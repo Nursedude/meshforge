@@ -1,123 +1,94 @@
-# Dude-Claw bring-up — Heltec V4 (WireClaw edge) + moc1 brain
+# Dude-Claw bring-up — Heltec V4 (WireClaw edge) + moc2 brain — ✅ COMPLETE
 
-> **Status:** Phase A software SHIPPED + staged 2026-06-11 (`a171fec`).
-> Remaining steps need the operator at the bench (Chromium + USB-C).
-> Design: `standalone_wireclaw_variant.md` · Session plan: operator-side
-> `~/.claude/plans/wanting-to-wire-meshforges-fluttering-crab.md`
+> **Status: Phase A END-TO-END PROVEN 2026-06-11** (~20:04 HST). Sensor →
+> rule → actuator + page, both edges, no LLM in the loop. Flash, portal
+> config, and bring-up were all executed REMOTELY (esptool on the brain box;
+> portal driven over HTTP from an in-subnet foothold) — no bench visit needed.
+> Design: `standalone_wireclaw_variant.md` · Code: `a171fec`.
 
-## What is already in place (verified live)
+## As-built (differs from the original moc1 plan — topology discovery)
 
-| Piece | State |
-|-------|-------|
-| `nats_sensor` / `nats` adapters + `standalone` preset + stdlib NATS client | shipped `a171fec`, 57 tests + 9 deploy guards, suite 6,455 green |
-| nats-server v2.14.2 on moc1 | **active**, `127.0.0.1:4222` (localhost-only until the pinhole step), unit from `templates/systemd/nats-server.service` |
-| Claw env `~/.config/meshforge/mini_dudeai_claw.env` (moc1, 600) | staged: `MINI_DUDEAI_NATS_SERVER=localhost:4222`, `MINI_DUDEAI_CLAW_DEVICE=dudeclaw-01`, fleet ntfy topic |
-| `meshforge-mini-dudeai-claw.service` user unit (moc1) | installed, **disabled** (enable AFTER flash — else the blindness rule pages hourly about a device that doesn't exist yet) |
-| Preset smoke on moc1 | `--once`: seeded 3 rules, 1 honest `source_error` (no device), 0 fires, exit 0 |
-
-**Security posture (decided, verified):** WireClaw v0.4.0 firmware carries ONLY
-`nats_host`/`nats_port` (its `data/config.json.example` — no token/user/pass),
-so server-side token auth would lock the device out. The bus binds localhost
-until the pinhole step below; never an open unauthenticated LAN bind. moc1 has
-no firewall framework today — the recipe below installs an ADDITIVE nftables
-table scoped to dport 4222 only (cannot affect SSH/federation/soak).
-
-## Bench steps (operator present)
-
-### 1. Back up the V4's Meshtastic config (reversibility)
-```bash
-meshtastic --port /dev/ttyACM0 --export-config > ~/heltec_v4_meshtastic_backup.yaml
 ```
-Keep OFF-repo (channels carry PSKs). Restore path later: Meshtastic web
-flasher + `meshtastic --configure`.
-
-### 2. Flash WireClaw
-1. Chromium (not Firefox) → https://wireclaw.io/flash.html
-2. USB-C **data** cable. If no serial port appears (native-USB S3): hold
-   **BOOT**, tap **RST**, release BOOT → ROM download mode.
-3. Flash v0.4.0 ("includes filesystem"). Press RST after.
-4. Expected: pulsating blue LED = setup mode. **OLED stays dark — normal**
-   (no display driver in stock WireClaw; display fork is the next arc).
-
-### 3. Captive portal
-Join `WireClaw-Setup` AP → portal at `192.168.4.1`:
-- WiFi: the **2.4 GHz** LAN SSID + password
-- Device name: `dudeclaw-01` (must match `MINI_DUDEAI_CLAW_DEVICE`)
-- `nats_host`: moc1's LAN address · `nats_port`: 4222
-- LLM + Telegram: **leave empty** (mini-dudeai is the brain)
-
-Then find the claw's IP (router DHCP table; give it a **reservation** — the
-pinhole pins to it).
-
-### 4. moc1: pinhole + LAN rebind (additive, 4222-scoped)
-```bash
-sudo apt-get install -y nftables
-sudo tee /etc/nftables.conf > /dev/null << 'EOF'
-#!/usr/sbin/nft -f
-flush ruleset
-table inet clawbus {
-  chain input {
-    type filter hook input priority 0; policy accept;
-    # NATS 4222: localhost + the claw only. Everything else on this box
-    # is untouched (policy accept) — additive by design, soak-safe.
-    iifname "lo" tcp dport 4222 accept
-    ip saddr <CLAW-IP> tcp dport 4222 accept
-    tcp dport 4222 drop
-  }
-}
-EOF
-sudo systemctl enable --now nftables
-# now widen the bus to the LAN (the pinhole is already in front of it)
-sudo sed -i 's/^listen: 127.0.0.1:4222/listen: 0.0.0.0:4222/' /etc/nats/nats.conf
-sudo systemctl restart nats-server
-# verify: still reachable locally, and SSH untouched
-PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.nats_client req _ion.discover '' --many --timeout 2
-```
-(Order matters: pinhole BEFORE rebind — the bus is never LAN-open unguarded.)
-
-### 5. Verify the claw answers (from moc1)
-```bash
-cd /opt/meshforge
-PYTHONPATH=src python3 -m mini_dudeai.nats_client req _ion.discover '' --many
-PYTHONPATH=src python3 -m mini_dudeai.nats_client req dudeclaw-01.tool_exec '{"tool":"temperature_read"}'
-PYTHONPATH=src python3 -m mini_dudeai.nats_client req dudeclaw-01.tool_exec '{"tool":"led_set","r":0,"g":0,"b":255}'
-PYTHONPATH=src python3 -m mini_dudeai.nats_client req dudeclaw-01.tool_exec '{"tool":"led_set","r":0,"g":0,"b":0}'
-```
-Discovery shows `dudeclaw-01`; temperature returns a reading; LED flashes blue.
-
-### 6. Enable the brain
-```bash
-systemctl --user enable --now meshforge-mini-dudeai-claw.service
-journalctl --user -u meshforge-mini-dudeai-claw -f   # expect src_errors=0 ticks
+moc2 (BRAIN, collector box)                Heltec V4 "dudeclaw-01" (EDGE)
+├─ nats-server v2.14.2 :4222          ◄──  WireClaw v0.4.0 · WiFi "DudeNET"
+│   (LAN bind BEHIND nftables pinhole)     = an AREDN node's 10.x/28 LAN AP;
+├─ meshforge-mini-dudeai-claw.service      egress NATs out the node's WAN
+│   (enabled; 3 seed rules, 30s tick)      (the same WAN address that fronts
+└─ fleet mini daemon (separate flock)      the legacy ".32" bot identity)
 ```
 
-### 7. End-to-end proof (the Phase A milestone)
-Drop the threshold below ambient so the breach fires without cooking the board:
-```bash
-# in ~/.config/meshforge/mini_dudeai_claw.env:
-#   MINI_DUDEAI_CLAW_TEMP_THRESHOLD=20
-systemctl --user restart meshforge-mini-dudeai-claw.service
-```
-Within ~90 s (grace_s 60 needs ≥2 observed ticks): **LED turns red** +
-`[claw] chip temp over threshold` page. Restore the threshold (55), restart →
-edge_down: **LED off** + quiet "cleared" notice. That round trip — sensor →
-rule → actuator + page, no LLM in the loop — closes Phase A; record it in the
-session notes + memory, and the claw earns its changelog entry (version bump
-rides the 0.6.2-beta soak convention).
+- **Why moc2, not moc1**: the claw's subnet (behind the AREDN node) reaches
+  the main-LAN segment only; moc1 sits alone on a second wired segment that
+  AREDN-LAN-originated traffic cannot reach (ICMP+TCP verified dead), and the
+  AREDN mesh path to moc5 was dead too. moc/moc2/moc3 are on the reachable
+  segment; moc2 (collector, RF-sparse, light) won. moc1's staging fully
+  unwound; the operator ratified the re-home mid-session.
+- **Pinhole before LAN bind**: WireClaw v0.4.0 has NO NATS auth fields
+  (verified in firmware source), so `/etc/nftables.conf` on moc2 carries an
+  additive, dport-4222-scoped rule: lo + the claw's NAT egress only, drop
+  rest; policy accept everywhere else (soak-safe). The bus rebound to LAN
+  only after the table was live.
+- The V4 needs only USB **power** now (WiFi does everything) — it can move to
+  any 5 V source within the AREDN node's WiFi range. It currently draws power
+  from moc1's USB port, which is otherwise unrelated to it.
 
-## Troubleshooting
-- `_ion.discover` empty: claw not on WiFi (2.4 GHz only) / wrong `nats_host` /
-  pinhole blocking it (check `sudo nft list table inet clawbus`).
-- Serial console (`/setup` to re-open the portal) via any USB terminal at 115200.
-- `claw_blind_any` pages later = bus or device went dark; the engine HOLDS
-  last-good breach state while blind (no false "recovered").
-- Full revert: Meshtastic web flasher → restore step-1 backup; disable the
-  claw unit + nats-server; remove the clawbus nft table.
+## Proof record (moc2, 2026-06-11)
 
-## Deferred (next arcs)
-- **Display fork**: PlatformIO, SSD1306 status panel + `display_print` tool →
-  mini pushes fleet metrics to the glass. Candidate upstream PRs: display tool
-  + NATS token auth (the gap that forced the pinhole posture).
-- Battery-voltage sensor (verify V4 VBAT pin map), push-subscribe sensor mode,
-  Phase B chat-compiler, role/`fleet_roles.yaml` declaration once the pilot
-  graduates.
+- `_ion.discover` → full capability sheet (19 tools, `chip_temp` 30.6 °C,
+  rgb_led, HAL gpio/adc/pwm/uart).
+- Threshold dropped to 20 → grace held 2 ticks → **edge_up**:
+  `nats_edge_up ok` reply `LED set to RGB(255, 0, 0)` + `ntfy_edge_up ok`
+  (operator paged). Threshold restored → **edge_down**: LED off + quiet
+  cleared notice. `~/mini_dudeai_claw_history.jsonl` on moc2 holds the record.
+- Steady state: `rules=3 conds=0 src_errors=0`; both mini daemons (fleet +
+  claw) active side by side — the state-file-keyed flock isolation working.
+
+## Remote-flash recipe (for the next claw — no browser needed)
+
+1. Plug the ESP32-S3 board into any fleet box (native USB → `/dev/ttyACM0`,
+   `303a:1001`). **Verify the work-holder first**: confirm the box's radio is
+   NOT a tty (moc1/moc2's MeshToad is CH341 **SPI**, VID 0x1A86) and
+   `fuser /dev/ttyACM0` is empty.
+2. `pipx install esptool` (Debian's apt esptool is dfsg-stripped of flasher
+   stubs — chip-erase fails on S3 without them).
+3. Firmware: `https://wireclaw.io/firmware/manifest.json` → per-chip parts.
+   For S3: bootloader@0x0, partitions@0x8000, boot_app0@0xE000,
+   firmware@0x10000, littlefs@0x290000.
+4. `esptool --chip esp32s3 --port /dev/ttyACM0 erase-flash` then
+   `write-flash` with the offsets above. Native-USB auto-download works —
+   no BOOT button.
+5. Portal without a phone: join the open `WireClaw-Setup` AP from any box
+   with free WiFi (`nmcli con add type wifi ... ipv4.never-default yes
+   ipv4.ignore-auto-dns yes` — soak-safe), then POST the form to
+   `http://192.168.4.1/save` (fields: wifi_ssid, wifi_pass, device_name,
+   nats_host, nats_port, timezone — POSIX form, e.g. `HST10`; leave
+   api_key/model/telegram empty).
+6. Reconfig later via the device's REST API (`/api/config` GET→edit→POST,
+   then POST `/api/reboot`). ⚠️ GET **masks** `wifi_pass` (`...tail`) —
+   never POST the mask back; always carry the real password.
+7. Find the device afterwards: it appears in `ss -tn state established
+   '( sport = :4222 )'` on the brain box once it dials in; inside its subnet,
+   `ip neigh` shows the base MAC esptool reported.
+
+## Operating notes
+
+- Claw config surface: `http://<claw-ip>/` (reachable only from inside its
+  subnet — e.g. via the bot box foothold) — tabs for config/prompt/memory/
+  devices/rules/status.
+- Brain env: `~/.config/meshforge/mini_dudeai_claw.env` on moc2
+  (`MINI_DUDEAI_CLAW_TEMP_THRESHOLD` default 55; drop it to ~20 to re-run the
+  demo). Rules: `~/mini_dudeai_claw_rules.json` (+ `.candidate` promotion).
+- `claw_blind_any` pages on sustained NATS/device darkness (grace 300 s);
+  while blind the engine HOLDS last-good breach state — silence never reads
+  as recovery.
+- OLED stays dark on stock firmware (no display driver) — **display fork is
+  the ratified next arc**: PlatformIO, SSD1306 status panel + `display_print`
+  tool → mini pushes fleet metrics to the glass. Upstream-PR candidates:
+  display tool + NATS token auth (the gap that forced the pinhole posture).
+
+## Deferred / next arcs
+
+- Display fork (above) · battery-voltage ADC sensor (verify V4 VBAT pin map)
+  · push-subscribe sensor mode · Phase B chat-compiler · fleet_roles.yaml
+  claw-brain declaration once the pilot graduates · Substack post (the
+  remote-flash story is a good one).
