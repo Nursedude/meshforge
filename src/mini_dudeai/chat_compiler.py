@@ -140,6 +140,15 @@ sensor configuration, NOT in rules: rules match the presence of a
 than what is configured, still compile the rule and note the threshold request
 in "annotation" so the operator adjusts the sensor config.
 
+Choosing match.kind — do not conflate these:
+  - "sensor_breach": a sensor READING crossed its threshold (hot, cold, low
+    battery). The sensor is WORKING and reporting a bad value.
+  - "source_error": the feed is DARK — reads failing, device unreachable,
+    bus down, blind. Words like dark/blind/offline/unreachable/silent/failed
+    mean source_error, never sensor_breach.
+Durations: convert stated hold times to grace_s in SECONDS ("ten minutes"
+means grace_s 600, "a minute" means 60).
+
 Available source kinds (context): {sorted(source_kinds)}
 {notes}
 

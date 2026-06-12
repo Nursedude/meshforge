@@ -243,3 +243,12 @@ class TestPromptDerivedNotDuplicated:
         assert "custom_src" in text
         assert "custom_act" in text
         assert "custom_cond" in text
+
+    def test_prompt_teaches_darkness_vs_breach(self):
+        # the first live compile conflated "feed dark" with sensor_breach —
+        # the prompt must carry the explicit kind disambiguation + the
+        # duration→grace_s conversion guidance
+        text = build_system_prompt(SOURCE_KINDS, ACTION_KINDS, [])
+        assert "source_error" in text
+        assert "never sensor_breach" in text
+        assert "grace_s 600" in text
