@@ -286,9 +286,10 @@ does the operator place one? (Cf. the ears: real value needed real traffic;
 BLE needs a real beacon.)
 
 ### Cold-start facts a clean session needs
-- **Claw**: `dudeclaw-01`, on `0.4.0+dudeclaw.8`, node `!b29faaa0` (MAC
+- **Claw**: `dudeclaw-01`, on `0.4.0+dudeclaw.12`, node `!b29faaa0` (MAC
   80:f1:b2:9f:aa:a0), at `10.120.250.199`, USB-powered off **moc1**. On the
-  **fleet `meshforge` channel** (hash 0xa2, persisted) + LoRa ears RX active.
+  **fleet `meshforge` channel** (hash 0xa2, persisted) + LoRa ears RX active
+  + **BLE passive scan running** (soak gate — see build record above).
 - **Brain**: `meshforge-mini-dudeai-claw.service` (user unit) on **moc2**;
   env `~/.config/meshforge/mini_dudeai_claw.env`. NATS server `nats-server`
   unit on moc2 (`127.0.0.1:4222`, pinholed to moc2+lo). Claw control = NATS
@@ -330,11 +331,11 @@ BLE needs a real beacon.)
   is the model for proving wire/format logic in software before hardware —
   consider a BLE-advert-decode unit check for v2.
 
-### Tool-count bookkeeping (current = 25 on +dudeclaw.8)
+### Tool-count bookkeeping (current = 26 on +dudeclaw.12)
 led_set, gpio_write, gpio_read, temperature_read, device_register,
 device_list, device_remove, sensor_read, actuator_set, rule_create,
 rule_list, rule_delete, rule_enable, serial_send, chain_create, device_info,
 file_read, file_write, nats_publish, remote_chat, display_print,
-battery_read, lora_stats, mesh_send, mesh_set_channel. Phase 3 adds
-`ble_stats` (+ later `ble_read` / `ble_set_target`) → bump counts in
-TOOLS.md / OPENCLAW.md / README / SKILL.md.
+battery_read, lora_stats, mesh_send, mesh_set_channel, **ble_stats** (docs
+already bumped to 26). v1 adds `ble_set_target` (+ later `ble_read`) →
+bump counts again in TOOLS.md / OPENCLAW.md / README / SKILL.md.
