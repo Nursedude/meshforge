@@ -230,12 +230,84 @@ Deepen the existing AREDN footprint (`utils/aredn.py` `AREDNClient`,
 watchdog probe, NOC panel, advertise the Raven bridge as an AREDN service.
 Graft points in research doc §4. Can proceed independent of the Raven pilot.
 
-## Phase 2 — Raven on the production hAP (operator go/no-go)
-The wiki reference shape: `raven_alpha.ipk` (in the clone) on
-WH6GXZ-6-VOLCANO-QTH-HAP, bridging to moc5's meshtasticd. Accept: alpha code,
-daily file-hash auto-update, postinst restarts firewall+uhttpd ON the federation
-gateway (port-forwards ride it — treat like a production gateway change). The
-Debian pilot de-risks this. Rollback (opkg remove + firewall restore) untested.
+## ✅ PHASE 2 — EXECUTED 2026-06-12 (Raven LIVE on the production hAP, cross-host)
+
+Operator gave explicit go (~13:35 HST). Raven `0.0.1-r13647631` installed via
+**CLI opkg** on WH6GXZ-6-VOLCANO-QTH-HAP (AREDN 4.26.1.0 — the ipk's exact
+target). Both bridge directions verified cross-host the same hour. moc5 pilot
+decommissioned (raven.service stopped+disabled, LOOP patch reverted to stock).
+
+### Install-path consequences (deliberate)
+- **No daily auto-update**: the `cron.daily/raven-update` only acts when
+  `/etc/package_store/raven.ipk` exists (the admin-UI upload path). CLI install
+  leaves it inert → the alpha can't mutate itself on the gateway AND local
+  patches persist. Tradeoff: Raven will NOT auto-reinstall after an AREDN
+  firmware sysupgrade — reinstall manually (config+data DO persist via
+  `/etc/arednsysupgrade.d/KN6PLV.raven.conf`).
+
+### ⚠️ INCIDENT during install — AREDN `restart-firewall` is fw3 on fw4 firmware
+Raven's postinst calls AREDN's own `/usr/local/bin/restart-firewall`, which
+backgrounds `fw3 -q reload` — but 4.26.1.0 is fw4/nftables. Result: **every
+runtime-inserted mesh-firewall hook rule was lost** (WAN ssh 2222 + web 80
+access, wireguard, iperf3, raven's own 4404 accepts). Config-rendered rules
+(the port-forwards / `ct status dnat accept`) SURVIVED — fleet services never
+blipped; operator WAN-side management access was down ~12 min. The immediate
+post-install "verified OK" was a multiplexed-ssh illusion (rode a pre-restart
+TCP connection).
+- **Detection**: `nft list ruleset | grep -c "wan ssh access"` → 0 = hooks lost.
+- **Recovery (no firewall restart needed)**: `for f in
+  /etc/local/mesh-firewall/[0-9]*; do sh "$f"; done` — hooks are re-runnable.
+- **This is an AREDN firmware bug** (any package postinst calling
+  restart-firewall triggers it on 4.26.1.0) — upstream report candidate.
+- Insurance that earned its keep: 15-min dead-man firewall-config restore
+  (BusyBox: NO nohup — use `sh -c "..." &`), full `/etc/config` +
+  `/etc/config.mesh` snapshot at `VolcanoAI:~/hap_backups/`, and the LAN-side
+  jump path `ssh -J moc5 -p 2222 root@10.143.126.65` for when WAN access dies.
+
+### Fixes applied on the hAP
+- **`channel.uc:159` null-guard (root fix for the foreign/hash-0 packet crash)**:
+  `return [ meshtasticChannel ];` → `return meshtasticChannel ?
+  [ meshtasticChannel ] : null;` — when no stock-preset channel is configured
+  (our meshforge-only config), hash-0 packets (PKI DMs) produced `[ null ]` →
+  null-deref at meshtastic.uc decodePacket. Stock backup
+  `channel.uc.orig-stock`. **Upstream PR candidate** (kn6plv/Raven).
+- **`raven.conf.override`** (chmod 600, sysupgrade-persisted): role `client`,
+  `"meshtastic": { "address": "10.143.126.65" }` — **the address pin is
+  load-bearing**: without it the multicast join follows the default route =
+  the hAP's WAN, and the bridge silently never sees moc5. meshforge channel
+  only (namekey transferred moc5→hAP by pipe, never through a transcript);
+  debug 0; telemetry OFF (operator choice still open — a brief telemetry-on
+  window proved the reverse leg, cadence looked ~60s = too chatty to leave on
+  unilaterally).
+
+### Proofs (2026-06-12 ~13:51–13:55 HST)
+- **Forward**: `RAVEN-HAP-FWD-1` sent on moc5 ch2 → UDP multicast crossed the
+  wire → hAP Raven decoded with the PSK and delivered to its UI event stream.
+- **Reverse**: hAP Raven (`!744a18e4`) position+telemetry adverts → multicast →
+  moc5 meshtasticd relay → **LoRa RF → moc RX: `hops_away:1, snr:6`**. Position
+  auto-sourced from the hAP's AREDN node location (fuzzed, precision_bits 10) —
+  the Debian pilot's location-crash class is structurally absent on AREDN.
+- **RSS 3.0 MB**, hAP available RAM ~8.6 MB after — workable; watch it.
+- **Web UI live**: `http://<hap>/a/raven` (200) — operator-facing messaging UI.
+
+### Soak watch v2 (rewritten 2026-06-12)
+`VolcanoAI:~/raven_soak_watch.sh` now targets the hAP (WAN ssh 2222): pid via
+`/var/run/raven.pid`, VmRSS (FAIL >15 MB), process AGE (crash-loop tell: AGE
+stays young across 3h runs). Same cron + `cron_verdict.sh raven_soak` wiring;
+the Phase-1 one-time "Phase 2 ready" ping leg retired (Phase 2 executed before
+it fired). First verdict OK.
+
+### Phase 2 residuals
+1. PSK appeared in debug-1 raven log lines (known pilot lesson) — hAP RAM log
+   ring still holds them until rollover/reboot; scrub (`/etc/init.d/log
+   restart`) left to operator (logread is root-only; low exposure).
+2. Upstream reports: Raven channel.uc null-guard PR; AREDN restart-firewall
+   fw3-on-fw4 bug.
+3. Telemetry on the meshforge channel (Raven as visible fleet node) = open
+   operator choice; OFF today.
+4. DHCP reservation pre-flight turned out ALREADY DONE (06-04): hAP reserves
+   `dc:a6:32:8f:67:df → .75 (wh6gxzser)`.
+5. RAM headroom on the hAP is the long-term watch item (57 MB box).
 
 ## Phase 3 — dedicated meshtasticd-on-OpenWrt node (hardware)
 OpenWrt One ($89, SPI-native, officially tested) or GL-MT3000 (512 MB, USB) as a
