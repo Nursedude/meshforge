@@ -117,6 +117,16 @@ error at once.
 | `none` | — | no-op; just records the fire in history |
 | `nats` | `server` | drive a WireClaw node over OpenClaw `tool_exec` (`rule.action.payload` on edge-up, `payload_down` on edge-down; idempotent state-set tools only — safe under the send-retry queue) |
 
+### Chat-compiler (Phase B)
+
+`python3 -m mini_dudeai.chat --preset standalone` — describe a rule in
+English; a **local** LLM (Ollama, `MINI_DUDEAI_OLLAMA_URL`/`_MODEL`) compiles
+it; you ratify the rendered rule; `write_candidate()` hands it to the running
+daemon, which validates + promotes within a tick. LLM at authorship only —
+never in the hot path. One repair round on validation errors, then a loud
+CompilerError; lint warnings reach the ratification display. `--once "..."`
+for one-shot, `--yes` for scripted use (the daemon still validates).
+
 ### Standalone ("dude-claw") preset
 
 `python3 -m mini_dudeai --preset standalone` wires `nats_sensor` + `nats` +

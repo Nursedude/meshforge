@@ -115,9 +115,27 @@ VolcanoAI (branch `dudeclaw`, commit `428f10c`, version `0.4.0+dudeclaw.1` —
   above.** Upstream-PR candidates: display tool (generalized pins) + NATS
   token auth (the gap that forced the pinhole posture).
 
+## Phase B chat-compiler — ✅ LIVE 2026-06-11 (late)
+
+`python3 -m mini_dudeai.chat --preset standalone` on the brain box. Backend:
+Ollama 0.30.7 + qwen2.5:3b on the dev box (systemd unit, models under
+/usr/share/ollama, HOME fix required — the service user needs a real home for
+its signing key) behind an additive nftables **11434 pinhole** (lo + the
+claw-brain box only; Ollama has no auth). Claw env carries
+`MINI_DUDEAI_OLLAMA_URL`/`_MODEL`.
+
+Production proof, including the lesson: the first compile of "note when the
+sensor feed has been dark for ten minutes" produced a structurally-valid but
+semantically-WRONG rule (`sensor_breach`/60s instead of `source_error`/600s)
+— exactly what ratification exists to catch. Removed via the sanctioned
+candidate path, prompt taught the darkness-vs-breach distinction + the
+duration→grace_s conversion (test-pinned), recompiled correctly:
+`claw_feed_dark_note` promoted live by the daemon. **Never run `--yes`
+without reading the rendered rule.** 3B models compile; humans ratify.
+
 ## Deferred / next arcs
 
 - Battery-voltage ADC sensor (verify V4 VBAT pin map) · push-subscribe sensor
-  mode · Phase B chat-compiler · fleet_roles.yaml claw-brain declaration once
-  the pilot graduates · GitHub fork push + upstream PRs · Substack post (the
-  remote-flash + first-light story is a good one).
+  mode · TUI chat front-end (the CLI shipped first; the claw brain is
+  headless) · fleet_roles.yaml claw-brain declaration once the pilot
+  graduates · GitHub fork push + upstream PRs · Phase C/D per the design doc.

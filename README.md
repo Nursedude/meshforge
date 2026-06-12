@@ -40,7 +40,7 @@ Plug in a LoRa radio, run the installer, and you get:
 
 Optional add-ons (install from TUI when you need them):
 - **NomadNet** — terminal-based LXMF client (Reticulum users)
-- **Dude-claw** — mini-dudeai's physical-world mode: a Pi brain driving WireClaw ESP32 edge nodes over NATS (sensors → rules → actuators + an OLED the fleet paints metrics onto; `--preset standalone`)
+- **Dude-claw** — mini-dudeai's physical-world mode: a Pi brain driving WireClaw ESP32 edge nodes over NATS (sensors → rules → actuators + an OLED the fleet paints metrics onto; `--preset standalone`). Includes the **chat-compiler**: speak a rule in English to a local offline LLM, ratify it, and the running daemon promotes it (`python3 -m mini_dudeai.chat`)
 
 ### Extensions (install from TUI: Maps & Viz menu)
 

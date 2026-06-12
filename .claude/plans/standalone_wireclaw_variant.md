@@ -1,9 +1,15 @@
 # mini-dudeai Standalone — the WireClaw-like personal agent (design)
 
-> **Status:** design, 2026-05-29. Substrate for this exists today; this doc
-> specifies the build. Closes the arc that began with the In-Domain Principle
-> work (`foundations/in_domain_principle.md`) and the candidate-authoring API
-> (`mini_dudeai.write_candidate`, shipped `0c09f6e`).
+> **Status:** Phases A + B SHIPPED 2026-06-11 (one day): A = `a171fec`
+> (nats_sensor/nats_action/standalone preset, end-to-end proven on a Heltec
+> V4 "dudeclaw-01"; brain on moc2 — topology forced a re-home, see
+> `dudeclaw_heltec_v4_bringup.md`); B = `9d6c09f`+`aa9a521` (chat-compiler:
+> English → Ollama qwen2.5:3b → ratify → write_candidate → live promotion,
+> proven in production incl. a mis-compile caught at review → prompt fix).
+> Bonus: display fork `0.4.0+dudeclaw.1` (not in this design — OLED status
+> screen + display_print tool + fleet metrics pusher). Remaining: Phase C
+> demo polish, Phase D onboarding, TUI chat front-end.
+> Original design (2026-05-29) below, unchanged.
 
 ## What it is
 
