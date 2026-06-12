@@ -135,6 +135,40 @@ useful.
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
+## Battery ADC arc (06-12 PM) — pr/vbat-battery-read
+
+V4 VBAT wiring VERIFIED from the official V4.2.0 datasheet (Rev 1.4, Header
+J3 footnote): **VBAT_Read=GPIO1 (ADC1_CH0), ADC_Ctrl=GPIO37 active HIGH,
+390k/100k divider → VBAT = VADC × 4.9** (Heltec's footnote formula is
+written inverted; the divider attenuates). Same pins as V3 lore, but now
+document-verified — and the datasheet also confirms the display-fork pins
+(LED 35, Vext 36, OLED 17/18/21).
+
+`battery_read` tool (no params → "Battery: x.xx V (adc N mV)"): guarded
+behind `WIRECLAW_VBAT_ADC`, GPIO-switched divider (HIGH for the 8-sample
+calibrated read, LOW after), honest error on builds without battery sense,
+volts reported verbatim (no battery ⇒ ~0 V or charger float — the tool
+never guesses). Branch `pr/vbat-battery-read` is STACKED on
+`pr/display-status-screen` (the heltec-v4 env lives there); open its
+upstream PR after #15 merges. Pushed to the fork.
+
+`dudeclaw` rebuilt per THE INVARIANT → `0.4.0+dudeclaw.3` (main + vbat-stack
++ token-auth + residue), heltec-v4 build green; prior tip tagged
+`dudeclaw.2`. ⚠️ The deploy branch is rewritten by design — pushing it to
+fork/backup needs the operator's force-push (`git push fork +dudeclaw`).
+
+mini side STAGED on moc2: `~/.config/meshforge/claw_sensors.battery.json`
+(chip_temp gt 55 + battery_v lt 3.5 via battery_read) + commented
+`MINI_DUDEAI_CLAW_SENSORS` line in the claw env. Enable ONLY once a battery
+is physically attached — with none, VBAT≈0V breaches lt-3.5 forever.
+
+REMAINING (operator-gated): app-only reflash over moc1 USB
+(`~/.local/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash
+0x10000 <firmware.bin>`) → discover reports +dudeclaw.3 → live
+`battery_read` via tool_exec from moc2. Flash also delivers the WIRECLAW_*
+display rename + token-capable NATS client (no token configured ⇒ behavior
+unchanged).
+
 ## After the PRs are live
 
 Watch them when touching the claw (no cron); the FORK.md state machine says
