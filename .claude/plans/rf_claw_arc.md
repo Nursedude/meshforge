@@ -10,7 +10,7 @@
 |-------|-------|--------|
 | 1 | **Mesh ears** — RX-only Meshtastic leg: the claw hears the fleet mesh | ✅ **LIVE 06-12** — first light: 9 pkts / 2 min, 2 distinct nodes, 0 crc_err, RSSI −103..−106, incl. channel-hash 0x08 traffic moc's own journal logs as undecodable — the RF witness corroborates the fleet radio view. Fork branch `pr/lora-mesh-ears` (stacked on vbat), claw flashed `0.4.0+dudeclaw.4` (operator-ratified), tag `dudeclaw.3` = prior tip. moc2: `claw_sensors.with_ears.json` STAGED (mesh_heard_age_s gt 1800) — SOAK heard-rate incl. overnight before enabling. |
 | 2 | **Mesh voice** — TX leg: claw broadcasts onto the mesh | ✅ **ON THE FLEET CHANNEL 06-12** — claw `+dudeclaw.8` set to `meshforge` (hash 0xa2, persisted to flash), `mesh_send` DECODED by moc's gateway on the PRIVATE fleet channel: `Received text msg from=0xb29faaa0, id=0xd273e476, msg=dude-claw on the fleet channel` (no undecodable line = name+PSK match moc's channel exactly). Durability proven (test-channel reboot cycle restored from flash). Earlier public proof: — claw flashed `0.4.0+dudeclaw.5` (operator-ratified, Option A public-channel low-power), `mesh_send` fired, and **moc's radio DECODED the full text**: `Received text msg from=0xb29faaa0, id=0x5284794c, msg=dude-claw first voice de WH6GXZ` — node id + pkt id match the claw's report exactly. Because moc listens on public LongFast, the claw appears as a real DECODED node in the NOC, not just an undecodable blip. Airtime guard verified (rapid sends refused, 0 RF). The whole stack (header/hash/AES-CTR/protobuf) proven on air. |
-| 3 | **BLE ingestion** — beacons/tags as virtual sensors | 📋 **DESIGNED 06-12, awaiting a clean session to build** — full notes below |
+| 3 | **BLE ingestion** — beacons/tags as virtual sensors | 🟡 **COEXISTENCE BUILD LIVE 06-12 PM, SOAK RUNNING** — claw `+dudeclaw.12`, all THREE radios up (WiFi+NATS, LoRa RX/TX, BLE passive scan); 8 unique BLE devices heard in the first 2 min at the AREDN site. Validation gate = the soak (`claw_ble_soak` cron on moc2, 30-min ticks → `~/claw_ble_soak.log`): NATS link stays up, heap ≥~25k & no slow leak, WiFi RSSI ≈ −38 dBm baseline. Sensor features (v1 target presence) ONLY after the soak passes. Build journey below. |
 
 **Why ears first**: Meshtastic packet HEADERS are plaintext (to/from/id/
 flags/channel-hash + radio RSSI/SNR) — an RX-only leg needs NO channel PSK,
@@ -159,6 +159,51 @@ Phase 1 transmits nothing. Phase 2 operates inside the 915 MHz ISM rules the
 fleet's other Meshtastic nodes already follow (and the operator is a HAM).
 
 ---
+
+## Phase 3 — BUILD RECORD (06-12 PM): the coexistence gate was MEMORY, not airtime
+
+Fork branch `pr/lora-ble-ingest` (stacked on voice; pushed to fork). Claw on
+**`0.4.0+dudeclaw.12`**; flashed tips tagged `dudeclaw.8`–`dudeclaw.11`.
+
+**The journey (+dudeclaw.9 → .12)** — the make-or-break risk manifested as
+HEAP, not WiFi airtime:
+- **.9**: first BLE build. NimBLE observer-only passive scan (48/320 ms duty,
+  host task on core 0, `setMaxResults(0)` = callback-only, no per-device heap).
+  Flew DEAF: ble_stats "no scanner", ~60 kB heap consumed anyway, free heap
+  21 kB. One-shot init had no witness and no cleanup.
+- **.10**: failure-stage witness + loop retries (5 s tick, 12 tries, then
+  deinit + reclaim). Verdict: `init failed (try N/12)` — NimBLEDevice::init
+  itself, every retry. ⚠️ This board's app Serial is NOT on the USB port
+  (only the ROM banner is) — `ble_stats` is the ONLY failure window, which is
+  why the witness lives in the tool, not the log.
+- **.11**: `esp_bt_controller_get_status()` added to the witness + controller
+  normalize (disable/deinit back to IDLE) before each retry — a failed init
+  leaves the controller half-up and every naive retry dies on INVALID_STATE.
+  Verdict: **ctrl status 2 (ENABLED) yet init false** → the only false-return
+  past enable is `esp_nimble_hci_init` → its failure paths are all
+  allocation-shaped → **OOM**: BLE bring-up needs ~70 kB free, the V4 had ~56.
+- **.12 — the cure: V4 "NATS-edge lean profile"** (36.8 kB of .bss returned
+  to the heap pool). `LLM_MAX_REQUEST/RESPONSE/TOOLCALLS_JSON` now
+  `#ifndef`-tunable (stock defaults untouched; oversize requests FAIL LOUD);
+  V4 sets 4k/2k/2k — its on-device tool-agent is unused (no API key, rules
+  compile off-device) and TOOLS_JSON alone (~10.5 kB) no longer fits, BY
+  DESIGN. Plus scan-only NimBLE trims: `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1`,
+  20-entry controller duplicate cache. Result: total heap 173.6→210.5 kB,
+  **BLE up first try**, ~30 kB free steady with all three radios running.
+
+**SOAK (the gate, running now)**: `claw_ble_soak` cron on moc2 (*/30,
+cron-verdict-wired) → `~/claw_ble_soak.log` (DI = heap/RSSI/uptime, BS =
+ble counters). Judge after ~24 h: (a) NATS kept answering / no reboots
+(uptime monotone), (b) free heap flat ≥~25 kB, (c) WiFi RSSI ≈ −38 dBm,
+(d) ble restarts ~0. PASS → v1 target-presence (`ble_seen_age_s`,
+`ble_set_target` with the `/lora_channel.json`-style persistence) + mini
+sensor spec. FAIL → duty-cycle down or reconsider.
+⚠️ Known trade on V4: on-device LLM agent requests now fail loud
+("Request too large for buffer") — V4 is a NATS-edge node by design.
+⚠️ deploy tag hygiene: `dudeclaw.11` was briefly mis-tagged onto a stray
+hand-edit of the deploy branch (lean commit committed on `dudeclaw` by
+mistake); repaired same hour — retagged to the flashed residue tip,
+lean commit cherry-picked to the pr branch, deploy REBUILT per FORK.md.
 
 ## Phase 3 — BLE ingestion: DESIGN NOTES (06-12, for a clean session)
 
