@@ -70,6 +70,36 @@ moc2 (BRAIN, collector box)                Heltec V4 "dudeclaw-01" (EDGE)
    '( sport = :4222 )'` on the brain box once it dials in; inside its subnet,
    `ip neigh` shows the base MAC esptool reported.
 
+## Display fork — ✅ LIVE 2026-06-11 (~20:40 HST)
+
+The ratified next arc landed same-day. Fork: `~/src/wireclaw-dudeclaw` on
+VolcanoAI (branch `dudeclaw`, commit `428f10c`, version `0.4.0+dudeclaw.1` —
+`_ion.discover` reports it, which is the deploy check). See its `FORK.md`.
+
+- **SSD1306 status screen** (pins from the official V4 pinmap: SDA17/SCL18/
+  RST21/Vext36 active-LOW): device name + NATS marker (`N*`/`N-`), IP + RSSI,
+  chip temp/heap/uptime, and **2 remote metric rows** with a 30-min `(old)`
+  staleness suffix. Real I2C ACK probe at init (the lib's `init()` can't
+  detect a missing panel); headless boards answer `display_print` with an
+  honest error.
+- **`display_print` tool**: `{"tool":"display_print","row":0..1,"text":"..."}`
+  on `tool_exec`; empty text clears. Registered in TOOLS_JSON + dispatch +
+  discovery.
+- **White LED mapping**: V4 has no WS2812 — `led()` drives GPIO35 PWM
+  (max RGB channel), so `led_set` actuations and the chip_temp rule are now
+  visible.
+- **Build/flash**: `pio run -e esp32-s3-heltec-v4` (pipx platformio on
+  VolcanoAI; first build ~10 min) → app-only reflash preserves config:
+  `esptool --chip esp32s3 --port /dev/ttyACM0 write-flash 0x10000 firmware.bin`.
+  Flashed remotely over moc1's USB; claw rejoined + reconnected unaided.
+- **Metrics pusher**: `scripts/claw_metrics_push.py` (MF `25cb23c`) on moc2's
+  crontab every 5 min, cron-verdict-wired as `claw_metrics` (#78 probe
+  watches it). Rows: `mesh:<directory total> fed:<ok>/<peers>` +
+  `wd:<signals> OK|SIG <HH:MM>`. Fails loud (nonzero exit → FAIL verdict)
+  rather than painting rows it couldn't compute. First push caught a live
+  wrong-key bug (`reachable` vs the API's `ok` → painted `fed:0/4`) — the
+  #80 class, fixed `25cb23c`.
+
 ## Operating notes
 
 - Claw config surface: `http://<claw-ip>/` (reachable only from inside its
@@ -81,14 +111,13 @@ moc2 (BRAIN, collector box)                Heltec V4 "dudeclaw-01" (EDGE)
 - `claw_blind_any` pages on sustained NATS/device darkness (grace 300 s);
   while blind the engine HOLDS last-good breach state — silence never reads
   as recovery.
-- OLED stays dark on stock firmware (no display driver) — **display fork is
-  the ratified next arc**: PlatformIO, SSD1306 status panel + `display_print`
-  tool → mini pushes fleet metrics to the glass. Upstream-PR candidates:
-  display tool + NATS token auth (the gap that forced the pinhole posture).
+- ~~OLED stays dark on stock firmware~~ **Display fork LIVE — see section
+  above.** Upstream-PR candidates: display tool (generalized pins) + NATS
+  token auth (the gap that forced the pinhole posture).
 
 ## Deferred / next arcs
 
-- Display fork (above) · battery-voltage ADC sensor (verify V4 VBAT pin map)
-  · push-subscribe sensor mode · Phase B chat-compiler · fleet_roles.yaml
-  claw-brain declaration once the pilot graduates · Substack post (the
-  remote-flash story is a good one).
+- Battery-voltage ADC sensor (verify V4 VBAT pin map) · push-subscribe sensor
+  mode · Phase B chat-compiler · fleet_roles.yaml claw-brain declaration once
+  the pilot graduates · GitHub fork push + upstream PRs · Substack post (the
+  remote-flash + first-light story is a good one).
