@@ -10,7 +10,7 @@
 |-------|-------|--------|
 | 1 | **Mesh ears** — RX-only Meshtastic leg: the claw hears the fleet mesh | ✅ **LIVE 06-12** — first light: 9 pkts / 2 min, 2 distinct nodes, 0 crc_err, RSSI −103..−106, incl. channel-hash 0x08 traffic moc's own journal logs as undecodable — the RF witness corroborates the fleet radio view. Fork branch `pr/lora-mesh-ears` (stacked on vbat), claw flashed `0.4.0+dudeclaw.4` (operator-ratified), tag `dudeclaw.3` = prior tip. moc2: `claw_sensors.with_ears.json` STAGED (mesh_heard_age_s gt 1800) — SOAK heard-rate incl. overnight before enabling. |
 | 2 | **Mesh voice** — TX leg: claw broadcasts onto the mesh | ✅ **ON THE FLEET CHANNEL 06-12** — claw `+dudeclaw.8` set to `meshforge` (hash 0xa2, persisted to flash), `mesh_send` DECODED by moc's gateway on the PRIVATE fleet channel: `Received text msg from=0xb29faaa0, id=0xd273e476, msg=dude-claw on the fleet channel` (no undecodable line = name+PSK match moc's channel exactly). Durability proven (test-channel reboot cycle restored from flash). Earlier public proof: — claw flashed `0.4.0+dudeclaw.5` (operator-ratified, Option A public-channel low-power), `mesh_send` fired, and **moc's radio DECODED the full text**: `Received text msg from=0xb29faaa0, id=0x5284794c, msg=dude-claw first voice de WH6GXZ` — node id + pkt id match the claw's report exactly. Because moc listens on public LongFast, the claw appears as a real DECODED node in the NOC, not just an undecodable blip. Airtime guard verified (rapid sends refused, 0 RF). The whole stack (header/hash/AES-CTR/protobuf) proven on air. |
-| 3 | **BLE ingestion** — beacons/tags as virtual sensors | future; independent radio, parallel-able |
+| 3 | **BLE ingestion** — beacons/tags as virtual sensors | 📋 **DESIGNED 06-12, awaiting a clean session to build** — full notes below |
 
 **Why ears first**: Meshtastic packet HEADERS are plaintext (to/from/id/
 flags/channel-hash + radio RSSI/SNR) — an RX-only leg needs NO channel PSK,
@@ -157,3 +157,139 @@ the claw MAC `80:f1:b2:9f:aa:a0` ✓.
 
 Phase 1 transmits nothing. Phase 2 operates inside the 915 MHz ISM rules the
 fleet's other Meshtastic nodes already follow (and the operator is a HAM).
+
+---
+
+## Phase 3 — BLE ingestion: DESIGN NOTES (06-12, for a clean session)
+
+> Handoff written deliberately at the end of a very long session (the whole
+> dude-claw arc shipped in it). Phase 3 is a meaty new firmware feature with
+> one genuine make-or-break risk (coexistence) — it deserves fresh context.
+> Everything a clean session needs is here.
+
+### Goal
+BLE advertisements from nearby beacons / tags / sensors become **virtual
+sensors** in the mini-dudeai model — the same shape as `lora_stats` /
+`battery_read`: a `tool_exec` tool returns a number mini's `nats_sensor`
+extracts, thresholds, and alerts on. Reclaims the V4's third radio (BLE 5.0,
+dormant — WireClaw only uses WiFi).
+
+Start SIMPLE (presence/proximity), grow later (decoded sensor formats):
+- **v1 — presence + RSSI of a named device.** Tool `ble_stats` (mirror
+  `lora_stats`) leads with `ble_seen_age_s` (seconds since a target MAC/UUID
+  was last heard — honest lower bound = since-scan-start before first sight,
+  the #80 "deaf-forever must still alarm" rule) + last RSSI. A door-tag going
+  silent or a person's beacon leaving range becomes an alert.
+- **v2 — decoded sensor adverts.** BTHome v2 (open, unencrypted temp/humidity/
+  battery — the cleanest), RuuviTag (RAWv2 manufacturer data), Xiaomi/ATC
+  (MijiaBLE). Each decoded field → a virtual sensor. iBeacon/Eddystone = UUID
+  presence only.
+
+### ⚠️ THE make-or-break risk: BLE + WiFi coexistence
+WiFi is **load-bearing** on the claw — it carries the entire NATS brain link.
+BLE and WiFi share ONE 2.4 GHz radio on the ESP32-S3 (the radio does one
+thing at a time). Validated facts (Espressif coexistence guide + NimBLE
+forums, 06-12):
+- **Use NimBLE-Arduino, NOT Bluedroid** — ~100 kB less RAM, ~50% less flash.
+  WireClaw is already memory-tight (`platformio.ini` notes classic ESP32
+  overflows DRAM; the S3 has 2 MB PSRAM + 16 MB flash but **heap/DRAM is the
+  constraint**). NimBLE is the only viable stack here.
+- ESP32-S3 has a **hardware coexistence arbiter** (time-slices BLE/WiFi) — it
+  must be ENABLED (it is, in arduino-esp32 default, but verify).
+- **Pin BLE scan to one core, NATS/WiFi to the other** (S3 is dual-core) so
+  they don't fight for CPU. WireClaw's loop runs on one core; the BLE scan
+  should run as its own task on the other (`xTaskCreatePinnedToCore`), or use
+  short non-blocking scan windows from loop() and accept lower duty.
+- **Scan PASSIVELY** (no scan-requests/connections) — lowest airtime + power,
+  and pure listening matches the "ears" philosophy (RX-only, no TX, like the
+  LoRa ears). Active scan is unnecessary for adverts.
+
+**VALIDATION GATE before any feature work**: flash a minimal NimBLE
+passive-scan build, then confirm over a soak that (a) the NATS link stays up
+(discover keeps answering, no reconnect storms), (b) `device_info` heap stays
+healthy (no slow leak / OOM), (c) WiFi RSSI / throughput isn't degraded. If
+coexistence destabilizes the NATS link, that's a STOP — the brain link wins;
+fall back to duty-cycled short scans or reconsider. Prove stability FIRST,
+build sensors second. (This is the soak-first discipline from the ears + the
+battery legs.)
+
+### Design (mirror the established guarded-optional pattern)
+- New build flag `WIRECLAW_BLE` (heltec-v4 env only; stock envs no-op inlines
+  — same as `WIRECLAW_OLED` / `WIRECLAW_LORA_SX1262`). lib_dep
+  `h2zero/NimBLE-Arduino`.
+- New `src/ble_scan.cpp` + `include/ble_scan.h` mirroring `lora_ears.*`:
+  `bleScanInit()` (honest "running BLE-deaf" on init fail; `bleAvailable()`
+  reports truth), `bleScanTick()` or a pinned task, `bleStats(out,len)`.
+  Target device(s) configurable at runtime (`ble_set_target {mac/uuid}`,
+  RAM + optional flash persist — REUSE the `/lora_channel.json` persistence
+  pattern, dedicated file, never config.json).
+- `ble_stats` tool (and later `ble_read`) registered EVERYWHERE tools are:
+  TOOLS_JSON, `toolExecute`, the `_ion.discover` tools list, docs (TOOLS.md /
+  OPENCLAW.md / README counts), `skill/wireclaw/SKILL.md`. (The discover list
+  is in `src/main.cpp` — easy to forget; grep for `mesh_set_channel` to find
+  all the registration sites.)
+- mini side: a sensor spec in `claw_sensors.*.json` on moc2
+  (`{"sensor":"ble_seen_age_s","tool":"ble_stats","op":"gt","threshold":...}`)
+  STAGED then soaked before enabling — same discipline as ears/battery.
+
+### Hardware/deployment reality (operator question for the clean session)
+The claw lives at the **AREDN site on moc1's USB** (remote). BLE range is
+~10 m typical. For Phase 3 to do anything useful there must be a **BLE device
+in range of the claw's physical location** — a beacon, a BTHome sensor, a
+phone. Decide the demo target before/early: what BLE thing is near moc1, or
+does the operator place one? (Cf. the ears: real value needed real traffic;
+BLE needs a real beacon.)
+
+### Cold-start facts a clean session needs
+- **Claw**: `dudeclaw-01`, on `0.4.0+dudeclaw.8`, node `!b29faaa0` (MAC
+  80:f1:b2:9f:aa:a0), at `10.120.250.199`, USB-powered off **moc1**. On the
+  **fleet `meshforge` channel** (hash 0xa2, persisted) + LoRa ears RX active.
+- **Brain**: `meshforge-mini-dudeai-claw.service` (user unit) on **moc2**;
+  env `~/.config/meshforge/mini_dudeai_claw.env`. NATS server `nats-server`
+  unit on moc2 (`127.0.0.1:4222`, pinholed to moc2+lo). Claw control = NATS
+  `tool_exec` / `cmd` from moc2 ONLY.
+- **Reach the claw**: `ssh moc2`, `set -a && . ~/.config/meshforge/mini_dudeai_claw.env
+  && set +a && PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.nats_client
+  req dudeclaw-01.tool_exec '{"tool":"device_info"}'`. Discover:
+  `req _ion.discover "" --many`. **Reboot tool**: `req dudeclaw-01.cmd "reboot"`.
+- **Fork**: `~/src/wireclaw-dudeclaw` on **VolcanoAI**. Branch model in
+  `FORK.md` — **THE INVARIANT**: `dudeclaw` (deploy) = upstream `main` + merge
+  each `pr/*` + ONE residue commit (FORK.md + version.h only), REBUILT never
+  hand-edited. Phase 3 branch: `pr/lora-ble-ingest` stacked on
+  `pr/lora-mesh-voice` (its sibling stack: display→vbat→ears→voice). Rebuild
+  recipe + per-PR convergence state machine in `FORK.md`.
+- **Build/flash**: `~/.local/bin/pio run -e esp32-s3-heltec-v4` on VolcanoAI
+  (pipx platformio; ALSO build `-e esp32-s3` to prove the guarded-optional
+  stays byte-clean). App-only reflash preserves config:
+  `scp .pio/build/esp32-s3-heltec-v4/firmware.bin moc1:/tmp/fw.bin` then
+  `ssh moc1 '~/.local/bin/esptool --chip esp32s3 --port /dev/ttyACM0
+  write-flash 0x10000 /tmp/fw.bin'`. ⚠️ apt esptool is dfsg-stripped (no S3
+  stubs) — pipx esptool only.
+- **Recurring rebuild gotcha**: merging `pr/nats-token-auth` into the deploy
+  branch ALWAYS conflicts in `src/web_config.cpp` (both stacks grow the
+  config-key table). Deterministic resolution = combine to 15 keys (base 13 +
+  nats_token + lora_tx_psk + lora_tx_channel; if Phase 3 adds a ble config
+  key, +1). 6 hunks: mask block, GET args, field table (`Field fields[N]` +
+  loop bound), write loop (`if (i < N-1)`), 2 JS arrays. Pattern is in the
+  git history of the last several `dudeclaw.N` rebuilds.
+- **Secret discipline** (if BLE ever needs a key — most adverts don't):
+  same as the fleet PSK — getpass/on-box only, NEVER through the transcript/
+  git/logs; the device echoes only non-secret identifiers (hashes/lengths).
+  The classifier (rightly) blocks reading prod secrets — design so the
+  operator moves any secret on-box.
+- **Upstream PRs still open**: #15 (display), #16 (NATS token auth) at
+  `M64GitHub/WireClaw`; the LoRa + BLE branches are fork-first (upstream
+  candidacy after the stack lands). `dudeclaw` force-push to fork/backup is
+  operator-gated (deny-listed for me).
+- **Verifier**: `scripts/verify_mesh_packet.py` (host-side protocol check)
+  is the model for proving wire/format logic in software before hardware —
+  consider a BLE-advert-decode unit check for v2.
+
+### Tool-count bookkeeping (current = 25 on +dudeclaw.8)
+led_set, gpio_write, gpio_read, temperature_read, device_register,
+device_list, device_remove, sensor_read, actuator_set, rule_create,
+rule_list, rule_delete, rule_enable, serial_send, chain_create, device_info,
+file_read, file_write, nats_publish, remote_chat, display_print,
+battery_read, lora_stats, mesh_send, mesh_set_channel. Phase 3 adds
+`ble_stats` (+ later `ble_read` / `ble_set_target`) → bump counts in
+TOOLS.md / OPENCLAW.md / README / SKILL.md.
