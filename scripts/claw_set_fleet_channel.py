@@ -3,9 +3,12 @@
 
 Runs on the box that hosts the claw's NATS server (moc2). Sends the claw a
 `mesh_set_channel` with the channel NAME (not secret) and PSK. The key is
-read via getpass (no echo, no shell history) or from the meshtasticd channel
-store; it is sent over the local pinholed NATS bus and NEVER printed, NEVER
-written to git, NEVER persisted to flash (the tool sets it in RAM only).
+read via getpass (no echo, no shell history); it is sent over the local
+pinholed NATS bus and NEVER printed and NEVER written to git. By default it
+is persisted to the claw's OWN flash (a dedicated /lora_channel.json, the
+same trust model as Meshtastic's channel store) so it survives reboots;
+--no-persist keeps it RAM-only. Use --verify to fire the proof send in the
+same process (no reboot can revert the channel between set and send).
 
 The claw replies with the channel name and the resulting channel-HASH byte —
 that byte is the cleartext LoRa header field, not a secret. Cross-check it
@@ -46,6 +49,11 @@ def main() -> int:
                     help="write the channel to the claw's flash so it survives "
                          "reboots (default on; --no-persist for RAM-only)")
     ap.add_argument("--no-persist", dest="persist", action="store_false")
+    ap.add_argument("--verify", action="store_true",
+                    help="fire a test mesh_send in the SAME process right after "
+                         "the set, so no reboot can revert the channel first")
+    ap.add_argument("--verify-text", default="dude-claw on the fleet channel",
+                    help="text for the --verify test broadcast")
     ap.add_argument("--timeout", type=float, default=15.0)
     args = ap.parse_args()
 
@@ -76,13 +84,35 @@ def main() -> int:
     # on-air header byte — confirm it equals the fleet channel's hash.
     print(resp.get("result", resp))
     ok = isinstance(resp, dict) and resp.get("ok") is not False
-    print("\nNext: send a test message and watch the gateway decode it on the "
-          "fleet channel:\n"
-          f"  PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.nats_client \\\n"
-          f"    req {args.device}.tool_exec "
-          f"'{{\"tool\":\"mesh_send\",\"text\":\"claw on fleet ch\"}}'\n"
-          "  ssh <gateway> \"journalctl -u meshtasticd --since '-2 min' "
-          "| grep 'Received text msg'\"")
+
+    if args.verify and ok:
+        # Fire a test broadcast in the SAME process, immediately after the set,
+        # so no reboot can revert the channel in between (the gap that lost the
+        # first attempt). The send result shows the channel hash actually used.
+        send = request(args.server, f"{args.device}.tool_exec",
+                       json.dumps({"tool": "mesh_send",
+                                   "text": args.verify_text}),
+                       timeout_s=args.timeout)
+        if isinstance(send, (bytes, bytearray)):
+            send = send.decode()
+        if isinstance(send, str):
+            try:
+                send = json.loads(send)
+            except ValueError:
+                pass
+        print("sent:", send.get("result", send) if isinstance(send, dict)
+              else send)
+        print("\nNow watch the gateway decode it ON THE FLEET CHANNEL:\n"
+              "  ssh <gateway> \"journalctl -u meshtasticd --since '-2 min' "
+              "| grep 'Received text msg'\"\n"
+              "(the send line above must show the fleet hash, NOT 0x08)")
+    else:
+        print("\nNext: send a test message and watch the gateway decode it on "
+              "the fleet channel:\n"
+              f"  PYTHONPATH=/opt/meshforge/src python3 -m "
+              f"mini_dudeai.nats_client \\\n"
+              f"    req {args.device}.tool_exec "
+              f"'{{\"tool\":\"mesh_send\",\"text\":\"claw on fleet ch\"}}'")
     return 0 if ok else 1
 
 
