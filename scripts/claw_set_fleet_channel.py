@@ -42,6 +42,10 @@ def main() -> int:
     ap.add_argument("--psk-stdin", action="store_true",
                     help="read the PSK (hex/base64) from stdin instead of "
                          "prompting (for piping; the value is still not echoed)")
+    ap.add_argument("--persist", action="store_true", default=True,
+                    help="write the channel to the claw's flash so it survives "
+                         "reboots (default on; --no-persist for RAM-only)")
+    ap.add_argument("--no-persist", dest="persist", action="store_false")
     ap.add_argument("--timeout", type=float, default=15.0)
     args = ap.parse_args()
 
@@ -51,7 +55,8 @@ def main() -> int:
         psk = getpass.getpass(f"PSK for channel {args.name!r} "
                               "(hex or base64, blank = public default): ")
 
-    payload = {"tool": "mesh_set_channel", "name": args.name, "psk": psk}
+    payload = {"tool": "mesh_set_channel", "name": args.name, "psk": psk,
+               "persist": 1 if args.persist else 0}
     # Scrub our own copy as soon as it is serialized — minimize the window.
     body = json.dumps(payload)
     del psk, payload
