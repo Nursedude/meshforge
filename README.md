@@ -314,7 +314,7 @@ Code works in testing but hasn't been validated in real-world deployments with a
 
 | Category | Capabilities | Blocker |
 |----------|-------------|---------|
-| **AREDN** | Node discovery, link quality, service enumeration | Needs AREDN hardware |
+| **AREDN** | Node discovery, link quality, service enumeration — live at an AREDN site; Meshtastic↔AREDN messaging via Raven bridge (pilot, field-proven 2026-06-11) | Raven on the production AREDN router itself (Phase 2) pending |
 | **Grafana Dashboards** | Pre-built JSON dashboards for Prometheus | Needs Grafana + Prometheus setup |
 | **uConsole AIO V2** | Hardware detection, GPIO power control, auto-config | Hardware ships Q2 2026 |
 

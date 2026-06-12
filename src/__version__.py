@@ -3,9 +3,9 @@ MeshForge - LoRa Mesh Network Development & Operations Suite
 Version information and changelog
 """
 
-__version__ = "0.6.1-beta"
-__version_info__ = (0, 6, 1, 'beta')
-__release_date__ = "2026-06-04"
+__version__ = "0.6.2-beta"
+__version_info__ = (0, 6, 2, 'beta')
+__release_date__ = "2026-06-12"
 __app_name__ = "MeshForge"
 __app_description__ = "Mesh Network Operations Center & Development Ecosystem"
 __app_tagline__ = "Build. Test. Deploy. Monitor."
@@ -20,6 +20,16 @@ ALPHA_VERSION = "0.6.0-alpha"
 
 # Version history
 VERSION_HISTORY = [
+    {
+        "version": "0.6.2-beta",
+        "date": "2026-06-12",
+        "status": "beta",
+        "changes": [
+            "AREDN: Meshtastic↔AREDN bridge field-proven — Raven (the AREDN core team's ucode bridge) integrated on the AREDN-site collector box via its undocumented Debian platform port; full dependency chain (ucode interpreter + usign) built from source. Both directions verified over real RF (reverse leg received one hop away, SNR 6.25), then the persistent service passed a 24h soak gate clean: 0 restarts, RSS flat ~4 MB, forward store still ingesting at hour 23. Raven is INTEGRATED, not MeshForge-native — its Meshtastic leg rides UDP-over-LAN multicast (224.0.0.69:4403), never the PhoneAPI TCP stream, so Issue #17 contention is structurally absent. Pilot log, build recipe, and rollback path: .claude/plans/aredn_raven_moc5_pilot.md.",
+            "AREDN: Three field lessons load-bearing for Phase 2 (Raven on the AREDN router itself): same-host pilots need an IP_MULTICAST_LOOP 0→1 patch (revert cross-host); the meshtasticd serving as Raven's radio must RELAY (CLIENT, not CLIENT_MUTE) or the AREDN→RF leg never keys the radio; Raven crash-loops (status 254, ~60s advert timer) without a `location` in raven.conf. Known Phase-2 item: packets on channels Raven holds no key for log a non-fatal decode exception — needs a null-guard before it lives on a router.",
+            "FLEET: The bridge box's device.role flipped CLIENT_MUTE→CLIENT (permanent) so the reverse leg reaches the RF mesh; raven soak watch wired into the cron-verdict regime (Issue #78-covered) with a one-time Phase-2-ready ping. README: AREDN row shifted from awaiting-hardware monitoring to live monitoring + Raven bridge pilot.",
+        ],
+    },
     {
         "version": "0.6.1-beta",
         "date": "2026-06-04",
