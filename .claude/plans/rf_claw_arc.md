@@ -9,7 +9,7 @@
 | Phase | Shape | Status |
 |-------|-------|--------|
 | 1 | **Mesh ears** — RX-only Meshtastic leg: the claw hears the fleet mesh | ✅ **LIVE 06-12** — first light: 9 pkts / 2 min, 2 distinct nodes, 0 crc_err, RSSI −103..−106, incl. channel-hash 0x08 traffic moc's own journal logs as undecodable — the RF witness corroborates the fleet radio view. Fork branch `pr/lora-mesh-ears` (stacked on vbat), claw flashed `0.4.0+dudeclaw.4` (operator-ratified), tag `dudeclaw.3` = prior tip. moc2: `claw_sensors.with_ears.json` STAGED (mesh_heard_age_s gt 1800) — SOAK heard-rate incl. overnight before enabling. |
-| 2 | **Mesh voice** — TX leg: claw broadcasts telemetry onto the fleet channel | gated on Phase 1 soak + operator PSK decision |
+| 2 | **Mesh voice** — TX leg: claw broadcasts onto the mesh | ✅ **BUILT + VERIFIED 06-12** — `mesh_send` tool, fork branch `pr/lora-mesh-voice` (stacked on ears), `dudeclaw` rebuilt → `0.4.0+dudeclaw.5` (tag `dudeclaw.4`=prior), both envs green. Protocol byte-verified on the host (`scripts/verify_mesh_packet.py` / fork `tools/`): public LongFast hash=0x08, AES-128+256 round-trip recover text+TEXT portnum. ⏸️ NOT yet flashed/transmitted — the first on-air TX is the operator's call (channel/PSK/power). |
 | 3 | **BLE ingestion** — beacons/tags as virtual sensors | future; independent radio, parallel-able |
 
 **Why ears first**: Meshtastic packet HEADERS are plaintext (to/from/id/
@@ -64,14 +64,34 @@ separate ratified step.
   observe real heard-rates before wiring any alert (else instant false
   "RF dark"). Spec staged, not enabled, same discipline as the battery leg.
 
-## Phase 2 sketch (mesh voice — NOT this session)
+## Phase 2 BUILT (mesh voice) — 06-12
 
-TX onto the fleet channel: channel PSK (AES-128/256-CTR), protobuf `Data`
-encode (portnum TEXT_MESSAGE/TELEMETRY), channel hash byte, packet-id
-randomization, hop_limit, listen-before-talk + duty restraint. Claw appears
-as a real node in the NOC pipeline (journal `Received text msg` is the
-proof). Operator decisions: which channel + PSK custody (the rotation
-checklist gains a consumer), TX power, airtime budget.
+`mesh_send` tool: broadcasts a Meshtastic TEXT_MESSAGE_APP packet. Lives in
+`lora_ears.cpp` (single radio owner): standby → FEM to TX → transmit → FEM to
+RX → resume `startReceive` (half-duplex, RX always restored). Protocol from
+authoritative Meshtastic source, byte-verified on the host before any RF
+(`scripts/verify_mesh_packet.py` round-trips through a receiver's decode):
+- 16-byte header: to/from/id LE, flags = hop_limit | hop_start<<5, channel hash
+- Data protobuf (portnum 1 + payload), AES-CTR nonce [0:8]=pktId [8:12]=from
+- channel hash = xorHash(name) ^ xorHash(psk); public LongFast = **0x08** ✓
+
+**Secret-safe**: ships defaulting to the PUBLISHED public key (fine in source);
+a private channel PSK is runtime-only via config `lora_tx_psk` (masked, mirrors
+nats_token), NEVER compiled in. **Restraint by construction**: 2 dBm default
+SX1262 drive through the GC1109 FEM (CSD=2/VFEM=7/TX_EN=46), ≥30 s min interval,
+200-char cap. Node id = low-4 MAC → stable `!xxxxxxxx` in every receiver's log.
+
+### The operator's first-TX decision (gates the on-air step)
+
+| Option | What proves it | Needs |
+|--------|---------------|-------|
+| **A. Public channel, low power** | moc journal logs `fr=!<claw id>` undecodable-hash-0x08 packet | nothing (no secret); flash +dudeclaw.5 |
+| **B. Fleet channel** | claw decodes into a real NOC node (`Received text msg`) | set `lora_tx_psk` to the fleet PSK (custody decision); flash |
+
+A is the recommended first light — no secret touched, unambiguous (grep moc's
+journal for the claw's node id), reversible scope (a few low-power packets on
+the public ISM band the fleet already shares). B is the full vision and the
+real "operator PSK decision" the plan flagged.
 
 ## Regulatory note
 
