@@ -111,9 +111,16 @@ a secret). Operator runs ON moc2:
 Then `mesh_send` → the gateway's `journalctl -u meshtasticd | grep 'Received
 text msg'` decodes the claw ON THE FLEET CHANNEL (vs the public-channel proof
 below). The returned hash must equal the fleet channel's hash — that's the
-non-secret confirmation the right key landed. For persistence across reboot,
-set `lora_tx_channel` + `lora_tx_psk` via the claw portal (foothold .32);
-RAM-only set reverts to public default on reboot (safe — no leak).
+non-secret confirmation the right key landed.
+
+**Durability (operator chose NATS-persist, +dudeclaw.7)**: the helper now
+persists by DEFAULT — `mesh_set_channel {persist:1}` writes the channel to a
+dedicated flash file `/lora_channel.json` (NOT config.json → no cross-branch
+clobber; PSK in the device's own flash = Meshtastic's own channel-store trust
+model), restored at boot (most-recent-intent wins over the config.json keys).
+`--no-persist` for RAM-only. A one-off claw reboot already wiped the FIRST
+RAM-only set on 06-12 (claw decoded on PUBLIC, not fleet) — persistence closes
+that. Result string shows `[persisted]`.
 
 ### ✅ Option A executed 06-12 — and it landed BETTER than a blip
 
