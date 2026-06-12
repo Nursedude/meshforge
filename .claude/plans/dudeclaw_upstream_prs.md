@@ -1,9 +1,12 @@
-# dude-claw upstream arc — branches + convergence plan READY, fork-public step awaiting GO
+# dude-claw upstream arc — ✅ EXECUTED 2026-06-12: fork public, both PRs OPEN
 
-> Status 2026-06-12 (PM pass): operator liked "go" but asked for **a solid plan
-> to get this to main first** (the solo-dev divergence trap). Plan is now
-> written and the deploy branch is rebuilt to obey it. Nothing public yet —
-> the `gh repo fork` + PR step fires on the next explicit GO.
+> **PR #15 (display)**: https://github.com/M64GitHub/WireClaw/pull/15
+> **PR #16 (NATS token auth)**: https://github.com/M64GitHub/WireClaw/pull/16
+> Fork: https://github.com/Nursedude/WireClaw — `dudeclaw`, both `pr/*`
+> branches, and tag `dudeclaw.1-deployed` pushed. moc1 bare backup holds the
+> same refs (rebuilt tip parked as `dudeclaw-v2`; force-update of `dudeclaw`
+> is operator-gated: `git push backup +dudeclaw && git push backup :dudeclaw-v2`).
+> Watch the PRs per the FORK.md state machine below whenever the claw is touched.
 
 ## The convergence plan (full text lives in the fork's `FORK.md`)
 
