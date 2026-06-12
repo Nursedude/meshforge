@@ -129,6 +129,17 @@ persistence-mechanism failure (most likely that run didn't carry persist).
 Cleaned up to public default after. The fleet helper run (persist default)
 will now survive reboots. Reboot tool: WireClaw `<device>.cmd "reboot"`.
 
+### Key-format robustness (+dudeclaw.8, 06-12)
+
+First real-key `--verify` run errored `bad channel/key` — the decoder only took
+standard base64 + tight hex. +dudeclaw.8 accepts **standard base64, base64url
+(`-`/`_`), plain hex, and hex with `0x`/colons/whitespace**; on failure the
+tool reports the DECODED LENGTH (`key decoded to N bytes, need 16 or 32`) — a
+length, not the key, so a truncated/wrong-size key is diagnosable without the
+secret. Verified live: base64url→0x3f, colon-hex→0x0f (both match computed).
+Persistence durability already PROVEN (test-channel reboot cycle restored from
+flash). Awaiting operator's real-key retry (`--verify`, on moc2).
+
 ### ✅ Option A executed 06-12 — and it landed BETTER than a blip
 
 moc doesn't just *receive* the public LongFast channel, it **decodes** it (it
