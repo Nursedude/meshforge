@@ -57,8 +57,11 @@ def build_rows() -> list[str]:
     peers = ((status.get("federation") or {}).get("peer_status")) or []
     if total is None:
         raise SystemExit("claw_metrics: /api/status has no directory.total")
+    # peer health field is `ok` (map_federation's FederationPeerStatus) — a
+    # wrong key here defaults healthy peers to False and paints "fed:0/N",
+    # the exact degraded-state-as-valid-value class this row exists to expose
     reachable = sum(1 for p in peers
-                    if p.get("reachable", False) and not p.get("in_backoff"))
+                    if p.get("ok") and not p.get("in_backoff"))
     row0 = f"mesh:{total} fed:{reachable}/{len(peers)}"
 
     try:
