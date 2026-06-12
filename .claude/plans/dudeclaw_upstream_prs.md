@@ -162,12 +162,16 @@ mini side STAGED on moc2: `~/.config/meshforge/claw_sensors.battery.json`
 `MINI_DUDEAI_CLAW_SENSORS` line in the claw env. Enable ONLY once a battery
 is physically attached — with none, VBAT≈0V breaches lt-3.5 forever.
 
-REMAINING (operator-gated): app-only reflash over moc1 USB
-(`~/.local/bin/esptool --chip esp32s3 --port /dev/ttyACM0 write-flash
-0x10000 <firmware.bin>`) → discover reports +dudeclaw.3 → live
-`battery_read` via tool_exec from moc2. Flash also delivers the WIRECLAW_*
-display rename + token-capable NATS client (no token configured ⇒ behavior
-unchanged).
+✅ FLASHED + LIVE 06-12 (operator-ratified): app-only reflash over moc1
+USB, hash verified, claw rejoined unaided; `_ion.discover` reports
+**0.4.0+dudeclaw.3**. Live `battery_read` → **"Battery: 4.15 V (adc 847
+mV)"** — divider/ctrl-HIGH/×4.9 all proven on hardware (the BAT node is
+live: charged LiPo or charger float). With a real 4.15 V reading the
+staged spec became safe to enable in every case → `battery_low_page` rule
+authored (glob `*.battery_v`, grace 600s, cooldown 3600s — the chip rules
+glob only `*.chip_temp`, so a battery breach had no consumer) and PROMOTED
+by the live daemon; `MINI_DUDEAI_CLAW_SENSORS` enabled + daemon restarted.
+Steady state: 5 rules, 0 src_errors, no active conditions.
 
 ## After the PRs are live
 
