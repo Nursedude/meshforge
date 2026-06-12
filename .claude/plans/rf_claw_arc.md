@@ -118,9 +118,16 @@ persists by DEFAULT — `mesh_set_channel {persist:1}` writes the channel to a
 dedicated flash file `/lora_channel.json` (NOT config.json → no cross-branch
 clobber; PSK in the device's own flash = Meshtastic's own channel-store trust
 model), restored at boot (most-recent-intent wins over the config.json keys).
-`--no-persist` for RAM-only. A one-off claw reboot already wiped the FIRST
-RAM-only set on 06-12 (claw decoded on PUBLIC, not fleet) — persistence closes
-that. Result string shows `[persisted]`.
+`--no-persist` for RAM-only. Result string shows `[persisted]`.
+
+**✅ DURABILITY PROVEN 06-12 (no-secret test-channel reboot cycle)**: set a
+throwaway `clawtest`+seq-key channel persist:1 → `[persisted]` hash 0x0f →
+rebooted the claw via `dudeclaw-01.cmd "reboot"` → it came back (uptime 14s)
+on `ch 'clawtest' (hash 0x0f)` = RESTORED FROM FLASH. So write + restore both
+work; the earlier fleet set that showed public (0x08) post-reboot was NOT a
+persistence-mechanism failure (most likely that run didn't carry persist).
+Cleaned up to public default after. The fleet helper run (persist default)
+will now survive reboots. Reboot tool: WireClaw `<device>.cmd "reboot"`.
 
 ### ✅ Option A executed 06-12 — and it landed BETTER than a blip
 
