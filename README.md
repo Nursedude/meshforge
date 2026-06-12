@@ -36,9 +36,11 @@ Plug in a LoRa radio, run the installer, and you get:
 - **RF engineering tools** for site planning
 - **meshtastic CLI** integration for radio config (transient, no interference)
 - **AI diagnostics** that work offline
+- **mini-dudeai** — a deterministic rule-loop agent that watches fleet health 24/7 and pages on real signals (no LLM in the hot path)
 
 Optional add-ons (install from TUI when you need them):
 - **NomadNet** — terminal-based LXMF client (Reticulum users)
+- **Dude-claw** — mini-dudeai's physical-world mode: a Pi brain driving WireClaw ESP32 edge nodes over NATS (sensors → rules → actuators + an OLED the fleet paints metrics onto; `--preset standalone`)
 
 ### Extensions (install from TUI: Maps & Viz menu)
 
@@ -281,6 +283,7 @@ These features have been used in actual mesh deployments with physical radios an
 | **Standalone RF Tools** | Zero-dependency RF calculator, works without sudo or radio hardware |
 | **Multi-Mesh Gateway** | Meshtastic ↔ RNS/LXMF bridge via MQTT, composable-bridges model, refusal-on-inconsistency preflight, persistent SQLite queue. Field-deployed across the operator's 5-box LAN fleet + 1 cloud peer (since 2026-04-24) |
 | **Gateway + RNode** | rnsd RNodeInterface on USB LoRa radio alongside Meshtastic HAT; RNS-LoRa egress at 903.625 MHz / SF7 — validated on fleet-host-3 |
+| **Dude-claw (standalone agent)** | mini-dudeai brain + WireClaw ESP32 edge over NATS: sensor polls → threshold rules → actuation + pages, end-to-end proven on a Heltec V4 (2026-06-11). Display fork (`0.4.0+dudeclaw.N`) paints fleet metrics onto the board's OLED via a cron-verdict-wired pusher; stdlib NATS client, no new runtime deps |
 
 ### Beta (Automated Tests Pass, Needs Field Validation)
 
@@ -382,6 +385,8 @@ A class of "service running but not serving" failures was identified across the 
 | Gateway delivery confirmation (Issue #74) | Meshtastic ROUTING_APP ACK consumption in both bridge modes (TCP + MQTT `/e/` ServiceEnvelope) — honest CONFIRMED/DROPPED instead of "sent"; gated off by default |
 | 1,500-line file-split arc complete | Every source file under the 1,500-line maintainability threshold (facade-hub/mixin splits across watchdog, gateway, and map modules) |
 | Dependabot auto-merge | Green dependency PRs land themselves; CI required-context gate enforced |
+| AREDN ↔ Meshtastic bridge (Raven) | Persistent bidirectional bridge live on the AREDN-site box; both directions verified over real RF (2026-06-11) |
+| Dude-claw Phase A + display fork | mini-dudeai standalone preset driving a WireClaw Heltec V4 edge node over NATS — sensor→rule→actuator+page proven both edges; firmware fork lights the OLED with fleet metrics (2026-06-11). Next: chat-compiler (Phase B), upstream PRs (display tool, NATS token auth) |
 
 **Currently Soaking**
 
