@@ -39,42 +39,82 @@ from .config import registered_action_kinds, registered_source_kinds
 
 PROMOTE_WAIT_S = 75  # two 30s ticks + slack
 
+# The ONE table of per-preset compile targets. The TUI "describe a rule"
+# handler consumes this too (preset_paths with an explicit home=) — filenames,
+# condition kinds, and daemon units must never fork into a second copy.
+PRESETS = {
+    "standalone": {
+        "rules_file": "mini_dudeai_claw_rules.json",
+        "condition_kinds": ["sensor_breach", "source_error"],
+        "daemon_unit": "meshforge-mini-dudeai-claw",
+    },
+    "meshforge_fleet": {
+        "rules_file": "mini_dudeai_rules.json",
+        "condition_kinds": ["signal_class", "federation_peer_unhealthy",
+                            "digest_stale", "unexpected_reboot", "source_error"],
+        "daemon_unit": "meshforge-mini-dudeai",
+    },
+}
 
-def _paths_for_preset(preset: str) -> tuple[str, str, list[str], str]:
-    """(rules_path, candidate_path, condition_kinds, notes) per preset."""
-    home = resolve_home()
+
+def preset_paths(preset: str, home: str | None = None) -> dict:
+    """Compile-target facts for a preset.
+
+    Returns {rules_path, candidate_path, condition_kinds, notes, daemon_unit}.
+    `home` overrides the default resolver — the TUI runs under sudo where
+    resolve_home() would point at /root, so it passes the operator's real home.
+    """
+    spec = PRESETS.get(preset)
+    if spec is None:
+        raise ValueError(f"unknown preset {preset!r} "
+                         f"({' | '.join(sorted(PRESETS))})")
+    home = home or resolve_home()
+    rules = os.path.join(home, spec["rules_file"])
+    notes = ""
     if preset == "standalone":
-        rules = os.path.join(home, "mini_dudeai_claw_rules.json")
         device = os.environ.get("MINI_DUDEAI_CLAW_DEVICE", "")
-        notes = (f"The WireClaw edge device is named {device!r}; its chip "
-                 f"temperature sensor subject is \"{device}.chip_temp\"."
-                 if device else "")
-        return rules, rules + ".candidate", ["sensor_breach", "source_error"], notes
-    if preset == "meshforge_fleet":
-        rules = os.path.join(home, "mini_dudeai_rules.json")
-        kinds = ["signal_class", "federation_peer_unhealthy", "digest_stale",
-                 "unexpected_reboot", "source_error"]
-        return rules, rules + ".candidate", kinds, ""
-    raise SystemExit(f"unknown preset {preset!r} (standalone | meshforge_fleet)")
+        if device:
+            notes = (f"The WireClaw edge device is named {device!r}; its chip "
+                     f"temperature sensor subject is \"{device}.chip_temp\".")
+    return {
+        "rules_path": rules,
+        "candidate_path": rules + ".candidate",
+        "condition_kinds": list(spec["condition_kinds"]),
+        "notes": notes,
+        "daemon_unit": spec["daemon_unit"],
+    }
+
+
+def load_rules(rules_path: str) -> tuple[list | None, str | None]:
+    """(rules, error). Missing file → ([], None): a fresh box legitimately
+    compiles against an empty ruleset. Unreadable/corrupt/shape-wrong →
+    (None, reason): an unknown ruleset must REFUSE, never read as empty
+    (the error-reads-as-empty trap, Issue #80)."""
+    data, err = read_json(rules_path)
+    if err == "not found":
+        return [], None
+    if err:
+        return None, f"cannot read {rules_path}: {err}"
+    rules = (data or {}).get("rules")
+    if not isinstance(rules, list):
+        return None, f"{rules_path} has no 'rules' list"
+    return rules, None
 
 
 def _load_rules(rules_path: str) -> list[dict]:
-    data, err = read_json(rules_path)
-    if err == "not found":
+    """CLI wrapper: load_rules with print/exit semantics."""
+    rules, err = load_rules(rules_path)
+    if err:
+        raise SystemExit(f"{err} — refusing to compile against an unknown "
+                         f"ruleset")
+    if rules == [] and not os.path.exists(rules_path):
         print(f"note: {rules_path} does not exist yet — compiling against an "
               f"empty ruleset")
-        return []
-    if err:
-        raise SystemExit(f"cannot read {rules_path}: {err} — refusing to "
-                         f"compile against an unknown ruleset")
-    rules = (data or {}).get("rules")
-    if not isinstance(rules, list):
-        raise SystemExit(f"{rules_path} has no 'rules' list — refusing")
     return rules
 
 
-def _watch_promotion(rules_path: str, rule_id: str,
-                     wait_s: float = PROMOTE_WAIT_S) -> bool:
+def watch_promotion(rules_path: str, rule_id: str,
+                    wait_s: float = PROMOTE_WAIT_S) -> bool:
     deadline = time.monotonic() + wait_s
     while time.monotonic() < deadline:
         data, err = read_json(rules_path)
@@ -87,7 +127,8 @@ def _watch_promotion(rules_path: str, rule_id: str,
 
 def _one_intent(intent: str, backend: OllamaBackend, rules_path: str,
                 candidate_path: str, condition_kinds: list[str],
-                notes: str, assume_yes: bool = False) -> int:
+                notes: str, assume_yes: bool = False,
+                daemon_unit: str = "meshforge-mini-dudeai-claw") -> int:
     existing = _load_rules(rules_path)
     print(f"compiling against {len(existing)} existing rule(s) "
           f"[{backend.model} @ {backend.url}] ...")
@@ -123,12 +164,12 @@ def _one_intent(intent: str, backend: OllamaBackend, rules_path: str,
         return 1
     print(f"candidate written: {candidate_path}")
     print(f"waiting for the daemon to promote (up to {PROMOTE_WAIT_S}s) ...")
-    if _watch_promotion(rules_path, rule["id"]):
+    if watch_promotion(rules_path, rule["id"]):
         print(f"✓ PROMOTED — rule {rule['id']!r} is live in {rules_path}")
         return 0
     print(f"✗ candidate written but NOT observed promoting within "
           f"{PROMOTE_WAIT_S}s — is the daemon running? "
-          f"(systemctl --user status meshforge-mini-dudeai-claw)")
+          f"(systemctl --user status {daemon_unit})")
     return 1
 
 
@@ -154,7 +195,12 @@ def main(argv: list[str] | None = None) -> int:
                         "still validates)")
     args = p.parse_args(argv)
 
-    rules_path, candidate_path, cond_kinds, notes = _paths_for_preset(args.preset)
+    try:
+        target = preset_paths(args.preset)
+    except ValueError as e:
+        raise SystemExit(str(e))
+    rules_path, candidate_path = target["rules_path"], target["candidate_path"]
+    cond_kinds, notes = target["condition_kinds"], target["notes"]
     if args.rules_path:
         rules_path = args.rules_path
         candidate_path = rules_path + ".candidate"
@@ -162,7 +208,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.once:
         return _one_intent(args.once, backend, rules_path, candidate_path,
-                           cond_kinds, notes, assume_yes=args.yes)
+                           cond_kinds, notes, assume_yes=args.yes,
+                           daemon_unit=target["daemon_unit"])
 
     print("mini-dudeai chat-compiler — describe a rule in English; empty "
           "line or Ctrl-D exits.")
@@ -176,7 +223,7 @@ def main(argv: list[str] | None = None) -> int:
         if not intent:
             return rc
         rc = _one_intent(intent, backend, rules_path, candidate_path,
-                         cond_kinds, notes)
+                         cond_kinds, notes, daemon_unit=target["daemon_unit"])
 
 
 if __name__ == "__main__":

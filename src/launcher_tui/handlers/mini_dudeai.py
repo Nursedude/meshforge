@@ -122,6 +122,47 @@ def build_findings(state: dict, history: list, now_ts: float) -> list:
     return findings
 
 
+OLLAMA_PROBE_TIMEOUT_S = 4.0
+
+
+def probe_ollama(url: str, timeout_s: float = OLLAMA_PROBE_TIMEOUT_S):
+    """(ok, detail) — bounded reachability check before any compile attempt.
+
+    GET {url}/api/version. Never raises: a TUI flow must get an answer, not a
+    traceback. False carries the reason verbatim so the operator can act on it
+    (wrong URL, pinhole doesn't admit this box, server down)."""
+    import urllib.error
+    import urllib.request
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/api/version")
+        with urllib.request.urlopen(req, timeout=timeout_s) as r:
+            try:
+                ver = json.load(r).get("version", "?")
+            except ValueError:
+                ver = "?"
+            return True, f"ollama {ver}"
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return False, str(e)
+
+
+def discover_chat_targets(home: str) -> list:
+    """Rule targets the chat compiler can write on THIS box.
+
+    The fleet ruleset is always offered (the daemon seeds it on first run);
+    the claw (standalone) target appears only where its ruleset exists. Specs
+    come from mini_dudeai.chat.PRESETS via preset_paths — no second copy of
+    filenames / condition kinds / daemon units."""
+    from mini_dudeai.chat import preset_paths
+    fleet = preset_paths("meshforge_fleet", home=home)
+    fleet.update(key="fleet", label="Fleet watcher rules (this box)")
+    targets = [fleet]
+    claw = preset_paths("standalone", home=home)
+    if os.path.exists(claw["rules_path"]):
+        claw.update(key="claw", label="dude-claw rules (WireClaw edge)")
+        targets.append(claw)
+    return targets
+
+
 def _posture(state: dict, now_ts: float) -> str:
     last_tick = state.get("last_tick_ts")
     rule_count = state.get("rule_count", len(state.get("rules") or {}))
@@ -145,6 +186,7 @@ class MiniDudeaiHandler(BaseHandler):
         return [
             ("mini_dudeai", "mini-dudeai (local watcher + fixes)", None),
             ("mini_dudeai_rules", "mini-dudeai: edit rules (in-app)", None),
+            ("mini_dudeai_chat", "mini-dudeai: describe a rule (chat-compile)", None),
         ]
 
     def execute(self, action):
@@ -152,6 +194,8 @@ class MiniDudeaiHandler(BaseHandler):
             self.ctx.safe_call("mini-dudeai", self._render)
         elif action == "mini_dudeai_rules":
             self.ctx.safe_call("mini-dudeai rules", self._edit_rules)
+        elif action == "mini_dudeai_chat":
+            self.ctx.safe_call("mini-dudeai chat", self._describe_rule)
 
     def _render(self):
         state_p, hist_p = _mini_paths()
@@ -303,6 +347,141 @@ class MiniDudeaiHandler(BaseHandler):
             "The mini-dudeai daemon validates and promotes it within ~30s "
             "(you propose, it ratifies). Re-open the watcher to confirm.")
         return True
+
+    # --- "describe a rule" (the chat-compiler front-end) -----------------
+    #
+    # The TUI sibling of `python3 -m mini_dudeai.chat`: English → local Ollama
+    # → compiled rule → HUMAN ratification → write_candidate → the daemon
+    # validates + promotes. The LLM compiles; the operator ratifies — there is
+    # deliberately no auto-accept path here (the first live compile produced a
+    # structurally-valid-but-semantically-wrong rule; review caught it).
+
+    def _describe_rule(self):
+        from mini_dudeai.chat_compiler import (
+            DEFAULT_MODEL, DEFAULT_OLLAMA_URL, OllamaBackend)
+
+        url = os.environ.get("MINI_DUDEAI_OLLAMA_URL", DEFAULT_OLLAMA_URL)
+        model = os.environ.get("MINI_DUDEAI_OLLAMA_MODEL", DEFAULT_MODEL)
+        ok, detail = probe_ollama(url)
+        if not ok:
+            self.ctx.dialog.msgbox(
+                "Ollama not reachable",
+                f"The chat-compiler needs a local-network Ollama server, and\n"
+                f"  {url}\n"
+                f"did not answer from this box:\n  {detail}\n\n"
+                "Set MINI_DUDEAI_OLLAMA_URL to a server reachable from here, "
+                "or run the compiler on the box the server admits. If a "
+                "firewall pinhole guards the port, widen it deliberately to "
+                "this box only — never open it to everything.")
+            return
+
+        target = self._pick_chat_target()
+        if target is None:
+            return
+
+        while True:
+            intent = self.ctx.dialog.inputbox(
+                "Describe a rule",
+                f"Target: {target['label']}\nCompiler: {model} @ {url}\n\n"
+                "One sentence of English; the model compiles it, you ratify "
+                "it, the daemon promotes it.\nExample: page me high priority "
+                "when a federation peer stays unhealthy for ten minutes.")
+            if not intent or not intent.strip():
+                return
+            self._compile_one(intent.strip(), target,
+                              OllamaBackend(url=url, model=model))
+
+    def _pick_chat_target(self):
+        targets = discover_chat_targets(str(get_real_user_home()))
+        if len(targets) == 1:
+            return targets[0]
+        sel = self.ctx.dialog.menu(
+            "Compile target",
+            "This box carries more than one ruleset — which one is the rule "
+            "for?",
+            [(t["key"], t["label"]) for t in targets])
+        if not sel:
+            return None
+        return next((t for t in targets if t["key"] == sel), None)
+
+    def _compile_one(self, intent, target, backend):
+        from mini_dudeai.chat import PROMOTE_WAIT_S, load_rules, watch_promotion
+        from mini_dudeai.chat_compiler import (
+            CompilerError, compile_rule, render_rule)
+        from mini_dudeai.config import (
+            registered_action_kinds, registered_source_kinds)
+
+        existing, err = load_rules(target["rules_path"])
+        if err:
+            # An unreadable ruleset must refuse, never read as empty — a
+            # compile against "no rules" could ratify a duplicate id (#80).
+            self.ctx.dialog.msgbox(
+                "Ruleset unreadable",
+                f"{err}\n\nRefusing to compile against an unknown ruleset. "
+                "Fix or remove the file, then retry.")
+            return
+
+        self.ctx.dialog.infobox(
+            "Compiling",
+            f"{backend.model} @ {backend.url}\n\n"
+            f"Compiling against {len(existing)} existing rule(s) — a small "
+            "local model can take a minute ...")
+        try:
+            rule, warnings = compile_rule(
+                intent, backend, existing,
+                source_kinds=registered_source_kinds(),
+                action_kinds=registered_action_kinds(),
+                condition_kinds=target["condition_kinds"],
+                notes=target["notes"])
+        except CompilerError as e:
+            self.ctx.dialog.msgbox(
+                "Compile failed",
+                str(e) + ("\n\n" + "\n".join(f"- {x}" for x in e.errors[:6])
+                          if e.errors else ""))
+            return
+
+        review = render_rule(rule)
+        if warnings:
+            review += "\n\n" + "\n".join(f"⚠ lint: {w}" for w in warnings)
+        self.ctx.dialog.msgbox("Compiled rule — review it", review)
+        if not self.ctx.dialog.yesno(
+                "Ratify?",
+                f"Write rule {rule.get('id')!r} as a candidate for the daemon "
+                "to promote?\n\nThe model compiles; YOU ratify. If the rule "
+                "above is not what you meant, say No and re-describe it.",
+                default_no=True):
+            self.ctx.dialog.msgbox(
+                "Not ratified", "Nothing written. Re-describe the rule to "
+                "try again.")
+            return
+
+        from mini_dudeai import write_candidate
+        ok, errors = write_candidate(target["candidate_path"],
+                                     existing + [rule])
+        if not ok:
+            self.ctx.dialog.msgbox(
+                "Candidate rejected",
+                "Not written — the daemon would reject it:\n\n"
+                + "\n".join(f"  - {e}" for e in errors[:6]))
+            return
+        self._chown_to_operator(target["candidate_path"])
+
+        self.ctx.dialog.infobox(
+            "Waiting for promotion",
+            f"Candidate written:\n  {target['candidate_path']}\n\n"
+            f"Watching for the daemon to promote (up to {PROMOTE_WAIT_S}s) ...")
+        if watch_promotion(target["rules_path"], rule["id"]):
+            self.ctx.dialog.msgbox(
+                "Promoted ✓",
+                f"Rule {rule['id']!r} is live in\n  {target['rules_path']}")
+        else:
+            self.ctx.dialog.msgbox(
+                "Not promoted (yet)",
+                f"The candidate was written, but the rule was NOT observed "
+                f"promoting within {PROMOTE_WAIT_S}s.\n\nIs the daemon "
+                f"running?\n  systemctl --user status {target['daemon_unit']}\n\n"
+                "A written candidate with no running daemon is not an active "
+                "rule.")
 
     def _chown_to_operator(self, path) -> None:
         """If running as root, hand the candidate to the operator so the

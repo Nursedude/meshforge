@@ -24,7 +24,7 @@ from mini_dudeai.chat_compiler import (
     CompilerError, OllamaBackend, build_system_prompt, compile_rule,
     render_rule,
 )
-from mini_dudeai.chat import _load_rules, _watch_promotion
+from mini_dudeai.chat import _load_rules, watch_promotion
 
 SOURCE_KINDS = ["nats_sensor", "json_file"]
 ACTION_KINDS = ["nats", "ntfy", "annotate", "none"]
@@ -218,12 +218,12 @@ class TestRenderAndCandidate:
     def test_watch_promotion_sees_rule_land(self, tmp_path):
         rules = tmp_path / "rules.json"
         rules.write_text(json.dumps({"rules": [GOOD_RULE]}))
-        assert _watch_promotion(str(rules), "shop_hot_fan", wait_s=1)
+        assert watch_promotion(str(rules), "shop_hot_fan", wait_s=1)
 
     def test_watch_promotion_honest_on_absence(self, tmp_path):
         rules = tmp_path / "rules.json"
         rules.write_text(json.dumps({"rules": []}))
-        assert not _watch_promotion(str(rules), "shop_hot_fan", wait_s=0.1)
+        assert not watch_promotion(str(rules), "shop_hot_fan", wait_s=0.1)
 
     def test_load_rules_refuses_corrupt_file(self, tmp_path):
         bad = tmp_path / "rules.json"
