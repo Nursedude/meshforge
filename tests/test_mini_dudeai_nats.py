@@ -454,8 +454,11 @@ class TestNatsActionExecute:
         assert out.ok
         assert srv.requests[0][0] == "other-claw.tool_exec"
 
-    def test_allowlist_is_the_documented_trio(self):
-        assert IDEMPOTENT_TOOLS == {"gpio_write", "led_set", "actuator_set"}
+    def test_allowlist_is_the_documented_set(self):
+        # display_print joined with the dude-claw display fork: re-writing a
+        # row is a state-set, safe under retry re-application
+        assert IDEMPOTENT_TOOLS == {"gpio_write", "led_set", "actuator_set",
+                                    "display_print"}
 
 
 # --------------------------------------------------------------------------

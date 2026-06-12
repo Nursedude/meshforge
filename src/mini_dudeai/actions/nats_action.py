@@ -28,8 +28,10 @@ from ..sources.base import Condition
 from .base import Action, Outcome
 
 # State-set tools only — safe under #81 retry re-application. Grows
-# deliberately, not by default.
-IDEMPOTENT_TOOLS = frozenset({"gpio_write", "led_set", "actuator_set"})
+# deliberately, not by default. display_print qualifies: re-writing the same
+# text to the same row is a state-set (dude-claw fork +dudeclaw.1).
+IDEMPOTENT_TOOLS = frozenset({"gpio_write", "led_set", "actuator_set",
+                              "display_print"})
 
 
 def _check_payload(payload, where: str) -> str | None:
