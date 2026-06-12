@@ -1,9 +1,3 @@
-<!-- ⏳ HELD FOR PUBLICATION — finalize after the raven_soak 24h "Phase 2 ready"
-     ping (~2026-06-12 ~12:33 HST). Fill the verdict in the "Then we waited"
-     section below. If the soak did NOT pass cleanly (leak / crash-loop /
-     inactive), rewrite that section to tell that truth — the gate exists
-     precisely so this post never claims a stability it didn't earn. -->
-
 # It Heard, But It Wouldn't Speak
 
 **Subtitle:** We set out to run Meshtastic on a ham-radio router. The router couldn't run it — three hard walls — so we built a bridge to a box that could. Receiving worked in an afternoon. Getting a message *back* onto the air took understanding three different reasons for silence, none of them a bug. The proof was a signal-to-noise number off a real antenna.
@@ -54,8 +48,7 @@ Shawn was on that channel the whole time, sending "hey raven" from his own hands
 
 Here's the part I'm proudest of, and it's the dullest: we didn't publish "it works" the moment it worked. A bridge that relays one message and a bridge that runs clean for a day are different claims, and the public record should only ever carry the one you've earned. So the bridge went up as a proper service, the radio became a relay, and a watcher started checking it every few hours — pinging us only if it leaked memory, crash-looped, or fell over. The rule on this project is old and load-bearing: silence is the failure mode, so make the silence page you.
 
-<!-- VERDICT PLACEHOLDER — fill from the soak ping. Clean example below; rewrite if not. -->
-[HOLD — after the 24h soak ping, confirm and write the real outcome here. If clean: "It bridged quietly for twenty-four hours — no leak, no restarts, the radio relaying and the collector still collecting. The watcher sent one last message: soak passed, ready for the next step. *That* is when this post earned its title's past tense."]
+It bridged quietly for twenty-four hours — no leak (memory flat at four megabytes, drifting all of sixty kilobytes across the day), zero restarts, the radio relaying, the collector still collecting, fresh traffic still landing in the bridge's store at hour twenty-three. We didn't wait for the watcher's victory lap: at the twenty-four-hour mark we read the soak record ourselves, and its one-time "ready for the next step" ping fires on schedule either way. Reading the raw journal at the mark also surfaced the one thing the watcher's three numbers never would have — packets from channels the bridge holds no key for make it log a loud, harmless exception. Non-fatal, no effect on our channel, but on a router that's log spam, so it goes on the Phase 2 list. Standing in the room, again. A full day of unattended silence in the *good* direction — that is when this post earned its title's past tense.
 
 ## What's next, and the shape of it
 
