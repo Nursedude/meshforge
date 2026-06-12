@@ -61,7 +61,7 @@ def main() -> int:
         psk = sys.stdin.readline().strip()
     else:
         psk = getpass.getpass(f"PSK for channel {args.name!r} "
-                              "(hex or base64, blank = public default): ")
+                              "(hex or base64, blank = public default): ").strip()
 
     payload = {"tool": "mesh_set_channel", "name": args.name, "psk": psk,
                "persist": 1 if args.persist else 0}
