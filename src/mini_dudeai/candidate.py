@@ -38,6 +38,15 @@ STRUCTURAL_MATCH_KEYS = frozenset({
 # the extras vocabulary is open by design).
 WELL_KNOWN_EXTRAS_KEYS = frozenset({"class"})
 
+# The merge_seed_rules() report buckets, grouped by whether they change the
+# written file. CHANGE buckets mean a real edit (worth a write); PRESERVE
+# buckets leave the file byte-identical. Exported so every consumer (the
+# promote CLI keys "did anything move?" off these) shares ONE vocabulary
+# instead of re-hardcoding the bucket names — honest_failure_modes #5: when a
+# bucket is added or renamed here, the consumers move with it.
+SEED_MERGE_CHANGE_BUCKETS = ("added", "refreshed", "stamped")
+SEED_MERGE_PRESERVE_BUCKETS = ("tuned", "local", "unchanged")
+
 
 def validate_rules_document(data: Any) -> Tuple[List[dict], List[str]]:
     """Canonical rules-document validator → (valid_rules, errors). Pure, never
@@ -194,8 +203,7 @@ def merge_seed_rules(
     seed_by_id = {r["id"]: r for r in seed_rules
                   if isinstance(r, dict) and r.get("id")}
     report: Dict[str, List[str]] = {
-        "added": [], "refreshed": [], "stamped": [], "unchanged": [],
-        "tuned": [], "local": []}
+        k: [] for k in (*SEED_MERGE_CHANGE_BUCKETS, *SEED_MERGE_PRESERVE_BUCKETS)}
     merged: List[dict] = []
     live_ids = set()
     for rule in live_rules:

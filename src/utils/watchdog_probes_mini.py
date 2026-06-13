@@ -30,6 +30,15 @@ _MINI_STATE_NAME = "mini_dudeai_state.json"
 _MINI_HISTORY_NAME = "mini_dudeai_history.jsonl"
 _MINI_RULES_NAME = "mini_dudeai_rules.json"
 
+
+def _seed_rules_path(meshforge_root: str, seed_name: str) -> str:
+    """Path to a role seed's rules file. THE one place that knows the
+    ``configs/mini_dudeai_rules.<seed>.json`` layout — shared by this probe and
+    the promote CLI (scripts/promote_seed_rules.py) so the drift check and the
+    merge can never disagree about where a seed lives."""
+    return os.path.join(
+        meshforge_root, "configs", f"mini_dudeai_rules.{seed_name}.json")
+
 # A mini tick is 30s; treat the loop as ALIVE only when state.json's
 # last_tick is within this window (≈4 ticks of slack). A stale state means
 # the daemon is stopped — not a write-failure to surface here.
@@ -292,9 +301,7 @@ def probe_rules_seed_drift(
                 return None  # role has no dedicated mini seed → ambiguous, no guess
 
             if seed_ids is None and seed_rules is None:
-                seed_path = os.path.join(
-                    meshforge_root, "configs",
-                    f"mini_dudeai_rules.{seed_name}.json")
+                seed_path = _seed_rules_path(meshforge_root, seed_name)
                 try:
                     with open(seed_path, "r", encoding="utf-8") as fh:
                         seed_doc = json.load(fh)
