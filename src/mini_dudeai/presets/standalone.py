@@ -36,17 +36,18 @@ import shutil
 
 from ..actions import FileAnnotateAction, NoopAction, NtfyAction
 from ..actions.nats_action import NatsAction
+from ..candidate import seed_rules_path
 from ..engine import RuleEngine
 from ..sources.nats_sensor import NatsSensorSource
 from .._util import log_info, log_warning
 
 DEFAULT_TEMP_THRESHOLD_C = 55.0
-# repo-shipped seed (configs/ sits beside src/ in the repo root)
-_SEED_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))),
-    "configs", "mini_dudeai_rules.claw.json",
-)
+# repo-shipped seed. We derive the repo root from THIS file's location (configs/
+# sits beside src/), but the configs/mini_dudeai_rules.<seed>.json layout itself
+# comes from candidate.seed_rules_path so the bootstrap can't drift from it.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))))
+_SEED_PATH = seed_rules_path(_REPO_ROOT, "claw")
 
 
 def _load_sensors(sensors_path: str | None, device: str | None,

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from typing import Any, Dict, List, Tuple
 
 from ._util import atomic_write_json
@@ -46,6 +47,21 @@ WELL_KNOWN_EXTRAS_KEYS = frozenset({"class"})
 # bucket is added or renamed here, the consumers move with it.
 SEED_MERGE_CHANGE_BUCKETS = ("added", "refreshed", "stamped")
 SEED_MERGE_PRESERVE_BUCKETS = ("tuned", "local", "unchanged")
+
+
+def seed_rules_path(meshforge_root: str, seed_name: str) -> str:
+    """THE canonical place that knows the seed-rules layout
+    ``<root>/configs/mini_dudeai_rules.<seed>.json``.
+
+    Imported directly by the standalone preset bootstrap (presets/standalone.py)
+    and the promote CLI (scripts/promote_seed_rules.py). The watchdog drift
+    probe (utils/watchdog_probes_mini._seed_rules_path) mirrors this formula with
+    a TEST-PIN rather than an import — it must load even where the mini_dudeai
+    package isn't installed (its mini import is guarded), so it cannot depend on
+    this module. honest_failure_modes #5: share by import where layering allows,
+    test-pin where it doesn't."""
+    return os.path.join(
+        meshforge_root, "configs", f"mini_dudeai_rules.{seed_name}.json")
 
 
 def validate_rules_document(data: Any) -> Tuple[List[dict], List[str]]:

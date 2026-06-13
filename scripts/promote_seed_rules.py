@@ -12,8 +12,9 @@ class), this folds it in via the provenance merge WITHOUT clobbering box-tuned o
 box-local rules — exactly the gap ``probe_rules_seed_drift`` watches for.
 
 Role→seed resolution mirrors the probe: the same ``_ROLE_TO_MINI_SEED`` map, the
-same ``_seed_rules_path`` (shared helper), and the same ``_resolve_mini_home`` —
-so the CLI and the probe resolve a role to the same seed and the same files.
+same seed path (``mini_dudeai.candidate.seed_rules_path`` — the canonical layout
+owner the probe is test-pinned to), and the same ``_resolve_mini_home`` — so the
+CLI and the probe resolve a role to the same seed and the same files.
 
 Usage:
     python3 scripts/promote_seed_rules.py             # dry-run: what would change
@@ -55,7 +56,8 @@ def resolve_target(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None,
     from utils.watchdog_probes import (
         _ROLE_TO_MINI_SEED, _resolve_mini_home, _read_deployment_declaration,
     )
-    from utils.watchdog_probes_mini import _MINI_RULES_NAME, _seed_rules_path
+    from utils.watchdog_probes_mini import _MINI_RULES_NAME
+    from mini_dudeai.candidate import seed_rules_path
 
     known_seeds = sorted(set(_ROLE_TO_MINI_SEED.values()))
     if seed_name is None:
@@ -86,7 +88,7 @@ def resolve_target(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None,
     # role may legitimately be None here when --seed targets a seed directly and
     # the box declares no role — kept honest (None), not papered over with a
     # synthetic label that would pollute the --json `role` field.
-    seed_path = _seed_rules_path(meshforge_root, seed_name)
+    seed_path = seed_rules_path(meshforge_root, seed_name)
     home = mini_home or _resolve_mini_home()
     if not home:
         raise PromoteError("could not resolve the mini home (live-rules dir)")

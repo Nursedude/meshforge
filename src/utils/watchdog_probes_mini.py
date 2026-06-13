@@ -32,10 +32,13 @@ _MINI_RULES_NAME = "mini_dudeai_rules.json"
 
 
 def _seed_rules_path(meshforge_root: str, seed_name: str) -> str:
-    """Path to a role seed's rules file. THE one place that knows the
-    ``configs/mini_dudeai_rules.<seed>.json`` layout — shared by this probe and
-    the promote CLI (scripts/promote_seed_rules.py) so the drift check and the
-    merge can never disagree about where a seed lives."""
+    """Path to a role seed's rules file (``configs/mini_dudeai_rules.<seed>.json``).
+
+    The layout is OWNED by ``mini_dudeai.candidate.seed_rules_path``; this probe
+    keeps a local copy because it must import cleanly even where the mini_dudeai
+    package isn't installed (its mini import above is guarded). A test pins the
+    two byte-identical so they can never drift — honest_failure_modes #5: share
+    by import where layering allows, test-pin where it doesn't."""
     return os.path.join(
         meshforge_root, "configs", f"mini_dudeai_rules.{seed_name}.json")
 

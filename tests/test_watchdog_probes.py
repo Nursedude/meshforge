@@ -3568,3 +3568,16 @@ def test_aredn_source_dark_unknown_reason_never_fires(tmp_path):
 
 def test_aredn_source_dark_signal_class_registered():
     assert "aredn_source_dark" in SIGNAL_CLASSES
+
+
+def test_seed_rules_path_pinned_to_candidate():
+    # honest_failure_modes #5: the probe keeps a LOCAL _seed_rules_path (it must
+    # import without the mini_dudeai package — its mini import is guarded), so it
+    # can't share the canonical mini_dudeai.candidate.seed_rules_path by import.
+    # Pin them byte-identical instead, so the two can never silently drift.
+    from utils.watchdog_probes_mini import _seed_rules_path
+    from mini_dudeai.candidate import seed_rules_path
+    for root, seed in [("/opt/meshforge", "federator"),
+                       ("/x/y", "fleet_gateway"), ("/a", "claw"),
+                       ("rel/root", "example")]:
+        assert _seed_rules_path(root, seed) == seed_rules_path(root, seed)
