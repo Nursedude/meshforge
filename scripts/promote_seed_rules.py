@@ -154,24 +154,37 @@ def plan(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None, seed_name=None)
 
 
 def _restamp_owner_mode(path, uid, gid, mode):
-    """Restore owner+mode after an atomic write.
+    """Best-effort restore of owner+mode after an atomic write.
 
-    atomic_write_json/bytes go through mkstemp + os.replace, which hand the
-    live file the INVOKER's ownership and mode 0600. Run under sudo that would
-    leave ~operator/mini_dudeai_rules.json owned root:root 0600 — and the
-    operator's mini --user daemon could no longer read its own rules, silently
-    holding the last-good ruleset while we report success. So we re-stamp the
-    file to the mini-home owner. chown before chmod (chown can clear mode bits).
-    A failure here is surfaced loud, not swallowed: a wrong-owned rules file is
-    exactly the silent-strand we are preventing (honest_failure_modes #2/#9)."""
+    atomic_write_json/bytes go through mkstemp + os.replace, which hand the file
+    the INVOKER's ownership and mode 0600. Run under sudo that would leave
+    ~operator/mini_dudeai_rules.json root:root 0600 — and the operator's mini
+    --user daemon could no longer read its own rules. So we re-stamp to the
+    mini-home owner; chown before chmod (chown can clear setgid).
+
+    NON-FATAL by design: the write has ALREADY succeeded and is published, so a
+    restamp failure must NOT make apply() report the whole promote as failed —
+    that was a half-state bug (file written, but exit 2 / "ERROR"). It also
+    cannot strand the daemon: under root the chown always succeeds, and run as
+    the operator the file is already operator-owned (only the group could
+    differ, which owner-read ignores). On a denied full (uid,gid) chown — e.g. a
+    home dir whose group the operator isn't a member of — we still fix the uid
+    alone (the strand-critical part) and emit a loud WARNING (the witness,
+    honest_failure_modes #9) rather than raising."""
     try:
         os.chown(path, uid, gid)
+    except OSError:
+        try:
+            os.chown(path, uid, -1)  # uid is what the daemon's owner-read needs
+        except OSError as exc:
+            print(f"WARN: wrote {path} but could not set owner uid={uid}: {exc}"
+                  f" — if the mini daemon can't read it, fix ownership manually",
+                  file=sys.stderr)
+    try:
         os.chmod(path, mode)
     except OSError as exc:
-        raise PromoteError(
-            f"wrote {path} but could not restore owner/mode "
-            f"(uid={uid} gid={gid} mode={oct(mode)}): {exc} — the mini daemon "
-            f"may be unable to read it; fix ownership manually")
+        print(f"WARN: wrote {path} but could not set mode {oct(mode)}: {exc}",
+              file=sys.stderr)
 
 
 def apply(p):

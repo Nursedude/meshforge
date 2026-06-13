@@ -192,6 +192,37 @@ def test_apply_preserves_file_mode(tmp_path):
     assert _live_ids(home) == {"a", "b"}
 
 
+def test_apply_chowns_live_to_home_owner(tmp_path, monkeypatch):
+    # The headline fix: the live file is chowned to the MINI-HOME owner (so a
+    # sudo-run promote doesn't strand the operator's --user daemon on root:root).
+    root, home = _setup(tmp_path, [_rule("a")], [_rule("a"), _rule("b")])
+    live = str(Path(home) / "mini_dudeai_rules.json")
+    home_st = os.stat(home)
+    calls = []
+    real_chown = os.chown
+    def fake_chown(path, uid, gid):
+        calls.append((path, uid, gid))
+        return real_chown(path, uid, gid)
+    monkeypatch.setattr(os, "chown", fake_chown)
+    psr.apply(psr.plan(meshforge_root=root, mini_home=home, seed_name="fleet_gateway"))
+    assert any(c == (live, home_st.st_uid, home_st.st_gid) for c in calls)
+
+
+def test_apply_restamp_failure_is_nonfatal(tmp_path, monkeypatch, capsys):
+    # Regression: a post-write chown failure (e.g. operator whose home-dir group
+    # they don't belong to) must NOT report the promote as failed — the write is
+    # already committed. It warns loudly instead of raising (was a half-state bug).
+    root, home = _setup(tmp_path, [_rule("a")], [_rule("a"), _rule("b")])
+    def boom(*a, **k):
+        raise PermissionError("simulated foreign-gid EPERM")
+    monkeypatch.setattr(os, "chown", boom)
+    bak = psr.apply(psr.plan(meshforge_root=root, mini_home=home,
+                             seed_name="fleet_gateway"))   # must NOT raise
+    assert _live_ids(home) == {"a", "b"}          # merge actually committed
+    assert os.path.exists(bak)
+    assert "WARN" in capsys.readouterr().err       # loud witness emitted
+
+
 def test_apply_backup_is_cli_private_not_daemon_slot(tmp_path):
     # The backup must NOT be <live>.bak (the daemon's single-slot recovery file)
     # — it uses <live>.promote.bak so a promote never clobbers the daemon's
