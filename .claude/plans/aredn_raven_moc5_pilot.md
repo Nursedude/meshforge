@@ -301,8 +301,8 @@ it fired). First verdict OK.
 1. PSK appeared in debug-1 raven log lines (known pilot lesson) — hAP RAM log
    ring still holds them until rollover/reboot; scrub (`/etc/init.d/log
    restart`) left to operator (logread is root-only; low exposure).
-2. Upstream reports: Raven channel.uc null-guard PR; AREDN restart-firewall
-   fw3-on-fw4 bug.
+2. ✅ Upstream reports FILED 2026-06-12: Raven null-guard PR
+   kn6plv/Raven#19; AREDN fw3-on-fw4 bug aredn/aredn#2762 (cross-linked).
 3. Telemetry on the meshforge channel (Raven as visible fleet node) = open
    operator choice; OFF today.
 4. DHCP reservation pre-flight turned out ALREADY DONE (06-04): hAP reserves
