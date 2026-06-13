@@ -370,15 +370,23 @@ def _telemetry_block(cap: _CaptureFacts, window_s: int) -> Dict[str, Any]:
                 "detail": "Capture active but no packets in the window — mesh "
                           "quiet (true dark-feed is the diag block's job)."}
     rate_per_min = round(cap.telemetry_count / (window_s / 60.0), 2)
+    top = sorted((cap.by_port or {}).items(), key=lambda kv: kv[1], reverse=True)[:3]
+    ports_txt = ", ".join(f"{n}×{p}" for p, n in top) if top else "—"
     if cap.telemetry_count == 0:
-        return {"status": ALERT, "window_count": cap.window_count,
-                "telemetry_count": 0, "rate_per_min": 0.0,
-                "detail": "Other traffic is flowing but NO telemetry packets "
-                          "in the window — telemetry-dark candidate."}
+        # A short window with no telemetry is NORMAL — telemetry is periodic
+        # (minutes-to-tens-of-minutes per node). Sustained telemetry-dark is
+        # the diag block's job (channel_feed_dark over hours), NOT a panel
+        # alert on a 15-minute sample. Show the port mix so "0 telemetry" is
+        # self-evidently honest.
+        return {"status": OK, "window_count": cap.window_count,
+                "telemetry_count": 0, "rate_per_min": 0.0, "top_ports": ports_txt,
+                "detail": f"No telemetry in window ({cap.window_count} pkts: "
+                          f"{ports_txt}); telemetry is periodic."}
     return {"status": OK, "window_count": cap.window_count,
             "telemetry_count": cap.telemetry_count, "rate_per_min": rate_per_min,
-            "detail": f"{cap.telemetry_count} telemetry packets "
-                      f"(~{rate_per_min}/min) in the last {window_s // 60}m."}
+            "top_ports": ports_txt,
+            "detail": f"{cap.telemetry_count} telemetry pkts (~{rate_per_min}/min) "
+                      f"of {cap.window_count} in {window_s // 60}m."}
 
 
 def _rf_quality_band(avg_snr: Optional[float]) -> str:
@@ -412,7 +420,7 @@ def _rf_block(cap: _CaptureFacts) -> Dict[str, Any]:
                 "detail": "Capture active but no packets in the window."}
     if cap.rf_samples == 0:
         # No RF-bearing packets ≠ bad signal — RNS/MQTT carry no RF leg.
-        return {"status": UNOBSERVABLE, "reason": "no_rf_samples",
+        return {"status": UNOBSERVABLE, "reason": "no_rf_samples", "rf_samples": 0,
                 "detail": "No RF-bearing (Meshtastic) packets in the window — "
                           "no SNR/RSSI to report (not a signal problem)."}
     avg_snr = sum(cap.snr_values) / len(cap.snr_values) if cap.snr_values else None
@@ -448,13 +456,15 @@ def _dups_block(delivery: Optional[dict], cap: _CaptureFacts) -> Dict[str, Any]:
         1 for e in recent if isinstance(e, dict)
         and e.get("state") == "dropped" and e.get("drop_reason") == "dedup"
     )
-    status = OK
-    if window_dedup >= 10 or dedup_pct >= 25.0:
-        status = ALERT
+    # Dedup is BENIGN by design — the gateway correctly suppressing duplicates
+    # from dual-path delivery. A high LIFETIME count/pct is the system WORKING,
+    # not an alarm. Only a recent STORM (a big slice of the event ring is dedup
+    # drops → possible routing loop / retransmit flood) is worth flagging.
+    status = ALERT if window_dedup >= 20 else OK
     return {"status": status, "dedup_total": dedup_total, "dedup_pct": dedup_pct,
             "window_dedup": window_dedup, "ingress": ingress,
             "detail": f"{dedup_total} duplicates suppressed "
-                      f"({dedup_pct}% of ingress) · {window_dedup} in the "
+                      f"({dedup_pct}% of ingress, benign) · {window_dedup} in the "
                       f"recent window."}
 
 
@@ -643,7 +653,15 @@ def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
         verdict += (" but " + "; ".join(concerns) if concerns else "") + "."
     else:
         status = OK
-        verdict = "Gateway is reliably moving traffic"
+        # Don't claim reliability we can't verify: only say "reliably moving"
+        # when confirmation is actually observed healthy. Otherwise we are
+        # sending without confirmation — honest, not a failure, not a guarantee.
+        if confirmation["status"] == OK:
+            verdict = (f"Gateway is reliably moving traffic "
+                       f"(confirmation {confirmation.get('rate', 0):.0%})")
+        else:
+            verdict = ("Sending traffic, no hard failures — delivery "
+                       "confirmation not observable here")
         verdict += (" — note: " + "; ".join(concerns) if concerns else "") + "."
 
     return {"status": status, "verdict": verdict, "concerns": concerns,

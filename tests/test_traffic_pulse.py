@@ -120,12 +120,21 @@ class TestDupsBlock:
         assert r["dedup_total"] == 100 and r["dedup_pct"] == 10.0
         assert r["status"] == tp.OK
 
-    def test_window_dup_storm_alerts(self):
-        recent = [{"state": "dropped", "drop_reason": "dedup"} for _ in range(15)]
-        d = {"drop_reasons": {"dedup": 15}, "state_totals": {"queued": 5},
+    def test_recent_dup_storm_alerts(self):
+        recent = [{"state": "dropped", "drop_reason": "dedup"} for _ in range(25)]
+        d = {"drop_reasons": {"dedup": 25}, "state_totals": {"queued": 5},
              "recent": recent}
         r = tp._dups_block(d, None)
-        assert r["window_dedup"] == 15 and r["status"] == tp.ALERT
+        assert r["window_dedup"] == 25 and r["status"] == tp.ALERT
+
+    def test_high_lifetime_dedup_is_not_an_alarm(self):
+        # The live moc case: 1070 lifetime dedups but none recent. Dedup is
+        # benign by design — this must NOT alert.
+        d = {"drop_reasons": {"dedup": 1070}, "state_totals": {"queued": 200},
+             "recent": []}
+        r = tp._dups_block(d, None)
+        assert r["dedup_total"] == 1070 and r["window_dedup"] == 0
+        assert r["status"] == tp.OK
 
     def test_delivery_down_is_unobservable(self):
         r = tp._dups_block(None, None)
@@ -187,9 +196,21 @@ class TestQABlock:
     def test_delivery_down_unobservable(self):
         assert tp._qa_block(None, datetime.now())["status"] == tp.UNOBSERVABLE
 
-    def test_healthy_fresh_is_ok(self, no_queue):
+    def test_healthy_fresh_unconfirmable_is_ok_but_not_claimed_reliable(self, no_queue):
+        # Sending, fresh, no hard failures, but confirmation unobservable →
+        # OK, yet must NOT claim "reliably moving" (can't verify it).
         now = datetime.now()
         r = tp._qa_block(self._delivery(now), now)
+        assert r["status"] == tp.OK
+        assert "not observable" in r["verdict"]
+        assert "reliably moving" not in r["verdict"]
+
+    def test_healthy_with_confirmation_claims_reliable(self, no_queue):
+        now = datetime.now()
+        recent = [{"protocol": "rns", "state": "confirmed"} for _ in range(25)]
+        d = self._delivery(now, state_by_protocol={"confirmed": {"rns": 25}},
+                           recent=recent)
+        r = tp._qa_block(d, now)
         assert r["status"] == tp.OK and "reliably moving" in r["verdict"]
 
     def test_write_canary_fail_is_alert(self, no_queue):
@@ -301,12 +322,16 @@ class TestTelemetryRFBlocks:
         _make_capture_db(tmp_path / "t.db", rows)
         return tp._capture_facts(900, self.NOW)
 
-    def test_telemetry_dark_candidate_when_other_traffic_only(self, tmp_path, monkeypatch):
+    def test_no_telemetry_in_window_is_ok_not_alert(self, tmp_path, monkeypatch):
+        # 15-min window with other traffic but no telemetry is NORMAL
+        # (telemetry is periodic) — must NOT alert. Sustained dark-feed is the
+        # diag block's job.
         ts = (self.NOW - timedelta(minutes=2)).isoformat()
         rows = [("a", ts, "inbound", "meshtastic", "POSITION", 3, 5.0, -100, 1)]
         cap = self._cap(tmp_path, monkeypatch, rows)
         tb = tp._telemetry_block(cap, 900)
-        assert tb["status"] == tp.ALERT and tb["telemetry_count"] == 0
+        assert tb["status"] == tp.OK and tb["telemetry_count"] == 0
+        assert "POSITION" in tb["top_ports"]
 
     def test_rf_no_samples_is_unobservable(self, tmp_path, monkeypatch):
         # RNS-only window carries no RF leg → no SNR/RSSI to report.
