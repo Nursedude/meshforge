@@ -63,6 +63,7 @@ from utils.watchdog_probes import (
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
+    probe_dep_version_drift,
     probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
@@ -343,6 +344,15 @@ def run_all_probes(
     # present (only the box holding both repos checks; MeshForge-only boxes no-op).
     # Maintenance-hygiene signal so a forgotten port surfaces in the mini rollup.
     sig = probe_parity_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # pip dependency version-floor drift — a critical dep (meshtastic) installed
+    # BELOW the requirements/core.txt floor in the service user's env (a box that
+    # missed/failed an update; the recurring class rns_version_drift didn't
+    # cover). Env-independent floor, reads the service user's site-packages;
+    # self-guards None when compliant / unreadable / not visible.
+    sig = probe_dep_version_drift()
     if sig is not None:
         signals.append(sig)
 

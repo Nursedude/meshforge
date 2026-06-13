@@ -329,6 +329,124 @@ def probe_rns_version_drift(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: pip dependency version-floor drift (the recurring update class)
+# ─────────────────────────────────────────────────────────────────────
+
+# Critical pip deps whose installed version we floor-check against the
+# requirements SSOT. rns/lxmf are deliberately EXCLUDED — they have their own
+# fork-pin probe (probe_rns_version_drift). The gap this fills: meshtastic, the
+# lib whose update kept FAILING (PEP 668 / wrong env / a box that missed a roll)
+# and which nothing watched. See feedback_version_env_rigor.
+_DEP_VERSION_WATCHED = ("meshtastic",)
+
+_REQ_FLOOR_RE = re.compile(r'^\s*([A-Za-z0-9_.\-]+)\s*(?:>=|==|~=)\s*([0-9][^\s;,#]*)')
+
+
+def _read_requirement_floors(pkgs, requirements_path):
+    """Parse minimum-version floors for ``pkgs`` from a requirements file.
+
+    The requirements file is the version SSOT (honest_failure_modes item 5) —
+    the probe floor and the install pin are the SAME constant, so they can't
+    drift. Returns ``{pkg: floor}`` for ``pkg>=X`` / ``pkg==X`` lines found, or
+    ``{}`` when none parse / the file can't be read.
+    """
+    want = {p.lower() for p in pkgs}
+    floors = {}
+    try:
+        with open(requirements_path) as f:
+            for raw in f:
+                m = _REQ_FLOOR_RE.match(raw)
+                if m and m.group(1).lower() in want:
+                    floors[m.group(1).lower()] = m.group(2)
+    except OSError:
+        return {}
+    return floors
+
+
+def _version_below(have, floor) -> bool:
+    """True iff ``have`` < ``floor``. Unparseable → False (never false-alarm)."""
+    try:
+        from packaging.version import Version
+        return Version(str(have)) < Version(str(floor))
+    except Exception:
+        return False
+
+
+def probe_dep_version_drift(
+    *,
+    service_user=None,
+    floors=None,
+    installed=None,
+    requirements_path=None,
+) -> Optional[Signal]:
+    """A critical pip dependency installed BELOW the requirements version floor
+    — a box that missed or failed an update and is stuck on a stale version.
+
+    Makes the recurring update/install/env failure class OBSERVABLE (operator
+    2026-06-12: "be better at version control + env variables", after the TUI
+    update died on PEP 668). rns/lxmf have their own fork-pin probe; this covers
+    meshtastic — the lib nothing watched, whose update kept failing and was
+    operator-discovered instead of mini-caught.
+
+    The floor is env-independent (reads ``requirements/core.txt`` — the SAME pin
+    the installer uses, so no two-constant drift). INSTALLED versions are read
+    from the MeshForge service user's site-packages (root's env may carry a
+    different version; the watchdog sandbox blocks sudo/runuser — see
+    ``_read_pkg_versions_for_user``). Fires ``degraded`` only on a concrete
+    below-floor fact. Returns None when compliant, when the floor or the service
+    env can't be read, or when the package isn't visible in the user site (a
+    venv install elsewhere — don't guess), mirroring ``probe_rns_version_drift``'s
+    no-false-alarm conservatism.
+    """
+    if floors is None:
+        req = (Path(requirements_path) if requirements_path
+               else Path(__file__).resolve().parents[2] / "requirements" / "core.txt")
+        floors = _read_requirement_floors(_DEP_VERSION_WATCHED, req)
+    if not floors:
+        return None  # no floor parseable → indeterminate, never false-alarm
+
+    if service_user is None:
+        try:
+            from utils.rns_tree_perms import _read_rnsd_user
+            # MeshForge + rnsd share the service user on this fleet; this reads
+            # the env the apps actually import from (NOT root's).
+            service_user = _read_rnsd_user()
+        except Exception:
+            service_user = None
+
+    if installed is None:
+        installed = _read_pkg_versions_for_user(service_user, set(floors))
+    if not installed:
+        return None  # couldn't read the service env → indeterminate
+
+    stale = []
+    for pkg, floor in floors.items():
+        have = installed.get(pkg)
+        if have is None:
+            continue  # not visible in the user site (venv elsewhere?) — don't guess
+        if _version_below(have, floor):
+            stale.append(f"{pkg} installed={have} floor>={floor}")
+    if not stale:
+        return None
+
+    pkg_names = " ".join(sorted(s.split()[0] for s in stale))
+    detail = (
+        f"pip dependency below the requirements floor ({'; '.join(stale)}) — "
+        f"this box missed or failed an update. Converge in the service user's "
+        f"env: pip3 install --break-system-packages --upgrade {pkg_names} "
+        f"(or via the TUI Update), then verify the version + import. See "
+        f"feedback_version_env_rigor."
+    )
+    return Signal(
+        cls="dep_version_drift",
+        subject="pip-deps",
+        severity="degraded",
+        detail=detail,
+        extra={"service_user": service_user, "stale": stale},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: declared-role drift (fleet_roles.yaml + overrides vs live units)
 # ─────────────────────────────────────────────────────────────────────
 

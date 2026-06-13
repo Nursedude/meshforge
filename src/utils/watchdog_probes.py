@@ -78,6 +78,7 @@ from utils.watchdog_probes_service import (
 from utils.watchdog_probes_drift import (
     probe_aredn_source_dark,
     probe_cron_verdict_stale,
+    probe_dep_version_drift,
     probe_foundation_drift,
     probe_kernel_reboot_pending,
     probe_mqtt_root_drift,
@@ -121,6 +122,7 @@ __all__ = [
     "probe_foundation_drift",
     "probe_parity_drift",
     "probe_rns_version_drift",
+    "probe_dep_version_drift",
     "probe_role_drift",
     "probe_channel_feed_dark",
     "probe_mqtt_root_drift",

@@ -206,6 +206,19 @@
       "annotation": "2026-06-01: installed rns/lxmf off the +mf.N fork pin (box missed a fork roll). Fix: reviewed pip install --force-reinstall -r requirements/rns.txt, then verify rnsd. Side-effect-free escalation; NO ntfy page."
     },
     {
+      "id": "dep_version_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "dep_version_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-12: a critical pip dep (meshtastic) installed BELOW the requirements/core.txt floor in the service user's env — a box that missed/failed an update (the recurring update/install/env class, feedback_version_env_rigor). Fix: pip3 install --break-system-packages --upgrade <pkg> (or the TUI Update), then verify version + import in the service user python. Side-effect-free escalation; NO ntfy page (degraded)."
+    },
+    {
       "id": "role_drift_any",
       "match": {
         "kind": "signal_class",

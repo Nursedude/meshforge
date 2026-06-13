@@ -53,6 +53,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_foundation_drift,
     probe_parity_drift,
     probe_rns_version_drift,
+    probe_dep_version_drift,
     probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
@@ -110,6 +111,7 @@ def test_signal_classes_closed_enum_is_documented():
         "memory_index_oversize",        # mini-dudeai audit #2
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
+        "dep_version_drift",            # 2026-06-12 recurring update class
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -1911,6 +1913,87 @@ def test_rns_version_drift_fires_only_for_visible_mismatch():
         rnsd_user="wh6gxz", pins=_PINS, installed={"lxmf": "0.9.0"})
     assert sig is not None
     assert sig.extra["drift"] == ["lxmf installed=0.9.0 pinned=0.9.4+mf.0"]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# dep_version_drift — meshtastic below the requirements floor (recurring class)
+# ─────────────────────────────────────────────────────────────────────
+
+_DEP_FLOORS = {"meshtastic": "2.7.9"}
+
+
+def test_dep_version_drift_fires_below_floor():
+    sig = probe_dep_version_drift(
+        service_user="wh6gxz", floors=_DEP_FLOORS,
+        installed={"meshtastic": "2.7.8"})
+    assert sig is not None
+    assert sig.cls == "dep_version_drift"
+    assert sig.severity == "degraded"
+    assert sig.subject == "pip-deps"
+    assert "meshtastic installed=2.7.8 floor>=2.7.9" in sig.detail
+    assert sig.extra["stale"] == ["meshtastic installed=2.7.8 floor>=2.7.9"]
+
+
+def test_dep_version_drift_none_at_floor():
+    assert probe_dep_version_drift(
+        service_user="wh6gxz", floors=_DEP_FLOORS,
+        installed={"meshtastic": "2.7.9"}) is None
+
+
+def test_dep_version_drift_none_above_floor():
+    assert probe_dep_version_drift(
+        service_user="wh6gxz", floors=_DEP_FLOORS,
+        installed={"meshtastic": "2.8.0"}) is None
+
+
+def test_dep_version_drift_none_when_no_floor():
+    # requirements floor unparseable → indeterminate, never false-alarm.
+    assert probe_dep_version_drift(
+        service_user="wh6gxz", floors={}, installed={"meshtastic": "2.0.0"}) is None
+
+
+def test_dep_version_drift_none_when_env_unreadable():
+    # Couldn't read the service user's site-packages (sandbox: no user switch).
+    assert probe_dep_version_drift(
+        service_user="wh6gxz", floors=_DEP_FLOORS, installed={}) is None
+
+
+def test_dep_version_drift_none_when_pkg_not_visible():
+    # meshtastic not in the user site (venv elsewhere?) — don't guess on absence.
+    assert probe_dep_version_drift(
+        service_user="wh6gxz", floors=_DEP_FLOORS,
+        installed={"something_else": "1.0"}) is None
+
+
+def test_dep_version_drift_unparseable_version_does_not_fire():
+    # A non-PEP440 installed string must not crash or false-alarm.
+    assert probe_dep_version_drift(
+        service_user="wh6gxz", floors=_DEP_FLOORS,
+        installed={"meshtastic": "garbage"}) is None
+
+
+def test_read_requirement_floors_parses_and_ignores_noise(tmp_path):
+    from utils.watchdog_probes_drift import _read_requirement_floors
+    req = tmp_path / "core.txt"
+    req.write_text(
+        "# a comment\n"
+        "distro>=1.8.0\n"
+        "meshtastic>=2.7.9  # inline note\n"
+        "other==1.2.3\n")
+    floors = _read_requirement_floors(("meshtastic",), str(req))
+    assert floors == {"meshtastic": "2.7.9"}
+
+
+def test_dep_version_floor_in_real_requirements_is_at_least_2_7_9():
+    # The SSOT the probe reads — guards an accidental floor regression below
+    # the fleet baseline (would make the probe inert).
+    from pathlib import Path
+    from packaging.version import Version
+    from utils.watchdog_probes_drift import _read_requirement_floors
+    req = Path(__file__).resolve().parents[1] / "requirements" / "core.txt"
+    floors = _read_requirement_floors(("meshtastic",), str(req))
+    assert "meshtastic" in floors
+    assert Version(floors["meshtastic"]) >= Version("2.7.9")
 
 
 # ─────────────────────────────────────────────────────────────────────
