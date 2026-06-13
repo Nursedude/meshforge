@@ -10,10 +10,12 @@ Scope: this module is **observability only** — like ``delivery_counters``,
 it reads existing stores, creates no DB, never writes, and never raises out
 of :func:`pulse_snapshot`. The gateway/map daemons own the writes; the TUI
 is a reader. Delivery data comes over HTTP from the map daemon's
-``/api/gateway/delivery`` (the same source the #74 watchdog probe reads);
-packet stats come from a strictly read-only (``mode=ro``) open of
-``traffic_capture.db``. Per-box only — fleet aggregation is a later phase
-that points the HTTP base at a peer.
+``/api/gateway/delivery`` (the same source the #74 watchdog probe reads).
+RF/telemetry come from a strictly read-only (``mode=ro``) open of
+``node_observations`` (``node_history.db``): the fleet runs mqtt_bridge mode,
+so Meshtastic SNR/battery arrive over MQTT and are decoded into per-node
+observations — there is no capturable local-radio packet stream. Per-box only
+— fleet aggregation is a later phase that points the HTTP base at a peer.
 
 Honest-failure-mode contract (``.claude/rules/honest_failure_modes.md``):
 
@@ -29,17 +31,18 @@ Honest-failure-mode contract (``.claude/rules/honest_failure_modes.md``):
   confirmable protocols' real terminal outcomes** over the recent-events
   ring, sharing :data:`_DELIVERY_FAILURE_REASONS` with the watchdog probe so
   the two never drift (checklist 5).
-* **Capture-off ≠ mesh-quiet ≠ feed-dark.** The meta + telemetry/RF blocks
-  distinguish "packet capture isn't running" (unobservable) from "capture is
-  alive but the mesh is genuinely quiet" (quiet). ``channel_feed_dark`` (a
-  watchdog signal surfaced in the diag block) owns true dark-feed detection.
+* **Collector-stale ≠ mesh-quiet ≠ feed-dark.** The telemetry/RF blocks
+  distinguish "node collector isn't recording" (unobservable — newest
+  observation is stale) from "collector alive but the mesh is genuinely quiet"
+  (quiet). ``channel_feed_dark`` (a watchdog signal surfaced in the diag
+  block) owns true dark-feed detection.
 """
 from __future__ import annotations
 
 import json
 import socket
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.error import URLError
@@ -56,16 +59,18 @@ logger = get_logger(__name__)
 # honest answer when the source can't be read — it is NEVER collapsed into
 # "ok" or a zero count.
 OK = "ok"                       # observed and active/healthy
-QUIET = "quiet"                 # observed, capture alive, ~no traffic in window
+QUIET = "quiet"                 # observed, collector alive, ~no activity in window
 STALE = "stale"                 # data present but no recent activity
 ALERT = "alert"                 # observed anomaly worth attention
-UNOBSERVABLE = "unobservable"   # could not read / capture off / source down — HELD
+UNOBSERVABLE = "unobservable"   # could not read / source down / stale — HELD
 
 DEFAULT_BASE_URL = "http://127.0.0.1:5000"
-DEFAULT_WINDOW_S = 900          # 15-minute "recent" pulse window
+DEFAULT_WINDOW_S = 3600         # RF/telemetry node-freshness window (60m). Node
+                                # telemetry is periodic, so a 15m window is too
+                                # sparse to read SNR/battery health honestly.
 DEFAULT_TIMEOUT_S = 3.0
 STALE_AFTER_S = 3600            # delivery counters older than this → STALE
-STALE_CAPTURE_S = 3600          # newest captured packet older than this → capture stopped
+NODE_STALE_AFTER_S = 7200       # newest node observation older → collector stopped
 MIN_CONFIRMABLE_TERMINAL = 20   # mirrors the #74 probe's min_terminal
 CONF_DEGRADED = 0.50
 CONF_WEDGE = 0.10
@@ -87,11 +92,6 @@ except Exception:  # pragma: no cover - exercised only on a broken import graph
 _BENIGN_DROP_REASONS = frozenset({
     "dedup", "queue_pressure", "queue_shed", "evicted_overflow",
 })
-
-# Protocols that carry a real RF leg (SNR/RSSI). RNS/MQTT do not, so an
-# all-RNS window legitimately has no RF samples — that's "unobservable for
-# RF", not "0 dB".
-_RF_BEARING_PROTOCOLS = frozenset({"meshtastic", "bridged"})
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -225,113 +225,81 @@ def _parse_delivery_db() -> Optional[dict]:
 
 
 @dataclass
-class _CaptureFacts:
-    """Read-only facts derived from traffic_capture.db over a window."""
+class _NodeFacts:
+    """Read-only RF/telemetry facts from node_observations over a window.
+
+    The fleet runs mqtt_bridge mode: Meshtastic telemetry/RF arrives over MQTT
+    and is decoded into per-node observations (snr, battery), NOT a capturable
+    local-radio packet stream. So the RF/telemetry pulse is sourced from the
+    node-observation time-series — all networks, read-only, bounded by window.
+    """
     status: str
     reason: str = ""
-    capture_running: Optional[bool] = None
-    total_rows: int = 0
+    window_s: int = 0
+    obs: int = 0
+    nodes: int = 0
     latest_age_s: Optional[float] = None
-    window_count: int = 0
-    by_port: Dict[str, int] = None          # type: ignore[assignment]
-    by_protocol: Dict[str, int] = None      # type: ignore[assignment]
-    by_direction: Dict[str, int] = None     # type: ignore[assignment]
-    telemetry_count: int = 0
-    rf_samples: int = 0
     snr_values: List[float] = None          # type: ignore[assignment]
-    rssi_values: List[int] = None           # type: ignore[assignment]
-    hops_values: List[int] = None           # type: ignore[assignment]
+    snr_nodes: int = 0
+    battery_values: List[int] = None        # type: ignore[assignment]
+    battery_nodes: int = 0
 
 
-def _is_capture_running() -> Optional[bool]:
-    try:
-        from monitoring.traffic_inspector import is_capture_running
-        return bool(is_capture_running())
-    except Exception:
-        return None  # unknown ≠ False (honest)
+def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
+    """Strictly read-only RF/telemetry facts from node_observations.
 
-
-def _capture_facts(window_s: int, now: datetime) -> _CaptureFacts:
-    """Strictly read-only characterization of recent captured packets.
-
-    Distinguishes db-absent / unreadable (unobservable) from capture-off
-    (unobservable, different reason) from capture-alive-but-quiet (quiet).
+    Liveness is derived from data freshness: observations in the window prove
+    the collector is live; a newest observation hours old means it is
+    effectively stopped → unobservable, never a fabricated "quiet".
     """
-    path = _db_path("traffic_capture")
-    capture_running = _is_capture_running()
+    path = _db_path("node_history")
     if path is None or not path.exists():
-        return _CaptureFacts(status=UNOBSERVABLE, reason="db_absent",
-                             capture_running=capture_running)
+        return _NodeFacts(status=UNOBSERVABLE, reason="db_absent", window_s=window_s)
     conn = _ro_connect(path)
     if conn is None:
-        return _CaptureFacts(status=UNOBSERVABLE, reason="db_unreadable",
-                             capture_running=capture_running)
+        return _NodeFacts(status=UNOBSERVABLE, reason="db_unreadable", window_s=window_s)
     try:
-        total = conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
-        latest = conn.execute("SELECT MAX(timestamp) FROM packets").fetchone()[0]
-        latest_age = None
-        if latest:
-            try:
-                latest_age = (now - datetime.fromisoformat(latest)).total_seconds()
-            except ValueError:
-                latest_age = None
-        cutoff = (now - timedelta(seconds=window_s)).isoformat()
-        by_port: Dict[str, int] = {}
-        by_proto: Dict[str, int] = {}
-        by_dir: Dict[str, int] = {}
-        telem = 0
-        rf_samples = 0
+        latest = conn.execute(
+            "SELECT MAX(timestamp) FROM node_observations").fetchone()[0]
+        latest_age = (now.timestamp() - float(latest)) if latest is not None else None
+        cutoff = now.timestamp() - window_s
         snr: List[float] = []
-        rssi: List[int] = []
-        hops: List[int] = []
-        window_count = 0
-        # ISO-8601 strings sort lexicographically → range scan is valid.
+        battery: List[int] = []
+        node_ids = set()
+        snr_node_ids = set()
+        bat_node_ids = set()
+        obs = 0
         for r in conn.execute(
-            "SELECT protocol, direction, port_name, portnum, snr, rssi, "
-            "hops_taken FROM packets WHERE timestamp > ?", (cutoff,)
+            "SELECT node_id, snr, battery FROM node_observations "
+            "WHERE timestamp > ?", (cutoff,)
         ):
-            window_count += 1
-            proto = r["protocol"] or "unknown"
-            by_proto[proto] = by_proto.get(proto, 0) + 1
-            d = r["direction"] or "unknown"
-            by_dir[d] = by_dir.get(d, 0) + 1
-            pname = (r["port_name"] or "").strip() or "UNKNOWN"
-            by_port[pname] = by_port.get(pname, 0) + 1
-            if "TELEMETRY" in pname.upper() or r["portnum"] == 67:
-                telem += 1
-            if proto in _RF_BEARING_PROTOCOLS:
-                if r["snr"] is not None:
-                    snr.append(float(r["snr"]))
-                    rf_samples += 1
-                if r["rssi"] is not None:
-                    rssi.append(int(r["rssi"]))
-                if r["hops_taken"] is not None:
-                    hops.append(int(r["hops_taken"]))
-        # Liveness is derived from DATA FRESHNESS, not is_capture_running()
-        # (that flag is process-local — false in the TUI even while the
-        # gateway daemon captures into the same DB, which would make us lie
-        # "quiet"). Packets in the window prove capture is live; a newest
-        # packet hours old means capture is effectively stopped → unobservable,
-        # never "quiet".
-        if total == 0:
-            status, reason = UNOBSERVABLE, "no_capture"
-        elif window_count > 0:
+            obs += 1
+            nid = r["node_id"]
+            if nid:
+                node_ids.add(nid)
+            if r["snr"] is not None:
+                snr.append(float(r["snr"]))
+                snr_node_ids.add(nid)
+            if r["battery"] is not None:
+                battery.append(int(r["battery"]))
+                bat_node_ids.add(nid)
+        if obs > 0:
             status, reason = OK, ""
-        elif latest_age is not None and latest_age > STALE_CAPTURE_S:
-            status, reason = UNOBSERVABLE, "capture_stale"
+        elif latest is None:
+            status, reason = UNOBSERVABLE, "no_observations"
+        elif latest_age is not None and latest_age > NODE_STALE_AFTER_S:
+            status, reason = UNOBSERVABLE, "collector_stale"
         else:
             status, reason = QUIET, ""
-        return _CaptureFacts(
-            status=status, reason=reason, capture_running=capture_running,
-            total_rows=total, latest_age_s=latest_age, window_count=window_count,
-            by_port=by_port, by_protocol=by_proto, by_direction=by_dir,
-            telemetry_count=telem, rf_samples=rf_samples, snr_values=snr,
-            rssi_values=rssi, hops_values=hops,
+        return _NodeFacts(
+            status=status, reason=reason, window_s=window_s, obs=obs,
+            nodes=len(node_ids), latest_age_s=latest_age, snr_values=snr,
+            snr_nodes=len(snr_node_ids), battery_values=battery,
+            battery_nodes=len(bat_node_ids),
         )
     except Exception as exc:
-        logger.debug("traffic_pulse: capture read failed: %s", exc)
-        return _CaptureFacts(status=UNOBSERVABLE, reason="read_error",
-                             capture_running=capture_running)
+        logger.debug("traffic_pulse: node_observations read failed: %s", exc)
+        return _NodeFacts(status=UNOBSERVABLE, reason="read_error", window_s=window_s)
     finally:
         conn.close()
 
@@ -341,52 +309,44 @@ def _capture_facts(window_s: int, now: datetime) -> _CaptureFacts:
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _capture_unobservable_block(cap: _CaptureFacts) -> Dict[str, Any]:
-    """Shared unobservable shape for telemetry/RF when capture can't be read.
+def _node_unobservable_block(nf: _NodeFacts) -> Dict[str, Any]:
+    """Shared unobservable shape for telemetry/RF when node data can't be read.
 
-    Capture that is absent/stopped is unobservable, NOT quiet — the panel
-    must not imply the mesh is silent when we simply aren't listening.
+    Absent/stale node data is unobservable, NOT quiet — the panel must not
+    imply the mesh is silent when the collector simply isn't recording.
     """
-    reason = cap.reason or "no_capture"
-    if reason == "capture_stale":
-        age_m = int((cap.latest_age_s or 0) // 60)
-        detail = (f"Newest captured packet is ~{age_m}m old — packet capture "
-                  "appears stopped; current flow is not observable (not a "
-                  "quiet mesh).")
-    elif reason == "no_capture":
-        detail = ("No packets captured on this box — flow is not being "
-                  "observed (not the same as a quiet mesh).")
+    reason = nf.reason or "no_observations"
+    if reason == "collector_stale":
+        age_m = int((nf.latest_age_s or 0) // 60)
+        detail = (f"Newest node observation is ~{age_m}m old — the node "
+                  "collector appears stopped; RF/telemetry not observable now.")
+    elif reason == "no_observations":
+        detail = ("No node observations recorded yet — RF/telemetry not "
+                  "observable (not the same as a quiet mesh).")
     else:  # db_absent / db_unreadable / read_error
-        detail = ("Traffic capture store unavailable — cannot observe "
-                  "telemetry/RF flow on this box.")
+        detail = ("Node observation store unavailable — cannot observe "
+                  "RF/telemetry on this box.")
     return {"status": UNOBSERVABLE, "reason": reason, "detail": detail}
 
 
-def _telemetry_block(cap: _CaptureFacts, window_s: int) -> Dict[str, Any]:
-    if cap.status == UNOBSERVABLE:
-        return _capture_unobservable_block(cap)
-    if cap.status == QUIET:
-        return {"status": QUIET, "window_count": 0, "telemetry_count": 0,
-                "detail": "Capture active but no packets in the window — mesh "
-                          "quiet (true dark-feed is the diag block's job)."}
-    rate_per_min = round(cap.telemetry_count / (window_s / 60.0), 2)
-    top = sorted((cap.by_port or {}).items(), key=lambda kv: kv[1], reverse=True)[:3]
-    ports_txt = ", ".join(f"{n}×{p}" for p, n in top) if top else "—"
-    if cap.telemetry_count == 0:
-        # A short window with no telemetry is NORMAL — telemetry is periodic
-        # (minutes-to-tens-of-minutes per node). Sustained telemetry-dark is
-        # the diag block's job (channel_feed_dark over hours), NOT a panel
-        # alert on a 15-minute sample. Show the port mix so "0 telemetry" is
-        # self-evidently honest.
-        return {"status": OK, "window_count": cap.window_count,
-                "telemetry_count": 0, "rate_per_min": 0.0, "top_ports": ports_txt,
-                "detail": f"No telemetry in window ({cap.window_count} pkts: "
-                          f"{ports_txt}); telemetry is periodic."}
-    return {"status": OK, "window_count": cap.window_count,
-            "telemetry_count": cap.telemetry_count, "rate_per_min": rate_per_min,
-            "top_ports": ports_txt,
-            "detail": f"{cap.telemetry_count} telemetry pkts (~{rate_per_min}/min) "
-                      f"of {cap.window_count} in {window_s // 60}m."}
+def _telemetry_block(nf: _NodeFacts) -> Dict[str, Any]:
+    if nf.status == UNOBSERVABLE:
+        return _node_unobservable_block(nf)
+    win_m = nf.window_s // 60
+    if nf.status == QUIET or nf.obs == 0:
+        return {"status": QUIET, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
+                "detail": f"No node activity in the last {win_m}m — mesh quiet."}
+    if nf.battery_nodes == 0:
+        # Nodes are heard but none reported device telemetry this window —
+        # normal (telemetry is periodic), not an alarm.
+        return {"status": OK, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
+                "detail": f"{nf.nodes} nodes heard in {win_m}m, none reporting "
+                          "device telemetry (battery) — telemetry is periodic."}
+    avg_bat = round(sum(nf.battery_values) / len(nf.battery_values))
+    return {"status": OK, "telemetry_nodes": nf.battery_nodes,
+            "nodes_heard": nf.nodes, "avg_battery": avg_bat,
+            "detail": f"{nf.battery_nodes} of {nf.nodes} nodes reporting device "
+                      f"telemetry in {win_m}m · avg battery {avg_bat}%."}
 
 
 def _rf_quality_band(avg_snr: Optional[float]) -> str:
@@ -412,32 +372,29 @@ def _rf_quality_band(avg_snr: Optional[float]) -> str:
         return "bad"
 
 
-def _rf_block(cap: _CaptureFacts) -> Dict[str, Any]:
-    if cap.status == UNOBSERVABLE:
-        return _capture_unobservable_block(cap)
-    if cap.status == QUIET:
-        return {"status": QUIET, "rf_samples": 0,
-                "detail": "Capture active but no packets in the window."}
-    if cap.rf_samples == 0:
-        # No RF-bearing packets ≠ bad signal — RNS/MQTT carry no RF leg.
-        return {"status": UNOBSERVABLE, "reason": "no_rf_samples", "rf_samples": 0,
-                "detail": "No RF-bearing (Meshtastic) packets in the window — "
-                          "no SNR/RSSI to report (not a signal problem)."}
-    avg_snr = sum(cap.snr_values) / len(cap.snr_values) if cap.snr_values else None
-    avg_rssi = round(sum(cap.rssi_values) / len(cap.rssi_values)) if cap.rssi_values else None
-    avg_hops = round(sum(cap.hops_values) / len(cap.hops_values), 2) if cap.hops_values else None
+def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
+    if nf.status == UNOBSERVABLE:
+        return _node_unobservable_block(nf)
+    win_m = nf.window_s // 60
+    if nf.status == QUIET or not nf.snr_values:
+        if nf.status == QUIET:
+            return {"status": QUIET, "snr_samples": 0,
+                    "detail": f"No node activity in the last {win_m}m."}
+        # Nodes heard but none carried SNR — relayed/RNS nodes have no RF leg.
+        return {"status": UNOBSERVABLE, "reason": "no_snr_samples", "snr_samples": 0,
+                "detail": f"{nf.nodes} nodes heard in {win_m}m but none carried "
+                          "SNR (relayed/RNS nodes have no RF leg)."}
+    avg_snr = sum(nf.snr_values) / len(nf.snr_values)
     band = _rf_quality_band(avg_snr)
     status = ALERT if band == "bad" else OK
-    return {"status": status, "rf_samples": cap.rf_samples,
-            "avg_snr": round(avg_snr, 1) if avg_snr is not None else None,
-            "min_snr": round(min(cap.snr_values), 1) if cap.snr_values else None,
-            "avg_rssi": avg_rssi, "avg_hops": avg_hops, "quality_band": band,
-            "detail": f"{cap.rf_samples} RF samples · avg SNR "
-                      f"{round(avg_snr, 1) if avg_snr is not None else 'n/a'} dB "
-                      f"({band}) · avg {avg_hops} hops."}
+    return {"status": status, "snr_samples": len(nf.snr_values),
+            "snr_nodes": nf.snr_nodes, "avg_snr": round(avg_snr, 1),
+            "min_snr": round(min(nf.snr_values), 1), "quality_band": band,
+            "detail": f"{len(nf.snr_values)} SNR samples from {nf.snr_nodes} nodes "
+                      f"in {win_m}m · avg {round(avg_snr, 1)} dB ({band})."}
 
 
-def _dups_block(delivery: Optional[dict], cap: _CaptureFacts) -> Dict[str, Any]:
+def _dups_block(delivery: Optional[dict]) -> Dict[str, Any]:
     if delivery is None:
         return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
                 "detail": "Delivery counters unreachable — dedup count "
@@ -685,13 +642,13 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
                    now: Optional[datetime] = None) -> Dict[str, Any]:
     """Aggregate the five-axis traffic pulse. JSON-serializable; never raises.
 
-    Read-only: HTTP to the map daemon for delivery/status, ``mode=ro`` DB
-    reads for packet/queue stats. Per-box only.
+    Read-only: HTTP to the map daemon for delivery/status, ``mode=ro`` DB reads
+    for node-observation (RF/telemetry) and queue stats. Per-box only.
     """
     now = now or datetime.now()
     delivery, delivery_src = _load_delivery(base_url, timeout_s)
     status_blob = _http_json(f"{base_url}/api/status", timeout_s)
-    cap = _capture_facts(window_s, now)
+    nf = _node_facts(window_s, now)
 
     return {
         "meta": {
@@ -701,14 +658,14 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
             "scope": "local_box",
             "delivery_source": delivery_src,
             "status_source": "http" if status_blob is not None else "none",
-            "capture_running": cap.capture_running,
-            "capture_total_rows": cap.total_rows,
-            "capture_latest_age_s": (round(cap.latest_age_s)
-                                     if cap.latest_age_s is not None else None),
+            "nodes_heard": nf.nodes,
+            "node_obs": nf.obs,
+            "node_obs_latest_age_s": (round(nf.latest_age_s)
+                                      if nf.latest_age_s is not None else None),
         },
-        "telemetry": _telemetry_block(cap, window_s),
-        "rf": _rf_block(cap),
-        "dups": _dups_block(delivery, cap),
+        "telemetry": _telemetry_block(nf),
+        "rf": _rf_block(nf),
+        "dups": _dups_block(delivery),
         "diag": _diag_block(status_blob),
         "qa": _qa_block(delivery, now),
     }

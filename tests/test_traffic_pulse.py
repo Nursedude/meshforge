@@ -1,12 +1,16 @@
 """Tests for monitoring.traffic_pulse — the five-axis traffic heartbeat.
 
-Focus: the honest-failure-mode contract. Every "unobservable" path must
-stay unobservable (never collapse to a fabricated 0/healthy/recovered), and
-the QA confirmation must judge ONLY confirmable protocols (#74) so a
-mesh-heavy gateway with no ACK consumption never reads as "delivery failure".
+Focus: the honest-failure-mode contract. Every "unobservable" path must stay
+unobservable (never collapse to a fabricated 0/healthy/recovered), and the QA
+confirmation must judge ONLY confirmable protocols (#74) so a mesh-heavy
+gateway with no ACK consumption never reads as "delivery failure".
+
+RF/telemetry are sourced from node_observations (node_history.db) — the fleet
+runs mqtt_bridge mode, so there is no capturable local-radio packet stream;
+SNR/battery arrive over MQTT and land as per-node observations.
 """
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
 
@@ -17,18 +21,19 @@ from monitoring import traffic_pulse as tp
 from utils.db_helpers import connect_tuned
 
 
-# Schema mirroring the columns _capture_facts reads from traffic_capture.db.
-_PACKETS_DDL = (
-    "CREATE TABLE packets (id TEXT, timestamp TEXT, direction TEXT, "
-    "protocol TEXT, port_name TEXT, portnum INTEGER, snr REAL, rssi INTEGER, "
-    "hops_taken INTEGER)"
+_OBS_DDL = (
+    "CREATE TABLE node_observations (id INTEGER PRIMARY KEY, node_id TEXT, "
+    "timestamp REAL, snr REAL, battery INTEGER)"
 )
 
 
-def _make_capture_db(path, rows):
+def _make_node_db(path, rows):
+    """rows: iterable of (node_id, timestamp, snr, battery)."""
     conn = connect_tuned(str(path))
-    conn.execute(_PACKETS_DDL)
-    conn.executemany("INSERT INTO packets VALUES (?,?,?,?,?,?,?,?,?)", rows)
+    conn.execute(_OBS_DDL)
+    conn.executemany(
+        "INSERT INTO node_observations (node_id, timestamp, snr, battery) "
+        "VALUES (?,?,?,?)", rows)
     conn.commit()
     conn.close()
     return path
@@ -39,9 +44,6 @@ def _make_capture_db(path, rows):
 # ─────────────────────────────────────────────────────────────────────
 
 class TestSharedConstantPinning:
-    # The canonical failure-reason set; both the aggregator and the #74
-    # watchdog probe must equal this. If the probe grows the set, this test
-    # fails until the aggregator's mirror is updated too.
     EXPECTED = frozenset({
         "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
         "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
@@ -61,8 +63,6 @@ class TestSharedConstantPinning:
 
 class TestHonestConfirmation:
     def test_no_confirmable_protocol_is_unobservable_not_failure(self):
-        # Meshtastic-only sends, nothing ever confirmed → unobservable, NOT
-        # a 0% / alert. This is the live gateway-inactive federator case.
         d = {"state_by_protocol": {"confirmed": {}},
              "recent": [{"protocol": "meshtastic", "state": "sent"}] * 30}
         r = tp._honest_confirmation(d)
@@ -90,7 +90,6 @@ class TestHonestConfirmation:
         assert r["status"] == tp.UNOBSERVABLE and r["reason"] == "insufficient_sample"
 
     def test_benign_dedup_drops_never_count_as_failure(self):
-        # 50 dedup drops in the ring must NOT drag the confirmation rate.
         recent = ([{"protocol": "rns", "state": "confirmed"} for _ in range(20)]
                   + [{"protocol": "rns", "state": "dropped",
                       "drop_reason": "dedup"} for _ in range(50)])
@@ -100,7 +99,6 @@ class TestHonestConfirmation:
         assert r["status"] == tp.OK
 
     def test_meshtastic_sends_excluded_from_confirmable(self):
-        # Only RNS confirms; Meshtastic sends in the ring are ignored.
         recent = ([{"protocol": "rns", "state": "confirmed"} for _ in range(20)]
                   + [{"protocol": "meshtastic", "state": "sent"} for _ in range(100)])
         d = {"state_by_protocol": {"confirmed": {"rns": 20}}, "recent": recent}
@@ -116,7 +114,7 @@ class TestDupsBlock:
     def test_dedup_counted_and_pct(self):
         d = {"drop_reasons": {"dedup": 100}, "state_totals": {"queued": 900},
              "recent": []}
-        r = tp._dups_block(d, None)
+        r = tp._dups_block(d)
         assert r["dedup_total"] == 100 and r["dedup_pct"] == 10.0
         assert r["status"] == tp.OK
 
@@ -124,7 +122,7 @@ class TestDupsBlock:
         recent = [{"state": "dropped", "drop_reason": "dedup"} for _ in range(25)]
         d = {"drop_reasons": {"dedup": 25}, "state_totals": {"queued": 5},
              "recent": recent}
-        r = tp._dups_block(d, None)
+        r = tp._dups_block(d)
         assert r["window_dedup"] == 25 and r["status"] == tp.ALERT
 
     def test_high_lifetime_dedup_is_not_an_alarm(self):
@@ -132,12 +130,12 @@ class TestDupsBlock:
         # benign by design — this must NOT alert.
         d = {"drop_reasons": {"dedup": 1070}, "state_totals": {"queued": 200},
              "recent": []}
-        r = tp._dups_block(d, None)
+        r = tp._dups_block(d)
         assert r["dedup_total"] == 1070 and r["window_dedup"] == 0
         assert r["status"] == tp.OK
 
     def test_delivery_down_is_unobservable(self):
-        r = tp._dups_block(None, None)
+        r = tp._dups_block(None)
         assert r["status"] == tp.UNOBSERVABLE and r["reason"] == "delivery_source_down"
 
 
@@ -197,8 +195,6 @@ class TestQABlock:
         assert tp._qa_block(None, datetime.now())["status"] == tp.UNOBSERVABLE
 
     def test_healthy_fresh_unconfirmable_is_ok_but_not_claimed_reliable(self, no_queue):
-        # Sending, fresh, no hard failures, but confirmation unobservable →
-        # OK, yet must NOT claim "reliably moving" (can't verify it).
         now = datetime.now()
         r = tp._qa_block(self._delivery(now), now)
         assert r["status"] == tp.OK
@@ -252,7 +248,6 @@ class TestQABlock:
         assert r["status"] == tp.ALERT and "circuit-open" in r["verdict"]
 
     def test_cross_population_rate_only_labelled_never_headline(self, no_queue):
-        # confirmation_rate 0.0 must NOT make the QA verdict an alert.
         now = datetime.now()
         d = self._delivery(now, confirmation_rate=0.0)
         r = tp._qa_block(d, now)
@@ -261,93 +256,103 @@ class TestQABlock:
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Capture facts — capture-off / stale / quiet / ok distinction
+# Node facts — RF/telemetry source (collector-stale / quiet / ok / absent)
 # ─────────────────────────────────────────────────────────────────────
 
-class TestCaptureFacts:
+class TestNodeFacts:
     NOW = datetime(2026, 6, 12, 12, 0, 0)
 
     def _patch_db(self, monkeypatch, path):
         monkeypatch.setattr(tp, "_db_path",
-                            lambda n: path if n == "traffic_capture" else None)
+                            lambda n: path if n == "node_history" else None)
 
     def test_db_absent_is_unobservable(self, monkeypatch):
         monkeypatch.setattr(tp, "_db_path", lambda n: None)
-        cap = tp._capture_facts(900, self.NOW)
-        assert cap.status == tp.UNOBSERVABLE and cap.reason == "db_absent"
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.status == tp.UNOBSERVABLE and nf.reason == "db_absent"
 
-    def test_recent_packet_is_ok(self, tmp_path, monkeypatch):
-        ts = (self.NOW - timedelta(minutes=2)).isoformat()
-        rows = [("a", ts, "inbound", "meshtastic", "TELEMETRY", 67, 5.0, -100, 1)]
-        self._patch_db(monkeypatch, _make_capture_db(tmp_path / "t.db", rows))
-        monkeypatch.setattr(tp, "_is_capture_running", lambda: True)
-        cap = tp._capture_facts(900, self.NOW)
-        assert cap.status == tp.OK
-        assert cap.telemetry_count == 1 and cap.rf_samples == 1
+    def test_recent_obs_is_ok(self, tmp_path, monkeypatch):
+        ts = self.NOW.timestamp() - 120
+        rows = [("!a", ts, 5.0, 90), ("!b", ts, -2.0, 80), ("!c", ts, None, None)]
+        self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", rows))
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.status == tp.OK and nf.obs == 3 and nf.nodes == 3
+        assert nf.snr_nodes == 2 and nf.battery_nodes == 2
 
-    def test_stale_newest_packet_is_unobservable_not_quiet(self, tmp_path, monkeypatch):
-        # Newest packet 5h old → capture appears stopped. Must NOT be "quiet".
-        ts = (self.NOW - timedelta(hours=5)).isoformat()
-        rows = [("a", ts, "inbound", "meshtastic", "TELEMETRY", 67, 5.0, -100, 1)]
-        self._patch_db(monkeypatch, _make_capture_db(tmp_path / "t.db", rows))
-        cap = tp._capture_facts(900, self.NOW)
-        assert cap.status == tp.UNOBSERVABLE and cap.reason == "capture_stale"
+    def test_stale_collector_is_unobservable_not_quiet(self, tmp_path, monkeypatch):
+        # Newest observation 3h old (> NODE_STALE_AFTER_S) → collector stopped.
+        ts = self.NOW.timestamp() - 3 * 3600
+        self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", [("!a", ts, 5.0, 90)]))
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.status == tp.UNOBSERVABLE and nf.reason == "collector_stale"
 
-    def test_recently_active_but_outside_window_is_quiet(self, tmp_path, monkeypatch):
-        # 30m old: outside the 15m window but inside the 60m stale bound →
-        # capture is alive, just quiet.
-        ts = (self.NOW - timedelta(minutes=30)).isoformat()
-        rows = [("a", ts, "inbound", "rns", "", 0, None, None, None)]
-        self._patch_db(monkeypatch, _make_capture_db(tmp_path / "t.db", rows))
-        cap = tp._capture_facts(900, self.NOW)
-        assert cap.status == tp.QUIET
+    def test_recently_active_outside_window_is_quiet(self, tmp_path, monkeypatch):
+        # 90m old: outside the 60m window but inside the 2h stale bound.
+        ts = self.NOW.timestamp() - 5400
+        self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", [("!a", ts, 5.0, 90)]))
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.status == tp.QUIET
 
-    def test_empty_db_is_unobservable_no_capture(self, tmp_path, monkeypatch):
-        self._patch_db(monkeypatch, _make_capture_db(tmp_path / "t.db", []))
-        cap = tp._capture_facts(900, self.NOW)
-        assert cap.status == tp.UNOBSERVABLE and cap.reason == "no_capture"
+    def test_empty_db_is_unobservable_no_observations(self, tmp_path, monkeypatch):
+        self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", []))
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.status == tp.UNOBSERVABLE and nf.reason == "no_observations"
 
 
 # ─────────────────────────────────────────────────────────────────────
-# Telemetry / RF blocks over capture facts
+# Telemetry / RF blocks over node facts
 # ─────────────────────────────────────────────────────────────────────
 
 class TestTelemetryRFBlocks:
-    NOW = datetime(2026, 6, 12, 12, 0, 0)
+    def _nf(self, **kw):
+        base = dict(status=tp.OK, window_s=3600, obs=10, nodes=8,
+                    snr_values=[], snr_nodes=0, battery_values=[], battery_nodes=0)
+        base.update(kw)
+        return tp._NodeFacts(**base)
 
-    def _cap(self, tmp_path, monkeypatch, rows, running=True):
-        monkeypatch.setattr(tp, "_db_path",
-                            lambda n: tmp_path / "t.db" if n == "traffic_capture" else None)
-        monkeypatch.setattr(tp, "_is_capture_running", lambda: running)
-        _make_capture_db(tmp_path / "t.db", rows)
-        return tp._capture_facts(900, self.NOW)
+    def test_telemetry_ok_with_battery(self):
+        nf = self._nf(battery_values=[90, 80, 100], battery_nodes=3)
+        tb = tp._telemetry_block(nf)
+        assert tb["status"] == tp.OK and tb["telemetry_nodes"] == 3
+        assert tb["avg_battery"] == 90
 
-    def test_no_telemetry_in_window_is_ok_not_alert(self, tmp_path, monkeypatch):
-        # 15-min window with other traffic but no telemetry is NORMAL
-        # (telemetry is periodic) — must NOT alert. Sustained dark-feed is the
-        # diag block's job.
-        ts = (self.NOW - timedelta(minutes=2)).isoformat()
-        rows = [("a", ts, "inbound", "meshtastic", "POSITION", 3, 5.0, -100, 1)]
-        cap = self._cap(tmp_path, monkeypatch, rows)
-        tb = tp._telemetry_block(cap, 900)
-        assert tb["status"] == tp.OK and tb["telemetry_count"] == 0
-        assert "POSITION" in tb["top_ports"]
+    def test_telemetry_no_battery_is_ok_not_alert(self):
+        nf = self._nf(battery_values=[], battery_nodes=0, nodes=8)
+        tb = tp._telemetry_block(nf)
+        assert tb["status"] == tp.OK and tb["telemetry_nodes"] == 0
 
-    def test_rf_no_samples_is_unobservable(self, tmp_path, monkeypatch):
-        # RNS-only window carries no RF leg → no SNR/RSSI to report.
-        ts = (self.NOW - timedelta(minutes=2)).isoformat()
-        rows = [("a", ts, "inbound", "rns", "", 0, None, None, None)]
-        cap = self._cap(tmp_path, monkeypatch, rows)
-        rb = tp._rf_block(cap)
-        assert rb["status"] == tp.UNOBSERVABLE and rb["reason"] == "no_rf_samples"
+    def test_telemetry_quiet(self):
+        nf = self._nf(status=tp.QUIET, obs=0, nodes=0)
+        tb = tp._telemetry_block(nf)
+        assert tb["status"] == tp.QUIET
 
-    def test_capture_off_blocks_are_unobservable(self, tmp_path, monkeypatch):
-        cap = tp._CaptureFacts(status=tp.UNOBSERVABLE, reason="capture_stale",
-                               latest_age_s=20000)
-        tb = tp._telemetry_block(cap, 900)
-        rb = tp._rf_block(cap)
-        assert tb["status"] == tp.UNOBSERVABLE and "appears stopped" in tb["detail"]
-        assert rb["status"] == tp.UNOBSERVABLE
+    def test_telemetry_unobservable_propagates(self):
+        nf = self._nf(status=tp.UNOBSERVABLE, reason="collector_stale",
+                      latest_age_s=20000)
+        tb = tp._telemetry_block(nf)
+        assert tb["status"] == tp.UNOBSERVABLE and "collector appears stopped" in tb["detail"]
+
+    def test_rf_ok_with_snr(self):
+        nf = self._nf(snr_values=[5.0, -2.0, 8.0], snr_nodes=3)
+        rb = tp._rf_block(nf)
+        assert rb["status"] == tp.OK and rb["snr_samples"] == 3
+        assert rb["quality_band"] == "excellent"
+
+    def test_rf_bad_snr_alerts(self):
+        nf = self._nf(snr_values=[-18.0, -20.0], snr_nodes=2)
+        rb = tp._rf_block(nf)
+        assert rb["status"] == tp.ALERT and rb["quality_band"] == "bad"
+
+    def test_rf_no_snr_samples_is_unobservable(self):
+        # Nodes heard but none carried SNR (relayed/RNS) — not a signal problem.
+        nf = self._nf(snr_values=[], snr_nodes=0, nodes=5)
+        rb = tp._rf_block(nf)
+        assert rb["status"] == tp.UNOBSERVABLE and rb["reason"] == "no_snr_samples"
+
+    def test_rf_quiet(self):
+        nf = self._nf(status=tp.QUIET)
+        rb = tp._rf_block(nf)
+        assert rb["status"] == tp.QUIET
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -392,26 +397,26 @@ class TestPulseSnapshot:
     def test_shape_json_serializable_and_unobservable_when_sources_down(self, monkeypatch):
         monkeypatch.setattr(tp, "_load_delivery", lambda b, t: (None, "none"))
         monkeypatch.setattr(tp, "_http_json", lambda u, t: None)
-        monkeypatch.setattr(tp, "_capture_facts",
-                            lambda w, n: tp._CaptureFacts(status=tp.UNOBSERVABLE,
-                                                          reason="db_absent"))
+        monkeypatch.setattr(tp, "_node_facts",
+                            lambda w, n: tp._NodeFacts(status=tp.UNOBSERVABLE,
+                                                       reason="db_absent", window_s=w))
         snap = tp.pulse_snapshot()
         json.dumps(snap)  # must not raise
         assert set(snap) == {"meta", "telemetry", "rf", "dups", "diag", "qa"}
-        # Sources down → unobservable everywhere, never a fabricated healthy.
         assert snap["qa"]["status"] == tp.UNOBSERVABLE
         assert snap["dups"]["status"] == tp.UNOBSERVABLE
         assert snap["diag"]["status"] == tp.UNOBSERVABLE
         assert snap["telemetry"]["status"] == tp.UNOBSERVABLE
+        assert snap["rf"]["status"] == tp.UNOBSERVABLE
 
     def test_never_raises_on_garbage_sources(self, monkeypatch):
         monkeypatch.setattr(tp, "_load_delivery", lambda b, t: ({"junk": 1}, "http"))
         monkeypatch.setattr(tp, "_http_json", lambda u, t: {"nonsense": True})
-        monkeypatch.setattr(tp, "_capture_facts",
-                            lambda w, n: tp._CaptureFacts(status=tp.OK,
-                                                          window_count=1,
-                                                          telemetry_count=0,
-                                                          rf_samples=0))
+        monkeypatch.setattr(tp, "_node_facts",
+                            lambda w, n: tp._NodeFacts(status=tp.OK, window_s=w,
+                                                       obs=5, nodes=3, snr_values=[],
+                                                       snr_nodes=0, battery_values=[],
+                                                       battery_nodes=0))
         monkeypatch.setattr(tp, "_queue_facts",
                             lambda: {"status": tp.UNOBSERVABLE, "reason": "x"})
         snap = tp.pulse_snapshot()  # must not raise
