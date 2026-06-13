@@ -305,6 +305,80 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Environment-sensor enrichment (temp/humidity/pressure)
+# ─────────────────────────────────────────────────────────────────────
+# node_observations carries only snr+battery, so the richer device telemetry
+# (BME280/680 temp/humidity/pressure) comes from the MQTT subscriber's node
+# cache. The cache is atomically written (no torn reads) and already pruned to
+# current nodes, so we read the whole set rather than window it (its last_seen
+# is a human age-string, not a timestamp). Env sensors are SPARSE on a mesh:
+# "none reporting" is a benign info state, never an error, and a missing cache
+# must NOT degrade the battery-based telemetry status.
+
+
+def _mqtt_nodes_path() -> Optional[Path]:
+    try:
+        from utils.paths import get_real_user_home
+        return (get_real_user_home() / ".local" / "share" / "meshforge"
+                / "mqtt_nodes.json")
+    except Exception as exc:
+        logger.debug("traffic_pulse: mqtt_nodes path resolve failed: %s", exc)
+        return None
+
+
+def _coerce_float(value: Any) -> Optional[float]:
+    try:
+        return float(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _avg1(vals: List[float]) -> Optional[float]:
+    return round(sum(vals) / len(vals), 1) if vals else None
+
+
+def _mqtt_env_facts() -> Dict[str, Any]:
+    """Read-only temp/humidity/pressure aggregates from the MQTT node cache."""
+    path = _mqtt_nodes_path()
+    if path is None or not path.exists():
+        return {"status": UNOBSERVABLE, "reason": "cache_absent"}
+    try:
+        with open(path, "r") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError) as exc:
+        logger.debug("traffic_pulse: mqtt_nodes.json read failed: %s", exc)
+        return {"status": UNOBSERVABLE, "reason": "cache_unreadable"}
+    feats = data.get("features") if isinstance(data, dict) else None
+    if not isinstance(feats, list):
+        return {"status": UNOBSERVABLE, "reason": "cache_shape"}
+    temps: List[float] = []
+    hums: List[float] = []
+    press: List[float] = []
+    for f in feats:
+        if not isinstance(f, dict):
+            continue
+        p = f.get("properties") or {}
+        t = _coerce_float(p.get("temperature"))
+        if t is not None and -50.0 <= t <= 100.0:   # filter bogus sensors
+            temps.append(t)
+        h = _coerce_float(p.get("humidity"))
+        if h is not None and 0.0 <= h <= 100.0:
+            hums.append(h)
+        pr = _coerce_float(p.get("pressure"))
+        if pr is not None and 800.0 <= pr <= 1100.0:
+            press.append(pr)
+    return {
+        # "ok" = at least one env sensor; "none" = nodes present but no env
+        # (benign — most mesh nodes have no BME sensor).
+        "status": OK if (temps or hums or press) else "none",
+        "total_nodes": len(feats),
+        "temp_nodes": len(temps), "avg_temp_c": _avg1(temps),
+        "humidity_nodes": len(hums), "avg_humidity": _avg1(hums),
+        "pressure_nodes": len(press), "avg_pressure_hpa": _avg1(press),
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Per-axis blocks
 # ─────────────────────────────────────────────────────────────────────
 
@@ -329,7 +403,31 @@ def _node_unobservable_block(nf: _NodeFacts) -> Dict[str, Any]:
     return {"status": UNOBSERVABLE, "reason": reason, "detail": detail}
 
 
-def _telemetry_block(nf: _NodeFacts) -> Dict[str, Any]:
+def _attach_env(block: Dict[str, Any], env: Optional[Dict[str, Any]]) -> None:
+    """Fold MQTT environment metrics into a populated telemetry block.
+
+    Always records the env sub-block (so the panel can show observability);
+    only extends the headline detail when sensors actually reported — env
+    sensors are sparse, so silence here is normal, not a gap to flag.
+    """
+    if not isinstance(env, dict):
+        return
+    block["env"] = env
+    if env.get("status") != OK:
+        return
+    bits = []
+    if env.get("avg_temp_c") is not None:
+        bits.append(f"{env['temp_nodes']} temp ~{env['avg_temp_c']}°C")
+    if env.get("avg_humidity") is not None:
+        bits.append(f"{env['humidity_nodes']} RH ~{env['avg_humidity']}%")
+    if env.get("avg_pressure_hpa") is not None:
+        bits.append(f"{env['pressure_nodes']} baro ~{env['avg_pressure_hpa']}hPa")
+    if bits:
+        block["detail"] += " · env: " + ", ".join(bits)
+
+
+def _telemetry_block(nf: _NodeFacts,
+                     env: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if nf.status == UNOBSERVABLE:
         return _node_unobservable_block(nf)
     win_m = nf.window_s // 60
@@ -339,14 +437,17 @@ def _telemetry_block(nf: _NodeFacts) -> Dict[str, Any]:
     if nf.battery_nodes == 0:
         # Nodes are heard but none reported device telemetry this window —
         # normal (telemetry is periodic), not an alarm.
-        return {"status": OK, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
-                "detail": f"{nf.nodes} nodes heard in {win_m}m, none reporting "
-                          "device telemetry (battery) — telemetry is periodic."}
-    avg_bat = round(sum(nf.battery_values) / len(nf.battery_values))
-    return {"status": OK, "telemetry_nodes": nf.battery_nodes,
-            "nodes_heard": nf.nodes, "avg_battery": avg_bat,
-            "detail": f"{nf.battery_nodes} of {nf.nodes} nodes reporting device "
-                      f"telemetry in {win_m}m · avg battery {avg_bat}%."}
+        block = {"status": OK, "telemetry_nodes": 0, "nodes_heard": nf.nodes,
+                 "detail": f"{nf.nodes} nodes heard in {win_m}m, none reporting "
+                           "device telemetry (battery) — telemetry is periodic."}
+    else:
+        avg_bat = round(sum(nf.battery_values) / len(nf.battery_values))
+        block = {"status": OK, "telemetry_nodes": nf.battery_nodes,
+                 "nodes_heard": nf.nodes, "avg_battery": avg_bat,
+                 "detail": f"{nf.battery_nodes} of {nf.nodes} nodes reporting "
+                           f"device telemetry in {win_m}m · avg battery {avg_bat}%."}
+    _attach_env(block, env)
+    return block
 
 
 def _rf_quality_band(avg_snr: Optional[float]) -> str:
@@ -649,6 +750,7 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
     delivery, delivery_src = _load_delivery(base_url, timeout_s)
     status_blob = _http_json(f"{base_url}/api/status", timeout_s)
     nf = _node_facts(window_s, now)
+    env = _mqtt_env_facts()
 
     return {
         "meta": {
@@ -663,7 +765,7 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
             "node_obs_latest_age_s": (round(nf.latest_age_s)
                                       if nf.latest_age_s is not None else None),
         },
-        "telemetry": _telemetry_block(nf),
+        "telemetry": _telemetry_block(nf, env),
         "rf": _rf_block(nf),
         "dups": _dups_block(delivery),
         "diag": _diag_block(status_blob),

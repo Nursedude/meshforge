@@ -39,6 +39,13 @@ def _make_node_db(path, rows):
     return path
 
 
+def _make_mqtt_cache(path, props_list):
+    """Write a GeoJSON FeatureCollection like the MQTT subscriber's cache."""
+    feats = [{"type": "Feature", "properties": p} for p in props_list]
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": feats}))
+    return path
+
+
 # ─────────────────────────────────────────────────────────────────────
 # Shared-constant pinning (honest_failure_modes checklist item 5)
 # ─────────────────────────────────────────────────────────────────────
@@ -354,6 +361,69 @@ class TestTelemetryRFBlocks:
         rb = tp._rf_block(nf)
         assert rb["status"] == tp.QUIET
 
+    def test_telemetry_enriched_with_env(self):
+        nf = self._nf(battery_values=[90, 80], battery_nodes=2)
+        env = {"status": tp.OK, "temp_nodes": 2, "avg_temp_c": 25.0,
+               "humidity_nodes": 1, "avg_humidity": 55.0,
+               "pressure_nodes": 0, "avg_pressure_hpa": None}
+        tb = tp._telemetry_block(nf, env)
+        assert tb["env"]["avg_temp_c"] == 25.0
+        assert "env:" in tb["detail"] and "25.0°C" in tb["detail"]
+
+    def test_no_env_sensors_leaves_detail_clean(self):
+        nf = self._nf(battery_values=[90], battery_nodes=1)
+        tb = tp._telemetry_block(nf, {"status": "none", "temp_nodes": 0})
+        assert tb["env"]["status"] == "none" and "env:" not in tb["detail"]
+
+    def test_absent_env_does_not_degrade_battery_status(self):
+        nf = self._nf(battery_values=[90], battery_nodes=1)
+        tb = tp._telemetry_block(nf, {"status": tp.UNOBSERVABLE, "reason": "cache_absent"})
+        assert tb["status"] == tp.OK and tb["env"]["status"] == tp.UNOBSERVABLE
+
+
+# ─────────────────────────────────────────────────────────────────────
+# MQTT environment-sensor enrichment (temp/humidity/pressure)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestMqttEnvFacts:
+    def test_cache_absent_is_unobservable(self, monkeypatch):
+        monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: None)
+        e = tp._mqtt_env_facts()
+        assert e["status"] == tp.UNOBSERVABLE and e["reason"] == "cache_absent"
+
+    def test_aggregates_temp_humidity_pressure(self, tmp_path, monkeypatch):
+        p = _make_mqtt_cache(tmp_path / "m.json", [
+            {"temperature": 24.0, "humidity": 55.0, "pressure": 1013.0},
+            {"temperature": 26.0, "humidity": 45.0},
+            {"battery": 90}])  # node with no env metrics
+        monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
+        e = tp._mqtt_env_facts()
+        assert e["status"] == tp.OK
+        assert e["temp_nodes"] == 2 and e["avg_temp_c"] == 25.0
+        assert e["humidity_nodes"] == 2 and e["avg_humidity"] == 50.0
+        assert e["pressure_nodes"] == 1 and e["avg_pressure_hpa"] == 1013.0
+
+    def test_no_env_sensors_is_none_not_error(self, tmp_path, monkeypatch):
+        p = _make_mqtt_cache(tmp_path / "m.json", [{"battery": 90}, {"snr": 5.0}])
+        monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
+        e = tp._mqtt_env_facts()
+        assert e["status"] == "none" and e["temp_nodes"] == 0
+
+    def test_bogus_values_are_filtered(self, tmp_path, monkeypatch):
+        p = _make_mqtt_cache(tmp_path / "m.json",
+                             [{"temperature": 999.0, "humidity": 150.0, "pressure": 5.0}])
+        monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
+        e = tp._mqtt_env_facts()
+        assert e["temp_nodes"] == 0 and e["humidity_nodes"] == 0
+        assert e["pressure_nodes"] == 0 and e["status"] == "none"
+
+    def test_unreadable_cache_is_unobservable(self, tmp_path, monkeypatch):
+        p = tmp_path / "m.json"
+        p.write_text("{not valid json")
+        monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
+        e = tp._mqtt_env_facts()
+        assert e["status"] == tp.UNOBSERVABLE and e["reason"] == "cache_unreadable"
+
 
 # ─────────────────────────────────────────────────────────────────────
 # Delivery DB fallback parse (read-only key-scheme round-trip)
@@ -400,6 +470,8 @@ class TestPulseSnapshot:
         monkeypatch.setattr(tp, "_node_facts",
                             lambda w, n: tp._NodeFacts(status=tp.UNOBSERVABLE,
                                                        reason="db_absent", window_s=w))
+        monkeypatch.setattr(tp, "_mqtt_env_facts",
+                            lambda: {"status": tp.UNOBSERVABLE, "reason": "cache_absent"})
         snap = tp.pulse_snapshot()
         json.dumps(snap)  # must not raise
         assert set(snap) == {"meta", "telemetry", "rf", "dups", "diag", "qa"}
@@ -419,6 +491,7 @@ class TestPulseSnapshot:
                                                        battery_nodes=0))
         monkeypatch.setattr(tp, "_queue_facts",
                             lambda: {"status": tp.UNOBSERVABLE, "reason": "x"})
+        monkeypatch.setattr(tp, "_mqtt_env_facts", lambda: {"garbage": True})
         snap = tp.pulse_snapshot()  # must not raise
         json.dumps(snap)
         assert set(snap) == {"meta", "telemetry", "rf", "dups", "diag", "qa"}
