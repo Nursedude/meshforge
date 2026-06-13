@@ -89,10 +89,32 @@ write authority. You write as `origin="claude"`. You *may* set `verified=True` *
 you actually verified**. The gate is the loop's trust boundary; honor its spirit, not just
 its letter.
 
+## Deferred-work gate check (same bounded pass)
+
+After the delta queue, give the deferred-work ledger one quick look so gated work can't
+silently rot. The daily `deferred_work_watch` cron pages on each task's *review date*
+(mechanical, date-driven); you are the higher-judgment companion — you can verify a gate
+against LIVE truth, which a date can't, and surface readiness *earlier* than the date.
+
+- Read `~/deferred_work.json`. For any task still `status:"blocked"`, check whether its gate
+  is ACTUALLY clear now — verify, never assume (the same no-theater rule as memory):
+  - claw soak: moc2 `~/claw_ble_soak_verdict.txt` reads PASS (the judge wrote it)
+  - hAP Raven soak: `~/raven_soak.log` clean streak (active, NRestarts=0, RSS sane)
+  - AREDN organ collects: enough days since the 06-12 activation, organ still yielding
+    (`curl -s http://<moc5>:5000/api/status | jq .source_diagnostics.aredn`)
+  - hardware (Phase 3): only the operator can confirm arrival — do NOT claim it yourself
+- If a gate is *verifiably* clear, set that task's `status` to `"ready"` in the ledger and
+  note it in `~/situation_digest.md` so the next working session executes it. If you can't
+  verify, leave it `blocked` (absence of proof ≠ cleared).
+- Do NOT execute the deferred task here — surfacing/marking-ready is the whole job;
+  execution is a separate working session.
+
 ## Scope discipline
 
-- One bounded pass. Resolve the proposed deltas, then stop.
+- One bounded pass: resolve the proposed deltas, run the deferred-work gate check, then stop.
 - Do not restart services, change configs, or take recovery action — the crons/watchdog own
-  recovery. You only read, verify, and author memory.
-- If there are zero proposed deltas, do nothing and exit. (The launcher already gates on
-  this, but double-check.)
+  recovery. You only read, verify, author memory, and mark deferred-work readiness.
+- If there are zero proposed deltas, do nothing on the memory queue and exit — but still give
+  the deferred-work ledger its quick look first (it's cheap, and a gate may have cleared).
+  (The launcher gates the *session* on deltas existing, so this runbook only runs when there
+  is at least one; the daily `deferred_work_watch` cron is the reliable date-driven backstop.)
