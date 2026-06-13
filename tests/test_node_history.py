@@ -5,6 +5,7 @@ because record_observations had no automatic pruning. The hourly auto-prune
 ensures the WAL can't grow unbounded between manual cleanup() calls.
 """
 
+import sqlite3
 import time
 from pathlib import Path
 
@@ -1480,3 +1481,60 @@ class TestWeeklyGatedVacuumIssue_D:
         )
         assert DEFAULT_VACUUM_INTERVAL_SECONDS == 7 * 24 * 3600
         assert DEFAULT_VACUUM_DB_SIZE_THRESHOLD_BYTES == 200 * 1024 * 1024
+
+
+class TestRssiCapture:
+    """node_observations RSSI column — source for the Traffic Heartbeat RF panel.
+
+    record_observations historically dropped props['rssi'] even though the
+    feature carried it (that is where the working SNR comes from).
+    """
+
+    def test_rssi_recorded_from_feature(self, tmp_path):
+        h = NodeHistoryDB(db_path=tmp_path / "node_history.db",
+                          retention_seconds=86400)
+        feat = _feature("!rf")
+        feat["properties"]["snr"] = 5.5
+        feat["properties"]["rssi"] = -108
+        assert h.record_observations([feat]) == 1
+        conn = sqlite3.connect(str(tmp_path / "node_history.db"))
+        row = conn.execute(
+            "SELECT snr, rssi FROM node_observations WHERE node_id=?",
+            ("!rf",)).fetchone()
+        conn.close()
+        assert row == (5.5, -108)
+
+    def test_rssi_null_when_feature_lacks_it(self, tmp_path):
+        h = NodeHistoryDB(db_path=tmp_path / "node_history.db",
+                          retention_seconds=86400)
+        assert h.record_observations([_feature("!no_rf")]) == 1
+        conn = sqlite3.connect(str(tmp_path / "node_history.db"))
+        row = conn.execute(
+            "SELECT rssi FROM node_observations WHERE node_id=?",
+            ("!no_rf",)).fetchone()
+        conn.close()
+        assert row[0] is None
+
+    def test_migration_adds_rssi_column_to_legacy_db(self, tmp_path):
+        # A pre-rssi DB: opening NodeHistoryDB must ALTER in the column, then
+        # capture rssi on the next observation.
+        p = tmp_path / "node_history.db"
+        conn = sqlite3.connect(str(p))
+        conn.execute(
+            "CREATE TABLE node_observations (id INTEGER PRIMARY KEY "
+            "AUTOINCREMENT, node_id TEXT NOT NULL, timestamp REAL NOT NULL, "
+            "latitude REAL NOT NULL, longitude REAL NOT NULL, altitude REAL, "
+            "snr REAL, battery INTEGER, is_online INTEGER DEFAULT 1, "
+            "network TEXT DEFAULT 'meshtastic', hardware TEXT DEFAULT '', "
+            "role TEXT DEFAULT '', via_mqtt INTEGER DEFAULT 0, "
+            "name TEXT DEFAULT '')")
+        conn.commit()
+        conn.close()
+        h = NodeHistoryDB(db_path=p, retention_seconds=86400)  # _init_db migrates
+        conn = sqlite3.connect(str(p))
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(node_observations)")}
+        conn.close()
+        assert "rssi" in cols
+        feat = _feature("!mig")
+        feat["properties"]["rssi"] = -99
+        assert h.record_observations([feat]) == 1

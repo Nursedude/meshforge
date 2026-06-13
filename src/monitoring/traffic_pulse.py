@@ -229,9 +229,9 @@ class _NodeFacts:
     """Read-only RF/telemetry facts from node_observations over a window.
 
     The fleet runs mqtt_bridge mode: Meshtastic telemetry/RF arrives over MQTT
-    and is decoded into per-node observations (snr, battery), NOT a capturable
-    local-radio packet stream. So the RF/telemetry pulse is sourced from the
-    node-observation time-series — all networks, read-only, bounded by window.
+    and is decoded into per-node observations (snr, rssi, battery), NOT a
+    capturable local-radio packet stream. So the RF/telemetry pulse is sourced
+    from the node-observation time-series — all networks, read-only, windowed.
     """
     status: str
     reason: str = ""
@@ -241,6 +241,8 @@ class _NodeFacts:
     latest_age_s: Optional[float] = None
     snr_values: List[float] = None          # type: ignore[assignment]
     snr_nodes: int = 0
+    rssi_values: List[int] = None           # type: ignore[assignment]
+    rssi_nodes: int = 0
     battery_values: List[int] = None        # type: ignore[assignment]
     battery_nodes: int = 0
 
@@ -264,15 +266,23 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
         latest_age = (now.timestamp() - float(latest)) if latest is not None else None
         cutoff = now.timestamp() - window_s
         snr: List[float] = []
+        rssi: List[int] = []
         battery: List[int] = []
         node_ids = set()
         snr_node_ids = set()
+        rssi_node_ids = set()
         bat_node_ids = set()
         obs = 0
-        for r in conn.execute(
-            "SELECT node_id, snr, battery FROM node_observations "
-            "WHERE timestamp > ?", (cutoff,)
-        ):
+        # rssi was added later (collector migration) — an un-migrated DB read
+        # restart-free has no rssi column, so select it only when present
+        # rather than crash the whole read.
+        obs_cols = {r[1] for r in
+                    conn.execute("PRAGMA table_info(node_observations)")}
+        has_rssi = "rssi" in obs_cols
+        sel = ("SELECT node_id, snr, battery"
+               + (", rssi" if has_rssi else "")
+               + " FROM node_observations WHERE timestamp > ?")
+        for r in conn.execute(sel, (cutoff,)):
             obs += 1
             nid = r["node_id"]
             if nid:
@@ -280,6 +290,9 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
             if r["snr"] is not None:
                 snr.append(float(r["snr"]))
                 snr_node_ids.add(nid)
+            if has_rssi and r["rssi"] is not None:
+                rssi.append(int(r["rssi"]))
+                rssi_node_ids.add(nid)
             if r["battery"] is not None:
                 battery.append(int(r["battery"]))
                 bat_node_ids.add(nid)
@@ -294,7 +307,8 @@ def _node_facts(window_s: int, now: datetime) -> _NodeFacts:
         return _NodeFacts(
             status=status, reason=reason, window_s=window_s, obs=obs,
             nodes=len(node_ids), latest_age_s=latest_age, snr_values=snr,
-            snr_nodes=len(snr_node_ids), battery_values=battery,
+            snr_nodes=len(snr_node_ids), rssi_values=rssi,
+            rssi_nodes=len(rssi_node_ids), battery_values=battery,
             battery_nodes=len(bat_node_ids),
         )
     except Exception as exc:
@@ -337,8 +351,17 @@ def _avg1(vals: List[float]) -> Optional[float]:
     return round(sum(vals) / len(vals), 1) if vals else None
 
 
-def _mqtt_env_facts() -> Dict[str, Any]:
-    """Read-only temp/humidity/pressure aggregates from the MQTT node cache."""
+def _mqtt_node_facts() -> Dict[str, Any]:
+    """Read-only environment (temp/humidity/pressure) aggregates from the MQTT
+    subscriber's node cache — the device-telemetry fields node_observations
+    lacks. (RSSI is NOT taken from here: on this mqtt_bridge fleet the cache's
+    rssi is structurally empty — relayed nodes have no local RF leg — so RSSI
+    is sourced from node_observations alongside SNR instead.)
+
+    ``status`` reports only whether the cache was READABLE (ok / unobservable);
+    whether a given metric is present is just its count (env sensors are sparse
+    — zero is benign, not an error).
+    """
     path = _mqtt_nodes_path()
     if path is None or not path.exists():
         return {"status": UNOBSERVABLE, "reason": "cache_absent"}
@@ -368,9 +391,7 @@ def _mqtt_env_facts() -> Dict[str, Any]:
         if pr is not None and 800.0 <= pr <= 1100.0:
             press.append(pr)
     return {
-        # "ok" = at least one env sensor; "none" = nodes present but no env
-        # (benign — most mesh nodes have no BME sensor).
-        "status": OK if (temps or hums or press) else "none",
+        "status": OK,
         "total_nodes": len(feats),
         "temp_nodes": len(temps), "avg_temp_c": _avg1(temps),
         "humidity_nodes": len(hums), "avg_humidity": _avg1(hums),
@@ -403,31 +424,52 @@ def _node_unobservable_block(nf: _NodeFacts) -> Dict[str, Any]:
     return {"status": UNOBSERVABLE, "reason": reason, "detail": detail}
 
 
-def _attach_env(block: Dict[str, Any], env: Optional[Dict[str, Any]]) -> None:
-    """Fold MQTT environment metrics into a populated telemetry block.
+def _attach_env(block: Dict[str, Any], mqtt: Optional[Dict[str, Any]]) -> None:
+    """Fold MQTT environment metrics (temp/humidity/pressure) into a populated
+    telemetry block.
 
-    Always records the env sub-block (so the panel can show observability);
-    only extends the headline detail when sensors actually reported — env
-    sensors are sparse, so silence here is normal, not a gap to flag.
+    Always records the env sub-block (so the panel shows observability); only
+    extends the headline detail when sensors actually reported — env sensors
+    are sparse, so silence here is normal, not a gap to flag.
     """
-    if not isinstance(env, dict):
+    if not isinstance(mqtt, dict):
         return
-    block["env"] = env
-    if env.get("status") != OK:
+    status = mqtt.get("status")
+    block["env"] = {
+        "status": status,
+        "temp_nodes": mqtt.get("temp_nodes"), "avg_temp_c": mqtt.get("avg_temp_c"),
+        "humidity_nodes": mqtt.get("humidity_nodes"),
+        "avg_humidity": mqtt.get("avg_humidity"),
+        "pressure_nodes": mqtt.get("pressure_nodes"),
+        "avg_pressure_hpa": mqtt.get("avg_pressure_hpa"),
+    }
+    if status != OK:
         return
     bits = []
-    if env.get("avg_temp_c") is not None:
-        bits.append(f"{env['temp_nodes']} temp ~{env['avg_temp_c']}°C")
-    if env.get("avg_humidity") is not None:
-        bits.append(f"{env['humidity_nodes']} RH ~{env['avg_humidity']}%")
-    if env.get("avg_pressure_hpa") is not None:
-        bits.append(f"{env['pressure_nodes']} baro ~{env['avg_pressure_hpa']}hPa")
+    if mqtt.get("avg_temp_c") is not None:
+        bits.append(f"{mqtt['temp_nodes']} temp ~{mqtt['avg_temp_c']}°C")
+    if mqtt.get("avg_humidity") is not None:
+        bits.append(f"{mqtt['humidity_nodes']} RH ~{mqtt['avg_humidity']}%")
+    if mqtt.get("avg_pressure_hpa") is not None:
+        bits.append(f"{mqtt['pressure_nodes']} baro ~{mqtt['avg_pressure_hpa']}hPa")
     if bits:
         block["detail"] += " · env: " + ", ".join(bits)
 
 
+def _attach_rssi(block: Dict[str, Any], nf: _NodeFacts) -> None:
+    """Fold node_observations RSSI into a populated RF block. Only extends the
+    detail when nodes actually carried RSSI (a node heard over relayed/MQTT
+    paths has no local RF leg, so RSSI is sparse — silence here is normal)."""
+    if not nf.rssi_values:
+        return
+    avg = round(sum(nf.rssi_values) / len(nf.rssi_values))
+    block["rssi_nodes"] = nf.rssi_nodes
+    block["avg_rssi_dbm"] = avg
+    block["detail"] += f" · RSSI ~{avg} dBm ({nf.rssi_nodes} nodes)"
+
+
 def _telemetry_block(nf: _NodeFacts,
-                     env: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+                     mqtt: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if nf.status == UNOBSERVABLE:
         return _node_unobservable_block(nf)
     win_m = nf.window_s // 60
@@ -446,7 +488,7 @@ def _telemetry_block(nf: _NodeFacts,
                  "nodes_heard": nf.nodes, "avg_battery": avg_bat,
                  "detail": f"{nf.battery_nodes} of {nf.nodes} nodes reporting "
                            f"device telemetry in {win_m}m · avg battery {avg_bat}%."}
-    _attach_env(block, env)
+    _attach_env(block, mqtt)
     return block
 
 
@@ -488,11 +530,13 @@ def _rf_block(nf: _NodeFacts) -> Dict[str, Any]:
     avg_snr = sum(nf.snr_values) / len(nf.snr_values)
     band = _rf_quality_band(avg_snr)
     status = ALERT if band == "bad" else OK
-    return {"status": status, "snr_samples": len(nf.snr_values),
-            "snr_nodes": nf.snr_nodes, "avg_snr": round(avg_snr, 1),
-            "min_snr": round(min(nf.snr_values), 1), "quality_band": band,
-            "detail": f"{len(nf.snr_values)} SNR samples from {nf.snr_nodes} nodes "
+    block = {"status": status, "snr_samples": len(nf.snr_values),
+             "snr_nodes": nf.snr_nodes, "avg_snr": round(avg_snr, 1),
+             "min_snr": round(min(nf.snr_values), 1), "quality_band": band,
+             "detail": f"{len(nf.snr_values)} SNR samples from {nf.snr_nodes} nodes "
                       f"in {win_m}m · avg {round(avg_snr, 1)} dB ({band})."}
+    _attach_rssi(block, nf)
+    return block
 
 
 def _dups_block(delivery: Optional[dict]) -> Dict[str, Any]:
@@ -750,7 +794,7 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
     delivery, delivery_src = _load_delivery(base_url, timeout_s)
     status_blob = _http_json(f"{base_url}/api/status", timeout_s)
     nf = _node_facts(window_s, now)
-    env = _mqtt_env_facts()
+    mqtt = _mqtt_node_facts()
 
     return {
         "meta": {
@@ -765,7 +809,7 @@ def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
             "node_obs_latest_age_s": (round(nf.latest_age_s)
                                       if nf.latest_age_s is not None else None),
         },
-        "telemetry": _telemetry_block(nf, env),
+        "telemetry": _telemetry_block(nf, mqtt),
         "rf": _rf_block(nf),
         "dups": _dups_block(delivery),
         "diag": _diag_block(status_blob),

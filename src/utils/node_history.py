@@ -320,6 +320,7 @@ class NodeHistoryDB:
                         longitude REAL NOT NULL,
                         altitude REAL,
                         snr REAL,
+                        rssi INTEGER,
                         battery INTEGER,
                         is_online INTEGER DEFAULT 1,
                         network TEXT DEFAULT 'meshtastic',
@@ -341,6 +342,15 @@ class NodeHistoryDB:
                     CREATE INDEX IF NOT EXISTS idx_obs_node_time
                     ON node_observations(node_id, timestamp)
                 """)
+                # Migration: backfill the rssi column on pre-existing tables.
+                # CREATE IF NOT EXISTS is a no-op on an old DB, so ALTER adds
+                # the column (idempotent — guarded by table_info). Existing
+                # rows get NULL rssi; new observations capture it.
+                obs_cols = {r[1] for r in
+                            conn.execute("PRAGMA table_info(node_observations)")}
+                if "rssi" not in obs_cols:
+                    conn.execute(
+                        "ALTER TABLE node_observations ADD COLUMN rssi INTEGER")
                 # Directory table — one row per (network, node_id). Long-retention,
                 # tier-aware (Issue #49). Survives observation-stream eviction so
                 # nodes "stay cached" between long quiet stretches.
@@ -721,6 +731,7 @@ class NodeHistoryDB:
                 lon,
                 None,  # altitude not in standard features
                 props.get("snr"),
+                props.get("rssi"),
                 props.get("battery"),
                 1 if props.get("is_online", True) else 0,
                 network,
@@ -760,9 +771,9 @@ class NodeHistoryDB:
                 conn.executemany("""
                     INSERT INTO node_observations
                     (node_id, timestamp, latitude, longitude, altitude,
-                     snr, battery, is_online, network, hardware, role,
+                     snr, rssi, battery, is_online, network, hardware, role,
                      via_mqtt, name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, to_insert)
                 conn.commit()
                 inserted = len(to_insert)

@@ -23,17 +23,31 @@ from utils.db_helpers import connect_tuned
 
 _OBS_DDL = (
     "CREATE TABLE node_observations (id INTEGER PRIMARY KEY, node_id TEXT, "
+    "timestamp REAL, snr REAL, rssi INTEGER, battery INTEGER)"
+)
+_OBS_DDL_LEGACY = (  # pre-rssi schema (an un-migrated DB read restart-free)
+    "CREATE TABLE node_observations (id INTEGER PRIMARY KEY, node_id TEXT, "
     "timestamp REAL, snr REAL, battery INTEGER)"
 )
 
 
-def _make_node_db(path, rows):
-    """rows: iterable of (node_id, timestamp, snr, battery)."""
+def _make_node_db(path, rows, legacy=False):
+    """rows: iterable of (node_id, timestamp, snr, rssi, battery).
+
+    legacy=True writes the pre-rssi schema (drops the rssi column) to exercise
+    the reader's graceful degradation on an un-migrated DB.
+    """
     conn = connect_tuned(str(path))
-    conn.execute(_OBS_DDL)
-    conn.executemany(
-        "INSERT INTO node_observations (node_id, timestamp, snr, battery) "
-        "VALUES (?,?,?,?)", rows)
+    if legacy:
+        conn.execute(_OBS_DDL_LEGACY)
+        conn.executemany(
+            "INSERT INTO node_observations (node_id, timestamp, snr, battery) "
+            "VALUES (?,?,?,?)", [(r[0], r[1], r[2], r[4]) for r in rows])
+    else:
+        conn.execute(_OBS_DDL)
+        conn.executemany(
+            "INSERT INTO node_observations (node_id, timestamp, snr, rssi, "
+            "battery) VALUES (?,?,?,?,?)", rows)
     conn.commit()
     conn.close()
     return path
@@ -280,23 +294,37 @@ class TestNodeFacts:
 
     def test_recent_obs_is_ok(self, tmp_path, monkeypatch):
         ts = self.NOW.timestamp() - 120
-        rows = [("!a", ts, 5.0, 90), ("!b", ts, -2.0, 80), ("!c", ts, None, None)]
+        rows = [("!a", ts, 5.0, -100, 90), ("!b", ts, -2.0, -110, 80),
+                ("!c", ts, None, None, None)]
         self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", rows))
         nf = tp._node_facts(3600, self.NOW)
         assert nf.status == tp.OK and nf.obs == 3 and nf.nodes == 3
-        assert nf.snr_nodes == 2 and nf.battery_nodes == 2
+        assert nf.snr_nodes == 2 and nf.battery_nodes == 2 and nf.rssi_nodes == 2
+
+    def test_legacy_db_without_rssi_column_degrades_gracefully(self, tmp_path, monkeypatch):
+        # An un-migrated (pre-rssi) DB, read restart-free, must not crash —
+        # SNR still works, RSSI is simply empty.
+        ts = self.NOW.timestamp() - 120
+        rows = [("!a", ts, 5.0, -100, 90)]
+        self._patch_db(monkeypatch,
+                       _make_node_db(tmp_path / "n.db", rows, legacy=True))
+        nf = tp._node_facts(3600, self.NOW)
+        assert nf.status == tp.OK and nf.snr_nodes == 1 and nf.rssi_nodes == 0
+        assert nf.rssi_values == []
 
     def test_stale_collector_is_unobservable_not_quiet(self, tmp_path, monkeypatch):
         # Newest observation 3h old (> NODE_STALE_AFTER_S) → collector stopped.
         ts = self.NOW.timestamp() - 3 * 3600
-        self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", [("!a", ts, 5.0, 90)]))
+        self._patch_db(monkeypatch,
+                       _make_node_db(tmp_path / "n.db", [("!a", ts, 5.0, -100, 90)]))
         nf = tp._node_facts(3600, self.NOW)
         assert nf.status == tp.UNOBSERVABLE and nf.reason == "collector_stale"
 
     def test_recently_active_outside_window_is_quiet(self, tmp_path, monkeypatch):
         # 90m old: outside the 60m window but inside the 2h stale bound.
         ts = self.NOW.timestamp() - 5400
-        self._patch_db(monkeypatch, _make_node_db(tmp_path / "n.db", [("!a", ts, 5.0, 90)]))
+        self._patch_db(monkeypatch,
+                       _make_node_db(tmp_path / "n.db", [("!a", ts, 5.0, -100, 90)]))
         nf = tp._node_facts(3600, self.NOW)
         assert nf.status == tp.QUIET
 
@@ -313,7 +341,8 @@ class TestNodeFacts:
 class TestTelemetryRFBlocks:
     def _nf(self, **kw):
         base = dict(status=tp.OK, window_s=3600, obs=10, nodes=8,
-                    snr_values=[], snr_nodes=0, battery_values=[], battery_nodes=0)
+                    snr_values=[], snr_nodes=0, rssi_values=[], rssi_nodes=0,
+                    battery_values=[], battery_nodes=0)
         base.update(kw)
         return tp._NodeFacts(**base)
 
@@ -371,24 +400,40 @@ class TestTelemetryRFBlocks:
         assert "env:" in tb["detail"] and "25.0°C" in tb["detail"]
 
     def test_no_env_sensors_leaves_detail_clean(self):
+        # Cache readable but no env metrics → no detail clutter.
         nf = self._nf(battery_values=[90], battery_nodes=1)
-        tb = tp._telemetry_block(nf, {"status": "none", "temp_nodes": 0})
-        assert tb["env"]["status"] == "none" and "env:" not in tb["detail"]
+        tb = tp._telemetry_block(nf, {"status": tp.OK, "temp_nodes": 0,
+                                      "avg_temp_c": None})
+        assert tb["env"]["status"] == tp.OK and "env:" not in tb["detail"]
 
     def test_absent_env_does_not_degrade_battery_status(self):
         nf = self._nf(battery_values=[90], battery_nodes=1)
         tb = tp._telemetry_block(nf, {"status": tp.UNOBSERVABLE, "reason": "cache_absent"})
         assert tb["status"] == tp.OK and tb["env"]["status"] == tp.UNOBSERVABLE
 
+    def test_rf_enriched_with_rssi(self):
+        nf = self._nf(snr_values=[5.0, -2.0], snr_nodes=2,
+                      rssi_values=[-100, -116], rssi_nodes=2)
+        rb = tp._rf_block(nf)
+        assert rb["avg_rssi_dbm"] == -108 and rb["rssi_nodes"] == 2
+        assert "RSSI ~-108 dBm (2 nodes)" in rb["detail"]
+
+    def test_rf_no_rssi_leaves_detail_clean(self):
+        # SNR present but no RSSI samples (relayed/MQTT nodes) — detail clean.
+        nf = self._nf(snr_values=[5.0], snr_nodes=1, rssi_values=[], rssi_nodes=0)
+        rb = tp._rf_block(nf)
+        assert "avg_rssi_dbm" not in rb and "RSSI" not in rb["detail"]
+        assert rb["status"] == tp.OK
+
 
 # ─────────────────────────────────────────────────────────────────────
 # MQTT environment-sensor enrichment (temp/humidity/pressure)
 # ─────────────────────────────────────────────────────────────────────
 
-class TestMqttEnvFacts:
+class TestMqttNodeFacts:
     def test_cache_absent_is_unobservable(self, monkeypatch):
         monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: None)
-        e = tp._mqtt_env_facts()
+        e = tp._mqtt_node_facts()
         assert e["status"] == tp.UNOBSERVABLE and e["reason"] == "cache_absent"
 
     def test_aggregates_temp_humidity_pressure(self, tmp_path, monkeypatch):
@@ -397,31 +442,32 @@ class TestMqttEnvFacts:
             {"temperature": 26.0, "humidity": 45.0},
             {"battery": 90}])  # node with no env metrics
         monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
-        e = tp._mqtt_env_facts()
+        e = tp._mqtt_node_facts()
         assert e["status"] == tp.OK
         assert e["temp_nodes"] == 2 and e["avg_temp_c"] == 25.0
         assert e["humidity_nodes"] == 2 and e["avg_humidity"] == 50.0
         assert e["pressure_nodes"] == 1 and e["avg_pressure_hpa"] == 1013.0
 
-    def test_no_env_sensors_is_none_not_error(self, tmp_path, monkeypatch):
+    def test_no_metrics_is_ok_with_zero_counts(self, tmp_path, monkeypatch):
+        # Cache readable but nodes carry no env → OK (readable), counts 0.
         p = _make_mqtt_cache(tmp_path / "m.json", [{"battery": 90}, {"snr": 5.0}])
         monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
-        e = tp._mqtt_env_facts()
-        assert e["status"] == "none" and e["temp_nodes"] == 0
+        e = tp._mqtt_node_facts()
+        assert e["status"] == tp.OK and e["temp_nodes"] == 0
 
     def test_bogus_values_are_filtered(self, tmp_path, monkeypatch):
-        p = _make_mqtt_cache(tmp_path / "m.json",
-                             [{"temperature": 999.0, "humidity": 150.0, "pressure": 5.0}])
+        p = _make_mqtt_cache(tmp_path / "m.json", [
+            {"temperature": 999.0, "humidity": 150.0, "pressure": 5.0}])
         monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
-        e = tp._mqtt_env_facts()
+        e = tp._mqtt_node_facts()
         assert e["temp_nodes"] == 0 and e["humidity_nodes"] == 0
-        assert e["pressure_nodes"] == 0 and e["status"] == "none"
+        assert e["pressure_nodes"] == 0 and e["status"] == tp.OK
 
     def test_unreadable_cache_is_unobservable(self, tmp_path, monkeypatch):
         p = tmp_path / "m.json"
         p.write_text("{not valid json")
         monkeypatch.setattr(tp, "_mqtt_nodes_path", lambda: p)
-        e = tp._mqtt_env_facts()
+        e = tp._mqtt_node_facts()
         assert e["status"] == tp.UNOBSERVABLE and e["reason"] == "cache_unreadable"
 
 
@@ -470,7 +516,7 @@ class TestPulseSnapshot:
         monkeypatch.setattr(tp, "_node_facts",
                             lambda w, n: tp._NodeFacts(status=tp.UNOBSERVABLE,
                                                        reason="db_absent", window_s=w))
-        monkeypatch.setattr(tp, "_mqtt_env_facts",
+        monkeypatch.setattr(tp, "_mqtt_node_facts",
                             lambda: {"status": tp.UNOBSERVABLE, "reason": "cache_absent"})
         snap = tp.pulse_snapshot()
         json.dumps(snap)  # must not raise
@@ -487,11 +533,12 @@ class TestPulseSnapshot:
         monkeypatch.setattr(tp, "_node_facts",
                             lambda w, n: tp._NodeFacts(status=tp.OK, window_s=w,
                                                        obs=5, nodes=3, snr_values=[],
-                                                       snr_nodes=0, battery_values=[],
+                                                       snr_nodes=0, rssi_values=[],
+                                                       rssi_nodes=0, battery_values=[],
                                                        battery_nodes=0))
         monkeypatch.setattr(tp, "_queue_facts",
                             lambda: {"status": tp.UNOBSERVABLE, "reason": "x"})
-        monkeypatch.setattr(tp, "_mqtt_env_facts", lambda: {"garbage": True})
+        monkeypatch.setattr(tp, "_mqtt_node_facts", lambda: {"garbage": True})
         snap = tp.pulse_snapshot()  # must not raise
         json.dumps(snap)
         assert set(snap) == {"meta", "telemetry", "rf", "dups", "diag", "qa"}
