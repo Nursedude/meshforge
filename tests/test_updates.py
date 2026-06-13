@@ -90,3 +90,35 @@ class TestRnsdDualInstallSurfacing:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestUpdateAllRoutesMeshtasticLib:
+    """Update All must install the meshtastic library through the pip helper,
+    not the raw update_command — the raw string lacks --break-system-packages
+    (PEP 668 / externally-managed-environment) and the rnsd dual-install (#24).
+    Surfaced by a live walk: "Update All" reported the library FAILED with
+    'externally-managed-environment' while the standalone updater worked.
+    """
+
+    def test_lib_uses_pip_helper_others_use_run_command(self):
+        from types import SimpleNamespace
+        h = _handler()  # ctx is a MagicMock → dialog.yesno() is truthy
+        versions = {
+            'meshtastic_lib': SimpleNamespace(
+                name='Meshtastic Library', update_available=True,
+                update_command='pip3 install --break-system-packages --upgrade meshtastic'),
+            'meshtasticd': SimpleNamespace(
+                name='meshtasticd', update_available=True,
+                update_command='sudo apt-get install --only-upgrade -y meshtasticd'),
+        }
+        h._pip_install_meshtastic = MagicMock(return_value=(True, 'lib ok'))
+        h._run_update_command = MagicMock(return_value=(True, 'apt ok'))
+        with patch('handlers.updates._check_all_versions', return_value=versions):
+            h._update_all()
+
+        # The library is routed through the helper (PEP 668 + #24 handled)...
+        h._pip_install_meshtastic.assert_called_once_with(upgrade=True)
+        # ...and NOT through the raw-command path; other components still are.
+        routed = [c.args[0] for c in h._run_update_command.call_args_list]
+        assert 'meshtasticd' in routed
+        assert 'meshtastic_lib' not in routed

@@ -166,7 +166,17 @@ class UpdatesHandler(BaseHandler):
                 f"Running: {info.update_command}\n\nPlease wait..."
             )
 
-            success, msg = self._run_update_command(key, info.update_command)
+            # The meshtastic library must go through the pip helper, not the
+            # raw update_command: the helper adds --break-system-packages (PEP
+            # 668 / externally-managed-environment on Debian/RPi) and does the
+            # rnsd dual-install (#24). The raw 'pip3 install --upgrade
+            # meshtastic' string handles neither — it failed Update All with
+            # "externally-managed-environment" while the standalone updater
+            # (which already uses the helper) worked.
+            if key == 'meshtastic_lib':
+                success, msg = self._pip_install_meshtastic(upgrade=True)
+            else:
+                success, msg = self._run_update_command(key, info.update_command)
             results.append((info.name, success, msg))
 
         lines = ["UPDATE RESULTS", "=" * 40, ""]

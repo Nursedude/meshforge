@@ -381,8 +381,14 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     lib.latest = get_latest_meshtastic_cli_version()  # Same PyPI package
     if lib.installed and lib.latest:
         lib.update_available = compare_versions(lib.installed, lib.latest)
-    lib.update_command = 'pip3 install --upgrade meshtastic'
-    lib.install_command = 'pip3 install meshtastic'
+    # --break-system-packages: Debian/RPi mark system Python externally-managed
+    # (PEP 668), so a bare `pip3 install` fails. The flag is a no-op where no
+    # EXTERNALLY-MANAGED marker exists, so it's safe to show generically. The
+    # TUI's Update flow routes execution through _pip_install_meshtastic (which
+    # also handles venv + the rnsd dual-install, #24); this string is the
+    # display/manual-copy form.
+    lib.update_command = 'pip3 install --break-system-packages --upgrade meshtastic'
+    lib.install_command = 'pip3 install --break-system-packages meshtastic'
     results['meshtastic_lib'] = lib
 
     # Node Firmware
