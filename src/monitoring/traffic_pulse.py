@@ -1,0 +1,696 @@
+"""Traffic Pulse — the heartbeat of real gateway traffic flow.
+
+A read-only aggregator that buckets live gateway traffic into five axes —
+**telemetry · RF · DUPs · diagnostics · QA** — for the TUI "Traffic
+Heartbeat" view. It answers *what is actually moving through the gateway
+right now*, where the topology graph (``gateway.network_topology``) only
+shows *who exists*.
+
+Scope: this module is **observability only** — like ``delivery_counters``,
+it reads existing stores, creates no DB, never writes, and never raises out
+of :func:`pulse_snapshot`. The gateway/map daemons own the writes; the TUI
+is a reader. Delivery data comes over HTTP from the map daemon's
+``/api/gateway/delivery`` (the same source the #74 watchdog probe reads);
+packet stats come from a strictly read-only (``mode=ro``) open of
+``traffic_capture.db``. Per-box only — fleet aggregation is a later phase
+that points the HTTP base at a peer.
+
+Honest-failure-mode contract (``.claude/rules/honest_failure_modes.md``):
+
+* **Read error / source down ≠ empty / healthy.** A block whose source
+  cannot be read returns ``status="unobservable"`` with a ``reason`` — never
+  a fabricated "0 packets / all confirmed / recovered". Absence of evidence
+  is surfaced as its own state, not as good news (checklist 1, 2, 9).
+* **QA confirmation is judged honestly.** The cumulative
+  ``confirmation_rate`` from ``delivery_counters`` is the meaningless
+  cross-population ratio ``RNS-confirmed ÷ all-sent`` (#74) — Meshtastic
+  sends never confirm (no ACK consumption yet), so a naive panel reads
+  ~0–50% as "delivery failure". The QA block instead judges **only
+  confirmable protocols' real terminal outcomes** over the recent-events
+  ring, sharing :data:`_DELIVERY_FAILURE_REASONS` with the watchdog probe so
+  the two never drift (checklist 5).
+* **Capture-off ≠ mesh-quiet ≠ feed-dark.** The meta + telemetry/RF blocks
+  distinguish "packet capture isn't running" (unobservable) from "capture is
+  alive but the mesh is genuinely quiet" (quiet). ``channel_feed_dark`` (a
+  watchdog signal surfaced in the diag block) owns true dark-feed detection.
+"""
+from __future__ import annotations
+
+import json
+import socket
+from dataclasses import dataclass
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+from urllib.error import URLError
+from urllib.request import urlopen
+
+from utils.db_helpers import connect_tuned
+from utils.db_inventory import INVENTORY
+from utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+# ── Block status vocabulary ──────────────────────────────────────────
+# A closed set so the TUI renderer can switch on it. "unobservable" is the
+# honest answer when the source can't be read — it is NEVER collapsed into
+# "ok" or a zero count.
+OK = "ok"                       # observed and active/healthy
+QUIET = "quiet"                 # observed, capture alive, ~no traffic in window
+STALE = "stale"                 # data present but no recent activity
+ALERT = "alert"                 # observed anomaly worth attention
+UNOBSERVABLE = "unobservable"   # could not read / capture off / source down — HELD
+
+DEFAULT_BASE_URL = "http://127.0.0.1:5000"
+DEFAULT_WINDOW_S = 900          # 15-minute "recent" pulse window
+DEFAULT_TIMEOUT_S = 3.0
+STALE_AFTER_S = 3600            # delivery counters older than this → STALE
+STALE_CAPTURE_S = 3600          # newest captured packet older than this → capture stopped
+MIN_CONFIRMABLE_TERMINAL = 20   # mirrors the #74 probe's min_terminal
+CONF_DEGRADED = 0.50
+CONF_WEDGE = 0.10
+
+# Drop reasons that mean a delivery was ATTEMPTED and FAILED — the
+# denominator-mates of `confirmed`. Shared with the #74 probe so the two
+# consumers can never drift (honest_failure_modes checklist item 5). Pinned
+# mirror only if the import fails; `tests/test_traffic_pulse.py` asserts the
+# effective set equals the watchdog module's.
+try:
+    from utils.watchdog_probes_gateway import _DELIVERY_FAILURE_REASONS
+except Exception:  # pragma: no cover - exercised only on a broken import graph
+    _DELIVERY_FAILURE_REASONS = frozenset({
+        "rns_delivery_failed", "retries_exhausted", "destination_unreachable",
+        "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
+    })
+
+# Benign drops — capacity/duplicate management, NOT delivery failures.
+_BENIGN_DROP_REASONS = frozenset({
+    "dedup", "queue_pressure", "queue_shed", "evicted_overflow",
+})
+
+# Protocols that carry a real RF leg (SNR/RSSI). RNS/MQTT do not, so an
+# all-RNS window legitimately has no RF samples — that's "unobservable for
+# RF", not "0 dB".
+_RF_BEARING_PROTOCOLS = frozenset({"meshtastic", "bridged"})
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Path + read-only connection helpers
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _db_path(name: str) -> Optional[Path]:
+    """Resolve a DB's canonical runtime path from the inventory SSOT."""
+    for spec in INVENTORY:
+        if spec.name == name:
+            try:
+                return spec.path_factory()
+            except Exception as exc:  # path factory should never fail; be safe
+                logger.debug("traffic_pulse: path_factory(%s) failed: %s", name, exc)
+                return None
+    return None
+
+
+def _ro_connect(path: Path):
+    """Open a strictly read-only connection (writes blocked) or None.
+
+    Uses ``connect_tuned(mode=ro)`` — MF013-compliant and side-effect-free
+    on an existing WAL DB held open by a daemon writer.
+    """
+    if not path or not path.exists():
+        return None
+    try:
+        conn = connect_tuned(f"file:{path}?mode=ro", uri=True)
+        conn.row_factory = __import__("sqlite3").Row
+        return conn
+    except Exception as exc:
+        logger.debug("traffic_pulse: ro-connect %s failed: %s", path, exc)
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Source loaders (HTTP-first, read-only DB fallback)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _http_json(url: str, timeout_s: float) -> Optional[dict]:
+    try:
+        with urlopen(url, timeout=timeout_s) as resp:  # nosec - localhost map daemon
+            payload = json.loads(resp.read())
+        return payload if isinstance(payload, dict) else None
+    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        return None
+
+
+def _load_delivery(base_url: str, timeout_s: float) -> Tuple[Optional[dict], str]:
+    """Return (delivery_snapshot, source). source ∈ {http, db, none}.
+
+    Prefer the served ``/api/gateway/delivery`` (zero side effects, identical
+    to ``delivery_counters.snapshot()``). Fall back to a read-only DB parse
+    when the map daemon is down so a single-box TUI still works.
+    """
+    payload = _http_json(f"{base_url}/api/gateway/delivery", timeout_s)
+    if payload is not None:
+        return payload, "http"
+    db = _parse_delivery_db()
+    if db is not None:
+        return db, "db"
+    return None, "none"
+
+
+def _parse_delivery_db() -> Optional[dict]:
+    """Reconstruct the delivery snapshot from a read-only DB read.
+
+    Mirrors the key scheme written by ``gateway.delivery_counters`` —
+    ``state.<state>``, ``state_proto.<state>.<proto>``, ``drop.<reason>``,
+    ``meta.*`` — and the events ring. Pinned to that writer; if the scheme
+    there changes, this fallback (and its test) updates with it.
+    """
+    path = _db_path("delivery_counters")
+    conn = _ro_connect(path) if path else None
+    if conn is None:
+        return None
+    try:
+        state_totals: Dict[str, int] = {}
+        state_by_protocol: Dict[str, Dict[str, int]] = {}
+        drop_reasons: Dict[str, int] = {}
+        last_event_ts = None
+        preflight_ok = None
+        write_errors = 0
+        for row in conn.execute("SELECT key, value FROM counters"):
+            key, value = row["key"], row["value"]
+            if key.startswith("state_proto."):
+                _, state_v, proto = key.split(".", 2)
+                state_by_protocol.setdefault(state_v, {})[proto] = value
+            elif key.startswith("state."):
+                state_totals[key.split(".", 1)[1]] = value
+            elif key.startswith("drop."):
+                drop_reasons[key.split(".", 1)[1]] = value
+            elif key == "meta.last_event_ts":
+                last_event_ts = value / 1000.0
+            elif key == "meta.preflight_ok":
+                preflight_ok = bool(value)
+            elif key == "meta.consecutive_write_errors":
+                write_errors = int(value)
+        recent: List[Dict[str, Any]] = []
+        rows = conn.execute(
+            "SELECT ts, id, state, protocol, drop_reason FROM events "
+            "ORDER BY ts DESC LIMIT 50"
+        ).fetchall()
+        for r in reversed(rows):  # snapshot contract is newest-LAST
+            recent.append({
+                "ts": r["ts"], "id": r["id"], "state": r["state"],
+                "protocol": r["protocol"], "drop_reason": r["drop_reason"],
+            })
+        sent = state_totals.get("sent", 0)
+        confirmed = state_totals.get("confirmed", 0)
+        return {
+            "state_totals": state_totals,
+            "state_by_protocol": state_by_protocol,
+            "drop_reasons": drop_reasons,
+            "confirmation_rate": (confirmed / sent if sent > 0 else None),
+            "recent": recent,
+            "last_event_ts": last_event_ts,
+            "health": {
+                "preflight_ok": preflight_ok,
+                "consecutive_write_errors": write_errors,
+                "last_successful_write_ts": last_event_ts,
+            },
+        }
+    except Exception as exc:
+        logger.debug("traffic_pulse: delivery DB parse failed: %s", exc)
+        return None
+    finally:
+        conn.close()
+
+
+@dataclass
+class _CaptureFacts:
+    """Read-only facts derived from traffic_capture.db over a window."""
+    status: str
+    reason: str = ""
+    capture_running: Optional[bool] = None
+    total_rows: int = 0
+    latest_age_s: Optional[float] = None
+    window_count: int = 0
+    by_port: Dict[str, int] = None          # type: ignore[assignment]
+    by_protocol: Dict[str, int] = None      # type: ignore[assignment]
+    by_direction: Dict[str, int] = None     # type: ignore[assignment]
+    telemetry_count: int = 0
+    rf_samples: int = 0
+    snr_values: List[float] = None          # type: ignore[assignment]
+    rssi_values: List[int] = None           # type: ignore[assignment]
+    hops_values: List[int] = None           # type: ignore[assignment]
+
+
+def _is_capture_running() -> Optional[bool]:
+    try:
+        from monitoring.traffic_inspector import is_capture_running
+        return bool(is_capture_running())
+    except Exception:
+        return None  # unknown ≠ False (honest)
+
+
+def _capture_facts(window_s: int, now: datetime) -> _CaptureFacts:
+    """Strictly read-only characterization of recent captured packets.
+
+    Distinguishes db-absent / unreadable (unobservable) from capture-off
+    (unobservable, different reason) from capture-alive-but-quiet (quiet).
+    """
+    path = _db_path("traffic_capture")
+    capture_running = _is_capture_running()
+    if path is None or not path.exists():
+        return _CaptureFacts(status=UNOBSERVABLE, reason="db_absent",
+                             capture_running=capture_running)
+    conn = _ro_connect(path)
+    if conn is None:
+        return _CaptureFacts(status=UNOBSERVABLE, reason="db_unreadable",
+                             capture_running=capture_running)
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+        latest = conn.execute("SELECT MAX(timestamp) FROM packets").fetchone()[0]
+        latest_age = None
+        if latest:
+            try:
+                latest_age = (now - datetime.fromisoformat(latest)).total_seconds()
+            except ValueError:
+                latest_age = None
+        cutoff = (now - timedelta(seconds=window_s)).isoformat()
+        by_port: Dict[str, int] = {}
+        by_proto: Dict[str, int] = {}
+        by_dir: Dict[str, int] = {}
+        telem = 0
+        rf_samples = 0
+        snr: List[float] = []
+        rssi: List[int] = []
+        hops: List[int] = []
+        window_count = 0
+        # ISO-8601 strings sort lexicographically → range scan is valid.
+        for r in conn.execute(
+            "SELECT protocol, direction, port_name, portnum, snr, rssi, "
+            "hops_taken FROM packets WHERE timestamp > ?", (cutoff,)
+        ):
+            window_count += 1
+            proto = r["protocol"] or "unknown"
+            by_proto[proto] = by_proto.get(proto, 0) + 1
+            d = r["direction"] or "unknown"
+            by_dir[d] = by_dir.get(d, 0) + 1
+            pname = (r["port_name"] or "").strip() or "UNKNOWN"
+            by_port[pname] = by_port.get(pname, 0) + 1
+            if "TELEMETRY" in pname.upper() or r["portnum"] == 67:
+                telem += 1
+            if proto in _RF_BEARING_PROTOCOLS:
+                if r["snr"] is not None:
+                    snr.append(float(r["snr"]))
+                    rf_samples += 1
+                if r["rssi"] is not None:
+                    rssi.append(int(r["rssi"]))
+                if r["hops_taken"] is not None:
+                    hops.append(int(r["hops_taken"]))
+        # Liveness is derived from DATA FRESHNESS, not is_capture_running()
+        # (that flag is process-local — false in the TUI even while the
+        # gateway daemon captures into the same DB, which would make us lie
+        # "quiet"). Packets in the window prove capture is live; a newest
+        # packet hours old means capture is effectively stopped → unobservable,
+        # never "quiet".
+        if total == 0:
+            status, reason = UNOBSERVABLE, "no_capture"
+        elif window_count > 0:
+            status, reason = OK, ""
+        elif latest_age is not None and latest_age > STALE_CAPTURE_S:
+            status, reason = UNOBSERVABLE, "capture_stale"
+        else:
+            status, reason = QUIET, ""
+        return _CaptureFacts(
+            status=status, reason=reason, capture_running=capture_running,
+            total_rows=total, latest_age_s=latest_age, window_count=window_count,
+            by_port=by_port, by_protocol=by_proto, by_direction=by_dir,
+            telemetry_count=telem, rf_samples=rf_samples, snr_values=snr,
+            rssi_values=rssi, hops_values=hops,
+        )
+    except Exception as exc:
+        logger.debug("traffic_pulse: capture read failed: %s", exc)
+        return _CaptureFacts(status=UNOBSERVABLE, reason="read_error",
+                             capture_running=capture_running)
+    finally:
+        conn.close()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Per-axis blocks
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _capture_unobservable_block(cap: _CaptureFacts) -> Dict[str, Any]:
+    """Shared unobservable shape for telemetry/RF when capture can't be read.
+
+    Capture that is absent/stopped is unobservable, NOT quiet — the panel
+    must not imply the mesh is silent when we simply aren't listening.
+    """
+    reason = cap.reason or "no_capture"
+    if reason == "capture_stale":
+        age_m = int((cap.latest_age_s or 0) // 60)
+        detail = (f"Newest captured packet is ~{age_m}m old — packet capture "
+                  "appears stopped; current flow is not observable (not a "
+                  "quiet mesh).")
+    elif reason == "no_capture":
+        detail = ("No packets captured on this box — flow is not being "
+                  "observed (not the same as a quiet mesh).")
+    else:  # db_absent / db_unreadable / read_error
+        detail = ("Traffic capture store unavailable — cannot observe "
+                  "telemetry/RF flow on this box.")
+    return {"status": UNOBSERVABLE, "reason": reason, "detail": detail}
+
+
+def _telemetry_block(cap: _CaptureFacts, window_s: int) -> Dict[str, Any]:
+    if cap.status == UNOBSERVABLE:
+        return _capture_unobservable_block(cap)
+    if cap.status == QUIET:
+        return {"status": QUIET, "window_count": 0, "telemetry_count": 0,
+                "detail": "Capture active but no packets in the window — mesh "
+                          "quiet (true dark-feed is the diag block's job)."}
+    rate_per_min = round(cap.telemetry_count / (window_s / 60.0), 2)
+    if cap.telemetry_count == 0:
+        return {"status": ALERT, "window_count": cap.window_count,
+                "telemetry_count": 0, "rate_per_min": 0.0,
+                "detail": "Other traffic is flowing but NO telemetry packets "
+                          "in the window — telemetry-dark candidate."}
+    return {"status": OK, "window_count": cap.window_count,
+            "telemetry_count": cap.telemetry_count, "rate_per_min": rate_per_min,
+            "detail": f"{cap.telemetry_count} telemetry packets "
+                      f"(~{rate_per_min}/min) in the last {window_s // 60}m."}
+
+
+def _rf_quality_band(avg_snr: Optional[float]) -> str:
+    """Map mean SNR to the rf.py quality bands (best-effort import)."""
+    if avg_snr is None:
+        return "n/a"
+    try:
+        from utils import rf
+        for name, thresh in (("excellent", getattr(rf, "SNR_EXCELLENT", -3.0)),
+                             ("good", getattr(rf, "SNR_GOOD", -7.0)),
+                             ("fair", getattr(rf, "SNR_FAIR", -15.0))):
+            if avg_snr > thresh:
+                return name
+        return "bad"
+    except Exception:
+        # Pinned fallback mirrors rf.py SNR bands.
+        if avg_snr > -3.0:
+            return "excellent"
+        if avg_snr > -7.0:
+            return "good"
+        if avg_snr > -15.0:
+            return "fair"
+        return "bad"
+
+
+def _rf_block(cap: _CaptureFacts) -> Dict[str, Any]:
+    if cap.status == UNOBSERVABLE:
+        return _capture_unobservable_block(cap)
+    if cap.status == QUIET:
+        return {"status": QUIET, "rf_samples": 0,
+                "detail": "Capture active but no packets in the window."}
+    if cap.rf_samples == 0:
+        # No RF-bearing packets ≠ bad signal — RNS/MQTT carry no RF leg.
+        return {"status": UNOBSERVABLE, "reason": "no_rf_samples",
+                "detail": "No RF-bearing (Meshtastic) packets in the window — "
+                          "no SNR/RSSI to report (not a signal problem)."}
+    avg_snr = sum(cap.snr_values) / len(cap.snr_values) if cap.snr_values else None
+    avg_rssi = round(sum(cap.rssi_values) / len(cap.rssi_values)) if cap.rssi_values else None
+    avg_hops = round(sum(cap.hops_values) / len(cap.hops_values), 2) if cap.hops_values else None
+    band = _rf_quality_band(avg_snr)
+    status = ALERT if band == "bad" else OK
+    return {"status": status, "rf_samples": cap.rf_samples,
+            "avg_snr": round(avg_snr, 1) if avg_snr is not None else None,
+            "min_snr": round(min(cap.snr_values), 1) if cap.snr_values else None,
+            "avg_rssi": avg_rssi, "avg_hops": avg_hops, "quality_band": band,
+            "detail": f"{cap.rf_samples} RF samples · avg SNR "
+                      f"{round(avg_snr, 1) if avg_snr is not None else 'n/a'} dB "
+                      f"({band}) · avg {avg_hops} hops."}
+
+
+def _dups_block(delivery: Optional[dict], cap: _CaptureFacts) -> Dict[str, Any]:
+    if delivery is None:
+        return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
+                "detail": "Delivery counters unreachable — dedup count "
+                          "unobservable."}
+    drops = delivery.get("drop_reasons") or {}
+    dedup_total = int(drops.get("dedup", 0) or 0)
+    state_totals = delivery.get("state_totals") or {}
+    queued = int(state_totals.get("queued", 0) or 0)
+    # Denominator = enqueue attempts that survived dedup + the dedup drops.
+    ingress = queued + dedup_total
+    dedup_pct = round(100.0 * dedup_total / ingress, 1) if ingress > 0 else 0.0
+    # Windowed dedup from the recent ring (catches a recent dup storm the
+    # lifetime total would dilute).
+    recent = delivery.get("recent") or []
+    window_dedup = sum(
+        1 for e in recent if isinstance(e, dict)
+        and e.get("state") == "dropped" and e.get("drop_reason") == "dedup"
+    )
+    status = OK
+    if window_dedup >= 10 or dedup_pct >= 25.0:
+        status = ALERT
+    return {"status": status, "dedup_total": dedup_total, "dedup_pct": dedup_pct,
+            "window_dedup": window_dedup, "ingress": ingress,
+            "detail": f"{dedup_total} duplicates suppressed "
+                      f"({dedup_pct}% of ingress) · {window_dedup} in the "
+                      f"recent window."}
+
+
+def _traffic_signal_classes() -> frozenset:
+    return frozenset({
+        "channel_feed_dark", "delivery_confirmation_stall", "mqtt_root_drift",
+        "queue_backlog", "delivery_write_canary", "aredn_source_dark",
+        "phoneapi_tcp_leak",
+    })
+
+
+def _diag_block(status_blob: Optional[dict]) -> Dict[str, Any]:
+    """Active watchdog signals (read-only) tagged for traffic relevance."""
+    if not isinstance(status_blob, dict):
+        return {"status": UNOBSERVABLE, "reason": "status_source_down",
+                "signals": [],
+                "detail": "/api/status unreachable — watchdog signals "
+                          "unobservable."}
+    wd = status_blob.get("watchdog") or {}
+    if not wd.get("installed"):
+        return {"status": UNOBSERVABLE, "reason": "watchdog_absent",
+                "signals": [],
+                "detail": "Watchdog not installed on this box."}
+    raw = wd.get("signals") or []
+    traffic_classes = _traffic_signal_classes()
+    signals = []
+    worst = OK
+    for s in raw:
+        if not isinstance(s, dict):
+            continue
+        # /api/status serializes the Signal.cls field as "class"; in-process
+        # callers may pass "cls". Accept either.
+        cls = s.get("class") or s.get("cls")
+        sev = (s.get("severity") or "info").lower()
+        relevant = cls in traffic_classes
+        signals.append({"cls": cls, "subject": s.get("subject"),
+                        "severity": sev, "issue_ref": s.get("issue_ref"),
+                        "detail": s.get("detail"), "traffic_relevant": relevant})
+        if relevant and sev in ("degraded", "wedge"):
+            worst = ALERT
+    n_rel = sum(1 for s in signals if s["traffic_relevant"])
+    return {"status": worst, "signals": signals,
+            "active_total": len(signals), "traffic_relevant": n_rel,
+            "detail": (f"{n_rel} traffic-relevant of {len(signals)} active "
+                       f"watchdog signal(s).") if signals else
+                      "No active watchdog signals."}
+
+
+def _honest_confirmation(delivery: dict) -> Dict[str, Any]:
+    """Judge ONLY confirmable protocols' real terminal outcomes (#74).
+
+    Returns a status + windowed rate, NEVER the cross-population
+    confirmation_rate. Mirrors ``probe_delivery_confirmation_stall``.
+    """
+    confirmed_by_proto = (delivery.get("state_by_protocol") or {}).get("confirmed") or {}
+    confirmable = {
+        p for p, c in confirmed_by_proto.items()
+        if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
+    }
+    if not confirmable:
+        return {"status": UNOBSERVABLE, "reason": "no_confirmable_protocol",
+                "confirmable": [],
+                "detail": "No protocol records delivery confirmations here "
+                          "(Meshtastic has no ACK consumption yet — Thread-2 "
+                          "step 4). Sends are real; confirmation is unobservable."}
+    recent = delivery.get("recent")
+    if not isinstance(recent, list):
+        return {"status": UNOBSERVABLE, "reason": "no_recent_ring",
+                "confirmable": sorted(confirmable), "detail": "No recent-event ring."}
+    confirmed = failed = 0
+    for e in recent:
+        if not isinstance(e, dict) or e.get("protocol") not in confirmable:
+            continue
+        st = e.get("state")
+        if st == "confirmed":
+            confirmed += 1
+        elif st == "dropped" and e.get("drop_reason") in _DELIVERY_FAILURE_REASONS:
+            failed += 1
+    terminal = confirmed + failed
+    if terminal < MIN_CONFIRMABLE_TERMINAL:
+        return {"status": UNOBSERVABLE, "reason": "insufficient_sample",
+                "confirmable": sorted(confirmable), "terminal": terminal,
+                "detail": f"Only {terminal} confirmable terminal events in the "
+                          f"window (<{MIN_CONFIRMABLE_TERMINAL}) — too small to "
+                          f"judge honestly."}
+    rate = confirmed / terminal
+    if rate <= CONF_WEDGE:
+        status = ALERT
+    elif rate <= CONF_DEGRADED:
+        status = ALERT
+    else:
+        status = OK
+    return {"status": status, "confirmable": sorted(confirmable),
+            "confirmed": confirmed, "failed": failed, "terminal": terminal,
+            "rate": round(rate, 3),
+            "detail": f"{confirmed}/{terminal} {', '.join(sorted(confirmable))} "
+                      f"confirmed in the window ({rate:.0%})."}
+
+
+def _queue_facts() -> Dict[str, Any]:
+    """Read-only message_queue depth + dead-letter count."""
+    path = _db_path("message_queue")
+    conn = _ro_connect(path) if path else None
+    if conn is None:
+        return {"status": UNOBSERVABLE, "reason": "queue_unreadable"}
+    try:
+        counts: Dict[str, int] = {}
+        for r in conn.execute("SELECT status, COUNT(*) n FROM messages GROUP BY status"):
+            counts[r["status"]] = r["n"]
+        backlog = counts.get("pending", 0) + counts.get("in_progress", 0)
+        dead = counts.get("dead_letter", 0)
+        return {"status": OK, "by_status": counts, "backlog": backlog,
+                "dead_letter": dead}
+    except Exception as exc:
+        logger.debug("traffic_pulse: queue read failed: %s", exc)
+        return {"status": UNOBSERVABLE, "reason": "read_error"}
+    finally:
+        conn.close()
+
+
+def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
+    """The app diagnosing its own delivery quality & assured reliability.
+
+    Confirmation honesty + failure-vs-benign drops + write canary +
+    freshness + queue depth → a single reliability verdict.
+    """
+    if delivery is None:
+        return {"status": UNOBSERVABLE, "reason": "delivery_source_down",
+                "detail": "Delivery counters unreachable — gateway reliability "
+                          "unobservable."}
+    state_totals = delivery.get("state_totals") or {}
+    drops = delivery.get("drop_reasons") or {}
+    sent = int(state_totals.get("sent", 0) or 0)
+    dropped = int(state_totals.get("dropped", 0) or 0)
+    failed_drops = sum(int(drops.get(r, 0) or 0) for r in _DELIVERY_FAILURE_REASONS)
+    benign_drops = sum(int(drops.get(r, 0) or 0) for r in _BENIGN_DROP_REASONS)
+    circuit_open = int(drops.get("circuit_open", 0) or 0)
+
+    confirmation = _honest_confirmation(delivery)
+    queue = _queue_facts()
+
+    # Freshness — counters are cumulative; if nothing has happened in a long
+    # while, the gateway is idle/inactive (stale), not "100% healthy".
+    last_event_ts = delivery.get("last_event_ts")
+    if last_event_ts is None:
+        last_event_ts = (delivery.get("health") or {}).get("last_successful_write_ts")
+    age_s = None
+    if isinstance(last_event_ts, (int, float)):
+        age_s = max(0.0, now.timestamp() - float(last_event_ts))
+
+    health = delivery.get("health") or {}
+    write_errors = int(health.get("consecutive_write_errors", 0) or 0)
+    preflight_ok = health.get("preflight_ok")
+
+    # ── Synthesize verdict ──
+    # Hard failures (live reliability breakage) flip ALERT and own the
+    # headline. Staleness (idle/inactive gateway) is its own honest state, NOT
+    # "100% healthy". Secondary concerns (dead-letters, backlog) are always
+    # listed but never masquerade as a live outage on an idle box.
+    hard_fail: List[str] = []
+    if write_errors > 0 or preflight_ok is False:
+        hard_fail.append(f"delivery write canary failing ({write_errors} errors)")
+    if confirmation["status"] == ALERT:
+        hard_fail.append(f"confirmation collapsed ({confirmation.get('rate', 0):.0%})")
+    if circuit_open > 0:
+        hard_fail.append(f"{circuit_open} circuit-open drops")
+
+    concerns: List[str] = []
+    dead = queue.get("dead_letter")
+    if isinstance(dead, int) and dead > 0:
+        concerns.append(f"{dead} dead-letter messages")
+    backlog = queue.get("backlog")
+    if isinstance(backlog, int) and backlog >= 50:
+        concerns.append(f"{backlog} messages backlogged")
+
+    stale = age_s is not None and age_s > STALE_AFTER_S
+
+    if hard_fail:
+        status = ALERT
+        verdict = "Reliability concern: " + "; ".join(hard_fail)
+        verdict += (" (also: " + "; ".join(concerns) + ")" if concerns else "") + "."
+    elif stale:
+        status = STALE
+        verdict = (f"No delivery activity for {int(age_s // 60)}m — gateway "
+                   "idle/inactive (counters healthy)")
+        verdict += (" but " + "; ".join(concerns) if concerns else "") + "."
+    else:
+        status = OK
+        verdict = "Gateway is reliably moving traffic"
+        verdict += (" — note: " + "; ".join(concerns) if concerns else "") + "."
+
+    return {"status": status, "verdict": verdict, "concerns": concerns,
+            "confirmation": confirmation, "queue": queue,
+            "sent": sent, "dropped": dropped, "failed_drops": failed_drops,
+            "benign_drops": benign_drops, "circuit_open": circuit_open,
+            "write_errors": write_errors, "preflight_ok": preflight_ok,
+            "last_event_age_s": round(age_s) if age_s is not None else None,
+            # Surfaced ONLY labelled — never as the headline reliability number.
+            "cumulative_confirmation_rate_cross_population": delivery.get("confirmation_rate")}
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Public entry point
+# ─────────────────────────────────────────────────────────────────────
+
+
+def pulse_snapshot(*, base_url: str = DEFAULT_BASE_URL,
+                   window_s: int = DEFAULT_WINDOW_S,
+                   timeout_s: float = DEFAULT_TIMEOUT_S,
+                   now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Aggregate the five-axis traffic pulse. JSON-serializable; never raises.
+
+    Read-only: HTTP to the map daemon for delivery/status, ``mode=ro`` DB
+    reads for packet/queue stats. Per-box only.
+    """
+    now = now or datetime.now()
+    delivery, delivery_src = _load_delivery(base_url, timeout_s)
+    status_blob = _http_json(f"{base_url}/api/status", timeout_s)
+    cap = _capture_facts(window_s, now)
+
+    return {
+        "meta": {
+            "generated_ts": now.timestamp(),
+            "window_s": window_s,
+            "base_url": base_url,
+            "scope": "local_box",
+            "delivery_source": delivery_src,
+            "status_source": "http" if status_blob is not None else "none",
+            "capture_running": cap.capture_running,
+            "capture_total_rows": cap.total_rows,
+            "capture_latest_age_s": (round(cap.latest_age_s)
+                                     if cap.latest_age_s is not None else None),
+        },
+        "telemetry": _telemetry_block(cap, window_s),
+        "rf": _rf_block(cap),
+        "dups": _dups_block(delivery, cap),
+        "diag": _diag_block(status_blob),
+        "qa": _qa_block(delivery, now),
+    }

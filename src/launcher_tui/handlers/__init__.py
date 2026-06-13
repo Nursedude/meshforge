@@ -245,4 +245,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.noc_home import NocHomeHandler
     handlers.append(NocHomeHandler)
 
+    # Batch 24 — Traffic Heartbeat (live flow pulse: telemetry/RF/dups/QA)
+    from handlers.traffic_pulse import TrafficPulseHandler
+    handlers.append(TrafficPulseHandler)
+
     return handlers
