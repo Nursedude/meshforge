@@ -47,6 +47,7 @@ from typing import Dict, List, Optional, Tuple
 from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
+    probe_aredn_source_dark,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
@@ -304,6 +305,19 @@ def run_all_probes(
         # per-collect socket lives seconds; only a stuck one fires.
         sig = probe_phoneapi_tcp_leak(
             "meshforge-map.service", status_port=http_port,
+        )
+        if sig is not None:
+            signals.append(sig)
+
+        # AREDN local-source dark (Phase 0 AREDN organ, 2026-06-12) — a box
+        # with aredn_node_ips configured whose local sysinfo collection went
+        # dark: node unreachable, or the RUNNING service predates the config
+        # (reports not_configured while the settings file carries IPs).
+        # Self-guards None when the organ isn't configured (the 95% case);
+        # gating on the map service here keeps gateway-only boxes (moc3)
+        # from ever running it.
+        sig = probe_aredn_source_dark(
+            status_url=f"http://127.0.0.1:{http_port}/api/status",
         )
         if sig is not None:
             signals.append(sig)

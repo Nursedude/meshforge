@@ -2769,3 +2769,53 @@ completeness = Meshtastic ACK consumption (Thread-2 step 4). No new signal class
 
 ---
 
+
+
+---
+
+## Issue #76: /json/* was NEVER served by meshtasticd — honest-absent probe; fromradio probe-leak killed (2026-06-07)
+
+> Archived 2026-06-12 (MF012 trim). Resolution stable, upstream-verified, test-pinned.
+
+Research verdict (firmware source): `/json/report`+`/json/nodes` are **ESP32-only**
+(`ContentHandler.cpp`, HAS_WIFI-gated). meshtasticd's `PiWebServer.cpp` only ever
+registered `/api/v1/fromradio|toradio` + a 404 static fallback — not a 2.7.24
+regression; the HTTP leg was dead from day one (open FR: firmware#9164). Worse: the
+old availability probe fell through to **GET /api/v1/fromradio on 404**, reporting
+the dead API "available" forever AND consuming a PhoneAPI packet per 60s re-check
+(#17 contention class); `PROBE_PORTS` also HTTP-probed :4403. Fix
+(`meshtastic_http.py`): tri-state probe (`ok`/`absent`/`down`); alive-but-404 →
+sticky `json_api_absent`, `is_available=False`, 1h recheck; fromradio probe deleted;
+4403 depinned; `availability_reason` surfaces in `/api/status.radio_config`.
+ESP32-over-WiFi hosts still work. Residual: `radio_failover` HTTP health polls never
+worked against meshtasticd (needs a non-/json source if dual-radio failover revives);
+moc5's `collect_cache_max_age_seconds: 290` stays (TCP leg is the only leg).
+**Tests**: `TestJsonApiAbsentIssue76` (8) in `tests/test_meshtastic_http.py`.
+
+
+---
+
+## Issue #75: leaked TCPInterface starves :9443 web client — phoneapi_tcp_leak probe (2026-06-07)
+
+> Archived 2026-06-12 (MF012 trim). Probe live + test-pinned; leak origin unfound (recurrence will be caught).
+
+moc1's web client showed no inbound texts/ACKs while the radio journal proved RX
+healthy ("waiting for delivery", bot replies invisible). Cause: the map service
+held an UNACCOUNTED persistent TCP to meshtasticd :4403 (`/api/radio/status`
+`persistent_owner: null`) — a leaked `TCPInterface` whose reader thread drained
+the PhoneAPI stream (#17 contention class, leak form). Restarting meshforge-map
+cured it instantly; leak origin not yet identified (recurrence will be caught).
+Diagnosis trap that cost the evening: **json-journal greps cannot see
+`via_mqtt`/downlinked traffic** (firmware loop guard) — the honest RX record is
+`grep 'Received text msg'` router lines. New `probe_phoneapi_tcp_leak`
+(`phoneapi_tcp_leak`, degraded, issue_ref 75): MainPID's socket inodes
+(`/proc/<pid>/fd`) ∩ `/proc/net/tcp*` ESTAB-to-:4403, fires only when the SAME
+inode persists across ticks (legit per-collect sockets live seconds) AND
+persistent_owner is null; accounted owners (listener TCP fallback) and a dark
+status endpoint stay silent. Read-only, sandbox-safe (no ss/sudo). Recovery:
+`sudo systemctl restart meshforge-map.service`. Tests: 8 in
+`tests/test_watchdog_probes.py` (`test_phoneapi_leak_*`) + closed-enum bump.
+**False-alarm fix (2026-06-07)**: probe flapped NEW/CLEARED every 1-4 min on moc1 —
+demand-collect TCP nodedb syncs live MINUTES (rotating inodes), so the 2-tick bar
+was too low. Now consecutive-tick counts per inode; fires at ≥20 ticks (~10 min).
+Legacy state loads as count 1. +2 tests (slow-collect silent, legacy format).

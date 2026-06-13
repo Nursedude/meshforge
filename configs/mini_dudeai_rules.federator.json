@@ -532,6 +532,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "2026-06-09 version-updates arc \u2014 a newer same-flavor kernel is installed under /lib/modules than the running one (or /var/run/reboot-required exists); moc1 ran 6.12.75 for days with 6.18.33 installed and nothing paged. Fix: schedule a clean reboot (planned reboots through clean shutdown record boot_health clean-exit). Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+    },
+    {
+      "id": "aredn_source_dark_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "aredn_source_dark",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "AREDN Phase 0 (2026-06-12) \u2014 a box with aredn_node_ips configured whose local AREDN sysinfo collection went dark: node unreachable, or the running service predates the config (reports not_configured while the settings file carries IPs \u2014 restart meshforge-map to load). The worldmap fallback masks the loss; found dormant on the AREDN-site box itself. Side-effect-free escalation; NO ntfy page (degraded \u2014 the map serves, the AREDN leg is blind)."
     }
   ]
 }

@@ -76,6 +76,7 @@ from utils.watchdog_probes_service import (
     probe_tracer_peer_unreachable,
 )
 from utils.watchdog_probes_drift import (
+    probe_aredn_source_dark,
     probe_cron_verdict_stale,
     probe_foundation_drift,
     probe_kernel_reboot_pending,
@@ -130,6 +131,7 @@ __all__ = [
     "probe_tracer_peer_unreachable",
     "probe_cron_verdict_stale",
     "probe_kernel_reboot_pending",
+    "probe_aredn_source_dark",
     "probe_history_write_failure",
     "probe_rules_seed_drift",
     "probe_memory_index_oversize",

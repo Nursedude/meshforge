@@ -992,3 +992,171 @@ def probe_kernel_reboot_pending(
     )
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: AREDN local-source dark (Phase 0 AREDN organ, 2026-06-12)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_AREDN_SOURCE_DEBOUNCE_PATH = "/var/lib/meshforge/aredn_source_debounce.json"
+
+# Diagnostics reasons that mean "configured, but the organ sees nothing".
+# "unreachable" = AREDN node / LAN path dark; "not_configured" = the RUNNING
+# service predates the config file (settings load at startup — restart loads).
+_AREDN_DARK_REASONS = ("unreachable", "not_configured")
+
+
+def _read_configured_aredn_ips(service_user) -> Optional[List[str]]:
+    """Read ``aredn_node_ips`` from the service user's map_settings.json.
+
+    Returns the configured list (possibly empty = organ deliberately off) or
+    None when the file is unreadable/unparseable — indeterminate, the caller
+    must stay silent. Sandboxed-root direct read, never escalate (the
+    rns_version_drift lesson).
+    """
+    if not service_user:
+        return None
+    try:
+        import pwd
+        home = pwd.getpwnam(service_user).pw_dir
+        path = os.path.join(home, ".config", "meshforge", "map_settings.json")
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        raw = data.get("aredn_node_ips", [])
+        if isinstance(raw, str):
+            raw = [raw]
+        if not isinstance(raw, list):
+            return []
+        return [ip.strip() for ip in raw if isinstance(ip, str) and ip.strip()]
+    except (KeyError, OSError, ValueError, TypeError):
+        return None
+
+
+def _fetch_local_status_json(status_url: str, timeout_s: float) -> Optional[dict]:
+    """GET the local map status JSON. None on ANY failure (indeterminate)."""
+    import urllib.request
+    try:
+        req = urllib.request.Request(
+            status_url, headers={"User-Agent": "meshforge-watchdog"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout_s) as resp:
+            if getattr(resp, "status", 200) != 200:
+                return None
+            data = json.loads(resp.read().decode("utf-8"))
+        return data if isinstance(data, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def probe_aredn_source_dark(
+    *,
+    status_url: str = "http://127.0.0.1:5000/api/status",
+    timeout_s: float = 3.0,
+    configured_ips: Optional[List[str]] = None,
+    service_user_fn=None,
+    status_fetch_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when a CONFIGURED local AREDN sysinfo source has gone dark.
+
+    Phase 0 of the AREDN arc (2026-06-12): the box at the AREDN site was
+    found with its local AREDN organ silently dormant — ``aredn_node_ips``
+    never set, every "AREDN" node on the map coming from the worldmap
+    fallback. Once the organ IS configured, two dark shapes must page
+    instead of rotting silently (silence is the failure mode):
+
+    - ``unreachable`` — none of the configured node IPs answered sysinfo
+      (node down, LAN path broken, or the node's :8080 service dead).
+    - ``not_configured`` reported by a RUNNING service while the settings
+      file carries IPs — the service started before the config landed;
+      a restart loads it. Without this leg, "I configured it" and "it
+      runs" disagree forever and nobody is told.
+
+    Reads intent from the service user's map_settings.json (sandboxed-root
+    direct read) and observation from the local map's ``/api/status``
+    ``source_diagnostics.aredn`` block (written fresh on every collect).
+
+    Honest failure modes: unreadable settings → None (intent unknown, never
+    alarm); empty/absent ``aredn_node_ips`` → None + streak reset (organ
+    deliberately off — INERT by design on the 95% of boxes); status endpoint
+    unreachable/malformed or diagnostics block absent → None with the streak
+    HELD (http_local owns the wedge; a one-tick status hiccup must not erase
+    confirmed-dark progress); ``no_positions`` or ``yielded>0`` → healthy,
+    streak reset (reachable-but-no-GPS is an alive organ); unknown reason
+    strings → indeterminate, held. 2-tick debounce rides out a single failed
+    collect (node reboot, transient LAN blip). Severity ``degraded`` — the
+    map keeps serving, the AREDN leg is blind.
+    """
+    ips = configured_ips
+    if ips is None:
+        user_fn = service_user_fn
+        if user_fn is None:
+            from utils.rns_tree_perms import _read_rnsd_user
+            user_fn = _read_rnsd_user
+        ips = _read_configured_aredn_ips(user_fn())
+    if ips is None:
+        return None  # intent unreadable — indeterminate, never alarm
+    sp = state_path or DEFAULT_AREDN_SOURCE_DEBOUNCE_PATH
+    if not ips:
+        _save_parity_streak(sp, 0)
+        return None  # organ deliberately not configured — inert by design
+
+    fetch = status_fetch_fn or (
+        lambda: _fetch_local_status_json(status_url, timeout_s)
+    )
+    status = fetch()
+    if not isinstance(status, dict):
+        return None  # status unreadable — hold streak; http_local owns the wedge
+    diags = status.get("source_diagnostics")
+    if not isinstance(diags, dict):
+        return None  # diagnostics surface absent — indeterminate, hold
+    diag = diags.get("aredn")
+    if not isinstance(diag, dict):
+        return None  # no aredn entry yet (no collect since start) — hold
+
+    yielded = diag.get("yielded")
+    reason = diag.get("reason_if_zero")
+    if isinstance(yielded, int) and yielded > 0:
+        _save_parity_streak(sp, 0)
+        return None  # organ alive
+    if reason == "no_positions":
+        _save_parity_streak(sp, 0)
+        return None  # reachable, nothing has GPS set — alive
+    if reason not in _AREDN_DARK_REASONS:
+        return None  # unknown/absent reason — indeterminate, hold
+
+    streak = _load_parity_streak(sp) + 1
+    _save_parity_streak(sp, streak)
+    if streak < debounce_ticks:
+        return None  # dark seen, not yet confirmed across consecutive ticks
+
+    if reason == "not_configured":
+        hint = (
+            "the RUNNING service reports not_configured while map_settings.json "
+            "carries aredn_node_ips — it started before the config landed; fix: "
+            "sudo systemctl restart meshforge-map.service"
+        )
+    else:
+        hint = (
+            "none of the configured AREDN node IPs answered sysinfo — check the "
+            "node (web UI :8080), its power/PoE, and the LAN path from this box"
+        )
+    detail = (
+        f"AREDN local source dark — configured IPs {ips} but the collector "
+        f"reports '{reason}' (yielded 0), confirmed over {streak} consecutive "
+        f"ticks. {hint}."
+    )
+    return Signal(
+        cls="aredn_source_dark",
+        subject=ips[0],
+        severity="degraded",
+        detail=detail,
+        extra={
+            "configured_ips": list(ips),
+            "reason": reason,
+            "attempted": diag.get("attempted"),
+            "yielded": yielded,
+            "debounce_streak": streak,
+        },
+    )

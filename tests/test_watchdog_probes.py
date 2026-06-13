@@ -34,6 +34,7 @@ from utils.watchdog_probes import (  # noqa: E402
     SEVERITIES,
     SIGNAL_CLASSES,
     Signal,
+    probe_aredn_source_dark,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
@@ -108,6 +109,7 @@ def test_signal_classes_closed_enum_is_documented():
         "rules_seed_drift",             # mini-dudeai audit #6
         "memory_index_oversize",        # mini-dudeai audit #2
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
+        "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -3357,3 +3359,129 @@ class TestMemoryIndexOversize:
         with patch("utils.watchdog_probes_mini._resolve_mini_home", return_value=None):
             sig = probe_memory_index_oversize()
         assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-12 — aredn_source_dark (AREDN Phase 0: configured local sysinfo
+# source went dark; found dormant on the AREDN-site box itself)
+# ─────────────────────────────────────────────────────────────────────
+
+_ASD_IPS = ["10.20.30.65"]
+
+
+def _asd_kw(tmp_path, diag, *, ips=None, status=None):
+    """Build probe kwargs for one tick. ``diag`` is the source_diagnostics
+    aredn entry (None = entry absent); ``status`` overrides the whole status
+    body (None sentinel string "down" = fetch failure)."""
+    if status is None:
+        status = {"source_diagnostics": ({"aredn": diag} if diag is not None else {})}
+    body = None if status == "down" else status
+    return dict(
+        configured_ips=_ASD_IPS if ips is None else ips,
+        status_fetch_fn=lambda: body,
+        state_path=str(tmp_path / "asd_debounce.json"),
+    )
+
+
+def test_aredn_source_dark_inert_when_not_configured(tmp_path):
+    """Empty aredn_node_ips = organ deliberately off → None every tick and
+    the streak resets (the 95%-of-boxes case must be free)."""
+    dark = {"attempted": 1, "yielded": 0, "reason_if_zero": "unreachable"}
+    # Prime a streak first, then show un-configuring clears it.
+    probe_aredn_source_dark(**_asd_kw(tmp_path, dark))
+    for _ in range(3):
+        assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark, ips=[])) is None
+    assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
+
+
+def test_aredn_source_dark_none_when_intent_unreadable(tmp_path):
+    """Unreadable map_settings.json (service_user_fn → None) → indeterminate:
+    silent, and the status endpoint is never even fetched."""
+    fetched = []
+    sig = probe_aredn_source_dark(
+        configured_ips=None,
+        service_user_fn=lambda: None,
+        status_fetch_fn=lambda: fetched.append(1) or {},
+        state_path=str(tmp_path / "asd_debounce.json"),
+    )
+    assert sig is None
+    assert fetched == []
+
+
+def test_aredn_source_dark_fires_on_unreachable_after_debounce(tmp_path):
+    """The node-dark shape: silent on tick 1 (debounce), degraded on tick 2
+    with the configured IPs and the check-the-node hint in detail."""
+    dark = {"attempted": 2, "yielded": 0, "reason_if_zero": "unreachable"}
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark)) is None
+    sig = probe_aredn_source_dark(**_asd_kw(tmp_path, dark))
+    assert sig is not None
+    assert sig.cls == "aredn_source_dark"
+    assert sig.severity == "degraded"
+    assert sig.subject == "10.20.30.65"
+    assert "unreachable" in sig.detail
+    assert "10.20.30.65" in sig.detail
+    assert sig.extra["reason"] == "unreachable"
+    assert sig.extra["debounce_streak"] == 2
+
+
+def test_aredn_source_dark_not_configured_reason_names_restart(tmp_path):
+    """Settings file carries IPs but the RUNNING service reports
+    not_configured = it started before the config landed → the detail must
+    say so and name the restart fix (reader/writer halves must agree)."""
+    stale = {"attempted": 0, "yielded": 0, "reason_if_zero": "not_configured"}
+    probe_aredn_source_dark(**_asd_kw(tmp_path, stale))
+    sig = probe_aredn_source_dark(**_asd_kw(tmp_path, stale))
+    assert sig is not None
+    assert "restart meshforge-map" in sig.detail
+    assert sig.extra["reason"] == "not_configured"
+
+
+def test_aredn_source_dark_healthy_resets_streak(tmp_path):
+    """yielded>0 resets the streak: dark → healthy → dark must NOT fire
+    (needs two fresh consecutive dark ticks again)."""
+    dark = {"attempted": 1, "yielded": 0, "reason_if_zero": "unreachable"}
+    alive = {"attempted": 3, "yielded": 3, "reason_if_zero": None}
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark)) is None
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, alive)) is None
+    assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark)) is None
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark)) is not None
+
+
+def test_aredn_source_dark_no_positions_is_alive(tmp_path):
+    """Reachable-but-no-GPS is an alive organ: silent + streak reset."""
+    nopos = {"attempted": 2, "yielded": 0, "reason_if_zero": "no_positions"}
+    dark = {"attempted": 1, "yielded": 0, "reason_if_zero": "unreachable"}
+    probe_aredn_source_dark(**_asd_kw(tmp_path, dark))
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, nopos)) is None
+    assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
+
+
+def test_aredn_source_dark_holds_streak_on_status_hiccup(tmp_path):
+    """A one-tick status-fetch failure must HOLD confirmed-dark progress
+    (http_local owns the wedge): dark → fetch-down → dark fires."""
+    dark = {"attempted": 1, "yielded": 0, "reason_if_zero": "unreachable"}
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark)) is None
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, None, status="down")) is None
+    assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 1
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark)) is not None
+
+
+def test_aredn_source_dark_none_when_diagnostics_absent(tmp_path):
+    """No source_diagnostics block / no aredn entry (older service, no
+    collect yet) → indeterminate: silent, streak held."""
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, None)) is None
+    assert probe_aredn_source_dark(
+        **_asd_kw(tmp_path, None, status={"status": "ok"})) is None
+
+
+def test_aredn_source_dark_unknown_reason_never_fires(tmp_path):
+    """An unknown reason string is indeterminate — silent across many ticks
+    (closed vocabulary: only unreachable/not_configured are dark)."""
+    odd = {"attempted": 0, "yielded": 0, "reason_if_zero": "source_disabled"}
+    for _ in range(4):
+        assert probe_aredn_source_dark(**_asd_kw(tmp_path, odd)) is None
+
+
+def test_aredn_source_dark_signal_class_registered():
+    assert "aredn_source_dark" in SIGNAL_CLASSES
