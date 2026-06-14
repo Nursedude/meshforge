@@ -53,6 +53,14 @@ BYTE_IDENTICAL = (
     # delegated to by both rns_alignment (MeshForge) and fleet_foundation (both
     # repos), so it MUST stay byte-identical.
     "src/utils/rns_tree_perms.py",
+    # LXMFace deterministic-avatar port (2026-06-14): the pure algorithm, the
+    # vendored client-side JS, and the upstream parity vectors. These produce a
+    # node's face from its LXMF/RNS hash and MUST agree across both apps (and
+    # with Ratspeak) — a silent edit to one repo's copy would diverge the faces.
+    # MeshForge is the lead repo for this port; mirror any change to MeshAnchor.
+    "src/utils/lxmface.py",
+    "web/js/lxmface.js",
+    "tests/fixtures/lxmface_vectors.json",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
