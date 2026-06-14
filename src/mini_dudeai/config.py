@@ -184,20 +184,11 @@ def _seed_boot_health(spec: dict) -> Source:
     )
 
 
-def _seed_ntfy(spec: dict) -> Action:
-    return NtfyAction(
-        topic=spec["topic"],
-        base_url=spec.get("base_url", "https://ntfy.sh"),
-        default_priority=spec.get("default_priority", "default"),
-        default_tags=spec.get("default_tags"),
-    )
-
-
-def _resolve_nats_token(spec: dict) -> str | None:
+def _resolve_token(spec: dict) -> str | None:
     """Token from spec: `token_env` (env var NAME — preferred, keeps the
     secret out of the config file) wins over literal `token`. A named-but-
     missing env var is a loud config error, not a silent unauthenticated
-    connect."""
+    connect. Shared by the NATS source and the ntfy action seeds."""
     env_name = spec.get("token_env")
     if env_name:
         token = os.environ.get(env_name)
@@ -206,6 +197,21 @@ def _resolve_nats_token(spec: dict) -> str | None:
                 f"token_env names {env_name!r} but that env var is unset/empty")
         return token
     return spec.get("token") or None
+
+
+# Back-compat alias — NATS seed callers keep their name; one shared impl so the
+# two consumers can't drift (honest_failure_modes #5).
+_resolve_nats_token = _resolve_token
+
+
+def _seed_ntfy(spec: dict) -> Action:
+    return NtfyAction(
+        topic=spec["topic"],
+        base_url=spec.get("base_url", "https://ntfy.sh"),
+        default_priority=spec.get("default_priority", "default"),
+        default_tags=spec.get("default_tags"),
+        token=_resolve_token(spec),
+    )
 
 
 def _seed_nats_sensor(spec: dict) -> Source:

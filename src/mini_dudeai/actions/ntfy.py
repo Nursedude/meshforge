@@ -27,6 +27,10 @@ class NtfyAction(Action):
         default_priority: priority for edge-up if rule doesn't override (default "default")
         default_tags: tags for edge-up if rule doesn't override
         timeout_s: HTTP timeout (default 8)
+        token: optional bearer token for a reserved/auth'd topic (ntfy Pro or a
+            self-hosted server with ACLs). None => unauthenticated, identical to
+            the free-tier behavior. Resolve it from a `token_env` env-var NAME in
+            the seed spec (keeps the secret out of the config), never a literal.
     """
 
     name = "ntfy"
@@ -38,6 +42,7 @@ class NtfyAction(Action):
         default_priority: str = "default",
         default_tags: list[str] | None = None,
         timeout_s: float = 8.0,
+        token: str | None = None,
     ) -> None:
         if not topic:
             raise ValueError("NtfyAction requires a topic")
@@ -46,6 +51,7 @@ class NtfyAction(Action):
         self.default_priority = default_priority
         self.default_tags = default_tags or ["robot_face"]
         self.timeout_s = timeout_s
+        self.token = token or None
 
     def execute(self, rule: dict, cond: Condition, transition: str) -> Outcome:
         action_cfg = rule.get("action") or {}
@@ -77,6 +83,8 @@ class NtfyAction(Action):
             req.add_header("Priority", priority)
             if tags:
                 req.add_header("Tags", ",".join(tags))
+            if self.token:
+                req.add_header("Authorization", f"Bearer {self.token}")
             with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
                 r.read()
             return Outcome(action=f"ntfy_{transition}", ok=True)

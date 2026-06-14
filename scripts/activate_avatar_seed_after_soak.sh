@@ -23,9 +23,6 @@ VERDICT_LOG="$HOME/cron_verdicts.log"
 GW_BOXES="$*"
 LOGTAG="avatar_seed_activate"
 LEDGER_ID="gateway-avatar-seed-restart"
-# ntfy topic: MESHFORGE_NTFY_TOPIC env override (drills point this at a
-# throwaway topic, e.g. ~/.config/fleet_push_topic_test) else the real topic.
-NTFY_TOPIC="${MESHFORGE_NTFY_TOPIC:-$(cat "$HOME/.config/fleet_push_topic" 2>/dev/null)}"
 TODAY_UTC="$(date -u +%Y-%m-%d)"
 
 if [ -z "$GW_BOXES" ]; then
@@ -33,10 +30,8 @@ if [ -z "$GW_BOXES" ]; then
   exit 2
 fi
 
-page() {  # priority tags message
-  [ -n "$NTFY_TOPIC" ] || return 0
-  curl -s -H "Title: Gateway avatar-seed activation" -H "Priority: $1" \
-       -H "Tags: $2" --data-raw "$3" "https://ntfy.sh/$NTFY_TOPIC" >/dev/null 2>&1 || true
+page() {  # priority tags message — delegates to the fleet ntfy SSOT helper
+  /opt/meshforge/scripts/fleet_ntfy_push.sh "Gateway avatar-seed activation" "$1" "$2" "$3"
 }
 
 remove_self_cron() {
