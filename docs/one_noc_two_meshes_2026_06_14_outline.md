@@ -193,7 +193,9 @@ animating along teal links.
 | Slide | Asset | Status |
 |------|-------|--------|
 | 6 | live Hawaii NOC map → `assets/live_map_hawaii.png` | ✅ captured 2026-06-14 (MF015-clean: clustered, no node labels) |
-| 6 | topology graph *(eye candy)* → `assets/topology_view_UNCOMMITTED_label_scan_pending.png` | ⚠️ captured, **local only** — rim node-labels need an MF015 scan before publishing (gitignored so it can't be committed) |
+| 6 | topology core *(clean eye candy)* → `assets/topology_core_clean.png` | ✅ committed (center crop, **zero node labels**, MF015-safe; great node-graph-motif reference) |
+| 6 | island coverage / network → `assets/coverage_islands.png` | ✅ committed (declustered nodes + inter-island links, MF015-clean) |
+| 6 | topology full/wide *(richer, more grandeur)* → `assets/*_UNCOMMITTED_*.png` | ⚠️ local only — rim node-labels need an MF015 scan before publishing (gitignored) |
 | 6 | TUI dashboard | ⬜ capture, or Design-styled TUI panel |
 | 7 | RF link-budget panel → `assets/link_budget_sample.txt` | ✅ captured (real `rf.py` output); Design typesets, or render to PNG |
 | 7 | uConsole handheld photo | 📷 operator camera (or Design mockup w/ the panel composited on the screen) |
