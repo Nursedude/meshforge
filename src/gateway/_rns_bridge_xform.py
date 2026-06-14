@@ -24,6 +24,8 @@ import logging
 import re
 from typing import Optional
 
+from utils.lxmface import seed_string_for_node
+
 from .base_handler import chunk_for_mesh, get_rf_tx_registry, is_already_bridged
 from .canonical_message import format_reply_token, parse_reply_token
 from .message_queue import MessagePriority
@@ -234,6 +236,11 @@ class MessageTransformMixin:
                 "meshforge_channel": (msg.metadata or {}).get("channel", ""),
                 "meshforge_source_network": "meshtastic",
                 "meshforge_reply_to": reply_token,
+                # Canonical LXMFace seed for the originating mesh node — pure
+                # metadata, lets avatar-aware downstream clients render the
+                # right face even though bridged messages aggregate under the
+                # gateway's LXMF source hash (Issue #35).
+                "meshforge_from_avatar_seed": seed_string_for_node(source_id),
             }
 
             # Theme-A step 3: a Meshtastic DM addressed to the gateway's

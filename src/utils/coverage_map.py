@@ -37,6 +37,7 @@ from utils.safe_import import safe_import
 
 # Import centralized path utility for sudo compatibility
 from utils.paths import get_real_user_home
+from utils.lxmface import avatar_svg, seed_string_for_node
 
 # Optional: Folium map library
 _folium, _HAS_FOLIUM = safe_import('folium')
@@ -979,8 +980,21 @@ class CoverageMapGenerator:
         node_id = html_escape(str(node.id)) if node.id else ""
         network = html_escape(str(node.network).upper()) if node.network else ""
 
+        # Deterministic LXMFace identicon — derived purely from the node's
+        # address (the seed never appears in the SVG output, so it carries no
+        # injection vector). For RNS nodes the face matches Ratspeak's.
+        avatar = ""
+        if node.id:
+            avatar = (
+                '<div style="float: right; margin: 0 0 4px 8px; line-height: 0;"'
+                ' title="LXMFace identity (deterministic from address)">'
+                + avatar_svg(seed_string_for_node(str(node.id)), 36)
+                + "</div>"
+            )
+
         html = f"""
         <div style="font-family: sans-serif; min-width: 200px;">
+            {avatar}
             <h4 style="margin: 0 0 8px 0;">{name}</h4>
             <div style="color: {status_color}; font-weight: bold; margin-bottom: 8px;">
                 ● {status}

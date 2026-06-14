@@ -18,6 +18,9 @@
         integrity="sha384-mFKkGiGvT5vo1fEyGCD3hshDdKmW3wzXW/x+fWriYJArD0R3gawT6lMvLboM22c0" crossorigin="anonymous"></script>
     <script src="https://unpkg.com/d3@7.8.5/dist/d3.min.js"
         integrity="sha384-su5kReKyYlIFrI62mbQRKXHzFobMa7BHp1cK6julLPbnYcCW9NIZKJiTODjLPeDh" crossorigin="anonymous"></script>
+    <!-- LXMFace deterministic identicons (vendored, MIT). Same RNS address ->
+         same face here and in Ratspeak. Served from web/js/ (CSP script-src 'self'). -->
+    <script src="js/lxmface.js"></script>
     <style>
         * {
             margin: 0;
@@ -2932,6 +2935,7 @@
 
         return `
             <div class="node-popup">
+                ${(typeof lxmface === 'function' && props.id) ? `<div style="float:right;margin:0 0 4px 8px;line-height:0" title="LXMFace identity — deterministic from address, matches Ratspeak/RNS clients">${lxmface(seedForId(props.id), 36)}</div>` : ''}
                 <h3>${nameSafe}</h3>
                 <span class="network-badge ${badgeClass}">${networkSafe}</span>
                 ${sourceBadgeHtml}

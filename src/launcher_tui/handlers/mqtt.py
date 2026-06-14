@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from handler_protocol import BaseHandler
+from utils.lxmface import avatar_glyph, seed_string_for_node
 from utils.mqtt_defaults import (
     MESHTASTIC_PUBLIC_BROKER,
     MESHTASTIC_PUBLIC_CHANNEL,
@@ -717,8 +718,10 @@ class MQTTHandler(BaseHandler):
         choices = []
         node_list = nodes[:50]
         for i, node in enumerate(node_list):
+            seed_id = ""
             if hasattr(node, 'long_name'):
                 name = node.long_name or node.short_name or node.node_id
+                seed_id = node.node_id or ""
                 last_seen = node.get_age_string()
                 health_ind = ""
                 if hasattr(node, 'heart_bpm') and node.heart_bpm:
@@ -726,13 +729,18 @@ class MQTTHandler(BaseHandler):
             elif isinstance(node, dict):
                 props = node.get('properties', node)
                 name = props.get('name', props.get('id', f'Node {i}'))
+                seed_id = props.get('id', '')
                 last_seen = props.get('last_seen', 'cached')
                 health_ind = ""
             else:
                 name = f'Node {i}'
                 last_seen = 'unknown'
                 health_ind = ""
-            choices.append((str(i), f"{str(name)[:18]:<18}{health_ind} ({last_seen})"))
+            # Deterministic LXMFace glyph token — a stable per-node visual tag.
+            # whiptail strips ANSI colour from menu items, so the glyph (not a
+            # colour) carries the distinction. Stable across restarts.
+            glyph = avatar_glyph(seed_string_for_node(str(seed_id))) if seed_id else "  "
+            choices.append((str(i), f"{glyph} {str(name)[:18]:<18}{health_ind} ({last_seen})"))
 
         if len(nodes) > 50:
             choices.append(("more", f"... and {len(nodes) - 50} more nodes"))
