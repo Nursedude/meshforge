@@ -1,0 +1,3 @@
+# Assets flagged *UNCOMMITTED* hold node-label content that needs an MF015
+# scan before publishing. Block them from ever being committed/indexed.
+*UNCOMMITTED*

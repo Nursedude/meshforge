@@ -1,0 +1,23 @@
+LoRa LINK BUDGET   handheld -> ridge repeater   (US 906.875 MHz, SF11)
+--------------------------------------------------------
+TX Power:        +27.0 dBm
+TX Cable Loss:    0.3 dB
+TX Antenna Gain: +3.0 dBi
+EIRP:            +29.7 dBm
+---
+Distance:        8000 m (8.00 km)
+Path Loss:       109.7 dB
+Fresnel Zone:    15.4 m clearance needed
+---
+RX Antenna Gain: +6.0 dBi
+RX Cable Loss:    1.4 dB
+Received Power:  -75.3 dBm
+---
+RX Sensitivity:  -134.5 dBm
+Link Margin:     +59.2 dB
+Est. SNR:        +44.7 dB
+Signal Quality:  EXCELLENT
+
+# Generated 2026-06-14 from src/utils/rf.py detailed_link_budget()
+# Slide 7 asset. Regenerate/retune: see one_noc_two_meshes_2026_06_14_outline.md
+# Real RF math, no operator data (MF015-safe).

@@ -192,9 +192,12 @@ animating along teal links.
 
 | Slide | Asset | Status |
 |------|-------|--------|
-| 6 | clean node-map screenshot + TUI dashboard screenshot | ⬜ capture (MF015-safe: no LAN IPs, no box names) |
-| 7 | uConsole-style handheld photo/mockup running `standalone.py` | ⬜ capture / source |
-| 9 | Dude-claw ESP32 board close-up | ⬜ capture |
+| 6 | live Hawaii NOC map → `assets/live_map_hawaii.png` | ✅ captured 2026-06-14 (MF015-clean: clustered, no node labels) |
+| 6 | topology graph *(eye candy)* → `assets/topology_view_UNCOMMITTED_label_scan_pending.png` | ⚠️ captured, **local only** — rim node-labels need an MF015 scan before publishing (gitignored so it can't be committed) |
+| 6 | TUI dashboard | ⬜ capture, or Design-styled TUI panel |
+| 7 | RF link-budget panel → `assets/link_budget_sample.txt` | ✅ captured (real `rf.py` output); Design typesets, or render to PNG |
+| 7 | uConsole handheld photo | 📷 operator camera (or Design mockup w/ the panel composited on the screen) |
+| 9 | Dude-claw ESP32 board close-up | 📷 operator camera |
 | 1,4,8,13 | node-graph motif (evolving) | ⬜ Claude Design generates |
 
 > **MF015 audit before publishing**: scan every rendered slide/screenshot for LAN IPs, fleet box
