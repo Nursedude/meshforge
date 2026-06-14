@@ -194,7 +194,7 @@ animating along teal links.
 |------|-------|--------|
 | 6 | live Hawaii NOC map → `assets/live_map_hawaii.png` | ✅ captured 2026-06-14 (MF015-clean: clustered, no node labels) |
 | 6 | topology core *(motif hero)* → `assets/topology_core_clean.png` | ✅ committed — **HD 2040×1920**, labels hidden at source (zero PII text), MF015-safe |
-| 3/6 | **terrain LOS coverage** *(Civil Defense)* → `assets/terrain_coverage_kona.png` | ✅ committed — real `/api/coverage` terrain analysis, synthetic Kona station (no real node), MF015-safe |
+| 3/6 | **terrain LOS coverage** *(Civil Defense)* → `assets/terrain_coverage_hilo_tower.png` | ✅ committed — real `/api/coverage`, Hilo relay on a **~120 m mast** = 75% clear LOS (green core, red fringe shows where to add the next relay). Synthetic station, MF015-safe. **Speaker note: say "from a tower/relay site," not handheld.** |
 | 6 | island coverage / network → `assets/coverage_islands.png` | ✅ committed (declustered nodes + inter-island links, MF015-clean) |
 | 6 | topology full/wide *(richer, more grandeur)* → `assets/*_UNCOMMITTED_*.png` | ⚠️ local only — rim node-labels need an MF015 scan before publishing (gitignored) |
 | 6 | TUI dashboard | ⬜ capture, or Design-styled TUI panel |
