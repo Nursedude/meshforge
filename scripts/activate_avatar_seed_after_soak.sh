@@ -23,7 +23,9 @@ VERDICT_LOG="$HOME/cron_verdicts.log"
 GW_BOXES="$*"
 LOGTAG="avatar_seed_activate"
 LEDGER_ID="gateway-avatar-seed-restart"
-NTFY_TOPIC="$(cat "$HOME/.config/fleet_push_topic" 2>/dev/null)"
+# ntfy topic: MESHFORGE_NTFY_TOPIC env override (drills point this at a
+# throwaway topic, e.g. ~/.config/fleet_push_topic_test) else the real topic.
+NTFY_TOPIC="${MESHFORGE_NTFY_TOPIC:-$(cat "$HOME/.config/fleet_push_topic" 2>/dev/null)}"
 TODAY_UTC="$(date -u +%Y-%m-%d)"
 
 if [ -z "$GW_BOXES" ]; then
