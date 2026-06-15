@@ -6,7 +6,10 @@ These tests pin the operator contract for `/api/gateway/delivery`:
 * DropReason coverage — every enum value bumps the right bucket.
 * Per-protocol breakdown is sparse (no zero rows) but uniform across
   states (every recorded state has a per-protocol dict).
-* confirmation_rate = confirmed / sent (None when sent == 0).
+* confirmation_rate = confirmed / (confirmed + delivery-failures) over the
+  confirmable population, bounded [0,1], None when no confirmable terminal
+  outcome yet (Issue #74 display fix — was the >1.0 cross-population
+  confirmed/sent); unconfirmable_sent surfaces the mesh-direction blind spot.
 * Snapshot is JSON-serializable.
 * Counters are thread-safe (many publisher threads, no lost events).
 * Module-level convenience matches singleton behavior.
@@ -208,27 +211,57 @@ class TestConfirmationRate:
         c.record(DeliveryState.QUEUED, "1", protocol="rns")
         assert c.snapshot()["confirmation_rate"] is None
 
-    def test_rate_is_zero_when_sends_but_no_confirms(self):
+    def test_rate_is_none_when_sent_but_no_terminal_outcome(self):
+        """Sent-but-not-yet-confirmed/failed is PENDING, not failure. With
+        no confirmable terminal outcome the rate is None ('no data'), never
+        a false 0% that reads as total failure of a still-in-flight send
+        (honest_failure_modes #2: absence of terminal evidence != failure).
+        The pendency is visible in state_totals.sent, not faked into a 0%."""
         c = DeliveryCounters()
         c.record(DeliveryState.SENT, "1", protocol="rns")
         c.record(DeliveryState.SENT, "2", protocol="rns")
+        assert c.snapshot()["confirmation_rate"] is None
+
+    def test_rate_is_zero_when_confirmable_deliveries_all_fail(self):
+        """0% is the honest reading only when there ARE terminal outcomes
+        and none confirmed — here one delivery FAILED (not merely pending)."""
+        c = DeliveryCounters()
+        c.record(DeliveryState.DROPPED, "1", protocol="rns",
+                 drop_reason=DropReason.RNS_DELIVERY_FAILED)
         assert c.snapshot()["confirmation_rate"] == 0.0
 
-    def test_rate_is_one_when_every_send_confirmed(self):
+    def test_rate_is_one_when_every_confirmable_delivery_confirmed(self):
         c = DeliveryCounters()
         c.record(DeliveryState.SENT, "1", protocol="rns")
         c.record(DeliveryState.CONFIRMED, "1", protocol="rns")
         assert c.snapshot()["confirmation_rate"] == 1.0
 
-    def test_rate_above_one_when_legacy_confirms_have_no_send(self):
-        """Counters are observability — they don't pretend a stale
-        confirm wasn't real. Operators reading rate > 1 know to look
-        at the call site that's stamping confirms without sends."""
+    def test_rate_never_exceeds_one_confirms_without_sends(self):
+        """Issue #74 fix: the rate is bounded [0,1]. Confirms without a
+        matching send (fan-out / canary / proof-after-restart) used to push
+        confirmed/sent above 1.0 (read as '>100% confirmed'); the honest
+        denominator is confirmed+failures, so the rate caps at 1.0."""
         c = DeliveryCounters()
         c.record(DeliveryState.SENT, "1", protocol="rns")
         c.record(DeliveryState.CONFIRMED, "1", protocol="rns")
         c.record(DeliveryState.CONFIRMED, "2", protocol="rns")
-        assert c.snapshot()["confirmation_rate"] == 2.0
+        assert c.snapshot()["confirmation_rate"] == 1.0
+
+    def test_rate_not_inflated_by_unconfirmable_mesh_sends(self):
+        """The live-data shape (#74): RNS confirms + many fire-and-forget
+        mesh sends. The old confirmed/all-sent read 1.64 (">164% confirmed")
+        while mesh had ZERO proof. Honest: rate covers the confirmable
+        population only (1.0 here) and the mesh sends surface SEPARATELY in
+        unconfirmable_sent — the blind spot is visible, not averaged away."""
+        c = DeliveryCounters()
+        c.record(DeliveryState.CONFIRMED, "r1", protocol="rns")
+        c.record(DeliveryState.CONFIRMED, "r2", protocol="rns")
+        for i in range(5):
+            c.record(DeliveryState.SENT, f"m{i}", protocol="meshtastic")
+        snap = c.snapshot()
+        assert snap["confirmation_rate"] == 1.0      # confirmable-only, <= 1
+        assert snap["unconfirmable_sent"] == 5        # mesh blind spot visible
+        assert snap["confirmable_protocols"] == ["rns"]
 
 
 # ── Ring buffer ──────────────────────────────────────────────────────
@@ -296,9 +329,9 @@ class TestStateTransitionContract:
         ]
 
     def test_drop_after_send_is_not_a_confirm(self):
-        """SENT bumps the denominator of confirmation_rate; a subsequent
-        DROP bumps drop_reasons but NOT the numerator. So rate stays 0
-        even though the message had a terminal outcome."""
+        """A delivery-failure DROP bumps the rate's denominator (it's a
+        confirmable terminal outcome) but NOT the numerator. So with one
+        failed delivery and no confirms the rate is an honest 0%."""
         c = DeliveryCounters()
         msg_id = "lifecycle-2"
         c.record(DeliveryState.QUEUED, msg_id, protocol="rns")
@@ -315,8 +348,10 @@ class TestStateTransitionContract:
 
     def test_lifecycle_independent_per_msg_id(self):
         """Two messages in flight at once each carry their own history;
-        the snapshot's confirmation_rate is the aggregate, but
-        history_for keeps them separate."""
+        history_for keeps them separate. Rate is over confirmable TERMINAL
+        outcomes: a confirmed (terminal), b still sent-pending (not
+        terminal, not a failure) → 1/1 = 1.0. b's pendency shows in
+        state_totals.sent, not as a rate drag."""
         c = DeliveryCounters()
         c.record(DeliveryState.QUEUED, "a", protocol="rns")
         c.record(DeliveryState.QUEUED, "b", protocol="rns")
@@ -330,7 +365,7 @@ class TestStateTransitionContract:
             DeliveryState.CONFIRMED,
         ]
         assert states_b == [DeliveryState.QUEUED, DeliveryState.SENT]
-        assert c.snapshot()["confirmation_rate"] == 0.5
+        assert c.snapshot()["confirmation_rate"] == 1.0
 
     def test_queue_retried_message_can_reach_confirmed(self):
         """The Fork-D-fixed gap: messages reaching RNS via the persistent
@@ -360,8 +395,8 @@ class TestSnapshot:
         snap = c.snapshot()
         for key in (
             "state_totals", "drop_reasons", "state_by_protocol",
-            "confirmation_rate", "recent", "first_event_ts",
-            "last_event_ts", "ring_capacity",
+            "confirmation_rate", "confirmable_protocols", "unconfirmable_sent",
+            "recent", "first_event_ts", "last_event_ts", "ring_capacity",
         ):
             assert key in snap
 
@@ -869,3 +904,72 @@ class TestCrossProcessWriteErrorTruthIssue74:
         c.record(DeliveryState.SENT, "m2", protocol="rns")
         health = c.snapshot()["health"]
         assert health["consecutive_write_errors"] == 2
+
+
+# ── Honest confirmation view (Issue #74 display fix, 2026-06-15) ──────
+
+
+class TestComputeConfirmationView:
+    """The pure helper behind the snapshot's honest confirmation fields."""
+
+    def test_live_cross_population_shape_no_longer_exceeds_one(self):
+        """The exact live shape that read 1.64: confirmed dominated by RNS
+        proofs, sent dominated by unconfirmable mesh. Honest rate is bounded
+        and the mesh sends are surfaced separately."""
+        view = dc.compute_confirmation_view(
+            state_totals={"sent": 3390, "confirmed": 5566, "dropped": 1112},
+            state_by_protocol={
+                "confirmed": {"rns": 5566},
+                "sent": {"meshtastic": 2423, "secondary": 267,
+                         "primary": 570, "rns": 130},
+            },
+            drop_reasons={"dedup": 1070, "rns_delivery_failed": 32,
+                          "retries_exhausted": 10},
+        )
+        assert view["confirmation_rate"] is not None
+        assert 0.0 <= view["confirmation_rate"] <= 1.0
+        assert view["confirmation_rate"] == 5566 / (5566 + 42)
+        assert view["confirmable_protocols"] == ["rns"]
+        # meshtastic + secondary + primary sent; rns excluded (confirmable).
+        assert view["unconfirmable_sent"] == 2423 + 267 + 570
+
+    def test_none_when_no_confirmable_terminal_outcomes(self):
+        view = dc.compute_confirmation_view(
+            state_totals={"sent": 5},
+            state_by_protocol={"sent": {"meshtastic": 5}},
+            drop_reasons={"dedup": 3},
+        )
+        assert view["confirmation_rate"] is None
+        assert view["unconfirmable_sent"] == 5
+        assert view["confirmable_protocols"] == []
+
+    def test_benign_drops_never_count_as_failures(self):
+        """dedup / queue_pressure / queue_shed / invalid_payload are not
+        delivery failures — they must not drag the rate."""
+        view = dc.compute_confirmation_view(
+            state_totals={"confirmed": 4},
+            state_by_protocol={"confirmed": {"rns": 4}},
+            drop_reasons={"dedup": 100, "queue_pressure": 50,
+                          "queue_shed": 20, "invalid_payload": 5},
+        )
+        assert view["confirmation_rate"] == 1.0
+
+    def test_tolerates_empty_and_missing_inputs(self):
+        view = dc.compute_confirmation_view({}, {}, {})
+        assert view == {"confirmation_rate": None,
+                        "confirmable_protocols": [],
+                        "unconfirmable_sent": 0}
+
+
+class TestDeliveryFailureReasonsParity:
+    """honest_failure_modes #5: the failure-reason set is defined twice (the
+    watchdog can't import this module — gateway/__init__ pulls RNS into the
+    sandboxed probe loop) and MUST stay byte-identical. Pinned here."""
+
+    def test_matches_watchdog_set(self):
+        from utils.watchdog_probes_gateway import _DELIVERY_FAILURE_REASONS
+        assert dc.DELIVERY_FAILURE_REASONS == _DELIVERY_FAILURE_REASONS
+
+    def test_all_members_are_real_drop_reasons(self):
+        valid = {r.value for r in DropReason}
+        assert dc.DELIVERY_FAILURE_REASONS <= valid

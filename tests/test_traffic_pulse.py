@@ -268,12 +268,16 @@ class TestQABlock:
         r = tp._qa_block(d, now)
         assert r["status"] == tp.ALERT and "circuit-open" in r["verdict"]
 
-    def test_cross_population_rate_only_labelled_never_headline(self, no_queue):
+    def test_cumulative_rate_only_labelled_never_headline(self, no_queue):
         now = datetime.now()
         d = self._delivery(now, confirmation_rate=0.0)
         r = tp._qa_block(d, now)
         assert r["status"] == tp.OK
-        assert r["cumulative_confirmation_rate_cross_population"] == 0.0
+        # Issue #74 display fix: the cumulative field is the honest
+        # confirmable-population rate now, surfaced labelled — never the
+        # headline (which is the windowed ring computation).
+        assert r["cumulative_confirmable_confirmation_rate"] == 0.0
+        assert "unconfirmable_sent" in r
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -484,7 +488,8 @@ class TestParseDeliveryDB:
                      "protocol TEXT, drop_reason TEXT, note TEXT)")
         conn.executemany("INSERT INTO counters VALUES (?,?)", [
             ("state.sent", 10), ("state.confirmed", 4),
-            ("state_proto.confirmed.rns", 4), ("drop.dedup", 2),
+            ("state_proto.confirmed.rns", 4),
+            ("state_proto.sent.meshtastic", 8), ("drop.dedup", 2),
             ("meta.last_event_ts", 1781000000000),
             ("meta.preflight_ok", 1), ("meta.consecutive_write_errors", 0)])
         conn.execute("INSERT INTO events VALUES (?,?,?,?,?,?)",
@@ -497,7 +502,12 @@ class TestParseDeliveryDB:
         assert d["state_totals"]["sent"] == 10
         assert d["state_by_protocol"]["confirmed"]["rns"] == 4
         assert d["drop_reasons"]["dedup"] == 2
-        assert d["confirmation_rate"] == 0.4
+        # Issue #74 display fix in the fallback path too: honest confirmable
+        # rate (4 confirmed, 0 failures -> 1.0; dedup is benign), and the
+        # mesh sends surface as the blind spot, not inflating the rate.
+        assert d["confirmation_rate"] == 1.0
+        assert d["unconfirmable_sent"] == 8
+        assert d["confirmable_protocols"] == ["rns"]
         assert d["recent"][-1]["state"] == "confirmed"
 
     def test_absent_db_returns_none(self, monkeypatch):

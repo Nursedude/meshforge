@@ -128,6 +128,83 @@ class DropReason(Enum):
     UNKNOWN = "unknown"
 
 
+# Drop reasons that mean a delivery was ATTEMPTED and FAILED — the
+# denominator-mates of `confirmed` for a confirmable protocol. Benign
+# drops (dedup, capacity shedding, invalid payload) are NOT delivery
+# failures and must never count against the confirmation rate. Kept
+# byte-for-byte in sync with
+# ``utils.watchdog_probes_gateway._DELIVERY_FAILURE_REASONS`` by test
+# (``TestDeliveryFailureReasonsParity``): the watchdog can't import this
+# module — ``gateway/__init__`` pulls RNS into the sandboxed probe loop —
+# so honest_failure_modes #5 is satisfied by test-pin, not shared import.
+DELIVERY_FAILURE_REASONS = frozenset({
+    DropReason.RNS_DELIVERY_FAILED.value,
+    DropReason.RETRIES_EXHAUSTED.value,
+    DropReason.DESTINATION_UNREACHABLE.value,
+    DropReason.DELIVERY_TIMEOUT.value,
+    DropReason.NON_RETRIABLE_ERROR.value,
+    DropReason.CIRCUIT_OPEN.value,
+    DropReason.WEDGED.value,
+})
+
+
+def compute_confirmation_view(
+    state_totals: Dict[str, int],
+    state_by_protocol: Dict[str, Dict[str, int]],
+    drop_reasons: Dict[str, int],
+) -> Dict[str, Any]:
+    """Honest confirmation accounting from raw counters (Issue #74 display fix).
+
+    The pre-2026-06-15 ``confirmed / sent`` was a CROSS-POPULATION ratio:
+    ``confirmed`` only exists for protocols with a confirmation mechanism
+    (RNS — LXMF delivery proofs), while ``sent`` is dominated by
+    fire-and-forget mesh sends that can NEVER confirm (no ACK consumption
+    yet). The quotient exceeded 1.0 on every mesh-heavy gateway (observed
+    1.64) and an operator read it as ">100% confirmed" while the mesh
+    direction had ZERO delivery proof — a valid-looking value masking a
+    blind spot (the #80 defect class; a dishonest operator display IS an
+    app failure, MF018).
+
+    Honest replacement:
+      - ``confirmation_rate`` = confirmed / (confirmed + delivery-failures)
+        over the confirmable population only — bounded [0,1], None when
+        there are no confirmable terminal events yet (no data must NOT read
+        as 0% = total failure). Delivery-failures come from the global
+        failure-reason drops; if the mesh direction ever exhausts retries
+        those count too, biasing the rate DOWN (the safe, problem-surfacing
+        direction), never up.
+      - ``unconfirmable_sent`` = sends on protocols with NO confirmed event
+        (the mesh direction) — surfaced so the blind spot is VISIBLE, never
+        averaged into a healthy-looking scalar.
+      - ``confirmable_protocols`` = the protocols that record confirmations,
+        so the operator knows exactly what the rate covers.
+    """
+    def _pos_int(v) -> int:
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else 0
+
+    confirmed = _pos_int((state_totals or {}).get(DeliveryState.CONFIRMED.value, 0))
+    confirmed_by_proto = (state_by_protocol or {}).get(
+        DeliveryState.CONFIRMED.value, {}) or {}
+    sent_by_proto = (state_by_protocol or {}).get(
+        DeliveryState.SENT.value, {}) or {}
+
+    confirmable = sorted(p for p, c in confirmed_by_proto.items() if _pos_int(c) > 0)
+    confirmable_set = set(confirmable)
+    failures = sum(
+        _pos_int((drop_reasons or {}).get(r, 0)) for r in DELIVERY_FAILURE_REASONS
+    )
+    terminal = confirmed + failures
+    rate = confirmed / terminal if terminal > 0 else None
+    unconfirmable_sent = sum(
+        _pos_int(v) for p, v in sent_by_proto.items() if p not in confirmable_set
+    )
+    return {
+        "confirmation_rate": rate,
+        "confirmable_protocols": confirmable,
+        "unconfirmable_sent": unconfirmable_sent,
+    }
+
+
 # ── Event record ─────────────────────────────────────────────────────
 
 
@@ -651,9 +728,12 @@ class DeliveryCounters:
             elif key == "meta.last_write_error_ts":
                 db_write_error_ts = value / 1000.0
 
-        sent = state_totals.get(DeliveryState.SENT.value, 0)
-        confirmed = state_totals.get(DeliveryState.CONFIRMED.value, 0)
-        confirmation_rate = confirmed / sent if sent > 0 else None
+        # Honest confirmation accounting (Issue #74 display residual fixed
+        # 2026-06-15). The old cross-population `confirmed / sent` read as
+        # ">100% confirmed" (observed 1.64) while the mesh direction had zero
+        # delivery proof — a valid-looking value masking a blind spot.
+        confirmation = compute_confirmation_view(
+            state_totals, state_by_protocol, drop_reasons)
 
         # events_rows comes back newest-first from the DESC ORDER BY;
         # the snapshot contract is newest-LAST so the operator can
@@ -718,7 +798,9 @@ class DeliveryCounters:
             "state_totals": state_totals,
             "drop_reasons": drop_reasons,
             "state_by_protocol": state_by_protocol,
-            "confirmation_rate": confirmation_rate,
+            "confirmation_rate": confirmation["confirmation_rate"],
+            "confirmable_protocols": confirmation["confirmable_protocols"],
+            "unconfirmable_sent": confirmation["unconfirmable_sent"],
             "recent": recent,
             "first_event_ts": first_event_ts,
             "last_event_ts": last_event_ts,

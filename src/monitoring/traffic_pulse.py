@@ -24,13 +24,15 @@ Honest-failure-mode contract (``.claude/rules/honest_failure_modes.md``):
   a fabricated "0 packets / all confirmed / recovered". Absence of evidence
   is surfaced as its own state, not as good news (checklist 1, 2, 9).
 * **QA confirmation is judged honestly.** The cumulative
-  ``confirmation_rate`` from ``delivery_counters`` is the meaningless
-  cross-population ratio ``RNS-confirmed ÷ all-sent`` (#74) — Meshtastic
-  sends never confirm (no ACK consumption yet), so a naive panel reads
-  ~0–50% as "delivery failure". The QA block instead judges **only
-  confirmable protocols' real terminal outcomes** over the recent-events
-  ring, sharing :data:`_DELIVERY_FAILURE_REASONS` with the watchdog probe so
-  the two never drift (checklist 5).
+  ``confirmation_rate`` from ``delivery_counters`` is now the honest
+  confirmable-population rate (#74 display fix 2026-06-15:
+  ``confirmed ÷ (confirmed + delivery-failures)``, bounded [0,1], with
+  ``unconfirmable_sent`` surfacing the mesh-direction blind spot) — it was
+  the cross-population ``RNS-confirmed ÷ all-sent`` quotient that read >1.0
+  (1.64) while mesh sends had zero proof. The QA headline still judges
+  **only confirmable protocols' real terminal outcomes** over the
+  recent-events ring, sharing :data:`_DELIVERY_FAILURE_REASONS` with the
+  watchdog probe so the two never drift (checklist 5).
 * **Collector-stale ≠ mesh-quiet ≠ feed-dark.** The telemetry/RF blocks
   distinguish "node collector isn't recording" (unobservable — newest
   observation is stale) from "collector alive but the mesh is genuinely quiet"
@@ -202,13 +204,33 @@ def _parse_delivery_db() -> Optional[dict]:
                 "ts": r["ts"], "id": r["id"], "state": r["state"],
                 "protocol": r["protocol"], "drop_reason": r["drop_reason"],
             })
-        sent = state_totals.get("sent", 0)
-        confirmed = state_totals.get("confirmed", 0)
+        # Honest confirmation accounting — mirrors
+        # DeliveryCounters.compute_confirmation_view (Issue #74 display fix).
+        # Can't import it (gateway/__init__ pulls RNS into this monitoring
+        # tool), so the arithmetic is inlined and shares the canonical
+        # failure-reason set; TestFallbackConfirmationHonest pins it against
+        # the served snapshot's shape.
+        confirmed = int(state_totals.get("confirmed", 0) or 0)
+        _failures = sum(int(drop_reasons.get(r, 0) or 0)
+                        for r in _DELIVERY_FAILURE_REASONS)
+        _terminal = confirmed + _failures
+        _conf_by_proto = state_by_protocol.get("confirmed", {}) or {}
+        _sent_by_proto = state_by_protocol.get("sent", {}) or {}
+        _confirmable = {
+            p for p, c in _conf_by_proto.items()
+            if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
+        }
         return {
             "state_totals": state_totals,
             "state_by_protocol": state_by_protocol,
             "drop_reasons": drop_reasons,
-            "confirmation_rate": (confirmed / sent if sent > 0 else None),
+            "confirmation_rate": (confirmed / _terminal if _terminal > 0 else None),
+            "confirmable_protocols": sorted(_confirmable),
+            "unconfirmable_sent": sum(
+                int(v) for p, v in _sent_by_proto.items()
+                if p not in _confirmable
+                and isinstance(v, (int, float)) and not isinstance(v, bool)
+            ),
             "recent": recent,
             "last_event_ts": last_event_ts,
             "health": {
@@ -772,8 +794,12 @@ def _qa_block(delivery: Optional[dict], now: datetime) -> Dict[str, Any]:
             "benign_drops": benign_drops, "circuit_open": circuit_open,
             "write_errors": write_errors, "preflight_ok": preflight_ok,
             "last_event_age_s": round(age_s) if age_s is not None else None,
-            # Surfaced ONLY labelled — never as the headline reliability number.
-            "cumulative_confirmation_rate_cross_population": delivery.get("confirmation_rate")}
+            # Cumulative confirmable-population rate (Issue #74 display fix
+            # 2026-06-15: no longer the >1.0 cross-population quotient). The
+            # honest headline is the windowed `confirmation` above; this is
+            # the lifetime companion, plus the mesh-direction blind spot.
+            "cumulative_confirmable_confirmation_rate": delivery.get("confirmation_rate"),
+            "unconfirmable_sent": delivery.get("unconfirmable_sent")}
 
 
 # ─────────────────────────────────────────────────────────────────────
