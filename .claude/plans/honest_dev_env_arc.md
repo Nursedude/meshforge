@@ -198,11 +198,13 @@ echo responder (`lab.lxmf_echo`) and the nomadnet silence watcher
 (`scripts/nomadnet_silence_watch.py`) run MeshForge code but were restarted by NO
 deploy script → they served OLD code after a pull (the exact #79 class).** Fixed
 by wiring `try-restart meshforge-echo.service` + `nomadnet-silence-watch.service`
-into update.sh's user-unit block (soak-safe: manual path, try-restart honors
-disabled/absent). Live-falsified: against pre-fix update.sh the guard is RED on
-both units; post-fix GREEN. (Follow-up not done: fleet_sync.sh auto-restart for
-these two — a soak-sensitive change to the auto-deploy path; update.sh wiring
-satisfies the invariant. Optional completeness item.)
+into update.sh's user-unit block AND (completeness, 2026-06-15) into
+fleet_sync.sh's auto-deploy path — both the remote leg (`sync_user_unit`) and
+the local self leg (`sync_local_user_unit`), mirroring mini/claw. Soak-safe:
+try-restart honors disabled/absent, the proc-mtime-vs-code staleness gate only
+restarts on a real code change, and harmless stateless daemons. Live-falsified:
+against pre-fix update.sh the guard is RED on both units; post-fix all 7
+code-daemons are restart-wired by fleet_sync.sh alone.
 
 **§3c — daemon→output-probe coverage (7 tests, `TestDaemonOutputCoverage`) + the
 watchdog freshness fill.** Coverage test (the spec's reframe), not one clever
@@ -228,9 +230,10 @@ fix), `scripts/honest_status.sh` (watchdog freshness gate).
 ## Resume / verify in a clean session
 1. `bash scripts/honest_status.sh` — establish ground truth (don't trust this doc).
 2. `git log --oneline 6bc4a08..HEAD` — read the arc's commits.
-3. Steps 1–5 + deferred §3b/§3c are LANDED. Remaining optional follow-ups:
-   fleet_sync.sh auto-restart for echo/silence-watch (soak-sensitive);
-   the 3 user-timer deploy gap (§3b-i provenance notes); a claw-specific
+3. Steps 1–5 + deferred §3b/§3c are LANDED (incl. echo/silence-watch restart
+   in BOTH update.sh and fleet_sync.sh). Remaining optional follow-ups:
+   the 3 user-timer deploy gap (§3b-i provenance notes — update.sh's glob
+   copies *-user.service but not the sibling *-user.timer); a claw-specific
    output probe if claw graduates beyond single-box.
 
 Pending: synth-soak Monitor was armed on moc (won't survive session end — mini

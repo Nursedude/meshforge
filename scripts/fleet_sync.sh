@@ -439,6 +439,13 @@ sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_P
 # state). Only the claw-brain box (moc1) runs it; everywhere else this is a
 # clean no_unit/not_running PASS (try-restart honors absent/disabled).
 sync_user_unit meshforge-mini-dudeai-claw /opt/meshforge meshforge-mini-dudeai-claw "$MF_PRE_HEAD" || rc1e=$?
+# Other long-lived USER daemons that run /opt/meshforge code (same #79 deploy
+# gap as mini): the lab echo responder (lab.lxmf_echo) and the nomadnet silence
+# watcher (scripts/nomadnet_silence_watch.py). Restart on the user bus so a code
+# pull reaches the running daemon. no_unit / not_running PASS on boxes that do
+# not run them (try-restart honors absent/disabled).
+sync_user_unit meshforge-echo /opt/meshforge meshforge-echo "$MF_PRE_HEAD" || rc1f=$?
+sync_user_unit nomadnet-silence-watch /opt/meshforge nomadnet-silence-watch "$MF_PRE_HEAD" || rc1g=$?
 sync_repo meshforge-maps  /opt/meshforge-maps  meshforge-maps    "$MFMAPS_PRE_HEAD" || rc2=$?
 
 # Smoke: catch rollup self-loopback in ~/.config/meshanchor/fleet.json.
@@ -823,6 +830,10 @@ sync_local_unit meshforge-maps    /opt/meshforge-maps
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 # Standalone dude-claw sibling (no-op on boxes without the unit).
 sync_local_user_unit meshforge-mini-dudeai-claw /opt/meshforge
+# Other long-lived USER daemons from this repo (same #79 gap): the echo
+# responder + nomadnet silence watcher. no-op on boxes without the unit.
+sync_local_user_unit meshforge-echo /opt/meshforge
+sync_local_user_unit nomadnet-silence-watch /opt/meshforge
 
 # Self-side fleet-config smokes. Mirrors the remote checks so the
 # canonical box (which fleet_hosts deliberately excludes) gets the same
