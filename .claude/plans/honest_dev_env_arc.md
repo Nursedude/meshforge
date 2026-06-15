@@ -156,6 +156,53 @@ the blind-spot classes remain. Deferred §3b/§3c items (systemd-unit-template,
 deploy-restart-hook, "service active ≠ doing the job") are the remaining arc
 work — they need NEW guards, not a sweep.
 
+## Deferred §3b/§3c — execution spec (for a CLEAN session; recon'd 2026-06-15)
+These were left for a fresh session deliberately: each needs a NEW guard built
+red-test-first, and §3c is judgment-heavy (the plan's own "expect the first cut
+wrong"). Recon below is real (`ls templates/systemd/`, deploy scripts present:
+`update.sh`, `fleet_sync.sh`, `install_noc.sh`). Build each in
+`tests/test_honesty_invariants.py`, red-test-first.
+
+**§3b-i — every MeshForge-OWNED systemd unit has a `templates/systemd/` entry.**
+Invariant: each unit MeshForge installs/manages has a template. RED: drop a
+template or add an owned unit without one.
+TRAPS (found in recon — a naive guard WILL be vacuous):
+- Do NOT extract unit names by regex over `src/` — it yields garbage
+  substrings (`andler.service`, `d.service`, `env.service`, `health.service`)
+  and FOREIGN units (`meshanchor-*`, OS `meshtasticd.service`). Build the
+  OWNED set from real install/enable call-sites (`install_noc.sh`,
+  `install_lab_*.sh`, `provision_role.py`) or a curated `OWNED_UNITS` tuple
+  WITH a provenance comment.
+- user-bus vs system variants: several units exist as both `<name>-user.service`
+  and bare `<name>.service` (echo, tracer, synth-soak, lab-rollup,
+  moc-drain-snapshot, mini). Compare against the variant the installer actually
+  writes per role — don't assume one.
+- Add a REVERSE check too (every template maps to an install site) to catch
+  dead templates.
+
+**§3b-ii — every long-lived MeshForge daemon has a deploy-restart hook (#79).**
+Invariant: each `Type=simple/notify` daemon MeshForge deploys is restarted after
+a code pull by `update.sh` and/or `fleet_sync.sh`. #79 = the 3 SYSTEM units were
+restarted but the mini USER units were not. RED: drop a daemon from the restart
+list / add a daemon template without wiring its restart.
+TRAPS: oneshot/timer units must be EXEMPT (they fire fresh — no restart needed);
+parse `Type=` from the template to classify. User-bus units restart via
+`systemctl --user` (the #79 `sync_user_unit` path) — accept that path. The guard
+checks the deploy SCRIPT wires it, not that every box runs every unit (per-box
+topology, e.g. moc3 gateway-only, is legitimate).
+
+**§3c — "service active ≠ doing the job" (HARDEST; design in fresh context).**
+Reframe before coding: most long-lived daemons ALREADY have a watchdog probe
+that checks OUTPUT not just process-state (map→`/healthz`+collect ts;
+watchdog→json mtime; mini→history mtime; synth→recent envelope [step 4b]). So
+§3c is likely a COVERAGE test, not one clever guard: "every OWNED long-lived
+daemon has a probe that asserts its USER-FACING OUTPUT, not just `is-active`."
+First step is the INVENTORY (daemon → does a probe check its actual output, or
+only that the process exists?), then fill the 1–2 gaps with new probes. TRAP:
+do NOT build an `is-active` guard — active ≠ doing the job is the whole point
+(the "verify the work-holder" lesson). Deliverable is probably new probe(s) +
+a daemon→output-probe coverage test, wired into the closed-enum gate.
+
 ## Resume in a clean session
 1. `bash scripts/honest_status.sh` — establish ground truth (don't trust this doc).
 2. `git log --oneline 6bc4a08..HEAD` — read the arc's commits.
