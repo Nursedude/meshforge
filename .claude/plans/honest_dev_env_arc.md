@@ -108,6 +108,26 @@ WATCH (not changed — behavior change on a live collector, out of step-4 scope)
 collector `urlopen(timeout=3)` vs observed ~3.3 s sysinfo latency on moc5 — a
 candidate root for any intermittent `aredn_source_dark` flap; raise separately.
 
+## Step 4b — synth_soak_degraded false-fire (live-caught 2026-06-15, FIXED)
+The step-1 `synth_soak_degraded` probe FIRED on moc 20:08Z on a HEALTHY run
+(pass_envelope=true, 600/600). Root cause: `lab_synth_soak_fire.sh` redirected
+the synth run straight into the published file (`>"$out"`), truncating it at
+run START — but the ~67 s run writes its JSON only at the end, so the newest
+`synth-*.json` was unparseable for the whole run and outlasted the probe's
+~60 s torn-write debounce → healthy run trips degraded (+ hourly mini page). A
+false-RED that erodes trust in the honesty layer (honest_failure_modes #8).
+Fix (`21f278f`): write to a hidden `.synth-<stamp>.json.partial` (outside the
+`synth-*.json` glob), publish via atomic `mv` ONLY when the temp is complete,
+parseable JSON — NOT gated on exit code (a FAIL envelope must publish for the
+probe's ENVELOPE leg; only a crash with no JSON leaves no file → SILENCE leg).
+Guarded red-test-first by `TestSynthSoakAtomicWrite` (predicate strips
+comment-only lines so docs mentioning the dead pattern can't self-trip — a
+checker false-positive found+fixed while writing it). **LIVE-VERIFIED on moc**:
+direct fire showed `in_flight_partial=1` + `glob_sees_partial=0` +
+`synth_degraded=0` throughout, then atomic publish — exactly where the un-fixed
+script false-fired at 20:08. (persistent_issues.md is at the 40k MF012 cap, so
+this lives here, not there.)
+
 ## Resume in a clean session
 1. `bash scripts/honest_status.sh` — establish ground truth (don't trust this doc).
 2. `git log --oneline 6bc4a08..HEAD` — read the arc's commits.
