@@ -395,15 +395,16 @@ cases, + closed-enum gate bump. Regime remainder (wire live crons; triage the
 
 ## Issue #79: mini-dudeai hardening + the deploy-restart gap class (2026-06-09, extended 06-15)
 
-Audit of mini-dudeai (MeshForge-OWNED rule-loop agent; no MA twin — MA's `src/agent/`
-is unrelated) found 1 defect + risks, fixed in one pass. (1) **DEPLOY GAP** (defect):
+Audit of mini-dudeai (MeshForge-OWNED rule-loop agent; no MA twin) found 1 defect +
+risks, fixed in one pass. (1) **DEPLOY GAP** (defect):
 nothing restarted the mini USER daemon after `git pull` (fleet_sync/update.sh restarted
 only the 3 SYSTEM units) — added user-bus `sync_user_unit`/`sync_local_user_unit`, an
 update.sh user-unit restart, and install_noc enrollment of all 3 mini user units.
 **Extended 06-15 (the whole deploy-restart class):** MF `meshforge-echo` +
 `nomadnet-silence-watch` wired into update.sh + fleet_sync; §3b-ii guard
-`TestDeployRestartHook` pins it red-test-first; ported to MeshAnchor incl. SYSTEM
-`meshanchor`/`-map` (CODE_CHANGED-gated; no MA fleet_sync). Arc: `honest_dev_env_arc.md`.
+`TestDeployRestartHook` pins it red-test-first. **MeshAnchor parity**: same fix + the
+ported guard + MA's own #79 entry; MA `update.sh` restarts echo + SYSTEM
+`meshanchor`/`-map` (CODE_CHANGED-gated, no MA fleet_sync). Arc: `honest_dev_env_arc.md`.
 (2) **MEMORY.md over the ~24KB load limit** (defect): `check_index_size` warns (never
 blocks) + `demote_memory` → MEMORY_ARCHIVE.md + `probe_memory_index_oversize`.
 (3) unbounded append growth: `_rotate_if_needed` (atomic, keep-newest, valid JSONL) on
@@ -413,9 +414,8 @@ subprocess/systemctl in engine+sources+actions) lint-pinned **MF021** + test-pin
 (6) rules promotion writes a `.bak` + `probe_rules_seed_drift`. (8)
 `probe_history_write_failure` (loop alive + fires advancing but history mtime frozen).
 All 3 new probes wired in `run_all_probes`, classes in the closed enum (issue_ref 79).
-(7) schema-vs-validator drift test pins `mini_dudeai_config.schema.json` to the
-validator. Tests: +~90. ⚠️ Probes DEGRADED-only + self-guard None off-box; deploy
-user-bus restart needs linger (install_noc enables it).
+(7) schema-vs-validator drift test pins the config schema to the validator. Tests:
++~90. ⚠️ Probes DEGRADED-only, self-guard None off-box; user-bus restart needs linger.
 
 
 ---
