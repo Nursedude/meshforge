@@ -145,18 +145,38 @@ else ok "live conf_rate<=1.0" "$checked checked;$det"; fi
 #    this code's fault. Unreachable box = UNKNOWN (can't confirm clean).
 #    Verdict = worst present, ordered FAIL(wedge) > UNKNOWN(unreach) >
 #    WARN(degraded) > PASS — a signal is never hidden behind a green line.
+# Watchdog freshness threshold. The watchdog tick is 30s (DEFAULT_TICK_S); >10
+# ticks with no fresh write means the loop wedged and its last (possibly
+# 0-signal) snapshot is STALE — which would otherwise read as "clean" here: the
+# §3c "active != doing the job" false-green, for the watchdog daemon ITSELF. A
+# watchdog self-probe can't catch a wedged loop (a stuck loop never runs the
+# probe), so this EXTERNAL gate is the non-circular check. Disabled (0) in
+# fixture mode (HONEST_WD_PATH set), where fixtures carry a static ts, unless
+# HONEST_WD_STALE_S is set explicitly to exercise the stale path.
+if [ -n "${HONEST_WD_STALE_S:-}" ]; then WD_STALE_S="$HONEST_WD_STALE_S"
+elif [ -n "${HONEST_WD_PATH:-}" ]; then WD_STALE_S=0
+else WD_STALE_S=300; fi
+
 wedge_t=0; deg_t=0; clean=0; unreach=0; sigdesc=""
 btotal=$(echo $BOXES | wc -w)
 for b in $BOXES; do
-  w=$($SSH "$b" "cat $WD_PATH 2>/dev/null" 2>/dev/null)
+  # Fetch the box's OWN clock alongside its watchdog.json in ONE round-trip, so
+  # the freshness age is computed same-clock — never this box's clock vs that
+  # box's ts (cross-machine wall-clock is forgeable: honest_failure #6).
+  raw=$($SSH "$b" "date +%s 2>/dev/null; echo '---WDSEP---'; cat $WD_PATH 2>/dev/null" 2>/dev/null)
+  rnow=$(printf '%s\n' "$raw" | sed -n '1p')
+  w=$(printf '%s\n' "$raw" | awk 'f{print} /^---WDSEP---$/{f=1}')
   if [ -z "$w" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
   p=$(printf '%s' "$w" | python3 -c 'import sys,json
-try: s=json.load(sys.stdin).get("signals",[])
+try: d=json.load(sys.stdin)
 except Exception: print("PARSE"); sys.exit()
+s=d.get("signals",[])
 wg=sum(1 for x in s if x.get("severity")=="wedge")
 dg=len(s)-wg
+ts=d.get("ts")
+tsf=("%.3f"%ts) if isinstance(ts,(int,float)) else "NOTS"
 cl=",".join("%s(%s)"%(x.get("class","?"),x.get("severity","?")) for x in s)
-print("%d %d %s"%(wg,dg,cl))' 2>/dev/null)
+print("%d %d %s %s"%(wg,dg,tsf,cl))' 2>/dev/null)
   # Unreadable/garbage watchdog.json is UNKNOWN, never "clean" — a file I
   # can't parse must not read as healthy (the exact false-green this tool
   # exists to prevent; caught by the classifier drill 2026-06-15).
@@ -164,12 +184,20 @@ print("%d %d %s"%(wg,dg,cl))' 2>/dev/null)
     unreach=$((unreach+1)); sigdesc="$sigdesc $b:unparseable"; continue
   fi
   wg=$(printf '%s' "$p" | awk "{print \$1}"); dg=$(printf '%s' "$p" | awk "{print \$2}")
-  cl=$(printf '%s' "$p" | cut -d" " -f3-)
+  ts=$(printf '%s' "$p" | awk "{print \$3}"); cl=$(printf '%s' "$p" | cut -d" " -f4-)
+  # Freshness gate: a valid-but-stale snapshot (wedged loop) is NOT clean.
+  # Same UNKNOWN tier as unparseable — old signals are not current truth.
+  if [ "$WD_STALE_S" -gt 0 ] && [ "$ts" != "NOTS" ] && [ -n "$rnow" ]; then
+    age=$(awk "BEGIN{printf \"%d\", $rnow - $ts}" 2>/dev/null)
+    if [ -n "$age" ] && [ "$age" -gt "$WD_STALE_S" ] 2>/dev/null; then
+      unreach=$((unreach+1)); sigdesc="$sigdesc $b:stale(${age}s)"; continue
+    fi
+  fi
   if [ "${wg:-0}" = 0 ] && [ "${dg:-0}" = 0 ]; then clean=$((clean+1))
   else sigdesc="$sigdesc $b:[$cl]"; wedge_t=$((wedge_t+wg)); deg_t=$((deg_t+dg)); fi
 done
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
-elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$btotal clean, $unreach unreachable:$sigdesc"
+elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$btotal clean, $unreach unreachable/stale:$sigdesc"
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
 else ok "watchdog signals" "$clean/$btotal clean, 0 signals"; fi
 

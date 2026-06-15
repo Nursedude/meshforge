@@ -334,7 +334,18 @@ if $USER_SVC_UPDATED; then
         # standalone dude-claw sibling — try-restart is a no-op on boxes
         # that don't run it (only the claw-brain box does)
         run_user_systemctl try-restart meshforge-mini-dudeai-claw.service 2>/dev/null || true
-        echo -e "  ${GREEN}✓ mini-dudeai user units refreshed (try-restart)${NC}"
+        # Other long-lived USER daemons that run MeshForge code from this repo
+        # and would otherwise sit on OLD code after the pull (the #79 deploy
+        # gap, surfaced 2026-06-15 by the §3b-ii honesty guard): the lab echo
+        # responder (lab.lxmf_echo) and the nomadnet silence watcher
+        # (scripts/nomadnet_silence_watch.py). try-restart is a no-op on boxes
+        # that don't run them, and honors an operator-disabled unit. Oneshot
+        # user units (synth-soak, lab-rollup, drain-snapshot, tracer, dream)
+        # are deliberately NOT here — they pull fresh code at their next timer
+        # fire, so a restart would be pointless churn.
+        run_user_systemctl try-restart meshforge-echo.service 2>/dev/null || true
+        run_user_systemctl try-restart nomadnet-silence-watch.service 2>/dev/null || true
+        echo -e "  ${GREEN}✓ mini-dudeai + lab user daemons refreshed (try-restart)${NC}"
     else
         echo -e "  ${YELLOW}⚠ Could not reach the operator user bus to restart mini-dudeai.${NC}"
         echo -e "  ${YELLOW}  As ${REAL_USER}: systemctl --user restart meshforge-mini-dudeai.service${NC}"

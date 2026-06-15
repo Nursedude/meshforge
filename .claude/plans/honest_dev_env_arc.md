@@ -61,10 +61,10 @@ test goes red with a precise actionable message → revert → green):**
 `tests/test_db_inventory.py` ("DBs in src/ missing from INVENTORY") + lint
 MF013; §3b seed-routing → `TestSeedCoversSignalClasses`.
 
-**Deferred (fuzzy — would risk a vacuous/false-firing guard, the exact defect
-this arc kills; next increment):** §3b every systemd unit has a
-`templates/systemd/` entry + a new long-lived service has a deploy-restart hook
-(the #79 gap); §3c "service active ≠ doing the job" (hardest — semantic).
+**Deferred items — LANDED 2026-06-15** (a fresh session; see "Deferred §3b/§3c
+— LANDED" below for the build record + the real #79 gap it surfaced). §3b-i
+(template provenance), §3b-ii (deploy-restart hook), §3c (daemon→output-probe
+coverage) are now build-fails too.
 
 ### Original spec (retained for the deferred items)
 
@@ -156,59 +156,82 @@ the blind-spot classes remain. Deferred §3b/§3c items (systemd-unit-template,
 deploy-restart-hook, "service active ≠ doing the job") are the remaining arc
 work — they need NEW guards, not a sweep.
 
-## Deferred §3b/§3c — execution spec (for a CLEAN session; recon'd 2026-06-15)
-These were left for a fresh session deliberately: each needs a NEW guard built
-red-test-first, and §3c is judgment-heavy (the plan's own "expect the first cut
-wrong"). Recon below is real (`ls templates/systemd/`, deploy scripts present:
-`update.sh`, `fleet_sync.sh`, `install_noc.sh`). Build each in
-`tests/test_honesty_invariants.py`, red-test-first.
+## Deferred §3b/§3c — LANDED 2026-06-15 (clean session; +20 tests, red+green)
+Built all three in `tests/test_honesty_invariants.py`, red-test-first, each
+green-invariant live-falsified against the real source. The recon was real and
+overturned the agent-summary framing twice (the arc's own lesson: verify ground
+truth, don't trust a summary). 36 honesty tests total now; lint + #29 regression
+guards green.
 
-**§3b-i — every MeshForge-OWNED systemd unit has a `templates/systemd/` entry.**
-Invariant: each unit MeshForge installs/manages has a template. RED: drop a
-template or add an owned unit without one.
-TRAPS (found in recon — a naive guard WILL be vacuous):
-- Do NOT extract unit names by regex over `src/` — it yields garbage
-  substrings (`andler.service`, `d.service`, `env.service`, `health.service`)
-  and FOREIGN units (`meshanchor-*`, OS `meshtasticd.service`). Build the
-  OWNED set from real install/enable call-sites (`install_noc.sh`,
-  `install_lab_*.sh`, `provision_role.py`) or a curated `OWNED_UNITS` tuple
-  WITH a provenance comment.
-- user-bus vs system variants: several units exist as both `<name>-user.service`
-  and bare `<name>.service` (echo, tracer, synth-soak, lab-rollup,
-  moc-drain-snapshot, mini). Compare against the variant the installer actually
-  writes per role — don't assume one.
-- Add a REVERSE check too (every template maps to an install site) to catch
-  dead templates.
+**§3b-i — template provenance (8 tests, `TestTemplateProvenance`).** The literal
+"every OWNED unit has a template + every template maps to an install site"
+bijection is FALSE on a healthy repo, so a strict guard would be RED on ~half the
+templates → forced into a vacuous allowlist (the false-guard this arc kills).
+Ground truth: MeshForge materializes systemd units SEVEN ways — shell-installer
+copy/sed, update.sh `*-user.service` glob, a TUI handler at runtime
+(`meshtasticd-alt` ← `dual_radio_failover.py`), manager-box organs hand-enabled
+on the federator box (backup/ci-status/fleet-health), a hand-deployed fleet
+daemon with no committed installer (watchdog), ops band-aids + claw infra
+(meshtasticd-restart, nats-server), and inline heredocs (meshforge/rnsd/
+meshforge-map — owned-but-INLINE by design). The "dead template" list a discovery
+agent produced was an ARTIFACT of searching only shell scripts; all 29 templates
+have a real, verified (git-blame'd) consumer. So §3b-i is the spec's sanctioned
+curated-provenance manifest: a `TEMPLATE_PROVENANCE` dict (kinds installer/glob/
+tui/hand, each verified 2026-06-15) with a disk↔manifest bijection — a NEW
+template with no provenance entry fails (forces a deploy decision); a stale entry
+whose file vanished fails; machine-checkable kinds (installer/glob/tui) have their
+cited reference verified so provenance can't silently rot. Drop-in dirs covered by
+`DROPIN_PROVENANCE`. Found-and-recorded gap (NOT fixed — pre-existing, out of
+scope): the 3 user `*-user.timer` templates (synth-soak, lab-rollup, drain) are
+NOT copied by update.sh's `*-user.service` glob → hand-deployed only; flagged in
+their provenance notes.
 
-**§3b-ii — every long-lived MeshForge daemon has a deploy-restart hook (#79).**
-Invariant: each `Type=simple/notify` daemon MeshForge deploys is restarted after
-a code pull by `update.sh` and/or `fleet_sync.sh`. #79 = the 3 SYSTEM units were
-restarted but the mini USER units were not. RED: drop a daemon from the restart
-list / add a daemon template without wiring its restart.
-TRAPS: oneshot/timer units must be EXEMPT (they fire fresh — no restart needed);
-parse `Type=` from the template to classify. User-bus units restart via
-`systemctl --user` (the #79 `sync_user_unit` path) — accept that path. The guard
-checks the deploy SCRIPT wires it, not that every box runs every unit (per-box
-topology, e.g. moc3 gateway-only, is legitimate).
+**§3b-ii — deploy-restart hook (5 tests, `TestDeployRestartHook`) — surfaced a
+REAL #79 gap and fixed it.** Curated `MESHFORGE_CODE_DAEMONS` (daemons whose
+ExecStart runs THIS repo's code, so a `git pull` of /opt/meshforge changes them —
+verified per-unit) vs `RESTART_EXEMPT_DAEMONS` (external-binary wrappers:
+nomadnet/meshchatx/rnsd/meshtasticd/nats — a MeshForge pull doesn't change their
+code, and rnsd restart is explicitly dangerous). The guard parses update.sh +
+fleet_sync.sh for restart-wiring (try-restart / sync_repo / sync_*_unit), token-
+matched so `meshforge-mini-dudeai` ≠ `…-claw`. **It caught a genuine gap: the lab
+echo responder (`lab.lxmf_echo`) and the nomadnet silence watcher
+(`scripts/nomadnet_silence_watch.py`) run MeshForge code but were restarted by NO
+deploy script → they served OLD code after a pull (the exact #79 class).** Fixed
+by wiring `try-restart meshforge-echo.service` + `nomadnet-silence-watch.service`
+into update.sh's user-unit block (soak-safe: manual path, try-restart honors
+disabled/absent). Live-falsified: against pre-fix update.sh the guard is RED on
+both units; post-fix GREEN. (Follow-up not done: fleet_sync.sh auto-restart for
+these two — a soak-sensitive change to the auto-deploy path; update.sh wiring
+satisfies the invariant. Optional completeness item.)
 
-**§3c — "service active ≠ doing the job" (HARDEST; design in fresh context).**
-Reframe before coding: most long-lived daemons ALREADY have a watchdog probe
-that checks OUTPUT not just process-state (map→`/healthz`+collect ts;
-watchdog→json mtime; mini→history mtime; synth→recent envelope [step 4b]). So
-§3c is likely a COVERAGE test, not one clever guard: "every OWNED long-lived
-daemon has a probe that asserts its USER-FACING OUTPUT, not just `is-active`."
-First step is the INVENTORY (daemon → does a probe check its actual output, or
-only that the process exists?), then fill the 1–2 gaps with new probes. TRAP:
-do NOT build an `is-active` guard — active ≠ doing the job is the whole point
-(the "verify the work-holder" lesson). Deliverable is probably new probe(s) +
-a daemon→output-probe coverage test, wired into the closed-enum gate.
+**§3c — daemon→output-probe coverage (7 tests, `TestDaemonOutputCoverage`) + the
+watchdog freshness fill.** Coverage test (the spec's reframe), not one clever
+guard. `DAEMON_OUTPUT_COVERAGE`: each fleet-wide MeshForge-code daemon → its
+OUTPUT mechanism, verified — gateway→delivery_write_canary/queue_backlog/
+delivery_confirmation_stall, map→http_local(/healthz), mini→history_write_failure,
+rnsd→rns_rpc_responsive/rns_shared_instance_responsive, each asserted to be CALLED
+in `run_all_probes` (call-graph BFS) AND not a process-state probe. The watchdog
+is `external`: a self-probe for its OWN liveness is CIRCULAR (a wedged loop never
+runs the probe), so the fill is in `honest_status.sh` — a watchdog.json `ts`
+FRESHNESS gate (a stale-but-valid 0-signal snapshot used to read "clean": the §3c
+false-green for the watchdog itself). Freshness is same-clock (remote `date +%s`
+in one round-trip, never cross-box — honest_failure #6), 300s threshold (10×30s
+ticks), disabled in fixture mode. `AUX_DAEMON_COVERAGE` documents the single-box/
+transitive daemons honestly (echo→tracer no-route transitively; claw→documented
+single-box gap; silence-watch→is itself the watcher). Closed-set linkage
+(honest_failure #7): §3c's covered set must EQUAL §3b-ii's code-daemon set + rnsd,
+so a new daemon can't be deploy-restarted yet silently un-output-watched.
 
-## Resume in a clean session
+Files: `tests/test_honesty_invariants.py` (+515), `scripts/update.sh` (#79 gap
+fix), `scripts/honest_status.sh` (watchdog freshness gate).
+
+## Resume / verify in a clean session
 1. `bash scripts/honest_status.sh` — establish ground truth (don't trust this doc).
 2. `git log --oneline 6bc4a08..HEAD` — read the arc's commits.
-3. Build step 3 above, red-test-first.
+3. Steps 1–5 + deferred §3b/§3c are LANDED. Remaining optional follow-ups:
+   fleet_sync.sh auto-restart for echo/silence-watch (soak-sensitive);
+   the 3 user-timer deploy gap (§3b-i provenance notes); a claw-specific
+   output probe if claw graduates beyond single-box.
 
 Pending: synth-soak Monitor was armed on moc (won't survive session end — mini
-ntfy is the durable backstop). Step 4 AREDN reds fixed (above); moc5 yields ok.
-Next: step 5 (sweep) + the deferred §3b/§3c items. CI of the last push lands
-~3 min after.
+ntfy is the durable backstop). CI of any push lands ~3 min after.

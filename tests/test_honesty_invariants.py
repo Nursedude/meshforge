@@ -519,3 +519,518 @@ class TestSynthSoakAtomicWrite:
         good = ('python3 -m lab.synth ... >"$tmp" 2>>"$log"\nrc=$?\n'
                 'mv -f "$tmp" "$out"\n')
         assert synth_publishes_atomically(good)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# §3b-ii — every long-lived MeshForge-code daemon has a deploy-restart hook
+# ═════════════════════════════════════════════════════════════════════
+
+# Issue #79: nothing restarted the mini USER daemon after a `git pull`
+# (fleet_sync/update.sh restarted only the SYSTEM units), so the daemon sat on
+# OLD code until a hand-restart — a silent deploy gap. The invariant: every
+# long-lived daemon whose code lives in THIS repo (so a `git pull` of
+# /opt/meshforge changes it) must be restarted by a deploy script (update.sh
+# and/or fleet_sync.sh) after a pull.
+#
+# Why a CURATED set, not a glob over templates/systemd/ (the spec's sanctioned
+# escape hatch): the daemon set spans THREE definition sites — templates/systemd/
+# (mini, echo, silence-watch, watchdog), contrib/systemd/ (gateway, *.service.in),
+# and inline heredocs in install_noc.sh (map). A glob over one dir would miss
+# gateway+map entirely (false-pass) AND would sweep in external-code wrappers
+# (nomadnet/meshchatx/rnsd/meshtasticd/nats run binaries a /opt/meshforge pull
+# does NOT change → restarting them on a MeshForge pull is wrong, and rnsd
+# restart is explicitly dangerous). "Runs MeshForge code from this repo" is a
+# semantic property of the ExecStart, not decidable from a filename — so it is
+# curated, each entry carrying its verified ExecStart as provenance.
+#
+# Each entry was verified 2026-06-15 against the unit's ExecStart (see comment).
+MESHFORGE_CODE_DAEMONS: dict = {
+    # unit base name → (ExecStart provenance, where its restart is wired)
+    "meshforge-gateway":   "src/gateway/bridge_cli.py (contrib/systemd/*.in)",
+    "meshforge-map":       "utils.map_data_service (inline heredoc install_noc.sh)",
+    "meshforge-watchdog":  "utils.watchdog_runner (templates/systemd/)",
+    "meshforge-mini-dudeai":      "mini_dudeai engine (the #79 unit) (templates/systemd/)",
+    "meshforge-mini-dudeai-claw": "dude-claw sibling, claw-brain box only (templates/systemd/)",
+    "meshforge-echo":      "lab.lxmf_echo responder (templates/systemd/ meshforge-echo-user.service)",
+    "nomadnet-silence-watch": "scripts/nomadnet_silence_watch.py (templates/systemd/)",
+}
+
+# Type=simple/forking daemons MeshForge installs that a /opt/meshforge pull does
+# NOT change (they exec an EXTERNAL binary) — restarting them on a MeshForge code
+# pull is wrong, so they are correctly absent from the deploy-restart path.
+RESTART_EXEMPT_DAEMONS: dict = {
+    "nomadnet-user":   "tmux-wraps the external `nomadnet` app; pull doesn't change it",
+    "meshchatx-user":  "wraps the external meshchatx app; pull doesn't change it",
+    "rnsd-user":       "runs pip-installed (forked) rnsd, not repo code; restart is "
+                       "explicitly dangerous (RNS rapid-cycle @rns race, #69)",
+    "meshtasticd-native": "external meshtasticd binary (upstream)",
+    "meshtasticd-alt":    "external meshtasticd binary (TUI-deployed secondary radio)",
+    "nats-server":     "external nats-server binary (dude-claw infra)",
+}
+
+_RESTART_KEYWORDS = ("try-restart", "restart", "sync_repo", "sync_local_unit",
+                     "sync_user_unit", "sync_local_user_unit")
+
+
+def deploy_restarted_units(*script_texts: str) -> set:
+    """Set of systemd unit base names that a deploy script restarts after a
+    pull. A unit is "restart-wired" if its base name appears (as a whole token,
+    not a hyphen-prefix of a longer name) on a non-comment line that also
+    contains a restart verb — covering both direct `systemctl try-restart
+    <unit>.service` (update.sh) and the unit-name-as-arg wrappers
+    `sync_repo/sync_local_unit/sync_user_unit <unit>` (fleet_sync.sh).
+
+    Pure over the passed text so the red proof can feed synthetic scripts.
+    The token guard (negative-lookahead on `[\\w-]`) stops `meshforge-mini-dudeai`
+    from spuriously matching inside `meshforge-mini-dudeai-claw`."""
+    import re
+    found = set()
+    candidates = set(MESHFORGE_CODE_DAEMONS) | set(RESTART_EXEMPT_DAEMONS)
+    for text in script_texts:
+        for raw in text.splitlines():
+            line = raw.strip()
+            if line.startswith("#"):
+                continue
+            if not any(kw in line for kw in _RESTART_KEYWORDS):
+                continue
+            for unit in candidates:
+                if re.search(re.escape(unit) + r"(?![\w-])", line):
+                    found.add(unit)
+    return found
+
+
+class TestDeployRestartHook:
+    """§3b-ii — the #79 deploy gap: a long-lived daemon running THIS repo's code
+    must be restarted by a deploy script after a pull, or it silently serves
+    stale code. update.sh + fleet_sync.sh are the two pull-deploy paths."""
+
+    def _deploy_sources(self):
+        scripts = REPO / "scripts"
+        update = scripts / "update.sh"
+        fleet = scripts / "fleet_sync.sh"
+        for p in (update, fleet):
+            assert p.exists(), f"{p} moved — the deploy-restart guard would vacuously pass"
+        return update.read_text(), fleet.read_text()
+
+    def test_every_code_daemon_is_deploy_restarted(self):
+        restarted = deploy_restarted_units(*self._deploy_sources())
+        # Non-vacuity: the parser must actually have found the wired units.
+        assert len(restarted) >= 5, (
+            f"only {len(restarted)} restart-wired units found — parser likely "
+            f"broke against the real scripts; refusing to pass vacuously")
+        missing = set(MESHFORGE_CODE_DAEMONS) - restarted
+        assert not missing, (
+            f"long-lived MeshForge-code daemon(s) {sorted(missing)} are NOT "
+            f"restarted by update.sh or fleet_sync.sh after a pull → they serve "
+            f"OLD code until a hand-restart (the #79 deploy gap). Wire a "
+            f"try-restart into update.sh's user-unit block and/or a "
+            f"sync_repo/sync_*_unit call in fleet_sync.sh. "
+            f"Provenance: {[MESHFORGE_CODE_DAEMONS[m] for m in sorted(missing)]}")
+
+    def test_exempt_daemons_are_genuinely_external(self):
+        """The exempt set must stay disjoint from the must-restart set — a unit
+        can't be both 'runs repo code' and 'external'. Guards a careless edit
+        that double-lists a daemon (which would let a real gap hide as exempt)."""
+        overlap = set(MESHFORGE_CODE_DAEMONS) & set(RESTART_EXEMPT_DAEMONS)
+        assert not overlap, f"daemon(s) {overlap} listed as BOTH code-daemon and exempt"
+
+    def test_red_unrestarted_daemon_is_detected(self):
+        """RED proof — a code-daemon whose name appears on NO restart line is
+        flagged. If this passed, the gate would miss the #79 gap."""
+        update = "run_user_systemctl try-restart meshforge-mini-dudeai.service\n"
+        fleet = ("sync_repo meshforge-gateway /opt/meshforge meshforge-gateway\n"
+                 "sync_local_unit meshforge-map /opt/meshforge\n")
+        restarted = deploy_restarted_units(update, fleet)
+        assert "meshforge-mini-dudeai" in restarted
+        assert "meshforge-gateway" in restarted
+        assert "meshforge-map" in restarted
+        # echo runs repo code but is on no restart line here → the seeded gap:
+        assert "meshforge-echo" not in restarted
+
+    def test_red_hyphen_prefix_does_not_false_match(self):
+        """`meshforge-mini-dudeai` must NOT be considered restarted just because
+        `meshforge-mini-dudeai-claw` is on a restart line — else a real gap on
+        the bare unit would hide behind its longer sibling."""
+        only_claw = "run_user_systemctl try-restart meshforge-mini-dudeai-claw.service\n"
+        restarted = deploy_restarted_units(only_claw)
+        assert "meshforge-mini-dudeai-claw" in restarted
+        assert "meshforge-mini-dudeai" not in restarted
+
+    def test_red_comment_line_is_not_a_wiring(self):
+        """A restart verb inside a comment must NOT count as wiring (the same
+        comment-stripping discipline as the synth-soak checker)."""
+        commented = "# TODO: restart meshforge-echo.service someday\n"
+        assert "meshforge-echo" not in deploy_restarted_units(commented)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# §3b-i — every templates/systemd/ unit has documented, verified provenance
+# ═════════════════════════════════════════════════════════════════════
+
+# The arc spec asks: "every MeshForge-OWNED systemd unit has a templates/systemd/
+# entry" + a REVERSE check that "every template maps to an install site (catch
+# dead templates)." Recon (2026-06-15) found the literal bijection is FALSE on a
+# healthy repo — MeshForge's systemd units are materialized SEVEN different ways:
+#   * shell installer copy/sed (install_noc/nomadnet/meshchatx/lab_traffic)
+#   * update.sh's `*-user.service` glob
+#   * a TUI handler at runtime (meshtasticd-alt ← dual_radio_failover.py)
+#   * manager-box organs hand-enabled on the federator box (backup/ci-status/fleet-health)
+#   * a hand-deployed fleet daemon with no committed installer (watchdog)
+#   * ops band-aids + claw infra hand-deployed (meshtasticd-restart, nats-server)
+#   * inline heredocs (meshforge.service, rnsd.service, meshforge-map.service —
+#     these are owned-but-INLINE, deliberately NOT templated)
+# A guard asserting template↔shell-install bijection would be RED on ~half the
+# templates (all the hand/runtime-deployed ones), forcing a giant allowlist that
+# turns it vacuous — the exact false-guard this arc kills. The arc spec sanctioned
+# the honest alternative: "a curated OWNED_UNITS tuple WITH a provenance comment."
+#
+# So the invariant is REFRAMED to what's true and valuable: every template FILE
+# carries a curated, verified provenance entry, and every entry's file exists
+# (the bijection — disk↔manifest, not disk↔one-installer). This catches the real
+# mistakes: a NEW template added without anyone deciding/documenting how it gets
+# deployed (a template nobody installs is as dead as a daemon nobody restarts),
+# and a deleted/renamed template the manifest still claims. For the machine-
+# checkable kinds (installer/glob/tui) the cited deploy reference is VERIFIED too,
+# so the provenance can't silently rot. Each entry verified 2026-06-15 against the
+# real install/enable call-site (kinds: installer→script names it; glob→update.sh
+# *-user.service loop; tui→handler writes it; hand→hand-deployed, documented-only).
+TEMPLATE_PROVENANCE: dict = {
+    # ── shell-installer-consumed (verified: the named script references it) ──
+    "meshchatx-user.service":            ("installer", "install_meshchatx.sh"),
+    "nomadnet-user.service":             ("installer", "install_nomadnet.sh"),
+    "rnsd-user.service":                 ("installer", "install_noc.sh"),
+    "meshtasticd-native.service":        ("installer", "install_noc.sh"),
+    "meshforge-echo-user.service":       ("installer", "install_lab_traffic.sh"),
+    "meshforge-tracer-user.service":     ("installer", "install_lab_traffic.sh"),
+    "meshforge-tracer-user.timer":       ("installer", "install_lab_traffic.sh"),
+    "meshforge-mini-dudeai.service":       ("installer", "update.sh"),
+    "meshforge-mini-dudeai-dream.service": ("installer", "update.sh"),
+    "meshforge-mini-dudeai-dream.timer":   ("installer", "update.sh"),
+    "meshforge-mini-dudeai-claw.service":  ("installer", "update.sh"),
+    # ── update.sh `*-user.service` glob (verified: filename ends -user.service) ──
+    "meshforge-synth-soak-user.service":   ("glob", "update.sh *-user.service loop → synth-soak.service"),
+    "meshforge-lab-rollup-user.service":   ("glob", "update.sh *-user.service loop → lab-rollup.service"),
+    "moc-drain-snapshot-user.service":     ("glob", "update.sh *-user.service loop → moc-drain-snapshot.service"),
+    "nomadnet-silence-watch-user.service": ("glob", "update.sh *-user.service loop → nomadnet-silence-watch.service"),
+    # ── TUI-handler-deployed at runtime (verified: handler references it) ──
+    "meshtasticd-alt.service":           ("tui", "launcher_tui/handlers/dual_radio_failover.py"),
+    # ── hand-deployed; documented-only (no committed installer by design) ──
+    "meshforge-watchdog.service":  ("hand", "fleet daemon, hand-enabled; no committed "
+                                            "installer; fleet_sync.sh restarts it (#3b-ii)"),
+    "meshforge-backup.service":    ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
+    "meshforge-backup.timer":      ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
+    "meshforge-ci-status.service": ("hand", "manager-box organ (the federator box); ecosystem CI cron (6e0f21f)"),
+    "meshforge-ci-status.timer":   ("hand", "manager-box organ (the federator box); ecosystem CI cron (6e0f21f)"),
+    "meshforge-fleet-health.service": ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
+    "meshforge-fleet-health.timer":   ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
+    "meshtasticd-restart.service": ("hand", "ops band-aid, hand-deployed; weekly meshtasticd restart, upstream VSZ leak (15ea6e4)"),
+    "meshtasticd-restart.timer":   ("hand", "ops band-aid, hand-deployed; weekly meshtasticd restart, upstream VSZ leak (15ea6e4)"),
+    "nats-server.service":         ("hand", "dude-claw NATS infra, claw-brain box only, hand-deployed (a171fec)"),
+    "meshforge-synth-soak-user.timer":   ("hand", "hand-deployed (live on moc); NOT copied by update.sh's "
+                                                  "*-user.service glob — known timer-deploy gap"),
+    "meshforge-lab-rollup-user.timer":   ("hand", "hand-deployed; NOT copied by update.sh glob — known timer-deploy gap"),
+    "moc-drain-snapshot-user.timer":     ("hand", "hand-deployed; NOT copied by update.sh glob — known timer-deploy gap"),
+}
+
+# Drop-in directories (override fragments, not standalone units) — hand-deployed
+# on the fleet per their issue history; documented so a NEW drop-in dir must also
+# be accounted for rather than appearing silently.
+DROPIN_PROVENANCE: dict = {
+    "meshforge-map.service.d": "hand-deployed map start-pre wait-for-rnsd drop-in (cb61d3b)",
+    "rnsd.service.d":          "hand-deployed RNS-fork drop-ins: 10-stop-timeout, 20-exit-on-host-loss (#68/#69)",
+}
+
+
+def _template_files(template_dir: Path) -> set:
+    return {p.name for p in template_dir.iterdir()
+            if p.is_file() and p.suffix in (".service", ".timer")}
+
+
+def _template_dirs(template_dir: Path) -> set:
+    return {p.name for p in template_dir.iterdir() if p.is_dir()}
+
+
+def undocumented_templates(disk_files: set, manifest_keys: set) -> set:
+    """Template files on disk with NO provenance entry — a unit someone added
+    without deciding/documenting how it gets deployed (a dead-template risk)."""
+    return disk_files - manifest_keys
+
+
+def dangling_manifest_entries(manifest_keys: set, disk_files: set) -> set:
+    """Provenance entries whose template file no longer exists — a rename/delete
+    that left the manifest claiming a unit that's gone."""
+    return manifest_keys - disk_files
+
+
+def broken_provenance(manifest: dict, repo: Path) -> dict:
+    """{template: reason} for machine-checkable entries whose cited deploy
+    reference can't be confirmed — so a provenance string can't silently rot.
+      * installer → the named script must exist AND contain the template basename
+      * glob      → the filename must actually end in -user.service (else the
+                    *-user.service loop never matches it)
+      * tui       → the named handler must exist AND reference the basename
+      * hand      → documented-only; just requires a specific (non-stub) detail
+    """
+    broken: dict = {}
+    for name, (kind, detail) in manifest.items():
+        if kind == "installer":
+            script = repo / "scripts" / detail
+            if not script.exists():
+                broken[name] = f"cited installer {detail} not found"
+            elif name not in script.read_text():
+                broken[name] = f"{detail} does not reference {name}"
+        elif kind == "glob":
+            if not name.endswith("-user.service"):
+                broken[name] = "tagged glob but name is not *-user.service"
+        elif kind == "tui":
+            handler = repo / "src" / detail
+            if not handler.exists():
+                broken[name] = f"cited handler {detail} not found"
+            elif name.replace(".service", "") not in handler.read_text():
+                broken[name] = f"{detail} does not reference {name}"
+        elif kind == "hand":
+            if len(detail) < 20:
+                broken[name] = "hand-deployed entry lacks a specific provenance note"
+        else:
+            broken[name] = f"unknown provenance kind {kind!r}"
+    return broken
+
+
+class TestTemplateProvenance:
+    """§3b-i — every templates/systemd/ unit has curated, verified provenance.
+    Reframed from a (false-on-healthy-repo) template↔installer bijection to a
+    disk↔manifest bijection; see the module comment block above for why."""
+
+    _TDIR = SRC.parent / "templates" / "systemd"
+
+    def test_no_undocumented_template(self):
+        assert self._TDIR.is_dir(), f"{self._TDIR} moved — guard would vacuously pass"
+        disk = _template_files(self._TDIR)
+        # Non-vacuity (honest_failure #2): a moved dir / broken filter that found
+        # nothing must FAIL, not pass empty.
+        assert len(disk) >= 25, (
+            f"only {len(disk)} template files found under {self._TDIR} — "
+            f"discovery likely broke; refusing to pass vacuously")
+        missing = undocumented_templates(disk, set(TEMPLATE_PROVENANCE))
+        assert not missing, (
+            f"template(s) {sorted(missing)} have NO provenance entry in "
+            f"TEMPLATE_PROVENANCE → an undocumented unit nobody decided how to "
+            f"deploy (dead-template risk). Add an entry recording how it is "
+            f"installed/enabled (installer/glob/tui/hand), or delete the template.")
+
+    def test_no_dangling_manifest_entry(self):
+        disk = _template_files(self._TDIR)
+        dangling = dangling_manifest_entries(set(TEMPLATE_PROVENANCE), disk)
+        assert not dangling, (
+            f"TEMPLATE_PROVENANCE claims template(s) {sorted(dangling)} that no "
+            f"longer exist on disk — a rename/delete left the manifest stale.")
+
+    def test_provenance_references_resolve(self):
+        broken = broken_provenance(TEMPLATE_PROVENANCE, SRC.parent)
+        assert not broken, (
+            f"provenance entr(ies) cite a deploy reference that can't be "
+            f"confirmed: {broken}. Fix the citation (the install site moved/"
+            f"renamed) or re-classify the entry.")
+
+    def test_dropin_dirs_documented(self):
+        disk_dirs = _template_dirs(self._TDIR)
+        missing = disk_dirs - set(DROPIN_PROVENANCE)
+        assert not missing, (
+            f"drop-in dir(s) {sorted(missing)} under templates/systemd/ have no "
+            f"DROPIN_PROVENANCE entry — document how/where they are deployed.")
+        # And no stale dropin entry:
+        assert not (set(DROPIN_PROVENANCE) - disk_dirs), (
+            "DROPIN_PROVENANCE references a drop-in dir that no longer exists")
+
+    def test_red_undocumented_template_caught(self):
+        """RED proof — a disk file absent from the manifest is flagged."""
+        disk = {"known.service", "ghost.service"}
+        manifest = {"known.service"}
+        assert undocumented_templates(disk, manifest) == {"ghost.service"}
+
+    def test_red_dangling_entry_caught(self):
+        """RED proof — a manifest key with no disk file is flagged."""
+        assert dangling_manifest_entries({"gone.service"}, set()) == {"gone.service"}
+
+    def test_red_installer_not_naming_template_caught(self, tmp_path):
+        """RED proof — an installer entry whose script does NOT contain the
+        template basename is flagged (catches a renamed template the installer
+        no longer copies — the sharpest deploy-rot bug)."""
+        (tmp_path / "scripts").mkdir()
+        (tmp_path / "scripts" / "fake_install.sh").write_text("echo nothing here\n")
+        m = {"renamed.service": ("installer", "fake_install.sh")}
+        broken = broken_provenance(m, tmp_path)
+        assert "renamed.service" in broken
+
+    def test_red_glob_entry_must_be_user_service(self, tmp_path):
+        """RED proof — a `glob` entry not ending in -user.service is flagged
+        (update.sh's loop would never copy it)."""
+        m = {"wrong.service": ("glob", "claims the *-user.service loop")}
+        assert "wrong.service" in broken_provenance(m, tmp_path)
+
+
+# ═════════════════════════════════════════════════════════════════════
+# §3c — "service active ≠ doing the job": each long-lived daemon's OUTPUT
+#        is asserted by a probe (or external verifier), never just is-active
+# ═════════════════════════════════════════════════════════════════════
+
+# The arc spec reframes §3c (the hardest, "expect the first cut wrong") from one
+# clever guard into a COVERAGE test: every long-lived MeshForge-code daemon must
+# have something that asserts its USER-FACING OUTPUT (a fresh timestamp, a
+# /healthz response, a delivery counter advancing, a written envelope) — NOT
+# merely `systemctl is-active`. The "verify the work-holder" lesson: a process
+# can be active while producing nothing.
+#
+# Verified 2026-06-15 against the probe modules + run_all_probes + honest_status.sh.
+# CORE = fleet-wide MeshForge-code daemons, each mapped to its OUTPUT mechanism:
+#   * probe    → a probe_* function, asserted below to be CALLED in run_all_probes
+#                AND to read output (not a process-state check).
+#   * external → an out-of-process verifier (used for the watchdog, whose own
+#                liveness a self-probe CANNOT catch: a wedged loop never runs the
+#                probe — circular. honest_status.sh checks its ts freshness).
+DAEMON_OUTPUT_COVERAGE: dict = {
+    "meshforge-gateway":     ("probe", ("probe_delivery_write_canary",
+                                        "probe_queue_backlog",
+                                        "probe_delivery_confirmation_stall")),
+    "meshforge-map":         ("probe", ("probe_http_local",)),
+    "meshforge-mini-dudeai": ("probe", ("probe_history_write_failure",)),
+    "rnsd":                  ("probe", ("probe_rns_rpc_responsive",
+                                        "probe_rns_shared_instance_responsive")),
+    "meshforge-watchdog":    ("external", "honest_status.sh watchdog ts-freshness (WD_STALE_S)"),
+}
+
+# Probes that check ONLY process-state (is-active / pgrep) — these must NEVER be
+# offered as a §3c "output" mechanism. Listing one here is the trap the spec
+# warns against; the guard rejects it.
+PROCESS_STATE_PROBES: set = {"probe_service_inactive"}
+
+# AUX = single-box / transitively-covered daemons. Documented (not hard-gated by
+# a probe-wiring assertion) because forcing a dedicated probe for a niche
+# single-box daemon would be low-value churn — but each MUST carry an honest
+# coverage note so the gap is visible, never silent.
+AUX_DAEMON_COVERAGE: dict = {
+    "meshforge-echo": "transitive — probe_tracer_peer_unreachable: a dead echo "
+                      "responder surfaces as tracer no-route to that box",
+    "meshforge-mini-dudeai-claw": "claw-brain box only; runs the same mini engine; "
+                      "no claw-specific output probe yet — a documented single-box gap",
+    "nomadnet-silence-watch": "is itself an observability organ (watches nomadnet "
+                      "MQTT silence); its output is alerts, not metered by a meta-probe",
+}
+
+
+def probe_calls_reachable_from(runner_src: str, entry: str = "run_all_probes") -> set:
+    """All function names CALLED transitively from ``entry`` in the runner — a
+    coverage probe is 'wired' iff its name is in this set. BFS over the runner's
+    own call graph (run_all_probes may delegate to helpers it defines), reusing
+    _parse_func_table. Raises KeyError if ``entry`` is gone (fail loud, not empty
+    — honest_failure #4)."""
+    table = _parse_func_table(runner_src)
+    if entry not in table:
+        raise KeyError(f"entry {entry!r} not found in runner source")
+    reachable_calls, seen, frontier = set(), set(), [entry]
+    while frontier:
+        fn = frontier.pop()
+        if fn in seen:
+            continue
+        seen.add(fn)
+        _, calls = table.get(fn, (set(), set()))
+        reachable_calls |= calls
+        for c in calls:
+            if c in table and c not in seen:
+                frontier.append(c)
+    return reachable_calls
+
+
+class TestDaemonOutputCoverage:
+    """§3c — every long-lived MeshForge-code daemon has an OUTPUT-asserting
+    coverage mechanism, not just an is-active check. A coverage test (per the
+    spec's reframe), not one clever guard."""
+
+    def _runner_src(self):
+        p = SRC / "utils" / "watchdog_runner.py"
+        assert p.exists(), f"{p} moved — coverage guard would vacuously pass"
+        return p.read_text()
+
+    def _probe_defined_names(self):
+        """All probe_* function names DEFINED across the split probe modules."""
+        names = set()
+        for path in sorted(glob.glob(str(SRC / "utils" / "watchdog_probes*.py"))):
+            for n in _parse_func_table(Path(path).read_text()):
+                if n.startswith("probe_"):
+                    names.add(n)
+        assert len(names) >= 15, (
+            f"only {len(names)} probe_* defs found — discovery broke; not passing vacuously")
+        return names
+
+    def test_core_daemon_probes_are_wired_output_checks(self):
+        called = probe_calls_reachable_from(self._runner_src())
+        assert len(called) >= 20, (
+            f"only {len(called)} calls reachable from run_all_probes — parser "
+            f"likely broke; refusing to pass vacuously")
+        defined = self._probe_defined_names()
+        for daemon, (kind, mech) in DAEMON_OUTPUT_COVERAGE.items():
+            if kind != "probe":
+                continue
+            for probe in mech:
+                assert probe not in PROCESS_STATE_PROBES, (
+                    f"{daemon}: {probe} is a process-state (is-active) check — "
+                    f"NOT an output assertion. §3c forbids it as coverage.")
+                assert probe in defined, (
+                    f"{daemon}: coverage probe {probe} is not defined in any "
+                    f"watchdog_probes* module (renamed/removed?).")
+                assert probe in called, (
+                    f"{daemon}: output probe {probe} exists but is NOT called in "
+                    f"run_all_probes → it can't actually watch the daemon. Wire "
+                    f"the probe call into watchdog_runner.run_all_probes.")
+
+    def test_watchdog_external_freshness_mechanism_exists(self):
+        """The watchdog's output-liveness is asserted EXTERNALLY (a self-probe
+        would be circular). honest_status.sh must carry the ts-freshness gate."""
+        hs = (REPO / "scripts" / "honest_status.sh")
+        assert hs.exists(), "honest_status.sh moved — watchdog §3c coverage unverifiable"
+        text = hs.read_text()
+        assert "WD_STALE_S" in text and "stale" in text, (
+            "honest_status.sh lost the watchdog ts-freshness gate (WD_STALE_S) — "
+            "a stale-but-valid watchdog.json would read 'clean' again (the §3c "
+            "false-green for the watchdog daemon itself).")
+
+    def test_coverage_set_matches_code_daemon_inventory(self):
+        """Closed-set linkage (honest_failure #7): §3c's covered daemons must be
+        EXACTLY the §3b-ii MeshForge-code daemons (+ rnsd, the substrate). Add a
+        new code daemon → this FAILS until its output coverage is classified, so
+        a daemon can never be deployed+restarted yet silently un-output-watched."""
+        covered = set(DAEMON_OUTPUT_COVERAGE) | set(AUX_DAEMON_COVERAGE)
+        expected = set(MESHFORGE_CODE_DAEMONS) | {"rnsd"}
+        assert covered == expected, (
+            f"§3c coverage set drifted from the code-daemon inventory. "
+            f"Only in §3c: {sorted(covered - expected)}; "
+            f"missing from §3c (classify their output coverage): "
+            f"{sorted(expected - covered)}")
+
+    def test_aux_entries_carry_an_honest_note(self):
+        for daemon, note in AUX_DAEMON_COVERAGE.items():
+            assert len(note) >= 30, (
+                f"{daemon}: aux coverage note too thin — state HOW its output is "
+                f"(or is not) watched, so the gap stays visible.")
+
+    def test_red_unwired_probe_detected(self):
+        """RED proof — a probe named as coverage but NOT called in the runner is
+        caught. If this passed, §3c would bless a daemon whose probe never runs."""
+        runner = "def run_all_probes():\n    sig = probe_real()\n    return []\n"
+        called = probe_calls_reachable_from(runner)
+        assert "probe_real" in called
+        assert "probe_ghost" not in called  # the seeded un-wired coverage probe
+
+    def test_red_isactive_mechanism_is_rejected(self):
+        """RED proof — the §3c trap: offering a process-state probe as 'output'
+        coverage must be detectable. The bound check below mirrors the loop in
+        test_core_daemon_probes_are_wired_output_checks."""
+        bad_mech = ("probe_service_inactive",)
+        assert any(p in PROCESS_STATE_PROBES for p in bad_mech), (
+            "the is-active sentinel set failed to flag a process-state probe — "
+            "the §3c 'active ≠ doing the job' guard would be defeated")
+
+    def test_red_missing_entry_fails_loud(self):
+        """A renamed run_all_probes raises rather than passing an empty call set."""
+        with pytest.raises(KeyError):
+            probe_calls_reachable_from("def other():\n    pass\n")
