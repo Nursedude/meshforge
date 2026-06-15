@@ -128,6 +128,34 @@ direct fire showed `in_flight_partial=1` + `glob_sees_partial=0` +
 script false-fired at 20:08. (persistent_issues.md is at the 40k MF012 cap, so
 this lives here, not there.)
 
+## Step 5 — broad sweep for OTHER instances of the blind-spot classes (2026-06-15)
+Now that the lenses exist (steps 3–4), swept the codebase for further instances
+via four parallel read-only Explore agents (delegated discovery to keep the
+session's context clean — a tail-of-session sweep with cluttered context is the
+false-confidence failure this arc kills). Result: **broadly clean.**
+- **3a false-green displays:** NO new instances. All `*_pct/_rate/_ratio`
+  operator fields are within-population or clamped (`uptime_percent`
+  `min(100,…)`, `queue_usage_pct`, `dedup_pct` denom⊇numer, `success_rate`,
+  `drop_rate`). #74 is the only one that was ever cross-population, and it's fixed.
+- **3b registry wiring:** NO gaps. DropReason/DELIVERY_FAILURE_REASONS guarded
+  by `TestDeliveryFailureReasonsParity`; mini-dudeai source/action kinds
+  schema-pinned with drift tests; DeliveryState guarded; `Category`/
+  `MessageType`/`Protocol` are classification-only (no dispatch → no gap).
+- **3c reachability (MF018):** NO unreachable surfaces. 31 map endpoints all
+  routed in `map_http_handler`; CLI tools wired; TUI menu tags all dispatch;
+  `commands/` internal modules intentional.
+- **dead operator instructions:** one real (cosmetic) fix — `config/lora.py`
+  tip showed `http://client.meshtastic.org`; the live web client is HTTPS, so
+  → `https://`. NOTE: the discovery agent *suggested* `app.meshtastic.org`;
+  WebFetch proved that host is DEAD (ECONNREFUSED) while `client.meshtastic.org`
+  loads — an unverified false-correction caught by verifying before editing.
+  No http→https lint guard added (would false-fire on legit local URLs).
+
+Sweep verdict: the known instances are guarded (steps 1–4); no NEW instances of
+the blind-spot classes remain. Deferred §3b/§3c items (systemd-unit-template,
+deploy-restart-hook, "service active ≠ doing the job") are the remaining arc
+work — they need NEW guards, not a sweep.
+
 ## Resume in a clean session
 1. `bash scripts/honest_status.sh` — establish ground truth (don't trust this doc).
 2. `git log --oneline 6bc4a08..HEAD` — read the arc's commits.

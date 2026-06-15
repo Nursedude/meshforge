@@ -1005,7 +1005,7 @@ class LoRaConfigurator:
             console.print("  [bold]6[/bold]. Apply & Save to Device")
             console.print("\n  [bold]0[/bold]. Back (discard changes)")
             console.print("  [bold]m[/bold]. Main Menu")
-            console.print("\n[dim]Tip: Use meshtastic CLI or http://client.meshtastic.org for full config[/dim]")
+            console.print("\n[dim]Tip: Use meshtastic CLI or https://client.meshtastic.org for full config[/dim]")
 
             choice = Prompt.ask("\n[cyan]Select option[/cyan]",
                               choices=["0", "1", "2", "3", "4", "5", "6", "m"], default="0")
