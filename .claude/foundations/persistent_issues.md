@@ -393,28 +393,29 @@ cases, + closed-enum gate bump. Regime remainder (wire live crons; triage the
 
 ---
 
-## Issue #79: mini-dudeai hardening — deploy gap, memory guards, rotation, self-probes (2026-06-09)
+## Issue #79: mini-dudeai hardening + the deploy-restart gap class (2026-06-09, extended 06-15)
 
-Deep-research audit of mini-dudeai (MeshForge-OWNED deterministic rule-loop agent;
-NO MeshAnchor twin — MA's `src/agent/` is an unrelated command-exec daemon) found 1
-defect + several risks, all fixed in one pass. (1) **DEPLOY GAP** (defect): nothing
-restarted the mini USER daemon after `git pull` (fleet_sync/update.sh only restart the
-3 SYSTEM units) — added user-bus `sync_user_unit`/`sync_local_user_unit`, an update.sh
-user-unit restart, and install_noc enrollment of all 3 mini user units (XDG_RUNTIME_DIR
-bridge, no hardcoded user). (2) **MEMORY.md over the ~24KB load limit, unguarded**
-(defect): `memory_apply.check_index_size` warns (NEVER blocks an append) + `demote_memory`
-atomically moves a stale pointer to MEMORY_ARCHIVE.md + `probe_memory_index_oversize`.
-(3) unbounded append-only growth: `_rotate_if_needed` (atomic, keep-newest, valid JSONL)
-on history/deltas/ledger (1/1/2 MB caps). (4) cadence pinned `--model`
+Audit of mini-dudeai (MeshForge-OWNED rule-loop agent; no MA twin — MA's `src/agent/`
+is unrelated) found 1 defect + risks, fixed in one pass. (1) **DEPLOY GAP** (defect):
+nothing restarted the mini USER daemon after `git pull` (fleet_sync/update.sh restarted
+only the 3 SYSTEM units) — added user-bus `sync_user_unit`/`sync_local_user_unit`, an
+update.sh user-unit restart, and install_noc enrollment of all 3 mini user units.
+**Extended 06-15 (the whole deploy-restart class):** MF `meshforge-echo` +
+`nomadnet-silence-watch` wired into update.sh + fleet_sync; §3b-ii guard
+`TestDeployRestartHook` pins it red-test-first; ported to MeshAnchor incl. SYSTEM
+`meshanchor`/`-map` (CODE_CHANGED-gated; no MA fleet_sync). Arc: `honest_dev_env_arc.md`.
+(2) **MEMORY.md over the ~24KB load limit** (defect): `check_index_size` warns (never
+blocks) + `demote_memory` → MEMORY_ARCHIVE.md + `probe_memory_index_oversize`.
+(3) unbounded append growth: `_rotate_if_needed` (atomic, keep-newest, valid JSONL) on
+history/deltas/ledger (1/1/2 MB). (4) cadence pinned `--model`
 (`MINI_DUDEAI_CADENCE_MODEL`, default opus). (5) observation-only invariant (no
-subprocess/systemctl in engine+sources+actions) now **lint-pinned MF021** + test-pinned.
-(6) rules promotion writes a `.bak` (rollback) + `probe_rules_seed_drift` (live behind
-role seed). (8) `probe_history_write_failure` (loop alive + fires advancing but history
-mtime frozen). All 3 new probes wired in `watchdog_runner.run_all_probes`, classes in the
-closed enum (issue_ref 79). (7) schema-vs-validator drift test pins
-`mini_dudeai_config.schema.json` to the hand-rolled validator. Tests: +~90 across
-`test_mini_dudeai_*` / `test_watchdog_probes`. ⚠️ Probes are DEGRADED-only + self-guard
-None off-box; deploy user-bus restart needs linger (install_noc enables it).
+subprocess/systemctl in engine+sources+actions) lint-pinned **MF021** + test-pinned.
+(6) rules promotion writes a `.bak` + `probe_rules_seed_drift`. (8)
+`probe_history_write_failure` (loop alive + fires advancing but history mtime frozen).
+All 3 new probes wired in `run_all_probes`, classes in the closed enum (issue_ref 79).
+(7) schema-vs-validator drift test pins `mini_dudeai_config.schema.json` to the
+validator. Tests: +~90. ⚠️ Probes DEGRADED-only + self-guard None off-box; deploy
+user-bus restart needs linger (install_noc enables it).
 
 
 ---
