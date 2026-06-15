@@ -50,4 +50,48 @@ if [ "$rc" -ne 0 ]; then
     echo "  git push --no-verify"
     exit 1
 fi
+
+# Regression guards — the architectural WIRING invariants (seed coverage, RNS
+# chokepoint, TCP/service contracts, operator-value leaks). Fast (~4s) and
+# env-independent. pre-commit runs these too; re-running at push is the backstop
+# for a --no-verify commit, or a commit made while the hook was inactive (the
+# core.hooksPath gap found 2026-06-15). This is the "can't push mis-wired work"
+# gate.
+echo "Pre-push: regression guards (wiring invariants)..."
+if ! python3 -m pytest "$REPO_ROOT/tests/test_regression_guards.py" -x -q >/dev/null 2>&1; then
+    echo ""
+    echo "Regression guard FAILED — a wiring/anti-pattern regression. Run:"
+    echo "  python3 -m pytest tests/test_regression_guards.py -v"
+    echo "Override (sparingly): git push --no-verify"
+    exit 1
+fi
+
+# Parent-CI advisory — don't silently STACK onto an already-red origin/main
+# (the 2026-05-03 cascade: two pushes compounded a red baseline). Best-effort
+# and WARN-only: never blocks (gh/network may be down, or you may be pushing
+# the very fix). Honest about uncertainty — silent when it can't tell.
+if command -v gh >/dev/null 2>&1; then
+    base=$(git rev-parse origin/main 2>/dev/null)
+    if [ -n "${base:-}" ] && gh run list --branch main --limit 20 \
+         --json headSha,conclusion,status >/tmp/.prepush_ci.json 2>/dev/null; then
+        cc=$(base="$base" python3 - <<'PY' 2>/dev/null
+import json, os
+sha = os.environ["base"]
+try:
+    for r in json.load(open("/tmp/.prepush_ci.json")):
+        if r.get("headSha") == sha:
+            print(r.get("conclusion") or r.get("status") or "")
+            break
+except Exception:
+    pass
+PY
+)
+        if [ "$cc" = "failure" ]; then
+            echo "WARN: origin/main tip ${base:0:7} CI=FAILURE — you're pushing onto RED."
+            echo "      (advisory only; consider whether this push fixes it)"
+        fi
+    fi
+fi
+
+echo "Pre-push checks passed."
 exit 0

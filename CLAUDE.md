@@ -196,6 +196,19 @@ Before `git push origin main`, mentally run:
 
 If any line says "no", fix before pushing — every fleet box pulls within seconds and runs the change.
 
+**Hooks must be ON** (found OFF 2026-06-15 — `core.hooksPath` pointed at the
+empty `.git/hooks`, so the #29 spine was dormant): confirm
+`git config core.hooksPath` says `.githooks`. The pre-commit hook runs lint +
+regression guards + collection sweep; the pre-push hook re-runs lint +
+regression guards (the "can't push mis-wired work" gate) + a parent-CI advisory.
+
+**After pushing, verify it actually landed — don't trust the summary.** Run
+`bash scripts/honest_status.sh` — the operator-owned gate that re-derives state
+from external ground truth (CI conclusion for HEAD, per-box SHA convergence,
+full suite, lint, live `confirmation_rate ≤ 1.0`, watchdog signals). `exit 0`
+= fully verified; `UNKNOWN` (unreachable / CI-pending) is never counted as
+pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
+
 ---
 
 ## Research Docs (`.claude/` — 93 files)
