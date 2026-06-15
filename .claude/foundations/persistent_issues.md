@@ -458,37 +458,46 @@ ratchet in via merges; unstamped boxes can't false-alarm).
 
 ## kernel_reboot_pending probe — the 6.12.75-straggler guard (2026-06-09)
 
-Version-updates arc: moc/moc1/moc3/meshanchor-server silently ran kernel
-6.12.75 while 6.18.x sat installed or available (moc1 had 6.18.33 INSTALLED
-but not running for days) — nothing paged. New `probe_kernel_reboot_pending`
-(`kernel_reboot_pending`, degraded, no issue#): pending = `/var/run/reboot-required`
-exists OR a newer SAME-FLAVOR kernel under `/lib/modules` than
-`os.uname().release` — Pis install rpi-v8 AND rpi-2712 side by side, so never
-compare across flavors. Read-only/no-sudo; indeterminate shapes (unreadable/
-empty modules dir, unparseable release, no same-flavor sibling) stay silent
-while the flag-file leg works independently; 2-tick debounce. Fix: schedule a
-clean reboot (planned reboots through clean shutdown record boot_health
-clean-exit). Routed in both role seeds; 12 tests (`test_kernel_reboot_*`).
+`probe_kernel_reboot_pending` (`kernel_reboot_pending`, degraded, no issue#):
+newer same-flavor kernel under `/lib/modules` than the running `os.uname()`, OR
+`/var/run/reboot-required`. Flavor-aware (rpi-v8 ≠ rpi-2712); read-only; 2-tick
+debounce; both seeds; 12 tests. **Full body trimmed to
+`persistent_issues_archive.md` 2026-06-15 (MF012 headroom).**
+
+
+---
+
+## synth_soak_degraded probe — the unwatched delivery canary (2026-06-15)
+
+Gateway traffic-flow audit found the **hourly LXMF synth soak watched NOTHING**:
+`meshforge-synth-soak.timer` exercises the gateway's real round-trip path + writes
+a `pass_envelope` (0.95 ok-ratio), but the fire script **always `exit 0`**, no
+`cron_verdict`, and `probe_lxmf_process_wedge` checks the *process* not the
+*result* — so an envelope regression OR a silent timer paged no one. New
+`probe_synth_soak_degraded` (`synth_soak_degraded`, degraded, no issue#,
+`watchdog_probes_gateway.py`), two legs: **SILENCE** (newest `synth-*.json` >~2.5
+cadences old = exerciser stopped — silence IS the failure for a fixed-cadence
+generator, inverse of `delivery_confirmation_stall`) + **ENVELOPE** (`pass_envelope`
+false → ok_ratio + worst pair). Reads operator `~/.local/state/.../synth_soak`
+direct (root-safe via `_find_operator_user`, never escalate). Self-guards: dir
+absent → INERT; no file → held; unparseable newest → candidate but 2-tick debounce
+rides a torn mid-write; `pass_envelope` absent → indeterminate (held, never reads
+healthy). Both seeds (`synth_soak_degraded_any`); 9 tests + closed-enum bump. The
+`confirmation_rate` cross-population DISPLAY residual (#74, live 1.64) left as-is —
+the alerting path already judges per-population. Activation: `git pull --ff-only`
+(soak-safe), then restart `meshforge-watchdog` + promote seeds (runbook).
 
 
 ---
 
 ## aredn_source_dark probe — the dormant-AREDN-organ guard (2026-06-12, Phase 0)
 
-AREDN-arc Phase 0 found the AREDN-site box itself with its LOCAL AREDN organ
-silently dormant: `aredn_node_ips` never configured, every map "AREDN" node
-coming from the worldmap fallback — the loss was invisible. New
 `probe_aredn_source_dark` (`aredn_source_dark`, degraded, no issue#): intent =
-the map-service user's `map_settings.json` `aredn_node_ips` (sandboxed-root
-direct read, never escalate); observation = local `/api/status`
-`source_diagnostics.aredn`. Fires (2-tick debounce) on `unreachable` (node/LAN
-dark) or `not_configured` REPORTED BY A RUNNING SERVICE while the file carries
-IPs (service predates config — fix: restart meshforge-map). Self-guards None:
-no IPs configured (inert on the 95%), status unreachable/diagnostics absent
-(streak HELD — http_local owns the wedge; a status hiccup must not erase
-confirmed-dark progress), `no_positions`/`yielded>0` = alive (reset). Runner-
-gated on meshforge-map expected-active (moc3 never runs it). Routed in both
-role seeds; 10 tests (`test_aredn_source_dark_*`).
+map-user `map_settings.json` `aredn_node_ips`; observation = local `/api/status`
+`source_diagnostics.aredn`. Fires (2-tick) on `unreachable`/`not_configured`-by-
+a-running-service-with-IPs (fix: restart meshforge-map). Self-guards INERT/held;
+runner-gated on meshforge-map active. Both seeds; 10 tests. **Full body trimmed
+to `persistent_issues_archive.md` 2026-06-15 (MF012 headroom).**
 
 
 ---

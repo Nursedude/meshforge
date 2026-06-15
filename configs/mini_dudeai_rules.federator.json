@@ -413,6 +413,26 @@
       "annotation": "MF Issue #74 (2026-06-06): sends keep flowing but the recent-ring confirm rate collapsed (<=50% degraded, <=10% wedge, >=20 ring sends). The bridge self-report reads HEALTHY while shouting into a void \u2014 check RNS paths to fan-out peers + /api/gateway/delivery drop_reasons."
     },
     {
+      "id": "synth_soak_degraded_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "synth_soak_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] synth soak degraded/dark",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "test_tube"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "MF synth-soak watch (2026-06-15): the hourly LXMF round-trip exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope (pass_envelope=false) or went DARK (no fresh result in ~2.5 cadences). The synth canary was previously unwatched \u2014 the fire script always exits 0 and nothing consumed pass_envelope. Check meshforge-synth-soak.timer (systemd --user) + ~/.local/state/meshforge/synth_soak/fire.log; for an envelope fail, the detail carries the worst pair \u2014 also check /api/gateway/delivery drop_reasons. Self-guards INERT on boxes that don't run the soak."
+    },
+    {
       "id": "unexpected_reboot_alert",
       "match": {
         "kind": "unexpected_reboot",

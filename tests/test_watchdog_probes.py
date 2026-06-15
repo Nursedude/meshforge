@@ -47,6 +47,7 @@ from utils.watchdog_probes import (  # noqa: E402
     MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
+    probe_synth_soak_degraded,
     probe_fd_exhaustion,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
@@ -112,6 +113,7 @@ def test_signal_classes_closed_enum_is_documented():
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
         "dep_version_drift",            # 2026-06-12 recurring update class
+        "synth_soak_degraded",          # 2026-06-15 synth-soak watch
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -2646,6 +2648,184 @@ def test_queue_backlog_none_on_unexpected_shape(tmp_path):
                    {"error": "message_queue_unavailable"})):
         sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
     assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-15 — synth_soak_degraded (the gateway round-trip exerciser,
+# previously unwatched: fire script always exits 0, nothing read pass_envelope)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _write_synth(state_dir, stamp, *, pass_envelope=True, ok_ratio=1.0,
+                 threshold=0.95, total_ok=600, total_samples=600,
+                 worst_fail=0.0, raw=None, age_s=0.0, now=None):
+    """Write a synth-<stamp>.json into state_dir, returning its path.
+
+    raw= writes literal bytes (for the unparseable case). age_s/now sets the
+    file mtime to (now - age_s) so the staleness leg can be exercised
+    deterministically without sleeping.
+    """
+    os.makedirs(state_dir, exist_ok=True)
+    path = os.path.join(state_dir, f"synth-{stamp}.json")
+    if raw is not None:
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(raw)
+    else:
+        doc = {
+            "pattern": "burst", "n_users": 10,
+            "pass_envelope": pass_envelope, "ok_ratio": ok_ratio,
+            "ok_ratio_threshold": threshold, "total_ok": total_ok,
+            "total_samples": total_samples,
+            "pair_results": [
+                {"user": "synth-u0", "peer": "peer-ok", "samples": 12,
+                 "ok": 12, "fail_pct": 0.0},
+                {"user": "synth-u9", "peer": "peer-bad", "samples": 12,
+                 "ok": 12 - int(worst_fail * 12 / 100), "fail_pct": worst_fail},
+            ],
+        }
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+    if now is not None:
+        os.utime(path, (now - age_s, now - age_s))
+    return path
+
+
+def test_synth_soak_inert_when_dir_absent(tmp_path):
+    """A box that doesn't run the synth soak (no state dir) → None, never a
+    false alarm — unobservable is not degraded."""
+    missing = str(tmp_path / "nope" / "synth_soak")
+    sig = probe_synth_soak_degraded(
+        state_dir=missing, debounce_path=str(tmp_path / "s.json"))
+    assert sig is None
+
+
+def test_synth_soak_inert_when_no_result_files(tmp_path):
+    """Dir present but empty (never ran / freshly installed) → None (held),
+    distinct from a stale present file which fires."""
+    sdir = tmp_path / "synth_soak"
+    sdir.mkdir()
+    sig = probe_synth_soak_degraded(
+        state_dir=str(sdir), debounce_path=str(tmp_path / "s.json"))
+    assert sig is None
+
+
+def test_synth_soak_healthy_pass_envelope_none(tmp_path):
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    _write_synth(sdir, "20260615T170721Z", pass_envelope=True,
+                 age_s=60, now=now)
+    sig = probe_synth_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=str(tmp_path / "s.json"))
+    assert sig is None
+
+
+def test_synth_soak_envelope_fail_fires_after_debounce(tmp_path):
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    sp = str(tmp_path / "s.json")
+    _write_synth(sdir, "20260615T170721Z", pass_envelope=False,
+                 ok_ratio=0.83, threshold=0.95, total_ok=498,
+                 total_samples=600, worst_fail=25.0, age_s=60, now=now)
+    # First tick: candidate seen, debounce suppresses.
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+    # Second consecutive tick: fires.
+    sig = probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    assert sig is not None
+    assert sig.cls == "synth_soak_degraded"
+    assert sig.severity == "degraded"
+    assert sig.subject == "meshforge-gateway"
+    assert sig.issue_ref is None
+    assert "0.83" in sig.detail
+    assert "498/600" in sig.detail
+    # Worst pair surfaced.
+    assert "peer-bad" in sig.detail and "fail" in sig.detail
+
+
+def test_synth_soak_silence_fires_after_debounce(tmp_path):
+    """A present-but-stale newest file (timer dark) fires — silence IS the
+    failure mode for a fixed-cadence generator."""
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    sp = str(tmp_path / "s.json")
+    # 4h old (> 9000s stale threshold), but pass_envelope True — staleness
+    # must win regardless of the (untrustworthy, old) envelope value.
+    _write_synth(sdir, "20260615T120721Z", pass_envelope=True,
+                 age_s=4 * 3600, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+    sig = probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    assert sig is not None
+    assert sig.severity == "degraded"
+    assert "DARK" in sig.detail
+
+
+def test_synth_soak_unparseable_fresh_rides_mid_write(tmp_path):
+    """A torn mid-write newest file is a candidate, but the debounce rides it
+    out: by the next tick the writer finished and the file is healthy → no
+    fire, streak reset."""
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    sp = str(tmp_path / "s.json")
+    _write_synth(sdir, "20260615T170721Z", raw='{"started_at": "2026',
+                 age_s=10, now=now)  # truncated JSON
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+    # Writer finished — same newest file now valid + passing.
+    _write_synth(sdir, "20260615T170721Z", pass_envelope=True,
+                 age_s=5, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+    # Streak was reset, so a later single transient won't immediately fire.
+    with open(sp, encoding="utf-8") as fh:
+        assert json.load(fh)["streak"] == 0
+
+
+def test_synth_soak_unparseable_persistent_fires(tmp_path):
+    """A newest file that stays unreadable across ticks (writer crashed
+    mid-write, not a transient) DOES fire."""
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    sp = str(tmp_path / "s.json")
+    _write_synth(sdir, "20260615T170721Z", raw='not json at all',
+                 age_s=120, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+    sig = probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    assert sig is not None
+    assert "unreadable" in sig.detail
+
+
+def test_synth_soak_recovery_resets_streak(tmp_path):
+    """One failing tick then a pass clears the streak — a single later failure
+    can't immediately fire (the debounce truly requires CONSECUTIVE ticks)."""
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    sp = str(tmp_path / "s.json")
+    _write_synth(sdir, "20260615T160721Z", pass_envelope=False, age_s=60, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None  # streak=1
+    # Recovery.
+    _write_synth(sdir, "20260615T170721Z", pass_envelope=True, age_s=10, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None  # reset
+    with open(sp, encoding="utf-8") as fh:
+        assert json.load(fh)["streak"] == 0
+    # A fresh single failure now → suppressed (streak back to 1, not 2).
+    _write_synth(sdir, "20260615T180721Z", pass_envelope=False, age_s=10, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+
+
+def test_synth_soak_pass_envelope_absent_is_held_not_healthy(tmp_path):
+    """A parseable fresh file MISSING pass_envelope is indeterminate (a shape
+    regression must not read as healthy): it neither fires nor resets a
+    prior streak."""
+    now = 1_000_000.0
+    sdir = str(tmp_path / "synth_soak")
+    sp = str(tmp_path / "s.json")
+    # Seed a streak of 1 via a failing tick.
+    _write_synth(sdir, "20260615T160721Z", pass_envelope=False, age_s=60, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None  # streak=1
+    # Newest file now parseable but has NO pass_envelope key → held.
+    _write_synth(sdir, "20260615T170721Z",
+                 raw='{"pattern": "burst", "n_users": 10}', age_s=10, now=now)
+    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
+    # Streak must NOT have been reset to 0 (indeterminate holds it).
+    with open(sp, encoding="utf-8") as fh:
+        assert json.load(fh)["streak"] == 1
 
 
 # ─────────────────────────────────────────────────────────────────────

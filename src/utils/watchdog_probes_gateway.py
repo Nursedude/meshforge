@@ -365,3 +365,250 @@ def probe_delivery_confirmation_stall(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Probe: synth soak degraded / silent (2026-06-15)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH = "/var/lib/meshforge/synth_soak_debounce.json"
+
+# The synth soak fires hourly (meshforge-synth-soak.timer OnCalendar=*:07:00).
+# Treat it as DARK only after ~2.5 cadences with no fresh result — two missed
+# runs, so a single skipped/slow fire (RandomizedDelaySec, a long run, a
+# Persistent=true catch-up after brief downtime) never false-alarms.
+_SYNTH_SOAK_CADENCE_S = 3600.0
+_SYNTH_SOAK_STALE_AFTER_S = 9000.0
+
+
+def _resolve_synth_soak_dir() -> Optional[str]:
+    """Resolve the operator's synth_soak state dir, root-context safe.
+
+    The synth soak runs as the operator's systemd --user timer, so its output
+    lives under the operator home — the watchdog (sandboxed root) derives that
+    home from the operator UID and reads it directly, never escalating (the
+    rns_version_drift / cron_verdict lesson). None when no operator user is
+    resolvable (indeterminate — never a false alarm).
+    """
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        op = None
+    if not op:
+        return None
+    try:
+        import pwd
+        home = pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+    return os.path.join(home, ".local", "state", "meshforge", "synth_soak")
+
+
+def _load_synth_streak(state_path: str) -> int:
+    """Read the consecutive-degraded streak. Any error → 0 (favour silence on
+    uncertainty — a missing/garbage state suppresses a first-seen fire)."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_synth_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def _newest_synth_file(state_dir: str) -> Optional[Tuple[str, float]]:
+    """``(path, mtime)`` of the newest ``synth-*.json`` in ``state_dir``, else None.
+
+    None distinguishes 'no synth output exists' (inert — box never produced a
+    result) from a stale-but-present file (the silence signal). A listing error
+    after the dir existed is a transient race → None (caller holds the streak).
+    """
+    try:
+        entries = [
+            e for e in os.listdir(state_dir)
+            if e.startswith("synth-") and e.endswith(".json")
+        ]
+    except OSError:
+        return None
+    newest_path: Optional[str] = None
+    newest_mtime = -1.0
+    for name in entries:
+        p = os.path.join(state_dir, name)
+        try:
+            m = os.path.getmtime(p)
+        except OSError:
+            continue
+        if m > newest_mtime:
+            newest_mtime = m
+            newest_path = p
+    if newest_path is None:
+        return None
+    return newest_path, newest_mtime
+
+
+def _worst_synth_pair(pair_results) -> Optional[str]:
+    """Compact ``<user>-><peer> ok/samples (N% fail)`` for the worst pair.
+
+    None when pair_results is absent/empty/misshaped or nothing failed
+    (never raises — a degraded summary must not itself crash the probe)."""
+    if not isinstance(pair_results, list):
+        return None
+    worst = None
+    worst_fail = -1.0
+    for pr in pair_results:
+        if not isinstance(pr, dict):
+            continue
+        try:
+            fail = float(pr.get("fail_pct", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if fail > worst_fail:
+            worst_fail = fail
+            worst = pr
+    if worst is None or worst_fail <= 0:
+        return None
+    return (
+        f"{worst.get('user', '?')}->{worst.get('peer', '?')} "
+        f"{worst.get('ok', '?')}/{worst.get('samples', '?')} ok "
+        f"({worst_fail:.0f}% fail)"
+    )
+
+
+def probe_synth_soak_degraded(
+    *,
+    state_dir: Optional[str] = None,
+    now: Optional[float] = None,
+    stale_after_s: float = _SYNTH_SOAK_STALE_AFTER_S,
+    debounce_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """The synth soak's delivery envelope failed, or the soak went DARK.
+
+    The hourly LXMF multi-user synth soak (``meshforge-synth-soak.timer`` ->
+    ``lab_synth_soak_fire.sh``) exercises the gateway's REAL round-trip delivery
+    path and writes a pass/fail envelope per run — but the fire script always
+    exits 0 and nothing consumed the result, so a delivery regression (envelope
+    below its ok-ratio threshold) OR the timer going silent was invisible to the
+    fleet. This closes that gap: the synth canary is now itself watched.
+
+    Two legs, ``degraded`` only — a synth dip is a warning, the gateway may still
+    be serving real traffic, and queue_backlog / delivery_confirmation_stall /
+    delivery_write_canary own the hard-failure surface:
+
+      - SILENCE: newest ``synth-*.json`` older than ``stale_after_s`` (~2.5x the
+        hourly cadence) — the exerciser stopped (timer dead, fire script broken,
+        box wedged). Here silence IS the failure mode (a fixed-cadence generator
+        going quiet is unambiguous — the inverse of delivery_confirmation_stall).
+      - ENVELOPE: newest result has ``pass_envelope`` false — round-trip delivery
+        dropped below the run's ok-ratio threshold; the worst pair is surfaced.
+
+    Honest-failure self-guards (favour silence on uncertainty):
+      - state dir unresolvable / absent → None (INERT: this box doesn't run the
+        synth soak — the common case; unobservable != degraded).
+      - no ``synth-*.json`` present → None (never ran / freshly installed) — held,
+        distinct from a stale present file which fires.
+      - newest file unreadable/garbage → a degraded candidate, but RIDDEN OUT by
+        the debounce: a torn mid-write file is whole again by the next 30s tick,
+        so only a persistently-unreadable result fires.
+      - ``pass_envelope`` absent on a parseable fresh file → indeterminate (held;
+        neither fires nor resets) — a shape regression must not read as healthy.
+      - a candidate must persist ``debounce_ticks`` consecutive ticks before
+        firing; only an explicit healthy+fresh observation resets the streak;
+        indeterminate observations HOLD it.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+
+    sdir = state_dir or _resolve_synth_soak_dir()
+    if not sdir or not os.path.isdir(sdir):
+        return None  # INERT: box doesn't run the synth soak
+
+    sp = debounce_path or DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH
+
+    newest = _newest_synth_file(sdir)
+    if newest is None:
+        return None  # no result file / transient listing race — hold streak
+
+    newest_path, newest_mtime = newest
+    age = now - newest_mtime
+    extra: dict = {"newest": os.path.basename(newest_path), "age_s": round(age, 1)}
+
+    candidate_detail: Optional[str] = None
+    definitively_healthy = False
+
+    if age > stale_after_s:
+        candidate_detail = (
+            f"synth soak went DARK: newest result is {age / 3600.0:.1f}h old "
+            f"(cadence ~1h) — the LXMF round-trip exerciser stopped producing "
+            f"output. Check meshforge-synth-soak.timer (systemd --user) + its "
+            f"fire log."
+        )
+    else:
+        try:
+            with open(newest_path, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            doc = None
+        if not isinstance(doc, dict):
+            candidate_detail = (
+                f"synth soak newest result unreadable "
+                f"({os.path.basename(newest_path)}) — the run wrote no "
+                f"parseable envelope."
+            )
+        elif doc.get("pass_envelope") is True:
+            definitively_healthy = True
+        elif doc.get("pass_envelope") is False:
+            ok_ratio = doc.get("ok_ratio")
+            threshold = doc.get("ok_ratio_threshold")
+            total_ok = doc.get("total_ok")
+            total = doc.get("total_samples")
+            worst = _worst_synth_pair(doc.get("pair_results"))
+            extra.update({
+                "ok_ratio": ok_ratio, "ok_ratio_threshold": threshold,
+                "total_ok": total_ok, "total_samples": total,
+                "worst_pair": worst,
+            })
+            try:
+                ratio_s = f"{float(ok_ratio):.2f}" if ok_ratio is not None else "?"
+            except (TypeError, ValueError):
+                ratio_s = "?"
+            candidate_detail = (
+                f"synth soak FAILED its delivery envelope: ok_ratio={ratio_s} "
+                f"(threshold {threshold}); {total_ok}/{total} round-trips OK"
+                + (f". Worst pair: {worst}" if worst else "")
+                + ". Gateway/LXMF round-trip delivery is degrading — check RNS "
+                "paths to the fan-out peers + /api/gateway/delivery drop_reasons."
+            )
+        # else: pass_envelope absent/None on a parseable file → indeterminate
+        #       (held below — neither a fire candidate nor a healthy reset).
+
+    if candidate_detail is not None:
+        streak = _load_synth_streak(sp) + 1
+        _save_synth_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+        return Signal(
+            cls="synth_soak_degraded",
+            subject="meshforge-gateway",
+            severity="degraded",
+            detail=candidate_detail,
+            extra=extra,
+        )
+
+    if definitively_healthy:
+        _save_synth_streak(sp, 0)  # explicit healthy → reset the streak
+    return None
+
+

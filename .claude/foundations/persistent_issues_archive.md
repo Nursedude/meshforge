@@ -2819,3 +2819,44 @@ status endpoint stay silent. Read-only, sandbox-safe (no ss/sudo). Recovery:
 demand-collect TCP nodedb syncs live MINUTES (rotating inodes), so the 2-tick bar
 was too low. Now consecutive-tick counts per inode; fires at ≥20 ticks (~10 min).
 Legacy state loads as count 1. +2 tests (slow-collect silent, legacy format).
+
+
+---
+
+## kernel_reboot_pending probe — the 6.12.75-straggler guard (2026-06-09)
+
+(Trimmed from persistent_issues.md 2026-06-15 for MF012 headroom.)
+
+Version-updates arc: moc/moc1/moc3/meshanchor-server silently ran kernel
+6.12.75 while 6.18.x sat installed or available (moc1 had 6.18.33 INSTALLED
+but not running for days) — nothing paged. New `probe_kernel_reboot_pending`
+(`kernel_reboot_pending`, degraded, no issue#): pending = `/var/run/reboot-required`
+exists OR a newer SAME-FLAVOR kernel under `/lib/modules` than
+`os.uname().release` — Pis install rpi-v8 AND rpi-2712 side by side, so never
+compare across flavors. Read-only/no-sudo; indeterminate shapes (unreadable/
+empty modules dir, unparseable release, no same-flavor sibling) stay silent
+while the flag-file leg works independently; 2-tick debounce. Fix: schedule a
+clean reboot (planned reboots through clean shutdown record boot_health
+clean-exit). Routed in both role seeds; 12 tests (`test_kernel_reboot_*`).
+
+
+---
+
+## aredn_source_dark probe — the dormant-AREDN-organ guard (2026-06-12, Phase 0)
+
+(Trimmed from persistent_issues.md 2026-06-15 for MF012 headroom.)
+
+AREDN-arc Phase 0 found the AREDN-site box itself with its LOCAL AREDN organ
+silently dormant: `aredn_node_ips` never configured, every map "AREDN" node
+coming from the worldmap fallback — the loss was invisible. New
+`probe_aredn_source_dark` (`aredn_source_dark`, degraded, no issue#): intent =
+the map-service user's `map_settings.json` `aredn_node_ips` (sandboxed-root
+direct read, never escalate); observation = local `/api/status`
+`source_diagnostics.aredn`. Fires (2-tick debounce) on `unreachable` (node/LAN
+dark) or `not_configured` REPORTED BY A RUNNING SERVICE while the file carries
+IPs (service predates config — fix: restart meshforge-map). Self-guards None:
+no IPs configured (inert on the 95%), status unreachable/diagnostics absent
+(streak HELD — http_local owns the wedge; a status hiccup must not erase
+confirmed-dark progress), `no_positions`/`yielded>0` = alive (reset). Runner-
+gated on meshforge-map expected-active (moc3 never runs it). Routed in both
+role seeds; 10 tests (`test_aredn_source_dark_*`).

@@ -94,6 +94,7 @@ from utils.watchdog_probes_gateway import (
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_queue_backlog,
+    probe_synth_soak_degraded,
 )
 from utils.watchdog_probes_mini import (
     MEMORY_INDEX_LIMIT_BYTES,
@@ -129,6 +130,7 @@ __all__ = [
     "probe_delivery_write_canary",
     "probe_queue_backlog",
     "probe_delivery_confirmation_stall",
+    "probe_synth_soak_degraded",
     "probe_service_inactive",
     "probe_tracer_peer_unreachable",
     "probe_cron_verdict_stale",

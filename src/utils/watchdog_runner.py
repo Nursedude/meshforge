@@ -73,6 +73,7 @@ from utils.watchdog_probes import (
     probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
+    probe_synth_soak_degraded,
     probe_tracer_peer_unreachable,
     signal_to_dict,
 )
@@ -410,6 +411,18 @@ def run_all_probes(
     # None at zero/low traffic (silence is NOT failure here — the
     # explicit inversion of channel_feed_dark).
     sig = probe_delivery_confirmation_stall(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # Synth soak degraded / dark (2026-06-15) — the hourly LXMF round-trip
+    # exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope or
+    # stopped firing. Closes the "canary itself unwatched" gap: the synth
+    # fire script always exits 0 and nothing consumed pass_envelope, so a
+    # delivery regression OR a silent timer was invisible. Reads the
+    # operator's ~/.local/state synth_soak dir directly (root-context safe);
+    # self-guards None (INERT) on boxes that don't run the soak. 2-tick
+    # debounce rides out a torn mid-write / one slow run.
+    sig = probe_synth_soak_degraded()
     if sig is not None:
         signals.append(sig)
 
