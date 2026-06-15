@@ -454,3 +454,68 @@ class TestNoDeadArednSysinfoUrl:
         sample = "see http://node:8080/cgi-bin/sysinfo.json for details"
         assert sample.count(_DEAD_AREDN_PATH) == 1
         assert "ok /a/sysinfo only".count(_DEAD_AREDN_PATH) == 0
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Step 4b — the synth soak must publish its result file ATOMICALLY
+# ═════════════════════════════════════════════════════════════════════
+
+# 2026-06-15: the step-1 synth_soak_degraded probe false-fired on a HEALTHY
+# moc run (pass_envelope=true, 600/600). Root cause: lab_synth_soak_fire.sh
+# truncated the PUBLISHED result file at run START (`>"$out"`), but the ~67 s
+# synth process only writes its JSON at the end — so for ~67 s the newest
+# synth-*.json was empty/partial → unparseable, and the run (~67 s) outlasts
+# the probe's ~60 s torn-write debounce. A reader must NEVER see a partial
+# newest envelope: publish via temp-file + atomic rename (honest_failure #8).
+# This is the inverse of a false-green — a false-RED that pages the operator
+# hourly and erodes trust in the very honesty layer this arc builds.
+
+
+def synth_publishes_atomically(script_text: str) -> bool:
+    """True iff the script publishes its result file via an atomic rename
+    (mv/os.replace into "$out") and does NOT truncate the published "$out" in
+    place with a direct redirect. Pure predicate so the red proof can feed
+    synthetic script text.
+
+    Comment-only lines are stripped before the redirect check — a real
+    redirect is never on a comment line, and documentation that *mentions*
+    the dead `>"$out"` pattern (e.g. explaining why we avoid it) must not
+    trip the guard. (A guard that false-fires on a comment is itself the
+    false-positive this arc kills — found live writing this fix.)"""
+    import re
+    code = "\n".join(ln for ln in script_text.splitlines()
+                     if not ln.lstrip().startswith("#"))
+    bare_redirect = '>"$out"' in code or '> "$out"' in code
+    atomic_publish = bool(re.search(r'\bmv\b[^\n]*"\$out"', code)) \
+        or 'os.replace' in code
+    return atomic_publish and not bare_redirect
+
+
+class TestSynthSoakAtomicWrite:
+    """§step4b — lab_synth_soak_fire.sh must publish atomically so the
+    synth_soak_degraded probe can't false-fire on a healthy in-progress run."""
+
+    _SCRIPT = REPO / "scripts" / "lab_synth_soak_fire.sh"
+
+    def test_fire_script_publishes_atomically(self):
+        assert self._SCRIPT.exists(), f"{self._SCRIPT} moved — guard would vacuously pass"
+        text = self._SCRIPT.read_text()
+        assert synth_publishes_atomically(text), (
+            "lab_synth_soak_fire.sh must write its envelope to a temp file and "
+            "atomically rename it into \"$out\" — a direct `>\"$out\"` redirect "
+            "truncates the published file at run start, so a reader sees a "
+            "partial newest envelope for the whole run and synth_soak_degraded "
+            "false-fires (the 2026-06-15 moc incident).")
+
+    def test_red_bare_redirect_is_rejected(self):
+        """RED proof — a script that redirects the synth run straight into the
+        published file is flagged as non-atomic."""
+        bad = 'python3 -m lab.synth ... >"$out" 2>>"$log"\nrc=$?\n'
+        assert not synth_publishes_atomically(bad)
+
+    def test_red_atomic_pattern_is_accepted(self):
+        """A temp-then-mv script passes — so the guard won't false-fail a
+        correct fix."""
+        good = ('python3 -m lab.synth ... >"$tmp" 2>>"$log"\nrc=$?\n'
+                'mv -f "$tmp" "$out"\n')
+        assert synth_publishes_atomically(good)
