@@ -7,30 +7,52 @@
 # re-derives it from systems the AI (and the local harness) can't fabricate —
 # GitHub CI, git SHAs over ssh, the live HTTP API, real test/lint exit codes.
 #
-# Every line is PASS / FAIL / UNKNOWN with the raw evidence. The cardinal
-# rule (honest_failure_modes #2): UNKNOWN (box unreachable, gh not
+# Two tiers, kept distinct so `exit 0` stays meaningful:
+#   VERIFICATION — CI, fleet SHA, full suite, lint, live-honesty, watchdog
+#     WEDGE. A FAIL here means the code/deploy I claimed is not green.
+#   FLEET WARNINGS — watchdog DEGRADED signals. Real conditions, surfaced
+#     LOUD, but not necessarily this code's fault (e.g. a remote node
+#     flapping); they do not by themselves fail the verification verdict.
+#
+# Cardinal rule (honest_failure_modes #2): UNKNOWN (box unreachable, gh not
 # authenticated, endpoint absent) is NEVER counted as PASS — unobservable is
-# not healthy. So:
-#   exit 0  = every check PASSED and nothing was UNKNOWN  (fully verified green)
-#   exit 1  = at least one check FAILED                    (proven not-green)
-#   exit 2  = no failures but something couldn't be verified (NOT green)
+# not healthy. A WARN is never hidden — it is printed and counted in the
+# summary, so `exit 0` never means "nothing is wrong", only "code+deploy
+# verified; read the warnings".
+#
+#   exit 0 = all verification PASSED, nothing UNKNOWN (warnings surfaced)
+#   exit 1 = a verification check FAILED (incl. a watchdog WEDGE) — not green
+#   exit 2 = no failures but something couldn't be verified — NOT green
+#   --strict promotes WARNINGS to failures (exit 1) for "nothing may be wrong"
 #
 # Usage:
-#   bash scripts/honest_status.sh           # full (runs the local suite, ~3 min)
-#   bash scripts/honest_status.sh --quick   # skip the local suite (UNKNOWN for it)
+#   bash scripts/honest_status.sh             # full (runs the local suite, ~3 min)
+#   bash scripts/honest_status.sh --quick     # skip the local suite (UNKNOWN for it)
+#   bash scripts/honest_status.sh --strict    # fleet warnings also fail the gate
 #   HONEST_BOXES="moc moc1" bash scripts/honest_status.sh   # override fleet list
 set -u
 
 REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 BOXES="${HONEST_BOXES:-moc moc1 moc2 moc3 moc5}"
+# Watchdog state path — overridable (HONEST_WD_PATH) ONLY so the gate's own
+# severity logic can be exercised end-to-end against fixtures; production is
+# the default. Never point this at production fixtures.
+WD_PATH="${HONEST_WD_PATH:-/var/lib/meshforge/watchdog.json}"
 RUN_TESTS=1
-[ "${1:-}" = "--quick" ] && RUN_TESTS=0
+STRICT=0
+for arg in "$@"; do
+  case "$arg" in
+    --quick)  RUN_TESTS=0 ;;
+    --strict) STRICT=1 ;;
+  esac
+done
 
 SSH="ssh -o ConnectTimeout=8 -o BatchMode=yes"
-pass=0; fail=0; unknown=0
-ok()  { printf '  %-22s \033[32mPASS\033[0m  %s\n' "$1" "$2"; pass=$((pass+1)); }
-bad() { printf '  %-22s \033[31mFAIL\033[0m  %s\n' "$1" "$2"; fail=$((fail+1)); }
-unk() { printf '  %-22s \033[33mUNKNOWN\033[0m %s\n' "$1" "$2"; unknown=$((unknown+1)); }
+pass=0; fail=0; unknown=0; warns=0
+ok()    { printf '  %-22s \033[32mPASS\033[0m    %s\n' "$1" "$2"; pass=$((pass+1)); }
+bad()   { printf '  %-22s \033[31mFAIL\033[0m    %s\n' "$1" "$2"; fail=$((fail+1)); }
+unk()   { printf '  %-22s \033[33mUNKNOWN\033[0m %s\n' "$1" "$2"; unknown=$((unknown+1)); }
+warnf() { printf '  %-22s \033[33mWARN\033[0m    %s\n' "$1" "$2"; warns=$((warns+1)); }
 
 HEAD=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "?")
 HEADFULL=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "?")
@@ -118,32 +140,60 @@ if [ -n "$viol" ]; then bad "live conf_rate<=1.0" "$viol"
 elif [ "$checked" = 0 ]; then unk "live conf_rate<=1.0" "no box served /api/gateway/delivery"
 else ok "live conf_rate<=1.0" "$checked checked;$det"; fi
 
-# 6. Watchdog — surface ACTIVE signals (don't hide them behind a green summary).
-clean=0; wreach=0; sigdesc=""
+# 6. Watchdog — classify by severity. A WEDGE is real breakage (FAIL); a
+#    DEGRADED signal is a surfaced concern (WARN), loud but not necessarily
+#    this code's fault. Unreachable box = UNKNOWN (can't confirm clean).
+#    Verdict = worst present, ordered FAIL(wedge) > UNKNOWN(unreach) >
+#    WARN(degraded) > PASS — a signal is never hidden behind a green line.
+wedge_t=0; deg_t=0; clean=0; unreach=0; sigdesc=""
+btotal=$(echo $BOXES | wc -w)
 for b in $BOXES; do
-  w=$($SSH "$b" "cat /var/lib/meshforge/watchdog.json 2>/dev/null" 2>/dev/null)
-  [ -z "$w" ] && { sigdesc="$sigdesc $b:?"; continue; }
-  wreach=$((wreach+1))
-  n=$(printf '%s' "$w" | python3 -c 'import sys,json
-try: print(len(json.load(sys.stdin).get("signals",[])))
-except Exception: print("?")' 2>/dev/null)
-  if [ "$n" = 0 ]; then clean=$((clean+1)); else sigdesc="$sigdesc $b:${n}sig"; fi
+  w=$($SSH "$b" "cat $WD_PATH 2>/dev/null" 2>/dev/null)
+  if [ -z "$w" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
+  p=$(printf '%s' "$w" | python3 -c 'import sys,json
+try: s=json.load(sys.stdin).get("signals",[])
+except Exception: print("PARSE"); sys.exit()
+wg=sum(1 for x in s if x.get("severity")=="wedge")
+dg=len(s)-wg
+cl=",".join("%s(%s)"%(x.get("class","?"),x.get("severity","?")) for x in s)
+print("%d %d %s"%(wg,dg,cl))' 2>/dev/null)
+  # Unreadable/garbage watchdog.json is UNKNOWN, never "clean" — a file I
+  # can't parse must not read as healthy (the exact false-green this tool
+  # exists to prevent; caught by the classifier drill 2026-06-15).
+  if [ -z "$p" ] || [ "$p" = "PARSE" ]; then
+    unreach=$((unreach+1)); sigdesc="$sigdesc $b:unparseable"; continue
+  fi
+  wg=$(printf '%s' "$p" | awk "{print \$1}"); dg=$(printf '%s' "$p" | awk "{print \$2}")
+  cl=$(printf '%s' "$p" | cut -d" " -f3-)
+  if [ "${wg:-0}" = 0 ] && [ "${dg:-0}" = 0 ]; then clean=$((clean+1))
+  else sigdesc="$sigdesc $b:[$cl]"; wedge_t=$((wedge_t+wg)); deg_t=$((deg_t+dg)); fi
 done
-if [ -n "$sigdesc" ] && printf '%s' "$sigdesc" | grep -q "sig"; then
-  bad "watchdog signals" "$clean/$wreach clean; ACTIVE:$sigdesc"
-elif [ "$wreach" -lt "$(echo $BOXES | wc -w)" ]; then
-  unk "watchdog signals" "$clean/$wreach reachable clean;$sigdesc"
-else ok "watchdog signals" "$clean/$wreach clean, 0 active signals"; fi
+if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
+elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$btotal clean, $unreach unreachable:$sigdesc"
+elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
+else ok "watchdog signals" "$clean/$btotal clean, 0 signals"; fi
 
 echo
-total_checks=$((pass+fail+unknown))
+total_checks=$((pass+fail+unknown+warns))
+SUM="$pass/$total_checks PASS"
+[ "$warns"   -gt 0 ] && SUM="$SUM, $warns WARN"
+[ "$unknown" -gt 0 ] && SUM="$SUM, $unknown UNKNOWN"
+[ "$fail"    -gt 0 ] && SUM="$SUM, $fail FAIL"
+
 if [ "$fail" -gt 0 ]; then
-  printf -- '--> \033[31m%d/%d PASS, %d FAIL, %d UNKNOWN\033[0m  (proven not-green)\n' "$pass" "$total_checks" "$fail" "$unknown"
+  echo "--> $SUM  (proven not-green)"
+  exit 1
+elif [ "$STRICT" = 1 ] && [ "$warns" -gt 0 ]; then
+  echo "--> $SUM  (--strict: warnings treated as failures — not clean)"
   exit 1
 elif [ "$unknown" -gt 0 ]; then
-  printf -- '--> \033[33m%d/%d PASS, %d UNKNOWN\033[0m  (could not fully verify — NOT green)\n' "$pass" "$total_checks" "$unknown"
+  echo "--> $SUM  (could not fully verify — NOT green)"
   exit 2
 else
-  printf -- '--> \033[32m%d/%d PASS\033[0m  (fully verified green)\n' "$pass" "$total_checks"
+  if [ "$warns" -gt 0 ]; then
+    echo "--> $SUM  (code+deploy verified; $warns fleet warning(s) surfaced above — read them)"
+  else
+    echo "--> $SUM  (fully verified green)"
+  fi
   exit 0
 fi
