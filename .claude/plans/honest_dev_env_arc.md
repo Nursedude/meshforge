@@ -32,9 +32,41 @@ the existing Issue #29 spine — do not build a parallel system.
   on nothing). Fixed (local config, dev box only). pre-push strengthened: lint +
   regression guards (wiring backstop) + WARN-only parent-CI advisory.
 
-## Step 3 — encode the blind-spot classes as enforced tests (NOT YET DONE)
-Convert the 1000-hr knowledge from passive docs into build-fails. Extend
-`tests/test_regression_guards.py` / CI; add `tests/test_honesty_invariants.py`.
+## Step 3 — encode the blind-spot classes as enforced tests (CORE LANDED 2026-06-15)
+Convert the 1000-hr knowledge from passive docs into build-fails. Shipped
+`tests/test_honesty_invariants.py` (11 tests). The two genuinely-NEW gaps are
+now build-fails; the rest of §3b was already covered (confirmed, not rebuilt).
+
+**Landed — each is a pure checker with a RED proof (synthetic violation caught)
+AND a GREEN proof (repo holds), and each GREEN invariant was live-falsified
+against the real source (un-wire the synth probe / forget a handler → the
+test goes red with a precise actionable message → revert → green):**
+- **§3a bounded display** — `compute_confirmation_view` + `DeliveryTracker`
+  `confirmation_rate_pct` stay in [0,1]/[0,100] (or None) under the exact #74
+  mesh-heavy shape; `unconfirmable_sent` stays surfaced. RED = the old
+  `confirmed/sent` formula (=1.64) trips the same bound gate. (No name-based
+  `*rate*/*ratio*/*pct*` scan — bitrate/heart_rate/compression_ratio are
+  legitimately unbounded; cross-population is semantic, not syntactic.)
+- **§3b wiring (the NEW gap)** — `reachable_signal_classes()` AST closure proves
+  every `SIGNAL_CLASSES` member is emitted by a probe actually CALLED in
+  `watchdog_runner.run_all_probes` (transitive, so helper-delegation refactors
+  don't false-fail). This is the synth-soak gap that needed manual wiring.
+- **§3c user-access (MF018)** — `discover_handler_classes()` finds every
+  on-disk concrete handler; asserts each is returned by `get_all_handlers()`.
+  Catches a handler file forgotten in the hand-maintained import list (the
+  NomadNet-inaccessible / dead-UI class). Complements
+  `test_all_handlers_protocol.py` (which only tests what's REGISTERED).
+
+**Already covered (confirmed existing, NOT rebuilt):** §3b DBSpec/MF013 →
+`tests/test_db_inventory.py` ("DBs in src/ missing from INVENTORY") + lint
+MF013; §3b seed-routing → `TestSeedCoversSignalClasses`.
+
+**Deferred (fuzzy — would risk a vacuous/false-firing guard, the exact defect
+this arc kills; next increment):** §3b every systemd unit has a
+`templates/systemd/` entry + a new long-lived service has a deploy-restart hook
+(the #79 gap); §3c "service active ≠ doing the job" (hardest — semantic).
+
+### Original spec (retained for the deferred items)
 
 **3a — false-green invariants:** no displayed metric (field named `*rate*`,
 `*ratio*`, `*pct*`) exceeds its logical max (1.0 / 100) across the `/api/*`
