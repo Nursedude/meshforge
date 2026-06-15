@@ -120,7 +120,7 @@ class AREDNHandler(BaseHandler):
                     print(f"  Load:      {', '.join(str(l) for l in node.loads)}")
             else:
                 print(f"Connected to {node_ip} but couldn't parse node info.")
-                print(f"Check: http://{node_ip}:8080/cgi-bin/sysinfo.json")
+                print(f"Check: http://{node_ip}:8080/a/sysinfo")
 
         except Exception as e:
             print(f"Error: {e}")

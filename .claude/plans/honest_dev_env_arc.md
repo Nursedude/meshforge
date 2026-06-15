@@ -90,8 +90,23 @@ function. Hardest to encode; expect to get the first cut wrong.
 **Red-test-first for every invariant: prove the new check FAILS on a
 deliberately-seeded violation before trusting it.** A guard that can't be shown
 to fail is a vacuous false guard — worse than none, and the exact defect this
-arc exists to kill. Then 4 (fix known reds: moc5 AREDN sysinfo URL moved
-/cgi-bin/sysinfo.json→307→/a/sysinfo, collector uses stale URL), then 5 (sweep).
+arc exists to kill. Then 4 (fix known reds), then 5 (sweep).
+
+## Step 4 — known AREDN sysinfo-URL red (LANDED 2026-06-15)
+AREDN 4.x retired `:8080/cgi-bin/sysinfo.json` → it now answers **HTTP 307 →
+`:8080/a/sysinfo`** (verified live against the VOLCANO-QTH hAP). **Correction to
+this doc's own step-3 note:** the *collector* (`_map_collector_aredn.py`) + the
+`AREDNClient` were already moved to `/a/sysinfo` in `243d8a9` (2026-04-24) — moc5
+yields fine (`source_diagnostics.aredn` = attempted 1 / yielded 1 / "ok"). The
+REAL surviving reds were OPERATOR-FACING: the in-app knowledge base
+(`knowledge_content_extended.py` ×2) and a TUI troubleshooting hint
+(`handlers/aredn.py`) still told the operator to curl the dead path (a false
+instruction — MF018). All three updated to `/a/sysinfo` (`?hosts=1` for the
+node/host list). Guarded red-test-first by `TestNoDeadArednSysinfoUrl` in
+`tests/test_honesty_invariants.py` (the dead path must never reappear in `src/`).
+WATCH (not changed — behavior change on a live collector, out of step-4 scope):
+collector `urlopen(timeout=3)` vs observed ~3.3 s sysinfo latency on moc5 — a
+candidate root for any intermittent `aredn_source_dark` flap; raise separately.
 
 ## Resume in a clean session
 1. `bash scripts/honest_status.sh` — establish ground truth (don't trust this doc).
@@ -99,5 +114,6 @@ arc exists to kill. Then 4 (fix known reds: moc5 AREDN sysinfo URL moved
 3. Build step 3 above, red-test-first.
 
 Pending: synth-soak Monitor was armed on moc (won't survive session end — mini
-ntfy is the durable backstop). moc5 AREDN WARN is real (step 4). CI of the last
-push lands ~3 min after.
+ntfy is the durable backstop). Step 4 AREDN reds fixed (above); moc5 yields ok.
+Next: step 5 (sweep) + the deferred §3b/§3c items. CI of the last push lands
+~3 min after.

@@ -51,7 +51,7 @@ For MeshForge:
 AREDN API:
 - Each node has web UI at http://localnode.local.mesh
 - OLSR topology: http://node.local.mesh:9090/links
-- Node list: http://node.local.mesh:8080/cgi-bin/sysinfo.json
+- Node list: http://node.local.mesh:8080/a/sysinfo?hosts=1
 """,
         keywords=["aredn", "amateur radio", "emergency", "wifi", "olsr", "mesh", "ham"],
         expertise_level="intermediate",
@@ -77,7 +77,7 @@ Discovery Methods:
    - Updated every 2-10 seconds
 
 2. Node System Info:
-   - URL: http://<node>:8080/cgi-bin/sysinfo.json
+   - URL: http://<node>:8080/a/sysinfo
    - Returns: hostname, firmware, services, GPS position
    - Rich data for map display
 

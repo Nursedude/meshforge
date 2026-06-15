@@ -403,3 +403,54 @@ class TestHandlerReachability:
         missing = unregistered_handlers(
             discovered, set(), {"DeliberatelyHidden"})
         assert missing == {}
+
+
+# ═════════════════════════════════════════════════════════════════════
+# Step 4 — no false operator-facing instructions (dead AREDN sysinfo URL)
+# ═════════════════════════════════════════════════════════════════════
+
+# AREDN 4.x retired the old node API path: a GET to
+# ``:8080/cgi-bin/sysinfo.json`` now answers HTTP 307 → ``:8080/a/sysinfo``
+# (verified live against WH6GXZ-6-VOLCANO-QTH-HAP, 2026-06-15). The map
+# collector + the AREDNClient were moved to ``/a/sysinfo`` back in 243d8a9
+# (2026-04-24), but stale operator-FACING references survived — the in-app
+# knowledge base and a TUI troubleshooting hint told the operator to curl the
+# dead path. A scripted check of that path gets a 307, not JSON: the app was
+# instructing the user toward a dead end (MF018 — "never make the user leave
+# the app to discover the truth"; the false-instruction skin of a false-green).
+_DEAD_AREDN_PATH = "cgi-bin/sysinfo.json"
+
+
+def _src_files_referencing(needle: str):
+    hits = {}
+    for path in glob.glob(str(SRC / "**" / "*.py"), recursive=True):
+        text = Path(path).read_text(encoding="utf-8", errors="replace")
+        n = text.count(needle)
+        if n:
+            hits[os.path.relpath(path, SRC)] = n
+    return hits
+
+
+class TestNoDeadArednSysinfoUrl:
+    """§step4 — no source string points the operator at AREDN's retired
+    ``/cgi-bin/sysinfo.json`` (307 → ``/a/sysinfo``). Keeps the stale URL
+    from creeping back into KB text / TUI hints / collectors."""
+
+    # Intentional references (e.g. a migration note) go here WITH a reason.
+    ALLOWED: set = set()
+
+    def test_no_dead_aredn_url_in_src(self):
+        hits = {f: n for f, n in _src_files_referencing(_DEAD_AREDN_PATH).items()
+                if f not in self.ALLOWED}
+        assert not hits, (
+            f"deprecated AREDN path {_DEAD_AREDN_PATH!r} (HTTP 307 → /a/sysinfo) "
+            f"still referenced in: {hits}. Point the operator at "
+            f"'/a/sysinfo' (add '?hosts=1' for the node/host list) — instructing "
+            f"them toward a redirecting/dead endpoint is a false instruction (MF018).")
+
+    def test_red_checker_detects_the_dead_path(self):
+        """RED proof — the substring scanner really flags the dead path. If
+        this passed, the green test could vacuously pass on a broken scanner."""
+        sample = "see http://node:8080/cgi-bin/sysinfo.json for details"
+        assert sample.count(_DEAD_AREDN_PATH) == 1
+        assert "ok /a/sysinfo only".count(_DEAD_AREDN_PATH) == 0
