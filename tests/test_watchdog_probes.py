@@ -1329,7 +1329,7 @@ class TestMeshtasticdPhoneapiWedge:
         None (streak=1 < 2); the SECOND consecutive tick fires degraded."""
         sp = str(tmp_path / "wedge.json")
         kwargs = dict(
-            main_pid=1234,
+            main_pid=1234, gateway_main_pid=5678,
             threshold=self._THRESHOLD,
             count_fn=self._count_fn(40),  # ~well above threshold (incident)
             state_path=sp,
@@ -1358,7 +1358,7 @@ class TestMeshtasticdPhoneapiWedge:
         streak stays broken even after two below-threshold ticks."""
         sp = str(tmp_path / "wedge.json")
         kwargs = dict(
-            main_pid=1234, threshold=self._THRESHOLD,
+            main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
             count_fn=self._count_fn(3), state_path=sp,
         )
         assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
@@ -1369,9 +1369,9 @@ class TestMeshtasticdPhoneapiWedge:
         a quiet tick, then over-threshold again → still None (streak reset to
         1), proving a transient burst between quiet ticks can't accumulate."""
         sp = str(tmp_path / "wedge.json")
-        over = dict(main_pid=1234, threshold=self._THRESHOLD,
+        over = dict(main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
                     count_fn=self._count_fn(40), state_path=sp)
-        under = dict(main_pid=1234, threshold=self._THRESHOLD,
+        under = dict(main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
                      count_fn=self._count_fn(2), state_path=sp)
         assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1
         assert probe_meshtasticd_phoneapi_wedge(**under) is None  # reset to 0
@@ -1399,7 +1399,7 @@ class TestMeshtasticdPhoneapiWedge:
         (honest_failure_modes #1/#2). Two such ticks must never accumulate."""
         sp = str(tmp_path / "wedge.json")
         kwargs = dict(
-            main_pid=1234, threshold=self._THRESHOLD,
+            main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
             count_fn=self._count_fn(None), state_path=sp,
         )
         assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
@@ -1410,13 +1410,29 @@ class TestMeshtasticdPhoneapiWedge:
         leave a half-confirmed streak that the next over-threshold tick can
         complete — a blind tick is conservative, it breaks the streak."""
         sp = str(tmp_path / "wedge.json")
-        over = dict(main_pid=1234, threshold=self._THRESHOLD,
+        over = dict(main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
                     count_fn=self._count_fn(40), state_path=sp)
-        blind = dict(main_pid=1234, threshold=self._THRESHOLD,
+        blind = dict(main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
                      count_fn=self._count_fn(None), state_path=sp)
         assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1
         assert probe_meshtasticd_phoneapi_wedge(**blind) is None  # reset
         assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1 again
+
+    def test_no_gateway_on_box_returns_none_even_with_churn(self, tmp_path):
+        """The wedge only threatens a GATEWAY's mesh-TX. On a non-gateway box
+        (e.g. moc5, a collector) :4403 churn is the map's own reconnect
+        overhead — firing the gateway-wedge class there mislabels it. With no
+        meshforge-gateway pid, the probe returns None even at incident-level
+        churn, across two ticks (the gate short-circuits before the streak)."""
+        sp = str(tmp_path / "wedge.json")
+        kwargs = dict(
+            main_pid=1234, gateway_main_pid=None,
+            systemctl_path="/nonexistent/systemctl-xyz",  # gateway pid unresolvable
+            threshold=self._THRESHOLD,
+            count_fn=self._count_fn(99), state_path=sp,
+        )
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
 
 
 def test_meshtasticd_phoneapi_wedge_in_signal_classes():

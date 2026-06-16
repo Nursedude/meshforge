@@ -503,6 +503,8 @@ def probe_meshtasticd_phoneapi_wedge(
     journalctl_path: str = "journalctl",
     systemctl_path: str = "systemctl",
     main_pid: Optional[int] = None,
+    gateway_main_pid: Optional[int] = None,
+    gateway_unit: str = "meshforge-gateway.service",
     count_fn=None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
@@ -555,6 +557,17 @@ def probe_meshtasticd_phoneapi_wedge(
         unit, systemctl_path=systemctl_path
     )
     if pid is None:
+        return None
+
+    # Gate: the wedge only threatens a GATEWAY's mesh-TX. On a box with no
+    # gateway, :4403 churn is the map's own reconnect overhead (e.g. moc5, a
+    # collector) — NOT bot-dark — and firing the "gateway mesh-TX wedged" class
+    # there mislabels it (honest_failure_modes: a signal that says the wrong
+    # thing). Only meaningful where meshforge-gateway runs.
+    gw_pid = gateway_main_pid if gateway_main_pid is not None else _resolve_main_pid(
+        gateway_unit, systemctl_path=systemctl_path
+    )
+    if gw_pid is None:
         return None
 
     sp = state_path or DEFAULT_PHONEAPI_WEDGE_STATE_PATH
