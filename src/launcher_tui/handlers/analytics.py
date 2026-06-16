@@ -288,7 +288,10 @@ class AnalyticsHandler(BaseHandler):
             return
 
         store = get_analytics_store()
-        store.cleanup_old_data(days=30)
-        print("  Cleanup complete. Data older than 30 days removed.")
+        removed = store.cleanup_old_data(days=30)
+        if removed:
+            print(f"  Cleanup complete. {removed} record(s) older than 30 days removed.")
+        else:
+            print("  Cleanup complete. No data older than 30 days to remove.")
         print()
         self.ctx.wait_for_enter()

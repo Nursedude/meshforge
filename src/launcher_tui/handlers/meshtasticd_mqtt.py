@@ -117,9 +117,20 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                 capture_output=True, text=True, timeout=15
             )
             if result.returncode == 0:
-                print(f"\nMQTT {'enabled' if enabled else 'disabled'} successfully.")
+                state_word = 'enabled' if enabled else 'disabled'
+                print(f"\nMQTT {state_word} successfully.")
                 from utils.device_config_store import save_device_setting
-                save_device_setting('mqtt', 'enabled', enabled)
+                saved = save_device_setting('mqtt', 'enabled', enabled)
+                if saved:
+                    self.ctx.dialog.msgbox("Success",
+                        f"MQTT {state_word} on device.\n\n"
+                        "Saved for restart persistence.")
+                else:
+                    self.ctx.dialog.msgbox("Partial Success",
+                        f"MQTT {state_word} on device.\n\n"
+                        "WARNING: Failed to save for restart persistence. "
+                        "This setting will be lost on next meshtasticd "
+                        "restart.")
             else:
                 print("\nCommand failed.")
                 if result.stderr:
@@ -162,7 +173,17 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
             if result.returncode == 0:
                 print(f"\nMQTT broker set to: {broker}")
                 from utils.device_config_store import save_device_setting
-                save_device_setting('mqtt', 'address', broker.strip())
+                saved = save_device_setting('mqtt', 'address', broker.strip())
+                if saved:
+                    self.ctx.dialog.msgbox("Success",
+                        f"MQTT broker set to: {broker}\n\n"
+                        "Saved for restart persistence.")
+                else:
+                    self.ctx.dialog.msgbox("Partial Success",
+                        f"MQTT broker set to: {broker} on device.\n\n"
+                        "WARNING: Failed to save for restart persistence. "
+                        "This setting will be lost on next meshtasticd "
+                        "restart.")
             else:
                 print("\nCommand failed.")
                 if result.stderr:
@@ -212,7 +233,17 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
                     if password:
                         cred_data['password'] = password
                     if cred_data:
-                        save_device_settings({'mqtt': cred_data})
+                        saved = save_device_settings({'mqtt': cred_data})
+                        if saved:
+                            self.ctx.dialog.msgbox("Success",
+                                "MQTT credentials updated on device.\n\n"
+                                "Saved for restart persistence.")
+                        else:
+                            self.ctx.dialog.msgbox("Partial Success",
+                                "MQTT credentials updated on device.\n\n"
+                                "WARNING: Failed to save for restart "
+                                "persistence. These credentials will be lost "
+                                "on next meshtasticd restart.")
                 else:
                     print("\nCommand failed.")
                     if result.stderr:
@@ -247,7 +278,17 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
             if result.returncode == 0:
                 print(f"\nMQTT root topic set to: {topic}")
                 from utils.device_config_store import save_device_setting
-                save_device_setting('mqtt', 'root_topic', topic.strip())
+                saved = save_device_setting('mqtt', 'root_topic', topic.strip())
+                if saved:
+                    self.ctx.dialog.msgbox("Success",
+                        f"MQTT root topic set to: {topic}\n\n"
+                        "Saved for restart persistence.")
+                else:
+                    self.ctx.dialog.msgbox("Partial Success",
+                        f"MQTT root topic set to: {topic} on device.\n\n"
+                        "WARNING: Failed to save for restart persistence. "
+                        "This setting will be lost on next meshtasticd "
+                        "restart.")
             else:
                 print("\nCommand failed.")
                 if result.stderr:

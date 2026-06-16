@@ -350,10 +350,15 @@ class MeshAlertEngine:
                 count += 1
         return count
 
-    def update_config(self, key: str, value) -> None:
-        """Update a config value and save."""
+    def update_config(self, key: str, value) -> bool:
+        """Update a config value and save.
+
+        Returns True iff the change was persisted to disk (``SettingsManager.save()``
+        returns False on IOError/OSError). Callers must surface a False — a
+        silently-unsaved alert setting (e.g. emergency keywords) is the #74 class.
+        """
         self._settings.set(key, value)
-        self._settings.save()
+        return self._settings.save()
 
     def get_alert_count_by_type(self) -> Dict[str, int]:
         """Get count of active alerts grouped by type."""

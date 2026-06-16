@@ -302,12 +302,14 @@ class HardwareHandler(BaseHandler):
                 return
 
             raspi_config = shutil.which('raspi-config')
+            raspi_rc = None
             if raspi_config:
-                subprocess.run(
+                result = subprocess.run(
                     ['raspi-config', 'nonint', 'set_config_var', 'dtparam=spi', 'on', boot_config],
                     timeout=30,
                     check=False
                 )
+                raspi_rc = result.returncode
 
             config_content = Path(boot_config).read_text()
             needs_write = False
@@ -328,16 +330,35 @@ class HardwareHandler(BaseHandler):
             if needs_write:
                 Path(boot_config).write_text('\n'.join(new_lines))
 
-            self.ctx.dialog.msgbox(
-                "SPI Enabled",
-                "SPI interface has been enabled!\n\n"
-                "IMPORTANT: You must REBOOT for changes to take effect.\n\n"
-                "After reboot:\n"
-                "  1. Your HAT radio will be detected\n"
-                "  2. Configure meshtasticd for SPI\n"
-                "  3. Start meshtasticd service\n\n"
-                "Reboot now with: sudo reboot"
-            )
+            # Honest outcome: don't claim a fresh enable when nothing changed
+            # this run, and surface a non-zero raspi-config status as a caveat
+            # rather than hiding it behind a green "enabled" (#74 class).
+            raspi_note = ""
+            if raspi_rc not in (None, 0):
+                raspi_note = (
+                    "\n\nNote: raspi-config returned a non-zero status; the boot "
+                    "config was edited directly. Verify SPI is active after reboot."
+                )
+
+            if needs_write:
+                self.ctx.dialog.msgbox(
+                    "SPI Enabled",
+                    "SPI interface has been enabled!\n\n"
+                    "IMPORTANT: You must REBOOT for changes to take effect.\n\n"
+                    "After reboot:\n"
+                    "  1. Your HAT radio will be detected\n"
+                    "  2. Configure meshtasticd for SPI\n"
+                    "  3. Start meshtasticd service\n\n"
+                    "Reboot now with: sudo reboot" + raspi_note
+                )
+            else:
+                self.ctx.dialog.msgbox(
+                    "SPI Already Enabled",
+                    "SPI was already enabled in the boot config — no change was "
+                    "needed this run.\n\n"
+                    "If your HAT radio isn't detected, reboot and verify "
+                    "meshtasticd is configured for SPI." + raspi_note
+                )
 
         except subprocess.TimeoutExpired:
             self.ctx.dialog.msgbox("Error", "Timeout while configuring SPI.")

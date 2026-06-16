@@ -543,18 +543,30 @@ class MapDataCollector(
             return int(self._settings.get("meshtasticd_port", self.DEFAULT_MESHTASTICD_PORT))
         return self.DEFAULT_MESHTASTICD_PORT
 
-    def set_meshtasticd_connection(self, host: str, port: int) -> None:
+    def set_meshtasticd_connection(self, host: str, port: int) -> bool:
         """Set meshtasticd connection parameters.
 
         Args:
             host: Hostname or IP address of meshtasticd
             port: TCP port (default: 4403)
+
+        Returns:
+            True iff persisted to disk; False if there is no settings backend
+            (a silent no-op) or the save failed — so the caller can't report
+            "Connection set" for a change that never happened (#74 class).
         """
-        if self._settings:
-            self._settings.set("meshtasticd_host", host)
-            self._settings.set("meshtasticd_port", port)
-            self._settings.save()
+        if not self._settings:
+            logger.warning(
+                "set_meshtasticd_connection(%s:%s): no settings backend; not persisted",
+                host, port,
+            )
+            return False
+        self._settings.set("meshtasticd_host", host)
+        self._settings.set("meshtasticd_port", port)
+        ok = self._settings.save()
+        if ok:
             logger.info(f"Meshtasticd connection set to {host}:{port}")
+        return ok
 
     def get_nodes_without_position(self) -> List[Dict]:
         """Get list of nodes that have no GPS position.

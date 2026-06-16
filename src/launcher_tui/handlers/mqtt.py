@@ -80,15 +80,21 @@ def load_mqtt_config() -> Dict[str, Any]:
     }
 
 
-def save_mqtt_config(config: Dict[str, Any]):
-    """Save MQTT configuration to file."""
+def save_mqtt_config(config: Dict[str, Any]) -> bool:
+    """Save MQTT configuration to file.
+
+    Returns True iff the write succeeded; False on any write failure (so a
+    caller can't show "Saved" for a config that never hit disk — #74 class).
+    """
     config_path = get_real_user_home() / ".config" / "meshforge" / "mqtt_nodeless.json"
     try:
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
+        return True
     except Exception as e:
         logger.error("Error saving MQTT config: %s", e)
+        return False
 
 
 class MQTTHandler(BaseHandler):
@@ -588,8 +594,9 @@ class MQTTHandler(BaseHandler):
                     'password': None,
                     'use_tls': False
                 }
-                save_mqtt_config(config)
-                self.ctx.dialog.msgbox(
+                ok = save_mqtt_config(config)
+                self.ctx.report_action(
+                    ok,
                     "Local Mode Set",
                     f"Configured for local mosquitto broker:\n\n"
                     f"  Broker: localhost:1883\n"
@@ -598,7 +605,9 @@ class MQTTHandler(BaseHandler):
                     "Make sure:\n"
                     "  1. Mosquitto is running (systemctl status mosquitto)\n"
                     "  2. Meshtasticd MQTT is configured\n\n"
-                    "Use Service Config -> MQTT Setup for full setup."
+                    "Use Service Config -> MQTT Setup for full setup.",
+                    "Save Failed",
+                    "MQTT config could not be written to disk — your change was NOT saved.",
                 )
                 break
 
@@ -611,14 +620,17 @@ class MQTTHandler(BaseHandler):
                     'password': MESHTASTIC_PUBLIC_PASSWORD,
                     'use_tls': True
                 }
-                save_mqtt_config(config)
-                self.ctx.dialog.msgbox(
+                ok = save_mqtt_config(config)
+                self.ctx.report_action(
+                    ok,
                     "Public Mode Set",
                     "Configured for public Meshtastic broker:\n\n"
                     "  Broker: mqtt.meshtastic.org:8883\n"
                     "  Topic: msh/US/2/e/LongFast/#\n"
                     "  TLS: enabled\n\n"
-                    "This is nodeless monitoring - no local radio needed."
+                    "This is nodeless monitoring - no local radio needed.",
+                    "Save Failed",
+                    "MQTT config could not be written to disk — your change was NOT saved.",
                 )
                 break
 
@@ -685,11 +697,14 @@ class MQTTHandler(BaseHandler):
                 )
 
             elif choice == "save":
-                save_mqtt_config(config)
-                self.ctx.dialog.msgbox(
+                ok = save_mqtt_config(config)
+                self.ctx.report_action(
+                    ok,
                     "Saved",
                     "MQTT configuration saved.\n\n"
-                    "Restart the subscriber for changes to take effect."
+                    "Restart the subscriber for changes to take effect.",
+                    "Save Failed",
+                    "MQTT config could not be written to disk — your change was NOT saved.",
                 )
                 break
 
@@ -1105,8 +1120,9 @@ class MQTTHandler(BaseHandler):
         new_config['auto_start'] = config.get('auto_start', False)
         new_config['auto_start_telemetry'] = config.get('auto_start_telemetry', True)
 
-        save_mqtt_config(new_config)
-        self.ctx.dialog.msgbox(
+        ok = save_mqtt_config(new_config)
+        self.ctx.report_action(
+            ok,
             "Private Broker Configured",
             f"Saved configuration:\n\n"
             f"  Broker:   {broker}:{port}\n"
@@ -1115,7 +1131,9 @@ class MQTTHandler(BaseHandler):
             f"  Username: {username or '(anonymous)'}\n"
             f"  TLS:      {'Yes' if use_tls else 'No'}\n\n"
             f"Root topic '{root_topic}' determines node scope.\n"
-            f"Restart MQTT subscriber to apply."
+            f"Restart MQTT subscriber to apply.",
+            "Save Failed",
+            "MQTT config could not be written to disk — your change was NOT saved.",
         )
 
     def _request_telemetry_menu(self):

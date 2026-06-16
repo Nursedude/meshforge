@@ -335,6 +335,17 @@ class WebClientHandler(BaseHandler):
             else:
                 return False
 
+            # Don't write — or report success for — a config our regex edit may
+            # have malformed: re-parse first. A True returned on a broken edit
+            # makes _offer_meshtasticd_restart claim the Web UI will work
+            # (honest_failure #3 — a validator must reject what can't be meant).
+            try:
+                import yaml
+                yaml.safe_load(content)
+            except Exception as e:
+                logger.error("SSL config edit produced invalid YAML; not writing: %s", e)
+                return False
+
             config_path.write_text(content)
             logger.info("Updated meshtasticd config with SSL cert paths")
             return True
@@ -359,9 +370,10 @@ class WebClientHandler(BaseHandler):
             if ok:
                 self.ctx.dialog.msgbox(
                     "Restarted",
-                    "meshtasticd restarted with new SSL cert.\n"
-                    "Web UI should now work without warnings.",
-                    height=9, width=50
+                    "meshtasticd restarted with the new SSL cert.\n"
+                    "Open the Web UI over HTTPS to verify the certificate "
+                    "loaded — the browser warning should be gone.",
+                    height=9, width=55
                 )
             else:
                 self.ctx.dialog.msgbox(

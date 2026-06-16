@@ -166,12 +166,29 @@ class SettingsHandler(BaseHandler):
         if choice is None or choice == "back":
             return
         elif choice == "localhost":
-            self._save_meshtasticd_connection("localhost", 4403)
-            self.ctx.dialog.msgbox("Connection", "Connection set to localhost:4403")
+            ok = self._save_meshtasticd_connection("localhost", 4403)
+            self.ctx.report_action(
+                ok,
+                "Connection",
+                "Connection set to localhost:4403",
+                "Not Saved",
+                "Could not persist the meshtasticd connection — change NOT saved.",
+            )
         elif choice == "serial":
             port = self.ctx.dialog.inputbox("Serial Port", "Enter serial port:", "/dev/ttyUSB0")
             if port:
-                self.ctx.dialog.msgbox("Connection", f"Connection set to {port}")
+                # Serial selection is NOT persisted by this handler: the
+                # meshtasticd settings backend only stores host/port (TCP), and
+                # there is no serial-port setter to write to. Claiming the
+                # connection was "set" would be a #74 false-green — so say
+                # plainly that nothing was saved (honest-failure-modes #1/#2).
+                self.ctx.dialog.msgbox(
+                    "Connection — Not Saved",
+                    f"Serial port selection ({port}) is not yet persisted here.\n\n"
+                    "Nothing was saved. Serial connection support for this "
+                    "setting is not implemented; use Local TCP or Remote Host, "
+                    "or configure the serial device in meshtasticd directly.",
+                )
         elif choice == "remote":
             host_input = self.ctx.dialog.inputbox("Remote Host", "Enter host:port:", "192.168.1.100:4403")
             if host_input:
@@ -185,15 +202,27 @@ class SettingsHandler(BaseHandler):
                 else:
                     host = host_input
                     port = 4403
-                self._save_meshtasticd_connection(host, port)
-                self.ctx.dialog.msgbox("Connection", f"Connection set to {host}:{port}")
+                ok = self._save_meshtasticd_connection(host, port)
+                self.ctx.report_action(
+                    ok,
+                    "Connection",
+                    f"Connection set to {host}:{port}",
+                    "Not Saved",
+                    "Could not persist the meshtasticd connection — change NOT saved.",
+                )
 
-    def _save_meshtasticd_connection(self, host: str, port: int):
-        """Save meshtasticd connection settings."""
+    def _save_meshtasticd_connection(self, host: str, port: int) -> bool:
+        """Save meshtasticd connection settings.
+
+        Returns True iff the connection was actually persisted; False if the
+        map-data-collector dependency is unavailable (a silent no-op) or the
+        underlying save failed — so the caller can render an honest result
+        instead of an unconditional "Connection set" (#74 class).
+        """
         if not _HAS_MAP_DATA_COLLECTOR:
-            return
+            return False
         collector = MapDataCollector()
-        collector.set_meshtasticd_connection(host, port)
+        return bool(collector.set_meshtasticd_connection(host, port))
 
     def _configure_propagation_sources(self):
         """Configure propagation data sources."""

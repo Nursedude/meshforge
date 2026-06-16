@@ -141,10 +141,14 @@ class MeshAlertsHandler(BaseHandler):
         )
 
         if result is not None:
-            engine.update_config("enabled_types", list(result))
-            self.ctx.dialog.msgbox(
+            ok = engine.update_config("enabled_types", list(result))
+            self.ctx.report_action(
+                ok,
                 "Updated",
-                f"Enabled alert types: {', '.join(result) or 'none'}"
+                f"Enabled alert types: {', '.join(result) or 'none'}",
+                "Save Failed",
+                "The setting was changed for this session but could NOT be "
+                "saved to disk — it will revert on restart.",
             )
 
     def _configure_keywords(self):
@@ -162,8 +166,17 @@ class MeshAlertsHandler(BaseHandler):
 
         if result is not None and result.strip():
             keywords = [kw.strip().lower() for kw in result.split(",") if kw.strip()]
-            engine.update_config("emergency_keywords", keywords)
-            self.ctx.dialog.msgbox("Updated", f"Emergency keywords: {', '.join(keywords)}")
+            ok = engine.update_config("emergency_keywords", keywords)
+            self.ctx.report_action(
+                ok,
+                "Updated",
+                f"Emergency keywords: {', '.join(keywords)}",
+                "Save Failed",
+                "The LIFE-SAFETY emergency keywords were changed for this "
+                "session but could NOT be saved to disk — they will revert to "
+                "the old list on restart. Emergency-keyword alerting may not "
+                "trigger on the words you just entered after a restart.",
+            )
 
     def _configure_battery(self):
         """Configure battery alert threshold."""
@@ -180,8 +193,15 @@ class MeshAlertsHandler(BaseHandler):
             try:
                 value = int(result)
                 if 1 <= value <= 100:
-                    engine.update_config("battery_threshold", value)
-                    self.ctx.dialog.msgbox("Updated", f"Battery threshold: {value}%")
+                    ok = engine.update_config("battery_threshold", value)
+                    self.ctx.report_action(
+                        ok,
+                        "Updated",
+                        f"Battery threshold: {value}%",
+                        "Save Failed",
+                        "The setting was changed for this session but could "
+                        "NOT be saved to disk — it will revert on restart.",
+                    )
                 else:
                     self.ctx.dialog.msgbox("Invalid", "Value must be 1-100.")
             except ValueError:
@@ -202,8 +222,15 @@ class MeshAlertsHandler(BaseHandler):
             try:
                 value = int(result)
                 if 1 <= value <= 1440:
-                    engine.update_config("disconnect_timeout_minutes", value)
-                    self.ctx.dialog.msgbox("Updated", f"Disconnect timeout: {value} minutes")
+                    ok = engine.update_config("disconnect_timeout_minutes", value)
+                    self.ctx.report_action(
+                        ok,
+                        "Updated",
+                        f"Disconnect timeout: {value} minutes",
+                        "Save Failed",
+                        "The setting was changed for this session but could "
+                        "NOT be saved to disk — it will revert on restart.",
+                    )
                 else:
                     self.ctx.dialog.msgbox("Invalid", "Value must be 1-1440 minutes.")
             except ValueError:
@@ -225,8 +252,15 @@ class MeshAlertsHandler(BaseHandler):
             try:
                 value = int(result)
                 if 0 <= value <= 86400:
-                    engine.update_config("cooldown_seconds", value)
-                    self.ctx.dialog.msgbox("Updated", f"Cooldown: {value} seconds")
+                    ok = engine.update_config("cooldown_seconds", value)
+                    self.ctx.report_action(
+                        ok,
+                        "Updated",
+                        f"Cooldown: {value} seconds",
+                        "Save Failed",
+                        "The setting was changed for this session but could "
+                        "NOT be saved to disk — it will revert on restart.",
+                    )
                 else:
                     self.ctx.dialog.msgbox("Invalid", "Value must be 0-86400.")
             except ValueError:

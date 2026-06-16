@@ -402,28 +402,38 @@ class AnalyticsStore:
                 dist[s.link_quality] += 1
         return dist
 
-    def cleanup_old_data(self, days: int = 30):
-        """Remove data older than specified days."""
+    def cleanup_old_data(self, days: int = 30) -> int:
+        """Remove data older than specified days.
+
+        Returns the total number of rows deleted across all three tables, so a
+        caller can report the real count instead of asserting "removed" for a
+        run that deleted nothing (#74 class).
+        """
         cutoff = (datetime.now() - timedelta(days=days)).isoformat()
 
         with self._lock:
             conn = self._connect()
             try:
                 cursor = conn.cursor()
+                removed = 0
                 cursor.execute(
                     "DELETE FROM link_budget_history WHERE timestamp < ?",
                     (cutoff,)
                 )
+                removed += cursor.rowcount if cursor.rowcount > 0 else 0
                 cursor.execute(
                     "DELETE FROM network_health WHERE timestamp < ?",
                     (cutoff,)
                 )
+                removed += cursor.rowcount if cursor.rowcount > 0 else 0
                 cursor.execute(
                     "DELETE FROM coverage_snapshots WHERE timestamp < ?",
                     (cutoff,)
                 )
+                removed += cursor.rowcount if cursor.rowcount > 0 else 0
                 conn.commit()
-                logger.info(f"Cleaned up analytics data older than {days} days")
+                logger.info("Cleaned up %d analytics row(s) older than %d days", removed, days)
+                return removed
             finally:
                 conn.close()
 

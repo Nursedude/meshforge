@@ -252,36 +252,35 @@ class NomadNetRNSChecksMixin:
                 "Continue anyway?",
             )
 
-        # Add minimal [textui] section
-        textui_section = """
-
-[textui]
-# Text UI configuration added by MeshForge
-intro_time = 1
-theme = dark
-colormode = 256
-glyphs = unicode
-mouse_enabled = yes
-hide_guide = no
-"""
+        # Add minimal [textui] section (identical string, compact literal)
+        textui_section = (
+            "\n\n[textui]\n# Text UI configuration added by MeshForge\n"
+            "intro_time = 1\ntheme = dark\ncolormode = 256\n"
+            "glyphs = unicode\nmouse_enabled = yes\nhide_guide = no\n"
+        )
         try:
             # Append [textui] section to config
             with open(config_path, 'a') as f:
                 f.write(textui_section)
             logger.info(f"Added [textui] section to {config_path}")
 
-            # Fix ownership if running via sudo
+            # Fix ownership if running via sudo; warn on chown failure so we
+            # don't claim the UI works when the config is left root-owned and
+            # unreadable to NomadNet (#74 / MF018 false instruction).
             sudo_user = os.environ.get('SUDO_USER')
+            chown_ok = True
             if sudo_user and sudo_user != 'root':
-                subprocess.run(
+                chown_ok = subprocess.run(
                     ['chown', f'{sudo_user}:{sudo_user}', str(config_path)],
                     capture_output=True, timeout=10
-                )
-
+                ).returncode == 0
+            warn = "" if chown_ok else (
+                f"\n\nWARNING: ownership not restored to {sudo_user}; config may be "
+                f"root-owned/unreadable. Fix: sudo chown {sudo_user}:{sudo_user} {config_path}")
             self.ctx.dialog.msgbox(
                 "Config Updated",
                 f"Added [textui] section to config.\n\n"
-                f"NomadNet text UI should now work.",
+                f"NomadNet text UI should now work." + warn,
             )
             return True
         except (OSError, PermissionError) as e:

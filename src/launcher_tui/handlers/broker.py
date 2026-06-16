@@ -180,9 +180,15 @@ class BrokerHandler(BaseHandler):
                 break
 
             if choice == "activate":
-                set_active_profile(name, profiles)
-                profile.is_active = True
-                self.ctx.dialog.msgbox("Activated", f"Profile '{name}' is now active.")
+                ok = set_active_profile(name, profiles)
+                if ok:
+                    profile.is_active = True
+                self.ctx.report_action(
+                    ok,
+                    "Activated", f"Profile '{name}' is now active.",
+                    "Save Failed",
+                    "Could not write the broker profile to disk — change NOT saved.",
+                )
 
             elif choice == "apply":
                 self._apply_profile_to_mqtt(profile)
@@ -215,8 +221,13 @@ class BrokerHandler(BaseHandler):
                     )
                 elif self.ctx.dialog.yesno("Confirm Delete", f"Delete profile '{name}'?"):
                     del profiles[name]
-                    save_profiles(profiles)
-                    self.ctx.dialog.msgbox("Deleted", f"Profile '{name}' deleted.")
+                    ok = save_profiles(profiles)
+                    self.ctx.report_action(
+                        ok,
+                        "Deleted", f"Profile '{name}' deleted.",
+                        "Save Failed",
+                        "Could not write the broker profile to disk — change NOT saved.",
+                    )
                     break
 
     def _setup_private_broker(self):
@@ -296,7 +307,7 @@ class BrokerHandler(BaseHandler):
             p.is_active = False
         profile.is_active = True
         profiles["meshforge_private"] = profile
-        save_profiles(profiles)
+        saved_ok = save_profiles(profiles)
 
         if os.geteuid() == 0:
             if self.ctx.dialog.yesno(
@@ -318,7 +329,8 @@ class BrokerHandler(BaseHandler):
             )
 
         cmds = get_meshtastic_mqtt_setup_commands(profile)
-        self.ctx.dialog.msgbox(
+        self.ctx.report_action(
+            saved_ok,
             "Setup Complete",
             f"Private broker profile created and activated!\n\n"
             f"Broker: localhost:{profile.port}\n"
@@ -326,7 +338,8 @@ class BrokerHandler(BaseHandler):
             f"Channel: {channel}\n"
             f"Region: {region}\n\n"
             f"Configure your Meshtastic radio:\n\n{cmds}",
-            width=70
+            "Save Failed",
+            "Could not write the broker profile to disk — change NOT saved.",
         )
 
         self._apply_profile_to_mqtt(profile)
@@ -356,9 +369,10 @@ class BrokerHandler(BaseHandler):
             p.is_active = False
         profile.is_active = True
         profiles["meshtastic_public"] = profile
-        save_profiles(profiles)
+        ok = save_profiles(profiles)
 
-        self.ctx.dialog.msgbox(
+        self.ctx.report_action(
+            ok,
             "Public Broker Set",
             f"Configured for Meshtastic public broker.\n\n"
             f"Broker: mqtt.meshtastic.org:8883 (TLS)\n"
@@ -367,7 +381,9 @@ class BrokerHandler(BaseHandler):
             "This is read-only nodeless monitoring.\n"
             "No local radio needed.\n\n"
             "Public broker enforces zero-hop policy\n"
-            "(downlinked messages don't re-enter mesh)."
+            "(downlinked messages don't re-enter mesh).",
+            "Save Failed",
+            "Could not write the broker profile to disk — change NOT saved.",
         )
 
         self._apply_profile_to_mqtt(profile)
@@ -433,14 +449,17 @@ class BrokerHandler(BaseHandler):
             p.is_active = False
         profile.is_active = True
         profiles[name] = profile
-        save_profiles(profiles)
+        ok = save_profiles(profiles)
 
-        self.ctx.dialog.msgbox(
+        self.ctx.report_action(
+            ok,
             "Custom Broker Saved",
             f"Profile '{name}' created and activated.\n\n"
             f"Broker: {host}:{port}\n"
             f"Channel: {channel}\n"
-            f"Topic: {profile.topic_filter}"
+            f"Topic: {profile.topic_filter}",
+            "Save Failed",
+            "Could not write the broker profile to disk — change NOT saved.",
         )
 
         self._apply_profile_to_mqtt(profile)
@@ -722,5 +741,18 @@ class BrokerHandler(BaseHandler):
         tui_config['auto_start'] = existing_config.get('auto_start', False)
         tui_config['auto_start_telemetry'] = existing_config.get('auto_start_telemetry', True)
 
-        save_mqtt_config(tui_config)
-        logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
+        ok = save_mqtt_config(tui_config)
+        if ok:
+            logger.info("Applied broker profile '%s' to MQTT subscriber config", profile.name)
+        else:
+            logger.error(
+                "Failed to write MQTT subscriber config for broker profile '%s'",
+                profile.name,
+            )
+            self.ctx.report_action(
+                False,
+                "Applied", "",  # success path unreachable; ok is always False here
+                "Apply Failed",
+                "Could not write the MQTT subscriber config to disk — "
+                "the broker profile was saved but NOT applied to the subscriber.",
+            )
