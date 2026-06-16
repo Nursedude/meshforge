@@ -23,8 +23,28 @@ def collector(tmp_path):
     ~/.config/meshforge/map_settings.json on the dev box and pick up
     operator-set keys (e.g. aredn_node_ips on a real fleet host),
     defeating `assert d["aredn"]["reason_if_zero"] == "not_configured"`.
+
+    Hermetic against the public internet: with default settings the collector
+    fetches the AREDN worldmap (``enable_aredn_worldmap_fallback`` defaults
+    True), and tests that run the real ``collect()`` path otherwise reach
+    ``worldmap.arednmesh.org`` live. When that host is slow/unreachable the
+    15s per-source connect timeout × the CI ``--timeout=30`` thread killer
+    reddened the suite on commits that touched no collector code (observed
+    2026-06-16, host down). We construct the collector first (so __init__ may
+    use the network), then block ``socket.socket`` for the test body: any
+    fetch now raises OSError instantly, which the fetchers already catch and
+    turn into ``[]`` + an "unreachable"/empty source diagnostic — identical to
+    a real dead host, just without the hang. Tests that exercise a public
+    source patch ``urllib.request.urlopen`` themselves, so they never reach a
+    real socket and are unaffected.
     """
-    return MapDataCollector(cache_dir=tmp_path, config_dir=tmp_path, enable_history=False)
+    c = MapDataCollector(cache_dir=tmp_path, config_dir=tmp_path, enable_history=False)
+
+    def _blocked_socket(*_a, **_k):
+        raise OSError("network blocked in unit test (collector fixture)")
+
+    with patch("socket.socket", _blocked_socket):
+        yield c
 
 
 class TestPositionLessThroughHistory:
@@ -335,10 +355,18 @@ class TestArednFeatureSourceField:
 class TestCollectExposesDiagnostics:
     @staticmethod
     def _patched(coll):
-        """Patch every source-collection method on an instance to return []."""
+        """Patch every source-collection method on an instance to return [].
+
+        Must include the live-network sources (``_collect_aredn_worldmap``,
+        ``_collect_meshcore_public``) or collect() reaches public hosts for
+        real — when one is slow/down it hangs the test past CI's --timeout=30
+        (observed 2026-06-16). Mirror TestGeoJSONExposesDirectoryStats's
+        complete list; a missing source here is a silent network dependency.
+        """
         sources = [
             "_collect_unified_tracker", "_collect_meshtasticd", "_collect_direct_radio",
             "_collect_mqtt", "_collect_node_tracker", "_collect_aredn",
+            "_collect_aredn_worldmap", "_collect_meshcore_public",
             "_collect_rns_direct", "_collect_public_fallbacks",
         ]
         for name in sources:
@@ -353,7 +381,8 @@ class TestCollectExposesDiagnostics:
             return orig_reset(*a, **kw)
         c._collect_unified_tracker = lambda: (c._record_diagnostic("test_source", attempted=1, yielded=1) or [])
         for name in ["_collect_meshtasticd", "_collect_direct_radio", "_collect_mqtt",
-                     "_collect_node_tracker", "_collect_aredn", "_collect_rns_direct",
+                     "_collect_node_tracker", "_collect_aredn", "_collect_aredn_worldmap",
+                     "_collect_meshcore_public", "_collect_rns_direct",
                      "_collect_public_fallbacks"]:
             setattr(c, name, lambda *_a, **_kw: [])
 
