@@ -402,13 +402,25 @@ class BrokerHandler(BaseHandler):
         )
         if not host:
             return
+        if not self.ctx.validate_hostname(host):
+            self.ctx.dialog.msgbox(
+                "Invalid Host",
+                f"'{host}' is not a valid hostname or IP."
+            )
+            return
 
         port = self.ctx.dialog.inputbox(
             "Port",
             "MQTT port:\n\n  1883 = Plain TCP\n  8883 = TLS encrypted",
             init="1883"
         )
-        if not port or not port.isdigit():
+        if not port:
+            return
+        if not self.ctx.validate_port(port):
+            self.ctx.dialog.msgbox(
+                "Invalid Port",
+                "Port must be a number between 1 and 65535."
+            )
             return
 
         username = self.ctx.dialog.inputbox(

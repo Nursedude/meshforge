@@ -676,6 +676,15 @@ class FirstRunHandler(BaseHandler):
         if not host:
             return
 
+        # Validate the host up-front so an invalid value never reaches
+        # settings.json (the connect target). Honest, actionable signal.
+        if not self.ctx.validate_hostname(host):
+            self.ctx.dialog.msgbox(
+                "Invalid Host",
+                f"'{host}' is not a valid hostname or IP."
+            )
+            return
+
         port = self.ctx.dialog.inputbox(
             "Network Port",
             "Enter the port number (default 4403):",
@@ -684,6 +693,16 @@ class FirstRunHandler(BaseHandler):
 
         if not port:
             port = "4403"
+
+        # Validate the port up-front so the user gets an actionable message
+        # instead of the generic "Failed to save settings: invalid literal
+        # for int()" from the bare int(port) below.
+        if not self.ctx.validate_port(port):
+            self.ctx.dialog.msgbox(
+                "Invalid Port",
+                "Port must be a number between 1 and 65535."
+            )
+            return
 
         # Save network configuration
         try:

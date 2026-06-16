@@ -364,7 +364,15 @@ class GatewayHandler(BaseHandler):
                     init=config.meshtastic.host
                 )
                 if host:
-                    config.meshtastic.host = host.strip()
+                    candidate = host.strip()
+                    if not self.ctx.validate_hostname(candidate):
+                        self.ctx.dialog.msgbox(
+                            "Invalid Host",
+                            "Host must be a valid hostname or IP address "
+                            "(letters, digits, '.', '-', ':' only)."
+                        )
+                        continue
+                    config.meshtastic.host = candidate
 
             elif choice == "port":
                 port = self.ctx.dialog.inputbox(
@@ -372,8 +380,14 @@ class GatewayHandler(BaseHandler):
                     "Enter meshtasticd TCP port (default 4403):",
                     init=str(config.meshtastic.port)
                 )
-                if port and port.isdigit():
-                    config.meshtastic.port = int(port)
+                if port:
+                    if not self.ctx.validate_port(port.strip()):
+                        self.ctx.dialog.msgbox(
+                            "Invalid Port",
+                            "Port must be 1-65535."
+                        )
+                        continue
+                    config.meshtastic.port = int(port.strip())
 
             elif choice == "channel":
                 channel = self.ctx.dialog.inputbox(
@@ -448,7 +462,19 @@ class GatewayHandler(BaseHandler):
                     init=config.rns.config_dir
                 )
                 if dir_path is not None:
-                    config.rns.config_dir = dir_path.strip()
+                    p = dir_path.strip()
+                    # Blank clears the override (falls back to default ~/.reticulum).
+                    if p:
+                        # Require an absolute path with no '..' traversal segments.
+                        # expanduser() so '~/...' is accepted (resolved then checked).
+                        if '..' in Path(p).parts or not Path(p).expanduser().is_absolute():
+                            self.ctx.dialog.msgbox(
+                                "Invalid Path",
+                                "RNS config dir must be an absolute path "
+                                "with no '..' segments."
+                            )
+                            continue
+                    config.rns.config_dir = p
 
     def _config_routing(self, config):
         """Configure routing rules."""

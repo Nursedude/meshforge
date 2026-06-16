@@ -642,13 +642,23 @@ class MQTTHandler(BaseHandler):
                 new_broker = self.ctx.dialog.inputbox(
                     "MQTT Broker", "Enter MQTT broker hostname:", init=broker)
                 if new_broker:
+                    if not self.ctx.validate_hostname(new_broker):
+                        self.ctx.dialog.msgbox(
+                            "Invalid Host",
+                            f"'{new_broker}' is not a valid hostname or IP.")
+                        continue
                     config['broker'] = new_broker
 
             elif choice == "port":
                 new_port = self.ctx.dialog.inputbox(
                     "MQTT Port", "Enter MQTT port (8883 for TLS, 1883 for plain):",
                     init=str(port))
-                if new_port and new_port.isdigit():
+                if new_port:
+                    if not self.ctx.validate_port(new_port):
+                        self.ctx.dialog.msgbox(
+                            "Invalid Port",
+                            "Port must be a number between 1 and 65535.")
+                        continue
                     config['port'] = int(new_port)
 
             elif choice == "topic":
@@ -1059,6 +1069,11 @@ class MQTTHandler(BaseHandler):
         )
         if not broker:
             return
+        if not self.ctx.validate_hostname(broker):
+            self.ctx.dialog.msgbox(
+                "Invalid Host",
+                f"'{broker}' is not a valid hostname or IP.")
+            return
 
         port = self.ctx.dialog.inputbox(
             "Broker Port",
@@ -1068,7 +1083,12 @@ class MQTTHandler(BaseHandler):
             "  8883 = TLS encrypted",
             init=str(config.get('port', 1883))
         )
-        if not port or not port.isdigit():
+        if not port:
+            return
+        if not self.ctx.validate_port(port):
+            self.ctx.dialog.msgbox(
+                "Invalid Port",
+                "Port must be a number between 1 and 65535.")
             return
 
         username = self.ctx.dialog.inputbox(

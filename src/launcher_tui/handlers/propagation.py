@@ -277,6 +277,12 @@ class PropagationHandler(BaseHandler):
             host = self.ctx.dialog.inputbox(name, f"{name} host:", current.get('host', 'localhost'))
             if host is None:
                 return
+            if not self.ctx.validate_hostname(host):
+                self.ctx.dialog.msgbox(
+                    "Invalid Host",
+                    f"'{host}' is not a valid hostname or IP."
+                )
+                return
             port = self.ctx.dialog.inputbox(name, f"{name} port:", str(current.get('port', default_port)))
             if port is None:
                 return

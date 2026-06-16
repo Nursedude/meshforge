@@ -162,6 +162,13 @@ class MeshtasticdDeviceMQTTHandler(BaseHandler):
         if not broker:
             return
 
+        if not self.ctx.validate_hostname(broker):
+            self.ctx.dialog.msgbox(
+                "Invalid Host",
+                f"'{broker}' is not a valid broker hostname or IP."
+            )
+            return
+
         cli = self.ctx.get_meshtastic_cli()
         clear_screen()
         print("=== Setting MQTT Broker ===\n")
