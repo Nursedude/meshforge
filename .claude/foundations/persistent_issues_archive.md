@@ -2860,3 +2860,28 @@ no IPs configured (inert on the 95%), status unreachable/diagnostics absent
 confirmed-dark progress), `no_positions`/`yielded>0` = alive (reset). Runner-
 gated on meshforge-map expected-active (moc3 never runs it). Routed in both
 role seeds; 10 tests (`test_aredn_source_dark_*`).
+
+**REFINED 2026-06-16 (MF `3c7fc09`) — slow-but-reachable ≠ unreachable (moc5 flap).**
+moc5's probe flapped degraded↔clear overnight HST. Root cause (VERIFIED): every
+FAILED AREDN collect pegged at exactly **3.007s = the old hardcoded `timeout=3`** on
+the gate's plain `/a/sysinfo` GET in `_get_aredn_node_ip()`. The socket CONNECT
+succeeded (0ms = REACHABLE) — the constrained hAP ac lite (mips_24kc) just generates
+sysinfo slowly/variably, crossing 3s intermittently overnight (failures clustered
+22:52→05:14 HST; **45 mislabels** one night, 0 the morning after the fix). The collector
+recorded reachable-but-slow as `unreachable`, which the probe read as dark
+(honest_failure_modes #1: a degraded state mapped to a wrong-but-valid value). **NOT
+the 4.26 restart-firewall hook-wipe class** — the hAP had 55-day uptime, no reboot.
+Secondary amplifier: the watchdog ticks 30s but `source_diagnostics` refreshes
+per-collect (~290s), so one bad collect is re-read ~9× and the 2-tick debounce can't
+ride it out. **Cure:** `_get_aredn_node_ip()` returns `(ip, status)` distinguishing
+connect-fail (`unreachable`) from connect-ok-but-GET-timeout (`slow`); `_collect_aredn`
+records new `reason="slow_sysinfo"` with a correct hint (reachable, slow — NOT
+power/PoE/LAN); the probe treats `slow_sysinfo` as ALIVE (reset streak, never fire)
+alongside `no_positions`/`yielded>0`; gate-read + client timeout 3s/5s→**8s** (SSOT
+`AREDN_SYSINFO_*` in `utils.timeouts`), connect stays 2s (a slow connect IS down). A
+typical overnight 3–8s sysinfo now just succeeds (live: a 5615ms collect succeeded
+post-fix). +4 tests. **Residual (deferred):** the heavier link_info client-call timeout
+still maps to `no_positions` (benign — probe treats as alive, no fire); a per-collect
+debounce for the whole probe-reads-cached-diagnostic family was deferred. Decision tell:
+aredn latency at the timeout ceiling + `none of configured IPs reachable` in the map
+journal while the node's :8080 actually answers = slow, not down.
