@@ -294,6 +294,35 @@ class TestArednReasonIfZero:
         d = collector.get_source_diagnostics()
         assert d["aredn"]["reason_if_zero"] == "slow_sysinfo"
 
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=("10.143.126.65", "ok"))
+    @patch("utils._map_collector_aredn.AREDNClient")
+    def test_slow_sysinfo_when_detail_call_returns_none(self, mock_client_cls, _mock_ip, collector):
+        """Gate passed (node answered plain sysinfo) but the heavier link_info
+        call returned None (AREDNClient swallows a timeout to None on a slow
+        node) → reason='slow_sysinfo', NOT 'no_positions'. no_positions would
+        read as 'alive, no GPS' and mask a degrading detail call forever."""
+        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        mock_client_cls.return_value.get_node_info.return_value = None
+        features = collector._collect_aredn()
+        assert features == []
+        d = collector.get_source_diagnostics()
+        assert d["aredn"]["reason_if_zero"] == "slow_sysinfo"
+
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=("10.143.126.65", "ok"))
+    @patch("utils._map_collector_aredn.AREDNClient")
+    def test_no_positions_when_node_reached_but_no_gps(self, mock_client_cls, _mock_ip, collector):
+        """Reached the node but it has no location set → 'no_positions'
+        (genuinely alive, no GPS) — distinct from the slow detail-call case."""
+        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        node = MagicMock()
+        node.has_location.return_value = False
+        node.links = []
+        mock_client_cls.return_value.get_node_info.return_value = node
+        features = collector._collect_aredn()
+        assert features == []
+        d = collector.get_source_diagnostics()
+        assert d["aredn"]["reason_if_zero"] == "no_positions"
+
     def test_get_aredn_node_ip_skips_socket_when_no_custom_ips(self, collector):
         """Empty aredn_node_ips → no socket calls. Returns (None, 'unreachable').
 

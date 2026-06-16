@@ -132,16 +132,29 @@ class ARENDataCollectorMixin:
             )
             return features
 
-        # Success path — `no_positions` means we reached AREDN but nothing had GPS set.
+        # Success path. Two distinct zero-yield shapes must NOT be conflated:
+        #   - local_node is None: the gate passed (the node answered the plain
+        #     sysinfo) but the heavier services_local+link_info call returned
+        #     nothing — AREDNClient._make_request swallows timeouts to None, and
+        #     that bigger payload is what a slow constrained node chokes on. The
+        #     node is REACHABLE; the detail fetch failed. Calling that
+        #     `no_positions` (= "alive, just no GPS") would mask a degrading
+        #     detail call forever (honest_failure_modes #1). Label it slow.
+        #   - local_node present but no feature: genuinely reached, no GPS set.
+        notes = f"local node {local_node_ip}"
         reason = None
         if not features:
-            reason = "no_positions"
+            if local_node is None:
+                reason = "slow_sysinfo"
+                notes = f"{local_node_ip}: detail sysinfo returned nothing (reachable, slow)"
+            else:
+                reason = "no_positions"
         self._record_diagnostic(
             "aredn",
             attempted=1 + neighbors_tried,
             yielded=len(features),
             reason_if_zero=reason,
-            notes=f"local node {local_node_ip}",
+            notes=notes,
         )
         return features
 
