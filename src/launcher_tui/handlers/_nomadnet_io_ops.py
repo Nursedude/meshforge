@@ -300,13 +300,23 @@ class NomadNetIOOpsMixin:
         subprocess.run([editor, str(config_path)], timeout=None)
         sudo_user = os.environ.get('SUDO_USER')
         if sudo_user and sudo_user != 'root':
+            chown_ok = False
             try:
-                subprocess.run(
+                chown_ok = subprocess.run(
                     ['chown', f'{sudo_user}:{sudo_user}', str(config_path)],
                     capture_output=True, timeout=10,
-                )
+                ).returncode == 0
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("chown after edit failed: %s", e)
+            if not chown_ok:
+                # A root-owned config is unreadable to NomadNet next launch —
+                # the user must know (mirrors _nomadnet_rns_checks chown warning).
+                self.ctx.dialog.msgbox(
+                    "Ownership Warning",
+                    f"Config saved, but ownership could not be restored to "
+                    f"{sudo_user} — NomadNet may not be able to read it.\n\n"
+                    f"Fix: sudo chown {sudo_user}:{sudo_user} {config_path}"
+                )
 
     # ------------------------------------------------------------------
     # Unified logs menu (Issue #45) — journal + tmux + logfile + rnsd

@@ -310,7 +310,10 @@ class MeshtasticdLoRaHandler(BaseHandler):
             try:
                 overlay['Lora']['TXen'] = int(txen)
             except ValueError:
-                pass
+                # Don't silently drop the PA/LNA enable pin then claim "updated"
+                # — a bad value must be told, like the _lora_set_pins sibling.
+                self.ctx.dialog.msgbox("Error", "TX/RX enable pins must be integers.")
+                return
         else:
             overlay['Lora'].pop('TXen', None)
 
@@ -318,7 +321,8 @@ class MeshtasticdLoRaHandler(BaseHandler):
             try:
                 overlay['Lora']['RXen'] = int(rxen)
             except ValueError:
-                pass
+                self.ctx.dialog.msgbox("Error", "TX/RX enable pins must be integers.")
+                return
         else:
             overlay['Lora'].pop('RXen', None)
 

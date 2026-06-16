@@ -740,6 +740,15 @@ class FirstRunHandler(BaseHandler):
                 settings_file.write_text(json.dumps(settings, indent=2))
             except (OSError, ValueError) as e:
                 logger.debug("Failed to save region setting: %s", e)
+                # The region (regulatory frequencies) silently not persisting
+                # then "Setup Complete!" is the silent-failure class — tell the
+                # user, like the _wizard_step_network_config sibling does.
+                self.ctx.dialog.msgbox(
+                    "Region Not Saved",
+                    f"Could not save region {choice}:\n{e}\n\n"
+                    "Your regulatory region was NOT set — re-run the wizard or "
+                    "set the region from Settings before transmitting."
+                )
 
     # -- USB device detection ----------------------------------------------
 

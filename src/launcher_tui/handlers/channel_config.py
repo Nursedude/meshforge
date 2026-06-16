@@ -668,31 +668,46 @@ class ChannelConfigHandler(BaseHandler):
         try:
             self.ctx.dialog.infobox("Applying", f"Applying {tmpl['name']}...")
 
-            # Apply radio preset via meshtastic CLI
+            # Apply radio preset via meshtastic CLI. Check the returncode — a
+            # nonzero exit raises no exception, so an unchecked result would let
+            # us claim "Radio: {preset}" for a preset that never applied.
             import subprocess
             cli = self.ctx.get_meshtastic_cli()
-            subprocess.run(
+            preset_result = subprocess.run(
                 [cli, '--host', 'localhost', '--set', 'lora.modem_preset', tmpl['preset']],
                 capture_output=True, timeout=30
             )
+            preset_ok = preset_result.returncode == 0
 
             # Set gateway channel (index 7 = slot 8)
             sys.path.insert(0, str(self.ctx.src_dir))
             from commands import meshtastic as mesh_cmd
             name_result = mesh_cmd.set_channel_name(7, tmpl['channel'])
 
-            if name_result.success:
+            if name_result.success and preset_ok:
                 self.ctx.dialog.msgbox("Success",
                     f"{tmpl['name']} applied!\n\n"
                     f"Radio: {tmpl['preset']}\n"
                     f"Gateway Channel: {tmpl['channel']} (Slot 8)\n\n"
                     "Ready for RNS bridging.")
+            elif name_result.success and not preset_ok:
+                err = (preset_result.stderr or b"").decode("utf-8", "replace").strip()
+                self.ctx.dialog.msgbox(
+                    "Error",
+                    f"{tmpl['name']} partially applied — the gateway channel was "
+                    f"set, but the radio preset '{tmpl['preset']}' did NOT apply "
+                    f"(meshtastic CLI exit {preset_result.returncode}).\n\n"
+                    f"{err}\n\n"
+                    "Set the preset manually from Radio Config, then retry.",
+                )
             else:
+                preset_state = ("Radio preset was set" if preset_ok else
+                                f"Radio preset also failed (exit {preset_result.returncode})")
                 self.ctx.dialog.msgbox(
                     "Error",
                     f"{tmpl['name']} template partially applied — gateway "
                     f"channel setup failed:\n\n{name_result.message}\n\n"
-                    "Radio preset was set but the gateway channel was not "
+                    f"{preset_state}, but the gateway channel was not "
                     "configured. Re-run from Channel Config > Gateway "
                     "Channel to retry.",
                 )
