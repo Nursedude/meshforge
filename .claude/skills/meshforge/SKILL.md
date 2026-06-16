@@ -18,8 +18,10 @@ description: >
 > `.claude/foundations/persistent_issues.md` are auto-loaded into every session —
 > do NOT restate them here. This skill carries only operational reference that
 > lives nowhere else. Version: read `src/__version__.py`, never hardcode it here
-> (a stale copy sat at 0.5.5-beta while main was 0.6.1-beta). Handler count:
-> read `handler_registry.py` registrations, never hardcode (drifted 60→64→96).
+> (a stale copy sat at 0.5.5-beta while main was 0.6.1-beta). Handler surface:
+> read `capability_index.md` (next to this file) — auto-generated from the live
+> `get_all_handlers()` registry and test-pinned, so the count never goes stale
+> by hand again (it drifted 60→64→96 when hardcoded).
 
 ## Key Ports
 
@@ -45,15 +47,29 @@ description: >
 ## TUI Handler Pattern
 
 Each menu action is a self-contained handler in `src/launcher_tui/handlers/`,
-dispatched by `handler_registry.py`:
+dispatched by `handler_registry.py`. Context arrives via `set_context()` (stored
+as `self.ctx`); `execute()` receives the selected action **tag**, not the context:
 
 ```python
-from launcher_tui.handler_protocol import BaseHandler, TUIContext
+from handler_protocol import BaseHandler  # bare import: src/launcher_tui on path
 
 class MyHandler(BaseHandler):
-    def execute(self, ctx: TUIContext, **kwargs):
-        ...
+    handler_id = "my_handler"
+    menu_section = "system"           # which menu it appears under
+
+    def menu_items(self):             # (tag, label, feature_flag_or_None)
+        return [("mything", "My Thing — does the thing", None)]
+
+    def execute(self, action: str):   # action == the selected tag
+        self.ctx.report_action(ok, "Done", "It worked", "Failed", "It did not")
 ```
+
+New handlers must be appended in `handlers/__init__.py:get_all_handlers()` or
+they are silently dead UI (`TestHandlerReachability` guards this). The full
+command surface — every section, tag, label, and feature flag — is in
+**`capability_index.md`** (next to this file); grep it to answer "can the TUI
+do X?", then open the handler. Regenerate it after touching any handler:
+`python3 scripts/gen_capability_index.py`.
 
 ## Launch & Verify
 
