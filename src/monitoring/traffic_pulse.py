@@ -596,7 +596,7 @@ def _traffic_signal_classes() -> frozenset:
     return frozenset({
         "channel_feed_dark", "delivery_confirmation_stall", "mqtt_root_drift",
         "queue_backlog", "delivery_write_canary", "aredn_source_dark",
-        "phoneapi_tcp_leak",
+        "phoneapi_tcp_leak", "meshtasticd_phoneapi_wedge",
     })
 
 

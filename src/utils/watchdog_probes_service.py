@@ -20,6 +20,7 @@ from urllib.error import URLError
 
 from utils.watchdog_probe_core import (
     Signal,
+    _journal_count_match,
     _journal_newest_match,
     _resolve_main_pid,
     _short_unix_ts,
@@ -436,6 +437,173 @@ def probe_phoneapi_tcp_leak(
             "leaked_inodes": inode_list,
             "persisted_ticks": max_ticks,
             "persist_ticks_threshold": persist_ticks,
+        },
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: meshtasticd PhoneAPI wedge (2026-06-15 — #17/#75 contention,
+# churn form; the 2026-06-13→15 moc mesh-TX wedge)
+# ─────────────────────────────────────────────────────────────────────
+
+
+DEFAULT_PHONEAPI_WEDGE_STATE_PATH = (
+    "/var/lib/meshforge/phoneapi_wedge_debounce.json"
+)
+
+# The signature line meshtasticd logs whenever a NEW :4403 connection
+# arrives while one is still open — i.e. the single-consumer PhoneAPI
+# is being CONTENDED by ≥2 overlapping clients (#17). Steady-state with
+# one persistent consumer = ~0 of these (moc Jun 12 = 0); the 06-13→15
+# contention incident logged thousands/day (~1.5-2.5/min).
+PHONEAPI_FORCE_CLOSE_PATTERN = "Force close previous TCP connection"
+
+# ~12 force-closes over the 10-min default lookback (~1.2/min) is the
+# floor for SUSTAINED churn — comfortably above the single-consumer 0
+# steady state, comfortably below the incident's ~1.5-2.5/min, so a
+# stray reconnect or a momentary two-client overlap during a deploy
+# never crosses it while genuine contention does.
+DEFAULT_PHONEAPI_WEDGE_THRESHOLD = 12
+
+
+def _load_phoneapi_wedge_streak(state_path: str) -> int:
+    """Read the consecutive-over-threshold streak. Any error → 0.
+
+    A missing/unreadable/garbage state means 'no confirmed streak yet',
+    which suppresses a first-seen burst — the conservative direction the
+    debounce wants (favour silence on uncertainty, not a false page).
+    """
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_phoneapi_wedge_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def probe_meshtasticd_phoneapi_wedge(
+    *,
+    unit: str = "meshtasticd.service",
+    lookback: str = "10min",
+    threshold: int = DEFAULT_PHONEAPI_WEDGE_THRESHOLD,
+    journalctl_path: str = "journalctl",
+    systemctl_path: str = "systemctl",
+    main_pid: Optional[int] = None,
+    count_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when meshtasticd's PhoneAPI (:4403) is thrashed by ≥2 contenders.
+
+    The 2026-06-13→15 moc incident: the gateway's mesh-TX silently wedged
+    for ~2 days. meshtasticd's PhoneAPI is a SINGLE-consumer stream (#17) —
+    when a SECOND consumer (e.g. the map's ``_collect_meshtasticd`` :4403
+    source) opens a connection while one is still held, meshtasticd logs
+    ``Force close previous TCP connection`` and tears the prior one down.
+    Two consumers reconnecting against each other produce sustained churn
+    (~1.5-2.5/min in the incident vs ~0/min steady-state with one
+    persistent consumer). Under that thrash the gateway's
+    stateless-HTTP-protobuf mesh-TX path can never hold the radio long
+    enough to send: **the bot keeps producing output but it stops reaching
+    nodes — and NOTHING alarmed, because the RNS round-trip canary measures
+    the RNS leg, not mesh-RF.** This probe watches the one thing that goes
+    loud during the contention: the force-close churn in meshtasticd's own
+    journal.
+
+    Detection (journal-only, sandbox-safe — never opens a :4403 connection,
+    which would itself BE a contender, the #17 trap):
+
+    1. Count ``Force close previous TCP connection`` lines in meshtasticd's
+       journal over ``lookback`` (default 10 min). ``< threshold`` (default
+       12, ~1.2/min) → return None: not sustained churn.
+    2. **2-tick debounce** (mirrors ``probe_parity_drift`` /
+       ``probe_role_drift``): a brief two-client overlap during a deploy or
+       a stray reconnect produces one over-threshold tick that self-heals;
+       a streak persisted to ``state_path`` requires ``debounce_ticks``
+       CONSECUTIVE over-threshold ticks before firing, so a transient burst
+       can't flap the signal. Any below-threshold OR unobservable tick
+       resets the streak.
+
+    Self-guards (return None — never read unobservable as healthy):
+
+    - meshtasticd inactive (``_resolve_main_pid`` → None; ``service_inactive``
+      owns that), or
+    - the journal count is None (journalctl timeout/unavailable —
+      *unobservable* ≠ 0; absorbing it as 0 would mask the wedge,
+      honest_failure_modes #1/#2). The streak is reset on this path so an
+      observability gap never counts toward a fire.
+
+    Recovery: ``sudo systemctl restart meshtasticd`` clears the wedge
+    immediately; then stop the 2nd consumer so it can't recur — typically
+    the map's ``_collect_meshtasticd`` :4403 source.
+    """
+    pid = main_pid if main_pid is not None else _resolve_main_pid(
+        unit, systemctl_path=systemctl_path
+    )
+    if pid is None:
+        return None
+
+    sp = state_path or DEFAULT_PHONEAPI_WEDGE_STATE_PATH
+
+    if count_fn is None:
+        def count_fn(pattern: str) -> Optional[int]:
+            return _journal_count_match(
+                unit, pattern, lookback, journalctl_path=journalctl_path
+            )
+
+    count = count_fn(PHONEAPI_FORCE_CLOSE_PATTERN)
+    if count is None:
+        # Unobservable (journalctl wedged/absent) — NEVER read as 0/healthy.
+        # Break the streak so a blind tick can't carry toward a fire.
+        _save_phoneapi_wedge_streak(sp, 0)
+        return None
+    if count < threshold:
+        _save_phoneapi_wedge_streak(sp, 0)  # not sustained → streak broken
+        return None
+
+    streak = _load_phoneapi_wedge_streak(sp) + 1
+    _save_phoneapi_wedge_streak(sp, streak)
+    if streak < debounce_ticks:
+        return None  # over threshold once — wait for a confirming tick
+
+    detail = (
+        f"meshtasticd PhoneAPI (:4403) is being thrashed by ≥2 contending "
+        f"single-consumers — {count} '{PHONEAPI_FORCE_CLOSE_PATTERN}' lines "
+        f"in the last {lookback} (threshold {threshold}), confirmed over "
+        f"{streak} consecutive ticks. The single-consumer :4403 (#17/#75 "
+        f"contention class) is being torn open/closed, so the gateway's "
+        f"stateless-HTTP-protobuf mesh-TX wedges: bot output stops reaching "
+        f"nodes while the RNS round-trip canary stays green (the mesh-RF leg "
+        f"is unwatched — the 2026-06-13→15 moc incident). Recover: sudo "
+        f"systemctl restart meshtasticd (clears the wedge), then stop the "
+        f"2nd consumer — typically the map's _collect_meshtasticd :4403 "
+        f"source — so it can't recur."
+    )
+    return Signal(
+        cls="meshtasticd_phoneapi_wedge",
+        subject="meshtasticd",
+        severity="degraded",
+        detail=detail,
+        issue_ref=None,
+        extra={
+            "force_close_count": count,
+            "lookback": lookback,
+            "threshold": threshold,
+            "debounce_streak": streak,
         },
     )
 

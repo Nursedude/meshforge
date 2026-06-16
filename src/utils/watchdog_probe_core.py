@@ -40,6 +40,7 @@ SIGNAL_CLASSES = (
     "queue_backlog",  # Issue #74 (2026-06-06): persistent-queue depth near shed threshold / dead-letter growth — backlog masks delivery failures
     "delivery_confirmation_stall",  # Issue #74 (2026-06-06): sends flow but confirmations collapsed — bridge self-report reads HEALTHY while shouting into a void
     "phoneapi_tcp_leak",  # Issue #75 (2026-06-07): map service holds an unaccounted persistent TCP to meshtasticd :4403 — leaked TCPInterface silently starves the :9443 web client (#17 contention class, leak form)
+    "meshtasticd_phoneapi_wedge",  # 2026-06-15: ≥2 contending single-consumers thrash meshtasticd's PhoneAPI :4403 (journal 'Force close previous TCP connection' churn) — the gateway's stateless-HTTP-protobuf mesh-TX wedges, bot output stops reaching nodes while the RNS round-trip canary stays green (the 2026-06-13→15 moc incident; #17/#75 contention class, churn form)
     "mqtt_root_drift",  # Issue #77 (2026-06-07): radio's observed MQTT publish root prefix diverges from the box's declared mqtt_bridge.root_topic — a zero-config radio join silently reintroduces the msh/US split
     "cron_verdict_stale",  # Issue #78 (2026-06-08): a cron WIRED to cron_verdict.sh reported FAIL/CONCERN or went silent past its schedule cadence — silence is the failure mode (cross-references the crontab so stale ORPHAN verdicts never false-alarm)
     "history_write_stalled",  # mini-dudeai Issue #79 (2026-06-09): the mini loop is alive (state.json last_tick advancing) but its history/ledger files stopped accumulating — a swallowed-and-printed write failure with no fleet signal
@@ -144,6 +145,43 @@ def _journal_newest_match(
         return None
     lines = proc.stdout.strip().splitlines()
     return lines[0] if lines else None
+
+
+def _journal_count_match(
+    unit: str,
+    pattern: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Optional[int]:
+    """Count journal lines of ``unit`` matching ``pattern`` within ``lookback``.
+
+    Returns the integer count of matching lines, or **None** on
+    journalctl unavailable / timeout / non-trivial error. None is the
+    honest *unobservable* answer — a probe must NEVER read it as ``0``
+    (the healthy domain), or a journalctl wedge would mask the very
+    contention this counts (honest_failure_modes #1: empty ≠ error).
+    The watchdog runs as root, so journalctl needs no sudo. ``--since``
+    plus the subprocess timeout bound the worst case on a busy unit.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-u", unit, "--since", f"-{lookback}",
+                "-g", pattern, "-o", "cat", "-q", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    # rc 1 = "no entries matched" on some systemd builds (a true 0, not an
+    # error); only >1 is a real failure → unobservable.
+    if proc.returncode not in (0, 1):
+        return None
+    out = proc.stdout
+    if not out:
+        return 0
+    # Count non-empty lines; trailing newline must not inflate by one.
+    return sum(1 for ln in out.splitlines() if ln)
 
 
 def _short_unix_ts(line: str) -> Optional[float]:

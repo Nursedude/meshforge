@@ -51,6 +51,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_synth_soak_degraded,
     probe_fd_exhaustion,
     probe_phoneapi_tcp_leak,
+    probe_meshtasticd_phoneapi_wedge,
     probe_queue_backlog,
     probe_foundation_drift,
     probe_parity_drift,
@@ -106,6 +107,7 @@ def test_signal_classes_closed_enum_is_documented():
         "queue_backlog",                # Issue #74
         "delivery_confirmation_stall",  # Issue #74
         "phoneapi_tcp_leak",            # Issue #75
+        "meshtasticd_phoneapi_wedge",   # 2026-06-15 #17/#75 contention churn form (the 06-13→15 moc mesh-TX wedge); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as calibration_drift)
         "mqtt_root_drift",              # Issue #77
         "cron_verdict_stale",           # Issue #78
         "history_write_stalled",        # mini-dudeai audit #8
@@ -1303,6 +1305,123 @@ def test_channel_feed_dark_fires_when_no_text_in_lookback():
     assert sig is not None
     assert "24h lookback" in sig.detail
     assert "age_s" not in sig.extra
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-15 — meshtasticd_phoneapi_wedge (#17/#75 contention, churn form;
+# the 2026-06-13→15 moc 2-day silent mesh-TX wedge)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestMeshtasticdPhoneapiWedge:
+    """≥2 contending single-consumers thrash meshtasticd's :4403 — counted
+    via the 'Force close previous TCP connection' churn in the journal,
+    with a 2-tick debounce so a transient burst can't flap the signal."""
+
+    _THRESHOLD = 12
+
+    def _count_fn(self, value):
+        """Injectable count_fn returning a fixed value (or None) per tick."""
+        return lambda pattern: value
+
+    def test_two_consecutive_over_threshold_ticks_fire(self, tmp_path):
+        """RED-FIRST debounce proof: a SINGLE over-threshold tick returns
+        None (streak=1 < 2); the SECOND consecutive tick fires degraded."""
+        sp = str(tmp_path / "wedge.json")
+        kwargs = dict(
+            main_pid=1234,
+            threshold=self._THRESHOLD,
+            count_fn=self._count_fn(40),  # ~well above threshold (incident)
+            state_path=sp,
+        )
+
+        # Tick 1 — over threshold but not yet confirmed → None.
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+
+        # Tick 2 — confirms the streak → fire.
+        sig = probe_meshtasticd_phoneapi_wedge(**kwargs)
+        assert sig is not None
+        assert sig.cls == "meshtasticd_phoneapi_wedge"
+        assert sig.severity == "degraded"
+        assert sig.subject == "meshtasticd"
+        assert sig.issue_ref is None
+        assert sig.extra["force_close_count"] == 40
+        assert sig.extra["threshold"] == self._THRESHOLD
+        assert sig.extra["lookback"] == "10min"
+        # detail names contention, consequence, and recovery.
+        assert "Force close previous TCP connection" in sig.detail
+        assert "restart meshtasticd" in sig.detail
+        assert "RNS round-trip canary" in sig.detail
+
+    def test_below_threshold_returns_none(self, tmp_path):
+        """Steady-state single-consumer churn (~0) → never fires, and the
+        streak stays broken even after two below-threshold ticks."""
+        sp = str(tmp_path / "wedge.json")
+        kwargs = dict(
+            main_pid=1234, threshold=self._THRESHOLD,
+            count_fn=self._count_fn(3), state_path=sp,
+        )
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+
+    def test_below_threshold_tick_resets_the_streak(self, tmp_path):
+        """A confirming run must be CONSECUTIVE: one over-threshold tick, then
+        a quiet tick, then over-threshold again → still None (streak reset to
+        1), proving a transient burst between quiet ticks can't accumulate."""
+        sp = str(tmp_path / "wedge.json")
+        over = dict(main_pid=1234, threshold=self._THRESHOLD,
+                    count_fn=self._count_fn(40), state_path=sp)
+        under = dict(main_pid=1234, threshold=self._THRESHOLD,
+                     count_fn=self._count_fn(2), state_path=sp)
+        assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1
+        assert probe_meshtasticd_phoneapi_wedge(**under) is None  # reset to 0
+        assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1 again
+
+    def test_meshtasticd_inactive_returns_none(self, tmp_path):
+        """meshtasticd inactive (main_pid resolves to None via systemctl) →
+        None; service_inactive owns that. Inject a systemctl_path that yields
+        no pid by leaving main_pid unset and pointing at a nonexistent tool."""
+        sp = str(tmp_path / "wedge.json")
+        # main_pid=None + a systemctl that can't be found → _resolve_main_pid
+        # returns None → probe self-guards None even with sky-high churn.
+        sig = probe_meshtasticd_phoneapi_wedge(
+            main_pid=None,
+            systemctl_path="/nonexistent/systemctl-xyz",
+            threshold=self._THRESHOLD,
+            count_fn=self._count_fn(99),
+            state_path=sp,
+        )
+        assert sig is None
+
+    def test_journal_unobservable_returns_none_not_fire(self, tmp_path):
+        """count_fn returns None (journalctl wedged/absent) → None, NOT a fire
+        and NOT a healthy-silent 0. Unobservable ≠ healthy
+        (honest_failure_modes #1/#2). Two such ticks must never accumulate."""
+        sp = str(tmp_path / "wedge.json")
+        kwargs = dict(
+            main_pid=1234, threshold=self._THRESHOLD,
+            count_fn=self._count_fn(None), state_path=sp,
+        )
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+        assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+
+    def test_unobservable_tick_resets_streak(self, tmp_path):
+        """An over-threshold tick followed by an unobservable tick must NOT
+        leave a half-confirmed streak that the next over-threshold tick can
+        complete — a blind tick is conservative, it breaks the streak."""
+        sp = str(tmp_path / "wedge.json")
+        over = dict(main_pid=1234, threshold=self._THRESHOLD,
+                    count_fn=self._count_fn(40), state_path=sp)
+        blind = dict(main_pid=1234, threshold=self._THRESHOLD,
+                     count_fn=self._count_fn(None), state_path=sp)
+        assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1
+        assert probe_meshtasticd_phoneapi_wedge(**blind) is None  # reset
+        assert probe_meshtasticd_phoneapi_wedge(**over) is None   # streak 1 again
+
+
+def test_meshtasticd_phoneapi_wedge_in_signal_classes():
+    """The class is registered in the closed enum (gate companion)."""
+    assert "meshtasticd_phoneapi_wedge" in SIGNAL_CLASSES
 
 
 def test_channel_feed_dark_none_when_unobservable():

@@ -408,6 +408,25 @@
       "annotation": "Issue #75 \u2014 an unaccounted persistent TCP to meshtasticd :4403 is draining the PhoneAPI stream (web client goes deaf to inbound texts/ACKs while the radio journal shows healthy RX). Recovery: sudo systemctl restart meshforge-map.service, then verify /api/radio/status persistent_owner."
     },
     {
+      "id": "meshtasticd_phoneapi_wedge_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "meshtasticd_phoneapi_wedge",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] meshtasticd PhoneAPI wedge",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-06-13\u219215 moc incident \u2014 \u22652 contending single-consumers thrash meshtasticd's :4403 ('Force close previous TCP connection' churn, #17/#75 class), wedging the gateway's stateless-HTTP-protobuf mesh-TX: bot output stops reaching nodes while the RNS round-trip canary stays green (mesh-RF leg unwatched). Recovery: sudo systemctl restart meshtasticd, then stop the 2nd consumer (typically the map's _collect_meshtasticd :4403 source)."
+    },
+    {
       "id": "mqtt_root_drift_any",
       "match": {
         "kind": "signal_class",

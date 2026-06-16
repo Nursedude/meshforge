@@ -58,6 +58,7 @@ from utils.watchdog_probes import (
     probe_history_write_failure,
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
+    probe_meshtasticd_phoneapi_wedge,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
     probe_rules_seed_drift,
@@ -324,6 +325,18 @@ def run_all_probes(
         )
         if sig is not None:
             signals.append(sig)
+
+    # meshtasticd PhoneAPI wedge (2026-06-15) — the COMPANION to the
+    # phoneapi_tcp_leak probe above: ≥2 contending single-consumers thrash
+    # meshtasticd's :4403 ('Force close previous TCP connection' churn) and
+    # the gateway's stateless-HTTP-protobuf mesh-TX wedges while the RNS
+    # round-trip canary stays green (the 2026-06-13→15 moc 2-day silent
+    # wedge). Watches MESHTASTICD (not the map), so it is NOT gated on the
+    # map service — it self-guards None when meshtasticd is inactive and
+    # must still run on gateway-only boxes (moc3) whose map is disabled.
+    sig = probe_meshtasticd_phoneapi_wedge()
+    if sig is not None:
+        signals.append(sig)
 
     # Permission-foundation drift (mf.4/#73 perms class) — only meaningful on a
     # box that runs rnsd. Derives the rnsd user from its unit, so it's correct in
