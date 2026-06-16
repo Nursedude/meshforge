@@ -164,3 +164,41 @@ def test_non_numeric_last_tick_is_treated_as_unknown(tmp_path):
 
     out = render_warmstart(str(brief), str(state), NOW)
     assert "UNKNOWN" in out
+
+
+# ---------------------------------------------------------------------------
+# Calibration-ledger surfacing — the warm brief shows MY own track record
+# ---------------------------------------------------------------------------
+
+
+def test_calibration_block_surfaces_tracked_claims(tmp_path, monkeypatch):
+    """A ledger with claims must surface in the warm brief; an absent verdict
+    marker means nothing is re-checked yet (honest 'still unverified')."""
+    from mini_dudeai import calibration_ledger as cl
+    from mini_dudeai import warmstart
+
+    ledger = tmp_path / "calibration_ledger.jsonl"
+    monkeypatch.setenv("CALIBRATION_LEDGER_PATH", str(ledger))
+    monkeypatch.setenv("HONEST_VERDICT_PATH", str(tmp_path / "no_marker.json"))
+    cl.record_claim("all green", "fleet_green", "honest_status exit 0",
+                    "d" * 40, ts=1.0, path=str(ledger))
+
+    block = warmstart._calibration_block(NOW)
+    assert "calibration ledger" in block
+    assert "1 VERIFIED claim" in block and "still unverified" in block
+
+
+def test_calibration_block_silent_when_no_ledger(tmp_path, monkeypatch):
+    from mini_dudeai import warmstart
+    monkeypatch.setenv("CALIBRATION_LEDGER_PATH", str(tmp_path / "absent.jsonl"))
+    monkeypatch.setenv("HONEST_VERDICT_PATH", str(tmp_path / "absent.json"))
+    assert warmstart._calibration_block(NOW) == ""
+
+
+def test_calibration_block_never_raises(monkeypatch):
+    """Defense in depth: even if the ledger import/IO blows up, the warm-start
+    calibration block must degrade to '' and never break the hook."""
+    from mini_dudeai import warmstart
+    monkeypatch.setenv("CALIBRATION_LEDGER_PATH", "/nonexistent/dir/x.jsonl")
+    monkeypatch.setenv("HONEST_VERDICT_PATH", "/nonexistent/dir/m.json")
+    assert warmstart._calibration_block(NOW) == ""

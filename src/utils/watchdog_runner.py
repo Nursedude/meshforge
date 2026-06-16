@@ -48,6 +48,7 @@ from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
     Signal,
     probe_aredn_source_dark,
+    probe_calibration_drift,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
@@ -460,6 +461,13 @@ def run_all_probes(
     if sig is not None:
         signals.append(sig)
     sig = probe_memory_index_oversize()
+    if sig is not None:
+        signals.append(sig)
+
+    # Calibration spine (2026-06-15) — turns the self-observation pattern on the
+    # assistant: a VERIFIED claim that did not hold on re-derivation. Self-guards
+    # None off the dev/manager box (no ledger).
+    sig = probe_calibration_drift()
     if sig is not None:
         signals.append(sig)
 

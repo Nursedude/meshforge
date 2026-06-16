@@ -209,19 +209,57 @@ SUM="$pass/$total_checks PASS"
 [ "$fail"    -gt 0 ] && SUM="$SUM, $fail FAIL"
 
 if [ "$fail" -gt 0 ]; then
-  echo "--> $SUM  (proven not-green)"
-  exit 1
+  verdict_rc=1; verdict_msg="$SUM  (proven not-green)"
 elif [ "$STRICT" = 1 ] && [ "$warns" -gt 0 ]; then
-  echo "--> $SUM  (--strict: warnings treated as failures — not clean)"
-  exit 1
+  verdict_rc=1; verdict_msg="$SUM  (--strict: warnings treated as failures — not clean)"
 elif [ "$unknown" -gt 0 ]; then
-  echo "--> $SUM  (could not fully verify — NOT green)"
-  exit 2
+  verdict_rc=2; verdict_msg="$SUM  (could not fully verify — NOT green)"
+elif [ "$warns" -gt 0 ]; then
+  verdict_rc=0; verdict_msg="$SUM  (code+deploy verified; $warns fleet warning(s) surfaced above — read them)"
 else
-  if [ "$warns" -gt 0 ]; then
-    echo "--> $SUM  (code+deploy verified; $warns fleet warning(s) surfaced above — read them)"
-  else
-    echo "--> $SUM  (fully verified green)"
-  fi
-  exit 0
+  verdict_rc=0; verdict_msg="$SUM  (fully verified green)"
 fi
+echo "--> $verdict_msg"
+
+# Durable verdict marker — the unfabricatable record the calibration claim-gate
+# and ledger read: "honest_status ran for THIS HEAD at THIS time with THIS
+# verdict." User-writable + env-overridable (tests point HONEST_VERDICT_PATH at a
+# tmp path). Best-effort by design: a marker-write failure must NEVER change the
+# verdict the operator just saw — but it leaves a stderr witness
+# (honest_failure_modes #9), never a silent swallow. A missing/old marker simply
+# reads as "this HEAD is unverified" downstream, which is the safe direction.
+VERDICT_PATH="${HONEST_VERDICT_PATH:-${HOME:-/tmp}/.cache/meshforge/honest_verdict.json}"
+if ! HV_RC="$verdict_rc" HV_MSG="$verdict_msg" HV_HEAD="$HEADFULL" \
+     HV_FULL="$RUN_TESTS" HV_STRICT="$STRICT" HV_PATH="$VERDICT_PATH" \
+     python3 - <<'PY' 2>/dev/null
+import json, os, tempfile, time
+p = os.environ["HV_PATH"]
+d = os.path.dirname(os.path.abspath(p)) or "."
+os.makedirs(d, exist_ok=True)
+payload = json.dumps({
+    "head_full": os.environ.get("HV_HEAD", ""),
+    "exit_code": int(os.environ.get("HV_RC", "2") or 2),
+    "ts": time.time(),
+    "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    "summary": os.environ.get("HV_MSG", ""),
+    "ran_full_suite": os.environ.get("HV_FULL") == "1",
+    "strict": os.environ.get("HV_STRICT") == "1",
+}, indent=2)
+fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(p) + ".", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        f.write(payload); f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, p)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+PY
+then
+  echo "honest_status: WARN — could not write verdict marker $VERDICT_PATH" \
+       "(claim-gate will treat this HEAD as unverified)" >&2
+fi
+
+exit "$verdict_rc"

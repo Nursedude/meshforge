@@ -5,6 +5,7 @@
 
 <!-- Auto-loaded by Claude Code -->
 @.claude/rules/security.md
+@.claude/rules/calibrated_claims.md
 @.claude/foundations/persistent_issues.md
 
 ---
@@ -23,7 +24,16 @@
 - **ALWAYS** use `_stop_event.wait()` instead of `time.sleep()` in daemon loops
 - **ALWAYS** split files exceeding 1,500 lines
 
+**Calibrated claims** (the discipline for what *I* say): never emit a bare
+"100% / verified / all green / it works / done" without a quoted external result.
+Tag every completion claim **VERIFIED** (a check ran this turn — quote its exit
+code), **BELIEVED** (written, not run — say so), or **UNKNOWN** (couldn't check —
+unobservable ≠ healthy). "Worked once" is not "reliable". Re-derive the count at
+the end; never patch a running tally. Check of record: `bash scripts/honest_status.sh`
+(`exit 0` = green; `exit 2`/UNKNOWN is never a pass).
+
 > Full security rules: `.claude/rules/security.md`
+> Calibrated-claims discipline: `.claude/rules/calibrated_claims.md`
 > Known issues & fixes: `.claude/foundations/persistent_issues.md`
 
 ---

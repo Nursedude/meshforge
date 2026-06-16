@@ -457,3 +457,76 @@ def probe_memory_index_oversize(
         return None
 
 
+# Calibration ledger (the calibration spine, 2026-06-15). Read+fold via the
+# OWNING module so the probe and the ledger can never compute the fold
+# differently (honest_failure_modes #5 — share by import, never duplicate). When
+# mini_dudeai isn't importable the leg self-guards off rather than carrying a
+# duplicated fold; no two-constants drift trap.
+try:
+    from mini_dudeai import calibration_ledger as _calib
+except Exception:  # mini package absent in some contexts
+    _calib = None
+
+_CALIB_LEDGER_NAME = "calibration_ledger.jsonl"
+
+
+def probe_calibration_drift(
+    *,
+    ledger_path: Optional[str] = None,
+    events: Optional[list] = None,
+) -> Optional[Signal]:
+    """Surface VERIFIED completion claims that did NOT hold on re-derivation.
+
+    The calibration spine records every VERIFIED "done/green" claim and a later
+    re-derivation flips it held/broke against external ground truth (a full
+    ``honest_status`` verdict on the head it was claimed on). A BROKE claim — I
+    called a head verified and a later full run on that head FAILED — is my own
+    miscalibration. This probe routes it to the fleet surface so the operator's
+    concern ("you say 100%% and we do it N more times, the math is wrong") stops
+    being a private impression and becomes a tracked, shrinkable number.
+
+    Read-only fold of the ledger via its owning module (no duplicated fold).
+    Self-guards None: mini_dudeai unimportable, no ledger on this box (every box
+    but the dev/manager one), unreadable ledger, or zero broke claims (the math
+    held). Severity ``degraded`` — a trust signal, not a service outage; the seed
+    routes it side-effect-free (NO ntfy page) until the re-derivation soaks
+    low-false-positive, exactly as the operator chose."""
+    try:
+        if _calib is None:
+            return None
+        if events is None:
+            if ledger_path is None:
+                home = _resolve_mini_home()
+                if not home:
+                    return None
+                ledger_path = os.path.join(home, _CALIB_LEDGER_NAME)
+            if not os.path.exists(ledger_path):
+                return None  # not the dev/manager box — nothing to judge
+            events = _calib.load_events(ledger_path)
+        state = _calib.fold(events)
+        if state.get("n_broke", 0) <= 0:
+            return None  # every re-checked claim held → no calibration drift
+        ratio = state.get("ratio")
+        ratio_disp = (f"{round(100 * ratio)}% held"
+                      if isinstance(ratio, (int, float)) else "n/a")
+        examples = "; ".join(
+            (r.get("claim_text") or "")[:50]
+            for r in state.get("broke", [])[:2])
+        return Signal(
+            cls="calibration_drift",
+            subject="claude-claims",
+            severity="degraded",
+            detail=(
+                f"{state['n_broke']} VERIFIED completion claim(s) did NOT hold "
+                f"on re-derivation ({state['n_held']} held / {ratio_disp}) — a "
+                f"'done/verified' claim drifted from ground truth. e.g.: "
+                f"{examples}. See .claude/rules/calibrated_claims.md; treat "
+                f"completion claims with extra scrutiny."
+            ),
+            extra={"n_broke": state["n_broke"], "n_held": state["n_held"],
+                   "n_total": state.get("n_total", 0), "ratio": ratio},
+        )
+    except Exception:
+        return None
+
+

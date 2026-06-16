@@ -503,6 +503,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "AREDN Phase 0 (2026-06-12) \u2014 a box with aredn_node_ips configured whose local AREDN sysinfo collection went dark: node unreachable, or the running service predates the config (reports not_configured while the settings file carries IPs \u2014 restart meshforge-map to load). The worldmap fallback masks the loss; found dormant on the AREDN-site box itself. Side-effect-free escalation; NO ntfy page (degraded \u2014 the map serves, the AREDN leg is blind)."
+    },
+    {
+      "id": "calibration_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "calibration_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Calibration spine (2026-06-15) -- a VERIFIED completion claim (Claude's 'done/100%/all green') did NOT hold when re-derived against external ground truth (a full honest_status verdict on the head it was claimed on later FAILED). Surfaces 'you said 100% and the math was wrong' as a tracked number instead of a private impression. SSOT .claude/rules/calibrated_claims.md. Side-effect-free escalation; NO ntfy page until the re-derivation soaks low-false-positive (degraded, a trust signal not an outage)."
     }
   ]
 }

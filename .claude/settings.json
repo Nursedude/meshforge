@@ -24,6 +24,16 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 scripts/claim_gate.py"
+          }
+        ]
+      }
     ]
   },
   "permissions": {

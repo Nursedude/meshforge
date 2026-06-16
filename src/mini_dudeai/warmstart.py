@@ -133,6 +133,51 @@ def _default_paths() -> tuple[str, str]:
     )
 
 
+def _current_head() -> str | None:
+    """Best-effort current HEAD of the MeshForge repo (for calibration
+    re-derivation). None on any failure — re-derivation then mints no new
+    verdict and simply surfaces the existing ledger state."""
+    import subprocess
+    repo = os.environ.get("MESHFORGE_REPO", "/opt/meshforge")
+    try:
+        out = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def _read_verdict_marker() -> dict | None:
+    """Read honest_status.sh's verdict marker (same path contract as the
+    claim-gate). None on absence/parse error."""
+    env = os.environ.get("HONEST_VERDICT_PATH")
+    if env:
+        path = env
+    else:
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        path = os.path.join(home, ".cache", "meshforge", "honest_verdict.json")
+    data, _ = read_json(path)
+    return data if isinstance(data, dict) else None
+
+
+def _calibration_block(now_ts: float) -> str:
+    """Re-derive open calibration claims against the current HEAD + verdict
+    marker, persist any definitive verdicts, and render the warm-brief section.
+
+    Fully fail-safe: any error (import, I/O, subprocess) yields "" — the
+    calibration layer must never break the warm-start hook (which already runs
+    behind ``2>/dev/null || true``, but defense in depth)."""
+    try:
+        from . import calibration_ledger as cl
+        state = cl.rederive_and_persist(
+            cl.ledger_path(), _current_head(), _read_verdict_marker(), now_ts)
+        return cl.format_brief_block(state)
+    except Exception:  # noqa: BLE001 — never let calibration break warm start
+        return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import time
@@ -150,7 +195,13 @@ def main(argv: list[str] | None = None) -> int:
                         "instead of plain markdown (for .claude/settings.json).")
     args = p.parse_args(argv)
 
-    text = render_warmstart(args.brief_path, args.state_path, time.time())
+    now = time.time()
+    text = render_warmstart(args.brief_path, args.state_path, now)
+
+    # The calibration ledger is surfaced even on a mini-less box (it tracks MY
+    # claims, not mini's fleet posture) — so combine independently of `text`.
+    calib = _calibration_block(now)
+    text = "\n\n".join(s for s in (text, calib) if s.strip())
 
     if args.hook:
         # Silent when there's nothing to say — don't inject empty context.

@@ -44,6 +44,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_history_write_failure,
     probe_rules_seed_drift,
     probe_memory_index_oversize,
+    probe_calibration_drift,
     MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
@@ -114,6 +115,7 @@ def test_signal_classes_closed_enum_is_documented():
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
         "dep_version_drift",            # 2026-06-12 recurring update class
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
+        "calibration_drift",            # 2026-06-15 calibration spine; SSOT .claude/rules/calibrated_claims.md (new subsystem, not a fleet bug → no persistent_issues row; that file is at its MF012 cap)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -3622,6 +3624,65 @@ class TestMemoryIndexOversize:
         with patch("utils.watchdog_probes_mini._resolve_mini_home", return_value=None):
             sig = probe_memory_index_oversize()
         assert sig is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-15 — calibration_drift (the calibration spine turned on the
+# assistant: a VERIFIED completion claim that did not hold on re-derivation)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestCalibrationDrift:
+    """A VERIFIED 'done/100%' claim that broke on re-derivation must surface;
+    a clean ledger and a box with no ledger must stay silent."""
+
+    HEAD = "a" * 40
+
+    def _events(self, outcome):
+        return [
+            {"kind": "claim", "id": "x", "head_full": self.HEAD,
+             "claim_text": "all green, all tests pass"},
+            {"kind": "verdict", "claim_id": "x", "ts": 1.0, "outcome": outcome},
+        ]
+
+    def test_signal_class_registered(self):
+        assert "calibration_drift" in SIGNAL_CLASSES
+
+    def test_broke_claim_fires_degraded(self):
+        sig = probe_calibration_drift(events=self._events("broke"))
+        assert sig is not None
+        assert sig.cls == "calibration_drift"
+        assert sig.severity == "degraded"
+        assert sig.subject == "claude-claims"
+        assert sig.extra["n_broke"] == 1
+        assert "calibrated_claims.md" in sig.detail
+
+    def test_held_claim_is_none(self):
+        assert probe_calibration_drift(events=self._events("held")) is None
+
+    def test_empty_ledger_is_none(self):
+        assert probe_calibration_drift(events=[]) is None
+
+    def test_absent_ledger_file_is_none(self, tmp_path):
+        # not the dev/manager box — no ledger on disk → self-guard None
+        assert probe_calibration_drift(
+            ledger_path=str(tmp_path / "nope.jsonl")) is None
+
+    def test_no_home_is_none(self):
+        with patch("utils.watchdog_probes_mini._resolve_mini_home",
+                   return_value=None):
+            assert probe_calibration_drift() is None
+
+    def test_reads_real_ledger_file(self, tmp_path):
+        """End-to-end via the owning ledger module: a recorded claim flipped
+        broke by a re-derivation surfaces through the probe's file read+fold."""
+        from mini_dudeai import calibration_ledger as cl
+        p = str(tmp_path / "calibration_ledger.jsonl")
+        cl.record_claim("100% verified", "tests_passed", "exit 0", self.HEAD,
+                        ts=1.0, path=p)
+        marker = {"head_full": self.HEAD, "exit_code": 1, "ran_full_suite": True}
+        cl.rederive_and_persist(p, self.HEAD, marker, now_ts=2.0)
+        sig = probe_calibration_drift(ledger_path=p)
+        assert sig is not None and sig.extra["n_broke"] == 1
 
 
 # ─────────────────────────────────────────────────────────────────────
