@@ -211,8 +211,20 @@ class TestFullRegistryIntegration:
                 f"Section {section!r} has no menu items"
             )
 
-    def test_all_tags_dispatch(self, registry):
-        """Every registered tag should dispatch successfully."""
+    def test_all_tags_dispatch(self, registry, no_network):
+        """Every registered tag should dispatch successfully.
+
+        ``no_network`` makes this hermetic: dispatch actually runs each
+        handler's ``execute()`` (wrapped in ``safe_call``), and some paths
+        reach the network — e.g. the AREDN worldmap fetch in
+        ``_map_collector_public._fetch_aredn_worldmap_nodes``. In CI a blocked
+        connect usually fails fast, but a reachable-but-slow host let the
+        ``socket.connect`` hang past pytest-timeout and reddened the suite
+        (a real CI flake, observed 2026-06-16). Blocking ``socket.socket``
+        turns any such attempt into an instant OSError that ``safe_call``
+        catches, so dispatch still returns True — the routing assertion this
+        test exists for is unchanged, just no longer at the mercy of the net.
+        """
         for section in registry.section_names:
             for tag, _ in registry.get_menu_items(section):
                 result = registry.dispatch(section, tag)
