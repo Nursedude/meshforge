@@ -38,6 +38,26 @@ class MeshtasticDataCollectorMixin:
       3. CLI parsing — fallback when Python module unavailable
     """
 
+    def _gateway_owns_phoneapi(self) -> bool:
+        """True iff meshforge-gateway is running on this box.
+
+        The gateway holds the meshtasticd PhoneAPI (:4403), which is a
+        SINGLE-consumer stream (#17). When it is up, this collector must NOT
+        open a second TCP connection: the contention thrashes the PhoneAPI
+        ("Force close previous TCP connection") and can wedge the gateway's
+        mesh-TX — the 2026-06-13→15 incident where the bot's mesh output went
+        dark for 2 days behind a green RNS canary. On a gateway box the MQTT
+        source supplies mesh nodes instead. Unknown state → False (don't block
+        collection; probe_meshtasticd_phoneapi_wedge catches any contention).
+        """
+        try:
+            from utils.service_check import check_service, ServiceState
+            state = check_service("meshforge-gateway").state
+            return state in (ServiceState.AVAILABLE, ServiceState.DEGRADED)
+        except Exception as e:  # noqa: BLE001 — can't tell → don't block
+            logger.debug("gateway-owns-phoneapi check failed: %s", e)
+            return False
+
     def _collect_meshtasticd(self) -> List[Dict]:
         """Collect nodes from meshtasticd.
 
@@ -58,6 +78,22 @@ class MeshtasticDataCollectorMixin:
 
         # Strategy 2: TCP interface (needs lock)
         port = self.get_meshtasticd_port()
+
+        # #17 single-consumer guard: defer to the gateway when it owns :4403,
+        # so a second TCP consumer can't thrash/wedge it (the 06-13→15 bot-dark
+        # incident). Mesh nodes still arrive via the MQTT source on a gateway box.
+        if self._gateway_owns_phoneapi():
+            logger.debug(
+                "meshtasticd TCP collect skipped — meshforge-gateway owns "
+                ":4403 (#17 single-consumer); using MQTT source"
+            )
+            self._record_diagnostic(
+                "meshtasticd",
+                attempted=0, yielded=0,
+                reason_if_zero="deferred_to_gateway",
+                notes="meshforge-gateway active — :4403 single-consumer (#17); nodes via MQTT",
+            )
+            return []
 
         # Quick check if TCP port is open before attempting connection
         try:

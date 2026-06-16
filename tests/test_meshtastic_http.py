@@ -759,5 +759,53 @@ class TestJsonApiAbsentIssue76:
             assert features == []
 
 
+class TestMeshtasticdDefersToGatewayIssue17:
+    """The map's _collect_meshtasticd must NOT open a second :4403 TCP
+    connection when meshforge-gateway owns it (#17 single-consumer). That
+    contention thrashed/wedged the gateway's mesh-TX for 2 days (2026-06-13→15,
+    moc): the bot's output went dark behind a green RNS canary. On a gateway
+    box mesh nodes arrive via the MQTT source instead.
+    """
+
+    def _collector(self, tmp):
+        from utils.map_data_collector import MapDataCollector
+        return MapDataCollector(
+            cache_dir=Path(tmp), config_dir=Path(tmp), enable_history=False)
+
+    @patch('utils.service_check.check_service')
+    def test_skips_tcp_when_gateway_active(self, mock_check):
+        from types import SimpleNamespace
+        from utils.service_check import ServiceState
+        import tempfile
+        mock_check.return_value = SimpleNamespace(state=ServiceState.AVAILABLE)
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._collector(tmp)
+            c._collect_via_http = lambda host: []   # force fall-through to Strategy 2
+            # If the guard fails, the TCP probe runs — make it explode so the
+            # test goes RED against the old (unguarded) behavior.
+            with patch('socket.socket',
+                       side_effect=AssertionError("must not touch :4403 when gateway owns it")):
+                feats = c._collect_meshtasticd()
+            assert feats == []
+            d = c.get_source_diagnostics().get("meshtasticd", {})
+            assert d.get("reason_if_zero") == "deferred_to_gateway"
+
+    @patch('utils.service_check.check_service')
+    def test_proceeds_when_gateway_inactive(self, mock_check):
+        from types import SimpleNamespace
+        from utils.service_check import ServiceState
+        import tempfile
+        mock_check.return_value = SimpleNamespace(state=ServiceState.NOT_INSTALLED)
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._collector(tmp)
+            c._collect_via_http = lambda host: []
+            with patch('socket.socket') as msock:
+                msock.return_value.connect_ex.return_value = 1  # port closed → fast []
+                c._collect_meshtasticd()
+                assert msock.called   # reached Strategy 2 — NOT deferred
+            d = c.get_source_diagnostics().get("meshtasticd", {})
+            assert d.get("reason_if_zero") != "deferred_to_gateway"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
