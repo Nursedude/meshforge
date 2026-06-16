@@ -331,27 +331,15 @@ Tests: `TestJsonApiAbsentIssue76` (8). Full body in `persistent_issues_archive.m
 
 ---
 
-## Issue #77: mqtt_root_drift probe — the msh/US split guard (2026-06-07)
+## Issue #77 (2026-06-07): mqtt_root_drift probe — RESOLVED, body in archive (trimmed 2026-06-16)
 
-After the 06-06 fleet unification on explicit `mqtt.root msh` (moc2 was the last
-holdout), the remaining hole: a zero-config radio join or factory reset silently
-reintroduces a divergent root and consumers pinned to the declared root go
-partially deaf — the dark-feed class, but with the CAUSE visible hours before
-`channel_feed_dark` proves the symptom. New `probe_mqtt_root_drift`
-(`mqtt_root_drift`, degraded, issue_ref 77): compares the radio's OBSERVED
-publish root — parsed from meshtasticd's journal `JSON publish message to
-<root>[/<region>]/2/json/<ch>/!<id>` lines (journal-only: never queries the
-radio, which would open a PhoneAPI TCP connection — #17) — against the box's
-DECLARED consumer root (`gateway.json mqtt_bridge.root_topic`; absent key →
-the GatewayConfig default `msh`, the effective value). Local invariant only
-(brokers are per-box islands — no fleet consensus needed). Self-guards None:
-meshtasticd inactive, no json uplink in lookback (unobservable ≠ drift, the
-RX-only case), gateway.json unreadable / service user unresolvable. 2-tick
-debounce (parity-style streak file) rides out an operator mid-rotation. Fix:
-`meshtastic --host localhost --set mqtt.root <declared>` (or correct
-gateway.json if the radio is the intended truth). Tests: 9
-(`test_mqtt_root_drift_*` + `test_read_declared_root_topic_*`) + closed-enum
-gate bump. Journal line shape pinned live on moc 2026-06-07 01:25 HST.
+`probe_mqtt_root_drift` (degraded, issue_ref 77): radio's OBSERVED publish root
+(meshtasticd journal `JSON publish message to <root>/…` — journal-only, never
+queries the radio #17) vs the DECLARED consumer root (`gateway.json
+mqtt_bridge.root_topic`, default `msh`) — catches a zero-config/factory-reset
+radio reintroducing a divergent root before `channel_feed_dark` proves it. Local
+invariant; 2-tick debounce; fix `meshtastic --host localhost --set mqtt.root
+<declared>`. Full body + tests in `persistent_issues_archive.md`.
 
 
 ---
