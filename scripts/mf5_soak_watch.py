@@ -20,6 +20,13 @@ first run on/after 2026-06-24):
     C5  no blind days: every host observable every day (an unreachable
         journal is surfaced as CONCERN the day it happens, never absorbed
         — unobservable is not healthy). >=2 blind days for one host FAILs.
+    C6  watchdog health: no meshforge-watchdog box may carry a WEDGE
+        signal (FAIL — a wedge during the window is real fleet breakage,
+        e.g. the 2-day mesh-RF bot-dark that C1-C5 (RNS-only) never saw);
+        a DEGRADED signal or an unobservable/stale watchdog read is a
+        CONCERN (noted, not soak-fatal — unobservable is not healthy).
+        Mirrors honest_status.sh §6 (wedge=FAIL > unobservable~degraded
+        =CONCERN). meshanchor-server is EXCLUDED (no meshforge watchdog).
 
   PASS consequence: the retire-decision gate OPENS for the mf.3 detach
   bound + the 15s stop-cap drop-in (operator decision, not automatic —
@@ -58,6 +65,18 @@ FINAL_FROM = "2026-06-24"          # first day the final verdict may render
 HOSTS = ["local", "moc", "moc1", "moc2", "moc3", "moc5", "meshanchor-server"]
 CANARY_HOST = "moc"
 
+# Boxes that run the meshforge-watchdog loop (C6). EXCLUDES
+# meshanchor-server: it is MeshAnchor, runs no meshforge watchdog, so
+# reading its watchdog.json would be a perpetual false CONCERN.
+WATCHDOG_HOSTS = ["local", "moc", "moc1", "moc2", "moc3", "moc5"]
+WD_PATH = "/var/lib/meshforge/watchdog.json"
+# Watchdog tick is 30s (DEFAULT_TICK_S); >10 ticks (300s) with no fresh
+# write means the loop wedged and its last snapshot is STALE — which would
+# otherwise read as "clean" (the §3c active!=doing-the-job false-green for
+# the watchdog daemon itself). Mirrors honest_status.sh §6.
+WD_STALE_S = 300
+WD_SEP = "---WDSEP---"
+
 SSH_TIMEOUT_S = 15
 JOURNAL_FALLBACK_LOOKBACK_H = 25
 
@@ -91,6 +110,7 @@ class DayRecord:
     canary_concern: int = 0
     canary_fail: int = 0
     canary_observable: bool = True
+    watchdog: List[Dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------- shell
@@ -174,6 +194,84 @@ def collect_canary(since_iso: str) -> Dict:
     return {"observable": True, "ok": ok, "concern": concern, "fail": fail}
 
 
+def collect_watchdog(host: str) -> Dict:
+    """Read ONE box's meshforge-watchdog snapshot, classified by severity
+    (C6). Mirrors honest_status.sh §6 exactly: one same-clock round-trip
+    (the box's own `date +%s` alongside its watchdog.json), parse the
+    `signals` list (wedge = severity=="wedge", degraded = the rest),
+    freshness gate on the top-level `ts`.
+
+    HONEST FAILURE MODES (this whole file's reason to exist): an
+    unobservable watchdog NEVER reads as healthy. Missing/empty/
+    unparseable json -> observable=False (NOT wedge=0/degraded=0, which
+    would read as clean — the exact false-green C6 exists to kill). A
+    stale snapshot (now-ts>WD_STALE_S) means the loop wedged -> treat as
+    unobservable. A None command result (host unreachable) ->
+    observable=False. wedge/degraded are only trusted on a fresh, parsed
+    read."""
+    base = {"host": host, "observable": False, "wedge": 0, "degraded": 0,
+            "stale": False, "detail": ""}
+
+    raw = _run(_host_cmd(
+        host,
+        f"date +%s 2>/dev/null; echo '{WD_SEP}'; cat {WD_PATH} 2>/dev/null"))
+    if raw is None:
+        base["detail"] = "host unreachable"
+        return base
+
+    # Split same-clock: first line is the box's own epoch; everything
+    # after the separator is the watchdog.json.
+    if WD_SEP not in raw:
+        base["detail"] = "no separator (unreadable)"
+        return base
+    head, _, tail = raw.partition(WD_SEP)
+    box_now_lines = [ln for ln in head.splitlines() if ln.strip()]
+    json_text = tail.lstrip("\n")
+    if not json_text.strip():
+        base["detail"] = "watchdog.json missing/empty"
+        return base
+    try:
+        data = json.loads(json_text)
+    except (json.JSONDecodeError, ValueError):
+        base["detail"] = "watchdog.json unparseable"
+        return base
+    if not isinstance(data, dict):
+        base["detail"] = "watchdog.json not an object"
+        return base
+
+    signals = data.get("signals")
+    if not isinstance(signals, list):
+        # A degraded internal state must not read as clean: an absent or
+        # wrong-typed signals list is unobservable, not zero-signal.
+        base["detail"] = "signals absent/malformed"
+        return base
+
+    wedge = sum(1 for s in signals
+                if isinstance(s, dict) and s.get("severity") == "wedge")
+    degraded = sum(1 for s in signals
+                   if isinstance(s, dict) and s.get("severity") != "wedge")
+    detail = ",".join(
+        "%s(%s)" % (s.get("class", "?"), s.get("severity", "?"))
+        for s in signals if isinstance(s, dict))
+
+    # Freshness gate (same-clock): a valid-but-stale snapshot is a wedged
+    # loop, not current truth — unobservable, never clean.
+    ts = data.get("ts")
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool) \
+            and box_now_lines:
+        try:
+            box_now = int(box_now_lines[0].strip())
+        except (ValueError, IndexError):
+            box_now = None
+        if box_now is not None and (box_now - ts) > WD_STALE_S:
+            base["stale"] = True
+            base["detail"] = f"stale ({int(box_now - ts)}s)"
+            return base
+
+    return {"host": host, "observable": True, "wedge": wedge,
+            "degraded": degraded, "stale": False, "detail": detail}
+
+
 # ---------------------------------------------------------------- verdicts
 
 
@@ -203,6 +301,23 @@ def classify_day(rec: DayRecord) -> tuple:
     if rec.canary_fail:
         problems.append(f"canary {rec.canary_fail} FAIL (C4)")
 
+    # C6: fleet watchdog health. A WEDGE is real breakage (FAIL); a
+    # DEGRADED signal or an unobservable/stale read is a CONCERN
+    # (unobservable is not healthy — never absorbed into a clean line).
+    # Precedence mirrors honest_status.sh §6: wedge > unobservable
+    # ~ degraded; it sits alongside C1-C3 in `problems` so a watchdog
+    # wedge FAILs the day just as a C1-C3 violation does.
+    for w in rec.watchdog:
+        wname = w["host"]
+        if w.get("wedge", 0) >= 1:
+            problems.append(
+                f"C6: {wname} watchdog WEDGE ({w.get('detail', '')})")
+        elif w.get("degraded", 0) >= 1:
+            concerns.append(
+                f"C6: {wname} watchdog degraded ({w.get('detail', '')})")
+        elif not w.get("observable", False):
+            concerns.append(f"C6: {wname} watchdog unobservable")
+
     summary = (f"day evidence: {len(rec.hosts)} hosts,"
                f" canary {rec.canary_ok}OK/{rec.canary_concern}C/"
                f"{rec.canary_fail}F")
@@ -222,7 +337,8 @@ def render_final(evidence: List[Dict]) -> tuple:
     missing = sorted(set(expected) - days)
 
     total = {"exit75": 0, "no_restart": 0, "no_witness": 0,
-             "stop_kills": 0, "canary_fail": 0}
+             "stop_kills": 0, "canary_fail": 0, "wd_wedge": 0,
+             "wd_degraded": 0, "wd_unobservable": 0}
     blind: Dict[str, int] = {}
     for r in in_window:
         for h in r["hosts"]:
@@ -236,6 +352,16 @@ def render_final(evidence: List[Dict]) -> tuple:
             if h["exit75"] and h["collision_edges"] < 1:
                 total["no_witness"] += 1
         total["canary_fail"] += r.get("canary_fail", 0)
+        # C6: a watchdog WEDGE on any window day = not a clean window
+        # (final FAIL). Degraded/unobservable are CONCERN, noted but not
+        # soak-fatal (mirror C4's wording).
+        for w in r.get("watchdog", []):
+            if w.get("wedge", 0) >= 1:
+                total["wd_wedge"] += 1
+            elif w.get("degraded", 0) >= 1:
+                total["wd_degraded"] += 1
+            elif not w.get("observable", False):
+                total["wd_unobservable"] += 1
 
     fails: List[str] = []
     if missing:
@@ -252,13 +378,21 @@ def render_final(evidence: List[Dict]) -> tuple:
     over_blind = {h: n for h, n in blind.items() if n >= 2}
     if over_blind:
         fails.append(f"C5: blind days {over_blind}")
+    if total["wd_wedge"]:
+        fails.append(f"C6: {total['wd_wedge']} watchdog WEDGE day(s)")
 
     stats = (f"{len(in_window)} day-records, {total['exit75']} self-healed"
              f" exit75 total, 0 manual interventions required")
+    # C6 degraded/unobservable: noted but not soak-fatal (mirror C4).
+    c6_note = ""
+    if total["wd_degraded"] or total["wd_unobservable"]:
+        c6_note = (f" C6 CONCERN (noted, not soak-fatal):"
+                   f" {total['wd_degraded']} watchdog-degraded +"
+                   f" {total['wd_unobservable']} watchdog-unobservable day(s).")
     if fails:
         return "FAIL", "; ".join(fails)
     return "OK", (f"PASS — all criteria held over {WINDOW_START}.."
-                  f"{WINDOW_END}: {stats}. Retire-decision gate OPEN"
+                  f"{WINDOW_END}: {stats}.{c6_note} Retire-decision gate OPEN"
                   f" (mf.3 bound + 15s stop-cap — operator decision).")
 
 
@@ -314,6 +448,9 @@ def main() -> int:
     rec.canary_ok = canary["ok"]
     rec.canary_concern = canary["concern"]
     rec.canary_fail = canary["fail"]
+    # C6: fleet watchdog health (meshforge-watchdog boxes only).
+    for host in WATCHDOG_HOSTS:
+        rec.watchdog.append(collect_watchdog(host))
 
     with open(sdir / "evidence.jsonl", "a", encoding="utf-8") as f:
         f.write(json.dumps(asdict(rec)) + "\n")
