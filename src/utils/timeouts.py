@@ -46,6 +46,15 @@ HTTP_PROTOBUF_TX = 5.0  # seconds
 # HTTP protobuf session operations (handshake, config read)
 HTTP_PROTOBUF_SESSION = 10.0  # seconds
 
+# AREDN node sysinfo API. Constrained mips_24kc routers (e.g. the MikroTik hAP
+# ac lite) generate sysinfo on demand; it is slow and variable under OLSR load.
+# 2026-06-16 moc5 flap: the hAP's /a/sysinfo intermittently exceeded the old
+# hardcoded 3s read overnight (latency pegged at exactly 3.007s = the timeout),
+# mislabeling a REACHABLE-but-slow node as unreachable. The connect must stay
+# fast — a slow connect IS genuinely down — but the body read needs headroom.
+AREDN_SYSINFO_CONNECT = 2  # seconds — port-open probe; a slow connect = down
+AREDN_SYSINFO_READ = 8     # seconds — sysinfo body read (was a hardcoded 3/5)
+
 # =============================================================================
 # MQTT Timeouts
 # =============================================================================

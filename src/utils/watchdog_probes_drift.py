@@ -1200,11 +1200,13 @@ def probe_aredn_source_dark(
     deliberately off — INERT by design on the 95% of boxes); status endpoint
     unreachable/malformed or diagnostics block absent → None with the streak
     HELD (http_local owns the wedge; a one-tick status hiccup must not erase
-    confirmed-dark progress); ``no_positions`` or ``yielded>0`` → healthy,
-    streak reset (reachable-but-no-GPS is an alive organ); unknown reason
-    strings → indeterminate, held. 2-tick debounce rides out a single failed
-    collect (node reboot, transient LAN blip). Severity ``degraded`` — the
-    map keeps serving, the AREDN leg is blind.
+    confirmed-dark progress); ``no_positions``, ``slow_sysinfo`` or
+    ``yielded>0`` → healthy, streak reset (reachable-but-no-GPS, or
+    reachable-but-slow on a constrained mips_24kc router, is an alive organ —
+    slow ≠ dark, the 2026-06-16 moc5 lesson); unknown reason strings →
+    indeterminate, held. 2-tick debounce rides out a single failed collect
+    (node reboot, transient LAN blip). Severity ``degraded`` — the map keeps
+    serving, the AREDN leg is blind.
     """
     ips = configured_ips
     if ips is None:
@@ -1238,9 +1240,9 @@ def probe_aredn_source_dark(
     if isinstance(yielded, int) and yielded > 0:
         _save_parity_streak(sp, 0)
         return None  # organ alive
-    if reason == "no_positions":
+    if reason in ("no_positions", "slow_sysinfo"):
         _save_parity_streak(sp, 0)
-        return None  # reachable, nothing has GPS set — alive
+        return None  # reachable (no GPS, or sysinfo slow) — alive, NOT dark
     if reason not in _AREDN_DARK_REASONS:
         return None  # unknown/absent reason — indeterminate, hold
 

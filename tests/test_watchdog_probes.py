@@ -3916,6 +3916,23 @@ def test_aredn_source_dark_no_positions_is_alive(tmp_path):
     assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
 
 
+def test_aredn_source_dark_slow_sysinfo_is_alive(tmp_path):
+    """Reachable-but-slow (sysinfo GET exceeded the read timeout on a
+    constrained mips_24kc router) is an ALIVE organ, not dark: silent + streak
+    reset, and it must NEVER fire even sustained. This is the 2026-06-16 moc5
+    fix — slow ≠ unreachable; the old code mislabeled the slow hAP unreachable
+    and the probe flapped degraded↔clear overnight."""
+    slow = {"attempted": 1, "yielded": 0, "reason_if_zero": "slow_sysinfo"}
+    dark = {"attempted": 1, "yielded": 0, "reason_if_zero": "unreachable"}
+    # Prime a dark streak, then a slow tick must clear it (reachable).
+    probe_aredn_source_dark(**_asd_kw(tmp_path, dark))
+    assert probe_aredn_source_dark(**_asd_kw(tmp_path, slow)) is None
+    assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
+    # Sustained slow never fires.
+    for _ in range(4):
+        assert probe_aredn_source_dark(**_asd_kw(tmp_path, slow)) is None
+
+
 def test_aredn_source_dark_holds_streak_on_status_hiccup(tmp_path):
     """A one-tick status-fetch failure must HOLD confirmed-dark progress
     (http_local owns the wedge): dark → fetch-down → dark fires."""

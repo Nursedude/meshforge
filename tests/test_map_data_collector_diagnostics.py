@@ -7,6 +7,7 @@ Covers Issue #42 work (exposing MeshCore + AREDN on :5000 maps):
 - nodes_without_position surfacing across sources (not overwritten)
 """
 
+import socket
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -265,7 +266,7 @@ class TestOperatorPositions:
 
 
 class TestArednReasonIfZero:
-    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=None)
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=(None, "unreachable"))
     def test_not_configured_when_no_ips_and_unreachable(self, _mock_ip, collector):
         # Defaults: aredn_node_ips=[]
         features = collector._collect_aredn()
@@ -273,7 +274,7 @@ class TestArednReasonIfZero:
         d = collector.get_source_diagnostics()
         assert d["aredn"]["reason_if_zero"] == "not_configured"
 
-    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=None)
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=(None, "unreachable"))
     def test_unreachable_when_ips_configured_but_none_reachable(self, _mock_ip, collector):
         collector._settings.set("aredn_node_ips", ["10.99.99.99"])
         features = collector._collect_aredn()
@@ -281,8 +282,20 @@ class TestArednReasonIfZero:
         d = collector.get_source_diagnostics()
         assert d["aredn"]["reason_if_zero"] == "unreachable"
 
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=(None, "slow"))
+    def test_slow_sysinfo_when_reachable_but_gate_times_out(self, _mock_ip, collector):
+        """Reachable-but-slow (gate connect ok, sysinfo GET timed out) records
+        reason='slow_sysinfo', NOT 'unreachable' — slow ≠ down (2026-06-16 moc5
+        flap: the hAP's sysinfo crossed the 3s read overnight and a reachable
+        node was mislabeled unreachable, flapping the aredn_source_dark probe)."""
+        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        features = collector._collect_aredn()
+        assert features == []
+        d = collector.get_source_diagnostics()
+        assert d["aredn"]["reason_if_zero"] == "slow_sysinfo"
+
     def test_get_aredn_node_ip_skips_socket_when_no_custom_ips(self, collector):
-        """Empty aredn_node_ips → no socket calls. Returns None immediately.
+        """Empty aredn_node_ips → no socket calls. Returns (None, 'unreachable').
 
         Without this fast-skip, the previous default-host walk burned 4-5 s
         per cache-miss collect on non-AREDN boxes (the 95% case) probing
@@ -290,11 +303,22 @@ class TestArednReasonIfZero:
         """
         with patch("socket.socket") as mock_sock:
             result = collector._get_aredn_node_ip()
-        assert result is None
+        assert result == (None, "unreachable")
         assert mock_sock.call_count == 0, (
             "socket.socket was called despite aredn_node_ips=[]; "
             "fast-skip regression — see _map_collector_aredn.py docstring."
         )
+
+    def test_get_aredn_node_ip_slow_when_connect_ok_but_get_times_out(self, collector):
+        """Connect accepted but the sysinfo GET times out → status 'slow'
+        (reachable), never 'unreachable' (the moc5 mislabel root)."""
+        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        with patch("socket.socket") as mock_sock, \
+                patch("urllib.request.urlopen", side_effect=socket.timeout("timed out")):
+            mock_sock.return_value.connect_ex.return_value = 0  # port accepts
+            ip, status = collector._get_aredn_node_ip()
+        assert ip is None
+        assert status == "slow"
 
     def test_get_aredn_node_ip_probes_only_custom_ips(self, collector):
         """Configured aredn_node_ips → probe ONLY those. No default-host fallback."""

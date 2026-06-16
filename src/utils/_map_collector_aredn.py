@@ -14,12 +14,30 @@ Expects on the host class:
 import logging
 import socket
 import time
+import urllib.error
 import urllib.request
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from utils.aredn import AREDNClient
+from utils.timeouts import AREDN_SYSINFO_CONNECT, AREDN_SYSINFO_READ
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_timeout(exc: BaseException) -> bool:
+    """True when ``exc`` is (or wraps) a network read/connect timeout.
+
+    Distinguishes a REACHABLE-but-slow AREDN node (the sysinfo GET timed out)
+    from a genuinely unreachable one (connection refused/reset/DNS). urllib
+    surfaces a read timeout as ``socket.timeout``/``TimeoutError`` directly or
+    as a ``URLError`` wrapping one; fall back to the message as a last resort.
+    """
+    if isinstance(exc, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(exc, "reason", None)
+    if isinstance(reason, (TimeoutError, socket.timeout)):
+        return True
+    return "timed out" in str(exc).lower()
 
 
 class ARENDataCollectorMixin:
@@ -39,20 +57,29 @@ class ARENDataCollectorMixin:
             raw = self._settings.get("aredn_node_ips", [])
             configured_ips = [raw] if isinstance(raw, str) else list(raw or [])
 
-        local_node_ip = self._get_aredn_node_ip()
+        local_node_ip, gate_status = self._get_aredn_node_ip()
         if not local_node_ip:
-            if configured_ips:
-                reason = "unreachable"
-                msg = (
-                    f"AREDN: none of configured IPs {configured_ips} reachable; "
-                    "check aredn_node_ips in ~/.config/meshforge/map_settings.json"
-                )
-            else:
+            if not configured_ips:
                 reason = "not_configured"
                 msg = (
                     "AREDN: integration disabled (no aredn_node_ips configured). "
                     "Set aredn_node_ips=[\"10.x.y.z\", ...] in "
                     "~/.config/meshforge/map_settings.json to enable."
+                )
+            elif gate_status == "slow":
+                # Reachable-but-slow ≠ unreachable. Don't tell the operator to
+                # check power/PoE/LAN — the node answered the connection, its
+                # sysinfo just exceeded the read timeout (2026-06-16 moc5 flap).
+                reason = "slow_sysinfo"
+                msg = (
+                    f"AREDN: node(s) {configured_ips} reachable but sysinfo "
+                    f"exceeded {AREDN_SYSINFO_READ}s (slow/loaded node, not down)"
+                )
+            else:
+                reason = "unreachable"
+                msg = (
+                    f"AREDN: none of configured IPs {configured_ips} reachable; "
+                    "check aredn_node_ips in ~/.config/meshforge/map_settings.json"
                 )
             self._info_log_rate_limited("aredn", msg)
             self._record_diagnostic(
@@ -66,7 +93,7 @@ class ARENDataCollectorMixin:
 
         neighbors_tried = 0
         try:
-            client = AREDNClient(local_node_ip, timeout=5)
+            client = AREDNClient(local_node_ip, timeout=AREDN_SYSINFO_READ)
             local_node = client.get_node_info()
 
             if local_node:
@@ -150,8 +177,8 @@ class ARENDataCollectorMixin:
         )
         return features
 
-    def _get_aredn_node_ip(self) -> Optional[str]:
-        """Find AREDN node on configured IPs.
+    def _get_aredn_node_ip(self) -> Tuple[Optional[str], str]:
+        """Find AREDN node on configured IPs, distinguishing slow from down.
 
         Only probes when `aredn_node_ips` is configured. On a non-AREDN
         box (the 95% case) the previous default-host walk
@@ -162,6 +189,16 @@ class ARENDataCollectorMixin:
 
         Validates with HTTP API response (not just socket test) to confirm
         the host is actually an AREDN node, not some other service on 8080.
+
+        Returns ``(ip, status)`` where status is one of:
+        - ``"ok"``      — a configured host answered sysinfo as an AREDN node.
+        - ``"slow"``    — a host's :8080 ACCEPTED the connection but the
+          sysinfo GET timed out. Reachable, just slow (constrained mips_24kc
+          routers generate sysinfo on demand). NOT "unreachable" — mapping a
+          slow node to unreachable was the 2026-06-16 moc5 flap (the hAP's
+          sysinfo crossed the old hardcoded 3s read overnight).
+        - ``"unreachable"`` — no configured host's :8080 even accepted a
+          connection within the connect timeout (node down / LAN broken).
         """
         custom_ips = []
         if self._settings:
@@ -170,35 +207,49 @@ class ARENDataCollectorMixin:
                 custom_ips = [custom_ips]
 
         if not custom_ips:
-            return None
+            return None, "unreachable"
 
+        reachable_but_slow = False
         for host in custom_ips:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
+                sock.settimeout(AREDN_SYSINFO_CONNECT)
                 try:
                     result = sock.connect_ex((host, 8080))
                     if result != 0:
-                        continue
+                        continue  # port did not accept — this host is down
                 finally:
                     sock.close()
 
+                # Connection accepted → host is REACHABLE. From here a failure
+                # is a slow/odd sysinfo, not an unreachable node.
                 url = f"http://{host}:8080/a/sysinfo"
                 req = urllib.request.Request(url, method='GET')
                 req.add_header('User-Agent', 'MeshForge/1.0')
-                with urllib.request.urlopen(req, timeout=3) as response:
-                    data = response.read().decode('utf-8')
-                    import json as _json
-                    info = _json.loads(data)
-                    if isinstance(info, dict) and ('node' in info or 'sysinfo' in info
-                                                    or 'meshrf' in info):
-                        logger.debug(f"AREDN node confirmed at {host}")
-                        return host
+                try:
+                    with urllib.request.urlopen(req, timeout=AREDN_SYSINFO_READ) as response:
+                        data = response.read().decode('utf-8')
+                        import json as _json
+                        info = _json.loads(data)
+                        if isinstance(info, dict) and ('node' in info or 'sysinfo' in info
+                                                        or 'meshrf' in info):
+                            logger.debug(f"AREDN node confirmed at {host}")
+                            return host, "ok"
+                        else:
+                            logger.debug(f"Host {host}:8080 responds but not AREDN format")
+                except Exception as e:
+                    if _looks_like_timeout(e):
+                        reachable_but_slow = True
+                        logger.debug(
+                            f"AREDN {host}:8080 reachable but sysinfo slow "
+                            f"(>{AREDN_SYSINFO_READ}s): {e}"
+                        )
                     else:
-                        logger.debug(f"Host {host}:8080 responds but not AREDN format")
+                        logger.debug(f"AREDN {host}:8080 sysinfo error: {e}")
+                    continue
             except Exception:
                 continue
-        return None
+        return None, ("slow" if reachable_but_slow else "unreachable")
 
     def _aredn_node_to_feature(self, node) -> Optional[Dict]:
         """Convert AREDNNode to GeoJSON feature."""
