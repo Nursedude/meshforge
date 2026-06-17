@@ -393,26 +393,37 @@ def probe_dep_version_drift(
             service_user = None
 
     if installed is None:
-        installed = _read_pkg_versions_for_user(service_user, set(floors))
+        # Read the CONSUMER-OF-RECORD, not just ~/.local. On this fleet
+        # meshtastic lives in the venv (the services' interpreter) / system-dist
+        # / pipx and is frequently ABSENT from ~/.local — the old user-site-only
+        # read was venv-blind and silently missed a stale venv consumer (moc2/moc3
+        # ran 2.7.8 in-venv while this probe stayed None, found 2026-06-17 by the
+        # install audit). Mirror Layer 1 (updates.version_checker) + the audit:
+        # pick venv -> user-site -> system-dist.
+        watched_pkg = _DEP_VERSION_WATCHED[0]
+        _, consumer_version = _consumer_of_record_version(
+            _enumerate_pkg_installs(watched_pkg, service_user)
+        )
+        installed = {watched_pkg: consumer_version} if consumer_version else {}
     if not installed:
-        return None  # couldn't read the service env → indeterminate
+        return None  # couldn't read the consumer env → indeterminate
 
     stale = []
     for pkg, floor in floors.items():
         have = installed.get(pkg)
         if have is None:
-            continue  # not visible in the user site (venv elsewhere?) — don't guess
+            continue  # not visible in the consumer env — don't guess
         if _version_below(have, floor):
             stale.append(f"{pkg} installed={have} floor>={floor}")
     if not stale:
         return None
 
-    pkg_names = " ".join(sorted(s.split()[0] for s in stale))
     detail = (
-        f"pip dependency below the requirements floor ({'; '.join(stale)}) — "
-        f"this box missed or failed an update. Converge in the service user's "
-        f"env: pip3 install --break-system-packages --upgrade {pkg_names} "
-        f"(or via the TUI Update), then verify the version + import. See "
+        f"pip dependency below the requirements floor in the consumer-of-record "
+        f"({'; '.join(stale)}) — this box missed or failed an update and the "
+        f"services import a stale version. Identify the exact install + reconcile: "
+        f"python3 scripts/meshtastic_install_audit.py (its --fix prints the "
+        f"per-location command), then verify the version + import. See "
         f"feedback_version_env_rigor."
     )
     return Signal(
@@ -509,6 +520,25 @@ def _enumerate_pkg_installs(pkg, service_user, *, meshforge_root="/opt/meshforge
         if ver is not None:
             found[label] = ver
     return found
+
+
+# The order a stale install actually bites a SERVICE: the venv is the apps'
+# interpreter when present; otherwise the system python imports user-site
+# (~/.local) ahead of system-wide dist-packages. pipx venvs are CLI-only —
+# never the library consumer — so they're excluded from this priority.
+_DEP_CONSUMER_PRIORITY = ("venv", "user-site", "system-dist")
+
+
+def _consumer_of_record_version(installs):
+    """The version the SERVICES actually import, from an enumerated install map
+    (``{label: version}``). Returns ``(label, version)`` for the highest-priority
+    present location (venv -> user-site -> system-dist), or ``(None, None)`` when
+    the package is in none of them (e.g. only a pipx CLI copy — not a library
+    consumer)."""
+    for label in _DEP_CONSUMER_PRIORITY:
+        if label in installs:
+            return label, installs[label]
+    return None, None
 
 
 def probe_dep_install_fragmented(

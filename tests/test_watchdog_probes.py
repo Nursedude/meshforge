@@ -2113,6 +2113,65 @@ def test_dep_version_drift_unparseable_version_does_not_fire():
         installed={"meshtastic": "garbage"}) is None
 
 
+# Consumer-of-record awareness (2026-06-17): the probe must read the env the
+# services actually import (venv -> user-site -> system-dist), not just
+# ~/.local — the old user-site-only read was venv-blind and missed moc2/moc3's
+# stale venv consumer.
+
+def test_consumer_of_record_priority():
+    from utils.watchdog_probes_drift import _consumer_of_record_version
+    assert _consumer_of_record_version(
+        {"venv": "1", "user-site": "2", "system-dist": "3"}) == ("venv", "1")
+    assert _consumer_of_record_version(
+        {"user-site": "2", "system-dist": "3"}) == ("user-site", "2")
+    assert _consumer_of_record_version({"system-dist": "3"}) == ("system-dist", "3")
+    assert _consumer_of_record_version({"user-pipx": "9"}) == (None, None)
+    assert _consumer_of_record_version({}) == (None, None)
+
+
+def test_dep_version_drift_venv_consumer_below_floor_fires(monkeypatch):
+    # The moc2/moc3 case: venv (consumer-of-record) below floor, ~/.local empty.
+    import utils.watchdog_probes_drift as d
+    monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                        lambda pkg, user, **kw: {"venv": "2.7.8", "user-pipx": "2.7.8"})
+    sig = probe_dep_version_drift(service_user="svc", floors=_DEP_FLOORS)
+    assert sig is not None
+    assert sig.cls == "dep_version_drift"
+    assert "meshtastic installed=2.7.8 floor>=2.7.9" in sig.detail
+
+
+def test_dep_version_drift_venv_at_floor_silent_despite_stray(monkeypatch):
+    # Consumer (venv) fine; a stray system-dist is stale → dep_version_drift is
+    # SILENT (that's dep_install_fragmented's job, not the consumer probe).
+    import utils.watchdog_probes_drift as d
+    monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                        lambda pkg, user, **kw: {"venv": "2.7.9", "system-dist": "2.7.8"})
+    assert probe_dep_version_drift(service_user="svc", floors=_DEP_FLOORS) is None
+
+
+def test_dep_version_drift_prefers_venv_over_user_site(monkeypatch):
+    import utils.watchdog_probes_drift as d
+    monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                        lambda pkg, user, **kw: {"venv": "2.7.8", "user-site": "2.7.9"})
+    assert probe_dep_version_drift(service_user="svc", floors=_DEP_FLOORS) is not None
+
+
+def test_dep_version_drift_system_dist_is_consumer_when_only_one(monkeypatch):
+    # moc1-shape: only system-dist present → it IS the consumer-of-record.
+    import utils.watchdog_probes_drift as d
+    monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                        lambda pkg, user, **kw: {"system-dist": "2.7.8"})
+    assert probe_dep_version_drift(service_user="svc", floors=_DEP_FLOORS) is not None
+
+
+def test_dep_version_drift_pipx_only_is_not_a_consumer(monkeypatch):
+    # Only a pipx CLI copy → not a library consumer → None (no false alarm).
+    import utils.watchdog_probes_drift as d
+    monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                        lambda pkg, user, **kw: {"user-pipx": "2.7.8"})
+    assert probe_dep_version_drift(service_user="svc", floors=_DEP_FLOORS) is None
+
+
 def test_read_requirement_floors_parses_and_ignores_noise(tmp_path):
     from utils.watchdog_probes_drift import _read_requirement_floors
     req = tmp_path / "core.txt"
