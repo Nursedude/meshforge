@@ -93,3 +93,72 @@ def test_auth_token_diagnostic_repair_declined():
     with patch('handlers._rns_repair.repair_rns_shared_instance') as repair:
         eng.diagnose_rns_connectivity(handler, "RNS: AuthenticationError digest rejected")
     assert not repair.called
+
+
+# ----------------------------------------------------------------------
+# RNS Repair wizard: rpc_key generation step (Issue #41/#37)
+# ----------------------------------------------------------------------
+def _fake_cfg(exists=True):
+    p = MagicMock()
+    p.exists.return_value = exists
+    return p
+
+
+def test_rpc_key_step_skips_when_resolvable():
+    """A box that already resolves an rpc_key (explicit OR identity-derived)
+    is NEVER repinned — that would break its clients."""
+    from handlers import _rns_repair
+    from utils.paths import ReticulumPaths
+    with patch.object(ReticulumPaths, 'get_shared_rpc_key', return_value='a' * 64):
+        with patch('utils.rns_config_setup.ensure_rpc_key') as ek:
+            result = _rns_repair._ensure_rnsd_rpc_key()
+    assert result is False
+    assert not ek.called, "must not pin a key when one is already resolvable"
+
+
+def test_rpc_key_step_pins_when_none():
+    """No resolvable key (incl. a deployed __RPC_KEY__ placeholder) -> pin a
+    fresh key via the existing ensure_rpc_key writer."""
+    from handlers import _rns_repair
+    from utils.paths import ReticulumPaths
+    with patch.object(ReticulumPaths, 'get_shared_rpc_key', return_value=None):
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=_fake_cfg(True)):
+            with patch('utils.rns_config_setup.ensure_rpc_key',
+                       return_value=('b' * 64, True)) as ek:
+                result = _rns_repair._ensure_rnsd_rpc_key()
+    assert result is True
+    assert ek.called
+
+
+def test_rpc_key_step_skips_when_no_config():
+    from handlers import _rns_repair
+    from utils.paths import ReticulumPaths
+    with patch.object(ReticulumPaths, 'get_shared_rpc_key', return_value=None):
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=_fake_cfg(False)):
+            with patch('utils.rns_config_setup.ensure_rpc_key') as ek:
+                result = _rns_repair._ensure_rnsd_rpc_key()
+    assert result is False
+    assert not ek.called
+
+
+def test_rpc_key_step_oserror_is_graceful():
+    """A write failure (no Admin) returns False, never raises into the wizard."""
+    from handlers import _rns_repair
+    from utils.paths import ReticulumPaths
+    with patch.object(ReticulumPaths, 'get_shared_rpc_key', return_value=None):
+        with patch.object(ReticulumPaths, 'get_config_file', return_value=_fake_cfg(True)):
+            with patch('utils.rns_config_setup.ensure_rpc_key',
+                       side_effect=OSError("permission denied")):
+                result = _rns_repair._ensure_rnsd_rpc_key()
+    assert result is False
+
+
+def test_offer_rns_client_restarts_targets_gateway_and_map():
+    """After a fresh key is pinned, the clients (which rebuild config at start)
+    are offered a restart so they read the new key."""
+    from handlers import _rns_repair
+    ctx = make_handler_context()
+    with patch('service_remediation.offer_service_fix') as offer:
+        _rns_repair._offer_rns_client_restarts(ctx)
+    svcs = [c[0][1] for c in offer.call_args_list]
+    assert 'meshforge-gateway' in svcs and 'meshforge-map' in svcs

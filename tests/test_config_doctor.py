@@ -82,7 +82,12 @@ class TestCheckRpcKeyPinned:
             r = checks.check_rpc_key_pinned()
         assert r.status == FAIL
         assert "rpc_key" in r.message.lower()
-        assert "openssl rand" in r.fix_hint
+        # The fix is now in-app: route to the RNS Repair wizard (which pins a
+        # fresh rpc_key, restarts rnsd, and offers client restarts) — not a
+        # shell openssl/systemctl runbook (In-Domain Principle).
+        assert "Repair RNS" in r.fix_hint
+        assert "openssl" not in r.fix_hint and "systemctl" not in r.fix_hint
+        assert r.route_hint == "RNS > Repair RNS"
 
     def test_ok_when_key_pinned(self, tmp_path):
         cfg = tmp_path / "config"

@@ -102,10 +102,9 @@ def check_rpc_key_pinned() -> CheckResult:
             status=FAIL,
             message=f"rnsd config has no valid rpc_key: {cfg_file}",
             fix_hint=(
-                "Generate a key and add it under [reticulum]:\n"
-                "  openssl rand -hex 32\n"
-                "Then: sudo systemctl restart rnsd\n"
-                "See Issue #41 in persistent_issues.md for context."
+                "Run RNS > Repair RNS — it pins a fresh rpc_key and restarts\n"
+                "rnsd in-app, then offers to restart the RNS clients so they\n"
+                "read it. See Issue #41 in persistent_issues.md for context."
             ),
             route_hint="RNS > Repair RNS",
             details=[f"checked: {cfg_file}"],

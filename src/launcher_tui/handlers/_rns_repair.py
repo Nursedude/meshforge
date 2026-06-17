@@ -198,6 +198,7 @@ def repair_rns_shared_instance(handler) -> bool:
     Returns True if fix was successful.
     """
     ctx = handler.ctx
+    rpc_key_generated = False
 
     print("\n" + "=" * 50)
     print("RNS REPAIR: Shared Instance")
@@ -234,6 +235,10 @@ def repair_rns_shared_instance(handler) -> bool:
         print(f"  ERROR: {e}")
         print("  (Run MeshForge with sudo)")  # in-domain-ok: privilege separation — creating /etc/reticulum needs root (in_domain_principle.md)
         return False
+
+    # Step 1b: ensure rnsd carries a resolvable rpc_key (Issue #41/#37).
+    print(f"\n  Ensuring rnsd rpc_key (RPC client authentication)...")
+    rpc_key_generated = _ensure_rnsd_rpc_key()
 
     # Step 2: Validate rnsd.service file
     print(f"\n[2/5] Validating rnsd systemd service file...")
@@ -423,6 +428,8 @@ def repair_rns_shared_instance(handler) -> bool:
         print("\n" + "=" * 50)
         print("RNS shared instance is now available!")
         print("=" * 50 + "\n")
+        if rpc_key_generated:
+            _offer_rns_client_restarts(ctx)
         return True
 
     if rnsd_crashed:
@@ -430,6 +437,61 @@ def repair_rns_shared_instance(handler) -> bool:
 
     # Shared instance not available after 30s but rnsd didn't crash
     return _diagnose_timeout(handler, user_declined_disable)
+
+
+def _ensure_rnsd_rpc_key() -> bool:
+    """Pin a fresh rnsd rpc_key ONLY when none is resolvable. Returns True if a
+    key was newly generated/pinned.
+
+    ``get_shared_rpc_key()`` is DERIVATION-AWARE (explicit pin OR rnsd-identity-
+    derived); we act only when it returns None — which includes a freshly-
+    deployed template's literal ``__RPC_KEY__`` placeholder. Pinning on a box
+    that already resolves a (derived) key would break its clients until they
+    re-read it, so we never do (#41/#37). The clients rebuild their own client
+    config at startup, so a restart is how the new key propagates — see
+    ``_offer_rns_client_restarts``.
+    """
+    cfg_path = ReticulumPaths.get_config_file()
+    if ReticulumPaths.get_shared_rpc_key() is not None:
+        print("  rpc_key: OK (resolvable)")
+        return False
+    if not cfg_path.exists():
+        print("  rpc_key: skipped (no config file yet)")
+        return False
+    try:
+        from utils.rns_config_setup import ensure_rpc_key
+        _key, generated = ensure_rpc_key(cfg_path)
+        if generated:
+            print("  Pinned a fresh rpc_key — RNS clients read it on (re)start.")
+        else:
+            print("  rpc_key still unresolved (existing value left as-is).")
+        return generated
+    except OSError as e:
+        print(f"  Could not write rpc_key: {e}")
+        print("  (Relaunch in Admin mode to write /etc/reticulum/config.)")  # in-domain-ok: privilege separation — writing /etc/reticulum needs root (in_domain_principle.md)
+        return False
+    except Exception as e:
+        logger.debug("rpc_key ensure failed: %s", e)
+        return False
+
+
+def _offer_rns_client_restarts(ctx):
+    """After a fresh rpc_key is pinned, offer to restart the RNS client
+    services in-app.
+
+    The clients (gateway, map) rebuild their own RNS client config at startup,
+    reading ``ReticulumPaths.get_shared_rpc_key()`` fresh — so restarting them
+    is how the new key propagates (no separate copy step). ``offer_service_fix``
+    is profile-gated, so only services this box actually runs are offered.
+    """
+    print("\n  A fresh rpc_key was pinned. RNS client services must restart")
+    print("  to pick it up (they rebuild their client config on start).")
+    try:
+        from service_remediation import offer_service_fix
+        for svc in ("meshforge-gateway", "meshforge-map"):
+            offer_service_fix(ctx, svc, running=True)
+    except Exception as e:
+        logger.debug("RNS client restart offer failed: %s", e)
 
 
 def _preflight_share_instance(ctx):
