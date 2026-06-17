@@ -547,10 +547,14 @@ class MeshtasticdConfigHandler(BaseHandler):
                 self.ctx.dialog.msgbox("Error", f"File not found:\n{path}")
                 return
 
-        clear_screen()
-        subprocess.run(['nano', path])  # Interactive editor - no timeout
+        # In-Domain (MF018): edit the config IN-APP — was a `nano` spawn that
+        # ejected the operator to a shell. Only prompt for a restart on a real
+        # saved change (the editbox tells us; nano never could).
+        from config_edit import edit_config_in_app
+        changed = edit_config_in_app(
+            self.ctx, path, title="Edit meshtasticd config")
 
-        if self.ctx.dialog.yesno(
+        if changed and self.ctx.dialog.yesno(
             "Restart Service?",
             "Config file modified.\n\n"
             "Restart meshtasticd to apply changes?",

@@ -257,6 +257,27 @@ class DialogBackend:
             return output
         return None
 
+    def editbox(self, title: str, file_path: str, height: int = None,
+                width: int = None) -> Optional[str]:
+        """Edit a text file IN-APP (whiptail/dialog --editbox) and return the
+        edited text, or None on cancel.
+
+        The In-Domain alternative to spawning nano/vi (MF018): the operator
+        never leaves the TUI to fix a config. Does NOT write the file — the
+        caller (config_edit.edit_config_in_app) persists the returned text, so
+        it controls permissions / atomic write / validation.
+        """
+        h = height if height is not None else max(self.height, 20)
+        w = width if width is not None else max(self.width, 72)
+        code, output = self._run([
+            '--title', title,
+            '--editbox', str(file_path),
+            str(h), str(w),
+        ])
+        if code == 0:
+            return output
+        return None
+
     def infobox(self, title: str, text: str) -> None:
         """Display info box (no wait for input)."""
         self._run([

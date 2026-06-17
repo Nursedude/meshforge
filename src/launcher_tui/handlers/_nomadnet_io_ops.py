@@ -288,16 +288,13 @@ class NomadNetIOOpsMixin:
         self._open_editor(config_path)
 
     def _open_editor(self, config_path: Path):
-        """Launch an available editor against a config path and fix ownership."""
-        editor = None
-        for cmd in ['nano', 'vim', 'vi']:
-            if shutil.which(cmd):
-                editor = cmd
-                break
-        if not editor:
-            self.ctx.dialog.msgbox("Error", "No text editor found (nano, vim, vi)")
-            return
-        subprocess.run([editor, str(config_path)], timeout=None)
+        """Edit a NomadNet config IN-APP (In-Domain/MF018; was a nano/vi spawn)
+        and restore ownership if we wrote it as root under sudo."""
+        from config_edit import edit_config_in_app
+        changed = edit_config_in_app(
+            self.ctx, config_path, title="Edit NomadNet config")
+        if not changed:
+            return  # cancelled, unchanged, or save failed (already reported)
         sudo_user = os.environ.get('SUDO_USER')
         if sudo_user and sudo_user != 'root':
             chown_ok = False

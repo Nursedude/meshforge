@@ -249,18 +249,10 @@ class RNSConfigHandler(BaseHandler):
                     )
                 # If migration failed, continue with original path
 
-        # Find editor
-        editor = None
-        for cmd in ['nano', 'vim', 'vi']:
-            if shutil.which(cmd):
-                editor = cmd
-                break
-
-        if not editor:
-            self.ctx.dialog.msgbox("Error", "No text editor found (nano, vim, vi)")
-            return
-
-        subprocess.run([editor, str(config_path)], timeout=None)
+        # In-Domain (MF018): edit the RNS config IN-APP — was a nano/vi spawn
+        # that ejected the operator to a shell.
+        from config_edit import edit_config_in_app
+        edit_config_in_app(self.ctx, config_path, title="Edit RNS config")
 
         # After editing, check for config divergence between user and root
         self._check_rns_config_divergence(config_path)

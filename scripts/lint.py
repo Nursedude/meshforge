@@ -791,7 +791,7 @@ MF018_BASELINE = {
     'src/launcher_tui/handlers/_ai_tools_mfmaps.py': 1,
     'src/launcher_tui/handlers/_nomadnet_iface_checks.py': 1,
     'src/launcher_tui/handlers/_nomadnet_install_utils.py': 8,
-    'src/launcher_tui/handlers/_nomadnet_io_ops.py': 2,
+    'src/launcher_tui/handlers/_nomadnet_io_ops.py': 1,  # Arc 3: editor spawn -> in-app editbox (config_edit); chown-warning remains
     'src/launcher_tui/handlers/_nomadnet_rns_checks.py': 1,
     'src/launcher_tui/handlers/_nomadnet_service_ops.py': 2,
     'src/launcher_tui/handlers/_rns_diagnostics_engine.py': 2,
@@ -800,7 +800,7 @@ MF018_BASELINE = {
     'src/launcher_tui/handlers/emergency_mode.py': 1,
     'src/launcher_tui/handlers/extensions.py': 1,
     'src/launcher_tui/handlers/favorites.py': 1,
-    'src/launcher_tui/handlers/meshtasticd_config.py': 6,
+    'src/launcher_tui/handlers/meshtasticd_config.py': 5,  # Arc 3: config.yaml nano spawn -> in-app editbox (config_edit)
     'src/launcher_tui/handlers/meshtasticd_nodedb.py': 1,
     # meshtasticd_radio.py: 0 (Arc 3 — bootstrap "run with sudo to auto-create"
     # escapes replaced by an in-app "Create hardware templates now" action)
@@ -809,7 +809,7 @@ MF018_BASELINE = {
     'src/launcher_tui/handlers/nomadnet.py': 4,
     'src/launcher_tui/handlers/quick_actions.py': 2,
     'src/launcher_tui/handlers/radio_menu.py': 4,
-    'src/launcher_tui/handlers/rns_config.py': 4,  # Arc 2: loglevel→restart now via remediation surface
+    'src/launcher_tui/handlers/rns_config.py': 3,  # Arc 2: loglevel→restart via remediation surface; Arc 3: editor spawn -> in-app editbox
     'src/launcher_tui/handlers/rns_diagnostics.py': 4,
     'src/launcher_tui/handlers/rns_tools.py': 1,
     'src/launcher_tui/handlers/service_menu.py': 4,

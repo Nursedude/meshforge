@@ -243,6 +243,11 @@ class TestNomadNetEditChownFailure:
     ``fd.last_msgbox_title`` stays None, so ``== "Ownership Warning"`` fails.
     Confirmed by reverting the ``if not chown_ok:`` block to a bare
     logger.debug (see report).
+
+    UPDATED (Arc 3, MF018): ``_open_editor`` now edits IN-APP via
+    ``config_edit.edit_config_in_app`` instead of spawning nano/vi. The
+    chown-back warning is unchanged and still pinned here; the tests mock the
+    in-app editor to return True (a save occurred) to reach the chown path.
     """
 
     def _make_host(self, fd):
@@ -261,7 +266,7 @@ class TestNomadNetEditChownFailure:
         host = self._make_host(fd)
 
         def run_side_effect(argv, *a, **kw):
-            # The editor invocation succeeds; the chown call returns nonzero.
+            # The chown call returns nonzero.
             if argv and argv[0] == 'chown':
                 return Mock(returncode=1, stderr=b"Operation not permitted")
             return Mock(returncode=0)
@@ -270,8 +275,7 @@ class TestNomadNetEditChownFailure:
             cfg_path = Path(tf.name)
         try:
             with patch.dict(os.environ, {"SUDO_USER": "meshuser"}), \
-                 patch('handlers._nomadnet_io_ops.shutil.which',
-                       return_value="/bin/nano"), \
+                 patch('config_edit.edit_config_in_app', return_value=True), \
                  patch('handlers._nomadnet_io_ops.subprocess.run',
                        side_effect=run_side_effect):
                 host._open_editor(cfg_path)
@@ -295,8 +299,7 @@ class TestNomadNetEditChownFailure:
             cfg_path = Path(tf.name)
         try:
             with patch.dict(os.environ, {"SUDO_USER": "meshuser"}), \
-                 patch('handlers._nomadnet_io_ops.shutil.which',
-                       return_value="/bin/nano"), \
+                 patch('config_edit.edit_config_in_app', return_value=True), \
                  patch('handlers._nomadnet_io_ops.subprocess.run',
                        side_effect=run_side_effect):
                 host._open_editor(cfg_path)
@@ -314,8 +317,7 @@ class TestNomadNetEditChownFailure:
             cfg_path = Path(tf.name)
         try:
             with patch.dict(os.environ, {"SUDO_USER": "meshuser"}), \
-                 patch('handlers._nomadnet_io_ops.shutil.which',
-                       return_value="/bin/nano"), \
+                 patch('config_edit.edit_config_in_app', return_value=True), \
                  patch('handlers._nomadnet_io_ops.subprocess.run',
                        return_value=Mock(returncode=0)):
                 host._open_editor(cfg_path)
