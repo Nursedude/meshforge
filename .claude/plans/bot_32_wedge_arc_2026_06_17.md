@@ -167,3 +167,64 @@ Three facts re-derived from our own logs/notes this session, not from the web:
    official PSU + short thick cable, with non-essential USB stripped? Brownout is the top
    suspect and the coupled cause of SD corruption — a PSU/cable swap is the single
    cheapest diagnostic and may be the whole fix.
+
+---
+
+## Leg C kickoff (NEXT CLEAN SESSION — dude-claw out-of-band witness)
+
+Status at handoff (2026-06-17): Legs A/B-Phase-0 done (`.32` desktop fix + forensics
+armed), **Leg D SHIPPED + live-drilled** (`ee759b16`+`93757ef6`). `.32` ROOT CAUSE was
+mundane (Pi Zero W desktop overload) — so Leg C is now **defense-in-depth**, not the
+headline. But it's still worth it: the internal HW watchdog can't catch the
+systemd-still-pets class, and an out-of-band witness localizes faults the remote probe
+can't (the AREDN-WAN/DNAT ambiguity).
+
+**Precondition VERIFIED 2026-06-17 ~12:00 HST:** moc2 `nats-server` active; the claw is
+answering NATS polls (`~/claw_ble_soak.log` fresh at 12:00); moc2 @ `93757ef6`. Claw +
+brain are healthy → Leg C is unblocked.
+
+**THE DESIGN CRUX (settle this FIRST):** the same-subnet *froze-vs-path-down*
+discrimination — the whole reason the claw beats the remote probe — requires the **claw
+itself** to probe `.32`'s real iface `10.120.250.195` (ARP/TCP) from inside the DudeNET
+subnet. moc2/VolcanoAI can only reach `.32` via `192.168.86.32` (the AREDN WAN+DNAT), which
+carries the SAME ambiguity. So the discriminating version needs a **lean claw firmware
+probe tool** (e.g. `host_probe`: TCP-connect + ARP-presence to a target on the local
+subnet) → a flash over moc1's USB. That firmware step is the heavy, FORK-disciplined work
+that earns the clean session.
+- **Lighter slice-1 (no firmware):** the claw is already a NATS sensor + an independent
+  *witness by presence*. A first alert-only version can report "claw can/can't see `.32`"
+  using whatever reach the claw already has, OR simply surface the claw's own liveness as
+  the out-of-band heartbeat. Decide slice-1 (no-flash, alert-only) vs the full discriminating
+  version (firmware probe tool) at session start.
+
+**Integration shape (from `bot_32_research/leg3_esp32_watcher.md`):** mini-dudeai claw
+**sensor** (`sources/nats_sensor.py` pattern) polls the probe via the claw's `tool_exec`
+→ source-side threshold → Condition → mini rule on moc2 → report HOST_FROZEN over NATS
+**+ LoRa** (independent of the dead `.32`) → surface on `/fleet`. **Alert-only first.**
+Gated auto-power-cycle (relay/MOSFET on `.32`'s USB-C + the boot-loop-safe state machine:
+debounce→confirm→MAX_RESETS→backoff→boot-grace→confirm-recovery→LOCKOUT) is a LATER,
+hardware + operator-go step — do NOT build actuation in slice-1.
+
+**Cautions (load-bearing):**
+- ⚠️ **FORK.md INVARIANT — never `git commit` while checked out on the `dudeclaw` branch.**
+  Deploy-branch = upstream main + merge `pr/*` + ONE residue commit, REBUILT not hand-edited
+  (`.claude/plans/dudeclaw_upstream_prs.md`). Watch the open PRs when touching the claw.
+- ⚠️ Memory budget: claw runs the V4 NATS-edge lean profile (~30 kB free heap); a new tool
+  must be lean (the on-device tool-AGENT is disabled by design, but tools the claw *uses*
+  are compiled in). Flash = app-only `esptool write-flash 0x10000` over moc1 USB (pipx
+  esptool; apt's is dfsg-stripped); claw rejoins unaided; discover-verify the `+dudeclaw.N`.
+- ⚠️ Topology: claw `10.120.250.199`; `.32` real iface `10.120.250.195` (`.32`'s
+  `192.168.86.32` is the AREDN node WAN + :22 DNAT); claw portal reachable only from inside
+  the subnet → use `.32` as the foothold; brain = moc2 (`meshforge-mini-dudeai-claw` user
+  unit, env `~/.config/meshforge/mini_dudeai_claw.env`).
+- New signal class (`host_frozen` / reuse `fleet_box_unreachable`?) → closed enum +
+  BOTH seeds + the coverage/reachability/enum-doc gates (same drill as Leg D Piece 2).
+
+**Cold-start reading:** memory `project_dudeclaw_phase_a_2026_06_11` (cold-start facts),
+`.claude/plans/rf_claw_arc.md` §Phase 3, `.claude/plans/dudeclaw_heltec_v4_bringup.md`
+(remote-flash recipe), `.claude/plans/dudeclaw_upstream_prs.md` (PR state machine).
+
+**Verification gate:** alert-only first; drill it like Leg D Piece 2 (inject a synthetic
+HOST_FROZEN via the claw sensor, confirm it surfaces in mini's brief + `/fleet`, NO
+auto-reset, then revert). Field-prove the discrimination on a real `.32` reboot before
+trusting it.
