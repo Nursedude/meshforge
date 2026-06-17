@@ -21,12 +21,18 @@ first run on/after 2026-06-24):
         journal is surfaced as CONCERN the day it happens, never absorbed
         — unobservable is not healthy). >=2 blind days for one host FAILs.
     C6  watchdog health: no meshforge-watchdog box may carry a WEDGE
-        signal (FAIL — a wedge during the window is real fleet breakage,
-        e.g. the 2-day mesh-RF bot-dark that C1-C5 (RNS-only) never saw);
-        a DEGRADED signal or an unobservable/stale watchdog read is a
-        CONCERN (noted, not soak-fatal — unobservable is not healthy).
-        Mirrors honest_status.sh §6 (wedge=FAIL > unobservable~degraded
-        =CONCERN). meshanchor-server is EXCLUDED (no meshforge watchdog).
+        signal during the window (FAIL — a wedge is real fleet breakage,
+        e.g. the 2-day mesh-RF bot-dark that C1-C5 (RNS-only) never saw).
+        A DEGRADED / unobservable / stale watchdog read is broad
+        fleet-health OUTSIDE the RNS-only soak scope: it is NOTED on the
+        verdict line (and in evidence.jsonl) but does NOT flip the soak
+        verdict. Decoupled 2026-06-16 — a memory-bloat -> cron_verdict_stale
+        (degraded) -> C6 echo was cosmetically turning the green RNS soak
+        CONCERN, and an RNS retire-gate must not page on fleet meta-health
+        it does not scope. Only a WEDGE is soak-fatal (precedence still
+        mirrors honest_status.sh §6); the watchdog's OWN observability is
+        honest_status.sh's job, not this gate's. meshanchor-server is
+        EXCLUDED (no meshforge watchdog).
 
   PASS consequence: the retire-decision gate OPENS for the mf.3 detach
   bound + the 15s stop-cap drop-in (operator decision, not automatic —
@@ -280,6 +286,7 @@ def classify_day(rec: DayRecord) -> tuple:
     criterion violation; CONCERN on blindness or review-needed."""
     problems: List[str] = []
     concerns: List[str] = []
+    c6_notes: List[str] = []  # out-of-scope watchdog meta-health; never flips
     for h in rec.hosts:
         name = h["host"]
         if not h["observable"]:
@@ -301,26 +308,33 @@ def classify_day(rec: DayRecord) -> tuple:
     if rec.canary_fail:
         problems.append(f"canary {rec.canary_fail} FAIL (C4)")
 
-    # C6: fleet watchdog health. A WEDGE is real breakage (FAIL); a
-    # DEGRADED signal or an unobservable/stale read is a CONCERN
-    # (unobservable is not healthy — never absorbed into a clean line).
-    # Precedence mirrors honest_status.sh §6: wedge > unobservable
-    # ~ degraded; it sits alongside C1-C3 in `problems` so a watchdog
-    # wedge FAILs the day just as a C1-C3 violation does.
+    # C6: fleet watchdog health. ONLY a WEDGE flips the RNS-soak verdict
+    # (FAIL — real fleet breakage during the window, the bot-dark class
+    # C1-C5 (RNS-only) never saw; precedence mirrors honest_status.sh §6).
+    # A DEGRADED / unobservable / stale watchdog read is broad fleet-health
+    # OUTSIDE the RNS-only soak scope: it is NOTED (witness preserved here
+    # + in evidence.jsonl) but NEVER flips the verdict. Decoupled
+    # 2026-06-16 — a memory-bloat -> cron_verdict_stale(degraded) -> C6
+    # echo was turning the green RNS soak cosmetically CONCERN, and the
+    # cron_verdict_stale probe then re-fired on mf5_soak_watch itself. The
+    # watchdog's own observability is honest_status.sh's job, not the soak's.
     for w in rec.watchdog:
         wname = w["host"]
         if w.get("wedge", 0) >= 1:
             problems.append(
                 f"C6: {wname} watchdog WEDGE ({w.get('detail', '')})")
         elif w.get("degraded", 0) >= 1:
-            concerns.append(
-                f"C6: {wname} watchdog degraded ({w.get('detail', '')})")
+            c6_notes.append(f"{wname} degraded ({w.get('detail', '')})")
         elif not w.get("observable", False):
-            concerns.append(f"C6: {wname} watchdog unobservable")
+            c6_notes.append(f"{wname} unobservable")
 
     summary = (f"day evidence: {len(rec.hosts)} hosts,"
                f" canary {rec.canary_ok}OK/{rec.canary_concern}C/"
                f"{rec.canary_fail}F")
+    if c6_notes:
+        # Recorded, never status-flipping — out of the RNS-only soak scope.
+        summary += (" — C6 note (out of RNS-soak scope): "
+                    + "; ".join(c6_notes))
     if problems:
         return "FAIL", "; ".join(problems) + f" — {summary}"
     if concerns:

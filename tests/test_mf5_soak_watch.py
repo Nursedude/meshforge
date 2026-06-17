@@ -108,27 +108,51 @@ class TestClassifyDay:
         assert status == "FAIL"
         assert "C6" in msg
 
-    def test_watchdog_degraded_is_c6_concern_not_fail(self):
+    def test_watchdog_degraded_is_c6_note_not_concern(self):
+        # Decoupled 2026-06-16: a degraded watchdog signal is broad
+        # fleet-health OUTSIDE the RNS-only soak scope — noted on the line,
+        # never flipping the verdict (was CONCERN; that echoed memory-bloat
+        # -> cron_verdict_stale into the green RNS soak).
         status, msg = msw.classify_day(
             _day(watchdog=[_wd(name="moc1", degraded=1,
                                detail="role_drift(degraded)")]))
-        assert status == "CONCERN"
-        assert "C6" in msg
+        assert status == "OK"
+        assert "C6 note" in msg
+        assert "role_drift" in msg  # witness preserved on the verdict line
 
-    def test_watchdog_unobservable_is_c6_concern_never_ok(self):
-        # Unobservable is not healthy — must surface, never absorbed.
+    def test_watchdog_unobservable_is_c6_note_not_concern(self):
+        # An unobservable WATCHDOG (not an unobservable rnsd host — that is
+        # C5) is out of the RNS-soak scope: noted, never status-flipping.
+        # honest_status.sh owns watchdog observability, not this gate.
         status, msg = msw.classify_day(
             _day(watchdog=[_wd(name="moc2", observable=False)]))
-        assert status == "CONCERN"
-        assert "C6" in msg
+        assert status == "OK"
+        assert "C6 note" in msg
+        assert "moc2 unobservable" in msg
 
-    def test_watchdog_stale_is_c6_concern_never_ok(self):
-        # A stale snapshot is a wedged loop — unobservable, not clean.
+    def test_watchdog_stale_is_c6_note_not_concern(self):
+        # A stale snapshot is a wedged watchdog loop — still out of the
+        # RNS-soak scope (collect_watchdog marks stale reads observable=
+        # False): noted, never flipping the soak verdict.
         status, msg = msw.classify_day(
             _day(watchdog=[_wd(name="moc3", observable=False, stale=True,
                                detail="stale (640s)")]))
-        assert status == "CONCERN"
-        assert "C6" in msg
+        assert status == "OK"
+        assert "C6 note" in msg
+
+    def test_degraded_watchdog_does_not_flip_clean_rns_day(self):
+        # The exact 2026-06-16 live regression: C1-C5 all clean (7 hosts,
+        # canary 13OK/0C/0F) but the local watchdog carried
+        # cron_verdict_stale(degraded) from memory bloat. The RNS soak must
+        # read OK, not the cosmetic CONCERN that then tripped
+        # cron_verdict_stale on mf5_soak_watch itself.
+        wd = _clean_wd()
+        wd[0] = _wd(name="local", degraded=1,
+                    detail="cron_verdict_stale(degraded)")
+        status, msg = msw.classify_day(
+            _day(canary_ok=13, watchdog=wd))
+        assert status == "OK"
+        assert "cron_verdict_stale" in msg
 
     def test_clean_watchdog_and_clean_day_is_ok(self):
         # C6 does not false-fire when everything (C1-C5 + C6) is clean.
