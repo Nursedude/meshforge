@@ -285,3 +285,28 @@ class BaseHandler:
         raise NotImplementedError(
             f"{type(self).__name__}.execute() not implemented for action={action!r}"
         )
+
+    def _show_command_output(self, title: str, cmd, timeout: int = 15) -> None:
+        """Run a read-only diagnostic command, CAPTURE its output, and show it
+        in an in-app scrollable pane (In-Domain Principle / MF018 Class 3 — no
+        terminal eject). A timeout or a missing binary is shown in-pane, never
+        dumped to the terminal and never silently swallowed.
+
+        Shared by every handler (promoted from LogsHandler 2026-06-16) so a
+        log/diagnostic view never ejects the operator to a shell
+        (foundations/in_domain_principle.md). Output goes to a read-only
+        scrollable textbox; an empty result renders "(no output)" rather than a
+        blank pane that could read as a clean result.
+        """
+        import subprocess
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=timeout)
+            out = r.stdout or ""
+            if r.stderr:
+                out += ("\n[stderr]\n" + r.stderr)
+        except subprocess.TimeoutExpired:
+            out = f"[{cmd[0]} timed out after {timeout}s]"
+        except (subprocess.SubprocessError, OSError) as e:
+            out = f"[could not run {cmd[0]}: {e}]"
+        self.ctx.dialog.textbox(title, out)

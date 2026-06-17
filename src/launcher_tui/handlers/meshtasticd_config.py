@@ -688,31 +688,15 @@ class MeshtasticdConfigHandler(BaseHandler):
         self.ctx.wait_for_enter()
 
     def _meshtasticd_logs(self):
-        """Show recent meshtasticd service logs via journalctl."""
-        clear_screen()
-        print("=== meshtasticd Service Logs (last 100 lines) ===\n")
-
-        try:
-            result = subprocess.run(
-                ['journalctl', '-u', 'meshtasticd', '-n', '100',
-                 '--no-pager', '--output=short-iso'],
-                capture_output=True, text=True, timeout=10
-            )
-            output = result.stdout.strip()
-            if output:
-                print(output)
-            else:
-                print("No log entries found for meshtasticd.")
-                print("Service may not have started yet.")
-        except FileNotFoundError:
-            print("journalctl not available (not a systemd system).")
-        except subprocess.TimeoutExpired:
-            print("Timed out reading logs.")
-        except Exception as e:
-            print(f"Failed to read logs: {e}")
-
-        print()
-        self.ctx.wait_for_enter()
+        """Show recent meshtasticd service logs in-app (In-Domain Class 3 — no
+        terminal eject). Captured + shown in a scrollable pane via the shared
+        BaseHandler helper."""
+        self._show_command_output(
+            "meshtasticd Service Logs (last 100 lines)",
+            ['journalctl', '-u', 'meshtasticd', '-n', '100',
+             '--no-pager', '--output=short-iso'],
+            timeout=10,
+        )
 
     def _restart_meshtasticd(self):
         """Restart meshtasticd service and re-apply saved device settings."""

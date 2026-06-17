@@ -169,10 +169,14 @@ class ServiceMenuHandler(BaseHandler):
         for svc in failed_services:
             try:
                 print(f"\033[0;31m{svc} failure:\033[0m")
-                subprocess.run(
+                # Capture rather than let journalctl stream raw to the terminal
+                # (In-Domain Class 3); it is shown as part of this status report.
+                r = subprocess.run(
                     ['journalctl', '-u', svc, '-n', '5', '--no-pager'],
-                    timeout=10
+                    capture_output=True, text=True, timeout=10
                 )
+                tail = (r.stdout or "").strip()
+                print(tail if tail else "  (no recent journal entries)")
                 print()
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("Failure log check for %s failed: %s", svc, e)
@@ -639,27 +643,26 @@ WantedBy=multi-user.target
             self.ctx.wait_for_enter()
 
         elif action == "logs":
-            print(f"=== {service_name} logs (last 30) ===\n")
+            # In-Domain Class 3: capture logs and show them in a scrollable
+            # pane instead of streaming to the terminal.
+            title = f"{service_name} logs (last 30)"
             if use_direct_rnsd:
-                try:
-                    log_path = get_real_user_home() / '.reticulum' / 'logfile'
-                    if log_path.exists():
-                        print(f"Log file: {log_path}\n")
-                        subprocess.run(
-                            ['tail', '-n', '30', str(log_path)],
-                            timeout=10
-                        )
-                    else:
-                        print("No log file found at ~/.reticulum/logfile")
-                        print("rnsd may log to stdout or syslog depending on config.")
-                except Exception as e:
-                    print(f"Could not read logs: {e}")
+                log_path = get_real_user_home() / '.reticulum' / 'logfile'
+                if log_path.exists():
+                    try:
+                        tail = "\n".join(
+                            log_path.read_text(errors='replace').splitlines()[-30:])
+                        out = f"Log file: {log_path}\n\n{tail}"
+                    except OSError as e:
+                        out = f"Could not read {log_path}: {e}"
+                else:
+                    out = ("No log file found at ~/.reticulum/logfile\n"
+                           "rnsd may log to stdout or syslog depending on config.")
+                self.ctx.dialog.textbox(title, out)
             else:
-                subprocess.run(
-                    ['journalctl', '-u', service_name, '-n', '30', '--no-pager'],
-                    timeout=15
-                )
-            self.ctx.wait_for_enter()
+                self._show_command_output(
+                    title,
+                    ['journalctl', '-u', service_name, '-n', '30', '--no-pager'])
 
     # =========================================================================
     # OpenHamClock Docker Management

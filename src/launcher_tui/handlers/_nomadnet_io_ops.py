@@ -167,28 +167,11 @@ class NomadNetIOOpsMixin:
             return
 
         if choice == "rnsd":
-            clear_screen()
-            print("=== rnsd journal (last 50 lines) ===\n")
-            try:
-                result = subprocess.run(
-                    ['journalctl', '-u', 'rnsd', '-n', '50',
-                     '--no-pager'],
-                    capture_output=True, text=True, timeout=15,
-                )
-                output = result.stdout.strip()
-                if output:
-                    print(output)
-                else:
-                    print("  (no rnsd journal entries found)")
-                    print("  Check if rnsd runs as a systemd service:")
-                    print("    sudo systemctl status rnsd")
-            except FileNotFoundError:
-                print("  journalctl not found (not a systemd system?)")
-            except subprocess.TimeoutExpired:
-                print("  journalctl timed out")
-            except OSError as e:
-                print(f"  Error reading journal: {e}")
-            self.ctx.wait_for_enter()
+            # In-Domain Class 3: captured + shown in-pane, not streamed.
+            self._show_command_output(
+                "rnsd journal (last 50 lines)",
+                ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'],
+            )
             return
 
         maxlines = 200 if choice == "last200" else 50
@@ -441,42 +424,27 @@ class NomadNetIOOpsMixin:
         self.ctx.wait_for_enter()
 
     def _show_user_journal(self) -> None:
-        """Render ``journalctl --user -u nomadnet -n 50``."""
-        clear_screen()
-        print("=== journalctl --user -u nomadnet (last 50) ===\n")
+        """Show ``journalctl --user -u nomadnet -n 50`` in-pane (Class 3)."""
         out = self._capture_user_journal(tail=50)
-        if out:
-            print(out)
-        else:
-            print("  (no entries — unit may not be installed / linger off)")
-        self.ctx.wait_for_enter()
+        self.ctx.dialog.textbox(
+            "journalctl --user -u nomadnet (last 50)",
+            out if out else "(no entries — unit may not be installed / linger off)",
+        )
 
     def _show_tmux_capture(self) -> None:
-        """Render ``tmux capture-pane -p -t nomadnet`` last 100 lines."""
-        clear_screen()
-        print("=== tmux capture-pane -t nomadnet (last 100) ===\n")
+        """Show ``tmux capture-pane -t nomadnet`` (last 100) in-pane (Class 3)."""
         out = self._capture_tmux_pane(tail=100)
-        if out:
-            print(out)
-        else:
-            print("  (no session or capture failed)")
-        self.ctx.wait_for_enter()
+        self.ctx.dialog.textbox(
+            "tmux capture-pane -t nomadnet (last 100)",
+            out if out else "(no session or capture failed)",
+        )
 
     def _show_rnsd_journal_quick(self) -> None:
-        """Render ``journalctl -u rnsd -n 50``."""
-        clear_screen()
-        print("=== journalctl -u rnsd (last 50) ===\n")
-        try:
-            res = subprocess.run(
-                ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'],
-                capture_output=True, text=True, timeout=15,
-            )
-            out = (res.stdout or "").strip()
-            print(out if out else "  (no entries)")
-        except (subprocess.SubprocessError, OSError,
-                FileNotFoundError) as e:
-            print(f"  (journalctl failed: {e})")
-        self.ctx.wait_for_enter()
+        """Show ``journalctl -u rnsd -n 50`` in-pane (In-Domain Class 3)."""
+        self._show_command_output(
+            "journalctl -u rnsd (last 50)",
+            ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'],
+        )
 
     def _show_logfile_errors(self, cfg_dir: Path) -> None:
         """Errors-only tail from the default-identity logfile."""

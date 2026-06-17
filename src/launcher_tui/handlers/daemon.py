@@ -224,10 +224,12 @@ class DaemonHandler(BaseHandler):
             self.ctx.dialog.msgbox("Error", f"Could not load daemon config:\n{e}")
 
     def _daemon_logs(self):
-        """Show daemon logs."""
-        clear_screen()
-        print("=== MeshForge Daemon Logs (last 100 lines) ===\n")
+        """Show daemon logs in-app (In-Domain Class 3 — no terminal eject).
 
+        Captures journalctl (or the daemon log file as a fallback) into one
+        scrollable in-pane view instead of printing to the terminal.
+        """
+        title = "MeshForge Daemon Logs (last 100 lines)"
         try:
             # Try journalctl first (systemd)
             result = subprocess.run(
@@ -237,28 +239,25 @@ class DaemonHandler(BaseHandler):
             )
             output = result.stdout.strip()
             if output and "No entries" not in output:
-                print(output)
+                out = output
             else:
                 # Fall back to daemon log file
                 from utils.paths import get_real_user_home
                 log_file = get_real_user_home() / ".local" / "share" / "meshforge" / "daemon.log"
                 if log_file.exists():
-                    lines = log_file.read_text().splitlines()
-                    for line in lines[-100:]:
-                        print(line)
+                    out = "\n".join(log_file.read_text().splitlines()[-100:])
                 else:
-                    print("No daemon logs found.")
-                    print("")
-                    print("The daemon writes logs to journald (if running as")
-                    print("a systemd service) or to stderr (foreground mode).")
-                    print("")
-                    print(f"Log file path: {log_file}")
+                    out = (
+                        "No daemon logs found.\n\n"
+                        "The daemon writes logs to journald (if running as a\n"
+                        "systemd service) or to stderr (foreground mode).\n\n"
+                        f"Log file path: {log_file}"
+                    )
         except FileNotFoundError:
-            print("journalctl not available (not a systemd system).")
+            out = "journalctl not available (not a systemd system)."
         except subprocess.TimeoutExpired:
-            print("Timed out reading logs.")
+            out = "Timed out reading logs."
         except Exception as e:
-            print(f"Failed to read logs: {e}")
+            out = f"Failed to read logs: {e}"
 
-        print()
-        self.ctx.wait_for_enter()
+        self.ctx.dialog.textbox(title, out)

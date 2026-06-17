@@ -66,8 +66,11 @@ class FakeDialog:
             return self._checklist_returns.pop(0)
         return []
 
-    def textbox(self, path, **kwargs):
-        self.calls.append(('textbox', (path,), kwargs))
+    def textbox(self, title, text, **kwargs):
+        """Mirror backend.textbox(title, text): show read-only scrollable text."""
+        self.calls.append(('textbox', (title, text), kwargs))
+        self.last_msgbox_title = title
+        self.last_msgbox_text = text
 
     def gauge(self, text, percent, **kwargs):
         self.calls.append(('gauge', (text, percent), kwargs))

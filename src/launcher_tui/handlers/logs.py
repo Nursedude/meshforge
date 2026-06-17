@@ -107,24 +107,8 @@ class LogsHandler(BaseHandler):
                     proc.kill()
                     proc.wait(timeout=5)
 
-    def _show_command_output(self, title: str, cmd: List[str],
-                             timeout: int = 15) -> None:
-        """Run a read-only diagnostic command, CAPTURE its output, and show it
-        in an in-app scrollable pane (In-Domain/MF018 Class 3 — no terminal
-        eject). A timeout or a missing binary is shown in-pane, never dumped to
-        the terminal and never silently swallowed.
-        """
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=timeout)
-            out = r.stdout or ""
-            if r.stderr:
-                out += ("\n[stderr]\n" + r.stderr)
-        except subprocess.TimeoutExpired:
-            out = f"[{cmd[0]} timed out after {timeout}s]"
-        except (subprocess.SubprocessError, OSError) as e:
-            out = f"[could not run {cmd[0]}: {e}]"
-        self.ctx.dialog.textbox(title, out)
+    # _show_command_output is inherited from BaseHandler (promoted there
+    # 2026-06-16 so every handler can show captured command output in-pane).
 
     def _view_live_meshtasticd(self):
         self._view_live_log(
