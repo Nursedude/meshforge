@@ -689,11 +689,13 @@ class BrokerHandler(BaseHandler):
                     "  3. Firewall allows port " + str(active.port)
                 )
         except FileNotFoundError:
-            self.ctx.dialog.msgbox(
+            # In-Domain: offer the in-app installer instead of a shell command.
+            if self.ctx.dialog.yesno(
                 "Tool Missing",
-                "mosquitto_pub not found.\n\n"
-                "Install: sudo apt install mosquitto-clients"
-            )
+                "mosquitto_pub (mosquitto-clients) is not installed.\n\n"
+                "Install the mosquitto packages now, in-app?",
+            ):
+                self._install_mosquitto()
         except subprocess.TimeoutExpired:
             self.ctx.dialog.msgbox(
                 "Connection Timeout",

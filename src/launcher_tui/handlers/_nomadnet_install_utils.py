@@ -48,115 +48,114 @@ class NomadNetInstallUtilsMixin:
     # ------------------------------------------------------------------
 
     def _install_nomadnet(self):
-        """Install NomadNet via pipx (isolated environment)."""
+        """Install NomadNet in-app via the canonical installer.
+
+        Delegates to ``scripts/install_nomadnet.sh`` — the env-rigorous SSOT
+        for the NomadNet install layout (pipx-first, PEP-668-safe, resolves the
+        real user under sudo). We do NOT hand-roll pipx here: a second install
+        path drifts from the canonical one (honest_failure_modes #5) and is the
+        exact update/env failure class the operator flagged
+        ([[feedback_version_env_rigor]]). On failure we offer an in-app retry —
+        the In-Domain Principle: never punt the operator to a shell.
+        """
         if self._is_nomadnet_installed():
-            self.ctx.dialog.msgbox("Already Installed", "NomadNet is already installed.")
+            self.ctx.dialog.msgbox(
+                "Already Installed",
+                "NomadNet is already installed.\n\n"
+                "To refresh or repair it, use:\n"
+                "  Service Control > Reinstall NomadNet (idempotent)",
+            )
             return
 
         if not self.ctx.dialog.yesno(
             "Install NomadNet",
             "Install NomadNet RNS client?\n\n"
-            "This will run:\n"
-            "  pipx install nomadnet\n\n"
-            "NomadNet pulls in RNS and LXMF automatically.\n\n"
-            "It provides:\n"
+            "Runs the canonical installer (pipx, isolated env):\n"
+            "  scripts/install_nomadnet.sh\n\n"
+            "NomadNet pulls in RNS and LXMF automatically and provides:\n"
             "  - Text UI with micron page browser\n"
             "  - LXMF encrypted messaging\n"
-            "  - Node hosting and page serving\n"
-            "  - Network announcement/discovery\n\n"
+            "  - Node hosting and page serving\n\n"
             "Source: github.com/markqvist/NomadNet\n\n"
             "Install now?",
         ):
             return
 
-        clear_screen()
-        print("=== Installing NomadNet ===\n")
+        self.ctx.dialog.infobox(
+            "Installing NomadNet",
+            "Running the canonical installer — this may take a minute...",
+        )
+        ok, msg = self._run_canonical_installer()
+        if ok:
+            self.ctx.dialog.msgbox("NomadNet Installed", "✓ " + msg)
+            return
 
-        # Determine if we should install as a different user (when running via sudo)
-        sudo_user = os.environ.get('SUDO_USER')
-        run_as_user = sudo_user if sudo_user and sudo_user != 'root' else None
+        # In-Domain: a failed install offers a one-keystroke in-app retry,
+        # never a shell instruction. The captured installer output (msg) is
+        # the diagnostic the operator reads to decide.
+        from remediation import RemediationAction, propose_remediation
+        propose_remediation(
+            self.ctx,
+            "NomadNet install incomplete",
+            msg,
+            [RemediationAction(
+                label="Retry installation",
+                description="re-run scripts/install_nomadnet.sh in-app",
+                apply=self._run_canonical_installer,
+            )],
+        )
 
+    def _run_canonical_installer(self):
+        """Run scripts/install_nomadnet.sh captured, in-app. Returns (ok, msg).
+
+        The canonical installer is the single source of truth for the NomadNet
+        install layout; delegating to it keeps the TUI and bash install paths
+        identical instead of drifting (honest_failure_modes #5).
+
+        FAILS LOUD: a non-zero exit returns ``(False, ...)`` carrying the
+        captured output, and even a zero exit is downgraded to failure when the
+        binary did not actually land on PATH — a failed install must never
+        report success (Issue #24 / [[feedback_version_env_rigor]] point 5).
+        """
+        installer = (
+            Path(__file__).resolve().parents[3]
+            / 'scripts' / 'install_nomadnet.sh'
+        )
+        if not installer.is_file():
+            return (
+                False,
+                f"Canonical installer not found at {installer}.\n"
+                "Update MeshForge and try again.",
+            )
         try:
-            # Ensure pipx is available (this needs root for apt)
-            if not shutil.which('pipx'):
-                print("Installing pipx...\n")
-                result = subprocess.run(
-                    ['apt-get', 'install', '-y', 'pipx'],
-                    timeout=60
-                )
-                if result.returncode != 0:
-                    print("\nFailed to install pipx.")
-                    print("Try manually: sudo apt install pipx")
-                    self.ctx.wait_for_enter()
-                    return
-
-            # Build pipx commands - run as real user if we're under sudo
-            def run_pipx_cmd(args, timeout_sec=300):
-                """Run pipx command, as real user if running via sudo."""
-                if run_as_user:
-                    # Run as real user with login shell (-i) to set HOME correctly
-                    cmd = ['sudo', '-i', '-u', run_as_user] + args
-                else:
-                    cmd = args
-                return subprocess.run(cmd, timeout=timeout_sec)
-
-            # Ensure pipx bin dir is in PATH for this session
-            print("Ensuring pipx paths...\n")
-            run_pipx_cmd(['pipx', 'ensurepath'], timeout_sec=15)
-
-            # Add common pipx bin dirs to current process PATH
-            for bindir in [
-                get_real_user_home() / '.local' / 'bin',
-                Path('/root/.local/bin'),
-                Path('/usr/local/bin'),
-            ]:
-                if bindir.is_dir() and str(bindir) not in os.environ.get('PATH', ''):
-                    os.environ['PATH'] = f"{bindir}:{os.environ.get('PATH', '')}"
-
-            # Install nomadnet via pipx (live output)
-            if run_as_user:
-                print(f"\nInstalling NomadNet via pipx (as {run_as_user})...\n")
-            else:
-                print("\nInstalling NomadNet via pipx...\n")
-            result = run_pipx_cmd(['pipx', 'install', 'nomadnet'])
-
-            if result.returncode == 0:
-                print("\nInstallation complete.")
-                if self._is_nomadnet_installed():
-                    nn_path = shutil.which('nomadnet')
-                    if nn_path:
-                        print(f"NomadNet installed at: {nn_path}")
-                    else:
-                        # Check user's local bin
-                        user_bin = get_real_user_home() / '.local' / 'bin' / 'nomadnet'
-                        if user_bin.exists():
-                            print(f"NomadNet installed at: {user_bin}")
-
-                    # Configure NomadNet for shared instance mode (use rnsd)
-                    self._setup_nomadnet_shared_instance(run_as_user)
-                else:
-                    print("\nnomadnet not found in PATH.")
-                    print("You may need to log out and back in,")
-                    print("or run: eval \"$(pipx ensurepath)\"")
-            else:
-                print(f"\nInstallation failed (exit code {result.returncode}).")
-                print("Try manually: pipx install nomadnet")
-        except FileNotFoundError:
-            print("pipx not found.")
-            print("Try: sudo apt install pipx && pipx install nomadnet")
-        except KeyboardInterrupt:
-            print("\n\nInstallation cancelled.")
+            proc = subprocess.run(
+                ['bash', str(installer)],
+                capture_output=True, text=True, timeout=600,
+            )
         except subprocess.TimeoutExpired:
-            print("\nInstallation timed out. Check your internet connection.")
-            print("Try manually: pipx install nomadnet")
-        except Exception as e:
-            print(f"\nInstallation error: {e}")
-            print("Try manually: pipx install nomadnet")
+            return (False, "Installer timed out (600s). Check your internet "
+                           "connection and retry.")
+        except (subprocess.SubprocessError, OSError) as e:
+            return (False, f"Installer could not run: {e}")
 
-        try:
-            self.ctx.wait_for_enter()
-        except (EOFError, KeyboardInterrupt):
-            pass
+        out = (proc.stdout or '') + (
+            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
+        )
+        tail = out[-1800:] if len(out) > 1800 else out
+        if proc.returncode != 0:
+            return (
+                False,
+                f"Installer exited {proc.returncode}.\n\n{tail or '(no output)'}",
+            )
+        # A zero exit is necessary but not sufficient — verify the consumer can
+        # actually see the binary (the #24 success-but-broken guard).
+        if not self._is_nomadnet_installed():
+            return (
+                False,
+                "Installer reported success but nomadnet is not on PATH.\n\n"
+                + (tail or '(no output)'),
+            )
+        return (True, "NomadNet installed via the canonical installer.\n\n" + tail)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -323,23 +322,6 @@ class NomadNetInstallUtilsMixin:
         user_home = get_real_user_home()
         candidate = user_home / '.local' / 'bin' / 'nomadnet'
         return candidate.exists()
-
-    def _setup_nomadnet_shared_instance(self, run_as_user: str = None):
-        """Post-install message for NomadNet.
-
-        NomadNet creates its own complete default config on first run.
-        We don't create configs - let NomadNet use its defaults.
-        """
-        user_home = get_real_user_home()
-        config_file = user_home / '.nomadnetwork' / 'config'
-
-        if config_file.exists():
-            print(f"\nNomadNet config exists: {config_file}")
-        else:
-            print("\nNomadNet will create its default config on first run.")
-
-        print("\nNomadNet uses the shared RNS instance from rnsd by default.")
-        print("Config location: ~/.nomadnetwork/config")
 
     def _is_nomadnet_running(self) -> bool:
         """Check if NomadNet process is running.
@@ -538,7 +520,7 @@ class NomadNetInstallUtilsMixin:
             "This will:\n"
             "  - Stop NomadNet if running\n"
             "  - Leave files in place\n\n"
-            "Reinstall later with: pipx install nomadnet\n\n"
+            "Reinstall later from Service Control > Reinstall NomadNet.\n\n"
             "Disable now?",
         ):
             return
@@ -570,13 +552,16 @@ class NomadNetInstallUtilsMixin:
 
         if self._is_nomadnet_running():
             print("NomadNet may still be running.")
-            print("Try: sudo pkill -9 -f nomadnet")
+            if os.geteuid() != 0:
+                print("Relaunch MeshForge in Admin mode (sudo) to force-stop it.")
+            else:
+                print("It resisted SIGKILL — it may be a wedged or defunct process.")
         else:
             print("NomadNet stopped.")
 
         user_home = get_real_user_home()
         print(f"\nConfig remains at: {user_home}/.nomadnetwork/")
-        print("Reinstall: pipx install nomadnet")
+        print("Reinstall from Service Control > Reinstall NomadNet.")
 
         self.ctx.wait_for_enter()
 
@@ -678,7 +663,7 @@ class NomadNetInstallUtilsMixin:
                         break
                     elif 'ModuleNotFoundError' in line or 'ImportError' in line:
                         error_hints.append("Missing Python dependencies")
-                        error_hints.append("Try: pipx reinstall nomadnet")
+                        error_hints.append("Reinstall via Service Control > Reinstall NomadNet")
                         break
             except (OSError, PermissionError):
                 pass

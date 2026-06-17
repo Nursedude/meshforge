@@ -1478,11 +1478,11 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
     # _configure_propagation_node provided by NomadNetConfigOpsMixin
 
     # Install/upgrade utilities provided by NomadNetInstallUtilsMixin:
-    #   _install_nomadnet, _find_pipx, _upgrade_nomadnet,
-    #   _get_rns_version_info, _is_nomadnet_installed,
-    #   _setup_nomadnet_shared_instance, _is_nomadnet_running,
-    #   _find_nomadnet_binary, _get_nomadnet_config_path,
-    #   _create_nomadnet_wrapper, _get_wrapper_command
+    #   _install_nomadnet, _run_canonical_installer, _find_pipx,
+    #   _upgrade_nomadnet, _get_rns_version_info, _is_nomadnet_installed,
+    #   _is_nomadnet_running, _find_nomadnet_binary,
+    #   _get_nomadnet_config_path, _create_nomadnet_wrapper,
+    #   _get_wrapper_command
 
     # RNS prerequisite checks provided by NomadNetRNSChecksMixin:
     #   _check_rns_for_nomadnet, _validate_nomadnet_config

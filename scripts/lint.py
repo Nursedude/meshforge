@@ -790,13 +790,13 @@ MF018_PATTERNS = [
 MF018_BASELINE = {
     'src/launcher_tui/handlers/_ai_tools_mfmaps.py': 0,  # Class 5 audit: privilege-relaunch (install needs root) marked in-domain-ok
     'src/launcher_tui/handlers/_nomadnet_iface_checks.py': 1,
-    'src/launcher_tui/handlers/_nomadnet_install_utils.py': 8,
+    'src/launcher_tui/handlers/_nomadnet_install_utils.py': 0,  # Class 5 install: install delegates to canonical install_nomadnet.sh (in-app retry on fail); uninstall/diagnostic point at in-app Reinstall
     'src/launcher_tui/handlers/_nomadnet_io_ops.py': 1,  # Arc 3: editor spawn -> in-app editbox (config_edit); chown-warning remains
     'src/launcher_tui/handlers/_nomadnet_rns_checks.py': 1,
     'src/launcher_tui/handlers/_nomadnet_service_ops.py': 2,
     'src/launcher_tui/handlers/_rns_diagnostics_engine.py': 2,
     'src/launcher_tui/handlers/_rns_repair.py': 2,  # Class 5 audit: 2 privilege-relaunch (mkdir /etc/reticulum needs root) marked in-domain-ok
-    'src/launcher_tui/handlers/broker.py': 1,  # Class 5 audit: radio cmds -> in-app apply; privilege/cross-node marked; manual-install fallbacks removed (1 apt install remains)
+    'src/launcher_tui/handlers/broker.py': 0,  # Class 5 install: missing mosquitto_pub -> in-app _install_mosquitto offer (last apt-install escape closed)
     'src/launcher_tui/handlers/emergency_mode.py': 1,
     'src/launcher_tui/handlers/extensions.py': 0,  # Class 5 audit: privilege-relaunch (install needs root) marked in-domain-ok
     'src/launcher_tui/handlers/favorites.py': 1,
@@ -813,7 +813,7 @@ MF018_BASELINE = {
     'src/launcher_tui/handlers/rns_diagnostics.py': 4,
     'src/launcher_tui/handlers/rns_tools.py': 1,
     'src/launcher_tui/handlers/service_menu.py': 4,
-    'src/launcher_tui/handlers/system_tools.py': 7,
+    'src/launcher_tui/handlers/system_tools.py': 0,  # Class 5 install: stale baseline — handler reduced to a deliberate "drop to bash" tool with no shell-escape strings
     'src/launcher_tui/handlers/tactical_ops.py': 2,
     'src/launcher_tui/handlers/web_client.py': 1,
 }
