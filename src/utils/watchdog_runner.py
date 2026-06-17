@@ -52,6 +52,7 @@ from utils.watchdog_probes import (
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
+    probe_fleet_box_unreachable,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -458,6 +459,16 @@ def run_all_probes(
     # root (no sudo — sandbox); cross-references the crontab so stale ORPHAN
     # verdicts never false-alarm. INERT (None) until crons are wired — opt-in.
     sig = probe_cron_verdict_stale()
+    if sig is not None:
+        signals.append(sig)
+
+    # Fleet box unreachable (2026-06-17, Leg D) — surface a box the offline-
+    # monitor (fleet_offline_check.sh, manager-box-only) has confirmed DOWN into
+    # mini's brief + /fleet, so it can't sit silent in a side-channel logfile
+    # (the .32 33h-dark lesson). Reads ~/fleet_offline_state.tsv as root;
+    # self-guards INERT off the manager box (no file) and on a stale file (the
+    # monitor's own death is cron_verdict_stale's job — it's verdict-wired).
+    sig = probe_fleet_box_unreachable()
     if sig is not None:
         signals.append(sig)
 

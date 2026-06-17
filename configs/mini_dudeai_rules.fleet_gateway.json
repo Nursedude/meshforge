@@ -472,6 +472,19 @@
       "annotation": "Issue #78 \u2014 a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
+      "id": "fleet_box_unreachable_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "fleet_box_unreachable",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Leg D (2026-06-17) - a fleet box the offline-monitor (fleet_offline_check.sh on the manager box) confirmed UNREACHABLE past its 3-fail (~15min) threshold. Surfaced into the warm brief + /fleet so a dark box can't sit silent in a side-channel logfile (the .32 33h-dark lesson). The monitor OWNS the ntfy re-page (witnessed, escalating); this rule is visibility only - propose_escalation, NO duplicate page."
+    },
+    {
       "id": "history_write_stalled_any",
       "match": {
         "kind": "signal_class",

@@ -1163,6 +1163,155 @@ def probe_cron_verdict_stale(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: fleet box unreachable (2026-06-17, Leg D) — surface a fleet box
+# the offline-monitor (fleet_offline_check.sh on the manager box) has confirmed
+# DOWN into mini's brief + /fleet, so a dark box can't sit silent in a
+# side-channel logfile (the .32 33h-dark lesson). The monitor's OWN death
+# is covered by cron_verdict_stale (fleet_offline_check is verdict-wired).
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_FLEET_UNREACHABLE_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/fleet_unreachable_debounce.json")
+FLEET_STATE_STALE_S = 1800          # state file older than this → not current
+FLEET_UNREACHABLE_WEDGE_S = 1800    # a box down longer than this → wedge severity
+
+
+def _read_operator_fleet_state(home) -> Tuple[Optional[str], Optional[float]]:
+    """Read ``~/fleet_offline_state.tsv`` + its mtime as root, in-process (no
+    sudo — watchdog sandbox). Returns ``(text, mtime)`` or ``(None, None)`` on
+    absent/unreadable (→ INERT: the monitor is manager-box-only)."""
+    if not home:
+        return None, None
+    path = os.path.join(str(home), "fleet_offline_state.tsv")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        return text, os.path.getmtime(path)
+    except (FileNotFoundError, IsADirectoryError):
+        return None, None
+    except OSError:
+        return None, None
+
+
+def probe_fleet_box_unreachable(
+    *,
+    operator: Optional[Tuple[int, str]] = None,
+    state_text: Optional[str] = None,
+    state_mtime: Optional[float] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+    stale_after_s: float = FLEET_STATE_STALE_S,
+    wedge_after_s: float = FLEET_UNREACHABLE_WEDGE_S,
+) -> Optional[Signal]:
+    """Surface fleet boxes the offline-monitor has confirmed DOWN, into the spine
+    the operator actually watches (mini warm brief + /fleet) — Leg D, 2026-06-17.
+
+    Reads the manager box's ``~/fleet_offline_state.tsv`` (written by the hardened
+    ``fleet_offline_check.sh``) directly as root. A row with ``alerted==1`` is a
+    box unreachable past the monitor's 3-fail (~15 min) threshold that is already
+    being re-paged; this probe makes it VISIBLE in the brief/panel so it can't sit
+    silent in a side-channel logfile (the ".32 dark 33h, found by manually poking
+    it" gap). The monitor owns the ntfy page; this probe is visibility, not a
+    second page — its seed rule is ``propose_escalation`` (no duplicate ntfy).
+
+    Self-guards None: no state file (not the manager box → INERT — the monitor is
+    manager-box-only), or the file is STALE past ``stale_after_s`` (the monitor
+    itself stopped — reporting frozen down-rows as current would be the
+    absence-of-evidence trap; ``cron_verdict_stale`` owns the dead-cron alert,
+    since ``fleet_offline_check`` is verdict-wired). 2-tick debounce. Back-compat
+    with the pre-Leg-D 3-field state rows. Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_FLEET_UNREACHABLE_DEBOUNCE_PATH
+
+        if state_text is None:
+            if operator is None:
+                try:
+                    from utils.fleet_test_runner import _find_operator_user
+                    operator = _find_operator_user()
+                except Exception:
+                    operator = None
+            home = None
+            if operator is not None:
+                try:
+                    import pwd
+                    home = pwd.getpwuid(operator[0]).pw_dir
+                except (KeyError, OSError):
+                    home = None
+            state_text, state_mtime = _read_operator_fleet_state(home)
+
+        if not state_text:
+            _save_parity_streak(sp, 0)      # no monitor here → INERT
+            return None
+
+        # Stale file = the monitor stopped updating; do NOT read frozen rows as
+        # current (cron_verdict_stale owns the dead-monitor alert).
+        if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            _save_parity_streak(sp, 0)
+            return None
+
+        down: List[Tuple[str, float, int]] = []
+        for line in state_text.splitlines():
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3 or not parts[0].strip():
+                continue
+            try:
+                alerted = int(parts[2])
+            except ValueError:
+                continue
+            if alerted != 1:
+                continue
+            try:
+                down_since = float(parts[3]) if len(parts) > 3 and parts[3] else 0.0
+            except ValueError:
+                down_since = 0.0
+            try:
+                alert_count = int(parts[5]) if len(parts) > 5 and parts[5] else 0
+            except ValueError:
+                alert_count = 0
+            down.append((parts[0].strip(), down_since, alert_count))
+
+        if not down:
+            _save_parity_streak(sp, 0)
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        descs: List[str] = []
+        max_down_min = 0
+        sustained = False
+        for name, ds, ac in sorted(down):
+            if ds and now >= ds:
+                mins = int((now - ds) // 60)
+                max_down_min = max(max_down_min, mins)
+                if (now - ds) > wedge_after_s:
+                    sustained = True
+                descs.append(f"{name} (~{mins}m, page #{ac})" if ac
+                             else f"{name} (~{mins}m)")
+            else:
+                descs.append(name)
+        return Signal(
+            cls="fleet_box_unreachable",
+            subject="fleet",
+            severity="wedge" if sustained else "degraded",
+            detail=("Fleet box(es) the offline-monitor confirms DOWN: "
+                    + ", ".join(descs)
+                    + " — surfaced here so a dark box can't sit silent (Leg D); "
+                    "ntfy is re-paging on a cadence. Check the box."),
+            issue_ref=None,
+            extra={"down": [d[0] for d in sorted(down)],
+                   "max_down_min": max_down_min, "streak": streak},
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: kernel reboot pending (2026-06-09 version-updates arc — the
 # 6.12.75-straggler guard: moc/moc1/moc3/meshanchor-server silently ran
 # an old kernel for days while a newer one sat installed; nothing paged)

@@ -38,6 +38,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
+    probe_fleet_box_unreachable,
     probe_kernel_reboot_pending,
     _cron_max_interval,
     _parse_kernel_release,
@@ -120,6 +121,7 @@ def test_signal_classes_closed_enum_is_documented():
         "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
         "calibration_drift",            # 2026-06-15 calibration spine; SSOT .claude/rules/calibrated_claims.md (new subsystem, not a fleet bug → no persistent_issues row; that file is at its MF012 cap)
+        "fleet_box_unreachable",        # 2026-06-17 Leg D — fleet liveness surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent as calibration_drift)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -3607,6 +3609,94 @@ class TestCronVerdictStale:
         assert _cron_max_interval("@daily") == 86400.0
         assert _cron_max_interval("@reboot") == float("inf")
         assert _cron_max_interval("garbage") == 26 * 3600.0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Leg D (2026-06-17) — probe_fleet_box_unreachable (fleet liveness → spine)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFleetBoxUnreachable:
+    """A fleet box the offline-monitor (fleet_offline_check.sh) confirms DOWN
+    (alerted==1 in ~/fleet_offline_state.tsv) surfaced into mini's brief + /fleet
+    so it can't sit silent in a side-channel logfile (the .32 33h-dark lesson).
+    Hermetic: inject state_text + state_mtime + now. INERT off the manager box
+    (no file) and on a STALE file (the monitor's own death is cron_verdict_stale's
+    job — don't read frozen down-rows as current)."""
+
+    NOW = 2_000_000_000.0
+
+    def _fire(self, tmp_path, state_text, *, state_mtime=None, **kw):
+        """Run twice (2-tick debounce); return the 2nd. Fresh mtime by default."""
+        sp = str(tmp_path / "fleet_unreach_debounce.json")
+        mt = self.NOW if state_mtime is None else state_mtime
+        probe_fleet_box_unreachable(state_text=state_text, state_mtime=mt,
+                                    now=self.NOW, state_path=sp, **kw)
+        return probe_fleet_box_unreachable(state_text=state_text, state_mtime=mt,
+                                           now=self.NOW, state_path=sp, **kw)
+
+    def test_signal_class_registered(self):
+        assert "fleet_box_unreachable" in SIGNAL_CLASSES
+
+    def test_all_healthy_is_none(self, tmp_path):
+        text = "moc\t0\t0\t0\t0\t0\nmoc1\t0\t0\t0\t0\t0\n"
+        assert self._fire(tmp_path, text) is None
+
+    def test_no_state_is_inert(self, tmp_path):
+        """No state file (not the manager box) → INERT."""
+        assert self._fire(tmp_path, "") is None
+
+    def test_down_box_fires(self, tmp_path):
+        text = ("moc\t0\t0\t0\t0\t0\n"
+                f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t2\n")
+        sig = self._fire(tmp_path, text)
+        assert sig is not None
+        assert sig.cls == "fleet_box_unreachable"
+        assert sig.subject == "fleet"
+        assert "bot" in sig.extra["down"]
+        assert "bot" in sig.detail
+
+    def test_recent_down_is_degraded(self, tmp_path):
+        text = f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t1\n"   # ~10 min
+        sig = self._fire(tmp_path, text)
+        assert sig is not None and sig.severity == "degraded"
+
+    def test_sustained_down_is_wedge(self, tmp_path):
+        text = f"bot\t3\t1\t{self.NOW - 3600}\t{self.NOW - 60}\t6\n"  # 1h > 30min
+        sig = self._fire(tmp_path, text)
+        assert sig is not None and sig.severity == "wedge"
+
+    def test_stale_state_is_none(self, tmp_path):
+        """A state file older than stale_after_s → None (monitor stopped)."""
+        text = f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t2\n"
+        assert self._fire(tmp_path, text, state_mtime=self.NOW - 3600) is None
+
+    def test_back_compat_3_field_rows(self, tmp_path):
+        """Pre-Leg-D 3-field rows (box/fail/alerted) with alerted=1 still fire."""
+        sig = self._fire(tmp_path, "bot\t3\t1\n")
+        assert sig is not None
+        assert "bot" in sig.extra["down"]
+
+    def test_debounce_first_tick_silent(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        text = f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t2\n"
+        first = probe_fleet_box_unreachable(
+            state_text=text, state_mtime=self.NOW, now=self.NOW, state_path=sp)
+        assert first is None
+        assert json.loads(Path(sp).read_text())["streak"] == 1
+        second = probe_fleet_box_unreachable(
+            state_text=text, state_mtime=self.NOW, now=self.NOW, state_path=sp)
+        assert second is not None
+
+    def test_heal_clears_streak(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        down = f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t2\n"
+        probe_fleet_box_unreachable(state_text=down, state_mtime=self.NOW,
+                                    now=self.NOW, state_path=sp)            # streak 1
+        probe_fleet_box_unreachable(state_text="moc\t0\t0\t0\t0\t0\n",
+                                    state_mtime=self.NOW, now=self.NOW,
+                                    state_path=sp)                          # heal → 0
+        assert json.loads(Path(sp).read_text())["streak"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────
