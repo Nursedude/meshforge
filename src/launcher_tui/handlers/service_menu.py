@@ -447,13 +447,9 @@ WantedBy=multi-user.target
             self.ctx.dialog.msgbox(
                 "Success",
                 "Native meshtasticd installed!\n\n"
-                "NEXT STEP: Select your HAT config:\n"
+                "NEXT STEP: select your HAT config in-app:\n"
                 "  meshtasticd → Device Templates\n\n"
-                "Or manually:\n"
-                "  ls /etc/meshtasticd/available.d/\n"
-                "  sudo cp /etc/meshtasticd/available.d/<your-hat>.yaml \\\n"
-                "         /etc/meshtasticd/config.d/\n"
-                "  sudo systemctl restart meshtasticd"
+                "Then restart meshtasticd from Service Control."
             )
 
         except Exception as e:

@@ -503,7 +503,7 @@ def diagnose_rns_connectivity(handler, error_output: str):
             print("  (no log output)")
     except (subprocess.SubprocessError, OSError):
         print("  (could not read journal)")
-    print("\nTo restart: sudo systemctl restart rnsd")
+    print("\nRestart rnsd from Service Control to clear this.")
 
 
 def check_rns_interface_health():
@@ -652,12 +652,12 @@ def diagnose_rns_port_conflict(handler):
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("rnsd PID lookup failed: %s", e)
                 pid = 'unknown'
-            print(f"rnsd is running (PID: {pid}) but may need a restart:")
-            print("  sudo systemctl restart rnsd")
+            print(f"rnsd is running (PID: {pid}) but may need a restart.")
+            print("  Restart rnsd from Service Control.")
         else:
             print("No rnsd found. A stale process may be holding the port.")
             print("  Restart rnsd from Service Control to clear it,")
             print("  or wait ~30s for the socket to time out.")
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("RNS port conflict diagnosis failed: %s", e)
-        print("  Try: sudo systemctl restart rnsd")
+        print("  Restart rnsd from Service Control.")

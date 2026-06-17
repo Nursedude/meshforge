@@ -244,9 +244,10 @@ class RNSConfigHandler(BaseHandler):
                     self.ctx.dialog.msgbox(
                         "Migrated",
                         f"Config moved to: {config_path}\n\n"
-                        f"Restart rnsd to apply:\n"
-                        f"  sudo systemctl restart rnsd"
+                        f"Restart rnsd to apply the change."
                     )
+                    from service_remediation import offer_service_fix
+                    offer_service_fix(self.ctx, "rnsd", running=True)
                 # If migration failed, continue with original path
 
         # In-Domain (MF018): edit the RNS config IN-APP — was a nano/vi spawn
@@ -300,16 +301,16 @@ class RNSConfigHandler(BaseHandler):
                                     "Config Synced",
                                     f"Copied to: {root_config}\n"
                                     f"Backup at: {backup}\n\n"
-                                    f"Restart rnsd to apply:\n"
-                                    f"  sudo systemctl restart rnsd"
+                                    f"Restart rnsd to apply the change."
                                 )
+                                from service_remediation import offer_service_fix
+                                offer_service_fix(self.ctx, "rnsd", running=True)
                             except Exception as e:
                                 self.ctx.dialog.msgbox(
                                     "Sync Failed",
                                     f"Could not copy config: {e}\n\n"
-                                    f"Manual fix:\n"
-                                    f"  sudo cp {edited_path} {root_config}\n"
-                                    f"  sudo systemctl restart rnsd"
+                                    f"Relaunch MeshForge in Admin mode (sudo) to\n"
+                                    f"write the system config, then retry."
                                 )
                 except (OSError, subprocess.SubprocessError) as e:
                     logger.debug("RNS config apply failed: %s", e)
@@ -389,9 +390,10 @@ class RNSConfigHandler(BaseHandler):
                         self.ctx.dialog.msgbox(
                             "Config Deployed",
                             f"Deployed to: {deployed}\n\n"
-                            f"Restart rnsd to apply:\n"
-                            f"  sudo systemctl restart rnsd"
+                            f"Restart rnsd to apply the change."
                         )
+                        from service_remediation import offer_service_fix
+                        offer_service_fix(self.ctx, "rnsd", running=True)
                         config_path = deployed
             return True  # Continue to menu either way
 
@@ -409,9 +411,10 @@ class RNSConfigHandler(BaseHandler):
                     self.ctx.dialog.msgbox(
                         "Migrated",
                         f"Config moved to: {config_path}\n\n"
-                        f"Restart rnsd to apply:\n"
-                        f"  sudo systemctl restart rnsd"
+                        f"Restart rnsd to apply the change."
                     )
+                    from service_remediation import offer_service_fix
+                    offer_service_fix(self.ctx, "rnsd", running=True)
 
         # Config exists - validate it
         try:
@@ -627,13 +630,12 @@ class RNSConfigHandler(BaseHandler):
                         )
                 meshtastic_installed = pip_result.returncode == 0
 
-            restart_hint = ("Restart rnsd to load the new interface:\n"
-                            "  sudo systemctl restart rnsd")
+            restart_hint = "Restart rnsd to load the new interface."
             if not meshtastic_installed:
                 restart_hint = (
-                    "NOTE: The meshtastic Python module is also required.\n"
-                    "Install it: /opt/meshforge/venv/bin/pip install meshtastic"
-                    "\n\nThen restart rnsd:\n  sudo systemctl restart rnsd"
+                    "NOTE: the meshtastic Python module is also required.\n"
+                    "Reinstall MeshForge dependencies (Settings > Updates),\n"
+                    "then restart rnsd."
                 )
 
             self.ctx.dialog.msgbox(
@@ -642,6 +644,8 @@ class RNSConfigHandler(BaseHandler):
                 f"  {plugin_path}\n\n"
                 f"{restart_hint}"
             )
+            from service_remediation import offer_service_fix
+            offer_service_fix(self.ctx, "rnsd", running=True)
 
         except (OSError, PermissionError) as e:
             self.ctx.dialog.msgbox(

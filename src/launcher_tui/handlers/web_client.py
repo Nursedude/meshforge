@@ -382,10 +382,11 @@ class WebClientHandler(BaseHandler):
         else:
             self.ctx.dialog.msgbox(
                 "Certificate Ready",
-                "Restart meshtasticd when ready:\n"
-                "  sudo systemctl restart meshtasticd",
+                "Restart meshtasticd to apply the certificate.",
                 height=8, width=50
             )
+            from service_remediation import offer_service_fix
+            offer_service_fix(self.ctx, "meshtasticd", running=True)
 
     def _show_manual_ssl_help(self):
         """Show manual SSL certificate acceptance guidance."""

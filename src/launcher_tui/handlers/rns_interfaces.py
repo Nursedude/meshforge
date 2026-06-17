@@ -13,6 +13,7 @@ from pathlib import Path
 
 from handler_protocol import BaseHandler
 from backend import clear_screen
+from service_remediation import offer_service_fix
 from commands import rns as rns_mod
 from utils.paths import get_real_user_home, ReticulumPaths
 
@@ -241,7 +242,7 @@ class RNSInterfacesHandler(BaseHandler):
         if blocking_map:
             print(f"\n  ! = blocked (dependency missing)")
         if not rnsd_running:
-            print(f"\n  Start rnsd: sudo systemctl start rnsd")
+            print(f"\n  Start rnsd from Service Control.")
         elif not si_available:
             # Degraded state: show journal tail for immediate visibility
             print(f"\n  rnsd is running but shared instance is NOT responding.")
@@ -478,7 +479,7 @@ class RNSInterfacesHandler(BaseHandler):
         print(f"  Issues fixed: {issues_fixed}")
 
         if issues_fixed > 0:
-            print(f"\n  Restart rnsd to apply: sudo systemctl restart rnsd")
+            print(f"\n  Restart rnsd to apply (offered next).")
             if self.ctx.dialog.yesno(
                 "Restart rnsd?",
                 f"Fixed {issues_fixed} permission issue(s).\n\n"
@@ -634,9 +635,9 @@ class RNSInterfacesHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Interface Added",
                 f"Added [[{iface_name}]] ({template['type']})\n\n"
-                f"Restart rnsd to apply:\n"
-                f"  sudo systemctl restart rnsd",
+                f"Restart rnsd to apply the change.",
             )
+            offer_service_fix(self.ctx, "rnsd", running=True)
         else:
             self.ctx.dialog.msgbox("Error", f"Failed to add interface:\n{result.message}")
 
@@ -700,9 +701,9 @@ class RNSInterfacesHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Interfaces Added",
                 f"Added {len(added)} interfaces:\n{names_str}\n\n"
-                f"Restart rnsd to apply:\n"
-                f"  sudo systemctl restart rnsd",
+                f"Restart rnsd to apply the change.",
             )
+            offer_service_fix(self.ctx, "rnsd", running=True)
         else:
             self.ctx.dialog.msgbox("Error", f"Failed:\n{result.message}")
 
@@ -773,9 +774,9 @@ class RNSInterfacesHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 f"Interface {action.title()}d",
                 f"[[{iface_name}]] is now {action}d.\n\n"
-                f"Restart rnsd to apply:\n"
-                f"  sudo systemctl restart rnsd",
+                f"Restart rnsd to apply the change.",
             )
+            offer_service_fix(self.ctx, "rnsd", running=True)
         else:
             self.ctx.dialog.msgbox("Error", f"Failed to {action} interface:\n{result.message}")
 
@@ -806,9 +807,9 @@ class RNSInterfacesHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Interface Removed",
                 f"[[{iface_name}]] has been removed.\n\n"
-                f"Restart rnsd to apply:\n"
-                f"  sudo systemctl restart rnsd",
+                f"Restart rnsd to apply the change.",
             )
+            offer_service_fix(self.ctx, "rnsd", running=True)
         else:
             self.ctx.dialog.msgbox("Error", f"Failed to remove interface:\n{result.message}")
 

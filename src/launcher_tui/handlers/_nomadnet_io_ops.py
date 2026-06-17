@@ -42,8 +42,8 @@ class NomadNetIOOpsMixin:
             for line in lines:
                 if 'ConnectionRefusedError' in line or 'Errno 111' in line:
                     print("\nDiagnosis: RPC connection to rnsd refused")
-                    print("  Fix: Use RNS Diagnostics to check rnsd status")
-                    print("       sudo systemctl restart rnsd")
+                    print("  Fix: Use RNS Diagnostics to check rnsd, then")
+                    print("       restart rnsd from Service Control.")
                     return
                 if 'AuthenticationError' in line or 'digest sent was rejected' in line:
                     print("\nDiagnosis: RPC authentication failed")

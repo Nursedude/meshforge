@@ -595,7 +595,7 @@ class NomadNetInstallUtilsMixin:
                         rnsd_user = self._get_rnsd_user()
                         if not rnsd_user:
                             error_hints.append("rnsd is NOT running — NomadNet cannot connect")
-                            error_hints.append("Fix: sudo systemctl start rnsd")
+                            error_hints.append("Fix: start rnsd from Service Control")
                             error_hints.append("     Then wait a few seconds and retry")
                         else:
                             if rnsd_user == 'root' and sudo_user and sudo_user != 'root':
@@ -608,7 +608,7 @@ class NomadNetInstallUtilsMixin:
                                 error_hints.append("  - RNS version mismatch (pipx venv vs system)")
                                 error_hints.append("  - Stale auth tokens after rnsd restart")
                                 error_hints.append("Verify: rnstatus")
-                                error_hints.append("Fix: pipx upgrade nomadnet && sudo systemctl restart rnsd")
+                                error_hints.append("Fix: Reinstall NomadNet, then restart rnsd (both in Service Control)")
                         break
                     elif 'AuthenticationError' in line or 'digest sent was rejected' in line:
                         error_hints.append("RPC authentication failed between NomadNet and rnsd")
@@ -646,7 +646,7 @@ class NomadNetInstallUtilsMixin:
                             "Fix: sudo pip3 install --break-system-packages "
                             "--ignore-installed meshtastic"
                         )
-                        error_hints.append("Then: sudo systemctl restart rnsd")
+                        error_hints.append("Then restart rnsd from Service Control")
                         break
                     elif 'TypeError' in line and 'list indices' in line:
                         error_hints.append(
@@ -685,7 +685,7 @@ class NomadNetInstallUtilsMixin:
                         "Fix: sudo pip3 install --break-system-packages "
                         "--ignore-installed meshtastic"
                     )
-                    error_hints.append("Then: sudo systemctl restart rnsd")
+                    error_hints.append("Then restart rnsd from Service Control")
                 elif 'status=255' in journal_text or 'exception' in journal_text:
                     error_hints.append("rnsd is crashing (exit code 255)")
                     error_hints.append("View rnsd logs in-app (RNS > Diagnostics)")

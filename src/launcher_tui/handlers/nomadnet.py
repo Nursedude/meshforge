@@ -1307,10 +1307,11 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                     self.ctx.dialog.msgbox(
                         "Start Failed — Connection Refused",
                         "NomadNet daemon crashed: ConnectionRefusedError.\n\n"
-                        "Use RNS Diagnostics to check rnsd status.\n\n"
-                        "Quick fix: sudo systemctl restart rnsd\n"
-                        "Then wait 20s and re-launch NomadNet.",
+                        "Use RNS Diagnostics to check rnsd status, then\n"
+                        "wait 20s and re-launch NomadNet.",
                     )
+                    from service_remediation import offer_service_fix
+                    offer_service_fix(self.ctx, "rnsd", running=True)
                 elif stderr_out:
                     # Show first few lines of stderr
                     lines = stderr_out.splitlines()[:5]

@@ -98,7 +98,7 @@ def _check_meshtastic_interface(name: str, body: str, blocking: list):
                 blocking.append((
                     name,
                     f"needs meshtasticd ({host_port}) but it is not running",
-                    "sudo systemctl start meshtasticd"
+                    "Start meshtasticd from Service Control"
                 ))
             else:
                 import socket
@@ -124,7 +124,7 @@ def _check_meshtastic_interface(name: str, body: str, blocking: list):
                         f"{tcp_host}:{tcp_port_num} not accepting "
                         f"connections (still starting?)",
                         f"Wait for meshtasticd to finish starting, "
-                        f"or: sudo systemctl restart meshtasticd"
+                        f"or restart it from Service Control"
                     ))
         except (subprocess.SubprocessError, OSError):
             pass

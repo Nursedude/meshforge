@@ -151,6 +151,6 @@ class StartupHealthHandler(BaseHandler):
             else:
                 self.ctx.dialog.msgbox(
                     "Manual Fix Needed",
-                    "Remove /etc/meshtasticd/config.d/usb-serial.yaml\n"
-                    "Then restart: sudo systemctl restart meshtasticd"
+                    "Remove /etc/meshtasticd/config.d/usb-serial.yaml,\n"
+                    "then restart meshtasticd from Service Control."
                 )

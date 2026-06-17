@@ -1,0 +1,70 @@
+"""Fix-hint -> in-app remediation offer (In-Domain Principle).
+
+The "complete in-pane" follow-on converted service-FIX hint strings
+("sudo systemctl start/restart X") into one-keystroke in-app fixes at clean
+dialog points: after the action/error, the handler calls
+service_remediation.offer_service_fix(ctx, service, running), which routes
+through the remediation surface (profile-gated, ratified, applied in-app) —
+no shell command for the operator to type.
+
+These pin the wiring at a local-import site (meshtasticd_nodedb) and a
+module-import site (rns_interfaces).
+"""
+
+import os
+import sys
+from unittest.mock import patch, MagicMock
+
+import pytest
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.dirname(__file__))
+
+from handler_test_utils import make_handler_context
+
+
+def test_nodedb_unreachable_offers_meshtasticd_fix():
+    """meshtasticd HTTP API unreachable -> in-app offer to start meshtasticd
+    (running=False), not a 'sudo systemctl start' instruction."""
+    from handlers.meshtasticd_nodedb import MeshtasticdNodeDBHandler
+    h = MeshtasticdNodeDBHandler()
+    h.set_context(make_handler_context())
+
+    fake_client = MagicMock()
+    fake_client.is_available = False
+
+    with patch('handlers.meshtasticd_nodedb._get_http_client',
+               return_value=fake_client):
+        with patch('service_remediation.offer_service_fix') as offer:
+            h._scan_phantom_nodes()
+
+    assert offer.called, "expected an in-app service-fix offer"
+    args, kwargs = offer.call_args
+    # offer_service_fix(ctx, "meshtasticd", running=False)
+    assert args[1] == "meshtasticd"
+    running = kwargs.get("running", args[2] if len(args) > 2 else None)
+    assert running is False
+
+
+def test_rns_remove_interface_offers_rnsd_restart():
+    """Removing an interface offers an in-app rnsd restart (running=True),
+    not a 'sudo systemctl restart rnsd' instruction."""
+    from handlers.rns_interfaces import RNSInterfacesHandler
+    h = RNSInterfacesHandler()
+    h.set_context(make_handler_context())
+    h.ctx.dialog._yesno_returns = [True]  # confirm remove
+
+    cmd_mod = MagicMock()
+    cmd_mod.remove_interface.return_value = MagicMock(success=True, message="ok")
+
+    with patch.object(h, '_import_rns_commands', return_value=cmd_mod):
+        with patch.object(h, '_rns_pick_interface', return_value="MyIface"):
+            with patch('handlers.rns_interfaces.offer_service_fix') as offer:
+                h._rns_remove_interface()
+
+    assert offer.called, "expected an in-app rnsd restart offer after removal"
+    args, kwargs = offer.call_args
+    assert args[1] == "rnsd"
+    running = kwargs.get("running", args[2] if len(args) > 2 else None)
+    assert running is True

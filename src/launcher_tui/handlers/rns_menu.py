@@ -339,7 +339,7 @@ class RNSMenuHandler(BaseHandler):
             if count == 0:
                 print("No known destinations yet.")
                 print("\nNodes appear when they announce or when you request paths.")
-                print("Make sure rnsd is running: sudo systemctl start rnsd")
+                print("Make sure rnsd is running (Service Control).")
             else:
                 print(f"Found {count} destination(s):\n")
                 print(f"{'Hash':>10}  {'Hops':>5}  {'Source':<20}  {'Name'}")

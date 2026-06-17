@@ -512,7 +512,7 @@ def _handle_rnsd_crash(ctx) -> bool:
                 print("  Cause: Permission denied")
             elif 'connection refused' in lower_output:
                 print("  Cause: meshtasticd not running (Connection refused)")
-                print("  Fix: sudo systemctl start meshtasticd")
+                print("  Fix: start meshtasticd from Service Control.")
             else:
                 for line in output.splitlines()[-5:]:
                     print(f"  {line}")

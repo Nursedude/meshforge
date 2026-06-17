@@ -612,7 +612,7 @@ class RNSDiagnosticsHandler(BaseHandler):
             print("Reinstall MeshForge to restore RNS (Settings > Updates).")
         except subprocess.TimeoutExpired:
             print(f"\n{tool_name} timed out. RNS may be unresponsive.")
-            print("Try restarting rnsd: sudo systemctl restart rnsd")
+            print("Restart rnsd from Service Control.")
 
     def _wait_for_rns_shared_instance(self, max_wait: int = 10) -> bool:
         """Wait for rnsd shared instance to become available.

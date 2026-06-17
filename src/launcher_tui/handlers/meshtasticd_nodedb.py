@@ -78,9 +78,10 @@ class MeshtasticdNodeDBHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "Not Available",
                     "meshtasticd HTTP API not reachable.\n\n"
-                    "Ensure meshtasticd is running:\n"
-                    "  sudo systemctl start meshtasticd"
+                    "meshtasticd may not be running.",
                 )
+                from service_remediation import offer_service_fix
+                offer_service_fix(self.ctx, "meshtasticd", running=False)
                 return
 
             nodes = client.get_nodes()
@@ -370,6 +371,7 @@ class MeshtasticdNodeDBHandler(BaseHandler):
                 f"MaxNodes set to {new_int}.\n\n"
                 f"Overlay: {OVERLAY_PATH}\n"
                 "(config.yaml unchanged)\n\n"
-                "Restart meshtasticd to apply:\n"
-                "  sudo systemctl restart meshtasticd"
+                "Restart meshtasticd to apply the change."
             )
+            from service_remediation import offer_service_fix
+            offer_service_fix(self.ctx, "meshtasticd", running=True)
