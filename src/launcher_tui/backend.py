@@ -278,6 +278,31 @@ class DialogBackend:
             return output
         return None
 
+    def textbox(self, title: str, text: str, height: int = None,
+                width: int = None) -> None:
+        """Show read-only, scrollable text IN-APP (whiptail/dialog --textbox).
+
+        The In-Domain alternative to dumping logs / command output to the
+        terminal (MF018 Class 3): captured output stays inside the TUI in a
+        scrollable pane. --textbox reads a file, so the text is written to a
+        temp file, shown, and removed. Blank input shows "(no output)" — an
+        empty pane must never read as a clean result.
+        """
+        import tempfile
+        h = height if height is not None else max(self.height, 22)
+        w = width if width is not None else max(self.width, 78)
+        fd, tmp = tempfile.mkstemp(suffix='.txt', prefix='meshforge_log_')
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(text if text else "(no output)")
+            self._run(['--title', title, '--scrolltext',
+                       '--textbox', tmp, str(h), str(w)])
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
     def infobox(self, title: str, text: str) -> None:
         """Display info box (no wait for input)."""
         self._run([

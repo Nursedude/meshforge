@@ -61,7 +61,8 @@ class LogsHandler(BaseHandler):
 
             choice = self.ctx.dialog.menu(
                 "Log Viewer",
-                "Terminal-native logs (real journalctl):",
+                "Snapshots open in an in-app scrollable pane; "
+                "Live views stream in the terminal (Ctrl+C to stop):",
                 choices
             )
 
@@ -106,6 +107,25 @@ class LogsHandler(BaseHandler):
                     proc.kill()
                     proc.wait(timeout=5)
 
+    def _show_command_output(self, title: str, cmd: List[str],
+                             timeout: int = 15) -> None:
+        """Run a read-only diagnostic command, CAPTURE its output, and show it
+        in an in-app scrollable pane (In-Domain/MF018 Class 3 — no terminal
+        eject). A timeout or a missing binary is shown in-pane, never dumped to
+        the terminal and never silently swallowed.
+        """
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=timeout)
+            out = r.stdout or ""
+            if r.stderr:
+                out += ("\n[stderr]\n" + r.stderr)
+        except subprocess.TimeoutExpired:
+            out = f"[{cmd[0]} timed out after {timeout}s]"
+        except (subprocess.SubprocessError, OSError) as e:
+            out = f"[could not run {cmd[0]}: {e}]"
+        self.ctx.dialog.textbox(title, out)
+
     def _view_live_meshtasticd(self):
         self._view_live_log(
             "meshtasticd live log",
@@ -125,46 +145,33 @@ class LogsHandler(BaseHandler):
         self._view_live_log("Mesh services live log", cmd)
 
     def _view_error_logs(self):
-        clear_screen()
-        print("=== Mesh Service Errors (last hour, priority err+) ===\n")
         cmd = ['journalctl', '-p', 'err', '--since', '1 hour ago', '--no-pager']
         for unit in self.MESH_UNITS:
             cmd.extend(['-u', unit])
-        subprocess.run(cmd, timeout=30)
-        self.ctx.wait_for_enter()
+        self._show_command_output(
+            "Mesh Service Errors (last hour, priority err+)", cmd, timeout=30)
 
     def _view_meshtasticd_recent(self):
-        clear_screen()
-        print("=== meshtasticd (last 50 lines) ===\n")
-        subprocess.run(
-            ['journalctl', '-u', 'meshtasticd', '-n', '50', '--no-pager'],
-            timeout=15
-        )
-        self.ctx.wait_for_enter()
+        self._show_command_output(
+            "meshtasticd (last 50 lines)",
+            ['journalctl', '-u', 'meshtasticd', '-n', '50', '--no-pager'])
 
     def _view_rnsd_recent(self):
-        clear_screen()
-        print("=== rnsd (last 50 lines) ===\n")
-        subprocess.run(
-            ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'],
-            timeout=15
-        )
-        self.ctx.wait_for_enter()
+        self._show_command_output(
+            "rnsd (last 50 lines)",
+            ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'])
 
     def _view_boot_messages(self):
-        clear_screen()
-        print("=== Mesh Service Boot Messages (this boot) ===\n")
         cmd = ['journalctl', '-b', '-n', '100', '--no-pager']
         for unit in self.MESH_UNITS:
             cmd.extend(['-u', unit])
-        subprocess.run(cmd, timeout=15)
-        self.ctx.wait_for_enter()
+        self._show_command_output(
+            "Mesh Service Boot Messages (this boot)", cmd)
 
     def _view_kernel_messages(self):
-        clear_screen()
-        print("=== Kernel messages (dmesg) ===\n")
-        subprocess.run(['dmesg', '--time-format=reltime'], timeout=10)
-        self.ctx.wait_for_enter()
+        self._show_command_output(
+            "Kernel messages (dmesg)",
+            ['dmesg', '--time-format=reltime'], timeout=10)
 
     def _view_meshforge_logs(self):
         home = get_real_user_home()
@@ -221,20 +228,22 @@ class LogsHandler(BaseHandler):
             pass
 
     def _display_log_file(self, log_path: Path, tail_lines: int = 80) -> None:
+        # In-app scrollable pane (In-Domain/MF018 Class 3) — was a print-to-
+        # terminal + wait-for-enter.
         try:
             content = log_path.read_text()
             lines = content.strip().split('\n')
             total = len(lines)
             shown = lines[-tail_lines:]
-
-            clear_screen()
-            print(f"=== {log_path.name} ({total} total lines, showing last {len(shown)}) ===\n")
-            print('\n'.join(shown))
-            print(f"\n{'=' * 60}")
-            print(f"Full path: {log_path}")
-            print(f"Size: {log_path.stat().st_size / 1024:.1f} KB")
-            self.ctx.wait_for_enter()
-        except Exception as e:
+            header = (
+                f"{log_path.name} — {total} total lines, "
+                f"showing last {len(shown)}\n"
+                f"Path: {log_path}  "
+                f"({log_path.stat().st_size / 1024:.1f} KB)\n"
+                + "=" * 60)
+            self.ctx.dialog.textbox(
+                log_path.name, header + "\n" + '\n'.join(shown))
+        except OSError as e:
             self.ctx.dialog.msgbox("Error", f"Failed to read log file:\n{e}")
 
     def _view_crash_log(self):
