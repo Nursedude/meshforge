@@ -513,7 +513,7 @@ class MeshtasticdRadioHandler(BaseHandler):
                     "Error",
                     f"Hardware config activation failed.\n\n"
                     f"Config: {config_name}\n\n"
-                    "Check `journalctl -u meshtasticd` for details. "
+                    "View meshtasticd logs in-app (Logs menu) for details. "
                     "The unit may have failed to restart or the copy "
                     "to config.d/ may have been rejected.",
                 )

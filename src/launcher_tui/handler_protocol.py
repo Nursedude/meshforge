@@ -286,6 +286,28 @@ class BaseHandler:
             f"{type(self).__name__}.execute() not implemented for action={action!r}"
         )
 
+    def _capture_command(self, cmd, timeout: int = 15) -> str:
+        """Run a read-only command and RETURN its combined output as text.
+
+        A timeout or a missing binary is returned as a bracketed note, never
+        raised and never silently swallowed. This is the capture half of the
+        in-pane log/diagnostic pattern (In-Domain Principle / MF018 Class 3):
+        callers that want to combine the output with other text (an action
+        result, several commands) capture here, then show one textbox.
+        """
+        import subprocess
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               timeout=timeout)
+            out = r.stdout or ""
+            if r.stderr:
+                out += ("\n[stderr]\n" + r.stderr)
+            return out
+        except subprocess.TimeoutExpired:
+            return f"[{cmd[0]} timed out after {timeout}s]"
+        except (subprocess.SubprocessError, OSError) as e:
+            return f"[could not run {cmd[0]}: {e}]"
+
     def _show_command_output(self, title: str, cmd, timeout: int = 15) -> None:
         """Run a read-only diagnostic command, CAPTURE its output, and show it
         in an in-app scrollable pane (In-Domain Principle / MF018 Class 3 — no
@@ -298,15 +320,4 @@ class BaseHandler:
         scrollable textbox; an empty result renders "(no output)" rather than a
         blank pane that could read as a clean result.
         """
-        import subprocess
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True,
-                               timeout=timeout)
-            out = r.stdout or ""
-            if r.stderr:
-                out += ("\n[stderr]\n" + r.stderr)
-        except subprocess.TimeoutExpired:
-            out = f"[{cmd[0]} timed out after {timeout}s]"
-        except (subprocess.SubprocessError, OSError) as e:
-            out = f"[could not run {cmd[0]}: {e}]"
-        self.ctx.dialog.textbox(title, out)
+        self.ctx.dialog.textbox(title, self._capture_command(cmd, timeout))

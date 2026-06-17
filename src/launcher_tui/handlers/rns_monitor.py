@@ -262,7 +262,7 @@ class RNSMonitorHandler(BaseHandler):
                 self._render_interface_table(last_good)
             else:
                 print(f"\n  {_DIM}No previous status available.{_RESET}")
-                print(f"  {_DIM}Check: sudo journalctl -u rnsd -n 20{_RESET}")
+                print(f"  {_DIM}View rnsd logs in-app (RNS > Diagnostics).{_RESET}")
             print()
             return
 

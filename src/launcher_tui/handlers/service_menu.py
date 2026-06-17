@@ -249,40 +249,40 @@ class ServiceMenuHandler(BaseHandler):
                 self.ctx.wait_for_enter()
 
     def _restart_meshtasticd_service(self):
-        """Restart the meshtasticd service."""
-        clear_screen()
-        print("Restarting meshtasticd...\n")
+        """Restart meshtasticd; result + status shown in-pane (Class 3)."""
         success, msg = apply_config_and_restart('meshtasticd')
-        print(msg)
-        subprocess.run(['systemctl', 'status', 'meshtasticd', '--no-pager', '-l'], timeout=10)
-        self.ctx.wait_for_enter()
+        status = self._capture_command(
+            ['systemctl', 'status', 'meshtasticd', '--no-pager', '-l'], timeout=10)
+        self.ctx.dialog.textbox("Restart meshtasticd", f"{msg}\n\n{status}")
 
     def _start_rnsd_service(self):
-        """Start the rnsd service."""
-        clear_screen()
-        print("Starting rnsd...\n")
+        """Start the rnsd service (systemd result + status shown in-pane)."""
         if not self._has_systemd_unit('rnsd'):
+            clear_screen()
+            print("Starting rnsd...\n")
             self._start_rnsd_direct()
-        else:
-            success, msg = start_service('rnsd')
-            print(msg)
-            subprocess.run(['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
-        self.ctx.wait_for_enter()
+            self.ctx.wait_for_enter()
+            return
+        success, msg = start_service('rnsd')
+        status = self._capture_command(
+            ['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
+        self.ctx.dialog.textbox("Start rnsd", f"{msg}\n\n{status}")
 
     def _restart_rnsd_service(self):
-        """Restart the rnsd service."""
-        clear_screen()
-        print("Restarting rnsd...\n")
+        """Restart the rnsd service (systemd result + status shown in-pane)."""
         if not self._has_systemd_unit('rnsd'):
+            clear_screen()
+            print("Restarting rnsd...\n")
             self._stop_rnsd_direct()
             import time
             time.sleep(0.5)
             self._start_rnsd_direct()
-        else:
-            success, msg = restart_service('rnsd')
-            print(msg)
-            subprocess.run(['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
-        self.ctx.wait_for_enter()
+            self.ctx.wait_for_enter()
+            return
+        success, msg = restart_service('rnsd')
+        status = self._capture_command(
+            ['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
+        self.ctx.dialog.textbox("Restart rnsd", f"{msg}\n\n{status}")
 
     def _fix_spi_config(self, has_native: bool = False):
         """Quick fix for SPI HAT with wrong USB config."""
@@ -340,12 +340,12 @@ class ServiceMenuHandler(BaseHandler):
                     "Configuration corrected!\n\n"
                     "- Removed wrong USB config\n"
                     "- Restarted meshtasticd service\n\n"
-                    "Check status: sudo systemctl status meshtasticd",
+                    "Check meshtasticd status in Service Control.",
                     "Config Fixed — Restart FAILED",
                     "The wrong USB config was removed, but meshtasticd did NOT "
                     f"restart cleanly:\n{msg}\n\n"
                     "meshtasticd may still be down or in a failed state.\n"
-                    "Check: sudo systemctl status meshtasticd",
+                    "Check meshtasticd in Service Control.",
                 )
 
         except Exception as e:
@@ -575,72 +575,68 @@ WantedBy=multi-user.target
 
     def _service_action(self, service_name: str, action: str):
         """Perform service action using systemctl or direct process control."""
-        clear_screen()
-
         use_direct_rnsd = (service_name == 'rnsd' and
                           not self._has_systemd_unit('rnsd'))
 
         if action == "status":
-            print(f"=== {service_name} status ===\n")
+            # In-Domain Class 3: show status in-pane, never stream to terminal.
             if use_direct_rnsd:
                 if self._is_rnsd_running():
-                    print(f"\033[0;32m●\033[0m rnsd is \033[0;32mrunning\033[0m")
-                    try:
-                        subprocess.run(
-                            ['pgrep', '-a', '-x', 'rnsd'],
-                            timeout=5
-                        )
-                    except (subprocess.SubprocessError, OSError) as e:
-                        logger.debug("rnsd process info display failed: %s", e)
+                    proc = self._capture_command(
+                        ['pgrep', '-a', '-x', 'rnsd'], timeout=5)
+                    self.ctx.dialog.textbox(
+                        f"{service_name} status",
+                        f"rnsd is running (no systemd unit).\n\n{proc}")
                 else:
-                    print(f"\033[0;31m○\033[0m rnsd is \033[0;31mnot running\033[0m")
-                    print("\nTo start: Select 'Start Service' from the menu")
+                    self.ctx.dialog.textbox(
+                        f"{service_name} status",
+                        "rnsd is not running.\n\n"
+                        "Use 'Start Service' from this menu to start it.")
             else:
-                subprocess.run(
+                self._show_command_output(
+                    f"{service_name} status",
                     ['systemctl', 'status', service_name, '--no-pager', '-l'],
-                    timeout=10
-                )
-            self.ctx.wait_for_enter()
+                    timeout=10)
 
         elif action == "start":
-            print(f"Starting {service_name}...\n")
             if use_direct_rnsd:
+                clear_screen()
+                print(f"Starting {service_name}...\n")
                 self._start_rnsd_direct()
+                self.ctx.wait_for_enter()
             else:
                 success, msg = start_service(service_name)
-                print(msg)
-                subprocess.run(
+                status = self._capture_command(
                     ['systemctl', 'status', service_name, '--no-pager', '-l'],
-                    timeout=10
-                )
-            self.ctx.wait_for_enter()
+                    timeout=10)
+                self.ctx.dialog.textbox(f"Start {service_name}", f"{msg}\n\n{status}")
 
         elif action == "stop":
             if self.ctx.dialog.yesno("Confirm", f"Stop {service_name}?", default_no=True):
-                clear_screen()
-                print(f"Stopping {service_name}...\n")
                 if use_direct_rnsd:
+                    clear_screen()
+                    print(f"Stopping {service_name}...\n")
                     self._stop_rnsd_direct()
+                    self.ctx.wait_for_enter()
                 else:
                     success, msg = stop_service(service_name)
-                    print(msg)
-                self.ctx.wait_for_enter()
+                    self.ctx.dialog.textbox(f"Stop {service_name}", msg)
 
         elif action == "restart":
-            print(f"Restarting {service_name}...\n")
             if use_direct_rnsd:
+                clear_screen()
+                print(f"Restarting {service_name}...\n")
                 self._stop_rnsd_direct()
                 import time
                 time.sleep(0.5)
                 self._start_rnsd_direct()
+                self.ctx.wait_for_enter()
             else:
                 success, msg = restart_service(service_name)
-                print(msg)
-                subprocess.run(
+                status = self._capture_command(
                     ['systemctl', 'status', service_name, '--no-pager', '-l'],
-                    timeout=10
-                )
-            self.ctx.wait_for_enter()
+                    timeout=10)
+                self.ctx.dialog.textbox(f"Restart {service_name}", f"{msg}\n\n{status}")
 
         elif action == "logs":
             # In-Domain Class 3: capture logs and show them in a scrollable
@@ -830,21 +826,15 @@ WantedBy=multi-user.target
         self.ctx.wait_for_enter()
 
     def _openhamclock_docker_logs(self):
-        """Show OpenHamClock Docker container logs."""
-        clear_screen()
-        print("=== OpenHamClock Logs (last 30) ===\n")
+        """Show OpenHamClock Docker container logs in-pane (Class 3).
 
-        try:
-            subprocess.run(
-                ['docker', 'logs', '--tail', '30', 'openhamclock'],
-                timeout=15
-            )
-        except subprocess.TimeoutExpired:
-            print("Log retrieval timed out.")
-        except (subprocess.SubprocessError, OSError) as e:
-            print(f"Error: {e}")
-
-        self.ctx.wait_for_enter()
+        ``docker logs`` writes the container's logs to stderr, so capture both
+        streams."""
+        self._show_command_output(
+            "OpenHamClock Logs (last 30)",
+            ['docker', 'logs', '--tail', '30', 'openhamclock'],
+            timeout=15,
+        )
 
     # =========================================================================
     # MQTT Setup Wizard
@@ -892,7 +882,7 @@ WantedBy=multi-user.target
             self.ctx.dialog.msgbox(
                 "Warning",
                 "Could not start mosquitto service.\n\n"
-                "Check: sudo systemctl status mosquitto"
+                "Check mosquitto in Service Control."
             )
 
         self.ctx.dialog.infobox("MQTT Setup", "Step 3/3: Configuring meshtasticd...")
@@ -1052,7 +1042,7 @@ WantedBy=multi-user.target
                 print(f"  Uplink: enabled (channel 0)")
             else:
                 print("\n\033[0;33mWarning:\033[0m Some settings may have failed.")
-                print("Check meshtasticd is running: sudo systemctl status meshtasticd")
+                print("Check meshtasticd is running (Service Control).")
 
             self.ctx.wait_for_enter()
             return success

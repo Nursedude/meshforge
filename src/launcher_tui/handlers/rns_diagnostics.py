@@ -300,7 +300,7 @@ class RNSDiagnosticsHandler(BaseHandler):
         else:
             print("  Shared instance not available after 15s.")
             print("  rnsd may be slow to initialize or may have crashed.")
-            print("  Check: sudo journalctl -u rnsd -n 20")
+            print("  View rnsd logs in-app (RNS > Diagnostics).")
 
         print()
         self.ctx.wait_for_enter()
@@ -550,7 +550,7 @@ class RNSDiagnosticsHandler(BaseHandler):
                                     )
                             else:
                                 print("rnsd started but shared instance not available.")
-                                print("Check: sudo journalctl -u rnsd -n 20")
+                                print("View rnsd logs in-app for details.")
                                 print("Or run: RNS > Diagnostics from the menu.")
                         except (subprocess.SubprocessError, OSError) as e:
                             print(f"Failed to start rnsd: {e}")
@@ -606,7 +606,7 @@ class RNSDiagnosticsHandler(BaseHandler):
                     # Show concise error hint — not raw tracebacks
                     stderr_lower = result.stderr.lower()
                     if "error" in stderr_lower or "traceback" in stderr_lower or "exception" in stderr_lower:
-                        print(f"\n{tool_name} reported an error. Check: sudo journalctl -u rnsd -n 10")
+                        print(f"\n{tool_name} reported an error. View rnsd logs in-app (RNS > Diagnostics).")
         except FileNotFoundError:
             print(f"\n{tool_name} not found. Is RNS installed?")
             print("Reinstall MeshForge to restore RNS (Settings > Updates).")
@@ -725,8 +725,8 @@ class RNSDiagnosticsHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "Fix May Have Failed",
                     f"{detail}\n\n"
-                    f"Check: systemctl status rnsd\n"
-                    f"       cat {override_file}",
+                    f"Check rnsd in Service Control.\n"
+                    f"Override file: {override_file}",
                 )
                 return True  # Let them try anyway
 

@@ -116,7 +116,7 @@ class StartupHealthHandler(BaseHandler):
                         "Fixed",
                         "Removed usb-serial.yaml\n"
                         f"{restart_note}\n"
-                        "Check: systemctl status meshtasticd"
+                        "Check meshtasticd in Service Control."
                     )
                 except Exception as e:
                     self.ctx.dialog.msgbox("Error", f"Failed:\n{e}")

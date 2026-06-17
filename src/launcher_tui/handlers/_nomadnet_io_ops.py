@@ -69,8 +69,8 @@ class NomadNetIOOpsMixin:
         else:
             user_home = get_real_user_home()
             logfile = user_home / '.nomadnetwork' / 'logfile'
-            print(f"\nCheck logs: cat {logfile}")
-            print(f"  journalctl --user -u nomadnet -n 50")
+            print(f"\nLogfile: {logfile}")
+            print(f"  View NomadNet logs from the NomadNet menu.")
 
     # ------------------------------------------------------------------
     # Log viewer

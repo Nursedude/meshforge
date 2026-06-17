@@ -116,8 +116,8 @@ def run_rns_diagnostics(handler):
                 except (OSError, PermissionError):
                     print("    (cannot read NomadNet logfile)")
         elif service_state == 'failed':
-            print("  WARNING: rnsd has crashed. Check logs:")
-            print("    sudo journalctl -u rnsd -n 30")
+            print("  WARNING: rnsd has crashed.")
+            print("    View rnsd logs in-app (RNS > Diagnostics).")
 
     # 2. Config check
     print("\n[2/6] Checking configuration...")

@@ -463,12 +463,12 @@ class FirstRunHandler(BaseHandler):
                 f"Template: {src.name}\n"
                 f"Config: {dst}\n\n"
                 f"meshtasticd has been restarted.\n"
-                f"Check: systemctl status meshtasticd",
+                f"Check meshtasticd in Service Control.",
                 "Config Applied — Restart FAILED",
                 f"The template was copied to:\n  {dst}\n\n"
                 f"But meshtasticd did NOT restart cleanly:\n{msg}\n\n"
                 f"The radio may be down or still on the old config.\n"
-                f"Check: systemctl status meshtasticd",
+                f"Check meshtasticd in Service Control.",
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to apply config: {e}")
@@ -842,12 +842,12 @@ class FirstRunHandler(BaseHandler):
                 f"Applied configuration for {hw_config['name']}.\n\n"
                 f"Config: {dest}\n\n"
                 f"meshtasticd has been restarted.\n"
-                f"Check: systemctl status meshtasticd",
+                f"Check meshtasticd in Service Control.",
                 "Config Applied — Restart FAILED",
                 f"The config was written to:\n  {dest}\n\n"
                 f"But meshtasticd did NOT restart cleanly:\n{msg}\n\n"
                 f"The radio may be down or still on the old config.\n"
-                f"Check: systemctl status meshtasticd",
+                f"Check meshtasticd in Service Control.",
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to apply config: {e}")
@@ -898,7 +898,7 @@ Logging:
                 f"But meshtasticd did NOT restart cleanly:\n{msg}\n\n"
                 f"The radio service may be down (it will not be reachable on "
                 f":9443 until it restarts).\n"
-                f"Check: systemctl status meshtasticd",
+                f"Check meshtasticd in Service Control.",
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to create config: {e}")

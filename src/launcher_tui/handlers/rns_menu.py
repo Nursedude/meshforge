@@ -140,8 +140,7 @@ class RNSMenuHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "RNS Error",
                     f"Operation failed:\n{type(e).__name__}: {e}\n\n"
-                    f"Check that rnsd is running:\n"
-                    f"  sudo systemctl status rnsd"
+                    f"Check that rnsd is running (Service Control)."
                 )
 
     # ------------------------------------------------------------------

@@ -604,7 +604,7 @@ class MQTTHandler(BaseHandler):
                     f"  Topic: {topic}\n"
                     f"  TLS: disabled\n\n"
                     "Make sure:\n"
-                    "  1. Mosquitto is running (systemctl status mosquitto)\n"
+                    "  1. Mosquitto is running (check Service Control)\n"
                     "  2. Meshtasticd MQTT is configured\n\n"
                     "Use Service Config -> MQTT Setup for full setup.",
                     "Save Failed",

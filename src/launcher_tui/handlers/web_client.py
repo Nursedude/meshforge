@@ -90,10 +90,7 @@ class WebClientHandler(BaseHandler):
                 "meshtasticd Not Running",
                 "meshtasticd is NOT responding on port 9443.\n\n"
                 "The web client needs meshtasticd for radio access.\n\n"
-                "1. Start meshtasticd:\n"
-                "   sudo systemctl start meshtasticd\n\n"
-                "2. Check status:\n"
-                "   sudo systemctl status meshtasticd\n\n"
+                "Start and check meshtasticd from Service Control, then retry.\n\n"
                 "Note: Ensure config has Webserver section with Port: 9443"
             )
             return

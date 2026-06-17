@@ -688,7 +688,7 @@ class NomadNetInstallUtilsMixin:
                     error_hints.append("Then: sudo systemctl restart rnsd")
                 elif 'status=255' in journal_text or 'exception' in journal_text:
                     error_hints.append("rnsd is crashing (exit code 255)")
-                    error_hints.append("Check: sudo journalctl -u rnsd -n 30")
+                    error_hints.append("View rnsd logs in-app (RNS > Diagnostics)")
             except (subprocess.SubprocessError, OSError):
                 pass
 
@@ -712,6 +712,6 @@ class NomadNetInstallUtilsMixin:
                     print(f"\nCheck logs: cat {logfile}")
             else:
                 print(f"\nNo logfile found at: {logfile}")
-            print(f"  journalctl --user -u nomadnet -n 50")
+            print(f"  View NomadNet logs from the NomadNet menu.")
 
         return connection_refused

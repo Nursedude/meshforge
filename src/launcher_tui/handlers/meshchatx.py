@@ -190,8 +190,7 @@ class MeshChatXHandler(MeshChatXServiceOpsMixin, BaseHandler):
                 f"The service is active but :{port} is not yet\n"
                 f"bound. Web servers usually need a few seconds to\n"
                 f"finish startup; try again in 5-10 seconds.\n\n"
-                f"If this persists, check the logs:\n"
-                f"  journalctl --user -u meshchatx -n 50",
+                f"If this persists, view the logs from this menu (View Logs).",
             )
             return
 

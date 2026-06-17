@@ -237,7 +237,7 @@ class UpdatesHandler(BaseHandler):
                     "meshtasticd was updated but did NOT restart cleanly:\n"
                     f"{restart_msg}\n\n"
                     "The radio daemon may be down or running the old version.\n"
-                    "Check: systemctl status meshtasticd",
+                    "Check meshtasticd in Service Control.",
                 )
             else:
                 # No service-control available — do not imply a restart happened.

@@ -142,40 +142,89 @@ class TestNoUncapturedJournalctlInTUI:
     def _tui_dir(self):
         return Path(__file__).parent.parent / "src" / "launcher_tui"
 
-    def test_every_journalctl_subprocess_is_captured_or_follow(self):
-        """Walk every subprocess.run/.call/.Popen call in the TUI; if its argv
-        contains 'journalctl', it must either capture output or be a live
-        follow (-f/-fu). A raw, captureless, non-follow journalctl call streams
-        to the terminal and ejects the operator (In-Domain Class 3)."""
-        offenders = []
+    def _calls(self, text):
+        """Yield (lineno, call_src) for each subprocess.run/.call/.Popen call."""
         call_re = re.compile(r"subprocess\.(run|call|Popen)\(")
+        for m in call_re.finditer(text):
+            i = m.end() - 1
+            depth = 0
+            j = i
+            while j < len(text):
+                if text[j] == '(':
+                    depth += 1
+                elif text[j] == ')':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                j += 1
+            yield text[:m.start()].count("\n") + 1, text[m.start():j + 1]
+
+    def test_every_journalctl_subprocess_is_captured_or_follow(self):
+        """Walk every subprocess call in the TUI; if its argv contains
+        'journalctl', it must either capture output or be a live follow
+        (-f/-fu). A raw, captureless, non-follow journalctl call streams to the
+        terminal and ejects the operator (In-Domain Class 3)."""
+        offenders = []
         for path in self._tui_dir().rglob("*.py"):
             text = path.read_text(encoding="utf-8", errors="ignore")
-            for m in call_re.finditer(text):
-                # Extract the call source span by balancing parentheses.
-                i = m.end() - 1
-                depth = 0
-                j = i
-                while j < len(text):
-                    if text[j] == '(':
-                        depth += 1
-                    elif text[j] == ')':
-                        depth -= 1
-                        if depth == 0:
-                            break
-                    j += 1
-                call_src = text[m.start():j + 1]
-                if "journalctl" not in call_src:
+            for line, src in self._calls(text):
+                if "journalctl" not in src:
                     continue
-                is_follow = ("'-f'" in call_src or '"-f"' in call_src
-                             or "'-fu'" in call_src or '"-fu"' in call_src)
-                is_captured = ("capture_output" in call_src
-                               or "stdout=" in call_src
-                               or "PIPE" in call_src)
-                if not (is_follow or is_captured):
-                    line = text[:m.start()].count("\n") + 1
+                follow = any(t in src for t in ("'-f'", '"-f"', "'-fu'", '"-fu"'))
+                captured = ("capture_output" in src or "stdout=" in src
+                            or "PIPE" in src)
+                if not (follow or captured):
                     offenders.append(f"{path.name}:{line}")
         assert offenders == [], (
-            "uncaptured non-follow journalctl subprocess calls (Class 3 ejects): "
-            + ", ".join(offenders)
-        )
+            "uncaptured non-follow journalctl calls (Class 3 ejects): "
+            + ", ".join(offenders))
+
+    def test_no_uncaptured_status_display_ejects(self):
+        """`systemctl status`, `pgrep`, `docker logs`, and non-follow `tail`
+        DISPLAY their output; uncaptured they stream to the terminal and eject
+        the operator. (Silent actions — systemctl start/stop/restart/enable/
+        daemon-reload/reboot — produce no display and are exempt.)"""
+        offenders = []
+        for path in self._tui_dir().rglob("*.py"):
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            for line, src in self._calls(text):
+                captured = ("capture_output" in src or "stdout=" in src
+                            or "PIPE" in src)
+                if captured:
+                    continue
+                follow = any(t in src for t in ("'-f'", '"-f"', "'-fu'", '"-fu"'))
+                is_display = (
+                    ("systemctl" in src and "status" in src)
+                    or "'pgrep'" in src or '"pgrep"' in src
+                    or ("docker" in src and "logs" in src)
+                    or (("'tail'" in src or '"tail"' in src) and not follow)
+                )
+                if is_display:
+                    offenders.append(f"{path.name}:{line}")
+        assert offenders == [], (
+            "uncaptured status-display ejects (Class 3): " + ", ".join(offenders))
+
+
+class TestStatusDisplaysInPane:
+
+    def test_qa_restart_meshtasticd_in_pane(self):
+        from handlers.quick_actions import QuickActionsHandler
+        h = QuickActionsHandler()
+        h.set_context(make_handler_context())
+        with patch('handlers.quick_actions.apply_config_and_restart',
+                   return_value=(True, "restarted ok")):
+            with patch('subprocess.run', return_value=_proc(stdout="active (running)")):
+                h._qa_restart_meshtasticd()
+        tb = _textboxes(h)
+        assert tb, "expected an in-pane result"
+        body = tb[0][1][1]
+        assert "restarted ok" in body and "active (running)" in body
+
+    def test_service_action_status_in_pane(self):
+        from handlers.service_menu import ServiceMenuHandler
+        h = ServiceMenuHandler()
+        h.set_context(make_handler_context())
+        with patch('subprocess.run', return_value=_proc(stdout="meshtasticd active")):
+            h._service_action("meshtasticd", "status")
+        tb = _textboxes(h)
+        assert tb and "meshtasticd active" in tb[0][1][1]

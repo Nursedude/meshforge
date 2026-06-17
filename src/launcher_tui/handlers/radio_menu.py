@@ -208,13 +208,13 @@ class RadioMenuHandler(BaseHandler):
             result = subprocess.run(cmd, timeout=30)
             if result.returncode != 0:
                 print(f"\nCommand failed (exit {result.returncode})")
-                print("Is meshtasticd running? Check: systemctl status meshtasticd")
+                print("Is meshtasticd running? Check it in Service Control.")
         except FileNotFoundError:
             self._offer_install_meshtastic_cli()
             return
         except subprocess.TimeoutExpired:
             print("\n\nCommand timed out (30s). Radio may not be connected.")
-            print("Check: systemctl status meshtasticd")
+            print("Check meshtasticd in Service Control.")
         except KeyboardInterrupt:
             print("\n\nAborted.")
         try:

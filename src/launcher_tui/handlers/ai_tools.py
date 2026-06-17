@@ -424,9 +424,8 @@ class AIToolsHandler(
             self.ctx.dialog.msgbox(
                 "Map Server Failed to Start",
                 "meshforge-map.service is installed but failed to start.\n\n"
-                "Diagnose:\n"
-                "  systemctl status meshforge-map\n"
-                "  journalctl -u meshforge-map -n 50\n\n"
+                "Diagnose: use 'View Map Server Logs' in this menu to see\n"
+                "the captured logs in-app.\n\n"
                 "Common causes:\n"
                 "  - Port 5000 already bound by another process\n"
                 "  - Python import error (check dependencies)\n"

@@ -194,44 +194,34 @@ class QuickActionsHandler(BaseHandler):
             self.ctx.wait_for_enter("Press Enter to continue...")
 
     def _qa_restart_meshtasticd(self):
-        """Quick: restart meshtasticd service."""
-        clear_screen()
-        print("Restarting meshtasticd...\n")
+        """Quick: restart meshtasticd; result + status shown in-pane (Class 3)."""
         try:
             success, msg = apply_config_and_restart('meshtasticd')
-            print(msg)
-            subprocess.run(
-                ['systemctl', 'status', 'meshtasticd', '--no-pager', '-l'],
-                timeout=10
-            )
         except Exception as e:
-            print(f"Error: {e}")
+            self.ctx.dialog.textbox("Restart meshtasticd", f"Error: {e}")
+            return
 
         if self.ctx.status_bar:
             self.ctx.status_bar.invalidate()
 
-        print()
-        self.ctx.wait_for_enter("Press Enter to continue...")
+        status = self._capture_command(
+            ['systemctl', 'status', 'meshtasticd', '--no-pager', '-l'], timeout=10)
+        self.ctx.dialog.textbox("Restart meshtasticd", f"{msg}\n\n{status}")
 
     def _qa_restart_rnsd(self):
-        """Quick: restart rnsd service."""
-        clear_screen()
-        print("Restarting rnsd...\n")
+        """Quick: restart rnsd; result + status shown in-pane (Class 3)."""
         try:
             success, msg = restart_service('rnsd')
-            print(msg)
-            subprocess.run(
-                ['systemctl', 'status', 'rnsd', '--no-pager', '-l'],
-                timeout=10
-            )
         except Exception as e:
-            print(f"Error: {e}")
+            self.ctx.dialog.textbox("Restart rnsd", f"Error: {e}")
+            return
 
         if self.ctx.status_bar:
             self.ctx.status_bar.invalidate()
 
-        print()
-        self.ctx.wait_for_enter("Press Enter to continue...")
+        status = self._capture_command(
+            ['systemctl', 'status', 'rnsd', '--no-pager', '-l'], timeout=10)
+        self.ctx.dialog.textbox("Restart rnsd", f"{msg}\n\n{status}")
 
     def _qa_port_check(self):
         """Quick: check network ports."""

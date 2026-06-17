@@ -516,7 +516,7 @@ def _handle_rnsd_crash(ctx) -> bool:
             else:
                 for line in output.splitlines()[-5:]:
                     print(f"  {line}")
-            print(f"  Full log: sudo journalctl -u rnsd -n 20")
+            print(f"  View full rnsd logs in-app (RNS > Diagnostics).")
         else:
             print("  (no output captured)")
     except subprocess.TimeoutExpired:
@@ -668,7 +668,7 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
         else:
             print("  No journal entries for rnsd")
     except (subprocess.SubprocessError, OSError):
-        print("  Check logs: sudo journalctl -u rnsd -n 20")
+        print("  View rnsd logs in-app (RNS > Diagnostics).")
 
     print("\n  Run RNS > Diagnostics for a full health check.")
     return False

@@ -297,7 +297,7 @@ class NomadNetServiceOpsMixin:
                 print("  tmux:      (no session)")
         if svc["n_restarts"] and svc["n_restarts"] > 0:
             print(f"  Restarts:  \033[0;33m{svc['n_restarts']}"
-                  f" — check journalctl --user -u nomadnet\033[0m")
+                  f" — view NomadNet logs from this menu\033[0m")
             logger.warning(
                 "NomadNet user unit has restarted %d times",
                 svc["n_restarts"],

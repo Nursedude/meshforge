@@ -493,7 +493,7 @@ class RNSConfigHandler(BaseHandler):
             f"Current loglevel: {current_level}\n\n"
             f"Higher = more verbose. Set to 6 (Debug) or 7\n"
             f"(Extreme) to see interface connection details.\n\n"
-            f"Logs visible via: sudo journalctl -u rnsd -f",
+            f"View logs in-app from the Logs menu (live follow available).",
             levels,
         )
 

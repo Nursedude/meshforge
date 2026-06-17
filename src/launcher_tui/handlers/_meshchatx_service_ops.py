@@ -278,8 +278,8 @@ class MeshChatXServiceOpsMixin:
                 print(f"  Port:      \033[0;33m{svc['port']} NOT bound — "
                       f"daemon may still be warming up\033[0m")
         if svc["n_restarts"] and svc["n_restarts"] > 0:
-            print(f"  Restarts:  \033[0;33m{svc['n_restarts']} — check "
-                  f"journalctl --user -u meshchatx\033[0m")
+            print(f"  Restarts:  \033[0;33m{svc['n_restarts']} — view "
+                  f"MeshChatX logs from this menu\033[0m")
             logger.warning(
                 "MeshChatX user unit has restarted %d times",
                 svc["n_restarts"],

@@ -428,8 +428,7 @@ class FavoritesHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Connection Failed",
                 "Could not connect to meshtasticd.\n\n"
-                "Ensure meshtasticd is running:\n"
-                "  sudo systemctl status meshtasticd"
+                "Ensure meshtasticd is running (check it in Service Control)."
             )
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Sync failed:\n{e}")
