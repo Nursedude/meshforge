@@ -122,3 +122,134 @@ class TestUpdateAllRoutesMeshtasticLib:
         routed = [c.args[0] for c in h._run_update_command.call_args_list]
         assert 'meshtasticd' in routed
         assert 'meshtastic_lib' not in routed
+
+    def test_cli_uses_pipx_helper_not_raw_command(self):
+        """The CLI must upgrade through `_pipx_upgrade_cli` (which runs pipx in
+        the pipx that OWNS the resolved binary), not the raw `pipx upgrade`
+        string — under sudo the raw command hits root's pipx, not the
+        operator's, so the upgrade no-ops and the flag never clears (the
+        read/write split, feedback_version_env_rigor)."""
+        from types import SimpleNamespace
+        h = _handler()
+        versions = {
+            'cli': SimpleNamespace(
+                name='Meshtastic CLI', update_available=True,
+                update_command='pipx upgrade meshtastic'),
+            'meshtasticd': SimpleNamespace(
+                name='meshtasticd', update_available=True,
+                update_command='sudo apt-get install --only-upgrade -y meshtasticd'),
+        }
+        h._pipx_upgrade_cli = MagicMock(return_value=(True, 'cli ok'))
+        h._run_update_command = MagicMock(return_value=(True, 'apt ok'))
+        with patch('handlers.updates._check_all_versions', return_value=versions):
+            h._update_all()
+
+        h._pipx_upgrade_cli.assert_called_once_with()
+        routed = [c.args[0] for c in h._run_update_command.call_args_list]
+        assert 'cli' not in routed
+        assert 'meshtasticd' in routed
+
+
+class TestPipxUpgradeCliTargetsOwner:
+    """`_pipx_upgrade_cli` must run pipx as the OWNER of the resolved CLI binary
+    so the upgrade lands in the pipx home the reader reads from."""
+
+    def test_drops_to_owner_when_owner_differs_from_euid(self):
+        h = _handler()
+        with patch('utils.cli.find_meshtastic_cli',
+                   return_value='/home/op/.local/bin/meshtastic'), \
+                patch('os.stat', return_value=MagicMock(st_uid=1000)), \
+                patch('pwd.getpwuid', return_value=MagicMock(pw_name='op')), \
+                patch('os.geteuid', return_value=0), \
+                patch('handlers.updates.subprocess.run',
+                      return_value=_result(0, stdout='ok')) as run:
+            success, _msg = h._pipx_upgrade_cli()
+        assert success is True
+        cmd = run.call_args.args[0]
+        assert cmd[:4] == ['sudo', '-u', 'op', '-H']
+        assert cmd[-3:] == ['pipx', 'upgrade', 'meshtastic']
+
+    def test_plain_pipx_when_owner_is_current_user(self):
+        h = _handler()
+        with patch('utils.cli.find_meshtastic_cli',
+                   return_value='/usr/local/bin/meshtastic'), \
+                patch('os.stat', return_value=MagicMock(st_uid=0)), \
+                patch('pwd.getpwuid', return_value=MagicMock(pw_name='root')), \
+                patch('os.geteuid', return_value=0), \
+                patch('handlers.updates.subprocess.run',
+                      return_value=_result(0)) as run:
+            success, _msg = h._pipx_upgrade_cli()
+        assert success is True
+        cmd = run.call_args.args[0]
+        assert cmd == ['pipx', 'upgrade', 'meshtastic']
+        assert 'sudo' not in cmd
+
+    def test_no_cli_found_returns_false(self):
+        h = _handler()
+        with patch('utils.cli.find_meshtastic_cli', return_value=None):
+            success, msg = h._pipx_upgrade_cli()
+        assert success is False
+        assert 'not found' in msg.lower()
+
+
+class TestLibVersionReadsWriteTarget:
+    """`get_meshtastic_lib_version` must read from the venv python the updater
+    writes to — not the checker's own interpreter — so read == write target."""
+
+    def test_reads_from_venv_python_when_present(self):
+        import updates.version_checker as vc
+        with patch.object(vc, 'get_meshforge_venv_dir',
+                          return_value=pathlib.Path('/opt/meshforge/venv')), \
+                patch('updates.version_checker.subprocess.run',
+                      return_value=_result(0, stdout='2.7.9\n')) as run:
+            v = vc.get_meshtastic_lib_version()
+        assert v == '2.7.9'
+        cmd = run.call_args.args[0]
+        assert cmd[0] == '/opt/meshforge/venv/bin/python'
+        assert '-c' in cmd
+
+    def test_venv_present_but_meshtastic_missing_returns_none(self):
+        import updates.version_checker as vc
+        with patch.object(vc, 'get_meshforge_venv_dir',
+                          return_value=pathlib.Path('/opt/meshforge/venv')), \
+                patch('updates.version_checker.subprocess.run',
+                      return_value=_result(1, stderr='PackageNotFoundError')):
+            assert vc.get_meshtastic_lib_version() is None
+
+    def test_no_venv_reads_in_process(self):
+        import updates.version_checker as vc
+        with patch.object(vc, 'get_meshforge_venv_dir', return_value=None), \
+                patch('importlib.metadata.version', return_value='2.7.9'):
+            assert vc.get_meshtastic_lib_version() == '2.7.9'
+
+
+class TestVenvDirGate:
+    """`get_meshforge_venv_dir` is the SSOT venv gate shared by reader+writer."""
+
+    def test_none_when_no_venv_marker_present(self):
+        import updates.version_checker as vc
+
+        def fake_exists(self):
+            s = str(self)
+            if s.endswith('.no-venv'):
+                return True            # opt-out marker present
+            if s.endswith('venv/bin/python'):
+                return True
+            return False
+        with patch.object(pathlib.Path, 'exists', fake_exists):
+            assert vc.get_meshforge_venv_dir() is None
+
+    def test_returns_dir_when_python_present_and_no_marker(self):
+        import updates.version_checker as vc
+
+        def fake_exists(self):
+            s = str(self)
+            if s.endswith('.no-venv'):
+                return False
+            if s.endswith('venv/bin/python'):
+                return True
+            return False
+        with patch.object(pathlib.Path, 'exists', fake_exists):
+            d = vc.get_meshforge_venv_dir()
+        assert d is not None
+        assert str(d).endswith('venv')

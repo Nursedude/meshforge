@@ -175,6 +175,10 @@ class UpdatesHandler(BaseHandler):
             # (which already uses the helper) worked.
             if key == 'meshtastic_lib':
                 success, msg = self._pip_install_meshtastic(upgrade=True)
+            elif key == 'cli':
+                # pipx upgrade must run in the pipx that owns the resolved CLI,
+                # not the sudo'd (root) context — read/write split, #24 sibling.
+                success, msg = self._pipx_upgrade_cli()
             else:
                 success, msg = self._run_update_command(key, info.update_command)
             results.append((info.name, success, msg))
@@ -299,7 +303,7 @@ class UpdatesHandler(BaseHandler):
             return
 
         self.ctx.dialog.infobox("Updating CLI", "Running pipx upgrade...")
-        success, msg = self._run_update_command('cli', info.update_command)
+        success, msg = self._pipx_upgrade_cli()
 
         if success:
             self.ctx.dialog.msgbox("Update Complete", "Meshtastic CLI updated successfully!")
@@ -386,19 +390,64 @@ class UpdatesHandler(BaseHandler):
                 f"Failed to update library.\n\n{msg}"
             )
 
+    def _pipx_upgrade_cli(self) -> Tuple[bool, str]:
+        """Upgrade the meshtastic CLI in the pipx that OWNS the resolved binary.
+
+        `find_meshtastic_cli()` — the reader, and what MeshForge actually runs —
+        prefers the operator's `~/.local/bin` under sudo, but a bare
+        `pipx upgrade meshtastic` runs in the CURRENT context (root, when the
+        TUI is launched with sudo) and upgrades ROOT's pipx instead. Read and
+        write then target different pipx homes, so the upgrade no-ops on root's
+        already-current copy and the flag never clears (the read/write split,
+        feedback_version_env_rigor). Run pipx as the binary's owner.
+        """
+        import os
+        import pwd
+        from utils.cli import find_meshtastic_cli
+
+        cli_path = find_meshtastic_cli()
+        if not cli_path:
+            return False, "meshtastic CLI not found"
+
+        try:
+            owner_uid = os.stat(cli_path).st_uid
+            owner_name = pwd.getpwuid(owner_uid).pw_name
+        except (OSError, KeyError) as e:
+            return False, f"could not resolve CLI owner ({cli_path}): {e}"
+
+        if owner_uid == os.geteuid():
+            cmd = ['pipx', 'upgrade', 'meshtastic']
+        else:
+            # Drop to the owning user so pipx uses THEIR pipx home
+            # (~/.local/share/pipx) rather than the current (root) one.
+            cmd = ['sudo', '-u', owner_name, '-H', 'pipx', 'upgrade', 'meshtastic']
+
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            if result.returncode == 0:
+                logger.info("Upgraded meshtastic CLI in %s's pipx", owner_name)
+                return True, result.stdout
+            return False, result.stderr or result.stdout or f"Exit code: {result.returncode}"
+        except subprocess.TimeoutExpired:
+            return False, "pipx upgrade timed out after 5 minutes"
+        except Exception as e:
+            return False, str(e)
+
     def _pip_install_meshtastic(self, upgrade: bool = False) -> Tuple[bool, str]:
         """Install or upgrade the meshtastic Python library.
 
         Handles venv vs system pip and dual-install for rnsd (Issue #24).
+        Resolves the venv via the SAME helper the version reader uses
+        (`get_meshforge_venv_dir`), so read and write target one interpreter —
+        otherwise an upgrade no-ops against a flag that never clears (the
+        read/write split, feedback_version_env_rigor).
         """
         from pathlib import Path
+        from updates.version_checker import get_meshforge_venv_dir
 
-        meshforge_dir = Path(__file__).parent.parent.parent.parent
-        venv_pip = meshforge_dir / 'venv' / 'bin' / 'pip'
-        no_venv_marker = meshforge_dir / '.no-venv'
-
-        if venv_pip.exists() and not no_venv_marker.exists():
-            pip_cmd = [str(venv_pip), 'install']
+        venv_dir = get_meshforge_venv_dir()
+        if venv_dir is not None:
+            pip_cmd = [str(venv_dir / 'bin' / 'pip'), 'install']
         else:
             pip_cmd = ['pip3', 'install', '--break-system-packages']
 

@@ -189,12 +189,61 @@ def get_meshtastic_cli_version() -> Optional[str]:
     return None
 
 
-def get_meshtastic_lib_version() -> Optional[str]:
-    """Get installed meshtastic Python library version.
+def get_meshforge_venv_dir() -> Optional[Path]:
+    """Return MeshForge's venv dir IFF the updater installs into it.
 
-    This checks the pip-installed library (used for protobuf definitions),
-    which is separate from the meshtastic CLI (typically installed via pipx).
+    SINGLE SOURCE OF TRUTH for "which python does MeshForge install into" —
+    consumed by BOTH the version reader (`get_meshtastic_lib_version`) and the
+    writer (`_pip_install_meshtastic`). The two MUST resolve the same target:
+    if the reader looks at the TUI's own interpreter (system python, root under
+    sudo) while the writer installs into the venv the services actually run, an
+    upgrade can succeed yet the "update available" flag never clears — the
+    read/write split (feedback_version_env_rigor).
+
+    The venv is used when `venv/bin/python` exists and there is no `.no-venv`
+    opt-out marker — identical to the writer's gate.
     """
+    repo_root = Path(__file__).resolve().parents[2]
+    venv_dir = repo_root / 'venv'
+    if (venv_dir / 'bin' / 'python').exists() and not (repo_root / '.no-venv').exists():
+        return venv_dir
+    return None
+
+
+def get_meshtastic_lib_version() -> Optional[str]:
+    """Get the meshtastic library version FROM THE PYTHON THE UPDATER WRITES TO.
+
+    When MeshForge uses a venv, read meshtastic from THAT interpreter (the one
+    the gateway/map services run and that `_pip_install_meshtastic` upgrades),
+    not from whatever python is running this checker. Otherwise the reported
+    version reflects the wrong site-packages and an upgrade no-ops against a
+    flag that never clears (the read/write split, feedback_version_env_rigor).
+    With no venv the updater uses system `pip3`, which targets this same
+    interpreter, so reading in-process is correct.
+    """
+    venv_dir = get_meshforge_venv_dir()
+    if venv_dir is not None:
+        venv_python = venv_dir / 'bin' / 'python'
+        try:
+            result = subprocess.run(
+                [str(venv_python), '-c',
+                 "import importlib.metadata as m; print(m.version('meshtastic'))"],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+            # venv is the install target but meshtastic isn't importable there:
+            # report not-installed (the install path writes into this same venv).
+            return None
+        except subprocess.TimeoutExpired:
+            logger.debug("venv meshtastic version check timed out")
+            return None
+        except Exception as e:
+            logger.debug(f"Error reading venv meshtastic version: {e}")
+            return None
+
+    # No venv → the updater uses system pip3 (--break-system-packages), which
+    # targets this interpreter; read it directly.
     try:
         import importlib.metadata
         return importlib.metadata.version('meshtastic')
