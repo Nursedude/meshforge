@@ -68,3 +68,28 @@ def test_rns_remove_interface_offers_rnsd_restart():
     assert args[1] == "rnsd"
     running = kwargs.get("running", args[2] if len(args) > 2 else None)
     assert running is True
+
+
+def test_auth_token_diagnostic_launches_repair_wizard():
+    """An RPC auth-token mismatch offers the in-app guided RNS Repair wizard
+    (which clears stale tokens + restarts rnsd), not a shell rm/systemctl
+    runbook."""
+    from handlers import _rns_diagnostics_engine as eng
+    handler = MagicMock()
+    handler.ctx = make_handler_context()
+    handler.ctx.dialog._yesno_returns = [True]  # accept the repair
+    with patch('handlers._rns_repair.repair_rns_shared_instance') as repair:
+        eng.diagnose_rns_connectivity(handler, "RNS: AuthenticationError digest rejected")
+    assert repair.called, "auth-token diagnostic must launch the in-app RNS Repair wizard"
+    assert repair.call_args[0][0] is handler
+
+
+def test_auth_token_diagnostic_repair_declined():
+    """Declining the offer runs nothing (no auto-repair)."""
+    from handlers import _rns_diagnostics_engine as eng
+    handler = MagicMock()
+    handler.ctx = make_handler_context()
+    handler.ctx.dialog._yesno_returns = [False]  # decline
+    with patch('handlers._rns_repair.repair_rns_shared_instance') as repair:
+        eng.diagnose_rns_connectivity(handler, "RNS: AuthenticationError digest rejected")
+    assert not repair.called

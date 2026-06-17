@@ -407,14 +407,17 @@ def diagnose_rns_connectivity(handler, error_output: str):
 
     # Auth errors are actionable — detect and show specific fix
     if "authenticationerror" in lower or "digest" in lower:
-        print("Cause: RPC authentication mismatch (stale auth tokens)")
-        print("Fix:   Clear auth tokens and restart rnsd:\n")
-        print("  sudo systemctl stop rnsd")
-        print("  sudo rm -f /etc/reticulum/storage/shared_instance_*")
-        print("  sudo rm -f /root/.reticulum/storage/shared_instance_*")
-        user_home = get_real_user_home()
-        print(f"  rm -f {user_home}/.reticulum/storage/shared_instance_*")
-        print("  sudo systemctl start rnsd")
+        print("Cause: RPC authentication mismatch (stale auth tokens).")
+        print("The guided RNS Repair clears the stale tokens and restarts rnsd.\n")
+        if handler.ctx.dialog.yesno(
+            "Repair RNS now?",
+            "Stale RPC auth tokens detected.\n\n"
+            "Run the guided RNS Repair in-app? It stops rnsd, clears the\n"
+            "stale shared-instance auth files, and restarts rnsd — no shell\n"
+            "needed.",
+        ):
+            from ._rns_repair import repair_rns_shared_instance
+            repair_rns_shared_instance(handler)
         return
 
     # Check if rnsd is running as root (causes identity/auth mismatch)
@@ -482,11 +485,10 @@ def diagnose_rns_connectivity(handler, error_output: str):
         for iface_name, reason, fix in blocking:
             print(f"  [{iface_name}] {reason}")
             print(f"  Fix: {fix}\n")
-        print("Options:")
-        print("  1. Start the missing dependency (see Fix above)")
-        print("  2. Disable the interface in /etc/reticulum/config")
-        print("     (change 'enabled = yes' to 'enabled = no')")
-        print("  3. sudo systemctl restart rnsd (after fixing)")
+        print("Fix this in-app:")
+        print("  - Address each blocking interface's dependency (Fix above).")
+        print("  - Or disable a blocking interface in RNS > Manage Interfaces.")
+        print("  - Then restart rnsd from Service Control.")
         return
 
     # No specific cause detected — show actual rnsd log
