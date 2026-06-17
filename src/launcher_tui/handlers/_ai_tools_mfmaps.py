@@ -360,7 +360,7 @@ class MeshForgeMapsExtensionMixin:
         if os.geteuid() != 0:
             self.ctx.dialog.msgbox(
                 "Root Required",
-                "Run MeshForge with sudo to install extensions.")
+                "Run MeshForge with sudo to install extensions.")  # in-domain-ok: privilege separation — install (clone + system service) needs root (in_domain_principle.md)
             return
 
         if not self.ctx.dialog.yesno(

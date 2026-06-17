@@ -788,19 +788,19 @@ MF018_PATTERNS = [
 # shell-escapes. Files absent here have an implicit baseline of 0 — any escape
 # in a new or clean file fails. DECREMENT as arcs close gaps; never increment.
 MF018_BASELINE = {
-    'src/launcher_tui/handlers/_ai_tools_mfmaps.py': 1,
+    'src/launcher_tui/handlers/_ai_tools_mfmaps.py': 0,  # Class 5 audit: privilege-relaunch (install needs root) marked in-domain-ok
     'src/launcher_tui/handlers/_nomadnet_iface_checks.py': 1,
     'src/launcher_tui/handlers/_nomadnet_install_utils.py': 8,
     'src/launcher_tui/handlers/_nomadnet_io_ops.py': 1,  # Arc 3: editor spawn -> in-app editbox (config_edit); chown-warning remains
     'src/launcher_tui/handlers/_nomadnet_rns_checks.py': 1,
     'src/launcher_tui/handlers/_nomadnet_service_ops.py': 2,
     'src/launcher_tui/handlers/_rns_diagnostics_engine.py': 2,
-    'src/launcher_tui/handlers/_rns_repair.py': 4,
-    'src/launcher_tui/handlers/broker.py': 8,
+    'src/launcher_tui/handlers/_rns_repair.py': 2,  # Class 5 audit: 2 privilege-relaunch (mkdir /etc/reticulum needs root) marked in-domain-ok
+    'src/launcher_tui/handlers/broker.py': 1,  # Class 5 audit: radio cmds -> in-app apply; privilege/cross-node marked; manual-install fallbacks removed (1 apt install remains)
     'src/launcher_tui/handlers/emergency_mode.py': 1,
-    'src/launcher_tui/handlers/extensions.py': 1,
+    'src/launcher_tui/handlers/extensions.py': 0,  # Class 5 audit: privilege-relaunch (install needs root) marked in-domain-ok
     'src/launcher_tui/handlers/favorites.py': 1,
-    'src/launcher_tui/handlers/meshtasticd_config.py': 5,  # Arc 3: config.yaml nano spawn -> in-app editbox (config_edit)
+    'src/launcher_tui/handlers/meshtasticd_config.py': 4,  # Arc 3: config.yaml nano spawn -> in-app editbox; Class 5 audit: 'Run with sudo' (overlay write) marked in-domain-ok
     'src/launcher_tui/handlers/meshtasticd_nodedb.py': 1,
     # meshtasticd_radio.py: 0 (Arc 3 — bootstrap "run with sudo to auto-create"
     # escapes replaced by an in-app "Create hardware templates now" action)

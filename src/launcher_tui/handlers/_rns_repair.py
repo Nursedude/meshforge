@@ -215,7 +215,7 @@ def repair_rns_shared_instance(handler) -> bool:
             print(f"  Ensured: {ReticulumPaths.ETC_INTERFACES}")
         else:
             print("  ERROR: Could not create /etc/reticulum/ directories")
-            print("  (Run MeshForge with sudo)")
+            print("  (Run MeshForge with sudo)")  # in-domain-ok: privilege separation — creating /etc/reticulum needs root (in_domain_principle.md)
             return False
 
         existing_config = ReticulumPaths.get_config_file()
@@ -232,7 +232,7 @@ def repair_rns_shared_instance(handler) -> bool:
                 print("  Run: rnsd --exampleconfig > /etc/reticulum/config")
     except (OSError, PermissionError) as e:
         print(f"  ERROR: {e}")
-        print("  (Run MeshForge with sudo)")
+        print("  (Run MeshForge with sudo)")  # in-domain-ok: privilege separation — creating /etc/reticulum needs root (in_domain_principle.md)
         return False
 
     # Step 2: Validate rnsd.service file

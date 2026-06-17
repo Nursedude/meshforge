@@ -136,7 +136,7 @@ def write_overlay(data: dict, dialog=None) -> bool:
         return True
     except PermissionError:
         if dialog:
-            dialog.msgbox("Error", "Permission denied. Run with sudo.")
+            dialog.msgbox("Error", "Permission denied. Run with sudo.")  # in-domain-ok: privilege separation — writing the meshtasticd overlay needs root (in_domain_principle.md)
         return False
     except Exception as e:
         if dialog:

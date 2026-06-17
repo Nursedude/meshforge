@@ -194,12 +194,7 @@ class BrokerHandler(BaseHandler):
                 self._apply_profile_to_mqtt(profile)
 
             elif choice == "radio":
-                cmds = get_meshtastic_mqtt_setup_commands(profile)
-                self.ctx.dialog.msgbox(
-                    "Radio MQTT Setup",
-                    f"Run these commands to configure your radio:\n\n{cmds}",
-                    width=70
-                )
+                self._apply_mqtt_to_radio(profile)
 
             elif choice == "install":
                 self._install_broker_config(profile)
@@ -323,9 +318,10 @@ class BrokerHandler(BaseHandler):
         else:
             self.ctx.dialog.msgbox(
                 "Manual Install Required",
-                "Run MeshForge with sudo to install broker config,\n"
-                "or manually create the mosquitto configuration.\n\n"
-                "Use 'View mosquitto.conf' to see the template."
+                "Run MeshForge with sudo to install the broker config "  # in-domain-ok: privilege separation — writing /etc/mosquitto needs root; the in-app installer does it in Admin mode (in_domain_principle.md)
+                "(it writes to /etc/mosquitto); the in-app installer does it "
+                "for you in Admin mode.\n\n"
+                "Use 'View mosquitto.conf' to see the template first."
             )
 
         cmds = get_meshtastic_mqtt_setup_commands(profile)
@@ -531,9 +527,8 @@ class BrokerHandler(BaseHandler):
         if os.geteuid() != 0:
             self.ctx.dialog.msgbox(
                 "Root Required",
-                "Run MeshForge with sudo to install packages.\n\n"
-                "Or install manually:\n"
-                "  sudo apt install mosquitto mosquitto-clients"
+                "Run MeshForge with sudo to install the mosquitto packages — "  # in-domain-ok: privilege separation — apt install needs root; the in-app installer runs apt in Admin mode (in_domain_principle.md)
+                "the in-app installer runs apt for you in Admin mode."
             )
             return
 
@@ -615,7 +610,7 @@ class BrokerHandler(BaseHandler):
     def _mosquitto_action(self, action: str):
         """Start/stop mosquitto service."""
         if os.geteuid() != 0:
-            self.ctx.dialog.msgbox("Root Required", f"Run MeshForge with sudo to {action} services.")
+            self.ctx.dialog.msgbox("Root Required", f"Run MeshForge with sudo to {action} services.")  # in-domain-ok: privilege separation — systemctl service control needs root (in_domain_principle.md)
             return
 
         try:
@@ -726,7 +721,7 @@ class BrokerHandler(BaseHandler):
             f"Active Profile: {active.display_name}",
             f"Broker: {active.host}:{active.port}",
             "",
-            "Run these commands on each gateway node to connect",
+            "Run these commands on each gateway node to connect",  # in-domain-ok: cross-node — these configure OTHER gateway nodes' radios (over WiFi), not this box; this box's radio uses 'Apply to radio' (in_domain_principle.md)
             "the radio to your MQTT broker:",
             "",
             cmds,
@@ -768,3 +763,72 @@ class BrokerHandler(BaseHandler):
                 "Could not write the MQTT subscriber config to disk — "
                 "the broker profile was saved but NOT applied to the subscriber.",
             )
+
+    def _apply_mqtt_to_radio(self, profile):
+        """Apply this broker's MQTT settings to the LOCAL radio IN-APP
+        (In-Domain/MF018) — replaces a shell-command block the operator used to
+        copy out and type to configure the radio.
+
+        For a local broker the radio (on WiFi) cannot reach 'localhost', so we
+        prompt for the host's LAN IP. The device write goes through the
+        remediation surface (ratify -> apply -> honest report): each meshtastic
+        CLI command runs with a timeout, and a nonzero exit is reported as a
+        REAL failure — never a silent "configured". Commands are built from the
+        broker_profiles SSOT (no drift with the displayed command block).
+        """
+        from utils.broker_profiles import (
+            get_meshtastic_mqtt_setup_argv, host_needs_lan_ip,
+        )
+
+        host = None
+        if host_needs_lan_ip(profile):
+            host = self.ctx.dialog.inputbox(
+                "Radio MQTT Setup",
+                "The radio connects to the broker over WiFi and cannot reach "
+                "'localhost'. Enter the LAN IP (or hostname) of THIS machine "
+                "running mosquitto:",
+                init="",
+            )
+            if not host or not host.strip():
+                return  # cancelled / empty — nothing applied
+            host = host.strip()
+
+        cli = self.ctx.get_meshtastic_cli()
+        if not cli:
+            self.ctx.dialog.msgbox(
+                "Radio MQTT Setup",
+                "The meshtastic CLI is not available. Install it from "
+                "Radio Tools, then retry — the radio settings were NOT applied.")
+            return
+
+        argv_cmds = get_meshtastic_mqtt_setup_argv(profile, host=host)
+
+        from remediation import RemediationAction, propose_remediation
+
+        def _apply():
+            import subprocess
+            for cmd in argv_cmds:
+                # cmd[0] is the literal 'meshtastic'; run via the resolved CLI.
+                full = [cli] + list(cmd[1:])
+                try:
+                    r = subprocess.run(full, capture_output=True, text=True,
+                                       timeout=60)
+                except (subprocess.SubprocessError, OSError) as e:
+                    return (False, f"Radio command failed to run: {e}")
+                if r.returncode != 0:
+                    detail = (r.stderr or r.stdout or "").strip()[:200]
+                    return (False,
+                            f"Radio rejected: {' '.join(cmd[3:6])}…\n{detail}")
+            return (True, "Radio MQTT settings applied — the radio will "
+                          "connect to the broker over WiFi.")
+
+        propose_remediation(
+            self.ctx, "Apply MQTT to Radio",
+            f"Apply broker '{profile.name}' MQTT settings to the LOCAL radio "
+            f"now? Writes mqtt.* + channel uplink/downlink to the radio.",
+            [RemediationAction(
+                label="Apply to radio now",
+                description="meshtastic --set mqtt.* + --ch-set uplink/downlink",
+                apply=_apply,
+            )],
+        )

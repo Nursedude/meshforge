@@ -690,10 +690,55 @@ def enable_mosquitto_at_boot() -> Tuple[bool, str]:
     return _enable_service('mosquitto', start=True)
 
 
-def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile) -> str:
-    """Generate meshtastic CLI commands to configure the radio for this broker.
+def host_needs_lan_ip(profile: BrokerProfile) -> bool:
+    """True when the broker host is local — the radio connects over WiFi and
+    cannot reach 'localhost'/127.0.0.1, so the radio must use the host's LAN IP.
+    The in-app apply prompts for that IP; the display string shows a placeholder.
+    """
+    return profile.host in ("localhost", "127.0.0.1")
 
-    Returns a multi-line string of commands the user can run.
+
+def get_meshtastic_mqtt_setup_argv(
+        profile: BrokerProfile, host: str = None) -> List[List[str]]:
+    """The meshtastic CLI commands to point the radio at this broker, as argv
+    lists ready to execute.
+
+    SSOT for BOTH the human-readable display string (get_meshtastic_mqtt_setup_
+    commands) and the in-app apply (broker._apply_mqtt_to_radio) — so the two can
+    never drift (honest_failure_modes #5). ``host`` overrides the broker host
+    (pass the host's LAN IP for a local broker — see host_needs_lan_ip); None
+    uses profile.host verbatim.
+    """
+    h = host if host is not None else profile.host
+    base = ["meshtastic", "--host", "localhost"]
+
+    set_cmd = base + [
+        "--set", "mqtt.enabled", "true",
+        "--set", "mqtt.address", h,
+    ]
+    if profile.username:
+        set_cmd += ["--set", "mqtt.username", profile.username]
+    if profile.password:
+        set_cmd += ["--set", "mqtt.password", profile.password]
+    set_cmd += [
+        "--set", "mqtt.encryption_enabled", "true",
+        "--set", "mqtt.json_enabled", str(profile.json_enabled).lower(),
+        "--set", "mqtt.tls_enabled", str(profile.use_tls).lower(),
+    ]
+
+    ch_cmd = base + [
+        "--ch-set", "uplink_enabled", "true", "--ch-index", "0",
+        "--ch-set", "downlink_enabled", "true", "--ch-index", "0",
+    ]
+    return [set_cmd, ch_cmd]
+
+
+def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile) -> str:
+    """Render the radio MQTT setup as a human-readable command block.
+
+    Renders from get_meshtastic_mqtt_setup_argv (the SSOT) so display and the
+    in-app apply stay in lockstep. A local broker shows a <YOUR_SERVER_IP>
+    placeholder (the radio needs the host's LAN IP, not localhost).
     """
     lines = [
         "# Configure Meshtastic radio MQTT module for this broker",
@@ -701,33 +746,18 @@ def get_meshtastic_mqtt_setup_commands(profile: BrokerProfile) -> str:
         "",
     ]
 
-    host = profile.host
-    if host in ("localhost", "127.0.0.1"):
+    host = None
+    if host_needs_lan_ip(profile):
         lines.append("# NOTE: Set broker to your device's LAN IP, not localhost")
         lines.append("# The radio needs the IP of the machine running mosquitto")
         host = "<YOUR_SERVER_IP>"
 
-    cmd_parts = ["meshtastic", "--host", "localhost"]
-    cmd_parts.extend(["--set", "mqtt.enabled", "true"])
-    cmd_parts.extend(["--set", "mqtt.address", host])
+    set_cmd, ch_cmd = get_meshtastic_mqtt_setup_argv(profile, host=host)
 
-    if profile.username:
-        cmd_parts.extend(["--set", "mqtt.username", profile.username])
-    if profile.password:
-        cmd_parts.extend(["--set", "mqtt.password", profile.password])
-
-    cmd_parts.extend(["--set", "mqtt.encryption_enabled", "true"])
-    cmd_parts.extend(["--set", "mqtt.json_enabled", str(profile.json_enabled).lower()])
-    cmd_parts.extend(["--set", "mqtt.tls_enabled", str(profile.use_tls).lower()])
-
-    lines.append(" \\\n  ".join(cmd_parts))
+    lines.append(" \\\n  ".join(set_cmd))
     lines.append("")
-
-    # Channel uplink/downlink
     lines.append("# Enable uplink (mesh -> MQTT) and downlink (MQTT -> mesh)")
-    lines.append("meshtastic --host localhost \\")
-    lines.append("  --ch-set uplink_enabled true --ch-index 0 \\")
-    lines.append("  --ch-set downlink_enabled true --ch-index 0")
+    lines.append(" \\\n  ".join(ch_cmd))
 
     return "\n".join(lines)
 
