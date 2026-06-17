@@ -369,12 +369,8 @@ class MeshtasticdConfigHandler(BaseHandler):
                 print("Permission denied. Try: sudo cat /etc/meshtasticd/config.yaml")
         else:
             print("config.yaml not found!\n")
-            print("Run MeshForge with sudo to auto-create:")
-            print("  sudo python3 src/launcher_tui/main.py")
-            print("\nOr create manually:")
-            print("  sudo mkdir -p /etc/meshtasticd/{available.d,config.d}")
-            print("  sudo cp templates/config.yaml /etc/meshtasticd/")
-            print("  sudo cp templates/available.d/*.yaml /etc/meshtasticd/available.d/")
+            print("Relaunch MeshForge in Admin mode (sudo) — it auto-creates")
+            print("the meshtasticd config tree from the bundled templates.")
 
         self.ctx.wait_for_enter()
 
@@ -390,8 +386,7 @@ class MeshtasticdConfigHandler(BaseHandler):
 
         if not config_d.exists():
             print("config.d/ directory not found.")
-            print("\nRun with sudo to auto-create, or:")
-            print("  sudo mkdir -p /etc/meshtasticd/config.d")
+            print("\nRelaunch MeshForge in Admin mode (sudo) to auto-create it.")
             self.ctx.wait_for_enter()
             return
 
@@ -472,7 +467,7 @@ class MeshtasticdConfigHandler(BaseHandler):
             elif is_running and preset_display.startswith("Unknown"):
                 text += "\n  (CLI detection unavailable — select preset manually)"
             text += f"\n\nConfig File: {config_path}"
-            text += f"\nConfig Exists: {'Yes' if config_exists else 'No — run with sudo to create'}"
+            text += f"\nConfig Exists: {'Yes' if config_exists else 'No — relaunch in Admin mode to create'}"
             text += f"\nAvailable Templates: {available_count}"
             text += f"\n\nActive Hardware Configs: {len(active_configs)}"
 

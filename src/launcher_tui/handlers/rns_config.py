@@ -225,8 +225,8 @@ class RNSConfigHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "No Config",
                     "No Reticulum config found and template missing.\n\n"
-                    "Install RNS first: pipx install rns\n"
-                    "Then run rnsd once to generate default config."
+                    "Reinstall MeshForge to restore RNS (Settings > Updates),\n"
+                    "then run rnsd once to generate the default config."
                 )
                 return
 
@@ -427,7 +427,7 @@ class RNSConfigHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Permission Denied",
                 f"Cannot read config at:\n  {config_path}\n\n"
-                f"Run MeshForge with sudo to access this file,\n"
+                f"Relaunch MeshForge in Admin mode (sudo) to access this file,\n"
                 f"or use 'Edit Reticulum Config' to migrate it."
             )
 
@@ -647,6 +647,6 @@ class RNSConfigHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 f"{action} Failed",
                 f"Failed to {action.lower()} plugin:\n{e}\n\n"
-                f"Try running with sudo, or manually copy:\n"
-                f"  sudo cp {vendored} {interfaces_dir}/"
+                f"Relaunch MeshForge in Admin mode (sudo) to place the plugin\n"
+                f"(this writes into {interfaces_dir})."
             )

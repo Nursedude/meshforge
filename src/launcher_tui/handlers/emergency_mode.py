@@ -227,7 +227,7 @@ class EmergencyModeHandler(BaseHandler):
             )
         except FileNotFoundError:
             print("ERROR: meshtastic CLI not available.")
-            print("Install: pipx install meshtastic[cli]")
+            print("Install it in-app from Radio > Install/Reinstall CLI.")
         except subprocess.TimeoutExpired:
             print("ERROR: Command timed out.")
         except Exception as e:

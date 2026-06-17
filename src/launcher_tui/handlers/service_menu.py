@@ -509,7 +509,7 @@ WantedBy=multi-user.target
         rnsd_path = shutil.which('rnsd')
         if not rnsd_path:
             print("\033[0;31mError:\033[0m rnsd not found in PATH.")
-            print("Install Reticulum: pip install rns")
+            print("Reinstall MeshForge to restore RNS (Settings > Updates).")
             return False
 
         try:
@@ -878,8 +878,7 @@ WantedBy=multi-user.target
                 self.ctx.dialog.msgbox(
                     "Setup Cancelled",
                     "MQTT setup requires mosquitto.\n\n"
-                    "Install manually with:\n"
-                    "  sudo apt install mosquitto mosquitto-clients"
+                    "Re-run this setup to install it in-app."
                 )
                 return
         else:

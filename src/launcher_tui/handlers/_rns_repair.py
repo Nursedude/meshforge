@@ -136,7 +136,7 @@ def validate_rnsd_service_file() -> bool:
     if not Path(rnsd_path).exists():
         print(f"  ERROR: No rnsd binary found on this system.")
         print(f"  Checked: /opt/meshforge/venv/bin/rnsd, PATH, /usr/local/bin/rnsd")
-        print(f"  Install RNS: pip install rns")
+        print(f"  Reinstall MeshForge to restore RNS (Settings > Updates).")
         return False
 
     service_content = f'''[Unit]
@@ -750,7 +750,6 @@ def fix_rns_storage_permissions(ctx) -> bool:
             "Permission Fix Failed",
             f"Could not fix /etc/reticulum/storage permissions:\n"
             f"  {e}\n\n"
-            f"Try manually:\n"
-            f"  sudo chmod 777 /etc/reticulum/storage"
+            f"Relaunch MeshForge in Admin mode (sudo) to fix permissions."
         )
         return False

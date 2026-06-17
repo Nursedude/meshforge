@@ -68,10 +68,17 @@ def test_clean_file_passes(tmp_path):
     assert issues == []
 
 
-def test_baseline_only_shrinks_invariant():
-    """Guard against silently bumping a baseline to dodge the ratchet: total
-    baseline escapes must not exceed the frozen-2026-05-29 total of 79."""
-    assert sum(lint.MF018_BASELINE.values()) <= 79
+def test_baseline_retired_to_zero():
+    """The In-Domain arc retired the backlog: the baseline is now EMPTY, so
+    every TUI file has an implicit baseline of 0 and any new bare shell-escape
+    fails the build. This is the terminal state of the ratchet — it only ever
+    shrank (frozen-2026-05-29 total was 79). Re-adding a nonzero entry to grant
+    a file headroom is a regression; close the escape in-app or mark a genuine
+    exception instead (foundations/in_domain_principle.md)."""
+    assert lint.MF018_BASELINE == {}, (
+        "MF018 backlog must stay retired — no file may carry shell-escape "
+        f"headroom; got {lint.MF018_BASELINE}"
+    )
 
 
 def test_files_outside_tui_scope_ignored(tmp_path):

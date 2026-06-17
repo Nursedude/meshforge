@@ -59,7 +59,7 @@ class NomadNetIOOpsMixin:
                     return
                 if 'ModuleNotFoundError' in line or 'ImportError' in line:
                     print("\nDiagnosis: Missing Python dependencies")
-                    print("  Fix: pipx reinstall nomadnet")
+                    print("  Fix: Reinstall via Service Control > Reinstall NomadNet")
                     return
 
             print("\n--- stderr output ---")

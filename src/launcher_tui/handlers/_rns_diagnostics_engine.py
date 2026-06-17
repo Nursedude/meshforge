@@ -316,7 +316,7 @@ def run_rns_diagnostics(handler):
             # Provide specific reason instead of generic message
             rnstatus_path = shutil.which('rnstatus')
             if not rnstatus_path:
-                print("  rnstatus not installed — install RNS tools: pip install rns")
+                print("  rnstatus not found — reinstall MeshForge to restore RNS (Settings > Updates).")
             elif running and not instance_ok:
                 print("  rnstatus available but cannot connect (shared instance not available)")
             else:
@@ -656,9 +656,8 @@ def diagnose_rns_port_conflict(handler):
             print("  sudo systemctl restart rnsd")
         else:
             print("No rnsd found. A stale process may be holding the port.")
-            print("  Find it:    sudo lsof -i UDP:37428")
-            print("  Kill stale: pkill -f rnsd")
-            print("  Or wait ~30s for the socket to timeout")
+            print("  Restart rnsd from Service Control to clear it,")
+            print("  or wait ~30s for the socket to time out.")
     except (subprocess.SubprocessError, OSError) as e:
         logger.debug("RNS port conflict diagnosis failed: %s", e)
         print("  Try: sudo systemctl restart rnsd")

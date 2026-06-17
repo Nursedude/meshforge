@@ -348,7 +348,7 @@ class MetricsHandler(BaseHandler):
             else:
                 print(f"Error: {result.stderr}")
         except FileNotFoundError:
-            print("curl not found. Install with: apt install curl")
+            print("curl not found — required for this network check.")
         except subprocess.TimeoutExpired:
             print("Request timed out.")
         except Exception as e:
@@ -452,7 +452,7 @@ class MetricsHandler(BaseHandler):
         if shutil.which('grafana-server'):
             lines.append("grafana-server: INSTALLED")
         else:
-            lines.extend(["grafana-server: NOT FOUND", "", "Install with: sudo apt install grafana"])
+            lines.extend(["grafana-server: NOT FOUND", "", "Grafana is an optional external dashboard service."])
         self.ctx.dialog.msgbox("Grafana Status", "\n".join(lines))
 
     def _grafana_open(self, url):

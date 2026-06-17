@@ -333,7 +333,8 @@ class MQTTHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "WebSocket Unavailable",
                 "WebSocket bridge not available.\n\n"
-                "Install websockets: pip install websockets"
+                "The 'websockets' package ships in requirements.txt —\n"
+                "reinstall dependencies from Settings > Updates."
             )
             return
 
@@ -1239,7 +1240,7 @@ class MQTTHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "CLI Not Found",
                 "meshtastic CLI not found.\n\n"
-                "Install it with: pipx install meshtastic"
+                "Install it in-app from Radio > Install/Reinstall CLI."
             )
             return
 

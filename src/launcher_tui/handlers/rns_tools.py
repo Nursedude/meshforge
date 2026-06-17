@@ -184,7 +184,7 @@ class RNSToolsHandler(BaseHandler):
             return -1
         except FileNotFoundError:
             print(f"\n  Command not found: {cmd[0]}")
-            print("  Install RNS: sudo pip3 install --break-system-packages rns")
+            print("  Reinstall MeshForge to restore RNS (Settings > Updates).")
             return -1
         except (subprocess.SubprocessError, OSError) as e:
             print(f"\n  Failed to run: {e}")

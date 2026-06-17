@@ -309,7 +309,7 @@ class TacticalOpsHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "QR Not Available",
                 "QR code generation requires 'qrcode' package.\n"
-                "Install with: pip install qrcode"
+                "It ships in requirements.txt — reinstall via Settings > Updates."
             )
             return
 
@@ -350,7 +350,7 @@ class TacticalOpsHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Map Not Available",
                 "Tactical map requires 'folium' package.\n"
-                "Install with: pip install folium"
+                "It ships in requirements.txt — reinstall via Settings > Updates."
             )
             return
 

@@ -168,7 +168,7 @@ class QuickActionsHandler(BaseHandler):
             )
         except FileNotFoundError:
             print("Error: 'meshtastic' CLI not installed.")
-            print("Install with: pipx install meshtastic[cli]")
+            print("Install it in-app from Radio > Install/Reinstall CLI.")
         except subprocess.TimeoutExpired:
             print("Error: Command timed out. Is meshtasticd running?")
         except Exception as e:
@@ -528,7 +528,7 @@ class QuickActionsHandler(BaseHandler):
                 if self.ctx.registry.dispatch("maps_viz", "coverage"):
                     return
             print("  Coverage map generation not available.")
-            print("  Ensure folium is installed: pip install folium")
+            print("  'folium' ships in requirements.txt — reinstall via Settings > Updates.")
         except Exception as e:
             logger.debug(f"Coverage map quick action failed: {e}")
             print(f"Error: {e}")

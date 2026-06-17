@@ -92,11 +92,8 @@ class NomadNetIfaceChecksMixin:
                 self.ctx.dialog.msgbox(
                     "Not Available",
                     "RNS Diagnostics handler not found.\n\n"
-                    "Align users manually, e.g. edit\n"
-                    "  /etc/systemd/system/rnsd.service\n"
-                    f"to set User={nomadnet_user}, then:\n"
-                    "  sudo systemctl daemon-reload\n"
-                    "  sudo systemctl restart rnsd",
+                    "Use Service Control > Repair RNS alignment to align the\n"
+                    f"rnsd user to {nomadnet_user} in-app.",
                 )
             return False
 

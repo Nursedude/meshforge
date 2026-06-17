@@ -365,7 +365,7 @@ class FavoritesHandler(BaseHandler):
                 "Favorites Sync Unavailable",
                 "The isFavorite flag requires the meshtastic Python library\n"
                 "(TCP/protobuf API). The HTTP API does not expose it.\n\n"
-                "Install with: pip install meshtastic\n\n"
+                "Install it in-app from Radio > Install/Reinstall CLI.\n\n"
                 "You can still set favorites via the meshtastic CLI."
             )
             return

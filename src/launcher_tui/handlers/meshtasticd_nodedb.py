@@ -196,7 +196,7 @@ class MeshtasticdNodeDBHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "CLI Not Found",
                     "meshtastic CLI not installed.\n\n"
-                    "Install: pip install meshtastic"
+                    "Install it in-app from Radio > Install/Reinstall CLI."
                 )
                 return
             except subprocess.TimeoutExpired:

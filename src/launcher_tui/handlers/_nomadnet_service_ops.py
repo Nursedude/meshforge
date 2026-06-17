@@ -576,7 +576,7 @@ class NomadNetServiceOpsMixin:
             self.ctx.dialog.msgbox(
                 "tmux not installed",
                 "tmux is required to attach to NomadNet's detached session.\n\n"
-                "Install with:\n  sudo apt-get install -y tmux",
+                "Service Control > Reinstall NomadNet installs tmux for you.",
             )
             return
 
@@ -696,7 +696,7 @@ class NomadNetServiceOpsMixin:
                 self.ctx.dialog.msgbox(
                     "tmux install failed",
                     f"Could not install tmux:\n\n{tmux_out}\n\n"
-                    f"Install manually and re-run Install systemd user unit.",
+                    f"Check the output above, then re-run Install systemd user unit.",
                 )
                 return
 

@@ -154,9 +154,7 @@ class NomadNetRNSChecksMixin:
                 self.ctx.dialog.msgbox(
                     "Not Available",
                     "RNS Diagnostics handler not found.\n\n"
-                    "Try manually:\n"
-                    "  sudo systemctl start rnsd\n"
-                    "  rnstatus",
+                    "Start rnsd from Service Control, then re-run diagnostics.",
                 )
             return False  # Return to NomadNet menu after diagnostics
 

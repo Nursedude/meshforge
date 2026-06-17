@@ -252,7 +252,7 @@ class RadioMenuHandler(BaseHandler):
                 )
                 if result.returncode != 0:
                     print("\nFailed to install pipx.")
-                    print("Try manually: sudo apt install pipx")
+                    print("Relaunch MeshForge in Admin mode and retry from this menu.")
                     self.ctx.wait_for_enter()
                     return
 
@@ -296,19 +296,19 @@ class RadioMenuHandler(BaseHandler):
                     print("or run: eval \"$(pipx ensurepath)\"")
             else:
                 print("\nInstallation failed.")
-                print("Try manually: pipx install meshtastic")
+                print("Retry from this menu, or check your network connection.")
 
         except FileNotFoundError:
             print("pipx not found.")
-            print("Try: sudo apt install pipx && pipx install meshtastic")
+            print("Relaunch MeshForge in Admin mode to install pipx, then retry.")
         except KeyboardInterrupt:
             print("\n\nInstallation cancelled.")
         except subprocess.TimeoutExpired:
             print("\n\nInstallation timed out.")
-            print("Try manually: pipx install meshtastic")
+            print("Check your network connection and retry from this menu.")
         except Exception as e:
             print(f"\nInstallation error: {e}")
-            print("Try manually: pipx install meshtastic")
+            print("Retry from this menu.")
 
         try:
             self.ctx.wait_for_enter()

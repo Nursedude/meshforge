@@ -784,39 +784,16 @@ MF018_PATTERNS = [
     re.compile(r"(?i)(try|find it|run)[: ]\s*(sudo )?(lsof|pkill)\b"),
 ]
 
-# Frozen 2026-05-29 (the foundation arc). Per-file count of pre-existing
-# shell-escapes. Files absent here have an implicit baseline of 0 — any escape
-# in a new or clean file fails. DECREMENT as arcs close gaps; never increment.
-MF018_BASELINE = {
-    'src/launcher_tui/handlers/_ai_tools_mfmaps.py': 0,  # Class 5 audit: privilege-relaunch (install needs root) marked in-domain-ok
-    'src/launcher_tui/handlers/_nomadnet_iface_checks.py': 1,
-    'src/launcher_tui/handlers/_nomadnet_install_utils.py': 0,  # Class 5 install: install delegates to canonical install_nomadnet.sh (in-app retry on fail); uninstall/diagnostic point at in-app Reinstall
-    'src/launcher_tui/handlers/_nomadnet_io_ops.py': 1,  # Arc 3: editor spawn -> in-app editbox (config_edit); chown-warning remains
-    'src/launcher_tui/handlers/_nomadnet_rns_checks.py': 1,
-    'src/launcher_tui/handlers/_nomadnet_service_ops.py': 2,
-    'src/launcher_tui/handlers/_rns_diagnostics_engine.py': 2,
-    'src/launcher_tui/handlers/_rns_repair.py': 2,  # Class 5 audit: 2 privilege-relaunch (mkdir /etc/reticulum needs root) marked in-domain-ok
-    'src/launcher_tui/handlers/broker.py': 0,  # Class 5 install: missing mosquitto_pub -> in-app _install_mosquitto offer (last apt-install escape closed)
-    'src/launcher_tui/handlers/emergency_mode.py': 1,
-    'src/launcher_tui/handlers/extensions.py': 0,  # Class 5 audit: privilege-relaunch (install needs root) marked in-domain-ok
-    'src/launcher_tui/handlers/favorites.py': 1,
-    'src/launcher_tui/handlers/meshtasticd_config.py': 4,  # Arc 3: config.yaml nano spawn -> in-app editbox; Class 5 audit: 'Run with sudo' (overlay write) marked in-domain-ok
-    'src/launcher_tui/handlers/meshtasticd_nodedb.py': 1,
-    # meshtasticd_radio.py: 0 (Arc 3 — bootstrap "run with sudo to auto-create"
-    # escapes replaced by an in-app "Create hardware templates now" action)
-    'src/launcher_tui/handlers/metrics.py': 2,
-    'src/launcher_tui/handlers/mqtt.py': 2,
-    'src/launcher_tui/handlers/nomadnet.py': 4,
-    'src/launcher_tui/handlers/quick_actions.py': 2,
-    'src/launcher_tui/handlers/radio_menu.py': 4,
-    'src/launcher_tui/handlers/rns_config.py': 3,  # Arc 2: loglevel→restart via remediation surface; Arc 3: editor spawn -> in-app editbox
-    'src/launcher_tui/handlers/rns_diagnostics.py': 4,
-    'src/launcher_tui/handlers/rns_tools.py': 1,
-    'src/launcher_tui/handlers/service_menu.py': 4,
-    'src/launcher_tui/handlers/system_tools.py': 0,  # Class 5 install: stale baseline — handler reduced to a deliberate "drop to bash" tool with no shell-escape strings
-    'src/launcher_tui/handlers/tactical_ops.py': 2,
-    'src/launcher_tui/handlers/web_client.py': 1,
-}
+# Frozen 2026-05-29 (the foundation arc), RETIRED 2026-06-16 (the In-Domain arc).
+# The backlog only ever shrank; as of the Class 5 install close-out + remainder
+# sweep, EVERY src/launcher_tui/ file scans to 0 shell-escapes (real escapes
+# closed via in-app actions/pointers; legitimate privilege/cross-app/protocol
+# cases carry an inline '# in-domain-ok: <reason>' marker, which the counter
+# skips). The baseline is therefore empty: every TUI file has an implicit
+# baseline of 0, so ANY new bare shell-escape fails the build. Do NOT re-add
+# entries to grant a file headroom — close the escape with an in-app action or
+# mark a genuine exception (foundations/in_domain_principle.md).
+MF018_BASELINE = {}
 
 
 def _count_in_domain_escapes(filepath: str) -> tuple:

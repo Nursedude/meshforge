@@ -460,7 +460,7 @@ class RNSDiagnosticsHandler(BaseHandler):
                 except (subprocess.SubprocessError, OSError) as e:
                     print(f"  {pip_name}: error — {e}")
         else:
-            print(f"  Skipped. Install manually: sudo {rnsd_python} -m pip install {pkg_list}")
+            print(f"  Skipped — re-run this check and confirm to install in-app.")
             print(f"  Without these packages, rnsd will crash on startup.")
 
     def _run_rns_tool(self, cmd: list, tool_name: str):
@@ -555,7 +555,7 @@ class RNSDiagnosticsHandler(BaseHandler):
                         except (subprocess.SubprocessError, OSError) as e:
                             print(f"Failed to start rnsd: {e}")
                     else:
-                        print("To start rnsd manually: sudo systemctl start rnsd")
+                        print("Start rnsd from Service Control, or relaunch in Admin mode.")
                 else:
                     # rnsd IS running but tools can't connect.
                     # Most common cause: rnsd still initializing (crypto, interfaces).
@@ -609,7 +609,7 @@ class RNSDiagnosticsHandler(BaseHandler):
                         print(f"\n{tool_name} reported an error. Check: sudo journalctl -u rnsd -n 10")
         except FileNotFoundError:
             print(f"\n{tool_name} not found. Is RNS installed?")
-            print("Install: pipx install rns")
+            print("Reinstall MeshForge to restore RNS (Settings > Updates).")
         except subprocess.TimeoutExpired:
             print(f"\n{tool_name} timed out. RNS may be unresponsive.")
             print("Try restarting rnsd: sudo systemctl restart rnsd")
@@ -734,7 +734,7 @@ class RNSDiagnosticsHandler(BaseHandler):
             self.ctx.dialog.msgbox(
                 "Permission Denied",
                 f"Cannot write to {override_dir}\n\n"
-                "MeshForge needs to run with sudo to fix this.",
+                "Relaunch MeshForge in Admin mode (sudo) to fix this.",
             )
             return False
         except Exception as e:

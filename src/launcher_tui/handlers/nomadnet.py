@@ -369,7 +369,7 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                     "Ownership Fix Failed",
                     f"Could not fix ownership of:\n  {dir_path}\n\n"
                     f"Error: {e}\n\n"
-                    f"Try manually:\n  sudo chown -R {sudo_user}:{sudo_user} {dir_path}",
+                    f"Relaunch MeshForge in Admin mode (sudo) to fix ownership.",
                 )
                 return False
 
@@ -1319,14 +1319,14 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                         "Start Failed",
                         f"NomadNet daemon failed to start.\n\n"
                         f"Error output:\n{detail}\n\n"
-                        f"Or run manually: nomadnet --daemon --console",
+                        f"Retry from the NomadNet menu after addressing the error.",
                     )
                 else:
                     self.ctx.dialog.msgbox(
                         "Start Failed",
                         "NomadNet daemon failed to start.\n\n"
                         "Check logs: ~/.nomadnetwork/logfile\n"
-                        "Or run manually: nomadnet --daemon --console",
+                        "Retry from the NomadNet menu, or view logs in-app.",
                     )
         except FileNotFoundError:
             self.ctx.dialog.msgbox("Error", f"NomadNet binary not found at: {nn_path}")
@@ -1435,7 +1435,7 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
             if not self._is_nomadnet_running():
                 self.ctx.dialog.msgbox("Stopped", "NomadNet has been stopped.")
             else:
-                self.ctx.dialog.msgbox("Warning", "NomadNet may still be running.\nTry: sudo pkill -9 -f nomadnet")
+                self.ctx.dialog.msgbox("Warning", "NomadNet may still be running.\nRelaunch in Admin mode to force-stop it.")
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to stop NomadNet:\n{e}")
 

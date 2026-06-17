@@ -379,8 +379,7 @@ class WebClientHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "Restart Failed",
                     f"Could not restart meshtasticd:\n{restart_msg}\n\n"
-                    "Try manually:\n"
-                    "  sudo systemctl restart meshtasticd",
+                    "Restart it from Service Control, or relaunch in Admin mode.",
                     height=12, width=55
                 )
         else:
