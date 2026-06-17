@@ -150,12 +150,23 @@ class RadioMenuHandler(BaseHandler):
             except KeyboardInterrupt:
                 pass
             except Exception as e:
-                self.ctx.dialog.msgbox(
-                    "Radio Error",
-                    f"Operation failed:\n{type(e).__name__}: {e}\n\n"
-                    f"Check that meshtasticd is running:\n"
-                    f"  sudo systemctl status meshtasticd"
-                )
+                self._handle_radio_op_error(e)
+
+    def _handle_radio_op_error(self, exc) -> None:
+        """Surface a radio-op failure and, if meshtasticd is actually down,
+        offer to start it in-app (In-Domain Principle) — instead of pointing the
+        operator at `systemctl status`. The offer is profile-gated and applied
+        through the service_check SSOT (service_remediation), so it only fires
+        for a genuinely-down daemon this box is configured to run."""
+        self.ctx.dialog.msgbox(
+            "Radio Error",
+            f"Operation failed:\n{type(exc).__name__}: {exc}",
+        )
+        from service_remediation import (
+            collect_degraded_services, offer_service_fix,
+        )
+        if collect_degraded_services(["meshtasticd"]):
+            offer_service_fix(self.ctx, "meshtasticd", running=False)
 
     def _delegate_to_meshtasticd(self, action: str):
         """Delegate hardware config / presets to meshtasticd sub-handlers."""

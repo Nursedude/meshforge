@@ -184,14 +184,19 @@ class TrafficInspectorHandler(BaseHandler):
                 except Exception:
                     diag_lines.append("  [FAIL] pubsub check error")
 
+                meshtasticd_down = False
                 try:
                     from utils.service_check import check_service
+                    # ServiceStatus is a dataclass (truthy iff available) — it
+                    # has no .get(); the old `svc.get("active")` ALWAYS raised
+                    # and silently fell to "could not check", masking the real
+                    # state. bool(svc) reads it honestly.
                     svc = check_service("meshtasticd")
-                    if svc.get("active"):
+                    if svc:
                         diag_lines.append("  [OK] meshtasticd is running")
                     else:
                         diag_lines.append("  [FAIL] meshtasticd is not running")
-                        diag_lines.append("    Fix: sudo systemctl start meshtasticd")
+                        meshtasticd_down = True
                 except Exception:
                     diag_lines.append("  [WARN] Could not check meshtasticd")
 
@@ -203,6 +208,13 @@ class TrafficInspectorHandler(BaseHandler):
                     "\n".join(diag_lines),
                     height=16, width=55
                 )
+
+                # In-Domain Principle: if the radio daemon is down, offer to
+                # start it in-app (profile-gated, applied via the service_check
+                # SSOT) instead of handing the operator a shell command.
+                if meshtasticd_down:
+                    from service_remediation import offer_service_fix
+                    offer_service_fix(self.ctx, "meshtasticd", running=False)
 
     def _traffic_live_view(self) -> None:
         """View live traffic stream."""

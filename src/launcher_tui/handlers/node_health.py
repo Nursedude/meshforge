@@ -112,10 +112,19 @@ class NodeHealthHandler(BaseHandler):
             print(f"  Avg RTT:  {avg_rtt:.1f}ms")
 
         if down_count > 0:
-            print("\n  Down services may need to be started:")
-            for name, host, port, success, _ in results:
-                if not success:
-                    print(f"    sudo systemctl start {name.split('_')[0]}")
+            print("\n  Some probed services are down.")
+            # In-Domain Principle: offer to fix the down LOCAL services this box
+            # runs, right here — no shell-escape. collect_degraded_services
+            # re-checks via systemd (the SSOT, authoritative over a raw TCP
+            # probe), and the chooser is profile-gated so intentionally-off
+            # services aren't nagged. (The mqtt probe maps to the mosquitto unit.)
+            from service_remediation import (
+                collect_degraded_services, offer_service_fix_chooser,
+            )
+            degraded = collect_degraded_services(
+                ["meshtasticd", "rnsd", "mosquitto"])
+            if offer_service_fix_chooser(self.ctx, degraded):
+                return  # operator engaged the fix chooser; no extra wait
 
         print()
         self.ctx.wait_for_enter()
