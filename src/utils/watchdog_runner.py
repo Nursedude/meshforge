@@ -66,6 +66,7 @@ from utils.watchdog_probes import (
     probe_parity_drift,
     probe_rns_version_drift,
     probe_dep_version_drift,
+    probe_dep_install_fragmented,
     probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
@@ -368,6 +369,17 @@ def run_all_probes(
     # cover). Env-independent floor, reads the service user's site-packages;
     # self-guards None when compliant / unreadable / not visible.
     sig = probe_dep_version_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # meshtastic install fragmentation — the SAME pip lib installed at divergent
+    # versions across the root-readable locations (venv / system-wide dist-
+    # packages / root+user pipx / user-site) with ≥1 copy below the core.txt
+    # floor. dep_version_drift watches only the service-user consumer and was
+    # BLIND to a stray system-wide/pipx copy the TUI-as-root reads (the
+    # 2026-06-17 phantom-update; feedback_version_env_rigor). Self-guards None
+    # when not fragmented / no floor / single location; 2-tick debounced.
+    sig = probe_dep_install_fragmented()
     if sig is not None:
         signals.append(sig)
 

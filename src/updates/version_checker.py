@@ -25,6 +25,11 @@ from utils.safe_import import safe_import
 # Module-level safe imports
 _version_mod, _HAS_VERSION = safe_import('__version__', '__version__')
 from utils.cli import find_meshtastic_cli
+# Shared SSOT for the fleet version floor (requirements/core.txt) — the SAME
+# parser + below-floor test the watchdog dep_version_drift probe uses, so the
+# TUI badge and the watchdog page can never disagree about the baseline
+# (honest_failure_modes item 5; feedback_version_env_rigor).
+from utils.requirements_floor import read_floor, version_below
 
 # Cache for version checks to avoid hitting APIs too frequently
 _version_cache: Dict[str, Any] = {}
@@ -41,6 +46,14 @@ class VersionInfo:
     install_command: Optional[str] = None
     update_command: Optional[str] = None
     error: Optional[str] = None
+    # When this component is gated against the REVIEWED fleet baseline rather
+    # than raw PyPI-latest, ``fleet_floor`` is that baseline (from
+    # requirements/core.txt) and ``update_available`` means "installed BELOW the
+    # floor" — a real laggard — not "PyPI moved past the floor" (which is a
+    # reviewed bump, surfaced informationally in ``pypi_latest``). See
+    # feedback_version_env_rigor (the 2026-06-17 phantom-update class).
+    fleet_floor: Optional[str] = None
+    pypi_latest: Optional[str] = None
 
 
 def parse_version(version_str: str) -> tuple:
@@ -392,6 +405,35 @@ def get_latest_firmware_version() -> Optional[str]:
     return get_latest_meshtasticd_version()
 
 
+def _apply_fleet_floor(info: VersionInfo, pypi_latest: Optional[str]) -> None:
+    """Gate ``info.update_available`` on the REVIEWED fleet floor, not PyPI-latest.
+
+    For a fleet pinned to a reviewed baseline (``requirements/core.txt:
+    meshtastic>=X``), a box is a real laggard only when it is installed BELOW
+    that floor. Comparing against raw PyPI-latest produced phantom "update
+    available" the moment PyPI moved past the reviewed baseline — the recurring
+    class the operator called out 2026-06-17 (feedback_version_env_rigor). The
+    floor is a LOCAL file read, so the gating decision also works offline; the
+    PyPI version is kept only as informational context (a reviewed bump is
+    possible, but it is not an automatic update).
+
+    Honest failure mode: if the floor can't be read we refuse to claim either
+    "up to date" OR a phantom update — we leave ``update_available`` False and
+    record the blindness in ``error`` so it is surfaced, not silently healthy.
+    """
+    info.pypi_latest = pypi_latest
+    floor = read_floor('meshtastic')
+    if not floor:
+        info.update_available = False
+        note = 'fleet baseline (requirements/core.txt) unavailable'
+        info.error = f"{info.error}; {note}" if info.error else note
+        return
+    info.fleet_floor = floor
+    # The comparison target shown to the operator IS the reviewed floor.
+    info.latest = floor
+    info.update_available = bool(info.installed and version_below(info.installed, floor))
+
+
 def check_all_versions() -> Dict[str, VersionInfo]:
     """Check all component versions and return status"""
     results = {}
@@ -414,22 +456,19 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     meshtasticd.update_command = 'sudo apt update && sudo apt upgrade meshtasticd'
     results['meshtasticd'] = meshtasticd
 
-    # Meshtastic CLI
+    # Meshtastic CLI — gated against the fleet floor, not PyPI-latest (same
+    # PyPI package as the library; both phantom-flagged 2026-06-17).
     cli = VersionInfo(name='Meshtastic CLI')
     cli.installed = get_meshtastic_cli_version()
-    cli.latest = get_latest_meshtastic_cli_version()
-    if cli.installed and cli.latest:
-        cli.update_available = compare_versions(cli.installed, cli.latest)
+    _apply_fleet_floor(cli, get_latest_meshtastic_cli_version())
     cli.update_command = 'pipx upgrade meshtastic'
     cli.install_command = 'pipx install meshtastic'
     results['cli'] = cli
 
-    # Meshtastic Python Library (protobuf definitions)
+    # Meshtastic Python Library (protobuf definitions) — fleet-floor gated.
     lib = VersionInfo(name='Meshtastic Library')
     lib.installed = get_meshtastic_lib_version()
-    lib.latest = get_latest_meshtastic_cli_version()  # Same PyPI package
-    if lib.installed and lib.latest:
-        lib.update_available = compare_versions(lib.installed, lib.latest)
+    _apply_fleet_floor(lib, get_latest_meshtastic_cli_version())  # same PyPI pkg (cached)
     # --break-system-packages: Debian/RPi mark system Python externally-managed
     # (PEP 668), so a bare `pip3 install` fails. The flag is a no-op where no
     # EXTERNALLY-MANAGED marker exists, so it's safe to show generically. The
@@ -470,6 +509,11 @@ def get_version_summary() -> Dict[str, Any]:
             'latest': info.latest or 'Unknown',
             'update_available': info.update_available,
             'update_command': info.update_command,
+            # Floor-gated components expose the reviewed baseline they're judged
+            # against (and the PyPI version for a possible reviewed bump), so a
+            # consumer can distinguish "below the fleet floor" from "PyPI moved".
+            'fleet_floor': info.fleet_floor,
+            'pypi_latest': info.pypi_latest,
         }
         summary['components'].append(component)
 

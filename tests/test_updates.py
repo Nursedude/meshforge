@@ -253,3 +253,115 @@ class TestVenvDirGate:
             d = vc.get_meshforge_venv_dir()
         assert d is not None
         assert str(d).endswith('venv')
+
+
+class TestApplyFleetFloor:
+    """`_apply_fleet_floor` gates update_available on the REVIEWED fleet floor
+    (requirements/core.txt), NOT raw PyPI-latest — the 2026-06-17 phantom-update
+    fix (feedback_version_env_rigor)."""
+
+    def _info(self, installed):
+        import updates.version_checker as vc
+        return vc.VersionInfo(name='Meshtastic Library', installed=installed)
+
+    def test_below_floor_flags_update(self):
+        import updates.version_checker as vc
+        info = self._info('2.7.8')
+        with patch.object(vc, 'read_floor', return_value='2.7.9'):
+            vc._apply_fleet_floor(info, pypi_latest='2.7.10')
+        assert info.update_available is True
+        assert info.fleet_floor == '2.7.9'
+        assert info.latest == '2.7.9'          # target shown = the floor
+        assert info.pypi_latest == '2.7.10'    # informational only
+
+    def test_at_floor_is_not_a_phantom_update(self):
+        # The exact 2026-06-17 case: installed == fleet floor, PyPI moved ahead.
+        # Must NOT report an update (the phantom the operator saw).
+        import updates.version_checker as vc
+        info = self._info('2.7.9')
+        with patch.object(vc, 'read_floor', return_value='2.7.9'):
+            vc._apply_fleet_floor(info, pypi_latest='2.7.10')
+        assert info.update_available is False
+        assert info.fleet_floor == '2.7.9'
+        assert info.pypi_latest == '2.7.10'
+
+    def test_above_floor_no_update(self):
+        import updates.version_checker as vc
+        info = self._info('2.7.10')
+        with patch.object(vc, 'read_floor', return_value='2.7.9'):
+            vc._apply_fleet_floor(info, pypi_latest='2.7.10')
+        assert info.update_available is False
+
+    def test_unreadable_floor_refuses_to_guess(self):
+        # No floor → neither phantom-update NOR silently-healthy: update_available
+        # False but the blindness is surfaced in error (honest_failure_modes).
+        import updates.version_checker as vc
+        info = self._info('2.7.8')
+        with patch.object(vc, 'read_floor', return_value=None):
+            vc._apply_fleet_floor(info, pypi_latest='2.7.10')
+        assert info.update_available is False
+        assert info.fleet_floor is None
+        assert 'baseline' in (info.error or '').lower()
+
+    def test_no_installed_version_no_update(self):
+        import updates.version_checker as vc
+        info = self._info(None)
+        with patch.object(vc, 'read_floor', return_value='2.7.9'):
+            vc._apply_fleet_floor(info, pypi_latest='2.7.10')
+        assert info.update_available is False
+
+
+class TestCheckAllVersionsFleetFloor:
+    """End-to-end: a box AT the fleet floor with PyPI ahead reports ZERO
+    meshtastic updates (cli + lib) — the regression guard for the operator's
+    2026-06-17 '2 updates available' phantom."""
+
+    def _patch_env(self, vc, *, installed, floor, pypi):
+        # Isolate from the network + other components: only the two meshtastic
+        # pip components matter here; null everything else.
+        return [
+            patch.object(vc, 'get_meshtastic_cli_version', return_value=installed),
+            patch.object(vc, 'get_meshtastic_lib_version', return_value=installed),
+            patch.object(vc, 'get_latest_meshtastic_cli_version', return_value=pypi),
+            patch.object(vc, 'read_floor', return_value=floor),
+            patch.object(vc, 'get_meshforge_version', return_value=None),
+            patch.object(vc, 'get_latest_meshforge_version', return_value=None),
+            patch.object(vc, 'get_meshtasticd_version', return_value=None),
+            patch.object(vc, 'get_latest_meshtasticd_version', return_value=None),
+            patch.object(vc, 'get_node_firmware_version', return_value=None),
+            patch.object(vc, 'get_latest_firmware_version', return_value=None),
+        ]
+
+    def test_at_floor_pypi_ahead_no_phantom_updates(self):
+        import contextlib
+        import updates.version_checker as vc
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_env(vc, installed='2.7.9', floor='2.7.9', pypi='2.7.10'):
+                stack.enter_context(p)
+            results = vc.check_all_versions()
+        assert results['cli'].update_available is False
+        assert results['meshtastic_lib'].update_available is False
+        assert results['cli'].fleet_floor == '2.7.9'
+        assert results['meshtastic_lib'].fleet_floor == '2.7.9'
+
+    def test_below_floor_flags_both_components(self):
+        import contextlib
+        import updates.version_checker as vc
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_env(vc, installed='2.7.8', floor='2.7.9', pypi='2.7.10'):
+                stack.enter_context(p)
+            results = vc.check_all_versions()
+        assert results['cli'].update_available is True
+        assert results['meshtastic_lib'].update_available is True
+
+    def test_summary_exposes_floor_fields(self):
+        import contextlib
+        import updates.version_checker as vc
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_env(vc, installed='2.7.9', floor='2.7.9', pypi='2.7.10'):
+                stack.enter_context(p)
+            summary = vc.get_version_summary()
+        lib = next(c for c in summary['components'] if c['id'] == 'meshtastic_lib')
+        assert lib['fleet_floor'] == '2.7.9'
+        assert lib['pypi_latest'] == '2.7.10'
+        assert lib['update_available'] is False

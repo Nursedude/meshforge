@@ -101,11 +101,22 @@ class UpdatesHandler(BaseHandler):
                 updates_available.append(key)
 
             installed = info.installed or "Not installed"
-            latest = info.latest or "Unknown"
 
             lines.append(f"{info.name}:")
             lines.append(f"  Installed: {installed}")
-            lines.append(f"  Latest:    {latest}{status}")
+            # Floor-gated components (meshtastic lib/cli) are judged against the
+            # REVIEWED fleet baseline, not PyPI-latest — label it as such so the
+            # operator isn't told "behind" when the box is at the baseline and
+            # PyPI simply moved (the 2026-06-17 phantom-update class).
+            floor = getattr(info, "fleet_floor", None)
+            if floor:
+                lines.append(f"  Fleet floor: {floor}{status}")
+                pypi = getattr(info, "pypi_latest", None)
+                if pypi and pypi != floor:
+                    lines.append(f"  (PyPI {pypi} — reviewed bump only, not auto)")
+            else:
+                latest = info.latest or "Unknown"
+                lines.append(f"  Latest:    {latest}{status}")
             if info.error:
                 lines.append(f"  Error:     {info.error}")
             lines.append("")

@@ -339,37 +339,15 @@ def probe_rns_version_drift(
 # and which nothing watched. See feedback_version_env_rigor.
 _DEP_VERSION_WATCHED = ("meshtastic",)
 
-_REQ_FLOOR_RE = re.compile(r'^\s*([A-Za-z0-9_.\-]+)\s*(?:>=|==|~=)\s*([0-9][^\s;,#]*)')
-
-
-def _read_requirement_floors(pkgs, requirements_path):
-    """Parse minimum-version floors for ``pkgs`` from a requirements file.
-
-    The requirements file is the version SSOT (honest_failure_modes item 5) —
-    the probe floor and the install pin are the SAME constant, so they can't
-    drift. Returns ``{pkg: floor}`` for ``pkg>=X`` / ``pkg==X`` lines found, or
-    ``{}`` when none parse / the file can't be read.
-    """
-    want = {p.lower() for p in pkgs}
-    floors = {}
-    try:
-        with open(requirements_path) as f:
-            for raw in f:
-                m = _REQ_FLOOR_RE.match(raw)
-                if m and m.group(1).lower() in want:
-                    floors[m.group(1).lower()] = m.group(2)
-    except OSError:
-        return {}
-    return floors
-
-
-def _version_below(have, floor) -> bool:
-    """True iff ``have`` < ``floor``. Unparseable → False (never false-alarm)."""
-    try:
-        from packaging.version import Version
-        return Version(str(have)) < Version(str(floor))
-    except Exception:
-        return False
+# The floor PARSER and the below-floor TEST are shared with the TUI version
+# checker (updates.version_checker) so the two consumers of requirements/core.txt
+# can never disagree about "the floor" (honest_failure_modes item 5). Imported
+# under the historical private names this module already exposed to its tests.
+from utils.requirements_floor import (  # noqa: E402
+    default_core_requirements as _default_core_requirements,
+    read_requirement_floors as _read_requirement_floors,
+    version_below as _version_below,
+)
 
 
 def probe_dep_version_drift(
@@ -444,6 +422,204 @@ def probe_dep_version_drift(
         detail=detail,
         extra={"service_user": service_user, "stale": stale},
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: meshtastic install fragmentation (the phantom-update class,
+# 2026-06-17) — the SAME pip lib installed at DIVERGENT versions across
+# the root-readable locations (venv / system-wide dist-packages / root+user
+# pipx / user-site). probe_dep_version_drift watches only the service-user
+# consumer and is BLIND to a stray system-wide/pipx copy the TUI reads as
+# root — the manager box stayed green (consumer 2.7.9) while a stray 2.7.8
+# drove the phantom "2 updates available". This is the fragmentation half.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_DEP_FRAGMENT_DEBOUNCE_PATH = "/var/lib/meshforge/dep_fragment_debounce.json"
+
+# Glob patterns (by location label) for every place a root-context read can
+# find a pip install of the watched package. `{home}` / `{root}` are filled per
+# call. Versioned-python dirs are globbed (the fleet runs mixed 3.12/3.13).
+_DEP_INSTALL_SITE_GLOBS = {
+    "venv":        ["{root}/venv/lib/python3*/site-packages"],
+    "system-dist": [
+        "/usr/local/lib/python3*/dist-packages",
+        "/usr/lib/python3*/dist-packages",
+        "/usr/lib/python3/dist-packages",
+    ],
+    "root-pipx":   [
+        "/root/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages",
+        "/opt/pipx/venvs/{pkg}/lib/python3*/site-packages",
+    ],
+    "user-site":   ["{home}/.local/lib/python3*/site-packages"],
+    "user-pipx":   ["{home}/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages"],
+}
+
+
+def _read_pkg_version_at_dirs(site_dirs, pkg):
+    """Version of ``pkg`` found in the given site-packages dirs, or None.
+
+    Reads in-process via ``importlib.metadata.distributions(path=...)`` — the
+    watchdog sandbox (NoNewPrivileges + RestrictSUIDSGID) blocks sudo/runuser,
+    but ProtectHome=no lets root READ any of these trees directly (same
+    constraint and pattern as ``_read_pkg_versions_for_user``)."""
+    dirs = [d for d in dict.fromkeys(site_dirs) if os.path.isdir(d)]
+    if not dirs:
+        return None
+    try:
+        import importlib.metadata as _im
+        for dist in _im.distributions(path=dirs):
+            try:
+                name = (dist.metadata["Name"] or "").lower()
+            except Exception:
+                continue
+            if name == pkg.lower():
+                return dist.version
+    except Exception:
+        return None
+    return None
+
+
+def _enumerate_pkg_installs(pkg, service_user, *, meshforge_root="/opt/meshforge",
+                            user_home=None):
+    """Return ``{location_label: version}`` for every root-readable install of
+    ``pkg`` (venv / system-dist / root-pipx / user-site / user-pipx).
+
+    Locations whose tree is absent or where ``pkg`` isn't installed are simply
+    omitted (not an error). User-scoped locations are skipped when there is no
+    non-root service user / resolvable home — we never guess a path."""
+    import glob
+    if user_home is None and service_user and service_user != "root":
+        try:
+            import pwd
+            user_home = pwd.getpwnam(service_user).pw_dir
+        except (KeyError, OSError):
+            user_home = f"/home/{service_user}"
+    found = {}
+    for label, patterns in _DEP_INSTALL_SITE_GLOBS.items():
+        if ("{home}" in "".join(patterns)) and not user_home:
+            continue  # user-scoped location but no resolvable home — skip
+        dirs = []
+        for pat in patterns:
+            try:
+                expanded = pat.format(root=meshforge_root, home=user_home or "", pkg=pkg)
+            except (KeyError, IndexError):
+                continue
+            dirs.extend(sorted(glob.glob(expanded)))
+        ver = _read_pkg_version_at_dirs(dirs, pkg)
+        if ver is not None:
+            found[label] = ver
+    return found
+
+
+def probe_dep_install_fragmented(
+    *,
+    service_user=None,
+    floor=None,
+    installs=None,
+    requirements_path=None,
+    state_path=None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when meshtastic is installed at DIVERGENT versions across the
+    root-readable locations, with at least one copy BELOW the fleet floor.
+
+    The blind spot ``probe_dep_version_drift`` couldn't see (2026-06-17): that
+    probe reads only the service-user ``~/.local`` consumer, so a stray
+    system-wide ``/usr/local/lib/.../dist-packages`` or pipx copy can sit BELOW
+    the reviewed floor while the consumer is fine — and the TUI-as-root (plus
+    any future root import path) reads that stray and shows a phantom "update
+    available". This probe enumerates every install location root can read and
+    surfaces the fragmentation so it stops being operator-discovered.
+
+    Fires ``degraded`` only when (a) ≥2 distinct versions exist across the
+    found locations AND (b) at least one of them is below the floor. That
+    second clause is load-bearing: a pipx CLI legitimately running AHEAD of the
+    venv lib is normal, intended divergence (both ≥ floor) and must NOT page —
+    only a below-floor stray is a real fragmentation defect. ``rns/lxmf`` are
+    excluded (their own fork-pin probe). Uniform staleness (every copy at the
+    same below-floor version) is ``dep_version_drift``'s job via the consumer,
+    not fragmentation.
+
+    Honest failure modes: no floor parseable, 0/1 install location, or all
+    locations at one version → None (indeterminate / not fragmented; never
+    false-alarm). 2-tick debounce rides out a mid-roll window where one
+    location is part-way through an upgrade. Never raises into the tick.
+    """
+    try:
+        pkg = _DEP_VERSION_WATCHED[0]  # "meshtastic" — the fragmentation-prone lib
+        sp = state_path or DEFAULT_DEP_FRAGMENT_DEBOUNCE_PATH
+
+        if floor is None:
+            req = (Path(requirements_path) if requirements_path
+                   else _default_core_requirements())
+            floor = _read_requirement_floors([pkg], req).get(pkg.lower())
+        if not floor:
+            _save_parity_streak(sp, 0)
+            return None  # no reviewed floor → indeterminate, never alarm
+
+        if installs is None:
+            if service_user is None:
+                try:
+                    from utils.rns_tree_perms import _read_rnsd_user
+                    service_user = _read_rnsd_user()
+                except Exception:
+                    service_user = None
+            installs = _enumerate_pkg_installs(pkg, service_user)
+
+        if not installs or len(installs) < 2:
+            _save_parity_streak(sp, 0)
+            return None  # 0/1 location → no fragmentation possible
+        versions = set(installs.values())
+        if len(versions) < 2:
+            _save_parity_streak(sp, 0)
+            return None  # every location agrees — not fragmented
+
+        below = {label: v for label, v in installs.items()
+                 if _version_below(v, floor)}
+        if not below:
+            _save_parity_streak(sp, 0)
+            return None  # divergence but nothing below floor (pipx CLI ahead) — benign
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None  # fragmentation seen, not yet confirmed across ticks
+
+        consumer = ("venv" if "venv" in installs
+                    else ("user-site" if "user-site" in installs else None))
+        consumer_ver = installs.get(consumer) if consumer else None
+        loc_str = ", ".join(
+            f"{label}={ver}{' (<floor)' if label in below else ''}"
+            for label, ver in sorted(installs.items())
+        )
+        below_str = ", ".join(f"{label}={ver}" for label, ver in sorted(below.items()))
+        consumer_note = (f"consumer-of-record {consumer}={consumer_ver}"
+                         if consumer else "consumer-of-record unknown")
+        detail = (
+            f"meshtastic install fragmentation — {len(installs)} locations at "
+            f"{len(versions)} versions ({loc_str}); below the fleet floor "
+            f">={floor}: {below_str}. {consumer_note}. The TUI-as-root and any "
+            f"root import path read a stray, so 'update available' phantoms appear "
+            f"though the service consumer is fine (feedback_version_env_rigor, "
+            f"2026-06-17). Reconcile every copy to >= the floor: "
+            f"python3 scripts/meshtastic_install_audit.py (see its --fix hint), "
+            f"then re-check."
+        )
+        return Signal(
+            cls="dep_install_fragmented",
+            subject="meshtastic",
+            severity="degraded",
+            detail=detail,
+            extra={
+                "installs": dict(sorted(installs.items())),
+                "below_floor": below_str,
+                "floor": floor,
+                "consumer": consumer,
+                "streak": streak,
+            },
+        )
+    except Exception:
+        return None
 
 
 # ─────────────────────────────────────────────────────────────────────

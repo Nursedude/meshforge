@@ -57,6 +57,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_parity_drift,
     probe_rns_version_drift,
     probe_dep_version_drift,
+    probe_dep_install_fragmented,
     probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
@@ -116,6 +117,7 @@ def test_signal_classes_closed_enum_is_documented():
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
         "dep_version_drift",            # 2026-06-12 recurring update class
+        "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
         "calibration_drift",            # 2026-06-15 calibration spine; SSOT .claude/rules/calibrated_claims.md (new subsystem, not a fleet bug → no persistent_issues row; that file is at its MF012 cap)
     }
@@ -2133,6 +2135,117 @@ def test_dep_version_floor_in_real_requirements_is_at_least_2_7_9():
     floors = _read_requirement_floors(("meshtastic",), str(req))
     assert "meshtastic" in floors
     assert Version(floors["meshtastic"]) >= Version("2.7.9")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# dep_install_fragmented — meshtastic at divergent versions across the
+# root-readable install locations (the 2026-06-17 phantom-update class)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _make_distinfo(site_dir, name, version):
+    """Write a minimal ``<name>-<version>.dist-info/METADATA`` so the real
+    importlib.metadata path the probe uses can read the version back."""
+    d = site_dir / f"{name}-{version}.dist-info"
+    d.mkdir(parents=True)
+    (d / "METADATA").write_text(
+        f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n")
+
+
+def test_read_pkg_version_at_dirs_reads_distinfo(tmp_path):
+    from utils.watchdog_probes_drift import _read_pkg_version_at_dirs
+    site = tmp_path / "sp"
+    _make_distinfo(site, "meshtastic", "2.7.8")
+    assert _read_pkg_version_at_dirs([str(site)], "meshtastic") == "2.7.8"
+    # absent tree → None (not an error)
+    assert _read_pkg_version_at_dirs([str(tmp_path / "absent")], "meshtastic") is None
+
+
+def test_enumerate_pkg_installs_finds_venv_and_user_site(tmp_path):
+    from utils.watchdog_probes_drift import _enumerate_pkg_installs
+    mroot = tmp_path / "opt" / "meshforge"
+    _make_distinfo(mroot / "venv" / "lib" / "python3.13" / "site-packages",
+                   "meshtastic", "2.7.9")
+    home = tmp_path / "home" / "svc"
+    _make_distinfo(home / ".local" / "lib" / "python3.13" / "site-packages",
+                   "meshtastic", "2.7.8")
+    found = _enumerate_pkg_installs(
+        "meshtastic", "svc", meshforge_root=str(mroot), user_home=str(home))
+    # asserts specific keys, tolerant of a real system-wide install on the host
+    assert found.get("venv") == "2.7.9"
+    assert found.get("user-site") == "2.7.8"
+
+
+def test_dep_install_fragmented_fires_on_stray_below_floor(tmp_path):
+    # The 2026-06-17 case: consumer (venv) AT floor, strays BELOW it — the
+    # blind spot dep_version_drift (consumer-only) couldn't see.
+    sig = probe_dep_install_fragmented(
+        floor="2.7.9",
+        installs={"venv": "2.7.9", "user-site": "2.7.9",
+                  "system-dist": "2.7.8", "root-pipx": "2.7.8"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.cls == "dep_install_fragmented"
+    assert sig.severity == "degraded"
+    assert sig.subject == "meshtastic"
+    assert "system-dist=2.7.8" in sig.detail
+    assert sig.extra["consumer"] == "venv"          # consumer-of-record is fine
+    assert "system-dist=2.7.8" in sig.extra["below_floor"]
+    assert "root-pipx=2.7.8" in sig.extra["below_floor"]
+
+
+def test_dep_install_fragmented_none_when_all_agree(tmp_path):
+    assert probe_dep_install_fragmented(
+        floor="2.7.9", installs={"venv": "2.7.9", "system-dist": "2.7.9"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1) is None
+
+
+def test_dep_install_fragmented_none_on_benign_pipx_ahead(tmp_path):
+    # A pipx CLI legitimately AHEAD of the venv lib (both >= floor) is intended
+    # divergence, not a defect — the load-bearing below-floor clause.
+    assert probe_dep_install_fragmented(
+        floor="2.7.9", installs={"venv": "2.7.9", "user-pipx": "2.8.0"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1) is None
+
+
+def test_dep_install_fragmented_none_single_location(tmp_path):
+    assert probe_dep_install_fragmented(
+        floor="2.7.9", installs={"venv": "2.7.8"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1) is None
+
+
+def test_dep_install_fragmented_none_no_floor(tmp_path):
+    # Unparseable floor → indeterminate, never false-alarm.
+    assert probe_dep_install_fragmented(
+        floor=None, requirements_path=str(tmp_path / "absent.txt"),
+        installs={"venv": "2.7.9", "system-dist": "2.7.8"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1) is None
+
+
+def test_dep_install_fragmented_debounce_two_ticks(tmp_path):
+    sp = str(tmp_path / "frag.json")
+    args = dict(floor="2.7.9",
+                installs={"venv": "2.7.9", "system-dist": "2.7.8"},
+                state_path=sp)  # default debounce_ticks=2
+    assert probe_dep_install_fragmented(**args) is None   # first sighting: silent
+    sig = probe_dep_install_fragmented(**args)            # second: confirmed → fires
+    assert sig is not None and sig.cls == "dep_install_fragmented"
+
+
+def test_dep_install_fragmented_consumer_user_site_when_no_venv(tmp_path):
+    sig = probe_dep_install_fragmented(
+        floor="2.7.9", installs={"user-site": "2.7.9", "system-dist": "2.7.8"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.extra["consumer"] == "user-site"
+
+
+def test_dep_install_fragmented_unparseable_version_does_not_crash(tmp_path):
+    # A non-PEP440 string must not raise; the parseable below-floor stray fires.
+    sig = probe_dep_install_fragmented(
+        floor="2.7.9", installs={"venv": "garbage", "system-dist": "2.7.8"},
+        state_path=str(tmp_path / "frag.json"), debounce_ticks=1)
+    assert sig is not None and sig.cls == "dep_install_fragmented"
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -282,6 +282,19 @@
       "annotation": "2026-06-12: a critical pip dep (meshtastic) installed BELOW the requirements/core.txt floor in the service user's env — a box that missed/failed an update (the recurring update/install/env class, feedback_version_env_rigor). Fix: pip3 install --break-system-packages --upgrade <pkg> (or the TUI Update), then verify version + import in the service user python. Side-effect-free escalation; NO ntfy page (degraded)."
     },
     {
+      "id": "dep_install_fragmented_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "dep_install_fragmented",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-17: meshtastic installed at DIVERGENT versions across root-readable locations (venv / system-wide dist-packages / root+user pipx / user-site) with ≥1 copy BELOW the core.txt floor — the service consumer-of-record can be fine while the TUI-as-root reads a stale stray and shows phantom 'update available' (the install-fragmentation half of the update class, feedback_version_env_rigor; dep_version_drift sees only the consumer). Fix: reconcile every copy to >= the floor via python3 scripts/meshtastic_install_audit.py (see its --fix hint), then re-check. Side-effect-free escalation; NO ntfy page (degraded)."
+    },
+    {
       "id": "role_drift_any",
       "match": {
         "kind": "signal_class",
