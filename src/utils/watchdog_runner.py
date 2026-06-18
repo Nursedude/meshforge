@@ -53,6 +53,7 @@ from utils.watchdog_probes import (
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
+    probe_host_frozen,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -469,6 +470,14 @@ def run_all_probes(
     # self-guards INERT off the manager box (no file) and on a stale file (the
     # monitor's own death is cron_verdict_stale's job — it's verdict-wired).
     sig = probe_fleet_box_unreachable()
+    if sig is not None:
+        signals.append(sig)
+
+    # host_frozen (Leg C): the dude-claw out-of-band witness verdict for a box on
+    # its own subnet — HOST_FROZEN (kernel alive, userspace wedged) the box's own
+    # self-petted HW watchdog can't catch. Reads ~/host_probe_state.json written
+    # by the out-of-band host_probe_check collector; INERT off the claw's brain box.
+    sig = probe_host_frozen()
     if sig is not None:
         signals.append(sig)
 

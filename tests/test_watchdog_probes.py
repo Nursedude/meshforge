@@ -39,6 +39,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
+    probe_host_frozen,
     probe_kernel_reboot_pending,
     _cron_max_interval,
     _parse_kernel_release,
@@ -122,6 +123,7 @@ def test_signal_classes_closed_enum_is_documented():
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
         "calibration_drift",            # 2026-06-15 calibration spine; SSOT .claude/rules/calibrated_claims.md (new subsystem, not a fleet bug → no persistent_issues row; that file is at its MF012 cap)
         "fleet_box_unreachable",        # 2026-06-17 Leg D — fleet liveness surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent as calibration_drift)
+        "host_frozen",                  # 2026-06-17 Leg C — dude-claw out-of-band witness verdict (HOST_FROZEN/UNREACHABLE/UNKNOWN) surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -3696,6 +3698,106 @@ class TestFleetBoxUnreachable:
         probe_fleet_box_unreachable(state_text="moc\t0\t0\t0\t0\t0\n",
                                     state_mtime=self.NOW, now=self.NOW,
                                     state_path=sp)                          # heal → 0
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+
+class TestHostFrozen:
+    """The dude-claw out-of-band witness (host_probe over NATS, on the watched
+    box's own subnet) verdict surfaced into mini's brief + /fleet (Leg C).
+    Hermetic: inject the verdict-file JSON + mtime + now. INERT off the claw's
+    brain box (no file) and on a STALE file (the collector's own death is
+    cron_verdict_stale's job). UNKNOWN (the witness itself blind) is *degraded*,
+    NOT silently None — lost visibility is not 'healthy' (honest_failure_modes #2)."""
+
+    NOW = 2_000_000_000.0
+
+    def _doc(self, verdict, *, name="bot-32", collector_ok=True, **fields):
+        t = {"name": name, "host": "10.0.0.5", "verdict": verdict,
+             "ip_alive": fields.get("ip_alive"), "app_state": fields.get("app_state"),
+             "banner": fields.get("banner"), "kstack": fields.get("kstack"),
+             "rtt_ms": fields.get("rtt_ms"), "raw": fields.get("raw", ""),
+             "error": fields.get("error")}
+        return {"ts": self.NOW, "collector_ok": collector_ok, "targets": [t]}
+
+    def _fire(self, tmp_path, doc, *, state_mtime=None, **kw):
+        """Run twice (2-tick debounce); return the 2nd. Fresh mtime by default.
+        doc=None injects an absent verdict file (empty state_text)."""
+        sp = str(tmp_path / "host_frozen_debounce.json")
+        mt = self.NOW if state_mtime is None else state_mtime
+        text = "" if doc is None else json.dumps(doc)
+        probe_host_frozen(state_text=text, state_mtime=mt, now=self.NOW,
+                          state_path=sp, **kw)
+        return probe_host_frozen(state_text=text, state_mtime=mt, now=self.NOW,
+                                 state_path=sp, **kw)
+
+    def test_signal_class_registered(self):
+        assert "host_frozen" in SIGNAL_CLASSES
+
+    def test_all_ok_is_none(self, tmp_path):
+        assert self._fire(tmp_path, self._doc("OK")) is None
+
+    def test_no_state_is_inert(self, tmp_path):
+        """No verdict file (not the claw's brain box) → INERT."""
+        assert self._fire(tmp_path, None) is None
+
+    def test_frozen_fires_wedge(self, tmp_path):
+        doc = self._doc("HOST_FROZEN", ip_alive=1, app_state="open", banner=0,
+                        raw="host_probe 10.0.0.5: ip_alive=1 app22=open banner=0B kstack=0 rtt_ms=9")
+        sig = self._fire(tmp_path, doc)
+        assert sig is not None
+        assert sig.cls == "host_frozen"
+        assert sig.subject == "bot-32"
+        assert sig.severity == "wedge"
+        assert "HOST_FROZEN" in sig.detail
+        assert sig.extra["targets"][0]["verdict"] == "HOST_FROZEN"
+
+    def test_unreachable_fires_wedge(self, tmp_path):
+        doc = self._doc("UNREACHABLE", ip_alive=0)
+        sig = self._fire(tmp_path, doc)
+        assert sig is not None and sig.severity == "wedge"
+        assert "UNREACHABLE" in sig.detail
+
+    def test_unknown_is_degraded_not_silent(self, tmp_path):
+        """The witness itself blind (claw unreachable) → degraded, never None or OK."""
+        doc = self._doc("UNKNOWN", collector_ok=False, error="NatsError: timed out")
+        sig = self._fire(tmp_path, doc)
+        assert sig is not None
+        assert sig.severity == "degraded"
+        assert "UNKNOWN" in sig.detail
+
+    def test_stale_state_is_none(self, tmp_path):
+        """A verdict file older than stale_after_s → None (collector stopped)."""
+        doc = self._doc("HOST_FROZEN", ip_alive=1, app_state="open", banner=0)
+        assert self._fire(tmp_path, doc, state_mtime=self.NOW - 3600) is None
+
+    def test_unparseable_is_none(self, tmp_path):
+        """Garbage in the verdict file → None (don't false-fire)."""
+        sp = str(tmp_path / "d.json")
+        probe_host_frozen(state_text="not json {", state_mtime=self.NOW,
+                          now=self.NOW, state_path=sp)
+        second = probe_host_frozen(state_text="not json {", state_mtime=self.NOW,
+                                   now=self.NOW, state_path=sp)
+        assert second is None
+
+    def test_debounce_first_tick_silent(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        text = json.dumps(self._doc("HOST_FROZEN", ip_alive=1, app_state="open", banner=0))
+        first = probe_host_frozen(state_text=text, state_mtime=self.NOW,
+                                  now=self.NOW, state_path=sp)
+        assert first is None
+        assert json.loads(Path(sp).read_text())["streak"] == 1
+        second = probe_host_frozen(state_text=text, state_mtime=self.NOW,
+                                   now=self.NOW, state_path=sp)
+        assert second is not None
+
+    def test_heal_clears_streak(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        bad = json.dumps(self._doc("HOST_FROZEN", ip_alive=1, app_state="open", banner=0))
+        probe_host_frozen(state_text=bad, state_mtime=self.NOW,
+                          now=self.NOW, state_path=sp)                       # streak 1
+        probe_host_frozen(state_text=json.dumps(self._doc("OK")),
+                          state_mtime=self.NOW, now=self.NOW,
+                          state_path=sp)                                     # heal → 0
         assert json.loads(Path(sp).read_text())["streak"] == 0
 
 

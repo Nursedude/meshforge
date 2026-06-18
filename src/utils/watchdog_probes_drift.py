@@ -1312,6 +1312,151 @@ def probe_fleet_box_unreachable(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: host frozen (2026-06-17 Leg C — the dude-claw out-of-band witness)
+#
+# An ESP32 (dude-claw) on the watched box's OWN subnet runs a host_probe tool
+# over NATS; an out-of-band collector cron on the claw's brain box polls it and
+# writes a verdict file. This probe READS that file (no NATS in the sandboxed
+# watchdog) and surfaces HOST_FROZEN / UNREACHABLE / (sustained) UNKNOWN into
+# mini's brief + /fleet — exactly the swap-thrash freeze class the box's own
+# self-petted HW watchdog can't catch. Mirrors fleet_box_unreachable's
+# file-read pattern + 2-tick debounce. Alert-only (propose_escalation).
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_HOST_FROZEN_DEBOUNCE_PATH = "/var/lib/meshforge/host_frozen_debounce.json"
+HOST_PROBE_STATE_STALE_S = 900   # verdict file older than this → the collector
+                                 # stopped; cron_verdict_stale owns the dead-cron
+                                 # alert (host_probe_check is verdict-wired)
+
+# verdicts that mean "the target is in trouble" (→ wedge) vs degraded visibility
+_HOST_FROZEN_WEDGE_VERDICTS = ("HOST_FROZEN", "UNREACHABLE")
+
+
+def _read_host_probe_verdict(home) -> Tuple[Optional[str], Optional[float]]:
+    """Read ``~/host_probe_state.json`` + its mtime as root, in-process (no sudo
+    — watchdog sandbox). Returns ``(text, mtime)`` or ``(None, None)`` on
+    absent/unreadable (→ INERT: the collector runs only on the claw's brain box)."""
+    if not home:
+        return None, None
+    path = os.path.join(str(home), "host_probe_state.json")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        return text, os.path.getmtime(path)
+    except (FileNotFoundError, IsADirectoryError):
+        return None, None
+    except OSError:
+        return None, None
+
+
+def probe_host_frozen(
+    *,
+    operator: Optional[Tuple[int, str]] = None,
+    state_text: Optional[str] = None,
+    state_mtime: Optional[float] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+    stale_after_s: float = HOST_PROBE_STATE_STALE_S,
+) -> Optional[Signal]:
+    """Surface a dude-claw out-of-band witness verdict (Leg C, 2026-06-17).
+
+    Reads the brain box's ``~/host_probe_state.json`` (written by the
+    out-of-band ``host_probe_check`` collector that polls the claw's
+    ``host_probe`` tool over NATS). The claw sits on the watched box's own
+    subnet, so it tells HOST_FROZEN (the IP stack answers but the app port
+    serves no banner = kernel alive / userspace swap-wedged — the .32 class the
+    box's self-petted HW watchdog can't catch) from UNREACHABLE (no TCP answer
+    = host/path/SoC down). A sustained UNKNOWN (the claw witness itself couldn't
+    be reached) surfaces as *degraded* — lost visibility is NOT "healthy"
+    (honest_failure_modes #2), not silently swallowed.
+
+    Self-guards None: no verdict file (not the brain box → INERT), STALE file
+    (the collector stopped — cron_verdict_stale owns the dead-cron alert,
+    host_probe_check is verdict-wired; reading a frozen verdict as current would
+    be the absence-of-evidence trap), unparseable JSON (don't false-fire), or
+    every target OK. 2-tick debounce. Alert-only (seed rule is
+    propose_escalation — no ntfy). Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_HOST_FROZEN_DEBOUNCE_PATH
+
+        if state_text is None:
+            if operator is None:
+                try:
+                    from utils.fleet_test_runner import _find_operator_user
+                    operator = _find_operator_user()
+                except Exception:
+                    operator = None
+            home = None
+            if operator is not None:
+                try:
+                    import pwd
+                    home = pwd.getpwuid(operator[0]).pw_dir
+                except (KeyError, OSError):
+                    home = None
+            state_text, state_mtime = _read_host_probe_verdict(home)
+
+        if not state_text:
+            _save_parity_streak(sp, 0)      # no collector here → INERT
+            return None
+
+        # Stale file = the collector stopped; do NOT read a frozen verdict as
+        # current (cron_verdict_stale owns the dead-collector alert).
+        if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            _save_parity_streak(sp, 0)
+            return None
+
+        try:
+            doc = json.loads(state_text)
+            targets = doc.get("targets") or []
+        except (ValueError, TypeError, AttributeError):
+            _save_parity_streak(sp, 0)      # garbage → don't false-fire
+            return None
+
+        bad: List[Tuple[str, str, str]] = []   # (name, verdict, raw)
+        for t in targets:
+            if not isinstance(t, dict):
+                continue
+            verdict = str(t.get("verdict") or "").upper()
+            if not verdict or verdict == "OK":
+                continue
+            name = str(t.get("name") or t.get("host") or "?")
+            raw = str(t.get("raw") or "")
+            bad.append((name, verdict, raw))
+
+        if not bad:
+            _save_parity_streak(sp, 0)
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        wedge = any(v in _HOST_FROZEN_WEDGE_VERDICTS for _, v, _ in bad)
+        descs = [f"{n}: {v}" + (f" [{r}]" if r else "") for n, v, r in sorted(bad)]
+        names = sorted({n for n, _, _ in bad})
+        return Signal(
+            cls="host_frozen",
+            subject=names[0] if len(names) == 1 else "claw-witness",
+            severity="wedge" if wedge else "degraded",
+            detail=("dude-claw out-of-band witness: "
+                    + "; ".join(descs)
+                    + " — HOST_FROZEN = kernel alive but userspace wedged "
+                    "(the self-petted HW watchdog can't catch this); UNREACHABLE "
+                    "= host/path down; UNKNOWN = claw witness itself unreachable "
+                    "(lost visibility). Alert-only; check the box."),
+            issue_ref=None,
+            extra={"targets": [{"name": n, "verdict": v} for n, v, _ in sorted(bad)],
+                   "streak": streak},
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: kernel reboot pending (2026-06-09 version-updates arc — the
 # 6.12.75-straggler guard: moc/moc1/moc3/meshanchor-server silently ran
 # an old kernel for days while a newer one sat installed; nothing paged)
