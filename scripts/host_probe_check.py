@@ -119,7 +119,12 @@ def _probe_one(req, server: str, device: str, target: dict,
                     timeout_s=timeout_s)
         if isinstance(reply, (bytes, bytearray)):
             reply = reply.decode("utf-8", "replace")
-        doc = json.loads(reply)
+        # nats_client.request() may hand back an already-parsed dict or a raw
+        # JSON string — accept either, never assume.
+        doc = json.loads(reply) if isinstance(reply, str) else reply
+        if not isinstance(doc, dict):
+            out["error"] = f"unexpected reply type: {type(reply).__name__}"
+            return out
         result = str(doc.get("result") or "")
         out["raw"] = result
         if not doc.get("ok"):
