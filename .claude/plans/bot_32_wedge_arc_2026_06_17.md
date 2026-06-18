@@ -228,3 +228,127 @@ hardware + operator-go step — do NOT build actuation in slice-1.
 HOST_FROZEN via the claw sensor, confirm it surfaces in mini's brief + `/fleet`, NO
 auto-reset, then revert). Field-prove the discrimination on a real `.32` reboot before
 trusting it.
+
+---
+
+## Leg C — slice progress (2026-06-17, session 2)
+
+**Decision (operator-driven "make it real / can it be more reliable"): FULL firmware
+host_probe, actuation-ready but alert-only this session (2+2).** Slice-1 (claw-liveness-
+by-presence) rejected as barely-informational. Auto-reset stays designed-for (RUN→GND
+reset, NOT power-cut — `.32` is a Pi Zero W, micro-USB; hard power-cut risks the very SD
+corruption that's a top suspect) but ships nothing actuating.
+
+**VERIFIED preconditions (this session):**
+- L2 premise: from `.32` (`wh6gxzTRDEV`), claw `10.120.250.199` is `dev wlan0 ... REACHABLE`,
+  direct (no gateway hop) on the `10.120.250.192/28` WiFi segment. ARP/TCP discrimination is
+  real and targets `.32`'s actual swap-thrash class (kernel/NIC alive, userspace wedged).
+- No existing net-probe tool in WireClaw's 25-tool sheet (`_ion.discover --many`): HAL is
+  pin-level (gpio), not socket — so the active probe genuinely requires a firmware tool.
+- Toolchain: pio at `~/.local/bin/pio`; `esp32-s3-heltec-v4` env exists ONLY on `dudeclaw`
+  (added by a PR), not `main`.
+
+**host_probe (lwIP non-blocking connect + SO_ERROR + banner read):** honest-by-design — a
+bare SYN-ACK is NOT read as healthy (kernel completes the handshake while a wedged sshd
+never accept()s). Two-port: app port (banner liveness) + a normally-closed port (service-
+independent kernel-alive RST check). Returns
+`host_probe <ip>: ip_alive=N appP=open|refused|timeout banner=NB kstack=N rtt_ms=N`.
+Verdict map for the brain: banner>0 → OK; app open + banner=0 + kstack=1 → HOST_FROZEN
+(the money case); app refused + kstack=1 → host-up/ssh-down (NOT frozen); ip_alive=0 →
+UNREACHABLE (path/wifi/SoC down).
+
+**VERIFIED build state (local, unpushed):**
+- `pr/host-probe` off `main` @ `3997578` — feature SSOT, +116 lines tools.cpp. Built green
+  `esp32-s3` (BUILD_EXIT=0).
+- `dc-hostprobe-candidate` off `dudeclaw` @ `82a265c` — merged pr/host-probe (only tools.cpp
+  schema conflicted → resolved as union of all 6 fork tools + host_probe; handler+dispatch
+  auto-merged), residue version.h → `0.4.0+dudeclaw.13`. Built green `esp32-s3-heltec-v4`
+  (BUILD_EXIT=0): RAM 52.6%, Flash 61.0%. Flashable `firmware.bin` ready.
+
+**GATED — remaining (operator):**
+1. FLASH over moc1 USB (touches live field box). Recipe in `dudeclaw_heltec_v4_bringup.md`
+   §Remote-flash. Post-flash VERIFY: `_ion.discover` shows `+dudeclaw.13`, free-heap-after
+   ≈30 kB, smoke-test `host_probe` {host:10.120.250.195}.
+2. Advance the `dudeclaw` ref per FORK.md (operator-gated force-update). Candidate firmware
+   content is method-independent; cleanest = ff `dudeclaw`→`dc-hostprobe-candidate` (host_probe
+   SSOT stays on `pr/host-probe`). Push pr/host-probe + new ref to moc1 bare backup.
+3. THEN brain pipeline on moc2 (post-flash, against proven tool): `nats_sensor` polls
+   host_probe(10.120.250.195) → condition → rule → NEW signal class (closed enum + BOTH seeds
+   + coverage/enum-doc gates, Leg D Piece-2 drill) → `/fleet` + warm brief (NATS primary, LoRa
+   backup). Drill synthetic HOST_FROZEN, NO auto-reset, revert. Field-prove on a real `.32` event.
+
+⚠️ FORK PRs unchanged (6 open); watch them per the state machine when next touching the claw.
+
+### ✅ FLASHED + dudeclaw advanced (2026-06-17, session 2 cont.)
+
+host_probe is LIVE on the claw. Shipped `+dudeclaw.14` (not .13 — a clean ship:
+post-.13 smoke-test found host_probe callable but ABSENT from `_ion.discover`,
+because the tools list at `main.cpp:~1000` is a HARDCODED duplicate of TOOLS_JSON
+[honest-failure-modes #5, pre-existing pattern]; .14 registers host_probe in BOTH
+the dispatch and the discover list, amended into the one feature commit).
+
+- `pr/host-probe` @ `0940e86` (feature SSOT, both files) · `dudeclaw` ff'd → `a73d574`
+  (`+dudeclaw.14`). Built green esp32-s3 + esp32-s3-heltec-v4 (RAM 52.6%/Flash 61.0%).
+- Flash: app-only `write-flash 0x10000` via moc1 pipx esptool 5.3.0, no erase (config
+  preserved); FLASH_EXIT=0, hash verified; claw rejoined NATS in ~4s.
+- VERIFIED live: version `+dudeclaw.14`, free_heap 30872 (no regression vs .12 30132),
+  host_probe in discover (count=1), smoke `host_probe 10.120.250.195: ip_alive=1
+  app22=open banner=43B kstack=0 rtt_ms=9` (reads .32 HEALTHY — sshd banner present).
+- ⚠️ DESIGN NOTE for the brain rule: `.32` firewall-DROPS the closed port (:9) → no RST
+  → `kstack=0` even when healthy. So the HOST_FROZEN verdict must key on
+  `app_open=1 AND banner=0` (the app-port SYN-ACK is itself the kernel-alive proof);
+  `kstack` is corroborating-only, not required. (Or set closed_port to one .32 RSTs.)
+
+**STILL LOCAL/UNPUSHED** — pr/host-probe + dudeclaw.14 live only in VolcanoAI's repo
+(claw runs .14, but the SOURCE is single-copy). Push to moc1 bare backup for durability.
+
+**NEXT = brain pipeline on moc2** (alert-only): `nats_sensor` polls host_probe(10.120.250.195)
+on a cadence → source threshold maps the line to OK/HOST_FROZEN/UNREACHABLE → Condition →
+mini rule → NEW signal class (closed enum + BOTH role seeds + coverage/enum-doc gates,
+Leg D Piece-2 drill) → `/fleet` + warm brief (NATS primary, LoRa backup). Drill a synthetic
+HOST_FROZEN, confirm it surfaces, NO auto-reset, revert. Field-prove on a real .32 wedge.
+
+---
+
+## ✅ Leg C COMPLETE — brain pipeline SHIPPED + live-drilled (2026-06-17, session 2)
+
+The dude-claw out-of-band witness is fully wired into the spine the operator
+watches. MeshForge HEAD `97b9dfcd` (CI PASS run 27727766806, fleet 5/5 converged,
+lint exit 0). The whole chain is live:
+
+  collector cron (moc2) → claw host_probe(.32) over NATS → verdict file
+  → probe_host_frozen → watchdog.json → mini host_frozen_any rule
+  → mini_dudeai_state.json → /fleet + warm brief   (alert-only, propose_escalation)
+
+**Shipped (MeshForge repo, `80760cad` + `97b9dfcd`):**
+- signal class `host_frozen` (closed enum + BOTH role seeds + coverage/wiring gates).
+- `probe_host_frozen` + `_read_host_probe_verdict` (watchdog_probes_drift.py): reads
+  `~/host_probe_state.json`, INERT off the brain box, 2-tick debounce, never-raises.
+  HOST_FROZEN/UNREACHABLE → wedge; sustained UNKNOWN (witness itself blind) →
+  degraded (lost visibility != healthy, honest_failure_modes #2).
+- `scripts/host_probe_check.py`: the OUT-OF-BAND collector (NATS call lives here, NOT
+  in the sandboxed watchdog — mirrors fleet_offline_check.sh). Self-gates on a
+  moc2-only config (operator IPs in `~/.config/meshforge/host_probe_targets.json`,
+  not repo source — MF014). Fixed `97b9dfcd`: request() returns a dict, not str.
+- Tests: `TestHostFrozen` (10) + the 3 signal-class gates. 376 green, lint 0.
+
+**moc2 activation (the claw's brain box):** config written (target bot32=10.120.250.195,
+app_port 22, closed_port 9), cron `*/3` wired with cron_verdict.sh (first verdict
+seeded `host_probe_check OK`), watchdog restarted, seed promoted (`host_frozen_any`).
+Baseline: bot32=OK (claw reads .32 healthy, banner=43B).
+
+**LIVE DRILL PASSED (moc2):** injected synthetic HOST_FROZEN → probe fired `wedge`
+in ~60s (2 ticks) → watchdog.json `class=host_frozen subject=bot32 severity=wedge` →
+mini consumed via `host_frozen_any` in ~15s → healed (real collector → OK) → signal
+CLEARED in ~15s (edge-down). NO auto-reset (alert-only confirmed). Cron restored.
+
+**Fleet rolled:** all 6 boxes pulled + `host_frozen_any` promoted + watchdog restarted
+(probe INERT off moc2). honest_status --quick: CI/fleet/lint/conf_rate PASS; watchdog
+WARN = pre-existing dep_version_drift/dep_install_fragmented (deferred 06-24) +
+claw_ble_soak_judge(never) — NO host_frozen, nothing new wedged.
+
+**Remaining (NOT this session):**
+- ⏳ backup/dudeclaw force-update to .14 + FORK.md recovery into the live lineage
+  (operator-gated; pr/host-probe IS on the backup, so the source is safe).
+- Leg C field-proof: the discrimination on a REAL .32 wedge (the next actual freeze).
+- Phase 5 (later, gated): RUN→GND auto-reset hardware + boot-loop state machine.
