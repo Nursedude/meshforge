@@ -51,15 +51,19 @@ proof. Cost: an HTTP ack receiver + state + a second escalation path.
 
 **Option 3 — Redundant second channel (mitigates all, confirms none).**
 Route RED/crash pages to ntfy **and** an independent path (a 2nd ntfy
-topic/server, email via the connected Gmail MCP, or a Pi-local SMS gateway).
-Redundancy, not confirmation — if one is dark the other still reaches you. It is
-also the escalation backbone Options 1 & 2 require.
+topic/server, email via a dedicated Gmail + `curl`→SMTP, or a Pi-local SMS
+gateway). Redundancy, not confirmation — if one is dark the other still reaches
+you. It is also the escalation backbone Options 1 & 2 require.
 
 ## Recommended design (phased — they compose; none alone suffices)
 
-- **Phase 1 — the second channel (Opt 3), the backbone.** Pick one independent
-  path; simplest is **email via the Gmail MCP** (already connected) or a 2nd
-  ntfy topic on a different server. Everything else escalates through it.
+- **Phase 1 — the second channel (Opt 3), the backbone. DECIDED 2026-06-17 +
+  BUILT 2026-06-18: a dedicated throwaway Gmail + `curl`→SMTP**, via
+  `scripts/fleet_alert_email.sh` (sibling of `fleet_ntfy_push.sh`, same 4-arg
+  signature; creds in `~/.config/fleet_email_creds`, no-op-safe without them).
+  The **Gmail MCP was rejected**: it has no send tool and is session-scoped, so
+  cron/watchdog can't reach it. `curl` is already present on the boxes — no
+  install. Everything else escalates through this.
   **Exercise it on a schedule too — a channel you never test is already dark.**
 - **Phase 2 — server/topic liveness: loopback monitor (Opt 1).** A
   `probe_ntfy_loopback` watchdog probe: publish a heartbeat to the fleet topic,
@@ -72,8 +76,9 @@ also the escalation backbone Options 1 & 2 require.
 
 ## Open questions (decide before building)
 
-- **Second channel:** Gmail MCP (lowest friction, already wired) vs a 2nd ntfy
-  server vs SMS (most reliable, needs a gateway)? Lean Gmail for Phase 1.
+- **Second channel:** ~~Gmail MCP vs 2nd ntfy server vs SMS~~ — **RESOLVED
+  2026-06-17:** dedicated throwaway Gmail + `curl`→SMTP (the MCP has no send
+  tool + is session-scoped; `curl` needs no install). Built 2026-06-18.
 - **Ack-endpoint host:** VolcanoAI (manager) — but it must itself be monitored
   (who watches the watcher → the Phase-1 channel + a cross-box check).
 - **Cadence vs fatigue:** daily loopback + weekly ack feels right; tune.
