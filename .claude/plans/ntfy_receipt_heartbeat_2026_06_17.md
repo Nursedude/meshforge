@@ -83,9 +83,22 @@ you. It is also the escalation backbone Options 1 & 2 require.
   watcher). Signal class `ntfy_loopback`; seed `ntfy_loopback_any`
   (propose_escalation) in both role seeds; 12 probe tests + the closed-enum /
   seed-coverage / wiring gates.
-- **Phase 3 — the human's device: operator-ack heartbeat (Opt 2).** Weekly
-  tap-to-ack page; unacked past threshold → escalate via Phase 1 + a `/fleet`
-  card. Catches C + the exact incident T (device on a wrong/old topic, dead app).
+- **Phase 3 — the human's device: operator-ack heartbeat (Opt 2). BUILT
+  2026-06-18.** `scripts/fleet_ntfy_ack.sh` (hourly manager-box cron) sends a
+  **weekly** tap-to-ack page to the fleet topic carrying an ntfy `http` **action
+  button** ("Got it"); tapping it makes the **phone POST to a dedicated ack-topic**
+  (`<fleet>-ack`) — no public ingress needed, since VolcanoAI has none (MF015).
+  The cron polls that ack-topic, tracks `consecutive_unacked_pings`, escalates via
+  the Phase-1 **email** backbone at ≥2 unacked weeks, and writes
+  `~/ntfy_ack_state.json`. `probe_ntfy_ack_stale` (read-only) surfaces unacked
+  weeks into mini's brief + `/fleet` (degraded; wedge at ≥2); INERT until first
+  pinged; stale state → `cron_verdict_stale`. Catches C + the exact incident T
+  (device on a wrong/old topic, dead app, notifications off) — what loopback (a
+  different subscriber) structurally cannot. Signal class `ntfy_ack_stale`; seed
+  `ntfy_ack_stale_any` in both role seeds; 12 probe tests. **⚠️ The defining proof
+  — the phone rendering the button + the tap producing an ack — can only be
+  confirmed by a live tap-test on the operator's device** (the ack *rendezvous*
+  poll mechanics are verified by simulating the POST).
 
 ## Open questions (decide before building)
 
@@ -126,13 +139,41 @@ On the **manager box** (VolcanoAI — where the fleet topic SSOT lives):
 The heartbeat is **min-priority** → silent on the phone; set your ntfy
 subscription's minimum priority to ignore it if the feed clutters.
 
+## Activation (Phase 3 — manager box only; needs a live tap-test)
+
+Unlike Phase 2, the weekly ack page **notifies** (default priority — it's the one
+you tap), so this is opt-in to a recurring weekly interaction.
+
+1. **Live tap-test FIRST** (proves the button works on your device). Send one ping
+   now and tap it:
+   `MESHFORGE_ACK_PING_INTERVAL_S=1 /opt/meshforge/scripts/fleet_ntfy_ack.sh`
+   → a "Fleet alert check" page hits your phone → tap **Got it** → run the script
+   again (normal interval) and confirm `~/ntfy_ack_state.json` shows
+   `last_ack_ts` advanced + `consecutive_unacked_pings: 0`.
+2. **Wire the hourly cron** (polls acks + sends the weekly ping; cron_verdict tail
+   makes `cron_verdict_stale` watch it):
+   ```
+   17 * * * * /opt/meshforge/scripts/fleet_ntfy_ack.sh; /opt/meshforge/scripts/cron_verdict.sh ntfy_ack $?
+   ```
+3. The watchdog restart + seed promote from the Phase-2 steps already cover
+   `ntfy_ack_stale` (same `promote_seed_rules.py --apply`; the probe + seed shipped
+   together). If you skipped those, run them.
+
+Cadence/escalation are env-tunable: `MESHFORGE_ACK_PING_INTERVAL_S` (default 7d),
+and the email fires at ≥2 unacked weeks.
+
 ## Status
 
 **Phase 1 BUILT + VERIFIED 2026-06-17/18** (`scripts/fleet_alert_email.sh`,
 end-to-end: send `exit 0` + operator receipt). **Phase 2 BUILT + VERIFIED
 2026-06-18** (`scripts/fleet_ntfy_loopback.sh` + `probe_ntfy_loopback`; collector
 live-tested against a throwaway topic, `received:true latency 4s`; lint + full
-affected suites green). **Phase 3 (weekly tap-to-ack — the human's device) is
-the remaining rung** — it's the only one that catches the exact 2026-06-14→17
-incident (phone on a dead topic). Needs an HTTP ack receiver on the manager box
-+ a second escalation path (the Phase-1 email backbone is ready for it).
+affected suites green). **Phase 3 BUILT 2026-06-18** (`scripts/fleet_ntfy_ack.sh` +
+`probe_ntfy_ack_stale`; ack-rendezvous poll mechanics verified by simulating the
+phone's POST — `last_ack_ts` updated, unacked=0; 12 probe tests + the
+closed-enum / seed-coverage / wiring gates; lint + 422 affected-suite green).
+**All three rungs are now code-complete.** Phase 3's defining proof (the phone
+rendering the action button + the tap producing an ack) needs a **live tap-test
+on the operator's device** — it is gated INERT until activated. The ntfy
+ack-topic rendezvous (no public ingress) replaced the originally-scoped "HTTP ack
+receiver."

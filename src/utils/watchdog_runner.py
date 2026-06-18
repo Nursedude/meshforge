@@ -55,6 +55,7 @@ from utils.watchdog_probes import (
     probe_fleet_box_unreachable,
     probe_host_frozen,
     probe_ntfy_loopback,
+    probe_ntfy_ack_stale,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -490,6 +491,17 @@ def run_all_probes(
     # (root, no sudo) and surfaces a miss into mini/+/fleet; INERT off the
     # manager box, stale file → cron_verdict_stale owns the dead-cron alert.
     sig = probe_ntfy_loopback()
+    if sig is not None:
+        signals.append(sig)
+
+    # ntfy ack stale (2026-06-18, receipt-heartbeat Phase 3) — the only rung that
+    # confirms the operator's DEVICE. A manager-box cron (fleet_ntfy_ack.sh) sends
+    # a WEEKLY tap-to-ack page; the tap makes the phone POST to a dedicated
+    # ack-topic the cron polls. This reads ~/ntfy_ack_state.json (root, no sudo)
+    # and surfaces consecutive unacked weeks into mini/+/fleet; INERT until first
+    # pinged, stale file → cron_verdict_stale owns the dead-cron alert. The cron
+    # owns the email escalation (this is visibility — propose_escalation).
+    sig = probe_ntfy_ack_stale()
     if sig is not None:
         signals.append(sig)
 

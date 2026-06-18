@@ -41,6 +41,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_fleet_box_unreachable,
     probe_host_frozen,
     probe_ntfy_loopback,
+    probe_ntfy_ack_stale,
     probe_kernel_reboot_pending,
     _cron_max_interval,
     _parse_kernel_release,
@@ -126,6 +127,7 @@ def test_signal_classes_closed_enum_is_documented():
         "fleet_box_unreachable",        # 2026-06-17 Leg D — fleet liveness surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent as calibration_drift)
         "host_frozen",                  # 2026-06-17 Leg C — dude-claw out-of-band witness verdict (HOST_FROZEN/UNREACHABLE/UNKNOWN) surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
         "ntfy_loopback",                # 2026-06-18 ntfy receipt-heartbeat Phase 2 — the alerting spine's own loopback liveness (collector publishes a nonce'd heartbeat to the fleet topic + polls it back, escalates via the email backbone on a miss); read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
+        "ntfy_ack_stale",               # 2026-06-18 ntfy receipt-heartbeat Phase 3 — the only rung confirming the operator's DEVICE (weekly tap-to-ack page; tap makes the phone POST to a dedicated ack-topic the manager-box cron polls); consecutive unacked weeks → email escalation + this read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -3904,6 +3906,105 @@ class TestNtfyLoopback:
         probe_ntfy_loopback(state_text=json.dumps(self._doc(received=True)),
                             state_mtime=self.NOW, now=self.NOW,
                             state_path=sp)                               # heal → 0
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+
+class TestNtfyAckStale:
+    """The operator-device confirmation (ntfy receipt-heartbeat Phase 3) surfaced
+    into mini's brief + /fleet. Hermetic: inject the state-file JSON + mtime + now.
+    INERT off the manager box (no file) and on a STALE file (the cron's own death
+    is cron_verdict_stale's job). A ``consecutive_unacked_pings`` that isn't an int
+    (missing / torn write / a JSON bool) is indeterminate → None, NEVER invented
+    (honest_failure_modes #1); the cron OWNS the email page, this is visibility."""
+
+    NOW = 2_000_000_000.0
+
+    def _doc(self, *, unacked, last_ping=None, last_ack=None):
+        return {"last_ping_ts": self.NOW if last_ping is None else last_ping,
+                "last_ack_ts": self.NOW if last_ack is None else last_ack,
+                "consecutive_unacked_pings": unacked,
+                "last_poll_ts": self.NOW, "ping_interval_s": 604800}
+
+    def _fire(self, tmp_path, doc, *, state_mtime=None, **kw):
+        """Run twice (2-tick debounce); return the 2nd. Fresh mtime by default.
+        doc=None injects an absent state file (empty state_text)."""
+        sp = str(tmp_path / "ntfy_ack_debounce.json")
+        mt = self.NOW if state_mtime is None else state_mtime
+        text = "" if doc is None else json.dumps(doc)
+        probe_ntfy_ack_stale(state_text=text, state_mtime=mt, now=self.NOW,
+                             state_path=sp, **kw)
+        return probe_ntfy_ack_stale(state_text=text, state_mtime=mt, now=self.NOW,
+                                    state_path=sp, **kw)
+
+    def test_signal_class_registered(self):
+        assert "ntfy_ack_stale" in SIGNAL_CLASSES
+
+    def test_acked_is_none(self, tmp_path):
+        assert self._fire(tmp_path, self._doc(unacked=0)) is None
+
+    def test_no_state_is_inert(self, tmp_path):
+        """No state file (not the manager box) → INERT."""
+        assert self._fire(tmp_path, None) is None
+
+    def test_one_unacked_fires_degraded(self, tmp_path):
+        sig = self._fire(tmp_path, self._doc(unacked=1))
+        assert sig is not None
+        assert sig.cls == "ntfy_ack_stale"
+        assert sig.subject == "ntfy"
+        assert sig.severity == "degraded"
+        assert "UNCONFIRMED" in sig.detail
+        assert sig.extra["consecutive_unacked_pings"] == 1
+
+    def test_two_unacked_fires_wedge(self, tmp_path):
+        sig = self._fire(tmp_path, self._doc(unacked=2))
+        assert sig is not None and sig.severity == "wedge"
+
+    def test_stale_state_is_none(self, tmp_path):
+        """State file older than stale_after_s → None (the cron stopped)."""
+        assert self._fire(tmp_path, self._doc(unacked=2),
+                          state_mtime=self.NOW - 50000) is None
+
+    def test_unparseable_is_none(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        probe_ntfy_ack_stale(state_text="not json {", state_mtime=self.NOW,
+                             now=self.NOW, state_path=sp)
+        second = probe_ntfy_ack_stale(state_text="not json {", state_mtime=self.NOW,
+                                      now=self.NOW, state_path=sp)
+        assert second is None
+
+    def test_unacked_missing_is_indeterminate_none(self, tmp_path):
+        """No counter key (torn/partial write) → None, never invented."""
+        doc = {"last_ping_ts": self.NOW, "last_poll_ts": self.NOW}
+        assert self._fire(tmp_path, doc) is None
+
+    def test_unacked_bool_is_none(self, tmp_path):
+        """A JSON bool (True is an int subclass) is rejected as indeterminate."""
+        doc = self._doc(unacked=1)
+        doc["consecutive_unacked_pings"] = True
+        assert self._fire(tmp_path, doc) is None
+
+    def test_negative_unacked_is_none(self, tmp_path):
+        assert self._fire(tmp_path, self._doc(unacked=-1)) is None
+
+    def test_debounce_first_tick_silent(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        text = json.dumps(self._doc(unacked=1))
+        first = probe_ntfy_ack_stale(state_text=text, state_mtime=self.NOW,
+                                     now=self.NOW, state_path=sp)
+        assert first is None
+        assert json.loads(Path(sp).read_text())["streak"] == 1
+        second = probe_ntfy_ack_stale(state_text=text, state_mtime=self.NOW,
+                                      now=self.NOW, state_path=sp)
+        assert second is not None
+
+    def test_heal_clears_streak(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        probe_ntfy_ack_stale(state_text=json.dumps(self._doc(unacked=1)),
+                             state_mtime=self.NOW, now=self.NOW,
+                             state_path=sp)                              # streak 1
+        probe_ntfy_ack_stale(state_text=json.dumps(self._doc(unacked=0)),
+                             state_mtime=self.NOW, now=self.NOW,
+                             state_path=sp)                              # ack → 0
         assert json.loads(Path(sp).read_text())["streak"] == 0
 
 

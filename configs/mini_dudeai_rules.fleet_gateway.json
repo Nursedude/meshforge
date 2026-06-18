@@ -511,6 +511,19 @@
       "annotation": "ntfy receipt-heartbeat Phase 2 (2026-06-18) - the alerting channel's OWN loopback failed: a manager-box collector (fleet_ntfy_loopback.sh) publishes a nonce'd min-priority heartbeat to the fleet topic and polls ntfy.sh to confirm it loops back; a miss means ntfy.sh is down OR the fleet topic's publish path is broken OR the sender no-ops. The collector OWNS the page and escalates via the Phase-1 EMAIL backbone (ntfy is the suspect channel, so it does NOT page back through ntfy); this rule is visibility only - propose_escalation, NO duplicate page. The operator-phone-on-wrong-topic case is Phase 3's tap-to-ack job."
     },
     {
+      "id": "ntfy_ack_stale_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "ntfy_ack_stale",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 86400,
+      "annotation": "ntfy receipt-heartbeat Phase 3 (2026-06-18) - the ONLY rung that confirms the operator's DEVICE. A manager-box cron (fleet_ntfy_ack.sh) sends a WEEKLY tap-to-ack page; consecutive unacked weeks mean the phone may not be receiving fleet pages (wrong/dead topic, app killed, notifications off - the exact 06-14->17 failure loopback can't catch, since loopback is a different subscriber). The cron OWNS the page and escalates via the Phase-1 EMAIL backbone at >=2 unacked weeks; this rule is visibility only - propose_escalation, NO duplicate page."
+    },
+    {
       "id": "history_write_stalled_any",
       "match": {
         "kind": "signal_class",

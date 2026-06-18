@@ -1616,6 +1616,146 @@ def probe_ntfy_loopback(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: ntfy ack stale (2026-06-18 — ntfy receipt-heartbeat Phase 3)
+#
+# The ONLY rung that confirms the operator's DEVICE. A manager-box cron
+# (scripts/fleet_ntfy_ack.sh) sends a WEEKLY tap-to-ack page to the fleet topic
+# with an ntfy action button; the tap makes the PHONE POST to a dedicated
+# ack-topic (<fleet>-ack), which the cron polls. consecutive_unacked_pings grows
+# each unacked week (reset on ack); the cron escalates via the Phase-1 EMAIL
+# backbone at >=2 unacked, and this READ-ONLY probe surfaces it into mini's brief
+# + /fleet. Catches exactly the 2026-06-14→17 incident (phone on a wrong/dead
+# topic, app killed, notifications off) — what loopback (Phase 2, a different
+# subscriber) structurally cannot. Mirrors the host_frozen file-read pattern +
+# 2-tick debounce. Alert-only (propose_escalation — the cron owns the email).
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_NTFY_ACK_DEBOUNCE_PATH = "/var/lib/meshforge/ntfy_ack_debounce.json"
+NTFY_ACK_STATE_STALE_S = 14400   # state file older than this → the cron stopped;
+                                 # cron_verdict_stale owns the dead-cron alert
+                                 # (fleet_ntfy_ack is verdict-wired). ~4× hourly.
+NTFY_ACK_WEDGE_PINGS = 2         # this many consecutive unacked weeks → wedge
+
+
+def _read_ntfy_ack_state(home) -> Tuple[Optional[str], Optional[float]]:
+    """Read ``~/ntfy_ack_state.json`` + its mtime as root, in-process (no sudo —
+    watchdog sandbox). Returns ``(text, mtime)`` or ``(None, None)`` on
+    absent/unreadable (→ INERT: the ack monitor is manager-box-only)."""
+    if not home:
+        return None, None
+    path = os.path.join(str(home), "ntfy_ack_state.json")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        return text, os.path.getmtime(path)
+    except (FileNotFoundError, IsADirectoryError):
+        return None, None
+    except OSError:
+        return None, None
+
+
+def probe_ntfy_ack_stale(
+    *,
+    operator: Optional[Tuple[int, str]] = None,
+    state_text: Optional[str] = None,
+    state_mtime: Optional[float] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+    stale_after_s: float = NTFY_ACK_STATE_STALE_S,
+    wedge_after_pings: int = NTFY_ACK_WEDGE_PINGS,
+) -> Optional[Signal]:
+    """Surface an UNCONFIRMED operator device — Phase 3 of the ntfy receipt-
+    heartbeat arc (2026-06-18).
+
+    Reads the manager box's ``~/ntfy_ack_state.json`` (written by
+    ``scripts/fleet_ntfy_ack.sh``, which sends a weekly tap-to-ack page and polls
+    the ack-topic the phone POSTs to on tap). ``consecutive_unacked_pings >= 1``
+    means a weekly page went out with no tap-to-ack — the operator's phone may
+    not be receiving fleet alerts (wrong/dead topic, app killed, notifications
+    off), the exact 2026-06-14→17 failure that loopback (a different subscriber)
+    cannot catch. The cron OWNS the email page (escalates at >=2 unacked weeks);
+    this probe is VISIBILITY into mini's brief + /fleet (propose_escalation, no
+    duplicate page — the fleet_box_unreachable model).
+
+    Self-guards None: no state file (not the manager box → INERT), STALE file
+    past ``stale_after_s`` (the cron stopped — cron_verdict_stale owns the
+    dead-cron alert, fleet_ntfy_ack is verdict-wired), unparseable JSON, a
+    ``consecutive_unacked_pings`` that is not an int (indeterminate → held, never
+    invented; a JSON bool is rejected too), or ``<= 0`` (acked → healthy; also
+    covers never-pinged, which keeps the counter at 0 so the first-week grace
+    never false-alarms). 2-tick debounce. Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_NTFY_ACK_DEBOUNCE_PATH
+
+        if state_text is None:
+            if operator is None:
+                try:
+                    from utils.fleet_test_runner import _find_operator_user
+                    operator = _find_operator_user()
+                except Exception:
+                    operator = None
+            home = None
+            if operator is not None:
+                try:
+                    import pwd
+                    home = pwd.getpwuid(operator[0]).pw_dir
+                except (KeyError, OSError):
+                    home = None
+            state_text, state_mtime = _read_ntfy_ack_state(home)
+
+        if not state_text:
+            _save_parity_streak(sp, 0)      # no monitor here → INERT
+            return None
+
+        if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            _save_parity_streak(sp, 0)      # cron stopped → cron_verdict_stale owns it
+            return None
+
+        try:
+            doc = json.loads(state_text)
+        except (ValueError, TypeError):
+            _save_parity_streak(sp, 0)
+            return None
+        if not isinstance(doc, dict):
+            _save_parity_streak(sp, 0)
+            return None
+
+        unacked = doc.get("consecutive_unacked_pings")
+        # Indeterminate (missing / not an int / a JSON bool) → HOLD, never invent.
+        if not isinstance(unacked, int) or isinstance(unacked, bool):
+            _save_parity_streak(sp, 0)
+            return None
+        if unacked <= 0:
+            _save_parity_streak(sp, 0)      # acked (or never pinged) → healthy
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        return Signal(
+            cls="ntfy_ack_stale",
+            subject="ntfy",
+            severity="wedge" if unacked >= wedge_after_pings else "degraded",
+            detail=(f"weekly fleet-alert ack UNCONFIRMED — {unacked} consecutive "
+                    "weekly page(s) with no tap-to-ack. Your phone may not be "
+                    "receiving fleet pages (wrong/dead topic, app killed, "
+                    "notifications off — the exact 06-14→17 failure). Tap "
+                    "'Got it' on the next weekly page, or check your ntfy "
+                    "subscription. The cron escalates via the Phase-1 EMAIL "
+                    "backbone; this is visibility."),
+            issue_ref=None,
+            extra={"consecutive_unacked_pings": unacked, "streak": streak},
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: kernel reboot pending (2026-06-09 version-updates arc — the
 # 6.12.75-straggler guard: moc/moc1/moc3/meshanchor-server silently ran
 # an old kernel for days while a newer one sat installed; nothing paged)
