@@ -40,6 +40,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_ntfy_loopback,
     probe_kernel_reboot_pending,
     _cron_max_interval,
     _parse_kernel_release,
@@ -124,6 +125,7 @@ def test_signal_classes_closed_enum_is_documented():
         "calibration_drift",            # 2026-06-15 calibration spine; SSOT .claude/rules/calibrated_claims.md (new subsystem, not a fleet bug → no persistent_issues row; that file is at its MF012 cap)
         "fleet_box_unreachable",        # 2026-06-17 Leg D — fleet liveness surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent as calibration_drift)
         "host_frozen",                  # 2026-06-17 Leg C — dude-claw out-of-band witness verdict (HOST_FROZEN/UNREACHABLE/UNKNOWN) surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
+        "ntfy_loopback",                # 2026-06-18 ntfy receipt-heartbeat Phase 2 — the alerting spine's own loopback liveness (collector publishes a nonce'd heartbeat to the fleet topic + polls it back, escalates via the email backbone on a miss); read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -3798,6 +3800,110 @@ class TestHostFrozen:
         probe_host_frozen(state_text=json.dumps(self._doc("OK")),
                           state_mtime=self.NOW, now=self.NOW,
                           state_path=sp)                                     # heal → 0
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+
+class TestNtfyLoopback:
+    """The alerting spine's OWN loopback (ntfy receipt-heartbeat Phase 2)
+    surfaced into mini's brief + /fleet. Hermetic: inject the verdict-file JSON
+    + mtime + now. INERT off the manager box (no file) and on a STALE file (the
+    collector's own death is cron_verdict_stale's job). A ``received`` that is
+    not an explicit bool (torn/partial write) is indeterminate → None, NEVER
+    read as a miss (honest_failure_modes #1/#2 — absence of evidence ≠ failure;
+    the collector OWNS the email page, this probe is visibility only)."""
+
+    NOW = 2_000_000_000.0
+
+    def _doc(self, *, received, published_ok=True, misses=0):
+        return {"ts": self.NOW, "nonce": "lb-x-1-2", "published_ok": published_ok,
+                "received": received, "latency_s": 4, "consecutive_misses": misses,
+                "interval_s": 1800, "last_received_ts": self.NOW}
+
+    def _fire(self, tmp_path, doc, *, state_mtime=None, **kw):
+        """Run twice (2-tick debounce); return the 2nd. Fresh mtime by default.
+        doc=None injects an absent verdict file (empty state_text)."""
+        sp = str(tmp_path / "ntfy_loopback_debounce.json")
+        mt = self.NOW if state_mtime is None else state_mtime
+        text = "" if doc is None else json.dumps(doc)
+        probe_ntfy_loopback(state_text=text, state_mtime=mt, now=self.NOW,
+                            state_path=sp, **kw)
+        return probe_ntfy_loopback(state_text=text, state_mtime=mt, now=self.NOW,
+                                   state_path=sp, **kw)
+
+    def test_signal_class_registered(self):
+        assert "ntfy_loopback" in SIGNAL_CLASSES
+
+    def test_received_true_is_none(self, tmp_path):
+        assert self._fire(tmp_path, self._doc(received=True)) is None
+
+    def test_no_state_is_inert(self, tmp_path):
+        """No verdict file (not the manager box) → INERT."""
+        assert self._fire(tmp_path, None) is None
+
+    def test_published_but_lost_fires_degraded(self, tmp_path):
+        sig = self._fire(tmp_path, self._doc(received=False, published_ok=True, misses=1))
+        assert sig is not None
+        assert sig.cls == "ntfy_loopback"
+        assert sig.subject == "ntfy"
+        assert sig.severity == "degraded"
+        assert "did NOT loop back" in sig.detail
+        assert sig.extra["published_ok"] is True
+        assert sig.extra["consecutive_misses"] == 1
+
+    def test_publish_failed_fires(self, tmp_path):
+        sig = self._fire(tmp_path, self._doc(received=False, published_ok=False, misses=1))
+        assert sig is not None
+        assert "could NOT publish" in sig.detail
+        assert sig.extra["published_ok"] is False
+
+    def test_sustained_misses_wedge(self, tmp_path):
+        sig = self._fire(tmp_path, self._doc(received=False, published_ok=True, misses=3))
+        assert sig is not None and sig.severity == "wedge"
+
+    def test_stale_state_is_none(self, tmp_path):
+        """A verdict file older than stale_after_s → None (collector stopped)."""
+        assert self._fire(tmp_path, self._doc(received=False, misses=2),
+                          state_mtime=self.NOW - 7200) is None
+
+    def test_unparseable_is_none(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        probe_ntfy_loopback(state_text="not json {", state_mtime=self.NOW,
+                            now=self.NOW, state_path=sp)
+        second = probe_ntfy_loopback(state_text="not json {", state_mtime=self.NOW,
+                                     now=self.NOW, state_path=sp)
+        assert second is None
+
+    def test_received_missing_is_indeterminate_none(self, tmp_path):
+        """A verdict with no 'received' key (torn/partial write) → None, never a
+        miss (honest_failure_modes: absence of evidence is not a failure)."""
+        doc = {"ts": self.NOW, "published_ok": True}   # no 'received'
+        assert self._fire(tmp_path, doc) is None
+
+    def test_received_non_bool_is_none(self, tmp_path):
+        """received as a string (not an explicit bool) → indeterminate → None."""
+        doc = self._doc(received=False)
+        doc["received"] = "false"   # JSON string, not a bool
+        assert self._fire(tmp_path, doc) is None
+
+    def test_debounce_first_tick_silent(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        text = json.dumps(self._doc(received=False, misses=1))
+        first = probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
+                                    now=self.NOW, state_path=sp)
+        assert first is None
+        assert json.loads(Path(sp).read_text())["streak"] == 1
+        second = probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
+                                     now=self.NOW, state_path=sp)
+        assert second is not None
+
+    def test_heal_clears_streak(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        bad = json.dumps(self._doc(received=False, misses=1))
+        probe_ntfy_loopback(state_text=bad, state_mtime=self.NOW,
+                            now=self.NOW, state_path=sp)                  # streak 1
+        probe_ntfy_loopback(state_text=json.dumps(self._doc(received=True)),
+                            state_mtime=self.NOW, now=self.NOW,
+                            state_path=sp)                               # heal → 0
         assert json.loads(Path(sp).read_text())["streak"] == 0
 
 

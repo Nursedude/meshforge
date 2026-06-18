@@ -1457,6 +1457,165 @@ def probe_host_frozen(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: ntfy loopback (2026-06-18 — ntfy receipt-heartbeat Phase 2)
+#
+# The alerting spine's OWN liveness. A manager-box collector cron
+# (scripts/fleet_ntfy_loopback.sh) publishes a nonce'd, MIN-priority heartbeat
+# to the FLEET topic, then polls ntfy.sh's poll API to confirm the nonce LOOPS
+# BACK within a window; on a miss it escalates via the Phase-1 EMAIL backbone
+# (ntfy is the suspect channel, so it does NOT page back through ntfy) and
+# writes a verdict file. This probe READS that file (read-only: probes never
+# send network traffic) and surfaces a miss into mini's brief + /fleet — the
+# "send ≠ receipt" lesson aimed at the spine itself (the 2026-06-14→17 dark
+# incident). Catches ntfy.sh-down / fleet-topic-publish-broken / sender-no-op;
+# the operator-phone-on-wrong-topic case is Phase 3's tap-to-ack job. Mirrors
+# host_frozen's file-read pattern + 2-tick debounce. Alert-only
+# (propose_escalation — the collector owns the email page).
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_NTFY_LOOPBACK_DEBOUNCE_PATH = "/var/lib/meshforge/ntfy_loopback_debounce.json"
+NTFY_LOOPBACK_STATE_STALE_S = 5400   # verdict older than this → the collector
+                                     # stopped; cron_verdict_stale owns the dead-
+                                     # cron alert (fleet_ntfy_loopback is verdict-
+                                     # wired). ~3× a 30-min cron cadence.
+NTFY_LOOPBACK_WEDGE_MISSES = 3       # this many consecutive misses → wedge
+
+
+def _read_ntfy_loopback_state(home) -> Tuple[Optional[str], Optional[float]]:
+    """Read ``~/ntfy_loopback_state.json`` + its mtime as root, in-process (no
+    sudo — watchdog sandbox). Returns ``(text, mtime)`` or ``(None, None)`` on
+    absent/unreadable (→ INERT: the loopback monitor is manager-box-only)."""
+    if not home:
+        return None, None
+    path = os.path.join(str(home), "ntfy_loopback_state.json")
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        return text, os.path.getmtime(path)
+    except (FileNotFoundError, IsADirectoryError):
+        return None, None
+    except OSError:
+        return None, None
+
+
+def probe_ntfy_loopback(
+    *,
+    operator: Optional[Tuple[int, str]] = None,
+    state_text: Optional[str] = None,
+    state_mtime: Optional[float] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+    stale_after_s: float = NTFY_LOOPBACK_STATE_STALE_S,
+    wedge_after_misses: int = NTFY_LOOPBACK_WEDGE_MISSES,
+) -> Optional[Signal]:
+    """Surface a failure of the ntfy alerting channel's OWN loopback — Phase 2 of
+    the ntfy receipt-heartbeat arc (2026-06-18).
+
+    Reads the manager box's ``~/ntfy_loopback_state.json`` (written by
+    ``scripts/fleet_ntfy_loopback.sh``, which publishes a nonce'd min-priority
+    heartbeat to the fleet topic and polls ntfy.sh to confirm it loops back).
+    ``received == false`` means the channel is dark from this box's vantage —
+    either the publish failed (sender-no-op / network) or it published but the
+    heartbeat never came back (ntfy.sh down / the fleet topic's delivery
+    broken). The collector OWNS the email page (it escalates via the Phase-1
+    EMAIL backbone — ntfy is the suspect channel, so it does NOT page back
+    through ntfy); this probe is VISIBILITY into mini's brief + /fleet
+    (propose_escalation, no duplicate page — the fleet_box_unreachable model).
+
+    Self-guards None: no verdict file (not the manager box → INERT — the monitor
+    is manager-box-only), STALE file past ``stale_after_s`` (the collector
+    stopped — reading a frozen verdict as current is the absence-of-evidence
+    trap; ``cron_verdict_stale`` owns the dead-cron alert, fleet_ntfy_loopback is
+    verdict-wired), unparseable JSON, a ``received`` that is not an explicit bool
+    (torn/partial write — indeterminate, never read as a miss; honest_failure_
+    modes #1/#2), or ``received == true``. 2-tick debounce rides a one-off
+    transient miss. Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_NTFY_LOOPBACK_DEBOUNCE_PATH
+
+        if state_text is None:
+            if operator is None:
+                try:
+                    from utils.fleet_test_runner import _find_operator_user
+                    operator = _find_operator_user()
+                except Exception:
+                    operator = None
+            home = None
+            if operator is not None:
+                try:
+                    import pwd
+                    home = pwd.getpwuid(operator[0]).pw_dir
+                except (KeyError, OSError):
+                    home = None
+            state_text, state_mtime = _read_ntfy_loopback_state(home)
+
+        if not state_text:
+            _save_parity_streak(sp, 0)      # no monitor here → INERT
+            return None
+
+        # Stale file = the collector stopped; cron_verdict_stale owns that alert.
+        if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            _save_parity_streak(sp, 0)
+            return None
+
+        try:
+            doc = json.loads(state_text)
+        except (ValueError, TypeError):
+            _save_parity_streak(sp, 0)      # garbage → don't false-fire
+            return None
+        if not isinstance(doc, dict):
+            _save_parity_streak(sp, 0)
+            return None
+
+        received = doc.get("received")
+        # Indeterminate (key missing / torn write / not a bool) → HOLD, never
+        # read as a miss — absence of evidence is not a failure (#80 class).
+        if not isinstance(received, bool):
+            _save_parity_streak(sp, 0)
+            return None
+        if received:
+            _save_parity_streak(sp, 0)      # looped back → healthy
+            return None
+
+        # received is False → a real miss.
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        published_ok = doc.get("published_ok")
+        try:
+            misses = int(doc.get("consecutive_misses", 0))
+        except (ValueError, TypeError):
+            misses = 0
+
+        if published_ok is False:
+            cause = ("could NOT publish to the fleet ntfy topic from this box "
+                     "(sender no-op / network) — ntfy pages from here will not send")
+        else:
+            cause = ("published but the heartbeat did NOT loop back via ntfy.sh "
+                     "(server or fleet-topic delivery broken) — pages may be lost")
+        return Signal(
+            cls="ntfy_loopback",
+            subject="ntfy",
+            severity="wedge" if misses >= wedge_after_misses else "degraded",
+            detail=("ntfy alerting channel loopback FAILED: " + cause
+                    + f" ({misses} consecutive miss(es)). The collector escalates "
+                    "via the Phase-1 EMAIL backbone; this is visibility. "
+                    "'send ≠ receipt' — the spine watching itself."),
+            issue_ref=None,
+            extra={"published_ok": (published_ok if isinstance(published_ok, bool)
+                                    else None),
+                   "consecutive_misses": misses, "streak": streak},
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: kernel reboot pending (2026-06-09 version-updates arc — the
 # 6.12.75-straggler guard: moc/moc1/moc3/meshanchor-server silently ran
 # an old kernel for days while a newer one sat installed; nothing paged)

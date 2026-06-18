@@ -65,11 +65,24 @@ you. It is also the escalation backbone Options 1 & 2 require.
   cron/watchdog can't reach it. `curl` is already present on the boxes — no
   install. Everything else escalates through this.
   **Exercise it on a schedule too — a channel you never test is already dark.**
-- **Phase 2 — server/topic liveness: loopback monitor (Opt 1).** A
-  `probe_ntfy_loopback` watchdog probe: publish a heartbeat to the fleet topic,
-  confirm a fleet-box subscriber receives it within the window; `degraded` →
-  escalate via Phase 1. Catches A + D + fleet-side B. Reuses the watchdog→mini→
-  `/fleet` spine.
+- **Phase 2 — server/topic liveness: loopback monitor (Opt 1). BUILT
+  2026-06-18.** Two parts, mirroring the Leg-C/D collector→state-file→read-only-
+  probe pattern (a probe must never send network traffic, so the side-effecting
+  half is a cron): **(a)** `scripts/fleet_ntfy_loopback.sh` — a manager-box cron
+  publishes a nonce'd, **min-priority** (silent-on-phone) heartbeat to the FLEET
+  topic, polls ntfy.sh's poll API to confirm it loops back within ~20s, writes
+  `~/ntfy_loopback_state.json`, and on a sustained miss (≥2 consecutive)
+  escalates via the Phase-1 **email** backbone (`fleet_alert_email.sh`) — NOT
+  back through ntfy, the suspect channel. **(b)** `probe_ntfy_loopback`
+  (read-only) reads that verdict file → `degraded` (or `wedge` at ≥3 misses) into
+  mini's brief + `/fleet`; INERT off the manager box, stale verdict → defers to
+  `cron_verdict_stale`. Catches A (ntfy.sh down) + D (sender no-op) + fleet-side
+  B (the fleet topic's publish path broken). Does NOT catch the operator's PHONE
+  on a wrong topic — that's Phase 3. The cron is wired to `cron_verdict.sh` so
+  `cron_verdict_stale` (#78) watches the monitor itself (who watches the
+  watcher). Signal class `ntfy_loopback`; seed `ntfy_loopback_any`
+  (propose_escalation) in both role seeds; 12 probe tests + the closed-enum /
+  seed-coverage / wiring gates.
 - **Phase 3 — the human's device: operator-ack heartbeat (Opt 2).** Weekly
   tap-to-ack page; unacked past threshold → escalate via Phase 1 + a `/fleet`
   card. Catches C + the exact incident T (device on a wrong/old topic, dead app).
@@ -93,9 +106,33 @@ you. It is also the escalation backbone Options 1 & 2 require.
 - "No ack yet" is held as **UNKNOWN**, never read as "fine" (unobservable ≠
   healthy — the exact lie that hid this for 4 days).
 
+## Activation (Phase 2 — manager box only)
+
+`probe_ntfy_loopback` is INERT until the collector cron writes its verdict file.
+On the **manager box** (VolcanoAI — where the fleet topic SSOT lives):
+
+1. **Wire the collector cron** (every 30 min; the `cron_verdict.sh` tail makes
+   `cron_verdict_stale` watch the monitor itself):
+   ```
+   */30 * * * * /opt/meshforge/scripts/fleet_ntfy_loopback.sh; /opt/meshforge/scripts/cron_verdict.sh ntfy_loopback $?
+   ```
+2. **Restart the watchdog** so it loads the new probe (SYSTEM unit, soak-safe):
+   `sudo systemctl restart meshforge-watchdog`
+3. **Promote the seed** so mini routes `ntfy_loopback`:
+   `python3 scripts/promote_seed_rules.py --apply` (clears the expected
+   `rules_seed_drift`). Run on the other 5 boxes too (the probe is INERT there,
+   but promotion keeps them in sync / quiets `rules_seed_drift`).
+
+The heartbeat is **min-priority** → silent on the phone; set your ntfy
+subscription's minimum priority to ignore it if the feed clutters.
+
 ## Status
 
-**SCOPED, not built** (2026-06-17). Companion to the
-`dudeclaw_second_brain_2026_06_17.md` arc (this surfaced while wiring the scout
-discharge cron). Implementation is a future arc; Phase 1 is the cheapest first
-rung and the prerequisite for the other two.
+**Phase 1 BUILT + VERIFIED 2026-06-17/18** (`scripts/fleet_alert_email.sh`,
+end-to-end: send `exit 0` + operator receipt). **Phase 2 BUILT + VERIFIED
+2026-06-18** (`scripts/fleet_ntfy_loopback.sh` + `probe_ntfy_loopback`; collector
+live-tested against a throwaway topic, `received:true latency 4s`; lint + full
+affected suites green). **Phase 3 (weekly tap-to-ack — the human's device) is
+the remaining rung** — it's the only one that catches the exact 2026-06-14→17
+incident (phone on a dead topic). Needs an HTTP ack receiver on the manager box
++ a second escalation path (the Phase-1 email backbone is ready for it).

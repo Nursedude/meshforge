@@ -573,6 +573,19 @@
       "annotation": "Leg C (2026-06-17) - the dude-claw out-of-band witness (host_probe over NATS, on the watched box's own subnet) reports a target HOST_FROZEN (kernel alive, userspace swap-wedged - the .32 class the box's self-petted HW watchdog can't catch), UNREACHABLE (host/path/SoC down), or a sustained UNKNOWN (the claw witness itself unreachable = lost visibility, not 'healthy'). Surfaced into the warm brief + /fleet. Alert-only - propose_escalation, NO ntfy; the operator decides on the page."
     },
     {
+      "id": "ntfy_loopback_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "ntfy_loopback",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "ntfy receipt-heartbeat Phase 2 (2026-06-18) - the alerting channel's OWN loopback failed: a manager-box collector (fleet_ntfy_loopback.sh) publishes a nonce'd min-priority heartbeat to the fleet topic and polls ntfy.sh to confirm it loops back; a miss means ntfy.sh is down OR the fleet topic's publish path is broken OR the sender no-ops. The collector OWNS the page and escalates via the Phase-1 EMAIL backbone (ntfy is the suspect channel, so it does NOT page back through ntfy); this rule is visibility only - propose_escalation, NO duplicate page. The operator-phone-on-wrong-topic case is Phase 3's tap-to-ack job."
+    },
+    {
       "id": "history_write_stalled_any",
       "match": {
         "kind": "signal_class",

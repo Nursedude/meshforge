@@ -54,6 +54,7 @@ from utils.watchdog_probes import (
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_ntfy_loopback,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_fd_exhaustion,
@@ -478,6 +479,17 @@ def run_all_probes(
     # self-petted HW watchdog can't catch. Reads ~/host_probe_state.json written
     # by the out-of-band host_probe_check collector; INERT off the claw's brain box.
     sig = probe_host_frozen()
+    if sig is not None:
+        signals.append(sig)
+
+    # ntfy loopback (2026-06-18, receipt-heartbeat Phase 2) — the alerting
+    # spine's OWN liveness. A manager-box collector (fleet_ntfy_loopback.sh)
+    # publishes a nonce'd min-priority heartbeat to the fleet topic + polls
+    # ntfy.sh to confirm it loops back, escalating via the EMAIL backbone on a
+    # miss (ntfy is the suspect channel). This reads ~/ntfy_loopback_state.json
+    # (root, no sudo) and surfaces a miss into mini/+/fleet; INERT off the
+    # manager box, stale file → cron_verdict_stale owns the dead-cron alert.
+    sig = probe_ntfy_loopback()
     if sig is not None:
         signals.append(sig)
 
