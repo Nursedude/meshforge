@@ -9,6 +9,20 @@
 > This is the kickoff note for a **deep-research session** (use the `deep-research`
 > skill, MeshForge-domain style: fan-out → fetch → adversarially verify → cited
 > synthesis). Cold-start by reading this, then the grounding below.
+>
+> ✅ **RESEARCH EXECUTED 2026-06-17** — workflow `wf_0e34d5bd-51a` (105 agents,
+> 21/25 claims 3-vote-verified). **Findings + recommendations live in
+> `.claude/research/dudeclaw_second_brain_2026_06_17.md`** — read that for the
+> answers. Headline: autonomy ladder = Run-Time Assurance / Simplex (gate an
+> unverified agent behind a *verified* deterministic filter, not "trust the
+> agent"); edge keeps the critical loop closed (guardrail migrates DOWN to the
+> Heltec); power budget derived (ESP32-S3+WiFi dominant ~120 mA → 10 W panel +
+> MPPT + 10 Ah LiPo; GPS duty-cycled near-free; LoRa-TX = 1 A peak not energy);
+> DTN/BPv7 is **Pi-tier only** (BP7-on-MCU refuted); 3T cyber-physical naming.
+> Three honest open items remain (field power measurement, the discrete-action
+> safe set for the reset line, cognitive-architecture naming) — see §"What we
+> could NOT verify". The carry-over firmware fix + next steps are in §"Immediate
+> next steps".
 
 ---
 

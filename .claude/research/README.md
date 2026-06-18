@@ -54,6 +54,7 @@
 | `local_mqtt_architecture.md` | Local MQTT bridging design |
 | `uconsole_portable_noc.md` | uConsole portable NOC design |
 | `fleet_architecture_2026_06_03.md` | Full fleet diagnosis: per-box roles, routing/messaging/telemetry/RF/transport map, gateway-cornerstone verdict, federation+cloud flow, 4-theme roadmap. +2026-06-04: Theme-A shipped, dual-radio/downlink data plane (§7.6), live config matrix + drift findings (§7.7) |
+| `dudeclaw_second_brain_2026_06_17.md` | **Deep-research findings** (workflow `wf_0e34d5bd-51a`, 21/25 claims 3-vote-verified) for the dude-claw second-brain arc: autonomy ladder = Run-Time Assurance/Simplex (verified filter, not "trust the agent"); edge/brain split (guardrail migrates to the edge); cited power budget (ESP32-S3+WiFi dominant, GPS near-free, LoRa-TX = 1A peak); DTN/BPv7 solo mode (Pi-tier only); 3T cyber-physical naming. Answers the kickoff `.claude/plans/dudeclaw_second_brain_2026_06_18.md` |
 
 ### Session Notes
 
