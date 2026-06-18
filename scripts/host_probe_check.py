@@ -97,10 +97,10 @@ def _verdict(fields: dict, collector_ok: bool) -> str:
     return "OK"
 
 
-def _probe_one(req, server: str, device: str, target: dict,
-               timeout_s: float) -> dict:
-    """Probe a single target via the claw. Never raises — a transport failure
-    becomes a UNKNOWN verdict with the error recorded."""
+def _probe_once(req, server: str, device: str, target: dict,
+                timeout_s: float) -> dict:
+    """Probe a single target via the claw ONCE. Never raises — a transport
+    failure becomes a UNKNOWN verdict with the error recorded."""
     name = str(target.get("name") or target.get("host") or "?")
     host = str(target.get("host") or "")
     out = {"name": name, "host": host, "verdict": "UNKNOWN",
@@ -139,6 +139,26 @@ def _probe_one(req, server: str, device: str, target: dict,
     return out
 
 
+def _probe_target(req, server: str, device: str, target: dict,
+                  timeout_s: float, attempts: int = 3) -> dict:
+    """Confirm a wedge before claiming one. A loaded box (the .32 Pi Zero W at
+    load ~3.5) can miss the 800ms banner window on one probe and look
+    HOST_FROZEN, then serve the banner fine on the next — observed firing a
+    false wedge the day Leg C shipped. So: re-probe a non-OK verdict; if ANY
+    attempt shows the box serving (OK), it is ALIVE and we report OK. Only a
+    verdict that PERSISTS across every attempt is reported (a truly frozen box
+    gives banner=0 every time; a down box is UNREACHABLE every time). Records
+    the attempt count. (Root fix is a longer firmware banner window — deferred.)"""
+    last = None
+    for i in range(max(1, attempts)):
+        last = _probe_once(req, server, device, target, timeout_s)
+        if last["verdict"] == "OK":
+            last["attempts"] = i + 1
+            return last                  # alive — stop, never a transient wedge
+    last["attempts"] = max(1, attempts)
+    return last                          # every attempt agreed it's not OK
+
+
 def main() -> int:
     home = get_real_user_home()
     config_path = os.path.join(str(home), CONFIG_REL)
@@ -167,7 +187,7 @@ def main() -> int:
     def req(srv, subj, payload, *, timeout_s):
         return _request(srv, subj, payload, token=token, timeout_s=timeout_s)
 
-    results = [_probe_one(req, server, device, t, timeout_s)
+    results = [_probe_target(req, server, device, t, timeout_s)
                for t in targets if isinstance(t, dict)]
     collector_ok = all(r["error"] is None for r in results) if results else True
 
