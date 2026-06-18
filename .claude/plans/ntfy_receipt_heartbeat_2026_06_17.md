@@ -121,6 +121,10 @@ you. It is also the escalation backbone Options 1 & 2 require.
 
 ## Activation (Phase 2 — manager box only)
 
+> ✅ **DONE on VolcanoAI 2026-06-18** — all three steps below are wired/live
+> (loopback cron `*/30`, watchdog restarted, seeds promoted on all 6). Retained
+> as the reproducible record / for any future manager-box rebuild.
+
 `probe_ntfy_loopback` is INERT until the collector cron writes its verdict file.
 On the **manager box** (VolcanoAI — where the fleet topic SSOT lives):
 
@@ -140,6 +144,13 @@ The heartbeat is **min-priority** → silent on the phone; set your ntfy
 subscription's minimum priority to ignore it if the feed clutters.
 
 ## Activation (Phase 3 — manager box only; needs a live tap-test)
+
+> ✅ **DONE on VolcanoAI 2026-06-18** — live tap-test passed (operator tapped
+> "Got it", ack POSTed to `<fleet>-ack`, poller ingested it), hourly cron `:17`
+> wired (cron_verdict-tailed), and the **escalation email path was drill-verified
+> end-to-end** (primed unacked=2 on throwaway state/topic → `fleet_alert_email.sh`
+> exit 0 → operator confirmed the drill email landed). Retained as the
+> reproducible record.
 
 Unlike Phase 2, the weekly ack page **notifies** (default priority — it's the one
 you tap), so this is opt-in to a recurring weekly interaction.
@@ -172,8 +183,13 @@ affected suites green). **Phase 3 BUILT 2026-06-18** (`scripts/fleet_ntfy_ack.sh
 `probe_ntfy_ack_stale`; ack-rendezvous poll mechanics verified by simulating the
 phone's POST — `last_ack_ts` updated, unacked=0; 12 probe tests + the
 closed-enum / seed-coverage / wiring gates; lint + 422 affected-suite green).
-**All three rungs are now code-complete.** Phase 3's defining proof (the phone
-rendering the action button + the tap producing an ack) needs a **live tap-test
-on the operator's device** — it is gated INERT until activated. The ntfy
-ack-topic rendezvous (no public ingress) replaced the originally-scoped "HTTP ack
-receiver."
+**✅ ARC COMPLETE + LIVE on VolcanoAI 2026-06-18.** All three rungs are activated:
+P1 email backbone (send + receipt verified), P2 loopback (`*/30` cron, real
+round-trip), P3 device-confirm (`:17` cron; device round-trip verified by the
+operator's live tap, AND the escalation email path drill-verified end-to-end to
+the operator's inbox). Both ntfy crons are `cron_verdict.sh`-tailed so
+`cron_verdict_stale` watches the monitors themselves; signal classes
+`ntfy_loopback` + `ntfy_ack_stale` route in both role seeds (promoted on all 6
+boxes). `honest_status.sh` is `exit 0` at HEAD. The ntfy ack-topic rendezvous (no
+public ingress) replaced the originally-scoped "HTTP ack receiver." **No pending
+steps** — the next weekly ack page is ~7 days out; normal operation from here.
