@@ -212,6 +212,76 @@ class TestMiniDudeaiStatusBlock:
         assert "malformed_json" in block["reason"]
 
 
+class TestClawStatusBlock:
+    """_read_claw_state_block stitches ~/claw_last_tick.json into /api/status.
+
+    Mirrors the mini block but for the dude-claw's captured NATS telemetry.
+    The honesty bar (the design's "stale must render stale, never green-with-
+    old-numbers"): a stopped capture cron (stale) AND a claw that didn't answer
+    at last capture (tick ok=False) must BOTH render ok=False with a distinct
+    reason — never a healthy-looking block with old numbers.
+    """
+
+    def _handler_with_home(self, monkeypatch, home):
+        import utils.paths as paths_mod
+        monkeypatch.setattr(paths_mod, "get_real_user_home", lambda: home)
+        return MapRequestHandler.__new__(MapRequestHandler)
+
+    def _tick(self, **over):
+        import time as _t
+        base = {
+            "captured_at": _t.time(), "captured_iso": "now", "host": "moc2",
+            "device": "dudeclaw-01", "ok": True,
+            "device_info": {"heap_free_bytes": 17764, "uptime_s": 109368,
+                            "wifi_rssi_dbm": -37},
+            "ble": {"adv_age_s": 0, "advs": 767422, "last_rssi_dbm": -59},
+            "errors": {},
+        }
+        base.update(over)
+        return base
+
+    def test_not_installed_when_no_state_file(self, tmp_path, monkeypatch):
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block == {"installed": False, "reason": "no_state_file"}
+
+    def test_healthy_block_when_fresh(self, tmp_path, monkeypatch):
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick()))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["installed"] is True and block["ok"] is True
+        assert block["host"] == "moc2" and block["device"] == "dudeclaw-01"
+        assert block["device_info"]["uptime_s"] == 109368
+        assert block["ble"]["advs"] == 767422
+        assert "reason" not in block
+
+    def test_stale_flagged_when_capture_old(self, tmp_path, monkeypatch):
+        import time as _t
+        (tmp_path / "claw_last_tick.json").write_text(
+            json.dumps(self._tick(captured_at=_t.time() - 9999)))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["installed"] is True and block["ok"] is False
+        assert "stale" in block["reason"]
+
+    def test_unreachable_tick_renders_not_ok(self, tmp_path, monkeypatch):
+        # Fresh capture, but the claw didn't answer: ok must be False with an
+        # unreachable reason — NOT a green block carrying the last good numbers.
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick(
+            ok=False, device_info=None, errors={"device_info": "timeout"})))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["installed"] is True and block["ok"] is False
+        assert "unreachable" in block["reason"]
+
+    def test_malformed_json_reported(self, tmp_path, monkeypatch):
+        (tmp_path / "claw_last_tick.json").write_text("{not json")
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["installed"] is True and block["ok"] is False
+        assert "malformed_json" in block["reason"]
+
+
 # ── F8: Server-side View preset filter ─────────────────────────────────
 from utils.map_http_handler import (
     VIEW_PRESETS,

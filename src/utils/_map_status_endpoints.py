@@ -215,6 +215,14 @@ class StatusEndpointsMixin:
         # silently if mini isn't installed on this box.
         status["mini_dudeai"] = self._read_mini_state_block()
 
+        # dude-claw passthrough (the ESP32-S3 edge node). Same read-a-state-file
+        # pattern: claw_metrics_push.py captures the claw's last NATS telemetry
+        # tick to ~/claw_last_tick.json; we stitch it in so federation carries
+        # the claw's posture to the /fleet rollup. Absent on every box without a
+        # claw (silently {"installed": false}). Display only — no probe/DB; the
+        # claw_metrics cron already pages on the claw's death.
+        status["claw"] = self._read_claw_state_block()
+
         data = json.dumps(status).encode()
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
@@ -385,6 +393,74 @@ class StatusEndpointsMixin:
                 f"stale: last tick {age_s:.0f}s ago "
                 f"(threshold {self._MINI_STALE_S:.0f}s) — mini-dudeai "
                 f"daemon may have crashed"
+            )
+        return block
+
+    # 3x the */5-min claw_metrics capture cadence: captured every 5 min, called
+    # stale (capture cron stopped) after 15.
+    _CLAW_STALE_S = 900.0
+
+    def _read_claw_state_block(self) -> Dict[str, Any]:
+        """Stitch ~/claw_last_tick.json into /api/status.
+
+        claw_metrics_push.py captures the dude-claw's last NATS telemetry tick
+        (heap/uptime/wifi-rssi/ble counters) to this operator-home file every
+        5 min; we surface it so federation carries the claw's posture to the
+        /fleet rollup with no new plumbing. Operator-home path (MF001).
+
+        Honesty (the design's "stale must render stale, never green-with-old-
+        numbers"): two distinct degraded states both force ``ok`` False with a
+        reason — ``stale`` (capture cron stopped) and an unreachable tick (the
+        claw didn't answer at last capture, ``ok`` False in the file). Absent
+        file → ``{"installed": false}`` so claw-less boxes report a coherent
+        shape rather than a missing key.
+        """
+        try:
+            from utils.paths import get_real_user_home
+            path = get_real_user_home() / "claw_last_tick.json"
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return {"installed": False, "reason": "no_state_file"}
+        except OSError as exc:
+            return {"installed": False, "reason": f"read_error: {exc}"}
+
+        try:
+            payload = json.loads(raw)
+        except (json.JSONDecodeError, ValueError) as exc:
+            return {"installed": True, "ok": False, "reason": f"malformed_json: {exc}"}
+        if not isinstance(payload, dict):
+            return {"installed": True, "ok": False, "reason": "malformed_json: not an object"}
+
+        ts = payload.get("captured_at")
+        age_s: Optional[float] = None
+        if isinstance(ts, (int, float)):
+            age_s = max(0.0, time.time() - float(ts))
+        stale = bool(age_s is not None and age_s > self._CLAW_STALE_S)
+        tick_ok = bool(payload.get("ok"))
+
+        block = {
+            "installed": True,
+            "ok": tick_ok and not stale,
+            "captured_at": ts,
+            "captured_iso": payload.get("captured_iso"),
+            "age_s": age_s,
+            "host": payload.get("host"),
+            "device": payload.get("device"),
+            "device_info": payload.get("device_info"),
+            "ble": payload.get("ble"),
+        }
+        if stale:
+            block["reason"] = (
+                f"stale: last capture {age_s:.0f}s ago "
+                f"(threshold {self._CLAW_STALE_S:.0f}s) — claw_metrics cron "
+                f"may have stopped"
+            )
+        elif not tick_ok:
+            errs = payload.get("errors") or {}
+            detail = ", ".join(f"{k}: {v}" for k, v in errs.items()) if isinstance(errs, dict) else ""
+            block["reason"] = (
+                f"claw_unreachable: claw did not answer at last capture"
+                + (f" ({detail})" if detail else "")
             )
         return block
 

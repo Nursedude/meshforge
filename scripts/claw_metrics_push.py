@@ -20,16 +20,27 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from mini_dudeai._util import fetch_json  # noqa: E402
+from mini_dudeai._util import atomic_write_json, fetch_json  # noqa: E402
+from mini_dudeai.claw_telemetry import build_tick  # noqa: E402
 from mini_dudeai.nats_client import NatsConnection, NatsError  # noqa: E402
+from utils.paths import get_real_user_home  # noqa: E402
 
 WATCHDOG_PATH = "/var/lib/meshforge/watchdog.json"
 STATUS_URL = "http://localhost:5000/api/status"
+# Last-tick telemetry capture (display only) read by /api/status.claw + the
+# /fleet rollup. Operator-home path (MF001) so the writer and the reader
+# (_read_claw_state_block) resolve the same file.
+CLAW_TICK_BASENAME = "claw_last_tick.json"
+
+
+def _tick_path() -> str:
+    return str(get_real_user_home() / CLAW_TICK_BASENAME)
 
 
 def _load_claw_env() -> dict:
@@ -75,17 +86,35 @@ def build_rows() -> list[str]:
     return [row0[:23], row1[:23]]
 
 
-def push_rows(rows: list[str], server: str, device: str,
-              token: str | None) -> None:
-    with NatsConnection(server, token=token, timeout_s=8) as nc:
-        for i, text in enumerate(rows):
-            reply = nc.request(
-                f"{device}.tool_exec",
-                json.dumps({"tool": "display_print", "row": i, "text": text}),
-            )
-            if not (isinstance(reply, dict) and reply.get("ok")):
-                raise SystemExit(
-                    f"claw_metrics: display_print row {i} refused: {reply!r:.120}")
+def _request_tool(nc: NatsConnection, device: str, tool: str):
+    """One claw tool_exec; a transport failure becomes an honest error reply
+    (build_tick records it) rather than aborting the capture."""
+    try:
+        return nc.request(f"{device}.tool_exec", json.dumps({"tool": tool}))
+    except NatsError as e:
+        return {"ok": False, "error": str(e)[:160]}
+
+
+def _capture_tick(nc: NatsConnection, device: str, host: str,
+                  now: float) -> dict:
+    """Pull device_info + ble_stats for the /api/status.claw display block.
+    Best-effort: a half that fails is None + an error in the tick, never a
+    fabricated value (build_tick enforces the honest-failure contract)."""
+    di = _request_tool(nc, device, "device_info")
+    bs = _request_tool(nc, device, "ble_stats")
+    return build_tick(now, host, device, di, bs)
+
+
+def _push_rows(nc: NatsConnection, rows: list[str], device: str):
+    """Paint OLED rows. Returns an error string on refusal, else None."""
+    for i, text in enumerate(rows):
+        reply = nc.request(
+            f"{device}.tool_exec",
+            json.dumps({"tool": "display_print", "row": i, "text": text}),
+        )
+        if not (isinstance(reply, dict) and reply.get("ok")):
+            return f"display_print row {i} refused: {reply!r:.120}"
+    return None
 
 
 def main() -> int:
@@ -95,11 +124,32 @@ def main() -> int:
     if not server or not device:
         raise SystemExit("claw_metrics: claw env missing NATS server / device")
     rows = build_rows()
+    host = socket.gethostname()
+    now = time.time()
+    token = env.get("MINI_DUDEAI_NATS_TOKEN") or None
+
+    # Default to an unreachable tick so a total NATS failure persists an honest
+    # "claw didn't answer" record (the reader shows claw_unreachable) rather
+    # than letting the last good tick silently age into stale.
+    tick = build_tick(now, host, device, None, None)
+    paint_err: str | None = None
     try:
-        push_rows(rows, server, device, env.get("MINI_DUDEAI_NATS_TOKEN") or None)
+        with NatsConnection(server, token=token, timeout_s=8) as nc:
+            tick = _capture_tick(nc, device, host, now)
+            paint_err = _push_rows(nc, rows, device)
     except NatsError as e:
-        raise SystemExit(f"claw_metrics: NATS push failed: {e}")
-    print(f"claw_metrics: pushed {rows!r} to {device}")
+        paint_err = f"NATS connect/push failed: {e}"
+
+    # Persist the capture for /api/status display (best-effort; a write failure
+    # must NOT mask a paint failure, which is the claw-liveness page).
+    try:
+        atomic_write_json(_tick_path(), tick)
+    except OSError as e:
+        print(f"claw_metrics: WARN tick write failed: {e}", file=sys.stderr)
+
+    if paint_err:
+        raise SystemExit(f"claw_metrics: {paint_err}")
+    print(f"claw_metrics: pushed {rows!r} to {device}; tick ok={tick['ok']}")
     return 0
 
 
