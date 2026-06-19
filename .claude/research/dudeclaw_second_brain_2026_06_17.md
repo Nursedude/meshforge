@@ -293,7 +293,10 @@ but **editorial, not a literature term**; the literature-anchored name is
    correctly-defined "safe set" + verified backup behavior for a *GPIO reset
    line* (rate-limit, reversibility window, confirm-token, kill-switch,
    boot-loop abort) is **unspecified in the literature** and needs first-
-   principles design before Phase 5 actuation.
+   principles design before Phase 5 actuation. **→ ANSWERED 2026-06-19 (§5 of
+   the self-audit arc): `dudeclaw_reset_safe_set_2026_06_19.md`** — guards
+   G1–G7, NULL-action verified backup, honest-failure-modes pass, with the
+   `.32` overload as the adversarial test case.
 3. **Cognitive-architecture naming** beyond the grounded fast/slow split — the
    embodied-persistent-agent + continuity naming produced no surviving primary
    claim; the 3T mapping above is reasoned, not literature-gated.
@@ -356,7 +359,8 @@ the link gap itself** — hold edge state, surface the blindness (mini-dudeai
    prerequisite for committing to a panel size.
 3. **Design the discrete-action safe set** (Open Question #2) for the Phase 5
    reset line, on paper, against the honest-failure-modes checklist, *before* any
-   actuation firmware. This is the gate between rung 2 and rung 3.
+   actuation firmware. This is the gate between rung 2 and rung 3. **✅ DONE
+   2026-06-19 → `dudeclaw_reset_safe_set_2026_06_19.md`.**
 4. **GPS hardware spec** — MAX-M10S (numbers above) as the candidate; duty-cycled
    with hardware-backup; position in reports + geofenced sensing.
 
