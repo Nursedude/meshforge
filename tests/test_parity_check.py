@@ -49,3 +49,44 @@ def test_main_in_sync_exits_0(capsys):
     rc = pc.main(["--meshforge", "/opt/meshforge", "--meshanchor", "/opt/meshanchor"])
     assert rc == 0
     assert "RESULT: in sync." in capsys.readouterr().out
+
+
+# ── Calibration claim-gate shared-core guard (self-audit-qa-arc §1) ──
+
+def test_extract_literal_constant_tuple():
+    pc = _load()
+    assert pc._extract_literal_constant('X = ("a", "b", "c")\nY = 5\n', "X") == \
+        frozenset({"a", "b", "c"})
+
+
+def test_extract_literal_constant_absent_or_nonliteral():
+    pc = _load()
+    assert pc._extract_literal_constant("X = 1", "MISSING") is None   # absent
+    assert pc._extract_literal_constant("X = foo()", "X") is None      # non-literal
+    assert pc._extract_literal_constant("X = 5", "X") is None          # not a collection
+    assert pc._extract_literal_constant("def (", "X") is None          # unparseable
+    assert pc._extract_literal_constant(None, "X") is None             # no text
+
+
+def test_extract_detects_vocab_difference():
+    """The set-difference the drift finding reports (mf-only / ma-only)."""
+    pc = _load()
+    a = pc._extract_literal_constant('S = ("x", "y")', "S")
+    b = pc._extract_literal_constant('S = ("x", "z")', "S")
+    assert a != b
+    assert sorted(a - b) == ["y"] and sorted(b - a) == ["z"]
+
+
+@pytest.mark.skipif(not _HAS_MESHANCHOR, reason="/opt/meshanchor not present")
+def test_calibgate_section_wired_and_ok():
+    """The claim-gate shared-core check is wired into check_parity and the three
+    detection vocabularies agree between the real repos — the guard the operator
+    asked for so a future MeshForge claim_gate change can't silently skip MA."""
+    pc = _load()
+    findings, _ = pc.check_parity("/opt/meshforge", "/opt/meshanchor")
+    cg = [f for f in findings if f.section == "calibgate"]
+    assert cg, "calibgate section missing — check not wired"
+    assert all(f.status == "ok" for f in cg), \
+        [f.label for f in cg if f.status != "ok"]
+    names = {f.label.split("::")[-1].strip() for f in cg if "::" in f.label}
+    assert {"STRONG_CLAIMS", "CALIBRATION_MARKERS", "EVIDENCE_PATTERNS"} <= names

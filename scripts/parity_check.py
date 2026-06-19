@@ -18,6 +18,19 @@ Two tiers of parity:
   equality. Today: the rnstatus parser's ``timed_out`` keystone, the lint
   rules MF009 + MF019, and the two RNS-wedge probes.
 
+* **Calibration claim-gate shared core** — the calibrated-claims rule+gate are
+  a by-intent MF<->MA pair (the 2026-06-15 spine arc): MeshAnchor legitimately
+  LACKS the ledger-feeding trio (no ``mini_dudeai`` there) and uses its own
+  marker path, so byte/shape parity is wrong. But the DETECTION VOCABULARY
+  (which phrases are strong completion claims / honest hedges / quoted evidence)
+  must agree, or the two gates judge the same closing message differently —
+  silent drift. So we AST-extract the three vocabulary constants from both
+  ``scripts/claim_gate.py`` copies and compare them as SETS (no import side
+  effects; order-insensitive), plus assert the core decision functions are
+  present in both. Added 2026-06-19 (self-audit-qa-arc §1) — this REVERSES the
+  original "maintain by intent, not parity_check" choice, per operator request,
+  so a future MeshForge claim_gate improvement can't silently skip MeshAnchor.
+
 Pure stdlib. Runs from anywhere:
 
     python3 /opt/meshforge/scripts/parity_check.py
@@ -31,6 +44,7 @@ Exit codes:
     2  a repo or expected file is missing (can't compare)
 """
 import argparse
+import ast
 import hashlib
 import os
 import re
@@ -99,6 +113,20 @@ SHAPE_SYMBOLS = {
     ),
 }
 
+# ── Calibration claim-gate shared core ─────────────────────────────────
+# The detection vocabularies (compared as SETS via AST) + the core decision
+# functions (compared as substring presence) that MUST agree between the two
+# claim_gate.py copies. The ledger-feeding trio and the marker path legitimately
+# DIFFER (MeshAnchor has no mini_dudeai), so they are deliberately NOT checked.
+CLAIM_GATE_FILE = "scripts/claim_gate.py"
+CLAIM_GATE_CONSTANTS = ("STRONG_CLAIMS", "CALIBRATION_MARKERS", "EVIDENCE_PATTERNS")
+CLAIM_GATE_CORE_SYMBOLS = (
+    "def has_strong_claim(",
+    "def is_calibrated(",
+    "def evaluate(",
+    "def marker_satisfies(",
+)
+
 # The two RNS-wedge probes live in different modules in the two repos
 # (MeshForge: watchdog_probes.py pure-function Signal idiom; MeshAnchor:
 # active_health_probe.py HealthResult idiom). So we assert each repo
@@ -129,6 +157,33 @@ def _read(path):
             return fh.read()
     except OSError:
         return None
+
+
+def _extract_literal_constant(text, name):
+    """Value of a module-level ``name = <literal>`` assignment, as a frozenset,
+    via AST (no exec/import side effects). The claim_gate detection vocabularies
+    are tuples of strings; returned as a set so ordering differences aren't false
+    drift. Returns None if the file is unparseable, the name is absent, or the
+    value isn't a literal collection (the safe direction — a None on either side
+    is reported 'missing', never silently 'ok')."""
+    if text is None:
+        return None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == name:
+                    try:
+                        val = ast.literal_eval(node.value)
+                    except (ValueError, TypeError):
+                        return None
+                    if isinstance(val, (tuple, list, set, frozenset)):
+                        return frozenset(val)
+                    return None
+    return None
 
 
 def _fork_pin_block(text):
@@ -224,6 +279,39 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
             status = "ok" if sym in txt else "drift"
             findings.append(ParityFinding("probe", f"{rlabel}:{rel} :: {sym}", status))
 
+    # ── Calibration claim-gate shared core ──
+    # The detection VOCABULARY must agree or the two gates judge the same closing
+    # message differently. Compare the three constant SETS by AST (no import side
+    # effects) + assert the core decision fns are present in both. The ledger trio
+    # + marker path legitimately differ (MeshAnchor has no mini_dudeai) → not here.
+    cga = _read(os.path.join(mf, CLAIM_GATE_FILE))
+    cgb = _read(os.path.join(ma, CLAIM_GATE_FILE))
+    if cga is None or cgb is None:
+        findings.append(ParityFinding("calibgate", CLAIM_GATE_FILE, "missing",
+            f"(mf={'ok' if cga else 'absent'} ma={'ok' if cgb else 'absent'})"))
+    else:
+        for name in CLAIM_GATE_CONSTANTS:
+            va = _extract_literal_constant(cga, name)
+            vb = _extract_literal_constant(cgb, name)
+            label = f"{CLAIM_GATE_FILE} :: {name}"
+            if va is None or vb is None:
+                findings.append(ParityFinding("calibgate", label, "missing",
+                    f"(mf={'ok' if va is not None else 'absent'} "
+                    f"ma={'ok' if vb is not None else 'absent'})"))
+            elif va == vb:
+                findings.append(ParityFinding("calibgate", label, "ok"))
+            else:
+                findings.append(ParityFinding("calibgate", label, "drift",
+                    f"(mf-only={sorted(va - vb)} ma-only={sorted(vb - va)})"))
+        for sym in CLAIM_GATE_CORE_SYMBOLS:
+            in_a, in_b = sym in cga, sym in cgb
+            label = f"{CLAIM_GATE_FILE} :: {sym}"
+            if in_a and in_b:
+                findings.append(ParityFinding("calibgate", label, "ok"))
+            else:
+                findings.append(ParityFinding("calibgate", label, "drift",
+                    f"(mf={'y' if in_a else 'n'} ma={'y' if in_b else 'n'})"))
+
     if any(f.status == "missing" for f in findings):
         overall = "missing"
     elif any(f.status == "drift" for f in findings):
@@ -238,6 +326,7 @@ _SECTION_HEADER = {
     "byte": "Byte-identical tier:",
     "shape": "\nShape tier (symbol presence in both repos):",
     "probe": "\nRNS-wedge probes (each repo, own idiom):",
+    "calibgate": "\nCalibration claim-gate shared core (detection vocabulary + decision fns):",
 }
 
 
