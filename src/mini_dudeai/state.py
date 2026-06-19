@@ -15,6 +15,14 @@ import time
 from ._util import atomic_write_json, read_json
 
 
+class StateLoadError(OSError):
+    """A real read/parse failure of an EXISTING state file (not first-boot
+    absence). Subclasses OSError so the engine's two callers degrade gracefully
+    without a new except clause: tick() lets it propagate to RuleEngine.run()'s
+    ``except Exception`` (which skips the cycle BEFORE save(), preserving the
+    good file), and _reset_pending_streaks()'s ``except OSError`` swallows it."""
+
+
 def _empty_rule_state(rule_id: str, subject: str) -> dict:
     return {
         "rule_id": rule_id,
@@ -46,7 +54,17 @@ class StateStore:
         self.path = path
 
     def load(self) -> dict:
-        data, _ = read_json(self.path)
+        data, err = read_json(self.path)
+        # Genuine absence (first boot) is the ONLY case that may read as empty.
+        # A real read/parse error on an EXISTING file (transient SD-card EIO,
+        # external corruption) must NOT collapse to {"rules": {}} — that empty
+        # is byte-identical to a fresh box, so the engine would mass-deactivate
+        # every live edge (false 'recovered'), drop the pending_sends retry
+        # queue (#81), then save() the wipe over the good file. Raise instead;
+        # the caller skips the cycle and the good file survives. (read_json
+        # returns "not found" for FileNotFoundError, an error string otherwise.)
+        if err is not None and err != "not found":
+            raise StateLoadError(f"refusing to load degraded state {self.path}: {err}")
         if not isinstance(data, dict):
             return {"rules": {}}
         if "rules" not in data:

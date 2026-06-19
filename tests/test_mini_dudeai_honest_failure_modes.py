@@ -631,3 +631,50 @@ class TestProbeAlignment:
         assert MEMORY_INDEX_LIMIT_BYTES == MEMORY_INDEX_SOFT_LIMIT_BYTES, (
             "writer (memory_apply) and watcher (probe_memory_index_oversize) "
             "judge MEMORY.md against different limits")
+
+
+class TestStateUnreadableRefusesToWipe:
+    """A degraded read of an EXISTING state file must not read as first-boot.
+
+    StateStore.load() used to discard read_json's error and return
+    {"rules": {}} on ANY failure — byte-identical to a fresh box. Because the
+    engine re-saves state every tick, a single transient read OSError (SD-card
+    EIO on these Pis) would mass-deactivate every live edge (false 'recovered'),
+    drop the pending_sends crash-retry queue (#81), then PERSIST the wipe over
+    the atomically-written good file. load() now raises StateLoadError on a real
+    read/parse error of an EXISTING file; genuine absence still = first-boot
+    empty, so the tick aborts before save() and the good file survives.
+    """
+
+    def test_missing_state_file_is_first_boot_empty(self, tmp_path):
+        from mini_dudeai.state import StateStore
+        store = StateStore(str(tmp_path / "nope.json"))
+        assert store.load() == {"rules": {}}  # genuine absence = first boot
+
+    def test_corrupt_state_file_raises_not_empty(self, tmp_path):
+        from mini_dudeai.state import StateStore, StateLoadError
+        p = tmp_path / "state.json"
+        p.write_text("{ torn json")  # readable path, unparseable content
+        with pytest.raises(StateLoadError):
+            StateStore(str(p)).load()
+
+    def test_state_load_error_is_oserror(self):
+        # _reset_pending_streaks catches OSError and run()'s except Exception
+        # catches everything — subclassing OSError keeps BOTH paths graceful.
+        from mini_dudeai.state import StateLoadError
+        assert issubclass(StateLoadError, OSError)
+
+    def test_corrupt_state_does_not_clobber_good_file_via_tick(self, tmp_path):
+        from mini_dudeai.state import StateLoadError
+        src = FlippableSource([COND])
+        eng, action = make_engine(tmp_path, src)
+        eng.tick()  # edge_up writes a good state file
+        assert "peer_down::moc9" in open(eng.state_store.path).read()
+        with open(eng.state_store.path, "w") as f:
+            f.write("{ torn json")  # transient torn/corrupt read class
+        # load() is the FIRST line of tick(), so the raise precedes save():
+        # the good file is never overwritten with an empty state, and the
+        # raise IS the operator-visible witness (run() logs it + ticks stall).
+        with pytest.raises(StateLoadError):
+            eng.tick()
+        assert open(eng.state_store.path).read() == "{ torn json"  # not wiped
