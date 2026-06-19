@@ -103,6 +103,50 @@ def check_port(port: int, host: str = 'localhost', timeout: float = 2.0) -> bool
                 pass  # Socket close errors are non-critical
 
 
+def tcp_port_listening(
+    port: int, *, proc_paths: tuple = ('/proc/net/tcp', '/proc/net/tcp6')
+) -> bool:
+    """Return True iff a local socket is in the LISTEN state on ``port``.
+
+    Reads the kernel socket table (``/proc/net/tcp`` + ``tcp6``) directly
+    instead of opening a connection — the same /proc technique
+    :func:`check_udp_port` uses.
+
+    Why this exists (Issue #17/#75): meshtasticd's PhoneAPI (:4403) is a
+    SINGLE-consumer stream. A ``connect_ex`` "is the port open?" probe to it
+    is itself a PhoneAPI *client* connection — meshtasticd accepts it,
+    logs ``Force close previous TCP connection``, and tears down whoever
+    held the stream. When such a probe runs on a hot path (e.g. the
+    ``/api/status`` radio summary, polled by federation + the node_map UI),
+    the churn intermittently wedges the gateway's mesh-TX (the 2026-06-13→15
+    moc bot-dark incident). A status read must observe the port WITHOUT
+    perturbing it, so we look for a LISTEN socket (state ``0A``) on the port.
+
+    Args:
+        port: TCP port number.
+        proc_paths: kernel socket-table paths (overridable for tests).
+
+    Returns:
+        True if something is LISTENing on ``port`` locally, else False.
+    """
+    hex_suffix = f':{port:04X}'
+    for proc_path in proc_paths:
+        try:
+            with open(proc_path, 'r') as f:
+                next(f, None)  # skip header row
+                for line in f:
+                    parts = line.split()
+                    # cols: sl local_address rem_address st ...
+                    # local_address is "ADDR:PORT_HEX"; st 0A == TCP LISTEN.
+                    if (len(parts) >= 4 and parts[3] == '0A'
+                            and parts[1].endswith(hex_suffix)):
+                        return True
+        except (OSError, ValueError) as e:
+            logger.debug(f"tcp_port_listening: {proc_path}: {e}")
+            continue
+    return False
+
+
 def check_udp_port(port: int, host: str = '127.0.0.1', timeout: float = 2.0) -> bool:
     """
     Check if a UDP port is in use.

@@ -31,6 +31,9 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 from utils.safe_import import safe_import
+# First-party direct import (MF005): non-contending LISTEN check that replaces
+# the old contending connect_ex(:4403) probe in _get_radio_status_summary (#75).
+from utils._port_detection import tcp_port_listening
 
 _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
     'utils.meshtastic_connection', 'get_connection_manager', 'ConnectionMode'
@@ -246,15 +249,16 @@ class StatusEndpointsMixin:
         if not _HAS_MESHTASTIC_CONN:
             return {"available": False, "error": "meshtastic library not installed"}
 
-        # Check TCP port (meshtasticd)
-        tcp_available = False
-        try:
-            import socket
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                sock.settimeout(1)
-                tcp_available = sock.connect_ex(('localhost', 4403)) == 0
-        except Exception as e:
-            logger.debug(f"TCP port check failed: {e}")
+        # Check meshtasticd's PhoneAPI (:4403) WITHOUT opening a connection.
+        # A connect_ex here would itself be a PhoneAPI *client* connect:
+        # :4403 is single-consumer, so the probe seizes the stream and
+        # triggers "Force close previous TCP connection". /api/status is
+        # polled often (federation cross-poll + node_map UI auto-refresh),
+        # so that churn intermittently wedges the gateway's mesh-TX
+        # (Issue #17/#75 — the 2026-06-13→15 moc bot-dark incident; root-
+        # caused 2026-06-19 to this exact probe via gdb + py-spy). Read the
+        # LISTEN socket from /proc instead — never perturb the radio.
+        tcp_available = tcp_port_listening(4403)
 
         # Check USB serial device
         import glob
