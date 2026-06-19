@@ -4,17 +4,12 @@ Run the MeshForge self-audit system and report findings.
 
 ## Instructions
 
-1. Run the auto-review system:
+1. Run the auto-review system (CLI entrypoint — `python3 -c` is blocked by the
+   project deny-list, so the runner lives in `auto_review.py`'s `__main__`):
 ```bash
-cd /opt/meshforge/src && python3 -c "
-from utils.auto_review import ReviewOrchestrator
-r = ReviewOrchestrator()
-report = r.run_full_review()
-print(f'Files: {report.total_files_scanned}')
-print(f'Issues: {report.total_issues}')
-for cat, result in report.agent_results.items():
-    print(f'  {cat.value}: {result.total_issues}')
-"
+cd /opt/meshforge
+python3 src/utils/auto_review.py 1>/tmp/autoreview.log 2>&1; echo AUTOREVIEW_EXIT=$?
+cat /tmp/autoreview.log
 ```
 
 2. Run the blocking gate (this is what CI and the pre-commit hook enforce):

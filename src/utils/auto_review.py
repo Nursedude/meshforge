@@ -21,6 +21,16 @@ from pathlib import Path
 import re
 import logging
 
+# Allow direct execution (`python3 src/utils/auto_review.py`) for the /review
+# command + CLAUDE.md snippet, which can no longer use `python3 -c` (blocked by
+# the project deny-list). Fires ONLY on direct run — normal `import
+# utils.auto_review` has __package__ set and skips this, so importer behavior
+# is unchanged. Puts src/ on the path so the absolute `from utils.*` below resolve.
+if __name__ == "__main__" and __package__ in (None, ""):
+    import sys as _sys
+    from pathlib import Path as _Path
+    _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
+
 from utils.logging_config import get_logger
 from utils.review_patterns import ReviewPatterns, Severity
 
@@ -1125,3 +1135,17 @@ def run_review(scope: ReviewScope = ReviewScope.ALL,
 def generate_report_markdown(report: ReviewReport) -> str:
     """Generate markdown report from review results"""
     return report.to_markdown()
+
+
+if __name__ == "__main__":
+    # CLI entrypoint for the /review command + CLAUDE.md Auto-Review snippet.
+    # Advisory only — the BLOCKING gate is `scripts/lint.py --all`, so this
+    # always exits 0; a non-zero exit here would falsely read as a gate failure.
+    import sys as _sys
+
+    _report = run_review()
+    print(f"Files: {_report.total_files_scanned}")
+    print(f"Issues: {_report.total_issues}")
+    for _category, _result in _report.agent_results.items():
+        print(f"  {_category.value}: {_result.total_issues}")
+    _sys.exit(0)

@@ -174,13 +174,9 @@ Key imports: `check_service`, `apply_config_and_restart`, `enable_service`, `sta
 
 ## Auto-Review
 
-```python
-cd src && python3 -c "
-from utils.auto_review import ReviewOrchestrator
-r = ReviewOrchestrator()
-report = r.run_full_review()
-print(f'Issues: {report.total_issues}')
-"
+```bash
+# CLI entrypoint (python3 -c is deny-listed; runner lives in auto_review.py __main__)
+python3 src/utils/auto_review.py
 ```
 
 ---
