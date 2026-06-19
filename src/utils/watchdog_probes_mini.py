@@ -180,6 +180,21 @@ def probe_history_write_failure(
                                       streak=0)
             return None
 
+        # honest_failure_modes #6 — st_mtime is a WALL-CLOCK value; on this
+        # RTC-less fleet a backward NTP/fake-hwclock step at boot can drop a
+        # freshly-WRITTEN file's mtime BELOW the persisted baseline even though it
+        # WAS written this interval. A real write only moves mtime forward, so an
+        # EXISTING file (mtime > 0) whose mtime regressed means the CLOCK moved,
+        # not that the write stalled. Re-baseline + reset the streak rather than
+        # manufacture a stall from a clock artifact (the engine carries the same
+        # backward-step guard for fire/grace deltas). The absent-file sentinel
+        # (0.0, set above on OSError) is excluded so a genuinely missing/unreadable
+        # history file still trips the stall below.
+        if 0.0 < history_mtime < prior_mtime:
+            _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
+                                      streak=0)
+            return None
+
         fires_advanced = fires > prior_fires
         history_advanced = history_mtime > prior_mtime
         stalled = fires_advanced and not history_advanced
@@ -469,11 +484,27 @@ except Exception:  # mini package absent in some contexts
 
 _CALIB_LEDGER_NAME = "calibration_ledger.jsonl"
 
+# Recency window for calibration_drift (2026-06-19, self-audit-qa-arc §1): a broke
+# claim older than this no longer fires the alert — so the signal can CLEAR once
+# I've demonstrably stopped miscalibrating, instead of ONE old broke pinning it
+# 'degraded' forever (which would never soak low-false-positive, the documented
+# bar for graduating it to an ntfy page, and erodes into ignored noise). The
+# lifetime held/broke RATIO stays visible in the warm-brief ledger block
+# regardless — this alert reflects "am I CURRENTLY miscalibrating," the brief
+# keeps the full history. Env-overridable; default 7 days.
+try:
+    CALIB_DRIFT_RECENT_WINDOW_S = float(
+        os.environ.get("MESHFORGE_CALIB_DRIFT_RECENT_DAYS", "7")) * 86400.0
+except (TypeError, ValueError):
+    CALIB_DRIFT_RECENT_WINDOW_S = 7 * 86400.0
+
 
 def probe_calibration_drift(
     *,
     ledger_path: Optional[str] = None,
     events: Optional[list] = None,
+    now_ts: Optional[float] = None,
+    recent_window_s: Optional[float] = None,
 ) -> Optional[Signal]:
     """Surface VERIFIED completion claims that did NOT hold on re-derivation.
 
@@ -487,8 +518,10 @@ def probe_calibration_drift(
 
     Read-only fold of the ledger via its owning module (no duplicated fold).
     Self-guards None: mini_dudeai unimportable, no ledger on this box (every box
-    but the dev/manager one), unreadable ledger, or zero broke claims (the math
-    held). Severity ``degraded`` — a trust signal, not a service outage; the seed
+    but the dev/manager one), unreadable ledger, zero broke claims (the math
+    held), or all broke claims aged out of the recency window (recovery
+    demonstrated — the lifetime ratio stays in the warm-brief ledger block).
+    Severity ``degraded`` — a trust signal, not a service outage; the seed
     routes it side-effect-free (NO ntfy page) until the re-derivation soaks
     low-false-positive, exactly as the operator chose."""
     try:
@@ -504,26 +537,51 @@ def probe_calibration_drift(
                 return None  # not the dev/manager box — nothing to judge
             events = _calib.load_events(ledger_path)
         state = _calib.fold(events)
-        if state.get("n_broke", 0) <= 0:
+        broke = state.get("broke", [])
+        if not broke:
             return None  # every re-checked claim held → no calibration drift
+
+        # RECENCY (self-audit-qa-arc §1): fire only on RECENT drift so the alert
+        # can CLEAR once recovery is demonstrated, instead of one old broke pinning
+        # it 'degraded' forever. Anchor on the CLAIM ts (when I made the claim that
+        # turned out wrong). honest_failure_modes #6: ts is wall-clock, but the
+        # ledger lives on the dev/manager box (NTP-up during the interactive
+        # sessions that make claims) so it's far less boot-churn-exposed than a
+        # fleet probe — and a negative age (clock stepped back) OR a missing ts is
+        # treated as RECENT (fire), never a false-clear (the safe direction).
+        now = time.time() if now_ts is None else now_ts
+        window = (CALIB_DRIFT_RECENT_WINDOW_S if recent_window_s is None
+                  else recent_window_s)
+
+        def _is_recent(rec):
+            ts = rec.get("ts")
+            if not isinstance(ts, (int, float)):
+                return True  # malformed/synthetic ts → conservative: fire
+            return (now - ts) <= window  # negative age (clock back) → recent
+
+        recent = [r for r in broke if _is_recent(r)]
+        if not recent:
+            return None  # all breaks aged out → recovery demonstrated; the
+            #              lifetime ratio stays in the warm-brief ledger block
         ratio = state.get("ratio")
         ratio_disp = (f"{round(100 * ratio)}% held"
                       if isinstance(ratio, (int, float)) else "n/a")
         examples = "; ".join(
-            (r.get("claim_text") or "")[:50]
-            for r in state.get("broke", [])[:2])
+            (r.get("claim_text") or "")[:50] for r in recent[:2])
+        n_recent = len(recent)
         return Signal(
             cls="calibration_drift",
             subject="claude-claims",
             severity="degraded",
             detail=(
-                f"{state['n_broke']} VERIFIED completion claim(s) did NOT hold "
-                f"on re-derivation ({state['n_held']} held / {ratio_disp}) — a "
-                f"'done/verified' claim drifted from ground truth. e.g.: "
+                f"{n_recent} recent VERIFIED completion claim(s) did NOT hold on "
+                f"re-derivation ({state['n_held']} held / {ratio_disp} lifetime) "
+                f"— a 'done/verified' claim drifted from ground truth. e.g.: "
                 f"{examples}. See .claude/rules/calibrated_claims.md; treat "
                 f"completion claims with extra scrutiny."
             ),
-            extra={"n_broke": state["n_broke"], "n_held": state["n_held"],
+            extra={"n_broke": state["n_broke"], "n_recent": n_recent,
+                   "n_held": state["n_held"],
                    "n_total": state.get("n_total", 0), "ratio": ratio},
         )
     except Exception:

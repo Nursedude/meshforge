@@ -4105,6 +4105,33 @@ class TestHistoryWriteFailure:
                 now=self.NOW, state_path=str(tmp_path / "s.json"))
         assert sig is None
 
+    def test_backward_clock_mtime_regress_is_none(self, tmp_path):
+        """honest_failure_modes #6 — an EXISTING history file whose mtime went
+        BELOW the baseline (a backward NTP/fake-hwclock step at boot) while fires
+        advanced is a CLOCK artifact, not a stall: re-baseline + reset streak,
+        never fire, even sustained over the debounce window."""
+        sp = str(tmp_path / "s.json")
+        probe_history_write_failure(state_doc=self._state(fires=5),
+                                    history_mtime=300.0, now=self.NOW, state_path=sp)
+        # fires advance but mtime REGRESSED (clock stepped back) over two ticks
+        s1 = probe_history_write_failure(state_doc=self._state(fires=8),
+                                         history_mtime=200.0, now=self.NOW,
+                                         state_path=sp)
+        s2 = probe_history_write_failure(state_doc=self._state(fires=11),
+                                         history_mtime=150.0, now=self.NOW,
+                                         state_path=sp)
+        assert s1 is None and s2 is None
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+    def test_absent_history_file_still_stalls(self, tmp_path):
+        """The absent/unreadable sentinel (mtime 0.0) is NOT a backward-clock case
+        — a missing history file while fires advance must still trip the stall
+        after the debounce (the 0.0 sentinel is excluded from the #6 guard)."""
+        sigs = self._run(tmp_path, fires_seq=[5, 8, 11],
+                         mtime_seq=[0.0, 0.0, 0.0])
+        assert sigs[0] is None and sigs[1] is None
+        assert sigs[2] is not None and sigs[2].cls == "history_write_stalled"
+
 
 class TestRulesSeedDrift:
     """Live mini_dudeai_rules.json MISSING rule ids the role seed carries (audit #6).
@@ -4387,8 +4414,50 @@ class TestCalibrationDrift:
                         ts=1.0, path=p)
         marker = {"head_full": self.HEAD, "exit_code": 1, "ran_full_suite": True}
         cl.rederive_and_persist(p, self.HEAD, marker, now_ts=2.0)
-        sig = probe_calibration_drift(ledger_path=p)
+        # claim ts=1.0 → pass a matching now_ts so it's inside the recency window
+        sig = probe_calibration_drift(ledger_path=p, now_ts=2.0)
         assert sig is not None and sig.extra["n_broke"] == 1
+
+    def _ts_events(self, outcome, ts):
+        return [
+            {"kind": "claim", "id": "x", "head_full": self.HEAD,
+             "ts": ts, "claim_text": "all green, all tests pass"},
+            {"kind": "verdict", "claim_id": "x", "ts": ts, "outcome": outcome},
+        ]
+
+    def test_recent_broke_fires(self):
+        """A broke claim INSIDE the recency window fires (n_recent surfaced)."""
+        sig = probe_calibration_drift(
+            events=self._ts_events("broke", 1000.0), now_ts=1000.0 + 3600)
+        assert sig is not None
+        assert sig.extra["n_recent"] == 1
+        assert sig.extra["n_broke"] == 1
+        assert "lifetime" in sig.detail
+
+    def test_old_broke_aged_out_is_none(self):
+        """A broke claim OLDER than the recency window stops firing — recovery
+        demonstrated. The lifetime ratio stays in the warm brief; the alert clears
+        (so the signal can soak low-false-positive instead of crying wolf forever)."""
+        old = 1000.0
+        assert probe_calibration_drift(
+            events=self._ts_events("broke", old),
+            now_ts=old + 8 * 86400) is None  # 8d later, default window 7d
+
+    def test_backward_clock_future_ts_fires(self):
+        """Claim ts in the FUTURE (clock stepped back since) → negative age →
+        treated as recent (fire), never a false-clear (honest_failure_modes #6)."""
+        assert probe_calibration_drift(
+            events=self._ts_events("broke", 5000.0), now_ts=1000.0) is not None
+
+    def test_window_override_respected(self):
+        """recent_window_s param overrides the default (testable, env-free)."""
+        evs = self._ts_events("broke", 1000.0)
+        # 2 days old: cleared under a 1-day window, fires under a 3-day window
+        assert probe_calibration_drift(
+            events=evs, now_ts=1000.0 + 2 * 86400, recent_window_s=86400) is None
+        assert probe_calibration_drift(
+            events=evs, now_ts=1000.0 + 2 * 86400,
+            recent_window_s=3 * 86400) is not None
 
 
 # ─────────────────────────────────────────────────────────────────────
