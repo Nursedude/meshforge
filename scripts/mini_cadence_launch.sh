@@ -36,6 +36,16 @@ PRESET="${MINI_PRESET:-meshforge_fleet}"
 # `claude` CLI happens to default to — that can silently drift. Most-capable Opus
 # for the judgment; overridable via env so an operator can change it without
 # editing the script.
+#
+# MODEL-SWAP CONTRACT (verified 2026-06-19, self-audit-qa-arc §0): a retired or
+# renamed model FAILS LOUD, never a silent fallback. `claude --model <bad> -p`
+# prints "It may not exist or you may not have access to it" and exits 1; that rc
+# propagates through the `|| rc=$?` / `exit "$rc"` below into
+# `cron_verdict.sh mini_cadence`, recording FAIL. The FAIL is STICKY: a failed
+# session cannot ratify the proposed deltas, so they stay "proposed" and
+# re-trigger a session every run — so it fails on EVERY cadence with deltas, not
+# just once, and Issue #78 `cron_verdict_stale` reliably escalates to ntfy.
+# To repoint after a swap: set MINI_DUDEAI_CADENCE_MODEL (no script edit).
 MODEL="${MINI_DUDEAI_CADENCE_MODEL:-claude-opus-4-8}"
 # Bound the session so a wedged run can't pin a fleet box (cf. the rnsd-RPC
 # fragility class — everything mini-adjacent carries a timeout).

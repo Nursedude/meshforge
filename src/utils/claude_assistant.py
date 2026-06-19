@@ -59,6 +59,21 @@ from utils.knowledge_base import (
 
 logger = logging.getLogger(__name__)
 
+# Single source of truth for the PRO-tier Claude API model. A bare model id
+# inline at the call site is a stale-hardcode trap: when a model is retired or
+# renamed (the agent-side Fable 5 -> Opus lurch has a twin here on the API
+# side), messages.create() starts raising and the assistant drops to the
+# standalone knowledge base. Naming it here AND honoring
+# MESHFORGE_ASSISTANT_MODEL makes a swap a one-env-var change, not a code edit
+# -- matching the cadence launcher's MINI_DUDEAI_CADENCE_MODEL pattern.
+# Contract on a retired/unknown model: the API call raises -> logged (a witness,
+# honest_failure_modes #9) -> ask() degrades to standalone (fail-SAFE: still
+# answers, never silently-wrong). See .claude/rules/calibrated_claims.md
+# ("behavior shifts across model versions") and ~/.claude/plans/self-audit-qa-arc.md s0.
+DEFAULT_ASSISTANT_MODEL = os.environ.get(
+    "MESHFORGE_ASSISTANT_MODEL", "claude-sonnet-4-6"
+)
+
 
 class ExpertiseLevel(Enum):
     """User expertise levels for response adaptation."""
@@ -251,7 +266,7 @@ Always prioritize safety - never suggest actions that could damage hardware
 
             # Call Claude API
             response = client.messages.create(
-                model="claude-sonnet-4-6",
+                model=DEFAULT_ASSISTANT_MODEL,
                 max_tokens=1024,
                 system=self._get_system_prompt(),
                 messages=messages,
