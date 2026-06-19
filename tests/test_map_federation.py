@@ -27,6 +27,8 @@ from utils.map_federation import (
     DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
     _peer_url,
     _extract_features,
+    _fetch_peer_claw,
+    _fetch_peer_directory_and_claw,
     _wal_path_for,
     fetch_peer_directory,
     filter_self_from_peers,
@@ -159,6 +161,74 @@ class TestSelfFiltering:
 
 
 # ── fetch_peer_directory ──────────────────────────────────────────────────
+
+
+def _mock_status_resp(claw_block, status: int = 200):
+    """Mock urlopen ctx mgr returning an /api/status payload with a claw block."""
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=cm)
+    cm.__exit__ = MagicMock(return_value=False)
+    cm.status = status
+    cm.read = MagicMock(return_value=json.dumps({"claw": claw_block}).encode("utf-8"))
+    return cm
+
+
+_INSTALLED_CLAW = {"installed": True, "ok": True, "device": "dudeclaw-01",
+                   "captured_at": 1781852101.0, "age_s": 12.0,
+                   "device_info": {"uptime_s": 109368, "heap_free_bytes": 30036,
+                                   "wifi_rssi_dbm": -37},
+                   "ble": {"adv_age_s": 0, "advs": 767422}}
+
+
+class TestFederatedClaw:
+    """The federator pulls each peer's /api/status.claw so a claw card can
+    render on the federator's node_map UI (federated, not just on the claw box).
+    Best-effort + short-timeout: a claw fetch must never break or slow the
+    directory poll, and a peer with no claw simply contributes no card."""
+
+    def test_fetch_peer_claw_installed_returns_block(self):
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_mock_status_resp(_INSTALLED_CLAW)):
+            block = _fetch_peer_claw("moc2", timeout=1.0)
+        assert block is not None and block["device"] == "dudeclaw-01"
+        assert block["device_info"]["uptime_s"] == 109368
+
+    def test_fetch_peer_claw_not_installed_returns_none(self):
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_mock_status_resp({"installed": False,
+                                                   "reason": "no_state_file"})):
+            assert _fetch_peer_claw("moc1", timeout=1.0) is None
+
+    def test_fetch_peer_claw_http_error_returns_none(self):
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_mock_status_resp(_INSTALLED_CLAW, status=500)):
+            assert _fetch_peer_claw("moc2", timeout=1.0) is None
+
+    def test_fetch_peer_claw_exception_returns_none(self):
+        def boom(*a, **kw):
+            raise OSError("refused")
+        with patch("utils.map_federation.urllib.request.urlopen", side_effect=boom):
+            assert _fetch_peer_claw("moc2", timeout=0.5) is None
+
+    def test_wrapper_attaches_claw_on_ok(self):
+        ok_status = FederationPeerStatus(hostname="moc2", ok=True)
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=(["e"], ok_status)), \
+             patch("utils.map_federation._fetch_peer_claw",
+                   return_value=_INSTALLED_CLAW) as m:
+            entries, status = _fetch_peer_directory_and_claw("moc2", 1.0, DEFAULT_PORT)
+        assert status.claw == _INSTALLED_CLAW and entries == ["e"]
+        m.assert_called_once()
+
+    def test_wrapper_skips_claw_when_directory_failed(self):
+        bad_status = FederationPeerStatus(hostname="moc2", ok=False,
+                                          last_error="HTTP 500")
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=([], bad_status)), \
+             patch("utils.map_federation._fetch_peer_claw") as m:
+            entries, status = _fetch_peer_directory_and_claw("moc2", 1.0, DEFAULT_PORT)
+        assert status.claw is None
+        m.assert_not_called()  # don't probe a peer whose directory just failed
 
 
 class TestFetchPeerDirectory:

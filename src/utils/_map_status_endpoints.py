@@ -37,6 +37,34 @@ _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
 )
 
 
+def _serialize_peer_status(s: Any) -> Dict[str, Any]:
+    """Serialize one FederationPeerStatus into the /api/status.federation
+    peer_status[] shape. Extracted so the field set (and the federated `claw`
+    block the node_map claw card reads) is unit-testable without standing up
+    the whole status handler."""
+    return {
+        "hostname": s.hostname,
+        "peer_name": s.peer_name,
+        "ok": s.ok,
+        "last_sync": s.last_sync,
+        "last_attempt": s.last_attempt,
+        "last_error": s.last_error,
+        "last_count": s.last_count,
+        "last_latency_ms": s.last_latency_ms,
+        "consecutive_failures": s.consecutive_failures,
+        # Backoff state (Issue #59): a peer the collector is intentionally
+        # not polling right now still appears here, with these fields set,
+        # so the operator sees a labeled row rather than a mysteriously-
+        # absent peer.
+        "in_backoff": s.in_backoff,
+        "backoff_multiplier": s.backoff_multiplier,
+        "next_eligible_poll_ts": s.next_eligible_poll_ts,
+        # Federated dude-claw edge telemetry (None on claw-less peers) — read
+        # by the node_map claw card so the federator shows a peer's claw.
+        "claw": getattr(s, "claw", None),
+    }
+
+
 class StatusEndpointsMixin:
     """``/api/status`` endpoint + its watchdog/mini/radio readers."""
 
@@ -165,25 +193,7 @@ class StatusEndpointsMixin:
                     "last_attempt": snap.last_attempt,
                     "federated_node_count": len(snap.by_node),
                     "peer_status": [
-                        {
-                            "hostname": s.hostname,
-                            "peer_name": s.peer_name,
-                            "ok": s.ok,
-                            "last_sync": s.last_sync,
-                            "last_attempt": s.last_attempt,
-                            "last_error": s.last_error,
-                            "last_count": s.last_count,
-                            "last_latency_ms": s.last_latency_ms,
-                            "consecutive_failures": s.consecutive_failures,
-                            # Backoff state (Issue #59): a peer the collector
-                            # is intentionally not polling right now still
-                            # appears here, with these fields set, so the
-                            # operator sees a labeled row rather than a
-                            # mysteriously-absent peer.
-                            "in_backoff": s.in_backoff,
-                            "backoff_multiplier": s.backoff_multiplier,
-                            "next_eligible_poll_ts": s.next_eligible_poll_ts,
-                        }
+                        _serialize_peer_status(s)
                         for s in snap.peer_status.values()
                     ],
                 }

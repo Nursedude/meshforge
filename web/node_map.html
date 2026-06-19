@@ -1567,6 +1567,15 @@
                 <div id="federation-list" class="sources-list"></div>
             </div>
 
+            <!-- Edge (claw) — dude-claw ESP32 edge telemetry, local + federated (batch-2-5) -->
+            <div class="sources-section" id="claw-section" style="display: none;">
+                <div class="sources-header" onclick="toggleClawList()">
+                    <span><span id="claw-summary">Edge (claw)</span></span>
+                    <span id="claw-toggle">▸</span>
+                </div>
+                <div id="claw-list" class="sources-list"></div>
+            </div>
+
             <div class="filter-section" style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #1a2a3a;">
                 <span style="font-size: 10px; color: #888; display: block; margin-bottom: 4px;" title="Preset queries that layer onto the protocol checkboxes below">View</span>
                 <select id="filter-preset" style="width: 100%; background: #0a1622; color: #e0e0e0; border: 1px solid #2a3a4a; border-radius: 4px; padding: 3px 6px; font-size: 11px;">
@@ -5323,6 +5332,7 @@
                 applyHealthBadge(network, computeHealth(diagnostics, sources));
             }
             renderSourcesList(diagnostics, data);
+            renderClawCards(data);
         } catch (e) {
             console.debug('Source health fetch failed:', e);
         }
@@ -5468,6 +5478,81 @@
         return String(s).replace(/[&<>"']/g, ch => ({
             '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
         }[ch]));
+    }
+
+    // Edge (claw) cards — the dude-claw's captured telemetry (batch-2-5).
+    // Sources: the LOCAL box's own /api/status.claw (shows on the claw box's
+    // own map) PLUS each FEDERATED peer's claw block (shows the claw on the
+    // federator's map). Stale/unreachable render as such — never healthy-
+    // looking numbers from a dead capture (mirrors _read_claw_state_block).
+    function clawDisplayState(c) {
+        if (c.ok) return { dot: 'ok', bad: false, text: '' };
+        const r = c.reason || '';
+        if (r.indexOf('stale') !== -1)
+            return { dot: 'unreachable', bad: true, text: 'STALE — capture cron stopped' };
+        if (r.indexOf('unreachable') !== -1)
+            return { dot: 'unreachable', bad: true, text: 'UNREACHABLE — claw did not answer' };
+        return { dot: 'unreachable', bad: true, text: r || 'degraded' };
+    }
+
+    function clawRowHtml(label, c, st) {
+        const di = c.device_info || {};
+        const ble = c.ble || {};
+        const ageTxt = (typeof c.age_s === 'number') ? `${Math.round(c.age_s)}s ago` : '?';
+        let meta;
+        if (st.bad) {
+            meta = st.text;
+        } else {
+            const parts = [];
+            if (di.uptime_s != null) parts.push(`up ${Math.round(di.uptime_s / 3600)}h`);
+            if (di.heap_free_bytes != null) parts.push(`heap ${Math.round(di.heap_free_bytes / 1024)}k`);
+            if (di.wifi_rssi_dbm != null) parts.push(`wifi ${di.wifi_rssi_dbm}dBm`);
+            if (ble.adv_age_s != null) parts.push(`ble ${ble.adv_age_s}s`);
+            meta = parts.join(' · ') || 'no fields';
+        }
+        const dev = c.device || 'claw';
+        const tooltip = st.bad ? st.text : `${dev} · captured ${ageTxt}`;
+        return `<div class="source-row" title="${escapeHtml(tooltip)}">`
+            + `<span class="source-name"><span class="source-dot ${st.dot}"></span>🦞 ${escapeHtml(label)}</span>`
+            + `<span class="source-meta">${escapeHtml(meta)}</span>`
+            + `</div>`;
+    }
+
+    function renderClawCards(data) {
+        const section = document.getElementById('claw-section');
+        const summary = document.getElementById('claw-summary');
+        const list = document.getElementById('claw-list');
+        if (!section || !summary || !list) return;
+        const claws = [];
+        if (data.claw && data.claw.installed) {
+            claws.push({ label: (data.claw.host || 'self') + ' (self)', c: data.claw });
+        }
+        const peers = (data.federation && data.federation.peer_status) || [];
+        for (const p of peers) {
+            if (p.claw && p.claw.installed) {
+                claws.push({ label: p.peer_name || p.hostname, c: p.claw });
+            }
+        }
+        if (!claws.length) { section.style.display = 'none'; return; }
+        section.style.display = '';
+        let degraded = 0;
+        const rows = claws.map(({ label, c }) => {
+            const st = clawDisplayState(c);
+            if (st.bad) degraded++;
+            return clawRowHtml(label, c, st);
+        });
+        summary.textContent = degraded
+            ? `Edge (claw) · ${degraded} degraded / ${claws.length}`
+            : `Edge (claw) · ${claws.length} ok`;
+        list.innerHTML = rows.join('');
+    }
+
+    function toggleClawList() {
+        const list = document.getElementById('claw-list');
+        const toggle = document.getElementById('claw-toggle');
+        if (!list) return;
+        const expanded = list.classList.toggle('expanded');
+        if (toggle) toggle.textContent = expanded ? '▾' : '▸';
     }
 
     // ============================================

@@ -282,6 +282,28 @@ class TestClawStatusBlock:
         assert "malformed_json" in block["reason"]
 
 
+class TestFederationClawSerialization:
+    """The federated claw card needs each peer's claw block in
+    /api/status.federation.peer_status[].claw — so the federator UI can render
+    moc2's claw, not just moc2's own map."""
+
+    def test_peer_status_dict_includes_claw(self):
+        from utils._map_status_endpoints import _serialize_peer_status
+        from utils.map_federation import FederationPeerStatus
+        claw = {"installed": True, "ok": True, "device": "dudeclaw-01"}
+        d = _serialize_peer_status(FederationPeerStatus(
+            hostname="moc2", peer_name="moc2", ok=True, claw=claw))
+        assert d["hostname"] == "moc2" and d["claw"] == claw
+
+    def test_peer_status_dict_claw_none_by_default(self):
+        from utils._map_status_endpoints import _serialize_peer_status
+        from utils.map_federation import FederationPeerStatus
+        d = _serialize_peer_status(FederationPeerStatus(hostname="moc1"))
+        assert d["claw"] is None
+        # sanity: still carries the pre-existing fields
+        assert "in_backoff" in d and "consecutive_failures" in d
+
+
 # ── F8: Server-side View preset filter ─────────────────────────────────
 from utils.map_http_handler import (
     VIEW_PRESETS,

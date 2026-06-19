@@ -140,6 +140,11 @@ class FederationPeerStatus:
     in_backoff: bool = False
     next_eligible_poll_ts: Optional[float] = None
     backoff_multiplier: int = 1
+    # The peer's /api/status.claw block (dude-claw edge telemetry), pulled
+    # best-effort each poll so a federated claw card can render on the
+    # federator's node_map UI. None when the peer has no claw or the probe
+    # failed — a missing card, never a stale-looking one.
+    claw: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -374,6 +379,54 @@ def fetch_peer_directory(
     return entries, status
 
 
+#: Short, independent timeout for the cosmetic claw-block fetch — the directory
+#: poll's latency budget (#55/#56) must never wait on it.
+_CLAW_FETCH_TIMEOUT = 4.0
+#: /api/status is ~8 KB; cap the read defensively (never a directory-sized body).
+_CLAW_STATUS_MAX_BYTES = 512 * 1024
+
+
+def _fetch_peer_claw(peer: str, timeout: float = _CLAW_FETCH_TIMEOUT,
+                     port: int = DEFAULT_PORT) -> Optional[Dict[str, Any]]:
+    """Best-effort GET of a peer's /api/status.claw block (the dude-claw edge
+    telemetry) for the federated claw card. Returns the block only when the
+    peer reports an INSTALLED claw; None on any error or claw-less peer.
+
+    Cosmetic + bounded: short timeout, never raises, never retries — a slow or
+    broken claw probe yields no card, it does not slow or break the directory
+    poll that called it.
+    """
+    url = _peer_url(peer, port=port, path="/api/status")
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "MeshForge/federation"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            if resp.status != 200:
+                return None
+            raw = resp.read(_CLAW_STATUS_MAX_BYTES)
+        block = (json.loads(raw.decode("utf-8")) or {}).get("claw")
+    except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout,
+            OSError, ValueError) as e:
+        logger.debug("claw probe of %s failed (benign): %s", peer, e)
+        return None
+    if isinstance(block, dict) and block.get("installed"):
+        return block
+    return None
+
+
+def _fetch_peer_directory_and_claw(
+    peer: str, timeout: float = DEFAULT_TIMEOUT, port: int = DEFAULT_PORT,
+) -> Tuple[List[Dict[str, Any]], FederationPeerStatus]:
+    """Directory poll + (on success) a best-effort claw-block probe, so the
+    federator carries each peer's claw telemetry for the node_map claw card.
+    The claw probe is skipped when the directory fetch failed (the peer is
+    unreachable — no point probing) and can never fail this call."""
+    entries, status = fetch_peer_directory(peer, timeout, port)
+    if status.ok:
+        status.claw = _fetch_peer_claw(peer, port=port)
+    return entries, status
+
+
 class FederationCollector:
     """Background thread that polls peer directories and merges them.
 
@@ -576,7 +629,7 @@ class FederationCollector:
         with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
             futures = {
                 executor.submit(
-                    fetch_peer_directory, peer, self._timeout, self._port
+                    _fetch_peer_directory_and_claw, peer, self._timeout, self._port
                 ): peer
                 for peer in due_peers
             }
