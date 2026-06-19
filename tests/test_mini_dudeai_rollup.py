@@ -10,15 +10,24 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mini_dudeai.rollup import (  # noqa: E402
+    _CLAW_SENTINEL,
     build_rollup,
     collect_fleet,
     collect_local,
     collect_remote,
+    parse_claw_posture,
     parse_state_posture,
     resolve_fleet_hosts,
 )
 
 NOW = 1_780_000_000.0
+
+_CLAW_DOC = {
+    "captured_at": NOW - 10, "ok": True, "device": "dudeclaw-01",
+    "device_info": {"uptime_s": 109368, "heap_free_bytes": 17764,
+                    "wifi_rssi_dbm": -37},
+    "ble": {"adv_age_s": 0, "advs": 767422, "last_rssi_dbm": -59},
+}
 
 
 # === resolve_fleet_hosts =========================================
@@ -164,6 +173,74 @@ def test_build_rollup_renders_active_rules():
     }]
     out = build_rollup(postures, NOW)
     assert "active: backoff" in out and "in_backoff=True" in out
+
+
+# === claw card (batch-2-5 harness #2) ============================
+
+def test_parse_claw_posture_fresh():
+    c = parse_claw_posture(_CLAW_DOC, NOW)
+    assert c["status"] == "fresh" and c["device"] == "dudeclaw-01"
+    assert c["uptime_s"] == 109368 and c["heap_free_bytes"] == 17764
+    assert c["wifi_rssi_dbm"] == -37 and c["ble_adv_age_s"] == 0
+
+
+def test_parse_claw_posture_stale_when_capture_old():
+    c = parse_claw_posture({**_CLAW_DOC, "captured_at": NOW - 9999}, NOW)
+    assert c["status"] == "stale"
+
+
+def test_parse_claw_posture_unreachable_when_tick_not_ok():
+    # fresh capture but the claw didn't answer -> unreachable, not fresh
+    c = parse_claw_posture({**_CLAW_DOC, "ok": False, "device_info": None}, NOW)
+    assert c["status"] == "unreachable"
+
+
+def test_parse_claw_posture_none_when_absent():
+    assert parse_claw_posture(None, NOW) is None
+    assert parse_claw_posture({}, NOW) is None
+
+
+def test_parse_state_posture_carries_claw():
+    p = parse_state_posture("moc2", {"last_tick_ts": NOW - 5}, NOW, claw=_CLAW_DOC)
+    assert p["claw"]["status"] == "fresh"
+
+
+def test_parse_state_posture_claw_none_by_default():
+    p = parse_state_posture("moc2", {"last_tick_ts": NOW - 5}, NOW)
+    assert p["claw"] is None
+
+
+def test_build_rollup_renders_claw_card():
+    postures = [parse_state_posture("moc2", {"last_tick_ts": NOW - 5,
+                "rule_count": 9}, NOW, claw=_CLAW_DOC)]
+    out = build_rollup(postures, NOW)
+    assert "🦞" in out and "dudeclaw-01" in out
+    assert "up " in out and "heap" in out  # numbers shown when fresh
+
+
+def test_build_rollup_claw_stale_renders_stale():
+    postures = [parse_state_posture("moc2", {"last_tick_ts": NOW - 5}, NOW,
+                claw={**_CLAW_DOC, "captured_at": NOW - 9999})]
+    out = build_rollup(postures, NOW)
+    assert "🦞" in out and "STALE" in out and "capture cron" in out
+
+
+def test_collect_remote_carries_claw_after_sentinel():
+    payload = (json.dumps({"last_tick_ts": NOW - 5, "rule_count": 9, "host": "moc2"})
+               + f"\n{_CLAW_SENTINEL}\n" + json.dumps(_CLAW_DOC))
+    p = collect_remote("moc2", NOW, runner=_runner(0, payload))
+    assert p["status"] == "fresh" and p["claw"]["status"] == "fresh"
+
+
+def test_collect_remote_no_sentinel_means_no_claw():
+    # backward compatible: a runner that returns state only -> no claw line
+    st = json.dumps({"last_tick_ts": NOW - 5, "rule_count": 9, "host": "moc2"})
+    p = collect_remote("moc2", NOW, runner=_runner(0, st))
+    assert p["status"] == "fresh" and p["claw"] is None
+
+
+def test_claw_sentinel_is_shell_safe():
+    assert not (set(_CLAW_SENTINEL) & set("<>|&;$`()\"' \t*?[]{}#~!"))
 
 
 # === collect_fleet (local + injected remotes) ====================
