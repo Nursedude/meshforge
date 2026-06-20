@@ -165,6 +165,124 @@ def test_send_ack_skips_when_recall_returns_none():
     assert state.tx_count == 0
 
 
+# ----------------------------------------------------- _on_receive: PINGBIG (A1)
+
+
+def test_on_receive_replies_bigack_to_valid_pingbig():
+    """Valid PINGBIG → _send_bigack invoked (NOT the PING path), rx/tx bumped."""
+    from lab.lxmf_echo import _EchoState, make_on_receive
+
+    state = _EchoState()
+    state.router = MagicMock()
+    state.source = MagicMock()
+
+    sent: list = []
+
+    def _fake_send_bigack(s, dest, bp):
+        sent.append((dest, bp.seq, bp.sender, bp.want_bytes))
+        s.tx_count += 1
+
+    with patch("lab.lxmf_echo._send_bigack", side_effect=_fake_send_bigack), \
+            patch("lab.lxmf_echo._send_ack") as fake_ack:
+        cb = make_on_receive(state)
+        cb(_fake_message("PINGBIG seq=12 from=rescanary-moc want=512"))
+
+    assert state.rx_count == 1
+    assert state.tx_count == 1
+    assert sent == [(b"\xaa" * 16, 12, "rescanary-moc", 512)]
+    fake_ack.assert_not_called()  # PINGBIG must NOT go through the PING path
+
+
+def test_on_receive_ping_does_not_use_bigack_path():
+    """Regression: a plain PING routes to _send_ack only — the two formats
+    never cross-dispatch."""
+    from lab.lxmf_echo import _EchoState, make_on_receive
+
+    state = _EchoState()
+    state.router = MagicMock()
+    state.source = MagicMock()
+
+    with patch("lab.lxmf_echo._send_ack") as fake_ack, \
+            patch("lab.lxmf_echo._send_bigack") as fake_big:
+        cb = make_on_receive(state)
+        cb(_fake_message("PING seq=5 from=box-a"))
+
+    fake_ack.assert_called_once()
+    fake_big.assert_not_called()
+
+
+def test_on_receive_survives_send_bigack_exception():
+    """A failed resource reply must not kill the daemon either."""
+    from lab.lxmf_echo import _EchoState, make_on_receive
+
+    state = _EchoState()
+    state.router = MagicMock()
+    state.source = MagicMock()
+
+    def _boom(*_a, **_kw):
+        raise RuntimeError("transient path loss")
+
+    with patch("lab.lxmf_echo._send_bigack", side_effect=_boom):
+        cb = make_on_receive(state)
+        cb(_fake_message("PINGBIG seq=1 from=rescanary-moc want=512"))
+
+    assert state.rx_count == 1
+    assert state.tx_count == 0  # reply never landed
+
+
+# -------------------------------------------------------- _send_bigack: routing
+
+
+def test_send_bigack_skips_when_recall_returns_none():
+    """Unknown identity even after a path request → skip, must NOT raise."""
+    from lab.lxmf_echo import _EchoState, _send_bigack
+    from lab._lab_common import BigPingMessage
+
+    state = _EchoState()
+    state.router = MagicMock()
+    state.source = MagicMock()
+
+    fake_rns = MagicMock()
+    fake_rns.Identity.recall.return_value = None
+    fake_lxmf = MagicMock()
+
+    bp = BigPingMessage(seq=1, sender="rescanary-moc", want_bytes=512)
+    with patch.dict("sys.modules", {"RNS": fake_rns, "LXMF": fake_lxmf}), \
+            patch("lab.lxmf_echo.PATH_REQUEST_WAIT_S", 0.0):
+        _send_bigack(state, b"\xaa" * 16, bp)
+
+    fake_rns.Transport.request_path.assert_called_once_with(b"\xaa" * 16)
+    state.router.handle_outbound.assert_not_called()
+    assert state.tx_count == 0
+
+
+def test_send_bigack_builds_resource_sized_body():
+    """When the identity resolves, the echo hands the router an LXMessage whose
+    body is RESOURCE-sized (>319 B) — the property that forces RNS to deliver it
+    as a Resource the requester's gateway must assemble (the EROFS path)."""
+    from lab.lxmf_echo import _EchoState, _send_bigack
+    from lab._lab_common import BigPingMessage
+
+    state = _EchoState()
+    state.router = MagicMock()
+    state.source = MagicMock()
+
+    fake_rns = MagicMock()
+    fake_rns.Identity.recall.return_value = MagicMock()  # identity found
+    fake_lxmf = MagicMock()
+
+    bp = BigPingMessage(seq=7, sender="rescanary-moc", want_bytes=512)
+    with patch.dict("sys.modules", {"RNS": fake_rns, "LXMF": fake_lxmf}):
+        _send_bigack(state, b"\xaa" * 16, bp)
+
+    state.router.handle_outbound.assert_called_once()
+    # LXMF.LXMessage(destination, source, body, title) — body is the 3rd arg.
+    body = fake_lxmf.LXMessage.call_args.args[2]
+    assert len(body) == 512 and len(body) > 319
+    assert body.startswith("ACKBIG seq=7 orig=rescanary-moc len=")
+    assert state.tx_count == 1
+
+
 def test_send_ack_path_request_fetches_identity_routed_leaf():
     """The moc5 routed-leaf shape: recall misses (announce never reached
     this box), the on-demand path request delivers the identity, and the

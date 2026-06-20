@@ -980,3 +980,202 @@ def probe_gateway_delivery_degraded(
         return None
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Probe: resource canary degraded / silent (2026-06-20; the gateway-
+# reliability arc A1 — the OUTCOME source of truth)
+# ─────────────────────────────────────────────────────────────────────
+#
+# A2 (above) consumes the gateway's OWN self-report; A1 is the active
+# exerciser that PROVES the gateway delivers a RESOURCE-sized round-trip —
+# the multi-chunk RNS Resource path the 2026-06-20 wx-total-loss EROFS broke
+# while single-packet replies kept working (so every shape/liveness probe and
+# the single-packet gateway_rt_canary read green). src/lab/gateway_resource_canary
+# fires a control PING + a PINGBIG whose reply is resource-sized, on a timer,
+# and writes a verdict envelope (last.json); this probe consumes it. The
+# canary's own FAIL verdict — "control back, resource NOT" — is the EROFS
+# signature; the probe simply surfaces it (and the canary going DARK) into
+# mini/+/fleet, the same "the canary itself must be watched" pattern as
+# synth_soak_degraded. degraded only: a resource-canary dip is a warning, and
+# gateway_delivery_degraded / delivery_confirmation_stall own the gateway's
+# self-reported hard-failure surface.
+
+# The verdict-envelope dir leaf, kept byte-identical to the canary's
+# STATE_DIR_LEAF and the wrapper's STATE_DIR default (TestStateDirContract pins
+# the trio — honest_failure_modes #5: two consumers of one path WILL drift).
+RESOURCE_CANARY_STATE_LEAF = "gateway_resource_canary"
+DEFAULT_RESOURCE_CANARY_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/resource_canary_debounce.json")
+
+# The canary fires hourly (meshforge-gateway-resource-canary.timer
+# OnCalendar=*:43:00). DARK only after ~2.5 cadences with no fresh envelope —
+# two missed fires, so one slow/skipped run never false-alarms.
+_RESOURCE_CANARY_CADENCE_S = 3600.0
+_RESOURCE_CANARY_STALE_AFTER_S = 9000.0
+
+
+def _resolve_resource_canary_dir() -> Optional[str]:
+    """The operator's resource-canary state dir, root-context safe.
+
+    The canary runs as the operator's systemd --user timer, so its envelope
+    lives under the operator home — the sandboxed-root watchdog derives that
+    home from the operator UID and reads it directly, never escalating (the
+    same pattern as _resolve_synth_soak_dir). None when no operator user is
+    resolvable (indeterminate — never a false alarm)."""
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        op = None
+    if not op:
+        return None
+    try:
+        import pwd
+        home = pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+    return os.path.join(home, ".local", "state", "meshforge",
+                        RESOURCE_CANARY_STATE_LEAF)
+
+
+def _load_resource_canary_streak(state_path: str) -> int:
+    """Read the consecutive-candidate streak. Any error → 0 (favour silence)."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_resource_canary_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def probe_resource_canary_degraded(
+    *,
+    state_dir: Optional[str] = None,
+    now: Optional[float] = None,
+    stale_after_s: float = _RESOURCE_CANARY_STALE_AFTER_S,
+    debounce_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """The gateway resource round-trip canary FAILED, or went DARK.
+
+    The hourly resource canary (meshforge-gateway-resource-canary.timer →
+    gateway_resource_canary.py) drives a control PING + a PINGBIG whose reply is
+    RESOURCE-sized through the real gateway path and writes ``last.json``. This
+    probe consumes it — closing the same "the canary itself is unwatched" gap
+    synth_soak_degraded closed for the LXMF soak.
+
+    Two legs, ``degraded`` only:
+
+      - SILENCE: ``last.json`` older than ``stale_after_s`` (~2.5x the hourly
+        cadence) — the exerciser stopped (timer dead, fire script broken, box
+        wedged). Silence IS the failure mode for a fixed-cadence canary.
+      - VERDICT: the envelope's ``verdict`` is FAIL or CONCERN — the canary's
+        own honest classification. A FAIL whose reason carries "EROFS
+        signature" (control back, resource NOT) is the 2026-06-20 class.
+
+    Honest-failure self-guards (favour silence on uncertainty):
+      - state dir unresolvable / absent → None (INERT: this box doesn't run the
+        canary — the common case; unobservable != degraded).
+      - no ``last.json`` present → None (never ran / freshly installed) — held,
+        distinct from a stale present file which fires.
+      - file unreadable/garbage → a degraded candidate RIDDEN OUT by the
+        debounce (a torn mid-write is whole by the next tick — though the canary
+        writes atomically, so this should never happen).
+      - ``verdict`` OK on a fresh file → definitively healthy (resets streak).
+      - ``verdict`` absent/unknown on a parseable fresh file → indeterminate
+        (held; neither fires nor resets — a shape regression must not read as
+        healthy).
+      - a candidate must persist ``debounce_ticks`` consecutive ticks before
+        firing; only an explicit healthy+fresh observation resets the streak.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+
+    sdir = state_dir or _resolve_resource_canary_dir()
+    if not sdir or not os.path.isdir(sdir):
+        return None  # INERT: box doesn't run the resource canary
+
+    envelope = os.path.join(sdir, "last.json")
+    try:
+        mtime = os.path.getmtime(envelope)
+    except OSError:
+        return None  # no last.json yet (never fired) / transient race — hold
+
+    sp = debounce_path or DEFAULT_RESOURCE_CANARY_DEBOUNCE_PATH
+    age = now - mtime
+    extra: dict = {"age_s": round(age, 1)}
+
+    candidate_detail: Optional[str] = None
+    definitively_healthy = False
+
+    if age > stale_after_s:
+        candidate_detail = (
+            f"resource canary went DARK: last.json is {age / 3600.0:.1f}h old "
+            f"(cadence ~1h) — the gateway resource round-trip exerciser stopped "
+            f"producing a verdict. Check "
+            f"meshforge-gateway-resource-canary.timer (systemd --user) + its "
+            f"fire log."
+        )
+    else:
+        try:
+            with open(envelope, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            doc = None
+        if not isinstance(doc, dict):
+            candidate_detail = (
+                "resource canary newest envelope unreadable (last.json) — "
+                "the fire wrote no parseable verdict."
+            )
+        else:
+            verdict = doc.get("verdict")
+            extra.update({
+                "verdict": verdict,
+                "seq": doc.get("seq"),
+                "reply_bytes": doc.get("reply_bytes"),
+                "control_back": doc.get("control_back"),
+                "resource_back": doc.get("resource_back"),
+                "peer": doc.get("peer"),
+            })
+            if verdict == "OK":
+                definitively_healthy = True
+            elif verdict in ("FAIL", "CONCERN"):
+                reason = doc.get("reason") or "(no reason recorded)"
+                candidate_detail = (
+                    f"resource round-trip canary {verdict}: {reason}"
+                )
+            # else: verdict absent/unknown on a parseable file → indeterminate
+            #       (held below — neither a fire candidate nor a healthy reset).
+
+    if candidate_detail is not None:
+        streak = min(_load_resource_canary_streak(sp) + 1, debounce_ticks)
+        _save_resource_canary_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+        extra["debounce_streak"] = streak
+        return Signal(
+            cls="resource_canary_degraded",
+            subject="meshforge-gateway",
+            severity="degraded",
+            detail=candidate_detail,
+            extra=extra,
+        )
+
+    if definitively_healthy:
+        _save_resource_canary_streak(sp, 0)  # explicit healthy → reset streak
+    return None
+
+

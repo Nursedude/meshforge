@@ -1,0 +1,34 @@
+# MeshForge — gateway resource round-trip canary timer (hourly)
+# =============================================================
+#
+# Fires meshforge-gateway-resource-canary.service hourly. At hourly cadence a
+# wx-class resource break pages within ~1h instead of waiting for a manual
+# test (the 2026-06-20 lesson — the EROFS sat undetected because nothing
+# exercised the multi-chunk path on a schedule).
+#
+# RF cost: each fire bridges one resource-sized reply (~512 B default ≈ 3 mesh
+# chunks) back onto the fleet channel — comparable to one organic wx request
+# per hour. To throttle, change OnCalendar (e.g. *:43:00/2h) and bump the
+# probe's stale-after window to match; or lower RESOURCE_CANARY_REPLY_BYTES
+# (must stay > ~319 B to force a Resource).
+#
+# Persistent=true so a fire missed across a reboot catches up.
+#
+# To change cadence, edit OnCalendar and run:
+#   systemctl --user daemon-reload
+#   systemctl --user restart meshforge-gateway-resource-canary.timer
+
+[Unit]
+Description=Fire meshforge-gateway-resource-canary hourly
+Requires=meshforge-gateway-resource-canary.service
+
+[Timer]
+# :43 of every hour — a non-round minute offset from the synth soak (:07),
+# the rt canary (:23), and on-the-hour cron/timer jobs across the fleet.
+OnCalendar=*-*-* *:43:00
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=20s
+
+[Install]
+WantedBy=timers.target

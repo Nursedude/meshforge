@@ -1,0 +1,48 @@
+# MeshForge — gateway RESOURCE round-trip canary (systemd-user, one-shot)
+# =======================================================================
+#
+# Gateway-reliability arc A1 (2026-06-20). Fires one resource round-trip
+# canary cycle and writes the verdict envelope to
+# ~/.local/state/meshforge/gateway_resource_canary/last.json. Pairs with
+# meshforge-gateway-resource-canary.timer (hourly by default).
+#
+# Proves the gateway DOES ITS JOB on the path that broke 2026-06-20: a
+# control single-packet PING + a PINGBIG whose REPLY is resource-sized, so
+# the gateway must assemble an inbound RNS Resource (the EROFS step the
+# single-packet gateway_rt_canary is blind to). probe_resource_canary_degraded
+# consumes the envelope; a FAIL with "control back, resource NOT" is the
+# 2026-06-20 EROFS signature.
+#
+# Install ONLY on a GATEWAY box (moc/moc3 — wherever Resource assembly is
+# under test). The --peer must be a DIFFERENT box running a resource-aware
+# lab echo (meshforge-echo with PINGBIG support):
+#   cp /opt/meshforge/templates/systemd/meshforge-gateway-resource-canary-user.service \
+#      ~/.config/systemd/user/meshforge-gateway-resource-canary.service
+#   cp /opt/meshforge/templates/systemd/meshforge-gateway-resource-canary-user.timer \
+#      ~/.config/systemd/user/meshforge-gateway-resource-canary.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-gateway-resource-canary.timer
+#
+# Prereqs:
+#   - meshforge-gateway running on THIS box (the canary injects into its queue)
+#   - ~/.config/meshforge/lab_peers carries the --peer hash
+#   - the peer's meshforge-echo daemon is enabled AND carries the PINGBIG
+#     support (this commit) — i.e. the peer has pulled + restarted echo
+#
+# Per-fire knobs (set in the timer's [Service] Environment= or here):
+#   RESOURCE_CANARY_PEER, RESOURCE_CANARY_REPLY_BYTES,
+#   RESOURCE_CANARY_LEG1_TIMEOUT, RESOURCE_CANARY_LEG2_TIMEOUT, STATE_DIR
+
+[Unit]
+Description=MeshForge gateway resource round-trip canary (one fire)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+ExecStart=/opt/meshforge/scripts/gateway_resource_canary.sh
+TimeoutStartSec=360
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-gateway-resource-canary

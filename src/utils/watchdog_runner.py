@@ -81,6 +81,7 @@ from utils.watchdog_probes import (
     probe_nomadnet_crashloop,
     probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
+    probe_resource_canary_degraded,
     probe_service_inactive,
     probe_synth_soak_degraded,
     probe_tracer_peer_unreachable,
@@ -467,6 +468,20 @@ def run_all_probes(
     # self-guards None (INERT) on boxes that don't run the soak. 2-tick
     # debounce rides out a torn mid-write / one slow run.
     sig = probe_synth_soak_degraded()
+    if sig is not None:
+        signals.append(sig)
+
+    # Resource canary degraded / dark (2026-06-20, gateway-reliability arc A1 —
+    # the OUTCOME source of truth). The synthetic RESOURCE round-trip canary
+    # (meshforge-gateway-resource-canary.timer) actively PROVES the gateway
+    # delivers a multi-chunk RNS Resource round-trip — the exact path the
+    # 2026-06-20 wx-total-loss EROFS broke while single-packet replies kept
+    # working. Consumes the canary's verdict envelope (last.json): a FAIL
+    # "control back, resource NOT" is the EROFS signature; a stale file is the
+    # canary going silent. Reads the operator's ~/.local/state dir directly
+    # (root-context safe); self-guards None (INERT) on boxes that don't run the
+    # canary. 2-tick debounce rides out a torn mid-write / one slow run.
+    sig = probe_resource_canary_degraded()
     if sig is not None:
         signals.append(sig)
 

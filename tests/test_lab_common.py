@@ -12,12 +12,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 from lab._lab_common import (
     AckMessage,
     PingMessage,
+    BigAckMessage,
+    BigPingMessage,
+    MAX_BIGACK_REPLY_BYTES,
     bounded_block,
     check_rns_listener_owner,
     init_reticulum_with_watchdog,
     make_ack_body,
+    make_bigack_body,
+    make_bigping_body,
     make_ping_body,
     parse_ack,
+    parse_bigack,
+    parse_bigping,
     parse_ping,
     short_name,
     _parse_ss_listener_line,
@@ -82,6 +89,90 @@ def test_parse_ping_handles_extra_whitespace():
 def test_parse_none_is_none():
     assert parse_ping(None) is None
     assert parse_ack(None) is None
+
+
+# --------------------------------------------------------- PINGBIG/ACKBIG (A1)
+
+
+def test_make_bigping_body_round_trip():
+    body = make_bigping_body(42, "rescanary-moc", 512)
+    assert parse_bigping(body) == BigPingMessage(
+        seq=42, sender="rescanary-moc", want_bytes=512)
+
+
+def test_make_bigack_body_round_trip_and_size():
+    """The load-bearing property: a default reply is sized OVER LXMF's
+    single-packet link limit (~319 B), so LXMF delivers it as an RNS Resource
+    — the multi-chunk assembly path the 2026-06-20 EROFS broke."""
+    body = make_bigack_body(42, "rescanary-moc", 512,
+                            recv_at_iso="2026-06-20T00:00:00Z")
+    assert len(body) == 512                       # padded to exactly want
+    assert len(body) > 319                        # forces a Resource over a link
+    parsed = parse_bigack(body)
+    assert parsed == BigAckMessage(
+        seq=42, orig="rescanary-moc", length=512,
+        recv_at_iso="2026-06-20T00:00:00Z")
+
+
+def test_make_bigack_first_line_carries_marker():
+    """The unique marker is on line 1 so a leading [RNS:] bridge tag (added on
+    the return path) doesn't defeat the canary's substring match, and the
+    all-or-nothing Resource means the marker proves full assembly."""
+    body = make_bigack_body(7, "rescanary-moc", 600)
+    first = body.split("\n", 1)[0]
+    assert first.startswith("ACKBIG seq=7 orig=rescanary-moc len=")
+
+
+def test_make_bigack_clamps_to_max():
+    """An absurd want is clamped — amplification guard."""
+    body = make_bigack_body(1, "x", 10_000_000)
+    assert len(body) == MAX_BIGACK_REPLY_BYTES
+    # len= field never lies: it reports the actual padded length.
+    assert parse_bigack(body).length == MAX_BIGACK_REPLY_BYTES
+
+
+def test_make_bigack_tiny_want_keeps_marker_and_honest_len():
+    """A want smaller than the header returns the bare header (still carries the
+    marker), with len= re-stamped to the ACTUAL length, never a value the body
+    doesn't honour (honest_failure_modes)."""
+    body = make_bigack_body(3, "rescanary-moc", 5)
+    parsed = parse_bigack(body)
+    assert parsed is not None and parsed.seq == 3
+    assert parsed.length == len(body)
+
+
+@pytest.mark.parametrize("bad", [
+    "",
+    "hello world",
+    "PINGBIG seq=1 from=moc",                       # missing want
+    "PINGBIG seq=abc from=moc want=512",            # non-numeric seq
+    "PING seq=1 from=moc",                          # PING shape
+])
+def test_parse_bigping_rejects_garbage(bad):
+    assert parse_bigping(bad) is None
+
+
+@pytest.mark.parametrize("bad", [
+    "",
+    "hello world",
+    "ACK seq=1 orig=moc recv_at=z",                 # plain ACK, not ACKBIG
+    "ACKBIG seq=1 orig=moc recv_at=z",              # missing len
+])
+def test_parse_bigack_rejects_garbage(bad):
+    assert parse_bigack(bad) is None
+
+
+def test_parse_bigack_ignores_padding_lines():
+    """parse_bigack matches the first line only — padding after the newline
+    must not break the parse."""
+    body = "ACKBIG seq=9 orig=moc len=400 recv_at=z\n" + ("." * 360)
+    parsed = parse_bigack(body)
+    assert parsed is not None and parsed.seq == 9 and parsed.length == 400
+
+
+def test_parse_big_none_is_none():
+    assert parse_bigping(None) is None
+    assert parse_bigack(None) is None
 
 
 # ------------------------------------------------------------------ short_name

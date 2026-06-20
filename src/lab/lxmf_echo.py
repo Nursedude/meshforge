@@ -101,7 +101,7 @@ def make_on_receive(state: _EchoState):
     up RNS — the callback only depends on the message object's
     ``content`` and ``source_hash``, plus the LXMF builder.
     """
-    from lab._lab_common import make_ack_body, parse_ping
+    from lab._lab_common import parse_bigping, parse_ping
 
     def _on_receive(message):
         # Decode body. message.content is bytes in newer LXMF builds,
@@ -113,34 +113,48 @@ def make_on_receive(state: _EchoState):
             except UnicodeDecodeError:
                 body = body.decode("utf-8", errors="replace")
 
+        # Two wire formats share this destination. PING is the original
+        # single-packet round-trip; PINGBIG (gateway-reliability arc A1)
+        # asks for a RESOURCE-sized reply so the requester's gateway must
+        # assemble an inbound RNS Resource — the exact step the 2026-06-20
+        # EROFS broke, which the single-packet PING is blind to.
         ping = parse_ping(body)
-        if not ping:
-            # Not a PING — log and skip. Could be a stray LXMF, a chat
+        bigping = parse_bigping(body) if ping is None else None
+        if ping is None and bigping is None:
+            # Neither format — log and skip. Could be a stray LXMF, a chat
             # message, anything. The echo destination is shared via the
-            # lab_peers file; we don't refuse non-PING input, just ignore.
+            # lab_peers file; we don't refuse unknown input, just ignore.
             logger.debug(
-                "echo: rx ignored (not PING) from=%s len=%d",
+                "echo: rx ignored (not PING/PINGBIG) from=%s len=%d",
                 message.source_hash.hex(), len(body),
             )
             return
 
         state.rx_count += 1
-        logger.info(
-            "echo: rx seq=%d from=%s source=%s",
-            ping.seq, ping.sender, message.source_hash.hex(),
-        )
-
+        seq = ping.seq if ping is not None else bigping.seq
         try:
-            _send_ack(state, message.source_hash, ping)
+            if ping is not None:
+                logger.info(
+                    "echo: rx seq=%d from=%s source=%s",
+                    ping.seq, ping.sender, message.source_hash.hex(),
+                )
+                _send_ack(state, message.source_hash, ping)
+            else:
+                logger.info(
+                    "echo: rx BIG seq=%d from=%s want=%d source=%s",
+                    bigping.seq, bigping.sender, bigping.want_bytes,
+                    message.source_hash.hex(),
+                )
+                _send_bigack(state, message.source_hash, bigping)
         except Exception as exc:
-            # One failed ACK must not kill the daemon — soak runs for
+            # One failed reply must not kill the daemon — soak runs for
             # weeks. Bridge errors / transient path loss happen.
             # exc_info=True puts the traceback in the journal so we
             # can diagnose without re-running; some RNS exceptions have
             # empty str() and would otherwise produce a stub line.
             logger.warning(
                 "echo: tx FAILED seq=%d to=%s: %s: %s",
-                ping.seq, message.source_hash.hex(),
+                seq, message.source_hash.hex(),
                 type(exc).__name__, exc or "(no message)",
                 exc_info=True,
             )
@@ -148,22 +162,18 @@ def make_on_receive(state: _EchoState):
     return _on_receive
 
 
-def _send_ack(state: _EchoState, dest_hash: bytes, ping):
-    """Resolve dest, build LXMessage, hand to router."""
+def _resolve_out_destination(state: _EchoState, dest_hash: bytes, seq: int):
+    """Resolve an OUT lxmf.delivery destination for dest_hash, or None.
+
+    Shared by _send_ack and _send_bigack. Returns the RNS.Destination, or
+    None (already logged) when the identity can't be recalled even after a
+    bounded on-demand path request — the ROUTED-LEAF case (moc5 behind the
+    AREDN hAP, 2026-06-04) where recall misses though the inbound arrived.
+    """
     import RNS
-    import LXMF
-    from lab._lab_common import make_ack_body
 
     dest_identity = RNS.Identity.recall(dest_hash)
     if dest_identity is None:
-        # Flat-LAN boxes hear every announce, so recall always hit and a
-        # None looked like "path forgotten". A ROUTED LEAF (moc5 behind
-        # the AREDN hAP, 2026-06-04) receives pings from tracers whose
-        # announces never propagated to it — recall misses and every
-        # reply died here while the inbound ping arrived fine. Cure:
-        # fetch the identity on demand with a bounded path request (the
-        # path response carries the announcing identity), exactly like
-        # the tracer's outbound leg already does.
         logger.info(
             "echo: identity for %s not cached — requesting path",
             dest_hash.hex(),
@@ -177,17 +187,27 @@ def _send_ack(state: _EchoState, dest_hash: bytes, ping):
         logger.warning(
             "echo: tx skipped seq=%d to=%s (Identity.recall returned None "
             "after %.0fs path request)",
-            ping.seq, dest_hash.hex(), PATH_REQUEST_WAIT_S,
+            seq, dest_hash.hex(), PATH_REQUEST_WAIT_S,
         )
-        return
+        return None
 
-    destination = RNS.Destination(
+    return RNS.Destination(
         dest_identity,
         RNS.Destination.OUT,
         RNS.Destination.SINGLE,
         "lxmf",
         "delivery",
     )
+
+
+def _send_ack(state: _EchoState, dest_hash: bytes, ping):
+    """Resolve dest, build the ACK LXMessage, hand to router."""
+    import LXMF
+    from lab._lab_common import make_ack_body
+
+    destination = _resolve_out_destination(state, dest_hash, ping.seq)
+    if destination is None:
+        return
     body = make_ack_body(ping.seq, ping.sender)
     lxm = LXMF.LXMessage(destination, state.source, body, "lab echo ACK")
     state.router.handle_outbound(lxm)
@@ -195,6 +215,30 @@ def _send_ack(state: _EchoState, dest_hash: bytes, ping):
     logger.info(
         "echo: tx seq=%d to=%s bytes=%d",
         ping.seq, dest_hash.hex(), len(body),
+    )
+
+
+def _send_bigack(state: _EchoState, dest_hash: bytes, bigping):
+    """Resolve dest, build a RESOURCE-sized ACKBIG reply, hand to router.
+
+    The body is sized to bigping.want_bytes (clamped to MAX_BIGACK_REPLY_BYTES
+    inside make_bigack_body), which pushes it over LXMF's single-packet limit
+    so LXMF delivers it as an RNS Resource over the link — exercising the
+    receiver's Resource-assembly path (the EROFS class) end to end.
+    """
+    import LXMF
+    from lab._lab_common import make_bigack_body
+
+    destination = _resolve_out_destination(state, dest_hash, bigping.seq)
+    if destination is None:
+        return
+    body = make_bigack_body(bigping.seq, bigping.sender, bigping.want_bytes)
+    lxm = LXMF.LXMessage(destination, state.source, body, "lab echo ACKBIG")
+    state.router.handle_outbound(lxm)
+    state.tx_count += 1
+    logger.info(
+        "echo: tx BIG seq=%d to=%s bytes=%d (requested want=%d)",
+        bigping.seq, dest_hash.hex(), len(body), bigping.want_bytes,
     )
 
 
