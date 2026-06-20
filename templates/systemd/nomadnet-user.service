@@ -68,19 +68,38 @@ ExecStartPre=-/usr/bin/tmux kill-session -t nomadnet
 
 # Boot-race gate (#69; moc reboot 2026-06-09): the After=rnsd.service
 # above is a NO-OP — user units cannot order against system units — so
-# on a fast boot this unit can win the race to @rns/default and strand
-# the restarted rnsd as a CLIENT of nomadnet (the moc 2026-06-09 and
-# moc5 meshchat incidents). Wait, bounded, for the system rnsd to bind
-# the shared-instance listener before launching. If rnsd never binds,
-# the gate times out, the unit fails, and StartLimitBurst parks it —
-# refuse-loud, never race. (ss reads /proc/net/unix; no root needed.
-# $$ is systemd's escape for a literal $; no nested quotes — systemd's
-# backslash handling mangles \" inside ExecStart* — proven on moc.)
-# The `grep -v /rpc` leg is LOAD-BEARING: rnsd binds @rns/default/rpc
-# even when stranded as a client, and an unpinned match on that socket
-# false-passed this gate on moc1's 2026-06-09 boot — nomadnet launched
-# into a host-less instance and claimed it. Wait for the MAIN listener.
-ExecStartPre=/bin/sh -c 'n=0; until ss -xl | grep @rns/default | grep -qv /rpc; do n=$$((n+1)); [ $$n -ge 45 ] && exit 75; sleep 2; done'
+# on a fast boot this unit can win the race to HOST the RNS shared
+# instance and strand the restarted rnsd as a CLIENT of nomadnet (the
+# moc 2026-06-09 and moc5 meshchat incidents). Wait, bounded, for the
+# system rnsd to become the shared-instance HOST before launching.
+#
+# We gate on `rnstatus` succeeding, NOT on grepping a specific
+# @rns/<name> socket. Two reasons, both load-bearing:
+#   1. INSTANCE-NAME AGNOSTIC. rnsd binds @rns/<instance_name> — e.g.
+#      @rns/volcano ai rns, NOT @rns/default. A hardcoded `@rns/default`
+#      grep matched zero lines on every non-default box, so this gate
+#      crash-looped the unit ~7800× from 2026-06-09 (regression in commit
+#      121ac59a) until ExecStart never ran. rnstatus needs no name.
+#   2. HOST vs orphan. rnstatus rc=0 requires a reachable shared-instance
+#      HOST; a stranded-client-only rnsd still binds @rns/<name>/rpc but
+#      has no host, and correctly FAILS the probe — the exact host-less
+#      case the old `grep -v /rpc` leg was trying (and failing) to catch.
+# This is the same proven gate the map service uses
+# (meshforge-map.service.d/10-wait-for-rnsd.conf, fleet-stable since
+# 2026-05-30). $$ is systemd's escape for a literal $.
+#
+# #68 hang-proofing: `timeout 5` bounds a wedged rnstatus per probe; the
+# outer `timeout 90` bounds total wall-clock so a sequence of hung probes
+# can't balloon past the start budget. If rnsd never hosts within the
+# budget the gate exits 75 — fail-CLOSED (unlike the map drop-in's
+# fail-open exit 0, nomadnet must REFUSE to start rather than race): the
+# unit fails, StartLimitBurst parks it, refuse-loud, never race.
+ExecStartPre=/bin/sh -c 'timeout 90 sh -c "until timeout 5 /usr/local/bin/rnstatus >/dev/null 2>&1; do sleep 2; done"; [ $$? -eq 0 ] || exit 75'
+
+# Must exceed the start-pre 90s wall-clock bound so the fail-closed exit 75
+# can fire instead of systemd killing start-pre mid-probe (they race at the
+# 90s DefaultTimeoutStartSec otherwise — the map drop-in's hard-won lesson).
+TimeoutStartSec=150
 
 # Launch the real TUI wrapped in a detached tmux session. The ExecStart
 # line below contains a placeholder that the MeshForge TUI substitutes

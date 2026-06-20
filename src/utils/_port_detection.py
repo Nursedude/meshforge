@@ -343,7 +343,9 @@ def _check_proc_net_unix(socket_name: str) -> bool:
 
     Args:
         socket_name: Socket name WITHOUT the null byte or ``@`` prefix.
-                     e.g. ``'rns/default'`` to match ``@rns/default``.
+                     e.g. ``'rns/<instance>'`` to match ``@rns/<instance>``
+                     (derive ``<instance>`` from the box's RNS config —
+                     never hardcode ``default``).
 
     Returns:
         True if the socket is listed in /proc/net/unix.

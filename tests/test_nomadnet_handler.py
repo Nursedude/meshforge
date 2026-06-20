@@ -1257,6 +1257,38 @@ class TestNomadNetServiceOpsSudoBridging:
         ]
 
 
+class TestShippedGateTemplate:
+    """The shipped nomadnet-user.service boot-race gate is instance-agnostic.
+
+    Locks the #69 regression fix (2026-06-19, commit 121ac59a regression):
+    the gate must wait on ``rnstatus`` (works on any rnsd instance_name),
+    carry NO active @rns/default directive (the hardcode that crash-looped
+    the unit ~7800x on every non-default box), and set TimeoutStartSec high
+    enough that the fail-closed exit 75 fires before systemd kills start-pre.
+    """
+
+    @staticmethod
+    def _template_text():
+        from handlers._nomadnet_service_ops import _UNIT_TEMPLATE
+        return Path(_UNIT_TEMPLATE).read_text()
+
+    def test_gate_uses_rnstatus_not_socket_name(self):
+        text = self._template_text()
+        # No active (non-comment) directive may pin @rns/default.
+        for line in text.splitlines():
+            s = line.strip()
+            if not s or s.startswith('#'):
+                continue
+            assert 'rns/default' not in s, (
+                f"active directive hardcodes @rns/default: {s!r}"
+            )
+        # The boot-race gate waits on instance-agnostic rnstatus.
+        assert 'rnstatus' in text
+
+    def test_gate_sets_timeout_start_sec(self):
+        assert 'TimeoutStartSec=150' in self._template_text()
+
+
 class TestInstallUserUnit:
     """_install_user_unit prereq chain + path substitution.
 
@@ -1393,6 +1425,41 @@ class TestInstallUserUnit:
         # shlex.join should keep the argv parts space-separated for tmux
         import shlex as _shlex
         assert _shlex.join(pipx_argv) in text
+
+    def test_install_removes_legacy_boot_race_dropin(self, tmp_path):
+        """Re-install drops the stale @rns/default drop-in (#69 cleanup)."""
+        h = _make_nomadnet()
+        fake_home = tmp_path / "home"
+        user_dir = fake_home / ".config" / "systemd" / "user"
+        user_dir.mkdir(parents=True)
+        # Simulate the legacy boot-race drop-in shipped by commit 121ac59a.
+        dropin_dir = user_dir / "nomadnet.service.d"
+        dropin_dir.mkdir()
+        legacy = dropin_dir / "10-wait-rnsd.conf"
+        legacy.write_text(
+            "[Service]\nExecStartPre=/bin/sh -c 'until ss -xl | "
+            "grep @rns/default; do sleep 2; done'\n"
+        )
+        fake_template = tmp_path / "nomadnet-user.service"
+        self._template_with_placeholder(fake_template)
+
+        patches = self._enter_all(self._install_env(h, fake_template,
+                                                     fake_home))
+        try:
+            with patch('shutil.which', return_value='/usr/bin/tmux'):
+                with patch('subprocess.run') as mock_run:
+                    mock_run.return_value.returncode = 0
+                    mock_run.return_value.stdout = ""
+                    mock_run.return_value.stderr = ""
+                    h._install_user_unit(force=True)
+        finally:
+            self._exit_all(patches)
+
+        assert not legacy.exists(), "stale boot-race drop-in not removed"
+        # Empty drop-in dir is cleaned up too.
+        assert not dropin_dir.exists()
+        # The corrected unit itself was still written.
+        assert (user_dir / "nomadnet.service").exists()
 
     # ------------------------------------------------------------------
     # Prerequisite guards

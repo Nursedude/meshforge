@@ -113,10 +113,18 @@ class RNSInterfacesHandler(BaseHandler):
             # Check abstract Unix socket for more specific diagnosis
             unix_socket_exists = False
             try:
+                from utils.paths import ReticulumPaths
+                # rnsd binds @rns/<instance_name> — e.g. @rns/volcano ai rns,
+                # NOT @rns/default. /proc/net/unix (like ss) can truncate the
+                # spaced name at the first token, so match the leading token,
+                # never a hardcoded "default" (which silently never matched on
+                # non-default-instance boxes — the #69 hardcode class).
+                inst = ReticulumPaths.get_configured_instance_name()
+                inst_token = inst.split()[0] if inst.split() else 'default'
                 proc_unix = Path('/proc/net/unix').read_text()
                 unix_socket_exists = (
-                    '@rns/default' in proc_unix
-                    or 'rns/default' in proc_unix
+                    f'@rns/{inst_token}' in proc_unix
+                    or f'rns/{inst_token}' in proc_unix
                 )
             except (OSError, PermissionError):
                 pass

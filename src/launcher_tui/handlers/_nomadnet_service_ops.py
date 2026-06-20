@@ -768,6 +768,27 @@ class NomadNetServiceOpsMixin:
             )
             return
 
+        # 5b. Remove the legacy boot-race drop-in (#69 regression cleanup).
+        # Commit 121ac59a shipped the boot-race gate as a drop-in
+        # (nomadnet.service.d/10-wait-rnsd.conf) hardcoding @rns/default,
+        # which crash-looped the unit on every non-default-instance box.
+        # The corrected gate now lives INLINE in the unit above, so a
+        # lingering drop-in would only re-shadow it. Remove it (and the
+        # dir if it's left empty) so the inline gate is authoritative.
+        legacy_dropin = unit_dir / "nomadnet.service.d" / "10-wait-rnsd.conf"
+        try:
+            if legacy_dropin.exists():
+                legacy_dropin.unlink()
+                logger.info("Removed legacy boot-race drop-in: %s", legacy_dropin)
+                try:
+                    legacy_dropin.parent.rmdir()  # only succeeds if now empty
+                except OSError:
+                    pass  # other drop-ins present — leave the dir
+        except (OSError, PermissionError) as e:
+            logger.warning(
+                "Could not remove legacy drop-in %s: %s", legacy_dropin, e,
+            )
+
         # 6. reload + enable --now
         reload_ok, reload_out = self._systemctl_user("daemon-reload")
         enable_ok, enable_out = self._systemctl_user("enable")

@@ -686,6 +686,72 @@ class TestOperatorValueContract:
         )
 
 
+class TestNoHardcodedRnsDefaultSocket:
+    """Enforce: no hardcoded ``@rns/default`` shared-instance socket name.
+
+    The #69 boot-race gate in templates/systemd/nomadnet-user.service
+    hardcoded ``@rns/default`` and crash-looped the user unit ~7800x on
+    every box whose rnsd instance_name != 'default' (regression 2026-06-09,
+    commit 121ac59a; the operator's "house of cards"). rnsd binds
+    ``@rns/<instance_name>`` (e.g. ``@rns/volcano ai rns``), so any code or
+    unit directive that must reference the socket MUST derive the name via
+    ``ReticulumPaths.get_configured_instance_name()`` (src/utils/paths.py)
+    or gate on instance-agnostic ``rnstatus`` — never a literal 'default'.
+    Comments/docstrings may mention it for context (this file does too).
+    """
+
+    # Quoted code literal: '@rns/default', "rns/default", etc. Bare prose
+    # mentions (no adjacent quotes) do not match — those are documentation.
+    _RNS_DEFAULT_LITERAL = r"""['"]@?rns/default['"]"""
+
+    def test_no_rns_default_in_systemd_templates(self):
+        """systemd unit/drop-in DIRECTIVES must not pin @rns/default."""
+        templates_dir = os.path.join(REPO_ROOT, 'templates', 'systemd')
+        violations = []
+        for root, _dirs, files in os.walk(templates_dir):
+            for filename in files:
+                filepath = os.path.join(root, filename)
+                try:
+                    with open(filepath, 'r', encoding='utf-8',
+                              errors='ignore') as f:
+                        for lineno, line in enumerate(f, 1):
+                            stripped = line.strip()
+                            # `#` comments may explain the regression; only
+                            # active directive lines are violations.
+                            if not stripped or stripped.startswith('#'):
+                                continue
+                            if 'rns/default' in stripped:
+                                violations.append(
+                                    f"{filepath}:{lineno}: {stripped}"
+                                )
+                except (IOError, OSError):
+                    continue
+        assert not violations, (
+            "Hardcoded @rns/default in a systemd directive — the #69 gate "
+            "regression. Gate on `rnstatus` (instance-agnostic) or derive "
+            "the socket from get_configured_instance_name():\n\n"
+            + "\n".join(violations)
+        )
+
+    def test_no_rns_default_literal_in_src(self):
+        """Python code must not use a literal '@rns/default' string."""
+        matches = _scan_python_files(self._RNS_DEFAULT_LITERAL)
+        violations = [f"{fp}:{ln}: {txt.strip()}" for fp, ln, txt in matches]
+        assert not violations, (
+            "Hardcoded '@rns/default' string literal in src/ — derive the "
+            "instance name via ReticulumPaths.get_configured_instance_name() "
+            "instead (the #69 hardcode class):\n\n" + "\n".join(violations)
+        )
+
+    def test_guard_catches_known_pattern(self):
+        """Self-test: the literal pattern fires on a leak, not on a derive."""
+        pat = re.compile(self._RNS_DEFAULT_LITERAL)
+        assert pat.search("if '@rns/default' in proc_unix:")
+        assert pat.search('socket = "rns/default"')
+        assert not pat.search("f'@rns/{inst_token}'")
+        assert not pat.search("# rnsd binds @rns/default on default boxes")
+
+
 class TestDeliveryCallbackSymmetry:
     """Enforce: both RNS send paths register LXMF delivery-proof callbacks.
 
