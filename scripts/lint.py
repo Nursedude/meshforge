@@ -673,6 +673,20 @@ def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
 # turned out to be wrong six months later).
 MF017_REQUIRED_BUCKETS = (".config/meshforge", ".local/share/meshforge", ".cache/meshforge")
 
+# D2 (2026-06-20): a hardened unit that declares itself an RNS client must also
+# whitelist the RNS storage path, or it has the exact 2026-06-20 wx-total-loss
+# EROFS latent (a shared-instance RNS client writes assembled Resources under
+# <configdir>/storage; ProtectSystem=strict makes /etc read-only otherwise).
+# The unit DECLARES the profile with the marker below (a self-documenting,
+# unit-local statement of what it writes); MF017 then requires the derived
+# path. The literal mirrors ReticulumPaths.ETC_STORAGE — the SSOT — and a test
+# (test_lint_mf017 / test_sandbox_check) pins the two equal so they can't drift.
+# The runtime preflight (sandbox_check.meshforge_writable_paths(rns_client=True))
+# is the BACKSTOP for an un-marked unit: it probes the real path at startup,
+# keyed to the service code, not this declaration.
+MF017_RNS_CLIENT_MARKER = "mf-sandbox-requires: rns-storage"
+MF017_RNS_STORAGE_PATH = "/etc/reticulum/storage"  # == ReticulumPaths.ETC_STORAGE
+
 
 def _audit_one_systemd_unit(
     rel_path: str,
@@ -727,6 +741,22 @@ def _audit_one_systemd_unit(
                 f"'@HOME@/{bucket}' to the ReadWritePaths line, OR mark "
                 f"the omission deliberate with an inline "
                 f"'# audit-skip: <reason>' comment.",
+            ))
+
+    # D2: a unit that DECLARES the rns-client profile must grant the RNS storage
+    # path, or it has the 2026-06-20 EROFS latent. Derived requirement, not a
+    # per-unit hand-list (the #60 lesson).
+    if MF017_RNS_CLIENT_MARKER in content:
+        if not any(MF017_RNS_STORAGE_PATH in p for p in whitelisted):
+            issues.append(LintIssue(
+                rel_path, rwp_lineno, Severity.ERROR, "MF017",
+                f"hardened systemd unit declares '{MF017_RNS_CLIENT_MARKER}' "
+                f"but ReadWritePaths= is missing '{MF017_RNS_STORAGE_PATH}' — "
+                f"the Issue #60 EROFS class. A shared-instance RNS client "
+                f"assembles inbound Resources under that path; without it, "
+                f"ProtectSystem=strict makes /etc read-only and multi-chunk "
+                f"replies drop silently (the 2026-06-20 wx-dark incident). Add "
+                f"'{MF017_RNS_STORAGE_PATH}' to the ReadWritePaths line.",
             ))
     return issues
 

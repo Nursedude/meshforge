@@ -24,28 +24,43 @@ import tempfile
 from pathlib import Path
 from typing import List, Tuple
 
-from utils.paths import get_real_user_home
+from utils.paths import ReticulumPaths, get_real_user_home
 
 logger = logging.getLogger(__name__)
 
 
-def meshforge_writable_paths() -> List[Path]:
-    """Canonical writable buckets MeshForge services need.
+def meshforge_writable_paths(*, rns_client: bool = False) -> List[Path]:
+    """Canonical writable paths a MeshForge service needs, DERIVED from its
+    write profile (not a hand-list per unit — the Issue #60 lesson).
 
-    Returned in the conventional order (``.config`` first, the bucket most
-    code uses; ``.local/share`` second, the DB bucket per
-    ``utils.db_inventory._meshforge_data_dir``; ``.cache`` third). Hardened
-    services that touch any state under ``~`` must whitelist all three —
-    each new SQLite DB or persistence file lands in one of them, and a
-    refactor that changes which bucket a feature uses must NOT depend on
-    the systemd unit being updated in lockstep.
+    Base set (every service that touches state under ``~``): the three data
+    buckets, in conventional order — ``.config`` first (the bucket most code
+    uses), ``.local/share`` second (the DB bucket per
+    ``utils.db_inventory._meshforge_data_dir``), ``.cache`` third.
+
+    ``rns_client=True`` appends ``ReticulumPaths.ETC_STORAGE``
+    (``/etc/reticulum/storage``) — the path a shared-instance RNS client
+    writes under (assembled Resources, ratchets, announce cache). This is the
+    D2 class-closer: the 2026-06-20 wx-total-loss was an EROFS writing an
+    assembled Resource there, and it slipped the #60 runtime guard precisely
+    because that guard probed only the three home buckets and was structurally
+    blind to the RNS write target (honest_failure_modes #5 — where-code-writes
+    and what-the-guard-probes were two facts that drifted). Deriving the path
+    from the SAME ``ReticulumPaths`` SSOT the RNS machinery uses to choose it
+    means the two can't drift again: an RNS-client service that passes
+    ``rns_client=True`` to ``assert_writable_or_exit`` fails LOUD at startup if
+    the systemd sandbox left ``/etc/reticulum/storage`` read-only, instead of
+    EROFS-ing silently for hours.
     """
     home = get_real_user_home()
-    return [
+    paths = [
         home / ".config" / "meshforge",
         home / ".local" / "share" / "meshforge",
         home / ".cache" / "meshforge",
     ]
+    if rns_client:
+        paths.append(ReticulumPaths.ETC_STORAGE)
+    return paths
 
 
 def verify_writable_paths(paths: List[Path]) -> List[Tuple[Path, str]]:
@@ -111,12 +126,17 @@ def assert_writable_or_exit(
         return
 
     home = get_real_user_home()
+    rns_storage_failed = any(p == ReticulumPaths.ETC_STORAGE for p, _ in failures)
     logger.error(
         "%s: sandbox writable-path check FAILED (%d/%d paths). "
         "Service cannot persist state. Most likely the systemd unit's "
         "ReadWritePaths= is missing one of the meshforge data buckets "
-        "(Issue #58 class — see persistent_issues.md).",
+        "(Issue #58 class)%s — see persistent_issues.md.",
         service_name, len(failures), len(paths),
+        (" OR the RNS storage path /etc/reticulum/storage (Issue #60 EROFS "
+         "class — a shared-instance RNS client cannot write assembled "
+         "Resources, so multi-chunk replies drop silently while the service "
+         "reads 'active')") if rns_storage_failed else "",
     )
     for path, err in failures:
         logger.error("  ✗ %s — %s", path, err)

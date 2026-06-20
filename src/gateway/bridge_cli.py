@@ -24,7 +24,7 @@ from gateway import (
     create_rns_transport,
 )
 from utils.service_check import check_service, check_port
-from utils.sandbox_check import assert_writable_or_exit
+from utils.sandbox_check import assert_writable_or_exit, meshforge_writable_paths
 
 # Setup logging — use canonical logging_config (avoids basicConfig conflicts)
 from utils.logging_config import setup_logging, get_logger
@@ -370,13 +370,18 @@ def main():
     print("  MeshForge Gateway Bridge")
     print("="*50)
 
-    # Sandbox preflight (Issue #58 class). When systemd's
-    # ProtectHome=read-only + ReadWritePaths= drift from the data
-    # directories the gateway actually writes, we want to fail at
-    # startup with a precise operator-actionable error rather than
-    # hours later in an LXMF callback exception. See
-    # utils/sandbox_check.py and persistent_issues #58/#60.
-    assert_writable_or_exit("meshforge-gateway")
+    # Sandbox preflight (Issue #58/#60 class). When systemd's
+    # ProtectHome=read-only + ReadWritePaths= drift from the directories the
+    # gateway actually writes, we want to fail at startup with a precise
+    # operator-actionable error rather than hours later in an LXMF callback
+    # exception. rns_client=True probes /etc/reticulum/storage too — the
+    # gateway is a shared-instance RNS client and writes assembled Resources
+    # there; the 2026-06-20 wx-total-loss EROFS slipped past this very preflight
+    # (D2) because it probed only the home buckets, blind to the RNS write
+    # target. Deriving that path from the ReticulumPaths SSOT closes the class.
+    # See utils/sandbox_check.py and persistent_issues #58/#60.
+    assert_writable_or_exit(
+        "meshforge-gateway", meshforge_writable_paths(rns_client=True))
 
     # Load config
     try:

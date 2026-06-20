@@ -27,6 +27,10 @@ ProtectSystem=strict
 # ProtectSystem=strict makes /etc read-only and assembly fails [Errno 30] EROFS,
 # silently dropping every resource-sized reply while the gateway stays "active /
 # RNS: connected" (2026-06-20; #60 sandbox-drift class — the wx-dark incident).
+# mf-sandbox-requires: rns-storage  (D2 marker — lint MF017 enforces the
+# /etc/reticulum/storage path below is present; the gateway main ALSO probes it
+# at startup via assert_writable_or_exit(meshforge_writable_paths(rns_client=True)),
+# the runtime backstop that would have caught 2026-06-20 in seconds.)
 ReadWritePaths=@HOME@/.config/meshforge @HOME@/.cache/meshforge @HOME@/.local/share/meshforge /etc/reticulum/storage
 ProtectHome=read-only
 ProtectKernelTunables=yes

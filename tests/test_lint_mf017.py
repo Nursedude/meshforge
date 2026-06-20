@@ -92,6 +92,40 @@ WantedBy=multi-user.target
 """
 
 
+HARDENED_UNIT_RNS_CLIENT_OK = """\
+[Unit]
+Description=Test
+
+[Service]
+User=alice
+ProtectSystem=strict
+ProtectHome=read-only
+# mf-sandbox-requires: rns-storage
+ReadWritePaths=@HOME@/.config/meshforge @HOME@/.cache/meshforge @HOME@/.local/share/meshforge /etc/reticulum/storage
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+# Declares the rns-client profile but omits /etc/reticulum/storage — the exact
+# 2026-06-20 latent. All three buckets ARE present, so ONLY the new rns-storage
+# check should fire (isolates it from the bucket checks).
+HARDENED_UNIT_RNS_CLIENT_MISSING_STORAGE = """\
+[Unit]
+Description=Test
+
+[Service]
+User=alice
+ProtectSystem=strict
+ProtectHome=read-only
+# mf-sandbox-requires: rns-storage
+ReadWritePaths=@HOME@/.config/meshforge @HOME@/.cache/meshforge @HOME@/.local/share/meshforge
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 def _write_unit(repo_root: Path, fname: str, content: str) -> Path:
     contrib = repo_root / "contrib" / "systemd"
     contrib.mkdir(parents=True, exist_ok=True)
@@ -187,6 +221,41 @@ class TestMF017AuditSkipMarker:
         )
         assert "bb-drift.service.in" in issues[0].file
         assert ".local/share/meshforge" in issues[0].message
+
+
+class TestMF017RnsClientStorage:
+    """D2 (2026-06-20): a hardened unit DECLARING the rns-client profile
+    (`# mf-sandbox-requires: rns-storage`) must grant /etc/reticulum/storage, or
+    it has the 2026-06-20 wx-total-loss EROFS latent. Closes the #60 class on
+    the lint side; the runtime preflight (sandbox_check, rns_client=True) is the
+    backstop for an un-marked unit."""
+
+    def test_rns_client_with_storage_is_clean(self, tmp_path):
+        _write_unit(tmp_path, "gw.service.in", HARDENED_UNIT_RNS_CLIENT_OK)
+        assert lint.check_systemd_sandbox_paths(repo_root=str(tmp_path)) == []
+
+    def test_rns_client_missing_storage_is_flagged(self, tmp_path):
+        """The RED test: a deliberately-seeded violation IS caught."""
+        _write_unit(tmp_path, "gw.service.in",
+                    HARDENED_UNIT_RNS_CLIENT_MISSING_STORAGE)
+        issues = lint.check_systemd_sandbox_paths(repo_root=str(tmp_path))
+        assert len(issues) == 1  # buckets all present → only the storage check
+        assert issues[0].code == "MF017"
+        assert "/etc/reticulum/storage" in issues[0].message
+        assert "EROFS" in issues[0].message or "#60" in issues[0].message
+
+    def test_unmarked_unit_has_no_storage_requirement(self, tmp_path):
+        """A hardened unit WITHOUT the marker is not required to grant storage —
+        only declared RNS clients are (the runtime guard backstops the rest)."""
+        _write_unit(tmp_path, "plain.service.in", HARDENED_UNIT_OK)
+        assert lint.check_systemd_sandbox_paths(repo_root=str(tmp_path)) == []
+
+    def test_lint_literal_matches_the_ssot(self):
+        """The lint literal mirrors ReticulumPaths.ETC_STORAGE — pin them equal
+        so the marker check can't silently diverge from the SSOT."""
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from utils.paths import ReticulumPaths
+        assert lint.MF017_RNS_STORAGE_PATH == str(ReticulumPaths.ETC_STORAGE)
 
 
 class TestMF017HandlesMissingContribDir:

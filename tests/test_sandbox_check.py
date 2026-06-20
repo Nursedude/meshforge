@@ -44,6 +44,67 @@ class TestMeshforgeWritablePaths:
         assert {".config", "share", ".cache"} == parents
 
 
+class TestRnsClientDerivation:
+    """D2 (2026-06-20): the RNS storage path is DERIVED from the ReticulumPaths
+    SSOT for rns_client services, not hand-listed per unit — closing the #60
+    class that let the 2026-06-20 EROFS slip past this very preflight."""
+
+    def test_default_excludes_rns_storage(self):
+        """Backward-compat: non-RNS callers (delivery_counters, etc.) keep the
+        three home buckets only."""
+        paths = meshforge_writable_paths()
+        assert len(paths) == 3
+        from utils.paths import ReticulumPaths
+        assert ReticulumPaths.ETC_STORAGE not in paths
+
+    def test_rns_client_appends_etc_storage(self):
+        from utils.paths import ReticulumPaths
+        paths = meshforge_writable_paths(rns_client=True)
+        assert len(paths) == 4
+        assert paths[-1] == ReticulumPaths.ETC_STORAGE
+
+    def test_rns_storage_path_is_the_ssot_value(self):
+        """Pins the SSOT value the lint literal MF017_RNS_STORAGE_PATH mirrors —
+        if the SSOT moves, this fails and flags the lint literal to update."""
+        from utils.paths import ReticulumPaths
+        assert str(ReticulumPaths.ETC_STORAGE) == "/etc/reticulum/storage"
+
+    def test_contrib_gateway_in_covers_rns_client_set(self):
+        """The anti-drift #5 closer: derive the required set from the SSOT and
+        assert the DEPLOYED gateway unit (.in) grants every path. Removing
+        /etc/reticulum/storage from the unit — the 2026-06-20 regression — fails
+        HERE, at commit, instead of after a 12h outage."""
+        from utils.paths import get_real_user_home
+        in_path = (Path(__file__).parent.parent / "contrib" / "systemd"
+                   / "meshforge-gateway.service.in")
+        rwp_line = next(
+            l for l in in_path.read_text().splitlines()
+            if l.strip().startswith("ReadWritePaths="))
+        home = get_real_user_home()
+        for p in meshforge_writable_paths(rns_client=True):
+            try:
+                needle = str(p.relative_to(home))   # ".config/meshforge"
+            except ValueError:
+                needle = str(p)                      # "/etc/reticulum/storage"
+            assert needle in rwp_line, (
+                f"gateway .in ReadWritePaths is missing {needle!r} "
+                f"(derived from the rns_client SSOT) — #60 EROFS class")
+
+    def test_rns_storage_failure_names_the_erofs_class(self, tmp_path, caplog,
+                                                       monkeypatch):
+        """When the RNS storage path is the failing one, the operator hint calls
+        out the #60 EROFS class specifically — not a generic bucket message."""
+        from utils.paths import ReticulumPaths
+        fake_storage = tmp_path / "etc_reticulum_storage"  # missing → fails
+        monkeypatch.setattr(ReticulumPaths, "ETC_STORAGE", fake_storage)
+        with caplog.at_level(logging.ERROR, logger="utils.sandbox_check"):
+            with pytest.raises(SystemExit) as exc:
+                assert_writable_or_exit("meshforge-gateway", paths=[fake_storage])
+        assert exc.value.code == 2
+        msg = "\n".join(r.message for r in caplog.records)
+        assert "Issue #60" in msg and "EROFS" in msg
+
+
 class TestVerifyWritablePaths:
     """Per-path probe behavior."""
 
