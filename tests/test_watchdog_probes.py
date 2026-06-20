@@ -3863,9 +3863,35 @@ class TestNtfyLoopback:
         assert sig is not None and sig.severity == "wedge"
 
     def test_stale_state_is_none(self, tmp_path):
-        """A verdict file older than stale_after_s → None (collector stopped)."""
+        """A verdict file older than the effective window → None (collector
+        stopped). At the default 30-min cadence (interval_s=1800) the window is
+        the 5400s floor, so a 2h-old file is stale."""
         assert self._fire(tmp_path, self._doc(received=False, misses=2),
                           state_mtime=self.NOW - 7200) is None
+
+    def test_stale_window_scales_with_recorded_interval(self, tmp_path):
+        """At a q2hr cadence (interval_s=7200) the stale window scales to 3×
+        (=6h), so a 2h-old verdict is FRESH and a real miss still fires — a cron
+        cadence change needs no second edit in the probe (honest_failure_modes
+        #5: the cron is the single source of truth)."""
+        doc = self._doc(received=False, published_ok=True, misses=1)
+        doc["interval_s"] = 7200
+        sig = self._fire(tmp_path, doc, state_mtime=self.NOW - 7200)   # 2h old
+        assert sig is not None and sig.cls == "ntfy_loopback"
+
+    def test_stale_window_still_bounds_at_q2hr(self, tmp_path):
+        """Even at q2hr the window is bounded: a verdict past 3× cadence (>6h
+        old) is stale → None (collector stopped; cron_verdict_stale owns it)."""
+        doc = self._doc(received=False, misses=2)
+        doc["interval_s"] = 7200
+        assert self._fire(tmp_path, doc, state_mtime=self.NOW - 25200) is None  # 7h
+
+    def test_insane_interval_falls_back_to_floor(self, tmp_path):
+        """An absurd recorded interval_s is ignored (clamped) — the 5400s floor
+        applies, so a 2h-old file is still stale (honest_failure_modes #6)."""
+        doc = self._doc(received=False, misses=2)
+        doc["interval_s"] = 99999999
+        assert self._fire(tmp_path, doc, state_mtime=self.NOW - 7200) is None
 
     def test_unparseable_is_none(self, tmp_path):
         sp = str(tmp_path / "d.json")

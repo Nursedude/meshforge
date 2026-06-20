@@ -1474,10 +1474,18 @@ def probe_host_frozen(
 # ─────────────────────────────────────────────────────────────────────
 
 DEFAULT_NTFY_LOOPBACK_DEBOUNCE_PATH = "/var/lib/meshforge/ntfy_loopback_debounce.json"
-NTFY_LOOPBACK_STATE_STALE_S = 5400   # verdict older than this → the collector
-                                     # stopped; cron_verdict_stale owns the dead-
-                                     # cron alert (fleet_ntfy_loopback is verdict-
-                                     # wired). ~3× a 30-min cron cadence.
+NTFY_LOOPBACK_STATE_STALE_S = 5400   # FLOOR for the stale window. The EFFECTIVE
+                                     # window scales to 3× the collector's OWN
+                                     # recorded cadence (interval_s in the verdict
+                                     # file), so a cron cadence change (e.g.
+                                     # */30 → q2hr) needs NO second edit here —
+                                     # the cron is the single source of truth
+                                     # (honest_failure_modes #5: one cadence, not
+                                     # two drifting copies). This floor applies
+                                     # only when interval_s is absent/insane.
+                                     # Past the window the collector stopped →
+                                     # cron_verdict_stale owns the dead-cron alert
+                                     # (fleet_ntfy_loopback is verdict-wired).
 NTFY_LOOPBACK_WEDGE_MISSES = 3       # this many consecutive misses → wedge
 
 
@@ -1556,17 +1564,29 @@ def probe_ntfy_loopback(
             _save_parity_streak(sp, 0)      # no monitor here → INERT
             return None
 
-        # Stale file = the collector stopped; cron_verdict_stale owns that alert.
-        if state_mtime is not None and (now - state_mtime) > stale_after_s:
-            _save_parity_streak(sp, 0)
-            return None
-
         try:
             doc = json.loads(state_text)
         except (ValueError, TypeError):
             _save_parity_streak(sp, 0)      # garbage → don't false-fire
             return None
         if not isinstance(doc, dict):
+            _save_parity_streak(sp, 0)
+            return None
+
+        # The stale window scales with the collector's OWN recorded cadence
+        # (interval_s) so changing the cron cadence (e.g. */30 → q2hr) needs no
+        # second edit here — the cron is the single source of truth
+        # (honest_failure_modes #5). stale_after_s is the FLOOR, applied when
+        # interval_s is absent/insane; an absurd recorded value is clamped (#6).
+        interval = doc.get("interval_s")
+        if (isinstance(interval, (int, float)) and not isinstance(interval, bool)
+                and 60 <= interval <= 21600):
+            effective_stale = max(float(interval) * 3.0, float(stale_after_s))
+        else:
+            effective_stale = float(stale_after_s)
+
+        # Stale file = the collector stopped; cron_verdict_stale owns that alert.
+        if state_mtime is not None and (now - state_mtime) > effective_stale:
             _save_parity_streak(sp, 0)
             return None
 
