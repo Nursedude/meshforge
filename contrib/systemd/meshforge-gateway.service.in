@@ -21,7 +21,13 @@ StandardError=journal
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=@HOME@/.config/meshforge @HOME@/.cache/meshforge @HOME@/.local/share/meshforge
+# /etc/reticulum/storage is REQUIRED: as a shared-instance RNS client the gateway
+# assembles inbound RNS Resources (multi-chunk LXMF — e.g. a wx/leaderboard bot
+# reply) by writing them under <configdir>/storage/resources. Without it,
+# ProtectSystem=strict makes /etc read-only and assembly fails [Errno 30] EROFS,
+# silently dropping every resource-sized reply while the gateway stays "active /
+# RNS: connected" (2026-06-20; #60 sandbox-drift class — the wx-dark incident).
+ReadWritePaths=@HOME@/.config/meshforge @HOME@/.cache/meshforge @HOME@/.local/share/meshforge /etc/reticulum/storage
 ProtectHome=read-only
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
