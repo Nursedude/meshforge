@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -82,6 +83,11 @@ from utils.watchdog_runner import (  # noqa: E402
     write_state,
     _DEFAULT_SERVICES_EXPECTED_ACTIVE,
     _DEFAULT_SERVICES_WEDGE_CHECK,
+)
+from utils.watchdog_probes_service import (  # noqa: E402
+    _journal_user_unit_restart_ts,
+    _save_nomadnet_crashloop_streak,
+    _load_nomadnet_crashloop_streak,
 )
 
 
@@ -1562,6 +1568,122 @@ class TestNomadnetCrashloop:
             raise RuntimeError("journalctl exploded")
         assert probe_nomadnet_crashloop(
             ts_fn=boom, state_path=sp, now=_NOW) is None
+
+    def test_streak_is_clamped_at_debounce_floor(self, tmp_path):
+        """A sustained loop keeps firing but the PERSISTED streak never grows
+        past debounce_ticks (no unbounded counter across a 7842-class loop),
+        and an absurd on-disk value is clamped, not trusted."""
+        sp = str(tmp_path / "nn.json")
+        kw = dict(ts_fn=self._ts_fn(self._loop(5)), state_path=sp, now=_NOW)
+        probe_nomadnet_crashloop(**kw)            # streak 1
+        for _ in range(6):                        # many more live ticks
+            assert probe_nomadnet_crashloop(**kw) is not None
+        assert _load_nomadnet_crashloop_streak(sp) == 2   # capped at debounce
+        # A torn/edited file with a huge value is clamped on the next tick,
+        # not surfaced as a meaningless 6-digit number.
+        _save_nomadnet_crashloop_streak(sp, 999999)
+        sig = probe_nomadnet_crashloop(**kw)
+        assert sig is not None and sig.extra["streak"] == 2
+
+    def test_save_logs_witness_on_write_failure(self, tmp_path, caplog):
+        """honest_failure_modes #9: a swallowed state-write OSError leaves a
+        WITNESS in the watchdog journal (else a persistent write failure makes
+        the probe silently never advance past its debounce floor)."""
+        import logging as _logging
+        # An un-creatable parent (a path under a regular FILE) forces OSError.
+        blocker = tmp_path / "afile"
+        blocker.write_text("x")
+        doomed = str(blocker / "sub" / "nn.json")
+        with caplog.at_level(_logging.WARNING, logger="watchdog"):
+            _save_nomadnet_crashloop_streak(doomed, 1)   # must not raise
+        assert any("could not persist debounce streak" in r.message
+                   for r in caplog.records)
+
+
+class TestNomadnetCrashloopRealQuery:
+    """Exercise the REAL journalctl helper (_journal_user_unit_restart_ts) —
+    the probe's whole value rests on it, and the behavioral tests above all
+    inject ts_fn, so without this a field-name/flag/parse regression would
+    ship green (the #82 silent-blind-spot class)."""
+
+    _SHORT_UNIX = (
+        "1781943622.004417 host systemd[1012]: nomadnet.service: "
+        "Scheduled restart job, restart counter is at 7869.\n"
+        "1781943715.504331 host systemd[1012]: nomadnet.service: "
+        "Scheduled restart job, restart counter is at 7870.\n"
+    )
+
+    def _patched(self, *, stdout="", returncode=0, exc=None):
+        """Patch watchdog_probes_service.subprocess.run; record the argv."""
+        captured = {}
+
+        class _Result:
+            def __init__(self):
+                self.stdout = stdout
+                self.returncode = returncode
+
+        def _runner(*args, **kwargs):
+            captured["argv"] = args[0]
+            if exc is not None:
+                raise exc
+            return _Result()
+
+        return patch("utils.watchdog_probes_service.subprocess.run",
+                     side_effect=_runner), captured
+
+    def test_selects_user_unit_field_not_dash_u(self):
+        """The whole thesis of #82: select via USER_UNIT= (root-readable user
+        unit) — NOT `-u <unit>`, which is structurally blind to user units."""
+        ctx, captured = self._patched(stdout=self._SHORT_UNIX)
+        with ctx:
+            ts = _journal_user_unit_restart_ts(
+                "nomadnet.service", "restart counter is at", "15min")
+        argv = captured["argv"]
+        assert "USER_UNIT=nomadnet.service" in argv
+        # `-u nomadnet.service` (the system-namespace selector) must NOT appear
+        assert "-u" not in argv
+        assert "-g" in argv and "restart counter is at" in argv
+        assert "short-unix" in argv
+        # parsed the epoch first-token of each short-unix line
+        assert ts == [1781943622.004417, 1781943715.504331]
+
+    def test_empty_stdout_is_empty_list_not_none(self):
+        """rc 0 + no output = genuinely no restarts → [] (NOT None)."""
+        ctx, _ = self._patched(stdout="", returncode=0)
+        with ctx:
+            assert _journal_user_unit_restart_ts(
+                "nomadnet.service", "p", "15min") == []
+
+    def test_rc2_is_unobservable_none(self):
+        """rc∉(0,1) (real journalctl failure) → None, never []·"""
+        ctx, _ = self._patched(stdout="boom", returncode=2)
+        with ctx:
+            assert _journal_user_unit_restart_ts(
+                "nomadnet.service", "p", "15min") is None
+
+    def test_rc1_no_match_is_empty_list(self):
+        """rc 1 = 'no entries matched' on some systemd builds → [] (a true 0)."""
+        ctx, _ = self._patched(stdout="", returncode=1)
+        with ctx:
+            assert _journal_user_unit_restart_ts(
+                "nomadnet.service", "p", "15min") == []
+
+    def test_timeout_is_unobservable_none(self):
+        """journalctl timeout/absent → None (unobservable ≠ healthy)."""
+        ctx, _ = self._patched(
+            exc=subprocess.TimeoutExpired(cmd="journalctl", timeout=15))
+        with ctx:
+            assert _journal_user_unit_restart_ts(
+                "nomadnet.service", "p", "15min") is None
+
+    def test_garbage_lines_skipped_not_crashed(self):
+        """A non-short-unix line is skipped, not fatal (parse returns None)."""
+        ctx, _ = self._patched(
+            stdout="not-a-timestamp blah\n1781943622.0 host systemd: x\n")
+        with ctx:
+            ts = _journal_user_unit_restart_ts(
+                "nomadnet.service", "p", "15min")
+        assert ts == [1781943622.0]
 
 
 def test_channel_feed_dark_none_when_unobservable():

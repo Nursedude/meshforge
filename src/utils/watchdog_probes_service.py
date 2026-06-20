@@ -8,6 +8,7 @@ Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import socket
@@ -25,6 +26,11 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid,
     _short_unix_ts,
 )
+
+# Same logger name the runner uses (watchdog_runner.py) so a swallowed
+# state-write failure lands in the one "watchdog" namespace the operator
+# already greps — honest_failure_modes #9 ("every swallow gets a witness").
+logger = logging.getLogger("watchdog")
 
 # ─────────────────────────────────────────────────────────────────────
 # Probe: HTTP local unresponsive (catches socketserver-deadlock class)
@@ -747,7 +753,14 @@ def _load_nomadnet_crashloop_streak(state_path: str) -> int:
 
 
 def _save_nomadnet_crashloop_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises)."""
+    """Persist the streak counter (atomic-rename, never raises).
+
+    On a persistent write failure the debounce streak can never advance past
+    1 (``_load`` reads 0 each tick) → the probe would silently NEVER fire
+    during a real crashloop. So a swallowed ``OSError`` leaves a WITNESS in
+    the watchdog journal (honest_failure_modes #9) rather than vanishing — a
+    write-only failure here is itself a signal worth grepping.
+    """
     try:
         parent = os.path.dirname(state_path)
         if parent:
@@ -756,8 +769,13 @@ def _save_nomadnet_crashloop_streak(state_path: str, streak: int) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
-        pass
+    except OSError as exc:
+        logger.warning(
+            "nomadnet_crashloop: could not persist debounce streak to %s "
+            "(%s) — the probe may not advance past its debounce floor; "
+            "check %s is writable.",
+            state_path, exc, os.path.dirname(state_path) or state_path,
+        )
 
 
 def probe_nomadnet_crashloop(
@@ -790,6 +808,17 @@ def probe_nomadnet_crashloop(
     (a loop that already stopped — e.g. just remediated), or journalctl
     unavailable/timeout (unobservable ≠ healthy — never read None as 0).
     2-tick debounce rides out a single tick landing mid-restart. Never raises.
+
+    KNOWN BOUNDARY (calibrated — do not overclaim): this is a LIVE-loop
+    detector. The slow exit-75 boot-gate loop (the #82 case) restarts forever
+    (~125 s/cycle) and is covered continuously. The FAST exit-87 (rpc_key)
+    path instead trips ``StartLimitBurst`` and PARKS the unit in ``failed``
+    after a ~30 s burst — this probe catches that burst and fires ONCE within
+    the ``recency_s`` window, then goes INERT. A steadily *parked-failed* user
+    unit has no steady-state detector here: ``probe_service_inactive`` is
+    blind to user units and the sandbox forbids the user-bus state query that
+    would see ``failed``. The single fire (+ the ``propose_escalation``
+    companion rule surfacing it in the brief) is the coverage for that case.
     """
     try:
         now = time.time() if now is None else now
@@ -817,7 +846,11 @@ def probe_nomadnet_crashloop(
             _save_nomadnet_crashloop_streak(sp, 0)   # below thresh / stale → INERT
             return None
 
-        streak = _load_nomadnet_crashloop_streak(sp) + 1
+        # Clamp at the debounce floor: once confirmed, a sustained loop fires
+        # every tick (streak == debounce_ticks >= debounce_ticks) without the
+        # persisted counter growing unbounded across a 7842-class loop, and a
+        # torn/edited file with an absurd value can't be trusted as-is.
+        streak = min(_load_nomadnet_crashloop_streak(sp) + 1, debounce_ticks)
         _save_nomadnet_crashloop_streak(sp, streak)
         if streak < debounce_ticks:
             return None
