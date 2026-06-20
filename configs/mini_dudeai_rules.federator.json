@@ -279,7 +279,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-12: a critical pip dep (meshtastic) installed BELOW the requirements/core.txt floor in the service user's env — a box that missed/failed an update (the recurring update/install/env class, feedback_version_env_rigor). Fix: pip3 install --break-system-packages --upgrade <pkg> (or the TUI Update), then verify version + import in the service user python. Side-effect-free escalation; NO ntfy page (degraded)."
+      "annotation": "2026-06-12: a critical pip dep (meshtastic) installed BELOW the requirements/core.txt floor in the service user's env \u2014 a box that missed/failed an update (the recurring update/install/env class, feedback_version_env_rigor). Fix: pip3 install --break-system-packages --upgrade <pkg> (or the TUI Update), then verify version + import in the service user python. Side-effect-free escalation; NO ntfy page (degraded)."
     },
     {
       "id": "dep_install_fragmented_any",
@@ -292,7 +292,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-17: meshtastic installed at DIVERGENT versions across root-readable locations (venv / system-wide dist-packages / root+user pipx / user-site) with ≥1 copy BELOW the core.txt floor — the service consumer-of-record can be fine while the TUI-as-root reads a stale stray and shows phantom 'update available' (the install-fragmentation half of the update class, feedback_version_env_rigor; dep_version_drift sees only the consumer). Fix: reconcile every copy to >= the floor via python3 scripts/meshtastic_install_audit.py (see its --fix hint), then re-check. Side-effect-free escalation; NO ntfy page (degraded)."
+      "annotation": "2026-06-17: meshtastic installed at DIVERGENT versions across root-readable locations (venv / system-wide dist-packages / root+user pipx / user-site) with \u22651 copy BELOW the core.txt floor \u2014 the service consumer-of-record can be fine while the TUI-as-root reads a stale stray and shows phantom 'update available' (the install-fragmentation half of the update class, feedback_version_env_rigor; dep_version_drift sees only the consumer). Fix: reconcile every copy to >= the floor via python3 scripts/meshtastic_install_audit.py (see its --fix hint), then re-check. Side-effect-free escalation; NO ntfy page (degraded)."
     },
     {
       "id": "role_drift_any",
@@ -675,6 +675,39 @@
       },
       "cooldown_s": 21600,
       "annotation": "Calibration spine (2026-06-15) -- a VERIFIED completion claim (Claude's 'done/100%/all green') did NOT hold when re-derived against external ground truth (a full honest_status verdict on the head it was claimed on later FAILED). Surfaces 'you said 100% and the math was wrong' as a tracked number instead of a private impression. SSOT .claude/rules/calibrated_claims.md. Side-effect-free escalation; NO ntfy page until the re-derivation soaks low-false-positive (degraded, a trust signal not an outage)."
+    },
+    {
+      "id": "nomadnet_crashloop_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "nomadnet_crashloop",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] NomadNet crashloop",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "rotating_light",
+          "nomadnet"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-06-19 \u2014 the NomadNet user unit is crashlooping (the NRestarts=7842, 10-day-silent class; probe_service_inactive is structurally blind to user units). Usually exit 75 from the rnstatus boot-gate (rnsd not hosting) or exit 87 rpc_key mismatch. Check: journalctl --user -u nomadnet -n 50; systemctl --user status nomadnet. Recovery: fix the start-pre gate / rpc_key, then systemctl --user restart nomadnet."
+    },
+    {
+      "id": "nomadnet_crashloop_escalate",
+      "match": {
+        "kind": "signal_class",
+        "class": "nomadnet_crashloop",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-06-19 \u2014 companion to nomadnet_crashloop_any; surfaces the crashloop in the deep-feed/brief 'look here first' so a session catches an episode the posture pane no longer shows. Cross-refs the #69-fix-regression (the rnstatus boot-gate)."
     }
   ]
 }

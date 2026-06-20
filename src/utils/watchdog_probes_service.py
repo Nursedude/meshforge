@@ -669,6 +669,188 @@ def probe_service_inactive(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: NomadNet user-unit crashloop (2026-06-19; the 10-day-silent class)
+# ─────────────────────────────────────────────────────────────────────
+
+# A SHORT live window, not a long one: the journal still holds the PRE-fix
+# crashloop lines for a while after a remediation, so a 2h window would
+# false-page right after every fix. A 15min window + a count floor gates
+# "it's a LOOP not a one-off restart"; the newest-restart recency gate makes
+# it "it's LIVE not history" — a just-fixed unit's newest restart ages past
+# recency within minutes → INERT. (Tuned against the 2026-06-19 manager-box
+# fix, whose 15-min restart count fell to 0 once settled, while the 2h window
+# still showed 19 pre-fix restarts.)
+NOMADNET_CRASHLOOP_LOOKBACK = "15min"
+NOMADNET_CRASHLOOP_DEGRADED_N = 3      # ≥3 restarts in the window = looping
+NOMADNET_CRASHLOOP_WEDGE_N = 8         # ≥8 = hard continuous loop (the 7842 class)
+NOMADNET_CRASHLOOP_RECENCY_S = 300.0   # newest restart ≤5min old = LIVE, not pre-fix history
+DEFAULT_NOMADNET_CRASHLOOP_STATE = (
+    "/var/lib/meshforge/nomadnet_crashloop_debounce.json")
+
+
+def _journal_user_unit_restart_ts(
+    user_unit: str,
+    pattern: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Optional[List[float]]:
+    """Epoch timestamps of ``USER_UNIT=<user_unit>`` journal lines matching
+    ``pattern`` within ``lookback``.
+
+    The core ``_journal_*`` helpers hardcode ``-u <unit>`` (the SYSTEM journal
+    namespace), which is **structurally blind to user units** — from the
+    watchdog's root/system context a user unit returns rc 0 but EMPTY (this is
+    half of why the 10-day crashloop went silent). Root must select user-unit
+    logs via the ``USER_UNIT=`` journal field (a direct journal read — no sudo,
+    no user-bus — so it works under the watchdog NoNewPrivileges sandbox).
+
+    Returns the parsed epoch list (``[]`` = genuinely no restarts), or
+    **None** on journalctl unavailable / timeout / rc∉(0,1) — the honest
+    *unobservable* answer. A probe must NEVER read None as ``[]`` (empty ≠
+    error — honest_failure_modes #1), or a journalctl wedge would mask the
+    very crashloop this counts.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-q", f"USER_UNIT={user_unit}",
+                "--since", f"-{lookback}", "-g", pattern,
+                "-o", "short-unix", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    out = proc.stdout
+    if not out:
+        return []
+    ts: List[float] = []
+    for ln in out.splitlines():
+        if not ln:
+            continue
+        parsed = _short_unix_ts(ln)
+        if parsed is not None:
+            ts.append(parsed)
+    return ts
+
+
+def _load_nomadnet_crashloop_streak(state_path: str) -> int:
+    """Consecutive-over-threshold streak; any error → 0 (favour silence)."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_nomadnet_crashloop_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def probe_nomadnet_crashloop(
+    *,
+    user_unit: str = "nomadnet.service",
+    lookback: str = NOMADNET_CRASHLOOP_LOOKBACK,
+    degraded_n: int = NOMADNET_CRASHLOOP_DEGRADED_N,
+    wedge_n: int = NOMADNET_CRASHLOOP_WEDGE_N,
+    recency_s: float = NOMADNET_CRASHLOOP_RECENCY_S,
+    ts_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+    journalctl_path: str = "journalctl",
+    now: Optional[float] = None,
+) -> Optional[Signal]:
+    """Fire when the NomadNet USER unit is crashlooping — the 2026-06-19
+    class (NRestarts=7842, stuck ``activating (start-pre)``, exit 75 from the
+    rnstatus boot-gate; undetected for 10 days).
+
+    ``probe_service_inactive`` is BLIND here: from the watchdog's root/system
+    context ``systemctl`` cannot see a user unit at all, and a unit thrashing
+    in auto-restart is neither ``inactive`` nor ``failed``. The only
+    root-readable signal is systemd's ``restart counter is at N`` line under
+    the ``USER_UNIT=`` journal field. We count those in a SHORT window and gate
+    on the newest being RECENT, so a LIVE loop fires but post-fix history does
+    not (a 2h window would false-page right after every remediation).
+
+    Self-guards None (INERT): zero/too-few restart lines (healthy, or the
+    nomadnet-disabled box — moc5), a newest restart older than ``recency_s``
+    (a loop that already stopped — e.g. just remediated), or journalctl
+    unavailable/timeout (unobservable ≠ healthy — never read None as 0).
+    2-tick debounce rides out a single tick landing mid-restart. Never raises.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_NOMADNET_CRASHLOOP_STATE
+        pat = "restart counter is at"
+
+        if ts_fn is None:
+            def ts_fn(p):
+                return _journal_user_unit_restart_ts(
+                    user_unit, p, lookback, journalctl_path=journalctl_path)
+        tslist = ts_fn(pat)
+
+        if tslist is None:
+            # unobservable — hold; do NOT reset the streak to a healthy 0.
+            return None
+
+        n = len(tslist)
+        newest = max(tslist) if tslist else None
+        live = (
+            n >= degraded_n
+            and newest is not None
+            and (now - newest) <= recency_s
+        )
+        if not live:
+            _save_nomadnet_crashloop_streak(sp, 0)   # below thresh / stale → INERT
+            return None
+
+        streak = _load_nomadnet_crashloop_streak(sp) + 1
+        _save_nomadnet_crashloop_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        severity = "wedge" if n >= wedge_n else "degraded"
+        age_min = (now - newest) / 60.0
+        return Signal(
+            cls="nomadnet_crashloop",
+            subject=user_unit,
+            severity=severity,
+            detail=(
+                f"NomadNet user unit crashlooping — {n} systemd restarts in "
+                f"the last {lookback} (newest {age_min:.0f} min ago). The unit "
+                f"is stuck auto-restarting — likely exit 75 from the rnstatus "
+                f"boot-gate (rnsd not hosting), or exit 87 rpc_key mismatch. "
+                f"probe_service_inactive is blind to user units. Check: "
+                f"`journalctl --user -u {user_unit} -n 50` and "
+                f"`systemctl --user status {user_unit}`. Recovery: fix the "
+                f"start-pre gate / rpc_key, then "
+                f"`systemctl --user restart {user_unit}`. "
+                f"(The 2026-06-19 NRestarts=7842, 10-day-silent class.)"
+            ),
+            extra={
+                "restarts": n, "lookback": lookback,
+                "newest_age_s": round(now - newest, 1),
+                "streak": streak, "degraded_n": degraded_n, "wedge_n": wedge_n,
+            },
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: tracer peer unreachable across recent fires (today's symptom)
 # ─────────────────────────────────────────────────────────────────────
 

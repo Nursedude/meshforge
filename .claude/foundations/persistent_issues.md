@@ -344,39 +344,21 @@ invariant; 2-tick debounce; fix `meshtastic --host localhost --set mqtt.root
 
 ---
 
-## Issue #78: cron_verdict_stale probe — the silent-cron guard (2026-06-08)
+## Issue #78: cron_verdict_stale probe — the silent-cron guard (RESOLVED, condensed 2026-06-19)
 
-The `/fleet` "Scheduled & Running" panel surfaced a stale `diag24h_watchdog`
-`FAIL` verdict on moc → investigating it found **7 dead crons firing into a
-deleted `routine-bin/` since ~May 21**, silently failing under `>/dev/null
-2>&1`. The cron-verdict regime (`scripts/cron_verdict.sh`, the "every cron
-leaves a dated verdict" recorder) existed but had **no active alerter** — the
-"silence is the failure mode" class with no watchdog-LAYER alerter. New
-`probe_cron_verdict_stale` (`cron_verdict_stale`, degraded, issue_ref 78) is
-that alerter — built as a probe so it flows to mini + the `/fleet` panel,
-per-box, integrated with the observability spine. (Complements — does NOT
-replace — the cron-based `cron_verdict_freshness.sh` ntfy monitor that DOES
-exist on the manager box VolcanoAI; defense in depth, different surfaces.)
-
-**Load-bearing design — cross-references the crontab, not just the log:** a
-verdict-log-only probe would FALSE-ALARM on stale ORPHAN verdicts (the
-`diag24h_watchdog` line was a one-off test verdict for a cron that no longer
-exists). So the probe reads the operator's crontab spool
-(`/var/spool/cron/crontabs/<user>`) directly as root (no sudo — the watchdog
-NoNewPrivileges sandbox forbids it; same in-process-read pattern as
-`probe_rns_version_drift`/`probe_role_drift`), finds crons WIRED to
-`cron_verdict.sh <name>`, and judges ONLY those — a verdict whose name is not
-a currently-wired cron is ignored. Per-cron staleness cadence is derived coarse
-from the schedule (`_cron_max_interval`; `@reboot`→inf, unparseable→26h),
-`× CADENCE_MULT=3` with a 2h FLOOR. Fires on a wired cron whose latest verdict
-is FAIL/CONCERN, or that went silent past threshold, or never reported. **INERT
-(None) on any box with no wired crons — the regime is opt-in**, so it would NOT
-auto-catch *unwired* dead crons (the panel + per-box triage own those); it
-guarantees a WIRED cron can never silently fail again. 2-tick debounce. Reuses
-the `_parse_crontab`/`_parse_cron_verdicts` parsers from `fleet_snapshot`.
-Tests: `TestCronVerdictStale` (11) incl. the orphan-filter + inert-when-unwired
-cases, + closed-enum gate bump. Regime remainder (wire live crons; triage the
-7 dead) = per-box operator passes.
+`probe_cron_verdict_stale` (`cron_verdict_stale`, degraded, issue_ref 78): the
+watchdog-LAYER alerter for the "silence is the failure mode" cron class. Origin:
+**7 dead crons firing into a deleted `routine-bin/` undetected since ~May 21**
+(`>/dev/null 2>&1`); the cron-verdict regime (`scripts/cron_verdict.sh`) recorded
+verdicts but had no alerter. **Load-bearing design**: reads the operator crontab
+spool (`/var/spool/cron/crontabs/<user>`) directly as root (no sudo — sandbox;
+same pattern as `probe_rns_version_drift`/`probe_role_drift`), judges ONLY crons
+WIRED to `cron_verdict.sh` (orphan verdicts ignored → no false-alarm), cadence
+from the schedule (`_cron_max_interval × CADENCE_MULT=3`, 2h floor). Fires on a
+wired cron that's FAIL/CONCERN, silent-past-threshold, or never-reported. **INERT
+(None) when no crons wired** — opt-in regime. 2-tick debounce. Reuses
+`_parse_crontab`/`_parse_cron_verdicts` from `fleet_snapshot`. Tests:
+`TestCronVerdictStale` (11) + closed-enum gate bump.
 
 
 ---
@@ -522,3 +504,31 @@ attempts (state + brief witness) → unblock → `send_retry_delivered` attempt
 4, ~90s after first failure; confirmed server-side via topic poll. fire_count
 stayed 1; removed-while-active deactivated loudly, action not run; hosts/
 ruleset/state/brief verified clean after.
+
+
+---
+
+## Issue #82: NomadNet boot-race gate hardcoded @rns/default — the #69-fix regression (2026-06-19)
+
+The #69 boot-race gate (commit `121ac59a`) hardcoded `@rns/default` in the
+nomadnet user-unit `ExecStartPre`. On every box whose rnsd `instance_name` ≠
+`default` (VolcanoAI = `volcano ai rns` → rnsd binds `@rns/volcano`) the grep
+matched nothing → gate timed out → `exit 75` → **crashloop, NRestarts=7842,
+ExecStart never ran, UNDETECTED for 10 days**. The fix for #69 became a worse,
+fleet-wide bug ("house of cards"). **Cure**: replace the brittle socket-grep with
+the instance-agnostic `rnstatus` host-wait already proven by
+`meshforge-map.service.d/10-wait-for-rnsd.conf` (fleet-stable since 2026-05-30),
+fail-CLOSED (`exit 75`), 120s window + `TimeoutStartSec=180` so a slow-but-healthy
+rnsd boot isn't parked by `StartLimitBurst`. Installer drops the stale
+`10-wait-rnsd.conf` drop-in; `rns_interfaces.py` + `_port_detection.py`
+de-hardcoded. Commits `96aa3d78` + `c3a62c01`; fleet-remediated all boxes (moc5
+nomadnet intentionally disabled). **Prevention — 2 layers**: (1) lint/test guard
+`TestNoHardcodedRnsDefaultSocket` (templates + src) blocks the CODE regression;
+(2) **`probe_nomadnet_crashloop`** closes the 10-day-silent DETECTION gap —
+`probe_service_inactive` is structurally blind to USER units, so it reads systemd
+`restart counter is at N` lines under the `USER_UNIT=` journal field (root-direct,
+no sudo), short live-window + newest-restart recency gate (post-fix history can't
+false-page), INERT on disabled/unobservable, both seeds. **Bonus**: the
+"multi-chunk RNS reply drops chunks 2..N" symptom was downstream of THIS — a
+dest×chunk re-test proved the gateway delivers all 3 (LXMF-confirmed); the real
+loss was the broken reading client (the box's own NomadNet), NOT the bridge.

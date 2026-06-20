@@ -77,6 +77,7 @@ from utils.watchdog_probes import (
     probe_main_thread_wedge,
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
+    probe_nomadnet_crashloop,
     probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
@@ -233,6 +234,18 @@ def run_all_probes(
         sig = probe_service_inactive(unit)
         if sig is not None:
             signals.append(sig)
+
+    # NomadNet USER-unit crashloop (2026-06-19) — probe_service_inactive is
+    # structurally blind to user units (root/system-context systemctl can't
+    # see them, and a thrashing unit is neither inactive nor failed), so the
+    # NRestarts=7842 loop went 10 days silent. Reads systemd restart-counter
+    # lines under the USER_UNIT= journal field (root-direct, no sudo). NOT
+    # gated on services_expected_active (user units aren't system units);
+    # self-guards None on a healthy/disabled/never-installed unit and when
+    # journalctl is unobservable.
+    sig = probe_nomadnet_crashloop()
+    if sig is not None:
+        signals.append(sig)
 
     # RNS namespace collision — single ``ss -xnpl`` call.
     if rns_instance_name:

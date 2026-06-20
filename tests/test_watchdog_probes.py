@@ -56,6 +56,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_fd_exhaustion,
     probe_phoneapi_tcp_leak,
     probe_meshtasticd_phoneapi_wedge,
+    probe_nomadnet_crashloop,
     probe_queue_backlog,
     probe_foundation_drift,
     probe_parity_drift,
@@ -128,6 +129,7 @@ def test_signal_classes_closed_enum_is_documented():
         "host_frozen",                  # 2026-06-17 Leg C — dude-claw out-of-band witness verdict (HOST_FROZEN/UNREACHABLE/UNKNOWN) surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
         "ntfy_loopback",                # 2026-06-18 ntfy receipt-heartbeat Phase 2 — the alerting spine's own loopback liveness (collector publishes a nonce'd heartbeat to the fleet topic + polls it back, escalates via the email backbone on a miss); read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
         "ntfy_ack_stale",               # 2026-06-18 ntfy receipt-heartbeat Phase 3 — the only rung confirming the operator's DEVICE (weekly tap-to-ack page; tap makes the phone POST to a dedicated ack-topic the manager-box cron polls); consecutive unacked weeks → email escalation + this read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
+        "nomadnet_crashloop",           # 2026-06-19 — the NomadNet USER unit crashloop (the 10-day-silent NRestarts=7842 class; probe_service_inactive is structurally blind to user units); root-direct USER_UNIT= journal read, short live-window + newest-restart recency gate so post-fix history can't false-page; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; cross-refs the #69-fix-regression)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -1448,6 +1450,118 @@ class TestMeshtasticdPhoneapiWedge:
 def test_meshtasticd_phoneapi_wedge_in_signal_classes():
     """The class is registered in the closed enum (gate companion)."""
     assert "meshtasticd_phoneapi_wedge" in SIGNAL_CLASSES
+
+
+class TestNomadnetCrashloop:
+    """The NomadNet USER-unit crashloop probe (2026-06-19; the 10-day-silent
+    NRestarts=7842 class). Short live-window + a newest-restart recency gate so
+    post-fix journal history can't false-page; 2-tick debounce."""
+
+    def _ts_fn(self, value):
+        """Injectable ts_fn: returns a fixed timestamp list (or None) per tick."""
+        return lambda pattern: value
+
+    @staticmethod
+    def _loop(count, *, newest_age_s=30.0, spacing_s=100.0, now=_NOW):
+        """``count`` restart timestamps, newest at ``now-newest_age_s``,
+        each ``spacing_s`` older going back (newest first in age)."""
+        return [now - newest_age_s - i * spacing_s for i in range(count)]
+
+    def test_signal_class_registered(self):
+        assert "nomadnet_crashloop" in SIGNAL_CLASSES
+
+    def test_two_consecutive_live_ticks_fire(self, tmp_path):
+        """RED-FIRST debounce: one live tick → None (streak 1); the second
+        consecutive live tick fires degraded (5 restarts ∈ [3, 8))."""
+        sp = str(tmp_path / "nn.json")
+        kw = dict(ts_fn=self._ts_fn(self._loop(5)), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**kw) is None          # streak 1
+        sig = probe_nomadnet_crashloop(**kw)
+        assert sig is not None
+        assert sig.cls == "nomadnet_crashloop"
+        assert sig.subject == "nomadnet.service"
+        assert sig.severity == "degraded"
+        assert sig.issue_ref is None
+        assert sig.extra["restarts"] == 5
+        # detail names the diagnosis + recovery
+        assert "journalctl --user" in sig.detail
+        assert "restart nomadnet" in sig.detail
+        assert "exit 75" in sig.detail
+
+    def test_wedge_severity_hard_loop(self, tmp_path):
+        """≥ wedge_n restarts in the window → 'wedge' (the 7842 class)."""
+        sp = str(tmp_path / "nn.json")
+        kw = dict(ts_fn=self._ts_fn(self._loop(12)), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**kw) is None
+        sig = probe_nomadnet_crashloop(**kw)
+        assert sig is not None and sig.severity == "wedge"
+        assert sig.extra["restarts"] == 12
+
+    def test_below_threshold_returns_none(self, tmp_path):
+        """A one-off restart (count < degraded_n) never fires — not a loop."""
+        sp = str(tmp_path / "nn.json")
+        kw = dict(ts_fn=self._ts_fn(self._loop(2)), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**kw) is None
+        assert probe_nomadnet_crashloop(**kw) is None
+
+    def test_stale_loop_post_fix_does_not_fire(self, tmp_path):
+        """THE post-fix correction: MANY restarts in the window but the newest
+        is older than recency_s (the loop already stopped — e.g. just
+        remediated) → INERT across two ticks. A 2h-window probe with no recency
+        gate would have false-paged here right after every fix (the 2026-06-19
+        manager-box case: 19 restarts in 2h, newest 70+ min ago, healthy)."""
+        sp = str(tmp_path / "nn.json")
+        stale = self._loop(20, newest_age_s=600.0)   # newest 10min > 5min recency
+        kw = dict(ts_fn=self._ts_fn(stale), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**kw) is None
+        assert probe_nomadnet_crashloop(**kw) is None
+
+    def test_no_restarts_inert(self, tmp_path):
+        """Healthy / disabled / never-installed (moc5) → empty list → None."""
+        sp = str(tmp_path / "nn.json")
+        kw = dict(ts_fn=self._ts_fn([]), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**kw) is None
+        assert probe_nomadnet_crashloop(**kw) is None
+
+    def test_journal_unobservable_returns_none_not_fire(self, tmp_path):
+        """ts_fn None (journalctl wedged/absent) → None, NOT a fire and NOT a
+        healthy 0. Unobservable ≠ healthy (honest_failure_modes #1/#2)."""
+        sp = str(tmp_path / "nn.json")
+        kw = dict(ts_fn=self._ts_fn(None), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**kw) is None
+        assert probe_nomadnet_crashloop(**kw) is None
+
+    def test_settled_tick_resets_streak(self, tmp_path):
+        """A confirming run must be CONSECUTIVE: live, then an OBSERVED
+        not-looping tick (below threshold), then live → still None (the
+        observed-healthy tick reset the debounce)."""
+        sp = str(tmp_path / "nn.json")
+        live = dict(ts_fn=self._ts_fn(self._loop(5)), state_path=sp, now=_NOW)
+        settled = dict(ts_fn=self._ts_fn(self._loop(1)), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**live) is None      # streak 1
+        assert probe_nomadnet_crashloop(**settled) is None   # observed-healthy → reset
+        assert probe_nomadnet_crashloop(**live) is None      # streak 1 again
+
+    def test_unobservable_tick_holds_streak(self, tmp_path):
+        """An unobservable tick HOLDS the debounce streak (honest_failure_modes
+        #2: hold last-known on unobservable — a journalctl hiccup must not erase
+        a real in-progress signal). live, blind, live → fires on the 2nd real
+        observation (distinct from an OBSERVED-healthy tick, which resets)."""
+        sp = str(tmp_path / "nn.json")
+        live = dict(ts_fn=self._ts_fn(self._loop(5)), state_path=sp, now=_NOW)
+        blind = dict(ts_fn=self._ts_fn(None), state_path=sp, now=_NOW)
+        assert probe_nomadnet_crashloop(**live) is None    # streak 1
+        assert probe_nomadnet_crashloop(**blind) is None   # held at 1
+        sig = probe_nomadnet_crashloop(**live)             # streak 2 → fire
+        assert sig is not None
+
+    def test_never_raises(self, tmp_path):
+        """A ts_fn that raises → None (never propagates out of the probe)."""
+        sp = str(tmp_path / "nn.json")
+        def boom(pattern):
+            raise RuntimeError("journalctl exploded")
+        assert probe_nomadnet_crashloop(
+            ts_fn=boom, state_path=sp, now=_NOW) is None
 
 
 def test_channel_feed_dark_none_when_unobservable():
