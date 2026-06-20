@@ -100,6 +100,7 @@ from utils.watchdog_probes_drift import (
 from utils.watchdog_probes_gateway import (
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
+    probe_gateway_delivery_degraded,
     probe_queue_backlog,
     probe_synth_soak_degraded,
 )
@@ -140,6 +141,7 @@ __all__ = [
     "probe_delivery_write_canary",
     "probe_queue_backlog",
     "probe_delivery_confirmation_stall",
+    "probe_gateway_delivery_degraded",
     "probe_synth_soak_degraded",
     "probe_service_inactive",
     "probe_nomadnet_crashloop",

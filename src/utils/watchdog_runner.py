@@ -58,6 +58,7 @@ from utils.watchdog_probes import (
     probe_ntfy_ack_stale,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
+    probe_gateway_delivery_degraded,
     probe_fd_exhaustion,
     probe_history_write_failure,
     probe_kernel_reboot_pending,
@@ -466,6 +467,21 @@ def run_all_probes(
     # self-guards None (INERT) on boxes that don't run the soak. 2-tick
     # debounce rides out a torn mid-write / one slow run.
     sig = probe_synth_soak_degraded()
+    if sig is not None:
+        signals.append(sig)
+
+    # Gateway delivery degraded (2026-06-20, gateway-reliability arc A2) —
+    # OUTCOME monitoring from the gateway's OWN journal self-report: the
+    # windowed delivered/attempted ratio (att/del/drop block) collapsed, OR a
+    # spike of its RNS resource/forward error lines (EROFS / resource-assembly
+    # / forward-to-secondary). Leg 2 catches the 2026-06-20 wx-total-loss
+    # EROFS shape that had a journal witness but no probe consumer; those
+    # failures never reach the att/del counters, so only the error channel
+    # sees them. Self-guards INERT (None) on a box that doesn't run the
+    # gateway (gw MainPID None — moc/moc3 only); journalctl-unobservable holds
+    # the debounce, observed-clean resets, 2-tick debounce. NOT gated on the
+    # map service — gateway-only boxes (moc3) must run it.
+    sig = probe_gateway_delivery_degraded()
     if sig is not None:
         signals.append(sig)
 

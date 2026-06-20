@@ -1,19 +1,34 @@
 """Watchdog probes — gateway delivery-path failure shapes.
 
 Delivery write canary (#63), queue backlog (#74), delivery confirmation
-stall (#74). Part of the ``watchdog_probes`` split (2026-06-09) — import
-via the ``utils.watchdog_probes`` hub, not from here.
+stall (#74), synth-soak watch (2026-06-15), gateway-delivery-degraded
+(2026-06-20, the gateway-reliability arc A2). Part of the
+``watchdog_probes`` split (2026-06-09) — import via the
+``utils.watchdog_probes`` hub, not from here.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import socket
+import subprocess
 from typing import List, Optional, Tuple
 from urllib.request import urlopen
 from urllib.error import URLError
 
-from utils.watchdog_probe_core import Signal
+from utils.watchdog_probe_core import (
+    Signal,
+    _journal_count_match,
+    _resolve_main_pid,
+    _short_unix_ts,
+)
+
+# Same logger name the runner uses (watchdog_runner.py) so a swallowed
+# state-write failure lands in the one "watchdog" namespace the operator
+# already greps — honest_failure_modes #9 ("every swallow gets a witness").
+logger = logging.getLogger("watchdog")
 
 # ─────────────────────────────────────────────────────────────────────
 # Probe: delivery counters write canary (Issue #63)
@@ -610,5 +625,358 @@ def probe_synth_soak_degraded(
     if definitively_healthy:
         _save_synth_streak(sp, 0)  # explicit healthy → reset the streak
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: gateway delivery degraded (2026-06-20; the gateway-reliability
+# arc A2 — OUTCOME-based monitoring, not shape-enumeration)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The spine was SHAPE-based (probes for KNOWN failure shapes) + LIVENESS-
+# based. The 2026-06-20 wx-total-loss was a NEW shape (RNS Resource EROFS:
+# the gateway, a shared-instance RNS client, tried to write an assembled
+# multi-chunk Resource under /etc/reticulum/storage/resources/ but
+# ProtectSystem=strict omitted that path → [Errno 30] EROFS → the reply was
+# silently dropped while the gateway read "active / RNS: connected"). The
+# error HAD a witness — the EROFS line was in moc's journal the whole time —
+# but NO probe consumed it (honest_failure_modes #9 at the spine level).
+# Enumerating shapes is a treadmill. A2's lever is to prove the gateway DOES
+# ITS JOB from its OWN self-report, shape-agnostically:
+#
+#   Leg 1 (delivery gap): the att/del/drop counter block bridge_cli prints
+#     to the journal every 30s. A WINDOWED delivered/attempted ratio (delta
+#     across the window, NOT lifetime — recent-sensitive, the operator's
+#     "things fall silent") below a conservative floor with real volume.
+#   Leg 2 (RNS error-spike): a count of the gateway's own RNS resource/
+#     forward error lines (EROFS / resource-assembly / forward-to-secondary)
+#     — the witness class that today had no consumer. This is the leg that
+#     directly catches the EROFS shape: those failures happen during RNS
+#     Resource assembly, BEFORE the message reaches the att/del counters, so
+#     leg 1 cannot see them — only the error channel can.
+#
+# Deliberately additive, not a duplicate: probe_delivery_confirmation_stall
+# judges the CLEAN reason-split confirmation rate of CONFIRMABLE protocols
+# (RNS only, recent-ring) via the API; probe_delivery_write_canary watches
+# the SQLite write health; probe_queue_backlog watches depth/dead-letter.
+# A2 watches the GROSS journal self-report (both directions, Meshtastic
+# included) + the RNS error channel none of those see.
+
+# Matches the att/del/drop line in BOTH bridge_cli formats — single-bridge
+# ("  attempted/delivered/dropped — M->R: a/d/x  R->M: a/d/x") and
+# multi-bridge ("      att/del/drop — M->R: a/d/x  R->M: a/d/x"). The
+# slash triplet after "M->R:" is the discriminator: the "Messages bridged:
+# N (M->R: a, R->M: b)" line uses a COMMA, so it never matches. ERE for
+# journalctl -g.
+GATEWAY_DELIVERY_BLOCK_GREP = r"M->R: [0-9]+/[0-9]+/[0-9]+"
+_GATEWAY_DELIVERY_BLOCK_RE = re.compile(
+    r"M->R:\s*(\d+)/(\d+)/(\d+)\s+R->M:\s*(\d+)/(\d+)/(\d+)")
+
+# The RNS error-channel witnesses (ERE for journalctl -g). EROFS is the
+# 2026-06-20 wx class; the other two are the adjacent resource/forward
+# failure shapes. Deliberately concrete strings — NOT a bare "Resource"
+# match, which would false-fire on benign "Resource" log lines.
+GATEWAY_RNS_ERROR_GREP = (
+    r"EROFS|Error while assembling received resource|"
+    r"Failed to forward to secondary")
+
+DEFAULT_GATEWAY_DELIVERY_STATE_PATH = (
+    "/var/lib/meshforge/gateway_delivery_debounce.json")
+
+
+def _parse_delivery_block(
+    line: str,
+) -> Optional[Tuple[float, int, int, int, int, int, int]]:
+    """Parse one ``-o short-unix`` att/del/drop journal line.
+
+    Returns ``(ts, m2r_att, m2r_del, m2r_drop, r2m_att, r2m_del, r2m_drop)``
+    or None when the epoch or the six counters don't parse (a torn line, a
+    format that doesn't match) — None is dropped by the caller, never read as
+    a zeroed block.
+    """
+    ts = _short_unix_ts(line)
+    if ts is None:
+        return None
+    m = _GATEWAY_DELIVERY_BLOCK_RE.search(line)
+    if m is None:
+        return None
+    try:
+        n = [int(x) for x in m.groups()]
+    except (ValueError, TypeError):
+        return None
+    return (ts, n[0], n[1], n[2], n[3], n[4], n[5])
+
+
+def _gateway_delivery_blocks(
+    unit: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Optional[List[Tuple[float, int, int, int, int, int, int]]]:
+    """All att/del/drop counter blocks for ``unit`` within ``lookback``.
+
+    Returns the parsed block list (``[]`` = the gateway printed no att/del
+    block in the window — idle / just-started, a genuine *observed* state),
+    or **None** on journalctl unavailable / timeout / rc∉(0,1) — the honest
+    *unobservable* answer. The caller must never read None as ``[]`` (empty ≠
+    error — honest_failure_modes #1), or a journalctl wedge would mask the
+    very delivery collapse this measures.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-u", unit, "--since", f"-{lookback}",
+                "-g", GATEWAY_DELIVERY_BLOCK_GREP, "-o", "short-unix",
+                "-q", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    out = proc.stdout
+    if not out:
+        return []
+    blocks: List[Tuple[float, int, int, int, int, int, int]] = []
+    for ln in out.splitlines():
+        if not ln:
+            continue
+        parsed = _parse_delivery_block(ln)
+        if parsed is not None:
+            blocks.append(parsed)
+    return blocks
+
+
+def _window_delivery_gap(
+    blocks: List[Tuple[float, int, int, int, int, int, int]],
+    *,
+    min_volume: int,
+    ratio_floor: float,
+) -> List[Tuple[str, int, int, float]]:
+    """Per-direction windowed delivered/attempted gap.
+
+    Returns ``[(label, d_att, d_del, ratio), ...]`` for each direction whose
+    WINDOWED delivery (newest counter minus oldest in the window) fell below
+    ``ratio_floor`` with at least ``min_volume`` attempts — the recent-drop
+    lens, not the lifetime-cumulative one (which would mask a fresh collapse
+    on a long-uptime box). A counter going BACKWARD across the window means
+    the gateway restarted mid-window (counters are in-memory); the earliest
+    baseline is then taken as zero so we measure since-the-restart rather than
+    reading a bogus negative delta.
+
+    Needs ≥2 blocks to form a delta; fewer → ``[]`` (can't judge — the caller
+    treats that as *no finding*, not *healthy*, and the volume gate keeps a
+    quiet box silent regardless).
+
+    NOTE (calibrated): the journal exposes only the TOTAL dropped count, which
+    on the Mesh→RNS direction folds in benign best-effort broadcast-to-no-peer
+    misses alongside real failures (RNS→Mesh dropped is clean — failures only).
+    That is why the floor is conservative (a true majority-failure collapse,
+    far below any benign-broadcast steady state) and why the precise,
+    reason-split moderate-gap detection is delivery_confirmation_stall's job,
+    not this leg's. Leg 1 is the gross-collapse backstop.
+    """
+    if len(blocks) < 2:
+        return []
+    ordered = sorted(blocks, key=lambda b: b[0])
+    earliest, latest = ordered[0], ordered[-1]
+    findings: List[Tuple[str, int, int, float]] = []
+    # tuple indices: ts=0; M->R att/del/drop = 1/2/3; R->M att/del/drop = 4/5/6
+    for label, att_i, del_i in (("Mesh->RNS", 1, 2), ("RNS->Mesh", 4, 5)):
+        att_l, del_l = latest[att_i], latest[del_i]
+        att_e, del_e = earliest[att_i], earliest[del_i]
+        if att_l < att_e:                 # counter reset → measure since reset
+            base_att, base_del = 0, 0
+        else:
+            base_att, base_del = att_e, del_e
+        d_att = att_l - base_att
+        d_del = del_l - base_del
+        if d_att < min_volume:
+            continue
+        ratio = max(0.0, min(1.0, d_del / d_att))
+        if ratio < ratio_floor:
+            findings.append((label, d_att, d_del, ratio))
+    return findings
+
+
+def _load_gateway_delivery_streak(state_path: str) -> int:
+    """Consecutive-candidate streak; any error → 0 (favour silence)."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_gateway_delivery_streak(state_path: str, streak: int) -> None:
+    """Persist the debounce streak (atomic-rename, never raises).
+
+    A persistent write failure pins the streak below the debounce floor → the
+    probe would silently never fire during a real collapse, so a swallowed
+    OSError leaves a WITNESS in the watchdog journal (honest_failure_modes #9).
+    """
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError as exc:
+        logger.warning(
+            "gateway_delivery_degraded: could not persist debounce streak to "
+            "%s (%s) — the probe may not advance past its debounce floor; "
+            "check %s is writable.",
+            state_path, exc, os.path.dirname(state_path) or state_path,
+        )
+
+
+def probe_gateway_delivery_degraded(
+    *,
+    unit: str = "meshforge-gateway.service",
+    lookback: str = "30min",
+    journalctl_path: str = "journalctl",
+    systemctl_path: str = "systemctl",
+    main_pid: Optional[int] = None,
+    blocks_fn=None,
+    error_count_fn=None,
+    min_volume: int = 20,
+    ratio_floor: float = 0.50,
+    error_degraded_n: int = 3,
+    error_wedge_n: int = 10,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when the gateway's OWN self-report shows it is NOT delivering —
+    the gateway-reliability arc A2 (2026-06-20). OUTCOME monitoring: prove the
+    gateway does its job, don't enumerate how it fails.
+
+    Two legs, max severity wins (see the module-level block comment for the
+    arc rationale and the EROFS-class origin):
+
+    * **Leg 1 — delivery gap** (degraded): the windowed delivered/attempted
+      ratio from the att/del/drop block ``bridge_cli`` prints every 30s falls
+      below ``ratio_floor`` (default 0.50) with ≥ ``min_volume`` attempts in
+      the window — a recent, high-volume collapse. Conservative by design
+      (the journal's total-dropped count folds in benign Mesh→RNS broadcast
+      misses; the precise moderate-gap lens is delivery_confirmation_stall).
+    * **Leg 2 — RNS error-spike** (degraded ≥ ``error_degraded_n``, wedge ≥
+      ``error_wedge_n``): the count of the gateway's own RNS resource/forward
+      error lines (EROFS / resource-assembly / forward-to-secondary) in the
+      window. THIS is the leg that catches the 2026-06-20 EROFS shape, whose
+      failures never reach the att/del counters (they fail during Resource
+      assembly, before the message becomes bridgeable).
+
+    Self-guards (honest_failure_modes):
+
+    * gateway not running on this box (``_resolve_main_pid`` → None) → None
+      (INERT — the "does this box run the gateway" gate; moc/moc3 only).
+    * BOTH legs unobservable (journalctl wedged/absent for the block fetch AND
+      the error count) → None, HOLDING the debounce streak — unobservable ≠
+      healthy, and a journalctl hiccup must not erase a real in-progress
+      signal (#1/#2). An OBSERVED-clean tick (≥1 leg read, nothing crossed a
+      threshold) resets the streak; a candidate must persist ``debounce_ticks``
+      consecutive ticks before firing, so a torn block / one slow window can't
+      flap it. Never raises.
+
+    Recovery: read the gateway journal for the failing destination /
+    ``EROFS``; an EROFS spike is the #60 sandbox class — confirm
+    ``meshforge-gateway.service`` ``ReadWritePaths`` includes
+    ``/etc/reticulum/storage`` (the 2026-06-20 fix).
+    """
+    try:
+        sp = state_path or DEFAULT_GATEWAY_DELIVERY_STATE_PATH
+
+        gw_pid = main_pid if main_pid is not None else _resolve_main_pid(
+            unit, systemctl_path=systemctl_path)
+        if gw_pid is None:
+            return None  # INERT: this box doesn't run the gateway
+
+        if blocks_fn is None:
+            def blocks_fn():
+                return _gateway_delivery_blocks(
+                    unit, lookback, journalctl_path=journalctl_path)
+        if error_count_fn is None:
+            def error_count_fn():
+                return _journal_count_match(
+                    unit, GATEWAY_RNS_ERROR_GREP, lookback,
+                    journalctl_path=journalctl_path)
+
+        blocks = blocks_fn()           # Optional[List]: None=unobservable
+        err = error_count_fn()         # Optional[int]: None=unobservable
+
+        if blocks is None and err is None:
+            # Fully unobservable — hold the streak (do NOT reset to a healthy
+            # 0, do NOT fire). honest_failure_modes #2.
+            return None
+
+        findings: List[Tuple[str, str]] = []  # (severity, fragment)
+        extra: dict = {
+            "lookback": lookback, "min_volume": min_volume,
+            "ratio_floor": ratio_floor,
+            "error_degraded_n": error_degraded_n,
+            "error_wedge_n": error_wedge_n,
+        }
+
+        # Leg 1 — windowed delivery gap (needs ≥2 blocks; observed = blocks
+        # is not None, i.e. journalctl worked).
+        if blocks is not None:
+            for label, d_att, d_del, ratio in _window_delivery_gap(
+                blocks, min_volume=min_volume, ratio_floor=ratio_floor
+            ):
+                findings.append((
+                    "degraded",
+                    f"{label} delivered {d_del}/{d_att} ({ratio:.0%}) over the "
+                    f"last {lookback}",
+                ))
+                extra[f"gap_{label.replace('->', '_')}"] = {
+                    "attempted": d_att, "delivered": d_del,
+                    "ratio": round(ratio, 3),
+                }
+
+        # Leg 2 — RNS error-channel spike (the EROFS catcher).
+        if err is not None:
+            extra["rns_error_count"] = err
+            if err >= error_degraded_n:
+                sev = "wedge" if err >= error_wedge_n else "degraded"
+                findings.append((
+                    sev,
+                    f"{err} RNS resource/forward errors (EROFS / "
+                    f"resource-assembly / forward-to-secondary) in the last "
+                    f"{lookback}",
+                ))
+
+        if not findings:
+            # Observed at least one leg and nothing crossed a threshold →
+            # reset the debounce streak (explicit healthy observation).
+            _save_gateway_delivery_streak(sp, 0)
+            return None
+
+        streak = min(_load_gateway_delivery_streak(sp) + 1, debounce_ticks)
+        _save_gateway_delivery_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        severity = "wedge" if any(s == "wedge" for s, _ in findings) else "degraded"
+        extra["debounce_streak"] = streak
+        return Signal(
+            cls="gateway_delivery_degraded",
+            subject="meshforge-gateway",
+            severity=severity,
+            detail=(
+                "Gateway self-report shows degraded delivery: "
+                + "; ".join(frag for _, frag in findings)
+                + ". OUTCOME monitor (gateway-reliability arc A2) — the gateway "
+                "may read 'active / RNS: connected' while replies silently "
+                "drop. Check the gateway journal for the failing destination + "
+                "any EROFS lines; an EROFS spike is the #60 sandbox class — "
+                "confirm meshforge-gateway.service ReadWritePaths includes "
+                "/etc/reticulum/storage (the 2026-06-20 fix)."
+            ),
+            extra=extra,
+        )
+    except Exception:
+        return None
 
 

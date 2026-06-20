@@ -53,6 +53,7 @@ from utils.watchdog_probes import (  # noqa: E402
     MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
+    probe_gateway_delivery_degraded,
     probe_synth_soak_degraded,
     probe_fd_exhaustion,
     probe_phoneapi_tcp_leak,
@@ -88,6 +89,15 @@ from utils.watchdog_probes_service import (  # noqa: E402
     _journal_user_unit_restart_ts,
     _save_nomadnet_crashloop_streak,
     _load_nomadnet_crashloop_streak,
+)
+from utils.watchdog_probes_gateway import (  # noqa: E402
+    _parse_delivery_block,
+    _window_delivery_gap,
+    _gateway_delivery_blocks,
+    _save_gateway_delivery_streak,
+    _load_gateway_delivery_streak,
+    GATEWAY_DELIVERY_BLOCK_GREP,
+    GATEWAY_RNS_ERROR_GREP,
 )
 
 
@@ -136,6 +146,7 @@ def test_signal_classes_closed_enum_is_documented():
         "ntfy_loopback",                # 2026-06-18 ntfy receipt-heartbeat Phase 2 — the alerting spine's own loopback liveness (collector publishes a nonce'd heartbeat to the fleet topic + polls it back, escalates via the email backbone on a miss); read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
         "ntfy_ack_stale",               # 2026-06-18 ntfy receipt-heartbeat Phase 3 — the only rung confirming the operator's DEVICE (weekly tap-to-ack page; tap makes the phone POST to a dedicated ack-topic the manager-box cron polls); consecutive unacked weeks → email escalation + this read-only probe surfaces it into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
         "nomadnet_crashloop",           # 2026-06-19 — the NomadNet USER unit crashloop (the 10-day-silent NRestarts=7842 class; probe_service_inactive is structurally blind to user units); root-direct USER_UNIT= journal read, short live-window + newest-restart recency gate so post-fix history can't false-page; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; cross-refs the #69-fix-regression)
+        "gateway_delivery_degraded",    # 2026-06-20 gateway-reliability arc A2 — OUTCOME monitoring from the gateway's OWN journal self-report (windowed delivered/attempted ratio collapse + a spike of EROFS / resource-assembly / forward-to-secondary errors, the exact 2026-06-20 wx-total-loss witness with a journal witness but no probe consumer); INERT off a box that doesn't run meshforge-gateway; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as nomadnet_crashloop)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -4876,3 +4887,313 @@ def test_seed_rules_path_pinned_to_candidate():
                        ("/x/y", "fleet_gateway"), ("/a", "claw"),
                        ("rel/root", "example")]:
         assert _seed_rules_path(root, seed) == seed_rules_path(root, seed)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Gateway delivery degraded (2026-06-20; gateway-reliability arc A2)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _blk(ts, m2r_a, m2r_d, m2r_x, r2m_a, r2m_d, r2m_x):
+    """One att/del/drop block tuple: (ts, M->R a/d/x, R->M a/d/x)."""
+    return (ts, m2r_a, m2r_d, m2r_x, r2m_a, r2m_d, r2m_x)
+
+
+class TestGatewayDeliveryParse:
+    """Pure parse/window helpers — the probe's value rests on parsing the
+    real bridge_cli att/del/drop journal line and computing a windowed gap."""
+
+    # Real -o short-unix lines from BOTH bridge_cli print formats.
+    _SINGLE = ("1781943622.0 host meshforge-gateway[123]:   "
+               "attempted/delivered/dropped — M->R: 631/631/0  R->M: 631/526/105")
+    _MULTI = ("1781943680.5 host meshforge-gateway[123]:       "
+              "att/del/drop — M->R: 10/10/0  R->M: 20/15/5")
+    # The "Messages bridged" line uses a COMMA, not a slash triplet — must NOT
+    # parse as a delivery block (else it'd be read as a bogus all-zero block).
+    _BRIDGED = ("1781943622.0 host meshforge-gateway[123]: "
+                "Messages bridged: 1157 (M->R: 631, R->M: 526)")
+
+    def test_parses_single_bridge_format(self):
+        b = _parse_delivery_block(self._SINGLE)
+        assert b == (1781943622.0, 631, 631, 0, 631, 526, 105)
+
+    def test_parses_multi_bridge_format(self):
+        b = _parse_delivery_block(self._MULTI)
+        assert b == (1781943680.5, 10, 10, 0, 20, 15, 5)
+
+    def test_messages_bridged_comma_line_does_not_parse(self):
+        """The comma-delimited summary line must not match the slash triplet."""
+        assert _parse_delivery_block(self._BRIDGED) is None
+
+    def test_no_timestamp_returns_none(self):
+        assert _parse_delivery_block("not-a-ts M->R: 1/1/0  R->M: 1/1/0") is None
+
+    def test_grep_pattern_is_the_slash_discriminator(self):
+        """The journalctl -g pattern keys on the slash triplet (so the comma
+        summary line is excluded) — a regression here re-includes it."""
+        assert "M->R:" in GATEWAY_DELIVERY_BLOCK_GREP
+        assert "[0-9]+/[0-9]+/[0-9]+" in GATEWAY_DELIVERY_BLOCK_GREP
+        # leg-2 error grep carries the EROFS witness (the 2026-06-20 class)
+        assert "EROFS" in GATEWAY_RNS_ERROR_GREP
+
+    def test_window_gap_needs_two_blocks(self):
+        assert _window_delivery_gap(
+            [_blk(1, 100, 100, 0, 100, 100, 0)],
+            min_volume=20, ratio_floor=0.5) == []
+
+    def test_window_gap_fires_on_r2m_collapse(self):
+        """R->M attempted +30 / delivered +10 over the window (33% < 50% floor,
+        ≥20 attempts) → one finding naming the direction. M->R (+10 attempts)
+        is below the volume gate → no finding there."""
+        blocks = [_blk(1, 100, 100, 0, 100, 100, 0),
+                  _blk(2, 110, 110, 0, 130, 110, 20)]
+        gaps = _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5)
+        assert len(gaps) == 1
+        label, d_att, d_del, ratio = gaps[0]
+        assert label == "RNS->Mesh"
+        assert (d_att, d_del) == (30, 10)
+        assert ratio == pytest.approx(10 / 30)
+
+    def test_window_gap_silent_when_above_floor(self):
+        blocks = [_blk(1, 100, 100, 0, 100, 100, 0),
+                  _blk(2, 200, 200, 0, 200, 195, 5)]  # 95% delivered
+        assert _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5) == []
+
+    def test_window_gap_silent_below_min_volume(self):
+        """A quiet box (small windowed delta) never fires even at a low ratio."""
+        blocks = [_blk(1, 100, 100, 0, 100, 100, 0),
+                  _blk(2, 105, 100, 5, 110, 102, 8)]  # only +10 R->M attempts
+        assert _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5) == []
+
+    def test_window_gap_handles_counter_reset(self):
+        """A gateway restart mid-window resets the in-memory counters (latest <
+        earliest); the baseline is taken as zero so we measure since-restart,
+        never a bogus negative delta."""
+        blocks = [_blk(1, 500, 490, 10, 500, 480, 20),
+                  _blk(2, 30, 10, 20, 40, 10, 30)]  # restarted → small counters
+        gaps = _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5)
+        labels = {g[0] for g in gaps}
+        assert labels == {"Mesh->RNS", "RNS->Mesh"}  # both collapsed since reset
+
+
+class TestGatewayDeliveryDegraded:
+    """The probe (2026-06-20, arc A2). Behavioral tests inject blocks_fn /
+    error_count_fn + a gateway main_pid; the real journalctl helper is
+    exercised separately in TestGatewayDeliveryRealQuery."""
+
+    # Two blocks whose R->M delivery collapsed (att +30 / del +10 = 33%).
+    _COLLAPSE = [_blk(1, 100, 100, 0, 100, 100, 0),
+                 _blk(2, 110, 110, 0, 130, 110, 20)]
+    _HEALTHY = [_blk(1, 100, 100, 0, 100, 100, 0),
+                _blk(2, 200, 200, 0, 200, 198, 2)]
+
+    def _kw(self, sp, *, blocks, err):
+        return dict(main_pid=1234, blocks_fn=lambda: blocks,
+                    error_count_fn=lambda: err, state_path=sp)
+
+    def test_signal_class_registered(self):
+        assert "gateway_delivery_degraded" in SIGNAL_CLASSES
+
+    def test_inert_when_gateway_not_running(self, tmp_path):
+        """No meshforge-gateway on this box (MainPID None) → INERT (None),
+        never a journalctl call. The moc/moc3-only gate."""
+        sp = str(tmp_path / "g.json")
+        with patch("utils.watchdog_probes_gateway._resolve_main_pid",
+                   return_value=None):
+            assert probe_gateway_delivery_degraded(state_path=sp) is None
+
+    def test_error_spike_two_ticks_fire_degraded(self, tmp_path):
+        """RED-FIRST debounce: a leg-2 error spike (5 ≥ degraded_n 3, < wedge_n
+        10) fires degraded only on the 2nd consecutive candidate tick."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=[], err=5)
+        assert probe_gateway_delivery_degraded(**kw) is None     # streak 1
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None
+        assert sig.cls == "gateway_delivery_degraded"
+        assert sig.subject == "meshforge-gateway"
+        assert sig.severity == "degraded"
+        assert sig.extra["rns_error_count"] == 5
+        assert "EROFS" in sig.detail
+        assert "/etc/reticulum/storage" in sig.detail
+
+    def test_error_spike_wedge_severity(self, tmp_path):
+        """≥ error_wedge_n (10) RNS errors → wedge."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=[], err=12)
+        assert probe_gateway_delivery_degraded(**kw) is None
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None and sig.severity == "wedge"
+
+    def test_delivery_gap_fires(self, tmp_path):
+        """Leg 1: a windowed R->M delivery collapse fires degraded, naming the
+        direction and the windowed delivered/attempted."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=self._COLLAPSE, err=0)
+        assert probe_gateway_delivery_degraded(**kw) is None
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None and sig.severity == "degraded"
+        assert "RNS->Mesh delivered 10/30" in sig.detail
+        assert sig.extra["gap_RNS_Mesh"]["ratio"] == pytest.approx(1 / 3, abs=1e-3)
+
+    def test_healthy_does_not_fire(self, tmp_path):
+        """Good ratio + zero errors → never fires (observed-clean)."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=self._HEALTHY, err=0)
+        assert probe_gateway_delivery_degraded(**kw) is None
+        assert probe_gateway_delivery_degraded(**kw) is None
+
+    def test_max_severity_wins_across_legs(self, tmp_path):
+        """Leg-1 degraded + leg-2 wedge (≥10 errors) → wedge (max wins)."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=self._COLLAPSE, err=11)
+        assert probe_gateway_delivery_degraded(**kw) is None
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None and sig.severity == "wedge"
+
+    def test_fully_unobservable_holds_streak(self, tmp_path):
+        """BOTH legs unobservable (journalctl wedged) HOLDS the debounce streak
+        (honest_failure_modes #2): candidate, blind, candidate → fires on the
+        2nd real observation (a blind tick must not erase an in-progress
+        signal, and unobservable is never read as a healthy reset)."""
+        sp = str(tmp_path / "g.json")
+        cand = self._kw(sp, blocks=[], err=5)
+        blind = self._kw(sp, blocks=None, err=None)
+        assert probe_gateway_delivery_degraded(**cand) is None    # streak 1
+        assert probe_gateway_delivery_degraded(**blind) is None   # held at 1
+        sig = probe_gateway_delivery_degraded(**cand)             # streak 2 → fire
+        assert sig is not None
+
+    def test_observed_clean_resets_streak(self, tmp_path):
+        """An OBSERVED-clean tick (distinct from unobservable) resets the
+        debounce: candidate, clean, candidate → still None."""
+        sp = str(tmp_path / "g.json")
+        cand = self._kw(sp, blocks=[], err=5)
+        clean = self._kw(sp, blocks=self._HEALTHY, err=0)
+        assert probe_gateway_delivery_degraded(**cand) is None   # streak 1
+        assert probe_gateway_delivery_degraded(**clean) is None  # observed → reset
+        assert probe_gateway_delivery_degraded(**cand) is None   # streak 1 again
+
+    def test_partial_observable_clean_leg_resets(self, tmp_path):
+        """Leg-2 observed clean while leg-1 is unobservable (blocks None) is
+        still an observed-clean tick → no fire (not held as a candidate)."""
+        sp = str(tmp_path / "g.json")
+        kw = dict(main_pid=1234, blocks_fn=lambda: None,
+                  error_count_fn=lambda: 0, state_path=sp)
+        assert probe_gateway_delivery_degraded(**kw) is None
+        assert probe_gateway_delivery_degraded(**kw) is None
+
+    def test_below_thresholds_inert(self, tmp_path):
+        """Errors below degraded_n + delivery above floor → no finding."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=self._HEALTHY, err=2)  # 2 < degraded_n 3
+        assert probe_gateway_delivery_degraded(**kw) is None
+        assert probe_gateway_delivery_degraded(**kw) is None
+
+    def test_never_raises(self, tmp_path):
+        """A data-source fn that raises → None (never propagates)."""
+        sp = str(tmp_path / "g.json")
+        def boom():
+            raise RuntimeError("journalctl exploded")
+        assert probe_gateway_delivery_degraded(
+            main_pid=1234, blocks_fn=boom, error_count_fn=lambda: 0,
+            state_path=sp) is None
+
+    def test_streak_clamped_at_debounce_floor(self, tmp_path):
+        """A sustained collapse keeps firing but the persisted streak never
+        grows past debounce_ticks, and an absurd on-disk value is clamped."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=[], err=5)
+        probe_gateway_delivery_degraded(**kw)        # streak 1
+        for _ in range(5):
+            assert probe_gateway_delivery_degraded(**kw) is not None
+        assert _load_gateway_delivery_streak(sp) == 2
+        _save_gateway_delivery_streak(sp, 999999)
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None and sig.extra["debounce_streak"] == 2
+
+    def test_save_logs_witness_on_write_failure(self, tmp_path, caplog):
+        """honest_failure_modes #9: a swallowed state-write OSError leaves a
+        WITNESS in the watchdog journal (else a persistent write failure makes
+        the probe silently never advance past its debounce floor)."""
+        import logging as _logging
+        blocker = tmp_path / "afile"
+        blocker.write_text("x")
+        doomed = str(blocker / "sub" / "g.json")
+        with caplog.at_level(_logging.WARNING, logger="watchdog"):
+            _save_gateway_delivery_streak(doomed, 1)   # must not raise
+        assert any("could not persist debounce streak" in r.message
+                   for r in caplog.records)
+
+
+class TestGatewayDeliveryRealQuery:
+    """Exercise the REAL _gateway_delivery_blocks journalctl helper — the
+    behavioral tests all inject blocks_fn, so without this a flag/field/parse
+    regression would ship green (the #82 silent-blind-spot lesson)."""
+
+    _LINES = (
+        "1781943622.0 host meshforge-gateway[1]:   attempted/delivered/dropped "
+        "— M->R: 631/631/0  R->M: 631/526/105\n"
+        "1781943680.5 host meshforge-gateway[1]:       att/del/drop — "
+        "M->R: 10/10/0  R->M: 20/15/5\n"
+    )
+
+    def _patched(self, *, stdout="", returncode=0, exc=None):
+        captured = {}
+
+        class _Result:
+            def __init__(self):
+                self.stdout = stdout
+                self.returncode = returncode
+
+        def _runner(*args, **kwargs):
+            captured["argv"] = args[0]
+            if exc is not None:
+                raise exc
+            return _Result()
+
+        return patch("utils.watchdog_probes_gateway.subprocess.run",
+                     side_effect=_runner), captured
+
+    def test_selects_unit_and_block_grep(self):
+        ctx, captured = self._patched(stdout=self._LINES)
+        with ctx:
+            blocks = _gateway_delivery_blocks(
+                "meshforge-gateway.service", "30min")
+        argv = captured["argv"]
+        assert "-u" in argv and "meshforge-gateway.service" in argv
+        assert "-g" in argv and GATEWAY_DELIVERY_BLOCK_GREP in argv
+        assert "short-unix" in argv
+        assert blocks == [
+            (1781943622.0, 631, 631, 0, 631, 526, 105),
+            (1781943680.5, 10, 10, 0, 20, 15, 5),
+        ]
+
+    def test_empty_stdout_is_empty_list_not_none(self):
+        ctx, _ = self._patched(stdout="", returncode=0)
+        with ctx:
+            assert _gateway_delivery_blocks("u", "30min") == []
+
+    def test_rc2_is_unobservable_none(self):
+        ctx, _ = self._patched(stdout="boom", returncode=2)
+        with ctx:
+            assert _gateway_delivery_blocks("u", "30min") is None
+
+    def test_rc1_no_match_is_empty_list(self):
+        ctx, _ = self._patched(stdout="", returncode=1)
+        with ctx:
+            assert _gateway_delivery_blocks("u", "30min") == []
+
+    def test_timeout_is_unobservable_none(self):
+        ctx, _ = self._patched(
+            exc=subprocess.TimeoutExpired(cmd="journalctl", timeout=15))
+        with ctx:
+            assert _gateway_delivery_blocks("u", "30min") is None
+
+    def test_garbage_line_skipped_not_crashed(self):
+        ctx, _ = self._patched(
+            stdout="garbage no match here\n1781943622.0 h g[1]: "
+                   "M->R: 5/5/0  R->M: 5/4/1\n")
+        with ctx:
+            blocks = _gateway_delivery_blocks("u", "30min")
+        assert blocks == [(1781943622.0, 5, 5, 0, 5, 4, 1)]

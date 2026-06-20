@@ -708,6 +708,26 @@
       },
       "cooldown_s": 3600,
       "annotation": "2026-06-19 \u2014 companion to nomadnet_crashloop_any; surfaces the crashloop in the deep-feed/brief 'look here first' so a session catches an episode the posture pane no longer shows. Cross-refs the #69-fix-regression (the rnstatus boot-gate)."
+    },
+    {
+      "id": "gateway_delivery_degraded_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "gateway_delivery_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] gateway delivery degraded",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "satellite_antenna"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-06-20 gateway-reliability arc A2 -- the gateway's OWN journal self-report shows it is NOT delivering: leg 1 = windowed delivered/attempted ratio collapse (recent, high-volume; conservative floor because the journal's total-dropped folds in benign Mesh->RNS broadcast misses -- the precise lens is delivery_confirmation_stall), leg 2 = a spike of EROFS / resource-assembly / forward-to-secondary errors (the exact 2026-06-20 wx-total-loss witness that had a journal witness but no probe consumer; an EROFS spike is the #60 sandbox class -- confirm meshforge-gateway.service ReadWritePaths includes /etc/reticulum/storage). OUTCOME monitor: the gateway may read 'active / RNS: connected' while replies silently drop. Self-guards INERT off a box that doesn't run meshforge-gateway."
     }
   ]
 }
