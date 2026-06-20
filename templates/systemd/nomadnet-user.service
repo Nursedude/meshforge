@@ -89,17 +89,24 @@ ExecStartPre=-/usr/bin/tmux kill-session -t nomadnet
 # 2026-05-30). $$ is systemd's escape for a literal $.
 #
 # #68 hang-proofing: `timeout 5` bounds a wedged rnstatus per probe; the
-# outer `timeout 90` bounds total wall-clock so a sequence of hung probes
-# can't balloon past the start budget. If rnsd never hosts within the
-# budget the gate exits 75 — fail-CLOSED (unlike the map drop-in's
-# fail-open exit 0, nomadnet must REFUSE to start rather than race): the
-# unit fails, StartLimitBurst parks it, refuse-loud, never race.
-ExecStartPre=/bin/sh -c 'timeout 90 sh -c "until timeout 5 /usr/local/bin/rnstatus >/dev/null 2>&1; do sleep 2; done"; [ $$? -eq 0 ] || exit 75'
+# outer `timeout 120` bounds total wall-clock. If rnsd never hosts within
+# the budget the gate exits 75 — fail-CLOSED (unlike the map drop-in's
+# fail-open exit 0, nomadnet must REFUSE to start rather than race).
+#
+# 120s (vs the map's 90s) because this gate is fail-CLOSED: the window must
+# exceed rnsd's worst-case host time (~50s settle + #69 rebind races) so a
+# SLOW-BUT-HEALTHY rnsd boot passes in ONE start attempt — otherwise
+# repeated ~90s exit-75s inside StartLimitIntervalSec=300 could park a unit
+# whose rnsd is merely slow (code-review 2026-06-19). At ~125s/attempt a
+# genuinely-down rnsd retries too slowly to trip StartLimitBurst=5 within
+# 300s, so the unit SELF-RECOVERS when rnsd appears rather than parking; the
+# fast exit-87 (rpc_key, #37/#41) path still parks within the burst, as meant.
+ExecStartPre=/bin/sh -c 'timeout 120 sh -c "until timeout 5 /usr/local/bin/rnstatus >/dev/null 2>&1; do sleep 2; done"; [ $$? -eq 0 ] || exit 75'
 
-# Must exceed the start-pre 90s wall-clock bound so the fail-closed exit 75
-# can fire instead of systemd killing start-pre mid-probe (they race at the
+# Must exceed the gate's 120s wall-clock bound so the fail-closed exit 75
+# fires instead of systemd killing start-pre mid-probe (they race at the
 # 90s DefaultTimeoutStartSec otherwise — the map drop-in's hard-won lesson).
-TimeoutStartSec=150
+TimeoutStartSec=180
 
 # Launch the real TUI wrapped in a detached tmux session. The ExecStart
 # line below contains a placeholder that the MeshForge TUI substitutes

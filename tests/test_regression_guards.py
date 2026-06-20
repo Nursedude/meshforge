@@ -735,7 +735,11 @@ class TestNoHardcodedRnsDefaultSocket:
 
     def test_no_rns_default_literal_in_src(self):
         """Python code must not use a literal '@rns/default' string."""
-        matches = _scan_python_files(self._RNS_DEFAULT_LITERAL)
+        # skip_strings=False: the literal we hunt lives INSIDE quotes by
+        # definition, and the regression's own idiom (`'@rns/default' in x`)
+        # is a quote-leading line the default skip would silently miss.
+        matches = _scan_python_files(self._RNS_DEFAULT_LITERAL,
+                                     skip_strings=False)
         violations = [f"{fp}:{ln}: {txt.strip()}" for fp, ln, txt in matches]
         assert not violations, (
             "Hardcoded '@rns/default' string literal in src/ — derive the "

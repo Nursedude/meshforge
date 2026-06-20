@@ -1286,7 +1286,9 @@ class TestShippedGateTemplate:
         assert 'rnstatus' in text
 
     def test_gate_sets_timeout_start_sec(self):
-        assert 'TimeoutStartSec=150' in self._template_text()
+        # Must exceed the gate's 120s wall-clock bound (fail-closed exit 75
+        # has to fire before systemd's start-pre timeout kills it).
+        assert 'TimeoutStartSec=180' in self._template_text()
 
 
 class TestInstallUserUnit:

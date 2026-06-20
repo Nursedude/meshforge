@@ -113,7 +113,6 @@ class RNSInterfacesHandler(BaseHandler):
             # Check abstract Unix socket for more specific diagnosis
             unix_socket_exists = False
             try:
-                from utils.paths import ReticulumPaths
                 # rnsd binds @rns/<instance_name> — e.g. @rns/volcano ai rns,
                 # NOT @rns/default. /proc/net/unix (like ss) can truncate the
                 # spaced name at the first token, so match the leading token,
