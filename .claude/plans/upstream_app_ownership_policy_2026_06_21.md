@@ -115,3 +115,39 @@ These apply to **every** inherited app, independent of tier:
 **⚠️ The two boxes' patch-sets are DIFFERENT.** The canonical overlay must be the **UNION** (dual-bridge dedup + ACK + tag-strip + ignoreDMs + antiSpam-config-overridable), with **both boxes converged onto it**. Note version drift too: .32 base `fde22f7` (v1.9.9.8) vs VolcanoAI `530d784` (v1.9.9.5).
 
 **Non-substantive (no rescue needed):** moc5 MeshSense = npm-regenerated `package*.json` churn (review the one `package.json` for intent); moc5 reticulum-meshchat = `setup.py` 0-line/whitespace no-op.
+
+---
+
+## 9. Action 5 — drift-check probe: build blueprint (for a fresh, focused session)
+
+The last substantive item. A new watchdog probe enforcing the policy §4
+invariants. **Build it fresh** — it's self-contained; everything it needs is
+here + `fleet-overlays/PINS.md` + the probe-activation runbook. Standard probe
+discipline (#79/#80): new signal class + **closed-enum gate**, `run_all_probes`
+wiring, **BOTH role seeds + seed-coverage gate**, tests red-first, the
+**honest-failure-modes 9-pt pass**, `degraded`-only, 2-tick debounce,
+**self-guard INERT off-box**. **Activation GATED** (watchdog restart +
+`promote_seed_rules.py --apply`) — same pattern as the resource-canary (A1).
+
+**What it enforces (policy §4):** for each INHERITED (non-`Nursedude`-origin)
+git checkout on a box —
+1. **No floating `main`** — flag an inherited checkout that tracks `origin/main`
+   un-pinned (the R2 bleed).
+2. **No unversioned code patch** — flag **tracked-file** modifications. Untracked
+   config/build artifacts (Raven's `raven.conf`, ucode's `build/`) are OK;
+   tracked-code edits are the R1 defect.
+3. *(stretch)* cross-box version mismatch for the same app.
+
+**Key design decision to settle first:** detect the problem-CLASSES *locally*
+per box (cleaner; nothing to deploy/drift) vs. compare each checkout against the
+`PINS.md` SHA (needs the ledger on the box). **Lean: local problem-class
+detection** — the probe enforces the invariants; `PINS.md` stays the human
+record. (honest-failure-modes: avoid two-consumers-of-one-constant drift.)
+
+**Scope/expectations:** moc5 is the only box with inherited apps today (where it
+will fire); moc1/2/3 = none (INERT). Known-benign, must NOT false-fire:
+MeshSense npm churn, Raven/ucode untracked artifacts. Decide whether the probe
+should surface the 2 R1 findings (`meshing_around_meshforge` config drift,
+raphael example edit) or they get cleaned up first. ⚠️ Calibration: tests green
+= BELIEVED; **run it against real fleet state (read-only) before "VERIFIED"** —
+the #78 synthetic-vs-real lesson.
