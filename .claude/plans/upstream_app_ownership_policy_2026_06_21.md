@@ -1,6 +1,6 @@
 # Upstream App Ownership & Version-Control Policy
 
-> **Status:** IN PROGRESS (2026-06-21) — inventory complete, policy + decisions approved, **Action 1 (rescue → version control) DONE**. Actions 2–5 remain.
+> **Status:** IN PROGRESS (2026-06-21) — inventory complete, policy + decisions approved. **Action 1 (rescue → version control) DONE.** **Action 4 (bot tier) DECIDED = T2; the fork is BUILT (Phase A) — deploy (Phase B) gated.** Actions 2, 3, 5 remain.
 > **Why:** Operator: *"we need to own more of this to avoid upstream issues — we do this in several instances."* Triggered by fixing `meshing_around_meshforge` #191 (INI-coercion startup crash) then finding upstream `SpudGunMan/meshing-around` carries the same root cause — and that we run a **mix** of owned forks and unversioned upstream checkouts across the fleet.
 > **Companion to:** the RNS/LXMF fork governance (`persistent_issues.md` SSOT + the upstream-dependency-governance memo). This extends that discipline beyond the two protocol forks.
 
@@ -90,14 +90,14 @@ These apply to **every** inherited app, independent of tier:
 1. **✅ DONE 2026-06-21 — patches RESCUED into version control.** Captured to `~/fleet_overlays_rescue_2026_06_21/` (read-only `git diff`), then committed to **`Nursedude/fleet-overlays`** (PRIVATE, `main`, commit `cb3a37a`; decision A). Verified on remote: 9 files, all 4 per-box patches + per-app READMEs documenting base SHAs / the load-bearing union / apply procedure. The `.32` + VolcanoAI bot patches (the gateway-arc bridge layer) are no longer one `git pull` from deletion. Local clone at `~/fleet-overlays`. Originals still untouched in the live trees (rescue was read-only).
 2. **Pin every inherited app to its current SHA** (T3 step 1) — stops the floating-`main` bleed immediately, zero behavior change. Start with `.32 ~/meshing-around` (the running bot).
 3. **Reconcile R3:** decide reticulum-meshchat = our fork everywhere, and converge moc5 onto it.
-4. **Decide the bot's tier** (T2 fork vs T3 pin+contribute) — §5, separate session.
+4. **✅ DECIDED + BUILT 2026-06-21 — bot tier = T2 (real fork).** Operator chose T2 (§7B). **Phase A (build) DONE:** forked `SpudGunMan/meshing-around` → **`Nursedude/meshing-around`** (public); `meshforge` branch based on `fde22f75ea` (v1.9.9.8, the newer running version) carries the reconciled **union** (commit `22915ce`: `.32`'s dual-bridge dedup + ACK/NAK + tag-strip applied at its native base = byte-faithful; + VolcanoAI's `ignoreDMs` + `antiSpam`-config-overridable, which supersedes `.32`'s hardcode) + `FORK.md` (`a15ca63e`). `python3 -m py_compile` clean on all 3 files (BELIEVED-correct; runtime-proven at deploy). `main` mirrors upstream. **Phase B (deploy) GATED** — canary VolcanoAI dev → then the running `.32` bot; tracked in `~/deferred_work.json` (`meshing-around-fork-deploy`).
 5. **Add the drift check** (rule §4.5) once the trees are clean.
 
 ---
 
 ## 7. Decisions — operator-approved 2026-06-21
 - **A. ✅ BUILT `Nursedude/fleet-overlays`** (PRIVATE, commit `cb3a37a`, 2026-06-21) — a thin repo of tracked per-app patch-sets (lighter than forking each app). All four rescued patches landed with per-app READMEs (base SHAs, the load-bearing union, apply procedure). Local clone `~/fleet-overlays`.
-- **B. ⚠️ REVISIT** — was approved **T3** (pin+contribute, don't fork the bot). BUT §8 then showed the bot is **already a de-facto fork**: 4 load-bearing unversioned MeshForge features on `.32` (dual-bridge reply-dedup, delivery ACK/NAK logging, bridge tag-stripping, ignoreDMs/antiSpam). A T3 "overlay" for the bot is non-trivial and must be reconciled across two diverged boxes — so **T2 (real fork) deserves a second look**. Flagged for the operator; not unilaterally changed.
+- **B. ✅ RESOLVED → T2 (real fork), operator-chosen 2026-06-21.** Initially approved T3, but §8 showed the bot is **already a de-facto fork** (4 load-bearing unversioned features on `.32`, a different set on VolcanoAI, two diverged versions) — a T3 overlay carried most of that reconciliation pain without the clean-tree/CI/single-source benefits. Operator chose **T2**. **Built (Phase A):** `Nursedude/meshing-around` `meshforge` branch (see §6.4 + the fork's `FORK.md`). Deploy (Phase B) gated.
 - **C. ✅ Yes** — standardize reticulum-meshchat on our `Nursedude` fork fleet-wide; converge moc5 off upstream `liamcottle`.
 - **D. ✅ SHA-based pins for T3** (we don't control upstream's tags); reserve `+mf.N` tags for T1/T2 owned forks.
 
