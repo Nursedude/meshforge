@@ -232,6 +232,21 @@ def test_from_env_consume_false_still_answers():
     assert r.handle("!anyone", "status")  # answered regardless of consume
 
 
+def test_consume_env_is_per_leg_independent():
+    # moc3 is a bidirectional gateway: MESHFORGE_ORACLE_CONSUME=0 enables
+    # Mesh->RNS bridge-through, but the RNS->Mesh leg reads its OWN var (default
+    # consume) so a direct LXMF query never spills onto the Meshtastic RF chan.
+    env = {"MESHFORGE_ORACLE_ENABLED": "1", "MESHFORGE_ORACLE_ALLOWLIST": "*",
+           "MESHFORGE_ORACLE_CONSUME": "0"}  # RNS-specific var deliberately unset
+    mesh_leg = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda *a: True, env=env)
+    rns_leg = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda *a: True, env=env,
+        consume_env="MESHFORGE_ORACLE_RNS_CONSUME")
+    assert mesh_leg.consume is False   # Mesh->RNS bridges through
+    assert rns_leg.consume is True     # RNS->Mesh stays consuming (no RF spill)
+
+
 def test_from_env_rns_leg_uses_separate_allowlist_and_transport():
     # The RNS leg shares ENABLED but reads its own allowlist + tags transport.
     sent, logs = [], []

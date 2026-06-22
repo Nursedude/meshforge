@@ -1201,9 +1201,14 @@ class RNSMeshtasticBridge(
             except Exception as e:  # pragma: no cover - best-effort audit log
                 logger.debug(f"mesh oracle (rns) log append failed: {e}")
 
+        # The RNS→Mesh leg reads its OWN consume var (default consume): a direct
+        # LXMF oracle query must never spill onto the Meshtastic RF channel, so
+        # MESHFORGE_ORACLE_CONSUME=0 (Mesh→RNS bridge-through) does NOT flip this
+        # leg. Bridge-through here is opt-in via MESHFORGE_ORACLE_RNS_CONSUME=0.
         return MeshOracleResponder.from_env(
             snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
-            transport="rns", allowlist_env="MESHFORGE_ORACLE_RNS_ALLOWLIST")
+            transport="rns", allowlist_env="MESHFORGE_ORACLE_RNS_ALLOWLIST",
+            consume_env="MESHFORGE_ORACLE_RNS_CONSUME")
 
     def _on_lxmf_receive(self, message):
         """Handle incoming LXMF message"""

@@ -168,6 +168,7 @@ class MeshOracleResponder:
         transport: str = "meshtastic",
         allowlist_env: str = "MESHFORGE_ORACLE_ALLOWLIST",
         allowed_channels: Optional[Set[int]] = None,
+        consume_env: str = "MESHFORGE_ORACLE_CONSUME",
     ) -> Optional["MeshOracleResponder"]:
         """Build from ``MESHFORGE_ORACLE_*`` env, or ``None`` if disabled (default).
 
@@ -185,14 +186,21 @@ class MeshOracleResponder:
           the radio), or channel NAME strings on the MQTT leg (the topic name is
           fleet-stable). ``handle`` must be passed the matching token type.
         - ``MESHFORGE_ORACLE_COOLDOWN_S``: per-sender min seconds (default 30).
-        - ``MESHFORGE_ORACLE_CONSUME``: 1/true (default) = a handled query is
+        - ``consume_env`` (default ``MESHFORGE_ORACLE_CONSUME``): the env var that
+          governs consume for THIS leg. 1/true (default) = a handled query is
           consumed (not bridged onward, per-mesh-local). 0/false = bridge-through:
           the oracle answers AND the command still bridges to the other mesh.
+          The leg name is a parameter because moc3 is a BIDIRECTIONAL gateway
+          (Meshtastic↔RNS): the inbound-Mesh legs read ``MESHFORGE_ORACLE_CONSUME``
+          (so meshforge commands can bridge to meshanchor), but the RNS→Mesh leg
+          reads its OWN ``MESHFORGE_ORACLE_RNS_CONSUME`` (default consume) so a
+          direct LXMF oracle query is never broadcast onto the Meshtastic RF
+          channel — bridge-through is enabled per-direction, at no RF-airtime cost.
         """
         env = os.environ if env is None else env
         if str(env.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() not in _TRUE:
             return None
-        consume = str(env.get("MESHFORGE_ORACLE_CONSUME", "1")).strip().lower() in _TRUE
+        consume = str(env.get(consume_env, "1")).strip().lower() in _TRUE
         raw = str(env.get(allowlist_env, "")).strip()
         answer_all = raw == "*"
         allowlist = set() if answer_all else {
