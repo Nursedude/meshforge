@@ -149,14 +149,31 @@ discipline, and it paid off:**
   (a submodule's churn is a dependency state, not the parent app's source).
   Post-fix MeshSense → `_real_code_patches=[]` → **INERT** ✓ (must-not-false-fire,
   honored). Pinned by a flag-presence regression test.
-- **.32** (`wh6gxzTRDEV`): fires `degraded` on the 2 expected true-positives —
-  `meshing-around` (`mesh_bot.py`,`modules/settings.py`; gated deploy) +
-  `raphael-kit` (`python/1.1.7_Lcd1602.py`) ✓.
+- **.32** (`wh6gxzTRDEV`): the probe LOGIC fires `degraded` on the 2 expected
+  true-positives when fed .32's real strings — `meshing-around`
+  (`mesh_bot.py`,`modules/settings.py`; gated deploy) + `raphael-kit`
+  (`python/1.1.7_Lcd1602.py`) ✓. **⚠️ PRODUCTION-COVERAGE CAVEAT (found
+  2026-06-21 building the activation verify):** .32 runs **NO meshforge stack**
+  (no `/opt/meshforge`, no `meshforge-watchdog`, no mini — verified read-only),
+  so **the probe never RUNS on .32** — those true-positives are a logic-test
+  result, not live coverage. The probe runs only on the 6 watchdog boxes
+  (VolcanoAI + moc/moc1/moc2/moc3/moc5), where it is **INERT today** (moc/1/2/3
+  have no inherited apps; moc5's are benign-churn/clean; VolcanoAI all-owned).
+  So the probe is a **forward-guard** against a future unversioned patch on any
+  stack-running box — NOT a detector of the current .32 patches, which are
+  tracked separately (the gated bot-fork deploy + the PINS.md R1 cleanup).
 
 **Activation GATED** (watchdog restart + `promote_seed_rules.py --apply`) — same
 pattern as the resource-canary (A1); the code ships INERT (probe-activation
-runbook). Recorded in `deferred_work.json` (post-06-24, after the mf.5 RNS soak).
-`rules_seed_drift` is the designed convergence nudge until the seed is promoted.
+runbook). Recorded in `deferred_work.json` (`inherited-app-drift-probe-activation`,
+post-06-24, after the mf.5 RNS soak). `rules_seed_drift` is the designed
+convergence nudge until the seed is promoted. **The deferred-work watcher now
+MECHANICALLY VERIFIES this activation**: the task carries a `verify` argv
+(`~/verify_inherited_app_drift_activation.sh`) and the upgraded
+`deferred_work_watch.py` runs it each due tick — auto-closing the task the moment
+all 6 watchdog boxes show code≥`48adab26` + watchdog active + the seed-promoted
+`inherited_app_drift` rule, nagging once if reachable-but-incomplete, and
+surfacing BLIND (CONCERN, never a pass) if a box is unreachable.
 
 **What it enforces (policy §4):** for each INHERITED (non-`Nursedude`-origin)
 git checkout on a box —
