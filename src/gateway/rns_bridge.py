@@ -504,6 +504,25 @@ class RNSMeshtasticBridge(
                 "(recommended) or meshtastic Python library for legacy TCP bridge."
             )
 
+        # Read-only PhoneAPI oracle tap (opt-in MESHFORGE_ORACLE_PHONEAPI_TAP):
+        # in mqtt_bridge mode the oracle is fed only by meshtasticd's MQTT-json
+        # uplink (1-hop / relayed-back) — MULTI-HOP nodes are invisible. The tap
+        # reads the :4403 PhoneAPI stream (every decoded packet) and runs the
+        # oracle there too, alongside the MQTT bridge (which keeps owning
+        # bridging/TX). Inert unless the env flag is set. In TCP mode the
+        # MeshtasticHandler already has the PhoneAPI oracle, so the tap is built
+        # only for mqtt_bridge.
+        self._oracle_tap = None
+        try:
+            if self.config.bridge_mode == "mqtt_bridge":
+                from .oracle_phoneapi_tap import OraclePhoneAPITap
+                tap = OraclePhoneAPITap(self.config, self._stop_event)
+                if tap.enabled:
+                    self._oracle_tap = tap
+                    logger.info("Read-only PhoneAPI oracle tap enabled (multi-hop visible)")
+        except Exception as e:  # pragma: no cover - never break gateway init
+            logger.debug(f"oracle PhoneAPI tap not initialized: {e}")
+
         # Register Meshtastic sender now that handler exists.
         # NOTE: Issue #40 (2026-04-21) routed R→M through send_text_direct()
         # via destination="meshtastic"; the historical destination="mqtt"
@@ -681,6 +700,17 @@ class RNSMeshtasticBridge(
             )
             self._meshcore_thread.start()
             logger.info("MeshCore handler thread started")
+
+        # Start the read-only PhoneAPI oracle tap thread if enabled (multi-hop
+        # oracle visibility alongside the MQTT bridge). Inert unless opted in.
+        if self._oracle_tap is not None:
+            self._oracle_tap_thread = threading.Thread(
+                target=self._oracle_tap.run_loop,
+                daemon=True,
+                name="OraclePhoneAPITap"
+            )
+            self._oracle_tap_thread.start()
+            logger.info("Oracle PhoneAPI tap thread started")
 
         # Start persistent queue processing
         if self._persistent_queue:
