@@ -226,6 +226,12 @@ class OraclePhoneAPITap:
             decoded = packet.get('decoded', {}) or {}
             if decoded.get('portnum') != 'TEXT_MESSAGE_APP':
                 return
+            if self._is_directly_heard(packet):
+                # The MQTT-json leg already answers directly-heard packets; this
+                # tap exists for the MULTI-HOP nodes that leg can't see. On a box
+                # running BOTH legs (separate cooldown state) a direct query would
+                # otherwise be answered twice — one broadcast from each leg.
+                return
             payload = decoded.get('payload', b'')
             text = (payload.decode('utf-8', errors='ignore')
                     if isinstance(payload, bytes) else str(payload or ""))
@@ -234,3 +240,22 @@ class OraclePhoneAPITap:
             self._oracle.handle(from_id, text, channel)
         except Exception as e:
             logger.debug(f"oracle tap receive error: {e}")
+
+    @staticmethod
+    def _is_directly_heard(packet: dict) -> bool:
+        """True only when the packet is POSITIVELY directly-heard (hops_away==0).
+
+        ``hops_away == hopStart - hopLimit`` (firmware >=2.x). Returns False when
+        ``hopStart`` is absent or zero — an UNKNOWN hop count is not provable
+        evidence of "direct", so the packet is still processed. Missing a real
+        multi-hop query (the tap's whole reason to exist) is worse than the rare
+        duplicate answer this guard otherwise prevents (honest-failure-modes #2:
+        absence of evidence is not evidence of absence).
+        """
+        hop_start = packet.get('hopStart')
+        hop_limit = packet.get('hopLimit')
+        if not isinstance(hop_start, int) or hop_start <= 0:
+            return False
+        if not isinstance(hop_limit, int):
+            return False
+        return (hop_start - hop_limit) == 0

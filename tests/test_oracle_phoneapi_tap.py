@@ -92,6 +92,44 @@ def test_on_receive_oracle_none_is_noop(monkeypatch):
                      'fromId': '!z', 'channel': 0})
 
 
+def test_on_receive_skips_directly_heard_packet(monkeypatch):
+    # hops_away == 0 (hopStart == hopLimit): the MQTT-json leg already answers
+    # directly-heard packets, so the tap skips it to avoid a double-broadcast on
+    # a box running both legs.
+    tap = _disabled_tap(monkeypatch)
+    tap._oracle = MagicMock()
+    tap._on_receive({'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': b'status'},
+                     'fromId': '!direct', 'channel': 2,
+                     'hopStart': 3, 'hopLimit': 3})
+    tap._oracle.handle.assert_not_called()
+
+
+def test_on_receive_processes_multihop_packet(monkeypatch):
+    # hops_away > 0 (hopLimit < hopStart): a relayed node the MQTT-json leg never
+    # carries — this is exactly what the tap exists for.
+    tap = _disabled_tap(monkeypatch)
+    tap._oracle = MagicMock()
+    tap._on_receive({'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': b'status'},
+                     'fromId': '!relayed', 'channel': 2,
+                     'hopStart': 3, 'hopLimit': 1})
+    tap._oracle.handle.assert_called_once_with('!relayed', 'status', 2)
+
+
+def test_on_receive_processes_when_hops_unknown(monkeypatch):
+    # No hopStart (or hopStart==0) is UNKNOWN, not provably direct — process it
+    # rather than risk dropping a multi-hop query (honest-failure-modes #2).
+    tap = _disabled_tap(monkeypatch)
+    tap._oracle = MagicMock()
+    tap._on_receive({'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': b'status'},
+                     'fromId': '!unknown', 'channel': 2, 'hopLimit': 3})
+    tap._oracle.handle.assert_called_once_with('!unknown', 'status', 2)
+    tap._oracle.handle.reset_mock()
+    # hopStart present but 0 — also unknown, also processed.
+    tap._on_receive({'decoded': {'portnum': 'TEXT_MESSAGE_APP', 'payload': b'status'},
+                     'fromId': '!unknown', 'channel': 2, 'hopStart': 0, 'hopLimit': 0})
+    tap._oracle.handle.assert_called_once_with('!unknown', 'status', 2)
+
+
 def test_on_receive_swallows_malformed_packet(monkeypatch):
     tap = _disabled_tap(monkeypatch)
     tap._oracle = MagicMock()
