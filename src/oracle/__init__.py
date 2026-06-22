@@ -27,6 +27,7 @@ from .snapshot import (
     NocSnapshot,
     NodeRec,
     fetch_api_status,
+    oracle_log_path,
     read_snapshot,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "MeshOracleResponder",
     "read_snapshot",
     "fetch_api_status",
+    "oracle_log_path",
     "NocSnapshot",
     "NodeRec",
     "MAX_REPLY_BYTES",

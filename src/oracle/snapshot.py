@@ -207,6 +207,20 @@ def _fill_fleet(snap: NocSnapshot, status: dict) -> None:
             snap.federation_peers = fed["count"]
 
 
+def oracle_log_path() -> Path:
+    """Path to the oracle's append-only continuity log.
+
+    Lives under the MeshForge DATA dir (``~/.local/share/meshforge``), NOT the
+    bare home, so the write succeeds under the gateway's systemd sandbox
+    (``ProtectHome=read-only`` with ``.local/share/meshforge`` in
+    ``ReadWritePaths`` — #60). Writing to ``~/mesh_oracle_log.jsonl`` silently
+    failed on every fleet gateway (read-only home; append_jsonl swallows the
+    OSError). Pure: returns a Path; the caller does the (sandbox-allowed) write.
+    """
+    from utils.paths import MeshForgePaths
+    return MeshForgePaths.get_data_dir() / "mesh_oracle_log.jsonl"
+
+
 def read_snapshot(
     *,
     home: Optional[Path] = None,

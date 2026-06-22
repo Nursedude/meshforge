@@ -1162,9 +1162,12 @@ class RNSMeshtasticBridge(
         def _log(record: dict) -> None:
             try:
                 from mini_dudeai.history import append_jsonl
-                from utils.paths import get_real_user_home
-                path = str(get_real_user_home() / "mesh_oracle_log.jsonl")
-                append_jsonl(path, [record], 2 * 1024 * 1024)
+                from oracle import oracle_log_path
+                p = oracle_log_path()
+                p.parent.mkdir(parents=True, exist_ok=True)
+                err = append_jsonl(str(p), [record], 2 * 1024 * 1024)
+                if err:  # #60/#9: a swallowed sandbox write must leave a witness
+                    logger.warning(f"mesh oracle audit log write failed: {err}")
             except Exception as e:  # pragma: no cover - best-effort audit log
                 logger.debug(f"mesh oracle (rns) log append failed: {e}")
 

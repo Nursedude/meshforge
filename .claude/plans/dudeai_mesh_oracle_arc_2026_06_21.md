@@ -195,7 +195,18 @@ service (a systemd drop-in `Environment=`); default-OFF + fail-closed everywhere
 
 Apply: write the drop-in, then `systemctl restart meshforge-gateway` — an rnsd **client**; it does NOT
 restart rnsd (safe alongside the RNS soak; never rapid-cycle rnsd, #69). Verify with the on-air
-round-trip (the Phase-1 PASS criterion) + `~/mesh_oracle_log.jsonl`.
+round-trip (the Phase-1 PASS criterion) + the audit log
+`~/.local/share/meshforge/mesh_oracle_log.jsonl`.
+
+**Deploy finding — audit-log path was an #60 silent-write bug (fixed 2026-06-22).** The audit log was
+written to `~/mesh_oracle_log.jsonl`, but the gateway unit runs `ProtectHome=read-only` with only
+`.config/.cache/.local/share/meshforge` in `ReadWritePaths` — so every write **silently failed**
+(`append_jsonl` swallows the OSError into a return value the closures ignored). The oracle fired but its
+continuity log was dark on every fleet gateway. Cure: `oracle.oracle_log_path()` (SSOT) → the
+sandbox-writable **DATA dir** (`~/.local/share/meshforge/mesh_oracle_log.jsonl`); all four legs use it,
+`mkdir(parents, exist_ok)` the dir, and now **log a WARNING when `append_jsonl` returns an error**
+(honest-failure-modes #9: every swallow leaves a probe-visible witness). Pinned by
+`test_oracle_log_path_under_data_dir_not_bare_home`.
 
 ### Phase 3 — Optional LLM phrasing / routing layer
 `OllamaBackend` used two bounded ways, **never as a fact source**:

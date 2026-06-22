@@ -410,3 +410,17 @@ def test_read_snapshot_status_injection(tmp_path):
                          status=status, now=10_000.0)
     assert snap.directory_total == 2731
     assert snap.federation_peers == 3 and snap.federation_ok == 2
+
+
+def test_oracle_log_path_under_data_dir_not_bare_home():
+    """#60: the audit log must live under the sandbox-writable DATA dir
+    (~/.local/share/meshforge), NOT bare ~/. The gateway runs with
+    ProtectHome=read-only + .local/share/meshforge in ReadWritePaths, so a
+    write to ~/mesh_oracle_log.jsonl silently fails (append_jsonl swallows the
+    OSError) and the oracle's continuity log goes dark on every fleet gateway."""
+    from oracle import oracle_log_path
+    from utils.paths import MeshForgePaths, get_real_user_home
+    p = oracle_log_path()
+    assert p.name == "mesh_oracle_log.jsonl"
+    assert p.parent == MeshForgePaths.get_data_dir()
+    assert p.parent != get_real_user_home()  # NOT the read-only bare home
