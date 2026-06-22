@@ -19,6 +19,7 @@ Public API:
 from __future__ import annotations
 
 from .intents import MAX_REPLY_BYTES, answer, is_query
+from .responder import MeshOracleResponder
 from .snapshot import (
     MINI_STALE_S,
     WATCHDOG_STALE_S,
@@ -31,6 +32,7 @@ from .snapshot import (
 __all__ = [
     "answer",
     "is_query",
+    "MeshOracleResponder",
     "read_snapshot",
     "NocSnapshot",
     "NodeRec",

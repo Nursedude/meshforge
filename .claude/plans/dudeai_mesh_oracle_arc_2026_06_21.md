@@ -103,7 +103,18 @@ source is stale/blind (never fake; #74/#78 lesson). **Unit-tested against fixtur
 - **PASS Phase 0** = every intent returns a correct answer (or honest abstention) on fixtures; read-only
   guard test green.
 
-### Phase 1 — Mesh round-trip (read-only, deterministic), one box
+### Phase 1 — Mesh round-trip (read-only, deterministic), one box — ✅ BUILT 2026-06-21 (default-OFF, not yet round-tripped on air)
+**Shipped:** `src/oracle/responder.py` (`MeshOracleResponder`, injected-deps I/O edge: query-gate → allowlist
+(fail-closed) → per-sender cooldown → snapshot → answer → directed reply → append-only audit log;
+`from_env` factory, **default OFF** via `MESHFORGE_ORACLE_ENABLED`). Wired into
+`meshtastic_handler._handle_text_message` after the loop guard (≤6 lines, fail-safe — a handled query is
+consumed, not bridged; `self._oracle=None` by default ⇒ inert). Reply via the handler's existing directed
+`send_text`; audit log `~/mesh_oracle_log.jsonl` via `mini_dudeai.history.append_jsonl`. Tests:
+`tests/test_oracle_responder.py` (18) + `TestMeshOracleWiring` in `tests/test_meshtastic_handler.py` (5).
+**VERIFIED:** `lint.py --all` exit 0; 170 passed (oracle + responder + handler + regression guards), exit 0.
+**Snapshot is watchdog+mini only** (no directory/federation injected yet ⇒ `fleet:?`); enriching it +
+the on-air round-trip + LXMF leg (Phase 2) remain. NOT pushed (mf.5 soak to 06-24).
+
 One-line hook in `_handle_text_message` → `oracle.maybe_handle(from_id, text, channel)`. On a query:
 resolve sender node num → `send_text_direct_with_id` → `append_jsonl` the exchange. Enforce **per-sender
 cooldown** (mini's `cooldown_s` house style) + an **airtime check** + the `is_already_bridged` loop guard +

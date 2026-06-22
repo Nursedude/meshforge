@@ -1249,3 +1249,41 @@ class TestMeshAckConsumption:
         rec.assert_called_with(DeliveryState.CONFIRMED,
                               msg_id="q-777", protocol="meshtastic")
         assert h.ack_tracker.resolve(0x0BADF00D) is None  # consumed once
+
+
+class TestMeshOracleWiring:
+    """Phase-1 wiring of the read-only mesh oracle into the text-RX path."""
+
+    def test_build_responder_default_off(self, handler, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_ORACLE_ENABLED", raising=False)
+        assert handler._build_oracle_responder() is None
+
+    def test_build_responder_enabled(self, handler, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_ALLOWLIST", "*")
+        assert handler._build_oracle_responder() is not None
+
+    def test_query_routed_to_oracle_and_consumed(self, handler):
+        handler._oracle = MagicMock()
+        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        packet = {"toId": "!ffffffff", "channel": 0, "rxSnr": -5, "rxRssi": -90}
+        handler._handle_text_message(packet, {"payload": b"status"}, "!a1b2c3d4")
+        handler._oracle.handle.assert_called_once_with("!a1b2c3d4", "status", 0)
+        assert handler._message_queue.empty()  # consumed, NOT bridged onward
+
+    def test_non_query_passes_through_to_bridge(self, handler):
+        handler._oracle = MagicMock()
+        handler._oracle.handle.return_value = None  # not a query
+        with patch("commands.messaging.store_incoming"):
+            handler._handle_text_message(
+                {"toId": "!ffffffff", "channel": 0},
+                {"payload": b"hello world"}, "!a1b2c3d4")
+        assert not handler._message_queue.empty()  # passed through to the bridge
+
+    def test_oracle_none_does_not_break_rx(self, handler):
+        handler._oracle = None  # default-off: hook is a no-op
+        with patch("commands.messaging.store_incoming"):
+            handler._handle_text_message(
+                {"toId": "!ffffffff", "channel": 0},
+                {"payload": b"hello"}, "!a1b2c3d4")
+        assert not handler._message_queue.empty()

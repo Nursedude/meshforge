@@ -123,6 +123,48 @@ class MeshtasticHandler(BaseMessageHandler):
             max_pending=getattr(self.config.rns, 'ack_pending_max', None),
         )
 
+        # Mesh oracle (read-only "ask dude-AI over the mesh" responder).
+        # Default OFF — built only when MESHFORGE_ORACLE_ENABLED is set; inert
+        # otherwise (self._oracle stays None and the _handle_text_message hook
+        # no-ops). Building it must NEVER break the bridge.
+        self._oracle = None
+        try:
+            self._oracle = self._build_oracle_responder()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"mesh oracle not initialized: {e}")
+
+    def _build_oracle_responder(self):
+        """Construct the read-only mesh-oracle responder, or None if disabled.
+
+        Default OFF (opt-in via MESHFORGE_ORACLE_ENABLED) — the env is checked
+        BEFORE importing the oracle so a disabled gateway pays no import cost.
+        Wires the oracle's injected deps to this handler: a read-only NOC
+        snapshot, the existing directed send_text (reply only), and an
+        append-only audit log under the operator home. The oracle never controls
+        services or mutates config (autonomy rung 1 — report).
+        """
+        import os
+        if str(os.environ.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() \
+                not in ("1", "true", "yes", "on"):
+            return None
+        from oracle import read_snapshot
+        from oracle.responder import MeshOracleResponder
+
+        def _send(text: str, dest: str, channel: int) -> bool:
+            return self.send_text(text, destination=dest, channel=channel)
+
+        def _log(record: dict) -> None:
+            try:
+                from mini_dudeai.history import append_jsonl
+                from utils.paths import get_real_user_home
+                path = str(get_real_user_home() / "mesh_oracle_log.jsonl")
+                append_jsonl(path, [record], 2 * 1024 * 1024)
+            except Exception as e:  # pragma: no cover - best-effort audit log
+                logger.debug(f"mesh oracle log append failed: {e}")
+
+        return MeshOracleResponder.from_env(
+            snapshot_fn=read_snapshot, send_fn=_send, log_fn=_log)
+
     @property
     def interface(self):
         """Get the Meshtastic interface."""
@@ -579,6 +621,16 @@ class MeshtasticHandler(BaseMessageHandler):
         if is_already_bridged(text):
             logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
+
+        # Mesh oracle (read-only): answer a query (status/whatsup/...) DIRECTED
+        # back to the sender — off-grid, no cloud. Default OFF; never breaks the
+        # bridge; a handled query is consumed (not bridged onward).
+        if self._oracle is not None:
+            try:
+                if self._oracle.handle(from_id, text, packet.get('channel', 0)):
+                    return
+            except Exception as e:
+                logger.debug(f"mesh oracle handle error: {e}")
 
         to_id = packet.get('toId')
         msg = BridgedMessage(
