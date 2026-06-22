@@ -1287,3 +1287,33 @@ class TestMeshOracleWiring:
                 {"toId": "!ffffffff", "channel": 0},
                 {"payload": b"hello"}, "!a1b2c3d4")
         assert not handler._message_queue.empty()
+
+    # -- channel whitelist (MESHFORGE_ORACLE_CHANNELS name -> local index) --
+    def test_resolve_oracle_channels_empty(self, handler):
+        assert handler._resolve_oracle_channels("") == set()
+        assert handler._resolve_oracle_channels("  ,  ") == set()
+
+    def test_resolve_oracle_channels_resolves_names(self, handler, monkeypatch):
+        calls = {"meshforge": (2, "resolved"), "anchor": (3, "resolved")}
+        monkeypatch.setattr(
+            "gateway._channel_resolver.resolve_tx_channel_index",
+            lambda name, fallback: calls[name])
+        assert handler._resolve_oracle_channels("meshforge, anchor") == {2, 3}
+
+    def test_resolve_oracle_channels_skips_unresolved(self, handler, monkeypatch):
+        # not_found / unreachable contribute nothing (never silently index 0)
+        monkeypatch.setattr(
+            "gateway._channel_resolver.resolve_tx_channel_index",
+            lambda name, fallback: (fallback, "not_found"))
+        assert handler._resolve_oracle_channels("ghost") == set()
+
+    def test_build_responder_with_channels(self, handler, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.delenv("MESHFORGE_ORACLE_ALLOWLIST", raising=False)
+        monkeypatch.setenv("MESHFORGE_ORACLE_CHANNELS", "meshforge")
+        monkeypatch.setattr(
+            "gateway._channel_resolver.resolve_tx_channel_index",
+            lambda name, fallback: (2, "resolved"))
+        responder = handler._build_oracle_responder()
+        assert responder is not None
+        assert responder._allowed_channels == {2}

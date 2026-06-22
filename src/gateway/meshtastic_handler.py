@@ -168,8 +168,46 @@ class MeshtasticHandler(BaseMessageHandler):
             except Exception as e:  # pragma: no cover - best-effort audit log
                 logger.debug(f"mesh oracle log append failed: {e}")
 
+        allowed_channels = self._resolve_oracle_channels(
+            os.environ.get("MESHFORGE_ORACLE_CHANNELS", ""))
         return MeshOracleResponder.from_env(
-            snapshot_fn=_snapshot, send_fn=_send, log_fn=_log)
+            snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
+            allowed_channels=allowed_channels)
+
+    def _resolve_oracle_channels(self, names_csv: str):
+        """Resolve a comma-separated channel-NAME list to local slot indices.
+
+        The oracle hook receives the inbound packet's box-local numeric channel
+        index (``packet.get('channel')``); a fleet-stable whitelist is keyed on
+        channel NAMES (e.g. ``meshforge``). Resolve each name to THIS box's index
+        once at startup via the same live channel-list query the bridge already
+        uses to reconcile its TX channel (``_channel_resolver``) — so no new
+        PhoneAPI probe pattern is introduced (#17/#75-safe). Names that cannot be
+        resolved are logged and skipped (never silently treated as index 0).
+        Returns a set of ints (empty when unset / nothing resolved).
+        """
+        names = [n.strip() for n in (names_csv or "").split(",") if n.strip()]
+        if not names:
+            return set()
+        try:
+            from gateway._channel_resolver import resolve_tx_channel_index
+        except ImportError as e:  # pragma: no cover - defensive
+            logger.warning(f"mesh oracle channel resolver unavailable: {e}")
+            return set()
+        resolved = set()
+        for name in names:
+            # fallback=-1 is a sentinel that can never match a real inbound
+            # channel index, so an unresolved name contributes nothing.
+            idx, status = resolve_tx_channel_index(name, -1)
+            if status in ("matches_config", "resolved") and idx >= 0:
+                resolved.add(idx)
+                logger.info(
+                    f"mesh oracle channel {name!r} -> index {idx} ({status})")
+            else:
+                logger.warning(
+                    f"mesh oracle channel {name!r} not resolved ({status}); "
+                    f"skipped — nodes on it will not be channel-allowed")
+        return resolved
 
     @property
     def interface(self):

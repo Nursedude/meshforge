@@ -53,6 +53,7 @@ class MeshOracleResponder:
         log_fn: Optional[Callable[[dict], None]] = None,
         now_fn: Callable[[], float] = time.time,
         allowlist: Optional[Set[str]] = None,
+        allowed_channels: Optional[Set[int]] = None,
         answer_all: bool = False,
         cooldown_s: float = _DEFAULT_COOLDOWN_S,
         transport: str = "meshtastic",
@@ -62,13 +63,26 @@ class MeshOracleResponder:
         self._log_fn = log_fn
         self._now = now_fn
         self._allowlist = {_norm(a) for a in (allowlist or set())}
+        self._allowed_channels = {int(c) for c in (allowed_channels or set())}
         self._answer_all = answer_all
         self._cooldown_s = max(0.0, cooldown_s)
         self._transport = transport
         self._last_answer: Dict[str, float] = {}
 
-    def _allowed(self, node_key: str) -> bool:
-        return self._answer_all or node_key in self._allowlist
+    def _allowed(self, node_key: str, channel: Optional[int] = None) -> bool:
+        """Additive access: answer-all OR known node OR on an allowed channel.
+
+        A sender is allowed if (a) the leg answers everyone, (b) their node-id is
+        on the per-node allowlist, or (c) the inbound ``channel`` is on the
+        channel allowlist — so any node configured for a whitelisted channel can
+        use the oracle without being listed individually. Fail-closed is
+        preserved: with answer_all off and BOTH sets empty, nobody is allowed
+        (an empty channel set can never match, so RNS ``channel=0`` cannot leak
+        through).
+        """
+        if self._answer_all or node_key in self._allowlist:
+            return True
+        return channel is not None and channel in self._allowed_channels
 
     def handle(self, from_id: str, text: str, channel: int = 0) -> Optional[str]:
         """Answer a query directed back to ``from_id``; return the reply or None.
@@ -82,7 +96,7 @@ class MeshOracleResponder:
         if not is_query(text):
             return None
         node = _norm(from_id)
-        if not self._allowed(node):
+        if not self._allowed(node, channel):
             self._record(from_id, text, intent=None, reply=None,
                          delivered=False, reason="not_allowlisted")
             return None
@@ -141,6 +155,7 @@ class MeshOracleResponder:
         env=None,
         transport: str = "meshtastic",
         allowlist_env: str = "MESHFORGE_ORACLE_ALLOWLIST",
+        allowed_channels: Optional[Set[int]] = None,
     ) -> Optional["MeshOracleResponder"]:
         """Build from ``MESHFORGE_ORACLE_*`` env, or ``None`` if disabled (default).
 
@@ -148,8 +163,13 @@ class MeshOracleResponder:
           shared across legs.
         - ``allowlist_env`` (default ``MESHFORGE_ORACLE_ALLOWLIST``; the RNS leg
           passes ``MESHFORGE_ORACLE_RNS_ALLOWLIST``): comma sender-ids, or ``"*"``
-          to answer all. **Fail-closed**: enabled with an EMPTY allowlist answers
-          no one — so a leg is effectively off until its allowlist is set.
+          to answer all. **Fail-closed**: enabled with an EMPTY allowlist (and no
+          ``allowed_channels``) answers no one — so a leg is effectively off until
+          its allowlist or channel set is configured.
+        - ``allowed_channels``: a set of already-resolved numeric channel indices
+          a node may be on to be answered (additive with the node allowlist). The
+          caller resolves channel NAMES to local indices (the responder cannot
+          query the radio) — see ``meshtastic_handler._build_oracle_responder``.
         - ``MESHFORGE_ORACLE_COOLDOWN_S``: per-sender min seconds (default 30).
         """
         env = os.environ if env is None else env
@@ -169,6 +189,7 @@ class MeshOracleResponder:
             send_fn=send_fn,
             log_fn=log_fn,
             allowlist=allowlist,
+            allowed_channels=allowed_channels,
             answer_all=answer_all,
             cooldown_s=cooldown,
             transport=transport,

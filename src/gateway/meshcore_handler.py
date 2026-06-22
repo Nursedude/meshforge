@@ -239,6 +239,72 @@ class MeshCoreHandler(BaseMessageHandler):
         }
         self._metrics_log_interval = 50  # Log summary every N poll cycles
 
+        # Mesh oracle (read-only "ask dude-AI over MeshCore" responder).
+        # Default OFF — built only when MESHFORGE_ORACLE_ENABLED is set; inert
+        # otherwise (self._oracle stays None and the RX hooks are no-ops).
+        # MeshAnchor-environment access: a known sender (MESHFORGE_ORACLE_
+        # MESHCORE_ALLOWLIST) OR a whitelisted channel (MESHFORGE_ORACLE_
+        # MESHCORE_CHANNELS), additive — see _build_meshcore_oracle_responder.
+        self._oracle = None
+        try:
+            self._oracle = self._build_meshcore_oracle_responder()
+        except Exception as e:  # pragma: no cover - never break handler init
+            logger.debug(f"meshcore oracle not initialized: {e}")
+
+    def _build_meshcore_oracle_responder(self):
+        """Construct the read-only MeshCore oracle responder, or None if disabled.
+
+        Default OFF (opt-in via MESHFORGE_ORACLE_ENABLED, shared across legs) —
+        the env is checked BEFORE importing the oracle so a disabled gateway pays
+        no import cost. Mirrors the Meshtastic/RNS legs: a read-only NOC snapshot,
+        the existing directed send_text (reply only), and an append-only audit log
+        under the operator home. Access is additive — a known sender
+        (MESHFORGE_ORACLE_MESHCORE_ALLOWLIST, keyed on the MeshCore source_address
+        / pubkey-prefix / adv_name) OR a whitelisted channel index
+        (MESHFORGE_ORACLE_MESHCORE_CHANNELS — MeshCore channels are numeric
+        indices, so no name resolution). The oracle never controls services or
+        mutates config (autonomy rung 1 — report).
+        """
+        import os
+        if str(os.environ.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() \
+                not in ("1", "true", "yes", "on"):
+            return None
+        from oracle import fetch_api_status, read_snapshot
+        from oracle.responder import MeshOracleResponder
+
+        def _snapshot():
+            return read_snapshot(status=fetch_api_status())
+
+        def _send(text: str, dest: str, channel) -> bool:
+            return self.send_text(text, destination=dest, channel=channel or 0)
+
+        def _log(record: dict) -> None:
+            try:
+                from mini_dudeai.history import append_jsonl
+                from utils.paths import get_real_user_home
+                path = str(get_real_user_home() / "mesh_oracle_log.jsonl")
+                append_jsonl(path, [record], 2 * 1024 * 1024)
+            except Exception as e:  # pragma: no cover - best-effort audit log
+                logger.debug(f"mesh oracle (meshcore) log append failed: {e}")
+
+        allowed_channels = set()
+        for tok in os.environ.get(
+                "MESHFORGE_ORACLE_MESHCORE_CHANNELS", "").split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            try:
+                allowed_channels.add(int(tok))
+            except ValueError:
+                logger.warning(
+                    f"mesh oracle meshcore channel {tok!r} not an int; skipped")
+
+        return MeshOracleResponder.from_env(
+            snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
+            transport="meshcore",
+            allowlist_env="MESHFORGE_ORACLE_MESHCORE_ALLOWLIST",
+            allowed_channels=allowed_channels)
+
     def connect(self) -> bool:
         """MeshCore connection is managed by run_loop() via async _connect()."""
         logger.warning("MeshCoreHandler.connect() called directly; use run_loop()")
@@ -425,6 +491,17 @@ class MeshCoreHandler(BaseMessageHandler):
         try:
             msg = CanonicalMessage.from_meshcore(event)
 
+            # Mesh oracle (read-only): answer a query DIRECTED back to the
+            # sender; a handled query is consumed (NOT bridged onward). A DM has
+            # no channel, so it is identity-gated only (channel=None) — the
+            # MESHFORGE_ORACLE_MESHCORE_ALLOWLIST or answer-all grants it.
+            if self._oracle is not None:
+                try:
+                    if self._oracle.handle(msg.source_address, msg.content, None):
+                        return
+                except Exception as e:
+                    logger.debug(f"meshcore oracle handle error: {e}")
+
             # Check routing rules
             if self._should_bridge and not self._should_bridge(msg):
                 logger.debug(f"MeshCore message blocked by routing rules")
@@ -458,6 +535,20 @@ class MeshCoreHandler(BaseMessageHandler):
         try:
             msg = CanonicalMessage.from_meshcore(event)
             msg.is_broadcast = True
+
+            # Mesh oracle (read-only): a query on a whitelisted channel is
+            # answered DIRECTED back to the asker (a DM, never a channel
+            # broadcast — honors the "broadcast is not auto-answered" rail) and
+            # consumed (NOT bridged). Channel-gated via MESHFORGE_ORACLE_
+            # MESHCORE_CHANNELS; per-sender cooldown also dedups the dual-path
+            # (event vs poll) delivery of the same query.
+            if self._oracle is not None:
+                try:
+                    chan = (msg.metadata or {}).get('channel', 0)
+                    if self._oracle.handle(msg.source_address, msg.content, chan):
+                        return
+                except Exception as e:
+                    logger.debug(f"meshcore oracle (channel) handle error: {e}")
 
             # Track for dual-path reconciliation
             content_hash = self._compute_channel_hash(msg)

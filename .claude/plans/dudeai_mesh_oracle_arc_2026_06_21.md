@@ -137,6 +137,57 @@ GET, bounded, degrades to None) wired into BOTH legs' `snapshot_fn` → `status`
 regression guards), exit 0. NOT pushed (mf.5 soak to 06-24). Snapshot `nodes` still empty (per-node
 directory is 35MB — `node <id>` stays "lookup unavailable"; a lighter per-node lookup is a follow-up).
 
+### Phase 2.5 — Environment/channel-scoped allowlist ("anyone on the channel can ask") — ✅ BUILT 2026-06-22
+The fail-closed node-id allowlist meant the oracle answered **no one** until each node was hand-listed
+— so the built P0–P2 work was dormant. This phase adds **additive, per-transport membership** so any
+node on an allowed environment can use the oracle *without being listed individually*. **One concept**
+— *"is this sender a member of an allowed environment?"* — realized via each transport's **native
+membership token** (the operator's "composability / agnostic reality", grounded in the RNS manual):
+
+| Transport | Native membership | Whitelist key | Env var |
+|---|---|---|---|
+| Meshtastic | on the channel (channel PSK) | channel **name** → THIS box's slot index | `MESHFORGE_ORACLE_CHANNELS` (names, e.g. `meshforge`) |
+| MeshCore (MeshAnchor) | on the channel / a known contact | channel **index** (chan path) / `source_address` (DM path) | `MESHFORGE_ORACLE_MESHCORE_CHANNELS` + `..._MESHCORE_ALLOWLIST` |
+| RNS / LXMF (hawaiinet) | **announced** LXMF delivery identity | source-hash hex | `MESHFORGE_ORACLE_RNS_ALLOWLIST` |
+| RNS **GROUP** destination | shared AES-256 PSK = a *true* RNS channel | the GROUP dest itself | (design — Phase 5) |
+
+**Allow logic (additive, fail-closed preserved):** `answer_all OR node∈allowlist OR channel∈allowed_channels`.
+Empty everything ⇒ answers no one (an empty channel set can never match, so RNS's hard-coded
+`channel=0` cannot leak through).
+
+**Shipped:**
+- `responder.py`: `allowed_channels: Set[int]` on `__init__`/`from_env`; `_allowed(node, channel)` made
+  additive. Read-only invariant preserved (only a set-membership check added; `test_oracle_*` green).
+- Meshtastic (`meshtastic_handler._resolve_oracle_channels`): resolves `MESHFORGE_ORACLE_CHANNELS`
+  channel **names** → THIS box's local slot indices via `_channel_resolver` (the same live channel-list
+  query the bridge already uses to reconcile its TX channel — no new PhoneAPI probe, #17/#75-safe).
+  Unresolved names are logged + **skipped** (never silently index 0). The hook's inbound
+  `packet.get('channel')` is a box-local index, so name→local-index is the correct, fleet-stable key
+  (#channel-feed-dark / Issue #42 NAME-vs-slot lesson).
+- MeshCore (`meshcore_handler._build_meshcore_oracle_responder` + hooks): `_on_contact_message` (DM,
+  identity-gated, `channel=None`) and `_on_channel_message` (channel-index-gated, replies **DM** to the
+  asker — never a channel broadcast, honoring the "broadcast is not auto-answered" rail; per-sender
+  cooldown also dedups the event-vs-poll dual delivery). MeshCore channels are numeric indices (no name
+  layer). ⚠️ async hooks call the sync `handle()` inline (`send_text` only enqueues, so it won't block
+  the radio; the bounded `/api/status` fetch only runs for an allowed, non-cooled-down query).
+- Tests: additive channel-allow / channel-only / empty-set-never-matches / `from_env` in
+  `test_oracle_responder.py`; name→index resolution in `test_meshtastic_handler.py::TestMeshOracleWiring`;
+  `test_meshcore_handler.py::TestMeshOracleMeshcoreWiring`.
+
+**Enabling the mesh-oracle (the deploy interface — previously undocumented).** Set on the gateway
+service (a systemd drop-in `Environment=`); default-OFF + fail-closed everywhere.
+- `MESHFORGE_ORACLE_ENABLED=1` — master switch (shared by all legs).
+- `MESHFORGE_ORACLE_CHANNELS=meshforge` — Meshtastic channel **names** any node may be on (resolved to
+  this box's index at startup).
+- `MESHFORGE_ORACLE_ALLOWLIST=!a1b2c3d4,…` or `*` — specific Meshtastic node-ids (additive; `*`=all).
+- `MESHFORGE_ORACLE_MESHCORE_CHANNELS=0,2` and/or `MESHFORGE_ORACLE_MESHCORE_ALLOWLIST=<pubkey-prefix|name|*>`.
+- `MESHFORGE_ORACLE_RNS_ALLOWLIST=<source-hash-hex,…|*>` — announced RNS identities.
+- `MESHFORGE_ORACLE_COOLDOWN_S=30` — per-sender minimum seconds between answers.
+
+Apply: write the drop-in, then `systemctl restart meshforge-gateway` — an rnsd **client**; it does NOT
+restart rnsd (safe alongside the RNS soak; never rapid-cycle rnsd, #69). Verify with the on-air
+round-trip (the Phase-1 PASS criterion) + `~/mesh_oracle_log.jsonl`.
+
 ### Phase 3 — Optional LLM phrasing / routing layer
 `OllamaBackend` used two bounded ways, **never as a fact source**:
 1. **Phrasing:** the deterministic engine produces the FACTS (a struct); the model rewrites to natural
@@ -154,6 +205,19 @@ knowing *"while away: N field queries, e.g. 0613 !abc 'status' → answered."* T
 - **PASS Phase 4** = the warm brief shows the away-window query digest.
 
 ### Phase 5 — GATED / DEFERRED: portable bundle + claw-only RX + autonomy
+- **True RNS "channel" via a GROUP destination** (the faithful agnostic-channel symmetry — designed
+  2026-06-22). RNS GROUP destinations use a **shared AES-256 PSK** — "readable by anyone in possession
+  of the key" (RNS reference) — the exact analog of a Meshtastic/MeshCore channel PSK. An oracle GROUP
+  destination (`RNS.Destination(identity, IN, GROUP, "meshforge", "oracle")`, key via
+  `create_keys()`/`load_private_key()`, `announce()`d) that any key-holder queries would give RNS the
+  same "on the channel ⇒ can ask" model as the other transports. **Deferred** because: (a) it is
+  net-new RNS plumbing **separate from LXMF** (today's RNS leg is LXMF SINGLE + source-hash, directed +
+  forward-secret), and a GROUP listener changes the reply/forward-secrecy posture (a GROUP dest has no
+  per-sender link — replies would need a SINGLE/LINK back-channel or a group broadcast); (b) it needs a
+  key-distribution story (who holds the PSK = who's "on the channel"). The **wire format is unchanged**
+  (uses RNS exactly as designed) so it does NOT touch the fork wire-compat invariant. Because announces
+  propagate network-wide across all interfaces, one GROUP dest reaches **every hawaiinet node
+  regardless of physical media** (TCP link, RNode LoRa, …) — RNS is one network over mixed interfaces.
 - **Portable "NOC in a box"** = the standalone Pi+claw bundle (`standalone_wireclaw_variant.md`) running
   the oracle off-grid. Packaging follows the capability.
 - **Claw-only portable** (no Pi radio) would need **RX-decrypt added to the WireClaw fork** so the claw
@@ -198,7 +262,10 @@ history/audit/dreams/calibration. Failed sends, unknown intents, and model failu
 - **Airtime/duty** — ≤237 bytes; respect airtime thresholds (warn 7% / crit 10%) + cooldown; on ham bands
   clear-text + callsign-ID (the §97.113/§97.119 gate from the roadmap report).
 - **Trust on open RF** — sender allowlist (fleet/known nodes) first; read-only bounds blast radius; widen
-  deliberately (token/known-node) later.
+  deliberately later. **DONE (Phase 2.5, 2026-06-22):** the deliberate widening is the additive
+  **channel/environment allowlist** — a node "on the channel" (the channel PSK = the membership token)
+  is trusted, which is exactly the open-RF trust boundary the channel key already establishes. Read-only
+  + per-sender cooldown still bound blast radius; the operator opts in per-channel, fail-closed.
 - **No-perturb reads** — follow the `/api/status` discipline (read `/proc` listen state, never open the
   PhoneAPI — Issue #17/#75); the oracle adds zero load to the radio path.
 - **Honest identity** — replies say `dude-AI@<box>` (local proxy), never imply it's cloud-me.

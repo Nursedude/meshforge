@@ -600,3 +600,88 @@ class TestStats:
             assert handler.stats.get('meshcore_acks', 0) >= 1
         finally:
             loop.close()
+
+
+# =============================================================================
+# Mesh oracle (read-only) — MeshAnchor/MeshCore leg
+# =============================================================================
+
+class TestMeshOracleMeshcoreWiring:
+    """Wiring of the read-only mesh oracle into the MeshCore RX paths.
+
+    Access is additive: a DM is identity-gated (MESHFORGE_ORACLE_MESHCORE_
+    ALLOWLIST), a channel query is channel-gated (MESHFORGE_ORACLE_MESHCORE_
+    CHANNELS). Both reply DIRECTED to the asker and consume the query.
+    """
+
+    def test_oracle_default_off(self, handler, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_ORACLE_ENABLED", raising=False)
+        assert handler._build_meshcore_oracle_responder() is None
+        assert handler._oracle is None  # not built at construction either
+
+    def test_build_responder_enabled(self, handler, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_MESHCORE_ALLOWLIST", "*")
+        assert handler._build_meshcore_oracle_responder() is not None
+
+    def test_build_responder_with_channel_indices(self, handler, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.delenv("MESHFORGE_ORACLE_MESHCORE_ALLOWLIST", raising=False)
+        monkeypatch.setenv("MESHFORGE_ORACLE_MESHCORE_CHANNELS", "1, 2, oops")
+        responder = handler._build_meshcore_oracle_responder()
+        assert responder is not None
+        assert responder._allowed_channels == {1, 2}  # 'oops' skipped
+
+    def test_dm_query_routed_directed_and_consumed(self, handler):
+        handler._oracle = MagicMock()
+        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        event = SimpleNamespace(type='CONTACT_MSG_RECV', payload={
+            'text': 'status', 'sender': 'abc123', 'destination': 'gw',
+            'is_channel': False, 'channel': 0})
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._on_contact_message(event))
+        finally:
+            loop.close()
+        # DM is identity-gated → channel passed as None
+        handler._oracle.handle.assert_called_once_with('abc123', 'status', None)
+        assert handler._message_queue.empty()  # consumed, NOT bridged onward
+
+    def test_channel_query_routed_with_channel_index_and_consumed(self, handler):
+        handler._oracle = MagicMock()
+        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        event = SimpleNamespace(type='CHANNEL_MSG_RECV', payload={
+            'text': 'status', 'sender': 'node789', 'destination': None,
+            'is_channel': True, 'channel': 2})
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._on_channel_message(event))
+        finally:
+            loop.close()
+        handler._oracle.handle.assert_called_once_with('node789', 'status', 2)
+        assert handler._message_queue.empty()  # consumed
+
+    def test_non_query_passes_through_to_bridge(self, handler):
+        handler._oracle = MagicMock()
+        handler._oracle.handle.return_value = None  # not a query
+        event = SimpleNamespace(type='CONTACT_MSG_RECV', payload={
+            'text': 'good morning', 'sender': 'abc', 'destination': 'gw',
+            'is_channel': False, 'channel': 0})
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._on_contact_message(event))
+        finally:
+            loop.close()
+        assert not handler._message_queue.empty()  # passed through
+
+    def test_oracle_none_does_not_break_rx(self, handler):
+        handler._oracle = None  # default-off: hook is a no-op
+        event = SimpleNamespace(type='CONTACT_MSG_RECV', payload={
+            'text': 'hello', 'sender': 'abc', 'destination': 'gw',
+            'is_channel': False, 'channel': 0})
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._on_contact_message(event))
+        finally:
+            loop.close()
+        assert not handler._message_queue.empty()

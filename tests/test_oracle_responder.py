@@ -26,7 +26,8 @@ class _Clock:
         return self.t
 
 
-def _make(allowlist=None, answer_all=False, cooldown_s=30.0, send_ok=True, clock=None):
+def _make(allowlist=None, answer_all=False, cooldown_s=30.0, send_ok=True,
+          clock=None, allowed_channels=None):
     sent, logs = [], []
 
     def send_fn(text, dest, channel):
@@ -36,7 +37,7 @@ def _make(allowlist=None, answer_all=False, cooldown_s=30.0, send_ok=True, clock
     r = MeshOracleResponder(
         snapshot_fn=_snap, send_fn=send_fn, log_fn=logs.append,
         now_fn=clock or _Clock(), allowlist=allowlist, answer_all=answer_all,
-        cooldown_s=cooldown_s)
+        cooldown_s=cooldown_s, allowed_channels=allowed_channels)
     return r, sent, logs
 
 
@@ -157,6 +158,50 @@ def test_from_env_enabled_empty_allowlist_is_fail_closed():
         env={"MESHFORGE_ORACLE_ENABLED": "1"})  # enabled, no allowlist
     assert r is not None
     assert r.handle("!anyone", "status") is None  # answers no one
+
+
+# --------------------------------------------------------------------------- #
+# channel allowlist — additive with the per-node allowlist (any node on a
+# whitelisted channel is answered without being listed individually)
+# --------------------------------------------------------------------------- #
+def test_channel_allow_answers_unlisted_node_on_that_channel():
+    r, sent, _ = _make(allowed_channels={2})  # no node allowlist
+    reply = r.handle("!stranger", "status", channel=2)
+    assert reply and len(sent) == 1
+    assert sent[0][2] == 2  # reply goes back on the same channel
+
+
+def test_node_on_non_whitelisted_channel_is_declined():
+    r, sent, logs = _make(allowed_channels={2})
+    assert r.handle("!stranger", "status", channel=3) is None
+    assert sent == []
+    assert logs[-1]["reason"] == "not_allowlisted"
+
+
+def test_empty_channel_set_never_matches_even_channel_zero():
+    # Fail-closed: enabled with empty node-list AND empty channel-set answers no
+    # one — and an empty set can't be matched by RNS's hard-coded channel=0.
+    r, sent, _ = _make()  # answer_all=False, no allowlist, no channels
+    assert r.handle("!anyone", "status", channel=0) is None
+    assert sent == []
+
+
+def test_channel_and_node_allow_are_additive():
+    r, sent, _ = _make(allowlist={"!known"}, allowed_channels={2})
+    assert r.handle("!known", "status", channel=3)      # node match (any chan)
+    assert r.handle("!stranger", "status", channel=2)   # channel match
+    assert r.handle("!stranger2", "status", channel=3) is None  # neither
+    assert len(sent) == 2
+
+
+def test_from_env_passes_allowed_channels():
+    r = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda *a: True,
+        env={"MESHFORGE_ORACLE_ENABLED": "1"},  # empty node allowlist
+        allowed_channels={2})
+    assert r is not None and r._allowed_channels == {2}
+    assert r.handle("!unlisted", "status", channel=2)        # channel grants it
+    assert r.handle("!unlisted", "status", channel=9) is None  # other channel
 
 
 def test_from_env_rns_leg_uses_separate_allowlist_and_transport():
