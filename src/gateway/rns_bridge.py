@@ -1259,13 +1259,15 @@ class RNSMeshtasticBridge(
 
             # Mesh oracle (read-only, RNS leg): answer a query directed back to
             # the LXMF source — off-grid, no cloud. Default OFF; never breaks the
-            # bridge; a handled query is consumed (not bridged/stored onward).
+            # bridge; a handled query is consumed (not bridged/stored onward)
+            # when consume=True (default), or bridged-through when consume=False.
             if self._oracle_rns is not None:
                 try:
                     q = message.content
                     if isinstance(q, bytes):
                         q = q.decode('utf-8', errors='ignore')
-                    if self._oracle_rns.handle(source_hash.hex(), q, 0):
+                    reply = self._oracle_rns.handle(source_hash.hex(), q, 0)
+                    if reply is not None and self._oracle_rns.consume:
                         return
                 except Exception as e:
                     logger.debug(f"mesh oracle (rns) handle error: {e}")

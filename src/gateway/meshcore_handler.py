@@ -495,12 +495,14 @@ class MeshCoreHandler(BaseMessageHandler):
             msg = CanonicalMessage.from_meshcore(event)
 
             # Mesh oracle (read-only): answer a query DIRECTED back to the
-            # sender; a handled query is consumed (NOT bridged onward). A DM has
-            # no channel, so it is identity-gated only (channel=None) — the
+            # sender; a handled query is consumed (NOT bridged onward) when
+            # consume=True (default), or bridged-through when consume=False. A DM
+            # has no channel, so it is identity-gated only (channel=None) — the
             # MESHFORGE_ORACLE_MESHCORE_ALLOWLIST or answer-all grants it.
             if self._oracle is not None:
                 try:
-                    if self._oracle.handle(msg.source_address, msg.content, None):
+                    reply = self._oracle.handle(msg.source_address, msg.content, None)
+                    if reply is not None and self._oracle.consume:
                         return
                 except Exception as e:
                     logger.debug(f"meshcore oracle handle error: {e}")
@@ -542,13 +544,15 @@ class MeshCoreHandler(BaseMessageHandler):
             # Mesh oracle (read-only): a query on a whitelisted channel is
             # answered DIRECTED back to the asker (a DM, never a channel
             # broadcast — honors the "broadcast is not auto-answered" rail) and
-            # consumed (NOT bridged). Channel-gated via MESHFORGE_ORACLE_
-            # MESHCORE_CHANNELS; per-sender cooldown also dedups the dual-path
-            # (event vs poll) delivery of the same query.
+            # consumed (NOT bridged) when consume=True (default), or
+            # bridged-through when consume=False. Channel-gated via
+            # MESHFORGE_ORACLE_MESHCORE_CHANNELS; per-sender cooldown also dedups
+            # the dual-path (event vs poll) delivery of the same query.
             if self._oracle is not None:
                 try:
                     chan = (msg.metadata or {}).get('channel', 0)
-                    if self._oracle.handle(msg.source_address, msg.content, chan):
+                    reply = self._oracle.handle(msg.source_address, msg.content, chan)
+                    if reply is not None and self._oracle.consume:
                         return
                 except Exception as e:
                     logger.debug(f"meshcore oracle (channel) handle error: {e}")

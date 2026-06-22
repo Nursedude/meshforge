@@ -661,6 +661,23 @@ class TestMeshOracleMeshcoreWiring:
         handler._oracle.handle.assert_called_once_with('node789', 'status', 2)
         assert handler._message_queue.empty()  # consumed
 
+    def test_channel_query_bridge_through_when_consume_false(self, handler):
+        # consume=False (bridge-through): the oracle still answers the query
+        # locally, but the command keeps bridging so the far mesh's NOC sees it.
+        handler._oracle = MagicMock()
+        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        handler._oracle.consume = False
+        event = SimpleNamespace(type='CHANNEL_MSG_RECV', payload={
+            'text': 'status', 'sender': 'node789', 'destination': None,
+            'is_channel': True, 'channel': 2})
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(handler._on_channel_message(event))
+        finally:
+            loop.close()
+        handler._oracle.handle.assert_called_once_with('node789', 'status', 2)
+        assert not handler._message_queue.empty()  # answered AND bridged onward
+
     def test_non_query_passes_through_to_bridge(self, handler):
         handler._oracle = MagicMock()
         handler._oracle.handle.return_value = None  # not a query

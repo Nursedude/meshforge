@@ -685,17 +685,20 @@ class MQTTBridgeHandler(BaseMessageHandler):
             return
 
         # Mesh oracle (read-only): answer a query DIRECTED back to the sender,
-        # consumed (NOT bridged/stored onward). Channel-gated by NAME from the
-        # topic (fleet-stable) + additive node allowlist. Non-queries (incl. our
-        # own [non-tagged] replies — is_query()==False) pass through untouched;
-        # per-sender cooldown bounds airtime. Placed AFTER the loop guard so a
-        # gateway's own re-heard reply is already filtered, and BEFORE store/queue
-        # so a handled query is not also bridged to RNS.
+        # consumed (NOT bridged/stored onward) when consume=True (default).
+        # consume=False = bridge-through: still answered, but the command keeps
+        # bridging to RNS so the far mesh's NOC sees the activity. Channel-gated
+        # by NAME from the topic (fleet-stable) + additive node allowlist.
+        # Non-queries (incl. our own [non-tagged] replies — is_query()==False)
+        # pass through untouched; per-sender cooldown bounds airtime. Placed
+        # AFTER the loop guard so a gateway's own re-heard reply is already
+        # filtered, and BEFORE store/queue so a consumed query is not bridged.
         _oracle = getattr(self, "_oracle", None)
         if _oracle is not None:
             try:
                 chan_name = (self._topic_channel_name(topic) or "").lower()
-                if _oracle.handle(from_id, text, chan_name):
+                reply = _oracle.handle(from_id, text, chan_name)
+                if reply is not None and _oracle.consume:
                     return
             except Exception as e:
                 logger.debug(f"mqtt oracle handle error: {e}")

@@ -204,6 +204,34 @@ def test_from_env_passes_allowed_channels():
     assert r.handle("!unlisted", "status", channel=9) is None  # other channel
 
 
+# --------------------------------------------------------------------------- #
+# consume flag — per-mesh-local (default) vs bridge-through. The responder
+# always answers + returns the reply; the .consume attribute tells the CALLER
+# whether to take the query off the wire or let it keep bridging.
+# --------------------------------------------------------------------------- #
+def test_consume_defaults_true():
+    r, _, _ = _make(answer_all=True)
+    assert r.consume is True
+
+
+def test_from_env_consume_defaults_true():
+    r = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda *a: True,
+        env={"MESHFORGE_ORACLE_ENABLED": "1", "MESHFORGE_ORACLE_ALLOWLIST": "*"})
+    assert r is not None and r.consume is True
+
+
+def test_from_env_consume_false_still_answers():
+    # consume=False is bridge-through: the oracle STILL answers locally (handle
+    # returns the reply), only the caller's decision to consume changes.
+    r = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda *a: True,
+        env={"MESHFORGE_ORACLE_ENABLED": "1", "MESHFORGE_ORACLE_ALLOWLIST": "*",
+             "MESHFORGE_ORACLE_CONSUME": "0"})
+    assert r is not None and r.consume is False
+    assert r.handle("!anyone", "status")  # answered regardless of consume
+
+
 def test_from_env_rns_leg_uses_separate_allowlist_and_transport():
     # The RNS leg shares ENABLED but reads its own allowlist + tags transport.
     sent, logs = [], []

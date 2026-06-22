@@ -57,6 +57,7 @@ class MeshOracleResponder:
         answer_all: bool = False,
         cooldown_s: float = _DEFAULT_COOLDOWN_S,
         transport: str = "meshtastic",
+        consume: bool = True,
     ) -> None:
         self._snapshot_fn = snapshot_fn
         self._send_fn = send_fn
@@ -71,6 +72,13 @@ class MeshOracleResponder:
         self._answer_all = answer_all
         self._cooldown_s = max(0.0, cooldown_s)
         self._transport = transport
+        # consume=True (default): a handled query is taken off the wire (the
+        # caller returns, not bridging it onward) — the per-mesh-local rail.
+        # consume=False (bridge-through): the oracle still answers, but the
+        # caller lets the command continue to bridge to the other mesh, so a
+        # NOC on the far side sees the activity. Safe because the bridge's own
+        # loop-guard skips re-answering already-bridged (tagged) text.
+        self.consume = bool(consume)
         self._last_answer: Dict[str, float] = {}
 
     def _allowed(self, node_key: str, channel: Optional[int] = None) -> bool:
@@ -177,10 +185,14 @@ class MeshOracleResponder:
           the radio), or channel NAME strings on the MQTT leg (the topic name is
           fleet-stable). ``handle`` must be passed the matching token type.
         - ``MESHFORGE_ORACLE_COOLDOWN_S``: per-sender min seconds (default 30).
+        - ``MESHFORGE_ORACLE_CONSUME``: 1/true (default) = a handled query is
+          consumed (not bridged onward, per-mesh-local). 0/false = bridge-through:
+          the oracle answers AND the command still bridges to the other mesh.
         """
         env = os.environ if env is None else env
         if str(env.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() not in _TRUE:
             return None
+        consume = str(env.get("MESHFORGE_ORACLE_CONSUME", "1")).strip().lower() in _TRUE
         raw = str(env.get(allowlist_env, "")).strip()
         answer_all = raw == "*"
         allowlist = set() if answer_all else {
@@ -199,4 +211,5 @@ class MeshOracleResponder:
             answer_all=answer_all,
             cooldown_s=cooldown,
             transport=transport,
+            consume=consume,
         )
