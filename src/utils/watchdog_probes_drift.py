@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -2099,3 +2100,346 @@ def probe_aredn_source_dark(
             "debounce_streak": streak,
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: inherited-app drift (Action 5, 2026-06-21 upstream-app ownership)
+# An INHERITED upstream app checkout (origin NOT ours) carrying an
+# unversioned tracked-file code patch — a hand-edit that lives in no repo
+# we control and is one `git pull` from silent deletion (the rescued
+# .32 + dev-box bot patches were exactly this). Enforces policy §4.2.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_INHERITED_DRIFT_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/inherited_app_drift_debounce.json")
+
+# A git checkout is OWNED (skip it — already version-controlled) when its
+# origin URL names our GitHub org. Everything else with a remote is INHERITED
+# upstream — the risk class this probe polices. Matched case-insensitively
+# against the whole URL (covers https://github.com/Nursedude/… and
+# git@github.com:Nursedude/…).
+_OWNED_ORIGIN_MARKER = "nursedude"
+
+# Top-level basenames never treated as an inherited fleet app even with a
+# non-owned origin (PINS.md "Excluded from pinning"): standard tool installs
+# and separately-governed forks. wireclaw-dudeclaw is the dude-claw FIRMWARE
+# fork (its own FORK invariant — never commit on the dudeclaw branch, so it is
+# intentionally dirty); nvm is a tool, not a fleet app. (wireclaw also lives
+# nested under ~/src so the top-level scan misses it anyway — this is the
+# belt-and-suspenders guard.)
+_INHERITED_SCAN_EXCLUDE = frozenset({".nvm", "nvm", "wireclaw-dudeclaw"})
+
+# Tracked-file modifications that are MACHINE-GENERATED dependency metadata,
+# NOT a hand-edited "code patch" (policy §4.3 config≠code). npm/yarn/pip/cargo
+# regenerate these on install — the MeshSense package*.json churn is exactly
+# this and must NOT read as an unversioned source patch. Matched by exact
+# basename or a ``*.lock`` suffix. Deliberately small + generic: ONE constant,
+# no per-app allowlist that would drift (honest_failure_modes #5). A real
+# hand-edited source file is never on this list, so it still fires.
+_BENIGN_TRACKED_BASENAMES = frozenset({
+    "package.json", "package-lock.json", "npm-shrinkwrap.json",
+    "yarn.lock", "pnpm-lock.yaml", "poetry.lock", "Pipfile.lock",
+    "Cargo.lock", "composer.lock", "Gemfile.lock",
+})
+
+
+def _read_git_origin_url(repo_path: str) -> Optional[str]:
+    """Origin remote URL from ``<repo>/.git/config`` — read DIRECTLY, no git
+    subprocess.
+
+    Why not ``git remote get-url``? Root running git on a user-owned checkout
+    hits the 'dubious ownership' refusal, and spawning a process for the
+    owned-repo majority (every box has /opt/meshforge etc.) is wasteful. A flat
+    read of the config + a tiny INI walk classifies owned-vs-inherited with no
+    spawn at all. Returns the URL, or None when the file/section/key is absent
+    or unreadable — the caller then SKIPS the repo (can't classify → never
+    guess owned-vs-inherited; indeterminate is not 'inherited')."""
+    cfg = os.path.join(repo_path, ".git", "config")
+    try:
+        with open(cfg, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    in_origin = False
+    for raw in text.splitlines():
+        line = raw.strip()
+        if line.startswith("["):
+            # [remote "origin"] — tolerate whitespace variants.
+            in_origin = (line.replace(" ", "").lower() == '[remote"origin"]')
+            continue
+        if in_origin:
+            m = re.match(r"url\s*=\s*(\S+)", line)
+            if m:
+                return m.group(1)
+    return None
+
+
+def _git_tracked_modifications(
+    repo_path: str, git_path: str = "git", timeout_s: float = 10.0,
+) -> Optional[List[str]]:
+    """Tracked-file paths with uncommitted modifications in ``repo_path``
+    (``git status --porcelain --untracked-files=no --ignore-submodules=all``).
+
+    UNTRACKED files are excluded by the flag (Raven's raven.conf, ucode's
+    build/ artifacts → not a patch, the policy's config-not-code line).
+    SUBMODULES are excluded too (``--ignore-submodules=all``): a vendored
+    submodule's own working-tree churn is a dependency state, not a hand-edited
+    source patch in the PARENT app — MeshSense's ``api/webbluetooth`` /
+    ``api/meshtastic-js`` gitlinks show ``S.M.`` from npm/build activity and
+    must NOT read as a MeshSense source edit (verified against moc5's real tree
+    2026-06-21; the #78 synthetic-vs-real lesson — a clean-package.json fixture
+    missed this). Returns ``None`` on ANY git error/timeout — a git failure must
+    NEVER read as a clean tree (honest_failure_modes #1/#2). ``-c safe.directory``
+    lets sandboxed root status a user-owned checkout without the dubious-
+    ownership refusal; ``-c core.fileMode=false`` keeps a mere perms-bit diff
+    from masquerading as a content edit."""
+    try:
+        proc = subprocess.run(
+            [git_path,
+             "-c", f"safe.directory={repo_path}",
+             "-c", "core.fileMode=false",
+             "-C", repo_path,
+             "status", "--porcelain", "--untracked-files=no",
+             "--ignore-submodules=all"],
+            capture_output=True, text=True, timeout=timeout_s,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode != 0:
+        return None  # git refused/errored → indeterminate, not "clean"
+    files: List[str] = []
+    for line in proc.stdout.splitlines():
+        # porcelain v1: "XY <path>" (or "XY <old> -> <new>" for renames/copies).
+        if len(line) < 4:
+            continue
+        path = line[3:].strip()
+        if " -> " in path:
+            path = path.split(" -> ", 1)[1].strip()
+        path = path.strip('"')
+        if path:
+            files.append(path)
+    return files
+
+
+def _real_code_patches(files: List[str]) -> List[str]:
+    """From a tracked-modification list, drop machine-generated dependency
+    manifests/lockfiles (benign churn) and keep the real code/config patches —
+    the unversioned-source-edit defect (R1). A path is benign iff its basename
+    is a known manifest or ends in ``.lock``."""
+    out: List[str] = []
+    for p in files:
+        base = os.path.basename(p)
+        if base in _BENIGN_TRACKED_BASENAMES or base.endswith(".lock"):
+            continue
+        out.append(p)
+    return out
+
+
+def _iter_inherited_checkouts(
+    scan_roots,
+    *,
+    exclude=_INHERITED_SCAN_EXCLUDE,
+    origin_fn=_read_git_origin_url,
+    max_repos: int = 40,
+):
+    """Yield ``(repo_path, origin_url)`` for each INHERITED (non-owned-origin)
+    git checkout at the TOP LEVEL of any ``scan_roots`` dir.
+
+    Top-level only (bounded; deep-nested checkouts like ~/src/wireclaw-dudeclaw
+    are separately governed — PINS.md). Owned (Nursedude-origin) repos and the
+    explicit excludes are skipped; a repo whose origin can't be read is skipped
+    (can't classify → don't guess). Caps at ``max_repos`` (runaway guard)."""
+    seen = 0
+    for root in scan_roots:
+        try:
+            entries = sorted(os.scandir(root), key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if seen >= max_repos:
+                return
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            if entry.name in exclude:
+                continue
+            if not os.path.isdir(os.path.join(entry.path, ".git")):
+                continue
+            url = origin_fn(entry.path)
+            if not url:
+                continue  # no readable origin → can't classify, skip
+            if _OWNED_ORIGIN_MARKER in url.lower():
+                continue  # owned fork — version-controlled already
+            seen += 1
+            yield entry.path, url
+
+
+def _resolve_operator_home(service_user_fn=None) -> Optional[str]:
+    """Resolve the operator's home dir (where inherited app checkouts live),
+    root-context safe. Tries the live --user-bus operator first (the
+    cron_verdict/synth_soak pattern — linger is on for the mini units), then the
+    rnsd service user (the dominant drift-probe pattern). None if neither
+    resolves to a non-root home."""
+    # Primary: an operator uid with a live systemd --user bus.
+    if service_user_fn is None:
+        try:
+            from utils.fleet_test_runner import _find_operator_user
+            op = _find_operator_user()
+            if op:
+                import pwd
+                return pwd.getpwuid(op[0]).pw_dir
+        except Exception:
+            pass
+    # Fallback (or injected): the rnsd/service user.
+    try:
+        fn = service_user_fn
+        if fn is None:
+            from utils.rns_tree_perms import _read_rnsd_user
+            fn = _read_rnsd_user
+        user = fn()
+        if user and user != "root":
+            import pwd
+            return pwd.getpwnam(user).pw_dir
+    except Exception:
+        pass
+    return None
+
+
+def probe_inherited_app_drift(
+    *,
+    scan_roots=None,
+    service_user_fn=None,
+    repos=None,
+    git_path: str = "git",
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when an INHERITED (non-owned) upstream app checkout carries an
+    unversioned tracked-file code patch — the R1 defect the upstream-app
+    ownership policy (Action 5, 2026-06-21) exists to police.
+
+    The operator's core concern: *"a local patch on an inherited checkout gets
+    CLOBBERED on git pull + isn't version-controlled."* A hand-edited source
+    file on a checkout we don't own (origin not Nursedude) exists in no repo we
+    control and is one ``git pull`` from silent deletion (the rescued
+    .32 + dev-box bot patches were exactly this). This makes that hygiene defect
+    a continuously-monitored signal in /fleet + the mini rollup instead of a
+    once-a-quarter manual git survey.
+
+    Scope is deliberately **LOCAL problem-class detection**, NOT a comparison
+    against ``fleet-overlays/PINS.md`` (the human pin ledger): the probe
+    enforces the §4.2 invariant directly, PINS.md stays the record, and the two
+    never have to agree on a shared constant (honest_failure_modes #5 —
+    two-consumers-of-one-constant drift). PINS.md isn't even present on moc5
+    (the box that has inherited apps), so reading it would couple to an artifact
+    that isn't there.
+
+    The floating-``main`` / pin-drift leg is intentionally **NOT** a local fire
+    here. The fleet's chosen enforcement is *"record the pin, never auto-pull"*
+    (PINS.md), NOT detached HEAD — so firing on "on a branch" would contradict
+    the policy and false-page every intentionally-pinned moc5 app. Detecting
+    "drifted off the recorded pin" needs the ledger SHA, which belongs to a
+    future ledger/cross-box check, not this single-box local probe.
+
+    What it inspects per inherited checkout (top level of the operator home +
+    ``/opt``): ``git status --porcelain --untracked-files=no
+    --ignore-submodules=all``. Untracked config/build artifacts (Raven's
+    raven.conf, ucode's build/) and vendored-submodule churn (MeshSense's
+    ``api/webbluetooth`` gitlink) are excluded by the flags, and machine-
+    generated dependency manifests/lockfiles (the MeshSense npm package*.json
+    churn) are filtered out — so only a real hand-edited code/config patch in
+    the parent app fires.
+
+    Honest failure modes — every error path stays SILENT and never reads as a
+    clean tree:
+
+    - no inherited checkouts on this box → None (INERT — moc1/2/3, the common
+      case; absence of inherited apps is not a failure to report).
+    - operator home / scan root unresolvable or unreadable → that root is
+      skipped (indeterminate).
+    - a repo whose ``.git/config`` origin can't be read → skipped (can't
+      classify owned-vs-inherited; never guess).
+    - ``git status`` errors/times out for a repo → that repo contributes
+      nothing (a git failure must not read as clean) — others still evaluated.
+    - 2-tick debounce rides out an operator mid-edit / a fleet-roll window where
+      a patch is briefly uncommitted before being committed or reverted (the
+      patches this targets are long-lived, so debounce only suppresses blips).
+
+    Severity ``degraded`` — latent version-control hygiene debt, not an active
+    outage; the seed routes it to a side-effect-free escalation (no ntfy page).
+    Expected true-positives on today's fleet: the gated ``.32 ~/meshing-around``
+    bot patch (rescued to fleet-overlays, fork-built, deploy gated post-06-24)
+    and ``.32 ~/raphael-kit`` example edit — both real unversioned patches the
+    policy wants surfaced. ``repos`` may be injected for tests as a list of
+    ``(path, origin_url, modified_tracked_files)`` (the benign filter is applied
+    to the injected files too)."""
+    sp = state_path or DEFAULT_INHERITED_DRIFT_DEBOUNCE_PATH
+    try:
+        # 1. Build the {inherited checkout → real code patches} list.
+        dirty: List[Tuple[str, str, List[str]]] = []
+        if repos is None:
+            if scan_roots is None:
+                home = _resolve_operator_home(service_user_fn)
+                scan_roots = [r for r in (home, "/opt") if r]
+            for path, url in _iter_inherited_checkouts(scan_roots):
+                mods = _git_tracked_modifications(path, git_path)
+                if mods is None:
+                    continue  # git indeterminate for this repo — skip
+                patches = _real_code_patches(mods)
+                if patches:
+                    dirty.append((path, url, patches))
+        else:
+            for path, url, files in repos:
+                patches = _real_code_patches(list(files))
+                if patches:
+                    dirty.append((path, url, patches))
+
+        if not dirty:
+            _save_parity_streak(sp, 0)
+            return None  # no inherited patch anywhere → INERT / clean
+
+        # 2. Debounce — ride out a transient mid-edit / mid-roll window.
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        # 3. Build the signal (one aggregate; subject stable for edge-tracking).
+        dirty.sort(key=lambda r: r[0])
+        names = [os.path.basename(p.rstrip("/")) for p, _u, _f in dirty]
+        breakdown = {
+            os.path.basename(p.rstrip("/")): files for p, _u, files in dirty
+        }
+        shown = "; ".join(
+            f"{os.path.basename(p.rstrip('/'))} "
+            f"({', '.join(files[:3])}"
+            f"{' +%d more' % (len(files) - 3) if len(files) > 3 else ''})"
+            for p, _u, files in dirty[:4]
+        )
+        if len(dirty) > 4:
+            shown += f" (+{len(dirty) - 4} more app(s))"
+        detail = (
+            f"Unversioned code patch on {len(dirty)} INHERITED upstream "
+            f"checkout(s): {shown} | confirmed over {streak} consecutive ticks "
+            f"| these hand-edits exist in no repo we control and are one `git "
+            f"pull` from silent deletion (upstream-app ownership policy §4.2). "
+            f"Fix: rescue the patch into an owned fork or the tracked overlay "
+            f"(Nursedude/fleet-overlays), or upstream it as a PR, then converge "
+            f"the checkout clean and record the chosen pin in "
+            f"fleet-overlays/PINS.md."
+        )
+        return Signal(
+            cls="inherited_app_drift",
+            subject="inherited-apps",
+            severity="degraded",
+            detail=detail,
+            extra={
+                "apps": names,
+                "patches": breakdown,
+                "debounce_streak": streak,
+            },
+        )
+    except Exception:
+        return None

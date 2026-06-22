@@ -308,6 +308,19 @@
       "annotation": "2026-06-03: live systemd unit state diverges from the box's declared role (fleet_roles.yaml + deployment.json overrides) \u2014 the moc2 legibility class. Documented service_overrides do NOT fire. Fix: review python3 scripts/provision_role.py, then sudo --apply or correct the declared role. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
+      "id": "inherited_app_drift_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "inherited_app_drift",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-06-21 upstream-app ownership Action 5: an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch \u2014 a hand-edit that exists in no repo we control and is one `git pull` from silent deletion (the rescued .32 + dev-box bot patches were exactly this; policy \u00a74.2). Fix: rescue the patch into an owned fork or the tracked overlay (Nursedude/fleet-overlays), or upstream it as a PR, then converge the checkout clean and record the pin in fleet-overlays/PINS.md. Side-effect-free escalation; NO ntfy page (degraded, latent version-control hygiene debt, not an outage)."
+    },
+    {
       "id": "rns_rpc_unresponsive_any",
       "match": {
         "kind": "signal_class",

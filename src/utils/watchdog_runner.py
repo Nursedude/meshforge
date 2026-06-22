@@ -61,6 +61,7 @@ from utils.watchdog_probes import (
     probe_gateway_delivery_degraded,
     probe_fd_exhaustion,
     probe_history_write_failure,
+    probe_inherited_app_drift,
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
     probe_meshtasticd_phoneapi_wedge,
@@ -409,6 +410,20 @@ def run_all_probes(
     # moc2 lesson, 2026-06-03) — only undeclared divergence fires, debounced
     # 2 ticks to ride out fleet-roll windows.
     sig = probe_role_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # Inherited-app drift (Action 5, 2026-06-21 upstream-app ownership) — an
+    # INHERITED (non-Nursedude-origin) upstream app checkout carrying an
+    # unversioned tracked-file CODE patch: a hand-edit that exists in no repo we
+    # control and is one `git pull` from silent deletion (the rescued
+    # .32 + dev-box bot patches were exactly this; policy §4.2). Scans the top
+    # level of the operator home + /opt, classifies owned-vs-inherited by
+    # .git/config, and filters untracked artifacts + machine-generated manifests
+    # so only a real source patch fires. NOT gated on any service — inherited
+    # apps can live on any box; self-guards None (INERT) when there are none
+    # (moc1/2/3). 2-tick debounced.
+    sig = probe_inherited_app_drift()
     if sig is not None:
         signals.append(sig)
 

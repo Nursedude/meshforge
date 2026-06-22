@@ -41,6 +41,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_inherited_app_drift,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
     probe_kernel_reboot_pending,
@@ -148,6 +149,7 @@ def test_signal_classes_closed_enum_is_documented():
         "nomadnet_crashloop",           # 2026-06-19 — the NomadNet USER unit crashloop (the 10-day-silent NRestarts=7842 class; probe_service_inactive is structurally blind to user units); root-direct USER_UNIT= journal read, short live-window + newest-restart recency gate so post-fix history can't false-page; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; cross-refs the #69-fix-regression)
         "gateway_delivery_degraded",    # 2026-06-20 gateway-reliability arc A2 — OUTCOME monitoring from the gateway's OWN journal self-report (windowed delivered/attempted ratio collapse + a spike of EROFS / resource-assembly / forward-to-secondary errors, the exact 2026-06-20 wx-total-loss witness with a journal witness but no probe consumer); INERT off a box that doesn't run meshforge-gateway; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as nomadnet_crashloop)
         "resource_canary_degraded",     # 2026-06-20 gateway-reliability arc A1 (the OUTCOME source of truth) — the synthetic RESOURCE round-trip canary (meshforge-gateway-resource-canary.timer → src/lab/gateway_resource_canary) FAILED its verdict or went DARK; A1 actively PROVES the gateway delivers a multi-chunk RNS Resource round-trip (the path the 2026-06-20 EROFS broke while single-packet replies kept working); a FAIL "control back, resource NOT" is the EROFS signature; INERT off a box that doesn't run the canary; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_delivery_degraded)
+        "inherited_app_drift",          # 2026-06-21 upstream-app ownership Action 5 — an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch (one `git pull` from silent deletion; policy §4.2); LOCAL problem-class detection (scans operator home + /opt, classifies by .git/config, filters untracked artifacts + machine-generated manifests); floating-main/pin-drift leg deliberately NOT a local fire (the fleet enforces pins by ledger, not detached HEAD); INERT off a box with no inherited checkouts; documented inline in the SIGNAL_CLASSES comment + .claude/plans/upstream_app_ownership_policy_2026_06_21.md §9 (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded)
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -5198,3 +5200,199 @@ class TestGatewayDeliveryRealQuery:
         with ctx:
             blocks = _gateway_delivery_blocks("u", "30min")
         assert blocks == [(1781943622.0, 5, 5, 0, 5, 4, 1)]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-06-21 — inherited_app_drift (upstream-app ownership Action 5): an
+# INHERITED upstream app checkout carries an unversioned tracked-file code
+# patch — one `git pull` from silent deletion (the rescued .32 + dev-box
+# bot patches were exactly this).
+# ─────────────────────────────────────────────────────────────────────
+
+from utils.watchdog_probes_drift import (  # noqa: E402
+    _iter_inherited_checkouts,
+    _read_git_origin_url,
+    _real_code_patches,
+)
+
+# A real inherited patch (raphael-kit's hand-edited example) and the gated
+# .32 bot patch — the two true-positives the policy wants surfaced.
+_INHERITED_DIRTY = ("/home/op/raphael-kit",
+                    "https://github.com/sunfounder/raphael-kit",
+                    ["python/1.1.7_Lcd1602.py"])
+
+
+def _iad_kw(tmp_path, repos):
+    return dict(repos=repos, state_path=str(tmp_path / "iad_debounce.json"))
+
+
+class TestInheritedAppDrift:
+    """Action-5 drift probe: an inherited upstream checkout with an
+    unversioned tracked-file code patch (R1) — the operator-named failure
+    class. LOCAL detection, INERT off-box, benign churn never false-fires."""
+
+    # ----- classification helpers (no subprocess) -----
+
+    def test_owned_origin_is_skipped_inherited_is_kept(self, tmp_path):
+        """_iter_inherited_checkouts keeps only non-Nursedude origins, reading
+        .git/config directly (no git subprocess)."""
+        for name, url in [
+            ("MeshSense", "https://github.com/Affirmatech/MeshSense"),
+            ("meshforge", "git@github.com:Nursedude/meshforge.git"),
+            ("reticulum-meshchat", "https://github.com/Nursedude/reticulum-meshchat"),
+        ]:
+            repo = tmp_path / name
+            (repo / ".git").mkdir(parents=True)
+            (repo / ".git" / "config").write_text(
+                '[core]\n\tbare = false\n[remote "origin"]\n'
+                f"\turl = {url}\n\tfetch = +refs/heads/*\n")
+        found = sorted(p for p, _u in _iter_inherited_checkouts([str(tmp_path)]))
+        # Only the Affirmatech (non-owned) checkout survives.
+        assert found == [str(tmp_path / "MeshSense")]
+
+    def test_origin_unreadable_repo_is_skipped(self, tmp_path):
+        """A repo whose .git/config has no origin URL can't be classified →
+        skipped (indeterminate, never guessed inherited)."""
+        repo = tmp_path / "weird"
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".git" / "config").write_text("[core]\n\tbare = false\n")
+        assert _read_git_origin_url(str(repo)) is None
+        assert list(_iter_inherited_checkouts([str(tmp_path)])) == []
+
+    def test_excluded_basenames_never_inherited(self, tmp_path):
+        """nvm / wireclaw-dudeclaw (tool + separately-governed firmware fork)
+        are excluded even with a non-owned origin (PINS.md)."""
+        for name in ("nvm", "wireclaw-dudeclaw"):
+            repo = tmp_path / name
+            (repo / ".git").mkdir(parents=True)
+            (repo / ".git" / "config").write_text(
+                '[remote "origin"]\n\turl = https://github.com/someone/' + name + "\n")
+        assert list(_iter_inherited_checkouts([str(tmp_path)])) == []
+
+    # ----- benign-manifest filter -----
+
+    def test_benign_manifests_are_not_code_patches(self):
+        """npm/pip/cargo machine-generated metadata is NOT a code patch — the
+        MeshSense package*.json churn must not read as a source edit."""
+        benign = ["package.json", "package-lock.json", "yarn.lock",
+                  "sub/poetry.lock", "Cargo.lock", "Pipfile.lock"]
+        assert _real_code_patches(benign) == []
+
+    def test_real_source_edit_survives_the_filter(self):
+        """A hand-edited source file IS a patch even next to benign churn."""
+        mixed = ["package-lock.json", "mesh_bot.py", "modules/settings.py"]
+        assert _real_code_patches(mixed) == ["mesh_bot.py", "modules/settings.py"]
+
+    # ----- probe behavior (repos injected) -----
+
+    def test_inert_when_no_inherited_checkouts(self, tmp_path):
+        """The moc1/2/3 case: no inherited apps → None every tick, streak 0."""
+        for _ in range(3):
+            assert probe_inherited_app_drift(**_iad_kw(tmp_path, [])) is None
+        assert json.loads(
+            (tmp_path / "iad_debounce.json").read_text())["streak"] == 0
+
+    def test_inert_when_only_benign_churn(self, tmp_path):
+        """MeshSense npm churn only → never fires, streak stays 0 (must NOT
+        false-fire — the blueprint's named must-not case)."""
+        meshsense = ("/home/op/MeshSense",
+                     "https://github.com/Affirmatech/MeshSense",
+                     ["package.json", "package-lock.json"])
+        for _ in range(3):
+            assert probe_inherited_app_drift(
+                **_iad_kw(tmp_path, [meshsense])) is None
+        assert json.loads(
+            (tmp_path / "iad_debounce.json").read_text())["streak"] == 0
+
+    def test_fires_on_unversioned_patch_after_debounce(self, tmp_path):
+        """The real R1 defect: silent on tick 1 (debounce), degraded on tick 2
+        naming the app + the modified file + the rescue fix."""
+        repos = [_INHERITED_DIRTY]
+        assert probe_inherited_app_drift(**_iad_kw(tmp_path, repos)) is None
+        sig = probe_inherited_app_drift(**_iad_kw(tmp_path, repos))
+        assert sig is not None
+        assert sig.cls == "inherited_app_drift"
+        assert sig.severity == "degraded"
+        assert sig.subject == "inherited-apps"
+        assert "raphael-kit" in sig.detail
+        assert "1.1.7_Lcd1602.py" in sig.detail
+        assert "fleet-overlays" in sig.detail  # the rescue fix is named
+        assert sig.extra["apps"] == ["raphael-kit"]
+        assert sig.extra["patches"]["raphael-kit"] == ["python/1.1.7_Lcd1602.py"]
+        assert sig.extra["debounce_streak"] == 2
+
+    def test_clean_tick_resets_streak(self, tmp_path):
+        """dirty → clean → dirty must NOT fire (needs two fresh dirty ticks)."""
+        repos = [_INHERITED_DIRTY]
+        assert probe_inherited_app_drift(**_iad_kw(tmp_path, repos)) is None
+        assert probe_inherited_app_drift(**_iad_kw(tmp_path, [])) is None
+        assert json.loads(
+            (tmp_path / "iad_debounce.json").read_text())["streak"] == 0
+        assert probe_inherited_app_drift(**_iad_kw(tmp_path, repos)) is None
+        assert probe_inherited_app_drift(**_iad_kw(tmp_path, repos)) is not None
+
+    def test_aggregates_multiple_apps(self, tmp_path):
+        """Two dirty inherited apps → one aggregate signal listing both."""
+        repos = [
+            _INHERITED_DIRTY,
+            ("/home/op/meshing-around",
+             "https://github.com/SpudGunMan/meshing-around",
+             ["mesh_bot.py", "modules/settings.py"]),
+        ]
+        probe_inherited_app_drift(**_iad_kw(tmp_path, repos))
+        sig = probe_inherited_app_drift(**_iad_kw(tmp_path, repos))
+        assert sig is not None
+        assert set(sig.extra["apps"]) == {"raphael-kit", "meshing-around"}
+        assert "2 INHERITED" in sig.detail
+
+    def test_never_raises_on_bad_injected_repo(self, tmp_path):
+        """A malformed injected tuple is swallowed → None, never crashes the
+        tick (the broad-except backstop)."""
+        assert probe_inherited_app_drift(
+            **_iad_kw(tmp_path, [("only-one-field",)])) is None
+
+    def test_git_status_error_reads_as_indeterminate_not_clean(self, tmp_path):
+        """A git failure for a repo must NOT read as a clean tree — the repo
+        contributes nothing, and with no other dirt the probe is INERT (not a
+        false 'all clean confirmed'). Exercises the live discovery path with a
+        git binary that always errors."""
+        repo = tmp_path / "MeshSense"
+        (repo / ".git").mkdir(parents=True)
+        (repo / ".git" / "config").write_text(
+            '[remote "origin"]\n\turl = https://github.com/Affirmatech/MeshSense\n')
+        sig = probe_inherited_app_drift(
+            scan_roots=[str(tmp_path)],
+            git_path="/nonexistent/git-binary",
+            state_path=str(tmp_path / "iad_debounce.json"),
+        )
+        assert sig is None  # git unreadable → skipped, not fired, not "clean-fired"
+
+    def test_git_status_carries_the_safety_flags(self):
+        """Pin the real-data fix (verified vs moc5 2026-06-21): the git status
+        invocation MUST carry --untracked-files=no (drop Raven/ucode artifacts),
+        --ignore-submodules=all (drop MeshSense's api/webbluetooth gitlink churn
+        — the #78 catch a clean-package.json fixture missed), safe.directory (no
+        dubious-ownership refusal under sandboxed root), and core.fileMode=false
+        (a perms-bit diff is not a content edit). Dropping any reintroduces a
+        false-fire/false-clean class."""
+        from utils.watchdog_probes_drift import _git_tracked_modifications
+        captured = {}
+
+        class _Proc:
+            returncode = 0
+            stdout = ""
+
+        def _fake_run(argv, **kw):
+            captured["argv"] = argv
+            return _Proc()
+
+        with patch("utils.watchdog_probes_drift.subprocess.run", _fake_run):
+            assert _git_tracked_modifications("/some/repo") == []
+        argv = captured["argv"]
+        assert "--untracked-files=no" in argv
+        assert "--ignore-submodules=all" in argv
+        assert "safe.directory=/some/repo" in argv
+        assert "core.fileMode=false" in argv
+
+    def test_signal_class_registered(self):
+        assert "inherited_app_drift" in SIGNAL_CLASSES

@@ -1,6 +1,6 @@
 # Upstream App Ownership & Version-Control Policy
 
-> **Status:** IN PROGRESS (2026-06-21) — inventory complete, policy + decisions approved. **DONE:** Action 1 (rescue → version control); Action 2 (inherited-app pins documented in `fleet-overlays/PINS.md`); Action 3 (moc5 meshchat → our fork, provenance no-restart); Action 4 (bot tier = T2, fork BUILT, VolcanoAI canary green). **GATED post-06-24:** the `meshing-around` `.32` deploy + the `meshchat` functional modernization. **Remain:** Action 5 (drift check — the pin-enforcement probe, now has its `PINS.md` input) + low-prio on-box dirty-tree cleanups.
+> **Status:** ACTIONS 1–5 DONE (2026-06-21). **DONE:** Action 1 (rescue → version control); Action 2 (inherited-app pins documented in `fleet-overlays/PINS.md`); Action 3 (moc5 meshchat → our fork, provenance no-restart); Action 4 (bot tier = T2, fork BUILT, VolcanoAI canary green); **Action 5 (drift-check probe `inherited_app_drift` — BUILT + real-data verified read-only across VolcanoAI/moc5/.32; §9)**. **GATED post-06-24:** the `meshing-around` `.32` deploy, the `meshchat` functional modernization, and Action 5's watchdog-restart + seed-promotion activation. **Remain:** only the low-prio on-box dirty-tree cleanups (which the new probe now surfaces).
 > **Why:** Operator: *"we need to own more of this to avoid upstream issues — we do this in several instances."* Triggered by fixing `meshing_around_meshforge` #191 (INI-coercion startup crash) then finding upstream `SpudGunMan/meshing-around` carries the same root cause — and that we run a **mix** of owned forks and unversioned upstream checkouts across the fleet.
 > **Companion to:** the RNS/LXMF fork governance (`persistent_issues.md` SSOT + the upstream-dependency-governance memo). This extends that discipline beyond the two protocol forks.
 
@@ -91,7 +91,7 @@ These apply to **every** inherited app, independent of tier:
 2. **✅ DONE 2026-06-21 (documented pins) — `fleet-overlays/PINS.md`.** Read-only fleet survey recorded the chosen SHA for every remaining inherited app: MeshSense/Raven/ucode/usign (moc5) + raphael-kit (`.32`). The load-bearing inherited apps are already fork-managed (bot = Action 4, meshchat = Action 3), so the pin universe is just **low-value moc5 tooling + a HW-kit example** — almost all "dirty" flags are untracked config/build artifacts, not code. moc/moc1/moc2/moc3 have **no** inherited apps. **Enforcement = the ledger + the Action-5 drift check, NOT detached HEAD** (which is fragile). Surfaced two R1 cleanups (deliberate, low-prio): `meshing_around_meshforge`'s `config.enhanced.ini` drift on `.32` (our *own* fork) + raphael-kit's example edit. On-box dirty-tree cleanup is the only residual, and it's not urgent.
 3. **✅ DONE 2026-06-21 (provenance) — R3 reconciled on moc5.** Repointed moc5's `~/reticulum-meshchat` origin `liamcottle` → **`Nursedude/reticulum-meshchat`** (upstream link preserved), ff'd to fork `master` `6ae50f1` (the fork's only delta is a docs-only `CLAUDE.md`). **No restart** — meshchat pid 1086 unchanged, `rnstatus OK`, zero soak impact. Decision C satisfied. ⚠️ The fork is itself **9 behind upstream** and its datetime fix (`2f519d9e`) is on a side branch, not `master` — so making moc5 *current+fixed* is a **functional** modernization (fork-sync + datetime fix + meshchat restart = the #69 risk the provenance step avoided), gated post-06-24 in `~/deferred_work.json` (`meshchat-fork-modernization`). moc5 was already at this old base pre-convergence, so no regression.
 4. **✅ DECIDED + BUILT 2026-06-21 — bot tier = T2 (real fork).** Operator chose T2 (§7B). **Phase A (build) DONE:** forked `SpudGunMan/meshing-around` → **`Nursedude/meshing-around`** (public); `meshforge` branch based on `fde22f75ea` (v1.9.9.8, the newer running version) carries the reconciled **union** (commit `22915ce`: `.32`'s dual-bridge dedup + ACK/NAK + tag-strip applied at its native base = byte-faithful; + VolcanoAI's `ignoreDMs` + `antiSpam`-config-overridable, which supersedes `.32`'s hardcode) + `FORK.md` (`a15ca63e`). `python3 -m py_compile` clean on all 3 files (BELIEVED-correct; runtime-proven at deploy). `main` mirrors upstream. **Phase B (deploy): ✅ VolcanoAI canary GREEN 2026-06-21** — switched `/opt/meshing-around` onto the fork (`meshforge@a15ca63`); `venv` `py_compile` rc=0 (Python 3.13.5) + `import modules.settings` resolves `antiSpam=False`/`ignoreDMs=True` config-driven = the fork VERIFIED-loads under the real runtime and the FORK.md deploy steps are proven on a real box (no bot runs on the dev box → VolcanoAI now converged onto the fork). **`.32` production deploy remains** (operator-timing; live radio runtime proven there); tracked in `~/deferred_work.json` (`meshing-around-fork-deploy`).
-5. **Add the drift check** (rule §4.5) once the trees are clean.
+5. **✅ DONE 2026-06-21 — the drift check** (rule §4.5). `probe_inherited_app_drift` built, wired, seeded, tested, and REAL-DATA VERIFIED read-only across VolcanoAI/moc5/.32 (caught + fixed a MeshSense submodule false-positive in the process). Local detection, not PINS.md-coupled. Activation gated post-06-24 (mf.5 soak). Full record in §9.
 
 ---
 
@@ -118,16 +118,44 @@ These apply to **every** inherited app, independent of tier:
 
 ---
 
-## 9. Action 5 — drift-check probe: build blueprint (for a fresh, focused session)
+## 9. Action 5 — drift-check probe ✅ BUILT + REAL-DATA VERIFIED 2026-06-21
 
-The last substantive item. A new watchdog probe enforcing the policy §4
-invariants. **Build it fresh** — it's self-contained; everything it needs is
-here + `fleet-overlays/PINS.md` + the probe-activation runbook. Standard probe
-discipline (#79/#80): new signal class + **closed-enum gate**, `run_all_probes`
-wiring, **BOTH role seeds + seed-coverage gate**, tests red-first, the
-**honest-failure-modes 9-pt pass**, `degraded`-only, 2-tick debounce,
-**self-guard INERT off-box**. **Activation GATED** (watchdog restart +
-`promote_seed_rules.py --apply`) — same pattern as the resource-canary (A1).
+**DONE.** `probe_inherited_app_drift` (signal class `inherited_app_drift`)
+shipped: closed-enum entry + documented-set test, `run_all_probes` wiring,
+BOTH role seeds (`inherited_app_drift_any`, propose_escalation/no-ntfy) + the
+seed-coverage + reachability gates green, honest-failure-modes pass, `degraded`
+only, 2-tick debounce, INERT off-box. **15 tests + the full local suite (501)
++ lint exit 0.** Lives in `src/utils/watchdog_probes_drift.py`.
+
+**Design decision settled = LOCAL problem-class detection** (the lean): scans
+the top level of the operator home + `/opt`, reads `.git/config` to classify
+owned-vs-inherited (NO `PINS.md` coupling — honest_failure_modes #5; PINS.md
+isn't even on moc5), runs `git status --porcelain --untracked-files=no
+--ignore-submodules=all`, then filters machine-generated manifests/lockfiles.
+The **floating-`main`/pin-drift leg is deliberately NOT a local fire** — the
+fleet enforces pins by ledger + never-auto-pull (PINS.md), NOT detached HEAD,
+so firing on "on a branch" would contradict the policy and false-page every
+intentionally-pinned moc5 app. That leg is a future ledger/cross-box check.
+
+**REAL-DATA VERIFIED (read-only, 2026-06-21) — the #78 synthetic-vs-real
+discipline, and it paid off:**
+- **VolcanoAI**: all 13 top-level checkouts are `Nursedude/*` (incl. the
+  converged `/opt/meshing-around`) → owned → **INERT** ✓ (full probe run).
+- **moc5**: MeshSense / Raven / ucode-src / usign-src classified INHERITED;
+  Raven/ucode/usign clean; MeshSense's churn is `package*.json` (benign) **plus
+  `api/webbluetooth` — a git SUBMODULE** (`160000`/`S.M.`). A clean-package.json
+  fixture MISSED this; the real tree caught it. Fix: added `--ignore-submodules=all`
+  (a submodule's churn is a dependency state, not the parent app's source).
+  Post-fix MeshSense → `_real_code_patches=[]` → **INERT** ✓ (must-not-false-fire,
+  honored). Pinned by a flag-presence regression test.
+- **.32** (`wh6gxzTRDEV`): fires `degraded` on the 2 expected true-positives —
+  `meshing-around` (`mesh_bot.py`,`modules/settings.py`; gated deploy) +
+  `raphael-kit` (`python/1.1.7_Lcd1602.py`) ✓.
+
+**Activation GATED** (watchdog restart + `promote_seed_rules.py --apply`) — same
+pattern as the resource-canary (A1); the code ships INERT (probe-activation
+runbook). Recorded in `deferred_work.json` (post-06-24, after the mf.5 RNS soak).
+`rules_seed_drift` is the designed convergence nudge until the seed is promoted.
 
 **What it enforces (policy §4):** for each INHERITED (non-`Nursedude`-origin)
 git checkout on a box —

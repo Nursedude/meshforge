@@ -84,6 +84,7 @@ from utils.watchdog_probes_drift import (
     probe_dep_version_drift,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_inherited_app_drift,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
     probe_foundation_drift,
@@ -96,6 +97,8 @@ from utils.watchdog_probes_drift import (
     _parse_kernel_release,
     _plan_role_actions,
     _read_declared_root_topic,
+    _read_git_origin_url,
+    _real_code_patches,
 )
 from utils.watchdog_probes_gateway import (
     probe_delivery_confirmation_stall,
@@ -151,6 +154,7 @@ __all__ = [
     "probe_cron_verdict_stale",
     "probe_kernel_reboot_pending",
     "probe_aredn_source_dark",
+    "probe_inherited_app_drift",
     "probe_fleet_box_unreachable",
     "probe_host_frozen",
     "probe_ntfy_loopback",
