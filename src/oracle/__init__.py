@@ -26,6 +26,7 @@ from .snapshot import (
     WATCHDOG_STATE_PATH,
     NocSnapshot,
     NodeRec,
+    fetch_api_status,
     read_snapshot,
 )
 
@@ -34,6 +35,7 @@ __all__ = [
     "is_query",
     "MeshOracleResponder",
     "read_snapshot",
+    "fetch_api_status",
     "NocSnapshot",
     "NodeRec",
     "MAX_REPLY_BYTES",

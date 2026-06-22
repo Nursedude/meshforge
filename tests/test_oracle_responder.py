@@ -157,3 +157,20 @@ def test_from_env_enabled_empty_allowlist_is_fail_closed():
         env={"MESHFORGE_ORACLE_ENABLED": "1"})  # enabled, no allowlist
     assert r is not None
     assert r.handle("!anyone", "status") is None  # answers no one
+
+
+def test_from_env_rns_leg_uses_separate_allowlist_and_transport():
+    # The RNS leg shares ENABLED but reads its own allowlist + tags transport.
+    sent, logs = [], []
+    env = {"MESHFORGE_ORACLE_ENABLED": "1",
+           "MESHFORGE_ORACLE_ALLOWLIST": "!meshnode",          # mesh leg only
+           "MESHFORGE_ORACLE_RNS_ALLOWLIST": "deadbeefcafe"}    # rns leg only
+    r = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda t, d, c: sent.append((t, d)) or True,
+        log_fn=logs.append, env=env, transport="rns",
+        allowlist_env="MESHFORGE_ORACLE_RNS_ALLOWLIST")
+    assert r is not None
+    # answers the RNS source-hash, NOT the mesh-only id
+    assert r.handle("deadbeefcafe", "status")
+    assert r.handle("!meshnode", "status") is None
+    assert logs[-1]["transport"] == "rns"

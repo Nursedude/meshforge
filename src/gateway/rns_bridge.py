@@ -233,6 +233,16 @@ class RNSMeshtasticBridge(
         self._status_callbacks = []
         self._callbacks_lock = threading.Lock()
 
+        # Mesh oracle (read-only) — RNS/LXMF leg. Default OFF (opt-in via
+        # MESHFORGE_ORACLE_ENABLED + MESHFORGE_ORACLE_RNS_ALLOWLIST); inert
+        # otherwise (self._oracle_rns stays None and the _on_lxmf_receive hook
+        # no-ops). Building it must NEVER break the bridge.
+        self._oracle_rns = None
+        try:
+            self._oracle_rns = self._build_rns_oracle_responder()
+        except Exception as e:  # pragma: no cover - defensive
+            logger.debug(f"mesh oracle (rns) not initialized: {e}")
+
         # Thread-safe stats updates
         self._stats_lock = threading.Lock()
 
@@ -1121,6 +1131,47 @@ class RNSMeshtasticBridge(
     # _suppress_signal_in_thread, _init_rns_main_thread, _connect_rns,
     # _setup_lxmf, _disconnect_rns
 
+    def _build_rns_oracle_responder(self):
+        """Construct the read-only mesh-oracle RNS responder, or None if disabled.
+
+        Mirror of the Meshtastic leg (meshtastic_handler._build_oracle_responder)
+        for the LXMF/RNS side. Default OFF — env checked BEFORE importing the
+        oracle. Replies via the existing directed send_to_rns; reads a read-only
+        NOC snapshot enriched with /api/status; appends to the shared audit log
+        with transport="rns". The oracle never controls services or mutates
+        config (autonomy rung 1 — report). Uses a separate allowlist
+        (MESHFORGE_ORACLE_RNS_ALLOWLIST) keyed on LXMF source-hash hex.
+        """
+        import os
+        if str(os.environ.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() \
+                not in ("1", "true", "yes", "on"):
+            return None
+        from oracle import fetch_api_status, read_snapshot
+        from oracle.responder import MeshOracleResponder
+
+        def _snapshot():
+            return read_snapshot(status=fetch_api_status())
+
+        def _send(text: str, dest: str, channel: int) -> bool:
+            try:
+                return bool(self.send_to_rns(text, destination_hash=bytes.fromhex(dest)))
+            except Exception as e:
+                logger.debug(f"mesh oracle (rns) send failed: {e}")
+                return False
+
+        def _log(record: dict) -> None:
+            try:
+                from mini_dudeai.history import append_jsonl
+                from utils.paths import get_real_user_home
+                path = str(get_real_user_home() / "mesh_oracle_log.jsonl")
+                append_jsonl(path, [record], 2 * 1024 * 1024)
+            except Exception as e:  # pragma: no cover - best-effort audit log
+                logger.debug(f"mesh oracle (rns) log append failed: {e}")
+
+        return MeshOracleResponder.from_env(
+            snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
+            transport="rns", allowlist_env="MESHFORGE_ORACLE_RNS_ALLOWLIST")
+
     def _on_lxmf_receive(self, message):
         """Handle incoming LXMF message"""
         try:
@@ -1172,6 +1223,19 @@ class RNSMeshtasticBridge(
                     'lxmf_fields': lxmf_fields,
                 }
             )
+
+            # Mesh oracle (read-only, RNS leg): answer a query directed back to
+            # the LXMF source — off-grid, no cloud. Default OFF; never breaks the
+            # bridge; a handled query is consumed (not bridged/stored onward).
+            if self._oracle_rns is not None:
+                try:
+                    q = message.content
+                    if isinstance(q, bytes):
+                        q = q.decode('utf-8', errors='ignore')
+                    if self._oracle_rns.handle(source_hash.hex(), q, 0):
+                        return
+                except Exception as e:
+                    logger.debug(f"mesh oracle (rns) handle error: {e}")
 
             # Store incoming message for UI/history
             try:

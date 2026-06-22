@@ -25,6 +25,7 @@ from oracle import (
     NodeRec,
     WATCHDOG_STALE_S,
     answer,
+    fetch_api_status,
     is_query,
     read_snapshot,
 )
@@ -293,11 +294,25 @@ def test_stale_thresholds_match_api_status_readers():
 # --------------------------------------------------------------------------- #
 # THE INVARIANT: read-only (autonomy rung 1)
 # --------------------------------------------------------------------------- #
-def test_oracle_module_is_read_only():
+def test_oracle_intent_engine_is_pure_no_io():
+    """intents.py is the pure brain: zero I/O, zero side effects of any kind."""
+    import oracle
+    src = (pathlib.Path(oracle.__file__).parent / "intents.py").read_text(encoding="utf-8")
+    for tok in ("subprocess", "os.system", "os.popen", "Popen", "systemctl",
+                "shell=True", ".write(", "open(", "urlopen", "urllib", "socket",
+                "requests", "send_text", "send_to_rns"):
+        assert tok not in src, f"intents.py must do no I/O — found {tok!r}"
+
+
+def test_oracle_never_controls_services_or_mutates():
+    """No oracle module shells out, controls services, writes files directly,
+    or calls the gateway's mutating send paths. The sanctioned rung-1 I/O is:
+    read-only file + HTTP reads (snapshot), a directed reply via the injected
+    send_fn, and an append-only audit log via the injected log_fn."""
     import oracle
     pkg = pathlib.Path(oracle.__file__).parent
     forbidden = ("subprocess", "os.system", "os.popen", "Popen", "systemctl",
-                 "shell=True", "send_text", "send_to_rns", ".write(", "open(")
+                 "shell=True", ".write(", "send_text", "send_to_rns")
     offenders = []
     for py in sorted(pkg.glob("*.py")):
         src = py.read_text(encoding="utf-8")
@@ -305,6 +320,43 @@ def test_oracle_module_is_read_only():
             if tok in src:
                 offenders.append(f"{py.name}:{tok}")
     assert not offenders, f"read-only invariant violated: {offenders}"
+
+
+# --------------------------------------------------------------------------- #
+# fetch_api_status — read-only /api/status enrichment (degrade to None)
+# --------------------------------------------------------------------------- #
+def test_fetch_api_status_success():
+    got = fetch_api_status(_get=lambda url, timeout: b'{"directory":{"total":5}}')
+    assert got == {"directory": {"total": 5}}
+
+
+def test_fetch_api_status_bad_json_returns_none():
+    assert fetch_api_status(_get=lambda url, timeout: b"{not json") is None
+
+
+def test_fetch_api_status_empty_body_returns_none():
+    assert fetch_api_status(_get=lambda url, timeout: None) is None
+
+
+def test_fetch_api_status_non_dict_returns_none():
+    assert fetch_api_status(_get=lambda url, timeout: b"[1,2,3]") is None
+
+
+def test_fetch_api_status_exception_returns_none():
+    def boom(url, timeout):
+        raise OSError("connection refused")
+    assert fetch_api_status(_get=boom) is None
+
+
+def test_read_snapshot_uses_fetched_status(tmp_path):
+    status = {"directory": {"total": 9},
+              "federation": {"peer_status": [{"ok": True}, {"ok": False}]}}
+    fetched = fetch_api_status(_get=lambda u, t: json.dumps(status).encode())
+    snap = read_snapshot(home=tmp_path, watchdog_path=tmp_path / "x.json",
+                         status=fetched, now=10_000.0)
+    assert snap.directory_total == 9
+    assert snap.federation_peers == 2 and snap.federation_ok == 1
+    assert "fleet:9" in answer("status", snap) and "fed:1/2" in answer("status", snap)
 
 
 # --------------------------------------------------------------------------- #

@@ -147,8 +147,14 @@ class MeshtasticHandler(BaseMessageHandler):
         if str(os.environ.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() \
                 not in ("1", "true", "yes", "on"):
             return None
-        from oracle import read_snapshot
+        from oracle import fetch_api_status, read_snapshot
         from oracle.responder import MeshOracleResponder
+
+        def _snapshot():
+            # Enrich with the local /api/status summary (directory + federation)
+            # so `status` reports real fleet numbers; degrades to fleet:? on any
+            # fetch failure (read-only, never perturbs the radio).
+            return read_snapshot(status=fetch_api_status())
 
         def _send(text: str, dest: str, channel: int) -> bool:
             return self.send_text(text, destination=dest, channel=channel)
@@ -163,7 +169,7 @@ class MeshtasticHandler(BaseMessageHandler):
                 logger.debug(f"mesh oracle log append failed: {e}")
 
         return MeshOracleResponder.from_env(
-            snapshot_fn=read_snapshot, send_fn=_send, log_fn=_log)
+            snapshot_fn=_snapshot, send_fn=_send, log_fn=_log)
 
     @property
     def interface(self):

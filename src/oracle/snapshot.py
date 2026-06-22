@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -29,6 +30,35 @@ from typing import Any, Dict, List, Optional, Tuple
 WATCHDOG_STATE_PATH = Path("/var/lib/meshforge/watchdog.json")
 WATCHDOG_STALE_S = 300.0  # mirror _map_status_endpoints._WATCHDOG_STALE_S
 MINI_STALE_S = 300.0      # mirror _map_status_endpoints._MINI_STALE_S
+DEFAULT_STATUS_URL = "http://localhost:5000/api/status"
+
+
+def _http_get(url: str, timeout: float):
+    with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 (localhost only)
+        if getattr(resp, "status", 200) != 200:
+            return None
+        return resp.read()
+
+
+def fetch_api_status(url: str = DEFAULT_STATUS_URL, timeout: float = 3.0,
+                     _get=None) -> Optional[dict]:
+    """Read-only fetch of the local ``/api/status`` summary, or ``None`` on any
+    failure.
+
+    A short, bounded localhost GET that degrades to ``None`` on timeout / non-200
+    / bad JSON — so the snapshot stays honestly *unknown* (``fleet:?``) rather
+    than fabricating fleet numbers. This is read-only (the same data the map
+    serves) and never perturbs the radio. ``_get`` is injectable for tests.
+    """
+    getter = _get or _http_get
+    try:
+        raw = getter(url, timeout)
+        if not raw:
+            return None
+        payload = json.loads(raw)
+        return payload if isinstance(payload, dict) else None
+    except Exception:
+        return None
 
 
 @dataclass

@@ -4536,3 +4536,28 @@ class TestTripOpenFailureVisibleIssue74:
         # The default hook still ran: wedge counter bumped.
         assert bounded_rpc.get_wedge_counters().get("rnsd.has_path") == 1
         bounded_rpc._reset_counters_for_tests()
+
+
+class TestMeshOracleRnsWiring:
+    """Phase-2 wiring of the read-only mesh oracle into the LXMF/RNS RX path."""
+
+    def test_rns_oracle_default_off(self, bridge, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_ORACLE_ENABLED", raising=False)
+        assert bridge._build_rns_oracle_responder() is None
+
+    def test_build_rns_oracle_responder_on(self, bridge, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")
+        assert bridge._build_rns_oracle_responder() is not None
+
+    def test_lxmf_query_routed_and_consumed(self, bridge):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+        bridge._oracle_rns = MagicMock()
+        bridge._oracle_rns.handle.return_value = "dude-AI@x: fleet:?"
+        h = bytes.fromhex("aabbccddeeff00112233445566778899")
+        msg = SimpleNamespace(source_hash=h, content="status", title=None,
+                              stamp=None, fields=None)
+        bridge._on_lxmf_receive(msg)
+        bridge._oracle_rns.handle.assert_called_once_with(h.hex(), "status", 0)
+        assert bridge._rns_to_mesh_queue.empty()  # consumed, not bridged onward

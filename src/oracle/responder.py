@@ -140,18 +140,22 @@ class MeshOracleResponder:
         log_fn=None,
         env=None,
         transport: str = "meshtastic",
+        allowlist_env: str = "MESHFORGE_ORACLE_ALLOWLIST",
     ) -> Optional["MeshOracleResponder"]:
         """Build from ``MESHFORGE_ORACLE_*`` env, or ``None`` if disabled (default).
 
-        - ``MESHFORGE_ORACLE_ENABLED``: 1/true/yes/on to enable (else ``None``).
-        - ``MESHFORGE_ORACLE_ALLOWLIST``: comma node-ids, or ``"*"`` to answer
-          all. **Fail-closed**: enabled with an EMPTY allowlist answers no one.
+        - ``MESHFORGE_ORACLE_ENABLED``: 1/true/yes/on to enable (else ``None``);
+          shared across legs.
+        - ``allowlist_env`` (default ``MESHFORGE_ORACLE_ALLOWLIST``; the RNS leg
+          passes ``MESHFORGE_ORACLE_RNS_ALLOWLIST``): comma sender-ids, or ``"*"``
+          to answer all. **Fail-closed**: enabled with an EMPTY allowlist answers
+          no one — so a leg is effectively off until its allowlist is set.
         - ``MESHFORGE_ORACLE_COOLDOWN_S``: per-sender min seconds (default 30).
         """
         env = os.environ if env is None else env
         if str(env.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() not in _TRUE:
             return None
-        raw = str(env.get("MESHFORGE_ORACLE_ALLOWLIST", "")).strip()
+        raw = str(env.get(allowlist_env, "")).strip()
         answer_all = raw == "*"
         allowlist = set() if answer_all else {
             tok.strip() for tok in raw.split(",") if tok.strip()

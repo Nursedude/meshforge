@@ -123,10 +123,19 @@ channel.
 - **PASS Phase 1** = a real handheld gets a correct directed reply; exchange logged; no broadcast storm; no
   self-answer; cooldown holds.
 
-### Phase 2 — RNS / LXMF leg
-Mirror the hook in `_on_lxmf_receive` → same intent engine → `send_to_rns(answer, destination_hash=src)`.
-Now reachable over **Reticulum** too (cross-mesh, off-grid). Same intents, same log.
-- **PASS Phase 2** = an LXMF query from an RNS node gets a directed LXMF answer through the gateway.
+### Phase 2 — RNS / LXMF leg — ✅ BUILT 2026-06-21 (default-OFF, not yet round-tripped on air)
+Mirror hook in `rns_bridge._on_lxmf_receive` (after the BridgedMessage, before store/bridge) → same
+`MeshOracleResponder` (`transport="rns"`) → `send_to_rns(reply, destination_hash=bytes.fromhex(src_hex))`.
+Separate allowlist **`MESHFORGE_ORACLE_RNS_ALLOWLIST`** (keyed on LXMF source-hash hex; shares
+`MESHFORGE_ORACLE_ENABLED`); a handled query is consumed (not bridged). `_build_rns_oracle_responder` in
+`rns_bridge.py`, default-OFF + fail-safe. Tests: `TestMeshOracleRnsWiring` in `tests/test_rns_bridge.py`
+(3) + `from_env` per-leg-allowlist test.
+**PLUS snapshot enrichment (Phase 1.5):** `oracle.fetch_api_status()` (read-only localhost `/api/status`
+GET, bounded, degrades to None) wired into BOTH legs' `snapshot_fn` → `status`/`whatsup` now report real
+`fleet:<dir.total>` + `fed:<ok>/<peers>` (was `fleet:?`). 6 fetch tests.
+**VERIFIED:** `lint.py --all` exit 0; 498 passed (oracle + responder + handler + **full rns_bridge** +
+regression guards), exit 0. NOT pushed (mf.5 soak to 06-24). Snapshot `nodes` still empty (per-node
+directory is 35MB — `node <id>` stays "lookup unavailable"; a lighter per-node lookup is a follow-up).
 
 ### Phase 3 — Optional LLM phrasing / routing layer
 `OllamaBackend` used two bounded ways, **never as a fact source**:
