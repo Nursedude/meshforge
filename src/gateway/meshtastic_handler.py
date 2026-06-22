@@ -157,7 +157,12 @@ class MeshtasticHandler(BaseMessageHandler):
             return read_snapshot(status=fetch_api_status())
 
         def _send(text: str, dest: str, channel: int) -> bool:
-            return self.send_text(text, destination=dest, channel=channel)
+            # Reply as a channel BROADCAST on the inbound channel index, NOT a
+            # DM to `dest`: re-emit/relay paths collapse the original sender, so
+            # a DM can target the wrong node and miss a remote asker. Broadcasting
+            # on the channel reaches every node on it (incl. the real asker) —
+            # consistent with the MQTT + MeshCore legs (private-channel model).
+            return self.send_text(text, destination=None, channel=channel)
 
         def _log(record: dict) -> None:
             try:

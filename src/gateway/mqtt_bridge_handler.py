@@ -215,12 +215,17 @@ class MQTTBridgeHandler(BaseMessageHandler):
             return read_snapshot(status=fetch_api_status())
 
         def _send(text: str, dest: str, channel) -> bool:
-            # The matched token passed in is the channel NAME, not a TX index;
-            # reply on the gateway's configured channel index (read live so it
-            # reflects any startup name->index reconcile) so the asker — who is
-            # on that channel — can decrypt the directed reply.
+            # Reply as a channel BROADCAST on the configured channel index — NOT
+            # a directed DM to `dest`. The asker's node-id is unreliable here:
+            # a re-emit / relay path (meshtastic_reemit, a mini-mesh repeater)
+            # collapses the original sender, so the gateway often sees the query
+            # `from` the gateway's own or a relay node — a DM would target the
+            # wrong node and a remote portable would never get it. Broadcasting
+            # on the channel reaches every node on it (incl. the real asker),
+            # matching the MeshCore leg + the private-channel model. (`channel`
+            # here is the matched channel NAME, not a TX index.)
             reply_idx = int(getattr(self.config.meshtastic, "channel", 0) or 0)
-            return self.send_text(text, destination=dest, channel=reply_idx)
+            return self.send_text(text, destination=None, channel=reply_idx)
 
         def _log(record: dict) -> None:
             try:

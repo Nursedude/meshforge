@@ -915,3 +915,27 @@ class TestMeshOracleMqttWiring:
              "payload": {"text": "status"}, "channel": 0},
             topic="msh/US/2/json/primary/!a2")
         h._message_queue.put.assert_called_once()
+
+    def test_oracle_reply_is_channel_broadcast_not_dm(self, monkeypatch):
+        # The reply BROADCASTS on the configured channel (destination=None), NOT
+        # a DM to the asker — re-emit/relay collapses the sender, so a DM can
+        # target the wrong node and miss a remote portable.
+        h = _make_bridge_handler()
+        h.config.meshtastic.channel = 2
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.delenv("MESHFORGE_ORACLE_ALLOWLIST", raising=False)
+        monkeypatch.setenv("MESHFORGE_ORACLE_CHANNELS", "meshforge")
+        monkeypatch.setattr("oracle.fetch_api_status", lambda *a, **k: None)
+        monkeypatch.setattr("mini_dudeai.history.append_jsonl", lambda *a, **k: None)
+        h.send_text = MagicMock(return_value=True)
+        h._oracle = h._build_mqtt_oracle_responder()
+        assert h._oracle is not None
+        h._bridge_text_message(
+            {"from": 0xa1b2c3d4, "sender": "!a1b2c3d4", "to": 0xFFFFFFFF,
+             "payload": {"text": "status"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!a1b2c3d4")
+        h.send_text.assert_called_once()
+        kwargs = h.send_text.call_args.kwargs
+        assert kwargs.get("destination") is None   # channel broadcast, not a DM
+        assert kwargs.get("channel") == 2
+        h._message_queue.put.assert_not_called()   # consumed
