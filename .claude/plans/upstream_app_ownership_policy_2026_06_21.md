@@ -124,8 +124,9 @@ These apply to **every** inherited app, independent of tier:
 shipped: closed-enum entry + documented-set test, `run_all_probes` wiring,
 BOTH role seeds (`inherited_app_drift_any`, propose_escalation/no-ntfy) + the
 seed-coverage + reachability gates green, honest-failure-modes pass, `degraded`
-only, 2-tick debounce, INERT off-box. **15 tests + the full local suite (501)
-+ lint exit 0.** Lives in `src/utils/watchdog_probes_drift.py`.
+only, 2-tick debounce, INERT off-box. **14 probe tests + the full local suite
+(501) + lint exit 0 + CI `success` (commit `48adab26`).** Lives in
+`src/utils/watchdog_probes_drift.py`.
 
 **Design decision settled = LOCAL problem-class detection** (the lean): scans
 the top level of the operator home + `/opt`, reads `.git/config` to classify
