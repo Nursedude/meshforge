@@ -63,7 +63,11 @@ class MeshOracleResponder:
         self._log_fn = log_fn
         self._now = now_fn
         self._allowlist = {_norm(a) for a in (allowlist or set())}
-        self._allowed_channels = {int(c) for c in (allowed_channels or set())}
+        # Channel tokens are whatever the leg keys on: numeric slot INDICES on
+        # the PhoneAPI/MeshCore legs, or channel NAME strings on the MQTT leg
+        # (the topic name is fleet-stable, unlike the box-local index). One
+        # responder instance == one leg, so a set never mixes the two.
+        self._allowed_channels = set(allowed_channels or ())
         self._answer_all = answer_all
         self._cooldown_s = max(0.0, cooldown_s)
         self._transport = transport
@@ -166,10 +170,12 @@ class MeshOracleResponder:
           to answer all. **Fail-closed**: enabled with an EMPTY allowlist (and no
           ``allowed_channels``) answers no one — so a leg is effectively off until
           its allowlist or channel set is configured.
-        - ``allowed_channels``: a set of already-resolved numeric channel indices
-          a node may be on to be answered (additive with the node allowlist). The
-          caller resolves channel NAMES to local indices (the responder cannot
-          query the radio) — see ``meshtastic_handler._build_oracle_responder``.
+        - ``allowed_channels``: a set of channel tokens a node may be on to be
+          answered (additive with the node allowlist). The token type is the
+          leg's choice — numeric slot INDICES on the PhoneAPI/MeshCore legs
+          (resolved by the caller, which the responder cannot do — it can't query
+          the radio), or channel NAME strings on the MQTT leg (the topic name is
+          fleet-stable). ``handle`` must be passed the matching token type.
         - ``MESHFORGE_ORACLE_COOLDOWN_S``: per-sender min seconds (default 30).
         """
         env = os.environ if env is None else env

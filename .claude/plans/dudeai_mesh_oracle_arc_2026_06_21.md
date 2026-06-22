@@ -158,12 +158,21 @@ Empty everything ⇒ answers no one (an empty channel set can never match, so RN
 **Shipped:**
 - `responder.py`: `allowed_channels: Set[int]` on `__init__`/`from_env`; `_allowed(node, channel)` made
   additive. Read-only invariant preserved (only a set-membership check added; `test_oracle_*` green).
-- Meshtastic (`meshtastic_handler._resolve_oracle_channels`): resolves `MESHFORGE_ORACLE_CHANNELS`
+- Meshtastic PhoneAPI (`meshtastic_handler._resolve_oracle_channels`): resolves `MESHFORGE_ORACLE_CHANNELS`
   channel **names** → THIS box's local slot indices via `_channel_resolver` (the same live channel-list
   query the bridge already uses to reconcile its TX channel — no new PhoneAPI probe, #17/#75-safe).
   Unresolved names are logged + **skipped** (never silently index 0). The hook's inbound
   `packet.get('channel')` is a box-local index, so name→local-index is the correct, fleet-stable key
   (#channel-feed-dark / Issue #42 NAME-vs-slot lesson).
+- **Meshtastic MQTT-bridge (`mqtt_bridge_handler._build_mqtt_oracle_responder` + hook in
+  `_bridge_text_message`) — THE leg that actually fires on fleet gateways.** Discovered at deploy: moc3
+  (and the fleet) ingest Meshtastic via the MQTT bridge in **zero-interference mode**, NOT the PhoneAPI
+  `MeshtasticHandler` — so the PhoneAPI hook above never runs there. The MQTT leg keys on the channel
+  **NAME** straight from the topic (`_topic_channel_name` → `meshforge`) — fleet-stable AND needs no
+  startup radio query (so RX churn at restart can't defeat it). Reply is DIRECTED via
+  `send_text → /api/v1/toradio` on the gateway's configured channel index (no TCP, no fromradio read).
+  Hooked after the `is_already_bridged` loop guard, before store/bridge; `getattr`-guarded so a
+  partially-constructed handler can never break RX.
 - MeshCore (`meshcore_handler._build_meshcore_oracle_responder` + hooks): `_on_contact_message` (DM,
   identity-gated, `channel=None`) and `_on_channel_message` (channel-index-gated, replies **DM** to the
   asker — never a channel broadcast, honoring the "broadcast is not auto-answered" rail; per-sender

@@ -179,6 +179,65 @@ class MQTTBridgeHandler(BaseMessageHandler):
         self._last_uplink_at: Optional[float] = None
         self._stale_warning_emitted: bool = False
 
+        # Mesh oracle (read-only "ask dude-AI over the mesh" responder) — the
+        # MQTT-bridge RX leg. THIS is the leg that actually fires on fleet
+        # gateways, which ingest Meshtastic via MQTT (zero-interference mode),
+        # NOT the PhoneAPI MeshtasticHandler. Default OFF; inert unless
+        # MESHFORGE_ORACLE_ENABLED is set (self._oracle stays None and the
+        # _bridge_text_message hook is a no-op).
+        self._oracle = None
+        try:
+            self._oracle = self._build_mqtt_oracle_responder()
+        except Exception as e:  # pragma: no cover - never break handler init
+            logger.debug(f"mqtt oracle not initialized: {e}")
+
+    def _build_mqtt_oracle_responder(self):
+        """Construct the read-only mesh-oracle responder for the MQTT-bridge RX
+        path, or None if disabled (default OFF via MESHFORGE_ORACLE_ENABLED,
+        shared across legs; checked BEFORE importing the oracle).
+
+        Channel access is keyed on the channel NAME from the MQTT topic
+        (``_topic_channel_name`` — fleet-stable, unlike the box-local per-message
+        index; needs no startup radio query, so it can't be defeated by RX churn
+        at restart), additive with the node allowlist (MESHFORGE_ORACLE_ALLOWLIST
+        — same env as the PhoneAPI leg). Replies go DIRECTED to the sender on the
+        gateway's configured channel via send_text -> /api/v1/toradio (no TCP, no
+        fromradio read; #17/#75 preserved). Read-only — never mutates state.
+        """
+        import os
+        if str(os.environ.get("MESHFORGE_ORACLE_ENABLED", "")).strip().lower() \
+                not in ("1", "true", "yes", "on"):
+            return None
+        from oracle import fetch_api_status, read_snapshot
+        from oracle.responder import MeshOracleResponder
+
+        def _snapshot():
+            return read_snapshot(status=fetch_api_status())
+
+        def _send(text: str, dest: str, channel) -> bool:
+            # The matched token passed in is the channel NAME, not a TX index;
+            # reply on the gateway's configured channel index (read live so it
+            # reflects any startup name->index reconcile) so the asker — who is
+            # on that channel — can decrypt the directed reply.
+            reply_idx = int(getattr(self.config.meshtastic, "channel", 0) or 0)
+            return self.send_text(text, destination=dest, channel=reply_idx)
+
+        def _log(record: dict) -> None:
+            try:
+                from mini_dudeai.history import append_jsonl
+                from utils.paths import get_real_user_home
+                path = str(get_real_user_home() / "mesh_oracle_log.jsonl")
+                append_jsonl(path, [record], 2 * 1024 * 1024)
+            except Exception as e:  # pragma: no cover - best-effort audit log
+                logger.debug(f"mqtt oracle log append failed: {e}")
+
+        names = {n.strip().lower() for n in os.environ.get(
+            "MESHFORGE_ORACLE_CHANNELS", "").split(",") if n.strip()}
+
+        return MeshOracleResponder.from_env(
+            snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
+            allowed_channels=names)
+
     # --- Thread-2 step 4: ACK consumption via /e/ ------------------------
 
     @property
@@ -616,6 +675,22 @@ class MQTTBridgeHandler(BaseMessageHandler):
         if is_already_bridged(text):
             logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
+
+        # Mesh oracle (read-only): answer a query DIRECTED back to the sender,
+        # consumed (NOT bridged/stored onward). Channel-gated by NAME from the
+        # topic (fleet-stable) + additive node allowlist. Non-queries (incl. our
+        # own [non-tagged] replies — is_query()==False) pass through untouched;
+        # per-sender cooldown bounds airtime. Placed AFTER the loop guard so a
+        # gateway's own re-heard reply is already filtered, and BEFORE store/queue
+        # so a handled query is not also bridged to RNS.
+        _oracle = getattr(self, "_oracle", None)
+        if _oracle is not None:
+            try:
+                chan_name = (self._topic_channel_name(topic) or "").lower()
+                if _oracle.handle(from_id, text, chan_name):
+                    return
+            except Exception as e:
+                logger.debug(f"mqtt oracle handle error: {e}")
 
         # Determine destination
         to_id = f"!{to_num:08x}" if to_num else None

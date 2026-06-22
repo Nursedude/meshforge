@@ -833,3 +833,85 @@ class TestEServiceEnvelopeAckIngestion:
         assert "Zm9vYmFy" in keys
         assert "YmF6cXV4" in keys
         assert keys.count("Zm9vYmFy") == 1  # no duplicates
+
+
+# ---------------------------------------------------------------------------
+# Mesh oracle (read-only) — the MQTT-bridge RX leg (fires on fleet gateways
+# that ingest Meshtastic via MQTT, not the PhoneAPI handler).
+# ---------------------------------------------------------------------------
+class TestMeshOracleMqttWiring:
+    """Channel access keyed on the topic channel NAME (fleet-stable), additive
+    with the node allowlist; directed reply consumes the query (not bridged)."""
+
+    def test_oracle_default_off(self, monkeypatch):
+        monkeypatch.delenv("MESHFORGE_ORACLE_ENABLED", raising=False)
+        h = _make_bridge_handler()
+        assert h._build_mqtt_oracle_responder() is None
+
+    def test_build_responder_with_channel_names(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.delenv("MESHFORGE_ORACLE_ALLOWLIST", raising=False)
+        monkeypatch.setenv("MESHFORGE_ORACLE_CHANNELS", "MeshForge, Anchor")
+        h = _make_bridge_handler()
+        r = h._build_mqtt_oracle_responder()
+        assert r is not None
+        assert r._allowed_channels == {"meshforge", "anchor"}  # lowercased names
+
+    def test_query_on_channel_routed_and_consumed(self):
+        h = _make_bridge_handler()
+        h._oracle = MagicMock()
+        h._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        h._bridge_text_message(
+            {"from": 0xa1b2c3d4, "sender": "!a1b2c3d4", "to": 0xFFFFFFFF,
+             "payload": {"text": "status"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!a1b2c3d4")
+        # channel matched by NAME from the topic, not the box-local index
+        h._oracle.handle.assert_called_once_with("!a1b2c3d4", "status", "meshforge")
+        h._message_queue.put.assert_not_called()  # consumed, NOT bridged onward
+
+    def test_non_query_passes_through_to_bridge(self):
+        h = _make_bridge_handler()
+        h._oracle = MagicMock()
+        h._oracle.handle.return_value = None  # not a query
+        h._bridge_text_message(
+            {"from": 0xa1b2c3d4, "sender": "!a1b2c3d4", "to": 0xFFFFFFFF,
+             "payload": {"text": "good morning fleet"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!a1b2c3d4")
+        h._message_queue.put.assert_called_once()
+
+    def test_oracle_none_does_not_break_rx(self):
+        h = _make_bridge_handler()
+        h._oracle = None  # default-off: hook is a no-op
+        h._bridge_text_message(
+            {"from": 0xa1b2c3d4, "sender": "!a1b2c3d4", "to": 0xFFFFFFFF,
+             "payload": {"text": "status"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!a1b2c3d4")
+        h._message_queue.put.assert_called_once()
+
+    def test_real_responder_answers_whitelisted_channel_only(self):
+        # End-to-end at the responder: a query on the whitelisted channel NAME
+        # is answered (consumed); the same query on another channel passes through.
+        from oracle import NocSnapshot
+        from oracle.responder import MeshOracleResponder
+        h = _make_bridge_handler()
+        h.send_text = MagicMock(return_value=True)
+        snap = NocSnapshot(now=1000.0, box="moc3", wd_installed=True, wd_ok=True,
+                           wd_signals=[], mini_installed=True, mini_ok=True)
+        h._oracle = MeshOracleResponder(
+            snapshot_fn=lambda: snap,
+            send_fn=lambda t, d, c: h.send_text(t, destination=d, channel=2),
+            allowed_channels={"meshforge"})
+        # whitelisted channel -> answered + consumed
+        h._bridge_text_message(
+            {"from": 0xa1, "sender": "!a1", "to": 0xFFFFFFFF,
+             "payload": {"text": "status"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!a1")
+        h.send_text.assert_called_once()
+        h._message_queue.put.assert_not_called()
+        # non-whitelisted channel -> not answered, passes through to bridge
+        h._message_queue.put.reset_mock()
+        h._bridge_text_message(
+            {"from": 0xa2, "sender": "!a2", "to": 0xFFFFFFFF,
+             "payload": {"text": "status"}, "channel": 0},
+            topic="msh/US/2/json/primary/!a2")
+        h._message_queue.put.assert_called_once()
