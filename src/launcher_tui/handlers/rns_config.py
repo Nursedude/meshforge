@@ -610,25 +610,18 @@ class RNSConfigHandler(BaseHandler):
             plugin_path.chmod(0o644)
             print(f"  {action}d: {plugin_path}")
 
-            # Install meshtastic Python module
+            # Install meshtastic Python module via the hardened helper (ensure_pip
+            # + return-code check + apt-conflict retry are internal to it).
             meshtastic_installed = False
             venv_pip = Path('/opt/meshforge/venv/bin/pip')
             if venv_pip.exists():
                 print("  Installing meshtastic Python module...")
-                pip_result = subprocess.run(
-                    [str(venv_pip), 'install', '-q', 'meshtastic'],
-                    capture_output=True, text=True, timeout=120
+                from utils.pip_install import pip_install
+                pip_result = pip_install(
+                    ['meshtastic'], python=str(venv_pip.parent / 'python'),
+                    extra_args=['-q'], timeout=120,
                 )
-                if pip_result.returncode != 0:
-                    err_text = (pip_result.stderr or pip_result.stdout or '').lower()
-                    if 'installed by' in err_text or 'externally-managed' in err_text:
-                        print("  Debian package conflict, retrying...")
-                        pip_result = subprocess.run(
-                            [str(venv_pip), 'install', '-q',
-                             '--ignore-installed', 'meshtastic'],
-                            capture_output=True, text=True, timeout=120
-                        )
-                meshtastic_installed = pip_result.returncode == 0
+                meshtastic_installed = pip_result.ok
 
             restart_hint = "Restart rnsd to load the new interface."
             if not meshtastic_installed:

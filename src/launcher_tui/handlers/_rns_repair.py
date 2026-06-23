@@ -599,19 +599,12 @@ def _handle_rnsd_crash(ctx) -> bool:
             "  pip install meshtastic (into MeshForge venv)",
         ):
             print("  Installing meshtastic module...")
-            pip_r = subprocess.run(
-                [str(venv_pip), 'install', 'meshtastic'],
-                capture_output=True, text=True, timeout=120
-            )
-            if pip_r.returncode != 0:
-                err_text = (pip_r.stderr or pip_r.stdout or '').lower()
-                if 'installed by' in err_text or 'externally-managed' in err_text:
-                    print("  Debian package conflict, retrying with --ignore-installed...")
-                    pip_r = subprocess.run(
-                        [str(venv_pip), 'install', '--ignore-installed', 'meshtastic'],
-                        capture_output=True, text=True, timeout=120
-                    )
-            if pip_r.returncode == 0:
+            # Route through the hardened helper into the venv's interpreter
+            # (ensure_pip + return-code check + conflict-retry are all internal).
+            from utils.pip_install import pip_install
+            venv_python = venv_pip.parent / 'python'
+            pip_r = pip_install(['meshtastic'], python=str(venv_python), timeout=120)
+            if pip_r.ok:
                 print("  meshtastic installed. Restarting rnsd...")
                 subprocess.run(
                     ['systemctl', 'reset-failed', 'rnsd'],
@@ -627,7 +620,7 @@ def _handle_rnsd_crash(ctx) -> bool:
                     return True
                 print("  rnsd restarted — check with RNS > Diagnostics")
             else:
-                print(f"  pip install failed: {pip_r.stderr.strip()[:200]}")
+                print(f"  pip install failed: {pip_r.detail[:200]}")
 
     return False
 

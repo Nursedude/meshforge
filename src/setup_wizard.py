@@ -577,22 +577,17 @@ class SetupWizard:
     def _install_package(self, package: str, name: str):
         """Install a pip package"""
         self._print(f"Installing {package}...", "dim")
-        try:
-            cmd = [sys.executable, '-m', 'pip', 'install',
-                   '--break-system-packages', '--ignore-installed', package]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-            if result.returncode == 0:
-                self._print(f"  {package} installed successfully", "success")
-                self._record_decision(name, "Install package", package, "success")
-                return True
-            else:
-                self._print(f"  Install failed: {result.stderr[:100]}", "error")
-                self._record_decision(name, "Install package", package, f"failed: {result.stderr[:50]}")
-                return False
-        except Exception as e:
-            self._print(f"  Install error: {e}", "error")
-            self._record_decision(name, "Install package", package, f"error: {e}")
-            return False
+        # Route through the hardened helper: ensure_pip first, single PEP 668
+        # decision, return code checked — no silent success on a failed install.
+        from utils.pip_install import pip_install
+        r = pip_install([package], python=sys.executable, ignore_installed=True, timeout=120)
+        if r.ok:
+            self._print(f"  {package} installed successfully", "success")
+            self._record_decision(name, "Install package", package, "success")
+            return True
+        self._print(f"  Install failed: {r.detail[:120]}", "error")
+        self._record_decision(name, "Install package", package, f"failed: {r.detail[:50]}")
+        return False
 
     def _check_systemd_exists(self, name: str) -> bool:
         """Check if a systemd service file exists"""

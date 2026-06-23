@@ -31,11 +31,12 @@ fi
 
 MESHFORGE_DIR=$(pwd)
 
-# Detect if Python is externally managed (PEP 668 - Debian Bookworm, RPi OS)
-check_externally_managed() {
-    python3 -c "import sys; sys.exit(0 if any('EXTERNALLY-MANAGED' in str(p) for p in __import__('pathlib').Path(sys.prefix).glob('**/EXTERNALLY-MANAGED')) else 1)" 2>/dev/null
-    return $?
-}
+# Hardened install primitives (ensure_pip + checked pip + import verify + the
+# install transcript). This also adds the pip bootstrap dev_setup never had —
+# it assumed pip already worked, the documented fresh-user failure.
+# shellcheck source=scripts/lib/install_common.sh
+source "$MESHFORGE_DIR/scripts/lib/install_common.sh"
+mf_log_init
 
 # Option 1: Create local venv (cleanest)
 setup_venv() {
@@ -43,8 +44,14 @@ setup_venv() {
     python3 -m venv .venv --system-site-packages
 
     echo -e "${CYAN}Installing dependencies in venv...${NC}"
-    .venv/bin/pip install --timeout 60 --upgrade pip
-    .venv/bin/pip install --timeout 60 -r requirements.txt
+    local vpy=".venv/bin/python"
+    mf_ensure_pip "$vpy" || { echo -e "${RED}pip unavailable in venv${NC}" >&2; exit 1; }
+    mf_pip_install "$vpy" --timeout 60 --upgrade pip \
+        || { echo -e "${RED}pip self-upgrade failed${NC}" >&2; exit 1; }
+    mf_pip_install "$vpy" --timeout 60 -r requirements.txt \
+        || { echo -e "${RED}dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
+    mf_verify_import "$vpy" rich \
+        || { echo -e "${RED}deps installed but 'rich' not importable in venv${NC}" >&2; exit 1; }
 
     # Create activation helper
     cat > activate.sh << 'EOF'
@@ -76,7 +83,11 @@ EOF
 # Option 2: Install with --break-system-packages (simpler for dedicated Pi)
 setup_system() {
     echo -e "${CYAN}Installing dependencies system-wide...${NC}"
-    pip3 install --break-system-packages --timeout 60 -r requirements.txt
+    mf_ensure_pip python3 || { echo -e "${RED}pip unavailable${NC}" >&2; exit 1; }
+    mf_pip_install python3 $(mf_pip_args python3) -r requirements.txt \
+        || { echo -e "${RED}dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
+    mf_verify_import python3 rich \
+        || { echo -e "${RED}deps installed but 'rich' not importable${NC}" >&2; exit 1; }
 
     echo ""
     echo -e "${GREEN}Setup complete!${NC}"
@@ -87,7 +98,7 @@ setup_system() {
 }
 
 # Check for externally managed environment
-if check_externally_managed; then
+if mf_pep668_active; then
     echo -e "${YELLOW}Detected: Externally managed Python environment (PEP 668)${NC}"
     echo -e "${YELLOW}This is common on Debian Bookworm, Ubuntu 23.04+, and Raspberry Pi OS.${NC}"
     echo ""
@@ -116,7 +127,11 @@ if check_externally_managed; then
 else
     # Standard pip install works
     echo -e "${CYAN}Installing dependencies...${NC}"
-    pip3 install -r requirements.txt
+    mf_ensure_pip python3 || { echo -e "${RED}pip unavailable${NC}" >&2; exit 1; }
+    mf_pip_install python3 --timeout 60 -r requirements.txt \
+        || { echo -e "${RED}dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
+    mf_verify_import python3 rich \
+        || { echo -e "${RED}deps installed but 'rich' not importable${NC}" >&2; exit 1; }
 
     echo ""
     echo -e "${GREEN}Setup complete!${NC}"

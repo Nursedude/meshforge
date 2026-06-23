@@ -21,6 +21,12 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
+# Hardened install primitives (ensure_pip + checked pip + transcript).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/install_common.sh
+source "$SCRIPT_DIR/lib/install_common.sh"
+mf_log_init
+
 echo -e "\n${YELLOW}Step 1: Removing Debian python3-packaging package${NC}"
 apt-get remove --purge python3-packaging -y || true
 
@@ -29,10 +35,22 @@ apt-get autoremove -y
 apt-get clean
 
 echo -e "\n${YELLOW}Step 3: Reinstalling packaging via pip${NC}"
-python3 -m pip install --upgrade --force-reinstall packaging --break-system-packages
+if ! mf_pip_install python3 --upgrade --force-reinstall --break-system-packages packaging; then
+    echo -e "${RED}ERROR: packaging reinstall failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+    exit 1
+fi
 
 echo -e "\n${YELLOW}Step 4: Installing setuptools and wheel${NC}"
-python3 -m pip install --upgrade setuptools wheel --break-system-packages
+if ! mf_pip_install python3 --upgrade --break-system-packages setuptools wheel; then
+    echo -e "${RED}ERROR: setuptools/wheel install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+    exit 1
+fi
+
+# Verify the conflict is actually resolved — the whole point of this script.
+if ! mf_verify_import python3 packaging; then
+    echo -e "${RED}ERROR: 'packaging' still not importable after reinstall${NC}" >&2
+    exit 1
+fi
 
 echo -e "\n${GREEN}=========================================${NC}"
 echo -e "${GREEN}Packaging conflict resolved!${NC}"

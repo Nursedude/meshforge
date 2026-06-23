@@ -416,49 +416,22 @@ class RNSDiagnosticsHandler(BaseHandler):
             f"Without these, rnsd will crash on startup.\n\n"
             f"Install now?"
         ):
+            # Route through the hardened helper: it ensures pip exists in rnsd's
+            # interpreter, installs system-wide (sudo) into that exact Python,
+            # and retries once with --ignore-installed on a Debian apt-owned
+            # conflict — the retry pattern this site hand-rolled. The crypto pins
+            # ride in the package list (rns.txt resolver co-pins).
+            from utils.pip_install import pip_install
             for _, _, pip_name in missing:
                 print(f"  Installing {pip_name}...")
-                try:
-                    install_cmd = [rnsd_python, '-m', 'pip', 'install',
-                                    '--break-system-packages', pip_name,
-                                    'cryptography>=45.0.7,<47', 'pyopenssl>=25.3.0']
-                    base_cmd = _sudo_cmd(install_cmd)
-                    result = subprocess.run(
-                        base_cmd,
-                        capture_output=True, text=True, timeout=120
-                    )
-                    if result.returncode == 0:
-                        print(f"  {pip_name}: installed")
-                    else:
-                        # Detect Debian-managed package conflict:
-                        # pip says "installed by debian/apt" when it refuses
-                        # to overwrite an apt-owned package.
-                        err_text = (result.stderr or result.stdout or '').lower()
-                        if 'installed by' in err_text or 'externally-managed' in err_text:
-                            print(f"  {pip_name}: Debian package conflict, retrying with --ignore-installed...")
-                            retry_cmd = _sudo_cmd([rnsd_python, '-m', 'pip', 'install',
-                                         '--break-system-packages', '--ignore-installed', pip_name,
-                                         'cryptography>=45.0.7,<47', 'pyopenssl>=25.3.0'])
-                            retry = subprocess.run(
-                                retry_cmd,
-                                capture_output=True, text=True, timeout=120
-                            )
-                            if retry.returncode == 0:
-                                print(f"  {pip_name}: installed (bypassed Debian package)")
-                            else:
-                                err_lines = (retry.stderr or retry.stdout or '').strip().split('\n')
-                                print(f"  {pip_name}: FAILED (even with --ignore-installed)")
-                                if err_lines:
-                                    print(f"    {err_lines[-1]}")
-                        else:
-                            err_lines = (result.stderr or result.stdout or '').strip().split('\n')
-                            print(f"  {pip_name}: FAILED")
-                            if err_lines:
-                                print(f"    {err_lines[-1]}")
-                except subprocess.TimeoutExpired:
-                    print(f"  {pip_name}: timed out (network issue?)")
-                except (subprocess.SubprocessError, OSError) as e:
-                    print(f"  {pip_name}: error — {e}")
+                r = pip_install(
+                    [pip_name, 'cryptography>=45.0.7,<47', 'pyopenssl>=25.3.0'],
+                    python=rnsd_python, sudo=True, break_system=True, timeout=120,
+                )
+                if r.ok:
+                    print(f"  {pip_name}: installed")
+                else:
+                    print(f"  {pip_name}: FAILED — {r.detail}")
         else:
             print(f"  Skipped — re-run this check and confirm to install in-app.")
             print(f"  Without these packages, rnsd will crash on startup.")

@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from handlers.updates import UpdatesHandler
+from utils.pip_install import PipResult
 
 RNSD_IFACE = "/etc/reticulum/interfaces/Meshtastic_Interface.py"
 
@@ -49,43 +50,63 @@ def _msgbox_titles(dialog):
 
 
 class TestRnsdDualInstallSurfacing:
+    """Issue #24: the rnsd dual-install must surface a failure honestly instead
+    of passing as full success. After the install-hardening refactor the method
+    routes through `utils.pip_install.pip_install` (which closes both the
+    subprocess-doesn't-raise trap AND the installed≠importable trap), so these
+    guards now patch the helper rather than raw subprocess.run."""
+
     def test_rnsd_install_failure_is_surfaced_but_user_install_succeeds(self):
         h = _handler()
-        runs = [_result(0, stdout="user ok"), _result(1, stderr="permission denied")]
+        runs = [PipResult(True, stdout="user ok", verified=True),
+                PipResult(False, detail="permission denied")]
         with patch.object(pathlib.Path, "exists", _path_exists(True)), \
-                patch("handlers.updates.subprocess.run", side_effect=runs):
+                patch("handlers.updates.pip_install", side_effect=runs) as pi:
             success, _msg = h._pip_install_meshtastic(upgrade=True)
         assert success is True  # user-level install genuinely worked
+        assert pi.call_count == 2
         assert "rnsd Install Incomplete" in _msgbox_titles(h.ctx.dialog)
 
     def test_rnsd_install_success_shows_no_warning(self):
         h = _handler()
-        runs = [_result(0, stdout="user ok"), _result(0, stdout="rnsd ok")]
+        runs = [PipResult(True, stdout="user ok", verified=True),
+                PipResult(True, stdout="rnsd ok", verified=True)]
         with patch.object(pathlib.Path, "exists", _path_exists(True)), \
-                patch("handlers.updates.subprocess.run", side_effect=runs):
+                patch("handlers.updates.pip_install", side_effect=runs):
             success, _msg = h._pip_install_meshtastic(upgrade=True)
         assert success is True
         assert "rnsd Install Incomplete" not in _msgbox_titles(h.ctx.dialog)
 
     def test_no_rnsd_interface_means_no_second_install(self):
         h = _handler()
-        run = MagicMock(side_effect=[_result(0, stdout="user ok")])
+        pi = MagicMock(side_effect=[PipResult(True, stdout="user ok", verified=True)])
         with patch.object(pathlib.Path, "exists", _path_exists(False)), \
-                patch("handlers.updates.subprocess.run", run):
+                patch("handlers.updates.pip_install", pi):
             success, _msg = h._pip_install_meshtastic(upgrade=True)
         assert success is True
-        assert run.call_count == 1  # only the user-level install ran
+        assert pi.call_count == 1  # only the user-level install ran
         assert "rnsd Install Incomplete" not in _msgbox_titles(h.ctx.dialog)
 
     def test_user_level_failure_returns_false_without_rnsd_attempt(self):
         h = _handler()
-        run = MagicMock(side_effect=[_result(1, stderr="boom")])
+        pi = MagicMock(side_effect=[PipResult(False, detail="boom")])
         with patch.object(pathlib.Path, "exists", _path_exists(True)), \
-                patch("handlers.updates.subprocess.run", run):
+                patch("handlers.updates.pip_install", pi):
             success, msg = h._pip_install_meshtastic(upgrade=True)
         assert success is False
         assert "boom" in msg
-        assert run.call_count == 1  # bailed before the rnsd dual-install
+        assert pi.call_count == 1  # bailed before the rnsd dual-install
+
+    def test_primary_install_verifies_meshtastic_imports(self):
+        """The primary install must request import-as-consumer verification —
+        'installed' is not 'importable' (Issue #24 / honest_failure_modes)."""
+        h = _handler()
+        pi = MagicMock(side_effect=[PipResult(True, stdout="ok", verified=True)])
+        with patch.object(pathlib.Path, "exists", _path_exists(False)), \
+                patch("handlers.updates.pip_install", pi):
+            h._pip_install_meshtastic(upgrade=True)
+        # first (primary) call carries verify_import='meshtastic'
+        assert pi.call_args_list[0].kwargs.get("verify_import") == "meshtastic"
 
 
 if __name__ == "__main__":

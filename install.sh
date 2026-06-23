@@ -90,35 +90,69 @@ fi
 
 # Install system dependencies
 echo -e "${CYAN}[4/7] Installing required dependencies...${NC}"
-apt-get install -y -qq python3 python3-pip python3-venv git wget curl &>/dev/null
-echo -e "${GREEN}  ✓ Core dependencies installed${NC}"
+# Pre-clone: the shared install lib isn't available yet (curl|bash runs before
+# the repo exists), so this one apt is inline-but-CHECKED — no &>/dev/null
+# swallow, and we only print ✓ after a real success (the `if` disables set -e
+# so the failure branch can give actionable guidance).
+if apt-get install -y -q python3 python3-pip python3-venv git wget curl; then
+    echo -e "${GREEN}  ✓ Core dependencies installed${NC}"
+else
+    echo -e "${RED}  ✗ Failed to install core dependencies (python3/python3-pip/${NC}" >&2
+    echo -e "${RED}    python3-venv/git/wget/curl). Check network + apt, then re-run.${NC}" >&2
+    exit 1
+fi
 
 # Clone or update repository
 INSTALL_DIR="/opt/meshforge"
 echo -e "${CYAN}[5/7] Setting up MeshForge...${NC}"
 
-if [[ -d "$INSTALL_DIR" ]]; then
+# Optional source pin: MESHFORGE_REF=<tag|branch|sha> installs that exact ref.
+# A pinned install that silently lands on main is worse than stopping, so an
+# unresolvable ref HARD-fails. Default (unset) tracks main as before. This is
+# the pre-clone bootstrap, so it is inline (the shared lib's mf_git_sync isn't
+# available until after the repo exists).
+MESHFORGE_REF="${MESHFORGE_REF:-}"
+
+if [[ -d "$INSTALL_DIR/.git" ]]; then
     echo "  Updating existing installation..."
-    # Fix git safe directory issue (required when running as root)
     git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
-    git pull -q || echo -e "${YELLOW}  Warning: Could not pull updates${NC}"
+    git pull -q || echo -e "${YELLOW}  Warning: git pull failed; continuing with existing checkout${NC}"
 else
     echo "  Cloning repository..."
-    git clone -q https://github.com/Nursedude/meshforge.git "$INSTALL_DIR"
-    # Fix git safe directory issue for future updates
+    if [[ -n "$MESHFORGE_REF" ]]; then
+        git clone -q --branch "$MESHFORGE_REF" https://github.com/Nursedude/meshforge.git "$INSTALL_DIR" 2>/dev/null \
+            || git clone -q https://github.com/Nursedude/meshforge.git "$INSTALL_DIR"
+    else
+        git clone -q https://github.com/Nursedude/meshforge.git "$INSTALL_DIR"
+    fi
     git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
     cd "$INSTALL_DIR"
 fi
 
-echo -e "${GREEN}  ✓ Repository ready${NC}"
+if [[ -n "$MESHFORGE_REF" ]]; then
+    git fetch -q --tags origin 2>/dev/null || true
+    git checkout -q "$MESHFORGE_REF" \
+        || { echo -e "${RED}  ✗ MESHFORGE_REF '$MESHFORGE_REF' could not be resolved${NC}" >&2; exit 1; }
+fi
+
+INSTALLED_SHA="$(git -C "$INSTALL_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
+echo -e "${GREEN}  ✓ Repository ready (HEAD: ${INSTALLED_SHA})${NC}"
+
+# Hardened install primitives now that the repo exists (curl|bash could not
+# source these before the clone). Adds ensure_pip + checked pip + the install
+# transcript. From here on, every install run leaves /var/log/meshforge/.
+# shellcheck source=scripts/lib/install_common.sh
+source "$INSTALL_DIR/scripts/lib/install_common.sh"
+mf_log_init
 
 # Install Python dependencies
 echo -e "${CYAN}[6/7] Installing Python dependencies...${NC}"
 
-# Check for PEP 668 (externally-managed-environment) - Debian Bookworm, RPi OS
+# Check for PEP 668 (externally-managed-environment) via the shared SSOT
+# detector — Debian Bookworm, RPi OS.
 PEP668_DETECTED=false
-if python3 -c "import sys, pathlib; sys.exit(0 if any('EXTERNALLY-MANAGED' in str(p) for p in pathlib.Path(sys.prefix).glob('**/EXTERNALLY-MANAGED')) else 1)" 2>/dev/null; then
+if mf_pep668_active python3; then
     PEP668_DETECTED=true
 fi
 
@@ -147,20 +181,38 @@ if [[ "$INSTALL_METHOD" == "venv" ]]; then
         echo "  Creating virtual environment..."
         python3 -m venv "$INSTALL_DIR/venv" --system-site-packages
     fi
-    # Install dependencies in virtual environment
+    # Install dependencies in virtual environment (checked; ✓ only after a
+    # verified import — never an unconditional success echo).
     echo "  Installing packages in virtual environment..."
-    "$INSTALL_DIR/venv/bin/pip" install -q --timeout 60 --upgrade pip
-    "$INSTALL_DIR/venv/bin/pip" install -q --timeout 60 -r requirements.txt
-    echo -e "${GREEN}  ✓ Python dependencies installed (venv)${NC}"
+    VENV_PY="$INSTALL_DIR/venv/bin/python"
+    mf_ensure_pip "$VENV_PY" || { echo -e "${RED}  ✗ pip unavailable in venv${NC}" >&2; exit 1; }
+    mf_pip_install "$VENV_PY" -q --timeout 60 --upgrade pip \
+        || { echo -e "${RED}  ✗ pip self-upgrade failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
+    mf_pip_install "$VENV_PY" -q --timeout 60 -r requirements.txt \
+        || { echo -e "${RED}  ✗ dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
+    if mf_verify_import "$VENV_PY" rich; then
+        echo -e "${GREEN}  ✓ Python dependencies installed (venv)${NC}"
+    else
+        echo -e "${RED}  ✗ deps installed but 'rich' not importable in venv${NC}" >&2
+        exit 1
+    fi
 else
-    # Install system-wide with --break-system-packages
+    # Install system-wide with --break-system-packages (--ignore-installed to
+    # avoid conflicts with apt-owned packages).
     echo "  Installing packages system-wide..."
-    # Use --ignore-installed to avoid conflicts with apt-installed packages
-    pip3 install --break-system-packages --ignore-installed --timeout 60 --upgrade pip
-    pip3 install --break-system-packages --ignore-installed --timeout 60 -r requirements.txt
+    mf_ensure_pip python3 || { echo -e "${RED}  ✗ pip unavailable${NC}" >&2; exit 1; }
+    mf_pip_install python3 --break-system-packages --ignore-installed --timeout 60 --upgrade pip \
+        || { echo -e "${RED}  ✗ pip self-upgrade failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
+    mf_pip_install python3 --break-system-packages --ignore-installed --timeout 60 -r requirements.txt \
+        || { echo -e "${RED}  ✗ dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2; exit 1; }
     # Mark that we're not using venv for the launcher scripts
     touch "$INSTALL_DIR/.no-venv"
-    echo -e "${GREEN}  ✓ Python dependencies installed (system)${NC}"
+    if mf_verify_import python3 rich; then
+        echo -e "${GREEN}  ✓ Python dependencies installed (system)${NC}"
+    else
+        echo -e "${RED}  ✗ deps installed but 'rich' not importable${NC}" >&2
+        exit 1
+    fi
 fi
 
 # Create symlink for easy access

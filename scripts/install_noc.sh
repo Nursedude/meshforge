@@ -98,6 +98,14 @@ if [[ $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# Hardened install primitives (ensure_pip + checked pip/apt + import verify +
+# service confirm + the install transcript). Sourced by the script's own dir so
+# it works regardless of CWD.
+MF_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/install_common.sh
+source "$MF_SCRIPT_DIR/lib/install_common.sh"
+mf_log_init
+
 # Resolve operator login for systemd User= placeholders.
 # Refuses root and users not in /etc/passwd — loud-fail rather than
 # silently install a unit that drifts from the TUI's $SUDO_USER home.
@@ -514,31 +522,33 @@ if [[ -f /etc/os-release ]]; then
 fi
 
 apt-get update -qq
-apt-get install -y -qq \
-    python3 python3-pip python3-venv \
-    python3-msgpack \
-    git wget curl gnupg \
-    libusb-1.0-0 \
-    mosquitto mosquitto-clients \
-    tmux \
-    &>/dev/null
+# Checked apt (no &>/dev/null swallow); ✓ only on a real success.
 # python3-msgpack is needed for NomadNet peer cache reading in
 # src/utils/_map_collector_rns.py. Without it, meshforge-map logs
 # "msgpack not available for NomadNet peer reading" every collect
 # cycle and silently skips the peer-cache code path. Installed via
 # apt (not pip) so the venv — which uses include-system-site-packages
 # — picks it up without needing --break-system-packages in the venv.
-
-echo -e "  ${GREEN}✓ System dependencies installed${NC}"
+if mf_apt_install \
+    python3 python3-pip python3-venv \
+    python3-msgpack \
+    git wget curl gnupg \
+    libusb-1.0-0 \
+    mosquitto mosquitto-clients \
+    tmux; then
+    echo -e "  ${GREEN}✓ System dependencies installed${NC}"
+else
+    echo -e "  ${RED}✗ System dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+    exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Detect PEP 668 (externally-managed-environment)
 # ─────────────────────────────────────────────────────────────────
-PIP_ARGS="--timeout 60"
-# Check for EXTERNALLY-MANAGED file (Debian Bookworm, RPi OS)
-if ls /usr/lib/python3*/EXTERNALLY-MANAGED 1>/dev/null 2>&1; then
+# PEP 668 flags via the shared SSOT detector (replaces the local glob).
+PIP_ARGS="$(mf_pip_args python3)"
+if mf_pep668_active python3; then
     echo -e "${YELLOW}  Detected: Externally managed Python (PEP 668)${NC}"
-    PIP_ARGS="--break-system-packages --timeout 60"
 fi
 
 # ─────────────────────────────────────────────────────────────────
@@ -689,7 +699,10 @@ UDEV_RULES
                 if ! $NATIVE_INSTALLED; then
                     echo -e "  ${YELLOW}Native meshtasticd required for SPI radios${NC}"
                     echo -e "  ${YELLOW}Install from: https://meshtastic.org/docs/software/linux-native/${NC}"
-                    pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
+                    if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'; then
+                        echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+                        exit 1
+                    fi
 
                     # Create placeholder service explaining the requirement
                     cat > /etc/systemd/system/meshtasticd.service << 'SPI_NEEDS_NATIVE'
@@ -1039,7 +1052,10 @@ NATIVE_SERVICE
             echo -e "  ${CYAN}Installing for USB serial radio...${NC}"
 
             # Install meshtastic Python package for CLI tools
-            pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
+            if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'; then
+                echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+                exit 1
+            fi
 
             USB_DEV=$(get_usb_device)
             echo -e "  ${GREEN}✓ Python meshtastic CLI installed${NC}"
@@ -1233,7 +1249,10 @@ USB_PLACEHOLDER
             echo -e "  ${YELLOW}⚠ No radio detected${NC}"
             echo -e "  ${YELLOW}  Installing Python meshtastic CLI tools${NC}"
 
-            pip3 install $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'
+            if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'; then
+                echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+                exit 1
+            fi
 
             # Check if native meshtasticd is available
             if command -v meshtasticd &> /dev/null; then
@@ -1304,16 +1323,31 @@ fi
 if $INSTALL_RNS; then
     echo -e "${CYAN}[4/8] Installing Reticulum (RNS)...${NC}"
 
-    # Install pipx (needed for NomadNet install via menu)
+    # Install pipx (needed for NomadNet install via menu) — non-fatal.
     if ! command -v pipx &>/dev/null; then
         echo "  Installing pipx..."
-        apt-get install -y -qq pipx &>/dev/null
+        mf_apt_install pipx \
+            || echo -e "  ${YELLOW}⚠ pipx install failed (NomadNet menu install may not work)${NC}" >&2
     fi
 
     # Install the MeshForge-owned RNS/LXMF forks (+ crypto pins) from the pinned
     # requirements file — the single source of truth for the fork git URLs and
     # versions (upstream Carrier Switch, Dec 2025; see requirements/rns.txt).
-    pip3 install $PIP_ARGS --ignore-installed -q -r "$INSTALL_DIR/requirements/rns.txt"
+    if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q -r "$INSTALL_DIR/requirements/rns.txt"; then
+        echo -e "  ${RED}✗ RNS/LXMF fork install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+        exit 1
+    fi
+
+    # Post-install fork-pin gate: confirm rns/lxmf match the MF-FORK-PIN in
+    # requirements/rns.txt (run against system python3, where rnsd reads them).
+    # A box may intentionally lag, so this WARNs rather than aborting — but it
+    # records drift in the transcript instead of letting a silent fork-fetch
+    # failure pass as success.
+    if python3 "$INSTALL_DIR/scripts/rns_version_check.py" >/dev/null 2>&1; then
+        echo -e "  ${GREEN}✓ RNS/LXMF versions match the fork pin${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ RNS/LXMF drifted from requirements/rns.txt — check: python3 scripts/rns_version_check.py${NC}" >&2
+    fi
 
     # Born-correct permission foundation (arch-meeting 2026-06-01): rnsd and its
     # RNS tree are owned by the non-root operator user (fleet parity), not root.
@@ -1448,9 +1482,18 @@ RNSD_SERVICE
         || echo -e "  ${YELLOW}⚠ foundation apply skipped — run: sudo python3 scripts/fleet_foundation.py apply${NC}"
 
     systemctl daemon-reload
-    systemctl enable rnsd 2>/dev/null
-    systemctl start rnsd 2>/dev/null
-    echo -e "  ${GREEN}✓ rnsd (User=${RNSD_USER}) enabled and started${NC}"
+    systemctl enable rnsd 2>/dev/null || true
+    systemctl start rnsd 2>/dev/null || true
+    # Confirm rnsd actually came up instead of echoing "started" unconditionally
+    # (the rnsd gap — meshtasticd/map already verify is-active). A wedged rnsd
+    # here is the common Issue-#24 / missing-meshtastic case; surface it loudly.
+    sleep 2
+    if mf_systemctl_confirm rnsd; then
+        echo -e "  ${GREEN}✓ rnsd (User=${RNSD_USER}) enabled and active${NC}"
+    else
+        echo -e "  ${YELLOW}⚠ rnsd enabled but NOT active — see the journalctl hint above.${NC}" >&2
+        echo -e "  ${YELLOW}  Common cause: meshtastic not importable by root (Issue #24).${NC}" >&2
+    fi
 
     echo -e "  ${GREEN}✓ Reticulum installed${NC}"
 else
@@ -1463,17 +1506,13 @@ fi
 # ─────────────────────────────────────────────────────────────────
 echo -e "${CYAN}[5/8] Installing MeshForge...${NC}"
 
-if [[ -d "$INSTALL_DIR" ]]; then
-    echo "  Updating existing installation..."
-    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
-    cd "$INSTALL_DIR"
-    git pull -q || echo -e "  ${YELLOW}Warning: Could not pull updates${NC}"
-else
-    echo "  Cloning repository..."
-    git clone -q https://github.com/Nursedude/meshforge.git "$INSTALL_DIR"
-    git config --global --add safe.directory "$INSTALL_DIR" 2>/dev/null || true
-    cd "$INSTALL_DIR"
+# Clone/update via the shared helper — honors an optional MESHFORGE_REF pin
+# (unresolvable pin hard-fails) and records the resolved HEAD for provenance.
+if ! mf_git_sync "https://github.com/Nursedude/meshforge.git" "$INSTALL_DIR"; then
+    echo -e "  ${RED}✗ MeshForge source sync failed (MESHFORGE_REF unresolvable?)${NC}" >&2
+    exit 1
 fi
+cd "$INSTALL_DIR"
 
 echo -e "  ${GREEN}✓ MeshForge source ready${NC}"
 
@@ -1487,10 +1526,22 @@ if [[ ! -d "$VENV_DIR" ]]; then
     python3 -m venv "$VENV_DIR" --system-site-packages
 fi
 
-"$VENV_DIR/bin/pip" install -q --timeout 60 --upgrade pip
-"$VENV_DIR/bin/pip" install -q --timeout 60 -r requirements.txt
-
-echo -e "  ${GREEN}✓ Python dependencies installed${NC}"
+VENV_PY="$VENV_DIR/bin/python"
+mf_ensure_pip "$VENV_PY" || { echo -e "  ${RED}✗ pip unavailable in venv${NC}" >&2; exit 1; }
+if ! mf_pip_install "$VENV_PY" -q --timeout 60 --upgrade pip; then
+    echo -e "  ${RED}✗ venv pip self-upgrade failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+    exit 1
+fi
+if ! mf_pip_install "$VENV_PY" -q --timeout 60 -r requirements.txt; then
+    echo -e "  ${RED}✗ Python dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
+    exit 1
+fi
+if mf_verify_import "$VENV_PY" rich; then
+    echo -e "  ${GREEN}✓ Python dependencies installed${NC}"
+else
+    echo -e "  ${RED}✗ deps installed but 'rich' not importable in venv${NC}" >&2
+    exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Create NOC configuration

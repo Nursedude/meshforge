@@ -10,6 +10,7 @@ from typing import Dict, Any, Optional, Tuple
 
 from handler_protocol import BaseHandler
 from utils.safe_import import safe_import
+from utils.pip_install import pip_install
 
 logger = logging.getLogger(__name__)
 
@@ -447,95 +448,57 @@ class UpdatesHandler(BaseHandler):
     def _pip_install_meshtastic(self, upgrade: bool = False) -> Tuple[bool, str]:
         """Install or upgrade the meshtastic Python library.
 
-        Handles venv vs system pip and dual-install for rnsd (Issue #24).
-        Resolves the venv via the SAME helper the version reader uses
-        (`get_meshforge_venv_dir`), so read and write target one interpreter —
-        otherwise an upgrade no-ops against a flag that never clears (the
-        read/write split, feedback_version_env_rigor).
+        Routes through the ONE hardened pip helper (`utils.pip_install`): it
+        resolves venv-vs-system via the SAME SSOT the version reader uses
+        (`get_meshforge_venv_dir`, so read and write target one interpreter —
+        the read/write split, feedback_version_env_rigor), ensures pip exists,
+        checks the return code, and verifies meshtastic actually IMPORTS
+        afterward. The Issue-#24 dual-install for rnsd's root Python is a second
+        verified call; its failure is surfaced honestly, never swallowed.
         """
         from pathlib import Path
-        from updates.version_checker import get_meshforge_venv_dir
 
-        venv_dir = get_meshforge_venv_dir()
-        if venv_dir is not None:
-            pip_cmd = [str(venv_dir / 'bin' / 'pip'), 'install']
-        else:
-            pip_cmd = ['pip3', 'install', '--break-system-packages']
+        # Primary install into MeshForge's interpreter (venv if present, else
+        # system pip with --break-system-packages auto-applied).
+        primary = pip_install(['meshtastic'], upgrade=upgrade,
+                              verify_import='meshtastic', timeout=120)
+        if not primary.ok:
+            return False, primary.detail
 
-        if upgrade:
-            pip_cmd.append('--upgrade')
-        pip_cmd.append('meshtastic')
-
-        try:
-            result = subprocess.run(
-                pip_cmd,
-                capture_output=True,
-                text=True,
-                timeout=120
+        # Dual-install for rnsd (Issue #24): rnsd runs as root and needs
+        # meshtastic in root's system Python, where pipx/--user installs don't
+        # reach. verify_import='meshtastic' with sudo runs the root-import check.
+        rnsd_interface = Path('/etc/reticulum/interfaces/Meshtastic_Interface.py')
+        if rnsd_interface.exists():
+            self.ctx.dialog.infobox(
+                "System Install",
+                "Also installing system-wide for rnsd..."
             )
-
-            if result.returncode != 0:
-                return False, result.stderr or result.stdout or f"Exit code: {result.returncode}"
-
-            # Dual-install for rnsd (Issue #24)
-            rnsd_interface = Path('/etc/reticulum/interfaces/Meshtastic_Interface.py')
-            if rnsd_interface.exists():
-                self.ctx.dialog.infobox(
-                    "System Install",
-                    "Also installing system-wide for rnsd..."
+            rnsd_result = pip_install(
+                ['meshtastic'], python='python3', sudo=True, break_system=True,
+                ignore_installed=True, upgrade=upgrade,
+                verify_import='meshtastic', timeout=120,
+            )
+            if not rnsd_result.ok:
+                # subprocess.run does NOT raise on nonzero exit, and "installed"
+                # is not "importable" — both traps are closed by the helper, so
+                # a real rnsd-copy failure reaches here instead of passing as
+                # full success (Issue #24 defeated).
+                logger.warning(
+                    "rnsd system-wide meshtastic install failed: %s", rnsd_result.detail
                 )
-                sudo_cmd = ['sudo', 'pip3', 'install',
-                            '--break-system-packages', '--ignore-installed']
-                if upgrade:
-                    sudo_cmd.append('--upgrade')
-                sudo_cmd.append('meshtastic')
+                self.ctx.dialog.msgbox(
+                    "rnsd Install Incomplete",
+                    "The Meshtastic library updated for MeshForge, but the\n"
+                    "system-wide copy that rnsd needs did NOT install.\n\n"
+                    "Impact: the RNS gateway bridge may not pick up the new\n"
+                    "protobuf definitions until this lands (Issue #24).\n\n"
+                    "Fix: re-run this update from the Updates menu. If it\n"
+                    "keeps failing, the error below shows why:\n\n"
+                    f"{rnsd_result.detail[:400]}"
+                )
 
-                rnsd_ok = False
-                rnsd_detail = ""
-                try:
-                    rnsd_result = subprocess.run(
-                        sudo_cmd,
-                        capture_output=True,
-                        text=True,
-                        timeout=120
-                    )
-                    rnsd_ok = rnsd_result.returncode == 0
-                    if not rnsd_ok:
-                        # subprocess.run does NOT raise on nonzero exit when
-                        # capturing output — a failed rnsd install would
-                        # otherwise pass silently and the caller would report
-                        # full success (Issue #24 defeated).
-                        rnsd_detail = (
-                            rnsd_result.stderr or rnsd_result.stdout
-                            or f"Exit code: {rnsd_result.returncode}"
-                        ).strip()
-                except Exception as e:
-                    rnsd_detail = str(e)
-                    logger.warning("System-wide meshtastic install error: %s", e)
-
-                if not rnsd_ok:
-                    logger.warning(
-                        "rnsd system-wide meshtastic install failed: %s", rnsd_detail
-                    )
-                    # User-level install succeeded (return True), but surface
-                    # the rnsd-copy failure honestly — don't claim full success.
-                    self.ctx.dialog.msgbox(
-                        "rnsd Install Incomplete",
-                        "The Meshtastic library updated for MeshForge, but the\n"
-                        "system-wide copy that rnsd needs did NOT install.\n\n"
-                        "Impact: the RNS gateway bridge may not pick up the new\n"
-                        "protobuf definitions until this lands (Issue #24).\n\n"
-                        "Fix: re-run this update from the Updates menu. If it\n"
-                        "keeps failing, the error below shows why:\n\n"
-                        f"{rnsd_detail[:400]}"
-                    )
-
-            return True, result.stdout
-
-        except subprocess.TimeoutExpired:
-            return False, "Installation timed out after 2 minutes"
-        except Exception as e:
-            return False, str(e)
+        return True, primary.stdout or primary.detail
 
     def _firmware_info(self):
         """Show firmware update information."""
@@ -634,35 +597,15 @@ class UpdatesHandler(BaseHandler):
             self.ctx.dialog.msgbox("Error", "requirements.txt not found!")
             return
 
-        venv_pip = meshforge_dir / 'venv' / 'bin' / 'pip'
-        no_venv_marker = meshforge_dir / '.no-venv'
-
-        try:
-            if venv_pip.exists() and not no_venv_marker.exists():
-                pip_cmd = [str(venv_pip), 'install', '-r', str(requirements_file)]
-            else:
-                pip_cmd = ['pip3', 'install', '--break-system-packages', '-r', str(requirements_file)]
-
-            result = subprocess.run(
-                pip_cmd,
-                capture_output=True,
-                text=True,
-                timeout=300
+        # Route through the hardened helper: SSOT venv-vs-system resolution
+        # (`get_meshforge_venv_dir`) + ensure_pip + return-code check, replacing
+        # the hand-rolled venv gate that bypassed the SSOT.
+        result = pip_install([], requirements_file=requirements_file, timeout=300)
+        if not result.ok:
+            self.ctx.dialog.msgbox(
+                "Pip Install Failed",
+                f"Failed to install dependencies:\n\n{result.detail[:500]}"
             )
-            pip_output = result.stdout + result.stderr
-
-            if result.returncode != 0:
-                self.ctx.dialog.msgbox(
-                    "Pip Install Failed",
-                    f"Failed to install dependencies:\n\n{pip_output[:500]}"
-                )
-                return
-
-        except subprocess.TimeoutExpired:
-            self.ctx.dialog.msgbox("Error", "Pip install timed out after 5 minutes.")
-            return
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", f"Pip install failed: {e}")
             return
 
         self.ctx.dialog.infobox("Updating MeshForge", "Step 3/3: Updating service files...")

@@ -12,6 +12,7 @@ except ImportError:
 
 from utils.system import run_command, check_package_installed
 from utils.logger import log, log_command
+from utils.pip_install import ensure_pip, pip_install
 
 console = Console()
 
@@ -99,6 +100,19 @@ class DependencyManager:
     def check_python_packages(self):
         """Check required Python packages"""
         log("Checking Python packages")
+
+        # pip itself must exist before we can inspect installed packages. This
+        # checker was historically pip-dependent: when pip was absent
+        # `pip3 list` failed, the success guard was skipped, and NO issue was
+        # recorded — a clean report while pip was missing (the exact fresh-user
+        # failure). Probe pip read-only (allow_apt=False — a checker must never
+        # apt-install) and surface its absence explicitly.
+        if not ensure_pip('python3', allow_apt=False).ok:
+            self.issues.append(
+                "pip is not available for python3 — install with: "
+                "sudo apt install -y python3-pip"
+            )
+            return
 
         result = run_command('pip3 list --format=json')
 
@@ -225,22 +239,27 @@ class DependencyManager:
         """Install missing Python packages for the installer UI"""
         console.print("\n[cyan]Installing missing Python packages...[/cyan]")
 
-        # Install UI dependencies via pip (meshtastic is installed via pipx separately)
-        packages = ' '.join(self.REQUIRED_PYTHON_PACKAGES)
-        result = run_command(f'pip3 install --upgrade --break-system-packages {packages}')
-        log_command('pip3 install packages', result)
+        # Install UI dependencies via the ONE hardened helper (meshtastic uses
+        # pipx separately): ensure_pip first, single PEP 668 decision, return
+        # code CHECKED. A real per-package failure is surfaced honestly (red ✗
+        # with detail) instead of the old "may be system package" reclassify
+        # that hid genuine failures (honest_failure_modes: error must not read
+        # as benign).
+        result = pip_install(self.REQUIRED_PYTHON_PACKAGES, python='python3', upgrade=True)
+        log_command('pip install UI packages', {'success': result.ok, 'stdout': result.stdout,
+                                                'stderr': result.stderr})
 
-        if result['success']:
+        if result.ok:
             console.print("[green]Python packages installed/updated[/green]")
         else:
-            console.print("[yellow]Some packages may have failed, checking individually...[/yellow]")
-            # Try installing each package individually
+            console.print(f"[yellow]Batch install failed: {result.detail}[/yellow]")
+            console.print("[yellow]Checking each package individually...[/yellow]")
             for pkg in self.REQUIRED_PYTHON_PACKAGES:
-                result = run_command(f'pip3 install --break-system-packages {pkg}')
-                if result['success']:
+                r = pip_install([pkg], python='python3')
+                if r.ok:
                     console.print(f"  [green]✓ {pkg}[/green]")
                 else:
-                    console.print(f"  [yellow]⚠ {pkg} (may be system package)[/yellow]")
+                    console.print(f"  [red]✗ {pkg}: {r.detail}[/red]")
 
     def fix_deprecated_packages(self):
         """Remove deprecated packages and install replacements"""
@@ -274,19 +293,25 @@ class DependencyManager:
             status = "✓ Installed" if check_package_installed(package) else "✗ Missing"
             table.add_row(package, status, "System")
 
-        # Python packages
-        result = run_command('pip3 list --format=json')
-        if result['success']:
-            import json
-            try:
-                installed = json.loads(result['stdout'])
-                installed_names = [pkg['name'].lower() for pkg in installed]
+        # Python packages — render pip's absence explicitly rather than leaving
+        # the rows silently empty (the table is a status surface; a blank for a
+        # missing pip reads as "all fine").
+        if not ensure_pip('python3', allow_apt=False).ok:
+            for package in self.REQUIRED_PYTHON_PACKAGES:
+                table.add_row(package, "⚠ pip unavailable", "Python")
+        else:
+            result = run_command('pip3 list --format=json')
+            if result['success']:
+                import json
+                try:
+                    installed = json.loads(result['stdout'])
+                    installed_names = [pkg['name'].lower() for pkg in installed]
 
-                for package in self.REQUIRED_PYTHON_PACKAGES:
-                    status = "✓ Installed" if package.lower() in installed_names else "✗ Missing"
-                    table.add_row(package, status, "Python")
-            except json.JSONDecodeError:
-                pass
+                    for package in self.REQUIRED_PYTHON_PACKAGES:
+                        status = "✓ Installed" if package.lower() in installed_names else "✗ Missing"
+                        table.add_row(package, status, "Python")
+                except json.JSONDecodeError:
+                    pass
 
         # Pipx packages (isolated environments)
         pipx_result = run_command('pipx list')

@@ -53,6 +53,11 @@ step() { echo; echo "==> $1"; }
 warn() { echo "WARN: $1" >&2; }
 die()  { echo "ERR:  $1" >&2; exit 1; }
 
+# Hardened install primitives (ensure_pip + checked pip + import verify + log).
+# shellcheck source=lib/install_common.sh
+source "$REPO_ROOT/scripts/lib/install_common.sh"
+mf_log_init
+
 # ---------------------------------------------------------------------------
 # Preflight
 # ---------------------------------------------------------------------------
@@ -104,15 +109,25 @@ step "Installing system-python dependencies for the gateway service"
 
 DEPS=(lxmf rns paho-mqtt meshtastic)
 if [[ "$DRY_RUN" = "1" ]]; then
-    echo "    (dry-run) would: sudo -u $TARGET_USER pip3 install --user --break-system-packages ${DEPS[*]}"
+    echo "    (dry-run) would: sudo -u $TARGET_USER $SYS_PY -m pip install --user $(mf_pip_args "$SYS_PY") ${DEPS[*]}"
 else
-    sudo -u "$TARGET_USER" pip3 install --user --break-system-packages "${DEPS[@]}" \
-        2>&1 | tail -5
-fi
-
-# Re-pick HASH_PY now that deps are installed.
-if [[ "$DRY_RUN" != "1" ]] && sudo -u "$TARGET_USER" "$SYS_PY" -c "import LXMF, RNS" >/dev/null 2>&1; then
-    HASH_PY="$SYS_PY"
+    # Checked install — NO `| tail` (that handed pip's exit code to tail, which
+    # always succeeds, so a failed gateway-dependency install reported success:
+    # the single worst silent failure in the installer). Ensure pip exists,
+    # capture the real exit code, then VERIFY the consumer can import the libs
+    # before declaring success.
+    mf_ensure_pip "$SYS_PY" || die "pip unavailable for $SYS_PY"
+    if ! mf_run_logged sudo -u "$TARGET_USER" "$SYS_PY" -m pip install --user \
+            $(mf_pip_args "$SYS_PY") "${DEPS[@]}"; then
+        die "gateway dependency install failed (transcript: ${MF_INSTALL_LOG:-console})"
+    fi
+    if mf_verify_import "$SYS_PY" "LXMF" "$TARGET_USER" \
+            && mf_verify_import "$SYS_PY" "RNS" "$TARGET_USER" \
+            && mf_verify_import "$SYS_PY" "meshtastic" "$TARGET_USER"; then
+        HASH_PY="$SYS_PY"
+    else
+        die "gateway deps installed but LXMF/RNS/meshtastic not importable as $TARGET_USER"
+    fi
 fi
 
 # ---------------------------------------------------------------------------

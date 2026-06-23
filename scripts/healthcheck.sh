@@ -98,12 +98,18 @@ run_tests_clean_venv() {
     fi
     # shellcheck disable=SC1091
     source "$venv/bin/activate"
-    pip install --upgrade pip --quiet 2>/dev/null
+    # Route through the hardened helper (ensure_pip + checked rc) against the
+    # venv's own interpreter — no more silent `2>/dev/null` self-upgrade.
+    # shellcheck source=lib/install_common.sh
+    source "${REPO_ROOT}/scripts/lib/install_common.sh"
+    local vpy="$venv/bin/python"
+    mf_pip_install "$vpy" --quiet --upgrade pip || echo "  (pip self-upgrade skipped)"
     echo "Installing required CI deps: ${CI_DEPS_REQUIRED[*]}"
-    pip install --quiet "${CI_DEPS_REQUIRED[@]}" || { print_fail "required deps failed"; deactivate; return 3; }
+    mf_pip_install "$vpy" --quiet "${CI_DEPS_REQUIRED[@]}" \
+        || { print_fail "required deps failed"; deactivate; return 3; }
     echo "Installing optional CI deps (soft-fail): ${CI_DEPS_OPTIONAL[*]}"
     for dep in "${CI_DEPS_OPTIONAL[@]}"; do
-        pip install --quiet "$dep" 2>/dev/null || echo "  (skipped: $dep)"
+        mf_pip_install "$vpy" --quiet "$dep" || echo "  (skipped: $dep)"
     done
     local rc=0
     CI=true MESHFORGE_CI=true python3 -m pytest tests/ "${CI_PYTEST_ARGS[@]}" -q 2>&1 | tail -50

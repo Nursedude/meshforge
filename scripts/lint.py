@@ -23,6 +23,7 @@ Checks:
 - MF019: RNS.Reticulum() constructed outside the guarded chokepoint (must use open_reticulum() from utils.rns_init; #68/#69, RNS T2-isolate arc)
 - MF020: apply_config_and_restart() return (bool, msg) discarded in TUI handlers (hardcoded-success-after-unchecked-action, honest-signal Issues #74-#77)
 - MF021: subprocess/systemctl/os.system/Popen/shell=True in the mini-dudeai engine/sources/actions (observation-only invariant — mini observes, never executes)
+- MF022: bare/exit-code-masked pip & swallowed apt in shell installers (must route through scripts/lib/install_common.sh — pip-presence + PEP 668 + checked rc; install-hardening arc)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -983,6 +984,106 @@ def check_mini_dudeai_observation_only(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# MF022: pip/apt hygiene in shell installers (install-hardening arc).
+# Shell scripts must route package installs through scripts/lib/install_common.sh
+# so pip-presence (ensure_pip), PEP 668, and the REAL exit code are handled —
+# the fresh-user "had to install pip by hand" failure + the configure_gateway
+# `pip … | tail` exit-code mask. `lint_file` is .py-only, so (like MF014) MF022
+# scans shell files via its own pass.
+# ─────────────────────────────────────────────────────────────────────────
+MF022_SCAN_EXTENSIONS = {'.sh', '.bash'}
+
+# The lib DEFINES the sanctioned wrappers (it legitimately constructs `pip
+# install` / `apt-get install`); lint.py + the rule's own test carry example
+# strings. Exempt them.
+MF022_ALLOWED_FILES = {
+    'scripts/lib/install_common.sh',
+    'scripts/lint.py',
+    'tests/test_lint_mf022.py',
+}
+
+MF022_PIPE_MASK = re.compile(r'\bpip3?\s+install\b.*\|\s*(tail|head)\b')
+MF022_BARE_PIP = re.compile(r'\bpip3?\s+install\b')
+MF022_APT_SWALLOW = re.compile(r'\bapt(-get)?\s+install\b.*&>\s*/dev/null')
+
+
+def _match_in_quotes(line: str, pos: int) -> bool:
+    """True when the match at `pos` sits inside a quoted string — i.e. it is a
+    fix-hint / echo / dry-run preview, not an actual command. An odd count of
+    quotes before the match means we are inside one."""
+    prefix = line[:pos]
+    return (prefix.count('"') % 2 == 1) or (prefix.count("'") % 2 == 1)
+
+
+def _check_pip_invocations_in_file(filepath: str, rel_path: str) -> List[LintIssue]:
+    issues: List[LintIssue] = []
+    try:
+        with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
+            for lineno, line in enumerate(f, 1):
+                if line.lstrip().startswith('#'):
+                    continue
+                m = MF022_PIPE_MASK.search(line)
+                if m and not _match_in_quotes(line, m.start()):
+                    issues.append(LintIssue(
+                        rel_path, lineno, Severity.ERROR, "MF022",
+                        "pip install piped to tail/head masks pip's exit code — route "
+                        "through mf_pip_install (scripts/lib/install_common.sh) and check rc",
+                    ))
+                    continue
+                m = MF022_BARE_PIP.search(line)
+                if (m and not _match_in_quotes(line, m.start())
+                        and '-m pip' not in line and 'mf_pip_install' not in line):
+                    issues.append(LintIssue(
+                        rel_path, lineno, Severity.WARNING, "MF022",
+                        "bare 'pip install' in a shell script — route through mf_pip_install "
+                        "(scripts/lib/install_common.sh) for pip-presence + PEP 668 + checked rc",
+                    ))
+                    continue
+                m = MF022_APT_SWALLOW.search(line)
+                if m and not _match_in_quotes(line, m.start()):
+                    issues.append(LintIssue(
+                        rel_path, lineno, Severity.WARNING, "MF022",
+                        "apt-get install with &>/dev/null hides the failure reason — "
+                        "use mf_apt_install (scripts/lib/install_common.sh)",
+                    ))
+    except (IOError, OSError):
+        pass
+    return issues
+
+
+def _mf022_exempt(rel_path: str) -> bool:
+    if rel_path in MF022_ALLOWED_FILES:
+        return True
+    ext = os.path.splitext(rel_path)[1].lower()
+    return ext not in MF022_SCAN_EXTENSIONS
+
+
+def check_pip_invocations_in_files(files: List[str], repo_root: str = '.') -> List[LintIssue]:
+    """MF022: scan a specific set of files (e.g. staged) for shell pip/apt hygiene."""
+    issues: List[LintIssue] = []
+    for f in files:
+        rel_path = os.path.relpath(f, repo_root) if os.path.isabs(f) else f
+        if _mf022_exempt(rel_path) or not os.path.isfile(f):
+            continue
+        issues.extend(_check_pip_invocations_in_file(f, rel_path))
+    return issues
+
+
+def check_pip_invocations_full_tree(repo_root: str = '.') -> List[LintIssue]:
+    """MF022: scan the whole repo tree's shell scripts for pip/apt hygiene."""
+    issues: List[LintIssue] = []
+    for root, dirs, files in os.walk(repo_root):
+        dirs[:] = [d for d in dirs if d not in MF014_SCAN_EXCLUDE_DIRS]
+        rel_root = os.path.relpath(root, repo_root)
+        for filename in files:
+            rel_path = os.path.normpath(os.path.join(rel_root, filename)) if rel_root != '.' else filename
+            if _mf022_exempt(rel_path):
+                continue
+            issues.extend(_check_pip_invocations_in_file(os.path.join(root, filename), rel_path))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
@@ -1022,6 +1123,12 @@ def main():
         issues.extend(check_operator_values_in_files(get_staged_files_all_types()))
     else:
         issues.extend(check_operator_values_full_tree())
+
+    # MF022: shell-installer pip/apt hygiene (broader than .py — scans .sh/.bash).
+    if args.staged:
+        issues.extend(check_pip_invocations_in_files(get_staged_files_all_types()))
+    else:
+        issues.extend(check_pip_invocations_full_tree())
 
     # MF018: In-Domain Principle ratchet — TUI shell-escapes vs frozen baseline.
     if args.staged:
