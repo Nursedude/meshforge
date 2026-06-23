@@ -90,9 +90,25 @@ def _verdict(fields: dict, collector_ok: bool) -> str:
         return "UNKNOWN"
     if fields["ip_alive"] == 0:
         return "UNREACHABLE"
-    # app port completed the TCP handshake (kernel accept) but served no banner
-    # = userspace not serving while the kernel/NIC is alive: the freeze class.
+    # app port completed the TCP handshake (kernel accept) but served no banner.
+    # banner==0 ALONE is AMBIGUOUS: a swap-wedged userspace (the real freeze
+    # class) AND a merely slow/loaded box both miss the banner window — the
+    # .32 Pi Zero W under two mesh bots false-fired HOST_FROZEN for days this
+    # way (2026-06-23). Corroborate with the kernel hung-task signal:
+    #   kstack==1 → the kernel itself flagged a stuck task = the genuine freeze
+    #               the self-petted HW watchdog can't catch → HOST_FROZEN.
+    #   kstack==0 → kernel healthy, sshd just slow to send the banner = NOT a
+    #               freeze (don't page; app_state=open already proves sshd is
+    #               accepting, ip_alive proves the NIC/kernel are up).
+    #   kstack missing (older claw tool didn't report it) → can't corroborate;
+    #               preserve the conservative freeze verdict rather than risk a
+    #               missed freeze (honest_failure_modes #2: absent corroboration
+    #               is not evidence of health).
+    # honest_failure_modes #1: never map one ambiguous observation (banner==0)
+    # straight onto a definitive wedge verdict.
     if fields.get("app_state") == "open" and (fields.get("banner") or 0) == 0:
+        if fields.get("kstack") == 0:
+            return "OK"
         return "HOST_FROZEN"
     return "OK"
 
@@ -148,7 +164,10 @@ def _probe_target(req, server: str, device: str, target: dict,
     attempt shows the box serving (OK), it is ALIVE and we report OK. Only a
     verdict that PERSISTS across every attempt is reported (a truly frozen box
     gives banner=0 every time; a down box is UNREACHABLE every time). Records
-    the attempt count. (Root fix is a longer firmware banner window — deferred.)"""
+    the attempt count. (This re-probe handles the TRANSIENT slow box; the
+    SUSTAINED-slow box — banner=0 every attempt but kernel-healthy — is now
+    disambiguated from a real freeze by the kstack hung-task signal in
+    _verdict, so a chronically loaded box no longer false-pages HOST_FROZEN.)"""
     last = None
     for i in range(max(1, attempts)):
         last = _probe_once(req, server, device, target, timeout_s)

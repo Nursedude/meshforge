@@ -987,9 +987,12 @@ class TestDetectorHonesty:
     value overlapping the healthy/absent domain). Enforced here for the
     meshtasticd presence gate: 'cannot determine' must NOT read as 'absent'
     (which would permit the radio seizure). New detectors should add a guard of
-    this shape. KNOWN-OUTSTANDING instance (not yet fixed — needs the claw tool's
-    kstack semantics): scripts/host_probe_check.py::_verdict maps banner==0 ->
-    HOST_FROZEN ignoring kstack, false-paging a merely-slow box.
+    this shape. Also pinned: the dude-claw witness verdict
+    (scripts/host_probe_check.py::_verdict) — banner==0 alone is ambiguous
+    (slow box vs real freeze), so a hard HOST_FROZEN requires the kernel
+    hung-task corroboration (kstack==1); kstack==0 (kernel healthy, just slow)
+    must NOT page. (Fixed 2026-06-23; behavioural detail in
+    tests/test_host_probe_check.py.)
     """
 
     def _collector(self):
@@ -1042,3 +1045,21 @@ class TestDetectorHonesty:
         finally:
             if SRC_DIR in sys.path:
                 sys.path.remove(SRC_DIR)
+
+    def test_witness_freeze_requires_kernel_corroboration(self):
+        """The dude-claw witness must not call a merely-slow box frozen:
+        banner==0 + kstack==0 (kernel healthy) is NOT HOST_FROZEN; a real
+        freeze needs the kernel hung-task signal (kstack==1)."""
+        scripts_dir = os.path.join(REPO_ROOT, 'scripts')
+        sys.path.insert(0, scripts_dir)
+        try:
+            import host_probe_check
+            v = host_probe_check._verdict
+            base = {"ip_alive": 1, "app_state": "open", "banner": 0, "kstack": 0}
+            # the .32 false-positive shape must read OK, not page
+            assert v(dict(base, kstack=0), True) == "OK"
+            # a kernel-corroborated wedge must still fire
+            assert v(dict(base, kstack=1), True) == "HOST_FROZEN"
+        finally:
+            if scripts_dir in sys.path:
+                sys.path.remove(scripts_dir)
