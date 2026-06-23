@@ -65,6 +65,7 @@ from utils.watchdog_probes import (
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
     probe_meshtasticd_phoneapi_wedge,
+    probe_oracle_delivery_degraded,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
     probe_rules_seed_drift,
@@ -512,6 +513,22 @@ def run_all_probes(
     # the debounce, observed-clean resets, 2-tick debounce. NOT gated on the
     # map service — gateway-only boxes (moc3) must run it.
     sig = probe_gateway_delivery_degraded()
+    if sig is not None:
+        signals.append(sig)
+
+    # Oracle delivery degraded (2026-06-22, the mesh-oracle health leg) — the
+    # read-only "ask dude-AI over the mesh" responder (src/oracle) answered
+    # queries but its confirmable delivery rate (delivered / (delivered +
+    # send_errors), over a recent ts window of its audit log) fell below
+    # threshold. Declines (cooldown / not_allowlisted) + benign non-deliveries
+    # (RNS no-path / MeshCore restart race) are excluded from the failure set
+    # and surfaced, so the rate is the #74 confirmation view, not a false alarm
+    # on a cooldowned/quiet channel. Reads the operator's ~/.local/share dir
+    # directly (root-context safe); self-guards None (INERT) off a box where the
+    # oracle never wrote a log (disabled / never queried) — the common case.
+    # degraded only; min-sample guard (no silence leg — a reactive service
+    # nobody queried isn't "broken"); 2-tick debounce.
+    sig = probe_oracle_delivery_degraded()
     if sig is not None:
         signals.append(sig)
 

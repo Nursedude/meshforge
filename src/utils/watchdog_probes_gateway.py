@@ -1179,3 +1179,269 @@ def probe_resource_canary_degraded(
     return None
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Probe: oracle delivery degraded (2026-06-22; the mesh-oracle health
+# leg). The read-only "ask dude-AI over the mesh" responder (src/oracle)
+# answers a NOC-state query over the mesh and appends one JSONL audit
+# record per handled query to ~/.local/share/meshforge/mesh_oracle_log.jsonl
+# (oracle.oracle_log_path; rotates at 2 MB). It had NO automated probe — a
+# blind spot for a service whose whole ethos is "silence is the failure
+# mode." v1 watches the DELIVERY-RATE leg only — the unambiguous one — over
+# a recent ts window:
+#
+#     rate = delivered_true / (delivered_true + real_failures)
+#
+# real_failures counts ONLY records whose `reason` marks a real send
+# EXCEPTION (reason startswith "send_error"). Three buckets are
+# DELIBERATELY EXCLUDED from the rate — each would false-alarm:
+#   - declines (reason in {cooldown, not_allowlisted}): the oracle CORRECTLY
+#     refused (rate-limit / not on the allowlist), not a failure — THE trap
+#     (honest_failure_modes #1).
+#   - benign non-delivery (delivered=false, NO send_error reason): the RNS
+#     leg's no-path-to-an-unannounced-ephemeral-identity (a 32-hex hash with
+#     no announce) + the MeshCore first-send-post-restart race. Expected,
+#     not defects. Counted + surfaced in `extra`, never hidden (#9).
+#
+# WITNESSED v1 blind spot: the RNS leg's send_fn (bridge_send_mixin.
+# send_to_rns) catches real send EXCEPTIONS internally and returns a bare
+# False, so an RNS *send error* lands in the benign bucket, not send_error —
+# v1 cannot yet tell an RNS no-path from an RNS crash. Closing that needs
+# send_to_rns to distinguish the two (a change to the LIVE RNS send path,
+# deliberately deferred out of the mf.5 RNS-fork soak). The Meshtastic /
+# MQTT / MeshCore legs DO surface send_error (their send_fn lets the
+# exception reach the responder), so v1 already covers 3 of the 4 legs; the
+# benign-bucket count makes the RNS gap visible rather than silent.
+#
+# degraded ONLY (a low oracle rate is a warning — the oracle is read-only,
+# low-traffic, operator-test-only today; the hard delivery surface is owned
+# by gateway_delivery_degraded / synth_soak / resource_canary). Fires when
+# rate < threshold AND a MINIMUM confirmable sample exists (else pass@small-N
+# noise; #6/#2). Silence (no queries) is NOT a failure for a reactive service
+# — nobody asked — so there is no silence leg in v1 (the min-sample guard
+# absorbs a quiet window; a v2 silence leg ties to channel_feed_dark, not a
+# naive "no log for Xh" that false-alarms every quiet night). INERT (None)
+# off a box where the oracle never wrote a log (disabled / never queried).
+# Reads the operator home directly (root-context safe); 2-tick debounce.
+# Mirrors synth_soak_degraded.
+
+_ORACLE_LOG_WINDOW_S = 6 * 3600.0           # rate over the last ~6h of ts
+_ORACLE_MIN_SAMPLE = 8                       # ≥8 confirmable queries or hold (small-N)
+_ORACLE_RATE_THRESHOLD = 0.8                 # fire when the confirmable rate < 0.8
+_ORACLE_LOG_READ_BYTES = 4 * 1024 * 1024     # bounded tail read (log rotates at 2 MB)
+_ORACLE_TS_FUTURE_SLOP_S = 300.0             # tolerate small forward clock skew on ts
+DEFAULT_ORACLE_DELIVERY_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/oracle_delivery_debounce.json")
+
+
+def _resolve_oracle_log_path() -> Optional[str]:
+    """Operator-home path to the oracle audit log, root-context safe.
+
+    The oracle runs inside meshforge-gateway as the operator and appends to
+    ``~/.local/share/meshforge/mesh_oracle_log.jsonl`` (== ``oracle.oracle_log_path``
+    = ``MeshForgePaths.get_data_dir()``). The watchdog (sandboxed root) derives the
+    operator home from the operator UID and reads it directly — never escalating
+    (the synth_soak / rns_version_drift lesson). None when no operator is
+    resolvable (indeterminate — never a false alarm).
+    """
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        op = None
+    if not op:
+        return None
+    try:
+        import pwd
+        home = pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+    return os.path.join(home, ".local", "share", "meshforge", "mesh_oracle_log.jsonl")
+
+
+def _load_oracle_streak(state_path: str) -> int:
+    """Read the consecutive-degraded streak. Any error → 0 (favour silence on
+    uncertainty — a missing/garbage state suppresses a first-seen fire)."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_oracle_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def _classify_oracle_record(rec: dict) -> Optional[str]:
+    """Bucket one audit record, or None if misshaped (skipped, never counted).
+
+    Order matters — a delivered record never carries a reason, and a decline is
+    a non-delivery WITH a known reason, so check the specific cases first:
+      - ``delivered is True``                       → 'delivered'  (success)
+      - ``reason`` startswith 'send_error'          → 'send_error' (real failure)
+      - ``reason`` in {cooldown, not_allowlisted}   → 'decline'    (excluded)
+      - ``delivered is False`` (any other/absent reason) → 'benign' (excluded, counted)
+    """
+    if not isinstance(rec, dict):
+        return None
+    delivered = rec.get("delivered")
+    reason = rec.get("reason")
+    if delivered is True:
+        return "delivered"
+    if isinstance(reason, str) and reason.startswith("send_error"):
+        return "send_error"
+    if reason in ("cooldown", "not_allowlisted"):
+        return "decline"
+    if delivered is False:
+        return "benign"
+    return None  # not a record we recognise (neither delivered nor a non-delivery)
+
+
+def _read_oracle_window(
+    log_path: str, now: float, window_s: float, read_bytes: int,
+) -> Optional[Tuple[dict, int]]:
+    """Parse the audit log's recent tail into per-bucket counts over the ts
+    window. Returns ``(counts, total_in_window)`` or None when the file is
+    unreadable (caller HOLDS the streak — unobservable ≠ healthy).
+
+    The log rotates at 2 MB; read at most ``read_bytes`` from the END so a busy
+    log stays bounded and the window is by ``ts``, never "all history". ``ts`` is
+    wall-clock (RTC-less Pis, NTP steps) — a non-numeric / negative / far-future
+    ts is skipped (clamp the forgeable clock).
+    """
+    try:
+        size = os.path.getsize(log_path)
+        with open(log_path, "rb") as fh:
+            if size > read_bytes:
+                fh.seek(size - read_bytes)
+                fh.readline()  # discard the partial line after the byte-seek
+            raw = fh.read()
+    except OSError:
+        return None
+    counts = {"delivered": 0, "send_error": 0, "decline": 0, "benign": 0}
+    total = 0
+    lo = now - window_s
+    hi = now + _ORACLE_TS_FUTURE_SLOP_S
+    for line in raw.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            rec = json.loads(line.decode("utf-8", "replace"))
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        try:
+            ts = float(rec.get("ts"))
+        except (TypeError, ValueError):
+            continue
+        if ts < lo or ts > hi:
+            continue
+        bucket = _classify_oracle_record(rec)
+        if bucket is None:
+            continue
+        counts[bucket] += 1
+        total += 1
+    return counts, total
+
+
+def probe_oracle_delivery_degraded(
+    *,
+    log_path: Optional[str] = None,
+    now: Optional[float] = None,
+    window_s: float = _ORACLE_LOG_WINDOW_S,
+    min_sample: int = _ORACLE_MIN_SAMPLE,
+    threshold: float = _ORACLE_RATE_THRESHOLD,
+    debounce_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """The mesh oracle's confirmable delivery rate fell below threshold.
+
+    Over the last ``window_s`` of audit-log ``ts``, compute the #74 confirmation
+    view: ``rate = delivered / (delivered + send_errors)``, where declines
+    (cooldown / not_allowlisted) and benign non-deliveries (reason-less
+    delivered:false — RNS no-path / MeshCore restart race) are EXCLUDED from the
+    failure set. Fire ``degraded`` when ``rate < threshold`` and at least
+    ``min_sample`` confirmable queries exist, after a ``debounce_ticks`` streak.
+
+    Honest self-guards (favour silence on uncertainty):
+      - operator unresolvable / log file absent → None (INERT: the oracle is
+        disabled or never answered on this box — unobservable ≠ unhealthy).
+      - log tail unreadable (transient/torn) → None, HOLDING the streak (neither
+        fires nor resets).
+      - confirmable sample < ``min_sample`` (incl. a quiet window — nobody asked)
+        → None: a rate over a handful of queries is pass@small-N noise.
+      - rate ≥ threshold on a real sample → explicit healthy → reset the streak.
+      - a degraded candidate must persist ``debounce_ticks`` consecutive ticks.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+
+    lp = log_path or _resolve_oracle_log_path()
+    if not lp:
+        return None  # operator unresolvable — indeterminate, never a false alarm
+    if not os.path.exists(lp):
+        return None  # INERT: the oracle never wrote a log here (disabled/never queried)
+
+    sp = debounce_path or DEFAULT_ORACLE_DELIVERY_DEBOUNCE_PATH
+
+    parsed = _read_oracle_window(lp, now, window_s, _ORACLE_LOG_READ_BYTES)
+    if parsed is None:
+        return None  # unreadable tail — HOLD the streak (don't reset, don't fire)
+    counts, _total = parsed
+
+    delivered = counts["delivered"]
+    real_failures = counts["send_error"]
+    confirmable = delivered + real_failures
+    if confirmable < min_sample:
+        return None  # small-N (incl. a quiet window) — can't judge a rate honestly
+
+    rate = delivered / confirmable  # confirmable >= min_sample >= 1, safe
+    extra = {
+        "window_h": round(window_s / 3600.0, 1),
+        "confirmable": confirmable,
+        "delivered": delivered,
+        "send_errors": real_failures,
+        "declines_excluded": counts["decline"],
+        "benign_nondeliveries_excluded": counts["benign"],
+        "rate": round(rate, 3),
+        "threshold": threshold,
+    }
+
+    if rate >= threshold:
+        _save_oracle_streak(sp, 0)  # explicit healthy observation → reset
+        return None
+
+    streak = min(_load_oracle_streak(sp) + 1, debounce_ticks)
+    _save_oracle_streak(sp, streak)
+    if streak < debounce_ticks:
+        return None
+    extra["debounce_streak"] = streak
+    detail = (
+        f"oracle delivery degraded: {rate:.2f} rate (threshold {threshold:.2f}) "
+        f"over ~{extra['window_h']}h — {delivered} delivered / {real_failures} "
+        f"send-error of {confirmable} confirmable queries "
+        f"({counts['decline']} declines + {counts['benign']} benign "
+        f"non-deliveries excluded). The oracle answered but its replies are not "
+        f"landing — check the gateway's RNS/Meshtastic send path + the oracle "
+        f"audit log (~/.local/share/meshforge/mesh_oracle_log.jsonl)."
+    )
+    return Signal(
+        cls="oracle_delivery_degraded",
+        subject="mesh-oracle",
+        severity="degraded",
+        detail=detail,
+        extra=extra,
+    )
+

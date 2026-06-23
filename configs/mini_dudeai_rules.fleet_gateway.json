@@ -686,6 +686,19 @@
       },
       "cooldown_s": 3600,
       "annotation": "2026-06-20 gateway-reliability arc A1 (the OUTCOME source of truth) -- the synthetic RESOURCE round-trip canary (meshforge-gateway-resource-canary.timer -> src/lab/gateway_resource_canary) FAILED its verdict or went DARK. A1 actively PROVES the gateway delivers a multi-chunk RNS Resource round-trip -- the exact path the 2026-06-20 wx-total-loss EROFS broke while single-packet replies kept working (so every shape/liveness probe and the single-packet gateway_rt_canary read green). The canary fires a control PING + a PINGBIG whose reply is resource-sized; its own FAIL 'control back, resource NOT' is the EROFS signature (check the gateway journal for EROFS / 'assembling received resource' + that meshforge-gateway.service ReadWritePaths includes /etc/reticulum/storage). A stale envelope = the canary went silent. Self-guards INERT off a box that doesn't run the canary; the 'canary itself must be watched' pattern, mirroring synth_soak_degraded."
+    },
+    {
+      "id": "oracle_delivery_degraded_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "oracle_delivery_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-06-22 mesh-oracle health -- the read-only 'ask dude-AI over the mesh' responder (src/oracle) answered queries but its confirmable delivery rate (delivered / (delivered + send_errors), over a recent ts window of ~/.local/share/meshforge/mesh_oracle_log.jsonl) fell below threshold. Intentional declines (cooldown / not_allowlisted) and benign non-deliveries (reason-less delivered:false -- RNS no-path to an unannounced ephemeral identity / MeshCore restart race) are EXCLUDED from the failure set + surfaced in the signal extra, so this is the #74 confirmation view, not a false alarm on a cooldowned/quiet channel. WITNESSED v1 blind spot: the RNS leg's send_to_rns swallows real send exceptions to a bare False, so an RNS send error lands in the benign bucket (the Meshtastic/MQTT/MeshCore legs surface send_error fully) -- the benign count makes the RNS gap visible. Check the gateway's RNS/Meshtastic send path + the oracle audit log on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage -- low-traffic read-only service). Self-guards INERT off a box where the oracle never wrote a log (disabled / never queried)."
     }
   ]
 }
