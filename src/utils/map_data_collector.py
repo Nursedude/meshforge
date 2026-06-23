@@ -110,6 +110,18 @@ class MapDataCollector(
     # Meshtasticd connection defaults
     DEFAULT_MESHTASTICD_HOST = "localhost"
     DEFAULT_MESHTASTICD_PORT = 4403
+    # Hard wall-clock cap on the meshtasticd TCP collect (connect + nodedb
+    # sync). The meshtastic TCPInterface constructor blocks until the full
+    # nodedb is received; a wedged/slow daemon can stall it up to its own
+    # ~900s server-side idle timeout, and for that whole time the map
+    # collector's _collect_lock is held — wedging every /api/nodes/geojson +
+    # /api/network/topology request behind it (the 2026-06-23 moc1 spin:
+    # 667 stuck handler threads, fd exhaustion). The collect runs the blocking
+    # call in a worker and abandons the wait after this cap, returning the rest
+    # of the collect. Must exceed a box's legitimate cold sync (moc5's CH341
+    # USB-SPI radio: 14-19s) with margin; raise in map_settings.json on a box
+    # with an even slower radio.
+    DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS = 45
 
     def __init__(self,
                  cache_dir: Optional[Path] = None,
@@ -177,6 +189,8 @@ class MapDataCollector(
                 "online_status_threshold_minutes": self.DEFAULT_ONLINE_THRESHOLD_MINUTES,
                 "meshtasticd_host": self.DEFAULT_MESHTASTICD_HOST,
                 "meshtasticd_port": self.DEFAULT_MESHTASTICD_PORT,
+                "meshtasticd_tcp_collect_timeout_seconds":
+                    self.DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS,
                 "aredn_node_ips": [],  # e.g. ["10.54.25.1", "10.1.0.1"]
                 # Operator-assigned positions for nodes that don't self-report GPS
                 # (MeshCore advertisements carry no position by protocol design).
@@ -542,6 +556,19 @@ class MapDataCollector(
         if self._settings:
             return int(self._settings.get("meshtasticd_port", self.DEFAULT_MESHTASTICD_PORT))
         return self.DEFAULT_MESHTASTICD_PORT
+
+    def get_meshtasticd_tcp_collect_timeout_seconds(self) -> float:
+        """Wall-clock cap for the meshtasticd TCP collect (connect + nodedb sync).
+
+        Bounds how long a wedged daemon can hold ``_collect_lock``. See
+        ``DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS`` for the why.
+        """
+        if self._settings:
+            return float(self._settings.get(
+                "meshtasticd_tcp_collect_timeout_seconds",
+                self.DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS,
+            ))
+        return float(self.DEFAULT_MESHTASTICD_TCP_COLLECT_TIMEOUT_SECONDS)
 
     def set_meshtasticd_connection(self, host: str, port: int) -> bool:
         """Set meshtasticd connection parameters.
