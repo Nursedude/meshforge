@@ -958,26 +958,34 @@ class TestServingNeverBlocksOnCollection:
         gateway-deferred meshtasticd (empty result, daemon present) lets the
         fallback seize /dev/ttyACM0, a DIFFERENT radio (dude-claw's)."""
         tree = self._parse(self.ORCHESTRATOR)
-        guarded = False
+        # Identify THE gate by `tcp_features` in its TEST (not merely
+        # `_collect_direct_radio` somewhere in its body): an outer wrapper such
+        # as `if self._meshtastic_enabled:` also contains the call nested in its
+        # body, so a body-only match hits the wrong node. Keying on the gate's
+        # own predicate is robust to such wrappers (caught porting to MeshAnchor,
+        # whose _collect_locked has exactly that outer wrapper).
+        gate = None
         for node in ast.walk(tree):
             if not isinstance(node, ast.If):
+                continue
+            if 'tcp_features' not in ast.dump(node.test):
                 continue
             body_dump = " ".join(ast.dump(s) for s in node.body)
             if '_collect_direct_radio' not in body_dump:
                 continue
-            # This is the direct-radio gate; its test MUST consult presence.
-            assert '_meshtasticd_present' in ast.dump(node.test), (
-                "The direct_radio fallback in map_data_collector._collect_locked "
-                "is no longer gated on self._meshtasticd_present() — reverting to "
-                "`if not tcp_features:` reintroduces the cross-subsystem radio "
-                "seizure (ttyACM0 cascade, 2026-06-23)."
-            )
-            guarded = True
+            gate = node
             break
-        assert guarded, (
-            "Could not find the direct_radio gate (an `if` whose body calls "
-            "_collect_direct_radio) in map_data_collector.py — refactored? "
-            "Update this guard so the presence-gate invariant stays enforced."
+        assert gate is not None, (
+            "Could not find the direct_radio gate (an `if` whose TEST references "
+            "tcp_features and whose body calls _collect_direct_radio) in "
+            "map_data_collector.py — refactored? Update this guard so the "
+            "presence-gate invariant stays enforced."
+        )
+        assert '_meshtasticd_present' in ast.dump(gate.test), (
+            "The direct_radio fallback in map_data_collector._collect_locked is "
+            "no longer gated on self._meshtasticd_present() — reverting to "
+            "`if not tcp_features:` reintroduces the cross-subsystem radio "
+            "seizure (ttyACM0 cascade, 2026-06-23)."
         )
 
 
