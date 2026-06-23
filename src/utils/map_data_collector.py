@@ -870,10 +870,16 @@ class MapDataCollector(
             if fid:
                 features[fid] = f
 
-        # Source 1.5: Direct USB radio (when meshtasticd not running)
-        # Only try this if TCP returned nothing (avoids double-connection)
+        # Source 1.5: Direct USB radio — ONLY when meshtasticd is genuinely
+        # ABSENT (usb-direct mode). Gating on `not tcp_features` alone was a
+        # cross-subsystem cascade bug: a WEDGED or gateway-deferred meshtasticd
+        # also returns empty, and the fallback then opened /dev/ttyACM0 — which
+        # on a gateway/claw box is a DIFFERENT radio (e.g. dude-claw's USB
+        # radio), starving it. One subsystem's wedge must not seize another's
+        # hardware (the 2026-06-23 moc1 incident). Gate on the SERVICE state,
+        # not the result.
         direct_radio_features = []
-        if not tcp_features:
+        if not tcp_features and not self._meshtasticd_present():
             direct_radio_features = self._tag_source_origin(
                 self._timed_collect("direct_radio", self._collect_direct_radio),
                 "local_radio",

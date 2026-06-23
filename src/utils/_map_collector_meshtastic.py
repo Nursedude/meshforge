@@ -60,6 +60,35 @@ class MeshtasticDataCollectorMixin:
             logger.debug("gateway-owns-phoneapi check failed: %s", e)
             return False
 
+    def _meshtasticd_present(self) -> bool:
+        """True iff a local meshtasticd service is running.
+
+        The direct-USB-radio fallback (_collect_direct_radio) is for usb-direct
+        boxes where meshtasticd is ABSENT. Gating it on "meshtasticd returned no
+        nodes" instead conflated a WEDGED or gateway-deferred daemon (empty
+        result, daemon present) with an absent one — so the fallback opened
+        /dev/ttyACM0, which on a gateway/claw box is a DIFFERENT radio (the
+        dude-claw USB radio), starving it (#17 contention class, 2026-06-23).
+
+        Unknown state → True (assume PRESENT). The conservative default here is
+        the opposite of _gateway_owns_phoneapi's: when we can't tell, we must
+        NOT grab the serial radio — a wrongly-skipped direct collect on a true
+        usb-direct box just yields no local nodes that cycle (recoverable),
+        whereas a wrongly-taken one seizes another subsystem's hardware.
+        """
+        try:
+            from utils.service_check import check_service, ServiceState
+            state = check_service("meshtasticd").state
+            # Only a genuinely NOT_INSTALLED daemon means "this is a usb-direct
+            # box". Running / degraded / failed / stopped / UNKNOWN all mean
+            # "don't seize the radio" — installed-but-not-serving is NOT a
+            # usb-direct box, and UNKNOWN must not overlap the absent domain
+            # (honest-failure-modes #1: degraded value ≠ healthy/absent value).
+            return state != ServiceState.NOT_INSTALLED
+        except Exception as e:  # noqa: BLE001 — can't tell → assume present
+            logger.debug("meshtasticd-present check failed: %s", e)
+            return True
+
     def _collect_meshtasticd(self) -> List[Dict]:
         """Collect nodes from meshtasticd.
 

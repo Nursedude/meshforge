@@ -216,3 +216,46 @@ class TestTimeoutSetting:
     def test_reads_override_from_settings(self, collector):
         collector._settings.set("meshtasticd_tcp_collect_timeout_seconds", 90)
         assert collector.get_meshtasticd_tcp_collect_timeout_seconds() == 90.0
+
+
+class TestMeshtasticdPresentGate:
+    """The direct-USB-radio fallback must NOT seize /dev/ttyACM0 when
+    meshtasticd is present-but-empty (wedged/gateway-deferred) — that's the
+    cross-subsystem cascade that starved dude-claw's radio on 2026-06-23.
+    direct_radio is only legitimate on a genuinely usb-direct box
+    (meshtasticd NOT_INSTALLED)."""
+
+    def _state(self, name):
+        from utils.service_check import ServiceState
+        return getattr(ServiceState, name)
+
+    def test_running_daemon_is_present(self, collector):
+        with patch("utils.service_check.check_service") as cs:
+            cs.return_value = MagicMock(state=self._state("AVAILABLE"))
+            assert collector._meshtasticd_present() is True
+
+    def test_degraded_daemon_is_present(self, collector):
+        with patch("utils.service_check.check_service") as cs:
+            cs.return_value = MagicMock(state=self._state("DEGRADED"))
+            assert collector._meshtasticd_present() is True
+
+    def test_stopped_daemon_still_present_not_usb_direct(self, collector):
+        # installed-but-stopped is NOT a usb-direct box — don't grab the radio
+        with patch("utils.service_check.check_service") as cs:
+            cs.return_value = MagicMock(state=self._state("NOT_RUNNING"))
+            assert collector._meshtasticd_present() is True
+
+    def test_unknown_state_assumed_present(self, collector):
+        # UNKNOWN must not overlap the "absent" domain (hfm #1)
+        with patch("utils.service_check.check_service") as cs:
+            cs.return_value = MagicMock(state=self._state("UNKNOWN"))
+            assert collector._meshtasticd_present() is True
+
+    def test_not_installed_is_absent_allows_direct(self, collector):
+        with patch("utils.service_check.check_service") as cs:
+            cs.return_value = MagicMock(state=self._state("NOT_INSTALLED"))
+            assert collector._meshtasticd_present() is False
+
+    def test_check_raises_assumed_present(self, collector):
+        with patch("utils.service_check.check_service", side_effect=OSError("boom")):
+            assert collector._meshtasticd_present() is True
