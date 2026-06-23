@@ -13,6 +13,7 @@ Usage:
     python3 -m pytest tests/test_regression_guards.py -v
 """
 
+import ast
 import os
 import re
 import sys
@@ -883,3 +884,161 @@ class TestDeliveryCallbackSymmetry:
                 f"TestSynAckCallbackSymmetry in tests/test_rns_bridge.py "
                 f"for the behavioural counterpart."
             )
+
+
+class TestServingNeverBlocksOnCollection:
+    """Invariant 1 of the recurring map-wedge class (#17/#70/#71/#73/#75/#76 +
+    the 2026-06-23 moc1 spin): a serving/collection path must never block
+    unboundedly on an external source. The meshtastic interface constructor
+    blocks until the full nodedb sync; a wedged daemon can stall it ~900s while
+    the map collector holds _collect_lock, wedging every /api/nodes/geojson +
+    /api/network/topology request behind it.
+
+    Two structural guards (defense-in-depth with lint MF023):
+      1. the blocking interface create lives ONLY in the bounded helper, and
+      2. the direct-USB-radio fallback is gated on meshtasticd SERVICE state,
+         not on an empty result (the ttyACM0 cross-subsystem radio seizure).
+    """
+
+    COLLECTOR = os.path.join(SRC_DIR, 'utils', '_map_collector_meshtastic.py')
+    ORCHESTRATOR = os.path.join(SRC_DIR, 'utils', 'map_data_collector.py')
+    BOUNDED_HELPER = '_collect_interface_bounded'
+    BLOCKING_CALLS = {'_create_interface'}
+
+    def _parse(self, path):
+        with open(path, 'r', encoding='utf-8') as f:
+            return ast.parse(f.read())
+
+    @staticmethod
+    def _call_name(func):
+        if isinstance(func, ast.Attribute):
+            return func.attr
+        if isinstance(func, ast.Name):
+            return func.id
+        return ''
+
+    def test_interface_create_only_in_bounded_helper(self):
+        """_create_interface() (the blocking nodedb sync) must be confined to
+        _collect_interface_bounded — nowhere else in the collector."""
+        tree = self._parse(self.COLLECTOR)
+        offenders = []
+
+        def walk(node, stack):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    walk(child, stack + [child.name])  # nested fns inherit ancestry
+                    continue
+                if isinstance(child, ast.Call):
+                    name = self._call_name(child.func)
+                    if name in self.BLOCKING_CALLS and self.BOUNDED_HELPER not in stack:
+                        offenders.append((child.lineno, name, list(stack)))
+                walk(child, stack)
+
+        walk(tree, [])
+        assert not offenders, (
+            f"Blocking meshtastic interface creation outside {self.BOUNDED_HELPER}() "
+            f"in _map_collector_meshtastic.py — serving would block on collection "
+            f"again (the 2026-06-23 moc1 spin). Offenders (line, call, fns): "
+            f"{offenders}"
+        )
+
+    def test_bounded_helper_exists(self):
+        """The chokepoint helper must exist (the guard above is vacuous without it)."""
+        tree = self._parse(self.COLLECTOR)
+        names = {n.name for n in ast.walk(tree)
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        assert self.BOUNDED_HELPER in names, (
+            f"{self.BOUNDED_HELPER}() is gone — the bounded-collect chokepoint "
+            f"(MF023) has no home. Restore it or update this guard."
+        )
+
+    def test_direct_radio_gated_on_meshtasticd_presence(self):
+        """The direct-USB-radio fallback must be gated on _meshtasticd_present()
+        (service state), not on `not tcp_features` alone — else a wedged or
+        gateway-deferred meshtasticd (empty result, daemon present) lets the
+        fallback seize /dev/ttyACM0, a DIFFERENT radio (dude-claw's)."""
+        tree = self._parse(self.ORCHESTRATOR)
+        guarded = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.If):
+                continue
+            body_dump = " ".join(ast.dump(s) for s in node.body)
+            if '_collect_direct_radio' not in body_dump:
+                continue
+            # This is the direct-radio gate; its test MUST consult presence.
+            assert '_meshtasticd_present' in ast.dump(node.test), (
+                "The direct_radio fallback in map_data_collector._collect_locked "
+                "is no longer gated on self._meshtasticd_present() — reverting to "
+                "`if not tcp_features:` reintroduces the cross-subsystem radio "
+                "seizure (ttyACM0 cascade, 2026-06-23)."
+            )
+            guarded = True
+            break
+        assert guarded, (
+            "Could not find the direct_radio gate (an `if` whose body calls "
+            "_collect_direct_radio) in map_data_collector.py — refactored? "
+            "Update this guard so the presence-gate invariant stays enforced."
+        )
+
+
+class TestDetectorHonesty:
+    """Invariant 2 of the recurring class: a detector must never map an AMBIGUOUS
+    observation onto a DEFINITIVE verdict (honest_failure_modes #1 — a degraded
+    value overlapping the healthy/absent domain). Enforced here for the
+    meshtasticd presence gate: 'cannot determine' must NOT read as 'absent'
+    (which would permit the radio seizure). New detectors should add a guard of
+    this shape. KNOWN-OUTSTANDING instance (not yet fixed — needs the claw tool's
+    kstack semantics): scripts/host_probe_check.py::_verdict maps banner==0 ->
+    HOST_FROZEN ignoring kstack, false-paging a merely-slow box.
+    """
+
+    def _collector(self):
+        import tempfile
+        from pathlib import Path
+        from utils.map_data_collector import MapDataCollector
+        d = Path(tempfile.mkdtemp())
+        return MapDataCollector(cache_dir=d, config_dir=d, enable_history=False)
+
+    def test_unknown_service_state_is_not_read_as_absent(self):
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from unittest.mock import patch, MagicMock
+            from utils.service_check import ServiceState
+            c = self._collector()
+            with patch('utils.service_check.check_service') as cs:
+                cs.return_value = MagicMock(state=ServiceState.UNKNOWN)
+                # UNKNOWN is ambiguous → must read PRESENT (don't seize the radio).
+                assert c._meshtasticd_present() is True
+        finally:
+            if SRC_DIR in sys.path:
+                sys.path.remove(SRC_DIR)
+
+    def test_check_failure_is_not_read_as_absent(self):
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from unittest.mock import patch
+            c = self._collector()
+            with patch('utils.service_check.check_service',
+                       side_effect=OSError("boom")):
+                assert c._meshtasticd_present() is True
+        finally:
+            if SRC_DIR in sys.path:
+                sys.path.remove(SRC_DIR)
+
+    def test_only_not_installed_reads_as_absent(self):
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from unittest.mock import patch, MagicMock
+            from utils.service_check import ServiceState
+            c = self._collector()
+            with patch('utils.service_check.check_service') as cs:
+                cs.return_value = MagicMock(state=ServiceState.NOT_INSTALLED)
+                assert c._meshtasticd_present() is False  # the ONLY absent state
+                for st in (ServiceState.AVAILABLE, ServiceState.DEGRADED,
+                           ServiceState.FAILED, ServiceState.NOT_RUNNING,
+                           ServiceState.UNKNOWN):
+                    cs.return_value = MagicMock(state=st)
+                    assert c._meshtasticd_present() is True, st
+        finally:
+            if SRC_DIR in sys.path:
+                sys.path.remove(SRC_DIR)
