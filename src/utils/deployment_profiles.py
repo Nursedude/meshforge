@@ -316,10 +316,25 @@ _PROFILE_PATH = get_real_user_home() / ".config" / "meshforge" / "deployment.jso
 
 
 def save_profile(profile: ProfileDefinition) -> bool:
-    """Save profile selection to disk."""
+    """Save profile selection to disk, preserving other deployment.json keys.
+
+    deployment.json is SHARED with the fleet-role system: provision_role.py
+    writes a ``role`` key (and per-box ``service_overrides``). The old
+    implementation wrote ``{"profile": ...}`` over the WHOLE file, clobbering
+    the role on every profile save. Merge into the existing document instead
+    — the same read-merge-write discipline as provision_role.write_role().
+    """
     try:
         _PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        data = {"profile": profile.name.value}
+        data = {}
+        if _PROFILE_PATH.exists():
+            try:
+                existing = json.loads(_PROFILE_PATH.read_text())
+                if isinstance(existing, dict):
+                    data = existing
+            except (json.JSONDecodeError, OSError):
+                data = {}
+        data["profile"] = profile.name.value
         with open(_PROFILE_PATH, 'w') as f:
             json.dump(data, f, indent=2)
         logger.info("Saved deployment profile: %s", profile.display_name)

@@ -167,6 +167,25 @@ class TestProfilePersistence:
             assert loaded is not None
             assert loaded.name == ProfileName.GATEWAY
 
+    def test_save_profile_preserves_role_and_overrides(self, tmp_path):
+        """deployment.json is shared with provision_role.py (`role`,
+        `service_overrides`). save_profile must MERGE, not clobber — the old
+        implementation wrote {"profile": ...} over the whole file, wiping the
+        fleet role. Mirrors provision_role.write_role()."""
+        profile_path = tmp_path / "deployment.json"
+        profile_path.write_text(json.dumps({
+            "role": "full-gateway",
+            "service_overrides": {
+                "meshforge-map": {"state": "disabled", "reason": "RF-sparse"},
+            },
+        }))
+        with patch('utils.deployment_profiles._PROFILE_PATH', profile_path):
+            assert save_profile(PROFILES[ProfileName.GATEWAY]) is True
+        data = json.loads(profile_path.read_text())
+        assert data["profile"] == ProfileName.GATEWAY.value     # profile written
+        assert data["role"] == "full-gateway"                   # role PRESERVED
+        assert data["service_overrides"]["meshforge-map"]["reason"] == "RF-sparse"
+
     def test_load_returns_none_when_no_file(self, tmp_path):
         """load_profile returns None when no saved profile."""
         profile_path = tmp_path / "nonexistent.json"
