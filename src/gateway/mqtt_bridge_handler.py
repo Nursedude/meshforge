@@ -42,7 +42,7 @@ from gateway import delivery_counters as _dc
 from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_already_bridged,
+    get_rf_tx_registry, is_already_bridged, mqtt_content_dedup_key,
 )
 from utils.meshtastic_se_crypto import (
     DEFAULT_KEY_B64, crypto_available, decode_service_envelope,
@@ -565,8 +565,16 @@ class MQTTBridgeHandler(BaseMessageHandler):
         sender = data.get('sender', '')
         msg_id = str(data.get('id', ''))
 
-        # Dedup check
-        if msg_id and self._is_duplicate(msg_id):
+        # Dedup check. When the JSON carries no stable packet `id` (some
+        # meshtasticd builds / malformed publishes omit it) the old
+        # `if msg_id and ...` guard skipped dedup ENTIRELY, so an identical
+        # packet delivered twice (overlapping topic subscriptions, a retained
+        # message, or QoS-1 redelivery) bridged twice (#34 hardening). Fall
+        # back to a content-derived key so the dedup layer is never silently
+        # bypassed; an empty key (no usable content) preserves the legacy
+        # skip rather than collapsing distinct empties.
+        dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
+        if dedup_key and self._is_duplicate(dedup_key):
             return
 
         # Update node tracking

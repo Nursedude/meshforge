@@ -32,6 +32,7 @@ from typing import Optional, Dict, Callable, Any, List
 
 from .base_handler import (
     get_rf_tx_registry, get_secondary_rf_registry, is_already_bridged,
+    mqtt_content_dedup_key,
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
@@ -243,8 +244,11 @@ class MQTTMeshInterface:
             msg_type = data.get('type', '')
             msg_id = str(data.get('id', ''))
 
-            # Dedup
-            if msg_id and self._is_duplicate(msg_id):
+            # Dedup. Fall back to a shared content key when the packet carries
+            # no `id`, so an id-less message is never silently un-deduped
+            # (#34 hardening — same fix + shared key as MQTTBridgeHandler).
+            dedup_key = msg_id if msg_id else mqtt_content_dedup_key(data)
+            if dedup_key and self._is_duplicate(dedup_key):
                 return
 
             if msg_type != 'text':

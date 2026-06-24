@@ -1232,3 +1232,53 @@ class TestSeenOnRfSecondaryScope:
         sec.register("Cmd")
         assert bridge._send_to_secondary(self._bcast_payload("Cmd")) is True
         bridge._secondary_interface.sendText.assert_called_once()
+
+
+class TestEmptyIdContentDedupIssue34:
+    """#34 mirror for MQTTMeshInterface._on_message: an id-less JSON message
+    must still be deduplicated by the SHARED content key. The old
+    ``if msg_id and self._is_duplicate(msg_id)`` guard skipped dedup entirely
+    when ``id`` was absent, double-forwarding the packet to the bridge."""
+
+    @staticmethod
+    def _iface():
+        from gateway.mesh_bridge import MQTTMeshInterface
+        from gateway.config import MeshtasticConfig
+
+        cb = MagicMock()
+        iface = MQTTMeshInterface(
+            config=MeshtasticConfig(use_mqtt=True, mqtt_channel="meshforge"),
+            name="test", message_callback=cb, stop_event=threading.Event(),
+        )
+        return iface, cb
+
+    @staticmethod
+    def _msg(text, with_id=False):
+        d = {"type": "text", "sender": "!aabb0042", "to": 0xFFFFFFFF,
+             "channel": 0, "payload": {"text": text}}
+        if with_id:
+            d["id"] = 7777
+        m = MagicMock()
+        m.topic = "msh/2/json/meshforge/!aabb0042"
+        m.payload = json.dumps(d).encode("utf-8")
+        return m
+
+    def test_idless_identical_forwarded_once(self):
+        iface, cb = self._iface()
+        msg = self._msg("hello fleet")     # no id
+        iface._on_message(None, None, msg)
+        iface._on_message(None, None, msg)
+        assert cb.call_count == 1
+
+    def test_idless_distinct_both_forwarded(self):
+        iface, cb = self._iface()
+        iface._on_message(None, None, self._msg("first"))
+        iface._on_message(None, None, self._msg("second"))
+        assert cb.call_count == 2
+
+    def test_id_present_path_unchanged(self):
+        iface, cb = self._iface()
+        msg = self._msg("hi", with_id=True)
+        iface._on_message(None, None, msg)
+        iface._on_message(None, None, msg)
+        assert cb.call_count == 1

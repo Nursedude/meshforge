@@ -10,8 +10,10 @@ spill on in-memory queue overflow.
 Run: python3 -m pytest tests/test_mqtt_bridge_handler.py -v
 """
 
+import json
 import os
 import sys
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -216,6 +218,26 @@ class TestSelfEchoFilter:
         handler._message_queue.put.assert_not_called()
 
 
+def _meshanchor_echo_prefixes():
+    """Read MeshAnchor's ECHO_LOOP_INVARIANT_PREFIXES from its SOURCE without
+    importing it — the `gateway` package name collides with MeshForge's, so a
+    plain import would resolve to the wrong package. Parses the literal with
+    ast instead. Returns None when MeshAnchor isn't installed on this box."""
+    import ast
+
+    path = "/opt/meshanchor/src/gateway/config.py"
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "ECHO_LOOP_INVARIANT_PREFIXES":
+                    return list(ast.literal_eval(node.value))
+    return None
+
+
 class TestIsAlreadyBridged:
     """The shared loop-guard predicate. Covers every bridge tag in
     BRIDGE_TAG_PREFIXES — mirrored with MeshAnchor's
@@ -247,13 +269,28 @@ class TestIsAlreadyBridged:
         assert not is_already_bridged("[urgent] meet at the pavilion")
 
     def test_prefix_list_mirrors_meshanchor(self):
-        """Parity pin: the list must stay identical to MeshAnchor's
-        ECHO_LOOP_INVARIANT_PREFIXES (gateway/config.py). If this fails,
-        port the new tag to the other repo, not just here."""
+        """Self-pin: the list must stay identical to a known-good set. Catches
+        an accidental in-repo edit. (Cross-repo parity is the next test.)"""
         from gateway.base_handler import BRIDGE_TAG_PREFIXES
         assert set(BRIDGE_TAG_PREFIXES) == {
             "[MeshCore]", "[MC:", "[RNS:", "[ch0:", "[ch1:", "[Mesh:",
         }
+
+    def test_prefix_list_matches_meshanchor_source(self):
+        """Cross-repo parity guard: when MeshAnchor is installed, the list
+        must be identical to MeshAnchor's ACTUAL ECHO_LOOP_INVARIANT_PREFIXES
+        source (not a hardcoded copy). A tag added on EITHER side that isn't
+        ported to the other fails here — closing the convention-only gap
+        (honest_failure_modes #5: two consumers of one invariant must be
+        pinned together, never independently hardcoded)."""
+        prefixes = _meshanchor_echo_prefixes()
+        if prefixes is None:
+            pytest.skip("MeshAnchor not installed (/opt/meshanchor absent)")
+        from gateway.base_handler import BRIDGE_TAG_PREFIXES
+        assert set(BRIDGE_TAG_PREFIXES) == set(prefixes), (
+            "BRIDGE_TAG_PREFIXES drifted from MeshAnchor's "
+            "ECHO_LOOP_INVARIANT_PREFIXES — port the tag to BOTH repos."
+        )
 
 
 class TestSourceAttribution:
@@ -939,3 +976,63 @@ class TestMeshOracleMqttWiring:
         assert kwargs.get("destination") is None   # channel broadcast, not a DM
         assert kwargs.get("channel") == 2
         h._message_queue.put.assert_not_called()   # consumed
+
+
+class TestEmptyIdContentDedupIssue34:
+    """#34 hardening: a JSON message with NO packet ``id`` must still be
+    deduplicated.
+
+    Before the fix ``_handle_json_message`` guarded dedup with
+    ``if msg_id and self._is_duplicate(msg_id)`` and ``msg_id`` was
+    ``str(data.get('id', ''))`` — so an id-less packet (some meshtasticd
+    builds / malformed publishes omit ``id``) skipped the packet-ID dedup
+    entirely. An identical packet delivered twice (overlapping topic
+    subscriptions, a retained message, or QoS-1 redelivery) then bridged
+    twice. The fix falls back to a content-derived key when ``id`` is absent.
+    """
+
+    def _make_dedup_handler(self) -> MQTTBridgeHandler:
+        h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        h._recent_ids = {}
+        h._dedup_window = 60
+        h._mqtt_lock = threading.Lock()
+        h._last_uplink_at = 0.0
+        h._bridge_text_message = MagicMock()
+        h._update_node_from_mqtt = MagicMock()
+        h._update_telemetry = MagicMock()
+        h._update_position = MagicMock()
+        h._update_nodeinfo = MagicMock()
+        return h
+
+    @staticmethod
+    def _text_payload(text: str, with_id: bool = False) -> bytes:
+        d = {"type": "text", "from": 0xAABB0042, "to": 0xFFFFFFFF,
+             "channel": 2, "payload": {"text": text}}
+        if with_id:
+            d["id"] = 12345678
+        return json.dumps(d).encode("utf-8")
+
+    def test_idless_identical_text_bridged_once(self):
+        h = self._make_dedup_handler()
+        topic = "msh/2/json/meshforge/!aabb0042"
+        payload = self._text_payload("hello fleet")   # no id
+        h._handle_json_message(topic, payload)
+        h._handle_json_message(topic, payload)
+        assert h._bridge_text_message.call_count == 1
+
+    def test_idless_distinct_text_both_bridged(self):
+        """The content key must NOT collapse genuinely different messages."""
+        h = self._make_dedup_handler()
+        topic = "msh/2/json/meshforge/!aabb0042"
+        h._handle_json_message(topic, self._text_payload("first"))
+        h._handle_json_message(topic, self._text_payload("second"))
+        assert h._bridge_text_message.call_count == 2
+
+    def test_id_present_path_unchanged(self):
+        """Regression: the packet-ID dedup path still dedups when id IS set."""
+        h = self._make_dedup_handler()
+        topic = "msh/US/2/json/meshforge/!aabb0042"
+        payload = self._text_payload("hi", with_id=True)
+        h._handle_json_message(topic, payload)
+        h._handle_json_message(topic, payload)
+        assert h._bridge_text_message.call_count == 1

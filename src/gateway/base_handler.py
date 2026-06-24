@@ -8,6 +8,7 @@ concrete methods to eliminate duplication.
 
 from abc import ABC, abstractmethod
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -76,6 +77,45 @@ def _strip_bridge_tags(text: str) -> str:
             break
         out = out[close + 1:].lstrip()
     return out
+
+
+def mqtt_content_dedup_key(data: dict) -> str:
+    """Stable dedup key for a meshtasticd MQTT/JSON message that lacks a
+    packet ``id``.
+
+    Both MQTT ingress sites — ``MQTTBridgeHandler._handle_json_message`` and
+    ``mesh_bridge.MQTTMeshInterface._on_mqtt_message`` — guarded dedup with
+    ``if msg_id and self._is_duplicate(msg_id)``, where ``msg_id`` is
+    ``str(data.get('id', ''))``. An id-less packet (some meshtasticd builds /
+    malformed publishes omit ``id``) therefore skipped dedup ENTIRELY, so the
+    same logical packet delivered twice (overlapping topic subscriptions, a
+    retained message, or QoS-1 redelivery) bridged twice (#34 hardening).
+
+    This is the SHARED fallback key both sites use, so the two dedup paths can
+    never drift. Keys on the originating node, destination, channel, type and
+    a deterministic serialization of the payload, namespaced with a ``c:``
+    prefix so it can never collide with a real (numeric) packet-id key in the
+    same cache. Returns "" when there is no usable content — the caller then
+    skips dedup (the legacy no-id behaviour) rather than collapsing every
+    empty message onto one key.
+    """
+    payload = data.get('payload', {})
+    try:
+        payload_repr = json.dumps(payload, sort_keys=True,
+                                  separators=(',', ':'))
+    except (TypeError, ValueError):
+        payload_repr = str(payload)
+    parts = (
+        str(data.get('from', '')),
+        str(data.get('to', '')),
+        str(data.get('channel', '')),
+        str(data.get('type', '')),
+        payload_repr,
+    )
+    if not any(p and p != '{}' for p in parts):
+        return ""
+    raw = "\x1f".join(parts)
+    return "c:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class RecentRfTxRegistry:
