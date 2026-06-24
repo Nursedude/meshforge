@@ -169,7 +169,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `diagnose` | Diagnostics — System health check |  | DiagnosticsHandler |
 | `status` | Quick Status — One-shot status display |  | DiagnosticsHandler |
 | `discover` | Service Discovery — Auto-discover services |  | ServiceDiscoveryHandler |
-| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (dry-run) |  | FleetProvisionHandler |
+| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (preview + apply) |  | FleetProvisionHandler |
 | `hardware` | Hardware — Detect SPI/I2C/USB |  | HardwareHandler |
 | `logs` | Logs — View/follow logs |  | LogsHandler |
 | `network` | Network Tools — Ping, ports, interfaces |  | NetworkToolsHandler |

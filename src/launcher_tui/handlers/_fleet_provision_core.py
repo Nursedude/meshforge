@@ -24,6 +24,11 @@ DEFAULT_ROOT = "/opt/meshforge"
 # plan() verbs that mean "the box would actually change under converge".
 CHANGE_VERBS = ("enable", "disable", "mask")
 
+# The guided next-step for the BRIDGE-LEG axis (gateway.json). apply_preset
+# converges the ROLE axis only; legs need box-specific values this generic
+# catalog deliberately omits (MF014), so they are applied with this command.
+CONFIGURE_GATEWAY_CMD = "sudo scripts/configure_gateway.sh"
+
 
 def load_provision_role(meshforge_root: str = DEFAULT_ROOT):
     """importlib-load scripts/provision_role.py (the converge SSOT).
@@ -109,3 +114,58 @@ def preview_preset(mod, preset_name: str, presets_doc: dict,
         "actions": actions,
         "gateway_overlay": gateway_overlay_for(preset_name, presets_doc),
     }
+
+
+def apply_preset(mod, preset_name: str, presets_doc: dict,
+                 overrides: Optional[dict] = None) -> Dict[str, Any]:
+    """Converge THIS box to a preset's ROLE: write the role into deployment.json
+    (merge — never clobber overrides) then apply the role's unit changes via
+    ``provision_role.apply_action`` (the ``service_check`` SSOT). This is the
+    apply half of the dry-run preview — it touches REAL systemd + deployment.json
+    and must only be called by the handler after an explicit admin confirm.
+
+    Scope (v1): the ROLE axis only — which systemd units run. The BRIDGE-LEG
+    axis (gateway.json) is NOT applied here: a generic preset deliberately omits
+    box-specific values (LXMF destination hash, meshforge channel index — MF014),
+    and ``configure_gateway.sh`` is the tool that derives them. The caller
+    surfaces the leg overlay + ``CONFIGURE_GATEWAY_CMD`` as a guided next step.
+    SSH/remote apply is out of scope (local box only).
+
+    ``mod`` is ``provision_role`` (injected so tests never touch real systemd).
+
+    Returns a result dict: ``role``, ``role_written`` (bool), ``role_err``,
+    ``results`` (per-action ``{item, verb, ok, result}``), ``failures``, ``ok``.
+    Honest contract (honest_failure_modes #4/#9): ``ok`` is True ONLY when the
+    role was written AND no unit action failed. An empty change set with the
+    role written IS a success (idempotent re-apply), never an ambiguous read.
+    """
+    preset = presets_doc["presets"][preset_name]
+    role = preset["role"]
+
+    # Write the role FIRST. If we cannot RECORD the role, do NOT start changing
+    # units — converging units toward a role the box does not claim is a
+    # confusing half-state (honest_failure_modes #4: wire together or fail
+    # together). Surface the error; never swallow it into a healthy-looking read.
+    try:
+        mod.write_role(role)
+    except Exception as e:  # write_role does filesystem IO
+        return {"preset": preset_name, "role": role, "role_written": False,
+                "role_err": f"{type(e).__name__}: {e}",
+                "results": [], "failures": [], "ok": False}
+
+    # Re-derive the plan against LIVE state (not a possibly-stale preview) and
+    # apply only the change verbs (enable/disable/mask).
+    catalog = mod.load_roles(mod.DEFAULT_ROLES_FILE)
+    role_def = mod.resolve_role(catalog, role)
+    actions = [a for a in mod.plan(role_def, overrides or {})
+               if a.verb in CHANGE_VERBS]
+
+    results: List[Dict[str, Any]] = []
+    for a in actions:
+        ok = bool(mod.apply_action(a))
+        results.append({"item": a.item, "verb": a.verb, "ok": ok,
+                        "result": getattr(a, "result", "")})
+    failures = [r for r in results if not r["ok"]]
+    return {"preset": preset_name, "role": role, "role_written": True,
+            "role_err": None, "results": results, "failures": failures,
+            "ok": not failures}
