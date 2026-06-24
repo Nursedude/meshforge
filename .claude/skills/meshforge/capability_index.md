@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**77 handlers · 106 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**78 handlers · 107 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -169,6 +169,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `diagnose` | Diagnostics — System health check |  | DiagnosticsHandler |
 | `status` | Quick Status — One-shot status display |  | DiagnosticsHandler |
 | `discover` | Service Discovery — Auto-discover services |  | ServiceDiscoveryHandler |
+| `fleet_provision` | Fleet Architecture — Reproduce a box to a preset (dry-run) |  | FleetProvisionHandler |
 | `hardware` | Hardware — Detect SPI/I2C/USB |  | HardwareHandler |
 | `logs` | Logs — View/follow logs |  | LogsHandler |
 | `network` | Network Tools — Ping, ports, interfaces |  | NetworkToolsHandler |
