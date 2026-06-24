@@ -111,6 +111,18 @@ SHAPE_SYMBOLS = {
         "def apply_foundation(",
         "from utils.rns_tree_perms import",
     ),
+    # App self-identification on /api/status (cross-domain fleet presence,
+    # Layer 0, 2026-06-23). Both NOCs serve an identically-shaped /api/status on
+    # :5000; the `app` block lets a probe know WHICH app answered. The
+    # _build_app_block / _read_deployment_role helpers are carried byte-identical
+    # (the per-app name falls out of each repo's own __version__), but the file
+    # as a whole legitimately differs (MeshForge's status block is richer), so
+    # this is shape- not byte-parity. Assert both helpers + the call site exist.
+    "src/utils/_map_status_endpoints.py": (
+        "def _build_app_block(",
+        "def _read_deployment_role(",
+        'status["app"] = _build_app_block()',
+    ),
 }
 
 # ── Calibration claim-gate shared core ─────────────────────────────────

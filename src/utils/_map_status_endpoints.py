@@ -68,6 +68,60 @@ def _serialize_peer_status(s: Any) -> Dict[str, Any]:
     }
 
 
+def _read_deployment_role(app_name: str) -> Optional[str]:
+    """Best-effort role for the app-identity block: ``~/.config/<app>/
+    deployment.json`` -> ``"role"``. Returns None if absent/unreadable — a box
+    may run the app role-less, and absence must never become a false role claim
+    (honest_failure_modes #2: unobservable != a value)."""
+    try:
+        from utils.paths import get_real_user_home
+        p = get_real_user_home() / ".config" / app_name / "deployment.json"
+        if not p.exists():
+            return None
+        role = json.loads(p.read_text()).get("role")
+        return role if isinstance(role, str) and role else None
+    except Exception:
+        return None
+
+
+def _build_app_block() -> Dict[str, Any]:
+    """Self-identifying ``app`` block for ``/api/status`` — cross-domain fleet
+    presence, Layer 0 (``.claude/plans/cross_domain_fleet_presence_design_2026_06_23.md``).
+
+    MeshForge and MeshAnchor both serve an identically-shaped ``/api/status`` on
+    ``:5000``, so a cross-domain probe cannot tell whose endpoint it hit without
+    this — the 2026-06-23 misread where MeshAnchor's ``honest_status`` reported
+    MeshForge's ``confirmation_rate`` as its own. The per-app identity falls out
+    of each repo's own ``src/__version__.py``, so this function is carried
+    BYTE-IDENTICAL across both repos (``parity_check.py``) with no per-app edits.
+    Pure-stdlib, best-effort: every field degrades to a present, honest value
+    rather than raising and dropping the whole ``/api/status`` payload.
+    """
+    import socket
+    name = "unknown"
+    version = "unknown"
+    try:
+        from __version__ import __app_name__, __version__ as _ver
+        name = (__app_name__ or "unknown").strip().lower() or "unknown"
+        version = _ver or "unknown"
+    except Exception:
+        pass
+    try:
+        host = socket.gethostname() or "unknown"
+    except Exception:
+        host = "unknown"
+    block: Dict[str, Any] = {
+        "name": name,        # "meshforge" | "meshanchor" — the disambiguation key
+        "version": version,
+        "repo": name,        # on this fleet the repo basename matches the app name
+        "host": host,
+    }
+    role = _read_deployment_role(name)
+    if role:
+        block["role"] = role
+    return block
+
+
 class StatusEndpointsMixin:
     """``/api/status`` endpoint + its watchdog/mini/radio readers."""
 
@@ -78,6 +132,13 @@ class StatusEndpointsMixin:
             "time": datetime.now().isoformat(),
             "collector": self.collector is not None,
         }
+
+        # App self-identification (cross-domain fleet presence, Layer 0): name
+        # the app + version so a probe knows WHICH NOC answered on :5000 —
+        # MeshForge and MeshAnchor share this endpoint's shape. Emitted before
+        # the collector-gated blocks so a warming/degraded server still
+        # self-identifies.
+        status["app"] = _build_app_block()
 
         # Include history stats if available
         if self.collector and self.collector._history:

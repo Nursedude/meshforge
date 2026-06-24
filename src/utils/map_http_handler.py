@@ -111,6 +111,18 @@ from utils._map_node_endpoints import (  # noqa: F401
 from utils.region_presets import REGION_PRESETS  # noqa: F401
 
 
+# App-identifying HTTP Server: header (cross-domain fleet presence, Layer 0).
+# MeshForge and MeshAnchor serve identically-shaped HTTP APIs on :5000; this
+# makes even a `HEAD /` disclose which NOC answered, as a cheap companion to
+# the /api/status `app` block. Derived from this repo's own __version__, so a
+# version bump tracks automatically.
+try:
+    from __version__ import __app_name__ as _APP_NAME, __version__ as _APP_VER
+    _SERVER_VERSION = f"{_APP_NAME}/{_APP_VER}"
+except Exception:
+    _SERVER_VERSION = "MeshForge"
+
+
 class MapRequestHandler(
     RadioEndpointsMixin,
     MeshtasticProxyMixin,
@@ -121,6 +133,10 @@ class MapRequestHandler(
     SimpleHTTPRequestHandler,
 ):
     """HTTP handler that serves the map HTML and node GeoJSON API."""
+
+    # Overrides BaseHTTPRequestHandler's default ("BaseHTTP/x.x") so the HTTP
+    # Server: header names this app (cross-domain fleet presence, Layer 0).
+    server_version = _SERVER_VERSION
 
     collector = None  # MapDataCollector instance
     web_dir: Optional[str] = None

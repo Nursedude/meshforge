@@ -304,6 +304,58 @@ class TestFederationClawSerialization:
         assert "in_backoff" in d and "consecutive_failures" in d
 
 
+class TestAppIdentityBlock:
+    """Cross-domain fleet presence, Layer 0 (2026-06-23): /api/status must
+    self-identify the app so a probe knows WHICH NOC answered on :5000.
+    MeshForge and MeshAnchor serve an identically-shaped /api/status; the
+    2026-06-23 misread (MA's honest_status reporting MeshForge's
+    confirmation_rate as its own) came from this ambiguity. The MeshAnchor
+    mirror of these tests asserts name == 'meshanchor' — a negative-parity
+    assertion that the two apps disambiguate."""
+
+    def test_build_app_block_names_meshforge(self):
+        from utils._map_status_endpoints import _build_app_block
+        from __version__ import __version__ as ver
+        block = _build_app_block()
+        # name is the disambiguation key, lower-cased from __app_name__.
+        assert block["name"] == "meshforge"
+        assert block["repo"] == "meshforge"
+        assert block["version"] == ver
+        # host is always a present, non-empty string (best-effort, never raises).
+        assert isinstance(block["host"], str) and block["host"]
+
+    def test_read_deployment_role_absent_is_none_not_raise(self):
+        # honest_failure_modes #2: an unobservable role must be None, never a
+        # forged value, and must never raise out of the status path.
+        from utils._map_status_endpoints import _read_deployment_role
+        assert _read_deployment_role("definitely-not-an-app-xyz") is None
+
+    def test_server_version_header_names_app(self):
+        # Even a HEAD / discloses the app via the Server: header.
+        assert MapRequestHandler.server_version.startswith("MeshForge")
+
+    def test_serve_status_payload_includes_app_block(self):
+        # Wiring: the emitted /api/status JSON carries `app` even with no
+        # collector (a warming/degraded server still self-identifies). Stub the
+        # heavy readers so this stays a pure-ish unit test.
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        h.collector = None
+        h.wfile = BytesIO()
+        h.send_response = MagicMock()
+        h.send_header = MagicMock()
+        h.end_headers = MagicMock()
+        h._send_cors_header = MagicMock()
+        h._get_radio_status_summary = lambda: {}
+        h._get_local_radio_config = lambda: {}
+        h._read_watchdog_block = lambda: {}
+        h._read_mini_state_block = lambda: {}
+        h._read_claw_state_block = lambda: {}
+        h._serve_status()
+        payload = json.loads(h.wfile.getvalue())
+        assert payload["app"]["name"] == "meshforge"
+        assert payload["app"]["version"]
+
+
 # ── F8: Server-side View preset filter ─────────────────────────────────
 from utils.map_http_handler import (
     VIEW_PRESETS,
