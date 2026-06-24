@@ -249,4 +249,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.traffic_pulse import TrafficPulseHandler
     handlers.append(TrafficPulseHandler)
 
+    # Batch 25 — Fleet Architecture (reproduce a box to a lab-hardened preset, dry-run)
+    from handlers.fleet_provision import FleetProvisionHandler
+    handlers.append(FleetProvisionHandler)
+
     return handlers
