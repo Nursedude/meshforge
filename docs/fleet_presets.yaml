@@ -1,0 +1,152 @@
+# MeshForge fleet PRESETS — lab-hardened (role × bridge-leg) configurations.
+#
+# A preset NAMES a proven topology variation a user can reproduce via the TUI:
+# the meshforge hub bridging protocol legs, e.g. ST<>meshforge<>LF. It is the
+# curated catalog behind the operator goal "configure this domain with proven,
+# lab-hardened configurations" — NOT an arbitrary combination space.
+#
+# Companion to fleet_roles.yaml (the ROLE source of truth: which systemd units
+# run). A preset = (role from fleet_roles.yaml) × (gateway.json bridge legs).
+# The Session-C TUI handler wraps the EXISTING engine — provision_role.py for
+# the role and configure_gateway.sh (templates/gateway/gateway.json.template)
+# for the legs — so this file adds data, not convergence logic.
+#
+# GENERIC + DUPLICABLE: no instance values (hostnames, LAN IPs, LXMF hashes,
+# coordinates) — those live in ~/.config/ and are never committed (MF014/MF015).
+# Field/lab provenance is recorded as a maturity tag, not a box name.
+#
+# maturity:  field-proven | lab-proven | alpha
+version: 0
+updated: "2026-06-24"
+
+# ---------------------------------------------------------------------------
+# Bridge-leg vocabulary. Each leg maps to the gateway.json flags it sets
+# (rendered by configure_gateway.sh). `legs` below are meaningful only for
+# bridge presets (role with meshforge-gateway ENABLED); monitor/hub/publisher
+# presets run no bridge daemon, so they carry no legs.
+# ---------------------------------------------------------------------------
+legs:
+  meshtastic_mqtt:
+    desc: "Meshtastic ingest via the local meshtasticd MQTT json uplink (the gateway's RX path; NOT PhoneAPI)."
+    gateway_json:
+      bridge_mode: mqtt_bridge
+      mqtt_bridge.json_enabled: true
+  rns_lxmf:
+    desc: "Reticulum / LXMF leg — the core Meshtastic<->RNS bridge."
+    gateway_json:
+      rns_bridge_enabled: true
+  mesh_bridge:
+    desc: "Meshtastic<->Meshtastic cross-preset forward (dual-radio, e.g. LONG_FAST<->SHORT_TURBO)."
+    gateway_json:
+      mesh_bridge.enabled: true
+  meshcore:
+    desc: "MeshCore companion-radio leg (alpha)."
+    gateway_json:
+      meshcore.enabled: true
+  rns_transport:
+    desc: "RNS-over-LoRa transport leg."
+    gateway_json:
+      rns_transport.enabled: true
+
+# ---------------------------------------------------------------------------
+# The catalog. `role` MUST name a role in fleet_roles.yaml. `bridge_legs` MUST
+# name legs in the vocabulary above and only appear when bridge: true.
+# ---------------------------------------------------------------------------
+presets:
+
+  full-bridge:
+    title: "Full bridge — ST <> meshforge <> LF"
+    shorthand: "ST<>meshforge<>LF"
+    role: full-gateway
+    bridge: true
+    bridge_legs: [meshtastic_mqtt, rns_lxmf]
+    board_tier: pi4_min_4gb
+    maturity: field-proven
+    use_when: >-
+      The primary gateway in a coverage area: bridge Meshtastic RF to RNS/LXMF
+      and serve the map. The canonical ST<>meshforge<>LF variation.
+
+  gateway-only-slim:
+    title: "Gateway-only (slim) — ST <> meshforge <> LF, no map"
+    shorthand: "ST<>meshforge<>LF"
+    role: gateway-only
+    bridge: true
+    bridge_legs: [meshtastic_mqtt, rns_lxmf]
+    board_tier: pi3b_1gb_ok
+    maturity: field-proven
+    use_when: >-
+      A constrained ~1GB board whose whole job is bridging — the map server is
+      disabled to fit memory. Same legs as full-bridge, lighter footprint.
+
+  dual-radio-cross-preset:
+    title: "Dual-radio cross-preset — ST <> meshforge <> ST (+ LF)"
+    shorthand: "ST<>meshforge<>ST"
+    role: full-gateway
+    bridge: true
+    bridge_legs: [meshtastic_mqtt, rns_lxmf, mesh_bridge]
+    board_tier: pi4_min_4gb
+    maturity: field-proven
+    use_when: >-
+      Bridge two Meshtastic RF presets on one box (the mesh_bridge leg) while
+      also bridging to RNS/LXMF. The ST<>meshforge<>ST variation.
+
+  meshcore-bridge:
+    title: "MeshCore bridge — ST <> meshforge <> MeshCore"
+    shorthand: "ST<>meshforge<>MeshCore"
+    role: full-gateway
+    bridge: true
+    bridge_legs: [meshtastic_mqtt, meshcore]
+    board_tier: pi4_min_4gb
+    maturity: alpha
+    use_when: >-
+      Bridge Meshtastic to a MeshCore companion radio. MeshCore is sister-app
+      proven; on a MeshForge gateway the leg is wired but young — alpha.
+
+  monitor-ingest:
+    title: "Monitor / ingest-only — ST > meshforge"
+    shorthand: "ST>meshforge"
+    role: collector
+    bridge: false
+    board_tier: pi4_min_4gb
+    maturity: field-proven
+    aredn_source: false
+    use_when: >-
+      An RF-sparse site: collect telemetry and serve the map/tiles, but do NOT
+      bridge (bridging adds nothing where there is no second mesh to reach).
+
+  aredn-site:
+    title: "AREDN-site collector — AREDN <> meshforge"
+    shorthand: "AREDN<>meshforge"
+    role: collector
+    bridge: false
+    board_tier: pi4_min_4gb
+    maturity: field-proven
+    aredn_source: true
+    use_when: >-
+      A site with an AREDN node: ingest AREDN topology/telemetry as a map data
+      source alongside local Meshtastic monitoring. AREDN is a data source, not
+      a gateway bridge leg, so this is a collector with aredn_source on.
+
+  hub-manager:
+    title: "Hub / manager (no bridge)"
+    shorthand: "-"
+    role: primary
+    bridge: false
+    singleton: true
+    board_tier: pi4_or_pi5_min_4gb
+    maturity: field-proven
+    use_when: >-
+      The one manager node (singleton): federation, canonical memory, the map,
+      and mini. It does not host the RF bridge.
+
+  cloud-publisher:
+    title: "Cloud publisher (no bridge)"
+    shorthand: "-"
+    role: cloud-publisher
+    bridge: false
+    singleton: true
+    board_tier: pi4_or_pi5_min_4gb
+    maturity: field-proven
+    use_when: >-
+      The one node (singleton) that pushes the cloud snapshot to the VPS; the
+      RF bridge is installed but deliberately off.
