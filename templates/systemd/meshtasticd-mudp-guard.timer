@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic self-heal of the Meshtastic UDP-multicast leg (224.0.0.69:4403)
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Catch the boot-race ~3 min after boot, then re-check every 5 min. The guard
+# script is a cheap no-op on healthy boxes and on boxes that don't use MUDP.
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=meshtasticd-mudp-guard.service
+
+[Install]
+WantedBy=timers.target

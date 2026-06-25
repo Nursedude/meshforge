@@ -263,6 +263,28 @@ RNSD_SVC
     fi
 fi
 
+# Deploy the meshtasticd MUDP-leg self-heal guard (oneshot + timer). The guard
+# script self-gates: it no-ops unless meshtasticd is active AND the box has been
+# seen actually using UDP multicast (224.0.0.69:4403), so it is safe to install
+# fleet-wide. Boot-race origin 2026-06-24 — meshtasticd came up "active" without
+# binding the multicast socket, so the meshforge channel went dark ~13h.
+# See scripts/meshtasticd_mudp_guard.sh + docs/fleet_roles.yaml.
+if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-mudp-guard.timer" ]]; then
+    cp "$INSTALL_DIR/templates/systemd/meshtasticd-mudp-guard.service" /etc/systemd/system/ 2>/dev/null || true
+    cp "$INSTALL_DIR/templates/systemd/meshtasticd-mudp-guard.timer"   /etc/systemd/system/ 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    SVC_UPDATED=true
+    # Enable only where meshtasticd exists (role model lists it on meshtasticd
+    # roles); the guard is a cheap no-op everywhere else, but no point arming a
+    # timer on a box that has no radio daemon to guard.
+    if systemctl list-unit-files meshtasticd.service &>/dev/null; then
+        systemctl enable --now meshtasticd-mudp-guard.timer 2>/dev/null || true
+        echo -e "  ${GREEN}✓ meshtasticd-mudp-guard.timer deployed + enabled${NC}"
+    else
+        echo -e "  ${GREEN}✓ meshtasticd-mudp-guard units deployed (no meshtasticd; timer not armed)${NC}"
+    fi
+fi
+
 # Deploy user-level service templates
 REAL_USER="${SUDO_USER:-$USER}"
 REAL_HOME=$(eval echo "~${REAL_USER}")

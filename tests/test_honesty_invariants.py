@@ -707,6 +707,8 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-mini-dudeai-dream.service": ("installer", "update.sh"),
     "meshforge-mini-dudeai-dream.timer":   ("installer", "update.sh"),
     "meshforge-mini-dudeai-claw.service":  ("installer", "update.sh"),
+    "meshtasticd-mudp-guard.service":      ("installer", "update.sh"),
+    "meshtasticd-mudp-guard.timer":        ("installer", "update.sh"),
     # ── update.sh `*-user.service` glob (verified: filename ends -user.service) ──
     "meshforge-synth-soak-user.service":   ("glob", "update.sh *-user.service loop → synth-soak.service"),
     "meshforge-gateway-resource-canary-user.service": ("glob", "update.sh *-user.service loop → gateway-resource-canary.service (inert everywhere until the timer is hand-deployed on a gateway box; oneshot, never enabled/started by the glob)"),

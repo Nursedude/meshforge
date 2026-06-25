@@ -97,6 +97,7 @@ roles:
       meshforge-map: enabled
       meshforge-maps: disabled        # tiles served by full-gateway nodes
       meshforge-watchdog: enabled
+      meshtasticd-mudp-guard.timer: enabled  # self-heal the MUDP leg (224.0.0.69:4403) boot-race
       meshforge-cloud-push.timer: disabled
     flags:
       canonical_memory_writer: true   # invariant: one_canonical_writer
@@ -115,6 +116,8 @@ roles:
       meshforge-map: enabled
       meshforge-maps: enabled
       meshforge-watchdog: enabled
+      meshtasticd-mudp-guard.timer: enabled  # self-heal the MUDP leg (224.0.0.69:4403);
+                                      # auto-learns per box, so it no-ops where MUDP is unused
       meshforge-cloud-push.timer: disabled
 
   cloud-publisher:
@@ -154,6 +157,7 @@ roles:
       meshforge-map: disabled         # DELIBERATE: map server too heavy for ~1GB
       meshforge-maps: absent
       meshforge-watchdog: enabled
+      meshtasticd-mudp-guard.timer: enabled  # self-heal the MUDP leg (224.0.0.69:4403) boot-race
 
   meshanchor-noc:
     board_tier: pi4_min_4gb

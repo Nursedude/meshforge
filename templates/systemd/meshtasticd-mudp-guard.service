@@ -1,0 +1,12 @@
+[Unit]
+Description=Self-heal Meshtastic UDP-multicast leg (224.0.0.69:4403) — MUDP source for Raven/meshforge
+Documentation=https://github.com/Nursedude/meshforge
+# Background: 2026-06-24 mains-outage reboot left meshtasticd "active" but its
+# UDP-multicast socket never bound, so the meshforge channel went dark for ~13h.
+# This guard restarts meshtasticd when the leg is missing on a box that uses it.
+# Auto-learns per box (last-seen marker), so it no-ops on non-MUDP boxes.
+After=meshtasticd.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/meshforge/scripts/meshtasticd_mudp_guard.sh
