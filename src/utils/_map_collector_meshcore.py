@@ -22,6 +22,8 @@ import urllib.error
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from utils._bounded_read import bounded_read
+
 logger = logging.getLogger(__name__)
 
 
@@ -129,39 +131,19 @@ class MeshCorePublicCollectorMixin:
                 self._MESHCORE_MAP_URL,
                 headers={"Accept": "application/json", "User-Agent": "MeshForge/1.0"},
             )
-            # Bound the TOTAL read with a monotonic wall-clock deadline, not just
-            # the per-socket `timeout`. urlopen(timeout=) fires only on a TOTAL
-            # stall (no bytes for `timeout` s); a server trickling the ~12 MB body
-            # steadily (each recv within `timeout`) reads UNBOUNDED — 2026-06-26 a
-            # slow map.meshcore.dev took 533 s and held the federator cold collect
-            # at HTTP 503 for ~9 min. Read in chunks, abort past the deadline
-            # (monotonic = clock-step-immune), and let the caller serve stale cache
-            # (this is a non-critical fallback source).
+            # Bound the TOTAL read with bounded_read's monotonic deadline (not just
+            # urlopen's per-socket `timeout`, which fires only on a total stall — a
+            # steady trickle reads unbounded; 2026-06-26 a slow map.meshcore.dev took
+            # 533 s and held the federator cold collect at HTTP 503 for ~9 min). On
+            # deadline bounded_read raises TimeoutError (an OSError subclass) -> the
+            # except below serves stale cache (non-critical fallback source).
             max_total = int(self._settings.get(
                 "meshcore_public_max_seconds",
                 self.DEFAULT_MESHCORE_PUBLIC_MAX_SECONDS,
             )) if self._settings else self.DEFAULT_MESHCORE_PUBLIC_MAX_SECONDS
-            deadline = time.monotonic() + max_total
-            # Cap at 64 MB — current global MeshCore map is ~12 MB for ~30k nodes.
-            # An 8 MB cap truncates mid-JSON and leaves an "Unterminated string"
-            # parse error rather than complete data.
-            CAP = 64 * 1024 * 1024
-            CHUNK = 256 * 1024
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                buf: List[bytes] = []
-                total = 0
-                while total < CAP:
-                    if time.monotonic() > deadline:
-                        return [], 0, False, (
-                            f"fetch exceeded {max_total}s deadline after "
-                            f"{total // 1024} KB (slow/trickling source) — served cache"
-                        )
-                    chunk = resp.read(CHUNK)
-                    if not chunk:
-                        break
-                    buf.append(chunk)
-                    total += len(chunk)
-            data = json.loads(b"".join(buf).decode("utf-8", errors="replace"))
+                raw = bounded_read(resp, max_total)
+            data = json.loads(raw.decode("utf-8", errors="replace"))
 
             if not isinstance(data, list):
                 return [], 0, False, "unexpected response shape (not a list)"

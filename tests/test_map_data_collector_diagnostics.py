@@ -858,7 +858,7 @@ class TestSourceTimeout:
         _, kwargs = mock_urlopen.call_args
         assert kwargs.get("timeout") == 7
 
-    @patch("utils._map_collector_meshcore.time.monotonic")
+    @patch("utils._bounded_read.time.monotonic")
     @patch("urllib.request.urlopen")
     def test_slow_trickle_aborts_at_deadline(self, mock_urlopen, mock_mono, collector):
         """A steadily-trickling source (never a total stall, so urlopen's socket
@@ -883,7 +883,7 @@ class TestSourceTimeout:
         assert "deadline" in notes.lower()
         assert resp.read.call_count == 1  # only the first chunk before the deadline tripped
 
-    @patch("utils._map_collector_meshcore.time.monotonic")
+    @patch("utils._bounded_read.time.monotonic")
     @patch("urllib.request.urlopen")
     def test_deadline_abort_serves_stale_cache(self, mock_urlopen, mock_mono, collector):
         """On a deadline abort the non-critical source serves its stale cache

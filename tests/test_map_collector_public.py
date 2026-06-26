@@ -100,7 +100,7 @@ class TestMeshmapFetch:
     @patch("utils._map_collector_public.urlopen")
     def test_meshmap_returns_valid_nodes(self, mock_urlopen):
         resp = MagicMock()
-        resp.read.return_value = json.dumps(MESHMAP_SAMPLE).encode()
+        resp.read.side_effect = [json.dumps(MESHMAP_SAMPLE).encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -126,7 +126,7 @@ class TestMeshmapFetch:
             }
         }
         resp = MagicMock()
-        resp.read.return_value = json.dumps(data).encode()
+        resp.read.side_effect = [json.dumps(data).encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -150,7 +150,7 @@ class TestMeshmapFetch:
     @patch("utils._map_collector_public.urlopen")
     def test_meshmap_invalid_json_returns_empty(self, mock_urlopen):
         resp = MagicMock()
-        resp.read.return_value = b"not json"
+        resp.read.side_effect = [b"not json", b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -195,7 +195,7 @@ class TestRmapFetch:
     @patch("utils._map_collector_public.urlopen")
     def test_rmap_returns_valid_nodes(self, mock_urlopen):
         resp = MagicMock()
-        resp.read.return_value = json.dumps(RMAP_SAMPLE).encode()
+        resp.read.side_effect = [json.dumps(RMAP_SAMPLE).encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -218,7 +218,7 @@ class TestRmapFetch:
         legacy CERT_NONE behavior (MITM on rmap.world could inject node
         positions into the map UI — see security review 2026-04-16)."""
         resp = MagicMock()
-        resp.read.return_value = json.dumps({"nodes": []}).encode()
+        resp.read.side_effect = [json.dumps({"nodes": []}).encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -238,7 +238,7 @@ class TestRmapFetch:
     def test_rmap_ssl_context_insecure_opt_in(self, mock_urlopen):
         """Opt-in path: setting rmap_insecure_tls=True disables verification."""
         resp = MagicMock()
-        resp.read.return_value = json.dumps({"nodes": []}).encode()
+        resp.read.side_effect = [json.dumps({"nodes": []}).encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -280,7 +280,7 @@ class TestArednWorldmapFetch:
     @patch("utils._map_collector_public.urlopen")
     def test_aredn_csv_returns_valid_nodes(self, mock_urlopen):
         resp = MagicMock()
-        resp.read.return_value = AREDN_CSV.encode()
+        resp.read.side_effect = [AREDN_CSV.encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -330,7 +330,7 @@ class TestPublicFallbackOrchestrator:
     @patch("utils._map_collector_public.urlopen")
     def test_threshold_allows_when_sparse_local_data(self, mock_urlopen):
         resp = MagicMock()
-        resp.read.return_value = json.dumps(MESHMAP_SAMPLE).encode()
+        resp.read.side_effect = [json.dumps(MESHMAP_SAMPLE).encode(), b""]
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = resp
@@ -346,17 +346,17 @@ class TestPublicFallbackOrchestrator:
     @patch("utils._map_collector_public.urlopen")
     def test_multiple_sources_merged(self, mock_urlopen):
         meshmap_resp = MagicMock()
-        meshmap_resp.read.return_value = json.dumps({
+        meshmap_resp.read.side_effect = [json.dumps({
             "1111": {"latitude": 21.3, "longitude": -157.8, "longName": "Mesh1"}
-        }).encode()
+        }).encode(), b""]
         meshmap_resp.__enter__ = MagicMock(return_value=meshmap_resp)
         meshmap_resp.__exit__ = MagicMock(return_value=False)
 
         rmap_resp = MagicMock()
-        rmap_resp.read.return_value = json.dumps({
+        rmap_resp.read.side_effect = [json.dumps({
             "nodes": [{"hash": "abc123", "lat": 21.4, "lon": -158.0,
                         "display_name": "RNS1", "node_type": "rnode"}]
-        }).encode()
+        }).encode(), b""]
         rmap_resp.__enter__ = MagicMock(return_value=rmap_resp)
         rmap_resp.__exit__ = MagicMock(return_value=False)
 

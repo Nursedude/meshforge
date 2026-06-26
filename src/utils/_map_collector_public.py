@@ -27,6 +27,15 @@ from typing import Any, Dict, List, Optional
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
+from utils._bounded_read import bounded_read
+
+# Total wall-clock deadline for each public-fallback HTTP body read (meshmap /
+# rmap / aredn_worldmap firehoses). Bounds the same slow-trickle class that hit
+# meshcore (533 s / 9-min-503, 2026-06-26): urlopen's per-socket timeout doesn't
+# cap a steady trickle. 30 s comfortably covers a healthy fetch; these are
+# non-critical fallbacks, so a deadline hit just drops the source this cycle.
+PUBLIC_FETCH_MAX_SECONDS = 30
+
 logger = logging.getLogger(__name__)
 
 MESHMAP_URL = "https://meshmap.net/nodes.json"
@@ -117,7 +126,7 @@ class PublicDataFallbackMixin:
                 },
             )
             with urlopen(req, timeout=self._get_source_timeout()) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(bounded_read(resp, PUBLIC_FETCH_MAX_SECONDS).decode())
 
             for num_id, node in data.items():
                 feature = self._parse_meshmap_node(num_id, node)
@@ -241,7 +250,7 @@ class PublicDataFallbackMixin:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
             with urlopen(req, timeout=self._get_source_timeout(), context=ctx) as resp:
-                data = json.loads(resp.read().decode())
+                data = json.loads(bounded_read(resp, PUBLIC_FETCH_MAX_SECONDS).decode())
 
             nodes = data.get("nodes", []) if isinstance(data, dict) else []
             for node in nodes:
@@ -304,7 +313,7 @@ class PublicDataFallbackMixin:
                 },
             )
             with urlopen(req, timeout=self._get_source_timeout()) as resp:
-                text = resp.read().decode("utf-8", errors="replace")
+                text = bounded_read(resp, PUBLIC_FETCH_MAX_SECONDS).decode("utf-8", errors="replace")
 
             reader = csv.DictReader(io.StringIO(text))
             for row in reader:
