@@ -51,6 +51,19 @@ MODEL="${MINI_DUDEAI_CADENCE_MODEL:-claude-opus-4-8}"
 # fragility class — everything mini-adjacent carries a timeout).
 TIMEOUT_S="${MINI_CADENCE_TIMEOUT_S:-900}"
 
+# Timeout-backoff (added 2026-06-26). A session that hits TIMEOUT_S exits 124 and
+# CANNOT ratify its deltas, so they stay "proposed" and the NEXT hourly run
+# re-fires the same doomed session — on 2026-06-24 this burned 4 consecutive 900s
+# sessions on an already-slow box. After a 124 we record (ts + a hash of the
+# proposed-delta set) and SKIP re-firing for TIMEOUT_BACKOFF_S *as long as the
+# proposed set is unchanged*; a genuinely NEW delta set (different hash) bypasses
+# the backoff and fires fresh. The skip still exits NON-ZERO (EX_TEMPFAIL, 75) so
+# cron_verdict keeps the stuck state VISIBLE to Issue #78 cron_verdict_stale — we
+# drop the COST (tokens + box load), never the SIGNAL. Distinct from the
+# model-swap FAIL above (exit 1), which is sticky-by-design and NOT backed off.
+TIMEOUT_BACKOFF_S="${MINI_CADENCE_TIMEOUT_COOLDOWN_S:-10800}"   # 3h
+STATE_FILE="${MINI_CADENCE_STATE_FILE:-$HOME/.config/meshforge/mini_cadence_timeout_state}"
+
 # Hold guard — pause ALL cadence activity (no --dream, no session) until a
 # given epoch. Generic: use it to keep cadence out of any controlled mini
 # experiment (e.g. a soak) without touching the crontab. Source is an epoch in
@@ -91,6 +104,38 @@ if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"proposed"' "$DELTAS"; then
   exit 0
 fi
 
+# Content-key the proposed set so the backoff below distinguishes "the SAME stuck
+# deltas a prior session timed out on" from "genuinely new work". Hash failure
+# (no sha256sum) -> empty hash -> backoff still applies on time alone (safe: we
+# err toward sparing the box, and a missing tool is itself anomalous).
+cur_hash=""
+if command -v sha256sum >/dev/null 2>&1; then
+  cur_hash="$(grep -E '"status"[[:space:]]*:[[:space:]]*"proposed"' "$DELTAS" 2>/dev/null \
+              | sha256sum | cut -d' ' -f1)"
+fi
+
+# Backoff gate: if the previous session TIMED OUT (124) on this same proposed set
+# within TIMEOUT_BACKOFF_S, skip the (expensive, already-failing) session. Exit
+# 75 keeps the FAIL verdict visible without spending a session or pinning the box.
+last_ts=0; last_hash=""
+if [ -f "$STATE_FILE" ]; then
+  # `|| true`: a torn/partial state file (missing a key) must fall through to
+  # firing, never abort the launcher under `set -e`/pipefail.
+  last_ts="$(grep -E '^last_timeout_ts=' "$STATE_FILE" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+  last_hash="$(grep -E '^last_timeout_hash=' "$STATE_FILE" 2>/dev/null | head -1 | cut -d= -f2 || true)"
+fi
+case "${last_ts:-0}" in ''|*[!0-9]*) last_ts=0 ;; esac
+now="$(date +%s)"
+if [ "$last_ts" -gt 0 ] && [ "$cur_hash" = "$last_hash" ] \
+   && [ "$((now - last_ts))" -lt "$TIMEOUT_BACKOFF_S" ]; then
+  ago_m=$(( (now - last_ts) / 60 ))
+  left_m=$(( (TIMEOUT_BACKOFF_S - (now - last_ts)) / 60 ))
+  echo "mini-cadence: prior session TIMED OUT ${ago_m}m ago on these SAME proposed deltas;" \
+       "backing off (retry in ~${left_m}m). Skipping the session to spare tokens + box load;" \
+       "the stuck state stays VISIBLE as a FAIL verdict." >&2
+  exit 75
+fi
+
 if [ ! -f "$RUNBOOK" ]; then
   echo "mini-cadence: runbook missing ($RUNBOOK) — refusing to launch blind." >&2
   exit 1
@@ -112,4 +157,15 @@ Resolve every proposed memory-delta: verify each against live truth, then ratify
 (authoring a verified canonical memory via mini_dudeai.memory_apply) or reject. \
 Never write verified=True without a check you ran. One bounded pass, then stop." || rc=$?
 echo "mini-cadence: cadence session finished (exit $rc)."
+
+# Record/clear the timeout-backoff state. Only a 124 (the session hit TIMEOUT_S)
+# arms the backoff; ANY other outcome — a clean ratify/reject (0) OR a loud
+# non-124 failure like the sticky-by-design model-swap FAIL — clears it.
+if [ "$rc" -eq 124 ]; then
+  mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
+  { echo "last_timeout_ts=$(date +%s)"; echo "last_timeout_hash=$cur_hash"; } \
+      > "$STATE_FILE" 2>/dev/null || true
+else
+  rm -f "$STATE_FILE" 2>/dev/null || true
+fi
 exit "$rc"
