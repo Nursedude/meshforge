@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -753,7 +754,34 @@ def _parse_cron_verdicts(text: str, now_unix: float) -> List[Dict[str, Any]]:
     return sorted(latest.values(), key=lambda v: v["name"])
 
 
-def _read_cron_verdicts() -> Dict[str, Any]:
+# Matches the verdict-emitting call in a crontab command:
+#   <job> >/dev/null 2>&1 ; /opt/meshforge/scripts/cron_verdict.sh <name> $?
+# The captured <name> is the cron the verdict belongs to.
+_VERDICT_CALL_RE = re.compile(r"cron_verdict\.sh\s+(\S+)")
+
+
+def _wired_verdict_names(crontab_block: Dict[str, Any]) -> Optional[set]:
+    """Cron names currently WIRED to ``cron_verdict.sh`` in the live crontab.
+
+    A verdict whose cron is NOT in this set is an ORPHAN — the job was removed
+    or PARKED (commented out; ``_parse_crontab`` skips ``#`` lines), so its last
+    verdict is a stale artifact, not an active concern. Mirrors Issue #78's
+    ``cron_verdict_stale``, which judges only wired crons and ignores orphans.
+
+    Returns ``None`` when the crontab is unavailable — the caller must then NOT
+    filter (we can't prove a verdict is orphan if we can't read the crontab;
+    absence of evidence ≠ orphan, honest_failure_modes #2).
+    """
+    if not crontab_block.get("available"):
+        return None
+    names: set = set()
+    for job in crontab_block.get("jobs", []):
+        for m in _VERDICT_CALL_RE.finditer(job.get("command", "")):
+            names.add(m.group(1))
+    return names
+
+
+def _read_cron_verdicts(wired_names: Optional[set] = None) -> Dict[str, Any]:
     """Read ``~/cron_verdicts.log`` (the silent-cron detection log).
 
     Missing file / unreadable -> ``available:False`` + reason; present ->
@@ -771,6 +799,16 @@ def _read_cron_verdicts() -> Dict[str, Any]:
         return {"available": False,
                 "reason": f"read_error: {e.__class__.__name__}"}
     jobs = _parse_cron_verdicts(text, time.time())
+    orphan_filtered = 0
+    if wired_names is not None:
+        # Drop verdicts whose cron is no longer WIRED (parked/commented). A
+        # paused cron is not an active concern — keeping its stale verdict in
+        # the fleet view reads as a false CONCERN/FAIL. Mirrors #78's
+        # orphan-ignore. When wired_names is None (crontab unreadable) we keep
+        # everything rather than hide a real signal.
+        kept = [j for j in jobs if j["name"] in wired_names]
+        orphan_filtered = len(jobs) - len(kept)
+        jobs = kept
     return {
         "available": True,
         "jobs": jobs,
@@ -778,6 +816,7 @@ def _read_cron_verdicts() -> Dict[str, Any]:
                           if j["status"].upper().startswith("FAIL")),
         "concern_count": sum(1 for j in jobs
                              if j["status"].upper() == "CONCERN"),
+        "orphan_filtered": orphan_filtered,
     }
 
 
@@ -879,7 +918,12 @@ def _schedules_block() -> Dict[str, Any]:
         block["crontab"] = {"available": False,
                             "reason": f"block_error: {e.__class__.__name__}"}
     try:
-        block["verdicts"] = _read_cron_verdicts()
+        # Pass the live crontab's wired cron names so verdicts for parked/
+        # removed (orphan) crons are dropped from the fleet view rather than
+        # lingering as false CONCERN/FAIL (#78 orphan-ignore, for the display).
+        block["verdicts"] = _read_cron_verdicts(
+            wired_names=_wired_verdict_names(block.get("crontab", {}))
+        )
     except Exception as e:
         block["verdicts"] = {"available": False,
                              "reason": f"block_error: {e.__class__.__name__}"}

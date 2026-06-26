@@ -1286,6 +1286,48 @@ def test_read_cron_verdicts_present_counts_fail(monkeypatch, tmp_path):
     assert r["available"] is True and r["fail_count"] == 1
 
 
+def test_wired_verdict_names_extracts_from_crontab():
+    crontab = {"available": True, "jobs": [
+        {"schedule": "* * * * *",
+         "command": "/h/job.sh >/dev/null 2>&1 ; "
+                    "/opt/meshforge/scripts/cron_verdict.sh soak_cron $?"},
+        {"schedule": "0 5 * * *",
+         "command": "/h/mh.sh >/dev/null 2>&1 || "
+                    "/opt/meshforge/scripts/cron_verdict.sh memory_health FAIL x"},
+        {"schedule": "* * * * *", "command": "/h/power.sh >/dev/null 2>&1"},  # no verdict
+    ]}
+    assert fleet_snapshot._wired_verdict_names(crontab) == {"soak_cron", "memory_health"}
+
+
+def test_wired_verdict_names_none_when_crontab_unavailable():
+    # Can't read the crontab -> can't prove orphan-ness -> None (caller won't filter).
+    assert fleet_snapshot._wired_verdict_names(
+        {"available": False, "reason": "x"}) is None
+
+
+def test_read_cron_verdicts_drops_orphan_parked_cron(monkeypatch, tmp_path):
+    # A parked cron (crontab line commented -> not wired) must NOT surface its
+    # stale verdict as a CONCERN in the fleet view.
+    (tmp_path / "cron_verdicts.log").write_text(
+        "2026-06-08T15:00:00+00:00 soak_cron OK\n"
+        "2026-06-08T15:01:00+00:00 mesh_client_pull CONCERN PARKED\n")
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_cron_verdicts(wired_names={"soak_cron"})
+    assert {j["name"] for j in r["jobs"]} == {"soak_cron"}  # orphan dropped
+    assert r["concern_count"] == 0                          # parked != concern
+    assert r["orphan_filtered"] == 1                        # witness, not silent
+
+
+def test_read_cron_verdicts_no_filter_when_wired_none(monkeypatch, tmp_path):
+    # Fail-safe: crontab unreadable -> keep everything (don't hide a real signal).
+    (tmp_path / "cron_verdicts.log").write_text(
+        "2026-06-08T15:01:00+00:00 mesh_client_pull CONCERN PARKED\n")
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_cron_verdicts(wired_names=None)
+    assert {j["name"] for j in r["jobs"]} == {"mesh_client_pull"}
+    assert r["orphan_filtered"] == 0
+
+
 def test_read_loop_crons_absent_is_unavailable_ephemeral(monkeypatch, tmp_path):
     monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
     r = fleet_snapshot._read_loop_crons()
