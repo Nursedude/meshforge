@@ -82,6 +82,14 @@ class MapDataCollector(
     # collect() worst-case predictable, and a slow MeshCore fetch falls back
     # to stale cache rather than holding _collect_lock for 30 s.
     DEFAULT_SOURCE_TIMEOUT_SECONDS = 15
+    # Total wall-clock deadline on the meshcore_public READ (distinct from the
+    # per-socket-op timeout above). urlopen(timeout=) fires only on a TOTAL stall
+    # (no bytes for that long); a server trickling the ~12 MB body steadily reads
+    # UNBOUNDED — 2026-06-26 a slow map.meshcore.dev took 533 s and held the
+    # federator cold collect at HTTP 503 for ~9 min. 30 s comfortably covers a
+    # healthy ~10 s fetch while bounding the pathology; the source is a
+    # non-critical fallback, so on deadline we serve stale cache.
+    DEFAULT_MESHCORE_PUBLIC_MAX_SECONDS = 30
     # Per-source online thresholds (minutes) — configurable via map_settings.json
     DEFAULT_MESHTASTIC_THRESHOLD_MINUTES = 15
     DEFAULT_MQTT_THRESHOLD_MINUTES = 15
@@ -220,6 +228,7 @@ class MapDataCollector(
                 # without GPS still surface via meshcore_positions overrides.
                 "enable_meshcore_public": False,
                 "meshcore_public_cache_ttl_seconds": self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
+                "meshcore_public_max_seconds": self.DEFAULT_MESHCORE_PUBLIC_MAX_SECONDS,
                 "source_timeout_seconds": self.DEFAULT_SOURCE_TIMEOUT_SECONDS,
                 "selected_region": None,
                 # Issue #71 regional-slice precompute: region keys whose geojson

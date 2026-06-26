@@ -607,7 +607,9 @@ class TestMeshCorePublicCollector:
         resp = MagicMock()
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
-        resp.read.return_value = _json.dumps([
+        # side_effect data-then-EOF mirrors a real HTTPResponse.read(n): the
+        # bounded chunked reader (meshcore deadline) loops until read() -> b"".
+        resp.read.side_effect = [_json.dumps([
             {
                 "public_key": "abc123def456",
                 "adv_name": "HiloRepeater",
@@ -632,7 +634,7 @@ class TestMeshCorePublicCollector:
                 "adv_lon": 0.0,
                 "type": 1,
             },
-        ]).encode()
+        ]).encode(), b""]
         mock_urlopen.return_value = resp
 
         features = collector._collect_meshcore_public()
@@ -848,13 +850,61 @@ class TestSourceTimeout:
         resp = MagicMock()
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
-        resp.read.return_value = b"[]"
+        resp.read.side_effect = [b"[]", b""]  # data-then-EOF for the chunked reader
         mock_urlopen.return_value = resp
 
         collector._fetch_meshcore_public_uncached()
         # urlopen should have been called with timeout=7 (overriding the default).
         _, kwargs = mock_urlopen.call_args
         assert kwargs.get("timeout") == 7
+
+    @patch("utils._map_collector_meshcore.time.monotonic")
+    @patch("urllib.request.urlopen")
+    def test_slow_trickle_aborts_at_deadline(self, mock_urlopen, mock_mono, collector):
+        """A steadily-trickling source (never a total stall, so urlopen's socket
+        timeout never fires) is bounded by the total read deadline — the 533s /
+        9-min-503 fix (2026-06-26)."""
+        collector._settings.set("enable_meshcore_public", True)
+        collector._settings.set("meshcore_public_max_seconds", 5)
+        collector._meshcore_public_cache = None
+        collector._meshcore_public_cache_ts = None
+        # monotonic: deadline calc (1000 -> deadline 1005); loop check 1 (1000, ok
+        # -> read one chunk); loop check 2 (1010 > 1005 -> abort).
+        mock_mono.side_effect = [1000.0, 1000.0, 1010.0]
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.side_effect = [b'[{"trickle":1}', b'more', b'more']  # never EOF in window
+        mock_urlopen.return_value = resp
+
+        features, attempted, ok, notes = collector._fetch_meshcore_public_uncached()
+        assert ok is False
+        assert features == []
+        assert "deadline" in notes.lower()
+        assert resp.read.call_count == 1  # only the first chunk before the deadline tripped
+
+    @patch("utils._map_collector_meshcore.time.monotonic")
+    @patch("urllib.request.urlopen")
+    def test_deadline_abort_serves_stale_cache(self, mock_urlopen, mock_mono, collector):
+        """On a deadline abort the non-critical source serves its stale cache
+        rather than going dark (ok=False -> stale_cached)."""
+        collector._settings.set("enable_meshcore_public", True)
+        collector._settings.set("meshcore_public_max_seconds", 5)
+        collector._settings.set("meshcore_public_cache_ttl_seconds", 1)
+        stale_feature = {"type": "Feature", "properties": {"id": "meshcore:stale"}}
+        collector._meshcore_public_cache = [stale_feature]
+        collector._meshcore_public_cache_ts = 0.0  # epoch 0 -> far older than ttl=1 -> refetch
+        mock_mono.side_effect = [1000.0, 1010.0]  # deadline 1005; first check 1010 -> abort
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.side_effect = [b'[{"x":1}', b'more']
+        mock_urlopen.return_value = resp
+
+        features = collector._collect_meshcore_public()
+        assert features == [stale_feature]
+        d = collector.get_source_diagnostics()
+        assert d["meshcore_public"]["reason_if_zero"] == "stale_cached"
 
     def test_public_mixin_get_source_timeout_default(self, collector):
         # No setting → default 15 (DEFAULT_SOURCE_TIMEOUT_SECONDS).
