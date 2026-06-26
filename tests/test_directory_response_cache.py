@@ -187,7 +187,7 @@ class TestObservabilityCounters:
         cache = DirectoryResponseCache(ttl_s=5.0)
         assert cache.stats() == {
             "hit_count": 0, "miss_count": 0,
-            "coalesced_count": 0, "entry_count": 0,
+            "coalesced_count": 0, "warmed_count": 0, "entry_count": 0,
         }
         cache.get_or_build(None, lambda: (b"a", None))   # miss
         cache.get_or_build(None, lambda: (b"unused", None))  # hit
