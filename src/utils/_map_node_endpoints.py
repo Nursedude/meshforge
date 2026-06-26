@@ -169,6 +169,123 @@ def _apply_view_preset_to_position_less(
     return [w["properties"] for w in filtered]
 
 
+def build_geojson_response(
+    collector,
+    region_key: Optional[str],
+    preset_key: Optional[str],
+    bbox_str: Optional[str],
+    gzip_min_bytes: int,
+) -> tuple:
+    """Build ``(raw_bytes, gzip_bytes_or_None)`` for a geojson response slice:
+    ``collector.collect()`` → View-preset filter → region/bbox filter →
+    cross-protocol collapse → ``json.dumps`` + ``gzip``.
+
+    Extracted from ``_serve_geojson`` (Issue #71 regional-slice precompute) so a
+    background warmer (``MapDataCollector._warm_geojson_regions``) produces
+    byte-identical bytes to the request path and can pre-populate the response
+    cache for the box's hot region slice. This is the SINGLE source of the
+    geojson build — the handler and the warmer must never diverge, or warmed
+    bytes would differ from what a live request would compute for the same key.
+    """
+    geojson = collector.collect()
+
+    # View preset filter — applied before bbox so federation's 50K features
+    # collapse to the preset slice (often <5K) before any geometry walk.
+    # Unknown/missing preset is a pass-through.
+    if preset_key in VIEW_PRESETS:
+        spec = VIEW_PRESETS[preset_key]
+        if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
+            filtered_features = _apply_view_preset(
+                geojson.get("features", []), preset_key
+            )
+            geojson = dict(geojson)
+            geojson["features"] = filtered_features
+            props = dict(geojson.get("properties", {}))
+            props["preset_filtered"] = True
+            props["preset"] = preset_key
+            props["nodes_with_position"] = len(filtered_features)
+            geojson["properties"] = props
+
+    bboxes: list = []
+
+    if region_key and region_key in REGION_PRESETS:
+        preset_bbox = REGION_PRESETS[region_key]["bbox"]
+        if preset_bbox is not None:
+            if isinstance(preset_bbox[0], list):
+                bboxes = preset_bbox
+            else:
+                bboxes = [preset_bbox]
+
+    # Explicit ?bbox= overrides ?region=. Reject malformed or out-of-range
+    # coordinates so a crafted query can't stall the server (NaN/inf
+    # arithmetic) or bypass the region allowlist.
+    if bbox_str:
+        MAX_BBOXES = 8
+        parsed_bboxes: List[List[float]] = []
+        for part in bbox_str.split(";")[:MAX_BBOXES]:
+            try:
+                coords = [float(x) for x in part.split(",")]
+            except (ValueError, TypeError):
+                continue
+            if len(coords) != 4:
+                continue
+            if not all(isinstance(c, float) and c == c and c not in (float("inf"), float("-inf")) for c in coords):
+                continue
+            south, west, north, east = coords
+            if not (-90.0 <= south <= 90.0 and -90.0 <= north <= 90.0):
+                continue
+            if not (-180.0 <= west <= 180.0 and -180.0 <= east <= 180.0):
+                continue
+            if south >= north or west >= east:
+                continue
+            parsed_bboxes.append(coords)
+        if parsed_bboxes:
+            bboxes = parsed_bboxes
+
+    if bboxes:
+        filtered = []
+        for f in geojson.get("features", []):
+            gc = f.get("geometry", {}).get("coordinates", [])
+            if len(gc) < 2:
+                continue
+            lon, lat = gc[0], gc[1]
+            for south, west, north, east in bboxes:
+                if south <= lat <= north and west <= lon <= east:
+                    filtered.append(f)
+                    break
+        geojson = dict(geojson)
+        geojson["features"] = filtered
+        props = dict(geojson.get("properties", {}))
+        props["nodes_with_position"] = len(filtered)
+        props["bbox_filtered"] = True
+        geojson["properties"] = props
+
+    # Cross-protocol collapse (node count opt §C). Applied AFTER preset and bbox
+    # filters so the cached bytes are post-collapse and per-request `?bbox=`
+    # still slices the canonical collection correctly.
+    try:
+        from utils.cross_protocol_collapse import collapse_cross_protocol
+        collapsed_features, collapsed_pairs = collapse_cross_protocol(
+            geojson.get("features", [])
+        )
+        geojson = dict(geojson)
+        geojson["features"] = collapsed_features
+        props = dict(geojson.get("properties", {}))
+        props["collapsed_pairs"] = collapsed_pairs
+        props["nodes_with_position"] = len(collapsed_features)
+        geojson["properties"] = props
+    except Exception as e:
+        logger.debug(f"cross-protocol collapse skipped: {e}")
+
+    raw = json.dumps(geojson).encode()
+    gz = (
+        gzip.compress(raw, compresslevel=6)
+        if len(raw) >= gzip_min_bytes
+        else None
+    )
+    return raw, gz
+
+
 class NodeDataEndpointsMixin:
     """Node-data endpoints for :class:`MapRequestHandler`.
 
@@ -213,110 +330,13 @@ class NodeDataEndpointsMixin:
         cache = self.collector._geojson_response_cache
 
         def _build() -> tuple:
-            geojson = self.collector.collect()
-
-            # View preset filter — applied before bbox so federation's 50K
-            # features collapse to the preset slice (often <5K) before any
-            # geometry walk. Unknown/missing preset is a pass-through.
-            if preset_key in VIEW_PRESETS:
-                spec = VIEW_PRESETS[preset_key]
-                if spec.get("origins") or spec.get("exclude_federated") or spec.get("max_age_s"):
-                    filtered_features = _apply_view_preset(
-                        geojson.get("features", []), preset_key
-                    )
-                    geojson = dict(geojson)
-                    geojson["features"] = filtered_features
-                    props = dict(geojson.get("properties", {}))
-                    props["preset_filtered"] = True
-                    props["preset"] = preset_key
-                    props["nodes_with_position"] = len(filtered_features)
-                    geojson["properties"] = props
-
-            bboxes: list = []
-
-            if region_key and region_key in REGION_PRESETS:
-                preset_bbox = REGION_PRESETS[region_key]["bbox"]
-                if preset_bbox is not None:
-                    if isinstance(preset_bbox[0], list):
-                        bboxes = preset_bbox
-                    else:
-                        bboxes = [preset_bbox]
-
-            # Explicit ?bbox= overrides ?region=. Reject malformed or
-            # out-of-range coordinates so a crafted query can't stall the server
-            # (NaN/inf arithmetic) or bypass the region allowlist.
-            if bbox_str:
-                MAX_BBOXES = 8
-                parsed_bboxes: List[List[float]] = []
-                for part in bbox_str.split(";")[:MAX_BBOXES]:
-                    try:
-                        coords = [float(x) for x in part.split(",")]
-                    except (ValueError, TypeError):
-                        continue
-                    if len(coords) != 4:
-                        continue
-                    if not all(isinstance(c, float) and c == c and c not in (float("inf"), float("-inf")) for c in coords):
-                        continue
-                    south, west, north, east = coords
-                    if not (-90.0 <= south <= 90.0 and -90.0 <= north <= 90.0):
-                        continue
-                    if not (-180.0 <= west <= 180.0 and -180.0 <= east <= 180.0):
-                        continue
-                    if south >= north or west >= east:
-                        continue
-                    parsed_bboxes.append(coords)
-                if parsed_bboxes:
-                    bboxes = parsed_bboxes
-
-            if bboxes:
-                filtered = []
-                for f in geojson.get("features", []):
-                    gc = f.get("geometry", {}).get("coordinates", [])
-                    if len(gc) < 2:
-                        continue
-                    lon, lat = gc[0], gc[1]
-                    for south, west, north, east in bboxes:
-                        if south <= lat <= north and west <= lon <= east:
-                            filtered.append(f)
-                            break
-                geojson = dict(geojson)
-                geojson["features"] = filtered
-                props = dict(geojson.get("properties", {}))
-                props["nodes_with_position"] = len(filtered)
-                props["bbox_filtered"] = True
-                geojson["properties"] = props
-
-            # Cross-protocol collapse (node count opt §C). Applied here
-            # — inside the per-request _build() closure, AFTER preset
-            # and bbox filters — so the response cache (Issue #71)
-            # stores the post-collapse bytes and per-request flags
-            # like `?bbox=` still slice the underlying canonical
-            # collection correctly. NOT applied to /api/nodes/directory
-            # because federation peers consume that endpoint and need
-            # raw (network, node_id) rows to merge cleanly.
-            try:
-                from utils.cross_protocol_collapse import collapse_cross_protocol
-                collapsed_features, collapsed_pairs = collapse_cross_protocol(
-                    geojson.get("features", [])
-                )
-                geojson = dict(geojson)
-                geojson["features"] = collapsed_features
-                props = dict(geojson.get("properties", {}))
-                props["collapsed_pairs"] = collapsed_pairs
-                # Updated count post-collapse — frontend uses this to
-                # render the "N nodes" badge.
-                props["nodes_with_position"] = len(collapsed_features)
-                geojson["properties"] = props
-            except Exception as e:
-                logger.debug(f"cross-protocol collapse skipped: {e}")
-
-            raw = json.dumps(geojson).encode()
-            gz = (
-                gzip.compress(raw, compresslevel=6)
-                if len(raw) >= self._GZIP_MIN_BYTES
-                else None
+            # Single source of the geojson build (Issue #71): the same function
+            # the background warmer calls, so warmed bytes are byte-identical to
+            # what a live request computes for the same (bbox, region, preset).
+            return build_geojson_response(
+                self.collector, region_key, preset_key, bbox_str,
+                self._GZIP_MIN_BYTES,
             )
-            return raw, gz
 
         try:
             raw_bytes, gzip_bytes, _was_built = cache.get_or_build(

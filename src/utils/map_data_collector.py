@@ -222,6 +222,14 @@ class MapDataCollector(
                 "meshcore_public_cache_ttl_seconds": self.DEFAULT_MESHCORE_PUBLIC_CACHE_TTL_SECONDS,
                 "source_timeout_seconds": self.DEFAULT_SOURCE_TIMEOUT_SECONDS,
                 "selected_region": None,
+                # Issue #71 regional-slice precompute: region keys whose geojson
+                # slice the periodic-refresh warmer keeps hot in
+                # _geojson_response_cache, so the GIL-heavy region-filter +
+                # json/gzip never lands on the request path (the cloud-map push
+                # + the public default view). [] = off (default; zero overhead).
+                # Set e.g. ["hawaii"] on the publishing federator. Each must be a
+                # known utils.region_presets.REGION_PRESETS key.
+                "geojson_warm_regions": [],
                 # Fleet federation (Issue #49 follow-up). Each box's :5000 is
                 # an island unless this is populated — peers expose
                 # /api/nodes/directory which we poll and fold into the local
@@ -409,6 +417,77 @@ class MapDataCollector(
                 logger.exception("Periodic map data refresh failed")
             finally:
                 self._collect_lock.release()
+            # Warm the configured region slices AFTER releasing the collect
+            # lock (Issue #71) — build_geojson_response's collect() re-acquires
+            # the lock and returns the just-refreshed cache cheaply. No-op when
+            # geojson_warm_regions is empty (the default).
+            try:
+                self._warm_geojson_regions()
+            except Exception:
+                logger.exception("geojson region warm failed")
+
+    # Issue #71 regional-slice precompute: a warmed entry's TTL = this many
+    # refresh intervals, so a skipped warm tick (collect lock held) can't let
+    # the hot slice go cold mid-window. Floor guards a tiny configured interval.
+    _GEOJSON_WARM_TTL_INTERVALS = 3
+    _GEOJSON_WARM_TTL_FLOOR_S = 90.0
+
+    def _warm_geojson_regions(self) -> None:
+        """Keep the configured region slices hot in the geojson response cache.
+
+        For each region in ``map_settings.geojson_warm_regions``, build the
+        slice via the SAME path the request handler uses
+        (``build_geojson_response``) and store it under the request-matching key
+        ``(None, region_key, None)`` with a TTL of several refresh intervals.
+        The box's published region slice is then always served warm — the
+        GIL-heavy region-filter + json/gzip never lands on the request path
+        (Issue #71; surfaced 2026-06-26 when the cloud-push decouple showed a
+        coincident request burst could push the 90 s push budget).
+
+        Opt-in: empty list (default) is a no-op. Runs in the periodic-refresh
+        thread; each build is ~one region-filter+serialize per refresh interval
+        (≈2 % duty at the 300 s default), and rebuilds genuinely-fresh data
+        since the 30 s collect cache expires every 300 s tick.
+        """
+        try:
+            regions = self._settings.get("geojson_warm_regions", []) or []
+        except Exception:
+            return
+        if not regions:
+            return
+        try:
+            from utils._map_node_endpoints import build_geojson_response
+            from utils.region_presets import REGION_PRESETS
+        except Exception:
+            logger.exception("geojson warmer: import failed; skipping")
+            return
+        interval = self._periodic_refresh_interval or self._GEOJSON_WARM_TTL_FLOOR_S
+        ttl_s = max(interval * self._GEOJSON_WARM_TTL_INTERVALS,
+                    self._GEOJSON_WARM_TTL_FLOOR_S)
+        # 10 KB gzip threshold matches MapRequestHandler._GZIP_MIN_BYTES; it is
+        # immaterial here since warmed region slices are multi-KB (always gzipped).
+        gzip_min = 10 * 1024
+        for region_key in regions:
+            if not isinstance(region_key, str) or region_key not in REGION_PRESETS:
+                logger.warning(
+                    "geojson warmer: skipping unknown region %r", region_key
+                )
+                continue
+            # Key MUST match _serve_geojson's (bbox_str, region_key, preset_key)
+            # for ?region=<key> with no bbox/preset, or a request would miss it.
+            key = (None, region_key, None)
+            try:
+                self._geojson_response_cache.prime(
+                    key,
+                    lambda rk=region_key: build_geojson_response(
+                        self, rk, None, None, gzip_min
+                    ),
+                    ttl_s=ttl_s,
+                )
+            except Exception:
+                logger.exception(
+                    "geojson warmer: build failed for region %r", region_key
+                )
 
     @staticmethod
     def _is_valid_coordinate(lat, lon) -> bool:

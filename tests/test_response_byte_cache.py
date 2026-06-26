@@ -198,7 +198,7 @@ class TestObservabilityCounters:
         cache = ResponseByteCache(ttl_s=5.0)
         assert cache.stats() == {
             "hit_count": 0, "miss_count": 0,
-            "coalesced_count": 0, "entry_count": 0,
+            "coalesced_count": 0, "warmed_count": 0, "entry_count": 0,
         }
         cache.get_or_build(None, lambda: (b"a", None))   # miss
         cache.get_or_build(None, lambda: (b"unused", None))  # hit
@@ -234,11 +234,11 @@ class TestMultiInstanceIsolation:
         b.get_or_build(None, lambda: (b"b", None))   # miss on b
         assert a.stats() == {
             "hit_count": 1, "miss_count": 1,
-            "coalesced_count": 0, "entry_count": 1,
+            "coalesced_count": 0, "warmed_count": 0, "entry_count": 1,
         }
         assert b.stats() == {
             "hit_count": 0, "miss_count": 1,
-            "coalesced_count": 0, "entry_count": 1,
+            "coalesced_count": 0, "warmed_count": 0, "entry_count": 1,
         }
 
     def test_clear_on_one_does_not_affect_the_other(self):

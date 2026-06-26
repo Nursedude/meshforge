@@ -66,6 +66,7 @@ class ResponseByteCache:
         self.hit_count: int = 0
         self.miss_count: int = 0
         self.coalesced_count: int = 0  # caller waited on _build_lock and found a fresh entry
+        self.warmed_count: int = 0  # entries pre-populated by a background warmer via prime()
 
     @property
     def ttl_s(self) -> float:
@@ -128,6 +129,35 @@ class ResponseByteCache:
                 )
             return raw, gz, True
 
+    def prime(
+        self,
+        key: Hashable,
+        build_fn: Callable[[], Tuple[bytes, Optional[bytes]]],
+        ttl_s: float,
+    ) -> Tuple[bytes, Optional[bytes]]:
+        """Build ``key`` under the single-flight lock and store it with a
+        custom ``ttl_s``.
+
+        For a background warmer (Issue #71 regional-slice precompute): keep a
+        hot key (e.g. the box's published region slice) fresh so its expensive
+        ``json.dumps`` + ``gzip`` build never lands on the request path.
+
+        Holds ``_build_lock`` for the duration of ``build_fn`` exactly like
+        ``get_or_build`` — so the warmer's build does NOT stack against a
+        concurrent request-path build under the GIL (the wedge this cache
+        exists to prevent). A concurrent same-key request coalesces on the
+        entry stored here. ``ttl_s`` is typically several refresh intervals so a
+        skipped warm tick can't let the entry go cold mid-window.
+        """
+        if ttl_s <= 0:
+            raise ValueError(f"ttl_s must be positive, got {ttl_s!r}")
+        with self._build_lock:
+            raw, gz = build_fn()
+            with self._entries_lock:
+                self._entries[key] = (time.monotonic() + ttl_s, raw, gz)
+            self.warmed_count += 1
+            return raw, gz
+
     def clear(self) -> None:
         """Drop all cached entries. Used by tests; not needed in prod
         because TTL expiry handles invalidation on its own."""
@@ -140,5 +170,6 @@ class ResponseByteCache:
             "hit_count": self.hit_count,
             "miss_count": self.miss_count,
             "coalesced_count": self.coalesced_count,
+            "warmed_count": self.warmed_count,
             "entry_count": len(self._entries),
         }
