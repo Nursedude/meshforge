@@ -760,13 +760,30 @@ def _parse_cron_verdicts(text: str, now_unix: float) -> List[Dict[str, Any]]:
 _VERDICT_CALL_RE = re.compile(r"cron_verdict\.sh\s+(\S+)")
 
 
+def _verdict_names_in_command(command: str) -> List[str]:
+    """All cron names a crontab command WIRES via ``cron_verdict.sh``.
+
+    A single command may chain several verdict calls (``jobA; cron_verdict.sh a
+    $?; jobB; cron_verdict.sh b $?``) — ALL are wired (``finditer``, not
+    ``search``: a second wired cron is still a real cron). This is the SSOT for
+    "which crons are wired", shared by this module's orphan filter and Issue
+    #78's ``probe_cron_verdict_stale`` so the two can never drift (one regex,
+    one extractor — honest_failure_modes #5).
+    """
+    return [m.group(1) for m in _VERDICT_CALL_RE.finditer(command or "")]
+
+
 def _wired_verdict_names(crontab_block: Dict[str, Any]) -> Optional[set]:
     """Cron names currently WIRED to ``cron_verdict.sh`` in the live crontab.
 
-    A verdict whose cron is NOT in this set is an ORPHAN — the job was removed
-    or PARKED (commented out; ``_parse_crontab`` skips ``#`` lines), so its last
-    verdict is a stale artifact, not an active concern. Mirrors Issue #78's
-    ``cron_verdict_stale``, which judges only wired crons and ignores orphans.
+    A verdict whose name is NOT in this set is an ORPHAN candidate — but note
+    that "wired" only sees names on a crontab COMMAND line. A script that emits
+    a *second* verdict from inside its body (e.g. ``mf5_soak_watch.sh`` emits
+    ``mf5_soak_verdict`` — the final soak PASS/FAIL) is active yet unwired, as
+    is a verdict from a non-user-crontab emitter. So the caller drops an orphan
+    only when it is ALSO stale: a parked/removed cron leaves a STALE verdict,
+    while a FRESH unwired verdict is a live signal that must not be hidden.
+    Mirrors Issue #78's ``cron_verdict_stale``, which judges only wired crons.
 
     Returns ``None`` when the crontab is unavailable — the caller must then NOT
     filter (we can't prove a verdict is orphan if we can't read the crontab;
@@ -776,8 +793,7 @@ def _wired_verdict_names(crontab_block: Dict[str, Any]) -> Optional[set]:
         return None
     names: set = set()
     for job in crontab_block.get("jobs", []):
-        for m in _VERDICT_CALL_RE.finditer(job.get("command", "")):
-            names.add(m.group(1))
+        names.update(_verdict_names_in_command(job.get("command", "")))
     return names
 
 
@@ -801,12 +817,17 @@ def _read_cron_verdicts(wired_names: Optional[set] = None) -> Dict[str, Any]:
     jobs = _parse_cron_verdicts(text, time.time())
     orphan_filtered = 0
     if wired_names is not None:
-        # Drop verdicts whose cron is no longer WIRED (parked/commented). A
-        # paused cron is not an active concern — keeping its stale verdict in
-        # the fleet view reads as a false CONCERN/FAIL. Mirrors #78's
-        # orphan-ignore. When wired_names is None (crontab unreadable) we keep
-        # everything rather than hide a real signal.
-        kept = [j for j in jobs if j["name"] in wired_names]
+        # Drop a verdict only when it is BOTH unwired AND stale. A parked/
+        # removed cron leaves a STALE verdict (the #78 dead-cron lesson); it
+        # should not linger in the fleet view as a false CONCERN/FAIL. But an
+        # unwired verdict that is still FRESH is a LIVE signal — a secondary
+        # verdict emitted from inside a wrapper (e.g. mf5_soak_watch.sh's
+        # mf5_soak_verdict, the final soak PASS/FAIL) or a non-user-crontab
+        # emitter. Dropping a fresh orphan would bury a live FAIL
+        # (honest_failure_modes #2: absence-of-wiring ≠ inactive). When
+        # wired_names is None (crontab unreadable) we keep everything.
+        kept = [j for j in jobs
+                if j["name"] in wired_names or not j.get("stale", False)]
         orphan_filtered = len(jobs) - len(kept)
         jobs = kept
     return {

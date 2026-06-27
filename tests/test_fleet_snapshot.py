@@ -1306,14 +1306,19 @@ def test_wired_verdict_names_none_when_crontab_unavailable():
 
 
 def test_read_cron_verdicts_drops_orphan_parked_cron(monkeypatch, tmp_path):
-    # A parked cron (crontab line commented -> not wired) must NOT surface its
-    # stale verdict as a CONCERN in the fleet view.
+    # A parked cron (crontab line commented -> not wired) leaves a STALE verdict
+    # and must NOT surface as a CONCERN in the fleet view. The drop needs BOTH
+    # unwired AND stale -- a FRESH unwired verdict is a live signal (see the
+    # keeps_fresh_orphan tests below), so make the parked verdict explicitly old.
+    from datetime import datetime, timedelta, timezone
+    stale = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
     (tmp_path / "cron_verdicts.log").write_text(
-        "2026-06-08T15:00:00+00:00 soak_cron OK\n"
-        "2026-06-08T15:01:00+00:00 mesh_client_pull CONCERN PARKED\n")
+        f"{stale} soak_cron OK\n"
+        f"{stale} mesh_client_pull CONCERN PARKED\n")
     monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
     r = fleet_snapshot._read_cron_verdicts(wired_names={"soak_cron"})
-    assert {j["name"] for j in r["jobs"]} == {"soak_cron"}  # orphan dropped
+    assert {j["name"] for j in r["jobs"]} == {"soak_cron"}  # stale orphan dropped
     assert r["concern_count"] == 0                          # parked != concern
     assert r["orphan_filtered"] == 1                        # witness, not silent
 
@@ -1326,6 +1331,56 @@ def test_read_cron_verdicts_no_filter_when_wired_none(monkeypatch, tmp_path):
     r = fleet_snapshot._read_cron_verdicts(wired_names=None)
     assert {j["name"] for j in r["jobs"]} == {"mesh_client_pull"}
     assert r["orphan_filtered"] == 0
+
+
+def test_verdict_names_in_command_finditer_all_chained():
+    # A single crontab line may chain TWO verdict calls -> BOTH are wired
+    # (.finditer, not .search). Pins the shared SSOT used by both the orphan
+    # filter and #78's probe so the two can never drift (honest_failure_modes #5).
+    cmd = ("/h/a.sh ; /opt/meshforge/scripts/cron_verdict.sh job_a $? ; "
+           "/h/b.sh ; /opt/meshforge/scripts/cron_verdict.sh job_b $?")
+    assert fleet_snapshot._verdict_names_in_command(cmd) == ["job_a", "job_b"]
+    assert fleet_snapshot._verdict_names_in_command("") == []
+
+
+def test_read_cron_verdicts_keeps_fresh_orphan_secondary_verdict(
+        monkeypatch, tmp_path):
+    # REGRESSION (review finding #1): mf5_soak_watch.sh wires only
+    # `mf5_soak_watch` on the crontab line but emits `mf5_soak_verdict` (the
+    # final soak PASS/FAIL) from INSIDE the wrapper. That fresh, unwired verdict
+    # must NOT be dropped as an orphan -- doing so hides a live soak FAIL.
+    from datetime import datetime, timedelta, timezone
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+    (tmp_path / "cron_verdicts.log").write_text(
+        f"{fresh} mf5_soak_watch OK\n"
+        f"{fresh} mf5_soak_verdict FAIL soak regression\n")
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_cron_verdicts(wired_names={"mf5_soak_watch"})
+    assert "mf5_soak_verdict" in {j["name"] for j in r["jobs"]}  # fresh orphan KEPT
+    assert r["fail_count"] == 1                                  # live FAIL surfaces
+    assert r["orphan_filtered"] == 0                             # nothing hidden
+
+
+def test_read_cron_verdicts_keeps_fresh_drops_stale_when_none_wired(
+        monkeypatch, tmp_path):
+    # REGRESSION (review finding #2): an available-but-empty crontab yields an
+    # empty wired set (NOT None). The filter must still keep FRESH unwired
+    # verdicts (live non-user-crontab emitters) and drop only STALE ones --
+    # never blanket-drop every verdict to a clean-looking fail_count=0.
+    from datetime import datetime, timedelta, timezone
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+    stale = (datetime.now(timezone.utc) - timedelta(hours=48)).strftime(
+        "%Y-%m-%dT%H:%M:%S+00:00")
+    (tmp_path / "cron_verdicts.log").write_text(
+        f"{fresh} live_secondary CONCERN active emitter\n"
+        f"{stale} parked_cron FAIL long gone\n")
+    monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+    r = fleet_snapshot._read_cron_verdicts(wired_names=set())  # nothing wired
+    assert {j["name"] for j in r["jobs"]} == {"live_secondary"}  # fresh kept
+    assert r["concern_count"] == 1                              # live signal kept
+    assert r["orphan_filtered"] == 1                            # only stale dropped
 
 
 def test_read_loop_crons_absent_is_unavailable_ephemeral(monkeypatch, tmp_path):

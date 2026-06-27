@@ -967,7 +967,9 @@ DEFAULT_CRON_VERDICT_DEBOUNCE_PATH = "/var/lib/meshforge/cron_verdict_debounce.j
 CRON_VERDICT_STALE_FLOOR_S = 2 * 3600.0      # don't flag faster than this (anti-flap)
 CRON_VERDICT_CADENCE_MULT = 3.0              # stale if age > MULT × expected interval
 _CRON_VERDICT_FALLBACK_MAX_S = 26 * 3600.0   # unparseable schedule → panel's 26h
-_CRON_WIRED_RE = re.compile(r'cron_verdict\.sh\s+(\S+)')
+# Wired-cron extraction is owned by fleet_snapshot._verdict_names_in_command
+# (one regex, one extractor — honest_failure_modes #5; imported in the probe
+# below so this probe and the fleet-snapshot orphan filter can never drift).
 
 
 def _cron_max_interval(schedule: str) -> float:
@@ -1085,11 +1087,12 @@ def probe_cron_verdict_stale(
         wired: Dict[str, str] = {}
         if crontab_text:
             try:
-                from utils.fleet_snapshot import _parse_crontab
+                from utils.fleet_snapshot import (
+                    _parse_crontab, _verdict_names_in_command)
                 for job in _parse_crontab(crontab_text):
-                    m = _CRON_WIRED_RE.search(job.get("command", ""))
-                    if m:
-                        wired[m.group(1)] = job.get("schedule", "")
+                    for name in _verdict_names_in_command(
+                            job.get("command", "")):
+                        wired[name] = job.get("schedule", "")
             except Exception:
                 wired = {}
         if not wired:
