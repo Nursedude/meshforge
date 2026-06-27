@@ -442,8 +442,10 @@ debounce; both seeds; 12 tests. **Full body trimmed to
 
 Gateway traffic-flow audit found the **hourly LXMF synth soak watched NOTHING**:
 `meshforge-synth-soak.timer` exercises the gateway's real round-trip path + writes
-a `pass_envelope` (0.95 ok-ratio), but the fire script **always `exit 0`**, no
-`cron_verdict`, and `probe_lxmf_process_wedge` checks the *process* not the
+a `pass_envelope` (0.95 ok-ratio), but the fire script **always `exit 0`** +
+emitted no `cron_verdict` (FIXED 2026-06-27 `c68ed0c0`: now emits a `synth_soak`
+OK/CONCERN/FAIL verdict on /fleet/slo via the orphan stale-gate; the probe still
+owns alerting), and `probe_lxmf_process_wedge` checks the *process* not the
 *result* — so an envelope regression OR a silent timer paged no one. New
 `probe_synth_soak_degraded` (`synth_soak_degraded`, degraded, no issue#,
 `watchdog_probes_gateway.py`), two legs: **SILENCE** (newest `synth-*.json` >~2.5
