@@ -1321,6 +1321,9 @@ def test_read_cron_verdicts_drops_orphan_parked_cron(monkeypatch, tmp_path):
     assert {j["name"] for j in r["jobs"]} == {"soak_cron"}  # stale orphan dropped
     assert r["concern_count"] == 0                          # parked != concern
     assert r["orphan_filtered"] == 1                        # witness, not silent
+    # Itemized witness (Finding 4): the dropped stale verdict is named WITH its
+    # status, so a dropped CONCERN/FAIL stays visible, not folded into a count.
+    assert r["orphan_dropped"] == [{"name": "mesh_client_pull", "status": "CONCERN"}]
 
 
 def test_read_cron_verdicts_no_filter_when_wired_none(monkeypatch, tmp_path):
@@ -1381,6 +1384,9 @@ def test_read_cron_verdicts_keeps_fresh_drops_stale_when_none_wired(
     assert {j["name"] for j in r["jobs"]} == {"live_secondary"}  # fresh kept
     assert r["concern_count"] == 1                              # live signal kept
     assert r["orphan_filtered"] == 1                            # only stale dropped
+    # A dropped stale FAIL is named with its status, not hidden behind fail_count=0.
+    assert r["orphan_dropped"] == [{"name": "parked_cron", "status": "FAIL"}]
+    assert r["fail_count"] == 0  # the kept set has no FAIL — the dropped one is witnessed above
 
 
 def test_read_loop_crons_absent_is_unavailable_ephemeral(monkeypatch, tmp_path):
