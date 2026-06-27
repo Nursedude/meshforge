@@ -89,6 +89,54 @@ else
     rm -f "$tmp"
 fi
 
+# --- First-class cron verdict ----------------------------------------------
+# Emit a greppable verdict so the soak RESULT surfaces on /fleet/slo. This is
+# a systemd-timer organ (not a crontab line), so its verdict is UNWIRED — the
+# fleet snapshot keeps it while FRESH and drops it once stale (the 2026-06-27
+# orphan stale-gate). The verdict reflects the published envelope's pass/fail:
+#   OK       envelope published, pass_envelope=true  (ACK ratio >= threshold)
+#   CONCERN  envelope published, pass_envelope=false (degraded delivery)
+#   FAIL     no/!valid envelope (the soak run produced nothing) — SILENCE leg
+# The service still exits 0 below: the verdict LINE, not the service state,
+# carries the soak result (same observability-not-red philosophy as the run).
+# #78's cron_verdict_stale only judges WIRED crons, so this never double-pages;
+# the synth_soak_degraded watchdog probe still owns the alerting.
+VERDICT_BIN="$REPO_ROOT/scripts/cron_verdict.sh"
+if [ -x "$VERDICT_BIN" ]; then
+    if [ -f "$out" ]; then
+        verdict_out=$(python3 - "$out" "$THRESHOLD" 2>/dev/null <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    thr = d.get("ok_ratio_threshold")
+    if not isinstance(thr, (int, float)):
+        thr = float(sys.argv[2])
+    ratio = d.get("ok_ratio")
+    ok, n = d.get("total_ok"), d.get("total_samples")
+    passed = d.get("pass_envelope")
+    pct = f"{ratio * 100:.0f}%" if isinstance(ratio, (int, float)) else "?"
+    thrpct = f"{thr * 100:.0f}%"
+    frac = f"{ok}/{n}" if isinstance(ok, int) and isinstance(n, int) else "?"
+    if passed is True:
+        print(f"OK {pct} ACK ({frac}) >= {thrpct}")
+    elif passed is False:
+        print(f"CONCERN {pct} ACK ({frac}) < {thrpct} degraded delivery")
+    else:
+        print("FAIL envelope missing pass_envelope field")
+except Exception as e:
+    print(f"FAIL unparseable envelope: {e.__class__.__name__}")
+PY
+)
+    else
+        verdict_out="FAIL no envelope published (rc=$rc; run produced no valid JSON)"
+    fi
+    [ -z "$verdict_out" ] && verdict_out="FAIL verdict extraction failed"
+    vstatus=${verdict_out%% *}
+    vmsg=${verdict_out#* }
+    "$VERDICT_BIN" synth_soak "$vstatus" "$vmsg" 2>>"$log" || true
+    echo "  verdict: $vstatus $vmsg" >>"$log"
+fi
+
 # Retention prune (best-effort). Also sweep orphaned temps that a SIGKILL
 # mid-run could leave behind (the happy/fail paths above already clean theirs).
 find "$STATE_DIR" -maxdepth 1 -name 'synth-*.json' -mtime +14 -delete 2>/dev/null || true

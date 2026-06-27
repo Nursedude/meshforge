@@ -521,6 +521,35 @@ class TestSynthSoakAtomicWrite:
         assert synth_publishes_atomically(good)
 
 
+class TestSynthSoakEmitsVerdict:
+    """The synth soak must emit a first-class cron_verdict so its RESULT
+    surfaces on /fleet/slo. The always-0 service exit keeps systemd green
+    (observability-not-red); the VERDICT line — not the exit — carries the
+    soak outcome. A systemd-timer organ's verdict is unwired, so the fleet
+    snapshot's stale-gate (2026-06-27) keeps it while fresh."""
+
+    _SCRIPT = REPO / "scripts" / "lab_synth_soak_fire.sh"
+
+    def test_fire_script_emits_synth_soak_verdict(self):
+        assert self._SCRIPT.exists(), f"{self._SCRIPT} moved — guard would vacuously pass"
+        text = self._SCRIPT.read_text()
+        # Writer half of the reader/writer pair (honest_failure_modes #4): the
+        # soak must call cron_verdict.sh with the synth_soak name, else the
+        # result never reaches /fleet/slo and the wiring is silently dead.
+        assert "cron_verdict.sh" in text and "synth_soak" in text, (
+            "lab_synth_soak_fire.sh must emit a cron_verdict for synth_soak so "
+            "the soak result is greppable and shows on /fleet/slo.")
+
+    def test_verdict_reflects_envelope_pass_fail(self):
+        """The verdict must derive from the envelope and distinguish pass (OK) /
+        degraded (CONCERN) / no-envelope (FAIL) — a single hard-coded status
+        would hide a real delivery regression (honest_failure_modes #1)."""
+        text = self._SCRIPT.read_text()
+        assert "pass_envelope" in text, "verdict must derive from pass_envelope"
+        for status in ("OK", "CONCERN", "FAIL"):
+            assert status in text, f"verdict missing the {status} branch"
+
+
 # ═════════════════════════════════════════════════════════════════════
 # §3b-ii — every long-lived MeshForge-code daemon has a deploy-restart hook
 # ═════════════════════════════════════════════════════════════════════
