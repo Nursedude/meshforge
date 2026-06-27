@@ -27,6 +27,7 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from lab.gateway_resource_canary import (  # noqa: E402
+    DEFAULT_REPLY_BYTES,
     EXIT_CONCERN,
     EXIT_FAIL,
     EXIT_OK,
@@ -171,13 +172,22 @@ class TestClassify:
         assert r.control_back is True and r.resource_back is True
         assert r.confirm_s == pytest.approx(3.2)
 
-    def test_control_back_resource_missing_is_fail_erofs_signature(self):
-        """THE money signal: single-packet works, the Resource does not."""
+    def test_control_back_resource_missing_is_fail(self):
+        """THE money signal: single-packet works, the Resource does not.
+
+        Reason is path-AGNOSTIC (corrected 2026-06-27): it no longer hardcodes
+        ``/etc/reticulum/storage`` — the gateway's real resourcepath is its
+        runtime ``RNS.Reticulum.resourcepath``, verified to be PrivateTmp
+        ``/tmp/meshforge_rns_client`` on moc, not /etc/reticulum. The reason
+        points at the discovery script + the path-agnostic journal witness.
+        """
         r = self._c(_leg1("confirmed", None, 3.0), _leg2(True, False, None, 150.0))
         assert r.verdict == "FAIL" and r.exit_code == EXIT_FAIL
         assert r.control_back is True and r.resource_back is False
-        assert "EROFS signature" in r.reason
-        assert "/etc/reticulum/storage" in r.reason
+        assert "EROFS" in r.reason
+        assert "gateway_resourcepath.sh" in r.reason
+        # MUST NOT hardcode the (wrong) path any more — that misled the drill.
+        assert "/etc/reticulum/storage" not in r.reason
 
     def test_resource_back_control_missing_is_concern(self):
         r = self._c(_leg1("confirmed", None, 3.0), _leg2(False, True, None, 9.0))
@@ -194,6 +204,35 @@ class TestClassify:
                     _leg2(False, False, "queue DB unreadable: boom", 0.1))
         assert r.verdict == "CONCERN"
         assert "unreadable" in r.reason
+
+
+# ------------------------------------------------------------ reply-size ceiling
+
+
+class TestReplyByteCeiling:
+    """Pin the 512 default + ceiling (2026-06-27 finding).
+
+    The handoff plan was "make the reply bigger to force a disk write." That
+    was based on a misobservation. VERIFIED 2026-06-27 (strace, live gateway):
+      - 512 ALREADY forces an on-disk Resource assembly (write to
+        <resourcepath>/<hash>), so A1 is NOT blind to the #60 EROFS class; and
+      - larger replies (1024/2048) assemble fine but get DROPPED by the RNS→Mesh
+        bridge before the meshtastic queue the canary polls, producing a FALSE
+        resource_back=false FAIL — a mesh-bridge artifact, not a resource fault.
+    So the reply must stay >319 (to be a Resource) and <=512 (to round-trip
+    cleanly). These guards stop a future session re-raising it.
+    """
+
+    def test_default_reply_bytes_forces_a_resource(self):
+        # > LINK_PACKET_MAX_CONTENT (319) so LXMF delivers it as an RNS Resource
+        # the gateway must assemble (and write to disk) — the #60 EROFS step.
+        assert DEFAULT_REPLY_BYTES > 319
+
+    def test_default_reply_bytes_stays_at_or_below_512(self):
+        # CEILING: above ~512 the RNS→Mesh bridge drops the bridged reply before
+        # the meshtastic queue → false FAIL. Do NOT raise. See the module-level
+        # DEFAULT_REPLY_BYTES comment + the 2026-06-27 handoff.
+        assert DEFAULT_REPLY_BYTES <= 512
 
 
 # ---------------------------------------------------------------- envelope

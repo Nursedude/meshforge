@@ -79,10 +79,28 @@ from lab.gateway_rt_canary import poll_counters_terminal, resolve_target
 DEFAULT_PEER = "meshanchor-server"
 DEFAULT_LEG1_TIMEOUT_S = 120.0
 DEFAULT_LEG2_TIMEOUT_S = 150.0
-# Default reply size. LXMF delivers a >~319-byte body as an RNS Resource over a
-# link (LINK_PACKET_MAX_CONTENT); 512 is comfortably over that — forcing a
-# multi-segment Resource the gateway must assemble to disk — at a modest RF cost
-# when the gateway bridges it onward (~3 mesh chunks). Tunable via --reply-bytes.
+# Default reply size — KEEP AT 512; do NOT raise (see CEILING below).
+# LXMF delivers a >319-byte body (LINK_PACKET_MAX_CONTENT) as an RNS Resource
+# over the link, so 512 forces the gateway to ASSEMBLE an inbound Resource and
+# WRITE it to its RNS resourcepath — the #60 EROFS step. VERIFIED 2026-06-27
+# (strace, live moc gateway): a 512 ACKBIG IS written to
+# ``<resourcepath>/<hash>`` (openat O_CREAT|O_APPEND), read back, then unlinked
+# — exactly Resource.assemble(). So 512 already exercises the on-disk path,
+# REFUTING the earlier "stays in RAM" belief. (The all-'.' body bz2-compresses
+# to ~130 B → a SINGLE-part Resource; part count is irrelevant to the EROFS
+# class — assemble() writes to disk for ANY Resource.)
+#
+# NOTE the resourcepath is the gateway's RUNTIME ``RNS.Reticulum.resourcepath``
+# (whichever configdir wins the process-singleton init), verified 2026-06-27 to
+# be ``/tmp/meshforge_rns_client/storage/resources`` (PrivateTmp), NOT
+# ``/etc/reticulum/storage/resources``. Use ``scripts/gateway_resourcepath.sh``
+# to discover the live path (the validation drill injects EROFS there).
+#
+# CEILING (VERIFIED 2026-06-27): do NOT raise above ~512. Larger replies still
+# assemble fine, but the RNS→Mesh bridge drops them before the meshtastic queue
+# the canary polls (1024/2048 reproduced a false ``resource_back=false`` FAIL
+# that is a mesh-bridge/chunk artifact, NOT a resource failure). A bigger reply
+# makes A1 cry wolf; the on-disk EROFS class is fully exercised at 512.
 DEFAULT_REPLY_BYTES = 512
 POLL_INTERVAL_S = 2.0
 
@@ -250,14 +268,29 @@ def classify(
 
     if control and not resource:
         # THE money signal: single-packet works, the Resource does not.
+        # TWO distinct causes both land here — don't over-claim one (the old
+        # reason hardcoded "/etc/reticulum/storage", which is MISLEADING: the
+        # gateway's runtime resourcepath is /tmp/meshforge_rns_client under
+        # PrivateTmp, verified 2026-06-27):
+        #   (a) the inbound Resource could not be assembled+WRITTEN to the
+        #       gateway's RNS resourcepath (the #60 EROFS class). The
+        #       path-agnostic witness is A2's journal grep ("Error while
+        #       assembling received resource" / EROFS) — that fires regardless
+        #       of WHICH path. scripts/gateway_resourcepath.sh finds the live
+        #       resourcepath to confirm it is writable.
+        #   (b) the Resource assembled fine but the RNS→Mesh bridge dropped it
+        #       before the meshtastic queue — only at reply_bytes >~512
+        #       (verified 2026-06-27). At the 512 default this is not in play.
         return ResourceCanaryResult(
             "FAIL",
             f"RESOURCE round-trip BROKEN while single-packet works: control "
             f"PING returned but the {reply_bytes}-byte resource reply did NOT "
-            f"within {elapsed2:.0f}s — the 2026-06-20 EROFS signature. Check "
-            f"the gateway journal for EROFS / 'assembling received resource' "
-            f"errors and that meshforge-gateway.service ReadWritePaths includes "
-            f"/etc/reticulum/storage (the #60 sandbox class).",
+            f"within {elapsed2:.0f}s. Most likely the inbound Resource could "
+            f"not be assembled+written to the gateway's RNS resourcepath (#60 "
+            f"EROFS class) — run scripts/gateway_resourcepath.sh to find the "
+            f"live resourcepath and verify it is writable, and grep the gateway "
+            f"journal for 'Error while assembling received resource' / EROFS "
+            f"(the path-agnostic witness).",
             confirm_s=elapsed1, control_back=True, resource_back=False,
             rtt_s=elapsed2, **base)
 
