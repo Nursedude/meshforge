@@ -1357,6 +1357,16 @@ class TestMeshtasticdPhoneapiWedge:
         """Injectable count_fn returning a fixed value (or None) per tick."""
         return lambda pattern: value
 
+    @pytest.fixture(autouse=True)
+    def _held_connection_present(self):
+        """Default: a held :4403 contender exists, so the 2026-06-27 harm guard
+        doesn't suppress — the threshold/debounce/streak tests exercise their own
+        logic as before. The two harm-guard tests patch _estab_inodes_to_port
+        themselves (inner patch wins) to drive the held/not-held branches."""
+        with patch("utils.watchdog_probes_service._estab_inodes_to_port",
+                   return_value={1}):
+            yield
+
     def test_two_consecutive_over_threshold_ticks_fire(self, tmp_path):
         """RED-FIRST debounce proof: a SINGLE over-threshold tick returns
         None (streak=1 < 2); the SECOND consecutive tick fires degraded."""
@@ -1466,6 +1476,43 @@ class TestMeshtasticdPhoneapiWedge:
         )
         assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
         assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+
+    def test_churn_without_held_connection_is_benign_no_fire(self, tmp_path):
+        """Harm guard (2026-06-27 moc): force-close churn fires ONLY when a
+        contender is HOLDING the radio (a sustained ESTABLISHED :4403 client
+        connection). Brief connect+close touches (e.g. fleet_snapshot._probe_radio)
+        also emit 'Force close previous TCP connection' lines but release in
+        <100ms, so the gateway's mesh-TX is never starved — the moc benign case
+        (real churn, mesh-TX healthy). No held :4403 connection → None even at
+        incident-level churn, across two ticks."""
+        sp = str(tmp_path / "wedge.json")
+        kwargs = dict(
+            main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
+            count_fn=self._count_fn(40), state_path=sp,
+        )
+        with patch(
+            "utils.watchdog_probes_service._estab_inodes_to_port",
+            return_value=set(),               # no held :4403 client connection
+        ):
+            assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+            assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None
+
+    def test_churn_with_held_connection_fires(self, tmp_path):
+        """A real radio-monopolizing contender holds an ESTABLISHED :4403
+        connection → the churn IS harmful → fires after the 2-tick debounce."""
+        sp = str(tmp_path / "wedge.json")
+        kwargs = dict(
+            main_pid=1234, gateway_main_pid=5678, threshold=self._THRESHOLD,
+            count_fn=self._count_fn(40), state_path=sp,
+        )
+        with patch(
+            "utils.watchdog_probes_service._estab_inodes_to_port",
+            return_value={998877},            # a held :4403 client connection
+        ):
+            assert probe_meshtasticd_phoneapi_wedge(**kwargs) is None  # streak 1
+            sig = probe_meshtasticd_phoneapi_wedge(**kwargs)
+            assert sig is not None
+            assert sig.cls == "meshtasticd_phoneapi_wedge"
 
 
 def test_meshtasticd_phoneapi_wedge_in_signal_classes():

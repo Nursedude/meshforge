@@ -514,6 +514,8 @@ def probe_meshtasticd_phoneapi_wedge(
     count_fn=None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    phoneapi_port: int = 4403,
+    proc_root: str = "/proc",
 ) -> Optional[Signal]:
     """Fire when meshtasticd's PhoneAPI (:4403) is thrashed by ≥2 contenders.
 
@@ -545,6 +547,14 @@ def probe_meshtasticd_phoneapi_wedge(
        CONSECUTIVE over-threshold ticks before firing, so a transient burst
        can't flap the signal. Any below-threshold OR unobservable tick
        resets the streak.
+    3. **Held-contention harm guard** (2026-06-27 moc): fire only when a
+       contender is HOLDING the radio — a currently-ESTABLISHED :4403 client
+       connection (``_estab_inodes_to_port``, read-only /proc/net/tcp). Brief
+       connect+close touches (e.g. ``fleet_snapshot._probe_radio``'s status
+       probe) also emit force-close lines but release in <100ms and never
+       starve mesh-TX (the moc benign case: real churn, healthy TX). A real
+       radio-monopolising wedge can't exist without a held connection, so this
+       separates harm from noise without masking a true wedge.
 
     Self-guards (return None — never read unobservable as healthy):
 
@@ -592,6 +602,22 @@ def probe_meshtasticd_phoneapi_wedge(
         return None
     if count < threshold:
         _save_phoneapi_wedge_streak(sp, 0)  # not sustained → streak broken
+        return None
+
+    # Harm guard (2026-06-27 moc): force-close churn wedges mesh-TX only when a
+    # contender is HOLDING the radio — a sustained ESTABLISHED :4403 client
+    # connection. Brief connect+close touches (e.g. fleet_snapshot._probe_radio's
+    # status connect_ex) ALSO emit "Force close previous TCP connection" lines but
+    # release the radio in <100ms, so the gateway's mesh-TX is never starved (the
+    # moc benign case: 40/10min churn, mesh-TX healthy). A real radio-monopolising
+    # wedge MUST hold a :4403 connection (you can't monopolise the radio with
+    # sub-100ms touches), so a held connection reliably separates harm from noise.
+    # _estab_inodes_to_port reads world-readable /proc/net/tcp — empty means
+    # genuinely no held contender (not unobservable), so suppressing is safe; if
+    # /proc were unreadable it would also be empty, but on a healthy box that
+    # can't coincide with a real wedge (the holder's own socket would be in it).
+    if not _estab_inodes_to_port(phoneapi_port, proc_root=proc_root):
+        _save_phoneapi_wedge_streak(sp, 0)  # brief-touch churn → benign; reset
         return None
 
     streak = _load_phoneapi_wedge_streak(sp) + 1
