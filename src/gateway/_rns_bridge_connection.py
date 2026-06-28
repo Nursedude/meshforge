@@ -16,7 +16,6 @@ from utils.paths import get_real_user_home, ReticulumPaths
 from utils.rns_init import open_reticulum
 from utils.safe_import import safe_import
 from utils.service_check import check_service
-from utils.config_drift import detect_rnsd_config_drift, get_rnsd_effective_config_dir
 
 logger = logging.getLogger(__name__)
 
@@ -112,20 +111,21 @@ class RNSConnectionMixin:
         except ImportError:
             rns_pids = []
 
-        # Determine config directory: explicit config > rnsd's actual path > default
+        # Determine config directory. An explicit gateway.json override wins;
+        # otherwise use the CANONICAL clean-client configdir so the RNS
+        # singleton's resourcepath is DETERMINISTIC regardless of which client
+        # (bridge vs node_tracker) inits RNS first (gw-resourcepath-determinism,
+        # 2026-06-27). The old None/drift resolution made resourcepath
+        # init-order-dependent (/etc/reticulum vs an unwritable ~/.reticulum vs
+        # node_tracker's /tmp). The canonical config is built from the box's
+        # instance_name + rnsd's rpc_key, so it never drifts from rnsd.
         config_dir = self.config.rns.config_dir or None
         if config_dir:
             logger.info(f"Using explicit RNS config dir: {config_dir}")
         else:
-            # Check for config drift between gateway and rnsd
-            try:
-                drift = detect_rnsd_config_drift()
-                if drift.drifted:
-                    logger.warning("Config drift: %s", drift.message)
-                    config_dir = str(drift.rnsd_config_dir)
-                    logger.info("Using rnsd's config dir: %s", config_dir)
-            except Exception as e:
-                logger.debug("Config drift check skipped: %s", e)
+            config_dir = ReticulumPaths.ensure_rns_client_configdir()
+            logger.info("Using canonical gateway RNS client config dir: %s",
+                        config_dir)
 
         try:
             if rns_pids:
@@ -209,13 +209,12 @@ class RNSConnectionMixin:
                 else:
                     # Fallback: init RNS from background thread.
                     # Works when rnsd is running (client mode, no signal handlers).
+                    # Same canonical configdir as the main-thread path above, so
+                    # whichever path constructs the singleton sets the SAME
+                    # deterministic resourcepath (gw-resourcepath-determinism).
                     config_dir = self.config.rns.config_dir or None
                     if not config_dir:
-                        try:
-                            effective = get_rnsd_effective_config_dir()
-                            config_dir = str(effective)
-                        except Exception:
-                            pass  # Use RNS default resolution
+                        config_dir = ReticulumPaths.ensure_rns_client_configdir()
 
                     try:
                         # Guarded chokepoint. We're inside

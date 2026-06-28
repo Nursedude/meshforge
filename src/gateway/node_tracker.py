@@ -169,35 +169,16 @@ class UnifiedNodeTracker:
             # rnsd is running - connect to existing instance as CLIENT ONLY
             logger.info(f"rnsd detected (PID: {rns_pids[0]}), connecting as client...")
             try:
-                # Create a client-only config to avoid interface conflicts
-                # This prevents RNS from trying to bind ports that rnsd already owns
-                import tempfile
-                client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
-                client_config_dir.mkdir(exist_ok=True)
-                client_config_file = client_config_dir / "config"
-
-                # Write minimal client-only config (no interfaces, just shared transport).
-                # Propagate rnsd's rpc_key when pinned (Issue #37/#40/#41) so
-                # our RPC digests match rnsd's. Also propagate rnsd's
-                # instance_name — @rns/<name> on disk must match what we ask
-                # the client to attach to, or the client binds its own fresh
-                # socket and sees an empty path table.
+                # Canonical clean-client config (NO interfaces — avoids binding
+                # ports rnsd owns) at a FIXED location, SHARED with the bridge
+                # connection so the gateway process's RNS singleton resourcepath
+                # is deterministic (gw-resourcepath-determinism, 2026-06-27). The
+                # helper propagates the box instance_name + rnsd's rpc_key
+                # (Issue #37/#40/#41). instance_name is still needed below for
+                # the shared-instance preflight + log lines.
                 from utils.paths import ReticulumPaths
+                client_config_dir = ReticulumPaths.ensure_rns_client_configdir()
                 instance_name = ReticulumPaths.get_configured_instance_name()
-                cfg = [
-                    "# MeshForge RNS Client Config (auto-generated)",
-                    "# This config connects to existing rnsd without creating interfaces",
-                    "",
-                    "[reticulum]",
-                    "share_instance = Yes",
-                    "shared_instance_port = 37428",
-                    "instance_control_port = 37429",
-                    f"instance_name = {instance_name}",
-                ]
-                rpc_key = ReticulumPaths.get_shared_rpc_key()
-                if rpc_key:
-                    cfg.append(f"rpc_key = {rpc_key}")
-                client_config_file.write_text("\n".join(cfg) + "\n")
 
                 # Pre-flight: check if shared instance socket is listening
                 try:

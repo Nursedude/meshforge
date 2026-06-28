@@ -950,11 +950,11 @@ class TestRNSConnectionStability:
              patch('gateway._rns_bridge_connection.open_reticulum',
                    return_value=MagicMock()) as mock_open, \
              patch('gateway._rns_bridge_connection.ReticulumPaths') as mock_paths, \
-             patch('gateway._rns_bridge_connection.detect_rnsd_config_drift') as mock_drift, \
              patch('os.geteuid', return_value=0):
 
             mock_paths.ensure_system_dirs.return_value = True
-            mock_drift.return_value = MagicMock(drifted=False)
+            mock_paths.ensure_rns_client_configdir.return_value = (
+                "/tmp/meshforge_rns_client")
 
             with patch.dict('sys.modules', {
                 'utils.gateway_diagnostic': MagicMock(find_rns_processes=lambda: [])
@@ -965,6 +965,11 @@ class TestRNSConnectionStability:
         # Init is delegated to the guarded chokepoint (which itself never
         # restarts services — POLICY: diagnose, don't fix).
         mock_open.assert_called_once()
+        # Determinism: the bridge resolves its configdir via the canonical
+        # client-config helper, not the old drift detection (gw-resourcepath-
+        # determinism, 2026-06-27).
+        mock_paths.ensure_rns_client_configdir.assert_called_once()
+        mock_open.assert_called_once_with("/tmp/meshforge_rns_client")
 
     def test_rns_loop_respects_permanent_failure(self):
         """When RNS init fails permanently, the loop should not retry."""

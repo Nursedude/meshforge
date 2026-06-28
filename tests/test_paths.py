@@ -486,3 +486,51 @@ class TestReticulumPathsResolution:
 
         result = _resolve_home_for_user('nonexistent_user_xyz_12345')
         assert result == Path('/home/nonexistent_user_xyz_12345')
+
+
+class TestReticulumClientConfigdir:
+    """ReticulumPaths.ensure_rns_client_configdir() — the ONE source of the
+    gateway's RNS client configdir, so the process singleton's resourcepath is
+    deterministic (gw-resourcepath-determinism, 2026-06-27). The FIXED location
+    + NO-interface config are the two load-bearing invariants."""
+
+    def _call(self, tmp_path, instance="volcano", rpc="deadbeef"):
+        from utils.paths import ReticulumPaths
+        with patch("tempfile.gettempdir", return_value=str(tmp_path)), \
+             patch.object(ReticulumPaths, "get_configured_instance_name",
+                          return_value=instance), \
+             patch.object(ReticulumPaths, "get_shared_rpc_key",
+                          return_value=rpc):
+            return ReticulumPaths.ensure_rns_client_configdir()
+
+    def test_returns_canonical_meshforge_rns_client(self, tmp_path):
+        d = self._call(tmp_path)
+        assert d == os.path.join(str(tmp_path), "meshforge_rns_client")
+
+    def test_deterministic_same_path_each_call(self, tmp_path):
+        # The whole point: two callers (bridge + node_tracker) get the SAME dir.
+        assert self._call(tmp_path) == self._call(tmp_path)
+
+    def test_writes_no_interface_client_config(self, tmp_path):
+        d = self._call(tmp_path)
+        with open(os.path.join(d, "config"), encoding="utf-8") as fh:
+            cfg = fh.read()
+        assert "share_instance = Yes" in cfg
+        assert "[reticulum]" in cfg
+        # Invariant: NO interface section ([[...]]) — would bind ports rnsd
+        # owns. (The header comment mentions "interfaces" by design, so match
+        # the section marker, not the word.)
+        assert "[[" not in cfg
+
+    def test_includes_instance_name_and_rpc_key(self, tmp_path):
+        d = self._call(tmp_path, instance="volcano ai rns", rpc="ab12cd")
+        with open(os.path.join(d, "config"), encoding="utf-8") as fh:
+            cfg = fh.read()
+        assert "instance_name = volcano ai rns" in cfg
+        assert "rpc_key = ab12cd" in cfg
+
+    def test_omits_rpc_key_when_unpinned(self, tmp_path):
+        d = self._call(tmp_path, rpc=None)
+        with open(os.path.join(d, "config"), encoding="utf-8") as fh:
+            cfg = fh.read()
+        assert "rpc_key" not in cfg

@@ -364,6 +364,57 @@ class ReticulumPaths:
                 return value.strip() or 'default'
         return 'default'
 
+    # FIXED dir name under tempdir for the canonical clean-client RNS config —
+    # makes the gateway process's RNS.Reticulum resourcepath deterministic
+    # (gw-resourcepath-determinism, 2026-06-27).
+    RNS_CLIENT_DIRNAME = 'meshforge_rns_client'
+
+    @classmethod
+    def ensure_rns_client_configdir(cls) -> str:
+        """Idempotently build + return the canonical clean-client RNS configdir.
+
+        Writes a NO-INTERFACE shared-instance client config to
+        ``<tmpdir>/meshforge_rns_client/config`` (``share_instance = Yes``, the
+        box ``instance_name``, the shared ports, and rnsd's ``rpc_key`` when
+        pinned) and returns the directory.
+
+        Every RNS client in the GATEWAY process (the RNS↔Meshtastic bridge AND
+        the node tracker) MUST init the process-wide RNS singleton through THIS
+        configdir so ``RNS.Reticulum.resourcepath`` is DETERMINISTIC — not
+        "whichever client won the singleton-init race" (the 2026-06-27 finding:
+        the bridge resolved to /etc/reticulum OR an unwritable ~/.reticulum,
+        node_tracker to /tmp, and the resourcepath was whoever ran first).
+        Anchoring on a tmp (PrivateTmp under the gateway unit) client config
+        also designs OUT the #60 EROFS-on-resourcepath class — PrivateTmp is
+        always writable. The gateway's DELIVERY identity + LXMF storage live
+        under ~/.config/meshforge (persistent), independent of this RNS
+        configdir, so the ephemeral RNS state never touches delivery.
+
+        "No interfaces" keeps the client from binding ports rnsd owns; the FIXED
+        location makes the resourcepath deterministic. Pinned by
+        ``TestReticulumClientConfigdir`` + the determinism regression guard.
+        """
+        import tempfile
+
+        d = Path(tempfile.gettempdir()) / cls.RNS_CLIENT_DIRNAME
+        d.mkdir(exist_ok=True)
+        instance_name = cls.get_configured_instance_name()
+        lines = [
+            "# MeshForge gateway RNS client config (auto-generated — NO interfaces).",
+            "# FIXED location so the gateway process's RNS.Reticulum resourcepath",
+            "# is deterministic (ReticulumPaths.ensure_rns_client_configdir).",
+            "[reticulum]",
+            "share_instance = Yes",
+            "shared_instance_port = 37428",
+            "instance_control_port = 37429",
+            f"instance_name = {instance_name}",
+        ]
+        rpc_key = cls.get_shared_rpc_key()
+        if rpc_key:
+            lines.append(f"rpc_key = {rpc_key}")
+        (d / "config").write_text("\n".join(lines) + "\n")
+        return str(d)
+
 
 class MeshChatXPaths:
     """Paths related to MeshChatX (third-party RNS web chat client).
