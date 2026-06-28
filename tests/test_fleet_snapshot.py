@@ -1431,3 +1431,50 @@ def test_failing_crontab_does_not_flip_timer_health(monkeypatch):
     block = _schedules_block()
     assert block["healthy"] is True                 # timer health unaffected
     assert block["crontab"]["available"] is False
+
+
+class TestProbeRadioPhoneApiDeferIssue17:
+    """_probe_radio() must NOT connect_ex(:4403) when meshforge-gateway owns it.
+
+    The 2026-06-27 moc dig: this snapshot is rebuilt on every status poll (~15s),
+    and _probe_radio()'s connect_ex(("localhost", 4403)) is itself a contender on
+    meshtasticd's single-consumer PhoneAPI (#17) — meshtasticd accepts it as a
+    PhoneAPI client and force-closes the prior ("Force close previous TCP
+    connection"), the sustained churn that tripped probe_meshtasticd_phoneapi_wedge.
+    On a gateway box, report the radio from meshtasticd's service state instead
+    (non-contending; honest — a down daemon still reads False).
+    """
+
+    @staticmethod
+    def _states(**m):
+        return lambda unit, *a, **k: m.get(unit, "not_running")
+
+    def test_gateway_owns_phoneapi_meshtasticd_up_no_probe(self):
+        with patch.object(fleet_snapshot, "_systemctl_state",
+                          self._states(**{"meshforge-gateway": "available",
+                                          "meshtasticd": "available"})), \
+             patch("utils.fleet_snapshot.socket.socket") as mock_sock:
+            out = _probe_radio()
+            assert out["connected"] is True
+            assert out["name"] == "meshtasticd"
+            mock_sock.assert_not_called()        # NO contending :4403 connect
+
+    def test_gateway_owns_phoneapi_meshtasticd_down_no_probe(self):
+        with patch.object(fleet_snapshot, "_systemctl_state",
+                          self._states(**{"meshforge-gateway": "available",
+                                          "meshtasticd": "not_running"})), \
+             patch("utils.fleet_snapshot.socket.socket") as mock_sock:
+            out = _probe_radio()
+            assert out["connected"] is False     # honest: daemon down ≠ connected
+            mock_sock.assert_not_called()
+
+    def test_non_gateway_box_still_probes_4403(self):
+        with patch.object(fleet_snapshot, "_systemctl_state",
+                          self._states(**{"meshforge-gateway": "not_running"})), \
+             patch("utils.fleet_snapshot.socket.socket") as mock_sock, \
+             patch("os.path.exists", return_value=False):
+            mock_sock.return_value.__enter__.return_value.connect_ex.return_value = 0
+            out = _probe_radio()
+            assert out["connected"] is True
+            assert out["name"] == "meshtasticd"
+            mock_sock.assert_called_once()       # the probe DID run (unchanged path)

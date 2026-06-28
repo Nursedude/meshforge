@@ -258,6 +258,23 @@ def _probe_radio() -> Dict[str, Any]:
     connected = False
     name = None
 
+    # #17 single-consumer defer: when meshforge-gateway owns the local :4403
+    # PhoneAPI, a connect_ex() probe here is itself a contender — meshtasticd
+    # accepts it as a PhoneAPI client and force-closes the gateway's stream
+    # ("Force close previous TCP connection"). This snapshot is rebuilt on every
+    # status poll (~15s), so on a gateway box the probe produced sustained
+    # force-close churn that tripped probe_meshtasticd_phoneapi_wedge (the
+    # 2026-06-27 moc finding — the gateway itself never touches :4403; it uses
+    # MQTT + HTTP-toradio). Report the radio from meshtasticd's service state
+    # instead — non-contending, and honest: a down daemon still reads False.
+    if _systemctl_state("meshforge-gateway") == "available":
+        return {
+            "connected": _systemctl_state("meshtasticd") == "available",
+            "name": "meshtasticd",
+            "preset": None,
+            "battery_pct": None,
+        }
+
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.settimeout(1.0)
