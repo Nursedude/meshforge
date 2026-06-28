@@ -26,7 +26,7 @@ from typing import Optional, List, Dict, Any
 
 from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
-from utils.service_check import restart_service
+from utils.service_check import restart_service, check_service, ServiceState
 
 logger = logging.getLogger(__name__)
 
@@ -272,6 +272,28 @@ def _force_close_socket(interface) -> None:
         pass  # Already closed
 
 
+# #17 single-consumer defer — the local meshtasticd PhoneAPI is one TCP port and
+# only one consumer may hold it. These name the "is this the contended local
+# :4403?" gate used by is_available() below.
+_MESHTASTICD_TCP_PORT = 4403
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1")
+
+
+def _service_is_up(name: str) -> bool:
+    """True iff systemd reports ``name`` AVAILABLE or DEGRADED.
+
+    Unknown / un-checkable → False: never claim a service is up without basis
+    (honest_failure_modes #2 — absence of evidence ≠ evidence of up).
+    """
+    try:
+        return check_service(name).state in (
+            ServiceState.AVAILABLE, ServiceState.DEGRADED
+        )
+    except Exception as e:  # noqa: BLE001 — can't tell → not up
+        logger.debug("service-up check failed for %s: %s", name, e)
+        return False
+
+
 class MeshtasticConnectionManager:
     """
     Manages connections to Meshtastic radios.
@@ -325,6 +347,20 @@ class MeshtasticConnectionManager:
         Returns:
             True if port is reachable, False otherwise
         """
+        # #17 single-consumer defer: when meshforge-gateway owns the LOCAL :4403
+        # PhoneAPI, a raw connect() probe is itself a contender — meshtasticd
+        # accepts it as a PhoneAPI client and force-closes the gateway's stream
+        # ("Force close previous TCP connection"). Sustained, that thrash trips
+        # probe_meshtasticd_phoneapi_wedge and can wedge the gateway's mesh-TX
+        # (the 2026-06-13→15 incident; the 2026-06-27 moc churn was THIS probe
+        # leaking past the collector's #17 defer — it guards _collect_meshtasticd
+        # only). Answer from meshtasticd's service state instead: non-contending,
+        # and honest — a down daemon still reads False (never masked).
+        if (self.port == _MESHTASTICD_TCP_PORT
+                and self.host in _LOCAL_HOSTS
+                and _service_is_up("meshforge-gateway")):
+            return _service_is_up("meshtasticd")
+
         try:
             with timed_boundary("meshtasticd.tcp_probe",
                                 target=f"{self.host}:{self.port}"):
