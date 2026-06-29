@@ -45,18 +45,26 @@ import os
 import sys
 import json
 import subprocess
-import urllib.request
 from datetime import date, datetime
 
 HOME = os.path.expanduser("~")
 LEDGER = os.environ.get("DEFERRED_WORK_LEDGER", os.path.join(HOME, "deferred_work.json"))
 SENT_DIR = os.path.dirname(LEDGER) or HOME          # sentinels live beside the ledger
 LOG = os.path.join(HOME, "deferred_work_watch.log")
+# Paging routes through the fleet ntfy SSOT (scripts/fleet_ntfy_push.sh), which
+# owns the topic + auth token in ONE place (honest_failure_modes #5) and sends
+# via curl — so unicode titles are UTF-8, not latin-1, and the em-dash bug that
+# silently killed 68 pages (2026-06-14..29) is structurally impossible here.
+# Resolve the SSOT relative to __file__ so cron's absolute invocation finds it.
+FLEET_NTFY_PUSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_ntfy_push.sh")
+
+
 def _ntfy_topic():
     """Fleet ntfy topic, resolved like scripts/fleet_ntfy_push.sh (the SSOT):
-    $MESHFORGE_NTFY_TOPIC override else ~/.config/fleet_push_topic. NEVER
-    hardcode it — that is an operator-specific value (MF014) and drills repoint
-    paging at a throwaway topic via the env var."""
+    $MESHFORGE_NTFY_TOPIC override else ~/.config/fleet_push_topic. The SSOT
+    resolves it the same way for the actual send; the watcher mirrors it ONLY to
+    observe the one failure the SSOT masks (no topic -> it no-ops exit 0). NEVER
+    hardcode it — operator-specific value (MF014); drills repoint via the env var."""
     t = os.environ.get("MESHFORGE_NTFY_TOPIC")
     if t:
         return t.strip()
@@ -81,39 +89,28 @@ def log(msg):
     print(msg)
 
 
-def _hdr_safe(s):
-    """HTTP header values are latin-1 (urllib http.client). Unicode punctuation
-    in a Title/Tags header raised UnicodeEncodeError and SILENTLY killed every
-    page (the em-dash bug: '\\u2014' un-encodable -> swallowed -> 68 lost pages
-    2026-06-14..29). Transliterate the common offenders, then hard-guarantee
-    latin-1 with a replace fallback so a page can NEVER fail to encode again."""
-    for k, v in (("—", "-"), ("–", "-"), ("…", "..."),
-                 ("‘", "'"), ("’", "'"), ("“", '"'), ("”", '"'),
-                 ("→", "->"), ("←", "<-"), (" ", " ")):
-        s = s.replace(k, v)
-    return s.encode("latin-1", "replace").decode("latin-1")
-
-
 def ntfy(title, body, priority="default", tags="alarm_clock"):
+    """Page via the fleet ntfy SSOT (scripts/fleet_ntfy_push.sh). Returns True if
+    the page was DISPATCHED. The SSOT is best-effort (exit 0 even on a transient
+    curl failure — paging is advisory by its design), so the only failure the
+    watcher can still witness is the one the SSOT masks: no topic configured ->
+    it silently no-ops. We check that here and return False so a DUE page sets
+    rc=2 (the witness) instead of writing a sentinel for a page that never sent."""
     if DRYRUN:
         log("[DRYRUN ntfy] %s | %s" % (title, body.replace("\n", " ")[:160]))
         return True
     if not NTFY_TOPIC:
-        # no topic configured = cannot page. NOT a silent success — return False
-        # so a DUE page sets rc=2 (the witness) instead of looking delivered.
         log("ntfy: no topic configured (set MESHFORGE_NTFY_TOPIC or ~/.config/fleet_push_topic)")
         return False
     try:
-        req = urllib.request.Request(
-            "https://ntfy.sh/" + NTFY_TOPIC,
-            data=body.encode(),
-            headers={"Title": _hdr_safe(title), "Priority": priority, "Tags": _hdr_safe(tags)},
-            method="POST",
-        )
-        urllib.request.urlopen(req, timeout=15).read()
+        # argv list, no shell (MF002); bounded (MF004). title/priority/tags/message.
+        subprocess.run([FLEET_NTFY_PUSH, title, priority, tags, body],
+                       timeout=20, capture_output=True, text=True, check=False)
         return True
-    except Exception as e:  # noqa: BLE001 -- ntfy best-effort; failure must not crash the watcher
-        log("ntfy FAILED: %s" % e)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        # could not even DISPATCH (SSOT missing / hung) — witness it, do not mark
+        # the page delivered (honest_failure_modes #9).
+        log("ntfy via SSOT could not dispatch: %s" % e)
         return False
 
 
