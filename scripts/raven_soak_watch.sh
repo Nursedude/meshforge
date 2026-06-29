@@ -1,6 +1,23 @@
 #!/bin/bash
 # raven_soak_watch.sh — self-healing watch for the raven-on-hAP Meshtastic bridge.
 #
+# ┌─ DORMANT 2026-06-29 ───────────────────────────────────────────────────────┐
+# │ raven was DECOMMISSIONED from the QTH AREDN hAP and this cron UN-WIRED.     │
+# │ Root cause: the hAP (56 MB, no swap, ~22 MB structurally short to kernel +  │
+# │ AREDN WireGuard tunnels) chronically OOM-killed raven.uc — a ~2.8 MB OOM    │
+# │ *victim*, not the cause. Killing it freed nothing, so the killer re-fired   │
+# │ every ~7 min and procd hit its respawn ceiling; raven was dark ~95% of the  │
+# │ time and its restart storms even endangered the AREDN core daemons. A       │
+# │ Meshtastic bridge is simply too much for this box. Decision: REMOVE, not    │
+# │ mask (a watchdog must not outlive its subject — leaving the cron wired      │
+# │ would have fired cron_verdict_stale RED forever on an absent workload).     │
+# │ hAP side: `/etc/init.d/raven stop && disable` (reversible — binary/config   │
+# │ stay). To REVIVE on a roomier host (e.g. the OpenWrt router project): start │
+# │ raven there, then re-add the crontab line documented below. The self-heal   │
+# │ logic + tests are kept intact for that rehome. Substack writeup:            │
+# │ docs/substack/2026-06-29-too-much-for-the-hap.md                            │
+# └────────────────────────────────────────────────────────────────────────────┘
+#
 # Runs on the cron host (full Linux); reaches the AREDN hAP over ssh. The hAP
 # target is operator-specific (a LAN IP) and MUST NOT live in this repo
 # (MF014/MF015) — pass it via RAVEN_HAP from a local, untracked wrapper, e.g.:
