@@ -340,11 +340,20 @@ class CanonicalMessage:
 
         is_broadcast = is_channel or destination is None
 
+        # content_id (dedup/identity arc, STEP 2b — measure-only): mint on the
+        # MeshCore ingress leg (dup-birth B) keyed on meshcore:<sender>, content,
+        # channel. '' for advertisements / empty text. NOTE: MeshCore channel
+        # broadcasts can arrive with an empty sender (baked into the text
+        # header), giving a thinner content+channel identity — still deterministic.
+        content_id = compute_content_id(
+            f"meshcore:{sender}", str(text), str(channel))
+
         return cls(
             source_network=Protocol.MESHCORE.value,
             source_address=str(sender),
             destination_address=str(destination) if destination and not is_broadcast else None,
             content=text,
+            content_id=content_id,
             message_type=msg_type,
             is_broadcast=is_broadcast,
             hop_limit=64,  # MeshCore supports up to 64 hops

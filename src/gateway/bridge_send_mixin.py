@@ -315,6 +315,7 @@ class BridgeSendMixin:
                 content=payload.get('content', '') or '',
                 title=payload.get('title'),
                 is_broadcast=bool(payload.get('is_broadcast', False)),
+                content_id=payload.get('content_id', '') or '',
                 metadata=dict(metadata),
             )
             self._process_mesh_to_rns(msg)

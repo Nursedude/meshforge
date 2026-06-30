@@ -4618,3 +4618,14 @@ class TestContentIdCarryRnsLeg:
              patch("commands.messaging.store_incoming"):
             bridge._on_lxmf_receive(msg)
         assert captured['m'].content_id == "c1:carried99"
+
+    def test_spill_requeue_reconstructs_content_id(self, bridge):
+        # A queue-full spill persists content_id (mqtt handler) and the requeue
+        # worker reconstructs it, so the overflow copy stays correlatable.
+        captured = {}
+        with patch.object(bridge, '_process_mesh_to_rns',
+                          side_effect=lambda m: captured.setdefault('m', m)):
+            bridge._dispatch_rns_xform_spill({
+                'source_id': '!a2e95ba4', 'content': 'hi',
+                'content_id': 'c1:spilled', 'is_broadcast': True})
+        assert captured['m'].content_id == 'c1:spilled'

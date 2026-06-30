@@ -1112,3 +1112,23 @@ class TestContentIdStampingAtMeshIngress:
             topic="msh/US/5/json/meshforge/!1111")
         assert (h1._message_queue.put.call_args[0][0].content_id
                 == h2._message_queue.put.call_args[0][0].content_id != "")
+
+    def test_spill_payload_carries_content_id(self):
+        # On queue-full spill, the content_id must survive into the persisted
+        # record so the requeued copy stays correlatable (honest #4 — carry the
+        # field through the serialization that exists for the type).
+        handler = _make_bridge_handler()
+        captured = {}
+
+        def enqueue(payload=None, **kw):
+            captured.update(payload or {})
+            return "id1"
+
+        pq = MagicMock()
+        pq.enqueue = enqueue
+        handler._persistent_queue = pq
+        msg = BridgedMessage(source_network="meshtastic", source_id="!a2e95ba4",
+                             destination_id=None, content="hi",
+                             content_id="c1:xyz")
+        assert handler._spill_to_persistent_queue(msg) is True
+        assert captured["content_id"] == "c1:xyz"

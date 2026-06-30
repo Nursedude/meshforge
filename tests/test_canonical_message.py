@@ -909,3 +909,33 @@ class TestCanonicalMessageContentIdField:
     def test_settable(self):
         m = CanonicalMessage(content="hi", content_id="c1:deadbeef")
         assert m.content_id == "c1:deadbeef"
+
+
+class TestFromMeshcoreStampsContentId:
+    """from_meshcore mints a content_id on the MeshCore ingress leg (dup-birth
+    B), keyed on meshcore:<sender>, content, channel (STEP 2b, measure-only)."""
+
+    def test_channel_text_stamped(self):
+        ev = SimpleNamespace(
+            type="CHANNEL_MSG_RECV",
+            payload={"text": "elo", "sender": "p4abc",
+                     "channel": 0, "is_channel": True})
+        m = CanonicalMessage.from_meshcore(ev)
+        assert m.content_id == compute_content_id("meshcore:p4abc", "elo", "0")
+        assert m.content_id != ""
+
+    def test_advertisement_empty_text_no_id(self):
+        # An advertisement (no text) has no logical content identity -> ''.
+        ev = SimpleNamespace(
+            type="ADVERTISEMENT",
+            payload={"text": "", "sender": "p4abc", "channel": 0})
+        m = CanonicalMessage.from_meshcore(ev)
+        assert m.content_id == ""
+
+    def test_same_message_same_id(self):
+        ev1 = SimpleNamespace(type="CONTACT_MSG_RECV",
+                              payload={"text": "hi", "sender": "kk", "channel": 1})
+        ev2 = SimpleNamespace(type="CONTACT_MSG_RECV",
+                              payload={"text": "hi", "sender": "kk", "channel": 1})
+        assert (CanonicalMessage.from_meshcore(ev1).content_id
+                == CanonicalMessage.from_meshcore(ev2).content_id != "")

@@ -1226,6 +1226,10 @@ class MQTTBridgeHandler(BaseMessageHandler):
                 'content': msg.content,
                 'title': getattr(msg, 'title', None),
                 'is_broadcast': bool(getattr(msg, 'is_broadcast', False)),
+                # Preserve the logical content_id across the spill→requeue so a
+                # queue-full overflow copy stays correlatable (dedup/identity
+                # arc STEP 2b; honest #4 — carry the field, don't drop it).
+                'content_id': getattr(msg, 'content_id', '') or '',
                 'metadata': dict(getattr(msg, 'metadata', None) or {}),
             }
             msg_id = self._persistent_queue.enqueue(
