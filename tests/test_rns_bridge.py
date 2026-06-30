@@ -1934,6 +1934,46 @@ class TestRelayOnReceive:
 
 
 # ---------------------------------------------------------------------------
+# content_id_view infra_hashes (dedup/identity arc STEP 6)
+# ---------------------------------------------------------------------------
+
+
+class TestContentIdViewInfraHashesStep6:
+    """The publish hook stamps the box's KNOWN gateway/peer hashes (own LXMF
+    source hash + peer_gateway_destinations) so the cross-box JOIN can tag a
+    dup to a gateway recipient (e.g. MeshAnchor 58cecbd0) as infra-to-infra
+    rather than human. default_lxmf_destination (which carries HUMAN inboxes)
+    is deliberately NOT a source — a dup to a real operator must still page."""
+
+    OWN = "aa" * 16
+    PEER = "bb" * 16
+
+    def test_infra_hashes_are_own_plus_peers_lowercased(self, bridge):
+        bridge.config.rns.get_peer_gateway_destinations = MagicMock(
+            return_value=[self.PEER.upper()])
+        own_hash = MagicMock()
+        own_hash.hex.return_value = self.OWN.upper()
+        bridge._lxmf_source = MagicMock()
+        bridge._lxmf_source.hash = own_hash
+        result = bridge._content_id_view_infra_hashes()
+        assert self.OWN in result    # own gateway hash, lowercased
+        assert self.PEER in result   # peer gateway, lowercased
+
+    def test_no_lxmf_source_still_returns_peers(self, bridge):
+        bridge.config.rns.get_peer_gateway_destinations = MagicMock(
+            return_value=[self.PEER])
+        bridge._lxmf_source = None
+        result = bridge._content_id_view_infra_hashes()
+        assert result == [self.PEER]   # no own hash, no crash
+
+    def test_peer_lookup_error_isolated_returns_empty(self, bridge):
+        bridge.config.rns.get_peer_gateway_destinations = MagicMock(
+            side_effect=TypeError("boom"))
+        bridge._lxmf_source = None
+        assert bridge._content_id_view_infra_hashes() == []
+
+
+# ---------------------------------------------------------------------------
 # _resolve_mesh_destination
 # ---------------------------------------------------------------------------
 
@@ -4659,7 +4699,12 @@ class TestContentIdViewPublishHookStep4c:
 
     def _fake(self):
         import types
-        return types.SimpleNamespace()
+        ns = types.SimpleNamespace()
+        # STEP 6: the publish hook gathers infra_hashes off self before
+        # writing — model that dependency so the throttle/isolation tests
+        # exercise the real publish path, not an AttributeError swallow.
+        ns._content_id_view_infra_hashes = lambda: []
+        return ns
 
     def test_publishes_first_then_throttles_then_republishes(self, monkeypatch):
         import types

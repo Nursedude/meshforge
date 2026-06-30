@@ -5554,5 +5554,67 @@ class TestProbeGatewayDupDegraded:
             assert probe_gateway_dup_degraded(
                 debounce_path=sp, min_dup_pairs=2) is None
 
+    # ── STEP 6: page on HUMAN dups, stay quiet on benign infra dups ───
+    #
+    # A dup whose recipient is itself a gateway/peer (e.g. MeshAnchor
+    # 58cecbd0, in both gateways' peer_gateway_destinations) is infra-to-
+    # infra: real, but benign and structurally unsuppressable without a
+    # coordination substrate. The probe must page only on HUMAN dups.
+
+    def _split(self, *, human, infra, **kw):
+        """An ok rollup carrying the STEP-6 human/infra split fields."""
+        total = human + infra
+        d = self._ok(total, **kw)
+        d["fleet_human_duplicate_pairs"] = human
+        d["fleet_infra_duplicate_pairs"] = infra
+        d["infra_hashes_known"] = 3
+        d["fleet_duplicates"] = (
+            [{"content_id": "c1:hh", "recipient": "6b1a0120",
+              "recipient_kind": "human", "distinct_hosts": 2}] * human +
+            [{"content_id": "c1:ii", "recipient": "58cecbd0",
+              "recipient_kind": "infra", "distinct_hosts": 2}] * infra
+        )
+        return d
+
+    def test_infra_only_dup_never_pages(self, tmp_path):
+        # 5 infra dups, 0 human → quiet even well past the debounce.
+        sp = str(tmp_path / "dup.json")
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._split(human=0, infra=5))):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+
+    def test_human_dup_pages_after_debounce(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._split(human=1, infra=5))):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None  # streak 1
+            sig = probe_gateway_dup_degraded(debounce_path=sp)
+        assert sig is not None
+        assert sig.extra["fleet_human_duplicate_pairs"] == 1
+        assert sig.extra["fleet_infra_duplicate_pairs"] == 5
+
+    def test_absent_human_field_falls_back_to_total(self, tmp_path):
+        # An OLD JOIN (no human split) must NOT silently stop paging — it
+        # falls back to the total dup count (pre-STEP-6 behavior) so an
+        # un-upgraded manager never reads as a forged benign zero.
+        sp = str(tmp_path / "dup.json")
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(2))):  # no human field
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+            sig = probe_gateway_dup_degraded(debounce_path=sp)
+        assert sig is not None
+        assert sig.extra["fleet_duplicate_pairs"] == 2
+
+    def test_human_field_garbage_is_inert(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        payload = self._ok(3)
+        payload["fleet_human_duplicate_pairs"] = "lots"  # shape error
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(payload)):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+
     def test_registered_in_signal_classes(self):
         assert "gateway_dup_degraded" in SIGNAL_CLASSES

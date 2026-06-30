@@ -1488,16 +1488,24 @@ def probe_gateway_dup_degraded(
     debounce_path: Optional[str] = None,
     debounce_ticks: int = 2,
 ) -> Optional["Signal"]:
-    """Cross-gateway DUPLICATE delivery detected (dedup/identity arc STEP 5).
+    """HUMAN-facing cross-gateway DUPLICATE delivery (dedup/identity arc STEP 6).
 
     Consumes the 4c cross-box rollup at ``/fleet/dups`` (the FIRST probe with
     a per-logical-message + cross-gateway dimension). A fleet DUPLICATE is the
     same ``(content_id, recipient)`` reaching CONFIRMED on >1 DISTINCT gateway
-    — the same logical message delivered to a recipient from two gateways
-    (the live dup-A: moc ``3dfbdb5d`` + moc3 ``f68c2f56`` both → ``6b1a0120``).
+    — the same logical message delivered to a recipient from two gateways.
     The rollup only exists on the manager box that runs the collector cron, so
     this probe is naturally INERT elsewhere (the endpoint is absent/unavailable
     there → None).
+
+    STEP 6 (honest paging): the JOIN classifies each dup recipient as INFRA
+    (itself a gateway/peer hash — e.g. MeshAnchor ``58cecbd0``, in BOTH
+    gateways' ``peer_gateway_destinations``, so both legitimately relay there)
+    vs HUMAN (a real NomadNet inbox). The infra-to-infra dup is a real dup but
+    benign AND structurally unsuppressable without a cross-gateway coordination
+    substrate (the live dup-A measured here, ~0 human / a steady infra
+    residual). This probe therefore pages ONLY on the HUMAN count; the infra
+    residual is surfaced in the detail/extra but never pages.
 
     degraded only — a duplicate is a quality/cost defect, not an outage
     (delivery still happened). Honest self-guards (honest_failure_modes #2 —
@@ -1509,14 +1517,21 @@ def probe_gateway_dup_degraded(
         → None, HOLD streak — you CANNOT observe a cross-gateway dup when you
         can't see ≥2 gateways, so this must NEVER read as a healthy "0 dups"
       - ``freshness.stale`` (collector cron dead → frozen verdict) → None, HOLD
-      - ``fleet_duplicate_pairs < min_dup_pairs`` → healthy, RESET streak (an
-        explicit observed-clean tick)
+      - ``fleet_human_duplicate_pairs`` missing (a pre-STEP-6 rollup) → fall
+        back to the TOTAL ``fleet_duplicate_pairs`` so an un-upgraded manager
+        never silently stops paging; present-but-garbage → None/HOLD
+      - gated count ``< min_dup_pairs`` → healthy, RESET streak (explicit
+        observed-clean tick)
       - ≥ threshold → 2-tick debounce streak before firing (rides a torn
         mid-write rollup / one transient overlap)
 
-    MEASURE-ONLY upstream: the probe ALERTS but never suppresses a copy (that's
-    the separately-gated STEP 6). issue_ref=None — the dedup/identity arc has no
-    GitHub issue#; the class is documented inline in SIGNAL_CLASSES (MF012 cap).
+    MEASURE-ONLY upstream: the probe ALERTS but never suppresses a copy.
+    Cross-gateway suppression of the residual infra dup was evaluated in STEP 6
+    and is structurally impossible with zero added loss + no coordination
+    substrate (two gateways confirm-deliver simultaneously; copy #2 cannot be
+    safely cancelled after the fact) — deferred to a future coordination-
+    substrate arc. issue_ref=None — the dedup/identity arc has no GitHub
+    issue#; the class is documented inline in SIGNAL_CLASSES (MF012 cap).
     """
     sp = debounce_path or DEFAULT_GATEWAY_DUP_DEBOUNCE_PATH
     url = f"http://{host}:{port}/fleet/dups"
@@ -1541,7 +1556,26 @@ def probe_gateway_dup_degraded(
     if not isinstance(dup_pairs, int) or isinstance(dup_pairs, bool):
         return None  # shape error → INERT (don't reset on a malformed read)
 
-    if dup_pairs < min_dup_pairs:
+    # STEP 6 — page on HUMAN-facing dups only. A dup whose recipient is
+    # itself a gateway/peer (e.g. MeshAnchor 58cecbd0, in BOTH gateways'
+    # peer_gateway_destinations) is infra-to-infra: a real dup, but benign
+    # AND structurally unsuppressable without a cross-gateway coordination
+    # substrate — so it must not page hourly. The 4c JOIN splits the count
+    # by recipient kind; gate on the human number when present. An OLD JOIN
+    # that predates the split OMITS the field → fall back to the TOTAL so we
+    # never SILENTLY stop paging (honest_failure_modes #2/#4 — an un-upgraded
+    # manager is not a forged benign zero). A PRESENT-but-garbage field is a
+    # shape error → INERT/hold (same discipline as the total above).
+    human_pairs = payload.get("fleet_human_duplicate_pairs")
+    infra_pairs = payload.get("fleet_infra_duplicate_pairs")
+    if human_pairs is None:
+        gate_pairs = dup_pairs            # old JOIN → total (pre-STEP-6)
+    elif isinstance(human_pairs, int) and not isinstance(human_pairs, bool):
+        gate_pairs = human_pairs          # new JOIN → human-only gate
+    else:
+        return None                        # present but garbage → INERT/hold
+
+    if gate_pairs < min_dup_pairs:
         _save_gateway_dup_streak(sp, 0)  # explicit observed-clean
         return None
 
@@ -1551,6 +1585,7 @@ def probe_gateway_dup_degraded(
         return None
 
     deliveries = payload.get("fleet_duplicate_deliveries")
+    human_deliveries = payload.get("fleet_human_duplicate_deliveries")
     dups = payload.get("fleet_duplicates")
     sample = ""
     if isinstance(dups, list):
@@ -1560,23 +1595,43 @@ def probe_gateway_dup_degraded(
                 continue
             cid = str(d.get("content_id", "?"))[:12]
             rcp = str(d.get("recipient", "?"))[:10]
-            parts.append(f"{cid}..→{rcp}×{d.get('distinct_hosts', '?')}gw")
+            kind = str(d.get("recipient_kind", "?"))
+            parts.append(
+                f"{cid}..→{rcp}({kind})×{d.get('distinct_hosts', '?')}gw")
         sample = "; ".join(parts)
+
+    if human_pairs is None:
+        # Pre-split rollup — page on the total, say the split is unavailable.
+        headline = (
+            f"Cross-gateway duplicate delivery: {gate_pairs} (content_id, "
+            f"recipient) pair(s) confirmed by >1 gateway (~{deliveries} extra "
+            f"copy/ies); infra/human split unavailable (old rollup)."
+        )
+    else:
+        # The page is the HUMAN count; the infra residual rides its OWN
+        # clause, never averaged into the paged number (#74 lesson).
+        infra_n = infra_pairs if isinstance(infra_pairs, int) else "?"
+        headline = (
+            f"HUMAN-facing cross-gateway duplicate delivery: {gate_pairs} "
+            f"(content_id, recipient) pair(s) reached a real inbox from >1 "
+            f"gateway (~{human_deliveries} extra copy/ies); {infra_n} benign "
+            f"infra-to-infra dup(s) NOT paged."
+        )
     return Signal(
         cls="gateway_dup_degraded",
         subject="fleet-gateways",
         severity="degraded",
         detail=(
-            f"Cross-gateway duplicate delivery: {dup_pairs} (content_id, "
-            f"recipient) pair(s) confirmed by >1 gateway "
-            f"(~{deliveries} extra copy/ies) — the same logical message reached "
-            f"a recipient from multiple gateways. {sample}. See /fleet/dups; "
-            f"fix is cross-gateway suppression / ownership (arc STEP 6)."
+            f"{headline} {sample}. See /fleet/dups; the human dup is the "
+            f"reliability defect — infra-to-infra dups are structurally "
+            f"residual without a coordination substrate (arc STEP 6)."
         ),
         issue_ref=None,
         extra={
             "fleet_duplicate_pairs": dup_pairs,
             "fleet_duplicate_deliveries": deliveries,
+            "fleet_human_duplicate_pairs": human_pairs,
+            "fleet_infra_duplicate_pairs": infra_pairs,
             "covered_hosts": payload.get("covered_hosts"),
             "debounce_streak": streak,
         },

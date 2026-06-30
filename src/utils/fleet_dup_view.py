@@ -73,7 +73,7 @@ def classify_box_view(
     out: Dict[str, Any] = {
         "host": host, "status": "covered", "reason": None,
         "age_s": None, "ts": None, "view": None, "unconfirmable_sent": 0,
-        "tracked_pairs": 0, "confirmed_pairs": 0,
+        "tracked_pairs": 0, "confirmed_pairs": 0, "infra_hashes": [],
     }
     if error:
         out["status"] = "error"
@@ -113,6 +113,17 @@ def classify_box_view(
     out["unconfirmable_sent"] = _pos_int(state.get("unconfirmable_sent"))
     out["tracked_pairs"] = _pos_int(view.get("tracked_pairs"))
     out["confirmed_pairs"] = _pos_int(view.get("confirmed_pairs"))
+    # Infra hashes the box published (STEP 6): its own gateway LXMF hash +
+    # its peer_gateway_destinations. A non-list / junk value is treated as
+    # ABSENT (empty) — never crashes the JOIN, and an unknown recipient then
+    # stays page-worthy "human" rather than being silently read as benign
+    # infra (honest_failure_modes #1/#2). A schema-1 box omits the key.
+    raw_infra = state.get("infra_hashes")
+    out["infra_hashes"] = (
+        [h.strip().lower() for h in raw_infra
+         if isinstance(h, str) and h.strip()]
+        if isinstance(raw_infra, list) else []
+    )
     return out
 
 
@@ -141,6 +152,20 @@ def compute_fleet_dup_view(
         for c in classified if c["status"] != "covered"
     ]
     covered_hosts = sorted({c["host"] for c in covered})
+
+    # Fleet infra set (STEP 6): the union of every covered box's published
+    # infra hashes (own gateway hash + peer_gateway_destinations). A dup
+    # whose recipient is in this set is an infra-to-infra dup (e.g. both
+    # gateways legitimately relaying to MeshAnchor 58cecbd0) — a real dup,
+    # but NOT a human-facing reliability problem and structurally
+    # unsuppressable without a cross-gateway coordination substrate. We tag
+    # those separately so the probe pages only on HUMAN dups. When NO box
+    # published its set (all schema-1), the set is empty and EVERY recipient
+    # stays "human" — i.e. page-worthy — so an unclassifiable dup is never
+    # silently treated as benign (honest_failure_modes #2).
+    fleet_infra_set = {
+        h for c in covered for h in c.get("infra_hashes") or []
+    }
 
     # (content_id, recipient) -> {host: confirmed_count}. Built ONLY from
     # covered boxes' confirmed-pair lists.
@@ -177,25 +202,41 @@ def compute_fleet_dup_view(
             bucket[c["host"]] = bucket.get(c["host"], 0) + n
 
     # A FLEET duplicate = a pair confirmed by >1 DISTINCT covered host.
+    # Each dup is classified infra (recipient is a known gateway/peer hash)
+    # vs human, and the human numbers are kept on their OWN lines so a probe
+    # can page on human dups without being drowned by the benign infra ones.
     dups: List[Dict[str, Any]] = []
     fleet_duplicate_deliveries = 0
+    fleet_human_duplicate_pairs = 0
+    fleet_infra_duplicate_pairs = 0
+    fleet_human_duplicate_deliveries = 0
     for (cid, rcp), per_host in pairs.items():
         distinct = len(per_host)
         if distinct > 1:
             total = sum(per_host.values())
-            fleet_duplicate_deliveries += distinct - 1  # extra copies x-gateway
+            extra = distinct - 1  # extra copies across gateways
+            fleet_duplicate_deliveries += extra
+            kind = "infra" if rcp.strip().lower() in fleet_infra_set else "human"
+            if kind == "human":
+                fleet_human_duplicate_pairs += 1
+                fleet_human_duplicate_deliveries += extra
+            else:
+                fleet_infra_duplicate_pairs += 1
             dups.append({
                 "content_id": cid,
                 "recipient": rcp,
+                "recipient_kind": kind,
                 "distinct_hosts": distinct,
                 "total_confirmed": total,
                 "hosts": [{"host": h, "confirmed": k}
                           for h, k in sorted(per_host.items())],
             })
 
-    # Widest dup first (then total, then id) so a real multi-gateway dup
-    # survives truncation; surface the drop.
-    dups.sort(key=lambda d: (-d["distinct_hosts"], -d["total_confirmed"],
+    # Human dups first, then widest dup (then total, then id) so a
+    # human-facing dup ALWAYS survives truncation ahead of a benign infra
+    # one (False < True puts recipient_kind=="human" ahead of "infra").
+    dups.sort(key=lambda d: (d["recipient_kind"] != "human",
+                             -d["distinct_hosts"], -d["total_confirmed"],
                              d["content_id"], d["recipient"]))
     fleet_duplicate_pairs = len(dups)
     cap = max(0, pair_cap)
@@ -240,6 +281,16 @@ def compute_fleet_dup_view(
         ],
         "fleet_duplicate_pairs": fleet_duplicate_pairs,
         "fleet_duplicate_deliveries": fleet_duplicate_deliveries,
+        # STEP 6 honest split: human dups page; infra-to-infra dups are real
+        # but benign + structurally residual (kept on their OWN lines, never
+        # folded into the human number). ``infra_hashes_known`` = size of the
+        # fleet infra set; 0 means NO box published one, so classification is
+        # inactive and every dup stayed "human" (page-safe), never a forged
+        # benign zero (honest_failure_modes #2).
+        "fleet_human_duplicate_pairs": fleet_human_duplicate_pairs,
+        "fleet_infra_duplicate_pairs": fleet_infra_duplicate_pairs,
+        "fleet_human_duplicate_deliveries": fleet_human_duplicate_deliveries,
+        "infra_hashes_known": len(fleet_infra_set),
         "fleet_duplicates": dups,
         "fleet_duplicates_truncated": truncated,
         # RNS-side miss proxy — its OWN number, never averaged with dups.

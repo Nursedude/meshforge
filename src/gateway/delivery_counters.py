@@ -1096,10 +1096,34 @@ def snapshot(recent_limit: int = 50) -> Dict[str, Any]:
 # operator's WAL DB (its -wal/-shm would land root-owned and break writes),
 # so the gateway process — which already owns the counters — writes the file.
 
-CONTENT_ID_VIEW_STATE_SCHEMA = 1
+CONTENT_ID_VIEW_STATE_SCHEMA = 2
 """Bump when the published envelope shape changes so a collector reading an
 old file can tell. The inner ``content_id_view`` is versioned implicitly by
-``compute_content_id_view``'s field set."""
+``compute_content_id_view``'s field set.
+
+  schema 2 (STEP 6): added ``infra_hashes`` — the box's own gateway LXMF hash
+  + its ``peer_gateway_destinations`` — so the cross-box JOIN can classify a
+  dup to a gateway/peer recipient as infra-to-infra (benign, structurally
+  residual) vs human-facing. A schema-1 file simply omits it; the JOIN then
+  treats the recipient as unclassifiable = page-worthy "human" (never
+  silently benign — honest_failure_modes #2)."""
+
+
+def _sanitize_infra_hashes(value: Any) -> List[str]:
+    """Normalize a published infra-hash list: lowercase, drop blanks /
+    non-strings, order-stable dedupe. A non-list is treated as absent ([])."""
+    if not isinstance(value, list):
+        return []
+    seen: set = set()
+    out: List[str] = []
+    for h in value:
+        if not isinstance(h, str):
+            continue
+        norm = h.strip().lower()
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
 
 
 def content_id_view_state_path() -> Path:
@@ -1133,6 +1157,7 @@ def build_content_id_view_state(
     host: Optional[str] = None,
     now: Optional[float] = None,
     unconfirmable_sent: Any = 0,
+    infra_hashes: Any = None,
 ) -> Dict[str, Any]:
     """Pure: wrap a ``content_id_view`` in the published envelope.
 
@@ -1142,7 +1167,15 @@ def build_content_id_view_state(
     frozen view as live (honest_failure_modes #2: absence != healthy).
     ``unconfirmable_sent`` (the mesh blind spot — sends on protocols with no
     delivery proof) rides alongside so the JOIN can keep it on its OWN line,
-    never averaged into the dup/miss numbers (the #74 lesson)."""
+    never averaged into the dup/miss numbers (the #74 lesson).
+
+    ``infra_hashes`` (STEP 6) is this box's known gateway/peer hashes — its
+    own LXMF source hash + ``peer_gateway_destinations`` — so the JOIN can
+    classify a dup whose recipient is itself a gateway (e.g. MeshAnchor
+    ``58cecbd0``, in both gateways' peer lists) as infra-to-infra (benign,
+    structurally residual) rather than a human-facing dup. Sanitized so junk
+    can never crash the JOIN; defaults to an empty list (schema-2 always
+    emits the key)."""
     usent = (int(unconfirmable_sent)
              if isinstance(unconfirmable_sent, (int, float))
              and not isinstance(unconfirmable_sent, bool) else 0)
@@ -1152,6 +1185,7 @@ def build_content_id_view_state(
         "ts": float(now) if now is not None else time.time(),
         "content_id_view": view,
         "unconfirmable_sent": usent,
+        "infra_hashes": _sanitize_infra_hashes(infra_hashes),
     }
 
 
@@ -1161,6 +1195,7 @@ def write_content_id_view_state(
     path: Optional[Path] = None,
     host: Optional[str] = None,
     now: Optional[float] = None,
+    infra_hashes: Any = None,
 ) -> bool:
     """Best-effort: publish this process's ``content_id_view`` to the state
     file (atomic). NEVER raises — a publish failure must never touch the
@@ -1169,7 +1204,11 @@ def write_content_id_view_state(
     ``view`` defaults to the live singleton's view (the gateway's own
     counters); tests pass it explicitly. A non-dict view (snapshot returned
     no block) is NOT published — an absent file is honestly "no data" to the
-    collector, never a forged healthy zero."""
+    collector, never a forged healthy zero.
+
+    ``infra_hashes`` (STEP 6) is supplied by the gateway publish hook (own
+    LXMF hash + ``peer_gateway_destinations``); the JOIN uses it to classify
+    a dup's recipient infra-vs-human."""
     try:
         usent: Any = 0
         if view is None:
@@ -1180,7 +1219,8 @@ def write_content_id_view_state(
         if not isinstance(payload_view, dict):
             return False
         payload = build_content_id_view_state(
-            payload_view, host=host, now=now, unconfirmable_sent=usent)
+            payload_view, host=host, now=now, unconfirmable_sent=usent,
+            infra_hashes=infra_hashes)
         target = Path(path) if path is not None else content_id_view_state_path()
         atomic_write_text(target, json.dumps(payload, separators=(",", ":")))
         return True

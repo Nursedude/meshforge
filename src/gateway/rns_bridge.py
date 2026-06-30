@@ -1036,9 +1036,39 @@ class RNSMeshtasticBridge(
             if (now - last) < _CONTENT_ID_VIEW_WRITE_INTERVAL_S:
                 return
             self._last_content_id_view_write = now
-            _dc.write_content_id_view_state()
+            _dc.write_content_id_view_state(
+                infra_hashes=self._content_id_view_infra_hashes())
         except Exception:
             logger.debug("content_id_view publish hook error", exc_info=True)
+
+    def _content_id_view_infra_hashes(self) -> list:
+        """This box's KNOWN gateway/peer hashes for the STEP 6 dup-recipient
+        classification: own LXMF source hash + ``peer_gateway_destinations``.
+
+        DELIBERATELY excludes ``default_lxmf_destination`` — that list also
+        carries HUMAN inboxes (6b1a0120/7cda0fab/9217147e), which must stay
+        classified "human" so a dup to a real operator still pages. The peer
+        list is gateways-only (the sibling gateway + MeshAnchor 58cecbd0), so
+        a dup whose recipient is a gateway is correctly tagged infra-to-infra.
+
+        Best-effort + never raises: a publish must never destabilize the
+        bridge. An empty return just leaves recipients unclassifiable =
+        page-worthy 'human' downstream (never silently benign)."""
+        out: list = []
+        try:
+            own_src = getattr(self, "_lxmf_source", None)
+            own_hash = getattr(own_src, "hash", None) if own_src else None
+            if own_hash is not None:
+                out.append(own_hash.hex().lower())
+        except Exception:
+            pass
+        try:
+            for h in self.config.rns.get_peer_gateway_destinations() or []:
+                if isinstance(h, str) and h.strip():
+                    out.append(h.strip().lower())
+        except (AttributeError, TypeError):
+            pass
+        return out
 
     def _maybe_start_meshtastic_broadcast(self) -> None:
         """Start the Meshtastic broadcast bridge plug-in if configured.

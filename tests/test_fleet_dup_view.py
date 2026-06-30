@@ -34,17 +34,20 @@ def _view(confirmed, *, tracked_pairs=None, confirmed_pairs=None,
     }
 
 
-def _box(host, confirmed, *, ts=NOW, unconfirmable_sent=0, **kw):
-    return {
+def _box(host, confirmed, *, ts=NOW, unconfirmable_sent=0,
+         infra_hashes=None, **kw):
+    state = {
+        "schema": 1,
         "host": host,
-        "state": {
-            "schema": 1,
-            "host": host,
-            "ts": ts,
-            "content_id_view": _view(confirmed, **kw),
-            "unconfirmable_sent": unconfirmable_sent,
-        },
+        "ts": ts,
+        "content_id_view": _view(confirmed, **kw),
+        "unconfirmable_sent": unconfirmable_sent,
     }
+    # Only stamp infra_hashes when the test supplies it, so the absent case
+    # (old-schema box) is exercised distinctly from an empty published list.
+    if infra_hashes is not None:
+        state["infra_hashes"] = infra_hashes
+    return {"host": host, "state": state}
 
 
 def _err(host, error):
@@ -205,6 +208,94 @@ class TestComputeFleetDupView:
         ], now=NOW)
         assert v["untracked_events"] == 6
         assert v["unattributed_events"] == 4
+
+    # ── infra-vs-human recipient classification (STEP 6) ─────────────
+    #
+    # A dup whose recipient is itself a gateway/peer hash (e.g. MeshAnchor
+    # 58cecbd0, listed in peer_gateway_destinations on BOTH moc and moc3)
+    # is an infra-to-infra dup: both gateways legitimately relay there, and
+    # it is structurally unsuppressable without a coordination substrate.
+    # The HONEST detector tags those separately so the probe pages only on
+    # HUMAN-facing dups, not the benign infra steady-state.
+
+    INFRA = "58cecbd0ab5e17750c3d45411c913b75"   # MeshAnchor — a peer gateway
+    HUMAN = "6b1a0120941444587d7d1dc1bf6d64d7"   # a human NomadNet inbox
+
+    def test_infra_dup_split_out_not_counted_human(self):
+        v = compute_fleet_dup_view([
+            _box("moc",  [("c1:x", self.INFRA, 1)], infra_hashes=[self.INFRA]),
+            _box("moc3", [("c1:x", self.INFRA, 1)], infra_hashes=[self.INFRA]),
+        ], now=NOW)
+        assert v["status"] == "ok"
+        assert v["fleet_duplicate_pairs"] == 1          # still a real dup
+        assert v["fleet_infra_duplicate_pairs"] == 1
+        assert v["fleet_human_duplicate_pairs"] == 0    # NOT a human dup
+        assert v["infra_hashes_known"] >= 1
+        assert v["fleet_duplicates"][0]["recipient_kind"] == "infra"
+
+    def test_human_dup_counted(self):
+        v = compute_fleet_dup_view([
+            _box("moc",  [("c1:y", self.HUMAN, 1)], infra_hashes=[self.INFRA]),
+            _box("moc3", [("c1:y", self.HUMAN, 1)], infra_hashes=[self.INFRA]),
+        ], now=NOW)
+        assert v["fleet_duplicate_pairs"] == 1
+        assert v["fleet_human_duplicate_pairs"] == 1
+        assert v["fleet_infra_duplicate_pairs"] == 0
+        assert v["fleet_human_duplicate_deliveries"] == 1
+        assert v["fleet_duplicates"][0]["recipient_kind"] == "human"
+
+    def test_no_infra_hashes_published_treats_all_as_human(self):
+        # Old-schema boxes (no infra_hashes) -> can't prove infra -> page-safe
+        # (honest_failure_modes #2: absence of classification != benign infra).
+        v = compute_fleet_dup_view([
+            _box("moc",  [("c1:z", self.INFRA, 1)]),   # no infra_hashes
+            _box("moc3", [("c1:z", self.INFRA, 1)]),
+        ], now=NOW)
+        assert v["infra_hashes_known"] == 0
+        assert v["fleet_human_duplicate_pairs"] == 1   # pages — current behavior
+        assert v["fleet_infra_duplicate_pairs"] == 0
+        assert v["fleet_duplicates"][0]["recipient_kind"] == "human"
+
+    def test_infra_set_unions_across_boxes(self):
+        # Only moc published the infra set; the fleet union still classifies.
+        v = compute_fleet_dup_view([
+            _box("moc",  [("c1:x", self.INFRA, 1)], infra_hashes=[self.INFRA]),
+            _box("moc3", [("c1:x", self.INFRA, 1)]),  # didn't publish its set
+        ], now=NOW)
+        assert v["infra_hashes_known"] >= 1
+        assert v["fleet_infra_duplicate_pairs"] == 1
+        assert v["fleet_human_duplicate_pairs"] == 0
+
+    def test_recipient_classification_case_insensitive(self):
+        v = compute_fleet_dup_view([
+            _box("moc",  [("c1:x", self.INFRA.upper(), 1)],
+                 infra_hashes=[self.INFRA.lower()]),
+            _box("moc3", [("c1:x", self.INFRA.upper(), 1)],
+                 infra_hashes=[self.INFRA.lower()]),
+        ], now=NOW)
+        assert v["fleet_infra_duplicate_pairs"] == 1
+        assert v["fleet_human_duplicate_pairs"] == 0
+
+    def test_mixed_human_and_infra_dups_split(self):
+        v = compute_fleet_dup_view([
+            _box("moc",  [("cH", self.HUMAN, 1), ("cI", self.INFRA, 1)],
+                 infra_hashes=[self.INFRA]),
+            _box("moc3", [("cH", self.HUMAN, 1), ("cI", self.INFRA, 1)],
+                 infra_hashes=[self.INFRA]),
+        ], now=NOW)
+        assert v["fleet_duplicate_pairs"] == 2
+        assert v["fleet_human_duplicate_pairs"] == 1
+        assert v["fleet_infra_duplicate_pairs"] == 1
+        assert v["fleet_human_duplicate_deliveries"] == 1
+
+    def test_malformed_infra_hashes_ignored_not_crash(self):
+        # A non-list / junk infra_hashes is ignored (absence), never crashes.
+        b1 = _box("moc",  [("c1:x", self.INFRA, 1)])
+        b1["state"]["infra_hashes"] = "not-a-list"
+        b2 = _box("moc3", [("c1:x", self.INFRA, 1)], infra_hashes=[None, 123, ""])
+        v = compute_fleet_dup_view([b1, b2], now=NOW)
+        assert v["infra_hashes_known"] == 0
+        assert v["fleet_human_duplicate_pairs"] == 1   # un-provable -> human
 
     def test_duplicates_sorted_and_capped(self):
         # 3 dup pairs; cap to 2 -> truncation surfaced, widest dup kept.

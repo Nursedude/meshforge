@@ -1232,6 +1232,44 @@ class TestContentIdViewStateProducerStep4c:
         assert v["confirmed"][0]["content_id"] == "c1:aa"
         assert v["confirmed"][0]["recipient"] == "6b1a0120"
 
+    # ── STEP 6: infra_hashes carry (recipient classification) ─────────
+    #
+    # The box publishes its own gateway hash + peer_gateway_destinations so
+    # the cross-box JOIN can tag a dup to a gateway/peer recipient (e.g.
+    # MeshAnchor 58cecbd0) as infra-to-infra rather than human-facing.
+
+    def test_schema_bumped_for_infra_hashes(self):
+        # The envelope shape grew an infra_hashes field -> schema must bump
+        # so a collector reading an old file can tell.
+        assert dc.CONTENT_ID_VIEW_STATE_SCHEMA >= 2
+
+    def test_build_state_carries_infra_hashes(self):
+        st = dc.build_content_id_view_state(
+            {}, infra_hashes=["3dFBdb5d", "58cecbd0"])
+        # normalized: lowercased + order-stable-deduped
+        assert st["infra_hashes"] == ["3dfbdb5d", "58cecbd0"]
+
+    def test_build_state_infra_hashes_default_empty_list(self):
+        st = dc.build_content_id_view_state({})
+        assert st["infra_hashes"] == []
+
+    def test_build_state_infra_hashes_sanitized(self):
+        # junk / non-str / blank dropped; dupes collapsed; never crashes.
+        st = dc.build_content_id_view_state(
+            {}, infra_hashes=["AAAA", None, 123, "", "aaaa", "bbbb"])
+        assert st["infra_hashes"] == ["aaaa", "bbbb"]
+
+    def test_build_state_infra_hashes_non_list_is_empty(self):
+        st = dc.build_content_id_view_state({}, infra_hashes="not-a-list")
+        assert st["infra_hashes"] == []
+
+    def test_write_carries_infra_hashes(self, tmp_path):
+        target = tmp_path / "v.json"
+        assert dc.write_content_id_view_state(
+            path=target, infra_hashes=["58cecbd0"]) is True
+        payload = json.loads(target.read_text())
+        assert payload["infra_hashes"] == ["58cecbd0"]
+
     def test_write_reflects_local_double_delivery(self, tmp_path):
         for mid in ("m1", "m2"):
             dc.record(DeliveryState.CONFIRMED, mid, protocol="rns",
