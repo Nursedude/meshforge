@@ -1091,3 +1091,96 @@ class TestDetectorHonesty:
         finally:
             if scripts_dir in sys.path:
                 sys.path.remove(scripts_dir)
+
+
+class TestContentIdInvariant:
+    """STEP 3 (dedup/identity arc): every explicit BridgedMessage /
+    CanonicalMessage construction in the gateway either stamps/carries a
+    content_id or sits in a DOCUMENTED allowlist — so a new bridge ingress or
+    egress can't silently ship an unidentifiable logical message. This is the
+    foundation guard the dup/miss detector rests on, mirroring
+    MF019/TestRNSReticulumChokepoint. AST-based, so it survives line shifts.
+
+    Allowlist (keyed by (file, enclosing-function)):
+      - meshtastic_handler.py::_handle_text_message — the PhoneAPI/TCP mesh
+        ingress. It has only the box-LOCAL numeric channel INDEX, not the topic
+        channel NAME (#77); stamping here would mint an id INCONSISTENT with the
+        live MQTT-json leg's name-keyed id, and a valid-looking-but-wrong id is
+        the honest-failure trap. Deliberately unstamped until a channel
+        index→name resolver is wired (MQTT-json is the live M→R-to-RNS leg).
+      - meshcore_handler.py::send_text — a MeshCore SEND (egress) built from
+        text+destination; not a logical-message ingress and carries no origin
+        to mint from. content_id is carried where a sourced message bridges,
+        not minted at this egress.
+    """
+
+    CONSTRUCTORS = {"BridgedMessage", "CanonicalMessage"}
+    ALLOWLIST = {
+        ("meshtastic_handler.py", "_handle_text_message"),
+        ("meshcore_handler.py", "send_text"),
+    }
+
+    @staticmethod
+    def _scan_constructions():
+        gw = os.path.join(SRC_DIR, "gateway")
+        found = []  # (basename, funcname, lineno, has_content_id)
+        for fn in sorted(os.listdir(gw)):
+            if not fn.endswith(".py"):
+                continue
+            with open(os.path.join(gw, fn), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), filename=fn)
+            stack = []
+
+            class _V(ast.NodeVisitor):
+                def visit_FunctionDef(self, node):
+                    stack.append(node.name)
+                    self.generic_visit(node)
+                    stack.pop()
+                visit_AsyncFunctionDef = visit_FunctionDef
+
+                def visit_Call(self, node):
+                    name = None
+                    if isinstance(node.func, ast.Name):
+                        name = node.func.id
+                    elif isinstance(node.func, ast.Attribute):
+                        name = node.func.attr
+                    if name in TestContentIdInvariant.CONSTRUCTORS:
+                        has = any(k.arg == "content_id" for k in node.keywords)
+                        found.append((fn, stack[-1] if stack else "<module>",
+                                      node.lineno, has))
+                    self.generic_visit(node)
+
+            _V().visit(tree)
+        return found
+
+    def test_no_unstamped_message_construction(self):
+        violations = []
+        for fn, func, lineno, has_cid in self._scan_constructions():
+            if has_cid or (fn, func) in self.ALLOWLIST:
+                continue
+            violations.append(f"{fn}:{lineno} in {func}()")
+        assert not violations, (
+            "Bridge message construction without a content_id (dedup/identity "
+            "arc STEP 3). Stamp content_id= (compute_content_id, a carried id, "
+            "or self.content_id), or add (file, function) to ALLOWLIST with a "
+            "documented reason.\nViolations:\n  " + "\n  ".join(sorted(violations)))
+
+    def test_allowlist_entries_are_live(self):
+        # A stale allowlist entry (construction removed/renamed/now stamped)
+        # must be cleaned up so the allowlist can't rot into a blind spot.
+        unstamped = {(fn, func) for fn, func, _, has
+                     in self._scan_constructions() if not has}
+        stale = self.ALLOWLIST - unstamped
+        assert not stale, f"Stale content_id allowlist entries: {sorted(stale)}"
+
+    def test_compute_content_id_is_the_shared_minter(self):
+        sys.path.insert(0, SRC_DIR)
+        try:
+            from gateway.canonical_message import compute_content_id
+            assert callable(compute_content_id)
+            a = compute_content_id("meshtastic:!x", "hi", "ch")
+            assert a == compute_content_id("meshtastic:!x", "hi", "ch")
+            assert a.startswith("c1:")
+        finally:
+            if SRC_DIR in sys.path:
+                sys.path.remove(SRC_DIR)

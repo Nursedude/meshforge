@@ -501,6 +501,9 @@ class CanonicalMessage:
             metadata=merged_meta,
             origin=self.origin,
             via_internet=self.via_internet,
+            # Carry the logical content_id across the Canonical→Bridged
+            # conversion so the identity survives (dedup/identity arc STEP 3).
+            content_id=self.content_id,
         )
 
     def should_bridge(self, filter_mqtt: bool = False,
