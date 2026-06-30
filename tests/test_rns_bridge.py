@@ -3998,6 +3998,72 @@ class TestSessionDmToGateway:
         assert bridge.stats['session_routed_m2r'] == 0
         assert bridge.stats['mesh_to_rns_delivered'] == 1
 
+    # --- durable r2m fallback (bot round-trip survives restart/expiry) ---
+
+    def _with_durable(self, bridge, tmp_path):
+        from gateway.correlation_store import BridgeCorrelationStore
+        bridge._correlation = BridgeCorrelationStore(
+            db_path=str(tmp_path / "c.db"))
+        bridge.config.rns.reply_routing_enabled = True
+        return bridge._correlation
+
+    def test_durable_directer_fallback_routes(self, bridge, tmp_path):
+        """No live session, but a durable r2m correlation (an RNS client
+        directed at this mesh node earlier) → the node's reply STILL routes
+        HOME, not to broadcast. The bot-round-trip-survives-restart property
+        the in-memory session loses."""
+        self._enable(bridge, tmp_path)
+        corr = self._with_durable(bridge, tmp_path)
+        # PEER directed at the bot node "!aabb0042" earlier (now persisted).
+        corr.record("!aabb0042", self.PEER, direction="r2m")
+        sends = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sends.append((content, dest_hash, title, fields))
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            bridge._process_mesh_to_rns(self._dm())
+
+        assert len(sends) == 1  # single private send to the directer — NO fan-out
+        assert sends[0][1] == bytes.fromhex(self.PEER)
+        assert bridge.stats.get('session_routed_m2r_durable') == 1
+        assert bridge.stats['session_routed_m2r'] == 1
+
+    def test_durable_fallback_gated_on_reply_routing(self, bridge, tmp_path):
+        """reply_routing OFF → durable fallback inert; broadcast fan-out."""
+        from gateway.correlation_store import BridgeCorrelationStore
+        self._enable(bridge, tmp_path)
+        bridge._correlation = BridgeCorrelationStore(
+            db_path=str(tmp_path / "c.db"))
+        bridge._correlation.record("!aabb0042", self.PEER, direction="r2m")
+        # reply_routing_enabled left as the MagicMock default → reads OFF
+        sends = []
+        with patch.object(bridge, 'send_to_rns',
+                          side_effect=lambda *a, **k: sends.append(a) or True):
+            bridge._process_mesh_to_rns(self._dm())
+        assert bridge.stats['session_dm_no_session'] == 1
+        assert bridge.stats.get('session_routed_m2r_durable', 0) == 0
+
+    def test_live_session_preferred_over_durable(self, bridge, tmp_path):
+        """A live session wins; the durable lookup isn't consulted."""
+        sessions = self._enable(bridge, tmp_path)
+        corr = self._with_durable(bridge, tmp_path)
+        sessions.touch("!aabb0042", self.PEER)
+        # A durable row pointing ELSEWHERE must be ignored while a session lives.
+        corr.record("!aabb0042", "cd" * 16, direction="r2m")
+        sends = []
+
+        def capture(content, dest_hash=None, title=None, fields=None):
+            sends.append(dest_hash)
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture):
+            bridge._process_mesh_to_rns(self._dm())
+
+        assert sends == [bytes.fromhex(self.PEER)]  # session peer, not the durable
+        assert bridge.stats.get('session_routed_m2r_durable', 0) == 0
+
     def test_flag_off_unchanged_and_db_never_opened(self, bridge):
         # Fixture MagicMock flag (truthy-not-True) → sessions OFF.
         from gateway.rns_bridge import BridgedMessage
