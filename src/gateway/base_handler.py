@@ -196,6 +196,67 @@ class RecentRfTxRegistry:
             ts = self._entries.get(key)
             return ts is not None and (now - ts) <= window_s
 
+    # ── content_id-keyed claim (transport-truth arc Phase 1) ──────────
+    #
+    # The text-hash seen_within above matches on normalized CONTENT, and is
+    # populated at RX (heard-on-RF) and TX — which makes it timing-sensitive:
+    # a second egress path can check BEFORE the first registers and both
+    # deliver. The content_id claim is the deterministic, race-free upgrade:
+    # both intra-box egress paths carry/compute the SAME content_id, and
+    # claim_content_id is an atomic check-and-set, so EXACTLY ONE wins the
+    # segment. Keyed separately ("cid\\x00" namespace) so a content_id string
+    # can never collide with a text body. Empty content_id is unidentifiable
+    # and is NEVER suppressed (honest_failure_modes #1).
+
+    @staticmethod
+    def _cid_key(content_id: str) -> Optional[str]:
+        cid = (content_id or "").strip()
+        return ("cid\x00" + cid) if cid else None
+
+    def register_content_id(self, content_id: str) -> None:
+        """Record that ``content_id`` was just transmitted on this radio."""
+        key = self._cid_key(content_id)
+        if key is None:
+            return
+        now = time.monotonic()
+        with self._lock:
+            self._entries[key] = now
+            self._prune_locked(now)
+
+    def seen_content_id_within(self, content_id: str, window_s: float) -> bool:
+        """True if ``content_id`` was registered on this radio in window_s."""
+        key = self._cid_key(content_id)
+        if key is None:
+            return False
+        now = time.monotonic()
+        with self._lock:
+            ts = self._entries.get(key)
+            return ts is not None and (now - ts) <= window_s
+
+    def claim_content_id(self, content_id: str, window_s: float) -> bool:
+        """Atomically claim ``content_id`` for this radio segment.
+
+        Returns True if NEWLY claimed (this caller owns the content_id for the
+        window and should transmit) — also True for an empty content_id, since
+        unidentifiable content must never be suppressed. Returns False if
+        another caller already claimed it within ``window_s`` (this caller must
+        SUPPRESS its copy). Check-and-set is one critical section, so two
+        egress paths racing the same logical message can never both win:
+        exactly one transmits, the other suppresses. In-process => no
+        distributed race (the dup is intra-box).
+        """
+        key = self._cid_key(content_id)
+        if key is None:
+            return True   # unidentifiable -> never suppress
+        now = time.monotonic()
+        with self._lock:
+            ts = self._entries.get(key)
+            if ts is not None and (now - ts) <= window_s:
+                return False  # already claimed within window -> suppress
+            self._entries[key] = now
+            self._prune_locked(now)
+            return True
+
 
 def dual_path_dedup_enabled(config: Any) -> bool:
     """Strict read of rns.dual_path_dedup_enabled (default False).

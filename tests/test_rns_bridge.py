@@ -4306,6 +4306,89 @@ class TestRecentRfTxRegistry:
         assert bh.get_rf_tx_registry() is bh._rf_tx_registry
 
 
+class TestContentIdClaim:
+    """Transport-truth arc Phase 1: the content_id-keyed per-segment claim —
+    a deterministic, race-free dedup / loop-guard substrate. Unlike the
+    text-hash seen_within (RX-timing sensitive), claim_content_id is an atomic
+    test-and-set so two intra-box egress paths racing to deliver the same
+    logical message can never both win."""
+
+    def _registry(self, **kw):
+        from gateway.base_handler import RecentRfTxRegistry
+        return RecentRfTxRegistry(**kw)
+
+    def test_register_then_seen_content_id(self):
+        r = self._registry()
+        r.register_content_id("c1:abc")
+        assert r.seen_content_id_within("c1:abc", 60.0) is True
+
+    def test_unregistered_content_id_not_seen(self):
+        r = self._registry()
+        assert r.seen_content_id_within("c1:abc", 60.0) is False
+
+    def test_content_id_window_expiry(self):
+        r = self._registry()
+        r.register_content_id("c1:abc")
+        for k in list(r._entries):
+            r._entries[k] -= 61.0            # simulate 61s passing
+        assert r.seen_content_id_within("c1:abc", 60.0) is False
+
+    def test_empty_content_id_never_seen_and_always_claims(self):
+        # Unidentifiable content (no content_id) must NEVER be suppressed.
+        r = self._registry()
+        r.register_content_id("")            # no-op
+        assert r.seen_content_id_within("", 60.0) is False
+        assert r.claim_content_id("", 60.0) is True
+        assert r.claim_content_id("", 60.0) is True
+
+    def test_claim_first_wins_second_suppressed(self):
+        r = self._registry()
+        assert r.claim_content_id("c1:x", 60.0) is True    # first -> proceed
+        assert r.claim_content_id("c1:x", 60.0) is False   # second -> suppress
+
+    def test_claim_independent_ids_both_proceed(self):
+        r = self._registry()
+        assert r.claim_content_id("c1:a", 60.0) is True
+        assert r.claim_content_id("c1:b", 60.0) is True
+
+    def test_claim_expires_then_reclaimable(self):
+        r = self._registry()
+        assert r.claim_content_id("c1:x", 60.0) is True
+        for k in list(r._entries):
+            r._entries[k] -= 61.0
+        assert r.claim_content_id("c1:x", 60.0) is True    # window passed
+
+    def test_content_id_keys_dont_collide_with_text(self):
+        # A content_id string and a text body equal to it must not cross-match.
+        r = self._registry()
+        r.register("c1:abc")                                # text key only
+        assert r.seen_content_id_within("c1:abc", 60.0) is False
+        r.register_content_id("c1:abc")
+        assert r.seen_content_id_within("c1:abc", 60.0) is True
+        assert r.seen_within("c1:abc", 60.0) is True        # text still independent
+
+    def test_claim_is_atomic_under_concurrency(self):
+        # 20 threads race claim() on ONE id: exactly one wins (the race-free
+        # guarantee that the timing-sensitive text dedup could not give).
+        import threading
+        r = self._registry()
+        results = []
+        rlock = threading.Lock()
+
+        def worker():
+            got = r.claim_content_id("c1:race", 60.0)
+            with rlock:
+                results.append(got)
+
+        threads = [threading.Thread(target=worker) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert results.count(True) == 1
+        assert results.count(False) == 19
+
+
 class TestDualPathDedup:
     """R→M broadcast suppression on registry hit (gated, default off)."""
 
