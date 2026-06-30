@@ -134,6 +134,9 @@ class BridgedMessage:
     metadata: dict = None
     origin: MessageOrigin = MessageOrigin.UNKNOWN
     via_internet: bool = False  # True if message came through MQTT/internet
+    # Logical content identity (dedup/identity arc), stamped at first ingress;
+    # '' when unminted. Measure-only — carried + counted, never used to suppress.
+    content_id: str = ""
 
     def __post_init__(self):
         if self.timestamp is None:

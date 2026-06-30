@@ -626,6 +626,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
         """Bridge a text message from Meshtastic to RNS."""
         from .rns_bridge import BridgedMessage
         from .bridge_health import MessageOrigin
+        from .canonical_message import compute_content_id
 
         # `sender` is the LAST-HOP node that delivered the packet to this
         # gateway's radio (often a rebroadcaster, or the gateway's own node);
@@ -715,6 +716,14 @@ class MQTTBridgeHandler(BaseMessageHandler):
         to_id = f"!{to_num:08x}" if to_num else None
         is_broadcast = to_num == 0xFFFFFFFF
 
+        # Logical content identity (dedup/identity arc, STEP 2 — measure-only).
+        # Keyed on the ORIGINATOR (data['from'] via from_id, not the last-hop
+        # sender), tag-stripped content, and the channel NAME from the topic
+        # (NOT the box-local numeric slot index, #77) — so the SAME logical
+        # broadcast minted independently on moc and moc3 gets the SAME id.
+        content_id = compute_content_id(
+            f"meshtastic:{from_id}", text, self._topic_channel_name(topic) or "")
+
         msg = BridgedMessage(
             source_network="meshtastic",
             source_id=from_id,
@@ -723,6 +732,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
             is_broadcast=is_broadcast,
             origin=MessageOrigin.MQTT,
             via_internet=False,  # Local MQTT, not internet relay
+            content_id=content_id,
             metadata={
                 'channel': channel,
                 'mqtt_topic': topic,

@@ -1036,3 +1036,79 @@ class TestEmptyIdContentDedupIssue34:
         h._handle_json_message(topic, payload)
         h._handle_json_message(topic, payload)
         assert h._bridge_text_message.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Dedup / identity arc — STEP 2a: mint content_id at the mesh M→R ingress
+# (measure-only — the field is carried + counted, never used to suppress).
+# ---------------------------------------------------------------------------
+
+from gateway.rns_bridge import BridgedMessage  # noqa: E402
+from gateway.canonical_message import compute_content_id  # noqa: E402
+
+
+class TestContentIdStampingAtMeshIngress:
+    """_bridge_text_message stamps a stable logical content_id on the
+    BridgedMessage it queues, keyed on origin (data['from'], the ORIGINATOR,
+    not the last-hop sender), tag-stripped content, and channel NAME."""
+
+    def test_bridged_message_has_content_id_field(self):
+        m = BridgedMessage(source_network="meshtastic", source_id="!a2e95ba4",
+                            destination_id=None, content="hi")
+        assert m.content_id == ""
+        m2 = BridgedMessage(source_network="rns", source_id="x",
+                            destination_id=None, content="hi",
+                            content_id="c1:abc")
+        assert m2.content_id == "c1:abc"
+
+    def test_ingress_stamps_expected_content_id(self):
+        handler = _make_bridge_handler()
+        handler._bridge_text_message(
+            {
+                "from": 0xa2e95ba4,
+                "sender": "!a2e95ba4",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": "hello fleet"},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!a2e95ba4",
+        )
+        handler._message_queue.put.assert_called_once()
+        msg = handler._message_queue.put.call_args[0][0]
+        expected = compute_content_id(
+            "meshtastic:!a2e95ba4", "hello fleet", "meshforge")
+        assert msg.content_id == expected and msg.content_id != ""
+
+    def test_ingress_origin_is_from_not_last_hop_sender(self):
+        # The origin axis must be data['from'] (originator), so a message
+        # relayed through a different last-hop 'sender' still mints the SAME
+        # content_id (the cross-gateway dup-A property).
+        handler = _make_bridge_handler()
+        common = dict(to=0xFFFFFFFF, payload={"text": "talk story"}, channel=2)
+        handler._bridge_text_message(
+            {"from": 0xa2e95ba4, "sender": "!deadbeef", **common},
+            topic="msh/US/2/json/meshforge/!deadbeef")
+        id_via_relay = handler._message_queue.put.call_args[0][0].content_id
+        handler2 = _make_bridge_handler()
+        handler2._bridge_text_message(
+            {"from": 0xa2e95ba4, "sender": "!a2e95ba4", **common},
+            topic="msh/US/2/json/meshforge/!a2e95ba4")
+        id_direct = handler2._message_queue.put.call_args[0][0].content_id
+        assert id_via_relay == id_direct != ""
+
+    def test_ingress_channel_by_name_not_slot_index(self):
+        # Two boxes that publish the same logical message under DIFFERENT
+        # numeric slot indices but the same channel NAME mint the SAME id
+        # (#77: the numeric 'channel' is box-local; the topic NAME is stable).
+        h1 = _make_bridge_handler()
+        h1._bridge_text_message(
+            {"from": 0x1111, "sender": "!1111", "to": 0xFFFFFFFF,
+             "payload": {"text": "hi"}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!1111")
+        h2 = _make_bridge_handler()
+        h2._bridge_text_message(
+            {"from": 0x1111, "sender": "!1111", "to": 0xFFFFFFFF,
+             "payload": {"text": "hi"}, "channel": 5},
+            topic="msh/US/5/json/meshforge/!1111")
+        assert (h1._message_queue.put.call_args[0][0].content_id
+                == h2._message_queue.put.call_args[0][0].content_id != "")

@@ -897,3 +897,15 @@ class TestComputeContentId:
     def test_bridge_tag_list_pinned_to_base_handler(self):
         assert tuple(_CONTENT_ID_BRIDGE_TAGS) == tuple(
             base_handler.BRIDGE_TAG_PREFIXES)
+
+
+class TestCanonicalMessageContentIdField:
+    """CanonicalMessage carries the content_id (STEP 2: mint + carry)."""
+
+    def test_default_empty(self):
+        m = CanonicalMessage(source_network="meshtastic", content="hi")
+        assert m.content_id == ""
+
+    def test_settable(self):
+        m = CanonicalMessage(content="hi", content_id="c1:deadbeef")
+        assert m.content_id == "c1:deadbeef"

@@ -168,6 +168,12 @@ class CanonicalMessage:
     # Identity
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
+    # Logical content identity (dedup/identity arc) — ONE stable id per logical
+    # message, stamped at first ingress (compute_content_id) and carried across
+    # every transport leg. '' when not yet minted / no text to mint from.
+    # Measure-only: carried + counted, never used to suppress a copy.
+    content_id: str = ""
+
     # Source
     source_network: str = ""         # "meshtastic" | "meshcore" | "rns"
     source_address: str = ""         # Network-specific node address
