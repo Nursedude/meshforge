@@ -149,6 +149,7 @@ class BridgeSendMixin:
             msg_id = f"lxmf-{int(time.time() * 1000)}"
             self._register_lxmf_delivery_callbacks(
                 lxm, msg_id, destination_hash, message[:50],
+                content_id=(fields or {}).get('meshforge_content_id', '') or '',
             )
 
             bounded_call("rnsd.handle_outbound",
@@ -270,6 +271,8 @@ class BridgeSendMixin:
             )
             self._register_lxmf_delivery_callbacks(
                 lxm, msg_id, destination_hash, message[:50],
+                content_id=(payload.get('content_id')
+                            or payload.get('meshforge_content_id') or ''),
             )
 
             bounded_call("rnsd.handle_outbound",

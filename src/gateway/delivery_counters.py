@@ -235,6 +235,10 @@ class DeliveryEvent:
     protocol: Optional[str] = None
     drop_reason: Optional[DropReason] = None
     note: str = ""
+    # dedup/identity arc STEP 4a (measure-only): the logical content_id and the
+    # delivery recipient. '' when not threaded through this lifecycle path yet.
+    content_id: str = ""
+    recipient: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         d = {
@@ -244,6 +248,10 @@ class DeliveryEvent:
             "protocol": self.protocol,
             "drop_reason": self.drop_reason.value if self.drop_reason else None,
         }
+        if self.content_id:
+            d["content_id"] = self.content_id
+        if self.recipient:
+            d["recipient"] = self.recipient
         if self.note:
             d["note"] = self.note
         return d
@@ -359,11 +367,30 @@ class DeliveryCounters:
                 " state TEXT NOT NULL,"
                 " protocol TEXT,"
                 " drop_reason TEXT,"
+                # dedup/identity arc STEP 4a: the stable logical content_id and
+                # the delivery recipient — together they key honest dup/miss
+                # accounting (a content_id alone false-alarms on the by-design
+                # M→R fan-out to many recipients).
+                " content_id TEXT NOT NULL DEFAULT '',"
+                " recipient TEXT NOT NULL DEFAULT '',"
                 " note TEXT NOT NULL DEFAULT ''"
                 ")"
             )
+            # Additive migration for pre-existing fleet DBs (the CREATE above is
+            # a no-op when the table exists, so the new columns need ALTER).
+            existing = {row[1] for row in
+                        conn.execute("PRAGMA table_info(events)")}
+            for col in ("content_id", "recipient"):
+                if col not in existing:
+                    conn.execute(
+                        f"ALTER TABLE events ADD COLUMN {col} "
+                        "TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_events_id ON events(id)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_events_content_id "
+                "ON events(content_id)"
             )
             conn.commit()
 
@@ -466,6 +493,8 @@ class DeliveryCounters:
         drop_reason: Optional[DropReason] = None,
         note: str = "",
         ts: Optional[float] = None,
+        content_id: str = "",
+        recipient: str = "",
     ) -> DeliveryEvent:
         """Record one lifecycle transition.
 
@@ -504,6 +533,8 @@ class DeliveryCounters:
             protocol=protocol,
             drop_reason=drop_reason,
             note=note,
+            content_id=str(content_id or ""),
+            recipient=str(recipient or ""),
         )
 
         try:
@@ -633,14 +664,17 @@ class DeliveryCounters:
             )
             # Event row.
             conn.execute(
-                "INSERT INTO events(ts, id, state, protocol, drop_reason, note) "
-                "VALUES(?, ?, ?, ?, ?, ?)",
+                "INSERT INTO events("
+                "ts, id, state, protocol, drop_reason, content_id, recipient, note"
+                ") VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     event.ts,
                     event.id,
                     event.state.value,
                     event.protocol,
                     event.drop_reason.value if event.drop_reason else None,
+                    event.content_id,
+                    event.recipient,
                     event.note,
                 ),
             )
@@ -676,7 +710,8 @@ class DeliveryCounters:
                     "SELECT key, value FROM counters"
                 ).fetchall()
                 events_rows = conn.execute(
-                    "SELECT ts, id, state, protocol, drop_reason, note "
+                    "SELECT ts, id, state, protocol, drop_reason, "
+                    "content_id, recipient, note "
                     "FROM events ORDER BY rowid DESC "
                     "LIMIT ?",
                     (max(0, recent_limit),),
@@ -739,7 +774,8 @@ class DeliveryCounters:
         # the snapshot contract is newest-LAST so the operator can
         # tail a JSON dump and read the latest at the bottom.
         recent: List[Dict[str, Any]] = []
-        for ts, msg_id, state, protocol, drop_reason, note in reversed(events_rows):
+        for (ts, msg_id, state, protocol, drop_reason,
+                content_id, recipient, note) in reversed(events_rows):
             d: Dict[str, Any] = {
                 "ts": ts,
                 "id": msg_id,
@@ -747,6 +783,10 @@ class DeliveryCounters:
                 "protocol": protocol,
                 "drop_reason": drop_reason,
             }
+            if content_id:
+                d["content_id"] = content_id
+            if recipient:
+                d["recipient"] = recipient
             if note:
                 d["note"] = note
             recent.append(d)
@@ -912,11 +952,14 @@ def record(
     protocol: Optional[str] = None,
     drop_reason: Optional[DropReason] = None,
     note: str = "",
+    content_id: str = "",
+    recipient: str = "",
 ) -> DeliveryEvent:
     """Module-level convenience — bumps the singleton's counters."""
     return get_singleton().record(
         state, msg_id,
         protocol=protocol, drop_reason=drop_reason, note=note,
+        content_id=content_id, recipient=recipient,
     )
 
 

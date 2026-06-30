@@ -2847,6 +2847,27 @@ class TestSynAckCallbackSymmetry:
         assert fake_lxm.register_delivery_callback.called
         assert fake_lxm.register_failed_callback.called
 
+    def test_send_to_rns_callback_records_content_id_and_recipient(self, bridge):
+        """STEP 4a-ii: the RNS delivery-proof CONFIRMED event carries the
+        content_id (from the meshforge_content_id field) + the recipient (the
+        destination hash) — the (content_id, recipient) axis the dup detector
+        keys on."""
+        import sys
+        from gateway import delivery_counters as _dc
+        fake_rns, fake_lxmf, fake_lxm = self._fake_rns_lxmf_modules()
+        self._prime_bridge_for_send(bridge)
+        dest = b"\xcd" * 16
+        with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
+            bridge.send_to_rns("hello", dest,
+                               fields={"meshforge_content_id": "c1:live99"})
+        delivered_cb = fake_lxm.register_delivery_callback.call_args[0][0]
+        delivered_cb(MagicMock(name="receipt"))
+        recent = _dc.get_singleton().snapshot()["recent"]
+        matches = [e for e in recent if e.get("content_id") == "c1:live99"]
+        assert matches, "no event carried the content_id"
+        assert matches[-1]["state"] == "confirmed"
+        assert matches[-1]["recipient"] == dest.hex()
+
     def test_queue_send_rns_registers_both_callbacks(self, bridge):
         """Retry path wires the same callbacks — was the Fork-D gap."""
         import sys

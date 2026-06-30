@@ -973,3 +973,46 @@ class TestDeliveryFailureReasonsParity:
     def test_all_members_are_real_drop_reasons(self):
         valid = {r.value for r in DropReason}
         assert dc.DELIVERY_FAILURE_REASONS <= valid
+
+
+class TestContentIdRecipientSubstrate:
+    """STEP 4a-i (dedup/identity arc): events carry content_id + recipient so
+    the dup/miss detector can later key on (content_id, recipient) — a
+    content_id alone false-alarms on the by-design M→R fan-out."""
+
+    def test_record_persists_content_id_and_recipient(self):
+        c = DeliveryCounters()
+        c.record(DeliveryState.CONFIRMED, "m1", protocol="rns",
+                 content_id="c1:abc", recipient="6b1a0120")
+        ev = c.snapshot()["recent"][-1]
+        assert ev["content_id"] == "c1:abc"
+        assert ev["recipient"] == "6b1a0120"
+
+    def test_defaults_empty_when_not_supplied(self):
+        c = DeliveryCounters()
+        c.record(DeliveryState.SENT, "m2", protocol="rns")
+        ev = c.snapshot()["recent"][-1]
+        assert ev.get("content_id", "") == ""
+        assert ev.get("recipient", "") == ""
+
+    def test_migration_adds_columns_to_legacy_events_table(self, tmp_path):
+        # A pre-existing fleet DB has the old events schema; _init_db must
+        # ALTER-ADD the columns without error (guarded, additive).
+        import sqlite3
+        db = tmp_path / "legacy.db"
+        conn = sqlite3.connect(str(db))
+        conn.execute(
+            "CREATE TABLE events (ts REAL NOT NULL, id TEXT NOT NULL DEFAULT '',"
+            " state TEXT NOT NULL, protocol TEXT, drop_reason TEXT,"
+            " note TEXT NOT NULL DEFAULT '')")
+        conn.execute("CREATE TABLE counters (key TEXT PRIMARY KEY,"
+                     " value INTEGER NOT NULL DEFAULT 0)")
+        conn.commit()
+        conn.close()
+        c = DeliveryCounters(db_path=db, run_preflight=False)
+        cols = {r[1] for r in
+                sqlite3.connect(str(db)).execute("PRAGMA table_info(events)")}
+        assert "content_id" in cols and "recipient" in cols
+        c.record(DeliveryState.CONFIRMED, "m3", content_id="c1:z", recipient="rr")
+        ev = c.snapshot()["recent"][-1]
+        assert ev["content_id"] == "c1:z" and ev["recipient"] == "rr"

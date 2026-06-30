@@ -28,6 +28,7 @@ class BridgeAckMixin:
         msg_id: str,
         destination_hash: bytes,
         msg_preview: str,
+        content_id: str = "",
     ) -> None:
         """Wire CONFIRMED + DROPPED(rns_delivery_failed) onto an LXMessage.
 
@@ -48,12 +49,23 @@ class BridgeAckMixin:
             msg_id, destination_hash, msg_preview
         )
 
+        # dedup/identity arc STEP 4a (measure-only): stamp the logical
+        # content_id + the recipient onto the RNS delivery-proof events so the
+        # dup/miss detector can key on (content_id, recipient). The RNS leg is
+        # the live dup-A path (M→R fan-out), and destination_hash IS the
+        # recipient — exactly the axis a content_id alone lacks.
+        recipient = (destination_hash.hex()
+                     if isinstance(destination_hash, (bytes, bytearray))
+                     else (str(destination_hash) if destination_hash else ""))
+
         def on_delivered(receipt):
             self.delivery_tracker.confirm_delivery(msg_id)
             _dc.record(
                 _dc.DeliveryState.CONFIRMED,
                 msg_id=msg_id,
                 protocol="rns",
+                content_id=content_id,
+                recipient=recipient,
             )
             self._maybe_emit_ack_for_msgid(msg_id, kind='delivered')
 
@@ -68,6 +80,8 @@ class BridgeAckMixin:
                 protocol="rns",
                 drop_reason=_dc.DropReason.RNS_DELIVERY_FAILED,
                 note=reason[:80],
+                content_id=content_id,
+                recipient=recipient,
             )
             self._maybe_emit_ack_for_msgid(msg_id, kind='failed')
 

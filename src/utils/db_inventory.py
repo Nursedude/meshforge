@@ -208,8 +208,10 @@ INVENTORY: List[DBSpec] = [
             "Fork C honest delivery counters. Two tables: counters "
             "(KV — state totals / drop-reason histogram / per-protocol "
             "breakdown / first+last event ts) and events (FIFO ring "
-            "pruned on insert at RING_BUFFER_CAP = 500). Cross-process: "
-            "gateway daemon writes, map daemon serves "
+            "pruned on insert at RING_BUFFER_CAP = 500; events carry "
+            "content_id + recipient for (content_id,recipient) dup/miss "
+            "keying — dedup/identity arc STEP 4a, additive ALTER-migrated). "
+            "Cross-process: gateway daemon writes, map daemon serves "
             "/api/gateway/delivery from the same file."
         ),
     ),
