@@ -4650,3 +4650,46 @@ class TestContentIdCarryRnsLeg:
                 'source_id': '!a2e95ba4', 'content': 'hi',
                 'content_id': 'c1:spilled', 'is_broadcast': True})
         assert captured['m'].content_id == 'c1:spilled'
+
+
+class TestContentIdViewPublishHookStep4c:
+    """STEP 4c producer hook: the gateway loop throttle-publishes its
+    content_id_view to the state file the cross-box JOIN ssh-collects.
+    Exception-isolated — a publish failure must never touch the bridge."""
+
+    def _fake(self):
+        import types
+        return types.SimpleNamespace()
+
+    def test_publishes_first_then_throttles_then_republishes(self, monkeypatch):
+        import types
+        from gateway import rns_bridge
+        calls = []
+        monkeypatch.setattr(rns_bridge._dc, "write_content_id_view_state",
+                            lambda **kw: (calls.append(kw), True)[1])
+        clock = {"t": 1000.0}
+        monkeypatch.setattr(rns_bridge, "time",
+                            types.SimpleNamespace(monotonic=lambda: clock["t"]))
+        fake = self._fake()
+        meth = rns_bridge.RNSMeshtasticBridge._maybe_publish_content_id_view
+        meth(fake)                     # first → publish
+        assert len(calls) == 1
+        meth(fake)                     # immediate → throttled
+        assert len(calls) == 1
+        clock["t"] += rns_bridge._CONTENT_ID_VIEW_WRITE_INTERVAL_S + 1
+        meth(fake)                     # after interval → publish
+        assert len(calls) == 2
+
+    def test_never_raises_when_writer_errors(self, monkeypatch):
+        import types
+        from gateway import rns_bridge
+
+        def boom(**kw):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(rns_bridge._dc,
+                            "write_content_id_view_state", boom)
+        monkeypatch.setattr(rns_bridge, "time",
+                            types.SimpleNamespace(monotonic=lambda: 5.0))
+        # Must not propagate — bridge stability over a publish failure.
+        rns_bridge.RNSMeshtasticBridge._maybe_publish_content_id_view(self._fake())

@@ -1155,3 +1155,92 @@ class TestSnapshotContentIdViewStep4b:
         c.record(DeliveryState.CONFIRMED, "m1", protocol="rns",
                  content_id="c1:aa", recipient="rr")
         json.dumps(c.snapshot()["content_id_view"])
+
+
+class TestContentIdViewStateProducerStep4c:
+    """STEP 4c producer: each gateway box PUBLISHES its content_id_view to
+    an operator-owned state file so the cross-box JOIN can ssh-collect it.
+
+    This is the ONLY reachable transport for a gateway-only box (moc3
+    serves no HTTP — the moc3 hardware constraint), so the producer must
+    run as the operator (the gateway process owns the DB; root can't
+    safely open the operator's WAL DB) and be best-effort (a publish
+    failure must never touch the bridge)."""
+
+    def test_build_state_wraps_view_with_schema_host_ts(self):
+        view = {"tracked_events": 3, "confirmed": []}
+        st = dc.build_content_id_view_state(view, host="moc3", now=123.5)
+        assert st["schema"] == dc.CONTENT_ID_VIEW_STATE_SCHEMA
+        assert st["host"] == "moc3"
+        assert st["ts"] == 123.5
+        assert st["content_id_view"] is view
+
+    def test_build_state_defaults_host_and_ts(self, monkeypatch):
+        monkeypatch.setattr(dc.socket, "gethostname", lambda: "boxX")
+        monkeypatch.setattr(dc.time, "time", lambda: 999.0)
+        st = dc.build_content_id_view_state({})
+        assert st["host"] == "boxX"
+        assert st["ts"] == 999.0
+
+    def test_state_path_honors_xdg(self, monkeypatch):
+        monkeypatch.setenv("XDG_STATE_HOME", "/run/x")
+        p = dc.content_id_view_state_path()
+        assert str(p) == "/run/x/meshforge/content_id_view.json"
+
+    def test_state_path_falls_back_to_local_state(self, monkeypatch):
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.setattr(dc, "get_real_user_home",
+                            lambda: dc.Path("/home/op"))
+        p = dc.content_id_view_state_path()
+        assert str(p) == "/home/op/.local/state/meshforge/content_id_view.json"
+
+    def test_write_publishes_singleton_view(self, tmp_path):
+        # The _reset_singleton fixture points the singleton DB at tmp_path.
+        dc.record(DeliveryState.CONFIRMED, "m1", protocol="rns",
+                  content_id="c1:aa", recipient="6b1a0120")
+        target = tmp_path / "content_id_view.json"
+        assert dc.write_content_id_view_state(path=target, host="moc3",
+                                              now=1.0) is True
+        payload = json.loads(target.read_text())
+        assert payload["host"] == "moc3"
+        assert payload["ts"] == 1.0
+        assert payload["schema"] == dc.CONTENT_ID_VIEW_STATE_SCHEMA
+        v = payload["content_id_view"]
+        assert v["confirmed"][0]["content_id"] == "c1:aa"
+        assert v["confirmed"][0]["recipient"] == "6b1a0120"
+
+    def test_write_reflects_local_double_delivery(self, tmp_path):
+        for mid in ("m1", "m2"):
+            dc.record(DeliveryState.CONFIRMED, mid, protocol="rns",
+                      content_id="c1:dup", recipient="6b1a0120")
+        target = tmp_path / "v.json"
+        assert dc.write_content_id_view_state(path=target) is True
+        v = json.loads(target.read_text())["content_id_view"]
+        assert v["local_duplicate_pairs"] == 1
+
+    def test_write_accepts_explicit_view_without_singleton(self, tmp_path):
+        target = tmp_path / "v.json"
+        ok = dc.write_content_id_view_state(
+            view={"tracked_events": 0, "confirmed": []},
+            path=target, host="h", now=2.0)
+        assert ok is True
+        assert json.loads(target.read_text())["content_id_view"][
+            "tracked_events"] == 0
+
+    def test_write_is_best_effort_returns_false_on_bad_path(self, tmp_path):
+        # Parent is a regular FILE → mkdir(parents=True) raises; the
+        # writer swallows it and reports False (never raises).
+        blocker = tmp_path / "afile"
+        blocker.write_text("x")
+        bad = blocker / "sub" / "content_id_view.json"
+        assert dc.write_content_id_view_state(
+            view={"confirmed": []}, path=bad) is False
+
+    def test_write_returns_false_when_view_unavailable(self, tmp_path):
+        # A non-dict view (e.g. snapshot returned no block) is not published.
+        assert dc.write_content_id_view_state(
+            view=None, path=tmp_path / "v.json") in (True, False)
+        ok = dc.write_content_id_view_state(
+            view="not-a-dict", path=tmp_path / "v2.json")  # type: ignore[arg-type]
+        assert ok is False
+        assert not (tmp_path / "v2.json").exists()

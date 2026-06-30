@@ -53,8 +53,10 @@ depends on its shape.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import socket
 import sqlite3
 import threading
 import time
@@ -64,7 +66,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from utils.db_helpers import connect_tuned
-from utils.paths import get_real_user_home
+from utils.paths import atomic_write_text, get_real_user_home
 
 
 logger = logging.getLogger(__name__)
@@ -1081,6 +1083,83 @@ def record(
 def snapshot(recent_limit: int = 50) -> Dict[str, Any]:
     """Module-level convenience for the HTTP handler."""
     return get_singleton().snapshot(recent_limit=recent_limit)
+
+
+# ── content_id_view state-file producer (dedup/identity arc STEP 4c) ──
+#
+# The 4b ``content_id_view`` rides ``/api/gateway/delivery`` for boxes that
+# run a map daemon. But the cross-box JOIN's whole point is the active-active
+# gateways — and one of them (moc3) is gateway-only and serves NO HTTP (the
+# moc3 hardware constraint). So each active gateway PUBLISHES its view to an
+# operator-owned state file the JOIN can ssh-collect (the lab-rollup ssh+cat
+# pattern). The producer MUST run as the operator: root can't safely open the
+# operator's WAL DB (its -wal/-shm would land root-owned and break writes),
+# so the gateway process — which already owns the counters — writes the file.
+
+CONTENT_ID_VIEW_STATE_SCHEMA = 1
+"""Bump when the published envelope shape changes so a collector reading an
+old file can tell. The inner ``content_id_view`` is versioned implicitly by
+``compute_content_id_view``'s field set."""
+
+
+def content_id_view_state_path() -> Path:
+    """``$XDG_STATE_HOME/meshforge/content_id_view.json`` (operator-owned).
+
+    Matches the lab tooling's state-dir convention (tracer/synth-soak) so
+    the JOIN collector finds it where it expects per-box state. Falls back
+    to ``~/.local/state`` (sudo-safe via ``get_real_user_home``)."""
+    xdg = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
+    return base / "meshforge" / "content_id_view.json"
+
+
+def build_content_id_view_state(
+    view: Dict[str, Any],
+    *,
+    host: Optional[str] = None,
+    now: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Pure: wrap a ``content_id_view`` in the published envelope.
+
+    ``host`` lets the collector attribute a confirmed pair to the box that
+    delivered it (the JOIN keys fleet dups on >1 DISTINCT host). ``ts`` lets
+    the collector treat a stale file as a coverage gap rather than reading a
+    frozen view as live (honest_failure_modes #2: absence != healthy)."""
+    return {
+        "schema": CONTENT_ID_VIEW_STATE_SCHEMA,
+        "host": host if host is not None else socket.gethostname(),
+        "ts": float(now) if now is not None else time.time(),
+        "content_id_view": view,
+    }
+
+
+def write_content_id_view_state(
+    *,
+    view: Optional[Dict[str, Any]] = None,
+    path: Optional[Path] = None,
+    host: Optional[str] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """Best-effort: publish this process's ``content_id_view`` to the state
+    file (atomic). NEVER raises — a publish failure must never touch the
+    bridge. Returns True on success.
+
+    ``view`` defaults to the live singleton's view (the gateway's own
+    counters); tests pass it explicitly. A non-dict view (snapshot returned
+    no block) is NOT published — an absent file is honestly "no data" to the
+    collector, never a forged healthy zero."""
+    try:
+        if view is None:
+            view = snapshot().get("content_id_view")
+        if not isinstance(view, dict):
+            return False
+        payload = build_content_id_view_state(view, host=host, now=now)
+        target = Path(path) if path is not None else content_id_view_state_path()
+        atomic_write_text(target, json.dumps(payload, separators=(",", ":")))
+        return True
+    except Exception:
+        logger.debug("content_id_view state publish failed", exc_info=True)
+        return False
 
 
 def _reset_singleton_for_tests() -> None:

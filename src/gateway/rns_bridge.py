@@ -91,6 +91,13 @@ logger = logging.getLogger(__name__)
 # 3-chunk message under ~10s end-to-end.
 MESHTASTIC_TX_MIN_SPACING_S = 3.0
 
+# Cadence for publishing this gateway's content_id_view to the state file the
+# cross-box dedup JOIN ssh-collects (dedup/identity arc STEP 4c). 60s keeps the
+# file fresh enough for a measure-only rollup without spending the gateway loop
+# on snapshot() GROUP BYs; the published `ts` lets the collector treat an older
+# file as a coverage gap (honest_failure_modes #2: absence != healthy).
+_CONTENT_ID_VIEW_WRITE_INTERVAL_S = 60.0
+
 # Centralized path utility — used by RNSConnectionMixin in _rns_bridge_connection.py
 # NO FALLBACK: stale fallback copies caused config divergence bugs (Issue #25+)
 
@@ -931,6 +938,7 @@ class RNSMeshtasticBridge(
         """
         _logged_permanent_failure = False
         while self._running:
+            self._maybe_publish_content_id_view()
             try:
                 # Don't retry if RNS init failed permanently (e.g., library not installed)
                 if self._rns_init_failed_permanently:
@@ -1011,6 +1019,26 @@ class RNSMeshtasticBridge(
                     self._update_subsystem_state("rns", SubsystemState.DISCONNECTED)
                     self._rns_reconnect.record_failure()
                     self._rns_reconnect.wait(self._stop_event)
+
+    def _maybe_publish_content_id_view(self) -> None:
+        """Throttled, best-effort publish of this gateway's content_id_view
+        to the state file the cross-box dedup JOIN ssh-collects (STEP 4c
+        producer). Runs once per RNS-loop iteration regardless of connection
+        state — even a degraded gateway publishes its (sparse) view so the
+        collector sees "alive, idle" rather than a coverage gap.
+
+        Fully exception-isolated: bridge stability ALWAYS wins over a
+        publish. The throttle uses a monotonic clock (NTP-step-proof; the
+        fleet is RTC-less — honest_failure_modes #6)."""
+        try:
+            last = getattr(self, "_last_content_id_view_write", 0.0)
+            now = time.monotonic()
+            if (now - last) < _CONTENT_ID_VIEW_WRITE_INTERVAL_S:
+                return
+            self._last_content_id_view_write = now
+            _dc.write_content_id_view_state()
+        except Exception:
+            logger.debug("content_id_view publish hook error", exc_info=True)
 
     def _maybe_start_meshtastic_broadcast(self) -> None:
         """Start the Meshtastic broadcast bridge plug-in if configured.
