@@ -27,7 +27,9 @@ from typing import Optional
 from utils.lxmface import seed_string_for_node
 
 from .base_handler import chunk_for_mesh, get_rf_tx_registry, is_already_bridged
-from .canonical_message import format_reply_token, parse_reply_token
+from .canonical_message import (
+    compute_content_id, format_reply_token, parse_reply_token,
+)
 from .message_queue import MessagePriority
 
 logger = logging.getLogger(__name__)
@@ -241,6 +243,12 @@ class MessageTransformMixin:
                 # right face even though bridged messages aggregate under the
                 # gateway's LXMF source hash (Issue #35).
                 "meshforge_from_avatar_seed": seed_string_for_node(source_id),
+                # Logical content identity (dedup/identity arc, STEP 2b —
+                # measure-only): carry the id minted at the mesh ingress so the
+                # SAME logical message is recognizable to the receiving RNS
+                # client AND to a sibling gateway that re-injects it (the
+                # cross-gateway dup-A correlation). '' when unminted.
+                "meshforge_content_id": getattr(msg, 'content_id', '') or '',
             }
 
             # Theme-A step 3: a Meshtastic DM addressed to the gateway's
@@ -902,6 +910,10 @@ class MessageTransformMixin:
             'meshforge_relayed_by': own_hex,
             'meshforge_origin_source_id': msg.source_id or '',
             'meshforge_origin_title': msg.title or '',
+            # Preserve the logical content_id across the peer-gateway relay so
+            # a relayed copy stays correlatable (the meshforge_* namespace
+            # survives the RNS hop; dedup/identity arc STEP 2b, measure-only).
+            'meshforge_content_id': getattr(msg, 'content_id', '') or '',
         }
         title = msg.title or 'MeshForge Gateway (relay)'
 

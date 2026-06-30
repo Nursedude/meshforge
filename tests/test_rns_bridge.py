@@ -4561,3 +4561,60 @@ class TestMeshOracleRnsWiring:
         bridge._on_lxmf_receive(msg)
         bridge._oracle_rns.handle.assert_called_once_with(h.hex(), "status", 0)
         assert bridge._rns_to_mesh_queue.empty()  # consumed, not bridged onward
+
+
+class TestContentIdCarryRnsLeg:
+    """STEP 2b-i (dedup/identity arc, measure-only): the logical content_id
+    is CARRIED across the RNS leg — stamped into the M→R meshforge_content_id
+    LXMF field, and read back (or minted) at _on_lxmf_receive."""
+
+    def test_m2r_fields_carry_content_id(self, bridge):
+        from gateway.rns_bridge import BridgedMessage
+        bridge.config.rns.get_lxmf_destinations.return_value = [
+            "6b1a0120941444587d7d1dc1bf6d64d7",
+        ]
+        bridge.node_tracker.get_node_by_mesh_id.return_value = None
+        msg = BridgedMessage(
+            source_network="meshtastic", source_id="!deadbeef",
+            destination_id=None, content="hello fleet",
+            content_id="c1:abc123", metadata={"channel": "meshforge"})
+        captured = {}
+
+        def capture_send(content, dest_hash=None, title=None, fields=None):
+            captured["fields"] = fields
+            return True
+
+        with patch.object(bridge, 'send_to_rns', side_effect=capture_send):
+            bridge._process_mesh_to_rns(msg)
+        assert captured["fields"]["meshforge_content_id"] == "c1:abc123"
+
+    def test_on_lxmf_mints_content_id_when_field_absent(self, bridge):
+        from types import SimpleNamespace
+        from gateway.canonical_message import compute_content_id
+        bridge._oracle_rns = None
+        h = bytes.fromhex("aabbccddeeff00112233445566778899")
+        msg = SimpleNamespace(source_hash=h, content="sun", title=None,
+                              stamp=None, fields=None)
+        captured = {}
+        with patch.object(bridge, '_notify_message',
+                          side_effect=lambda m: captured.setdefault('m', m)), \
+             patch("commands.messaging.store_incoming"):
+            bridge._on_lxmf_receive(msg)
+        expected = compute_content_id("rns:" + h.hex(), "sun", "")
+        assert captured['m'].content_id == expected != ""
+
+    def test_on_lxmf_carries_content_id_when_field_present(self, bridge):
+        # A sibling gateway already minted the id on the M→R hop; the RNS
+        # ingress must CARRY it (not re-mint), so the two legs share one id.
+        from types import SimpleNamespace
+        bridge._oracle_rns = None
+        h = bytes.fromhex("aabbccddeeff00112233445566778899")
+        msg = SimpleNamespace(source_hash=h, content="sun", title=None,
+                              stamp=None,
+                              fields={"meshforge_content_id": "c1:carried99"})
+        captured = {}
+        with patch.object(bridge, '_notify_message',
+                          side_effect=lambda m: captured.setdefault('m', m)), \
+             patch("commands.messaging.store_incoming"):
+            bridge._on_lxmf_receive(msg)
+        assert captured['m'].content_id == "c1:carried99"

@@ -1253,12 +1253,32 @@ class RNSMeshtasticBridge(
             # origin marker). LXMF.fields is dict-or-None; normalize to dict.
             lxmf_fields = getattr(message, 'fields', None) or {}
 
+            # content_id (dedup/identity arc, STEP 2b — measure-only): CARRY the
+            # id a sibling gateway already minted on the M→R hop (so both legs
+            # share ONE id), else MINT from the RNS origin. RNS/LXMF has no mesh
+            # channel, so channel="" here; a later mesh re-injection recomputes
+            # its own mesh-leg id from mesh content. Read by nothing yet (the
+            # detector is STEP 4); never used to suppress.
+            from .canonical_message import compute_content_id
+            _carried_cid = (lxmf_fields.get('meshforge_content_id')
+                            if isinstance(lxmf_fields, dict) else None)
+            if isinstance(_carried_cid, bytes):
+                _carried_cid = _carried_cid.decode('utf-8', errors='replace')
+            _content_for_id = message.content
+            if isinstance(_content_for_id, bytes):
+                _content_for_id = _content_for_id.decode('utf-8', errors='replace')
+            elif not isinstance(_content_for_id, str):
+                _content_for_id = str(_content_for_id or '')
+            content_id = _carried_cid or compute_content_id(
+                f"rns:{source_hash.hex()}", _content_for_id, "")
+
             msg = BridgedMessage(
                 source_network="rns",
                 source_id=source_hash.hex(),
                 destination_id=None,
                 content=message.content,
                 title=message.title,
+                content_id=content_id,
                 metadata={
                     'lxmf_stamp': message.stamp,
                     'lxmf_fields': lxmf_fields,
