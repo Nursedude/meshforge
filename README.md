@@ -48,6 +48,7 @@ Optional add-ons (install from TUI when you need them):
 |-----------|-------------|------|------|
 | **[MeshForge Maps](https://github.com/Nursedude/meshforge-maps)** | Multi-source map (Meshtastic, AREDN, MeshCore, MQTT, RNS) | 8808 | `Nursedude/meshforge-maps` |
 | **Meshing Around** | Bot framework integration for Meshtastic mesh bots | — | `Nursedude/meshing_around_meshforge` |
+| **MeshChatX** ([setup](docs/MESHCHATX_IN_MESHFORGE.md)) | Browser-based LXMF chat client — sibling to NomadNet (isolated RNS, propagation, gateway-enrolled) | 8000 | RNS-Things / Quad4-Software |
 
 Extensions are managed as systemd services. The TUI handles the full lifecycle:
 - **Install**: clone, venv, deps, service setup — one click
@@ -216,7 +217,11 @@ cd /opt/meshforge && sudo git pull origin main
 ```
 
 **Upgrading from pre-v0.5.4?** The gateway now uses MQTT instead of TCP.
-**Upgrading from v0.5.4?** MeshChat was removed (upstream unmaintained). Use NomadNet for LXMF messaging.
+**Upgrading from v0.5.4?** The old in-app MeshChat handler was removed (upstream unmaintained). For a
+browser-based LXMF client, **MeshChatX** is now integrated as an opt-in sibling to NomadNet — see
+**[docs/MESHCHATX_IN_MESHFORGE.md](docs/MESHCHATX_IN_MESHFORGE.md)** for the full domain setup
+(isolated install, propagation node, gateway enrollment, bot round-trips). NomadNet remains the
+default LXMF client.
 Install mosquitto (`sudo apt install mosquitto`) and configure via
 `TUI → Gateway Config → MQTT Bridge Settings → Run Setup Guide`.
 
