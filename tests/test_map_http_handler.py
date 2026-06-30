@@ -1734,3 +1734,59 @@ class TestStatusExposesTopologyCache:
         assert "directory" in body
 
 
+
+
+class TestServeFleetDupsStep4c:
+    """STEP 4c endpoint: serves the cross-box dedup rollup from the state
+    file (no ssh in the handler). Honest absent + stale-freshness axes."""
+
+    def _h(self):
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        captured: dict = {}
+        h._serve_json = (lambda payload, status=200, **kw:
+                         captured.update(payload=payload, status=status))
+        h._captured = captured
+        return h
+
+    def test_unavailable_when_no_rollup(self, tmp_path, monkeypatch):
+        import utils.fleet_dup_collector as col
+        monkeypatch.setattr(col, "rollup_state_path",
+                            lambda: tmp_path / "nope.json")
+        h = self._h()
+        h._serve_fleet_dups()
+        assert h._captured["payload"]["status"] == "unavailable"
+        assert h._captured["status"] == 200
+
+    def test_serves_rollup_with_fresh_axis(self, tmp_path, monkeypatch):
+        import time as _t
+        import utils.fleet_dup_collector as col
+        p = tmp_path / "r.json"
+        p.write_text(json.dumps({"status": "ok", "fleet_duplicate_pairs": 1,
+                                 "generated_at": _t.time()}))
+        monkeypatch.setattr(col, "rollup_state_path", lambda: p)
+        h = self._h()
+        h._serve_fleet_dups()
+        pl = h._captured["payload"]
+        assert pl["status"] == "ok" and pl["fleet_duplicate_pairs"] == 1
+        assert pl["freshness"]["stale"] is False
+
+    def test_old_rollup_flagged_stale_on_its_own_axis(self, tmp_path, monkeypatch):
+        import utils.fleet_dup_collector as col
+        p = tmp_path / "r.json"
+        # status stays the JOIN verdict; staleness is a separate axis.
+        p.write_text(json.dumps({"status": "ok", "generated_at": 1.0}))
+        monkeypatch.setattr(col, "rollup_state_path", lambda: p)
+        h = self._h()
+        h._serve_fleet_dups()
+        pl = h._captured["payload"]
+        assert pl["status"] == "ok"
+        assert pl["freshness"]["stale"] is True
+
+    def test_missing_generated_at_is_stale(self, tmp_path, monkeypatch):
+        import utils.fleet_dup_collector as col
+        p = tmp_path / "r.json"
+        p.write_text(json.dumps({"status": "indeterminate"}))
+        monkeypatch.setattr(col, "rollup_state_path", lambda: p)
+        h = self._h()
+        h._serve_fleet_dups()
+        assert h._captured["payload"]["freshness"]["stale"] is True

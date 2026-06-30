@@ -276,7 +276,7 @@ class MapRequestHandler(
             "/api/network/interfaces",
             "/api/region-presets",
             "/api/settings", "/api/websocket/status", "/api/weather",
-            "/fleet/slo", "/fleet/cascade",
+            "/fleet/slo", "/fleet/cascade", "/fleet/dups",
         ):
             return path_only or "/"
         # Parametrized routes — bucket by prefix
@@ -373,6 +373,8 @@ class MapRequestHandler(
             self._serve_weather()
         elif path_only == '/fleet/slo':
             self._serve_fleet_slo()
+        elif path_only == '/fleet/dups':
+            self._serve_fleet_dups()
         elif path_only == '/fleet/logs':
             self._serve_fleet_logs()
         elif path_only == '/fleet/tracer-fires':

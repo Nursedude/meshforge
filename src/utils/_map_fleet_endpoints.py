@@ -197,6 +197,59 @@ class FleetEndpointsMixin:
         from utils.fleet_snapshot import build_slo_snapshot
         self._serve_json(build_slo_snapshot(collector=self.collector))
 
+    # Cross-box dedup rollup is considered stale (collector likely dead) past
+    # this age — surfaced as its own axis so a frozen file can't read as live.
+    _FLEET_DUPS_STALE_S = 1800.0
+
+    def _serve_fleet_dups(self):
+        """Serve the cross-box dedup rollup (dedup/identity arc STEP 4c).
+
+        Reads the rollup state file written by the operator-cron collector
+        (``utils.fleet_dup_collector``). The handler does NO ssh — collection
+        runs in the operator's context where the fleet ssh keys live, and a
+        gateway-only box (moc3) is only reachable by ssh-cat, so the cron
+        owns the round trips and the endpoint just serves the cached result
+        (fast + safe).
+
+        Honest self-guards (honest_failure_modes #2): an absent file is
+        reported as ``unavailable`` (never a healthy "0 dups"); a rollup
+        older than the stale window carries ``freshness.stale=true`` on its
+        OWN axis so a dead collector can't serve a frozen verdict as live.
+        The JOIN's own ``status`` (ok / indeterminate) is left intact —
+        collection-freshness and the dup-verdict are two separate axes."""
+        import json as _json
+        import time as _time
+        try:
+            from utils.fleet_dup_collector import rollup_state_path
+            try:
+                raw = rollup_state_path().read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._serve_json({
+                    "status": "unavailable",
+                    "reason": ("no rollup yet — fleet_dup_collector has not "
+                               "run on this box (wire its cron on the "
+                               "manager)"),
+                }, status=200)
+                return
+            rollup = _json.loads(raw)
+            gen = rollup.get("generated_at")
+            if isinstance(gen, (int, float)) and not isinstance(gen, bool):
+                age = max(0.0, _time.time() - float(gen))
+                rollup["freshness"] = {
+                    "age_s": age,
+                    "stale": age > self._FLEET_DUPS_STALE_S,
+                    "threshold_s": self._FLEET_DUPS_STALE_S,
+                }
+            else:
+                rollup["freshness"] = {"age_s": None, "stale": True,
+                                       "threshold_s": self._FLEET_DUPS_STALE_S}
+            self._serve_json(rollup, status=200)
+        except Exception as e:
+            self._serve_json(
+                {"error": "fleet_dups_unavailable", "reason": str(e)},
+                status=500,
+            )
+
     # ─────────────────────────────────────────────────────────────────
     # /fleet/logs — T1 of fleet dashboard roadmap
     #
