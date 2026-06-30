@@ -257,21 +257,6 @@ class MessageTransformMixin:
                     and msg.source_id
                     and not self._reply_excluded(content, {})):
                 peer_hex = self._sessions.lookup(msg.source_id)
-                if not peer_hex and self._reply_routing_on():
-                    # Durable r2m fallback — Theme-A: the r2m correlation
-                    # recorded on a directed R→M send (an RNS client like
-                    # MeshChatX addressing the bot with @!id) was previously
-                    # recorded-but-unread. Read it now so the mesh node's
-                    # reply (the bot's DM to the gateway's own node) routes
-                    # HOME even when the in-memory session expired or a
-                    # bridge restart cleared it. Bot round-trips for RNS
-                    # clients depend on this surviving a restart.
-                    peer_hex = self._correlation.lookup_directer(msg.source_id)
-                    if peer_hex:
-                        with self._stats_lock:
-                            self.stats['session_routed_m2r_durable'] = (
-                                self.stats.get(
-                                    'session_routed_m2r_durable', 0) + 1)
                 dest_bytes = None
                 if peer_hex:
                     try:

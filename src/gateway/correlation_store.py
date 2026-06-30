@@ -205,44 +205,6 @@ class BridgeCorrelationStore:
             logger.warning(f"correlation lookup failed: {e}")
             return None
 
-    def lookup_directer(self, mesh_node) -> Optional[str]:
-        """Latest non-expired RNS peer that DIRECTED at this mesh node (r2m).
-
-        The durable mirror of the in-memory session: when an RNS client
-        sends a directed downlink to a mesh node (e.g. an operator
-        addressing the bot with ``@!id`` from MeshChatX/NomadNet), an
-        ``r2m`` row is recorded. This reads it back so the mesh node's
-        reply — the bot's DM to the gateway's own node — routes HOME to
-        that client even when the in-memory session has expired or a
-        bridge restart cleared it (the property the session cache loses).
-        Returns the canonical ``rns_peer_hash`` (hex), or None on
-        miss / expired. The caller re-validates before sending.
-        """
-        try:
-            m = self._norm_mesh(mesh_node)
-            if m is None:
-                return None
-            cutoff = time.time() - self._ttl  # lazy TTL in the WHERE
-            path = self._ensure_db()
-            with self._lock:
-                conn = connect_tuned(path)
-                try:
-                    row = conn.execute(
-                        "SELECT rns_peer_hash FROM bridge_correlation "
-                        "WHERE mesh_node = ? AND direction = 'r2m' "
-                        "AND last_interaction_ts >= ? "
-                        "ORDER BY last_interaction_ts DESC LIMIT 1",
-                        (m, cutoff),
-                    ).fetchone()
-                finally:
-                    conn.close()
-            if row and row[0]:
-                return row[0]
-            return None
-        except Exception as e:
-            logger.warning(f"correlation directer lookup failed: {e}")
-            return None
-
     def expire_idle(self) -> int:
         """Prune expired rows + enforce the row cap. Returns rows removed."""
         try:

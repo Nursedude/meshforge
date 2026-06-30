@@ -136,30 +136,38 @@ wiring. To make Meshtastic traffic flow to/from it, enroll it like NomadNet:
 
 ---
 
-## 4. Talking to the bot
+## 4. Talking to the bot — NOT supported yet
 
-The mesh command bot (e.g. a `meshing-around` instance) responds to commands on
-the channel. For its **reply to come back into MeshChatX**, two things matter:
+> **Honest status (verified on-air 2026-06-29): a MeshChatX → bot → MeshChatX
+> round-trip does NOT complete today.** Your command reaches the bot and the bot
+> answers — but the reply does **not** come back into MeshChatX. This is a known
+> architectural gap, not a misconfiguration, and it is **not** fixed by addressing
+> the bot directly (`@bot cmd`) — directed and broadcast both fail to return.
 
-1. **Address the bot directly.** Send `@<bot-shortname> <command>` (or
-   `@!<botnodeid> <command>`), *not* a bare broadcast command. A broadcast has no
-   per-client identity for the bot to reply to, so the reply can't find you. A
-   directed command opens a session/correlation that routes the reply home.
-2. **Gateway flags on** (`reply_routing_enabled`, `sessions_enabled` — the
-   default on a real gateway). The bot replies as a DM to the gateway, which then
-   routes it to you via the live session, **or** — if the session expired or the
-   gateway restarted — via the durable correlation store (the
-   `session_routed_m2r_durable` path). That durability is what makes the
-   round-trip survive a bridge restart.
+**What actually happens.** You send a command from MeshChatX (e.g. `sun`); it
+bridges to the mesh; the bot computes the answer and replies. But:
 
-So: **`@bot ping` → `🏓 PONG` back in MeshChatX.** A bare broadcast `ping`
-executes on the mesh but the reply won't thread back to you — that's expected, not
-a fault.
+1. **Your identity is lost on the way to the bot.** The bridge injects your
+   command onto the mesh under the *gateway's* identity, so the bot sees the
+   gateway as the requester and addresses its reply to the gateway
+   (`@<gateway-shortname>`), **not** to you. It has no way to address you back.
+2. **The reply is loop-guard-excluded from you.** The bot's answer returns
+   already RNS-tagged (`[RNS:...]`); the gateway correctly refuses to re-bridge
+   RNS-originated content back to RNS clients (loop prevention). So the answer
+   reaches the *Meshtastic* side (meshtasticd clients see it) but never re-fans to
+   MeshChatX.
 
-> *Known limitation:* bare-broadcast bot round-trips (no `@addr`) are not yet
-> correlated back to a specific RNS client — that's the cross-protocol
-> identity-correlation work tracked in the reliability/dedup arc. Direct
-> addressing is the supported path today.
+This is the **cross-protocol identity-correlation invariant** — the bridge would
+need to preserve and route your originating RNS identity through the whole
+round-trip so the bot's reply finds *you* (and is delivered even though it's
+RNS-originated). That's tracked in the reliability/dedup arc; it is not a quick
+patch, and a speculative one was tried and reverted (it addressed the wrong path).
+
+**Workaround today:** drive the bot from a **Meshtastic node** (the bot answers on
+the channel, which your node sees on RF). MeshChatX is fully functional for the
+things that *do* round-trip end-to-end — 1:1 RNS chat, propagation-backed
+delivery, and *receiving* Meshtastic channel traffic (§3). Bot interaction from
+MeshChatX simply isn't wired yet.
 
 ---
 
