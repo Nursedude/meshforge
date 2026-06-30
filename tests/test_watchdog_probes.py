@@ -55,6 +55,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_gateway_delivery_degraded,
+    probe_gateway_dup_degraded,
     probe_synth_soak_degraded,
     probe_fd_exhaustion,
     probe_phoneapi_tcp_leak,
@@ -151,6 +152,7 @@ def test_signal_classes_closed_enum_is_documented():
         "resource_canary_degraded",     # 2026-06-20 gateway-reliability arc A1 (the OUTCOME source of truth) — the synthetic RESOURCE round-trip canary (meshforge-gateway-resource-canary.timer → src/lab/gateway_resource_canary) FAILED its verdict or went DARK; A1 actively PROVES the gateway delivers a multi-chunk RNS Resource round-trip (the path the 2026-06-20 EROFS broke while single-packet replies kept working); a FAIL "control back, resource NOT" is the EROFS signature; INERT off a box that doesn't run the canary; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_delivery_degraded)
         "oracle_delivery_degraded",     # 2026-06-22 mesh-oracle health — the read-only "ask dude-AI over the mesh" responder's confirmable delivery rate fell below threshold; declines (cooldown/not_allowlisted) + benign non-deliveries (RNS no-path / MeshCore restart race) excluded from the failure set + surfaced; the one live service with NO automated probe; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded)
         "inherited_app_drift",          # 2026-06-21 upstream-app ownership Action 5 — an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch (one `git pull` from silent deletion; policy §4.2); LOCAL problem-class detection (scans operator home + /opt, classifies by .git/config, filters untracked artifacts + machine-generated manifests); floating-main/pin-drift leg deliberately NOT a local fire (the fleet enforces pins by ledger, not detached HEAD); INERT off a box with no inherited checkouts; documented inline in the SIGNAL_CLASSES comment + .claude/plans/upstream_app_ownership_policy_2026_06_21.md §9 (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded)
+        "gateway_dup_degraded",         # 2026-06-29 dedup/identity arc STEP 5 — cross-gateway duplicate delivery from the 4c /fleet/dups rollup (same (content_id, recipient) confirmed by >1 gateway = the live dup-A); degraded only; INERT off the manager box + on an indeterminate/stale rollup (built on the 4c JOIN <2-gateway gate); 2-tick debounce; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -5444,3 +5446,113 @@ class TestInheritedAppDrift:
 
     def test_signal_class_registered(self):
         assert "inherited_app_drift" in SIGNAL_CLASSES
+
+
+# ─────────────────────────────────────────────────────────────────────
+# probe_gateway_dup_degraded (dedup/identity arc STEP 5)
+# ─────────────────────────────────────────────────────────────────────
+
+class TestProbeGatewayDupDegraded:
+    """The first probe with a per-logical-message + cross-gateway dimension.
+    Reads the 4c /fleet/dups rollup; degraded-only; the discipline under test
+    is the honest indeterminate/stale gating (absence != healthy)."""
+
+    def _ok(self, dup_pairs, **kw):
+        d = {
+            "status": "ok",
+            "fleet_duplicate_pairs": dup_pairs,
+            "fleet_duplicate_deliveries": max(0, dup_pairs),
+            "covered_hosts": ["moc", "moc3"],
+            "freshness": {"age_s": 5.0, "stale": False, "threshold_s": 1800.0},
+            "fleet_duplicates": [
+                {"content_id": "c1:abc", "recipient": "6b1a0120",
+                 "distinct_hosts": 2}
+            ] if dup_pairs else [],
+        }
+        d.update(kw)
+        return d
+
+    def test_fires_degraded_after_debounce(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(1))):
+            # tick 1: builds streak, INERT
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+            # tick 2: fires
+            sig = probe_gateway_dup_degraded(debounce_path=sp)
+        assert sig is not None
+        assert sig.cls == "gateway_dup_degraded"
+        assert sig.severity == "degraded"
+        assert sig.subject == "fleet-gateways"
+        assert sig.issue_ref is None
+        assert sig.extra["fleet_duplicate_pairs"] == 1
+
+    def test_indeterminate_is_inert_and_holds_streak(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        # build a streak of 1 with an ok+dup tick
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(1))):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+        # an indeterminate tick must NOT fire AND must not advance the streak
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(
+                       {"status": "indeterminate",
+                        "fleet_duplicate_pairs": 0})):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+        # streak held at 1 (not reset, not advanced) — next ok tick reaches 2
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(1))):
+            sig = probe_gateway_dup_degraded(debounce_path=sp)
+        assert sig is not None  # 1 (held) + 1 = 2 → fires
+
+    def test_stale_rollup_is_inert(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        payload = self._ok(3)
+        payload["freshness"] = {"age_s": 9999.0, "stale": True,
+                                "threshold_s": 1800.0}
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(payload)):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+
+    def test_healthy_resets_streak(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(1))):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None  # streak 1
+        # a clean (0 dups) tick resets the streak
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(0))):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+        # so a single later dup tick is back at streak 1 (INERT), not firing
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(1))):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+
+    def test_endpoint_unreachable_is_inert(self, tmp_path):
+        from urllib.error import URLError
+        sp = str(tmp_path / "dup.json")
+        def _raise(*a, **k):
+            raise URLError("connection refused")
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+
+    def test_shape_error_is_inert(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(
+                       {"status": "ok", "fleet_duplicate_pairs": "lots"})):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+
+    def test_min_dup_pairs_threshold(self, tmp_path):
+        sp = str(tmp_path / "dup.json")
+        # 1 dup with min=2 → below threshold → clean (reset), never fires
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self._ok(1))):
+            assert probe_gateway_dup_degraded(
+                debounce_path=sp, min_dup_pairs=2) is None
+            assert probe_gateway_dup_degraded(
+                debounce_path=sp, min_dup_pairs=2) is None
+
+    def test_registered_in_signal_classes(self):
+        assert "gateway_dup_degraded" in SIGNAL_CLASSES

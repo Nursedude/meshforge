@@ -1445,3 +1445,139 @@ def probe_oracle_delivery_degraded(
         extra=extra,
     )
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: cross-gateway duplicate delivery (dedup/identity arc STEP 5)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_GATEWAY_DUP_DEBOUNCE_PATH = "/var/lib/meshforge/gateway_dup_debounce.json"
+
+
+def _load_gateway_dup_streak(state_path: str) -> int:
+    """Consecutive-over-threshold streak. Any error → 0 (favour silence on
+    uncertainty — mirrors _load_synth_streak)."""
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_gateway_dup_streak(state_path: str, streak: int) -> None:
+    """Persist the debounce streak (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass
+
+
+def probe_gateway_dup_degraded(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    timeout_s: float = 3.0,
+    min_dup_pairs: int = 1,
+    debounce_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional["Signal"]:
+    """Cross-gateway DUPLICATE delivery detected (dedup/identity arc STEP 5).
+
+    Consumes the 4c cross-box rollup at ``/fleet/dups`` (the FIRST probe with
+    a per-logical-message + cross-gateway dimension). A fleet DUPLICATE is the
+    same ``(content_id, recipient)`` reaching CONFIRMED on >1 DISTINCT gateway
+    — the same logical message delivered to a recipient from two gateways
+    (the live dup-A: moc ``3dfbdb5d`` + moc3 ``f68c2f56`` both → ``6b1a0120``).
+    The rollup only exists on the manager box that runs the collector cron, so
+    this probe is naturally INERT elsewhere (the endpoint is absent/unavailable
+    there → None).
+
+    degraded only — a duplicate is a quality/cost defect, not an outage
+    (delivery still happened). Honest self-guards (honest_failure_modes #2 —
+    absence of evidence is NOT evidence of absence; the whole point of the 4c
+    JOIN's indeterminate gate):
+      - endpoint unreachable / non-dict / shape error → None (other probes own
+        transport; the streak is HELD, not reset — unobservable ≠ healthy)
+      - ``status != "ok"`` (indeterminate: <2 contributing gateways reachable)
+        → None, HOLD streak — you CANNOT observe a cross-gateway dup when you
+        can't see ≥2 gateways, so this must NEVER read as a healthy "0 dups"
+      - ``freshness.stale`` (collector cron dead → frozen verdict) → None, HOLD
+      - ``fleet_duplicate_pairs < min_dup_pairs`` → healthy, RESET streak (an
+        explicit observed-clean tick)
+      - ≥ threshold → 2-tick debounce streak before firing (rides a torn
+        mid-write rollup / one transient overlap)
+
+    MEASURE-ONLY upstream: the probe ALERTS but never suppresses a copy (that's
+    the separately-gated STEP 6). issue_ref=None — the dedup/identity arc has no
+    GitHub issue#; the class is documented inline in SIGNAL_CLASSES (MF012 cap).
+    """
+    sp = debounce_path or DEFAULT_GATEWAY_DUP_DEBOUNCE_PATH
+    url = f"http://{host}:{port}/fleet/dups"
+    try:
+        with urlopen(url, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read())
+    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        return None  # transport — HOLD streak (unobservable ≠ clean)
+    if not isinstance(payload, dict):
+        return None
+
+    # indeterminate / unavailable: <2 gateways covered, or no rollup yet.
+    # Cannot observe a cross-gateway dup → HOLD streak, stay INERT. A wired
+    # probe treating indeterminate as green would be the exact #2 trap.
+    if payload.get("status") != "ok":
+        return None
+    fresh = payload.get("freshness")
+    if isinstance(fresh, dict) and fresh.get("stale") is True:
+        return None  # frozen rollup (dead collector) → HOLD, INERT
+
+    dup_pairs = payload.get("fleet_duplicate_pairs")
+    if not isinstance(dup_pairs, int) or isinstance(dup_pairs, bool):
+        return None  # shape error → INERT (don't reset on a malformed read)
+
+    if dup_pairs < min_dup_pairs:
+        _save_gateway_dup_streak(sp, 0)  # explicit observed-clean
+        return None
+
+    streak = min(_load_gateway_dup_streak(sp) + 1, debounce_ticks)
+    _save_gateway_dup_streak(sp, streak)
+    if streak < debounce_ticks:
+        return None
+
+    deliveries = payload.get("fleet_duplicate_deliveries")
+    dups = payload.get("fleet_duplicates")
+    sample = ""
+    if isinstance(dups, list):
+        parts = []
+        for d in dups[:3]:
+            if not isinstance(d, dict):
+                continue
+            cid = str(d.get("content_id", "?"))[:12]
+            rcp = str(d.get("recipient", "?"))[:10]
+            parts.append(f"{cid}..→{rcp}×{d.get('distinct_hosts', '?')}gw")
+        sample = "; ".join(parts)
+    return Signal(
+        cls="gateway_dup_degraded",
+        subject="fleet-gateways",
+        severity="degraded",
+        detail=(
+            f"Cross-gateway duplicate delivery: {dup_pairs} (content_id, "
+            f"recipient) pair(s) confirmed by >1 gateway "
+            f"(~{deliveries} extra copy/ies) — the same logical message reached "
+            f"a recipient from multiple gateways. {sample}. See /fleet/dups; "
+            f"fix is cross-gateway suppression / ownership (arc STEP 6)."
+        ),
+        issue_ref=None,
+        extra={
+            "fleet_duplicate_pairs": dup_pairs,
+            "fleet_duplicate_deliveries": deliveries,
+            "covered_hosts": payload.get("covered_hosts"),
+            "debounce_streak": streak,
+        },
+    )

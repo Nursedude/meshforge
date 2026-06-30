@@ -59,6 +59,7 @@ from utils.watchdog_probes import (
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
     probe_gateway_delivery_degraded,
+    probe_gateway_dup_degraded,
     probe_fd_exhaustion,
     probe_history_write_failure,
     probe_inherited_app_drift,
@@ -472,6 +473,18 @@ def run_all_probes(
     # None at zero/low traffic (silence is NOT failure here — the
     # explicit inversion of channel_feed_dark).
     sig = probe_delivery_confirmation_stall(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # Cross-gateway duplicate delivery (2026-06-29, dedup/identity arc STEP 5) —
+    # the FIRST probe with a per-logical-message + cross-gateway dimension.
+    # Reads the 4c cross-box rollup at /fleet/dups: a fleet DUP = the same
+    # (content_id, recipient) confirmed by >1 gateway (the live dup-A). degraded
+    # only. Naturally INERT off the manager box (the rollup only exists where the
+    # collector cron runs) and on an indeterminate/stale rollup — the 4c JOIN's
+    # own <2-gateway gate means a thin-coverage view never reads as a healthy
+    # "0 dups" (honest_failure_modes #2). 2-tick debounce.
+    sig = probe_gateway_dup_degraded(port=http_port)
     if sig is not None:
         signals.append(sig)
 

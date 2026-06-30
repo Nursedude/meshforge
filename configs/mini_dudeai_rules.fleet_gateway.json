@@ -699,6 +699,26 @@
       },
       "cooldown_s": 21600,
       "annotation": "2026-06-22 mesh-oracle health -- the read-only 'ask dude-AI over the mesh' responder (src/oracle) answered queries but its confirmable delivery rate (delivered / (delivered + send_errors), over a recent ts window of ~/.local/share/meshforge/mesh_oracle_log.jsonl) fell below threshold. Intentional declines (cooldown / not_allowlisted) and benign non-deliveries (reason-less delivered:false -- RNS no-path to an unannounced ephemeral identity / MeshCore restart race) are EXCLUDED from the failure set + surfaced in the signal extra, so this is the #74 confirmation view, not a false alarm on a cooldowned/quiet channel. WITNESSED v1 blind spot: the RNS leg's send_to_rns swallows real send exceptions to a bare False, so an RNS send error lands in the benign bucket (the Meshtastic/MQTT/MeshCore legs surface send_error fully) -- the benign count makes the RNS gap visible. Check the gateway's RNS/Meshtastic send path + the oracle audit log on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage -- low-traffic read-only service). Self-guards INERT off a box where the oracle never wrote a log (disabled / never queried)."
+    },
+    {
+      "id": "gateway_dup_degraded_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "gateway_dup_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] cross-gateway duplicate delivery",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "twisted_rightwards_arrows"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-06-29 dedup/identity arc STEP 5 -- cross-gateway DUPLICATE delivery from the 4c /fleet/dups rollup: the same (content_id, recipient) reached CONFIRMED on >1 DISTINCT gateway (the live dup-A: moc 3dfbdb5d + moc3 f68c2f56 both -> a shared inbox under two LXMF source hashes a stock client can't collapse, so the human sees the message twice). degraded only -- a dup is a quality/cost defect, not an outage (delivery still happened). The probe (probe_gateway_dup_degraded) reads /fleet/dups on the manager box; it is INERT when the rollup is indeterminate (<2 gateways reachable) or stale (dead collector cron) so a thin-coverage view never reads as a healthy 0-dups. Investigate /fleet/dups fleet_duplicates[]; the real fix is cross-gateway suppression / ownership over the overlapping default_lxmf_destination (separately-gated arc STEP 6) -- this rung only ALERTS, never suppresses."
     }
   ]
 }
