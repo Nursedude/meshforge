@@ -95,20 +95,20 @@ def ssh_cat_reader(host: str, *, timeout_s: int = DEFAULT_SSH_TIMEOUT_S) -> Tupl
 
 
 def local_read_reader(path: Optional[Path] = None) -> Tuple[int, str]:
-    """Read the local box's published view directly (no ssh to self)."""
-    p = path if path is not None else _local_view_path()
+    """Read the local box's published view directly (no ssh to self).
+
+    Resolves the SAME canonical path the producer writes
+    (``delivery_counters.content_id_view_state_path``) so the read- and
+    write-sides can't drift (honest_failure_modes #5)."""
+    if path is None:
+        from gateway.delivery_counters import content_id_view_state_path
+        path = content_id_view_state_path()
     try:
-        return 0, p.read_text(encoding="utf-8")
+        return 0, path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return 1, ""
     except OSError as exc:
         return 255, f"read error: {exc}"
-
-
-def _local_view_path() -> Path:
-    xdg = os.environ.get("XDG_STATE_HOME")
-    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
-    return base / "meshforge" / "content_id_view.json"
 
 
 def collect_box_views(

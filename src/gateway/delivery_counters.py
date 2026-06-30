@@ -1107,7 +1107,15 @@ def content_id_view_state_path() -> Path:
 
     Matches the lab tooling's state-dir convention (tracer/synth-soak) so
     the JOIN collector finds it where it expects per-box state. Falls back
-    to ``~/.local/state`` (sudo-safe via ``get_real_user_home``)."""
+    to ``~/.local/state`` (sudo-safe via ``get_real_user_home``).
+
+    ``MESHFORGE_CONTENT_ID_VIEW_STATE`` (full path) overrides — a test seam
+    (the suite points it at a tmp file so a test exercising the real gateway
+    loop can't write the operator's actual state dir), also useful for ops
+    who want the file elsewhere. Mirrors ``MESHFORGE_DELIVERY_COUNTERS_DB``."""
+    override = os.environ.get("MESHFORGE_CONTENT_ID_VIEW_STATE")
+    if override:
+        return Path(override)
     xdg = os.environ.get("XDG_STATE_HOME")
     base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
     return base / "meshforge" / "content_id_view.json"

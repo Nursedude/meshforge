@@ -52,6 +52,19 @@ def pytest_configure(config):
     # `monkeypatch.delenv("MESHFORGE_CASCADE_PROBE_DISABLED", raising=False)`.
     os.environ["MESHFORGE_CASCADE_PROBE_DISABLED"] = "1"
 
+    # Redirect the gateway's content_id_view state file (dedup arc STEP 4c)
+    # to a throwaway tmp path for the whole suite. The producer hook fires
+    # inside the real RNSMeshtasticBridge._rns_loop, which several bridge
+    # tests drive (bridge._running = True), and without this it would write
+    # the operator's actual ~/.local/state/meshforge/content_id_view.json.
+    # setdefault so a test can still point it elsewhere.
+    import tempfile as _tempfile
+    os.environ.setdefault(
+        "MESHFORGE_CONTENT_ID_VIEW_STATE",
+        os.path.join(_tempfile.gettempdir(),
+                     "meshforge-pytest-content_id_view.json"),
+    )
+
 
 def pytest_collection_modifyitems(config, items):
     """Auto-skip certain tests in CI environment."""
