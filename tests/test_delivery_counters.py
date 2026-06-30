@@ -1182,6 +1182,26 @@ class TestContentIdViewStateProducerStep4c:
         assert st["host"] == "boxX"
         assert st["ts"] == 999.0
 
+    def test_build_state_carries_unconfirmable_sent(self):
+        st = dc.build_content_id_view_state({}, unconfirmable_sent=42)
+        assert st["unconfirmable_sent"] == 42
+
+    def test_build_state_unconfirmable_sent_defaults_zero_on_garbage(self):
+        st = dc.build_content_id_view_state({}, unconfirmable_sent="nope")
+        assert st["unconfirmable_sent"] == 0
+        # bool must not slip through as 1
+        st2 = dc.build_content_id_view_state({}, unconfirmable_sent=True)
+        assert st2["unconfirmable_sent"] == 0
+
+    def test_write_publishes_unconfirmable_sent_from_snapshot(self, tmp_path):
+        # An unconfirmable mesh send bumps the top-level counter; the
+        # published envelope must carry it (the JOIN's blind-spot line).
+        dc.record(DeliveryState.SENT, "m1", protocol="meshtastic")
+        target = tmp_path / "v.json"
+        assert dc.write_content_id_view_state(path=target) is True
+        payload = json.loads(target.read_text())
+        assert payload["unconfirmable_sent"] >= 1
+
     def test_state_path_honors_xdg(self, monkeypatch):
         monkeypatch.setenv("XDG_STATE_HOME", "/run/x")
         p = dc.content_id_view_state_path()

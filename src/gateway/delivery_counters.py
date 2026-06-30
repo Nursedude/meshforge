@@ -1118,18 +1118,26 @@ def build_content_id_view_state(
     *,
     host: Optional[str] = None,
     now: Optional[float] = None,
+    unconfirmable_sent: Any = 0,
 ) -> Dict[str, Any]:
     """Pure: wrap a ``content_id_view`` in the published envelope.
 
     ``host`` lets the collector attribute a confirmed pair to the box that
     delivered it (the JOIN keys fleet dups on >1 DISTINCT host). ``ts`` lets
     the collector treat a stale file as a coverage gap rather than reading a
-    frozen view as live (honest_failure_modes #2: absence != healthy)."""
+    frozen view as live (honest_failure_modes #2: absence != healthy).
+    ``unconfirmable_sent`` (the mesh blind spot — sends on protocols with no
+    delivery proof) rides alongside so the JOIN can keep it on its OWN line,
+    never averaged into the dup/miss numbers (the #74 lesson)."""
+    usent = (int(unconfirmable_sent)
+             if isinstance(unconfirmable_sent, (int, float))
+             and not isinstance(unconfirmable_sent, bool) else 0)
     return {
         "schema": CONTENT_ID_VIEW_STATE_SCHEMA,
         "host": host if host is not None else socket.gethostname(),
         "ts": float(now) if now is not None else time.time(),
         "content_id_view": view,
+        "unconfirmable_sent": usent,
     }
 
 
@@ -1149,11 +1157,16 @@ def write_content_id_view_state(
     no block) is NOT published — an absent file is honestly "no data" to the
     collector, never a forged healthy zero."""
     try:
+        usent: Any = 0
         if view is None:
-            view = snapshot().get("content_id_view")
-        if not isinstance(view, dict):
+            snap = snapshot()
+            view = snap.get("content_id_view")
+            usent = snap.get("unconfirmable_sent", 0)
+        payload_view = view
+        if not isinstance(payload_view, dict):
             return False
-        payload = build_content_id_view_state(view, host=host, now=now)
+        payload = build_content_id_view_state(
+            payload_view, host=host, now=now, unconfirmable_sent=usent)
         target = Path(path) if path is not None else content_id_view_state_path()
         atomic_write_text(target, json.dumps(payload, separators=(",", ":")))
         return True
