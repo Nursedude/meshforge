@@ -31,10 +31,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from utils.fleet_dup_view import compute_fleet_dup_view
 from utils.paths import atomic_write_text, get_real_user_home
 
-# Remote/local path of the per-box published view (matches the producer's
-# content_id_view_state_path resolution). The remote form is evaluated by
-# the remote shell so XDG_STATE_HOME overrides are honored box-side.
-_REMOTE_VIEW_EXPR = '"${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/content_id_view.json"'
+# Remote path of the per-box published view — matches the producer's
+# content_id_view_state_path() (co-located with the DB in ~/.local/share so
+# it lands inside the gateway sandbox's ReadWritePaths; see that function).
+_REMOTE_VIEW_EXPR = '"$HOME/.local/share/meshforge/content_id_view.json"'
 
 DEFAULT_SSH_TIMEOUT_S = 8
 

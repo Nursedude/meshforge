@@ -1103,22 +1103,28 @@ old file can tell. The inner ``content_id_view`` is versioned implicitly by
 
 
 def content_id_view_state_path() -> Path:
-    """``$XDG_STATE_HOME/meshforge/content_id_view.json`` (operator-owned).
+    """``~/.local/share/meshforge/content_id_view.json`` — CO-LOCATED with
+    ``delivery_counters.db`` (``default_db_path``'s dir).
 
-    Matches the lab tooling's state-dir convention (tracer/synth-soak) so
-    the JOIN collector finds it where it expects per-box state. Falls back
-    to ``~/.local/state`` (sudo-safe via ``get_real_user_home``).
+    NOT ``~/.local/state`` (the lab-tooling convention): the gateway service
+    runs under ``ProtectHome=read-only`` and its ``ReadWritePaths`` covers
+    ``~/.local/share/meshforge`` (where the DB lives) but NOT ``~/.local/
+    state`` — writing there hit ``Errno 30`` on every publish (the Issue #60
+    sandbox-path-drift class, caught at live 4c activation: a silent write
+    failure while the service stays active). Writing next to the DB inherits
+    its already-proven-writable sandbox coverage. The lab tools live in
+    ``~/.local/state`` only because they run as user-timer units without
+    ``ProtectHome``.
 
     ``MESHFORGE_CONTENT_ID_VIEW_STATE`` (full path) overrides — a test seam
     (the suite points it at a tmp file so a test exercising the real gateway
-    loop can't write the operator's actual state dir), also useful for ops
-    who want the file elsewhere. Mirrors ``MESHFORGE_DELIVERY_COUNTERS_DB``."""
+    loop can't write the operator's actual data dir), also useful for ops.
+    Mirrors ``MESHFORGE_DELIVERY_COUNTERS_DB``."""
     override = os.environ.get("MESHFORGE_CONTENT_ID_VIEW_STATE")
     if override:
         return Path(override)
-    xdg = os.environ.get("XDG_STATE_HOME")
-    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
-    return base / "meshforge" / "content_id_view.json"
+    return (get_real_user_home() / ".local" / "share" / "meshforge"
+            / "content_id_view.json")
 
 
 def build_content_id_view_state(

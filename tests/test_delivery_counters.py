@@ -1202,23 +1202,19 @@ class TestContentIdViewStateProducerStep4c:
         payload = json.loads(target.read_text())
         assert payload["unconfirmable_sent"] >= 1
 
-    def test_state_path_honors_xdg(self, monkeypatch):
+    def test_state_path_is_in_share_dir_next_to_db(self, monkeypatch):
+        # Co-located with the DB so it lands inside the gateway sandbox's
+        # ReadWritePaths (Issue #60 — ~/.local/state is read-only there).
         monkeypatch.delenv("MESHFORGE_CONTENT_ID_VIEW_STATE", raising=False)
-        monkeypatch.setenv("XDG_STATE_HOME", "/run/x")
-        p = dc.content_id_view_state_path()
-        assert str(p) == "/run/x/meshforge/content_id_view.json"
-
-    def test_state_path_falls_back_to_local_state(self, monkeypatch):
-        monkeypatch.delenv("MESHFORGE_CONTENT_ID_VIEW_STATE", raising=False)
-        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        monkeypatch.delenv("MESHFORGE_DELIVERY_COUNTERS_DB", raising=False)
         monkeypatch.setattr(dc, "get_real_user_home",
                             lambda: dc.Path("/home/op"))
         p = dc.content_id_view_state_path()
-        assert str(p) == "/home/op/.local/state/meshforge/content_id_view.json"
+        assert str(p) == "/home/op/.local/share/meshforge/content_id_view.json"
+        assert p.parent == dc.default_db_path().parent  # shared sandbox dir
 
     def test_state_path_env_override_wins(self, monkeypatch):
         monkeypatch.setenv("MESHFORGE_CONTENT_ID_VIEW_STATE", "/srv/cid.json")
-        monkeypatch.setenv("XDG_STATE_HOME", "/run/x")
         assert str(dc.content_id_view_state_path()) == "/srv/cid.json"
 
     def test_write_publishes_singleton_view(self, tmp_path):
