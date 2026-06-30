@@ -1016,3 +1016,142 @@ class TestContentIdRecipientSubstrate:
         c.record(DeliveryState.CONFIRMED, "m3", content_id="c1:z", recipient="rr")
         ev = c.snapshot()["recent"][-1]
         assert ev["content_id"] == "c1:z" and ev["recipient"] == "rr"
+
+
+class TestComputeContentIdView:
+    """STEP 4b (dedup/identity arc): the pure aggregation behind the snapshot's
+    ``content_id_view`` block — the FIRST consumer of the content_id substrate.
+    Keys on (content_id, recipient); measure-only."""
+
+    CONF = DeliveryState.CONFIRMED.value
+    SENT = DeliveryState.SENT.value
+
+    def test_empty_rows_is_all_zero_not_truncated(self):
+        view = dc.compute_content_id_view([])
+        assert view["tracked_events"] == 0
+        assert view["untracked_events"] == 0
+        assert view["unattributed_events"] == 0
+        assert view["tracked_pairs"] == 0
+        assert view["confirmed_pairs"] == 0
+        assert view["local_duplicate_pairs"] == 0
+        assert view["local_duplicate_deliveries"] == 0
+        assert view["confirmed"] == []
+        assert view["confirmed_truncated"] is False
+
+    def test_local_duplicate_detected(self):
+        """The SAME (content_id, recipient) CONFIRMED twice = a real local
+        double-delivery (the per-box dup signal)."""
+        view = dc.compute_content_id_view([
+            ("c1:aa", "6b1a0120", self.CONF, 2),
+        ])
+        assert view["tracked_pairs"] == 1
+        assert view["confirmed_pairs"] == 1
+        assert view["local_duplicate_pairs"] == 1
+        assert view["local_duplicate_deliveries"] == 1  # excess = 2 - 1
+        assert view["confirmed"] == [
+            {"content_id": "c1:aa", "recipient": "6b1a0120", "confirmed": 2}]
+
+    def test_fanout_to_distinct_recipients_is_not_a_local_dup(self):
+        """The by-design M→R fan-out confirms one copy per DISTINCT recipient.
+        Same content_id, two recipients, each confirmed once → 2 confirmed
+        pairs, ZERO local dups. (The cross-gateway dup-A is 4c's job.)"""
+        view = dc.compute_content_id_view([
+            ("c1:aa", "6b1a0120", self.CONF, 1),
+            ("c1:aa", "7cda0fab", self.CONF, 1),
+        ])
+        assert view["confirmed_pairs"] == 2
+        assert view["local_duplicate_pairs"] == 0
+        assert view["local_duplicate_deliveries"] == 0
+
+    def test_untracked_events_surfaced_not_hidden(self):
+        """Events with NO content_id (the mesh-leg blind spot) are counted as
+        untracked, never folded into a clean zero (honest_failure_modes #2)."""
+        view = dc.compute_content_id_view([
+            ("", "", self.SENT, 17),
+            ("c1:aa", "6b1a0120", self.CONF, 1),
+        ])
+        assert view["untracked_events"] == 17
+        assert view["tracked_events"] == 1
+        assert view["tracked_pairs"] == 1
+
+    def test_unattributed_recipient_is_not_a_pair(self):
+        """content_id known but recipient empty cannot key a per-recipient dup;
+        an empty recipient must never masquerade as a real pair/dup."""
+        view = dc.compute_content_id_view([
+            ("c1:aa", "", self.CONF, 3),
+        ])
+        assert view["unattributed_events"] == 3
+        assert view["tracked_events"] == 3
+        assert view["tracked_pairs"] == 0
+        assert view["confirmed_pairs"] == 0
+        assert view["local_duplicate_pairs"] == 0
+
+    def test_non_confirmed_pair_tracked_but_not_confirmed(self):
+        view = dc.compute_content_id_view([
+            ("c1:bb", "rr", self.SENT, 1),
+        ])
+        assert view["tracked_pairs"] == 1
+        assert view["confirmed_pairs"] == 0
+        assert view["confirmed"] == []
+
+    def test_confirmed_list_sorted_desc_and_truncated_honestly(self):
+        """Pairs sort confirmed-count DESC so a local dup is never truncated
+        away; the cap surfaces the drop (no silent cap, #9)."""
+        rows = [(f"c1:{i:03d}", "rr", self.CONF, 1) for i in range(5)]
+        rows.append(("c1:dup", "rr", self.CONF, 3))  # the dup — must survive
+        view = dc.compute_content_id_view(rows, pair_cap=2)
+        assert view["confirmed_pairs"] == 6
+        assert view["confirmed_truncated"] is True
+        assert len(view["confirmed"]) == 2
+        # highest-count pair (the dup) sorts first and is retained
+        assert view["confirmed"][0] == {
+            "content_id": "c1:dup", "recipient": "rr", "confirmed": 3}
+        assert view["local_duplicate_pairs"] == 1
+        assert view["local_duplicate_deliveries"] == 2
+
+    def test_tolerates_none_and_bad_counts(self):
+        view = dc.compute_content_id_view([
+            (None, None, self.SENT, None),
+            ("c1:aa", "rr", self.CONF, 1),
+        ])
+        # (None, None) → treated as untracked with 0 count; no crash
+        assert view["confirmed_pairs"] == 1
+
+
+class TestSnapshotContentIdViewStep4b:
+    """STEP 4b integration: snapshot exposes content_id_view at the
+    /api/gateway/delivery boundary (additive, measure-only)."""
+
+    def test_snapshot_exposes_content_id_view(self):
+        snap = DeliveryCounters().snapshot()
+        assert "content_id_view" in snap
+        v = snap["content_id_view"]
+        for k in ("tracked_events", "untracked_events", "unattributed_events",
+                  "tracked_pairs", "confirmed_pairs", "local_duplicate_pairs",
+                  "local_duplicate_deliveries", "confirmed", "confirmed_truncated"):
+            assert k in v
+
+    def test_local_double_delivery_shows_in_view(self):
+        c = DeliveryCounters()
+        # same logical message confirmed twice to the same recipient
+        c.record(DeliveryState.CONFIRMED, "m1", protocol="rns",
+                 content_id="c1:dup", recipient="6b1a0120")
+        c.record(DeliveryState.CONFIRMED, "m2", protocol="rns",
+                 content_id="c1:dup", recipient="6b1a0120")
+        v = c.snapshot()["content_id_view"]
+        assert v["local_duplicate_pairs"] == 1
+        assert v["local_duplicate_deliveries"] == 1
+        assert v["confirmed"][0]["content_id"] == "c1:dup"
+
+    def test_plain_events_count_as_untracked(self):
+        c = DeliveryCounters()
+        c.record(DeliveryState.SENT, "m", protocol="meshtastic")
+        v = c.snapshot()["content_id_view"]
+        assert v["untracked_events"] == 1
+        assert v["tracked_pairs"] == 0
+
+    def test_view_is_json_serializable(self):
+        c = DeliveryCounters()
+        c.record(DeliveryState.CONFIRMED, "m1", protocol="rns",
+                 content_id="c1:aa", recipient="rr")
+        json.dumps(c.snapshot()["content_id_view"])
