@@ -31,6 +31,10 @@ from gateway.canonical_message import (
     _portnum_to_message_type,
     format_reply_token,
     parse_reply_token,
+    compute_content_id,
+    normalize_content_for_id,
+    CONTENT_ID_SCHEME,
+    _CONTENT_ID_BRIDGE_TAGS,
 )
 from gateway.bridge_health import MessageOrigin
 
@@ -761,3 +765,135 @@ class TestReplyTokenFormat:
     def test_parse_address_with_colon_preserved(self):
         # split-once semantics: only the first colon separates.
         assert parse_reply_token("rns:ab:cd") == ("rns", "ab:cd")
+
+
+# =============================================================================
+# Dedup / identity arc — STEP 1: the unified logical content-id
+# =============================================================================
+
+import hashlib  # noqa: E402  (local to this test section)
+from gateway import base_handler  # noqa: E402
+
+
+class TestComputeContentId:
+    """compute_content_id() — ONE stable id per logical message, computable
+    identically on every box (dedup/identity arc, STEP 1, measure-only).
+
+    Unifies base_handler.mqtt_content_dedup_key (#34) with
+    RecentRfTxRegistry._key normalization: channel-by-NAME (#77),
+    canonical_origin_token sender axis, tag-stripped + whitespace-normalized
+    content, NO timestamp.
+    """
+
+    OT = "meshtastic:!a2e95ba4"   # a canonical origin token
+    CH = "meshforge"
+
+    # ---- core invariant: deterministic + cross-box identical ----
+    def test_deterministic(self):
+        a = compute_content_id(self.OT, "hello world", self.CH)
+        b = compute_content_id(self.OT, "hello world", self.CH)
+        assert a == b and a != ""
+
+    def test_cross_box_identical_same_inputs(self):
+        # The whole point: two independent gateways feeding the SAME logical
+        # message (same origin token, same content, same channel NAME) mint
+        # the SAME id with no shared state.
+        box_moc = compute_content_id(self.OT, "talk story to me", self.CH)
+        box_moc3 = compute_content_id(self.OT, "talk story to me", self.CH)
+        assert box_moc == box_moc3
+
+    def test_no_timestamp_component(self):
+        # Re-derivation across calls must be stable — proves no wall-clock /
+        # NTP-forgeable component (honest_failure_modes #6).
+        ids = {compute_content_id(self.OT, "stable", self.CH) for _ in range(5)}
+        assert len(ids) == 1
+
+    # ---- tag invariance: raw == gateway-re-injected-tagged ----
+    def test_bridge_tag_invariance(self):
+        # The dup-A / identity unification: the SAME logical message hashes
+        # identically whether raw on one path or [RNS:]/[MC:] re-injected on
+        # another. '[RNS:xx] hello' == '[MC:yy] hello' == 'hello'.
+        raw = compute_content_id(self.OT, "hello", self.CH)
+        rns = compute_content_id(self.OT, "[RNS:1f68] hello", self.CH)
+        mc = compute_content_id(self.OT, "[MC:p4] hello", self.CH)
+        mesh = compute_content_id(self.OT, "[Mesh:LONG_FAST:2f10] hello", self.CH)
+        assert raw == rns == mc == mesh
+
+    def test_nested_tags_stripped(self):
+        # Iterative strip (a gateway can re-tag already-tagged content).
+        nested = compute_content_id(self.OT, "[RNS:627f] [ch0:p4] hi", self.CH)
+        plain = compute_content_id(self.OT, "hi", self.CH)
+        assert nested == plain
+
+    def test_whitespace_normalized(self):
+        a = compute_content_id(self.OT, "hello   world", self.CH)
+        b = compute_content_id(self.OT, "  hello world  ", self.CH)
+        c = compute_content_id(self.OT, "hello\tworld", self.CH)
+        assert a == b == c
+
+    # ---- origin axis: identical text from different senders must differ ----
+    def test_origin_distinguishes(self):
+        # Fixes the RecentRfTxRegistry gap (content-only key collides two
+        # senders with identical text).
+        a = compute_content_id("meshtastic:!aaaaaaaa", "ping", self.CH)
+        b = compute_content_id("meshtastic:!bbbbbbbb", "ping", self.CH)
+        assert a != b
+
+    def test_empty_origin_still_ids_when_content_present(self):
+        cid = compute_content_id("", "hello", self.CH)
+        assert cid != "" and cid == compute_content_id("", "hello", self.CH)
+
+    # ---- channel-by-NAME (#77) ----
+    def test_channel_name_distinguishes(self):
+        a = compute_content_id(self.OT, "hi", "meshforge")
+        b = compute_content_id(self.OT, "hi", "LongFast")
+        assert a != b
+
+    def test_channel_name_case_insensitive(self):
+        # Two boxes reporting the channel name in different case still match;
+        # the numeric slot index (which #77 warns differs per box) is never
+        # an input — only the NAME is.
+        a = compute_content_id(self.OT, "hi", "MeshForge")
+        b = compute_content_id(self.OT, "hi", "meshforge")
+        assert a == b
+
+    # ---- empty/degenerate: '' never collapses to a shared hash (honest #1) ----
+    def test_empty_content_returns_empty(self):
+        assert compute_content_id(self.OT, "", self.CH) == ""
+
+    def test_whitespace_only_returns_empty(self):
+        assert compute_content_id(self.OT, "   \t  ", self.CH) == ""
+
+    def test_tag_only_returns_empty(self):
+        # Tag with no body normalizes to empty -> no stable identity.
+        assert compute_content_id(self.OT, "[RNS:1f68]", self.CH) == ""
+
+    def test_empty_is_not_a_shared_hash(self):
+        # Two distinct origins with empty content must BOTH be '' (explicit
+        # unidentifiable), never the same non-empty hash.
+        a = compute_content_id("meshtastic:!aaaaaaaa", "", self.CH)
+        b = compute_content_id("meshtastic:!bbbbbbbb", "", self.CH)
+        assert a == "" and b == ""
+
+    # ---- format / namespace ----
+    def test_scheme_prefix_and_shape(self):
+        cid = compute_content_id(self.OT, "hello", self.CH)
+        assert cid.startswith(CONTENT_ID_SCHEME + ":")
+        digest = cid.split(":", 1)[1]
+        assert len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+
+    # ---- unification proof: normalization == RecentRfTxRegistry._key ----
+    def test_normalization_matches_rf_registry_key(self):
+        # The content-half of content_id normalizes IDENTICALLY to the
+        # seen-on-RF dedup key, so the two are ONE function.
+        for t in ("hello world", "[RNS:1f68] hello world",
+                  "[MC:p4] hello", "  spaced   out  ",
+                  "[RNS:627f] [ch0:p4] nested"):
+            assert (hashlib.sha256(
+                normalize_content_for_id(t).encode("utf-8")).hexdigest()
+                == base_handler.RecentRfTxRegistry._key(t))
+
+    # ---- drift guard: ONE prefix list (honest_failure_modes #5) ----
+    def test_bridge_tag_list_pinned_to_base_handler(self):
+        assert tuple(_CONTENT_ID_BRIDGE_TAGS) == tuple(
+            base_handler.BRIDGE_TAG_PREFIXES)

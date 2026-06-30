@@ -16,6 +16,7 @@ Supported protocols:
 - RNS/LXMF (via rnsd)
 """
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass, field
@@ -32,6 +33,103 @@ MESHTASTIC_MAX_PAYLOAD = 237
 MESHCORE_MAX_PAYLOAD = 184
 MESHCORE_MAX_TEXT = 160  # Text message limit (payload minus headers)
 TRUNCATION_INDICATOR = "\u2026"  # Unicode ellipsis
+
+
+# \u2500\u2500 Logical content-identity (dedup/identity arc, STEP 1) \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+# ONE deterministic id per logical message, computed identically on every box,
+# so independent active-active gateways (and the MeshForge\u2194MeshAnchor pair)
+# recognize the SAME logical message. Unifies the two existing content hashes:
+# base_handler.mqtt_content_dedup_key (#34) and RecentRfTxRegistry._key.
+# canonical_message.py is byte-identical across both repos (parity_check
+# BYTE_IDENTICAL tier), so a content_id minted here is byte-identical fleetwide.
+#
+# Leading bridge-routing tags are stripped before hashing so the SAME logical
+# message hashes identically whether it arrives raw ("hello") or tagged by a
+# gateway re-injection ("[RNS:xx] hello" / "[MC:yy] hello"). This list MUST stay
+# equal to base_handler.BRIDGE_TAG_PREFIXES (MeshForge) and
+# config.nested_drop_prefixes (MeshAnchor) \u2014 pinned by
+# TestComputeContentId.test_bridge_tag_list_pinned_to_base_handler.
+_CONTENT_ID_BRIDGE_TAGS = (
+    "[MeshCore]", "[MC:", "[RNS:", "[ch0:", "[ch1:", "[Mesh:",
+)
+
+# Scheme version prefix on every content_id: self-describing + version-evolvable
+# so a future algorithm change can never silently collide with an old id.
+CONTENT_ID_SCHEME = "c1"
+
+# ASCII unit separator between key fields (matches mqtt_content_dedup_key).
+_CONTENT_ID_SEP = "\x1f"
+
+
+def _strip_leading_bridge_tags(text: str) -> str:
+    """Iteratively remove LEADING bridge tags ([RNS:..]/[MC:..]/[Mesh:..]/...).
+
+    Mirrors base_handler._strip_bridge_tags so the content-identity hash and
+    the RecentRfTxRegistry seen-on-RF key normalize content the same way.
+    Stops at the first non-tag text or a malformed (unclosed) tag.
+    """
+    out = (text or "").lstrip()
+    while out.startswith(_CONTENT_ID_BRIDGE_TAGS):
+        close = out.find("]")
+        if close < 0:
+            break
+        out = out[close + 1:].lstrip()
+    return out
+
+
+def normalize_content_for_id(content: str) -> str:
+    """Canonical content normalization for the logical-message identity.
+
+    Strips leading bridge tags then collapses every run of whitespace to a
+    single space (identical to RecentRfTxRegistry._key), so
+    '[RNS:xx] hello  world' == '[MC:yy] hello world' == 'hello world'.
+    Returns '' for empty / tag-only / whitespace-only content.
+    """
+    return " ".join(_strip_leading_bridge_tags(content).split())
+
+
+def compute_content_id(origin_token: str, content: str,
+                       channel_name: str = "") -> str:
+    """Deterministic logical-message content identity (dedup/identity arc).
+
+    Keys on three fleet-stable axes, with NO wall-clock component:
+      - origin_token: the canonical (protocol,address) origin, e.g.
+        'meshtastic:!a2e95ba4' / 'rns:<hash>' / 'meshcore:<sender>' (see
+        format_reply_token). The sender axis \u2014 so identical text from two
+        different originators does NOT collide (the RecentRfTxRegistry gap).
+        Caller-supplied; may be '' (yields a thinner content+channel identity).
+      - content: tag-stripped + whitespace-normalized (normalize_content_for_id).
+      - channel_name: the channel NAME, lowercased \u2014 NOT the box-local numeric
+        slot index, which differs per box (#77). The name is fleet-stable.
+
+    Deliberately EXCLUDES any timestamp: the fleet is RTC-less Pis with NTP
+    steps (honest_failure_modes #6); origin+content+channel is collision-safe
+    except for genuine within-window repeats, which the dedup LAYER handles
+    with a short suppress window \u2014 never the identity itself.
+
+    Returns '' when content normalizes to empty (tag-only / no text): there is
+    no stable text identity to mint, and the caller MUST treat '' as
+    "unidentifiable", never collapse every empty onto one shared hash
+    (honest_failure_modes #1).
+
+    MEASURE-ONLY in this arc: the id is minted, carried, and counted; it is
+    never used to SUPPRESS a copy (suppression risks loss if the first copy
+    never delivered \u2014 suppress-only-on-hit conservatism is preserved for a
+    later, separately-gated step).
+
+    Result form: '<CONTENT_ID_SCHEME>:<sha256-hex>' (e.g. 'c1:ab34\u2026').
+    """
+    norm = normalize_content_for_id(content)
+    if not norm:
+        return ""
+    parts = (
+        (origin_token or "").strip(),
+        norm,
+        (channel_name or "").strip().lower(),
+    )
+    digest = hashlib.sha256(
+        _CONTENT_ID_SEP.join(parts).encode("utf-8")).hexdigest()
+    return f"{CONTENT_ID_SCHEME}:{digest}"
 
 
 class MessageType(Enum):
