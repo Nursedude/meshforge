@@ -693,6 +693,7 @@ The installer auto-detects SPI and presents a HAT selection menu. Configs live i
 | **MeshAdv-Pi HAT** | SX1262 | 33dBm (1W) | High power, GPS, PPS |
 | **MeshAdv-Mini** | SX1262/SX1268 | 22dBm | GPS, temp sensor, fan, I2C/Qwiic |
 | **MeshAdv-Pi v1.1** | SX1262 | Standard | Standard Pi HAT |
+| **PiMesh-1W** ([MeshSmith](https://meshsmith.net/)) | SX1262 (E22-900M30S) | 30dBm (1W) | Commercial MeshAdv-class — TXCO, SMA, PoE/GPS; pin-identical to the `lora-MeshAdv-900M30S` preset (zero-config drop-in); lab-test candidate |
 | **Waveshare SX126X** | SX1262 | Standard | DIO2 RF switch |
 | **Ebyte E22-900M30S** | SX1262 | 30dBm (1W) | 915MHz high power |
 | **Ebyte E22-400M30S** | SX1268 | 30dBm (1W) | 433MHz (EU/Asia) |
