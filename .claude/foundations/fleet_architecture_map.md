@@ -70,7 +70,7 @@ effective gateway config**, never raw role names (the moc2 collector lesson, §7
 | moc1 | **Pi 5B** | dudeclaw (ESP32) USB | dudeclaw-dev-host + collector; gw **disabled** | beefiest box; **designated FUTURE GATEWAY** (recognition flag pre-set 07-01) |
 | moc2 | Pi 4B | HAT + RAK4631 USB + POE | collector; gw **disabled** | RF-equipped; **being PULLED for Axiometa Genesis work** (role in flux) — NOT the "RF-sparse" the old map claimed |
 | moc3 | Pi 3B (1GB) | HAT + CP210x USB | `gateway-only` **enabled** (map disabled) | recognition (flag on, no downlink) — the canary's peer |
-| moc5 | Pi 4B **Ubuntu** | MeshToad | `collector` + AREDN; no gateway | AREDN-site collector; only non-Debian box |
+| moc5 | Pi 4B **Ubuntu** | MeshToad | `collector` + AREDN; no gateway | AREDN-site collector; only non-Debian box. **Formalized + hardened 2026-07-01**: external community-broker MQTT uplink RETIRED (`mqtt.enabled=false` — was publishing off-fleet + hourly map-report; data flow now local RF+AREDN only, fleet's own MQTT handles bridging); meshtasticd leak-guard (`MemoryMax=768M`) + 2G swap + 300M journal cap; Docker grab-bag retired (EMQX/postgres/registries), apache2 dropped; kept wg-easy VPN + portainer |
 | bench | OpenWrt | USB meshtoad + meshtasticd | (not deployed) | future gateway candidate |
 | meshanchor-server | — | — | external (sister NOC) | RNS↔MQTT |
 | .32 bot | — | — | external | autoresponder→AREDN |
