@@ -115,3 +115,24 @@ def test_gateway_template_defaults_true_origin_recognition():
                 .replace("@LXMF_DESTINATION@", "test_dest"))
     d = json.loads(rendered)
     assert d["rns"]["true_origin_downlink_enabled"] is True
+
+
+def test_gateway_template_defaults_dual_path_dedup():
+    """Transport-truth arc Phase 4 (2026-07-01): the gateway.json TEMPLATE must
+    default rns.dual_path_dedup_enabled=true so every PROVISIONED gateway
+    inherits the intra-box exactly-once guard. Without it, a reactivated
+    dual-radio gateway (e.g. moc1, the designated future gateway, which had the
+    recognition flag pre-set but NOT this one) would double-inject a message
+    that reaches its primary radio via both the RNS→Mesh true-origin downlink
+    AND the mesh_bridge ST→primary cross-band bridge — the live 0743 dup this
+    phase fixed. Field-proven on moc + moc3. Loop-safe on single-radio gateways
+    too (nothing registers a second egress path, so it never falsely suppresses;
+    empty content_id never suppresses, honest_failure_modes #1). Pin it as a
+    closed consumer, not memory (honest_failure_modes #7)."""
+    import json
+    template = REPO / "templates" / "gateway" / "gateway.json.template"
+    rendered = (template.read_text()
+                .replace("@MESHFORGE_CHANNEL_INDEX@", "2")
+                .replace("@LXMF_DESTINATION@", "test_dest"))
+    d = json.loads(rendered)
+    assert d["rns"]["dual_path_dedup_enabled"] is True
