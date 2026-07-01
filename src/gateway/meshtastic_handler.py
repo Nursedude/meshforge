@@ -687,6 +687,16 @@ class MeshtasticHandler(BaseMessageHandler):
             logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
 
+        # Cross-box loop guard (transport-truth arc Option A): passed the guard,
+        # so this gateway is bridging this broadcast mesh→RNS. Register its
+        # content_id so a PEER gateway's untagged true-origin re-injection of the
+        # same logical content (heard back on RF) is recognized by the guard
+        # above and not re-bridged — the shared-segment case Phase-2's intra-box
+        # registry alone can't cover. After the guard (never suppresses the
+        # original); only when the flag armed loop_cid (inert off); broadcast-only.
+        if loop_cid and packet.get('toId') == '!ffffffff':
+            get_rf_tx_registry().register_content_id(loop_cid)
+
         # Mesh oracle (read-only): answer a query (status/whatsup/...) DIRECTED
         # back to the sender — off-grid, no cloud. Default OFF; never breaks the
         # bridge; a handled query is consumed (not bridged onward).

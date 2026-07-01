@@ -320,6 +320,90 @@ class TestContentIdLoopGuardIngress:
             mp.undo()
 
 
+class TestCrossBoxEgressRegistration:
+    """Transport-truth arc Option A: a gateway registers the content_id of every
+    broadcast it bridges mesh→RNS, so a PEER gateway's untagged true-origin
+    re-injection of the same logical content — heard back on RF — is recognized
+    by the loop guard and NOT re-bridged (the shared-segment cross-box case).
+    Inert when the flag is off."""
+
+    def _armed(self, mp, *, enabled):
+        import gateway.base_handler as bh
+        from gateway.config import RNSConfig
+        fresh = bh.RecentRfTxRegistry()
+        mp.setattr(bh, "_rf_tx_registry", fresh)
+        handler = _make_bridge_handler(own_id="!32962f10")
+        handler.config.rns = RNSConfig()
+        handler.config.rns.true_origin_downlink_enabled = enabled
+        handler.config.rns.true_origin_loop_guard_window_sec = 120
+        return handler, fresh
+
+    def _send(self, handler, text, *, frm=0xa2e95ba4, to=0xFFFFFFFF):
+        handler._bridge_text_message(
+            {"from": frm, "sender": "!ebfa1b11", "to": to,
+             "payload": {"text": text}, "channel": 2},
+            topic="msh/US/2/json/meshforge/!ebfa1b11")
+
+    def _cid(self, text, frm="!a2e95ba4"):
+        from gateway.base_handler import loop_guard_content_id
+        return loop_guard_content_id(f"meshtastic:{frm}", text)
+
+    def test_bridged_broadcast_registers_content_id(self):
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed(mp, enabled=True)
+            self._send(handler, "borg joke reply")
+            # It bridged (original passes the guard)...
+            handler._message_queue.put.assert_called_once()
+            # ...and its content_id is now armed for the cross-box echo.
+            assert reg.seen_content_id_within(
+                self._cid("borg joke reply"), 120) is True
+        finally:
+            mp.undo()
+
+    def test_original_bridges_then_echo_dropped(self):
+        # The end-to-end cross-box guarantee, in one box: the first hearing
+        # (the original) bridges + registers; a second hearing of the SAME
+        # (origin, content) — the peer's untagged true-origin echo — is dropped.
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, _reg = self._armed(mp, enabled=True)
+            self._send(handler, "borg joke reply")
+            handler._message_queue.put.assert_called_once()   # original bridged
+            handler._message_queue.put.reset_mock()
+            self._send(handler, "borg joke reply")            # the echo
+            handler._message_queue.put.assert_not_called()    # dropped, no re-bridge
+        finally:
+            mp.undo()
+
+    def test_flag_off_does_not_register(self):
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed(mp, enabled=False)
+            self._send(handler, "borg joke reply")
+            handler._message_queue.put.assert_called_once()   # still bridges
+            assert reg.seen_content_id_within(
+                self._cid("borg joke reply"), 120) is False   # but nothing armed
+        finally:
+            mp.undo()
+
+    def test_dm_not_registered(self):
+        # Broadcast-only: a directed message's content_id is not registered
+        # (true-origin delivery is broadcast-only, so only broadcasts echo).
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed(mp, enabled=True)
+            self._send(handler, "a direct note", to=0x32962f10)  # DM, not broadcast
+            assert reg.seen_content_id_within(
+                self._cid("a direct note"), 120) is False
+        finally:
+            mp.undo()
+
+
 def _meshanchor_echo_prefixes():
     """Read MeshAnchor's ECHO_LOOP_INVARIANT_PREFIXES from its SOURCE without
     importing it — the `gateway` package name collides with MeshForge's, so a

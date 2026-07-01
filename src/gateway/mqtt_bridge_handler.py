@@ -710,6 +710,21 @@ class MQTTBridgeHandler(BaseMessageHandler):
             logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
 
+        # Cross-box loop guard (transport-truth arc Option A): the content
+        # PASSED the guard, so this gateway is about to bridge this broadcast
+        # mesh→RNS. Register its content_id so a PEER gateway's true-origin
+        # re-injection of the SAME logical content — heard back on RF UNTAGGED,
+        # which the tag test can't catch — is recognized by the loop guard above
+        # on THIS box and not re-bridged again. This is what makes untagged
+        # true-origin delivery safe on a segment SHARED with a peer gateway (the
+        # moc↔moc3 case Phase-2's intra-box registry alone can't cover): every
+        # gateway that heard the original registers the id, so it recognizes the
+        # echo. Registered AFTER the guard (never suppresses the original) and
+        # only when the flag armed loop_cid (inert when off). Broadcast-only, to
+        # match Phase-3's broadcast-only true-origin delivery.
+        if loop_cid and to_num == 0xFFFFFFFF:
+            get_rf_tx_registry().register_content_id(loop_cid)
+
         # Mesh oracle (read-only): answer a query DIRECTED back to the sender,
         # consumed (NOT bridged/stored onward) when consume=True (default).
         # consume=False = bridge-through: still answered, but the command keeps
