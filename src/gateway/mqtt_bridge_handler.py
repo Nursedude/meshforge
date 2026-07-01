@@ -42,7 +42,7 @@ from gateway import delivery_counters as _dc
 from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_bridge_loop, loop_guard_content_id,
+    get_rf_tx_registry, is_bridge_loop, mesh_origin_content_id,
     mqtt_content_dedup_key, true_origin_downlink_enabled,
     true_origin_loop_guard_window_s,
 )
@@ -702,7 +702,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # to is_already_bridged — no behavior change, id not even computed.
         loop_cid = ""
         if true_origin_downlink_enabled(self.config):
-            loop_cid = loop_guard_content_id(f"meshtastic:{from_id}", text)
+            loop_cid = mesh_origin_content_id(from_id, text)
         if is_bridge_loop(
                 text, loop_cid,
                 registry=get_rf_tx_registry(),
@@ -1154,17 +1154,29 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # By dispatch time — ≥min_spacing_s (3s) later — the registry is
         # settled, so re-checking here closes the race deterministically
         # (observed live 2026-06-04: every bot-reply pair on moc leaked).
+        # Both namespaces (Phase 4, review 2026-07-01): the payload carries
+        # the logical message's content_id so a TRUE-ORIGIN delivery of the
+        # same message — which registers only its cid, never raw text this
+        # tagged chunk could match — is recognized here too.
         # Suppress-only-on-hit: return True so the queue marks it done.
-        if (not destination and dual_path_dedup_enabled(self.config)
-                and get_rf_tx_registry().seen_within(
-                    message, dual_path_dedup_window_s(self.config))):
-            with self._stats_lock:
-                self.stats['dispatch_dedup_suppressed'] = (
-                    self.stats.get('dispatch_dedup_suppressed', 0) + 1)
-            logger.info(
-                f"Queue dispatch suppressed (dual-path dedup — already on "
-                f"RF): {message[:50]}...")
-            return True
+        if not destination and dual_path_dedup_enabled(self.config):
+            hit = get_rf_tx_registry().seen_namespace_within(
+                message, str(payload.get('content_id') or ''),
+                dual_path_dedup_window_s(self.config))
+            if hit:
+                with self._stats_lock:
+                    self.stats['dispatch_dedup_suppressed'] = (
+                        self.stats.get('dispatch_dedup_suppressed', 0) + 1)
+                    if hit == 'cid':
+                        # Witness: broker-publish-only evidence (see
+                        # _deliver_true_origin) — the loss-exposure meter.
+                        self.stats['dispatch_dedup_suppressed_cid_only'] = (
+                            self.stats.get(
+                                'dispatch_dedup_suppressed_cid_only', 0) + 1)
+                logger.info(
+                    f"Queue dispatch suppressed (dual-path dedup [{hit}] — "
+                    f"already on RF): {message[:50]}...")
+                return True
 
         # Queue owns the SENT transition (mark_delivered on _queue_msg_id);
         # arm ACK confirmation against that same id (record_sent=False).

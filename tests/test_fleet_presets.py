@@ -136,3 +136,15 @@ def test_gateway_template_defaults_dual_path_dedup():
                 .replace("@LXMF_DESTINATION@", "test_dest"))
     d = json.loads(rendered)
     assert d["rns"]["dual_path_dedup_enabled"] is True
+
+
+def test_code_default_dual_path_dedup_true():
+    """Review 2026-07-01 (the #62 saved-defaults class): the TEMPLATE default
+    above only reaches a FRESHLY rendered gateway.json — an already-deployed
+    config lacking the key silently constructs the CODE default, and there is
+    no key-merge migration for gateway.json. So the code default is the only
+    channel that protects e.g. a reactivated moc1 whose dormant config
+    predates Phase 4. Pin RNSConfig's default True so the template and code
+    defaults can never drift apart (honest_failure_modes #5)."""
+    from gateway.config import RNSConfig
+    assert RNSConfig().dual_path_dedup_enabled is True

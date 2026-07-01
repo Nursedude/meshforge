@@ -27,8 +27,9 @@ from typing import Optional
 from utils.lxmface import seed_string_for_node
 
 from .base_handler import (
-    chunk_for_mesh, get_rf_tx_registry, is_already_bridged,
-    loop_guard_content_id, true_origin_downlink_enabled,
+    chunk_for_mesh, dual_path_dedup_enabled, dual_path_dedup_window_s,
+    get_rf_tx_registry, is_already_bridged, mesh_origin_content_id,
+    true_origin_downlink_enabled,
 )
 from .canonical_message import (
     compute_content_id, format_reply_token, parse_reply_token,
@@ -65,21 +66,12 @@ class MessageTransformMixin:
         return getattr(rns_cfg, 'reply_routing_enabled', False) is True
 
     def _dual_path_dedup_on(self) -> bool:
-        """Strict read of rns.dual_path_dedup_enabled (default False).
-
-        Same ``is True`` discipline as _reply_routing_on — MagicMock test
-        configs and malformed values read as OFF, preserving the legacy
-        always-deliver behavior everywhere the flag wasn't explicitly set.
-        """
-        rns_cfg = getattr(self.config, 'rns', None)
-        return getattr(rns_cfg, 'dual_path_dedup_enabled', False) is True
+        """Delegates to the base_handler SSOT read (strict is-True)."""
+        return dual_path_dedup_enabled(self.config)
 
     def _dual_path_dedup_window(self) -> float:
-        rns_cfg = getattr(self.config, 'rns', None)
-        try:
-            return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
-        except (TypeError, ValueError):
-            return 60.0
+        """Delegates to the base_handler SSOT read (TTL-clamped)."""
+        return dual_path_dedup_window_s(self.config)
 
     def _identity_on(self) -> bool:
         """Strict read of rns.cross_protocol_identity_enabled (default False).
@@ -606,7 +598,7 @@ class MessageTransformMixin:
         origin_num = self._mesh_id_to_num(origin_id)
         if origin_num is None:
             return False   # origin unrecoverable -> keep the tag
-        loop_cid = loop_guard_content_id(f"meshtastic:{origin_id}", body)
+        loop_cid = mesh_origin_content_id(origin_id, body)
         if not loop_cid:
             return False   # unidentifiable content -> keep the tag (never untagged-unguarded)
         # Teach the primary radio the origin's NAME once (best-effort): the
@@ -633,6 +625,21 @@ class MessageTransformMixin:
         # Delivered untagged as the true origin -> arm the loop guard so a
         # re-heard echo on the ingress paths that lack the via_mqtt loop-safety
         # (mesh_bridge / TCP) is recognized and not re-bridged.
+        #
+        # Deliberately cid-ONLY, never register(body): the namespaces carry
+        # evidence tiers. The text namespace means "on RF" proven by an RF
+        # RX or a radio-API-confirmed send; inject() truth is broker-publish
+        # -only (QoS-0 to the local broker) and does NOT prove meshtasticd
+        # decoded or transmitted the downlink. A stale downlink_psk (the
+        # 06-04 re-key class) makes this a false "delivered", and this
+        # registration then suppresses the surviving copies on the other
+        # egress paths: message LOSS, not a dup. Keeping the weak-evidence
+        # claim in the cid namespace ONLY is what lets every check site tag
+        # a cid-only suppression with its *_cid_only witness stat (the
+        # exposure meter for this class). Text-only checkers see this
+        # delivery via the content_id carried in the queued payload. Root
+        # fix (deferred, ledgered): a downlink-PSK canary that proves the
+        # injector's envelope is decodable before trusting inject()==True.
         get_rf_tx_registry().register_content_id(loop_cid)
         with self._stats_lock:
             self.stats['rns_to_mesh_true_origin'] = (
@@ -709,7 +716,19 @@ class MessageTransformMixin:
 
             destination = None
             reply_route = ""  # "field"|"memory"|"contact" when reply routing resolved it
-            if body.startswith('@'):
+            # @-directed downlink (#39) is for RNS-AUTHORED originals only.
+            # A mesh-originated relayed broadcast whose body happens to start
+            # with '@<name>' (e.g. a bot reply "@moc3 ACK!") must STAY a
+            # broadcast: converting it to a DM would rewrite its mesh
+            # audience AND bypass every broadcast-gated dedup/true-origin
+            # path below — the resolved-DM leg neither checks nor registers
+            # either RF-TX namespace, so it double-delivers against
+            # mesh_bridge's forward of the same packet (review 2026-07-01;
+            # the live 0743 shape escaped only because the name was
+            # unresolved on that box).
+            if (body.startswith('@')
+                    and lxmf_fields.get('meshforge_source_network')
+                    != 'meshtastic'):
                 parts = body.split(None, 1)
                 if len(parts) == 2:
                     addr_token = parts[0][1:]
@@ -793,33 +812,39 @@ class MessageTransformMixin:
             # relayed events), there is no hit and this copy still delivers,
             # preserving the relay's fallback value. Broadcasts only — a
             # resolved DM destination is never dual-path.
+            # Shared Phase-4 coordination key for this logical message —
+            # '' for genuine RNS-origin content (never registered/matched).
+            # Computed once here; reused by the gate below and carried in
+            # every queued chunk payload so the dispatch-time re-checks can
+            # recognize a true-origin delivery of the same message (which
+            # registers only its cid, never raw text).
+            dedup_cid = mesh_origin_content_id(
+                lxmf_fields.get('meshforge_from_id'), body)
+
             if destination is None and self._dual_path_dedup_on():
-                _reg = get_rf_tx_registry()
-                _win = self._dual_path_dedup_window()
-                # Unified intra-box dedup (transport-truth arc Phase 4). The
-                # local mesh_bridge ST→primary forward and this R→M downlink
-                # are two egress paths to the SAME primary radio; they
-                # coordinate through the shared RF-TX registry so exactly one
-                # delivers. Two namespaces, one gate: the text-hash leg catches
-                # a peer's tagged relay + cross-box seen-on-RF, and the
-                # content_id leg closes the gap the text leg is BLIND to — a
-                # copy delivered UNTAGGED as its true origin registers only its
-                # content_id (loop_guard namespace), never the raw text. That
-                # blind spot is the live 0743 dup (2026-07-01): the true-origin
-                # downlink injected first, so mesh_bridge's text-only check
-                # missed it and double-delivered. Channel-agnostic id (#77);
-                # empty id never matches (honest_failure_modes #1).
-                _origin = (lxmf_fields.get('meshforge_from_id') or '').strip()
-                _dedup_cid = (loop_guard_content_id(f"meshtastic:{_origin}", body)
-                              if _origin else "")
-                if (_reg.seen_within(body, _win)
-                        or _reg.seen_content_id_within(_dedup_cid, _win)):
+                # Unified intra-box dedup (transport-truth arc Phase 4): the
+                # mesh_bridge ST→primary forward and this R→M downlink are
+                # two egress paths to the SAME primary radio, coordinating
+                # through the shared RF-TX registry. Two namespaces, one
+                # gate — the canonical rationale lives on
+                # mesh_bridge._send_to_primary; the shared check itself in
+                # RecentRfTxRegistry.seen_namespace_within.
+                hit = get_rf_tx_registry().seen_namespace_within(
+                    body, dedup_cid, self._dual_path_dedup_window())
+                if hit:
                     with self._stats_lock:
                         self.stats['rns_to_mesh_dual_path_suppressed'] = (
                             self.stats.get('rns_to_mesh_dual_path_suppressed', 0) + 1)
+                        if hit == 'cid':
+                            # Witness: suppression evidence is a broker-
+                            # publish-only true-origin registration (see
+                            # _deliver_true_origin) — the loss-exposure meter.
+                            self.stats['rns_to_mesh_dual_path_suppressed_cid_only'] = (
+                                self.stats.get(
+                                    'rns_to_mesh_dual_path_suppressed_cid_only', 0) + 1)
                     logger.info(
-                        f"Bridge RNS→Mesh suppressed (dual-path dedup — already "
-                        f"on RF via mesh_bridge): {body[:50]}...")
+                        f"Bridge RNS→Mesh suppressed (dual-path dedup [{hit}] — "
+                        f"already on RF via mesh_bridge): {body[:50]}...")
                     return
 
             # True-origin downlink (transport-truth arc Phase 3, flag-gated,
@@ -922,6 +947,12 @@ class MessageTransformMixin:
                         'channel': self.config.meshtastic.channel,
                         'source_id': msg.source_id,
                         'destination': destination,
+                        # Phase-4 coordination key: lets the dispatch-time
+                        # re-check recognize a true-origin delivery of this
+                        # same logical message (cid-only registration the
+                        # tagged chunk's text can never match — and chunked
+                        # text can't match the full body either way).
+                        'content_id': dedup_cid,
                     }
                     if self._persistent_queue.enqueue(
                         payload=payload,

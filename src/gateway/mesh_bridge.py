@@ -31,8 +31,9 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Callable, Any, List
 
 from .base_handler import (
+    dual_path_dedup_enabled, dual_path_dedup_window_s,
     get_rf_tx_registry, get_secondary_rf_registry, is_bridge_loop,
-    loop_guard_content_id, mqtt_content_dedup_key,
+    mesh_origin_content_id, mqtt_content_dedup_key,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
@@ -256,6 +257,7 @@ class MQTTMeshInterface:
                 return
 
             sender = data.get('sender', '')
+            from_num = data.get('from', 0)
             to_num = data.get('to', 0)
             payload = data.get('payload', {})
             text = payload.get('text', '') if isinstance(payload, dict) else str(payload)
@@ -266,9 +268,18 @@ class MQTTMeshInterface:
             to_id = f"!{to_num:08x}" if to_num else None
             is_broadcast = to_num == 0xFFFFFFFF
 
+            # Attribution SSOT (same rule as MQTTBridgeHandler._handle_json
+            # _message): `from` is the ORIGINATING node; `sender` is the
+            # LAST-HOP radio that uplinked the packet (often the gateway's
+            # own node). fromId keyed on sender here silently diverged the
+            # Phase-4 dedup/loop-guard content_id from the rns_bridge side
+            # (which keys on the originator) on MQTT-leg topologies
+            # (review 2026-07-01).
+            from_id = f"!{from_num:08x}" if from_num else sender
+
             # Build a packet dict compatible with _process_receive
             packet = {
-                'fromId': sender,
+                'fromId': from_id,
                 'toId': to_id or '!ffffffff',
                 'channel': data.get('channel', 0),
                 'rxSnr': data.get('snr'),
@@ -1078,7 +1089,7 @@ class MeshtasticPresetBridge:
             # reduces exactly to is_already_bridged (no behavior change).
             loop_cid = ""
             if true_origin_downlink_enabled(self.config):
-                loop_cid = loop_guard_content_id(f"meshtastic:{from_id}", text)
+                loop_cid = mesh_origin_content_id(from_id, text)
             leg_registry = (get_rf_tx_registry() if source == "primary"
                             else get_secondary_rf_registry())
             if is_bridge_loop(
@@ -1195,68 +1206,71 @@ class MeshtasticPresetBridge:
         if success:
             with self._stats_lock:
                 self.stats['messages_primary_to_secondary'] += 1
-            # Mirror of _send_to_primary's registration, secondary scope.
+            # Text-namespace registration, secondary scope. NOT a full mirror
+            # of _send_to_primary since Phase 4: the primary registers both
+            # namespaces because true-origin downlink delivery (the cid
+            # producer) exists only on the primary radio today. If injection
+            # ever extends to the secondary mesh, this site must register the
+            # cid too — until then the secondary cid namespace has zero
+            # producers and any cid check against it is structurally inert.
             if msg.is_broadcast:
                 get_secondary_rf_registry().register(msg.content)
         return success
 
     def _dual_path_dedup_on(self) -> bool:
-        """Strict read of rns.dual_path_dedup_enabled (default False).
-
-        Same ``is True`` discipline as the rns_bridge gates — MagicMock test
-        configs and malformed values read as OFF.
-        """
-        rns_cfg = getattr(self.config, 'rns', None)
-        return getattr(rns_cfg, 'dual_path_dedup_enabled', False) is True
+        """Delegates to the base_handler SSOT read (strict is-True)."""
+        return dual_path_dedup_enabled(self.config)
 
     def _dual_path_dedup_window(self) -> float:
-        rns_cfg = getattr(self.config, 'rns', None)
-        try:
-            return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
-        except (TypeError, ValueError):
-            return 60.0
+        """Delegates to the base_handler SSOT read (TTL-clamped)."""
+        return dual_path_dedup_window_s(self.config)
 
     def _send_to_primary(self, payload: Dict) -> bool:
         """Send callback for persistent queue — forward to primary."""
         msg = BridgedMeshMessage.from_payload(payload)
 
-        # Shared intra-box dedup content_id (transport-truth arc Phase 4).
-        # Channel-agnostic (#77), keyed on origin+content so it is byte-equal
-        # to the id the rns_bridge R→M true-origin path registers/checks — the
-        # coordination key that lets the two egress paths dedup each other.
-        # Empty on an unknown origin -> never matches (honest_failure_modes #1).
-        dedup_cid = (loop_guard_content_id(f"meshtastic:{msg.source_id}", msg.content)
-                     if msg.source_id else "")
+        # Shared intra-box dedup content_id (transport-truth arc Phase 4):
+        # mesh_origin_content_id is THE key derivation both egress paths use,
+        # so the id is byte-equal to what the rns_bridge R→M true-origin path
+        # registers/checks. Broadcast-only — both consumers below are gated
+        # on is_broadcast, and DMs never dual-path.
+        dedup_cid = (mesh_origin_content_id(msg.source_id, msg.content)
+                     if msg.is_broadcast else "")
 
-        # Symmetric dual-path dedup (gated, default off): when the
-        # rns_bridge's relay copy of this same content WON the race and
-        # already went out on the primary radio (it registered on TX),
-        # suppress our forward instead of double-delivering. The original
-        # one-directional check (rns_bridge consults mesh_bridge's
-        # registrations) only caught the races mesh_bridge won — live
-        # 2026-06-04 the RNS relay beat the serial RX by ~300ms and the
-        # duplicate sailed through. Returning True marks the queue item
-        # delivered (the content IS on the radio — just via the other path).
+        # Symmetric dual-path dedup (gated): when the rns_bridge's copy of
+        # this same content WON the race and already went out on the primary
+        # radio (it registered on delivery), suppress our forward instead of
+        # double-delivering. Two namespaces, one gate (Phase 4): the text leg
+        # catches the tagged relay + cross-box seen-on-RF; the cid leg
+        # catches the UNTAGGED true-origin delivery the text leg is blind to
+        # (the live 0743 dup, 2026-07-01). Returning True marks the queue
+        # item delivered (the content IS on the radio — via the other path).
         #
-        # Two namespaces, one gate (Phase 4): the text-hash leg catches the
-        # rns_bridge's TAGGED relay + cross-box seen-on-RF; the content_id leg
-        # closes the true-origin gap the text leg is blind to — the R→M path
-        # delivered UNTAGGED registers only its content_id, never the raw text,
-        # so a text-only check double-delivered (the live 0743 dup, 2026-07-01,
-        # true-origin injected first). register-on-confirmed-delivery below is
-        # retry-safe: a failed forward never registers, so the queue's retry
-        # re-checks cleanly and is never self-suppressed.
-        if (msg.is_broadcast and self._dual_path_dedup_on()
-                and (get_rf_tx_registry().seen_within(
-                        msg.content, self._dual_path_dedup_window())
-                     or get_rf_tx_registry().seen_content_id_within(
-                        dedup_cid, self._dual_path_dedup_window()))):
-            with self._stats_lock:
-                self.stats['dual_path_suppressed'] += 1
-            logger.info(
-                f"mesh_bridge forward suppressed (dual-path dedup — already "
-                f"on RF via rns_bridge): {msg.content[:50]}...")
-            return True
+        # Known residual windows (review 2026-07-01, deferred to the claim/
+        # confirm protocol slice): check→register is NOT atomic, so two paths
+        # racing tighter than one in-flight delivery can both miss and both
+        # deliver; and a queue retry lagging past the dedup window re-opens
+        # the gate. Both fail toward a cosmetic dup, never loss — the safe
+        # direction. register-on-confirmed-delivery below is retry-safe: a
+        # failed forward never registers, so the retry is never
+        # self-suppressed.
+        if msg.is_broadcast and self._dual_path_dedup_on():
+            hit = get_rf_tx_registry().seen_namespace_within(
+                msg.content, dedup_cid, self._dual_path_dedup_window())
+            if hit:
+                with self._stats_lock:
+                    self.stats['dual_path_suppressed'] += 1
+                    if hit == 'cid':
+                        # Witness (honest_failure_modes #9): the ONLY evidence
+                        # for this suppression is a true-origin registration
+                        # whose "delivered" is broker-publish-only — if the
+                        # downlink PSK is stale, this suppression IS the loss.
+                        self.stats['dual_path_suppressed_cid_only'] = (
+                            self.stats.get('dual_path_suppressed_cid_only', 0) + 1)
+                logger.info(
+                    f"mesh_bridge forward suppressed (dual-path dedup [{hit}] — "
+                    f"already on RF via rns_bridge): {msg.content[:50]}...")
+                return True
 
         success = self._forward_message(
             msg, self._primary_interface,
@@ -1274,7 +1288,9 @@ class MeshtasticPresetBridge:
             # text (for the rns_bridge tagged-relay text check) AND the shared
             # content_id (so the R→M true-origin path, which never sees this
             # raw text, still recognizes the copy). register_content_id('')
-            # is a no-op, so an unknown origin degrades to text-only.
+            # is a no-op, so an unknown origin degrades to text-only. This
+            # registration is radio-API-confirmed (_forward_message returned
+            # True) — the strongest evidence tier a register site has.
             if msg.is_broadcast:
                 get_rf_tx_registry().register(msg.content)
                 get_rf_tx_registry().register_content_id(dedup_cid)

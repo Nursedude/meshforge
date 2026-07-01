@@ -1098,6 +1098,23 @@ class TestDispatchTimeDedupRecheck:
                              "destination": None, "channel": 2}) is True
         h._interface.sendText.assert_called_once()
 
+    def test_suppresses_on_payload_content_id_hit(self, handler, monkeypatch):
+        """Review 2026-07-01: a true-origin delivery registers ONLY its
+        content_id — the payload carries the cid from enqueue time so this
+        re-check recognizes it, tagging the cid-only witness."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import mesh_origin_content_id
+        cid = mesh_origin_content_id("!a2e95ba4", "borg reply text")
+        reg.register_content_id(cid)             # cid only — no text entry
+        h = self._connected(handler)
+        h.config.rns.dual_path_dedup_enabled = True
+        assert h.queue_send({"message": "[RNS:BORG] borg reply text",
+                             "destination": None, "channel": 2,
+                             "content_id": cid}) is True
+        h._interface.sendText.assert_not_called()
+        assert h.stats.get('dispatch_dedup_suppressed') == 1
+        assert h.stats.get('dispatch_dedup_suppressed_cid_only') == 1
+
 
 # ---------------------------------------------------------------------------
 # Thread-2 step 4 — Meshtastic ROUTING_APP ACK consumption (#74)

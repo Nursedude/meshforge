@@ -1044,7 +1044,8 @@ class TestSymmetricDualPathSuppression:
     """mesh_bridge's primary forward suppresses when the rns_bridge relay
     copy already went out (it registered on TX) — closes the race direction
     the one-way check missed (live 2026-06-04: RNS beat serial RX by
-    ~300ms and the duplicate sailed through). Gated, default off."""
+    ~300ms and the duplicate sailed through). Gated; default TRUE since
+    Phase 4 (2026-07-01) — flag-off tests set it off explicitly."""
 
     def _fresh_registry(self, monkeypatch):
         import gateway.base_handler as bh
@@ -1098,8 +1099,8 @@ class TestSymmetricDualPathSuppression:
                                          mock_config, monkeypatch):
         reg = self._fresh_registry(monkeypatch)
         reg.register("dup content")
-        # mock_config.rns is a MagicMock — strict is-True gate reads OFF.
-        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        # Explicit off (the code default is True since Phase 4).
+        bridge = self._bridge(mock_home, tmp_path, mock_config, dedup=False)
 
         assert bridge._send_to_primary(self._payload("dup content")) is True
         bridge._primary_interface.sendText.assert_called_once()
@@ -1142,12 +1143,13 @@ class TestSymmetricDualPathSuppression:
     @patch('gateway.mesh_bridge.get_real_user_home')
     def test_content_id_hit_flag_off_still_forwards(self, mock_home, tmp_path,
                                                     mock_config, monkeypatch):
-        """Default-off: a content_id hit without the flag changes nothing."""
+        """Flag off: a content_id hit without the flag changes nothing."""
         reg = self._fresh_registry(monkeypatch)
         from gateway.base_handler import loop_guard_content_id
         reg.register_content_id(
             loop_guard_content_id("meshtastic:!b03bb70c", "off content"))
-        bridge = self._bridge(mock_home, tmp_path, mock_config)   # MagicMock rns → OFF
+        # Explicit off (the code default is True since Phase 4).
+        bridge = self._bridge(mock_home, tmp_path, mock_config, dedup=False)
 
         assert bridge._send_to_primary(self._payload("off content")) is True
         bridge._primary_interface.sendText.assert_called_once()
@@ -1341,3 +1343,113 @@ class TestEmptyIdContentDedupIssue34:
         iface._on_message(None, None, msg)
         iface._on_message(None, None, msg)
         assert cb.call_count == 1
+
+
+class TestMqttLegOriginatorAttribution:
+    """Review 2026-07-01: MQTTMeshInterface._on_message must key fromId on
+    the json envelope's ``from`` (the ORIGINATING node), not ``sender`` (the
+    LAST-HOP radio that uplinked) — the attribution SSOT the mqtt_bridge
+    handler already follows. Keying on sender silently diverged the Phase-4
+    dedup / Phase-2 loop-guard content_id from the rns_bridge side (which
+    keys on the originator) on any MQTT-ingress-leg topology."""
+
+    @staticmethod
+    def _iface():
+        from gateway.mesh_bridge import MQTTMeshInterface
+        from gateway.config import MeshtasticConfig
+        cb = MagicMock()
+        iface = MQTTMeshInterface(
+            config=MeshtasticConfig(use_mqtt=True, mqtt_channel="meshforge"),
+            name="test", message_callback=cb, stop_event=threading.Event(),
+        )
+        return iface, cb
+
+    @staticmethod
+    def _msg(d):
+        m = MagicMock()
+        m.topic = "msh/2/json/meshforge/!aabb0042"
+        m.payload = json.dumps(d).encode("utf-8")
+        return m
+
+    def test_from_id_is_originator_not_uplink_radio(self):
+        iface, cb = self._iface()
+        iface._on_message(None, None, self._msg({
+            "type": "text", "id": 1234,
+            "from": 0xA2E95BA4,          # originator
+            "sender": "!aabb0042",       # uplinking gateway radio
+            "to": 0xFFFFFFFF, "channel": 0,
+            "payload": {"text": "who said this"},
+        }))
+        cb.assert_called_once()
+        packet = cb.call_args[0][0]
+        assert packet['fromId'] == "!a2e95ba4"
+
+    def test_missing_from_falls_back_to_sender(self):
+        iface, cb = self._iface()
+        iface._on_message(None, None, self._msg({
+            "type": "text", "id": 1235,
+            "sender": "!aabb0042",
+            "to": 0xFFFFFFFF, "channel": 0,
+            "payload": {"text": "no from field"},
+        }))
+        cb.assert_called_once()
+        packet = cb.call_args[0][0]
+        assert packet['fromId'] == "!aabb0042"
+
+
+class TestCidOnlySuppressionWitness:
+    """Review 2026-07-01 (loss-exposure meter): a suppression whose ONLY
+    evidence is a content_id registration — i.e. a true-origin delivery whose
+    "delivered" is broker-publish-only — must leave its own witness stat,
+    distinct from text-evidenced suppressions (honest_failure_modes #9)."""
+
+    def _fresh_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _bridge(self, mock_home, tmp_path, mock_config):
+        from gateway.mesh_bridge import MeshtasticPresetBridge
+        mock_home.return_value = tmp_path
+        mock_config.rns.dual_path_dedup_enabled = True
+        mock_config.rns.dual_path_dedup_window_sec = 60
+        b = MeshtasticPresetBridge(config=mock_config)
+        b._primary_interface = MagicMock()
+        b._primary_connected = True
+        return b
+
+    def _payload(self, content):
+        from gateway.mesh_bridge import BridgedMeshMessage
+        return BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!b03bb70c",
+            destination_id="!ffffffff", content=content,
+            channel=2, is_broadcast=True,
+        ).to_payload()
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_cid_only_hit_bumps_witness(self, mock_home, tmp_path,
+                                        mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import mesh_origin_content_id
+        reg.register_content_id(
+            mesh_origin_content_id("!b03bb70c", "cid only content"))
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+
+        assert bridge._send_to_primary(self._payload("cid only content")) is True
+        bridge._primary_interface.sendText.assert_not_called()
+        assert bridge.stats['dual_path_suppressed'] == 1
+        assert bridge.stats['dual_path_suppressed_cid_only'] == 1
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_text_hit_does_not_bump_cid_witness(self, mock_home, tmp_path,
+                                                mock_config, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("text evidenced content")
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+
+        assert bridge._send_to_primary(
+            self._payload("text evidenced content")) is True
+        bridge._primary_interface.sendText.assert_not_called()
+        assert bridge.stats['dual_path_suppressed'] == 1
+        assert bridge.stats.get('dual_path_suppressed_cid_only', 0) == 0

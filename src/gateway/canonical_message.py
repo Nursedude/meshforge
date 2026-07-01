@@ -112,10 +112,15 @@ def compute_content_id(origin_token: str, content: str,
     "unidentifiable", never collapse every empty onto one shared hash
     (honest_failure_modes #1).
 
-    MEASURE-ONLY in this arc: the id is minted, carried, and counted; it is
-    never used to SUPPRESS a copy (suppression risks loss if the first copy
-    never delivered \u2014 suppress-only-on-hit conservatism is preserved for a
-    later, separately-gated step).
+    Suppression use is deliberately NARROW (contract revised 2026-07-01): the
+    id is minted, carried, and counted everywhere; it is used to SUPPRESS a
+    copy ONLY inside an explicitly-gated INTRA-box dual-path dedup window
+    whose register side runs on confirmed delivery (MeshForge transport-truth
+    Phase 4). Cross-box observation (/fleet/dups) stays measure-only. Any new
+    suppression consumer must preserve the failure direction: a missed match
+    is a cosmetic dup, but a false or unearned hit (registration without real
+    delivery) is message LOSS \u2014 suppress-only-on-hit, empty id never matches,
+    and cid-only suppressions leave a witness stat.
 
     Result form: '<CONTENT_ID_SCHEME>:<sha256-hex>' (e.g. 'c1:ab34\u2026').
     """

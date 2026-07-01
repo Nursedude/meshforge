@@ -832,6 +832,34 @@ class TestDispatchTimeDedupRecheck:
                              "destination": None, "channel": 2}) is True
         h.send_text.assert_called_once()  # still exactly one real TX
 
+    def test_suppresses_on_payload_content_id_hit(self, monkeypatch):
+        """Review 2026-07-01: a true-origin delivery registers ONLY its
+        content_id (never raw text this tagged chunk could match). The
+        payload carries the logical message's cid from enqueue time, so the
+        dispatch re-check recognizes the cid-only registration — and tags
+        the suppression with the cid-only witness (loss-exposure meter)."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import mesh_origin_content_id
+        cid = mesh_origin_content_id("!a2e95ba4", "borg reply text")
+        reg.register_content_id(cid)             # cid only — no text entry
+        assert not reg.seen_within("[RNS:BORG] borg reply text", 60.0)
+        h = self._handler(dedup_on=True)
+        assert h.queue_send({"message": "[RNS:BORG] borg reply text",
+                             "destination": None, "channel": 2,
+                             "content_id": cid}) is True
+        h.send_text.assert_not_called()
+        assert h.stats["dispatch_dedup_suppressed"] == 1
+        assert h.stats["dispatch_dedup_suppressed_cid_only"] == 1
+
+    def test_legacy_payload_without_cid_key_unaffected(self, monkeypatch):
+        """A pre-upgrade queued payload (no content_id key) degrades to the
+        text-only check — never crashes, never falsely suppresses."""
+        self._fresh_registry(monkeypatch)
+        h = self._handler(dedup_on=True)
+        assert h.queue_send({"message": "old payload shape",
+                             "destination": None, "channel": 2}) is True
+        h.send_text.assert_called_once()
+
 
 class TestSeenOnRfRegistration:
     """RX-time registration (seen-on-RF, cross-BOX dedup direction).

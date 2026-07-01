@@ -481,8 +481,13 @@ class RNSConfig:
     # the process-wide RecentRfTxRegistry and suppresses its copy ONLY on a
     # hit — unconditional suppression would lose messages (live trace: ~40%
     # of relayed events arrived ONLY via RNS because the local radio missed
-    # them on RF). Default off (canary-first). DMs are never suppressed.
-    dual_path_dedup_enabled: bool = False
+    # them on RF). DMs are never suppressed. Default TRUE since Phase 4
+    # (2026-07-01): field-proven on moc + moc3, loop-safe on single-radio
+    # boxes (no second egress path ever registers, suppress-only-on-hit),
+    # and the CODE default is the only channel that reaches an already-
+    # deployed gateway.json lacking the key — the template-only default
+    # left e.g. a reactivated moc1 unguarded (#62 saved-defaults class).
+    dual_path_dedup_enabled: bool = True
     dual_path_dedup_window_sec: int = 60    # registry hit window (seconds)
     # Transport-truth arc (2026-06-30): true-origin R→M downlink + content_id
     # loop guard. When True, mesh-originated content arriving via RNS (R→M)

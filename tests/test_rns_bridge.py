@@ -4494,6 +4494,12 @@ class TestTrueOriginDelivery:
         from gateway.base_handler import loop_guard_content_id
         cid = loop_guard_content_id("meshtastic:!a2e95ba4", "the joke text")
         assert reg.seen_content_id_within(cid, 120) is True
+        # EVIDENCE-TIER PIN (review 2026-07-01): cid ONLY, never the raw
+        # text. The text namespace means "on RF" proven by RF RX or a
+        # radio-API-confirmed send; inject()'s truth is broker-publish-only,
+        # so it must stay in the cid namespace where check sites can tag the
+        # suppression with the *_cid_only loss-exposure witness.
+        assert reg.seen_within("the joke text", 120) is False
 
     def test_flag_off_keeps_rns_tag(self, bridge, monkeypatch):
         self._fresh_primary_registry(monkeypatch)
@@ -4569,20 +4575,58 @@ class TestTrueOriginDelivery:
             bridge._process_rns_to_mesh(self._mesh_bcast())
         assert captured['sends'][0].startswith("[RNS:BORG] ")
 
-    def test_directed_dm_not_true_origin(self, bridge, monkeypatch):
+    def test_mesh_origin_at_token_stays_broadcast(self, bridge, monkeypatch):
+        """A MESH-originated relayed broadcast whose body starts with a
+        resolvable '@<addr>' must STAY a broadcast (review 2026-07-01): the
+        @-directed downlink (#39) is for RNS-authored originals only — the
+        DM conversion rewrote the mesh audience AND bypassed every
+        broadcast-gated dedup/true-origin path (the resolved-DM leg neither
+        checks nor registers either RF-TX namespace). So the @-parse is
+        skipped, destination stays None, and true-origin delivery runs on
+        the FULL body, token included."""
         self._fresh_primary_registry(monkeypatch)
         bridge.config.rns.true_origin_downlink_enabled = True
         inj = MagicMock(); inj.inject.return_value = True
         captured = {}
-        # '@!ebfa1b11 ...' resolves to a DM destination -> broadcast-only gate
-        # fails -> true-origin skipped.
         with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, '_resolve_mesh_destination',
+                             return_value='!ebfa1b11') as resolve, \
                 patch.object(bridge, 'send_to_meshtastic',
                              side_effect=lambda content, destination=None, channel=0:
                                  captured.setdefault('sends', []).append((content, destination)) or True):
             bridge._process_rns_to_mesh(
                 self._mesh_bcast("@!ebfa1b11 roger"))
-        inj.inject.assert_not_called()
+        # @-resolution never consulted for mesh-originated content...
+        resolve.assert_not_called()
+        # ...and the message delivered true-origin as a broadcast, untruncated.
+        inj.inject.assert_called_once()
+        args, _ = inj.inject.call_args
+        assert args[0] == "@!ebfa1b11 roger"
+        assert 'sends' not in captured
+
+    def test_rns_authored_at_token_still_resolves_dm(self, bridge, monkeypatch):
+        """Regression pin for #39: an RNS-AUTHORED original (no
+        meshforge_source_network) keeps the @-directed downlink — resolution
+        runs and the send is a DM with the token stripped."""
+        from gateway.rns_bridge import BridgedMessage
+        self._fresh_primary_registry(monkeypatch)
+        msg = BridgedMessage(
+            source_network="rns",
+            source_id="dead0000beef1111cafe2222f00d3333",
+            destination_id=None, content="@!ebfa1b11 roger",
+            metadata={},
+        )
+        captured = {}
+        with patch.object(bridge, '_resolve_mesh_destination',
+                          return_value='!ebfa1b11'), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append((content, destination)) or True):
+            bridge._process_rns_to_mesh(msg)
+        assert captured.get('sends'), "DM send must happen"
+        content, destination = captured['sends'][0]
+        assert destination == '!ebfa1b11'
+        assert 'roger' in content and '@!ebfa1b11' not in content
 
 
 class TestLoopGuardContentId:
@@ -4649,6 +4693,115 @@ class TestLoopGuardContentId:
         from_id = "!a2e95ba4"
         re_rx = loop_guard_content_id(f"meshtastic:{from_id}", "the joke text")
         assert delivered == re_rx
+
+
+class TestMeshOriginContentId:
+    """Review 2026-07-01: mesh_origin_content_id is THE shared derivation of
+    the Phase-4 dedup / loop-guard key — every register and check site routes
+    through it so the byte-equality invariant can never drift per-site (the
+    recipe was previously hand-rolled at 6 sites in 3 variants)."""
+
+    def test_equals_hand_rolled_recipe(self):
+        from gateway.base_handler import (
+            loop_guard_content_id, mesh_origin_content_id,
+        )
+        assert (mesh_origin_content_id("!a2e95ba4", "wx")
+                == loop_guard_content_id("meshtastic:!a2e95ba4", "wx"))
+
+    def test_origin_stripped(self):
+        # One site stripped its origin, one used it raw — the helper makes
+        # the normalization uniform so register/check can't diverge.
+        from gateway.base_handler import mesh_origin_content_id
+        assert (mesh_origin_content_id("  !a2e95ba4 ", "wx")
+                == mesh_origin_content_id("!a2e95ba4", "wx"))
+
+    def test_no_origin_yields_empty(self):
+        from gateway.base_handler import mesh_origin_content_id
+        assert mesh_origin_content_id(None, "wx") == ""
+        assert mesh_origin_content_id("", "wx") == ""
+        assert mesh_origin_content_id("   ", "wx") == ""
+
+    def test_placeholder_sentinels_yield_empty(self):
+        # 'unknown' (M→R uplink / mqtt ingress fallback) and 'None' (a raw
+        # f-string over packet.get('fromId')) are NOT identities — sharing
+        # one key bucket would let byte-identical text from two different
+        # unidentified senders cross-suppress.
+        from gateway.base_handler import mesh_origin_content_id
+        assert mesh_origin_content_id("unknown", "wx") == ""
+        assert mesh_origin_content_id("None", "wx") == ""
+
+
+class TestSeenNamespaceWithin:
+    """Review 2026-07-01: the shared two-namespace egress gate. Text checked
+    first, so 'cid' means the ONLY suppression evidence is a content_id
+    registration — the callers' loss-exposure witness."""
+
+    def _reg(self):
+        from gateway.base_handler import RecentRfTxRegistry
+        return RecentRfTxRegistry()
+
+    def test_no_hit(self):
+        assert self._reg().seen_namespace_within("t", "c1:ab", 60) == ''
+
+    def test_text_hit_wins(self):
+        reg = self._reg()
+        reg.register("hello")
+        from gateway.base_handler import mesh_origin_content_id
+        cid = mesh_origin_content_id("!a2e95ba4", "hello")
+        reg.register_content_id(cid)
+        assert reg.seen_namespace_within("hello", cid, 60) == 'text'
+
+    def test_cid_only_hit(self):
+        reg = self._reg()
+        from gateway.base_handler import mesh_origin_content_id
+        cid = mesh_origin_content_id("!a2e95ba4", "hello")
+        reg.register_content_id(cid)
+        assert reg.seen_namespace_within("hello", cid, 60) == 'cid'
+
+    def test_empty_cid_never_matches(self):
+        reg = self._reg()
+        reg.register_content_id("")   # no-op
+        assert reg.seen_namespace_within("nothing here", "", 60) == ''
+
+
+class TestWindowClampedToRegistryTtl:
+    """Review 2026-07-01 (honest_failure_modes #5): the registry prunes
+    entries past RF_TX_REGISTRY_MAX_AGE_S on every write, so any configured
+    window above the TTL was silently defeated — non-deterministically, only
+    on a busy gateway. The window helpers clamp to the shared constant."""
+
+    def _cfg(self, **rns_values):
+        from types import SimpleNamespace
+        return SimpleNamespace(rns=SimpleNamespace(**rns_values))
+
+    def test_dual_path_window_clamped(self):
+        from gateway.base_handler import (
+            RF_TX_REGISTRY_MAX_AGE_S, dual_path_dedup_window_s,
+        )
+        cfg = self._cfg(dual_path_dedup_window_sec=900)
+        assert dual_path_dedup_window_s(cfg) == RF_TX_REGISTRY_MAX_AGE_S
+
+    def test_loop_guard_window_clamped(self):
+        from gateway.base_handler import (
+            RF_TX_REGISTRY_MAX_AGE_S, true_origin_loop_guard_window_s,
+        )
+        cfg = self._cfg(true_origin_loop_guard_window_sec=900)
+        assert true_origin_loop_guard_window_s(cfg) == RF_TX_REGISTRY_MAX_AGE_S
+
+    def test_defaults_unaffected(self):
+        from gateway.base_handler import (
+            dual_path_dedup_window_s, true_origin_loop_guard_window_s,
+        )
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(rns=SimpleNamespace())
+        assert dual_path_dedup_window_s(cfg) == 60.0
+        assert true_origin_loop_guard_window_s(cfg) == 120.0
+
+    def test_registry_default_uses_shared_constant(self):
+        from gateway.base_handler import (
+            RF_TX_REGISTRY_MAX_AGE_S, RecentRfTxRegistry,
+        )
+        assert RecentRfTxRegistry()._max_age_s == RF_TX_REGISTRY_MAX_AGE_S
 
 
 class TestIsBridgeLoop:
@@ -4879,6 +5032,80 @@ class TestDualPathDedup:
 
         send.assert_not_called()
         assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 1
+
+    def test_cid_only_suppression_bumps_witness(self, bridge, monkeypatch):
+        """Review 2026-07-01: a suppression whose only evidence is the cid
+        namespace (broker-publish-only true-origin delivery) leaves its own
+        witness stat — the loss-exposure meter for the stale-PSK class."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import mesh_origin_content_id
+        reg.register_content_id(
+            mesh_origin_content_id("!a2e95ba4", "cid witness text"))
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(
+                self._mesh_origin_msg("cid witness text"))
+
+        send.assert_not_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 1
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed_cid_only'] == 1
+
+    def test_text_suppression_no_cid_witness(self, bridge, monkeypatch):
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("text witness text")
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(
+                self._mesh_origin_msg("text witness text"))
+
+        send.assert_not_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 1
+        assert bridge.stats.get(
+            'rns_to_mesh_dual_path_suppressed_cid_only', 0) == 0
+
+    def test_queued_payload_carries_content_id(self, bridge, monkeypatch):
+        """Review 2026-07-01: every queued [RNS:label] chunk payload carries
+        the logical message's content_id so the dispatch-time re-check can
+        recognize a true-origin (cid-only) delivery of the same message —
+        the tagged chunk's text can never match it, and chunked text can't
+        match the full body either way."""
+        self._fresh_registry(monkeypatch)
+        from gateway.base_handler import mesh_origin_content_id
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = True
+        bridge._persistent_queue = mock_queue
+        bridge.config.bridge_mode = "mqtt_bridge"
+        bridge.config.meshtastic.channel = 2
+
+        with patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", True):
+            bridge._process_rns_to_mesh(
+                self._mesh_origin_msg("payload cid text"))
+
+        assert mock_queue.enqueue.called
+        payload = mock_queue.enqueue.call_args.kwargs['payload']
+        assert payload['content_id'] == mesh_origin_content_id(
+            "!a2e95ba4", "payload cid text")
+
+    def test_queued_payload_empty_cid_for_rns_origin(self, bridge, monkeypatch):
+        """Genuine RNS-origin content has no mesh origin → cid '' (never
+        registered, never matched — honest_failure_modes #1)."""
+        self._fresh_registry(monkeypatch)
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = True
+        bridge._persistent_queue = mock_queue
+        bridge.config.bridge_mode = "mqtt_bridge"
+        bridge.config.meshtastic.channel = 2
+
+        with patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", True):
+            bridge._process_rns_to_mesh(self._msg("pure rns text"))
+
+        assert mock_queue.enqueue.called
+        payload = mock_queue.enqueue.call_args.kwargs['payload']
+        assert payload['content_id'] == ""
 
     def test_content_id_hit_flag_off_delivers(self, bridge, monkeypatch):
         """Default-off: a content_id hit without the flag changes nothing."""

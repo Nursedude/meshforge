@@ -82,15 +82,45 @@ def loop_guard_content_id(origin_token: str, content: str) -> str:
     every re-RX site. Origin is what a plain text-registry lookup lacks: it
     keeps byte-identical text from two DIFFERENT senders from colliding. The
     cost of dropping channel is a same-origin / byte-identical-text /
-    cross-channel collision within the window — vanishingly rare and, like all
-    dedup here, failing toward a cosmetic dup, never message loss (empty content
-    yields '' and is never suppressed, honest_failure_modes #1).
+    cross-channel collision within the window — vanishingly rare. Failure
+    direction (revised for Phase 4, 2026-07-01): a MISSED match is a cosmetic
+    dup; but since the id is now also an egress SUPPRESSION key, a registration
+    whose delivery evidence was weaker than radio-confirmed (the broker-publish
+    -only true-origin inject) can convert a later hit into message LOSS — which
+    is why register sites run on confirmed delivery and cid-only suppressions
+    leave a witness stat. Empty content yields '' and is never suppressed
+    (honest_failure_modes #1).
 
     Register (Phase 3) and check (Phase 2) MUST both route through this one
     function so they can never drift.
     """
     from .canonical_message import compute_content_id
     return compute_content_id(origin_token, content, "")
+
+
+def mesh_origin_content_id(origin_id: Optional[str], content: str) -> str:
+    """THE shared derivation of the intra-box dedup / loop-guard key for a
+    mesh-originated message (transport-truth arc Phase 4).
+
+    Every register site and every check site MUST call this — the whole
+    dedup invariant is that the key is byte-identical across the egress
+    paths, and before this helper the ``f"meshtastic:{origin}"`` recipe was
+    hand-rolled at 6 call sites in 3 guard variants (review 2026-07-01),
+    with the origin normalization already drifting (one site stripped, one
+    did not).
+
+    Normalization: origin stripped; the placeholder sentinels the ingress
+    paths mint for an unresolvable origin ('unknown' from the M→R uplink and
+    mqtt ingress, 'None' from a raw ``f"...{packet.get('fromId')}"``) are
+    treated as NO origin — otherwise every unidentified sender shares one
+    key bucket and byte-identical text from two different unknown senders
+    could cross-suppress. No origin → '' → never registered, never matched
+    (honest_failure_modes #1).
+    """
+    origin = (origin_id or "").strip()
+    if not origin or origin in ("unknown", "None"):
+        return ""
+    return loop_guard_content_id(f"meshtastic:{origin}", content)
 
 
 def is_bridge_loop(text: str, content_id: str = "", *,
@@ -184,6 +214,15 @@ def mqtt_content_dedup_key(data: dict) -> str:
     return "c:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+# Registry TTL: entries older than this are pruned on every write, so it is
+# the HARD ceiling on every window checked against the registry. The window
+# helpers below clamp to it — an operator window above the TTL would pass on
+# a quiet bench and fail non-deterministically on a busy gateway (any
+# interleaving register() prunes the entry mid-window). One constant, every
+# consumer derives from it (honest_failure_modes #5).
+RF_TX_REGISTRY_MAX_AGE_S = 300.0
+
+
 class RecentRfTxRegistry:
     """Cross-subsystem "recently SEEN on a radio('s mesh)" registry.
 
@@ -220,7 +259,8 @@ class RecentRfTxRegistry:
     and the table is bounded by ``max_entries`` (oldest evicted).
     """
 
-    def __init__(self, max_entries: int = 512, max_age_s: float = 300.0):
+    def __init__(self, max_entries: int = 512,
+                 max_age_s: float = RF_TX_REGISTRY_MAX_AGE_S):
         self._max_entries = max_entries
         self._max_age_s = max_age_s
         self._entries: Dict[str, float] = {}   # key -> time.monotonic()
@@ -299,6 +339,25 @@ class RecentRfTxRegistry:
             ts = self._entries.get(key)
             return ts is not None and (now - ts) <= window_s
 
+    def seen_namespace_within(self, text: str, content_id: str,
+                              window_s: float) -> str:
+        """The Phase-4 two-namespace egress gate, in one shared place.
+
+        Returns which namespace has a live entry — ``'text'``, ``'cid'``, or
+        ``''`` (no hit; deliver). Checked text-first so a ``'cid'`` result
+        means the ONLY evidence for suppression is a content_id registration
+        (e.g. a true-origin downlink whose "delivered" is broker-publish-only)
+        — callers use that to bump a cid-only witness stat, since a wrong
+        cid-only suppression is message loss, not a cosmetic dup. Shared by
+        both egress paths so the gate can never drift one-sided (the
+        ordering-dependent blind spot Phase 4 closed).
+        """
+        if self.seen_within(text, window_s):
+            return 'text'
+        if self.seen_content_id_within(content_id, window_s):
+            return 'cid'
+        return ''
+
     def claim_content_id(self, content_id: str, window_s: float) -> bool:
         """Atomically claim ``content_id`` for this radio segment.
 
@@ -339,12 +398,18 @@ def dual_path_dedup_enabled(config: Any) -> bool:
 
 
 def dual_path_dedup_window_s(config: Any) -> float:
-    """rns.dual_path_dedup_window_sec with a safe 60s default."""
+    """rns.dual_path_dedup_window_sec with a safe 60s default.
+
+    Clamped to RF_TX_REGISTRY_MAX_AGE_S: the registry prunes entries older
+    than its TTL on every write, so a window above it is silently defeated
+    exactly on a busy gateway (review 2026-07-01).
+    """
     rns_cfg = getattr(config, 'rns', None)
     try:
-        return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
+        window = float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
     except (TypeError, ValueError):
         return 60.0
+    return min(window, RF_TX_REGISTRY_MAX_AGE_S)
 
 
 def true_origin_downlink_enabled(config: Any) -> bool:
@@ -362,12 +427,17 @@ def true_origin_downlink_enabled(config: Any) -> bool:
 
 
 def true_origin_loop_guard_window_s(config: Any) -> float:
-    """rns.true_origin_loop_guard_window_sec with a safe 120s default."""
+    """rns.true_origin_loop_guard_window_sec with a safe 120s default.
+
+    Clamped to RF_TX_REGISTRY_MAX_AGE_S — same TTL bound as
+    dual_path_dedup_window_s (the registry prunes past its TTL on write).
+    """
     rns_cfg = getattr(config, 'rns', None)
     try:
-        return float(getattr(rns_cfg, 'true_origin_loop_guard_window_sec', 120))
+        window = float(getattr(rns_cfg, 'true_origin_loop_guard_window_sec', 120))
     except (TypeError, ValueError):
         return 120.0
+    return min(window, RF_TX_REGISTRY_MAX_AGE_S)
 
 
 # Process-wide instance — the composable bridges (mesh_bridge + rns_bridge)

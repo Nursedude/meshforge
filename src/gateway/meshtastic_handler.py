@@ -26,7 +26,7 @@ from .ack_tracker import (
 )
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_bridge_loop, loop_guard_content_id,
+    get_rf_tx_registry, is_bridge_loop, mesh_origin_content_id,
     true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig
@@ -504,17 +504,27 @@ class MeshtasticHandler(BaseMessageHandler):
         # see MQTTBridgeHandler.queue_send for the race this closes. The
         # enqueue-side check misses when the RNS relay copy arrives before
         # mesh_bridge registers its RF TX; by dispatch time the registry is
-        # settled. Suppress-only-on-hit: True marks the queue entry done.
-        if (not destination and dual_path_dedup_enabled(self.config)
-                and get_rf_tx_registry().seen_within(
-                    message, dual_path_dedup_window_s(self.config))):
-            with self._stats_lock:
-                self.stats['dispatch_dedup_suppressed'] = (
-                    self.stats.get('dispatch_dedup_suppressed', 0) + 1)
-            logger.info(
-                f"Queue dispatch suppressed (dual-path dedup — already on "
-                f"RF): {message[:50]}...")
-            return True
+        # settled. Both namespaces (Phase 4): the payload's content_id
+        # recognizes a true-origin (cid-only) delivery of the same message.
+        # Suppress-only-on-hit: True marks the queue entry done.
+        if not destination and dual_path_dedup_enabled(self.config):
+            hit = get_rf_tx_registry().seen_namespace_within(
+                message, str(payload.get('content_id') or ''),
+                dual_path_dedup_window_s(self.config))
+            if hit:
+                with self._stats_lock:
+                    self.stats['dispatch_dedup_suppressed'] = (
+                        self.stats.get('dispatch_dedup_suppressed', 0) + 1)
+                    if hit == 'cid':
+                        # Witness: broker-publish-only evidence — the
+                        # loss-exposure meter (see _deliver_true_origin).
+                        self.stats['dispatch_dedup_suppressed_cid_only'] = (
+                            self.stats.get(
+                                'dispatch_dedup_suppressed_cid_only', 0) + 1)
+                logger.info(
+                    f"Queue dispatch suppressed (dual-path dedup [{hit}] — "
+                    f"already on RF): {message[:50]}...")
+                return True
 
         if not self._connected:
             return False
@@ -679,7 +689,7 @@ class MeshtasticHandler(BaseMessageHandler):
         # to is_already_bridged (no behavior change).
         loop_cid = ""
         if true_origin_downlink_enabled(self.config):
-            loop_cid = loop_guard_content_id(f"meshtastic:{from_id}", text)
+            loop_cid = mesh_origin_content_id(from_id, text)
         if is_bridge_loop(
                 text, loop_cid,
                 registry=get_rf_tx_registry(),

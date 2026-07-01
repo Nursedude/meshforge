@@ -1143,10 +1143,11 @@ def probe_channel_feed_dark(
     # 24h of meshtasticd journal each tick and pegged a core. The freshness
     # gate (dark_after_s) already discards any json line older than the
     # threshold, so a window longer than dark_after_s is pure wasted CPU.
-    # Derive the window from dark_after_s (+1h margin) so the two can never
-    # drift (honest_failure_modes #5) and the scan is bounded to what the
-    # decision actually needs. int()+1 guarantees lookback >= dark_after_s, so
-    # the window can never be too short to see the threshold (no false dark).
+    # Derive the window from dark_after_s — rounded UP to the next whole hour
+    # — so the two can never drift (honest_failure_modes #5) and the scan is
+    # bounded to what the decision actually needs. int()+1 guarantees
+    # lookback >= dark_after_s (no false dark); the margin is (0, 1h] and is
+    # exactly 1h only for whole-hour thresholds (floor semantics).
     if lookback is None:
         lookback = f"{int(dark_after_s // 3600) + 1}h"
 
@@ -1164,9 +1165,9 @@ def probe_channel_feed_dark(
 
     ts_now = now if now is not None else time.time()
 
-    # Freshness gate (Issue #74): existence within the 24h lookback
-    # isn't enough — if the newest json line is ITSELF older than
-    # dark_after_s, the whole json pipeline died, and firing
+    # Freshness gate (Issue #74): existence within the scan window (the
+    # derived lookback above) isn't enough — if the newest json line is
+    # ITSELF older than dark_after_s, the whole json pipeline died, and firing
     # channel_feed_dark would misdirect the operator toward PSK
     # re-key / deaf radio when the uplink module is the real failure.
     # Whole-pipeline-dark is unobservable for channel-SPECIFIC dark.
