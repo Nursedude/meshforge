@@ -95,3 +95,23 @@ def test_leg_gateway_json_flags_present(presets_doc):
     for leg, spec in presets_doc["legs"].items():
         assert "gateway_json" in spec and spec["gateway_json"], \
             f"leg {leg!r} missing gateway_json mapping"
+
+
+def test_gateway_template_defaults_true_origin_recognition():
+    """Transport-truth invariant (2026-07-01): the gateway.json TEMPLATE must
+    default rns.true_origin_downlink_enabled=true so every PROVISIONED gateway
+    inherits the cross-box loop-guard recognition (Option A). Without it, a new
+    or reactivated gateway on a segment where a peer delivers untagged
+    true-origin content would re-bridge the echo (the moc<->moc3 loop this arc
+    closed). Delivery stays opt-in via meshtastic.injection_mode=downlink + a
+    channel PSK — only RECOGNITION is defaulted, which is always loop-safe.
+    A silent removal of this default reopens the loop; pin it (honest_failure_modes
+    #7 — the invariant needs a closed consumer, not memory)."""
+    import json
+    template = REPO / "templates" / "gateway" / "gateway.json.template"
+    # Type-correct placeholder substitution so the render is valid JSON.
+    rendered = (template.read_text()
+                .replace("@MESHFORGE_CHANNEL_INDEX@", "2")
+                .replace("@LXMF_DESTINATION@", "test_dest"))
+    d = json.loads(rendered)
+    assert d["rns"]["true_origin_downlink_enabled"] is True

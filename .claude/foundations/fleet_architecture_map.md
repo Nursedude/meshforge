@@ -61,18 +61,28 @@ effective gateway config**, never raw role names (the moc2 collector lesson, §7
 
 ---
 
-## 3. The live fleet (current snapshot — instances, not the model)
+## 3. The live fleet (current snapshot — instances, not the model — audited 2026-07-01)
 
-| Box | Role | Bridges | Catalog preset it matches |
-|---|---|---|---|
-| VolcanoAI | `primary` | none (manager) | `hub-manager` |
-| moc | `full-gateway` | Meshtastic↔RNS/LXMF + dual-radio + MQTT (the canary) | `dual-radio-cross-preset` |
-| moc1 | `cloud-publisher` | bridge off (cloud map) | `cloud-publisher` |
-| moc2 | `collector` | bridge off (RF-sparse, deliberate) | `monitor-ingest` |
-| moc3 | `gateway-only` | Meshtastic↔RNS/LXMF (MeshCore wired-off) | `gateway-only-slim` |
-| moc5 | `collector` + AREDN | AREDN-site collector | `aredn-site` |
-| meshanchor-server | external | RNS↔MQTT (sister NOC) | — |
-| .32 bot | external | autoresponder→AREDN | — |
+| Box | HW | Radio(s) | Role / gateway | Notes |
+|---|---|---|---|---|
+| VolcanoAI | Pi | — | `primary` (manager) | hub: federation, canonical memory, map, mini — no RF bridge |
+| moc | Pi 4B | HAT (LF) + CP210x USB (ST) | `full-gateway` **enabled** | dual-radio cross-preset; **TRUE-ORIGIN CANARY LIVE** since 06-30 (inject=downlink, flag on) |
+| moc1 | **Pi 5B** | dudeclaw (ESP32) USB | dudeclaw-dev-host + collector; gw **disabled** | beefiest box; **designated FUTURE GATEWAY** (recognition flag pre-set 07-01) |
+| moc2 | Pi 4B | HAT + RAK4631 USB + POE | collector; gw **disabled** | RF-equipped; **being PULLED for Axiometa Genesis work** (role in flux) — NOT the "RF-sparse" the old map claimed |
+| moc3 | Pi 3B (1GB) | HAT + CP210x USB | `gateway-only` **enabled** (map disabled) | recognition (flag on, no downlink) — the canary's peer |
+| moc5 | Pi 4B **Ubuntu** | MeshToad | `collector` + AREDN; no gateway | AREDN-site collector; only non-Debian box |
+| bench | OpenWrt | USB meshtoad + meshtasticd | (not deployed) | future gateway candidate |
+| meshanchor-server | — | — | external (sister NOC) | RNS↔MQTT |
+| .32 bot | — | — | external | autoresponder→AREDN |
+
+> **Transport-truth invariant (2026-07-01):** any active gateway on a segment where
+> a peer delivers true-origin (untagged) content MUST have `rns.true_origin_downlink_enabled`
+> on, or it re-bridges the untagged echo (Option A cross-box recognition). Now a
+> **default in `gateway.json.template`**, so every provisioned gateway inherits it;
+> true-origin *delivery* stays opt-in via `meshtastic.injection_mode=downlink` + a
+> channel PSK. Live: moc (delivery) + moc3 (recognition) since 06-30; moc1 pre-set as
+> the future gateway. Ref for moc2's repurpose: Axiometa Genesis mini starter kit
+> (https://hackmakemod.com/products/axiometa-genesis-mini-starter-kit).
 
 ---
 

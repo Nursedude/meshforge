@@ -23,6 +23,7 @@
     "identity_name": "meshforge_gateway",
     "announce_interval": 300,
     "propagation_node": "",
+    "true_origin_downlink_enabled": true,
     "default_lxmf_destination": "@LXMF_DESTINATION@"
   },
   "mqtt_bridge": {
