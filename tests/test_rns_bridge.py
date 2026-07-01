@@ -4389,6 +4389,202 @@ class TestContentIdClaim:
         assert results.count(False) == 19
 
 
+class TestMeshIdToNum:
+    """transport-truth Phase 3: '!hex' mesh id -> numeric node, robustly."""
+
+    def _fn(self):
+        from gateway._rns_bridge_xform import MessageTransformMixin
+        return MessageTransformMixin._mesh_id_to_num
+
+    def test_parses_valid(self):
+        assert self._fn()("!a2e95ba4") == 0xa2e95ba4
+        assert self._fn()("A2E95BA4") == 0xa2e95ba4   # no bang, upper
+
+    def test_rejects_malformed(self):
+        f = self._fn()
+        for bad in ("", "   ", "!zzzzzzzz", "!a2e95ba", "!a2e95ba44", "xyz", None):
+            assert f(bad) is None
+
+
+class TestTrueOriginInjectorBuild:
+    """transport-truth Phase 3: the RNS bridge's DownlinkInjector build gate —
+    only when the primary meshtastic leg is injection_mode='downlink' + PSK and
+    the injector is usable; None (keep [RNS:label]) otherwise."""
+
+    def test_none_when_not_downlink_mode(self, bridge):
+        bridge.config.meshtastic.injection_mode = "toradio"
+        assert bridge._build_true_origin_injector() is None
+
+    def test_none_when_no_psk(self, bridge):
+        bridge.config.meshtastic.injection_mode = "downlink"
+        bridge.config.meshtastic.downlink_psk = ""
+        assert bridge._build_true_origin_injector() is None
+
+    def test_returns_injector_when_configured_and_usable(self, bridge):
+        bridge.config.meshtastic.injection_mode = "downlink"
+        bridge.config.meshtastic.downlink_psk = "AQ=="
+        bridge.config.meshtastic.mqtt_broker = "localhost"
+        bridge.config.meshtastic.mqtt_port = 1883
+        bridge.config.meshtastic.mqtt_channel = "LongFast"
+        fake = MagicMock()
+        fake.usable = True
+        with patch("gateway.mqtt_downlink_inject.DownlinkInjector",
+                   return_value=fake) as Mk:
+            got = bridge._build_true_origin_injector()
+        assert got is fake
+        Mk.assert_called_once()
+        # cache: _get_ returns the same object without rebuilding
+        bridge._true_origin_injector = fake
+        assert bridge._get_true_origin_injector() is fake
+
+    def test_none_when_injector_unusable(self, bridge):
+        bridge.config.meshtastic.injection_mode = "downlink"
+        bridge.config.meshtastic.downlink_psk = "AQ=="
+        fake = MagicMock()
+        fake.usable = False
+        fake.fatal_reason = "downlink_psk must decode to 32 bytes"
+        with patch("gateway.mqtt_downlink_inject.DownlinkInjector",
+                   return_value=fake):
+            assert bridge._build_true_origin_injector() is None
+
+
+class TestTrueOriginDelivery:
+    """transport-truth Phase 3: mesh-originated R→M broadcasts delivered AS the
+    true origin via the downlink injector instead of [RNS:label], flag-gated,
+    with a [RNS:] fallback on every failure (never untagged-unguarded)."""
+
+    def _fresh_primary_registry(self, monkeypatch):
+        import gateway.base_handler as bh
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        return fresh
+
+    def _mesh_bcast(self, body="the joke text", **fields):
+        from gateway.rns_bridge import BridgedMessage
+        f = {
+            "meshforge_source_network": "meshtastic",
+            "meshforge_from_id": "!a2e95ba4",
+            "meshforge_from_short": "BORG",
+        }
+        f.update(fields)
+        return BridgedMessage(
+            source_network="rns",
+            source_id="dead0000beef1111cafe2222f00d3333",   # relaying gw hash
+            destination_id=None, content=body,
+            metadata={"lxmf_fields": f},
+        )
+
+    def test_broadcast_delivered_true_origin_not_tagged(self, bridge, monkeypatch):
+        reg = self._fresh_primary_registry(monkeypatch)
+        bridge.config.rns.true_origin_downlink_enabled = True
+        inj = MagicMock(); inj.inject.return_value = True
+        captured = {}
+        with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append(content) or True):
+            bridge._process_rns_to_mesh(self._mesh_bcast("the joke text"))
+        # Injected AS the true origin; NO [RNS:] fallback send happened.
+        inj.inject.assert_called_once()
+        args, kwargs = inj.inject.call_args
+        assert args[0] == "the joke text" and args[1] == 0xa2e95ba4
+        assert 'sends' not in captured
+        assert bridge.stats.get('rns_to_mesh_true_origin') == 1
+        # content_id armed on the primary registry for the M→R loop guard.
+        from gateway.base_handler import loop_guard_content_id
+        cid = loop_guard_content_id("meshtastic:!a2e95ba4", "the joke text")
+        assert reg.seen_content_id_within(cid, 120) is True
+
+    def test_flag_off_keeps_rns_tag(self, bridge, monkeypatch):
+        self._fresh_primary_registry(monkeypatch)
+        # flag OFF (default MagicMock reads False); injector must not be consulted
+        inj = MagicMock(); inj.inject.return_value = True
+        captured = {}
+        with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append(content) or True):
+            bridge._process_rns_to_mesh(self._mesh_bcast())
+        inj.inject.assert_not_called()
+        assert captured['sends'][0].startswith("[RNS:BORG] ")
+
+    def test_rns_origin_keeps_tag_even_with_flag_on(self, bridge, monkeypatch):
+        self._fresh_primary_registry(monkeypatch)
+        bridge.config.rns.true_origin_downlink_enabled = True
+        from gateway.rns_bridge import BridgedMessage
+        msg = BridgedMessage(   # genuine RNS content: no meshforge_source_network
+            source_network="rns", source_id="abcdef0123456789",
+            destination_id=None, content="from nomadnet")
+        inj = MagicMock(); inj.inject.return_value = True
+        captured = {}
+        with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append(content) or True):
+            bridge._process_rns_to_mesh(msg)
+        inj.inject.assert_not_called()
+        assert captured['sends'][0].startswith("[RNS:abcd] ")
+
+    def test_inject_failure_falls_back_to_tag(self, bridge, monkeypatch):
+        reg = self._fresh_primary_registry(monkeypatch)
+        bridge.config.rns.true_origin_downlink_enabled = True
+        inj = MagicMock(); inj.inject.return_value = False   # publish failed
+        captured = {}
+        with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append(content) or True):
+            bridge._process_rns_to_mesh(self._mesh_bcast("wx"))
+        inj.inject.assert_called_once()
+        assert captured['sends'][0].startswith("[RNS:BORG] ")   # tag fallback
+        # content_id NOT registered on failure (delivered tagged, tag-guarded).
+        from gateway.base_handler import loop_guard_content_id
+        cid = loop_guard_content_id("meshtastic:!a2e95ba4", "wx")
+        assert reg.seen_content_id_within(cid, 120) is False
+        assert bridge.stats.get('rns_to_mesh_true_origin', 0) == 0
+
+    def test_origin_unrecoverable_falls_back(self, bridge, monkeypatch):
+        self._fresh_primary_registry(monkeypatch)
+        bridge.config.rns.true_origin_downlink_enabled = True
+        inj = MagicMock(); inj.inject.return_value = True
+        captured = {}
+        # no meshforge_from_id -> origin_num None -> fall back before inject
+        with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append(content) or True):
+            bridge._process_rns_to_mesh(
+                self._mesh_bcast("x", meshforge_from_id=""))
+        inj.inject.assert_not_called()
+        assert captured['sends'][0].startswith("[RNS:")
+
+    def test_injector_none_keeps_tag(self, bridge, monkeypatch):
+        self._fresh_primary_registry(monkeypatch)
+        bridge.config.rns.true_origin_downlink_enabled = True
+        captured = {}
+        with patch.object(bridge, '_get_true_origin_injector', return_value=None), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append(content) or True):
+            bridge._process_rns_to_mesh(self._mesh_bcast())
+        assert captured['sends'][0].startswith("[RNS:BORG] ")
+
+    def test_directed_dm_not_true_origin(self, bridge, monkeypatch):
+        self._fresh_primary_registry(monkeypatch)
+        bridge.config.rns.true_origin_downlink_enabled = True
+        inj = MagicMock(); inj.inject.return_value = True
+        captured = {}
+        # '@!ebfa1b11 ...' resolves to a DM destination -> broadcast-only gate
+        # fails -> true-origin skipped.
+        with patch.object(bridge, '_get_true_origin_injector', return_value=inj), \
+                patch.object(bridge, 'send_to_meshtastic',
+                             side_effect=lambda content, destination=None, channel=0:
+                                 captured.setdefault('sends', []).append((content, destination)) or True):
+            bridge._process_rns_to_mesh(
+                self._mesh_bcast("@!ebfa1b11 roger"))
+        inj.inject.assert_not_called()
+
+
 class TestLoopGuardContentId:
     """Transport-truth arc Phase 2: the channel-agnostic loop-guard content_id.
 

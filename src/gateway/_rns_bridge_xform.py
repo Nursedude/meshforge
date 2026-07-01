@@ -26,7 +26,10 @@ from typing import Optional
 
 from utils.lxmface import seed_string_for_node
 
-from .base_handler import chunk_for_mesh, get_rf_tx_registry, is_already_bridged
+from .base_handler import (
+    chunk_for_mesh, get_rf_tx_registry, is_already_bridged,
+    loop_guard_content_id, true_origin_downlink_enabled,
+)
 from .canonical_message import (
     compute_content_id, format_reply_token, parse_reply_token,
 )
@@ -507,6 +510,137 @@ class MessageTransformMixin:
                 logger.debug(f"short_name resolve failed for {addr_token!r}: {e}")
         return None
 
+    # ── true-origin R→M downlink (transport-truth arc Phase 3) ────────────
+    #
+    # A mesh-originated broadcast arriving R→M is normally re-injected as
+    # ``[RNS:label] body`` — a transport artifact that reads as the gateway,
+    # not the real sender (the "joke dup" mixed-attribution symptom). When this
+    # box can inject a true-origin downlink (primary meshtastic leg
+    # injection_mode='downlink' + PSK), deliver ``body`` AS the origin mesh node
+    # (native e.g. BORG) instead. The [RNS:] tag ALSO served as the M→R loop
+    # guard, so dropping it is only safe because the delivered content_id is
+    # registered on the RF-TX registry and recognized on re-RX (Phase 2
+    # is_bridge_loop). Genuine RNS/NomadNet content KEEPS [RNS:label] (there the
+    # gateway IS the true mesh-side origin — truth preserved). Every uncertainty
+    # falls back to the tag: never untagged-unguarded.
+
+    def _true_origin_on(self) -> bool:
+        """Strict read of rns.true_origin_downlink_enabled (default False)."""
+        return true_origin_downlink_enabled(self.config)
+
+    @staticmethod
+    def _mesh_id_to_num(node_id: str):
+        """'!a2e95ba4' -> 0xa2e95ba4 (int), or None if unparseable."""
+        s = (node_id or "").strip().lstrip("!")
+        if len(s) != 8:
+            return None
+        try:
+            return int(s, 16)
+        except ValueError:
+            return None
+
+    def _get_true_origin_injector(self):
+        """Lazily build + cache the primary-radio DownlinkInjector, or None.
+
+        None => no true-origin path on this box (caller keeps [RNS:label]).
+        The None result is cached too, so a box that isn't downlink-configured
+        doesn't re-attempt the build on every message.
+        """
+        if not hasattr(self, '_true_origin_injector'):
+            self._true_origin_injector = self._build_true_origin_injector()
+        return self._true_origin_injector
+
+    def _build_true_origin_injector(self):
+        """Mirror of mesh_bridge._build_downlink_injector for the RNS bridge's
+        primary meshtastic leg. Returns a usable DownlinkInjector or None."""
+        mcfg = getattr(self.config, 'meshtastic', None)
+        if mcfg is None:
+            return None
+        if (getattr(mcfg, 'injection_mode', 'toradio') or 'toradio').lower() != 'downlink':
+            return None
+        psk = getattr(mcfg, 'downlink_psk', '') or ''
+        if not psk:
+            logger.warning(
+                "RNS→Mesh true-origin: injection_mode=downlink but no "
+                "downlink_psk — keeping [RNS:label]")
+            return None
+        try:
+            from .mqtt_downlink_inject import DownlinkInjector
+            injector = DownlinkInjector(
+                broker=getattr(mcfg, 'mqtt_broker', 'localhost'),
+                port=getattr(mcfg, 'mqtt_port', 1883),
+                channel_name=getattr(mcfg, 'mqtt_channel', 'LongFast'),
+                psk_b64=psk,
+                root_topic="msh",
+            )
+            if not injector.usable:
+                logger.warning(
+                    "RNS→Mesh true-origin injector unusable: %s — keeping "
+                    "[RNS:label]", injector.fatal_reason)
+                return None
+            logger.info(
+                "RNS→Mesh true-origin downlink injection ENABLED (channel=%s)",
+                getattr(mcfg, 'mqtt_channel', 'LongFast'))
+            return injector
+        except Exception as e:
+            logger.warning(
+                "RNS→Mesh true-origin injector init failed: %s — keeping "
+                "[RNS:label]", e)
+            return None
+
+    def _deliver_true_origin(self, msg, body: str, lxmf_fields: dict) -> bool:
+        """Try true-origin downlink delivery of a mesh-originated broadcast.
+
+        Returns True ONLY when ``body`` was injected AS its true mesh origin
+        (caller then skips the [RNS:label] path); False to fall back to the tag.
+        On success, registers the delivered content_id on the primary RF
+        registry so the Phase-2 M→R loop guard recognizes the re-heard echo (the
+        tag no longer guards it). Best-effort nodeinfo first so the radio renders
+        the origin's NAME not bare hex (the origin was heard on a DIFFERENT
+        radio the primary may not know). Never raises.
+        """
+        injector = self._get_true_origin_injector()
+        if injector is None:
+            return False
+        origin_id = (lxmf_fields.get('meshforge_from_id') or '').strip()
+        origin_num = self._mesh_id_to_num(origin_id)
+        if origin_num is None:
+            return False   # origin unrecoverable -> keep the tag
+        loop_cid = loop_guard_content_id(f"meshtastic:{origin_id}", body)
+        if not loop_cid:
+            return False   # unidentifiable content -> keep the tag (never untagged-unguarded)
+        # Teach the primary radio the origin's NAME once (best-effort): the
+        # origin is heard on another radio (e.g. moc's ST leg), so the primary
+        # LF radio would otherwise render bare hex instead of "BORG".
+        sent = getattr(self, '_true_origin_nodeinfo_sent', None)
+        if sent is None:
+            sent = self._true_origin_nodeinfo_sent = set()
+        if origin_num not in sent:
+            try:
+                long_name = (lxmf_fields.get('meshforge_from_long') or '').strip()
+                short_name = (lxmf_fields.get('meshforge_from_short') or '').strip()
+                if long_name or short_name:
+                    injector.inject_nodeinfo(
+                        origin_num,
+                        long_name or short_name or origin_id.lstrip('!'),
+                        short_name or origin_id.lstrip('!')[-4:],
+                    )
+            except Exception as e:
+                logger.debug("true-origin nodeinfo inject skipped: %s", e)
+            sent.add(origin_num)   # once-per-origin regardless (no retry-spam)
+        if not injector.inject(body, origin_num):
+            return False   # publish failed -> caller falls back to [RNS:label]
+        # Delivered untagged as the true origin -> arm the loop guard so a
+        # re-heard echo on the ingress paths that lack the via_mqtt loop-safety
+        # (mesh_bridge / TCP) is recognized and not re-bridged.
+        get_rf_tx_registry().register_content_id(loop_cid)
+        with self._stats_lock:
+            self.stats['rns_to_mesh_true_origin'] = (
+                self.stats.get('rns_to_mesh_true_origin', 0) + 1)
+        logger.info(
+            f"Bridge RNS→Mesh (true-origin downlink as {origin_id}): {body[:50]}...")
+        return True
+
     def _process_rns_to_mesh(self, msg):
         """Process message from RNS to Meshtastic.
 
@@ -669,6 +803,32 @@ class MessageTransformMixin:
                 logger.info(
                     f"Bridge RNS→Mesh suppressed (dual-path dedup — already "
                     f"on RF via mesh_bridge): {body[:50]}...")
+                return
+
+            # True-origin downlink (transport-truth arc Phase 3, flag-gated,
+            # default off). A mesh-originated BROADCAST is delivered AS its real
+            # mesh node via the downlink injector instead of [RNS:label]
+            # (reliability + truth). Only broadcasts; genuine RNS content (no
+            # meshtastic source_network) always keeps the tag. _deliver_true_origin
+            # returns False on ANY failure (not configured / origin unrecoverable
+            # / publish failed) and we fall through to the unchanged [RNS:label]
+            # path below — never untagged-unguarded. On success it has already
+            # registered the content_id for the M→R loop guard; here we only
+            # replicate the delivery bookkeeping the tag path does (stats +
+            # health + peer relay) and return.
+            if (destination is None
+                    and self._true_origin_on()
+                    and lxmf_fields.get('meshforge_source_network') == 'meshtastic'
+                    and self._deliver_true_origin(msg, body, lxmf_fields)):
+                with self._stats_lock:
+                    self.stats['messages_rns_to_mesh'] += 1
+                    self.stats['rns_to_mesh_delivered'] += 1
+                self.health.record_message_sent("rns_to_mesh")
+                # Relay originals onward to peer gateways (union coverage),
+                # exactly as the [RNS:label] delivery paths do — a true-origin
+                # LOCAL delivery does not change the peer fan-out contract.
+                if not relayed_by:
+                    self._maybe_relay_to_peers(msg, original_body)
                 return
 
             # Attribution label for the [RNS:xxxx] tag. When the LXMF
