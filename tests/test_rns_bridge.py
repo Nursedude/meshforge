@@ -4843,6 +4843,57 @@ class TestDualPathDedup:
         send.assert_called()
         assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 0
 
+    def _mesh_origin_msg(self, content, from_id="!a2e95ba4"):
+        """A mesh-originated R→M broadcast carrying its true origin — the shape
+        the true-origin downlink + Phase-4 content_id dedup operate on."""
+        from gateway.rns_bridge import BridgedMessage
+        return BridgedMessage(
+            source_network="rns",
+            source_id="dead0000beef1111cafe2222f00d3333",   # relaying gw hash
+            destination_id=None, content=content,
+            metadata={"lxmf_fields": {
+                "meshforge_source_network": "meshtastic",
+                "meshforge_from_id": from_id,
+                "meshforge_from_short": "BORG",
+            }},
+        )
+
+    def test_suppressed_on_content_id_hit(self, bridge, monkeypatch):
+        """Phase 4 (the live 0743 dup): mesh_bridge delivered this content
+        UNTAGGED as its true origin and registered ONLY the content_id (never
+        the raw text). A peer's RNS relay of the same logical message arriving
+        R→M must suppress via the content_id namespace — the text-only check is
+        blind to it. RED pre-Phase-4."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import loop_guard_content_id
+        cid = loop_guard_content_id("meshtastic:!a2e95ba4", "borg reply text")
+        reg.register_content_id(cid)                       # only the id, no text
+        assert not reg.seen_within("borg reply text", 60.0)
+        bridge.config.rns.dual_path_dedup_enabled = True
+        bridge.config.rns.dual_path_dedup_window_sec = 60
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send, \
+             patch.object(bridge, '_get_true_origin_injector',
+                          return_value=MagicMock()):
+            bridge._process_rns_to_mesh(self._mesh_origin_msg("borg reply text"))
+
+        send.assert_not_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 1
+
+    def test_content_id_hit_flag_off_delivers(self, bridge, monkeypatch):
+        """Default-off: a content_id hit without the flag changes nothing."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import loop_guard_content_id
+        reg.register_content_id(
+            loop_guard_content_id("meshtastic:!a2e95ba4", "off text"))
+        # bridge fixture config.rns is a MagicMock → strict is-True gate = OFF.
+
+        with patch.object(bridge, 'send_to_meshtastic', return_value=True) as send:
+            bridge._process_rns_to_mesh(self._mesh_origin_msg("off text"))
+
+        send.assert_called()
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed'] == 0
+
 
 class TestChunkForMeshPrefix:
     """Tag-every-chunk (2026-06-04): the bridge tag is the echo-loop

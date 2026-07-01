@@ -1220,6 +1220,14 @@ class MeshtasticPresetBridge:
         """Send callback for persistent queue — forward to primary."""
         msg = BridgedMeshMessage.from_payload(payload)
 
+        # Shared intra-box dedup content_id (transport-truth arc Phase 4).
+        # Channel-agnostic (#77), keyed on origin+content so it is byte-equal
+        # to the id the rns_bridge R→M true-origin path registers/checks — the
+        # coordination key that lets the two egress paths dedup each other.
+        # Empty on an unknown origin -> never matches (honest_failure_modes #1).
+        dedup_cid = (loop_guard_content_id(f"meshtastic:{msg.source_id}", msg.content)
+                     if msg.source_id else "")
+
         # Symmetric dual-path dedup (gated, default off): when the
         # rns_bridge's relay copy of this same content WON the race and
         # already went out on the primary radio (it registered on TX),
@@ -1229,9 +1237,20 @@ class MeshtasticPresetBridge:
         # 2026-06-04 the RNS relay beat the serial RX by ~300ms and the
         # duplicate sailed through. Returning True marks the queue item
         # delivered (the content IS on the radio — just via the other path).
+        #
+        # Two namespaces, one gate (Phase 4): the text-hash leg catches the
+        # rns_bridge's TAGGED relay + cross-box seen-on-RF; the content_id leg
+        # closes the true-origin gap the text leg is blind to — the R→M path
+        # delivered UNTAGGED registers only its content_id, never the raw text,
+        # so a text-only check double-delivered (the live 0743 dup, 2026-07-01,
+        # true-origin injected first). register-on-confirmed-delivery below is
+        # retry-safe: a failed forward never registers, so the queue's retry
+        # re-checks cleanly and is never self-suppressed.
         if (msg.is_broadcast and self._dual_path_dedup_on()
-                and get_rf_tx_registry().seen_within(
-                    msg.content, self._dual_path_dedup_window())):
+                and (get_rf_tx_registry().seen_within(
+                        msg.content, self._dual_path_dedup_window())
+                     or get_rf_tx_registry().seen_content_id_within(
+                        dedup_cid, self._dual_path_dedup_window()))):
             with self._stats_lock:
                 self.stats['dual_path_suppressed'] += 1
             logger.info(
@@ -1251,9 +1270,14 @@ class MeshtasticPresetBridge:
             # content, arriving seconds later via RNS) can suppress its
             # duplicate — gated on rns.dual_path_dedup_enabled at the CHECK
             # side; registering is unconditional and cheap. Broadcasts only:
-            # DMs never dual-path.
+            # DMs never dual-path. Register BOTH namespaces (Phase 4): the raw
+            # text (for the rns_bridge tagged-relay text check) AND the shared
+            # content_id (so the R→M true-origin path, which never sees this
+            # raw text, still recognizes the copy). register_content_id('')
+            # is a no-op, so an unknown origin degrades to text-only.
             if msg.is_broadcast:
                 get_rf_tx_registry().register(msg.content)
+                get_rf_tx_registry().register_content_id(dedup_cid)
         return success
 
     def _forward_message(self, msg: BridgedMeshMessage, interface,

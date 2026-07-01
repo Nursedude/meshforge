@@ -1017,6 +1017,28 @@ class TestDualPathDedupRegistration:
         assert bridge._send_to_primary(msg.to_payload()) is False
         assert not reg.seen_within("never went out", 60.0)
 
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_primary_broadcast_registers_content_id(self, mock_home, tmp_path,
+                                                    mock_config, monkeypatch):
+        """Phase 4: a successful primary broadcast forward registers the shared
+        content_id (not just the text) so the rns_bridge R→M true-origin path —
+        which never sees this raw text — can suppress its duplicate."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.mesh_bridge import BridgedMeshMessage
+        from gateway.base_handler import loop_guard_content_id
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge._primary_interface = MagicMock()
+        bridge._primary_connected = True
+
+        msg = BridgedMeshMessage(
+            source_preset="SHORT_TURBO", source_id="!b03bb70c",
+            destination_id="!ffffffff", content="cid me",
+            channel=2, is_broadcast=True,
+        )
+        assert bridge._send_to_primary(msg.to_payload()) is True
+        cid = loop_guard_content_id("meshtastic:!b03bb70c", "cid me")
+        assert reg.seen_content_id_within(cid, 60.0) is True
+
 
 class TestSymmetricDualPathSuppression:
     """mesh_bridge's primary forward suppresses when the rns_bridge relay
@@ -1091,6 +1113,43 @@ class TestSymmetricDualPathSuppression:
 
         assert bridge._send_to_primary(
             self._payload("private words", broadcast=False)) is True
+        bridge._primary_interface.sendText.assert_called_once()
+        assert bridge.stats['dual_path_suppressed'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_suppressed_when_true_origin_cid_already_out(self, mock_home, tmp_path,
+                                                         mock_config, monkeypatch):
+        """The live 0743 dup (2026-07-01), Phase 4: the rns_bridge R→M
+        true-origin downlink delivered FIRST and — being UNTAGGED — registered
+        ONLY its content_id, never the raw text. mesh_bridge's ST→primary
+        forward of the same logical message must recognize that via the
+        content_id namespace and suppress. Pre-Phase-4 (text-only check) this
+        double-delivered."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import loop_guard_content_id
+        # source_id in _payload is '!b03bb70c' — the true-origin path keys the
+        # cid the same way (origin+content), so the ids match cross-path.
+        cid = loop_guard_content_id("meshtastic:!b03bb70c", "ACK-ACK content")
+        reg.register_content_id(cid)                 # true-origin copy went out
+        assert not reg.seen_within("ACK-ACK content", 60.0)   # text NOT registered
+        bridge = self._bridge(mock_home, tmp_path, mock_config, dedup=True)
+
+        assert bridge._send_to_primary(self._payload("ACK-ACK content")) is True
+        bridge._primary_interface.sendText.assert_not_called()
+        assert bridge.stats['dual_path_suppressed'] == 1
+        assert bridge.stats['messages_secondary_to_primary'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_content_id_hit_flag_off_still_forwards(self, mock_home, tmp_path,
+                                                    mock_config, monkeypatch):
+        """Default-off: a content_id hit without the flag changes nothing."""
+        reg = self._fresh_registry(monkeypatch)
+        from gateway.base_handler import loop_guard_content_id
+        reg.register_content_id(
+            loop_guard_content_id("meshtastic:!b03bb70c", "off content"))
+        bridge = self._bridge(mock_home, tmp_path, mock_config)   # MagicMock rns → OFF
+
+        assert bridge._send_to_primary(self._payload("off content")) is True
         bridge._primary_interface.sendText.assert_called_once()
         assert bridge.stats['dual_path_suppressed'] == 0
 

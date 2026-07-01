@@ -793,17 +793,34 @@ class MessageTransformMixin:
             # relayed events), there is no hit and this copy still delivers,
             # preserving the relay's fallback value. Broadcasts only — a
             # resolved DM destination is never dual-path.
-            if (destination is None
-                    and self._dual_path_dedup_on()
-                    and get_rf_tx_registry().seen_within(
-                        body, self._dual_path_dedup_window())):
-                with self._stats_lock:
-                    self.stats['rns_to_mesh_dual_path_suppressed'] = (
-                        self.stats.get('rns_to_mesh_dual_path_suppressed', 0) + 1)
-                logger.info(
-                    f"Bridge RNS→Mesh suppressed (dual-path dedup — already "
-                    f"on RF via mesh_bridge): {body[:50]}...")
-                return
+            if destination is None and self._dual_path_dedup_on():
+                _reg = get_rf_tx_registry()
+                _win = self._dual_path_dedup_window()
+                # Unified intra-box dedup (transport-truth arc Phase 4). The
+                # local mesh_bridge ST→primary forward and this R→M downlink
+                # are two egress paths to the SAME primary radio; they
+                # coordinate through the shared RF-TX registry so exactly one
+                # delivers. Two namespaces, one gate: the text-hash leg catches
+                # a peer's tagged relay + cross-box seen-on-RF, and the
+                # content_id leg closes the gap the text leg is BLIND to — a
+                # copy delivered UNTAGGED as its true origin registers only its
+                # content_id (loop_guard namespace), never the raw text. That
+                # blind spot is the live 0743 dup (2026-07-01): the true-origin
+                # downlink injected first, so mesh_bridge's text-only check
+                # missed it and double-delivered. Channel-agnostic id (#77);
+                # empty id never matches (honest_failure_modes #1).
+                _origin = (lxmf_fields.get('meshforge_from_id') or '').strip()
+                _dedup_cid = (loop_guard_content_id(f"meshtastic:{_origin}", body)
+                              if _origin else "")
+                if (_reg.seen_within(body, _win)
+                        or _reg.seen_content_id_within(_dedup_cid, _win)):
+                    with self._stats_lock:
+                        self.stats['rns_to_mesh_dual_path_suppressed'] = (
+                            self.stats.get('rns_to_mesh_dual_path_suppressed', 0) + 1)
+                    logger.info(
+                        f"Bridge RNS→Mesh suppressed (dual-path dedup — already "
+                        f"on RF via mesh_bridge): {body[:50]}...")
+                    return
 
             # True-origin downlink (transport-truth arc Phase 3, flag-gated,
             # default off). A mesh-originated BROADCAST is delivered AS its real
