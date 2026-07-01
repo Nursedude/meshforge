@@ -1338,7 +1338,36 @@ def test_channel_feed_dark_fires_when_no_text_in_lookback():
         now=_NOW,
     )
     assert sig is not None
-    assert "24h lookback" in sig.detail
+    # Lookback is derived from the 6h dark_after_s default (6h + 1h margin).
+    assert "7h lookback" in sig.detail
+
+
+def test_channel_feed_dark_scan_window_bounded_to_threshold(monkeypatch):
+    """The journal scan window is DERIVED from dark_after_s, not a fixed 24h.
+
+    The no-match (dark / collector) case scans the ENTIRE --since window every
+    tick; moc5 (2026-07-01) is a collector with no json uplink and pegged a
+    core re-scanning a fixed 24h of meshtasticd journal each watchdog tick. The
+    freshness gate discards any json line older than dark_after_s, so a longer
+    window is pure wasted CPU. Pin the derivation so it can never silently
+    regress to a fixed 24h (honest_failure_modes #5 — one bounded constant)."""
+    import utils.watchdog_probes_service as svc
+    captured = []
+
+    def fake_newest(unit, pattern, lookback, journalctl_path="journalctl"):
+        captured.append(lookback)
+        if pattern == "serialized json message":
+            return f"{_NOW - 60.0:.6f} host meshtasticd[1]: json"  # fresh json
+        return None  # channel text dark → probe fires, exercising BOTH calls
+
+    monkeypatch.setattr(svc, "_journal_newest_match", fake_newest)
+    # No newest_line_fn / lookback passed → the default (derived) path runs.
+    sig = probe_channel_feed_dark(main_pid=1002, now=_NOW)
+    assert sig is not None and sig.cls == "channel_feed_dark"
+    assert captured, "the default path must call _journal_newest_match"
+    # 6h dark_after_s → 7h window (6h + 1h margin), and NEVER the old 24h.
+    assert set(captured) == {"7h"}
+    assert "24h" not in captured
     assert "age_s" not in sig.extra
 
 

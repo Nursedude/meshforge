@@ -1086,7 +1086,7 @@ def probe_channel_feed_dark(
     channel_name: str = "meshforge",
     unit: str = "meshtasticd.service",
     dark_after_s: float = 6 * 3600.0,
-    lookback: str = "24h",
+    lookback: Optional[str] = None,
     journalctl_path: str = "journalctl",
     systemctl_path: str = "systemctl",
     main_pid: Optional[int] = None,
@@ -1134,6 +1134,21 @@ def probe_channel_feed_dark(
     )
     if pid is None:
         return None
+
+    # Bound the journal scan to the darkness threshold. journalctl -g -r -n 1
+    # is cheap on a busy feed (stops at the first newest match) but the
+    # NO-MATCH case scans the ENTIRE --since window every tick — and that is
+    # exactly a dark or collector feed. moc5 (2026-07-01) is a collector with
+    # no json uplink at all, so the observability gate below re-scanned a fixed
+    # 24h of meshtasticd journal each tick and pegged a core. The freshness
+    # gate (dark_after_s) already discards any json line older than the
+    # threshold, so a window longer than dark_after_s is pure wasted CPU.
+    # Derive the window from dark_after_s (+1h margin) so the two can never
+    # drift (honest_failure_modes #5) and the scan is bounded to what the
+    # decision actually needs. int()+1 guarantees lookback >= dark_after_s, so
+    # the window can never be too short to see the threshold (no false dark).
+    if lookback is None:
+        lookback = f"{int(dark_after_s // 3600) + 1}h"
 
     if newest_line_fn is None:
         def newest_line_fn(pattern: str) -> Optional[str]:
