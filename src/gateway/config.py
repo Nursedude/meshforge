@@ -484,6 +484,30 @@ class RNSConfig:
     # them on RF). Default off (canary-first). DMs are never suppressed.
     dual_path_dedup_enabled: bool = False
     dual_path_dedup_window_sec: int = 60    # registry hit window (seconds)
+    # Transport-truth arc (2026-06-30): true-origin R→M downlink + content_id
+    # loop guard. When True, mesh-originated content arriving via RNS (R→M)
+    # that has a recoverable true mesh origin is delivered UNTAGGED as that
+    # origin (native e.g. BORG) via the downlink injector, instead of a
+    # [RNS:label] transport artifact. The [RNS:] tag ALSO serves as the M→R
+    # loop guard, so dropping it requires a REPLACEMENT guard: the delivered
+    # content_id is registered on the RF-TX registry and recognized on re-RX
+    # (the content_id loop guard). Phase 2 wires the RECOGNITION side (this
+    # flag gates whether the M→R ingress consults the registry by content_id);
+    # Phase 3 wires the delivery + registration. COUPLED under this one flag —
+    # true-origin delivery and its loop guard turn on together. Default off
+    # (canary moc → fleet). Degrades to today's [RNS:label] behavior when the
+    # downlink is unavailable or the origin is unrecoverable — no message loss,
+    # just the old cosmetic transport-attribution inconsistency.
+    true_origin_downlink_enabled: bool = False
+    # Window (seconds) a delivered content_id stays recognizable on the RF-TX
+    # registry for the loop guard: content heard back on RF within this window
+    # of a true-origin delivery is a loop and is dropped from re-bridging. A
+    # monotonic-clock window (no wall-clock — RTC-less Pis, honest_failure_modes
+    # #6). Covers meshtasticd MQTT-republish + peer-relay latency with headroom;
+    # bounded so the only false-positive (same origin, byte-identical text,
+    # within the window) is a rare, LOW-severity cosmetic drop — never loss on
+    # the primary path (empty/unidentifiable content is never suppressed).
+    true_origin_loop_guard_window_sec: int = 120
     # Theme-A step 4 (Thread-2 Phase 2) — honest Meshtastic delivery
     # confirmation. When True, directed downlinks (DMs to a specific mesh
     # node) are sent wantAck=True and the gateway consumes the recipient's

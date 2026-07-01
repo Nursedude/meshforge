@@ -218,6 +218,108 @@ class TestSelfEchoFilter:
         handler._message_queue.put.assert_not_called()
 
 
+class TestContentIdLoopGuardIngress:
+    """Transport-truth arc Phase 2: the content_id loop guard wired at the
+    mqtt_bridge M→R ingress. When true-origin downlink delivery is enabled,
+    untagged content this box delivered as its true mesh origin is recognized
+    on re-RX by its registered content_id and NOT re-bridged — the replacement
+    for the [RNS:] tag the delivery drops. Inert (no behavior change) when the
+    flag is off, which is the fleet default."""
+
+    def _armed_handler(self, monkeypatch, *, enabled, window=120):
+        import gateway.base_handler as bh
+        from gateway.config import RNSConfig
+        fresh = bh.RecentRfTxRegistry()
+        monkeypatch.setattr(bh, "_rf_tx_registry", fresh)
+        handler = _make_bridge_handler(own_id="!32962f10")
+        # Real RNSConfig so the strict `is True` / float reads see real values
+        # (a MagicMock rns would read the flag OFF regardless).
+        handler.config.rns = RNSConfig()
+        handler.config.rns.true_origin_downlink_enabled = enabled
+        handler.config.rns.true_origin_loop_guard_window_sec = window
+        return handler, fresh
+
+    def _send(self, handler, text, frm=0xa2e95ba4):
+        handler._bridge_text_message(
+            {
+                "from": frm,
+                "sender": "!ebfa1b11",
+                "to": 0xFFFFFFFF,
+                "payload": {"text": text},
+                "channel": 2,
+            },
+            topic="msh/US/2/json/meshforge/!ebfa1b11",
+        )
+
+    def test_registered_true_origin_content_dropped_when_enabled(self):
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed_handler(mp, enabled=True)
+            # Phase-3 delivery would register the delivered content_id; simulate
+            # that here (Phase 2 is the recognition side).
+            from gateway.base_handler import loop_guard_content_id
+            reg.register_content_id(
+                loop_guard_content_id("meshtastic:!a2e95ba4", "borg joke reply"))
+            self._send(handler, "borg joke reply")
+            handler._message_queue.put.assert_not_called()   # loop guard drop
+        finally:
+            mp.undo()
+
+    def test_same_content_different_origin_still_bridges(self):
+        # Origin-keyed: a DIFFERENT node's identical text is not the delivered
+        # loop content, so it must still bridge (no false-positive drop).
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed_handler(mp, enabled=True)
+            from gateway.base_handler import loop_guard_content_id
+            reg.register_content_id(
+                loop_guard_content_id("meshtastic:!a2e95ba4", "borg joke reply"))
+            self._send(handler, "borg joke reply", frm=0x11112222)  # alice
+            handler._message_queue.put.assert_called_once()
+        finally:
+            mp.undo()
+
+    def test_registered_content_bridges_when_flag_off(self):
+        # Flag off (fleet default): the content_id is never even computed, so
+        # the same registered content bridges exactly as today.
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, reg = self._armed_handler(mp, enabled=False)
+            from gateway.base_handler import loop_guard_content_id
+            reg.register_content_id(
+                loop_guard_content_id("meshtastic:!a2e95ba4", "borg joke reply"))
+            self._send(handler, "borg joke reply")
+            handler._message_queue.put.assert_called_once()
+        finally:
+            mp.undo()
+
+    def test_unregistered_content_bridges_when_enabled(self):
+        # Flag on but nothing registered (e.g. genuinely new mesh traffic):
+        # untagged content bridges normally.
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, _reg = self._armed_handler(mp, enabled=True)
+            self._send(handler, "a brand new message")
+            handler._message_queue.put.assert_called_once()
+        finally:
+            mp.undo()
+
+    def test_tagged_content_still_dropped_when_enabled(self):
+        # The tag guard remains active alongside the content_id branch.
+        import pytest
+        mp = pytest.MonkeyPatch()
+        try:
+            handler, _reg = self._armed_handler(mp, enabled=True)
+            self._send(handler, "[RNS:borg] tagged reply")
+            handler._message_queue.put.assert_not_called()
+        finally:
+            mp.undo()
+
+
 def _meshanchor_echo_prefixes():
     """Read MeshAnchor's ECHO_LOOP_INVARIANT_PREFIXES from its SOURCE without
     importing it — the `gateway` package name collides with MeshForge's, so a

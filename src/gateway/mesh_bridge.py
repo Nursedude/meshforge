@@ -31,8 +31,9 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, Dict, Callable, Any, List
 
 from .base_handler import (
-    get_rf_tx_registry, get_secondary_rf_registry, is_already_bridged,
-    mqtt_content_dedup_key,
+    get_rf_tx_registry, get_secondary_rf_registry, is_bridge_loop,
+    loop_guard_content_id, mqtt_content_dedup_key,
+    true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
@@ -1066,7 +1067,24 @@ class MeshtasticPresetBridge:
             # the mutated content -> infinite prefix-growing amplification.
             # Our own forwards carry a [Mesh: prefix (BRIDGE_TAG_PREFIXES),
             # so every gateway — including this one — refuses them on re-RX.
-            if is_already_bridged(text):
+            # Content_id augmentation (transport-truth arc Phase 2): when
+            # true-origin downlink delivery is on, content this box delivered
+            # UNTAGGED as its true mesh origin (the [RNS:] tag dropped) would
+            # otherwise be re-forwarded cross-preset. Recognize it by the
+            # content_id registered at delivery, checking the RECEIVING leg's
+            # registry (same scope as the seen-on-RF register above — a
+            # primary-delivered id must not be sought in the secondary scope).
+            # Channel-agnostic id (#77). Flag off: loop_cid '' → is_bridge_loop
+            # reduces exactly to is_already_bridged (no behavior change).
+            loop_cid = ""
+            if true_origin_downlink_enabled(self.config):
+                loop_cid = loop_guard_content_id(f"meshtastic:{from_id}", text)
+            leg_registry = (get_rf_tx_registry() if source == "primary"
+                            else get_secondary_rf_registry())
+            if is_bridge_loop(
+                    text, loop_cid,
+                    registry=leg_registry,
+                    cid_window_s=true_origin_loop_guard_window_s(self.config)):
                 with self._stats_lock:
                     self.stats['already_bridged_dropped'] += 1
                 logger.debug(

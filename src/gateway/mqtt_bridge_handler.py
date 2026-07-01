@@ -42,7 +42,9 @@ from gateway import delivery_counters as _dc
 from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_already_bridged, mqtt_content_dedup_key,
+    get_rf_tx_registry, is_bridge_loop, loop_guard_content_id,
+    mqtt_content_dedup_key, true_origin_downlink_enabled,
+    true_origin_loop_guard_window_s,
 )
 from utils.meshtastic_se_crypto import (
     DEFAULT_KEY_B64, crypto_available, decode_service_envelope,
@@ -689,7 +691,22 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # into RNS, duplicating it for upstream peers). Genuine
         # operator content (web UI / CLI sends) has no [RNS:] prefix and still
         # bridges so operators see their own activity in NomadNet.
-        if is_already_bridged(text):
+        #
+        # Content_id augmentation (transport-truth arc Phase 2): when true-
+        # origin downlink delivery is enabled, content this box delivered
+        # UNTAGGED as its true mesh origin (the [RNS:] tag dropped) can't be
+        # caught by the tag test above — it is recognized instead by the
+        # content_id registered at delivery. Channel-agnostic id so this check
+        # matches the registration regardless of ingress mode (#77). Flag off
+        # (fleet default): loop_cid stays '' and is_bridge_loop reduces exactly
+        # to is_already_bridged — no behavior change, id not even computed.
+        loop_cid = ""
+        if true_origin_downlink_enabled(self.config):
+            loop_cid = loop_guard_content_id(f"meshtastic:{from_id}", text)
+        if is_bridge_loop(
+                text, loop_cid,
+                registry=get_rf_tx_registry(),
+                cid_window_s=true_origin_loop_guard_window_s(self.config)):
             logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
 

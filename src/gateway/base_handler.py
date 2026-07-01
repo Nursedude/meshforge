@@ -61,6 +61,72 @@ def is_already_bridged(text: str) -> bool:
     return text.lstrip().startswith(BRIDGE_TAG_PREFIXES)
 
 
+def loop_guard_content_id(origin_token: str, content: str) -> str:
+    """Channel-agnostic content_id for the M→R loop guard (transport-truth arc).
+
+    Lives here (not in the byte-identical canonical_message.py) because the
+    loop guard is a MeshForge-only arc primitive — keeping it out of the parity
+    file avoids a cross-repo byte-drift for a feature MeshAnchor does not yet
+    carry. It is a thin, deliberate specialization of ``compute_content_id``.
+
+    The loop guard is INTRA-box: a true-origin R→M delivery REGISTERS this id
+    on the RF-TX registry, and every M→R ingress that re-hears the content on
+    RF must compute the SAME id to recognize the loop. But the ingress modes do
+    NOT agree on how they see the channel: mqtt_bridge has the channel NAME
+    (from the topic) while mesh_bridge / TCP see only the box-local NUMERIC slot
+    (#77). Keying the loop guard on the channel would make it match in one mode
+    and silently miss in another on the same box.
+
+    So the loop-guard id deliberately DROPS the channel axis (channel="") and
+    keys on ORIGIN + CONTENT only — computable identically at register and at
+    every re-RX site. Origin is what a plain text-registry lookup lacks: it
+    keeps byte-identical text from two DIFFERENT senders from colliding. The
+    cost of dropping channel is a same-origin / byte-identical-text /
+    cross-channel collision within the window — vanishingly rare and, like all
+    dedup here, failing toward a cosmetic dup, never message loss (empty content
+    yields '' and is never suppressed, honest_failure_modes #1).
+
+    Register (Phase 3) and check (Phase 2) MUST both route through this one
+    function so they can never drift.
+    """
+    from .canonical_message import compute_content_id
+    return compute_content_id(origin_token, content, "")
+
+
+def is_bridge_loop(text: str, content_id: str = "", *,
+                   registry: Optional["RecentRfTxRegistry"] = None,
+                   cid_window_s: float = 0.0) -> bool:
+    """M→R loop guard: True if this mesh content must NOT be re-bridged to RNS.
+
+    Combines two independent signals; either one is sufficient to drop:
+
+      1. ``is_already_bridged(text)`` — the tag-based guard (ALWAYS active). A
+         leading ``[RNS:]/[MC:]/[Mesh:]`` tag means the content already crossed
+         a bridge and is present in RNS, so re-bridging it loops.
+      2. ``content_id`` recently delivered onto THIS mesh via a true-origin
+         downlink (transport-truth arc Phase 2/3). When a gateway drops the
+         ``[RNS:]`` tag to deliver content as its true mesh origin, the tag can
+         no longer serve as the loop guard — so the delivered content_id is
+         registered in ``registry`` and recognized here on re-RX. Consulted
+         ONLY when a ``registry`` + positive ``cid_window_s`` are supplied
+         (the caller's Phase-3 flag is on) AND ``content_id`` is non-empty.
+
+    Signal 2 is inert until something registers a delivered content_id, so this
+    is a safe no-op vs. today until Phase 3 wires the delivery/registration.
+
+    Failure direction is deliberate: an empty / unidentifiable content_id never
+    matches, so unidentifiable content is NEVER suppressed (honest_failure_modes
+    #1) — the guard fails toward re-bridging (a cosmetic dup, back to today's
+    behavior), never toward dropping legitimate mesh traffic.
+    """
+    if is_already_bridged(text):
+        return True
+    if registry is not None and cid_window_s > 0 and content_id:
+        if registry.seen_content_id_within(content_id, cid_window_s):
+            return True
+    return False
+
+
 def _strip_bridge_tags(text: str) -> str:
     """Remove LEADING bridge tags ([Mesh:..] / [RNS:..] / ...) iteratively.
 
@@ -279,6 +345,29 @@ def dual_path_dedup_window_s(config: Any) -> float:
         return float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
     except (TypeError, ValueError):
         return 60.0
+
+
+def true_origin_downlink_enabled(config: Any) -> bool:
+    """Strict read of rns.true_origin_downlink_enabled (default False).
+
+    Transport-truth arc (2026-06-30). Gates the content_id loop guard at the
+    M→R ingress (Phase 2) AND the true-origin downlink delivery (Phase 3) —
+    the two are coupled, so ONE flag governs both. Same ``is True`` discipline
+    as the dual_path/reply-routing gates: MagicMock test configs and malformed
+    gateway.json values read as OFF, keeping the legacy [RNS:label] behavior
+    everywhere the flag wasn't explicitly enabled.
+    """
+    rns_cfg = getattr(config, 'rns', None)
+    return getattr(rns_cfg, 'true_origin_downlink_enabled', False) is True
+
+
+def true_origin_loop_guard_window_s(config: Any) -> float:
+    """rns.true_origin_loop_guard_window_sec with a safe 120s default."""
+    rns_cfg = getattr(config, 'rns', None)
+    try:
+        return float(getattr(rns_cfg, 'true_origin_loop_guard_window_sec', 120))
+    except (TypeError, ValueError):
+        return 120.0
 
 
 # Process-wide instance — the composable bridges (mesh_bridge + rns_bridge)

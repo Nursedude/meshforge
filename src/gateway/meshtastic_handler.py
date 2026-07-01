@@ -26,7 +26,8 @@ from .ack_tracker import (
 )
 from .base_handler import (
     BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_already_bridged,
+    get_rf_tx_registry, is_bridge_loop, loop_guard_content_id,
+    true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from .config import GatewayConfig
 from .node_tracker import UnifiedNode
@@ -670,7 +671,19 @@ class MeshtasticHandler(BaseMessageHandler):
 
         # Loop guard: [RNS:xxxx]-tagged content was injected from RNS and is
         # already there — never bridge it back (see is_already_bridged).
-        if is_already_bridged(text):
+        # Content_id augmentation (transport-truth arc Phase 2): when true-
+        # origin downlink delivery is enabled, content delivered UNTAGGED as
+        # its true mesh origin (tag dropped) is recognized by its registered
+        # content_id instead. Channel-agnostic id (matches registration across
+        # ingress modes, #77). Flag off: loop_cid '' → is_bridge_loop reduces
+        # to is_already_bridged (no behavior change).
+        loop_cid = ""
+        if true_origin_downlink_enabled(self.config):
+            loop_cid = loop_guard_content_id(f"meshtastic:{from_id}", text)
+        if is_bridge_loop(
+                text, loop_cid,
+                registry=get_rf_tx_registry(),
+                cid_window_s=true_origin_loop_guard_window_s(self.config)):
             logger.debug(f"Not re-bridging RNS-tagged content (loop guard): {text[:40]}")
             return
 

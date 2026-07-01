@@ -4389,6 +4389,194 @@ class TestContentIdClaim:
         assert results.count(False) == 19
 
 
+class TestLoopGuardContentId:
+    """Transport-truth arc Phase 2: the channel-agnostic loop-guard content_id.
+
+    The loop guard is INTRA-box (register at true-origin delivery, recognize on
+    re-RX) and must compute the SAME id regardless of ingress mode — but the
+    modes disagree on how they see the channel (topic NAME vs box-local numeric
+    slot, #77). So the loop-guard id deliberately drops the channel axis and
+    keys on ORIGIN + CONTENT only."""
+
+    def test_deterministic(self):
+        from gateway.base_handler import loop_guard_content_id
+        a = loop_guard_content_id("meshtastic:!a2e95ba4", "borg joke reply")
+        b = loop_guard_content_id("meshtastic:!a2e95ba4", "borg joke reply")
+        assert a == b and a.startswith("c1:")
+
+    def test_channel_agnostic(self):
+        # By construction the loop-guard id takes no channel — it equals the
+        # channel="" content_id and is INVARIANT to any channel a caller might
+        # otherwise have supplied. This is what lets mqtt_bridge (channel name)
+        # and mesh_bridge/TCP (numeric slot) agree on one box.
+        from gateway.base_handler import loop_guard_content_id
+        from gateway.canonical_message import compute_content_id
+        lg = loop_guard_content_id("meshtastic:!a2e95ba4", "hello")
+        assert lg == compute_content_id("meshtastic:!a2e95ba4", "hello", "")
+        # Differs from a channel-scoped id — proving the channel really is out.
+        assert lg != compute_content_id(
+            "meshtastic:!a2e95ba4", "hello", "longfast")
+
+    def test_origin_keyed(self):
+        # The axis a plain text-registry lookup lacks: identical text from two
+        # DIFFERENT senders must NOT collide (else the guard would drop a
+        # different node's genuine message).
+        from gateway.base_handler import loop_guard_content_id
+        borg = loop_guard_content_id("meshtastic:!a2e95ba4", "wx")
+        alice = loop_guard_content_id("meshtastic:!11112222", "wx")
+        assert borg != alice
+
+    def test_empty_content_unidentifiable(self):
+        # No text -> '' -> the guard treats it as unidentifiable and never
+        # suppresses (honest_failure_modes #1).
+        from gateway.base_handler import loop_guard_content_id
+        assert loop_guard_content_id("meshtastic:!a2e95ba4", "") == ""
+        assert loop_guard_content_id("meshtastic:!a2e95ba4", "   ") == ""
+
+    def test_tag_stripped_and_whitespace_normalized(self):
+        # A tagged delivery form and the raw re-RX form normalize to one id,
+        # and whitespace runs collapse — so register/check round-trip even if
+        # one side carries a leading bridge tag.
+        from gateway.base_handler import loop_guard_content_id
+        raw = loop_guard_content_id("meshtastic:!a2e95ba4", "hello world")
+        tagged = loop_guard_content_id(
+            "meshtastic:!a2e95ba4", "[RNS:borg]  hello   world")
+        assert raw == tagged
+
+    def test_round_trip_delivery_to_rerx(self):
+        # The real invariant: the id registered at true-origin DELIVERY
+        # (origin=BORG, body) equals the id computed at re-RX (from_id=BORG,
+        # untagged text). This is what makes the loop guard recognize the echo.
+        from gateway.base_handler import loop_guard_content_id
+        delivered = loop_guard_content_id(
+            "meshtastic:!a2e95ba4", "the joke text")
+        from_id = "!a2e95ba4"
+        re_rx = loop_guard_content_id(f"meshtastic:{from_id}", "the joke text")
+        assert delivered == re_rx
+
+
+class TestIsBridgeLoop:
+    """Transport-truth arc Phase 2: is_bridge_loop — the augmented M→R loop
+    guard. Signal 1 (leading bridge tag) is always active; signal 2 (a
+    content_id delivered onto this mesh via a true-origin downlink) is consulted
+    only when a registry + positive window + non-empty content_id are given."""
+
+    def _registry(self):
+        from gateway.base_handler import RecentRfTxRegistry
+        return RecentRfTxRegistry()
+
+    def test_tagged_always_loops_regardless_of_cid(self):
+        from gateway.base_handler import is_bridge_loop
+        r = self._registry()
+        # Tag guard fires with no registry at all, and even with a fresh one.
+        assert is_bridge_loop("[RNS:x] hi") is True
+        assert is_bridge_loop("[RNS:x] hi", "c1:unregistered",
+                              registry=r, cid_window_s=120) is True
+
+    def test_untagged_no_registry_never_loops(self):
+        from gateway.base_handler import is_bridge_loop
+        assert is_bridge_loop("plain content") is False
+        assert is_bridge_loop("plain content", "c1:abc") is False
+
+    def test_untagged_registered_cid_loops(self):
+        # The recognition mechanism: a content_id registered as delivered is
+        # recognized on re-RX and the untagged content is dropped.
+        from gateway.base_handler import is_bridge_loop
+        r = self._registry()
+        r.register_content_id("c1:abc")
+        assert is_bridge_loop("plain content", "c1:abc",
+                              registry=r, cid_window_s=120) is True
+
+    def test_untagged_unregistered_cid_does_not_loop(self):
+        from gateway.base_handler import is_bridge_loop
+        r = self._registry()
+        r.register_content_id("c1:other")
+        assert is_bridge_loop("plain content", "c1:abc",
+                              registry=r, cid_window_s=120) is False
+
+    def test_empty_cid_never_loops_even_when_registry_present(self):
+        # Unidentifiable content is never suppressed (honest_failure_modes #1).
+        from gateway.base_handler import is_bridge_loop
+        r = self._registry()
+        r.register_content_id("")   # no-op
+        assert is_bridge_loop("plain content", "",
+                              registry=r, cid_window_s=120) is False
+
+    def test_zero_window_disables_cid_branch(self):
+        # cid_window_s == 0 (or the caller passing no window) means the flag is
+        # off — the content_id branch is inert even with a registered id.
+        from gateway.base_handler import is_bridge_loop
+        r = self._registry()
+        r.register_content_id("c1:abc")
+        assert is_bridge_loop("plain content", "c1:abc",
+                              registry=r, cid_window_s=0) is False
+
+    def test_expired_cid_does_not_loop(self):
+        from gateway.base_handler import is_bridge_loop
+        r = self._registry()
+        r.register_content_id("c1:abc")
+        for k in list(r._entries):
+            r._entries[k] -= 200.0   # older than the 120s window
+        assert is_bridge_loop("plain content", "c1:abc",
+                              registry=r, cid_window_s=120) is False
+
+    def test_flag_off_equivalent_to_is_already_bridged(self):
+        # With loop_cid='' (what the ingress passes when the flag is off),
+        # is_bridge_loop reduces EXACTLY to is_already_bridged for both tagged
+        # and untagged content — proving flag-off is a no-op vs today.
+        from gateway.base_handler import is_bridge_loop, is_already_bridged
+        r = self._registry()
+        for text in ("[RNS:x] hi", "[MC:p4] yo", "plain", "", "  spaced  "):
+            assert (
+                is_bridge_loop(text, "", registry=r, cid_window_s=120)
+                == is_already_bridged(text)
+            )
+
+
+class TestTrueOriginFlagReaders:
+    """Strict `is True` reads of the transport-truth flags (default off), the
+    same MagicMock-safe discipline as the dual_path / reply-routing gates."""
+
+    def _cfg(self, **rns_kw):
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(rns=SimpleNamespace(**rns_kw))
+        return cfg
+
+    def test_enabled_default_false(self):
+        from gateway.base_handler import true_origin_downlink_enabled
+        assert true_origin_downlink_enabled(self._cfg()) is False
+
+    def test_enabled_true_only_on_literal_true(self):
+        from gateway.base_handler import true_origin_downlink_enabled
+        assert true_origin_downlink_enabled(
+            self._cfg(true_origin_downlink_enabled=True)) is True
+        # truthy-but-not-True reads OFF (a MagicMock attr, or 1/"yes")
+        assert true_origin_downlink_enabled(
+            self._cfg(true_origin_downlink_enabled=1)) is False
+        assert true_origin_downlink_enabled(MagicMock()) is False
+
+    def test_window_default_120(self):
+        from gateway.base_handler import true_origin_loop_guard_window_s
+        assert true_origin_loop_guard_window_s(self._cfg()) == 120.0
+
+    def test_window_reads_config_value(self):
+        from gateway.base_handler import true_origin_loop_guard_window_s
+        assert true_origin_loop_guard_window_s(
+            self._cfg(true_origin_loop_guard_window_sec=45)) == 45.0
+
+    def test_window_malformed_falls_back(self):
+        # A genuinely malformed value (float() raises ValueError/TypeError)
+        # falls back to the 120s default — same guard as dual_path_dedup_window_s.
+        # (A MagicMock config is NOT this case: it has __float__ -> 1.0, so it
+        # reads 1.0 exactly like the existing helper; but the FLAG reads OFF for
+        # a MagicMock, so that window is never consulted anyway.)
+        from gateway.base_handler import true_origin_loop_guard_window_s
+        assert true_origin_loop_guard_window_s(
+            self._cfg(true_origin_loop_guard_window_sec="oops")) == 120.0
+        assert true_origin_loop_guard_window_s(
+            self._cfg(true_origin_loop_guard_window_sec=None)) == 120.0
+
+
 class TestDualPathDedup:
     """R→M broadcast suppression on registry hit (gated, default off)."""
 
