@@ -933,7 +933,22 @@ def probe_tracer_peer_unreachable(
     at least one success in the lookback window. Severity: info.
 
     Tier-2 (persistent): peer failed in the last ``persistent_cycles``
-    consecutive fires with no successes between. Severity: wedge.
+    consecutive fires with no successes between. Severity depends on the
+    FAILURE KIND (2026-07-01, the moc2-offline lesson — a deliberately
+    powered-off box must not page the whole fleet as wedged):
+
+    - any ``timeout`` among the leading failures → **wedge**: an RNS path
+      to the peer exists (or existed moments ago) but nothing answers —
+      the actionable RNS-wedge class (dead echo service, identity-cache
+      eviction; see the 06-29 recipe: restart the peer's meshforge-echo /
+      re-announce).
+    - all leading failures ``no-route`` → **degraded**, tier ``absent``:
+      the peer has no RNS path at all — it is off the mesh (maintenance,
+      power, crash). Nothing on THIS observer is wedged, and no
+      observer-side action fixes it; the honest read is "that box is
+      absent — check the box". A crashed box still surfaces (degraded on
+      every peer + unreachable in fleet rollups), it just no longer fails
+      the fleet gate as N phantom wedges. Unobservable ≠ wedged.
 
     Why a list return: one tracer_dir can report on many peers in one
     pass; flattening to N Signals keeps the probe API uniform.
@@ -982,15 +997,40 @@ def probe_tracer_peer_unreachable(
             leading_fail += 1
 
         if leading_fail >= persistent_cycles:
+            leading_kinds = {result for _, result in history[:leading_fail]}
+            if leading_kinds == {"no-route"}:
+                # Peer ABSENT from the RNS mesh — no path at all. An
+                # offline/maintenance box, not an RNS wedge on this
+                # observer (the moc2-offline lesson, 2026-07-01).
+                signals.append(Signal(
+                    cls="tracer_peer_unreachable",
+                    subject=peer,
+                    severity="degraded",
+                    detail=(
+                        f"{leading_fail} consecutive no-route tracer fires "
+                        f"— {peer} is ABSENT from the RNS mesh (no path). "
+                        f"Off-line/maintenance or crashed: check the box "
+                        f"itself; nothing on this observer is wedged and "
+                        f"no observer-side action fixes it."
+                    ),
+                    extra={
+                        "leading_fail": leading_fail,
+                        "latest_result": latest_result,
+                        "tier": "absent",
+                    },
+                ))
+                continue
             signals.append(Signal(
                 cls="tracer_peer_unreachable",
                 subject=peer,
                 severity="wedge",
                 detail=(
                     f"{leading_fail} consecutive failed tracer fires "
-                    f"({latest_result!r} latest). Persistent — likely real "
-                    f"outage, not cold-start. Check {peer} echo service + "
-                    f"RNS path."
+                    f"({latest_result!r} latest, kinds={sorted(leading_kinds)}). "
+                    f"Persistent with a live/recent RNS path — the "
+                    f"actionable wedge class. Check {peer} echo service + "
+                    f"RNS path (06-29 recipe: restart meshforge-echo on "
+                    f"the peer / re-announce)."
                 ),
                 extra={
                     "leading_fail": leading_fail,

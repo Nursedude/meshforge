@@ -2801,6 +2801,49 @@ def test_tracer_persistent_unreachable_fires_after_three_consecutive_fails(tmp_p
     assert s.extra["leading_fail"] >= 3
 
 
+def test_tracer_all_no_route_classified_absent_degraded(tmp_path):
+    """The moc2-offline lesson (2026-07-01): a peer with NO RNS path at all
+    (every leading failure 'no-route') is ABSENT — off-line/maintenance or
+    crashed — not an RNS wedge on this observer. One deliberately powered-
+    off Pi must not page the whole fleet as N phantom wedges (honest_status
+    grades wedge=FAIL, degraded=WARN); the box still surfaces, at the
+    honest severity."""
+    tracer_dir = tmp_path
+    now = time.time()
+    for age in (600, 300, 60):
+        _write_fire(tracer_dir, now - age,
+                    [{"peer": "moc2", "seq": 1, "result": "no-route",
+                      "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+    )
+    assert len(signals) == 1
+    s = signals[0]
+    assert s.severity == "degraded"
+    assert s.extra["tier"] == "absent"
+    assert "ABSENT" in s.detail
+
+
+def test_tracer_timeout_among_leading_fails_stays_wedge(tmp_path):
+    """A run containing 'timeout' means an RNS path exists (or just did)
+    while nothing answers — the actionable wedge class (dead echo /
+    identity eviction, 06-29 recipe). Must NOT be softened to absent."""
+    tracer_dir = tmp_path
+    now = time.time()
+    _write_fire(tracer_dir, now - 600,
+                [{"peer": "moc5", "seq": 1, "result": "timeout", "rtt_ms": 0}])
+    _write_fire(tracer_dir, now - 300,
+                [{"peer": "moc5", "seq": 2, "result": "timeout", "rtt_ms": 0}])
+    _write_fire(tracer_dir, now - 60,
+                [{"peer": "moc5", "seq": 3, "result": "timeout", "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+    )
+    assert len(signals) == 1
+    assert signals[0].severity == "wedge"
+    assert signals[0].extra["tier"] == "persistent"
+
+
 def test_tracer_transient_unreachable_classified_as_info(tmp_path):
     """A single no-route fire after recent successes is transient — should
     NOT surface as wedge. (This is the cold-start path the user hit today.)"""
