@@ -2778,11 +2778,14 @@ def _write_fire(tracer_dir: Path, fire_at_unix: float,
 
 
 def test_tracer_persistent_unreachable_fires_after_three_consecutive_fails(tmp_path):
-    """Today's symptom reconstruction: 5 peers all failing to moc1.
-    A peer with N≥3 consecutive no-route fires must surface as wedge."""
+    """A peer with N≥3 consecutive failed fires (mixed no-route/timeout)
+    must surface persistently. Severity is degraded — every condition this
+    probe observes is REMOTE (2026-07-01, the moc2-offline lesson): nothing
+    on the observer is wedged, so a down/unresponsive peer must not fail
+    the fleet gate as phantom wedges on its healthy neighbors."""
     tracer_dir = tmp_path
     now = time.time()
-    # Three recent fires, all no-route to moc1, no good fires in window.
+    # Three recent fires, mixed kinds, no good fires in window.
     _write_fire(tracer_dir, now - 600,
                 [{"peer": "moc1", "seq": 1, "result": "no-route", "rtt_ms": 0}])
     _write_fire(tracer_dir, now - 300,
@@ -2796,8 +2799,8 @@ def test_tracer_persistent_unreachable_fires_after_three_consecutive_fails(tmp_p
     s = signals[0]
     assert s.cls == "tracer_peer_unreachable"
     assert s.subject == "moc1"
-    assert s.severity == "wedge"
-    assert s.extra["tier"] == "persistent"
+    assert s.severity == "degraded"
+    assert s.extra["tier"] == "unresponsive"
     assert s.extra["leading_fail"] >= 3
 
 
@@ -2824,10 +2827,12 @@ def test_tracer_all_no_route_classified_absent_degraded(tmp_path):
     assert "ABSENT" in s.detail
 
 
-def test_tracer_timeout_among_leading_fails_stays_wedge(tmp_path):
-    """A run containing 'timeout' means an RNS path exists (or just did)
-    while nothing answers — the actionable wedge class (dead echo /
-    identity eviction, 06-29 recipe). Must NOT be softened to absent."""
+def test_tracer_persistent_timeout_classified_unresponsive_degraded(tmp_path):
+    """A run of 'timeout' means an RNS path exists while nothing answers —
+    AMBIGUOUS by construction (live 07-01: moc1/moc5 read the powered-off
+    moc2 as timeout through a stale path, while the 06-29 identity-eviction
+    class produces the same shape from a live box). Ambiguous never maps to
+    the definitive 'wedge'; degraded, with both hypotheses in the detail."""
     tracer_dir = tmp_path
     now = time.time()
     _write_fire(tracer_dir, now - 600,
@@ -2840,8 +2845,11 @@ def test_tracer_timeout_among_leading_fails_stays_wedge(tmp_path):
         tracer_dir=tracer_dir, persistent_cycles=3, now=now,
     )
     assert len(signals) == 1
-    assert signals[0].severity == "wedge"
-    assert signals[0].extra["tier"] == "persistent"
+    s = signals[0]
+    assert s.severity == "degraded"
+    assert s.extra["tier"] == "unresponsive"
+    assert "UNRESPONSIVE" in s.detail
+    assert "meshforge-echo" in s.detail   # the 06-29 recipe stays named
 
 
 def test_tracer_transient_unreachable_classified_as_info(tmp_path):

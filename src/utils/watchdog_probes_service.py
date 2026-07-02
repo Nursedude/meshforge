@@ -933,22 +933,27 @@ def probe_tracer_peer_unreachable(
     at least one success in the lookback window. Severity: info.
 
     Tier-2 (persistent): peer failed in the last ``persistent_cycles``
-    consecutive fires with no successes between. Severity depends on the
-    FAILURE KIND (2026-07-01, the moc2-offline lesson — a deliberately
-    powered-off box must not page the whole fleet as wedged):
+    consecutive fires with no successes between. Severity is **degraded**
+    (2026-07-01, the moc2-offline lesson): every condition this probe can
+    observe is a REMOTE one — nothing on THIS observer is wedged and no
+    observer-side action fixes it — so one deliberately powered-off box
+    must not fail the fleet gate as N phantom wedges on its healthy
+    peers. The failure KIND still classifies the tier for the operator:
 
-    - any ``timeout`` among the leading failures → **wedge**: an RNS path
-      to the peer exists (or existed moments ago) but nothing answers —
-      the actionable RNS-wedge class (dead echo service, identity-cache
-      eviction; see the 06-29 recipe: restart the peer's meshforge-echo /
-      re-announce).
-    - all leading failures ``no-route`` → **degraded**, tier ``absent``:
-      the peer has no RNS path at all — it is off the mesh (maintenance,
-      power, crash). Nothing on THIS observer is wedged, and no
-      observer-side action fixes it; the honest read is "that box is
-      absent — check the box". A crashed box still surfaces (degraded on
-      every peer + unreachable in fleet rollups), it just no longer fails
-      the fleet gate as N phantom wedges. Unobservable ≠ wedged.
+    - all leading failures ``no-route`` → tier ``absent``: the peer has
+      no RNS path at all — off the mesh (maintenance, power, crash).
+      Check the box.
+    - any ``timeout`` among them → tier ``unresponsive``: an RNS path
+      exists but nothing answers. AMBIGUOUS by construction (detectors
+      never map ambiguous → definitive): either the box is off while
+      observers still hold a stale path (live 07-01: moc1/moc5 read the
+      powered-off moc2 as timeout while moc/moc3 read no-route), or the
+      box is up with a wedged echo / evicted identity (the 06-29 class —
+      recipe: restart the peer's meshforge-echo / re-announce).
+
+    A crashed box still surfaces (degraded on every peer + unreachable in
+    fleet rollups) — unobservable is never silently healthy — just at the
+    honest severity (honest_status: WARN, not FAIL).
 
     Why a list return: one tracer_dir can report on many peers in one
     pass; flattening to N Signals keeps the probe API uniform.
@@ -1020,22 +1025,29 @@ def probe_tracer_peer_unreachable(
                     },
                 ))
                 continue
+            # Timeout(s) among the leading failures: an RNS path exists
+            # but nothing answers. Ambiguous — off box behind a stale
+            # path, OR a live box with a wedged echo / evicted identity
+            # (06-29 class). A remote condition either way: degraded,
+            # never a wedge on this observer.
             signals.append(Signal(
                 cls="tracer_peer_unreachable",
                 subject=peer,
-                severity="wedge",
+                severity="degraded",
                 detail=(
-                    f"{leading_fail} consecutive failed tracer fires "
-                    f"({latest_result!r} latest, kinds={sorted(leading_kinds)}). "
-                    f"Persistent with a live/recent RNS path — the "
-                    f"actionable wedge class. Check {peer} echo service + "
-                    f"RNS path (06-29 recipe: restart meshforge-echo on "
-                    f"the peer / re-announce)."
+                    f"{leading_fail} consecutive failed tracer fires to "
+                    f"{peer} ({latest_result!r} latest, "
+                    f"kinds={sorted(leading_kinds)}) with an RNS path "
+                    f"present — the box is UNRESPONSIVE: either off-line "
+                    f"behind a stale path, or up with a wedged echo / "
+                    f"evicted identity. Check the box; if it is up, "
+                    f"restart its meshforge-echo / re-announce (06-29 "
+                    f"recipe)."
                 ),
                 extra={
                     "leading_fail": leading_fail,
                     "latest_result": latest_result,
-                    "tier": "persistent",
+                    "tier": "unresponsive",
                 },
             ))
         else:
