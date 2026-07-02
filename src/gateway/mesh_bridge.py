@@ -274,8 +274,14 @@ class MQTTMeshInterface:
             # own node). fromId keyed on sender here silently diverged the
             # Phase-4 dedup/loop-guard content_id from the rns_bridge side
             # (which keys on the originator) on MQTT-leg topologies
-            # (review 2026-07-01).
-            from_id = f"!{from_num:08x}" if from_num else sender
+            # (review 2026-07-01). Type-guarded: a non-int or negative
+            # `from` (malformed/foreign publisher) must fall back to sender
+            # attribution, not ValueError into the broad except below and
+            # silently drop the whole message.
+            from_id = (f"!{from_num & 0xFFFFFFFF:08x}"
+                       if isinstance(from_num, int)
+                       and not isinstance(from_num, bool) and from_num > 0
+                       else sender)
 
             # Build a packet dict compatible with _process_receive
             packet = {
@@ -471,6 +477,11 @@ class MeshtasticPresetBridge:
             # because the rns_bridge's relay copy already went out on the
             # primary radio (it won the race this time).
             'dual_path_suppressed': 0,
+            # Loss-exposure witness (review 2026-07-01): suppressions whose
+            # ONLY evidence was a content_id registration. Pre-seeded so a
+            # consumer can tell healthy-zero from meter-absent
+            # (honest_failure_modes #9 — absent-vs-zero ambiguity).
+            'dual_path_suppressed_cid_only': 0,
             'errors': 0,
             'start_time': None,
         }
@@ -1181,7 +1192,8 @@ class MeshtasticPresetBridge:
         """Send callback for persistent queue — forward to secondary."""
         msg = BridgedMeshMessage.from_payload(payload)
 
-        # Seen-on-RF dedup, secondary scope (gated, default off): when this
+        # Seen-on-RF dedup, secondary scope (gated; config default TRUE
+        # since Phase 4, 2026-07-01): when this
         # content is already on the SECONDARY mesh — e.g. a peer gateway's
         # RNS relay injected it there and our serial RX heard it — suppress
         # the forward instead of double-delivering (the other order of the
@@ -1288,9 +1300,19 @@ class MeshtasticPresetBridge:
             # text (for the rns_bridge tagged-relay text check) AND the shared
             # content_id (so the R→M true-origin path, which never sees this
             # raw text, still recognizes the copy). register_content_id('')
-            # is a no-op, so an unknown origin degrades to text-only. This
-            # registration is radio-API-confirmed (_forward_message returned
-            # True) — the strongest evidence tier a register site has.
+            # is a no-op, so an unknown origin degrades to text-only.
+            #
+            # EVIDENCE-TIER HONESTY (review 2026-07-01, second pass): how
+            # strong "_forward_message returned True" is depends on the
+            # forward path — a toradio/sendText success is radio-API
+            # -confirmed, but in injection_mode=downlink (moc's live config)
+            # it is a QoS-0 broker publish, the SAME weak tier as the
+            # true-origin inject. Under a stale downlink_psk that weak
+            # success registers TEXT here, so the loss can later suppress
+            # via the text leg with NO *_cid_only witness. Residual,
+            # ledgered (transport-truth Phase 5): have _forward_message
+            # report which path delivered and register text only on
+            # radio/RF-tier evidence.
             if msg.is_broadcast:
                 get_rf_tx_registry().register(msg.content)
                 get_rf_tx_registry().register_content_id(dedup_cid)

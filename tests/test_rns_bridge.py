@@ -4730,6 +4730,37 @@ class TestMeshOriginContentId:
         assert mesh_origin_content_id("unknown", "wx") == ""
         assert mesh_origin_content_id("None", "wx") == ""
 
+    def test_sentinel_constant_shared_with_producers(self):
+        # The producers mint UNKNOWN_ORIGIN and the filter refuses it — one
+        # constant, so a respelled producer sentinel can't slip past the
+        # filter and collapse unidentified senders onto one key bucket
+        # (honest_failure_modes #5; review 2026-07-01 second pass).
+        from gateway.base_handler import UNKNOWN_ORIGIN, mesh_origin_content_id
+        assert mesh_origin_content_id(UNKNOWN_ORIGIN, "wx") == ""
+
+    def test_non_str_origin_degrades_never_raises(self):
+        """Review 2026-07-01 second pass: meshforge_from_id is a PEER-
+        CONTROLLED msgpack wire field — a truthy non-str must degrade to
+        'no origin', never AttributeError into a caller's broad except
+        (which converted every message from that peer into an error+requeue
+        path)."""
+        from gateway.base_handler import mesh_origin_content_id
+        assert mesh_origin_content_id(12345, "wx") == ""
+        assert mesh_origin_content_id(3.5, "wx") == ""
+        assert mesh_origin_content_id(True, "wx") == ""
+        assert mesh_origin_content_id(["!a2e95ba4"], "wx") == ""
+
+    def test_bytes_origin_decodes_to_str_equal_key(self):
+        """A bytes origin (the one honest non-str shape msgpack produces)
+        must derive the SAME key as its str twin — pre-guard it silently
+        minted a repr-keyed id ('meshtastic:b\\'!…\\'') that matched
+        nothing."""
+        from gateway.base_handler import mesh_origin_content_id
+        assert (mesh_origin_content_id(b"!a2e95ba4", "wx")
+                == mesh_origin_content_id("!a2e95ba4", "wx"))
+        # Undecodable bytes are not an identity.
+        assert mesh_origin_content_id(b"\xff\xfe", "wx") == ""
+
 
 class TestSeenNamespaceWithin:
     """Review 2026-07-01: the shared two-namespace egress gate. Text checked
@@ -4762,6 +4793,36 @@ class TestSeenNamespaceWithin:
         reg = self._reg()
         reg.register_content_id("")   # no-op
         assert reg.seen_namespace_within("nothing here", "", 60) == ''
+
+
+class TestDualPathFlagStrictRead:
+    """Review 2026-07-01 second pass: the strict is-True discipline of
+    dual_path_dedup_enabled() pinned DIRECTLY (previously only transitive
+    via one MagicMock bridge test + the unpinned assumption every site keeps
+    delegating). Suppression is the loss direction, so a truthy-non-True
+    config value (hand-edited "false" string, 1, a mock shim) arming it
+    silently would be the dangerous failure."""
+
+    def _cfg(self, value):
+        from types import SimpleNamespace
+        return SimpleNamespace(rns=SimpleNamespace(
+            dual_path_dedup_enabled=value))
+
+    def test_true_reads_on(self):
+        from gateway.base_handler import dual_path_dedup_enabled
+        assert dual_path_dedup_enabled(self._cfg(True)) is True
+
+    def test_malformed_values_read_off(self):
+        from gateway.base_handler import dual_path_dedup_enabled
+        for malformed in ("false", "true", 1, 0, None, [], MagicMock()):
+            assert dual_path_dedup_enabled(self._cfg(malformed)) is False, \
+                f"{malformed!r} must read OFF (strict is-True)"
+
+    def test_attribute_less_config_reads_off(self):
+        from types import SimpleNamespace
+        from gateway.base_handler import dual_path_dedup_enabled
+        assert dual_path_dedup_enabled(SimpleNamespace()) is False
+        assert dual_path_dedup_enabled(MagicMock()) is False
 
 
 class TestWindowClampedToRegistryTtl:
@@ -4802,6 +4863,39 @@ class TestWindowClampedToRegistryTtl:
             RF_TX_REGISTRY_MAX_AGE_S, RecentRfTxRegistry,
         )
         assert RecentRfTxRegistry()._max_age_s == RF_TX_REGISTRY_MAX_AGE_S
+
+    def test_nan_window_degrades_to_default(self):
+        """Review 2026-07-01 second pass: NaN passes float() coercion and
+        poisons min() AND every registry comparison as always-False — dedup
+        silently OFF while the flag reads on. The bound must catch it."""
+        from gateway.base_handler import (
+            dual_path_dedup_window_s, true_origin_loop_guard_window_s,
+        )
+        cfg = self._cfg(dual_path_dedup_window_sec=float('nan'))
+        assert dual_path_dedup_window_s(cfg) == 60.0
+        cfg = self._cfg(true_origin_loop_guard_window_sec='nan')
+        assert true_origin_loop_guard_window_s(cfg) == 120.0
+
+    def test_negative_window_degrades_to_default(self):
+        from gateway.base_handler import dual_path_dedup_window_s
+        cfg = self._cfg(dual_path_dedup_window_sec=-30)
+        assert dual_path_dedup_window_s(cfg) == 60.0
+
+    def test_clamp_leaves_a_warning_witness(self, caplog):
+        """The bound adjusts operator config silently otherwise — every
+        swallow gets a witness (honest_failure_modes #9). Once per key."""
+        import logging
+        import gateway.base_handler as bh
+        bh._window_warned.discard('dual_path_dedup_window_sec')
+        cfg = self._cfg(dual_path_dedup_window_sec=900)
+        with caplog.at_level(logging.WARNING, logger='gateway.base_handler'):
+            assert bh.dual_path_dedup_window_s(cfg) == bh.RF_TX_REGISTRY_MAX_AGE_S
+            first = [r for r in caplog.records if 'exceeds' in r.message]
+            assert len(first) == 1
+            # Second call: latched, no spam on the hot path.
+            bh.dual_path_dedup_window_s(cfg)
+            again = [r for r in caplog.records if 'exceeds' in r.message]
+            assert len(again) == 1
 
 
 class TestIsBridgeLoop:
@@ -5106,6 +5200,56 @@ class TestDualPathDedup:
         assert mock_queue.enqueue.called
         payload = mock_queue.enqueue.call_args.kwargs['payload']
         assert payload['content_id'] == ""
+
+    def test_requeue_failed_chunks_carries_content_id(self, bridge):
+        """Review 2026-07-01 second pass: the partial-failure retry leg
+        dropped the cid, leaving the dispatch re-check's cid namespace inert
+        exactly when a true-origin delivery (cid-only registration) of the
+        same logical message could race the retry."""
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = True
+        bridge._persistent_queue = mock_queue
+        bridge.config.meshtastic.channel = 2
+
+        assert bridge._requeue_failed_chunks(
+            ["chunk one"], None, "meshtastic", content_id="c1:abc") is True
+        payload = mock_queue.enqueue.call_args.kwargs['payload']
+        assert payload['content_id'] == "c1:abc"
+
+    def test_requeue_failed_message_recomputes_content_id(self, bridge):
+        """The subsystem-flap requeue recomputes the cid from the message's
+        own lxmf_fields (it can be called from except handlers where the
+        enqueue-time cid was never computed)."""
+        from gateway.base_handler import mesh_origin_content_id
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = True
+        bridge._persistent_queue = mock_queue
+
+        msg = self._mesh_origin_msg("flap retry text")
+        assert bridge._requeue_failed_message(msg, "meshtastic") is True
+        payload = mock_queue.enqueue.call_args.kwargs['payload']
+        assert payload['content_id'] == mesh_origin_content_id(
+            "!a2e95ba4", "flap retry text")
+
+    def test_requeue_failed_message_rns_origin_empty_cid(self, bridge):
+        """No mesh origin in metadata → cid '' — never a shared bucket."""
+        mock_queue = MagicMock()
+        mock_queue.enqueue.return_value = True
+        bridge._persistent_queue = mock_queue
+
+        assert bridge._requeue_failed_message(
+            self._msg("plain rns retry"), "meshtastic") is True
+        payload = mock_queue.enqueue.call_args.kwargs['payload']
+        assert payload['content_id'] == ""
+
+    def test_witness_counters_pre_seeded(self, bridge):
+        """Absent-vs-zero (honest_failure_modes #9, review 2026-07-01 second
+        pass): the loss-exposure witnesses — including the dispatch-time
+        pair the handlers bump into this shared stats dict — must exist at 0
+        from construction."""
+        assert bridge.stats['rns_to_mesh_dual_path_suppressed_cid_only'] == 0
+        assert bridge.stats['dispatch_dedup_suppressed'] == 0
+        assert bridge.stats['dispatch_dedup_suppressed_cid_only'] == 0
 
     def test_content_id_hit_flag_off_delivers(self, bridge, monkeypatch):
         """Default-off: a content_id hit without the flag changes nothing."""

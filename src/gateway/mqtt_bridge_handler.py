@@ -41,10 +41,10 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 from gateway import delivery_counters as _dc
 from .ack_tracker import AckTracker, routing_error_to_drop_reason
 from .base_handler import (
-    BaseMessageHandler, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_bridge_loop, mesh_origin_content_id,
-    mqtt_content_dedup_key, true_origin_downlink_enabled,
-    true_origin_loop_guard_window_s,
+    UNKNOWN_ORIGIN, BaseMessageHandler, dual_path_dedup_enabled,
+    dual_path_dedup_window_s, get_rf_tx_registry, is_bridge_loop,
+    mesh_origin_content_id, mqtt_content_dedup_key,
+    true_origin_downlink_enabled, true_origin_loop_guard_window_s,
 )
 from utils.meshtastic_se_crypto import (
     DEFAULT_KEY_B64, crypto_available, decode_service_envelope,
@@ -640,7 +640,14 @@ class MQTTBridgeHandler(BaseMessageHandler):
         # the self-echo filter, which legitimately needs the last hop.
         sender = data.get('sender', '')
         from_num = data.get('from', 0)
-        from_id = f"!{from_num:08x}" if from_num else (sender or "unknown")
+        # Type-guarded (review 2026-07-01): a non-int/negative `from` from a
+        # malformed or foreign publisher must fall back to sender attribution,
+        # not ValueError out of the handler. UNKNOWN_ORIGIN is the shared
+        # sentinel mesh_origin_content_id refuses as an identity.
+        from_id = (f"!{from_num & 0xFFFFFFFF:08x}"
+                   if isinstance(from_num, int)
+                   and not isinstance(from_num, bool) and from_num > 0
+                   else (sender or UNKNOWN_ORIGIN))
         to_num = data.get('to', 0)
         payload = data.get('payload', {})
         text = payload.get('text', '') if isinstance(payload, dict) else str(payload)

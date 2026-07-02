@@ -302,6 +302,15 @@ class RNSMeshtasticBridge(
             # attempted counts them; delivered/dropped do not — this counter
             # explains the gap.
             'rns_to_mesh_dual_path_suppressed': 0,
+            # Loss-exposure witnesses (review 2026-07-01): suppressions whose
+            # ONLY evidence was a content_id registration (see
+            # seen_namespace_within) — plus the dispatch-time pair the
+            # handlers bump into this shared dict. Pre-seeded so a consumer
+            # can tell healthy-zero from meter-absent (honest_failure_modes
+            # #9, absent-vs-zero).
+            'rns_to_mesh_dual_path_suppressed_cid_only': 0,
+            'dispatch_dedup_suppressed': 0,
+            'dispatch_dedup_suppressed_cid_only': 0,
             'errors': 0,
             'bounced': 0,
             'start_time': None,

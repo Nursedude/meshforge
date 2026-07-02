@@ -27,9 +27,9 @@ from typing import Optional
 from utils.lxmface import seed_string_for_node
 
 from .base_handler import (
-    chunk_for_mesh, dual_path_dedup_enabled, dual_path_dedup_window_s,
-    get_rf_tx_registry, is_already_bridged, mesh_origin_content_id,
-    true_origin_downlink_enabled,
+    UNKNOWN_ORIGIN, chunk_for_mesh, dual_path_dedup_enabled,
+    dual_path_dedup_window_s, get_rf_tx_registry, is_already_bridged,
+    mesh_origin_content_id, true_origin_downlink_enabled,
 )
 from .canonical_message import (
     compute_content_id, format_reply_token, parse_reply_token,
@@ -207,7 +207,7 @@ class MessageTransformMixin:
                 except Exception as e:
                     logger.debug(f"node_tracker lookup failed for {msg.source_id}: {e}")
 
-            source_id = msg.source_id or "unknown"
+            source_id = msg.source_id or UNKNOWN_ORIGIN
             if long_name:
                 title = f"{long_name} ({source_id}) via Meshtastic"
             else:
@@ -432,12 +432,27 @@ class MessageTransformMixin:
                 content = content.decode("utf-8", errors="replace")
             elif not isinstance(content, str):
                 content = ""
+            # Phase-4 coordination key, recomputed HERE from the message's
+            # own metadata (review 2026-07-01: this requeue previously
+            # dropped it, leaving the dispatch-time cid re-check inert on
+            # the subsystem-flap retry — a true-origin delivery of the same
+            # logical message registers cid-only, so the retry transmitted
+            # a duplicate). Recomputed rather than passed in because this
+            # helper is also called from except handlers where the
+            # enqueue-time cid may never have been computed.
+            metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+            lxmf_fields = metadata.get('lxmf_fields') or {}
+            dedup_cid = mesh_origin_content_id(
+                lxmf_fields.get('meshforge_from_id')
+                if isinstance(lxmf_fields, dict) else None,
+                content)
             self._persistent_queue.enqueue(
                 payload={
                     'message': content,
                     'source_id': source_id,
                     'destination_id': dest_id or "",
                     'metadata': msg.metadata or {},
+                    'content_id': dedup_cid,
                 },
                 destination=destination,
                 priority=MessagePriority.HIGH,
@@ -449,7 +464,8 @@ class MessageTransformMixin:
             return False
 
     def _requeue_failed_chunks(self, chunks, destination_node,
-                               target: str = "meshtastic") -> bool:
+                               target: str = "meshtastic",
+                               content_id: str = "") -> bool:
         """Persist already-chunked, byte-bounded RNS→Mesh content for retry.
 
         Used by the direct-send path on PARTIAL failure. Each chunk is
@@ -470,6 +486,11 @@ class MessageTransformMixin:
                         'channel': self.config.meshtastic.channel,
                         'source_id': '',
                         'destination': destination_node,
+                        # Phase-4 coordination key — carried on the retry
+                        # too (review 2026-07-01: dropping it here left the
+                        # dispatch cid re-check inert on the partial-failure
+                        # retry leg).
+                        'content_id': content_id,
                     },
                     destination=target,
                     priority=MessagePriority.HIGH,
@@ -652,9 +673,12 @@ class MessageTransformMixin:
         """Process message from RNS to Meshtastic.
 
         Supports directed downlink via a leading ``@!xxxxxxxx`` or
-        ``@shortname`` token in the message body. When resolvable, the
-        token is stripped and the message is sent as a Meshtastic DM
-        to that node. Unresolvable or absent = broadcast (unchanged).
+        ``@shortname`` token — for RNS-AUTHORED originals ONLY (review
+        2026-07-01). When resolvable, the token is stripped and the message
+        is sent as a Meshtastic DM to that node; unresolvable or absent =
+        broadcast. MESH-originated relayed content always stays a broadcast:
+        DM conversion would rewrite its mesh audience and bypass the
+        broadcast-gated dedup/true-origin paths (see the guard below).
 
         In mqtt_bridge mode, routes through the persistent queue for
         reliable delivery with retry. Otherwise sends directly and
@@ -802,7 +826,8 @@ class MessageTransformMixin:
                 self._correlation.record(
                     destination, msg.source_id, direction="r2m")
 
-            # Dual-path dedup (gated, default off). On a box whose LOCAL
+            # Dual-path dedup (gated; config default TRUE since Phase 4,
+            # 2026-07-01). On a box whose LOCAL
             # mesh_bridge also carries this RF traffic, a broadcast the
             # mesh_bridge already transmitted onto the primary radio
             # (true-origin downlink or tagged toradio) arrives here a second
@@ -1048,7 +1073,8 @@ class MessageTransformMixin:
                 # (broadcast to ^all). This preserves the full content and the
                 # destination, and never re-sends the chunks that already went.
                 requeued = self._requeue_failed_chunks(
-                    failed_chunks, destination, "meshtastic")
+                    failed_chunks, destination, "meshtastic",
+                    content_id=dedup_cid)
                 self.health.record_message_failed("rns_to_mesh", requeued=requeued)
 
         except Exception as e:

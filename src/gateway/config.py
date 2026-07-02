@@ -482,11 +482,16 @@ class RNSConfig:
     # hit — unconditional suppression would lose messages (live trace: ~40%
     # of relayed events arrived ONLY via RNS because the local radio missed
     # them on RF). DMs are never suppressed. Default TRUE since Phase 4
-    # (2026-07-01): field-proven on moc + moc3, loop-safe on single-radio
-    # boxes (no second egress path ever registers, suppress-only-on-hit),
-    # and the CODE default is the only channel that reaches an already-
-    # deployed gateway.json lacking the key — the template-only default
-    # left e.g. a reactivated moc1 unguarded (#62 saved-defaults class).
+    # (2026-07-01). Basis, stated honestly (review 2026-07-01 second pass):
+    # the full dual-path shape is field-proven on moc (dual-radio); on
+    # single-radio boxes the gate is live too via RX-side seen-on-RF text
+    # registrations, and its safety there is the suppress-only-on-hit
+    # discipline (a hit means the bytes ARE on that mesh), not an absence
+    # of registrations. The CODE default is the channel that reaches an
+    # already-deployed gateway.json LACKING the key (#62 class; e.g. a
+    # reactivated dormant box) — but note GatewayConfig.save() bakes every
+    # field explicitly, so a config saved while the default was False keeps
+    # False until edited (residual, ledgered).
     dual_path_dedup_enabled: bool = True
     dual_path_dedup_window_sec: int = 60    # registry hit window (seconds)
     # Transport-truth arc (2026-06-30): true-origin R→M downlink + content_id

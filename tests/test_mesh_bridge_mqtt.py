@@ -1155,6 +1155,33 @@ class TestSymmetricDualPathSuppression:
         bridge._primary_interface.sendText.assert_called_once()
         assert bridge.stats['dual_path_suppressed'] == 0
 
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_malformed_flag_reads_off_at_this_site(self, mock_home, tmp_path,
+                                                   mock_config, monkeypatch):
+        """Strictness pin AT the mesh_bridge site (review 2026-07-01 second
+        pass): a truthy-but-not-True flag (MagicMock shim, a hand-edited
+        "false" string) must read OFF here — suppression is the loss
+        direction. This pin was lost when the flag-off tests moved to
+        explicit dedup=False; a refactor re-hand-rolling a truthy read at
+        this site must fail THIS test."""
+        reg = self._fresh_registry(monkeypatch)
+        reg.register("strict content")
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        bridge.config.rns = MagicMock()   # truthy-not-True flag value
+
+        assert bridge._send_to_primary(self._payload("strict content")) is True
+        bridge._primary_interface.sendText.assert_called_once()
+        assert bridge.stats['dual_path_suppressed'] == 0
+
+    @patch('gateway.mesh_bridge.get_real_user_home')
+    def test_witness_counter_pre_seeded(self, mock_home, tmp_path,
+                                        mock_config):
+        """Absent-vs-zero (honest_failure_modes #9): the loss-exposure
+        witness must exist at 0 from construction, so a stats consumer can
+        tell 'no cid-only suppressions' from 'meter not implemented'."""
+        bridge = self._bridge(mock_home, tmp_path, mock_config)
+        assert bridge.stats['dual_path_suppressed_cid_only'] == 0
+
 
 class TestSeenOnRfSecondaryScope:
     """Seen-on-RF registration + the secondary-scope check (2026-06-04).
@@ -1395,6 +1422,36 @@ class TestMqttLegOriginatorAttribution:
         cb.assert_called_once()
         packet = cb.call_args[0][0]
         assert packet['fromId'] == "!aabb0042"
+
+    def test_non_int_from_falls_back_to_sender_not_dropped(self):
+        """Review 2026-07-01 second pass: a str/float 'from' (malformed or
+        foreign publisher) must fall back to sender attribution — pre-guard
+        it ValueError'd in the :08x format spec and the broad except
+        silently dropped the whole message."""
+        iface, cb = self._iface()
+        iface._on_message(None, None, self._msg({
+            "type": "text", "id": 1236,
+            "from": "2733333412",          # str — malformed publisher
+            "sender": "!aabb0042",
+            "to": 0xFFFFFFFF, "channel": 0,
+            "payload": {"text": "still delivered"},
+        }))
+        cb.assert_called_once()
+        assert cb.call_args[0][0]['fromId'] == "!aabb0042"
+
+    def test_negative_from_falls_back_to_sender(self):
+        """A negative int would mint a malformed '!-…' id diverging the
+        dedup key — fall back to sender instead."""
+        iface, cb = self._iface()
+        iface._on_message(None, None, self._msg({
+            "type": "text", "id": 1237,
+            "from": -5,
+            "sender": "!aabb0042",
+            "to": 0xFFFFFFFF, "channel": 0,
+            "payload": {"text": "negative from"},
+        }))
+        cb.assert_called_once()
+        assert cb.call_args[0][0]['fromId'] == "!aabb0042"
 
 
 class TestCidOnlySuppressionWitness:

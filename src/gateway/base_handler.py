@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 import hashlib
 import json
 import logging
+import math
 import threading
 import time
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
@@ -98,6 +99,19 @@ def loop_guard_content_id(origin_token: str, content: str) -> str:
     return compute_content_id(origin_token, content, "")
 
 
+# The placeholder an ingress path mints when a mesh origin is unresolvable.
+# Producers (_rns_bridge_xform M→R uplink, mqtt_bridge_handler ingress) and
+# the mesh_origin_content_id filter below MUST share this one constant —
+# a respelled producer sentinel would slip past the filter and collapse
+# every unidentified sender onto one dedup-key bucket (cross-suppression =
+# loss; honest_failure_modes #5, review 2026-07-01).
+UNKNOWN_ORIGIN = "unknown"
+
+# Non-identities the filter refuses: the shared sentinel plus the legacy
+# 'None' artifact of a raw f-string over packet.get('fromId').
+_NON_ORIGIN_SENTINELS = (UNKNOWN_ORIGIN, "None")
+
+
 def mesh_origin_content_id(origin_id: Optional[str], content: str) -> str:
     """THE shared derivation of the intra-box dedup / loop-guard key for a
     mesh-originated message (transport-truth arc Phase 4).
@@ -109,16 +123,31 @@ def mesh_origin_content_id(origin_id: Optional[str], content: str) -> str:
     with the origin normalization already drifting (one site stripped, one
     did not).
 
+    Type discipline (review 2026-07-01, second pass): meshforge_from_id is a
+    PEER-CONTROLLED wire field (msgpack preserves types), so a non-str value
+    must degrade to "no origin" — never raise into a caller's broad except
+    (per-message delivery failure), never mint a repr-keyed id (bytes would
+    silently derive ``meshtastic:b'!…'`` and match nothing). Bytes are
+    decoded (the one honest non-str shape a peer legitimately produces);
+    everything else non-str reads as unidentifiable.
+
     Normalization: origin stripped; the placeholder sentinels the ingress
-    paths mint for an unresolvable origin ('unknown' from the M→R uplink and
-    mqtt ingress, 'None' from a raw ``f"...{packet.get('fromId')}"``) are
-    treated as NO origin — otherwise every unidentified sender shares one
+    paths mint for an unresolvable origin (UNKNOWN_ORIGIN from the M→R
+    uplink and mqtt ingress, 'None' from a raw ``f"...{packet.get('fromId')}"``)
+    are treated as NO origin — otherwise every unidentified sender shares one
     key bucket and byte-identical text from two different unknown senders
     could cross-suppress. No origin → '' → never registered, never matched
     (honest_failure_modes #1).
     """
+    if isinstance(origin_id, bytes):
+        try:
+            origin_id = origin_id.decode("utf-8")
+        except UnicodeDecodeError:
+            return ""
+    elif origin_id is not None and not isinstance(origin_id, str):
+        return ""
     origin = (origin_id or "").strip()
-    if not origin or origin in ("unknown", "None"):
+    if not origin or origin in _NON_ORIGIN_SENTINELS:
         return ""
     return loop_guard_content_id(f"meshtastic:{origin}", content)
 
@@ -384,32 +413,75 @@ class RecentRfTxRegistry:
 
 
 def dual_path_dedup_enabled(config: Any) -> bool:
-    """Strict read of rns.dual_path_dedup_enabled (default False).
+    """Strict read of rns.dual_path_dedup_enabled.
+
+    The CONFIG default is True since Phase 4 (RNSConfig, 2026-07-01); the
+    getattr fallback below is False only for config objects that lack the
+    attribute entirely (MagicMock shims, foreign objects) — those read OFF.
 
     Shared by the dispatch-time re-check in the handlers' queue_send
     (2026-06-04: the enqueue-side check in _rns_bridge_xform races
     mesh_bridge's RF-TX registration by ~250ms on LAN-fast RNS relays;
     by dispatch time — ≥min_spacing_s later — the registry is settled).
     Same ``is True`` discipline as the bridge-side helpers: MagicMock
-    test configs and malformed values read as OFF.
+    test configs and malformed values (strings, ints) read as OFF.
     """
     rns_cfg = getattr(config, 'rns', None)
     return getattr(rns_cfg, 'dual_path_dedup_enabled', False) is True
 
 
+# Once-per-key latch for window-bounding warnings: these helpers sit on the
+# per-message hot path, so the witness must not spam — but a silently
+# adjusted config value with NO witness is the honest_failure_modes #9
+# pattern the bound exists to prevent (review 2026-07-01, second pass).
+_window_warned: set = set()
+
+
+def _bounded_window(window: float, default: float, key: str) -> float:
+    """Bound a configured registry window to sane + TTL-covered values.
+
+    - non-finite (NaN — passes float() coercion and poisons min()/every
+      registry comparison as always-False, i.e. dedup silently OFF) or
+      negative → the default, with a once-per-key WARNING.
+    - above RF_TX_REGISTRY_MAX_AGE_S (the registry prunes past its TTL on
+      every write, so a longer window works only on an idle registry and
+      fails non-deterministically on a busy one) → the TTL, with a
+      once-per-key WARNING naming configured vs effective.
+    """
+    if not math.isfinite(window) or window < 0:
+        if key not in _window_warned:
+            _window_warned.add(key)
+            logger.warning(
+                "%s: configured window %r is not a sane duration — using "
+                "the default %.0fs (dedup would otherwise be silently "
+                "disabled or nonsensical)", key, window, default)
+        return default
+    if window > RF_TX_REGISTRY_MAX_AGE_S:
+        if key not in _window_warned:
+            _window_warned.add(key)
+            logger.warning(
+                "%s: configured window %.0fs exceeds the RF-TX registry "
+                "TTL — effective window is %.0fs (entries older than the "
+                "TTL are pruned on every write; raise "
+                "RF_TX_REGISTRY_MAX_AGE_S deliberately, not the config, "
+                "if longer coverage is ever needed)",
+                key, window, RF_TX_REGISTRY_MAX_AGE_S)
+        return RF_TX_REGISTRY_MAX_AGE_S
+    return window
+
+
 def dual_path_dedup_window_s(config: Any) -> float:
     """rns.dual_path_dedup_window_sec with a safe 60s default.
 
-    Clamped to RF_TX_REGISTRY_MAX_AGE_S: the registry prunes entries older
-    than its TTL on every write, so a window above it is silently defeated
-    exactly on a busy gateway (review 2026-07-01).
+    Bounded by _bounded_window (TTL clamp + NaN/negative guard, each with a
+    once-per-key warning witness — review 2026-07-01).
     """
     rns_cfg = getattr(config, 'rns', None)
     try:
         window = float(getattr(rns_cfg, 'dual_path_dedup_window_sec', 60))
     except (TypeError, ValueError):
         return 60.0
-    return min(window, RF_TX_REGISTRY_MAX_AGE_S)
+    return _bounded_window(window, 60.0, 'dual_path_dedup_window_sec')
 
 
 def true_origin_downlink_enabled(config: Any) -> bool:
@@ -429,15 +501,15 @@ def true_origin_downlink_enabled(config: Any) -> bool:
 def true_origin_loop_guard_window_s(config: Any) -> float:
     """rns.true_origin_loop_guard_window_sec with a safe 120s default.
 
-    Clamped to RF_TX_REGISTRY_MAX_AGE_S — same TTL bound as
-    dual_path_dedup_window_s (the registry prunes past its TTL on write).
+    Bounded by _bounded_window — same TTL clamp + NaN/negative guard (with
+    warning witness) as dual_path_dedup_window_s.
     """
     rns_cfg = getattr(config, 'rns', None)
     try:
         window = float(getattr(rns_cfg, 'true_origin_loop_guard_window_sec', 120))
     except (TypeError, ValueError):
         return 120.0
-    return min(window, RF_TX_REGISTRY_MAX_AGE_S)
+    return _bounded_window(window, 120.0, 'true_origin_loop_guard_window_sec')
 
 
 # Process-wide instance — the composable bridges (mesh_bridge + rns_bridge)

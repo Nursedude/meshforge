@@ -1340,9 +1340,11 @@ def test_channel_feed_dark_fires_when_no_text_in_lookback():
     assert sig is not None
     # Lookback is derived from the 6h dark_after_s default (6h + 1h margin).
     assert "7h lookback" in sig.detail
-    # A no-match fire carries NO age (nothing to measure) — this assert was
-    # accidentally spliced into the test below when it was inserted
-    # (review 2026-07-01); it belongs to THIS test's docstring contract.
+    # A no-match fire carries NO age (nothing to measure). This assert
+    # originally sat here, drifted into the tail of the test below when it
+    # was inserted, and is now DELIBERATELY present in both (each fires the
+    # no-match branch; review 2026-07-01) — this copy is the one that
+    # belongs to this test's docstring contract.
     assert "age_s" not in sig.extra
 
 
