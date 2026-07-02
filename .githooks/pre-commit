@@ -27,6 +27,22 @@ if ! python3 -m pytest tests/test_regression_guards.py -x -q 2>/dev/null; then
     exit 1
 fi
 
+# Parity-mirror execution gate (2026-07-02): byte-identical parity files must
+# also EXECUTE here — a mirror commit that keeps canonical_message.py in sync
+# but breaks its collaborators (MeshAnchor's STEP-3 BridgedMessage.content_id
+# gap: TypeError on every Canonical→Bridged for 2 days) is caught at commit
+# time. parity_check proves BYTES, this proves the repo can RUN them. <1s.
+if git diff --cached --name-only | grep -qE '^src/gateway/(canonical_message|rns_bridge)\.py$'; then
+    echo "Shared-contract surface changed — running canonical execution tests..."
+    if ! python3 -m pytest tests/test_canonical_message.py -x -q 2>/dev/null; then
+        echo ""
+        echo "canonical_message execution tests failed — the parity file cannot"
+        echo "run against this repo's collaborators (BridgedMessage et al.)."
+        echo "Run: python3 -m pytest tests/test_canonical_message.py -v"
+        exit 1
+    fi
+fi
+
 # Collection-only sweep: catches module-level import/syntax errors across the
 # full suite without running test bodies. Fast (~2-3s) and flags the class of
 # regression where a test module fails to import in CI but loads in dev.
