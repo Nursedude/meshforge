@@ -221,6 +221,7 @@ pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
 
 | File | Contents |
 |------|----------|
+| `foundations/harness_map.md` | **How a Claude session works here** — hooks→claim-gate→ledger→mini→probes→paging spine, truth sources, verification invariants, cold-start quickstart. Executable check: `scripts/harness_audit.sh` |
 | `foundations/meshforge_ecosystem.md` | All 5 repos, boundaries, APIs (canonical) |
 | `foundations/domain_architecture.md` | Core vs Plugin model |
 | `foundations/ai_principles.md` | Human-centered design philosophy |

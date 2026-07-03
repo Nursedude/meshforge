@@ -65,7 +65,9 @@ satisfied; the truth wasn't.
 
 Writing any monitor, daemon loop, validator, or persistence layer: walk the
 checklist over the diff BEFORE committing — every item is a 30-second question
-about code you just wrote. In review, candidates matching this class are
+about code you just wrote. When VERIFYING a detector you wired, observe the
+consumer-of-record (the live unit/interpreter that hosts it), not the wiring
+trace — a registered check is not a running check (calibrated_claims rule 7). In review, candidates matching this class are
 PLAUSIBLE by default; the burden of proof is on the error path to show what
 the consumer sees.
 

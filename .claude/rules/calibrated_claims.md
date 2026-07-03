@@ -67,6 +67,17 @@ the claim.
 6. **Every claim leaves a witness.** A VERIFIED claim of consequence should be
    logged to the calibration ledger so it can be re-derived later — the math
    becomes a number we can both see and shrink, not an assertion.
+7. **Verify the consumer-of-record, not the wiring.** A static trace — "X
+   registers Y, therefore Y runs"; "the requirement pins Z, therefore Z is
+   installed" — is BELIEVED at best. VERIFIED requires observing the LIVE
+   process, interpreter, or unit that actually hosts the behavior: the
+   systemd unit's real ExecStart (not the module you traced), the venv the
+   services import from (not system python3), the running daemon's own env.
+   Canonical failures (2026-07-03): `core.orchestrator` never hosts the
+   probe that `daemon.py` registers; both broke ledger claims (44b5b92,
+   2de68ec) were proxy-verifications. When you cannot reach the live
+   consumer, say so — that claim is BELIEVED, and name the observation that
+   would upgrade it.
 
 ## How to apply — run this before saying a task is done
 
