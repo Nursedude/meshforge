@@ -75,7 +75,17 @@ from .sources import (
     Source,
 )
 from .state import StateStore
-from .warmstart import render_warmstart
+
+
+def __getattr__(name):
+    # PEP 562 lazy import: an eager `from .warmstart import render_warmstart`
+    # puts mini_dudeai.warmstart in sys.modules during package init, which
+    # makes `python3 -m mini_dudeai.warmstart` (SessionStart hook, /warmstart
+    # skill) emit a runpy RuntimeWarning. Resolve it only when asked for.
+    if name == "render_warmstart":
+        from .warmstart import render_warmstart
+        return render_warmstart
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 __all__ = [
     "Action",
