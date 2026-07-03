@@ -56,17 +56,23 @@ class HandlerRegistry:
                 f"new: {type(handler).__name__})"
             )
 
+        # Validate tags BEFORE mutating registry state, so a duplicate
+        # leaves the registry unchanged (no half-registered handler).
+        for tag, _desc, _flag in handler.menu_items():
+            existing = self._tag_index[handler.menu_section].get(tag)
+            if existing is not None:
+                raise ValueError(
+                    f"Duplicate tag {tag!r} in section "
+                    f"{handler.menu_section!r}: already owned by "
+                    f"{existing.handler_id!r}, refusing {hid!r} — a "
+                    f"duplicate would silently shadow one handler's action"
+                )
+
         handler.set_context(self._ctx)
         self._handlers[hid] = handler
         self._sections[handler.menu_section].append(handler)
 
-        # Build tag index for this handler
         for tag, _desc, _flag in handler.menu_items():
-            if tag in self._tag_index[handler.menu_section]:
-                logger.warning(
-                    "Duplicate tag %r in section %r — overwriting with %s",
-                    tag, handler.menu_section, hid,
-                )
             self._tag_index[handler.menu_section][tag] = handler
 
         logger.debug(

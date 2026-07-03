@@ -254,6 +254,57 @@ class TestHandlerRegistry:
         with pytest.raises(ValueError, match="already registered"):
             registry.register(SampleHandler())
 
+    def test_duplicate_tag_raises(self):
+        """A tag collision within a section raises instead of silently
+        shadowing the earlier handler's action."""
+
+        class ShadowingHandler(BaseHandler):
+            handler_id = "shadowing"
+            menu_section = "test_section"
+
+            def menu_items(self):
+                return [("alpha", "Steals SampleHandler's tag", None)]
+
+            def execute(self, action):
+                pass
+
+        ctx = _make_context()
+        registry = HandlerRegistry(ctx)
+        registry.register(SampleHandler())
+
+        with pytest.raises(ValueError, match="Duplicate tag"):
+            registry.register(ShadowingHandler())
+
+    def test_duplicate_tag_leaves_registry_unchanged(self):
+        """The refused handler must not be half-registered: not findable by
+        id, not counted, and the original tag owner still dispatches."""
+
+        class ShadowingHandler(BaseHandler):
+            handler_id = "shadowing"
+            menu_section = "test_section"
+
+            def menu_items(self):
+                return [("gamma", "New tag, fine", None),
+                        ("alpha", "Steals SampleHandler's tag", None)]
+
+            def execute(self, action):
+                pass
+
+        ctx = _make_context()
+        registry = HandlerRegistry(ctx)
+        original = SampleHandler()
+        registry.register(original)
+
+        with pytest.raises(ValueError, match="Duplicate tag"):
+            registry.register(ShadowingHandler())
+
+        assert registry.get_handler("shadowing") is None
+        assert registry.handler_count == 1
+        assert registry.dispatch("test_section", "alpha") is True
+        assert original._last_action == "alpha"
+        # The refused handler's non-colliding tag must not dispatch either.
+        assert registry.dispatch("test_section", "gamma") is False
+
     def test_lookup_missing_returns_none(self):
         ctx = _make_context()
         registry = HandlerRegistry(ctx)

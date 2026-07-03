@@ -181,6 +181,55 @@ class TestHandlerUniqueness:
                 seen[key] = h.handler_id
 
 
+class TestNoOrphanHandlerModules:
+    """Every handler module on disk must be registered.
+
+    ``get_all_handlers()`` is a hand-maintained batch list — the one wiring
+    step nothing else verifies. A new ``handlers/foo.py`` that defines a
+    ``*Handler`` class but never gets a batch entry is silently unreachable
+    from the TUI (the #79 deploy-gap class, TUI form). This walks the
+    handlers/ directory and fails on any such orphan.
+    """
+
+    # Modules allowed to define a *Handler class without being registered
+    # (e.g. abstract bases). Keep empty unless a module is deliberately
+    # registration-exempt — and say why here when adding one.
+    EXEMPT_MODULES: set = set()
+
+    def test_every_handler_module_is_registered(self):
+        import ast
+        from pathlib import Path
+
+        handlers_dir = (
+            Path(__file__).parent.parent / "src" / "launcher_tui" / "handlers"
+        )
+        registered_modules = {
+            cls.__module__.rsplit(".", 1)[-1] for cls in _get_handler_classes()
+        }
+
+        orphans = []
+        for path in sorted(handlers_dir.glob("*.py")):
+            module = path.stem
+            if (module == "__init__" or module.startswith("_")
+                    or module in registered_modules
+                    or module in self.EXEMPT_MODULES):
+                continue
+            tree = ast.parse(path.read_text())
+            handler_classes = [
+                node.name for node in ast.walk(tree)
+                if isinstance(node, ast.ClassDef)
+                and node.name.endswith("Handler")
+            ]
+            if handler_classes:
+                orphans.append(f"{module} (defines {', '.join(handler_classes)})")
+
+        assert not orphans, (
+            "Handler module(s) on disk but missing from get_all_handlers() — "
+            "unreachable from the TUI. Add a batch entry in "
+            f"handlers/__init__.py or EXEMPT_MODULES (with a reason): {orphans}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Registry Integration Tests
 # ---------------------------------------------------------------------------
