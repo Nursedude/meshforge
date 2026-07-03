@@ -68,10 +68,17 @@ def make_claim_id(ts: float, claim_text: str, head_full: str) -> str:
 
 def record_claim(claim_text: str, claim_class: str, evidence: str,
                  head_full: str, *, model_id: str | None = None,
-                 session_id: str | None = None, ts: float | None = None,
-                 path: str | None = None,
+                 session_id: str | None = None, source: str | None = None,
+                 ts: float | None = None, path: str | None = None,
                  max_bytes: int = DEFAULT_LEDGER_MAX_BYTES) -> dict:
     """Append one ``claim`` event and return the record (with its generated id).
+
+    ``source`` is the feed's provenance — ``"claim_gate"`` for the automatic
+    Stop-hook feed, ``"manual"`` for a deliberate hand-logged claim (sanctioned
+    by calibrated_claims rule 6 when the evidence lives outside the gate's
+    marker: CI conclusion, live drill, fleet check). Recorded so held-rates can
+    later be split per feed. Pre-2026-07-03 records lack the key — consumers
+    must ``.get`` it.
 
     Best-effort persistence: an append failure leaves a log witness
     (honest_failure_modes #9) but never raises — recording a claim must not be
@@ -84,6 +91,7 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
         "ts": ts,
         "session_id": session_id,
         "model_id": model_id,
+        "source": source,
         "claim_class": claim_class,
         "claim_text": claim_text,
         "evidence": evidence,
@@ -99,7 +107,12 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
 def record_verdict(claim_id: str, outcome: str, detail: str = "", *,
                    ts: float | None = None, path: str | None = None,
                    max_bytes: int = DEFAULT_LEDGER_MAX_BYTES) -> dict:
-    """Append one ``verdict`` event (a later re-derivation of a claim's truth)."""
+    """Append one ``verdict`` event (a later re-derivation of a claim's truth).
+
+    Verdicts are minted ONLY by re-derivation machinery (the reverify cron,
+    the warm-start cheap path) — NEVER hand-written by the claimant. Claims
+    may enter by hand (see ``record_claim`` ``source``); a self-issued "held"
+    is the patched-tally disease the ledger exists to catch."""
     ts = time.time() if ts is None else ts
     path = path or ledger_path()
     rec = {"kind": "verdict", "claim_id": claim_id, "ts": ts,

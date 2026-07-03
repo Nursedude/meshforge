@@ -66,7 +66,16 @@ the claim.
    summary (the #74 confirmation_rate lie, in claim form).
 6. **Every claim leaves a witness.** A VERIFIED claim of consequence should be
    logged to the calibration ledger so it can be re-derived later — the math
-   becomes a number we can both see and shrink, not an assertion.
+   becomes a number we can both see and shrink, not an assertion. Feed
+   convention (2026-07-03): *gate automatic, hatch deliberate, verdicts never*.
+   The Stop-hook gate is the only AUTOMATIC writer; a deliberate
+   `record_claim(..., source="manual")` is sanctioned when the evidence lives
+   outside the gate's marker (CI conclusion for the head, live drill, fleet
+   check) — same schema, quoted evidence, exact `head_full`, accepting the
+   claim may stay `open` forever if no full-suite verdict lands on that head
+   (open is an honest terminal state). **Never hand-write a `verdict` event**
+   — claims are assertions; verdicts belong to the re-derivation machinery
+   alone (the ledger's analogue of never posting your own ntfy ack).
 7. **Verify the consumer-of-record, not the wiring.** A static trace — "X
    registers Y, therefore Y runs"; "the requirement pins Z, therefore Z is
    installed" — is BELIEVED at best. VERIFIED requires observing the LIVE

@@ -236,9 +236,13 @@ def should_record(text, head_full, marker, now_ts) -> bool:
 def _record_verified_claim(text, head_full, marker, session_id, model_id):
     """Best-effort: log a marker-backed VERIFIED claim to the calibration
     ledger so a later re-derivation can check whether that green head held.
-    This is the ONLY production feed into the ledger. Fully guarded — recording
-    must NEVER affect the gate's pass/block decision or its fail-open contract
-    (a ledger/IO problem is swallowed; the claim is just not logged)."""
+    This is the only AUTOMATIC feed into the ledger; deliberate hand-logged
+    claims (source="manual") are sanctioned by calibrated_claims rule 6 when
+    the evidence lives outside this gate's marker. Hand-written *verdict*
+    events are never sanctioned — verdicts belong to re-derivation machinery
+    alone. Fully guarded — recording must NEVER affect the gate's pass/block
+    decision or its fail-open contract (a ledger/IO problem is swallowed; the
+    claim is just not logged)."""
     try:
         src = str(REPO / "src")
         if src not in sys.path:
@@ -248,7 +252,8 @@ def _record_verified_claim(text, head_full, marker, session_id, model_id):
         evidence = f"honest_status {summary} (HEAD {str(head_full)[:7]})".strip()
         claim = " ".join(text.split())[:200]
         cl.record_claim(claim, "completion", evidence, head_full,
-                        model_id=model_id, session_id=session_id)
+                        model_id=model_id, session_id=session_id,
+                        source="claim_gate")
     except Exception:
         pass  # recording is best-effort; never breaks the gate
 

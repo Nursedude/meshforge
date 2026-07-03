@@ -350,6 +350,7 @@ class TestMainRecording:
         assert claims[0]["head_full"] == head
         assert claims[0]["session_id"] == "sess1"
         assert claims[0]["status"] == "open"
+        assert claims[0]["source"] == "claim_gate"  # automatic feed marks itself
 
     def test_blocked_claim_records_nothing(self, tmp_path, monkeypatch, capsys):
         ledger = str(tmp_path / "led.jsonl")

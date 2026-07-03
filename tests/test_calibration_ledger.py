@@ -46,6 +46,22 @@ def test_record_and_load_roundtrip(tmp_path):
     assert events[0]["id"] == rec["id"]
 
 
+def test_record_claim_source_provenance(tmp_path):
+    """Feed provenance (gate automatic vs manual hatch) is recorded so
+    held-rates can later be split per feed; omitted → explicit None (legacy
+    pre-source records lack the key entirely — consumers .get it)."""
+    p = _ledger(tmp_path)
+    cl.record_claim("gate claim", "completion", "e", HEAD, ts=1.0, path=p,
+                    source="claim_gate")
+    cl.record_claim("manual claim", "completion", "e", HEAD, ts=2.0, path=p,
+                    source="manual")
+    cl.record_claim("unattributed", "completion", "e", HEAD, ts=3.0, path=p)
+    by_text = {e["claim_text"]: e for e in cl.load_events(p)}
+    assert by_text["gate claim"]["source"] == "claim_gate"
+    assert by_text["manual claim"]["source"] == "manual"
+    assert by_text["unattributed"]["source"] is None
+
+
 def test_load_missing_file_is_empty(tmp_path):
     assert cl.load_events(str(tmp_path / "nope.jsonl")) == []
 
