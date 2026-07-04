@@ -30,8 +30,15 @@ from .base import Action, Outcome
 # State-set tools only — safe under #81 retry re-application. Grows
 # deliberately, not by default. display_print qualifies: re-writing the same
 # text to the same row is a state-set (dude-claw fork +dudeclaw.1).
+# display_alert qualifies the same way (+dudeclaw.15): set-class and
+# set-empty are state-sets, and the per-state queue is order-preserving, so
+# a late edge_up re-paint is always superseded by the queued edge_down clear
+# (the same ordering contract led_set already relies on).
+# display_tier is DELIBERATELY absent: the tier glyph is an evidence-based
+# claim owned by claw_metrics_push's live probes — a static rule payload
+# cannot prove a cognition tier, so rules may never assert one.
 IDEMPOTENT_TOOLS = frozenset({"gpio_write", "led_set", "actuator_set",
-                              "display_print"})
+                              "display_print", "display_alert"})
 
 
 def _check_payload(payload, where: str) -> str | None:

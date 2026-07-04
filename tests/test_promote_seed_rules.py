@@ -270,3 +270,17 @@ def test_json_role_is_null_when_seed_targeted(tmp_path, capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["role"] is None and out["seed"] == "fleet_gateway"
+
+
+def test_seed_claw_targets_claw_live_file(tmp_path):
+    # --seed claw resolves the dude-claw instance: claw seed merged into the
+    # claw-suffixed live file, never the fleet mini's mini_dudeai_rules.json.
+    root, home = _setup(tmp_path, [_rule("a")], [_rule("a"), _rule("b")],
+                        seed_name="claw")
+    (Path(home) / "mini_dudeai_claw_rules.json").write_text(
+        json.dumps({"rules": [_rule("a")]}))
+    p = psr.plan(meshforge_root=root, mini_home=home, seed_name="claw")
+    assert p["live_path"].endswith("mini_dudeai_claw_rules.json")
+    assert "b" in p["report"]["added"]
+    # the fleet live file _setup wrote is not the merge target
+    assert _live_ids(home) == {"a"}

@@ -456,9 +456,19 @@ class TestNatsActionExecute:
 
     def test_allowlist_is_the_documented_set(self):
         # display_print joined with the dude-claw display fork: re-writing a
-        # row is a state-set, safe under retry re-application
+        # row is a state-set, safe under retry re-application. display_alert
+        # joined with fw +dudeclaw.15: set-class / set-empty are state-sets.
         assert IDEMPOTENT_TOOLS == {"gpio_write", "led_set", "actuator_set",
-                                    "display_print"}
+                                    "display_print", "display_alert"}
+
+    def test_display_tier_is_deliberately_not_allowlisted(self):
+        # The tier glyph is an evidence-based claim owned by the
+        # claw_metrics_push live probes; a static rule payload cannot prove a
+        # cognition tier, so rules must be refused loudly if they try.
+        assert "display_tier" not in IDEMPOTENT_TOOLS
+        with pytest.raises(ValueError, match="display_tier"):
+            NatsAction(server="nats://x",
+                       payload={"tool": "display_tier", "tier": "F"})
 
 
 # --------------------------------------------------------------------------
@@ -562,7 +572,7 @@ class TestStandalonePreset:
         seeded = json.loads(rules_path.read_text())
         ids = {r["id"] for r in seeded["rules"]}
         assert {"chip_temp_hot_led", "chip_temp_hot_page",
-                "claw_blind_any"} <= ids
+                "chip_temp_hot_display", "claw_blind_any"} <= ids
         # operator edits survive a rebuild — the seed is a bootstrap,
         # never an overwrite
         rules_path.write_text(json.dumps({"rules": []}))

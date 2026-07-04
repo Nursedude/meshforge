@@ -20,7 +20,13 @@ Usage:
     python3 scripts/promote_seed_rules.py             # dry-run: what would change
     python3 scripts/promote_seed_rules.py --apply     # merge + atomic-write (backs up)
     python3 scripts/promote_seed_rules.py --role fleet_gateway --apply
+    python3 scripts/promote_seed_rules.py --seed claw --apply   # dude-claw instance
     python3 scripts/promote_seed_rules.py --json       # machine-readable
+
+``--seed claw`` targets the standalone dude-claw instance: seed
+``configs/mini_dudeai_rules.claw.json`` merged into the claw-suffixed live
+file (``~/mini_dudeai_claw_rules.json``) — the claw mini is a second engine
+beside the fleet one and never maps to a box role.
 
 Default is DRY-RUN (like provision_role.py); nothing is written without --apply.
 """
@@ -58,8 +64,11 @@ def resolve_target(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None,
     )
     from utils.watchdog_probes_mini import _MINI_RULES_NAME
     from mini_dudeai.candidate import seed_rules_path
+    from mini_dudeai.presets.standalone import CLAW_RULES_BASENAME
 
-    known_seeds = sorted(set(_ROLE_TO_MINI_SEED.values()))
+    # "claw" is --seed-only: the dude-claw instance is a SECOND engine beside
+    # the fleet one (own live file), never reachable via a box-role mapping.
+    known_seeds = sorted(set(_ROLE_TO_MINI_SEED.values()) | {"claw"})
     if seed_name is None:
         if role is None:
             try:
@@ -92,7 +101,8 @@ def resolve_target(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None,
     home = mini_home or _resolve_mini_home()
     if not home:
         raise PromoteError("could not resolve the mini home (live-rules dir)")
-    live_path = os.path.join(home, _MINI_RULES_NAME)
+    live_name = CLAW_RULES_BASENAME if seed_name == "claw" else _MINI_RULES_NAME
+    live_path = os.path.join(home, live_name)
     return role, seed_name, seed_path, live_path
 
 

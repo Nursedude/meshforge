@@ -47,6 +47,10 @@ DEFAULT_TEMP_THRESHOLD_C = 55.0
 # claw_metrics_push tier probe (rules-tier freshness check) — independent
 # hardcodes of this basename WOULD drift (honest_failure_modes #5).
 CLAW_STATE_BASENAME = "mini_dudeai_claw_state.json"
+
+# Same rule for the live-rules basename: build_engine's default AND
+# promote_seed_rules' --seed claw live-path resolution.
+CLAW_RULES_BASENAME = "mini_dudeai_claw_rules.json"
 # repo-shipped seed. We derive the repo root from THIS file's location (configs/
 # sits beside src/), but the configs/mini_dudeai_rules.<seed>.json layout itself
 # comes from candidate.seed_rules_path so the bootstrap can't drift from it.
@@ -127,7 +131,7 @@ def build_engine(
     operator-runtime defaults pull from env (see module docstring)."""
     from .._util import resolve_home
     home = home or resolve_home()
-    rules_path = rules_path or os.path.join(home, "mini_dudeai_claw_rules.json")
+    rules_path = rules_path or os.path.join(home, CLAW_RULES_BASENAME)
     state_path = state_path or os.path.join(home, CLAW_STATE_BASENAME)
     history_path = history_path or os.path.join(home, "mini_dudeai_claw_history.jsonl")
     brief_path = brief_path or os.path.join(home, "mini_dudeai_claw_brief.md")
