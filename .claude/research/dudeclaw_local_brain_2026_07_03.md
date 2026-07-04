@@ -194,6 +194,18 @@ evals, tier L is permanently BELIEVED.
 
 ## 5. Display v2 — "tier-honest glance" (the display improvement)
 
+> **STATUS 2026-07-03 (same day): BUILT on fork branch `pr/display-pages`
+> (commit `0b4567d`, pushed to `Nursedude/WireClaw` + backup).** Compile
+> VERIFIED both envs: `esp32-s3-heltec-v4` SUCCESS (RAM 52.6%, flash 61.1%,
+> 0 warnings in touched files) + stock `esp32-s3` SUCCESS (guarded-optional
+> proof). Deltas from the spec below: alert payload is `age_s` (age at push,
+> monotonic-safe) instead of `raised_ts` (no epoch dependency — honest on an
+> RTC-less device); an incoming alert also yanks the glass back to the
+> status page. On-glass behavior is BELIEVED until the next claw flash
+> (rebuild `dudeclaw` per FORK.md, ride `+dudeclaw.15`); brain-side pusher
+> (`display_tier` from `claw_metrics_push.py`) is W1-adjacent MeshForge work,
+> not yet written.
+
 **Goal:** standing at the radio, one glance answers: *who is thinking right
 now, is the mesh alive, and is anything paging?* — and every one of those
 answers stays **honest when the brain is gone** (the whole point of this arc).
