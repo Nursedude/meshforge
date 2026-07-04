@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**78 handlers · 107 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**79 handlers · 108 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -61,6 +61,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `mini_dudeai_rules` | mini-dudeai: edit rules (in-app) |  | MiniDudeaiHandler |
 | `moc_analysis` | MOC Analysis — Generate slide-ready SVG analysis pack |  | MOCAnalysisHandler |
 | `health` | Node Health — Battery, signal, latency |  | NodeHealthHandler |
+| `offline_oracle` | offline oracle (ask the fleet lore) |  | OfflineOracleHandler |
 | `traffic_pulse` | Traffic Heartbeat — Live flow pulse (telem/RF/dups/QA) |  | TrafficPulseHandler |
 
 ## `extensions`
