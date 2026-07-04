@@ -94,3 +94,19 @@ code explicitly (`pytest … 1>/tmp/out.log 2>&1; echo EXIT=$?`) — never trust
 - Full doc index: `.claude/INDEX.md`
 - Research deep dives: `.claude/research/`
 - Knowledge Base API: `src/utils/knowledge_base.py`
+
+## Searching the Lore (offline oracle)
+
+To answer "has this fleet seen X before?" search the WHOLE corpus (persistent
+issues + archive, foundations, rules, research, docs, memory topic files) in
+one deterministic shot — no INDEX to consult, no grep guessing:
+
+```bash
+PYTHONPATH=src python3 -m mini_dudeai.offline_oracle --retrieve-only "<question>"
+```
+
+BM25-ranked excerpts with paths land in ~1s. Drop `--retrieve-only` for a
+cited local-LLM answer when Ollama is reachable (tier L; works with the
+frontier away). In-app: TUI → dashboard → "offline oracle". Answers are
+citation-gated — an answer citing nothing it was shown degrades to the
+retrieval list, honestly.

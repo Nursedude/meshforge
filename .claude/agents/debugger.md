@@ -25,7 +25,9 @@ When invoked with an error:
 
 ### TUI Errors
 - Whiptail/dialog backend: Check `DialogBackend` fallback chain
-- Mixin method conflicts: 33 mixins share the launcher namespace
+- Handler not reachable: must be registered in
+  `handlers/__init__.py:get_all_handlers()` (registry pattern — mixins
+  retired 2026-02-28); duplicate menu tags refuse loudly at registration
 
 ### Path Errors
 - Use `get_real_user_home()` not `Path.home()`
@@ -42,11 +44,13 @@ When invoked with an error:
 # Syntax check
 python3 -m py_compile <file>
 
-# Check imports
-python3 -c "from <module> import <thing>"
+# Check imports (python3 -c is DENY-LISTED in this project — use a
+# collection sweep instead, which also catches module-level import errors)
+python3 -m pytest --collect-only -q tests/ 1>/tmp/collect.log 2>&1; echo EXIT=$?
 
-# System logs
+# System logs (user units need the _SYSTEMD_USER_UNIT= field, not -u)
 journalctl -xe | tail -50
+journalctl _SYSTEMD_USER_UNIT=meshforge-mini-dudeai.service -n 50
 ```
 
 ## Output Format

@@ -85,7 +85,17 @@
       "Bash(sudo -n git -C /opt/meshforge pull:*)",
       "Bash(systemctl is-active:*)",
       "Bash(systemctl status:*)",
-      "Bash(journalctl:*)"
+      "Bash(journalctl:*)",
+      "Bash(bash scripts/honest_status.sh:*)",
+      "Bash(bash scripts/harness_audit.sh:*)",
+      "Bash(python3 scripts/parity_check.py:*)",
+      "Bash(python3 scripts/gen_capability_index.py --check)",
+      "Bash(python3 ~/.claude/skills/memory-health/memory_health.py)",
+      "Bash(python3 ~/.claude/skills/memory-health/memory_health.py --json)",
+      "Bash(PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.warmstart)",
+      "Bash(PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.rollup)",
+      "Bash(PYTHONPATH=src python3 -m mini_dudeai.offline_oracle --retrieve-only:*)",
+      "Bash(gh run watch:*)"
     ],
     "deny": [
       "Bash(rm -rf:*)",

@@ -8,17 +8,20 @@ model: inherit
 You run the test suite, identify failures, and fix them.
 
 When invoked:
-1. Run `python3 -m pytest tests/ -v`
+1. Run the full suite with the REAL exit code captured (the suite is ~8k
+   tests — `-v` streaming truncates and masks failures; judge from EXIT,
+   never from a `| tail`-truncated stream)
 2. Identify failing tests
 3. Fix issues and re-run
 
 ## Commands
 
 ```bash
-# Run all tests
-python3 -m pytest tests/ -v
+# Run all tests — file-redirect + explicit exit code (repo convention)
+python3 -m pytest tests/ -q 1>/tmp/pytest.log 2>&1; echo TEST_EXIT=$?
+awk '/short test summary info/{flag=1} flag' /tmp/pytest.log | head -50
 
-# Run specific test file
+# Run specific test file (small enough for -v)
 python3 -m pytest tests/test_rf.py -v
 
 # Quick syntax check

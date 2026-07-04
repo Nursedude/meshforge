@@ -107,8 +107,13 @@ grep -rn "v0\.[0-4]\." .claude/ --include="*.md" | grep -v "archive\|timeline\|h
 ```
 
 Cross-check:
-- Every file listed in `INDEX.md` exists on disk
-- Every `.md` file in `.claude/` is listed in `INDEX.md`
+- Every file listed in `INDEX.md` exists on disk (dead links are real rot)
+- `INDEX.md` lists the CURATED entry points, not every file — the
+  every-.md-must-be-indexed rule was retired 2026-07-04 (58 plan/research
+  one-offs had drifted out and hand-indexing them is busywork): full-corpus
+  lore search is the offline oracle's job now
+  (`python3 -m mini_dudeai.offline_oracle --retrieve-only "<question>"`
+  BM25-ranks ALL of `.claude/` + `docs/` + memory, no index to maintain)
 - No version references older than current version (except in historical/archive docs)
 - `plans/TODO_PRIORITIES.md` priorities align with actual development activity
 
