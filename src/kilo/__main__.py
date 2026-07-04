@@ -14,11 +14,11 @@ import argparse
 import json
 import sys
 import time
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from kilo.registry import KiloNode, load_registry, registry_path
-from kilo.store import UNITS, db_path, latest_by_kilo, open_db, prune, \
-    seen_unregistered
+from kilo.registry import KiloNode, anchor_map, load_registry, registry_path
+from kilo.store import UNITS, db_path, latest_by_key, open_db, prune, \
+    seen_keys
 
 # A node is OK while its newest expected reading is younger than this many
 # declared cadences (3 missed beacons = dark, the fleet's usual debounce).
@@ -29,8 +29,12 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
                  ) -> List[dict]:
     """Pure tri-state join: registry expectation vs newest observations.
 
-    UNKNOWN (no ingest adapter for the node's anchors yet) is its own
-    state — an unobservable node is never OK and never DARK (#2)."""
+    ``latest`` is keyed by (node_key.lower(), metric) — the join runs
+    against the CURRENT anchors at read time (re-derive, never trust the
+    ingest-time stamp), so a node registered after its first readings
+    landed still owns its history. UNKNOWN (no ingest adapter for the
+    node's anchors yet) is its own state — an unobservable node is never
+    OK and never DARK (#2)."""
     now = time.time() if now is None else now
     out: List[dict] = []
     for n in nodes:
@@ -42,10 +46,11 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
                              f"{sorted(n.ids)} — unobservable ≠ dark")
             out.append(row)
             continue
+        anchor = (n.ids.get("meshtastic") or "").lower()
         fresh = stale = 0
         newest = None
         for metric in n.expected_metrics:
-            hit = latest.get((n.kilo_id, metric))
+            hit = latest.get((anchor, metric))
             if hit is None:
                 row["missing"].append(metric)
                 continue
@@ -59,7 +64,7 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
             fresh += 1 if ok else 0
             stale += 0 if ok else 1
         if not n.expected_metrics:
-            row["state"] = "OK" if latest_any(latest, n.kilo_id, now,
+            row["state"] = "OK" if latest_any(latest, anchor, now,
                                               n.cadence_s) else "NEVER"
             row["detail"] = "no expected_metrics declared — presence only"
         elif fresh and not stale and not row["missing"]:
@@ -75,10 +80,19 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
     return out
 
 
-def latest_any(latest, kilo_id: str, now: float, cadence_s: float) -> bool:
-    ages = [now - ts for (kid, _m), (ts, _v) in latest.items()
-            if kid == kilo_id]
+def latest_any(latest, anchor: str, now: float, cadence_s: float) -> bool:
+    ages = [now - ts for (key, _m), (ts, _v) in latest.items()
+            if key == anchor]
     return bool(ages) and min(ages) <= DARK_AFTER_CADENCES * cadence_s
+
+
+def split_seen(seen: List[dict], nodes: List[KiloNode]
+               ) -> Tuple[List[dict], List[dict]]:
+    """(registered, unregistered) senders, judged against CURRENT anchors."""
+    anchors = anchor_map(nodes)
+    reg = [s for s in seen if s["node_key"].lower() in anchors]
+    unreg = [s for s in seen if s["node_key"].lower() not in anchors]
+    return reg, unreg
 
 
 def _cmd_status(args) -> int:
@@ -90,8 +104,8 @@ def _cmd_status(args) -> int:
     conn = open_db(args.db)
     try:
         prune(conn)
-        rows = build_status(nodes, latest_by_kilo(conn))
-        unreg = seen_unregistered(conn)
+        rows = build_status(nodes, latest_by_key(conn))
+        _reg, unreg = split_seen(seen_keys(conn), nodes)
     finally:
         conn.close()
     if args.json:
@@ -119,9 +133,16 @@ def _cmd_status(args) -> int:
 
 
 def _cmd_discover(args) -> int:
+    nodes, errors = load_registry(args.registry)
+    if nodes is None:
+        # No readable registry: show EVERY sender, and say why — a broken
+        # registry must not silently reshape the discovery list.
+        print(f"kilo: WARN {errors[0]} — showing all senders",
+              file=sys.stderr)
+        nodes = []
     conn = open_db(args.db)
     try:
-        unreg = seen_unregistered(conn)
+        _reg, unreg = split_seen(seen_keys(conn), nodes)
     finally:
         conn.close()
     if args.json:

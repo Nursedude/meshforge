@@ -89,24 +89,28 @@ def prune(conn, retention_days: float = RETENTION_DAYS,
     return conn.total_changes - before
 
 
-def latest_by_kilo(conn) -> Dict[Tuple[str, str], Tuple[float, float]]:
-    """{(kilo_id, metric): (ts, value)} — newest reading per registered
-    node per metric (the status join's observation side)."""
+def latest_by_key(conn) -> Dict[Tuple[str, str], Tuple[float, float]]:
+    """{(node_key.lower(), metric): (ts, value)} — newest reading per
+    SENDER per metric. The registry join happens at READ time against the
+    CURRENT anchors (re-derive, never trust the ingest-time stamp): a node
+    registered after its first readings landed still owns its history.
+    The stored kilo_id column remains as the historical witness of what
+    the registry said at capture time."""
     out: Dict[Tuple[str, str], Tuple[float, float]] = {}
-    for kid, metric, ts, value in conn.execute(
-            "SELECT kilo_id, metric, MAX(ts), value FROM readings "
-            "WHERE kilo_id IS NOT NULL GROUP BY kilo_id, metric"):
-        out[(kid, metric)] = (ts, value)
+    for key, metric, ts, value in conn.execute(
+            "SELECT node_key, metric, MAX(ts), value FROM readings "
+            "GROUP BY node_key, metric"):
+        out[(str(key).lower(), metric)] = (ts, value)
     return out
 
 
-def seen_unregistered(conn) -> List[dict]:
-    """Discovery candidates: senders heard on the air with NO registry
-    match — each with count, last-heard, and the metrics they emit."""
+def seen_keys(conn) -> List[dict]:
+    """Every sender heard, grouped — the CLI splits registered vs
+    discovery candidates against the CURRENT anchor map at read time."""
     rows = conn.execute(
         "SELECT transport, node_key, COUNT(*), MAX(ts), "
         "GROUP_CONCAT(DISTINCT metric) FROM readings "
-        "WHERE kilo_id IS NULL GROUP BY transport, node_key "
+        "GROUP BY transport, node_key "
         "ORDER BY MAX(ts) DESC").fetchall()
     return [{"transport": t, "node_key": k, "readings": c,
              "last_ts": ts, "metrics": (m or "").split(",")}

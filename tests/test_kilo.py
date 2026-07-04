@@ -117,24 +117,24 @@ class TestStore:
         rows = conn.execute("SELECT value FROM readings").fetchall()
         assert rows == [(2.0,)]
 
-    def test_latest_by_kilo_newest_wins(self, tmp_path):
+    def test_latest_by_key_newest_wins_and_lowercases(self, tmp_path):
         conn = self._conn(tmp_path)
         kstore.record_readings(conn, [
-            (NOW - 100, "mqtt", "!x", "b1", "temperature", 20.0),
-            (NOW - 10, "mqtt", "!x", "b1", "temperature", 22.0),
+            (NOW - 100, "mqtt", "!0A0B", "b1", "temperature", 20.0),
+            (NOW - 10, "mqtt", "!0A0B", "b1", "temperature", 22.0),
         ])
-        assert kstore.latest_by_kilo(conn)[("b1", "temperature")] == \
+        assert kstore.latest_by_key(conn)[("!0a0b", "temperature")] == \
             (NOW - 10, 22.0)
 
-    def test_unregistered_senders_are_discovery_not_noise(self, tmp_path):
+    def test_seen_keys_lists_every_sender(self, tmp_path):
         conn = self._conn(tmp_path)
         kstore.record_readings(conn, [
             (NOW, "mqtt", "!feed", None, "temperature", 20.0),
             (NOW, "mqtt", "!feed", None, "humidity", 40.0),
         ])
-        unreg = kstore.seen_unregistered(conn)
-        assert len(unreg) == 1 and unreg[0]["node_key"] == "!feed"
-        assert set(unreg[0]["metrics"]) == {"temperature", "humidity"}
+        seen = kstore.seen_keys(conn)
+        assert len(seen) == 1 and seen[0]["node_key"] == "!feed"
+        assert set(seen[0]["metrics"]) == {"temperature", "humidity"}
 
     def test_dbspec_pair_pinned(self):
         # honest_failure_modes #5: the DBSpec entry and kilo.store are two
@@ -245,18 +245,33 @@ class TestBuildStatus:
 
     def test_fresh_node_is_ok(self, tmp_path):
         nodes = self._nodes(tmp_path)
-        latest = {("bench1-esp32-env", "temperature"): (NOW - 60, 21.0),
-                  ("bench1-esp32-env", "humidity"): (NOW - 60, 40.0)}
+        latest = {("!0a0b0c0d", "temperature"): (NOW - 60, 21.0),
+                  ("!0a0b0c0d", "humidity"): (NOW - 60, 40.0)}
         rows = build_status(nodes, latest, now=NOW)
         assert rows[0]["state"] == "OK"
 
     def test_stale_metric_degrades(self, tmp_path):
         nodes = self._nodes(tmp_path)
-        latest = {("bench1-esp32-env", "temperature"): (NOW - 60, 21.0),
-                  ("bench1-esp32-env", "humidity"): (NOW - 10_000, 40.0)}
+        latest = {("!0a0b0c0d", "temperature"): (NOW - 60, 21.0),
+                  ("!0a0b0c0d", "humidity"): (NOW - 10_000, 40.0)}
         rows = build_status(nodes, latest, now=NOW)
         assert rows[0]["state"] == "DEGRADED"
         assert rows[0]["metrics"]["humidity"]["ok"] is False
+
+    def test_pre_registration_history_joins_after_registration(
+            self, tmp_path):
+        """The moc live-proof lesson (2026-07-04): readings captured
+        BEFORE the node was registered (kilo_id NULL on disk) must count
+        the moment the anchor exists — the join re-derives from CURRENT
+        anchors at read time, never trusts the ingest-time stamp."""
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        kstore.record_readings(conn, [
+            (NOW - 60, "mqtt", "!0A0B0C0D", None, "temperature", 21.0),
+            (NOW - 60, "mqtt", "!0A0B0C0D", None, "humidity", 40.0),
+        ])
+        rows = build_status(self._nodes(tmp_path),
+                            kstore.latest_by_key(conn), now=NOW)
+        assert rows[0]["state"] == "OK"
 
     def test_never_seen_is_red_not_silent(self, tmp_path):
         rows = build_status(self._nodes(tmp_path), {}, now=NOW)
