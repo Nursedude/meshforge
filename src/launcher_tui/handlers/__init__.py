@@ -253,4 +253,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.fleet_provision import FleetProvisionHandler
     handlers.append(FleetProvisionHandler)
 
+    # Batch 26 — Offline oracle (ask the on-disk fleet lore in-app; W3)
+    from handlers.offline_oracle import OfflineOracleHandler
+    handlers.append(OfflineOracleHandler)
+
     return handlers
