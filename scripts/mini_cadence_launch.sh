@@ -153,7 +153,7 @@ run_local_fallback() {
   local frc="${1:-}"
   echo "mini-cadence: attempting LOCAL-tier triage fallback (frontier rc=${frc:-cli-missing})."
   if PYTHONPATH="$REPO/src" nice -n 10 \
-       timeout "${MINI_CADENCE_LOCAL_TIMEOUT_S:-300}" \
+       timeout "${MINI_CADENCE_LOCAL_TIMEOUT_S:-600}" \
        python3 -m mini_dudeai.cadence_fallback \
          --deltas "$DELTAS" --frontier-rc "$frc"; then
     echo "mini-cadence: local triage witness written (suggestions only — nothing ratified)."

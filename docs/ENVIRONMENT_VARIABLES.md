@@ -60,7 +60,7 @@
 | `MINI_DUDEAI_ENABLE_BOOT_HEALTH` / `MINI_DUDEAI_ENABLE_DIGEST` / `MINI_DUDEAI_ENABLE_FEDERATION` | `presets/meshforge_fleet.py` | Feature toggles for the fleet preset. |
 | `MINI_DUDEAI_CADENCE_MODEL` | `scripts/mini_cadence_launch.sh` | Model used for the cadence PROPOSE run (default opus). |
 | `MINI_DUDEAI_TIER_SLO_URL` | `scripts/claw_metrics_push.py` | `/fleet/slo` URL of the box running the frontier cadence cron — enables the claw OLED brain-tier glyph (F/L/R via `display_tier`, firmware ≥0.4.0+dudeclaw.15). Unset = tier feed disabled (glass decays to SOLO). |
-| `MINI_CADENCE_LOCAL_TIMEOUT_S` | `scripts/mini_cadence_launch.sh` | Bound on the W1 local-tier triage fallback (`mini_dudeai.cadence_fallback`, default 300 s). The fallback triages the proposed-delta backlog when the frontier session fails; it never ratifies and never turns the verdict OK. |
+| `MINI_CADENCE_LOCAL_TIMEOUT_S` | `scripts/mini_cadence_launch.sh` | Bound on the W1 local-tier triage fallback (`mini_dudeai.cadence_fallback`, default 600 s — sized for qwen3-4B at ~30 s/entry × the 12-entry fed cap). The fallback triages the proposed-delta backlog when the frontier session fails; it never ratifies and never turns the verdict OK. |
 
 ## Fleet scripts (cron / systemd context)
 

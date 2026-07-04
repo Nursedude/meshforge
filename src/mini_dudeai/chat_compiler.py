@@ -35,10 +35,16 @@ from .candidate import (
 )
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MODEL = "qwen2.5:3b"
-# Local 3B-class models on a Pi think in tens of seconds; this bounds a
-# wedged server, not a slow one.
-DEFAULT_TIMEOUT_S = 180.0
+# W2 model bump (2026-07-03, dudeclaw_local_brain research §4): pinned dated
+# tag, never a floating one. Acceptance: the W1 triage drill — qwen2.5:3b
+# under-covered 0-for-2 runs (1/2 deltas); qwen3:4b-instruct-2507 covered
+# 2-for-2 runs (2/2, zero validation drops). qwen2.5:3b stays pulled as the
+# rollback (env MINI_DUDEAI_OLLAMA_MODEL repoints without a code change).
+DEFAULT_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
+# Local 3-4B models on a Pi think in tens of seconds (measured ~75 s for a
+# 2-item schema-constrained triage, warm); this bounds a wedged server, not
+# a slow one.
+DEFAULT_TIMEOUT_S = 240.0
 
 _ID_RE = re.compile(r"^[a-z0-9_]{3,64}$")
 

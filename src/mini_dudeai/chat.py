@@ -13,7 +13,8 @@ it. The conversational sibling of the TUI rule form — both end at
                 page me high priority"
 
 Env: MINI_DUDEAI_OLLAMA_URL (default http://localhost:11434),
-     MINI_DUDEAI_OLLAMA_MODEL (default qwen2.5:3b).
+     MINI_DUDEAI_OLLAMA_MODEL (default chat_compiler.DEFAULT_MODEL —
+     qwen3:4b-instruct-2507 since the 2026-07-03 W2 bump).
 The compiler talks ONLY to the local Ollama server — no cloud, no internet.
 
 Promotion is observed, not assumed: after the candidate is written we watch

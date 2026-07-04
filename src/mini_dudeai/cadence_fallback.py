@@ -55,7 +55,10 @@ CADENCE_TRIAGE_BASENAME = "mini_dudeai_cadence_triage.json"
 # frontier session has either handled the backlog or will re-derive it).
 TRIAGE_FRESH_S = 24 * 3600.0
 
-MAX_DELTAS_DEFAULT = 20
+# Fed-set cap, derived from measured latency (qwen3-4B warm ≈ 30 s/entry on
+# the Pi 5): 12 entries ≈ 6 min, inside the 480 s client bound below. The
+# TOTAL count stays honest in the witness regardless of the cap.
+MAX_DELTAS_DEFAULT = 12
 _ASSESSMENT_CLAMP = 300
 _SUMMARY_CLAMP = 500
 
@@ -241,7 +244,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--model",
                     default=os.environ.get("MINI_DUDEAI_OLLAMA_MODEL",
                                            DEFAULT_MODEL))
-    ap.add_argument("--timeout-s", type=float, default=240.0)
+    ap.add_argument("--timeout-s", type=float, default=480.0)
     args = ap.parse_args(argv)
 
     if args.clear:
