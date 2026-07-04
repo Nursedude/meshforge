@@ -206,3 +206,53 @@ class TestSeedFileIsValid:
         assert all(c.get("provenance") for c in cases), (
             "every eval case must name the real incident that taught it "
             "(the distillation-flywheel convention)")
+
+
+class TestGradeOracle:
+    def _result(self, tier="local", answer="run timeout 8 rnstatus",
+                paths=(".claude/foundations/persistent_issues.md",)):
+        retrieved = [{"id": f"S{i+1}", "path": p, "heading": "h", "score": 1.0}
+                     for i, p in enumerate(paths)]
+        return {"brain_tier": tier, "answer": answer if tier == "local" else None,
+                "retrieved": retrieved,
+                "sources": retrieved if tier == "local" else [],
+                "confidence": "high" if tier == "local" else None,
+                "note": "synthesis failed (x)" if tier != "local" else None}
+
+    def _case(self, expect=None):
+        return {"id": "o1", "kind": "oracle",
+                "input": {"question": "rnsd wedged?"},
+                "expect": expect or {
+                    "retrieve_must_include": ["persistent_issues"],
+                    "cite_must_include": ["persistent_issues"],
+                    "answer_contains_any": ["rnstatus"]}}
+
+    def test_grounded_cited_answer_passes(self, monkeypatch):
+        monkeypatch.setattr(lbe.offline_oracle, "ask",
+                            lambda *a, **k: self._result())
+        ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
+        assert ok, reasons
+
+    def test_retrieval_miss_and_synthesis_miss_are_distinct(self, monkeypatch):
+        monkeypatch.setattr(
+            lbe.offline_oracle, "ask",
+            lambda *a, **k: self._result(paths=("docs/other.md",)))
+        ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
+        assert not ok
+        assert any("retrieval missing" in r for r in reasons)
+        assert any("citations missing" in r for r in reasons)
+
+    def test_degraded_answer_fails_when_answer_required(self, monkeypatch):
+        monkeypatch.setattr(lbe.offline_oracle, "ask",
+                            lambda *a, **k: self._result(tier="rules"))
+        ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
+        assert not ok
+        assert any("no grounded answer" in r for r in reasons)
+
+    def test_answer_content_any_of(self, monkeypatch):
+        monkeypatch.setattr(
+            lbe.offline_oracle, "ask",
+            lambda *a, **k: self._result(answer="reboot everything"))
+        ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
+        assert not ok
+        assert any("contains none of" in r for r in reasons)

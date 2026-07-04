@@ -30,6 +30,13 @@ triage input:  {"deltas": [{key, summary[, kind]}], ["frontier_rc": N]}
 compile input: {"intent": "...", ["condition_kinds": [...]], ["notes": ""]}
         expect: {["fields": {dotted: value}], ["fields_in": {dotted: [...]}],
                  ["fields_range": {dotted: [min, max]}]}
+oracle input:  {"question": "...", ["top_k": 6]}
+        expect: {["retrieve_must_include": [path fragments]],
+                 ["cite_must_include": [path fragments]],
+                 ["answer_contains_any": [strings, case-insensitive]],
+                 ["require_answer": true]}
+        (oracle cases must only rely on the REPO corpus — the memory root
+        exists on one box and is skipped elsewhere by design)
 """
 from __future__ import annotations
 
@@ -43,7 +50,7 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import cadence_fallback
+from . import cadence_fallback, offline_oracle
 from ._util import resolve_home
 from .history import append_jsonl
 from .chat_compiler import (
@@ -55,7 +62,7 @@ from .chat_compiler import (
 )
 from .config import registered_action_kinds, registered_source_kinds
 
-CASE_KINDS = ("triage", "compile")
+CASE_KINDS = ("triage", "compile", "oracle")
 
 # Results ledger — one summary record per run, appended forever (the
 # model's calibration history; the gate reads the latest, humans read the
@@ -200,7 +207,37 @@ def grade_compile(case: dict, backend) -> Tuple[bool, List[str], dict]:
     return not reasons, reasons, rule
 
 
-_GRADERS = {"triage": grade_triage, "compile": grade_compile}
+def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
+    """Ask the PRODUCTION oracle path and grade retrieval + citations +
+    answer content separately — a retrieval miss and a synthesis miss are
+    different diagnoses."""
+    inp = case["input"]
+    expect = case["expect"]
+    result = offline_oracle.ask(inp.get("question") or "", backend,
+                                top_k=inp.get("top_k", 6))
+    reasons: List[str] = []
+    retrieved_paths = " ".join(r["path"] for r in result.get("retrieved") or [])
+    for frag in expect.get("retrieve_must_include") or []:
+        if frag not in retrieved_paths:
+            reasons.append(f"retrieval missing {frag!r}")
+    if expect.get("require_answer", True):
+        if result.get("brain_tier") != "local":
+            reasons.append(f"no grounded answer: "
+                           f"{str(result.get('note', '?'))[:160]}")
+        else:
+            cited_paths = " ".join(s["path"] for s in result["sources"])
+            for frag in expect.get("cite_must_include") or []:
+                if frag not in cited_paths:
+                    reasons.append(f"citations missing {frag!r}")
+            anyof = expect.get("answer_contains_any") or []
+            if anyof and not any(a.lower() in result["answer"].lower()
+                                 for a in anyof):
+                reasons.append(f"answer contains none of {anyof!r}")
+    return not reasons, reasons, result
+
+
+_GRADERS = {"triage": grade_triage, "compile": grade_compile,
+            "oracle": grade_oracle}
 
 
 def run_cases(cases: List[dict], backend) -> Tuple[List[dict], dict]:
