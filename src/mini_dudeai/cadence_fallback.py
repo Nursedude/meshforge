@@ -95,7 +95,9 @@ disposition for the HUMAN or frontier session to act on later:
   looks-rejectable   duplicate/transient/superseded on its face
   needs-live-check   anything whose truth needs a command or live source
 
-Use each delta's `key` verbatim. Output JSON only, matching the schema."""
+Include EVERY listed delta exactly once — a triage that skips deltas is
+incomplete. Use each delta's `key` verbatim. Output JSON only, matching the
+schema."""
 
 
 def load_proposed_deltas(path: str, cap: int = MAX_DELTAS_DEFAULT,
@@ -226,6 +228,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--deltas", default=os.path.join(
         resolve_home(), "mini_dudeai_memory_deltas.jsonl"))
     ap.add_argument("--out", default=default_witness_path())
+    ap.add_argument("--clear", action="store_true",
+                    help="retire the witness (a SUCCESSFUL frontier session "
+                         "consumed the backlog it described); idempotent")
     ap.add_argument("--frontier-rc", default="",
                     help="exit code of the failed frontier session "
                          "(empty = claude CLI missing)")
@@ -238,6 +243,18 @@ def main(argv: Optional[List[str]] = None) -> int:
                                            DEFAULT_MODEL))
     ap.add_argument("--timeout-s", type=float, default=240.0)
     args = ap.parse_args(argv)
+
+    if args.clear:
+        try:
+            os.remove(args.out)
+            print(f"cadence_fallback: witness retired ({args.out})")
+        except FileNotFoundError:
+            print("cadence_fallback: no witness to retire")
+        except OSError as e:
+            print(f"cadence_fallback: witness retire FAILED: {e}",
+                  file=sys.stderr)
+            return 1
+        return 0
 
     frontier_rc: Optional[int] = None
     if str(args.frontier_rc).strip():

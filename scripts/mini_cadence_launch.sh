@@ -200,5 +200,10 @@ fi
 # preserved either way (sticky FAIL(1) and 124 semantics untouched).
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
   run_local_fallback "$rc"
+elif [ "$rc" -eq 0 ]; then
+  # Frontier returned and resolved the backlog: retire the local-tier
+  # witness so the warm brief stops flagging a degradation that is over
+  # (the run history stays in mini_cadence.log + the verdict trail).
+  PYTHONPATH="$REPO/src" python3 -m mini_dudeai.cadence_fallback --clear || true
 fi
 exit "$rc"

@@ -210,3 +210,18 @@ class TestBriefSection:
         # A clock step must not forge freshness (RTC-less discipline).
         w = self._witness(ts=NOW + 3600)
         assert "LOCAL tier" not in build_brief({}, [], NOW, cadence_triage=w)
+
+
+class TestClearFlag:
+    def test_clear_retires_witness_and_is_idempotent(self, tmp_path):
+        out = tmp_path / "witness.json"
+        out.write_text("{}")
+        assert cf.main(["--clear", "--out", str(out)]) == 0
+        assert not out.exists()
+        # second clear: nothing to retire is a clean no-op, not an error
+        assert cf.main(["--clear", "--out", str(out)]) == 0
+
+    def test_clear_never_runs_the_llm(self, tmp_path, monkeypatch):
+        boom = lambda **k: (_ for _ in ()).throw(AssertionError("LLM built"))
+        monkeypatch.setattr(cf, "OllamaBackend", boom)
+        assert cf.main(["--clear", "--out", str(tmp_path / "w.json")]) == 0
