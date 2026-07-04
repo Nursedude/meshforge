@@ -270,3 +270,25 @@ class TestUnknownToolCaseFolding:
         })
         _install_conn(monkeypatch, nc)
         assert cmp_mod.main() == 0
+
+
+class TestRTierReaderEnvFileOnly:
+    def test_process_env_mini_dudeai_home_is_ignored(self, tmp_path,
+                                                     monkeypatch):
+        """Re-review pin (2026-07-04): the claw daemon sees ONLY the claw
+        env FILE (EnvironmentFile=), so the R-tier reader must not honor a
+        crontab/profile MINI_DUDEAI_HOME the daemon never sees."""
+        writer_home = tmp_path / "writer"
+        cron_home = tmp_path / "cron_env"
+        writer_home.mkdir()
+        cron_home.mkdir()
+        # fresh state where the CRON env points; NOTHING where the env-file
+        # points — an os.environ leg would wrongly prove tier R
+        (cron_home / cmp_mod.CLAW_STATE_BASENAME).write_text("{}")
+        monkeypatch.setenv("MINI_DUDEAI_HOME", str(cron_home))
+        env = {"MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid/fleet/slo",
+               "MINI_DUDEAI_HOME": str(writer_home)}
+        monkeypatch.setattr(cmp_mod, "fetch_json",
+                            lambda url, timeout=0: (None, "refused"))
+        tier, note = cmp_mod._probe_tier(env)
+        assert tier is None  # env-file home has no state; cron env ignored

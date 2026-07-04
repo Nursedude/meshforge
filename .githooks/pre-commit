@@ -58,6 +58,15 @@ if ! python3 scripts/gen_capability_index.py --check; then
     echo "then stage .claude/skills/meshforge/capability_index.md"
     exit 1
 fi
+# --check compares the WORKTREE copy; a regenerated-but-unstaged index would
+# pass it while the COMMIT carries the stale staged copy (CI red anyway).
+if ! git diff --quiet -- .claude/skills/meshforge/capability_index.md; then
+    echo ""
+    echo "capability_index.md is current in the worktree but NOT staged —"
+    echo "the commit would carry the stale copy. Run:"
+    echo "  git add .claude/skills/meshforge/capability_index.md"
+    exit 1
+fi
 
 # Collection-only sweep: catches module-level import/syntax errors across the
 # full suite without running test bodies. Fast (~2-3s) and flags the class of

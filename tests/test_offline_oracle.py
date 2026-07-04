@@ -248,3 +248,27 @@ class TestMemoryDirSudoSafe:
         import os
         monkeypatch.delenv("SUDO_USER", raising=False)
         assert oo._memory_dir().startswith(os.path.expanduser("~"))
+
+
+class TestFixCommitReReview:
+    """Pins from the 2026-07-04 re-review of the fix commit itself
+    (feedback rule: a self-applied fix is unreviewed code)."""
+
+    def test_list_shaped_roots_still_accepted(self, tmp_path):
+        # roots historically accepted any iterable of pairs; the cache key
+        # must not narrow the public API to tuples (TypeError regression).
+        _corpus(tmp_path)
+        roots = [["test", str(tmp_path / "*.md")]]  # lists, not tuples
+        chunks, notes, index = oo.load_corpus_indexed(roots)
+        assert chunks
+        r = oo.ask("rnstatus wedged", FakeBackend(_oracle_reply(["S1"])),
+                   roots=roots)
+        assert r["brain_tier"] == "local"
+
+    def test_synthesis_failure_still_reports_excerpts_shown(self, tmp_path):
+        # The model WAS shown excerpts before the failure; the witness must
+        # say so on every prompt-built path (absence reads as 'nothing
+        # shown' — the #80 class in miniature).
+        be = FakeBackend(exc=CompilerError("ollama down"))
+        r = oo.ask("rnstatus wedged", be, roots=_corpus(tmp_path))
+        assert r["excerpts_shown"] >= 1

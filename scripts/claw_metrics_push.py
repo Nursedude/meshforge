@@ -128,13 +128,14 @@ def _probe_tier(env: dict) -> "tuple[str | None, str]":
         ollama_ok, _detail = probe_ollama(ollama_url, timeout_s=6)
 
     # R-tier evidence: the claw-mini daemon's state file. The WRITER anchors
-    # on MINI_DUDEAI_HOME (via _util.resolve_home, fed by the same claw env
-    # file the user unit loads) before falling back to home — so this reader
-    # honors the identical precedence, or a homed-elsewhere daemon would
-    # make tier R silently unprovable (glyph decays to SOLO while the rule
-    # brain is healthy).
-    claw_home = (env.get("MINI_DUDEAI_HOME")
-                 or os.environ.get("MINI_DUDEAI_HOME"))
+    # on MINI_DUDEAI_HOME via _util.resolve_home, and the daemon's user unit
+    # sees ONLY the claw env file (EnvironmentFile=) — so this reader reads
+    # the SAME source and nothing else. Deliberately NOT os.environ: a
+    # MINI_DUDEAI_HOME exported in the crontab/profile is an env the daemon
+    # never sees, and honoring it here would point the reader at a state
+    # file the writer never writes (tier R unprovable, glyph decays to SOLO
+    # while the rule brain is healthy).
+    claw_home = env.get("MINI_DUDEAI_HOME")
     state_dir = (os.path.expanduser(claw_home) if claw_home
                  else str(get_real_user_home()))
     rules_age_s = None

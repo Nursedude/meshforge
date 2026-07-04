@@ -122,16 +122,17 @@ def build_findings(state: dict, history: list, now_ts: float) -> list:
     return findings
 
 
-OLLAMA_PROBE_TIMEOUT_S = 4.0
-
-
-def probe_ollama(url: str, timeout_s: float = OLLAMA_PROBE_TIMEOUT_S):
+def probe_ollama(url: str, timeout_s: "float | None" = None):
     """(ok, detail) — bounded reachability check before any compile attempt.
 
     Delegates to THE shared probe (mini_dudeai.chat_compiler.probe_ollama):
     the cron scripts can't import TUI handlers, so the one implementation
-    lives beside OllamaBackend and this stays a thin TUI-facing name."""
+    lives beside OllamaBackend and this stays a thin TUI-facing name.
+    No local timeout constant — timeout_s=None inherits the shared default
+    (two constants for one probe is the drift channel this dedup closed)."""
     from mini_dudeai.chat_compiler import probe_ollama as _probe
+    if timeout_s is None:
+        return _probe(url)
     return _probe(url, timeout_s=timeout_s)
 
 

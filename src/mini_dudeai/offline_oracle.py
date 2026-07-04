@@ -198,7 +198,10 @@ def load_corpus_indexed(roots: Optional[List[Tuple[str, str]]] = None
     """(chunks, notes, index) — cached while the on-disk corpus is
     byte-for-byte the same files (path+mtime+size), rebuilt otherwise."""
     roots = roots if roots is not None else default_roots()
-    key = tuple(roots)
+    # Normalize pairs for hashing: roots historically accepted any iterable
+    # of (label, glob) pairs (lists included) — tuple(list-of-lists) would
+    # TypeError on the cache lookup and silently narrow the public API.
+    key = tuple((str(label), str(pattern)) for label, pattern in roots)
     sig = _corpus_signature(roots)
     hit = _INDEX_CACHE.get(key)
     if hit is not None and hit[0] == sig:
@@ -344,6 +347,7 @@ def ask(question: str, backend, roots=None, top_k: int = 6) -> dict:
     except (CompilerError, ValueError) as e:
         return {**base, "brain_tier": "rules", "answer": None, "sources": [],
                 "confidence": None,
+                "excerpts_shown": len(shown_ids),
                 "note": f"synthesis failed ({str(e)[:200]}) — retrieval "
                         f"results above are still good"}
 
