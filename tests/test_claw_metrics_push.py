@@ -122,3 +122,108 @@ def test_half_unreachable_tick_is_not_ok(wired, monkeypatch):
     assert tick["ok"] is False
     assert tick["device_info"]["uptime_s"] == 109368
     assert tick["ble"] is None and "ble_stats" in tick["errors"]
+
+
+class TestBrainTierPush:
+    """display_tier wiring (firmware 0.4.0+dudeclaw.15): the glyph is pushed
+    only when _probe_tier proved a tier; ladder decisions themselves are
+    covered in test_claw_telemetry.py::TestComputeBrainTier."""
+
+    def _nc_ok(self):
+        return _FakeNC({
+            "device_info": {"ok": True, "result": DI},
+            "ble_stats": {"ok": True, "result": BS},
+            "display_print": {"ok": True},
+            "display_tier": {"ok": True, "result": "Brain tier set: F"},
+        })
+
+    def test_tier_pushed_and_recorded_in_tick(self, wired, monkeypatch):
+        monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
+        fake = _install_conn(monkeypatch, self._nc_ok())
+        rc = cmp_mod.main()
+        assert rc == 0
+        tier_reqs = [r for r in fake.requests if r.get("tool") == "display_tier"]
+        assert tier_reqs == [{"tool": "display_tier", "tier": "F"}]
+        tick = json.loads(wired.read_text())
+        assert tick["brain_tier"] == "F"
+
+    def test_unprovable_tier_pushes_nothing(self, wired, monkeypatch):
+        # None = push NOTHING; the firmware decays the glyph to SOLO — the
+        # pusher never fabricates a tier just to have something to send.
+        monkeypatch.setattr(cmp_mod, "_probe_tier",
+                            lambda env: (None, "no tier provable"))
+        fake = _install_conn(monkeypatch, self._nc_ok())
+        rc = cmp_mod.main()
+        assert rc == 0
+        assert not [r for r in fake.requests if r.get("tool") == "display_tier"]
+        tick = json.loads(wired.read_text())
+        assert tick["brain_tier"] is None
+
+    def test_pre_dudeclaw15_firmware_warns_but_does_not_page(self, wired,
+                                                             monkeypatch):
+        # MF pulls can land before a claw reflash: a firmware without the
+        # tool must not page the operator; the glyph simply stays absent.
+        monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
+        nc = self._nc_ok()
+        nc._responses["display_tier"] = {
+            "ok": False, "error": "Error: unknown tool 'display_tier'"}
+        _install_conn(monkeypatch, nc)
+        assert cmp_mod.main() == 0
+
+    def test_real_tier_refusal_pages(self, wired, monkeypatch):
+        monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
+        nc = self._nc_ok()
+        nc._responses["display_tier"] = {"ok": False, "error": "oled busy"}
+        _install_conn(monkeypatch, nc)
+        with pytest.raises(SystemExit):
+            cmp_mod.main()
+
+    def test_row_paint_failure_skips_tier_push(self, wired, monkeypatch):
+        # Rows refused -> the claw's paint path is already broken; page once,
+        # don't stack a second failing call onto it.
+        monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
+        nc = self._nc_ok()
+        nc._responses["display_print"] = {"ok": False, "error": "oled busy"}
+        fake = _install_conn(monkeypatch, nc)
+        with pytest.raises(SystemExit):
+            cmp_mod.main()
+        assert not [r for r in fake.requests if r.get("tool") == "display_tier"]
+
+
+class TestProbeTier:
+    """_probe_tier I/O honesty: unset URL disables the feed (never claims
+    L/R without having LOOKED at the frontier); an unreachable SLO IS
+    evidence and falls down the ladder. Endpoints here are synthetic."""
+
+    def test_unset_slo_url_disables_feed(self):
+        tier, note = cmp_mod._probe_tier({})
+        assert tier is None
+        assert "disabled" in note
+
+    def test_frontier_proven_from_slo_verdict(self, monkeypatch):
+        env = {"MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid:5000/fleet/slo",
+               "MINI_DUDEAI_OLLAMA_URL": "http://llm.invalid:11434"}
+
+        def fake_fetch(url, timeout=0):
+            if "fleet/slo" in url:
+                return {"schedules": {"verdicts": {"available": True, "jobs": [
+                    {"name": "mini_cadence", "status": "OK", "stale": False,
+                     "age_s": 60.0}]}}}, None
+            return {"version": "0.30"}, None
+
+        monkeypatch.setattr(cmp_mod, "fetch_json", fake_fetch)
+        tier, note = cmp_mod._probe_tier(env)
+        assert tier == "F"
+
+    def test_unreachable_slo_falls_to_local(self, monkeypatch):
+        env = {"MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid:5000/fleet/slo",
+               "MINI_DUDEAI_OLLAMA_URL": "http://llm.invalid:11434"}
+
+        def fake_fetch(url, timeout=0):
+            if "fleet/slo" in url:
+                return None, "connection refused"
+            return {"version": "0.30"}, None
+
+        monkeypatch.setattr(cmp_mod, "fetch_json", fake_fetch)
+        tier, note = cmp_mod._probe_tier(env)
+        assert tier == "L"

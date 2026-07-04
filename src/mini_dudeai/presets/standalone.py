@@ -42,6 +42,11 @@ from ..sources.nats_sensor import NatsSensorSource
 from .._util import log_info, log_warning
 
 DEFAULT_TEMP_THRESHOLD_C = 55.0
+
+# One constant, two consumers: build_engine's state_path default AND the
+# claw_metrics_push tier probe (rules-tier freshness check) — independent
+# hardcodes of this basename WOULD drift (honest_failure_modes #5).
+CLAW_STATE_BASENAME = "mini_dudeai_claw_state.json"
 # repo-shipped seed. We derive the repo root from THIS file's location (configs/
 # sits beside src/), but the configs/mini_dudeai_rules.<seed>.json layout itself
 # comes from candidate.seed_rules_path so the bootstrap can't drift from it.
@@ -123,7 +128,7 @@ def build_engine(
     from .._util import resolve_home
     home = home or resolve_home()
     rules_path = rules_path or os.path.join(home, "mini_dudeai_claw_rules.json")
-    state_path = state_path or os.path.join(home, "mini_dudeai_claw_state.json")
+    state_path = state_path or os.path.join(home, CLAW_STATE_BASENAME)
     history_path = history_path or os.path.join(home, "mini_dudeai_claw_history.jsonl")
     brief_path = brief_path or os.path.join(home, "mini_dudeai_claw_brief.md")
     annotate_path = annotate_path or os.path.join(

@@ -145,3 +145,48 @@ def build_tick(now: float, host: str, device: str,
         "ble": ble,
         "errors": errors,
     }
+
+
+# ─── brain-tier decision (display_tier glyph, firmware 0.4.0+dudeclaw.15) ────
+
+# The cron-verdict name of the frontier Claude cadence run (the claw-brain's
+# fleet manager box, wired via cron_verdict.sh) — consumer-of-record evidence
+# that the frontier tier actually THOUGHT recently, not merely that an API
+# endpoint answers pings.
+CADENCE_VERDICT_NAME = "mini_cadence"
+
+# The claw-mini daemon ticks every ~30 s and rewrites its state file; a
+# state file older than this proves nothing (daemon dead or box wedged).
+RULES_FRESH_S = 900.0
+
+
+def compute_brain_tier(verdict_jobs: Any, ollama_ok: bool,
+                       rules_age_s: Optional[float],
+                       rules_fresh_s: float = RULES_FRESH_S,
+                       ) -> "tuple[Optional[str], str]":
+    """Highest PROVEN cognition tier -> ``('F'|'L'|'R', note)`` or
+    ``(None, note)`` when nothing is provable.
+
+    The ladder claims only what a live probe demonstrated this run:
+
+    * ``'F'`` — the frontier cadence's cron verdict is ``OK`` and the SLO
+      endpoint itself judges it not stale (staleness derives from the cron's
+      own schedule — no second hardcoded window here, #80 rule 5). A missing
+      or ambiguous ``stale`` field is NOT proven — unobservable freshness
+      must never read as fresh.
+    * ``'L'`` — frontier unproven, but the local Ollama answered.
+    * ``'R'`` — no LLM tier proven, but the claw-mini rule daemon's state
+      file is fresh: the deterministic engine is the brain of record.
+    * ``None`` — nothing provable; the caller pushes NOTHING and the glass
+      decays to SOLO, which honestly reads "no fresh brain claim".
+    """
+    for job in verdict_jobs or []:
+        if isinstance(job, dict) and job.get("name") == CADENCE_VERDICT_NAME:
+            if job.get("status") == "OK" and job.get("stale") is False:
+                return "F", f"cadence verdict OK (age {job.get('age_s', '?')}s)"
+            break
+    if ollama_ok:
+        return "L", "frontier unproven; ollama answered"
+    if rules_age_s is not None and 0 <= rules_age_s <= rules_fresh_s:
+        return "R", f"no LLM proven; claw-mini state fresh ({rules_age_s:.0f}s)"
+    return None, "no tier provable (glass decays to SOLO)"

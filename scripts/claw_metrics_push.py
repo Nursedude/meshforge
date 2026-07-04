@@ -10,11 +10,16 @@ Rows (23-char budget, SSD1306 metric rows 0-1):
     row 0:  mesh:<directory total> fed:<reachable>/<peers>
     row 1:  wd:<signal count> <OK|SIG> <HH:MM>
 
+Brain-tier glyph (firmware 0.4.0+dudeclaw.15 `display_tier` tool): F/L/R =
+highest cognition tier a live probe PROVED this run (see _probe_tier). The
+firmware decays the glyph to SOLO on its own clock when these pushes stop —
+so this script never needs to push a "down" state; silence IS the signal.
+
 Honesty: any unreadable source or failed push exits NONZERO so the verdict
 line says FAIL and the cron_verdict_stale probe pages — never paint a row we
 couldn't actually compute (the firmware adds its own "(old)" marker when the
-pusher stops updating). Operator values (device name, NATS server) come from
-the claw env file, not this script (MF014).
+pusher stops updating). Operator values (device name, NATS server, tier SLO
+URL) come from the claw env file, not this script (MF014).
 """
 from __future__ import annotations
 
@@ -27,8 +32,9 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mini_dudeai._util import atomic_write_json, fetch_json  # noqa: E402
-from mini_dudeai.claw_telemetry import build_tick  # noqa: E402
+from mini_dudeai.claw_telemetry import build_tick, compute_brain_tier  # noqa: E402
 from mini_dudeai.nats_client import NatsConnection, NatsError  # noqa: E402
+from mini_dudeai.presets.standalone import CLAW_STATE_BASENAME  # noqa: E402
 from utils.paths import get_real_user_home  # noqa: E402
 
 WATCHDOG_PATH = "/var/lib/meshforge/watchdog.json"
@@ -86,6 +92,66 @@ def build_rows() -> list[str]:
     return [row0[:23], row1[:23]]
 
 
+def _probe_tier(env: dict) -> "tuple[str | None, str]":
+    """Probe the cognition ladder and return ``(tier, note)``.
+
+    ``MINI_DUDEAI_TIER_SLO_URL`` (the /fleet/slo of the box that runs the
+    frontier cadence cron) is the feature switch: unset means we never LOOKED
+    at the frontier, and pushing L/R without looking would claim more than we
+    know — so unset disables the feed entirely (tier None, no push; the glass
+    decays to SOLO). Configured-but-unreachable IS evidence: the frontier
+    brain can't be confirmed from this segment, so the ladder falls through
+    to the local probes.
+    """
+    slo_url = env.get("MINI_DUDEAI_TIER_SLO_URL")
+    if not slo_url:
+        return None, "tier feed disabled (MINI_DUDEAI_TIER_SLO_URL unset)"
+
+    verdict_jobs = []
+    slo, err = fetch_json(slo_url, timeout=10)
+    if not err and isinstance(slo, dict):
+        verdicts = (slo.get("schedules") or {}).get("verdicts") or {}
+        if verdicts.get("available"):
+            verdict_jobs = verdicts.get("jobs") or []
+
+    ollama_ok = False
+    ollama_url = env.get("MINI_DUDEAI_OLLAMA_URL")
+    if ollama_url:
+        ver, oerr = fetch_json(ollama_url.rstrip("/") + "/api/version",
+                               timeout=6)
+        ollama_ok = not oerr and isinstance(ver, dict)
+
+    rules_age_s = None
+    try:
+        rules_age_s = time.time() - os.path.getmtime(
+            str(get_real_user_home() / CLAW_STATE_BASENAME))
+    except OSError:
+        pass  # no state file -> rules tier unprovable (compute handles None)
+
+    return compute_brain_tier(verdict_jobs, ollama_ok, rules_age_s)
+
+
+def _push_tier(nc: NatsConnection, device: str, tier: str):
+    """Push the brain-tier glyph. Returns an error string on a real refusal,
+    None on ok. A firmware that predates the tool (pre-0.4.0+dudeclaw.15)
+    warns instead of paging — MF pulls may land before a claw reflash, and
+    that ordering must not page the operator about a tool the glass never
+    had (the glyph simply stays absent there)."""
+    reply = nc.request(
+        f"{device}.tool_exec",
+        json.dumps({"tool": "display_tier", "tier": tier}),
+    )
+    if isinstance(reply, dict) and reply.get("ok"):
+        return None
+    err_txt = str((reply or {}).get("error", reply) if isinstance(reply, dict)
+                  else reply)
+    if "unknown tool" in err_txt:
+        print(f"claw_metrics: WARN firmware lacks display_tier "
+              f"(pre-dudeclaw.15?): {err_txt[:120]}", file=sys.stderr)
+        return None
+    return f"display_tier refused: {err_txt[:120]}"
+
+
 def _request_tool(nc: NatsConnection, device: str, tool: str):
     """One claw tool_exec; a transport failure becomes an honest error reply
     (build_tick records it) rather than aborting the capture."""
@@ -124,6 +190,7 @@ def main() -> int:
     if not server or not device:
         raise SystemExit("claw_metrics: claw env missing NATS server / device")
     rows = build_rows()
+    tier, tier_note = _probe_tier(env)
     host = socket.gethostname()
     now = time.time()
     token = env.get("MINI_DUDEAI_NATS_TOKEN") or None
@@ -137,8 +204,13 @@ def main() -> int:
         with NatsConnection(server, token=token, timeout_s=8) as nc:
             tick = _capture_tick(nc, device, host, now)
             paint_err = _push_rows(nc, rows, device)
+            if tier and not paint_err:
+                paint_err = _push_tier(nc, device, tier)
     except NatsError as e:
         paint_err = f"NATS connect/push failed: {e}"
+    # The tier is a claim about the BRAIN, not the claw — record it even on
+    # an unreachable tick so /api/status.claw can surface it later.
+    tick["brain_tier"] = tier
 
     # Persist the capture for /api/status display (best-effort; a write failure
     # must NOT mask a paint failure, which is the claw-liveness page).
@@ -149,7 +221,8 @@ def main() -> int:
 
     if paint_err:
         raise SystemExit(f"claw_metrics: {paint_err}")
-    print(f"claw_metrics: pushed {rows!r} to {device}; tick ok={tick['ok']}")
+    print(f"claw_metrics: pushed {rows!r} tier={tier or '-'} ({tier_note}) "
+          f"to {device}; tick ok={tick['ok']}")
     return 0
 
 

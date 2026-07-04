@@ -59,6 +59,7 @@
 | `MINI_DUDEAI_CLAW_DEVICE` / `MINI_DUDEAI_CLAW_SENSORS` / `MINI_DUDEAI_CLAW_TEMP_THRESHOLD` | standalone (dude-claw) | ESP32 claw serial device + sensor config. |
 | `MINI_DUDEAI_ENABLE_BOOT_HEALTH` / `MINI_DUDEAI_ENABLE_DIGEST` / `MINI_DUDEAI_ENABLE_FEDERATION` | `presets/meshforge_fleet.py` | Feature toggles for the fleet preset. |
 | `MINI_DUDEAI_CADENCE_MODEL` | `scripts/mini_cadence_launch.sh` | Model used for the cadence PROPOSE run (default opus). |
+| `MINI_DUDEAI_TIER_SLO_URL` | `scripts/claw_metrics_push.py` | `/fleet/slo` URL of the box running the frontier cadence cron — enables the claw OLED brain-tier glyph (F/L/R via `display_tier`, firmware ≥0.4.0+dudeclaw.15). Unset = tier feed disabled (glass decays to SOLO). |
 
 ## Fleet scripts (cron / systemd context)
 

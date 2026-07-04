@@ -22,7 +22,9 @@ IP test vectors are SYNTHETIC (MF014/MF015 — no operator LAN IPs in source).
 from __future__ import annotations
 
 from mini_dudeai.claw_telemetry import (
+    CADENCE_VERDICT_NAME,
     build_tick,
+    compute_brain_tier,
     parse_ble_stats,
     parse_device_info,
 )
@@ -129,3 +131,68 @@ class TestBuildTick:
         assert t["device_info"] is None
         assert "device_info" in t["errors"]
         assert t["ok"] is False
+
+
+class TestComputeBrainTier:
+    """The display_tier ladder claims only what a probe PROVED (research doc
+    dudeclaw_local_brain_2026_07_03 §5.2). Conservative direction: any
+    ambiguity falls DOWN the ladder, never up."""
+
+    def _cadence(self, status="OK", stale=False, age_s=120.0):
+        return {"name": CADENCE_VERDICT_NAME, "status": status,
+                "stale": stale, "age_s": age_s}
+
+    def test_frontier_when_cadence_ok_and_fresh(self):
+        tier, note = compute_brain_tier([self._cadence()], ollama_ok=True,
+                                        rules_age_s=10.0)
+        assert tier == "F"
+        assert "cadence" in note
+
+    def test_stale_cadence_is_not_frontier(self):
+        tier, _ = compute_brain_tier([self._cadence(stale=True)],
+                                     ollama_ok=True, rules_age_s=10.0)
+        assert tier == "L"
+
+    def test_failed_cadence_is_not_frontier(self):
+        tier, _ = compute_brain_tier([self._cadence(status="FAIL(1)")],
+                                     ollama_ok=True, rules_age_s=10.0)
+        assert tier == "L"
+
+    def test_missing_stale_field_is_not_proven_fresh(self):
+        # Unobservable freshness must never read as fresh (#80 class).
+        job = {"name": CADENCE_VERDICT_NAME, "status": "OK"}
+        tier, _ = compute_brain_tier([job], ollama_ok=True, rules_age_s=10.0)
+        assert tier == "L"
+
+    def test_local_when_no_verdicts_but_ollama_answers(self):
+        tier, note = compute_brain_tier([], ollama_ok=True, rules_age_s=10.0)
+        assert tier == "L"
+        assert "ollama" in note
+
+    def test_rules_when_no_llm_but_state_fresh(self):
+        tier, note = compute_brain_tier([], ollama_ok=False, rules_age_s=45.0)
+        assert tier == "R"
+        assert "state fresh" in note
+
+    def test_nothing_provable_is_none_not_r(self):
+        # Stale state file proves nothing; None means "push nothing" and the
+        # glass decays to SOLO — never a fabricated R.
+        tier, note = compute_brain_tier([], ollama_ok=False,
+                                        rules_age_s=99999.0)
+        assert tier is None
+        assert "SOLO" in note
+
+    def test_absent_state_file_is_none(self):
+        tier, _ = compute_brain_tier([], ollama_ok=False, rules_age_s=None)
+        assert tier is None
+
+    def test_negative_state_age_is_not_fresh(self):
+        # A clock step can make mtime "newer than now" — forged freshness
+        # must not prove the rules tier (RTC-less fleet discipline).
+        tier, _ = compute_brain_tier([], ollama_ok=False, rules_age_s=-30.0)
+        assert tier is None
+
+    def test_other_verdicts_do_not_prove_frontier(self):
+        jobs = [{"name": "synth_soak", "status": "OK", "stale": False}]
+        tier, _ = compute_brain_tier(jobs, ollama_ok=False, rules_age_s=5.0)
+        assert tier == "R"
