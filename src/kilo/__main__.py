@@ -16,7 +16,8 @@ import sys
 import time
 from typing import List, Optional, Tuple
 
-from kilo.registry import KiloNode, anchor_map, load_registry, registry_path
+from kilo.registry import OBSERVABLE_ANCHORS, KiloNode, load_registry, \
+    observable_anchor_map, registry_path
 from kilo.store import UNITS, db_path, latest_by_key, open_db, prune, \
     seen_keys
 
@@ -46,11 +47,16 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
                              f"{sorted(n.ids)} — unobservable ≠ dark")
             out.append(row)
             continue
-        anchor = (n.ids.get("meshtastic") or "").lower()
+        anchors = [n.ids[k].lower() for k in OBSERVABLE_ANCHORS
+                   if n.ids.get(k)]
         fresh = stale = 0
         newest = None
         for metric in n.expected_metrics:
-            hit = latest.get((anchor, metric))
+            # a node may carry several observable anchors (meshtastic +
+            # claw); the newest reading across ALL of its keys wins
+            hits = [latest[(a, metric)] for a in anchors
+                    if (a, metric) in latest]
+            hit = max(hits, key=lambda h: h[0]) if hits else None
             if hit is None:
                 row["missing"].append(metric)
                 continue
@@ -64,7 +70,7 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
             fresh += 1 if ok else 0
             stale += 0 if ok else 1
         if not n.expected_metrics:
-            row["state"] = "OK" if latest_any(latest, anchor, now,
+            row["state"] = "OK" if latest_any(latest, anchors, now,
                                               n.cadence_s) else "NEVER"
             row["detail"] = "no expected_metrics declared — presence only"
         elif fresh and not stale and not row["missing"]:
@@ -80,16 +86,18 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
     return out
 
 
-def latest_any(latest, anchor: str, now: float, cadence_s: float) -> bool:
+def latest_any(latest, anchors: List[str], now: float,
+               cadence_s: float) -> bool:
     ages = [now - ts for (key, _m), (ts, _v) in latest.items()
-            if key == anchor]
+            if key in anchors]
     return bool(ages) and min(ages) <= DARK_AFTER_CADENCES * cadence_s
 
 
 def split_seen(seen: List[dict], nodes: List[KiloNode]
                ) -> Tuple[List[dict], List[dict]]:
-    """(registered, unregistered) senders, judged against CURRENT anchors."""
-    anchors = anchor_map(nodes)
+    """(registered, unregistered) senders, judged against the CURRENT
+    anchors of every observable kind."""
+    anchors = observable_anchor_map(nodes)
     reg = [s for s in seen if s["node_key"].lower() in anchors]
     unreg = [s for s in seen if s["node_key"].lower() not in anchors]
     return reg, unreg
@@ -163,7 +171,7 @@ def _cmd_discover(args) -> int:
 
 
 def _cmd_collect(args) -> int:
-    from kilo.ingest import collect_mqtt
+    from kilo.ingest import collect_claw, collect_mqtt
     nodes, errors = load_registry(args.registry)
     if nodes is None:
         # Collection without a registry is still useful (pure discovery),
@@ -181,12 +189,21 @@ def _cmd_collect(args) -> int:
         overrides["root_topic"] = args.root_topic
     if args.channel:
         overrides["channel"] = args.channel
+    summary = {"ok": True, "mqtt": None, "claw": None}
     conn = open_db(args.db)
     try:
         prune(conn)
-        summary = collect_mqtt(conn, nodes, seconds=args.seconds,
-                               sample_every=args.sample_every,
-                               config_overrides=overrides or None)
+        if args.transport in ("all", "claw"):
+            # instant (one file read) — runs before the mqtt window
+            summary["claw"] = collect_claw(conn, nodes,
+                                           tick_path=args.claw_tick)
+            summary["ok"] = summary["ok"] and summary["claw"]["ok"]
+        if args.transport in ("all", "mqtt"):
+            summary["mqtt"] = collect_mqtt(
+                conn, nodes, seconds=args.seconds,
+                sample_every=args.sample_every,
+                config_overrides=overrides or None)
+            summary["ok"] = summary["ok"] and summary["mqtt"]["ok"]
     finally:
         conn.close()
     print(json.dumps(summary, indent=2))
@@ -208,13 +225,17 @@ def main(argv=None) -> int:
     p = sub.add_parser("discover", help="unregistered senders heard")
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_discover)
-    p = sub.add_parser("collect", help="bounded MQTT collection window")
+    p = sub.add_parser("collect", help="bounded collection window "
+                                       "(mqtt window + claw tick read)")
+    p.add_argument("--transport", choices=("all", "mqtt", "claw"),
+                   default="all")
     p.add_argument("--seconds", type=float, default=120.0)
     p.add_argument("--sample-every", type=float, default=15.0)
     p.add_argument("--broker", help="override broker (implies no TLS)")
     p.add_argument("--port", type=int)
     p.add_argument("--root-topic")
     p.add_argument("--channel")
+    p.add_argument("--claw-tick", help="override claw_last_tick.json path")
     p.set_defaults(fn=_cmd_collect)
     args = ap.parse_args(argv)
     return args.fn(args)

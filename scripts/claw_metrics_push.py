@@ -33,7 +33,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mini_dudeai._util import atomic_write_json, fetch_json  # noqa: E402
 from mini_dudeai.chat_compiler import probe_ollama  # noqa: E402
-from mini_dudeai.claw_telemetry import build_tick, compute_brain_tier  # noqa: E402
+from mini_dudeai.claw_telemetry import (  # noqa: E402
+    CLAW_TICK_BASENAME,
+    build_tick,
+    compute_brain_tier,
+)
 from mini_dudeai.nats_client import NatsConnection, NatsError  # noqa: E402
 from mini_dudeai.presets.standalone import CLAW_STATE_BASENAME  # noqa: E402
 from utils.paths import get_real_user_home  # noqa: E402
@@ -41,9 +45,9 @@ from utils.paths import get_real_user_home  # noqa: E402
 WATCHDOG_PATH = "/var/lib/meshforge/watchdog.json"
 STATUS_URL = "http://localhost:5000/api/status"
 # Last-tick telemetry capture (display only) read by /api/status.claw + the
-# /fleet rollup. Operator-home path (MF001) so the writer and the reader
-# (_read_claw_state_block) resolve the same file.
-CLAW_TICK_BASENAME = "claw_last_tick.json"
+# /fleet rollup + kilo's claw adapter. Basename owned by claw_telemetry
+# (the tick-shape owner); operator-home path (MF001) so writer and readers
+# resolve the same file — kilo test-pins its path formula to _tick_path().
 
 
 def _tick_path() -> str:

@@ -34,11 +34,12 @@ REGISTRY_BASENAME = "kilo_nodes.json"
 # category (closed enums need closed consumers; grow deliberately).
 ROLES = ("esp32-sensor", "nrf-meshtastic", "rnode", "claw", "gateway", "other")
 
-# Identity-anchor kinds the ingest layer can currently OBSERVE. Anchors of
-# other kinds (rns, claw, mac, ble) are legal in the registry — they mark
-# planned adapters — but a node with no observable anchor is reported
-# UNKNOWN by status, never OK and never DARK.
-OBSERVABLE_ANCHORS = ("meshtastic",)
+# Identity-anchor kinds the ingest layer can currently OBSERVE ("claw"
+# since K0.1: the WireClaw last-tick adapter). Anchors of other kinds
+# (rns, mac, ble) are legal in the registry — they mark planned adapters —
+# but a node with no observable anchor is reported UNKNOWN by status,
+# never OK and never DARK.
+OBSERVABLE_ANCHORS = ("meshtastic", "claw")
 
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$")
 
@@ -144,11 +145,22 @@ def load_registry(path: Optional[str] = None
 
 def anchor_map(nodes: List[KiloNode], kind: str = "meshtastic"
                ) -> Dict[str, str]:
-    """{lowercased anchor value: kilo_id} for one anchor kind — the ingest
-    join. Meshtastic ids compare case-insensitively ('!A1B2' == '!a1b2')."""
+    """{lowercased anchor value: kilo_id} for one anchor kind — the
+    per-transport ingest join. Meshtastic ids compare case-insensitively
+    ('!A1B2' == '!a1b2')."""
     out: Dict[str, str] = {}
     for n in nodes:
         val = n.ids.get(kind)
         if val:
             out[val.lower()] = n.kilo_id
+    return out
+
+
+def observable_anchor_map(nodes: List[KiloNode]) -> Dict[str, str]:
+    """{lowercased anchor value: kilo_id} across EVERY observable anchor
+    kind — the read-time join for status/discover (a node may carry both a
+    meshtastic and a claw anchor; all of its keys resolve to it)."""
+    out: Dict[str, str] = {}
+    for kind in OBSERVABLE_ANCHORS:
+        out.update(anchor_map(nodes, kind))
     return out

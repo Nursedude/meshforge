@@ -144,6 +144,14 @@ def build_tick(now: float, host: str, device: str,
     }
 
 
+# The basename of the persisted last-tick capture. Owned HERE because this
+# module owns the tick's shape (build_tick); consumers (the pusher's writer
+# path, /api/status's reader, kilo's claw adapter) import it rather than
+# re-hardcoding (honest_failure_modes #5). The full path formula lives with
+# consumers that may resolve home differently — they test-pin each other.
+CLAW_TICK_BASENAME = "claw_last_tick.json"
+
+
 # ─── brain-tier decision (display_tier glyph, firmware 0.4.0+dudeclaw.15) ────
 
 # The cron-verdict name of the frontier Claude cadence run (the claw-brain's

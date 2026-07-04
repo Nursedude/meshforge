@@ -284,3 +284,120 @@ class TestBuildStatus:
         rows = build_status(nodes, {}, now=NOW)
         assert rows[0]["state"] == "UNKNOWN"
         assert "unobservable" in rows[0]["detail"]
+
+
+# ── K0.1: claw adapter + closed-consumer gates ──────────────────────────
+
+from kilo.ingest import CLAW_METRICS, NODE_METRICS, collect_claw  # noqa: E402
+
+
+def _claw_tick(tmp_path, **overrides):
+    tick = {
+        "captured_at": NOW, "captured_iso": "2025-10-09T00:00:00",
+        "host": "testhost", "device": "dudeclaw-99", "ok": True,
+        "device_info": {"heap_free_bytes": 17764, "heap_total_bytes": 210492,
+                        "uptime_s": 109368, "wifi_connected": True,
+                        "wifi_rssi_dbm": -37, "chip": "ESP32-S3", "ip": None},
+        "ble": {"adv_age_s": 0, "advs": 767422, "uniq": "32+",
+                "last_rssi_dbm": -59, "restarts": "0/0", "window": "48/320ms"},
+        "errors": {}, "brain_tier": "F",
+    }
+    tick.update(overrides)
+    p = tmp_path / "claw_last_tick.json"
+    p.write_text(json.dumps(tick))
+    return str(p)
+
+
+def _claw_registry(tmp_path):
+    nodes, errs = kreg.load_registry(_write_registry(tmp_path, [
+        {"kilo_id": "bench4-claw-edge", "role": "claw",
+         "ids": {"claw": "DUDECLAW-99"},
+         "expected_metrics": ["heap_free_bytes", "uptime_s",
+                              "wifi_rssi_dbm"],
+         "cadence_s": 300}]))
+    assert errs == []
+    return nodes
+
+
+class TestCollectClaw:
+    def test_full_tick_lands_numeric_halves_with_join(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        reg = _claw_registry(tmp_path)
+        leg = collect_claw(conn, reg, tick_path=_claw_tick(tmp_path))
+        assert leg["ok"] and leg["state"] == "ok"
+        assert leg["device"] == "dudeclaw-99"
+        assert leg["readings_written"] == len(CLAW_METRICS)
+        latest = kstore.latest_by_key(conn)
+        assert latest[("dudeclaw-99", "heap_free_bytes")] == (NOW, 17764.0)
+
+    def test_absent_tick_is_inert_not_failure(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        leg = collect_claw(conn, [], tick_path=str(tmp_path / "absent.json"))
+        assert leg["ok"] is True and leg["state"] == "inert"
+        assert leg["readings_written"] == 0
+
+    def test_garbage_tick_is_error_witness(self, tmp_path):
+        p = tmp_path / "claw_last_tick.json"
+        p.write_text("{torn")
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        leg = collect_claw(conn, [], tick_path=str(p))
+        assert leg["ok"] is False and leg["state"] == "error"
+        assert "unreadable" in leg["error"]
+
+    def test_unreachable_tick_writes_nothing_fabricated(self, tmp_path):
+        # both halves None (total NATS failure capture): no rows — the
+        # node ages toward DARK, which is the truth; None never becomes 0.
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        path = _claw_tick(tmp_path, ok=False, device_info=None, ble=None)
+        leg = collect_claw(conn, [], tick_path=path)
+        assert leg["ok"] and leg["state"] == "ok"
+        assert leg["readings_written"] == 0
+
+    def test_same_tick_twice_is_idempotent(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        path = _claw_tick(tmp_path)
+        assert collect_claw(conn, [], tick_path=path)["readings_written"] > 0
+        assert collect_claw(conn, [], tick_path=path)["readings_written"] == 0
+
+    def test_tick_path_pinned_to_writer(self):
+        # kilo's default path formula and claw_metrics_push._tick_path()
+        # are two consumers of one artifact — pinned together here.
+        import importlib.util
+        from kilo.ingest import default_claw_tick_path
+        script = Path(__file__).parent.parent / "scripts" / "claw_metrics_push.py"
+        spec = importlib.util.spec_from_file_location("cmp_pin", str(script))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        assert default_claw_tick_path() == mod._tick_path()
+
+
+class TestMetricVocabularyClosedConsumers:
+    def test_every_ingest_metric_has_a_unit(self):
+        # honest_failure_modes #7: the metric vocabulary grew a second
+        # producer (claw) — every producer entry must exist in UNITS or
+        # this fails at test time, not at display time.
+        for metric in list(NODE_METRICS.values()) + list(CLAW_METRICS.values()):
+            assert metric in kstore.UNITS, f"UNITS missing {metric!r}"
+
+
+class TestClawStatusJoin:
+    def test_claw_anchored_node_is_observable_and_ok(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        reg = _claw_registry(tmp_path)
+        collect_claw(conn, reg, tick_path=_claw_tick(tmp_path))
+        rows = build_status(reg, kstore.latest_by_key(conn), now=NOW + 60)
+        assert rows[0]["state"] == "OK"
+        assert rows[0]["metrics"]["heap_free_bytes"]["value"] == 17764.0
+
+    def test_dual_anchor_node_merges_both_transports(self, tmp_path):
+        nodes, errs = kreg.load_registry(_write_registry(tmp_path, [
+            {"kilo_id": "hybrid", "role": "claw",
+             "ids": {"claw": "dudeclaw-99", "meshtastic": "!0a0b0c0d"},
+             "expected_metrics": ["heap_free_bytes", "snr"],
+             "cadence_s": 900}]))
+        assert errs == []
+        latest = {("dudeclaw-99", "heap_free_bytes"): (NOW - 30, 17764.0),
+                  ("!0a0b0c0d", "snr"): (NOW - 30, 6.0)}
+        rows = build_status(nodes, latest, now=NOW)
+        assert rows[0]["state"] == "OK"
+        assert set(rows[0]["metrics"]) == {"heap_free_bytes", "snr"}

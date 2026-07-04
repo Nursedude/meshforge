@@ -12,7 +12,8 @@
 
 | Rung | What | Status |
 |------|------|--------|
-| **K0** | Node registry (identity/role/cadence expectations) + telemetry ingest spine (SQLite readings) + tri-state presence status + discovery | **SHIPPED 2026-07-04** (`src/kilo/`) |
+| **K0** | Node registry (identity/role/cadence expectations) + telemetry ingest spine (SQLite readings) + tri-state presence status + discovery | **SHIPPED + LIVE-VERIFIED 2026-07-04** (`src/kilo/`; moc 🟢) |
+| **K0.1** | Claw adapter (reads `claw_last_tick.json` — zero device I/O) + recurring collect via crontab + cron_verdict (#78 alerting for free) | **SHIPPED 2026-07-04** |
 | K1 | Link-matrix observatory: every packet a channel sounding; nightly observed-vs-`utils/rf.py` link-budget diff; RF-shadow anomalies | planned |
 | K2 | Sensor trust ledger: co-located cross-checks, per-sensor held/broke record (the calibration ledger applied to hardware) | planned |
 | K3 | Meshtastic vs RNS controlled A/B on identical boards, same air: delivery/latency/airtime envelopes, eval-case scoring | planned |
@@ -46,12 +47,24 @@
    probe + seed routing** (deploy-restart class #79; seed-coverage gate).
    K0 deliberately ships NO daemon — collect is bounded.
 
+## Recurring collection (K0.1 wiring)
+
+Crontab + `cron_verdict.sh` — the same regime as claw_metrics_push, so
+Issue #78 (`cron_verdict_stale`) alerts on FAIL and on silence with zero
+new probe code. Canonical lines (per-box transports; exit 2 = could not
+verify → FAIL verdict):
+
+```cron
+# mqtt-audible box (gateway with local mosquitto json uplink):
+*/10 * * * * cd /opt/meshforge && PYTHONPATH=src timeout 570 python3 -m kilo collect --transport mqtt --seconds 480 --broker localhost --port 1883 --root-topic msh/2/e --channel "+" >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh kilo_collect $?
+# claw-brain box (tick file only, instant):
+*/10 * * * * cd /opt/meshforge && PYTHONPATH=src timeout 60 python3 -m kilo collect --transport claw >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh kilo_collect $?
+```
+
 ## Next concrete steps
 
-- Operator: copy the example registry, anchor the first 3 real nodes
-  (`kilo discover` after a collect window lists what's already audible).
-- K0.1: claw/NATS adapter (read `claw_last_tick.json` — zero new I/O) +
-  a `kilo collect` systemd timer + cron_verdict wiring once cadence is
-  proven by hand.
+- Operator: copy the example registry, anchor the real lab nodes as they
+  come online (`kilo discover` after a collect window lists what's
+  already audible).
 - K1 design doc before code: sounding source = existing packet metadata
   (SNR/RSSI per neighbor) already decoded by the subscriber.

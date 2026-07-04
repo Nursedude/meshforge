@@ -27,6 +27,15 @@
       "expected_metrics": [],
       "cadence_s": 3600,
       "notes": "SYNTHETIC EXAMPLE — RNode/RNS anchor; no ingest adapter yet, status reports UNKNOWN until the K1/K3 adapter lands"
+    },
+    {
+      "kilo_id": "bench4-claw-edge",
+      "role": "claw",
+      "location": "bench 4, WireClaw edge node",
+      "ids": {"claw": "dudeclaw-99"},
+      "expected_metrics": ["heap_free_bytes", "uptime_s", "wifi_rssi_dbm"],
+      "cadence_s": 300,
+      "notes": "SYNTHETIC EXAMPLE — claw anchor = the MINI_DUDEAI_CLAW_DEVICE name; K0.1 adapter ingests claw_last_tick.json (claw_metrics_push's 5-min capture), zero extra device I/O"
     }
   ]
 }

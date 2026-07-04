@@ -40,6 +40,20 @@ NODE_METRICS = {
 }
 
 TRANSPORT_MQTT = "mqtt"
+TRANSPORT_CLAW = "claw"
+
+# claw_last_tick.json field -> canonical metric name (K0.1 adapter).
+# Dotted paths into the tick; numeric-only — a None half (unreachable
+# capture) yields NOTHING, never a fabricated 0 (claw_telemetry contract).
+CLAW_METRICS = {
+    "device_info.heap_free_bytes": "heap_free_bytes",
+    "device_info.heap_total_bytes": "heap_total_bytes",
+    "device_info.uptime_s": "uptime_s",
+    "device_info.wifi_rssi_dbm": "wifi_rssi_dbm",
+    "ble.adv_age_s": "ble_adv_age_s",
+    "ble.advs": "ble_advs",
+    "ble.last_rssi_dbm": "ble_last_rssi_dbm",
+}
 
 
 def snapshot_readings(nodes, registry: List[KiloNode],
@@ -77,6 +91,80 @@ def snapshot_readings(nodes, registry: List[KiloNode],
             seen[(key, metric)] = (ts, value)
             rows.append((ts, transport, key, kilo_id, metric, value))
     return rows
+
+
+def default_claw_tick_path() -> str:
+    """Where claw_metrics_push persists the last tick — same formula as
+    the writer's _tick_path() (test-pinned pair; basename owned by
+    claw_telemetry, the tick-shape owner)."""
+    from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
+    from utils.paths import get_real_user_home
+    return str(get_real_user_home() / CLAW_TICK_BASENAME)
+
+
+def collect_claw(conn, registry: List[KiloNode],
+                 tick_path: Optional[str] = None) -> dict:
+    """Ingest the WireClaw last-tick capture — ZERO new I/O to the claw:
+    claw_metrics_push already polls the device every 5 min and persists
+    the tick; this reads that file and lands the numeric halves.
+
+    Tri-state summary (never error→quiet-air):
+      inert  — no tick file on this box (no claw here; not a failure)
+      error  — tick present but unreadable/unparseable (a witness)
+      ok     — parsed; a stale/unreachable tick simply writes no fresh
+               rows and the node ages toward DARK, which is the truth.
+    """
+    import json as _json
+    import os
+
+    from kilo.store import record_readings
+
+    path = tick_path or default_claw_tick_path()
+    leg = {"ok": False, "state": "inert", "transport": TRANSPORT_CLAW,
+           "tick_path": path, "device": None, "tick_age_s": None,
+           "readings_written": 0, "error": None}
+    if not os.path.exists(path):
+        leg["ok"] = True  # absence of a claw is corpus shape, not failure
+        return leg
+    try:
+        with open(path, encoding="utf-8") as f:
+            tick = _json.load(f)
+        if not isinstance(tick, dict):
+            raise ValueError(f"tick not an object: {type(tick).__name__}")
+    except (OSError, ValueError) as e:
+        leg["state"] = "error"
+        leg["error"] = f"claw tick unreadable: {e}"
+        return leg
+
+    device = str(tick.get("device") or "")
+    ts = tick.get("captured_at")
+    if not device or not isinstance(ts, (int, float)):
+        leg["state"] = "error"
+        leg["error"] = ("claw tick missing device/captured_at — "
+                        "writer/reader shape drift?")
+        return leg
+    leg["device"] = device
+    leg["tick_age_s"] = round(max(0.0, time.time() - float(ts)), 1)
+
+    kilo_id = anchor_map(registry, kind="claw").get(device.lower()) \
+        if registry else None
+    rows = []
+    for dotted, metric in CLAW_METRICS.items():
+        cur = tick
+        for part in dotted.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if cur is None or isinstance(cur, bool):
+            continue
+        try:
+            value = float(cur)
+        except (TypeError, ValueError):
+            continue
+        rows.append((float(ts), TRANSPORT_CLAW, device, kilo_id,
+                     metric, value))
+    leg["readings_written"] = record_readings(conn, rows)
+    leg["state"] = "ok"
+    leg["ok"] = True
+    return leg
 
 
 def collect_mqtt(conn, registry: List[KiloNode], seconds: float,

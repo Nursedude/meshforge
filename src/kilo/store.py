@@ -23,7 +23,10 @@ from utils.paths import get_real_user_home
 DB_BASENAME = "kilo_telemetry.db"
 RETENTION_DAYS = 30  # pinned to the DBSpec entry by test
 
-# metric name -> display unit (derivable, so not a schema column)
+# metric name -> display unit (derivable, so not a schema column).
+# Closed-consumers gate: tests pin that every ingest vocabulary entry
+# (NODE_METRICS, CLAW_METRICS) has a unit here — a metric added on one
+# side without the other fails a test, not a display.
 UNITS = {
     "temperature": "°C", "humidity": "%", "pressure": "hPa",
     "gas_resistance": "Ω", "co2": "ppm", "iaq": "idx",
@@ -31,6 +34,10 @@ UNITS = {
     "voltage": "V", "battery_level": "%",
     "channel_utilization": "%", "air_util_tx": "%",
     "snr": "dB", "rssi": "dBm",
+    # claw (WireClaw last-tick) vocabulary, K0.1
+    "heap_free_bytes": "B", "heap_total_bytes": "B", "uptime_s": "s",
+    "wifi_rssi_dbm": "dBm", "ble_adv_age_s": "s", "ble_advs": "",
+    "ble_last_rssi_dbm": "dBm",
 }
 
 
