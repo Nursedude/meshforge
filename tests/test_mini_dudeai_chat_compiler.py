@@ -190,9 +190,27 @@ class TestHonestTransportFailures:
             compile_rule("fan", backend, [], SOURCE_KINDS, ACTION_KINDS)
 
     def test_non_json_output_gets_repair_then_loud(self, fake_ollama):
-        srv = fake_ollama(["I think you should use a rule like..."])
-        with pytest.raises(CompilerError, match="not JSON"):
+        # This test's NAME always promised repair-then-loud, but until the
+        # W4 eval finding (2026-07-03) the implementation raised on the
+        # FIRST parse failure and this test scripted only one reply. Now it
+        # pins the promised behavior: two bad replies, two requests, loud.
+        srv = fake_ollama(["I think you should use a rule like...",
+                           "still prose, still not JSON"])
+        with pytest.raises(CompilerError, match="repair round"):
             compile_rule("fan", _backend(srv), [], SOURCE_KINDS, ACTION_KINDS)
+        assert len(srv.requests) == 2
+        # the repair prompt carries the parser's words, not a paraphrase
+        assert "not JSON" in srv.requests[1]["messages"][1]["content"]
+
+    def test_non_json_then_valid_repairs(self, fake_ollama):
+        # The W4 eval failure mode, mechanized: a semantically-right rule
+        # behind broken JSON must get its one repair round and recover.
+        srv = fake_ollama(['{"id": "shop_hot_fan", "match": {"kind"',
+                           json.dumps(GOOD_RULE)])
+        rule, _ = compile_rule("fan", _backend(srv), [],
+                               SOURCE_KINDS, ACTION_KINDS)
+        assert rule["id"] == "shop_hot_fan"
+        assert len(srv.requests) == 2
 
     def test_empty_intent_refused(self, fake_ollama):
         srv = fake_ollama([])

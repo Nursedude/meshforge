@@ -238,6 +238,13 @@ def compile_rule(intent: str, backend: OllamaBackend,
                  notes: str = "") -> tuple[dict, list[str]]:
     """English intent → (rule, lint_warnings). One repair round; then loud.
 
+    The repair round covers PARSE failures as well as validator errors —
+    broken JSON is the most repairable failure a schema-following model
+    produces. (Found live by the W4 eval 2026-07-03: the darkness-vs-breach
+    case compiled semantically RIGHT but died on a missing comma with no
+    second chance, while the test pinning this path was named
+    repair-then-loud and never scripted the repair.)
+
     The returned rule is validated against the FULL document it would join.
     Ratification and write_candidate() belong to the caller — this function
     never writes anything.
@@ -246,20 +253,27 @@ def compile_rule(intent: str, backend: OllamaBackend,
         raise CompilerError("empty intent — describe the rule you want")
     system = build_system_prompt(source_kinds, action_kinds, existing_rules,
                                  condition_kinds, notes)
+
+    def _attempt(raw: str) -> "tuple[dict | None, list[str]]":
+        try:
+            rule = _parse_rule_json(raw)
+        except CompilerError as e:
+            return None, [str(e)]  # the parser speaks in the repair prompt
+        return rule, _check_rule(rule, existing_rules, action_kinds)
+
     raw = backend.complete(system, intent.strip())
-    rule = _parse_rule_json(raw)
-    errors = _check_rule(rule, existing_rules, action_kinds)
+    rule, errors = _attempt(raw)
     if errors:
-        # ONE repair round: the validator speaks, the model gets to respond.
+        # ONE repair round: the validator (or the JSON parser) speaks, the
+        # model gets to respond. One round only — then loud.
         repair = (f"Your rule had these errors:\n- " + "\n- ".join(errors)
                   + "\n\nEmit the corrected rule as a single JSON object, "
                     "nothing else.\n\nOriginal intent: " + intent.strip())
         raw = backend.complete(system, repair)
-        rule = _parse_rule_json(raw)
-        errors = _check_rule(rule, existing_rules, action_kinds)
+        rule, errors = _attempt(raw)
         if errors:
             raise CompilerError(
-                "compiled rule failed validation after one repair round — "
+                "compiled rule failed after one repair round — "
                 "rephrase the intent or use the rule form", errors)
     warnings = lint_rules_document({"rules": [rule]})
     # a 1-rule document always lints "0 rules" clean; drop the irrelevant case
