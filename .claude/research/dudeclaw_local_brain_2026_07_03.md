@@ -190,6 +190,30 @@ evals, tier L is permanently BELIEVED.
 | **W7** | **Edge anomaly witness (optional, later)**: ESP-DL/tflite-micro autoencoder over the claw's local telemetry ring (heap/temp/RSSI/rx-rate) → `anomaly_score` as a *witness signal* to mini (never an actuator). New signal class → closed enum + seeds (coverage-gated). | L | med | Genuine "think different": the edge learns its own normal. |
 | **W8** | **Display v2** — §5. | M | low | `pr/display-pages` per FORK.md. |
 
+> **W6 DECIDED 2026-07-03: DO NOT BUY (defer indefinitely).** Both criteria
+> resolved against the purchase:
+> (a) **Independent benchmarks now exist and refute the vendor-community
+> speed claim** we had flagged [B, single-sourced]. Measured on the HAT
+> (schwab.sh, Q4_0): qwen2.5-instruct:1.5b **6.76 tok/s**, qwen2:1.5b
+> 8.03, llama3.2:3b **2.65** — nowhere near "30–50"; CNX Software's
+> independent test found the **Pi 5 CPU sometimes FASTER than the HAT**
+> (9.04 vs 6.7 tok/s on qwen2-1.5b).
+> (b) **hailo-ollama remains a closed, dated model set** (max qwen3:1.7b in
+> GenAI zoo 5.3; **Qwen3-4B unsupported, DFC conversion fails**; users
+> cannot add models) — our production model cannot run on it. And the
+> other half of (b) — "the 1.5B class passes W4 evals" — is now TRUE but
+> **on the CPU**: qwen2.5:1.5b-instruct passed the gate **8/8 = 1.0 at
+> 3–4× the 4B's speed** (suite 4.7 min vs 13; ledger 2026-07-03T23:00),
+> making the accelerator's remaining case (offload) moot for our
+> occasional-batch workload.
+> **Revisit triggers**: hailo-ollama ships ≥4B-class models AND an
+> independent decode benchmark beats the CPU ≥2×, OR a vision/VLM workload
+> enters the fleet (what the Hailo silicon is actually good at).
+> **Side-finding for the fallback tier**: the 1.5B's 1.0 is pass@1 with
+> both same-day fixes in place — keep the 4B default (quality margin,
+> 4-run history), but the 1.5B is now a MEASURED latency option
+> (env-var repoint) if oracle interactivity ever matters.
+
 ---
 
 ## 5. Display v2 — "tier-honest glance" (the display improvement)
