@@ -1,10 +1,36 @@
 # W5 — the agent claw (second-board runbook)
 
-> **Status 2026-07-03: SOFTWARE COMPLETE, HARDWARE PENDING.** Everything below
-> the "flash day" line waits on a second Heltec V4 (or the operator's decision
-> to role-swap `dudeclaw-01`, sacrificing its BLE-ears role — not recommended;
-> the lean profile exists for a reason). Firmware: fork branch
-> `pr/agent-profile` (env `esp32-s3-heltec-v4-agent`, compile-verified).
+> **Status 2026-07-04: FLASH-DAY DONE — dudeclaw-02 LIVE on moc5's site.**
+> Board: the 2nd Heltec V4 (16 MB, `!f66b575c` in its brief stock-Meshtastic
+> staging life), USB on moc5. Built `esp32-s3-heltec-v4-agent` off the
+> `dudeclaw` deploy branch (agent profile already merged; RAM 63.1%, heap
+> live 78 kB vs the lean radio's 29 kB), full-flash via esptool on moc5
+> (native-USB auto-download FAILED with stock meshtastic running —
+> `meshtastic --enter-dfu` was the cooperative path into the ROM bootloader).
+> **Network delta**: DudeNET is NOT visible at moc5's site — created
+> **DudeNET2** (2.4 GHz ch6 WPA2) on the site AREDN node by converting its
+> DEAD 2.4 mesh radio (0 RF stations) `radio1_mode mesh→lan` in
+> `/etc/config.mesh/setup` + node-setup; the 64 MB node needed a REAL reboot
+> to bring hostapd up (live wifi-reload wedged netifd: HOSTAPD_START_FAILED,
+> OOM-class box; `reboot` took ~4 min to actually fire — verify uptime).
+> PSK: on the node (`uci get`) + the claw config only, never in docs.
+> Claw egress = that node's WAN (.32-identity) → both pinholes (moc2:4222
+> existing, Ollama:11434 added 2026-07-04 operator-approved) trust it.
+> **Verify record**: 4a discover both claws ✓ · 4b temperature_read loop ✓
+> (61 s warm) · 4c enforcement ✓ (model never offered gpio_*; in-loop gate
+> unreached because the 4B SUBSTITUTES allowed tools and NARRATES THEM AS
+> SUCCESS — honesty wart, see W5.1) · 4d /config.json explicit refusal ✓
+> (39 s) · 4e cold first turn EXCEEDS the claw's 120 s HTTP timeout
+> ("[error]", Ollama logs show client-cancel at 2m0s mid-prompt-processing
+> ~16.6 tok/s); warm turns 39–62 s.
+> **W5.1 follow-ups**: (1) system-prompt hardening — "never claim an action
+> you did not perform; if a tool is unavailable say so"; (2) telemetry
+> enrollment DECIDED YES, not yet wired — second claw_metrics_push env +
+> tick path + cron on the brain box, plus kilo claw-anchor registration
+> (multi-claw tick design beat first: one basename today, two consumers);
+> (3) cold-turn latency — options: qwen2.5:1.5b repoint (gate-passed 8/8),
+> longer claw HTTP timeout (rebuild), Ollama keep_alive tuning.
+> Firmware: fork branch `pr/agent-profile` (merged into `dudeclaw` deploy).
 > Research: `.claude/research/dudeclaw_local_brain_2026_07_03.md` §2.5/§4-W5.
 
 ## What the agent claw IS
