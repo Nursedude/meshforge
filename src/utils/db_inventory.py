@@ -83,8 +83,11 @@ INVENTORY: List[DBSpec] = [
         retention_days=30,  # kilo.store.RETENTION_DAYS — test-pinned pair
         notes=(
             "Kilo K0 lab-instrument readings time-series (ts, transport, "
-            "node_key, kilo_id, metric, value). UNIQUE row guard makes "
-            "re-observation idempotent; prune() runs at every CLI open."
+            "node_key, kilo_id, metric, value) plus the K1 edges table "
+            "(per-packet RF soundings, 7d retention via "
+            "kilo.store.EDGE_RETENTION_DAYS — test-pinned). UNIQUE row "
+            "guards make re-observation idempotent; prune()/prune_edges() "
+            "run at every CLI open."
         ),
     ),
     DBSpec(

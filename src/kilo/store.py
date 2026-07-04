@@ -1,15 +1,16 @@
-"""Kilo readings store — the durable telemetry time-series (SQLite, MF013).
+"""Kilo readings + edges store — the durable telemetry tables (SQLite, MF013).
 
-One narrow table: a reading is (ts, transport, node_key, kilo_id, metric,
+Two narrow tables. A reading is (ts, transport, node_key, kilo_id, metric,
 value). ``node_key`` is the raw transport identity as heard (e.g. the
 Meshtastic ``!hex``); ``kilo_id`` is the registry join stamped at ingest
 time (NULL for unregistered senders — those are DISCOVERY candidates, not
-noise, and ``kilo discover`` lists them).
+noise, and ``kilo discover`` lists them). An edge (K1) is one per-packet
+(receiver ← sender) RF sounding; see the schema comment in open_db().
 
-Growth honesty: UNIQUE(transport, node_key, metric, ts) makes re-observed
-snapshots idempotent (INSERT OR IGNORE), and ``prune()`` enforces the
-30-day retention declared in utils.db_inventory — the DBSpec and this
-module are pinned together by test (two consumers, one constant).
+Growth honesty: UNIQUE guards make re-observation idempotent (INSERT OR
+IGNORE), and ``prune()``/``prune_edges()`` enforce the retentions declared
+in utils.db_inventory — the DBSpec and this module are pinned together by
+test (two consumers, one constant).
 """
 from __future__ import annotations
 
@@ -22,6 +23,9 @@ from utils.paths import get_real_user_home
 
 DB_BASENAME = "kilo_telemetry.db"
 RETENTION_DAYS = 30  # pinned to the DBSpec entry by test
+# Edges are per-packet (high volume) — shorter retention; this is also the
+# baseline-drift horizon for `kilo matrix`. Test-pinned ≤ RETENTION_DAYS.
+EDGE_RETENTION_DAYS = 7
 
 # metric name -> display unit (derivable, so not a schema column).
 # Closed-consumers gate: tests pin that every ingest vocabulary entry
@@ -66,6 +70,32 @@ def open_db(path: Optional[str] = None):
                  "ON readings (node_key, metric, ts)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_readings_ts "
                  "ON readings (ts)")
+    # K1 edges: one row per packet a receiver heard — (receiver ← sender)
+    # RF soundings. snr/rssi describe the LAST HOP into the receiver;
+    # hops_away==0 marks a true direct edge, NULL means the packet didn't
+    # say (unknown ≠ direct). relay_partial is the last byte of the
+    # relayer's id when present. packet_id dedups re-observation of the
+    # same packet — NULL packet ids never dedup (SQLite UNIQUE treats
+    # NULLs as distinct), which records everything rather than guessing.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS edges (
+            ts            REAL NOT NULL,
+            receiver      TEXT NOT NULL,
+            sender        TEXT NOT NULL,
+            channel       TEXT,
+            snr           REAL,
+            rssi          REAL,
+            hops_away     INTEGER,
+            hop_start     INTEGER,
+            relay_partial INTEGER,
+            packet_id     TEXT,
+            UNIQUE (receiver, sender, packet_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_pair "
+                 "ON edges (receiver, sender, ts)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_ts "
+                 "ON edges (ts)")
     conn.commit()
     return conn
 
@@ -94,6 +124,43 @@ def prune(conn, retention_days: float = RETENTION_DAYS,
     conn.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
     conn.commit()
     return conn.total_changes - before
+
+
+def record_edges(conn, rows: List[tuple]) -> int:
+    """INSERT OR IGNORE rows of (ts, receiver, sender, channel, snr, rssi,
+    hops_away, hop_start, relay_partial, packet_id); returns how many
+    landed. First-heard wins for a re-observed packet id."""
+    if not rows:
+        return 0
+    before = conn.total_changes
+    conn.executemany(
+        "INSERT OR IGNORE INTO edges "
+        "(ts, receiver, sender, channel, snr, rssi, hops_away, hop_start, "
+        "relay_partial, packet_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        rows)
+    conn.commit()
+    return conn.total_changes - before
+
+
+def prune_edges(conn, retention_days: float = EDGE_RETENTION_DAYS,
+                now: Optional[float] = None) -> int:
+    """Drop edges older than the edge retention window; returns rows
+    removed. Runs alongside prune() at every CLI open."""
+    now = time.time() if now is None else now
+    cutoff = now - retention_days * 86400.0
+    before = conn.total_changes
+    conn.execute("DELETE FROM edges WHERE ts < ?", (cutoff,))
+    conn.commit()
+    return conn.total_changes - before
+
+
+def edges_since(conn, since_ts: float) -> List[tuple]:
+    """(ts, receiver, sender, channel, snr, hops_away) for every edge at or
+    after ``since_ts`` — the matrix/baseline working set. Receiver/sender
+    are stored lowercased at parse time, so no read-time folding here."""
+    return conn.execute(
+        "SELECT ts, receiver, sender, channel, snr, hops_away FROM edges "
+        "WHERE ts >= ? ORDER BY ts", (since_ts,)).fetchall()
 
 
 def latest_by_key(conn) -> Dict[Tuple[str, str], Tuple[float, float]]:

@@ -14,7 +14,7 @@
 |------|------|--------|
 | **K0** | Node registry (identity/role/cadence expectations) + telemetry ingest spine (SQLite readings) + tri-state presence status + discovery | **SHIPPED + LIVE-VERIFIED 2026-07-04** (`src/kilo/`; moc 🟢) |
 | **K0.1** | Claw adapter (reads `claw_last_tick.json` — zero device I/O) + recurring collect via crontab + cron_verdict (#78 alerting for free) | **SHIPPED 2026-07-04** |
-| K1 | Link-matrix observatory: every packet a channel sounding; per-edge baseline drift; RF-shadow anomalies | **DESIGNED** — `.claude/plans/kilo_k1_link_matrix_design.md` (build in a fresh session) |
+| K1 | Link-matrix observatory: every packet a channel sounding; per-edge baseline drift; RF-shadow anomalies | **SHIPPED 2026-07-04** (`kilo/edges.py` + `kilo matrix`; edges ride the collect window via the subscriber's new packet hook; drift = median±MAD vs the edge's OWN baseline, tri-state ⚪🟢🟡🔴; design: `kilo_k1_link_matrix_design.md`) |
 | K2 | Sensor trust ledger: co-located cross-checks, per-sensor held/broke record (the calibration ledger applied to hardware) | planned |
 | K3 | Meshtastic vs RNS controlled A/B on identical boards, same air: delivery/latency/airtime envelopes, eval-case scoring | planned |
 

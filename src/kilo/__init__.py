@@ -6,7 +6,8 @@ sensors) treated as a single calibrated instrument on top of the NOC:
   K0  node registry (identity, role, expected cadence) + telemetry ingest
       spine (SQLite readings time-series) + tri-state presence status —
       THIS package. Silence per registered node becomes a signal.
-  K1  link-matrix observatory — every packet is a channel sounding.
+  K1  link-matrix observatory — every packet is a channel sounding;
+      per-edge baseline drift (kilo.edges + `kilo matrix`).
   K2  sensor trust ledger — cross-calibration; per-sensor held/broke record.
   K3  Meshtastic vs RNS controlled A/B — same air, measured envelopes.
 

@@ -128,6 +128,12 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         # Callbacks
         self._node_callbacks: List[Callable[[MQTTNode], None]] = []
         self._message_callbacks: List[Callable[[MQTTMessage], None]] = []
+        # Raw decoded-json packet observers: cb(topic, data) per uplinked
+        # packet of ANY type (message callbacks fire only for text; node
+        # callbacks carry neither the topic nor per-packet RF fields).
+        # Kilo K1 edge capture rides this. Fires on the paho network
+        # thread — observers must be fast and must not touch this client.
+        self._packet_callbacks: List[Callable[[str, Dict[str, Any]], None]] = []
 
         # Map cache persistence
         self._last_cache_write: float = 0
@@ -790,6 +796,16 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
     def register_message_callback(self, callback: Callable[[MQTTMessage], None]) -> None:
         """Register callback for new messages."""
         self._message_callbacks.append(callback)
+
+    def add_packet_callback(
+            self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Register a raw decoded-json packet observer: cb(topic, data).
+
+        Fires once per successfully-decoded json uplink packet (any type),
+        before type-specific handling, on the paho network thread. The
+        topic carries the uplinking gateway's identity as its suffix.
+        """
+        self._packet_callbacks.append(callback)
 
     def get_geojson(self) -> Dict:
         """Get nodes as GeoJSON FeatureCollection for mapping.

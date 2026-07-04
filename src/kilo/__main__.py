@@ -1,12 +1,16 @@
-"""Kilo CLI — status / discover / collect.
+"""Kilo CLI — status / discover / collect / matrix.
 
     PYTHONPATH=src python3 -m kilo status
     PYTHONPATH=src python3 -m kilo discover
     PYTHONPATH=src python3 -m kilo collect --seconds 120
+    PYTHONPATH=src python3 -m kilo matrix --window-hours 24
 
 Exit codes (cron_verdict-wireable): 0 = every OBSERVABLE registered node
 is OK; 1 = at least one observable node DARK/DEGRADED/NEVER-SEEN; 2 =
 registry/DB/collection error (could not verify — never counted as pass).
+``matrix`` mirrors the scheme: 0 = no edge SHIFTED, 1 = at least one
+edge SHIFTED beyond its own baseline band, 2 = error (SPARSE/DRIFTING
+never fail — sparse is unknown, and drifting is watch-not-page).
 """
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ from typing import List, Optional, Tuple
 from kilo.registry import OBSERVABLE_ANCHORS, KiloNode, load_registry, \
     observable_anchor_map, registry_path
 from kilo.store import UNITS, db_path, latest_by_key, open_db, prune, \
-    seen_keys
+    prune_edges, seen_keys
 
 # A node is OK while its newest expected reading is younger than this many
 # declared cadences (3 missed beacons = dark, the fleet's usual debounce).
@@ -112,6 +116,7 @@ def _cmd_status(args) -> int:
     conn = open_db(args.db)
     try:
         prune(conn)
+        prune_edges(conn)
         rows = build_status(nodes, latest_by_key(conn))
         _reg, unreg = split_seen(seen_keys(conn), nodes)
     finally:
@@ -193,6 +198,7 @@ def _cmd_collect(args) -> int:
     conn = open_db(args.db)
     try:
         prune(conn)
+        prune_edges(conn)
         if args.transport in ("all", "claw"):
             # instant (one file read) — runs before the mqtt window
             summary["claw"] = collect_claw(conn, nodes,
@@ -202,7 +208,7 @@ def _cmd_collect(args) -> int:
             summary["mqtt"] = collect_mqtt(
                 conn, nodes, seconds=args.seconds,
                 sample_every=args.sample_every,
-                config_overrides=overrides or None)
+                config_overrides=overrides or None, edges=args.edges)
             summary["ok"] = summary["ok"] and summary["mqtt"]["ok"]
     finally:
         conn.close()
@@ -210,10 +216,69 @@ def _cmd_collect(args) -> int:
     return 0 if summary["ok"] else 2
 
 
+def _cmd_matrix(args) -> int:
+    from kilo.edges import DRIFT_GLYPHS, DRIFT_MIN_BASELINE, \
+        DRIFT_MIN_RECENT, build_matrix
+    nodes, errors = load_registry(args.registry)
+    if nodes is None:
+        # The matrix is a VIEW — a broken registry costs the labels, not
+        # the data; warn like discover does, never silently reshape.
+        print(f"kilo: WARN {errors[0]} — showing raw node keys",
+              file=sys.stderr)
+        nodes = []
+    conn = open_db(args.db)
+    try:
+        prune(conn)
+        prune_edges(conn)
+        m = build_matrix(conn, nodes, window_s=args.window_hours * 3600.0,
+                         direct_only=not args.all_hops)
+    finally:
+        conn.close()
+    if args.json:
+        print(json.dumps(m, indent=2))
+    else:
+        t = m["totals"]
+        purity = "direct-only" if m["direct_only"] else \
+            "ALL HOPS (snr is last-hop — impure for relayed rows)"
+        print(f"kilo matrix — {len(m['receivers'])} receiver(s) × "
+              f"{len(m['senders'])} sender(s), window "
+              f"{args.window_hours:g}h, {purity}")
+        print(f"  7d edges: {t['edges_total']} total = "
+              f"{t['edges_direct']} direct + {t['edges_relayed']} relayed "
+              f"+ {t['edges_unknown_hops']} unknown-hop "
+              f"({t['edges_no_snr']} without snr)")
+        if not m["cells"]:
+            print("  no edges in the store yet — run `kilo collect` on a "
+                  "box whose gateway uplinks json")
+        for receiver in m["receivers"]:
+            cells = [c for c in m["cells"] if c["receiver"] == receiver]
+            label = cells[0]["receiver_label"]
+            shown = f"{label} ({receiver})" if label != receiver else receiver
+            print(f"  receiver {shown}:")
+            for c in cells:
+                d = c["drift"]
+                snr = (f"{c['median_snr']:+.2f} dB"
+                       if c["median_snr"] is not None else "no snr")
+                if d["state"] == "SPARSE":
+                    detail = (f"sparse: baseline {d['baseline_n']}/"
+                              f"{DRIFT_MIN_BASELINE} recent "
+                              f"{d['recent_n']}/{DRIFT_MIN_RECENT} — "
+                              f"unknown, not fine")
+                else:
+                    detail = (f"{d['state']} dev {d['deviation_db']:+.2f} "
+                              f"dB vs band ±{d['band_db']:.2f}")
+                print(f"    {DRIFT_GLYPHS[d['state']]} "
+                      f"{c['sender_label']:<20} ×{c['n']:<5} {snr:<10} "
+                      f"{detail}")
+    shifted = [c for c in m["cells"] if c["drift"]["state"] == "SHIFTED"]
+    return 1 if shifted else 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        prog="kilo", description="Kilo K0 — lab-node registry, telemetry "
-                                 "ingest spine, tri-state presence status.")
+        prog="kilo", description="Kilo — lab-node registry, telemetry "
+                                 "ingest spine, tri-state presence status, "
+                                 "link matrix.")
     ap.add_argument("--registry", default=None,
                     help=f"registry path (default {registry_path()})")
     ap.add_argument("--db", default=None,
@@ -236,7 +301,20 @@ def main(argv=None) -> int:
     p.add_argument("--root-topic")
     p.add_argument("--channel")
     p.add_argument("--claw-tick", help="override claw_last_tick.json path")
+    p.add_argument("--edges", action=argparse.BooleanOptionalAction,
+                   default=True,
+                   help="capture per-packet (receiver ← sender) edges "
+                        "during the mqtt window (K1; default on)")
     p.set_defaults(fn=_cmd_collect)
+    p = sub.add_parser("matrix", help="receivers × senders link matrix "
+                                      "with per-edge baseline drift (K1)")
+    p.add_argument("--window-hours", type=float, default=24.0,
+                   help="recent window; older edges form the baseline")
+    p.add_argument("--all-hops", action="store_true",
+                   help="include relayed/unknown-hop edges (snr is "
+                        "last-hop — impure; default is direct-only)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(fn=_cmd_matrix)
     args = ap.parse_args(argv)
     return args.fn(args)
 

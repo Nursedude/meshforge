@@ -171,14 +171,20 @@ def collect_mqtt(conn, registry: List[KiloNode], seconds: float,
                  sample_every: float = 15.0,
                  config_overrides: Optional[dict] = None,
                  stop_event: Optional[threading.Event] = None,
-                 subscriber=None) -> dict:
+                 subscriber=None, edges: bool = True) -> dict:
     """Run one bounded collection window; returns a witness summary.
 
     The summary is honest by construction: ``ok`` False means the
     subscriber never connected (nothing was observed — NOT "no traffic"),
     and counts are re-derived from what actually landed in the DB.
+
+    With ``edges`` (default on, K1) a per-packet observer is registered on
+    the SAME subscriber (no second client, #73) and (receiver ← sender)
+    soundings land in the edges table. The edges leg reports its own
+    honest state: a subscriber without the packet hook reads
+    ``enabled: False`` with the reason — never silently no-edges.
     """
-    from kilo.store import record_readings
+    from kilo.store import record_edges, record_readings
 
     stop = stop_event or threading.Event()
     if subscriber is None:
@@ -198,8 +204,21 @@ def collect_mqtt(conn, registry: List[KiloNode], seconds: float,
         "nodes_seen": 0,
         "registered_seen": [],
         "unregistered_seen": 0,
+        "edges": {"enabled": False, "reason": "disabled by flag"},
         "error": None,
     }
+    edge_buf = None
+    if edges:
+        from kilo.edges import EdgeBuffer
+        add_cb = getattr(subscriber, "add_packet_callback", None)
+        if callable(add_cb):
+            edge_buf = EdgeBuffer()
+            add_cb(edge_buf.on_packet)
+            summary["edges"] = {"enabled": True, "rows_written": 0,
+                                "packets": {}}
+        else:
+            summary["edges"] = {"enabled": False,
+                                "reason": "subscriber has no packet hook"}
     if not subscriber.start():
         summary["error"] = ("subscriber failed to connect — broker down or "
                             "misconfigured (~/.config/meshforge/"
@@ -223,12 +242,21 @@ def collect_mqtt(conn, registry: List[KiloNode], seconds: float,
             rows = snapshot_readings(nodes, registry, seen)
             summary["samples"] += 1
             summary["readings_written"] += record_readings(conn, rows)
+            if edge_buf is not None:
+                summary["edges"]["rows_written"] += \
+                    record_edges(conn, edge_buf.drain())
             for _ts, _tr, key, kilo_id, _m, _v in rows:
                 keys_seen.add(key)
                 if kilo_id:
                     registered.add(kilo_id)
     finally:
         subscriber.stop()
+        if edge_buf is not None:
+            # final drain AFTER stop — packets that arrived between the
+            # last sample tick and disconnect still land
+            summary["edges"]["rows_written"] += \
+                record_edges(conn, edge_buf.drain())
+            summary["edges"]["packets"] = edge_buf.counts()
 
     summary["ok"] = True
     summary["nodes_seen"] = len(keys_seen)

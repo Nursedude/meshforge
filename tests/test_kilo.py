@@ -401,3 +401,378 @@ class TestClawStatusJoin:
         rows = build_status(nodes, latest, now=NOW)
         assert rows[0]["state"] == "OK"
         assert set(rows[0]["metrics"]) == {"heap_free_bytes", "snr"}
+
+
+# ── K1: edges capture, drift tri-state, link matrix ─────────────────────
+
+from kilo import edges as kedges  # noqa: E402
+from kilo.edges import (  # noqa: E402
+    DRIFT_MIN_BASELINE, DRIFT_MIN_RECENT, EdgeBuffer, build_matrix,
+    classify_drift, parse_edge,
+)
+
+# The moc-live payload shape (sampled 2026-07-04): per-packet from/snr/
+# rssi/hops_away/hop_start/id are real; relay_node may be absent.
+LIVE_TOPIC = "msh/2/json/LongFast/!32962f10"
+LIVE_DATA = {
+    "channel": 1, "from": 3792937512, "hop_start": 7, "hops_away": 6,
+    "id": 3202878515, "payload": {"latitude_i": 214171648},
+    "rssi": -34, "sender": "!32962f10", "snr": 5.75,
+    "timestamp": 1783198573, "to": 4294967295, "type": "position",
+}
+
+
+class TestParseEdge:
+    def test_live_moc_payload_shape(self):
+        row, disp = parse_edge(LIVE_TOPIC, LIVE_DATA, now=NOW)
+        assert disp == "ok"
+        (ts, receiver, sender, channel, snr, rssi, hops_away, hop_start,
+         relay, packet_id) = row
+        assert ts == NOW
+        assert receiver == "!32962f10"      # topic SUFFIX, not payload
+        assert sender == "!e213a228"        # from = ORIGINATOR, not sender
+        assert channel == "LongFast"        # NAME from topic, never slot N
+        assert snr == 5.75 and rssi == -34.0
+        assert hops_away == 6 and hop_start == 7
+        assert relay is None                # absent in this payload
+        assert packet_id == "3202878515"
+
+    def test_self_edge_skipped_with_witness(self):
+        data = dict(LIVE_DATA, **{"from": 848703248})  # == !32962f10
+        row, disp = parse_edge(LIVE_TOPIC, data)
+        assert row is None and disp == "self"
+
+    def test_missing_from_is_no_sender(self):
+        row, disp = parse_edge(LIVE_TOPIC, {"snr": 1.0})
+        assert row is None and disp == "no_sender"
+
+    def test_topic_without_gateway_suffix_is_no_receiver(self):
+        row, disp = parse_edge("msh/2/json/LongFast", LIVE_DATA)
+        assert row is None and disp == "no_receiver"
+
+    def test_snr_zero_is_a_reading_not_absent(self):
+        row, _ = parse_edge(LIVE_TOPIC, dict(LIVE_DATA, snr=0.0), now=NOW)
+        assert row[4] == 0.0  # None-vs-0 discipline
+
+    def test_absent_snr_and_hops_stay_none(self):
+        data = {k: v for k, v in LIVE_DATA.items()
+                if k not in ("snr", "hops_away")}
+        row, disp = parse_edge(LIVE_TOPIC, data, now=NOW)
+        assert disp == "ok"
+        assert row[4] is None    # snr: absent ≠ 0.0
+        assert row[6] is None    # hops_away: unknown ≠ direct
+
+    def test_relay_byte_captured_and_zero_means_none(self):
+        row, _ = parse_edge(LIVE_TOPIC, dict(LIVE_DATA, relay_node=168))
+        assert row[8] == 168
+        row, _ = parse_edge(LIVE_TOPIC, dict(LIVE_DATA, relay_node=0))
+        assert row[8] is None
+
+    def test_identities_lowercased_at_parse(self):
+        row, _ = parse_edge("msh/2/json/LongFast/!32962F10", LIVE_DATA)
+        assert row[1] == "!32962f10"
+
+    def test_non_dict_payload_is_unparseable(self):
+        row, disp = parse_edge(LIVE_TOPIC, ["not", "a", "dict"])
+        assert row is None and disp == "unparseable"
+
+
+class TestEdgeStore:
+    def _conn(self, tmp_path):
+        return kstore.open_db(str(tmp_path / "kilo.db"))
+
+    def _row(self, **kw):
+        d = {"ts": NOW, "receiver": "!32962f10", "sender": "!e213a228",
+             "channel": "LongFast", "snr": 5.75, "rssi": -34.0,
+             "hops_away": 0, "hop_start": 7, "relay": None,
+             "packet_id": "111"}
+        d.update(kw)
+        return (d["ts"], d["receiver"], d["sender"], d["channel"], d["snr"],
+                d["rssi"], d["hops_away"], d["hop_start"], d["relay"],
+                d["packet_id"])
+
+    def test_same_packet_reobserved_dedups(self, tmp_path):
+        conn = self._conn(tmp_path)
+        assert kstore.record_edges(conn, [self._row()]) == 1
+        assert kstore.record_edges(conn, [self._row(ts=NOW + 5)]) == 0
+
+    def test_null_packet_id_rows_never_dedup(self, tmp_path):
+        # documented: without an id we record everything rather than guess
+        conn = self._conn(tmp_path)
+        assert kstore.record_edges(conn, [self._row(packet_id=None)]) == 1
+        assert kstore.record_edges(conn, [self._row(packet_id=None)]) == 1
+
+    def test_prune_edges_seven_days(self, tmp_path):
+        conn = self._conn(tmp_path)
+        kstore.record_edges(conn, [
+            self._row(ts=NOW - 8 * 86400, packet_id="old"),
+            self._row(ts=NOW - 1 * 86400, packet_id="new")])
+        assert kstore.prune_edges(conn, now=NOW) == 1
+        assert conn.execute("SELECT packet_id FROM edges").fetchall() == \
+            [("new",)]
+
+    def test_edge_retention_never_exceeds_db_retention(self):
+        # the DBSpec declares 30d for the DB; edges must live within it
+        assert kstore.EDGE_RETENTION_DAYS <= kstore.RETENTION_DAYS
+
+    def test_dbspec_notes_carry_the_edges_table(self):
+        from utils.db_inventory import INVENTORY
+        spec = next(s for s in INVENTORY if s.name == "kilo_telemetry")
+        assert "edges" in spec.notes
+        assert "EDGE_RETENTION_DAYS" in spec.notes
+
+
+class TestEdgeBuffer:
+    def test_ok_packet_buffers_and_drain_clears(self):
+        buf = EdgeBuffer()
+        buf.on_packet(LIVE_TOPIC, LIVE_DATA)
+        rows = buf.drain()
+        assert len(rows) == 1 and rows[0][1] == "!32962f10"
+        assert buf.drain() == []
+        assert buf.counts() == {"ok": 1}
+
+    def test_every_packet_lands_in_exactly_one_witness_counter(self):
+        buf = EdgeBuffer()
+        buf.on_packet(LIVE_TOPIC, LIVE_DATA)                       # ok
+        buf.on_packet(LIVE_TOPIC, dict(LIVE_DATA, **{"from": 848703248}))
+        buf.on_packet(LIVE_TOPIC, {"type": "text"})                # no from
+        buf.on_packet("msh/2/json/LongFast", LIVE_DATA)            # no rx
+        buf.on_packet(LIVE_TOPIC, "garbage")                       # unparse
+        counts = buf.counts()
+        assert counts == {"ok": 1, "self": 1, "no_sender": 1,
+                          "no_receiver": 1, "unparseable": 1}
+        assert sum(counts.values()) == 5
+
+    def test_never_raises_into_the_decoder(self):
+        buf = EdgeBuffer()
+        buf.on_packet(None, None)  # must not raise (paho thread safety)
+        assert sum(buf.counts().values()) == 1
+
+
+class TestClassifyDrift:
+    # baseline: 10×5.5 + 10×6.5 → median 6.0, MAD 0.5 → band =
+    # max(2·1.4826·0.5, 2.0) = 2.0 (the quantization floor wins)
+    BASE = [5.5] * 10 + [6.5] * 10
+
+    def test_sparse_baseline_is_unknown_not_fine(self):
+        d = classify_drift([6.0] * (DRIFT_MIN_BASELINE - 1), [7.0] * 10)
+        assert d["state"] == "SPARSE"
+        assert d["band_db"] is None  # no band claimed without a baseline
+
+    def test_sparse_recent_is_unknown(self):
+        d = classify_drift(self.BASE, [7.0] * (DRIFT_MIN_RECENT - 1))
+        assert d["state"] == "SPARSE"
+
+    def test_within_band_is_ok(self):
+        d = classify_drift(self.BASE, [7.5] * 5)   # dev +1.5 ≤ 2.0
+        assert d["state"] == "OK"
+        assert d["deviation_db"] == 1.5 and d["band_db"] == 2.0
+
+    def test_beyond_band_is_drifting(self):
+        d = classify_drift(self.BASE, [9.0] * 5)   # dev +3.0 ≤ 4.0
+        assert d["state"] == "DRIFTING"
+
+    def test_beyond_twice_band_is_shifted(self):
+        d = classify_drift(self.BASE, [12.0] * 5)  # dev +6.0 > 4.0
+        assert d["state"] == "SHIFTED"
+
+    def test_negative_drift_detected_too(self):
+        d = classify_drift(self.BASE, [0.0] * 5)   # dev -6.0
+        assert d["state"] == "SHIFTED"
+
+    def test_zero_mad_floor_absorbs_quantization(self):
+        # ultra-stable edge: MAD 0 → raw band 0 would page on 0.25 dB
+        # steps; the 2 dB floor keeps small wobble OK
+        d = classify_drift([6.0] * 30, [6.25] * 6)
+        assert d["state"] == "OK" and d["band_db"] == 2.0
+
+    def test_wide_baseline_widens_the_band(self):
+        base = [0.0] * 10 + [4.0] * 20 + [8.0] * 10  # median 4, MAD 2
+        d = classify_drift(base, [9.0] * 5)  # dev 5 ≤ 2·1.4826·2 ≈ 5.93
+        assert d["state"] == "OK"
+
+    def test_median_is_outlier_robust(self):
+        d = classify_drift(self.BASE, [6.0] * 9 + [50.0])  # one rogue
+        assert d["state"] == "OK"
+
+
+def _edge(ts, receiver="!32962f10", sender="!e213a228", snr=6.0,
+          hops=0, pid=None):
+    return (ts, receiver, sender, "LongFast", snr, -34.0, hops, 7, None,
+            pid)
+
+
+class TestBuildMatrix:
+    def _conn_with(self, tmp_path, rows):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        assert kstore.record_edges(conn, rows) == len(rows)
+        return conn
+
+    def test_direct_only_excludes_relayed_and_unknown(self, tmp_path):
+        conn = self._conn_with(tmp_path, [
+            _edge(NOW - 60, hops=0, pid="a"),
+            _edge(NOW - 61, hops=3, pid="b"),     # relayed: last-hop snr
+            _edge(NOW - 62, hops=None, pid="c"),  # unknown ≠ direct
+        ])
+        m = build_matrix(conn, [], now=NOW)
+        assert m["totals"] == {"edges_total": 3, "edges_direct": 1,
+                               "edges_relayed": 1, "edges_unknown_hops": 1,
+                               "edges_no_snr": 0}
+        assert len(m["cells"]) == 1 and m["cells"][0]["n"] == 1
+
+    def test_all_hops_includes_everything(self, tmp_path):
+        conn = self._conn_with(tmp_path, [
+            _edge(NOW - 60, hops=0, pid="a"),
+            _edge(NOW - 61, hops=3, pid="b"),
+        ])
+        m = build_matrix(conn, [], now=NOW, direct_only=False)
+        assert m["cells"][0]["n"] == 2
+
+    def test_labels_join_current_anchors_at_read_time(self, tmp_path):
+        conn = self._conn_with(tmp_path, [_edge(NOW - 60, pid="a")])
+        nodes, errs = kreg.load_registry(_write_registry(tmp_path, [
+            _node_raw(kid="moc-gw", role="gateway",
+                      ids={"meshtastic": "!32962F10"}),
+            _node_raw(kid="bench7", ids={"meshtastic": "!E213A228"})]))
+        assert errs == []
+        m = build_matrix(conn, nodes, now=NOW)
+        cell = m["cells"][0]
+        assert cell["receiver_label"] == "moc-gw"
+        assert cell["sender_label"] == "bench7"
+
+    def test_vanished_edge_keeps_a_cell(self, tmp_path):
+        # heard in the baseline, silent in the window: n=0, SPARSE —
+        # a dark link must not vanish from the view
+        conn = self._conn_with(
+            tmp_path, [_edge(NOW - 3 * 86400, pid="old")])
+        m = build_matrix(conn, [], now=NOW)
+        assert len(m["cells"]) == 1
+        cell = m["cells"][0]
+        assert cell["n"] == 0 and cell["median_snr"] is None
+        assert cell["drift"]["state"] == "SPARSE"
+
+    def test_null_snr_counts_presence_but_not_median(self, tmp_path):
+        conn = self._conn_with(tmp_path, [
+            _edge(NOW - 60, snr=4.0, pid="a"),
+            _edge(NOW - 61, snr=None, pid="b"),
+        ])
+        m = build_matrix(conn, [], now=NOW)
+        cell = m["cells"][0]
+        assert cell["n"] == 2 and cell["median_snr"] == 4.0
+        assert m["totals"]["edges_no_snr"] == 1
+
+    def test_drift_flows_from_baseline_to_cell(self, tmp_path):
+        rows = [_edge(NOW - 2 * 86400 - i * 60, snr=6.0, pid=f"b{i}")
+                for i in range(DRIFT_MIN_BASELINE)]
+        rows += [_edge(NOW - 60 - i, snr=20.0, pid=f"r{i}")
+                 for i in range(DRIFT_MIN_RECENT)]
+        conn = self._conn_with(tmp_path, rows)
+        m = build_matrix(conn, [], now=NOW)
+        assert m["cells"][0]["drift"]["state"] == "SHIFTED"
+
+
+class _FakeEdgeSubscriber(_FakeSubscriber):
+    """Fake with the K1 packet hook: queued packets are delivered on the
+    first get_nodes() tick, as if they arrived on the paho thread."""
+
+    def __init__(self, nodes, packets=(), **kw):
+        super().__init__(nodes, **kw)
+        self._packets = list(packets)
+        self.packet_cb = None
+
+    def add_packet_callback(self, cb):
+        self.packet_cb = cb
+
+    def get_nodes(self):
+        while self._packets and self.packet_cb is not None:
+            self.packet_cb(*self._packets.pop(0))
+        return super().get_nodes()
+
+
+class TestCollectEdgesWiring:
+    def test_edges_captured_during_window(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        sub = _FakeEdgeSubscriber(
+            [_mqtt_node(temperature=21.5)],
+            packets=[(LIVE_TOPIC, LIVE_DATA),
+                     (LIVE_TOPIC, dict(LIVE_DATA, **{"from": 848703248}))])
+        summary = collect_mqtt(conn, [], seconds=0.2, sample_every=0.05,
+                               subscriber=sub)
+        leg = summary["edges"]
+        assert leg["enabled"] is True
+        assert leg["rows_written"] == 1  # self-edge skipped
+        assert leg["packets"] == {"ok": 1, "self": 1}
+        assert conn.execute("SELECT COUNT(*) FROM edges").fetchone()[0] == 1
+
+    def test_no_edges_flag_disables_capture(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        sub = _FakeEdgeSubscriber([], packets=[(LIVE_TOPIC, LIVE_DATA)])
+        summary = collect_mqtt(conn, [], seconds=0.1, sample_every=0.05,
+                               subscriber=sub, edges=False)
+        assert summary["edges"]["enabled"] is False
+        assert summary["edges"]["reason"] == "disabled by flag"
+        assert sub.packet_cb is None
+
+    def test_subscriber_without_hook_reads_honest_not_silent(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        sub = _FakeSubscriber([_mqtt_node(temperature=21.5)])
+        summary = collect_mqtt(conn, [], seconds=0.1, sample_every=0.05,
+                               subscriber=sub)
+        assert summary["ok"] is True
+        assert summary["edges"]["enabled"] is False
+        assert "no packet hook" in summary["edges"]["reason"]
+
+
+class TestSubscriberPacketHook:
+    def _sub(self):
+        from monitoring.mqtt_subscriber import MQTTNodelessSubscriber
+        return MQTTNodelessSubscriber(config={"broker": "test.invalid"})
+
+    def test_hook_fires_per_decoded_json_packet(self):
+        sub = self._sub()
+        got = []
+        sub.add_packet_callback(lambda t, d: got.append((t, d)))
+        sub._handle_json_message(LIVE_TOPIC,
+                                 json.dumps(LIVE_DATA).encode())
+        assert got == [(LIVE_TOPIC, LIVE_DATA)]
+
+    def test_undecodable_payload_never_fires(self):
+        sub = self._sub()
+        got = []
+        sub.add_packet_callback(lambda t, d: got.append(1))
+        sub._handle_json_message(LIVE_TOPIC, b"{torn")
+        assert got == []
+
+    def test_raising_observer_does_not_break_decode(self):
+        sub = self._sub()
+
+        def boom(t, d):
+            raise RuntimeError("observer bug")
+
+        sub.add_packet_callback(boom)
+        sub._handle_json_message(LIVE_TOPIC,
+                                 json.dumps(LIVE_DATA).encode())
+        # node tracking (the packet's sender field) proceeded regardless
+        assert "!32962f10" in sub._nodes
+
+
+class TestMatrixCLI:
+    def test_empty_store_exits_zero(self, tmp_path):
+        from kilo.__main__ import main
+        rc = main(["--db", str(tmp_path / "kilo.db"),
+                   "--registry", _write_registry(tmp_path, []), "matrix"])
+        assert rc == 0
+
+    def test_shifted_edge_exits_one(self, tmp_path):
+        from kilo.__main__ import main
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        now = time.time()
+        rows = [_edge(now - 2 * 86400 - i * 60, snr=6.0, pid=f"b{i}")
+                for i in range(DRIFT_MIN_BASELINE)]
+        rows += [_edge(now - 60 - i, snr=20.0, pid=f"r{i}")
+                 for i in range(DRIFT_MIN_RECENT)]
+        kstore.record_edges(conn, rows)
+        conn.close()
+        rc = main(["--db", str(tmp_path / "kilo.db"),
+                   "--registry", _write_registry(tmp_path, []), "matrix"])
+        assert rc == 1

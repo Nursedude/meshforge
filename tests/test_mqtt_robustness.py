@@ -250,6 +250,42 @@ class TestPositionValidation:
 # Telemetry Validation Tests
 # =============================================================================
 
+class TestNumericFromCanonicalized:
+    """Live meshtasticd json uplinks carry ``from`` as a NUMBER (sampled
+    on-air 2026-07-04); position/telemetry handlers key nodes on it. The
+    string fixtures below masked that for months — these pin the live
+    shape so the handlers can never go silently dead for numeric senders
+    again (the swallowed-AttributeError class, honest_failure_modes #9)."""
+
+    def test_position_with_numeric_from_lands(self, subscriber):
+        data = {
+            "from": 3792937512,  # !e213a228 — numeric, as on the wire
+            "type": "position",
+            "payload": {"latitude_i": 197749000,
+                        "longitude_i": -1559000000},
+        }
+        subscriber._handle_json_message("msh/2/json/LongFast/!32962f10",
+                                        json.dumps(data).encode())
+        node = subscriber.get_node("!e213a228")
+        assert node is not None
+        assert abs(node.latitude - 19.7749) < 0.001
+
+    def test_telemetry_with_numeric_from_lands(self, subscriber):
+        data = {
+            "from": 3792937512,
+            "type": "telemetry",
+            "payload": {"device_metrics": {"battery_level": 85}},
+        }
+        subscriber._handle_json_message("msh/2/json/LongFast/!32962f10",
+                                        json.dumps(data).encode())
+        node = subscriber.get_node("!e213a228")
+        assert node is not None and node.battery_level == 85
+
+    def test_string_from_unchanged(self, subscriber):
+        node = subscriber._ensure_node("!node9")
+        assert node.node_id == "!node9"
+
+
 class TestTelemetryValidation:
     def test_valid_telemetry(self, subscriber):
         """Valid telemetry values accepted."""

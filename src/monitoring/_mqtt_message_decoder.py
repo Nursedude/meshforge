@@ -15,6 +15,7 @@ Expects the following attributes on the host class:
 - self._messages_lock: threading.Lock
 - self._node_callbacks: List[Callable]
 - self._message_callbacks: List[Callable]
+- self._packet_callbacks: List[Callable]  (raw (topic, data) observers)
 """
 
 import json
@@ -44,6 +45,14 @@ class MQTTMessageDecoderMixin:
             data = json.loads(payload.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return
+
+        # Raw packet observers first (any type, before type handling) —
+        # snapshot for thread-safe iteration, never let one break decode.
+        for cb in list(getattr(self, '_packet_callbacks', [])):
+            try:
+                cb(topic, data)
+            except Exception as e:
+                logger.debug(f"Packet callback error: {e}")
 
         # Extract node info from sender
         sender = data.get("sender") or data.get("from")
@@ -116,8 +125,19 @@ class MQTTMessageDecoderMixin:
         except Exception:
             pass  # Decrypted text processing is best-effort
 
-    def _ensure_node(self, node_id: str) -> MQTTNode:
-        """Ensure a node exists in our tracking."""
+    def _ensure_node(self, node_id) -> MQTTNode:
+        """Ensure a node exists in our tracking.
+
+        Accepts the canonical '!hex' string OR a raw integer node number:
+        live meshtasticd json uplinks carry ``from`` as a NUMBER, and the
+        position/telemetry handlers key on it — before this canonicalized,
+        every such packet died on a swallowed AttributeError and those
+        handlers were silently dead for numeric senders (found 2026-07-04
+        by Kilo K1's live-payload tests; test fixtures had used string
+        ``from`` values, masking it).
+        """
+        if isinstance(node_id, int) and not isinstance(node_id, bool):
+            node_id = f"!{node_id & 0xFFFFFFFF:08x}"
         with self._nodes_lock:
             if node_id not in self._nodes:
                 self._nodes[node_id] = MQTTNode(node_id=node_id)
