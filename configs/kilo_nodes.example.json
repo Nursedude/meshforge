@@ -1,0 +1,32 @@
+{
+  "_comment": "Kilo node registry template. Copy to ~/.config/meshforge/kilo_nodes.json and replace the SYNTHETIC anchors with your real lab nodes (MF014: no operator values in the repo copy). Anchors are RADIO identities — never IP addresses (DHCP reassigns them; the loader refuses IP-shaped anchors loudly). Roles: esp32-sensor | nrf-meshtastic | rnode | claw | gateway | other. cadence_s = the node's own telemetry period; status reads DARK after 3 missed cadences. Metric vocabulary (kilo/store.py UNITS): temperature humidity pressure gas_resistance co2 iaq pm25_standard pm10_standard voltage battery_level channel_utilization air_util_tx snr rssi. Nodes whose anchors have no ingest adapter yet (rns, claw) are reported UNKNOWN — declared, visible, never falsely OK or DARK.",
+  "nodes": [
+    {
+      "kilo_id": "bench1-esp32-env",
+      "role": "esp32-sensor",
+      "location": "bench 1, window side",
+      "ids": {"meshtastic": "!0a0b0c0d"},
+      "expected_metrics": ["temperature", "humidity", "pressure"],
+      "cadence_s": 900,
+      "notes": "SYNTHETIC EXAMPLE — ESP32 + BME280, telemetry over Meshtastic MQTT json"
+    },
+    {
+      "kilo_id": "shelf2-nrf-lowpower",
+      "role": "nrf-meshtastic",
+      "location": "shelf 2, RF-shadowed corner",
+      "ids": {"meshtastic": "!01020304"},
+      "expected_metrics": ["voltage", "battery_level", "channel_utilization"],
+      "cadence_s": 1800,
+      "notes": "SYNTHETIC EXAMPLE — nRF52 board on battery; power telemetry is the point"
+    },
+    {
+      "kilo_id": "desk-rnode-probe",
+      "role": "rnode",
+      "location": "desk, RNS side of the A/B",
+      "ids": {"rns": "0000000000000000000000000000dead"},
+      "expected_metrics": [],
+      "cadence_s": 3600,
+      "notes": "SYNTHETIC EXAMPLE — RNode/RNS anchor; no ingest adapter yet, status reports UNKNOWN until the K1/K3 adapter lands"
+    }
+  ]
+}

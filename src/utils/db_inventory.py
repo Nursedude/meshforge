@@ -76,6 +76,18 @@ INVENTORY: List[DBSpec] = [
         notes="Mesh message history. Hourly auto-prune from store_incoming.",
     ),
     DBSpec(
+        name="kilo_telemetry",
+        path_factory=lambda: _meshforge_data_dir() / "kilo_telemetry.db",
+        creator_module="kilo.store",
+        has_auto_prune=True,
+        retention_days=30,  # kilo.store.RETENTION_DAYS — test-pinned pair
+        notes=(
+            "Kilo K0 lab-instrument readings time-series (ts, transport, "
+            "node_key, kilo_id, metric, value). UNIQUE row guard makes "
+            "re-observation idempotent; prune() runs at every CLI open."
+        ),
+    ),
+    DBSpec(
         name="analytics",
         path_factory=lambda: _meshforge_config_dir() / "analytics.db",
         creator_module="utils.analytics",
