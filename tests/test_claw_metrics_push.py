@@ -54,11 +54,11 @@ class _FakeNC:
 @pytest.fixture
 def wired(monkeypatch, tmp_path):
     """Patch out env load, the localhost /api/status read, and the tick path."""
-    monkeypatch.setattr(cmp_mod, "_load_claw_env", lambda: {
+    monkeypatch.setattr(cmp_mod, "_load_claw_env", lambda _p=None: {
         "MINI_DUDEAI_NATS_SERVER": "nats://x", "MINI_DUDEAI_CLAW_DEVICE": "dudeclaw-01"})
     monkeypatch.setattr(cmp_mod, "build_rows", lambda: ["row0", "row1"])
     tick_file = tmp_path / "claw_last_tick.json"
-    monkeypatch.setattr(cmp_mod, "_tick_path", lambda: str(tick_file))
+    monkeypatch.setattr(cmp_mod, "_tick_path", lambda *_a: str(tick_file))
     return tick_file
 
 
@@ -73,7 +73,7 @@ def test_happy_path_writes_ok_tick(wired, monkeypatch):
         "ble_stats": {"ok": True, "result": BS},
         "display_print": {"ok": True},
     }))
-    rc = cmp_mod.main()
+    rc = cmp_mod.main([])
     assert rc == 0
     tick = json.loads(wired.read_text())
     assert tick["ok"] is True
@@ -87,7 +87,7 @@ def test_connect_failure_writes_unreachable_tick_and_pages(wired, monkeypatch):
     # the cron pages (SystemExit) so claw death is never silent.
     _install_conn(monkeypatch, _FakeNC({}, connect_error=cmp_mod.NatsError("refused")))
     with pytest.raises(SystemExit):
-        cmp_mod.main()
+        cmp_mod.main([])
     tick = json.loads(wired.read_text())
     assert tick["ok"] is False
     assert tick["device_info"] is None and tick["ble"] is None
@@ -103,7 +103,7 @@ def test_paint_failure_still_persists_captured_tick_and_pages(wired, monkeypatch
         "display_print": {"ok": False, "error": "oled busy"},
     }))
     with pytest.raises(SystemExit):
-        cmp_mod.main()
+        cmp_mod.main([])
     tick = json.loads(wired.read_text())
     assert tick["ok"] is True
     assert tick["device_info"]["uptime_s"] == 109368
@@ -116,7 +116,7 @@ def test_half_unreachable_tick_is_not_ok(wired, monkeypatch):
         "ble_stats": cmp_mod.NatsError("timeout"),
         "display_print": {"ok": True},
     }))
-    rc = cmp_mod.main()
+    rc = cmp_mod.main([])
     assert rc == 0
     tick = json.loads(wired.read_text())
     assert tick["ok"] is False
@@ -140,7 +140,7 @@ class TestBrainTierPush:
     def test_tier_pushed_and_recorded_in_tick(self, wired, monkeypatch):
         monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
         fake = _install_conn(monkeypatch, self._nc_ok())
-        rc = cmp_mod.main()
+        rc = cmp_mod.main([])
         assert rc == 0
         tier_reqs = [r for r in fake.requests if r.get("tool") == "display_tier"]
         assert tier_reqs == [{"tool": "display_tier", "tier": "F"}]
@@ -153,7 +153,7 @@ class TestBrainTierPush:
         monkeypatch.setattr(cmp_mod, "_probe_tier",
                             lambda env: (None, "no tier provable"))
         fake = _install_conn(monkeypatch, self._nc_ok())
-        rc = cmp_mod.main()
+        rc = cmp_mod.main([])
         assert rc == 0
         assert not [r for r in fake.requests if r.get("tool") == "display_tier"]
         tick = json.loads(wired.read_text())
@@ -168,7 +168,7 @@ class TestBrainTierPush:
         nc._responses["display_tier"] = {
             "ok": False, "error": "Error: unknown tool 'display_tier'"}
         _install_conn(monkeypatch, nc)
-        assert cmp_mod.main() == 0
+        assert cmp_mod.main([]) == 0
 
     def test_real_tier_refusal_pages(self, wired, monkeypatch):
         monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
@@ -176,7 +176,7 @@ class TestBrainTierPush:
         nc._responses["display_tier"] = {"ok": False, "error": "oled busy"}
         _install_conn(monkeypatch, nc)
         with pytest.raises(SystemExit):
-            cmp_mod.main()
+            cmp_mod.main([])
 
     def test_row_paint_failure_skips_tier_push(self, wired, monkeypatch):
         # Rows refused -> the claw's paint path is already broken; page once,
@@ -186,7 +186,7 @@ class TestBrainTierPush:
         nc._responses["display_print"] = {"ok": False, "error": "oled busy"}
         fake = _install_conn(monkeypatch, nc)
         with pytest.raises(SystemExit):
-            cmp_mod.main()
+            cmp_mod.main([])
         assert not [r for r in fake.requests if r.get("tool") == "display_tier"]
 
 
@@ -269,7 +269,7 @@ class TestUnknownToolCaseFolding:
                              "error": "Unknown Tool: display_tier"},
         })
         _install_conn(monkeypatch, nc)
-        assert cmp_mod.main() == 0
+        assert cmp_mod.main([]) == 0
 
 
 class TestRTierReaderEnvFileOnly:
@@ -292,3 +292,37 @@ class TestRTierReaderEnvFileOnly:
                             lambda url, timeout=0: (None, "refused"))
         tier, note = cmp_mod._probe_tier(env)
         assert tier is None  # env-file home has no state; cron env ignored
+
+
+class TestMultiClawTickRouting:
+    """W5.1: a --env instance must never clobber the primary's tick file."""
+
+    def test_no_env_flag_keeps_legacy_basename(self):
+        from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
+        assert cmp_mod._tick_basename_for(None, "dudeclaw-01") == \
+            CLAW_TICK_BASENAME
+
+    def test_explicit_default_env_still_primary(self):
+        # `--env <the default path>` must not fork the primary's tick
+        # into a secondary file (realpath comparison, not flag presence)
+        from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
+        assert cmp_mod._tick_basename_for(cmp_mod.DEFAULT_ENV_PATH,
+                                          "dudeclaw-01") == \
+            CLAW_TICK_BASENAME
+
+    def test_other_env_gets_per_device_basename(self, tmp_path):
+        env = tmp_path / "mini_dudeai_claw02.env"
+        env.write_text("MINI_DUDEAI_CLAW_DEVICE=dudeclaw-02\n")
+        assert cmp_mod._tick_basename_for(str(env), "dudeclaw-02") == \
+            "claw_last_tick.dudeclaw-02.json"
+
+    def test_load_claw_env_custom_path(self, tmp_path):
+        env = tmp_path / "claw02.env"
+        env.write_text("# comment\nMINI_DUDEAI_NATS_SERVER=localhost:4222\n"
+                       "MINI_DUDEAI_CLAW_DEVICE=dudeclaw-02\n")
+        got = cmp_mod._load_claw_env(str(env))
+        assert got["MINI_DUDEAI_CLAW_DEVICE"] == "dudeclaw-02"
+
+    def test_load_claw_env_missing_custom_path_exits(self, tmp_path):
+        with pytest.raises(SystemExit):
+            cmp_mod._load_claw_env(str(tmp_path / "absent.env"))

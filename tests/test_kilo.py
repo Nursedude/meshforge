@@ -776,3 +776,67 @@ class TestMatrixCLI:
         rc = main(["--db", str(tmp_path / "kilo.db"),
                    "--registry", _write_registry(tmp_path, []), "matrix"])
         assert rc == 1
+
+
+# ── W5.1: multi-claw tick ingestion (dudeclaw-02 enrollment) ─────────────
+
+from kilo.ingest import claw_tick_paths, collect_claw_all  # noqa: E402
+
+
+class TestMultiClawIngest:
+    def _tick(self, tmp_path, basename, device, ts=NOW):
+        tick = {"captured_at": ts, "captured_iso": "x", "host": "h",
+                "device": device, "ok": True,
+                "device_info": {"heap_free_bytes": 1000,
+                                "heap_total_bytes": 2000, "uptime_s": 5,
+                                "wifi_rssi_dbm": -40},
+                "ble": None, "errors": {}}
+        (tmp_path / basename).write_text(json.dumps(tick))
+
+    def test_glob_matches_writer_secondary_formula(self, tmp_path):
+        # pair pin: kilo's glob and the writer's secondary basename are
+        # two consumers of one naming rule — they move together or fail here
+        from mini_dudeai.claw_telemetry import (CLAW_TICK_BASENAME,
+                                                secondary_tick_basename)
+        self._tick(tmp_path, CLAW_TICK_BASENAME, "dudeclaw-01")
+        self._tick(tmp_path, secondary_tick_basename("dudeclaw-02"),
+                   "dudeclaw-02")
+        paths = claw_tick_paths(home=tmp_path)
+        assert len(paths) == 2
+        assert paths[0].endswith(CLAW_TICK_BASENAME)  # primary first
+
+    def test_primary_never_globbed_twice(self, tmp_path):
+        from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
+        self._tick(tmp_path, CLAW_TICK_BASENAME, "dudeclaw-01")
+        assert len(claw_tick_paths(home=tmp_path)) == 1
+
+    def test_all_ticks_land_with_device_identity(self, tmp_path):
+        from mini_dudeai.claw_telemetry import (CLAW_TICK_BASENAME,
+                                                secondary_tick_basename)
+        self._tick(tmp_path, CLAW_TICK_BASENAME, "dudeclaw-01")
+        self._tick(tmp_path, secondary_tick_basename("dudeclaw-02"),
+                   "dudeclaw-02", ts=NOW + 1)
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        summary = collect_claw_all(conn, [], home=tmp_path)
+        assert summary["ok"] is True
+        assert len(summary["legs"]) == 2
+        latest = kstore.latest_by_key(conn)
+        assert ("dudeclaw-01", "heap_free_bytes") in latest
+        assert ("dudeclaw-02", "heap_free_bytes") in latest
+
+    def test_no_ticks_at_all_is_inert_not_failure(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        summary = collect_claw_all(conn, [], home=tmp_path)
+        assert summary["ok"] is True
+        assert summary["readings_written"] == 0
+        assert all(leg["state"] == "inert" for leg in summary["legs"])
+
+    def test_torn_secondary_fails_loud_but_primary_lands(self, tmp_path):
+        from mini_dudeai.claw_telemetry import (CLAW_TICK_BASENAME,
+                                                secondary_tick_basename)
+        self._tick(tmp_path, CLAW_TICK_BASENAME, "dudeclaw-01")
+        (tmp_path / secondary_tick_basename("dudeclaw-02")).write_text("{torn")
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        summary = collect_claw_all(conn, [], home=tmp_path)
+        assert summary["ok"] is False          # error leg pages (exit 2)
+        assert summary["readings_written"] > 0  # good leg still landed

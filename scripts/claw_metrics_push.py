@@ -37,6 +37,7 @@ from mini_dudeai.claw_telemetry import (  # noqa: E402
     CLAW_TICK_BASENAME,
     build_tick,
     compute_brain_tier,
+    secondary_tick_basename,
 )
 from mini_dudeai.nats_client import NatsConnection, NatsError  # noqa: E402
 from mini_dudeai.presets.standalone import CLAW_STATE_BASENAME  # noqa: E402
@@ -50,14 +51,35 @@ STATUS_URL = "http://localhost:5000/api/status"
 # resolve the same file — kilo test-pins its path formula to _tick_path().
 
 
-def _tick_path() -> str:
-    return str(get_real_user_home() / CLAW_TICK_BASENAME)
+DEFAULT_ENV_PATH = os.path.join(os.path.expanduser("~"),
+                                ".config", "meshforge", "mini_dudeai_claw.env")
 
 
-def _load_claw_env() -> dict:
-    """KEY=VAL lines from the claw env file (same file the daemon loads)."""
-    path = os.path.join(os.path.expanduser("~"),
-                        ".config", "meshforge", "mini_dudeai_claw.env")
+def _tick_path(basename: str = CLAW_TICK_BASENAME) -> str:
+    return str(get_real_user_home() / basename)
+
+
+def _tick_basename_for(env_path: "str | None", device: str) -> str:
+    """Which tick file this pusher instance owns (multi-claw, W5.1).
+
+    The instance running on the DEFAULT env file is the primary claw and
+    keeps the legacy CLAW_TICK_BASENAME (the single-claw display surfaces
+    read exactly that file). Any --env instance writes the per-device
+    secondary basename — compared by realpath so `--env <default>` cannot
+    accidentally fork the primary's tick into a second file.
+    """
+    if env_path is None or \
+            os.path.realpath(env_path) == os.path.realpath(DEFAULT_ENV_PATH):
+        return CLAW_TICK_BASENAME
+    return secondary_tick_basename(device)
+
+
+def _load_claw_env(path: "str | None" = None) -> dict:
+    """KEY=VAL lines from the claw env file (same file the daemon loads).
+    ``path`` selects an alternate instance env (multi-claw, one file per
+    device); a missing file is a hard exit either way — never a silent
+    empty env that would page about the wrong device."""
+    path = path or DEFAULT_ENV_PATH
     if not os.path.exists(path):
         raise SystemExit(f"claw_metrics: {path} missing — is this the claw-brain box?")
     env = {}
@@ -207,8 +229,19 @@ def _push_rows(nc: NatsConnection, rows: list[str], device: str):
     return None
 
 
-def main() -> int:
-    env = _load_claw_env()
+def main(argv: "list[str] | None" = None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(
+        prog="claw_metrics_push",
+        description="Paint fleet metrics onto a dude-claw OLED + persist "
+                    "its telemetry tick.")
+    ap.add_argument("--env", default=None, metavar="PATH",
+                    help="alternate claw env file (multi-claw: one env + "
+                         "cron line per device; a non-default env writes "
+                         "claw_last_tick.<device>.json so instances never "
+                         "clobber each other's tick)")
+    args = ap.parse_args(argv)
+    env = _load_claw_env(args.env)
     server = env.get("MINI_DUDEAI_NATS_SERVER")
     device = env.get("MINI_DUDEAI_CLAW_DEVICE")
     if not server or not device:
@@ -239,7 +272,8 @@ def main() -> int:
     # Persist the capture for /api/status display (best-effort; a write failure
     # must NOT mask a paint failure, which is the claw-liveness page).
     try:
-        atomic_write_json(_tick_path(), tick)
+        atomic_write_json(_tick_path(_tick_basename_for(args.env, device)),
+                          tick)
     except OSError as e:
         print(f"claw_metrics: WARN tick write failed: {e}", file=sys.stderr)
 

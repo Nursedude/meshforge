@@ -94,12 +94,42 @@ def snapshot_readings(nodes, registry: List[KiloNode],
 
 
 def default_claw_tick_path() -> str:
-    """Where claw_metrics_push persists the last tick — same formula as
-    the writer's _tick_path() (test-pinned pair; basename owned by
-    claw_telemetry, the tick-shape owner)."""
+    """Where claw_metrics_push persists the PRIMARY claw's tick — same
+    formula as the writer's _tick_path() (test-pinned pair; basename owned
+    by claw_telemetry, the tick-shape owner)."""
     from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
     from utils.paths import get_real_user_home
     return str(get_real_user_home() / CLAW_TICK_BASENAME)
+
+
+def claw_tick_paths(home=None) -> List[str]:
+    """Every claw tick on this box: the primary tick plus any secondary
+    ``claw_last_tick.<device>.json`` (multi-claw brain box, W5.1). The
+    glob deliberately matches the writer's secondary_tick_basename formula
+    (test-pinned pair). Sender identity comes from each tick's ``device``
+    field, never the filename."""
+    from pathlib import Path
+
+    from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
+    from utils.paths import get_real_user_home
+    home = Path(home) if home else get_real_user_home()
+    paths = [home / CLAW_TICK_BASENAME]
+    paths += sorted(home.glob("claw_last_tick.*.json"))
+    return [str(p) for p in paths]
+
+
+def collect_claw_all(conn, registry: List[KiloNode], home=None) -> dict:
+    """Ingest EVERY claw tick present on this box (multi-claw, W5.1).
+
+    ``ok`` is False only when some leg ERRORED — a box with no ticks at
+    all is inert (no claw here; corpus shape, not failure), exactly like
+    the single-file leg. Each leg keeps its own tri-state witness."""
+    legs = [collect_claw(conn, registry, tick_path=p)
+            for p in claw_tick_paths(home)]
+    return {"ok": all(leg["ok"] for leg in legs),
+            "transport": TRANSPORT_CLAW,
+            "readings_written": sum(leg["readings_written"] for leg in legs),
+            "legs": legs}
 
 
 def collect_claw(conn, registry: List[KiloNode],

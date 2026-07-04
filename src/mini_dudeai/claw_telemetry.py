@@ -152,6 +152,23 @@ def build_tick(now: float, host: str, device: str,
 CLAW_TICK_BASENAME = "claw_last_tick.json"
 
 
+def secondary_tick_basename(device: str) -> str:
+    """Basename for an ADDITIONAL claw's tick on the same brain box
+    (multi-claw, W5.1: dudeclaw-02 enrollment).
+
+    The PRIMARY claw keeps ``CLAW_TICK_BASENAME`` — the box-level display
+    surfaces (/api/status.claw, the /fleet rollup card) read exactly that
+    file and stay single-claw for now. Secondary ticks match kilo's glob
+    (``claw_last_tick.*.json``). The device name in the filename is for
+    the operator's eyes only — IDENTITY always comes from the tick's own
+    ``device`` field, never the filename.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", str(device).strip())
+    if not safe:
+        raise ValueError("secondary_tick_basename: empty device name")
+    return f"claw_last_tick.{safe}.json"
+
+
 # ─── brain-tier decision (display_tier glyph, firmware 0.4.0+dudeclaw.15) ────
 
 # The cron-verdict name of the frontier Claude cadence run (the claw-brain's

@@ -176,7 +176,7 @@ def _cmd_discover(args) -> int:
 
 
 def _cmd_collect(args) -> int:
-    from kilo.ingest import collect_claw, collect_mqtt
+    from kilo.ingest import collect_claw, collect_claw_all, collect_mqtt
     nodes, errors = load_registry(args.registry)
     if nodes is None:
         # Collection without a registry is still useful (pure discovery),
@@ -200,9 +200,14 @@ def _cmd_collect(args) -> int:
         prune(conn)
         prune_edges(conn)
         if args.transport in ("all", "claw"):
-            # instant (one file read) — runs before the mqtt window
-            summary["claw"] = collect_claw(conn, nodes,
-                                           tick_path=args.claw_tick)
+            # instant (file reads) — runs before the mqtt window. Default
+            # ingests EVERY tick on the box (multi-claw, W5.1); an explicit
+            # --claw-tick keeps the single-file override.
+            if args.claw_tick:
+                summary["claw"] = collect_claw(conn, nodes,
+                                               tick_path=args.claw_tick)
+            else:
+                summary["claw"] = collect_claw_all(conn, nodes)
             summary["ok"] = summary["ok"] and summary["claw"]["ok"]
         if args.transport in ("all", "mqtt"):
             summary["mqtt"] = collect_mqtt(

@@ -21,6 +21,8 @@ IP test vectors are SYNTHETIC (MF014/MF015 — no operator LAN IPs in source).
 """
 from __future__ import annotations
 
+import pytest
+
 from mini_dudeai.claw_telemetry import (
     CADENCE_VERDICT_NAME,
     build_tick,
@@ -211,3 +213,30 @@ class TestCadenceVerdictNamePin:
         m = re.search(r'^CRON_VERDICT_NAME="([^"]+)"', sh, re.M)
         assert m, "mini_cadence_launch.sh must declare CRON_VERDICT_NAME"
         assert m.group(1) == CADENCE_VERDICT_NAME
+
+
+class TestSecondaryTickBasename:
+    """W5.1 multi-claw: the shape owner also owns the secondary naming."""
+
+    def test_formula(self):
+        from mini_dudeai.claw_telemetry import secondary_tick_basename
+        assert secondary_tick_basename("dudeclaw-02") == \
+            "claw_last_tick.dudeclaw-02.json"
+
+    def test_never_collides_with_primary(self):
+        # even a device literally named "json" yields a two-dot basename,
+        # so the primary single-dot file can never be clobbered
+        from mini_dudeai.claw_telemetry import (CLAW_TICK_BASENAME,
+                                                secondary_tick_basename)
+        for dev in ("json", "last_tick", "claw_last_tick"):
+            assert secondary_tick_basename(dev) != CLAW_TICK_BASENAME
+
+    def test_path_hostile_chars_sanitized(self):
+        from mini_dudeai.claw_telemetry import secondary_tick_basename
+        assert secondary_tick_basename("../evil/dev") == \
+            "claw_last_tick.---evil-dev.json"
+
+    def test_empty_device_raises(self):
+        from mini_dudeai.claw_telemetry import secondary_tick_basename
+        with pytest.raises(ValueError):
+            secondary_tick_basename("   ")
