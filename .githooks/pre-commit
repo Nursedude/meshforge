@@ -43,6 +43,23 @@ if git diff --cached --name-only | grep -qE '^src/gateway/(canonical_message|rns
     fi
 fi
 
+# Capability-index drift gate (2026-07-04): a new/changed TUI handler shifts
+# the live registry, but the COMMITTED capability index
+# (.claude/skills/meshforge/capability_index.md, gen_capability_index.py output)
+# does not regenerate itself — so it drifts, passes local dev, and only CI's
+# test_capability_index catches it (cost a RED cycle on the offline_oracle
+# handler). Run the drift test at commit time when a handler changes. <1s.
+if git diff --cached --name-only | grep -qE '^src/launcher_tui/handlers/'; then
+    echo "TUI handler changed — checking capability-index drift..."
+    if ! python3 -m pytest tests/test_capability_index.py -x -q 2>/dev/null; then
+        echo ""
+        echo "Capability index is stale for the current handler registry."
+        echo "Regenerate: python3 scripts/gen_capability_index.py"
+        echo "then stage .claude/skills/meshforge/capability_index.md"
+        exit 1
+    fi
+fi
+
 # Collection-only sweep: catches module-level import/syntax errors across the
 # full suite without running test bodies. Fast (~2-3s) and flags the class of
 # regression where a test module fails to import in CI but loads in dev.
