@@ -61,13 +61,21 @@ class OllamaBackend:
         self.model = model
         self.timeout_s = float(timeout_s)
 
-    def complete(self, system: str, user: str) -> str:
+    def complete(self, system: str, user: str,
+                 fmt: "str | dict" = "json") -> str:
         """One chat completion → the assistant text. Raises CompilerError on
-        any transport/shape failure — the caller never sees a fake reply."""
+        any transport/shape failure — the caller never sees a fake reply.
+
+        ``fmt`` maps to Ollama's ``format`` field: the default ``"json"``
+        keeps the historical free-JSON mode; a JSON-Schema dict (Ollama
+        ≥0.5) constrains decoding to the schema. Constrained output still
+        gets consumer-side validation — truncation can end a reply
+        mid-object regardless of the grammar (research doc §2.3).
+        """
         body = json.dumps({
             "model": self.model,
             "stream": False,
-            "format": "json",
+            "format": fmt,
             "options": {"temperature": 0.2},
             "messages": [
                 {"role": "system", "content": system},

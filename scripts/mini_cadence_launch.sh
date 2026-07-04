@@ -141,9 +141,33 @@ if [ ! -f "$RUNBOOK" ]; then
   exit 1
 fi
 
+# Local-tier fallback (W1, dudeclaw_local_brain_2026_07_03 §4). When the
+# frontier session cannot run or fails, a bounded local-LLM pass TRIAGES the
+# proposed backlog for the returning frontier — it NEVER ratifies (that is
+# high-judgment frontier work by charter), and this path NEVER exits 0, so
+# the `mini_cadence OK` cron verdict stays frontier-only evidence (the claw
+# tier glyph's F cannot be forged by a local run). Best-effort: its own
+# failure never masks the frontier rc. nice+timeout bound the client; the
+# inference load lives in the ollama SERVER, capped by its own unit drop-in.
+run_local_fallback() {
+  local frc="${1:-}"
+  echo "mini-cadence: attempting LOCAL-tier triage fallback (frontier rc=${frc:-cli-missing})."
+  if PYTHONPATH="$REPO/src" nice -n 10 \
+       timeout "${MINI_CADENCE_LOCAL_TIMEOUT_S:-300}" \
+       python3 -m mini_dudeai.cadence_fallback \
+         --deltas "$DELTAS" --frontier-rc "$frc"; then
+    echo "mini-cadence: local triage witness written (suggestions only — nothing ratified)."
+  else
+    echo "mini-cadence: local fallback also failed (rc=$?) — deltas stay pending, verdict stays FAIL." >&2
+  fi
+}
+
 if ! command -v claude >/dev/null 2>&1; then
   echo "mini-cadence: 'claude' CLI not on PATH — cannot launch cadence session." >&2
-  exit 1
+  run_local_fallback ""
+  # 75 (EX_TEMPFAIL, the same convention as the backoff skip): the cadence is
+  # DEGRADED and visibly so via the FAIL(75) verdict — never OK.
+  exit 75
 fi
 
 echo "mini-cadence: proposed deltas present — launching cadence session (model ${MODEL}, timeout ${TIMEOUT_S}s)."
@@ -167,5 +191,14 @@ if [ "$rc" -eq 124 ]; then
       > "$STATE_FILE" 2>/dev/null || true
 else
   rm -f "$STATE_FILE" 2>/dev/null || true
+fi
+
+# Frontier session failed (API unreachable, auth, model swap…): make the
+# failure productive on the local tier. NOT on 124 — a timeout means the box
+# was already grinding for TIMEOUT_S; stacking a local inference on top is
+# the freeze class, and the backoff above owns that path. The ORIGINAL rc is
+# preserved either way (sticky FAIL(1) and 124 semantics untouched).
+if [ "$rc" -ne 0 ] && [ "$rc" -ne 124 ]; then
+  run_local_fallback "$rc"
 fi
 exit "$rc"

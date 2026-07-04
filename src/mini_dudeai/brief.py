@@ -111,11 +111,17 @@ def _age(now_ts: float, ts: float | None) -> str:
 
 def build_brief(state: dict, history: list[dict], now_ts: float,
                 stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0,
-                escalation_window_s: float = ESCALATION_WINDOW_S) -> str:
+                escalation_window_s: float = ESCALATION_WINDOW_S,
+                cadence_triage: dict | None = None) -> str:
     """Render the warm-start brief markdown from mini's state + recent history.
 
     `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
     brief points the warm session at them (the dream log is where to review).
+
+    `cadence_triage` is the local-tier fallback witness
+    (cadence_fallback.CADENCE_TRIAGE_BASENAME): when fresh it earns its own
+    section so a returning frontier session cannot miss that the cadence ran
+    degraded — tier provenance in the reader's face, never buried (#80).
     """
     state = state if isinstance(state, dict) else {}
     rules = state.get("rules") or {}
@@ -177,6 +183,37 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append(f"\n## 💭 {pending_deltas} memory-delta(s) await ratification")
         lines.append("- See `mini_dudeai_dreams.md` for the synthesis + evidence; "
                      "ratify/reject via `dreams.resolve_delta()`.")
+
+    # W1 — the cadence ran DEGRADED while the frontier was away. Freshness is
+    # re-derived here from the witness ts (a stale witness must not keep
+    # claiming a recent local run), and the wording states the invariant:
+    # suggestions only, nothing was ratified.
+    if isinstance(cadence_triage, dict):
+        from .cadence_fallback import TRIAGE_FRESH_S
+        t_ts = cadence_triage.get("ts")
+        if isinstance(t_ts, (int, float)) and 0 <= now_ts - t_ts < TRIAGE_FRESH_S:
+            tier = cadence_triage.get("brain_tier")
+            frc = cadence_triage.get("frontier_rc")
+            frc_txt = "claude CLI missing" if frc is None else f"frontier rc={frc}"
+            if tier == "local":
+                lines.append(
+                    f"\n## 🥈 cadence ran on LOCAL tier {_age(now_ts, t_ts)} ago "
+                    f"({frc_txt})")
+                lines.append(
+                    f"- {cadence_triage.get('triaged', 0)}/"
+                    f"{cadence_triage.get('proposed_total', '?')} delta(s) "
+                    f"triaged by {cadence_triage.get('model', '?')} — "
+                    f"SUGGESTIONS ONLY, nothing ratified; dispositions in "
+                    f"`mini_dudeai_cadence_triage.json`. "
+                    f"{str(cadence_triage.get('summary', ''))[:160]}")
+            elif tier == "rules":
+                lines.append(
+                    f"\n## 🥉 cadence fell to RULES tier {_age(now_ts, t_ts)} ago "
+                    f"({frc_txt}; local LLM also unavailable)")
+                lines.append(
+                    f"- {cadence_triage.get('proposed_total', '?')} delta(s) "
+                    f"pending, UNTRIAGED — "
+                    f"{str(cadence_triage.get('summary', ''))[:160]}")
 
     # Look here first — escalations fired within the window, deduped (see
     # recent_escalations; shared with the situation digest so they never
@@ -251,7 +288,13 @@ def write_brief(state_path: str, history_path: str, out_path: str,
     if os.path.exists(deltas_path):
         from .dreams import count_pending_deltas
         pending = count_pending_deltas(deltas_path)
-    text = build_brief(state or {}, history, now_ts, pending_deltas=pending)
+    # Local-tier cadence witness lives beside the deltas file; unreadable or
+    # absent → None (the section simply doesn't render — absence is absence).
+    from .cadence_fallback import CADENCE_TRIAGE_BASENAME
+    triage, _terr = read_json(os.path.join(
+        os.path.dirname(deltas_path) or ".", CADENCE_TRIAGE_BASENAME))
+    text = build_brief(state or {}, history, now_ts, pending_deltas=pending,
+                       cadence_triage=triage if isinstance(triage, dict) else None)
     if not _brief_unchanged(out_path, text):
         atomic_write_text(out_path, text)
     return text
