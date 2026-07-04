@@ -49,6 +49,23 @@
       "annotation": "Display leg (fw >=0.4.0+dudeclaw.15): the RED chip-temp page also paints the OLED alert banner (class + locally-ticking age — a paging witness that survives ntfy loss via the #81 retry queue); recovery clears it EXPLICITLY (empty class is the only clear). SINGLE-BANNER CONSTRAINT: the glass has one banner — keep exactly ONE display_alert leg in this ruleset until the firmware learns class-matched clears, because a second leg's edge_down would clear the other's still-active banner. claw_blind deliberately has no display leg: its target is dark by definition, and queued paints delivering out-of-band on recovery are noise, not signal."
     },
     {
+      "id": "claw_anomaly_note",
+      "match": {
+        "kind": "sensor_breach",
+        "subject_glob": "*.anomaly"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[claw] telemetry anomaly",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": ["mag", "claw"]
+      },
+      "grace_s": 300,
+      "cooldown_s": 3600,
+      "annotation": "W7 edge anomaly witness (fw branch pr/anomaly-witness): the claw's anomaly_stats leads with max |z| vs self-learned EW baselines; -1 while learning, so a gt threshold can never breach during warm-up. INERT until the sensor is enabled in MINI_DUDEAI_CLAW_SENSORS with an entry like {sensor: anomaly, tool: anomaly_stats, threshold: 4.0, op: gt} — do that only after the firmware carrying the tool is flashed. Witness, not actuator: default-priority note, the operator (or frontier) decides what a deviation means."
+    },
+    {
       "id": "claw_blind_any",
       "match": {
         "kind": "source_error",

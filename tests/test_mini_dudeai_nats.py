@@ -572,7 +572,8 @@ class TestStandalonePreset:
         seeded = json.loads(rules_path.read_text())
         ids = {r["id"] for r in seeded["rules"]}
         assert {"chip_temp_hot_led", "chip_temp_hot_page",
-                "chip_temp_hot_display", "claw_blind_any"} <= ids
+                "chip_temp_hot_display", "claw_anomaly_note",
+                "claw_blind_any"} <= ids
         # operator edits survive a rebuild — the seed is a bootstrap,
         # never an overwrite
         rules_path.write_text(json.dumps({"rules": []}))
