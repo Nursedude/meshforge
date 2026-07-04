@@ -1,9 +1,26 @@
-# Kilo K1 — link-matrix observatory (DESIGN, pre-code)
+# Kilo K1 — link-matrix observatory (DESIGN — BUILT 2026-07-04, `e1073df8`)
 
 > Written 2026-07-04 at K0.1 close as the fresh-session handoff (author
 > context was aging; design-before-code is the K-ladder rule anyway).
 > Parent: `.claude/plans/kilo_lab_instrument.md`. K0/K0.1 are LIVE
 > (`src/kilo/`, moc + moc2 green, `kilo_collect` crons wired to #78).
+>
+> **BUILD NOTES (2026-07-04, commit `e1073df8`)**: shipped as designed,
+> two deltas. (1) The `_message_callbacks`/`_node_callbacks` hooks named
+> in context-gold #1 turned out NOT to fit (message cbs fire only for
+> text; node cbs carry neither topic nor per-packet fields) — a new
+> `add_packet_callback(topic, data)` hook on the subscriber is the
+> capture point. (2) Building against the LIVE payload exposed a latent
+> decoder bug: json `from` is NUMERIC on the wire and
+> `_handle_position`/`_handle_telemetry` died on a swallowed
+> AttributeError for every such packet — fixed at the `_ensure_node`
+> chokepoint, pinned by `TestNumericFromCanonicalized`. Live answers to
+> the open questions: moc payloads always carried id/snr/hops_away in
+> the proof windows; `relay_node` NEVER emitted by current firmware
+> (relay_partial stays NULL — resolution is K1.1 if it ever appears);
+> hourly per-edge rollup SKIPPED (measured volume ~200 rows/h on moc →
+> 7d ≈ 34k rows, fine without it); volume cap deferred with the same
+> evidence. Own-uplink self-edges: skipped at parse with a witness count.
 
 ## What K1 is
 
