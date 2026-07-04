@@ -1,4 +1,5 @@
 """Internal stdlib-only utilities. No third-party deps."""
+import datetime
 import gzip
 import http.client
 import json
@@ -26,6 +27,36 @@ def resolve_home():
     if env:
         return os.path.expanduser(env)
     return os.path.expanduser("~")
+
+
+def operator_home():
+    """The HUMAN operator's home — sudo-safe. NOT resolve_home():
+    resolve_home() locates MINI artifacts (honors MINI_DUDEAI_HOME);
+    this locates files the OPERATOR owns (the Claude memory corpus).
+    Under `sudo python3` (the TUI's launch mode) expanduser('~') is
+    /root and the operator's corpus silently vanishes from any reader
+    that used it — SUDO_USER is the honest anchor there.
+    """
+    su = os.environ.get("SUDO_USER")
+    if su:
+        try:
+            import pwd
+            return pwd.getpwnam(su).pw_dir
+        except (ImportError, KeyError):
+            pass
+    return os.path.expanduser("~")
+
+
+def iso_or_none(ts):
+    """Human-readable ISO stamp beside an epoch ts — None when the epoch
+    can't render (RTC-less fleet: an absurd/negative clock must not crash
+    a witness write; the epoch field stays the machine truth). ONE helper —
+    this idiom was copy-pasted into three modules before it lived here.
+    """
+    try:
+        return datetime.datetime.fromtimestamp(ts).isoformat(timespec="seconds")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _journal_prio(n):

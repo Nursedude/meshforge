@@ -45,6 +45,36 @@ DEFAULT_MODEL = "qwen3:4b-instruct-2507-q4_K_M"
 # 2-item schema-constrained triage, warm); this bounds a wedged server, not
 # a slow one.
 DEFAULT_TIMEOUT_S = 240.0
+# Local-brain SYNTHESIS bound (oracle / triage / eval): multi-excerpt work
+# runs minutes on a Pi, so it gets a longer leash than a compile. ONE
+# constant, four consumers (oracle CLI, oracle TUI handler, cadence
+# fallback, eval harness) — the TUI once inherited DEFAULT_TIMEOUT_S while
+# the CLIs passed 480, so the same question could time out in-app but
+# succeed on the CLI (surface divergence the oracle handler promises away).
+LOCAL_BRAIN_TIMEOUT_S = 480.0
+# Bounded "is the local brain up" reachability probe (GET /api/version).
+OLLAMA_PROBE_TIMEOUT_S = 4.0
+
+
+def probe_ollama(url: str, timeout_s: float = OLLAMA_PROBE_TIMEOUT_S):
+    """(ok, detail) — THE one Ollama reachability check. Never raises.
+
+    Lives beside OllamaBackend so BOTH layers can import it: the TUI
+    handlers (which the cron scripts cannot import — handler_protocol drags
+    the whole TUI up) and scripts/claw_metrics_push's tier probe. Two
+    hand-rolled copies had already diverged on timeout (4 s vs 6 s).
+    False carries the reason verbatim (wrong URL, pinhole, server down).
+    """
+    try:
+        req = urllib.request.Request(url.rstrip("/") + "/api/version")
+        with urllib.request.urlopen(req, timeout=timeout_s) as r:
+            try:
+                ver = json.load(r).get("version", "?")
+            except ValueError:
+                ver = "?"
+            return True, f"ollama {ver}"
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return False, str(e)
 
 _ID_RE = re.compile(r"^[a-z0-9_]{3,64}$")
 

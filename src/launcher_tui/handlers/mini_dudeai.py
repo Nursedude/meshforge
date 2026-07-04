@@ -128,21 +128,11 @@ OLLAMA_PROBE_TIMEOUT_S = 4.0
 def probe_ollama(url: str, timeout_s: float = OLLAMA_PROBE_TIMEOUT_S):
     """(ok, detail) — bounded reachability check before any compile attempt.
 
-    GET {url}/api/version. Never raises: a TUI flow must get an answer, not a
-    traceback. False carries the reason verbatim so the operator can act on it
-    (wrong URL, pinhole doesn't admit this box, server down)."""
-    import urllib.error
-    import urllib.request
-    try:
-        req = urllib.request.Request(url.rstrip("/") + "/api/version")
-        with urllib.request.urlopen(req, timeout=timeout_s) as r:
-            try:
-                ver = json.load(r).get("version", "?")
-            except ValueError:
-                ver = "?"
-            return True, f"ollama {ver}"
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        return False, str(e)
+    Delegates to THE shared probe (mini_dudeai.chat_compiler.probe_ollama):
+    the cron scripts can't import TUI handlers, so the one implementation
+    lives beside OllamaBackend and this stays a thin TUI-facing name."""
+    from mini_dudeai.chat_compiler import probe_ollama as _probe
+    return _probe(url, timeout_s=timeout_s)
 
 
 def discover_chat_targets(home: str) -> list:

@@ -28,6 +28,16 @@ class Action:
 
     name: str = "action"
 
+    # Send-retry semantics (#81). Default False = EVENT semantics: every
+    # undelivered send still matters (a late page is still information), so
+    # a delivered opposite-edge send never cancels a queued one. Set True
+    # for STATE-SET actions (actuators/displays): only the LATEST state is
+    # truth — any older undelivered send is superseded the moment a newer
+    # transition exists, because replaying stale state would re-assert a
+    # condition that is no longer true (the display_alert banner-
+    # resurrection class). The engine leaves a history witness per supersede.
+    supersedes_pending_sends: bool = False
+
     def execute(self, rule: dict, cond: Condition, transition: str) -> Outcome:
         """Run the action.
 

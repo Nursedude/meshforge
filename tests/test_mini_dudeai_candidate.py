@@ -148,3 +148,46 @@ class TestMergeSeedRules:
         merged, _ = merge_seed_rules([dict(SEED_A)], [SEED_A, SEED_B], "fed")
         rules, errors = validate_rules_document({"rules": merged})
         assert errors == [] and len(rules) == 2
+
+
+class TestSingleBannerConstraint:
+    """2026-07-04 review fix: the claw seed's SINGLE-BANNER prose annotation
+    is now a validator invariant — a second display_alert leg's empty-class
+    clear would wipe the first's still-active banner (paging witness lost)."""
+
+    def _banner(self, rid):
+        return {"id": rid,
+                "match": {"kind": "sensor_breach", "subject_glob": "*.t"},
+                "action": {"kind": "nats",
+                           "payload": {"tool": "display_alert",
+                                       "class": "hot"},
+                           "payload_down": {"tool": "display_alert",
+                                            "class": ""}}}
+
+    def test_second_display_alert_leg_is_an_error(self):
+        doc = {"rules": [self._banner("b1"), self._banner("b2")]}
+        _rules, errors = validate_rules_document(doc)
+        assert any("display_alert" in e and "single-banner" in e
+                   for e in errors)
+
+    def test_one_banner_leg_is_fine(self):
+        doc = {"rules": [self._banner("b1"), GOOD]}
+        _rules, errors = validate_rules_document(doc)
+        assert errors == []
+
+    def test_payload_down_only_leg_counts(self):
+        clear_only = {"id": "b2", "match": {"kind": "x"},
+                      "action": {"kind": "nats",
+                                 "payload": {"tool": "led_set"},
+                                 "payload_down": {"tool": "display_alert",
+                                                  "class": ""}}}
+        _rules, errors = validate_rules_document(
+            {"rules": [self._banner("b1"), clear_only]})
+        assert errors  # a clear-only leg can still wipe b1's live banner
+
+    def test_claw_seed_still_validates(self):
+        seed = json.loads((Path(__file__).parent.parent / "configs" /
+                           "mini_dudeai_rules.claw.json").read_text())
+        rules, errors = validate_rules_document(seed)
+        assert errors == []
+        assert len(rules) == 5

@@ -31,6 +31,14 @@ REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 RUNBOOK="$REPO/.claude/prompts/mini_cadence.md"
 ENV_FILE="${MINI_ENV_FILE:-$HOME/.config/meshforge/mini_dudeai.env}"
 PRESET="${MINI_PRESET:-meshforge_fleet}"
+# The cron-verdict job name for this cadence. The crontab wiring MUST use it
+# (`...mini_cadence_launch.sh; cron_verdict.sh $CRON_VERDICT_NAME $?` style),
+# and claw_telemetry.CADENCE_VERDICT_NAME reads the SAME name off /fleet/slo
+# as the F-tier evidence key — rename one side alone and the claw glyph
+# silently loses tier F forever while the frontier is healthy. The two are
+# test-pinned together (tests/test_claw_telemetry.py); this declaration is
+# the in-repo write-side anchor (honest_failure_modes #5).
+CRON_VERDICT_NAME="mini_cadence"
 # Pin the cadence model explicitly. Ratification is high-judgment work (verify
 # live truth before authoring durable memory), so we never ride on whatever the
 # `claude` CLI happens to default to — that can silently drift. Most-capable Opus

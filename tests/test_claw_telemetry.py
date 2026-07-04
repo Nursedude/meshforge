@@ -196,3 +196,18 @@ class TestComputeBrainTier:
         jobs = [{"name": "synth_soak", "status": "OK", "stale": False}]
         tier, _ = compute_brain_tier(jobs, ollama_ok=False, rules_age_s=5.0)
         assert tier == "R"
+
+
+class TestCadenceVerdictNamePin:
+    def test_verdict_name_matches_launch_script_declaration(self):
+        """honest_failure_modes #5 (2026-07-04 review fix): the F-tier
+        evidence key and the launch script's declared cron-verdict name are
+        two consumers of one artifact — pinned together so a rename can't
+        silently kill tier F while the frontier is healthy."""
+        import re
+        from pathlib import Path
+        sh = (Path(__file__).parent.parent / "scripts"
+              / "mini_cadence_launch.sh").read_text()
+        m = re.search(r'^CRON_VERDICT_NAME="([^"]+)"', sh, re.M)
+        assert m, "mini_cadence_launch.sh must declare CRON_VERDICT_NAME"
+        assert m.group(1) == CADENCE_VERDICT_NAME

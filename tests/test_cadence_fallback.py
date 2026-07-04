@@ -225,3 +225,23 @@ class TestClearFlag:
         boom = lambda **k: (_ for _ in ()).throw(AssertionError("LLM built"))
         monkeypatch.setattr(cf, "OllamaBackend", boom)
         assert cf.main(["--clear", "--out", str(tmp_path / "w.json")]) == 0
+
+
+class TestDuplicateKeyDedup:
+    def test_duplicate_keys_dropped_not_double_counted(self, tmp_path):
+        """2026-07-04 review fix: a model repeating delta A while skipping B
+        must read triaged=1 (dup counted as a drop), not 2 — dup inflation
+        reached brief.py's 'N/M triaged' line and the eval coverage gate as
+        a false full-coverage claim."""
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
+        reply = json.dumps({"summary": "ok", "deltas": [
+            {"key": "a", "assessment": "x",
+             "suggested_disposition": "needs-live-check"},
+            {"key": "a", "assessment": "again",
+             "suggested_disposition": "needs-live-check"},
+        ]})
+        w = cf.run(path, FakeBackend(reply=reply), frontier_rc=1, now=NOW)
+        assert w["brain_tier"] == "local"
+        assert [d["key"] for d in w["deltas"]] == ["a"]
+        assert w["triaged"] == 1
+        assert w["dropped_entries"] == 1

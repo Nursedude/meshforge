@@ -32,6 +32,7 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from mini_dudeai._util import atomic_write_json, fetch_json  # noqa: E402
+from mini_dudeai.chat_compiler import probe_ollama  # noqa: E402
 from mini_dudeai.claw_telemetry import build_tick, compute_brain_tier  # noqa: E402
 from mini_dudeai.nats_client import NatsConnection, NatsError  # noqa: E402
 from mini_dudeai.presets.standalone import CLAW_STATE_BASENAME  # noqa: E402
@@ -110,21 +111,36 @@ def _probe_tier(env: dict) -> "tuple[str | None, str]":
     verdict_jobs = []
     slo, err = fetch_json(slo_url, timeout=10)
     if not err and isinstance(slo, dict):
-        verdicts = (slo.get("schedules") or {}).get("verdicts") or {}
-        if verdicts.get("available"):
-            verdict_jobs = verdicts.get("jobs") or []
+        # Type-guard every nested level: `or {}` only covers None, and a
+        # peer whose /fleet/slo ever ships a list here would AttributeError
+        # this whole push into a FALSE claw-liveness page.
+        sched = slo.get("schedules")
+        verdicts = sched.get("verdicts") if isinstance(sched, dict) else None
+        if isinstance(verdicts, dict) and verdicts.get("available"):
+            jobs = verdicts.get("jobs")
+            verdict_jobs = jobs if isinstance(jobs, list) else []
 
     ollama_ok = False
     ollama_url = env.get("MINI_DUDEAI_OLLAMA_URL")
     if ollama_url:
-        ver, oerr = fetch_json(ollama_url.rstrip("/") + "/api/version",
-                               timeout=6)
-        ollama_ok = not oerr and isinstance(ver, dict)
+        # THE shared reachability probe (chat_compiler.probe_ollama) — same
+        # check the TUI runs; 6 s here (cross-segment pinhole, not localhost).
+        ollama_ok, _detail = probe_ollama(ollama_url, timeout_s=6)
 
+    # R-tier evidence: the claw-mini daemon's state file. The WRITER anchors
+    # on MINI_DUDEAI_HOME (via _util.resolve_home, fed by the same claw env
+    # file the user unit loads) before falling back to home — so this reader
+    # honors the identical precedence, or a homed-elsewhere daemon would
+    # make tier R silently unprovable (glyph decays to SOLO while the rule
+    # brain is healthy).
+    claw_home = (env.get("MINI_DUDEAI_HOME")
+                 or os.environ.get("MINI_DUDEAI_HOME"))
+    state_dir = (os.path.expanduser(claw_home) if claw_home
+                 else str(get_real_user_home()))
     rules_age_s = None
     try:
         rules_age_s = time.time() - os.path.getmtime(
-            str(get_real_user_home() / CLAW_STATE_BASENAME))
+            os.path.join(state_dir, CLAW_STATE_BASENAME))
     except OSError:
         pass  # no state file -> rules tier unprovable (compute handles None)
 
@@ -145,7 +161,10 @@ def _push_tier(nc: NatsConnection, device: str, tier: str):
         return None
     err_txt = str((reply or {}).get("error", reply) if isinstance(reply, dict)
                   else reply)
-    if "unknown tool" in err_txt:
+    # Case-insensitive: the current fork emits "Error: unknown tool '...'"
+    # (lowercase, pinned by tests), but this branch's whole job is surviving
+    # OTHER firmware vintages — a recased/reworded refusal must not page.
+    if "unknown tool" in err_txt.lower():
         print(f"claw_metrics: WARN firmware lacks display_tier "
               f"(pre-dudeclaw.15?): {err_txt[:120]}", file=sys.stderr)
         return None

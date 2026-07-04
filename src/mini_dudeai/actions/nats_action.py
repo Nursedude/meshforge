@@ -30,10 +30,14 @@ from .base import Action, Outcome
 # State-set tools only — safe under #81 retry re-application. Grows
 # deliberately, not by default. display_print qualifies: re-writing the same
 # text to the same row is a state-set (dude-claw fork +dudeclaw.1).
-# display_alert qualifies the same way (+dudeclaw.15): set-class and
-# set-empty are state-sets, and the per-state queue is order-preserving, so
-# a late edge_up re-paint is always superseded by the queued edge_down clear
-# (the same ordering contract led_set already relies on).
+# display_alert qualifies the same way (+dudeclaw.15). NOTE the retry-queue
+# ordering contract alone is NOT sufficient for state-sets: it only held
+# when BOTH edges failed — a failed edge_up followed by a SUCCESSFUL
+# edge_down left the stale edge_up queued, and its retry re-painted a
+# recovered condition (banner resurrection). NatsAction therefore declares
+# supersedes_pending_sends: the engine retires any older queued send the
+# moment a newer transition exists (latest state wins, witnessed in
+# history as send_retry_superseded).
 # display_tier is DELIBERATELY absent: the tier glyph is an evidence-based
 # claim owned by claw_metrics_push's live probes — a static rule payload
 # cannot prove a cognition tier, so rules may never assert one.
@@ -69,6 +73,10 @@ class NatsAction(Action):
     """
 
     name = "nats"
+    # Actuators/displays are STATE-SETS: only the latest state is truth, so
+    # the engine supersedes older queued sends on any newer transition (see
+    # IDEMPOTENT_TOOLS note — the banner-resurrection fix).
+    supersedes_pending_sends = True
 
     def __init__(self, server: str, device: str | None = None,
                  payload: dict | None = None, payload_down: dict | None = None,

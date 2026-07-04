@@ -94,6 +94,27 @@ def validate_rules_document(data: Any) -> Tuple[List[dict], List[str]]:
             errors.append(f"rule[{r.get('id', i)}] missing action")
             continue
         out.append(r)
+
+    # SINGLE-BANNER invariant (dude-claw firmware through +dudeclaw.15: the
+    # glass has ONE banner and an empty-class clear is unconditional). Two
+    # display_alert legs mean one leg's recovery WIPES the other's still-
+    # active banner — the paging witness silently vanishes on an unrelated
+    # recovery. The claw seed carried this as a prose annotation only; the
+    # validator is the natural home (every authoring/promote path runs it).
+    # Delete this block when the firmware learns class-matched clears.
+    banner_rules = [
+        r.get("id") for r in out
+        if any(isinstance(p, dict) and p.get("tool") == "display_alert"
+               for p in ((r.get("action") or {}).get("payload"),
+                         (r.get("action") or {}).get("payload_down")))
+    ]
+    if len(banner_rules) > 1:
+        errors.append(
+            f"multiple display_alert legs {banner_rules} — the glass has ONE "
+            f"banner and an empty-class clear is unconditional, so a second "
+            f"leg's recovery wipes the first's still-active banner (single-"
+            f"banner constraint; keep exactly one display_alert rule until "
+            f"the firmware learns class-matched clears)")
     return out, errors
 
 

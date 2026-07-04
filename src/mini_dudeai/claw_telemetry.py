@@ -17,9 +17,10 @@ Honest-failure contract (``.claude/rules/honest_failure_modes.md``):
 """
 from __future__ import annotations
 
-import datetime
 import re
 from typing import Any, Dict, Optional
+
+from ._util import iso_or_none
 
 # device_info: "Free heap: 17764 bytes, Total heap: 210492 bytes,
 #   Uptime: 109368 seconds, WiFi: connected (rssi -37 dBm), IP: <ip>,
@@ -130,11 +131,7 @@ def build_tick(now: float, host: str, device: str,
     device_info = _extract(device_info_reply, parse_device_info,
                            "device_info", errors)
     ble = _extract(ble_stats_reply, parse_ble_stats, "ble_stats", errors)
-    try:
-        captured_iso = datetime.datetime.fromtimestamp(now).isoformat(
-            timespec="seconds")
-    except (OverflowError, OSError, ValueError):
-        captured_iso = None
+    captured_iso = iso_or_none(now)
     return {
         "captured_at": now,
         "captured_iso": captured_iso,

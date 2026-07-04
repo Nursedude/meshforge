@@ -205,13 +205,14 @@ class TestProbeTier:
                "MINI_DUDEAI_OLLAMA_URL": "http://llm.invalid:11434"}
 
         def fake_fetch(url, timeout=0):
-            if "fleet/slo" in url:
-                return {"schedules": {"verdicts": {"available": True, "jobs": [
-                    {"name": "mini_cadence", "status": "OK", "stale": False,
-                     "age_s": 60.0}]}}}, None
-            return {"version": "0.30"}, None
+            return {"schedules": {"verdicts": {"available": True, "jobs": [
+                {"name": "mini_cadence", "status": "OK", "stale": False,
+                 "age_s": 60.0}]}}}, None
 
         monkeypatch.setattr(cmp_mod, "fetch_json", fake_fetch)
+        # ollama reachability now rides THE shared probe (chat_compiler)
+        monkeypatch.setattr(cmp_mod, "probe_ollama",
+                            lambda url, timeout_s=6: (True, "ollama 0.30"))
         tier, note = cmp_mod._probe_tier(env)
         assert tier == "F"
 
@@ -219,11 +220,53 @@ class TestProbeTier:
         env = {"MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid:5000/fleet/slo",
                "MINI_DUDEAI_OLLAMA_URL": "http://llm.invalid:11434"}
 
-        def fake_fetch(url, timeout=0):
-            if "fleet/slo" in url:
-                return None, "connection refused"
-            return {"version": "0.30"}, None
-
-        monkeypatch.setattr(cmp_mod, "fetch_json", fake_fetch)
+        monkeypatch.setattr(cmp_mod, "fetch_json",
+                            lambda url, timeout=0: (None, "connection refused"))
+        monkeypatch.setattr(cmp_mod, "probe_ollama",
+                            lambda url, timeout_s=6: (True, "ollama 0.30"))
         tier, note = cmp_mod._probe_tier(env)
         assert tier == "L"
+
+    def test_list_shaped_slo_fields_fall_through_not_crash(self, tmp_path,
+                                                           monkeypatch):
+        # 2026-07-04 hardening: `or {}` only guards None — a truthy wrong
+        # type (schedules as a list) used to AttributeError the whole push
+        # into a FALSE claw-liveness page.
+        env = {"MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid/fleet/slo",
+               "MINI_DUDEAI_HOME": str(tmp_path)}  # no state file -> no R
+        monkeypatch.setattr(cmp_mod, "fetch_json",
+                            lambda url, timeout=0: ({"schedules": ["oops"]},
+                                                    None))
+        tier, note = cmp_mod._probe_tier(env)  # must not raise
+        assert tier is None
+
+    def test_rules_tier_reads_state_from_mini_dudeai_home(self, tmp_path,
+                                                          monkeypatch):
+        # 2026-07-04 hardening: the WRITER (claw daemon via resolve_home)
+        # honors MINI_DUDEAI_HOME; the reader must follow the same
+        # precedence or a homed-elsewhere daemon makes tier R unprovable.
+        env = {"MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid/fleet/slo",
+               "MINI_DUDEAI_HOME": str(tmp_path)}
+        monkeypatch.setattr(cmp_mod, "fetch_json",
+                            lambda url, timeout=0: (None, "refused"))
+        (tmp_path / cmp_mod.CLAW_STATE_BASENAME).write_text("{}")
+        tier, note = cmp_mod._probe_tier(env)
+        assert tier == "R"
+
+
+class TestUnknownToolCaseFolding:
+    """2026-07-04 hardening: the pre-reflash detection must survive OTHER
+    firmware vintages' casing — 'Unknown Tool: ...' must warn, not page."""
+
+    def test_recased_unknown_tool_error_still_warns_not_pages(
+            self, wired, monkeypatch):
+        monkeypatch.setattr(cmp_mod, "_probe_tier", lambda env: ("F", "test"))
+        nc = _FakeNC({
+            "device_info": {"ok": True, "result": DI},
+            "ble_stats": {"ok": True, "result": BS},
+            "display_print": {"ok": True},
+            "display_tier": {"ok": False,
+                             "error": "Unknown Tool: display_tier"},
+        })
+        _install_conn(monkeypatch, nc)
+        assert cmp_mod.main() == 0

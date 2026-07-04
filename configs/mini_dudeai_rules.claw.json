@@ -63,7 +63,7 @@
       },
       "grace_s": 300,
       "cooldown_s": 3600,
-      "annotation": "W7 edge anomaly witness (fw branch pr/anomaly-witness): the claw's anomaly_stats leads with max |z| vs self-learned EW baselines; -1 while learning, so a gt threshold can never breach during warm-up. INERT until the sensor is enabled in MINI_DUDEAI_CLAW_SENSORS with an entry like {sensor: anomaly, tool: anomaly_stats, threshold: 4.0, op: gt} — do that only after the firmware carrying the tool is flashed. Witness, not actuator: default-priority note, the operator (or frontier) decides what a deviation means."
+      "annotation": "W7 edge anomaly witness (fw branch pr/anomaly-witness): the claw's anomaly_stats leads with max |z| vs self-learned EW baselines; -1 while learning, so a gt threshold can never breach during warm-up. INERT until the sensor is enabled in MINI_DUDEAI_CLAW_SENSORS with an entry like {device: <your MINI_DUDEAI_CLAW_DEVICE value>, sensor: anomaly, tool: anomaly_stats, threshold: 4.0, op: gt} — 'device' is REQUIRED (NatsSensorSource refuses to build without it, and a device-less entry crashloops the daemon at startup); do that only after the firmware carrying the tool is flashed. Witness, not actuator: default-priority note, the operator (or frontier) decides what a deviation means."
     },
     {
       "id": "claw_blind_any",

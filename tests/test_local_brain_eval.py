@@ -256,3 +256,65 @@ class TestGradeOracle:
         ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
         assert not ok
         assert any("contains none of" in r for r in reasons)
+
+
+class TestDuplicateKeyInflationGate:
+    def test_duplicate_key_reply_cannot_fake_full_coverage(self):
+        """2026-07-04 review fix: dup A + missing B must grade 1/2, not 2/2
+        — coverage is re-derived from UNIQUE keys, never the witness tally
+        (calibrated-claims rule 3)."""
+        ok, reasons, _ = lbe.grade_triage(
+            _triage_case(), FakeBackend([_triage_reply(["a", "a"])]))
+        assert not ok
+        assert any("coverage 1/2" in r for r in reasons)
+
+
+class TestLedgerAppendWitness:
+    def test_history_append_error_is_surfaced_not_swallowed(
+            self, tmp_path, monkeypatch, capsys):
+        """2026-07-04 sweep fix: append_jsonl returns error strings (never
+        raises), so the old try/except OSError was dead code that ALSO
+        discarded the return — a lost calibration record was doubly silent."""
+        cases = tmp_path / "c.jsonl"
+        cases.write_text(json.dumps(
+            {"id": "t1", "kind": "triage",
+             "input": {"deltas": [{"key": "a", "summary": "s"}]},
+             "expect": {"coverage_min": 1.0}}) + "\n")
+        monkeypatch.setattr(
+            lbe, "OllamaBackend",
+            lambda **kw: FakeBackend([_triage_reply(["a"])]))
+        monkeypatch.setattr(lbe, "append_jsonl",
+                            lambda *a, **k: "disk full")
+        rc = lbe.main(["--cases", str(cases),
+                       "--history", str(tmp_path / "ledger.jsonl")])
+        assert rc == 0
+        assert "history append failed: disk full" in capsys.readouterr().err
+
+
+class TestExpectShapeValidation:
+    """2026-07-04 sweep fix: malformed expectations fail LOUDLY at load
+    (EvalConfigError, rc 2), never at grade time as a 'grader crashed'
+    FAILED case that counts against pass_rate and can trip --gate."""
+
+    def test_bad_fields_range_fails_at_load_not_grade(self, tmp_path):
+        p = tmp_path / "c.jsonl"
+        p.write_text(json.dumps({"id": "t1", "kind": "compile",
+                                 "input": {"intent": "x"},
+                                 "expect": {"fields_range":
+                                            {"grace_s": [1, 2, 3]}}}) + "\n")
+        with pytest.raises(lbe.EvalConfigError, match="fields_range"):
+            lbe.load_cases([str(p)])
+
+    def test_non_numeric_coverage_min_fails_at_load(self, tmp_path):
+        p = tmp_path / "c.jsonl"
+        p.write_text(json.dumps({"id": "t1", "kind": "triage",
+                                 "input": {"deltas": [{"key": "a"}]},
+                                 "expect": {"coverage_min": "high"}}) + "\n")
+        with pytest.raises(lbe.EvalConfigError, match="coverage_min"):
+            lbe.load_cases([str(p)])
+
+    def test_invalid_utf8_case_file_is_config_error(self, tmp_path):
+        p = tmp_path / "c.jsonl"
+        p.write_bytes(b'\xff\xfe{"id"}')
+        with pytest.raises(lbe.EvalConfigError, match="UTF-8"):
+            lbe.load_cases([str(p)])

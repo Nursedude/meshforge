@@ -463,8 +463,8 @@ class RuleEngine:
                 history_entries.append(self._history_entry(
                     now_ts, rule["id"], cond.subject, "edge_up", cond.detail, outcome,
                 ))
-                self._queue_failed_send(rs, "edge_up", cond.detail, outcome,
-                                        now_ts, history_entries)
+                self._queue_failed_send(rule, rs, "edge_up", cond.detail,
+                                        outcome, now_ts, history_entries)
                 fire_count += 1
 
         # Edge-DOWN: was active, no longer matched this tick. SKIPPED entirely
@@ -515,7 +515,8 @@ class RuleEngine:
                     now_ts, rule["id"], rs.get("subject", "?"), "edge_down",
                     rs.get("last_detail", ""), outcome,
                 ))
-                self._queue_failed_send(rs, "edge_down", rs.get("last_detail", ""),
+                self._queue_failed_send(rule, rs, "edge_down",
+                                        rs.get("last_detail", ""),
                                         outcome, now_ts, history_entries)
                 fire_count += 1
 
@@ -568,8 +569,8 @@ class RuleEngine:
 
     # --- failed-send retry ---------------------------------------------
 
-    def _queue_failed_send(self, rs: dict, transition: str, detail: str,
-                           outcome: Outcome, now_ts: float,
+    def _queue_failed_send(self, rule: dict, rs: dict, transition: str,
+                           detail: str, outcome: Outcome, now_ts: float,
                            history_entries: list[dict]) -> None:
         """Queue an undelivered action for retry on subsequent ticks.
 
@@ -579,7 +580,34 @@ class RuleEngine:
         ok=False record already flags it. Queue overflow drops the OLDEST
         entry with a history record: a silently-vanished undelivered page is
         the exact defect class this exists to close.
+
+        STATE-SET actions (Action.supersedes_pending_sends): any queued older
+        send is superseded by THIS newer transition — delivered or queued —
+        before normal queueing runs. Without this, a failed edge_up banner
+        paint queued for retry outlives a SUCCESSFUL edge_down clear and
+        re-paints a recovered condition on the glass (the display_alert
+        resurrection: the ordering contract only held when BOTH edges
+        failed). The queue for such actions therefore holds at most the one
+        latest undelivered state; every supersede leaves a history witness.
         """
+        action = self.actions.get(
+            (rule.get("action") or {}).get("kind", "none")) if rule else None
+        if getattr(action, "supersedes_pending_sends", False):
+            pend = rs.get("pending_sends")
+            if isinstance(pend, list) and pend:
+                msg = (f"{len(pend)} undelivered send(s) superseded by a "
+                       f"newer {transition} "
+                       f"({'delivered' if outcome.ok else 'queued for retry'})"
+                       f" — state-set action: replaying stale state would "
+                       f"assert a condition that is no longer true")
+                log_info(f"send-retry: {rs.get('rule_id')!r} "
+                         f"({rs.get('subject')}): {msg}")
+                history_entries.append(self._history_entry(
+                    now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
+                    "send_retry_superseded", msg,
+                    Outcome(action="none", ok=True),
+                ))
+                rs.pop("pending_sends", None)
         if outcome.ok:
             return
         if str(outcome.error or "").startswith("unknown action kind"):

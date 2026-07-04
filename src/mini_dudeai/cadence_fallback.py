@@ -32,17 +32,17 @@ Hard invariants:
 from __future__ import annotations
 
 import argparse
-import datetime
 import json
 import os
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from ._util import atomic_write_json, resolve_home
+from ._util import atomic_write_json, iso_or_none, resolve_home
 from .chat_compiler import (
     DEFAULT_MODEL,
     DEFAULT_OLLAMA_URL,
+    LOCAL_BRAIN_TIMEOUT_S,
     CompilerError,
     OllamaBackend,
 )
@@ -160,12 +160,21 @@ def _validate_triage(raw: str, fed_keys: set) -> Tuple[dict, int]:
     if not isinstance(entries, list):
         raise ValueError("triage missing the deltas list")
     kept: List[dict] = []
+    seen_keys: set = set()
     dropped = 0
     for ent in entries:
+        # Duplicate keys are DROPPED, not kept: the prompt demands "every
+        # delta exactly once", and a kept duplicate inflates `triaged` —
+        # a model that repeats delta A while skipping delta B would read
+        # as 2/2 coverage (and pass the eval gate) when it really covered
+        # 1/2. First occurrence wins; the rest count as drops so the
+        # witness (and max_dropped gates) see the sloppiness.
         if (isinstance(ent, dict)
                 and ent.get("key") in fed_keys
+                and ent.get("key") not in seen_keys
                 and isinstance(ent.get("assessment"), str)
                 and ent.get("suggested_disposition") in DISPOSITIONS):
+            seen_keys.add(ent["key"])
             kept.append({
                 "key": ent["key"],
                 "assessment": ent["assessment"][:_ASSESSMENT_CLAMP],
@@ -184,10 +193,7 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
         now: Optional[float] = None) -> dict:
     """Produce the witness dict (pure orchestration; no writes here)."""
     now = time.time() if now is None else now
-    try:
-        iso = datetime.datetime.fromtimestamp(now).isoformat(timespec="seconds")
-    except (OverflowError, OSError, ValueError):
-        iso = None
+    iso = iso_or_none(now)
     proposed, total = load_proposed_deltas(deltas_path, cap=max_deltas)
     base = {
         "ts": now,
@@ -244,7 +250,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--model",
                     default=os.environ.get("MINI_DUDEAI_OLLAMA_MODEL",
                                            DEFAULT_MODEL))
-    ap.add_argument("--timeout-s", type=float, default=480.0)
+    ap.add_argument("--timeout-s", type=float, default=LOCAL_BRAIN_TIMEOUT_S)
     args = ap.parse_args(argv)
 
     if args.clear:

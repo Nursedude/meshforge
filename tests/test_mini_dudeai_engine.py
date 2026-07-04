@@ -936,3 +936,60 @@ def test_pending_send_blocks_state_retirement(tmp_path):
     }}}
     StateStore.prune_24h(state, now_ts=1.0 + StateStore.STALE_KEY_RETENTION_S + 10)
     assert "r1::foo" in state["rules"]
+
+
+def test_state_set_supersede_prevents_stale_banner_resurrection(tmp_path, monkeypatch):
+    """CONFIRMED review finding (2026-07-04): a failed edge_up display_alert
+    queued for retry outlived a SUCCESSFUL edge_down clear — the retry then
+    re-painted a recovered condition on the glass. STATE-SET actions declare
+    supersedes_pending_sends: a newer transition retires the stale queue
+    entry (latest state wins), with a send_retry_superseded witness. EVENT
+    actions (ntfy) keep the pinned deliver-late semantics above."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    class StateSetFlaky(FlakyAction):
+        supersedes_pending_sends = True
+
+    act = StateSetFlaky(fail_n=1)       # the edge_up paint fails once
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    engine.tick()                       # edge_up FAILS -> queued
+    src.conditions = []                 # condition recovers
+    clock["t"] = 1_000_030.0
+    engine.tick()                       # edge_down delivers; stale edge_up retired
+    clock["t"] = 1_000_060.0
+    engine.tick()                       # nothing left to resurrect
+    transitions = [c[2] for c in act.calls]
+    assert transitions == ["edge_up", "edge_down"]
+    hist = _hist(tmp_path)
+    assert any(h["transition"] == "send_retry_superseded" for h in hist)
+    assert not any(h["transition"] == "send_retry_delivered" for h in hist)
+
+
+def test_state_set_newer_failed_send_supersedes_older_queued(tmp_path, monkeypatch):
+    """Both edges fail: a state-set queue holds only the LATEST state (the
+    clear) — replaying up-then-down would flash a stale banner in between."""
+    import mini_dudeai.engine as eng
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(eng.time, "time", lambda: clock["t"])
+
+    class StateSetFlaky(FlakyAction):
+        supersedes_pending_sends = True
+
+    act = StateSetFlaky(fail_n=2)       # edge_up AND edge_down both fail once
+    src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+    engine = _retry_engine(tmp_path, src, act)
+    engine.tick()                       # edge_up FAILS -> queued
+    src.conditions = []
+    clock["t"] = 1_000_030.0
+    engine.tick()                       # edge_down FAILS -> supersedes up, queues down
+    clock["t"] = 1_000_060.0
+    engine.tick()                       # retry delivers the CLEAR only
+    transitions = [c[2] for c in act.calls]
+    assert transitions == ["edge_up", "edge_down", "edge_down"]
+    hist = _hist(tmp_path)
+    assert any(h["transition"] == "send_retry_superseded" for h in hist)
+    assert any(h["transition"] == "send_retry_delivered"
+               and "edge_down" in h["detail"] for h in hist)

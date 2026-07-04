@@ -81,3 +81,37 @@ def test_registers_without_tag_collision():
     assert reg.get_handler("offline_oracle") is not None
     tags = [t for t, _d in reg.get_menu_items("dashboard")]
     assert "offline_oracle" in tags
+
+
+def test_in_app_backend_uses_the_shared_synthesis_timeout(monkeypatch):
+    """2026-07-04 review fix: the TUI once inherited the 240s COMPILE bound
+    while every CLI passed 480s — the same question could time out in-app
+    but succeed on the CLI, breaking this handler's no-divergence promise.
+    Both surfaces now share chat_compiler.LOCAL_BRAIN_TIMEOUT_S."""
+    from types import SimpleNamespace
+    import handlers.mini_dudeai as mh
+    import mini_dudeai.offline_oracle as oo
+    from mini_dudeai.chat_compiler import LOCAL_BRAIN_TIMEOUT_S
+
+    monkeypatch.setattr(mh, "probe_ollama",
+                        lambda url, timeout_s=4.0: (True, "ollama t"))
+    captured = {}
+
+    def fake_ask(question, backend, roots=None, top_k=6):
+        captured["backend"] = backend
+        return {"question": question, "brain_tier": "rules", "answer": None,
+                "note": "n", "retrieved": [], "corpus_notes": []}
+    monkeypatch.setattr(oo, "ask", fake_ask)
+
+    questions = iter(["why is the mesh dark", None])
+    dialog = SimpleNamespace(
+        inputbox=lambda *a, **k: next(questions),
+        infobox=lambda *a, **k: None,
+        textbox=lambda *a, **k: None,
+        yesno=lambda *a, **k: True,
+        msgbox=lambda *a, **k: None,
+    )
+    h = OfflineOracleHandler()
+    h.ctx = SimpleNamespace(dialog=dialog)
+    h._ask_loop()
+    assert captured["backend"].timeout_s == LOCAL_BRAIN_TIMEOUT_S

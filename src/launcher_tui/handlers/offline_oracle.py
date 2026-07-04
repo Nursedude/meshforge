@@ -47,7 +47,8 @@ class OfflineOracleHandler(BaseHandler):
 
     def _ask_loop(self):
         from mini_dudeai.chat_compiler import (
-            DEFAULT_MODEL, DEFAULT_OLLAMA_URL, OllamaBackend)
+            DEFAULT_MODEL, DEFAULT_OLLAMA_URL, LOCAL_BRAIN_TIMEOUT_S,
+            OllamaBackend)
         # Reuse the mini handler's bounded reachability probe — there is no
         # second copy of "is Ollama up" in the TUI.
         from handlers.mini_dudeai import probe_ollama
@@ -82,8 +83,14 @@ class OfflineOracleHandler(BaseHandler):
             if retrieve_only:
                 self._show_retrieval(question.strip())
             else:
+                # Same synthesis bound as the CLI (LOCAL_BRAIN_TIMEOUT_S):
+                # the class default is the shorter COMPILE bound, and
+                # inheriting it made the same question time out in-app
+                # while succeeding on the CLI — the exact divergence this
+                # handler's docstring promises away.
                 self._answer(question.strip(),
-                             OllamaBackend(url=url, model=model))
+                             OllamaBackend(url=url, model=model,
+                                           timeout_s=LOCAL_BRAIN_TIMEOUT_S))
 
     def _answer(self, question, backend):
         from mini_dudeai.offline_oracle import ask
@@ -102,53 +109,16 @@ class OfflineOracleHandler(BaseHandler):
         self.ctx.dialog.textbox("Oracle answer", _render(result))
 
     def _show_retrieval(self, question):
-        from mini_dudeai.offline_oracle import load_corpus, rank
-        chunks, notes = load_corpus()
-        hits = rank(chunks, question, top_k=8)
+        # THE shared retrieve-only assembly — this handler carries no second
+        # retrieval logic (it briefly did, and the projections drifted).
+        from mini_dudeai.offline_oracle import retrieve_only
         self.ctx.dialog.textbox(
             "Lore hits (retrieval only)",
-            _render({"question": question, "brain_tier": "rules",
-                     "retrieved": [{"id": f"S{i+1}", "path": h["path"],
-                                    "heading": h["heading"],
-                                    "score": h["score"]}
-                                   for i, h in enumerate(hits)],
-                     "corpus_notes": notes, "corpus_chunks": len(chunks),
-                     "note": "retrieval only (local LLM not used)"}))
+            _render(retrieve_only(question, top_k=8)))
 
 
 def _render(result: dict) -> str:
-    """Human-readable oracle result — a cited answer, or the honest
-    retrieval fallback with its tier note shown verbatim (never dressed up
-    as grounded)."""
-    lines = [f"Q: {result.get('question', '')}", ""]
-    answer = result.get("answer")
-    if answer:
-        lines.append(f"[{result.get('brain_tier', '?')} tier · "
-                     f"{result.get('model', '?')} · confidence "
-                     f"{result.get('confidence', '?')}]")
-        lines.append("")
-        lines.append(answer)
-        lines.append("")
-        lines.append("Sources:")
-        for s in result.get("sources") or []:
-            lines.append(f"  {s['id']}  {s['path']} — {s['heading']}")
-        invented = result.get("invented_citations")
-        if invented:
-            lines.append("")
-            lines.append(f"(dropped {len(invented)} invented citation(s) the "
-                         f"model was not shown)")
-    else:
-        note = result.get("note") or "no answer"
-        lines.append(f"[{result.get('brain_tier', 'rules')} tier] {note}")
-        lines.append("")
-        retrieved = result.get("retrieved") or []
-        if retrieved:
-            lines.append("Top retrieval hits (start here):")
-            for s in retrieved:
-                lines.append(f"  {s['id']}  ({s.get('score', '?')})  "
-                             f"{s['path']} — {s['heading']}")
-        else:
-            lines.append("Retrieval found nothing for this question.")
-    for n in result.get("corpus_notes") or []:
-        lines.append(f"  (corpus: {n})")
-    return "\n".join(lines)
+    """Delegates to THE shared renderer (offline_oracle.render_result) —
+    the TUI and the CLI show one wording, not two drifting ones."""
+    from mini_dudeai.offline_oracle import render_result
+    return render_result(result)

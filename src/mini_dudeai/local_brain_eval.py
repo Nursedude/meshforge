@@ -41,7 +41,6 @@ oracle input:  {"question": "...", ["top_k": 6]}
 from __future__ import annotations
 
 import argparse
-import datetime
 import glob
 import json
 import os
@@ -51,11 +50,12 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import cadence_fallback, offline_oracle
-from ._util import resolve_home
+from ._util import iso_or_none, resolve_home
 from .history import append_jsonl
 from .chat_compiler import (
     DEFAULT_MODEL,
     DEFAULT_OLLAMA_URL,
+    LOCAL_BRAIN_TIMEOUT_S,
     CompilerError,
     OllamaBackend,
     compile_rule,
@@ -81,6 +81,39 @@ class EvalConfigError(Exception):
     (honest_failure_modes #3)."""
 
 
+def _validate_expect(case: dict, where: str) -> None:
+    """Reject malformed expectations at LOAD time — grade time is too late.
+
+    Without this, a typo'd case (fields_range with 3 elements, a string
+    coverage_min) slipped through load and blew up inside the graders,
+    where run_cases records it as 'grader crashed' — a FAILED case that
+    counts against pass_rate and can trip --gate on an authoring error.
+    That's the half of the fail-LOUD contract load_cases claimed but
+    didn't enforce (honest_failure_modes #3)."""
+    expect = case["expect"]
+    if "coverage_min" in expect \
+            and not isinstance(expect["coverage_min"], (int, float)):
+        raise EvalConfigError(f"{where}: coverage_min must be a number")
+    if "max_dropped" in expect and not isinstance(expect["max_dropped"], int):
+        raise EvalConfigError(f"{where}: max_dropped must be an integer")
+    for knob in ("fields", "fields_in", "fields_range", "dispositions"):
+        if knob in expect and not isinstance(expect[knob], dict):
+            raise EvalConfigError(f"{where}: {knob} must be an object")
+    for fpath, rng in (expect.get("fields_range") or {}).items():
+        if (not isinstance(rng, list) or len(rng) != 2
+                or not all(isinstance(v, (int, float)) for v in rng)):
+            raise EvalConfigError(
+                f"{where}: fields_range[{fpath!r}] must be [min, max]")
+    for key, allowed in (expect.get("dispositions") or {}).items():
+        if not isinstance(allowed, list):
+            raise EvalConfigError(
+                f"{where}: dispositions[{key!r}] must be a list")
+    for knob in ("retrieve_must_include", "cite_must_include",
+                 "answer_contains_any"):
+        if knob in expect and not isinstance(expect[knob], list):
+            raise EvalConfigError(f"{where}: {knob} must be a list")
+
+
 def load_cases(paths: List[str]) -> List[dict]:
     cases: List[dict] = []
     seen_ids: set = set()
@@ -88,31 +121,39 @@ def load_cases(paths: List[str]) -> List[dict]:
         raise EvalConfigError("no eval case files found — nothing to run is "
                               "an error, not a 100% pass")
     for path in paths:
-        with open(path, encoding="utf-8") as f:
-            for n, line in enumerate(f, 1):
-                line = line.strip()
-                if not line or line.startswith("//"):
-                    continue
-                where = f"{path}:{n}"
-                try:
-                    case = json.loads(line)
-                except ValueError as e:
-                    raise EvalConfigError(f"{where}: not valid JSON: {e}")
-                cid = case.get("id")
-                if not cid or not isinstance(cid, str):
-                    raise EvalConfigError(f"{where}: case missing an id")
-                if cid in seen_ids:
-                    raise EvalConfigError(f"{where}: duplicate case id {cid!r}")
-                if case.get("kind") not in CASE_KINDS:
-                    raise EvalConfigError(
-                        f"{where}: unknown kind {case.get('kind')!r} "
-                        f"(known: {', '.join(CASE_KINDS)})")
-                if not isinstance(case.get("input"), dict) \
-                        or not isinstance(case.get("expect"), dict):
-                    raise EvalConfigError(
-                        f"{where}: case needs object 'input' and 'expect'")
-                seen_ids.add(cid)
-                cases.append(case)
+        try:
+            with open(path, encoding="utf-8") as f:
+                lines = f.readlines()
+        except UnicodeDecodeError as e:
+            # UnicodeDecodeError is a ValueError, which main()'s except
+            # doesn't (and shouldn't) blanket-catch — name it here so a
+            # mis-encoded case file gets the clean rc-2 path, not a traceback.
+            raise EvalConfigError(f"{path}: not valid UTF-8: {e}")
+        for n, line in enumerate(lines, 1):
+            line = line.strip()
+            if not line or line.startswith("//"):
+                continue
+            where = f"{path}:{n}"
+            try:
+                case = json.loads(line)
+            except ValueError as e:
+                raise EvalConfigError(f"{where}: not valid JSON: {e}")
+            cid = case.get("id")
+            if not cid or not isinstance(cid, str):
+                raise EvalConfigError(f"{where}: case missing an id")
+            if cid in seen_ids:
+                raise EvalConfigError(f"{where}: duplicate case id {cid!r}")
+            if case.get("kind") not in CASE_KINDS:
+                raise EvalConfigError(
+                    f"{where}: unknown kind {case.get('kind')!r} "
+                    f"(known: {', '.join(CASE_KINDS)})")
+            if not isinstance(case.get("input"), dict) \
+                    or not isinstance(case.get("expect"), dict):
+                raise EvalConfigError(
+                    f"{where}: case needs object 'input' and 'expect'")
+            _validate_expect(case, where)
+            seen_ids.add(cid)
+            cases.append(case)
     return cases
 
 
@@ -171,10 +212,14 @@ def grade_triage(case: dict, backend) -> Tuple[bool, List[str], dict]:
                        f"{witness.get('error', 'unknown')[:160]}")
         return False, reasons, witness
     total = witness.get("proposed_total") or 0
-    triaged = witness.get("triaged") or 0
-    coverage = (triaged / total) if total else 0.0
+    # Coverage counts UNIQUE triaged keys, re-derived from the deltas list —
+    # never the witness's own `triaged` tally (defense in depth vs the
+    # duplicate-key inflation class: a repeated delta must not certify a
+    # skipped one as covered; calibrated-claims rule 3, re-derive not trust).
+    unique_triaged = len({d.get("key") for d in witness.get("deltas") or []})
+    coverage = (unique_triaged / total) if total else 0.0
     if coverage < float(expect.get("coverage_min", 1.0)):
-        reasons.append(f"coverage {triaged}/{total} below "
+        reasons.append(f"coverage {unique_triaged}/{total} below "
                        f"{expect.get('coverage_min', 1.0)}")
     if (witness.get("dropped_entries") or 0) > int(expect.get("max_dropped", 0)):
         reasons.append(f"{witness['dropped_entries']} entries dropped in "
@@ -266,10 +311,7 @@ def run_cases(cases: List[dict], backend) -> Tuple[List[dict], dict]:
         k["total"] += 1
         k["passed"] += 1 if r["ok"] else 0
     now = time.time()
-    try:
-        iso = datetime.datetime.fromtimestamp(now).isoformat(timespec="seconds")
-    except (OverflowError, OSError, ValueError):
-        iso = None
+    iso = iso_or_none(now)
     summary = {
         "ts": now, "iso": iso,
         "model": getattr(backend, "model", "?"),
@@ -292,7 +334,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         "MINI_DUDEAI_OLLAMA_URL", DEFAULT_OLLAMA_URL))
     ap.add_argument("--model", default=os.environ.get(
         "MINI_DUDEAI_OLLAMA_MODEL", DEFAULT_MODEL))
-    ap.add_argument("--timeout-s", type=float, default=480.0)
+    ap.add_argument("--timeout-s", type=float, default=LOCAL_BRAIN_TIMEOUT_S)
     ap.add_argument("--history", default=os.path.join(
         resolve_home(), EVAL_RESULTS_BASENAME),
         help="results ledger (JSONL, appended); empty string disables")
@@ -314,12 +356,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     results, summary = run_cases(cases, backend)
 
     if args.history:
-        try:
-            # 2 MB rotation, same convention as the calibration ledger.
-            append_jsonl(args.history, [{**summary, "results": results}],
-                         max_bytes=2 * 1024 * 1024)
-        except OSError as e:
-            print(f"local_brain_eval: WARN history append failed: {e}",
+        # 2 MB rotation, same convention as the calibration ledger.
+        # append_jsonl NEVER raises — it returns an error string (the shared
+        # observation-loop contract); an earlier try/except OSError here was
+        # dead code that ALSO discarded the return, so a lost calibration
+        # record was doubly silent in the one module whose purpose is "the
+        # pass-rate has a history, not a vibe".
+        err = append_jsonl(args.history, [{**summary, "results": results}],
+                           max_bytes=2 * 1024 * 1024)
+        if err:
+            print(f"local_brain_eval: WARN history append failed: {err}",
                   file=sys.stderr)
 
     if args.json:
