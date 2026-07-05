@@ -473,3 +473,57 @@ class TestRegistryRepr:
         r = repr(registry)
         assert "handlers=1" in r
         assert "test_section" in r
+
+
+class TestIntraHandlerDuplicateTag:
+    """QA 2026-07-05: the refuse-loud rewrite had lost the OLD code's
+    warning on a duplicate tag WITHIN one handler's own menu_items() —
+    restored as a raise, same contract as the cross-handler guard."""
+
+    def test_same_handler_duplicate_tag_refused(self):
+        from handler_registry import HandlerRegistry
+
+        class _DupHandler:
+            handler_id = "dup_test"
+            menu_section = "system"
+
+            def menu_items(self):
+                return [("status", "Show A", None),
+                        ("status", "Show B", None)]  # copy-pasted row
+
+            def set_context(self, ctx):
+                self.ctx = ctx
+
+            def execute(self, action):
+                pass
+
+        reg = HandlerRegistry(ctx=None)
+        with pytest.raises(ValueError, match="WITHIN"):
+            reg.register(_DupHandler())
+        # refuse-loud left the registry unchanged
+        assert reg.get_handler("dup_test") is None
+
+    def test_menu_items_snapshot_called_once_for_validation_and_index(self):
+        from handler_registry import HandlerRegistry
+
+        calls = {"n": 0}
+
+        class _CountingHandler:
+            handler_id = "count_test"
+            menu_section = "system"
+
+            def menu_items(self):
+                calls["n"] += 1
+                return [("count_tag", "X", None)]
+
+            def set_context(self, ctx):
+                self.ctx = ctx
+
+            def execute(self, action):
+                pass
+
+        reg = HandlerRegistry(ctx=None)
+        reg.register(_CountingHandler())
+        # one snapshot serves validate + index + log — a dynamic
+        # menu_items() can never validate one set and index another
+        assert calls["n"] == 1

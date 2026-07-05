@@ -148,3 +148,16 @@ def test_code_default_dual_path_dedup_true():
     defaults can never drift apart (honest_failure_modes #5)."""
     from gateway.config import RNSConfig
     assert RNSConfig().dual_path_dedup_enabled is True
+
+
+def test_no_preset_references_an_external_role():
+    """QA 2026-07-05: the CLI refuses provisioned_by roles (exit 2, the
+    #69 rival-host class); the TUI apply now refuses too — and no preset
+    may point at one, or the catalog invites the fight."""
+    import yaml
+    presets = yaml.safe_load(PRESETS_PATH.read_text())["presets"]
+    roles = yaml.safe_load(ROLES_PATH.read_text())["roles"]
+    external = [name for name, p in presets.items()
+                if roles.get(p["role"], {}).get("provisioned_by")]
+    assert not external, (
+        f"preset(s) reference EXTERNAL (provisioned_by) roles: {external}")

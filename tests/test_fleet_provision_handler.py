@@ -274,3 +274,190 @@ class TestApplyHandler:
         # a failed apply must NOT show a success title
         assert "Applied" not in (ctx.dialog.last_msgbox_title or "")
         assert "incomplete" in (ctx.dialog.last_msgbox_title or "").lower()
+
+
+# ---------------------------------------------------------------------------
+# QA review 2026-07-05 pins — apply-path honesty fixes
+# ---------------------------------------------------------------------------
+def _required_warn(item="meshforge-gateway",
+                   detail="required unit not installed — run install_noc.sh"):
+    w = FakeAction("warn", item, desired="enabled", detail=detail)
+    w.required = True
+    return w
+
+
+class TestApplyCoreQaFixes:
+    def test_toctou_mismatch_aborts_with_zero_mutation(self, presets_doc):
+        mod = _stub_mod(actions=[FakeAction("disable", "meshforge-map")])
+        confirmed = [FakeAction("enable", "meshforge-gateway")]
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {},
+                                expected_actions=confirmed)
+        assert res["aborted"] and "plan changed" in res["aborted"]
+        assert mod.write_role_calls == []   # role NOT written
+        assert mod.applied == []            # nothing applied
+        assert res["ok"] is False
+
+    def test_matching_expected_actions_applies(self, presets_doc):
+        acts = [FakeAction("enable", "meshforge-gateway")]
+        mod = _stub_mod(actions=acts)
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {},
+                                expected_actions=list(acts))
+        assert res["aborted"] is None and res["ok"] is True
+        assert mod.write_role_calls == ["full-gateway"]
+
+    def test_required_warn_blocks_ok_and_is_visible(self, presets_doc):
+        w = _required_warn()
+        mod = _stub_mod(actions=[w])
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {})
+        # CLI parity: the converge still runs (role written) but the result
+        # is NOT ok — 'Preset Applied' with required units missing was the
+        # false-converged claim this pins against.
+        assert res["role_written"] is True
+        assert res["ok"] is False
+        assert res["blocking_warnings"] and \
+            res["blocking_warnings"][0]["item"] == "meshforge-gateway"
+        prev = core.preview_preset(mod, "full-bridge", presets_doc, {})
+        assert prev["warnings"] == [w]
+
+    def test_current_box_counts_required_warns_like_the_probe(self):
+        w = _required_warn()
+        info = core.current_box(_stub_mod(role="collector", actions=[w]))
+        assert info["drift"] == []            # no change verbs...
+        assert core.required_warnings(info["warnings"]) == [w]  # ...but NOT converged
+
+    def test_external_role_refused_cli_parity(self, presets_doc):
+        mod = _stub_mod(actions=[])
+        mod.resolve_role = lambda c, r: {"services": {},
+                                         "provisioned_by": "meshanchor"}
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {})
+        assert res["aborted"] and "EXTERNAL" in res["aborted"]
+        assert mod.write_role_calls == [] and mod.applied == []
+
+    def test_derive_error_aborts_before_role_write(self, presets_doc):
+        mod = _stub_mod()
+        def _boom(_p):
+            raise OSError("fleet_roles.yaml torn mid-pull")
+        mod.load_roles = _boom
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {})
+        assert res["aborted"] and "could not derive" in res["aborted"]
+        assert mod.write_role_calls == []   # the half-state window is gone
+
+    def test_prior_role_recorded_for_revert(self, presets_doc):
+        mod = _stub_mod(role="collector", actions=[])
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {})
+        assert res["prior_role"] == "collector"
+
+    def test_foundation_converge_rides_the_apply(self, presets_doc):
+        f = FakeAction("foundation", "/etc/reticulum", desired="0755")
+        mod = _stub_mod(actions=[])
+        mod.foundation_actions = lambda: [f]
+        res = core.apply_preset(mod, "full-bridge", presets_doc, {})
+        assert mod.applied == [f]   # TUI apply is no longer a CLI subset
+        assert any(r["verb"] == "foundation" for r in res["results"])
+
+    def test_change_verbs_follow_engine_export(self, presets_doc):
+        mod = _stub_mod(actions=[FakeAction("frobnicate", "x"),
+                                 FakeAction("enable", "y")])
+        mod.PLAN_CHANGE_VERBS = ("frobnicate",)
+        prev = core.preview_preset(mod, "full-bridge", presets_doc, {})
+        assert [a.item for a in prev["actions"]] == ["x"]
+
+    def test_loader_pops_sys_modules_on_failed_exec(self, tmp_path):
+        import sys as _sys
+        root = tmp_path / "repo"
+        (root / "scripts").mkdir(parents=True)
+        (root / "scripts" / "provision_role.py").write_text("raise Boom(")
+        _sys.modules.pop("provision_role", None)
+        assert core.load_provision_role(str(root)) is None
+        assert "provision_role" not in _sys.modules
+
+    def test_verb_constants_shared_with_engine_and_probe(self):
+        # honest_failure_modes #5: three consumers of one verb vocabulary
+        # move together or fail HERE.
+        mod = core.load_provision_role(REPO)
+        assert mod is not None
+        from utils.watchdog_probes_drift import _ROLE_DRIFT_VERBS
+        assert tuple(mod.PLAN_CHANGE_VERBS) == tuple(core.CHANGE_VERBS)
+        assert tuple(mod.PLAN_CHANGE_VERBS) == tuple(_ROLE_DRIFT_VERBS)
+
+
+class TestApplyHandlerQaFixes:
+    def _ctx_handler(self):
+        ctx = make_handler_context()
+        h = FleetProvisionHandler()
+        h.set_context(ctx)
+        return ctx, h
+
+    def test_confirm_dialog_defaults_no(self, monkeypatch, presets_doc):
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        mod = _stub_mod(actions=[FakeAction("enable", "meshforge-gateway")])
+        ctx, h = self._ctx_handler()
+        captured = {}
+        orig = ctx.dialog.yesno
+        def _spy(title, text, **kw):
+            captured.update(kw)
+            captured["text"] = text
+            return False
+        ctx.dialog.yesno = _spy
+        h._apply_flow(mod, "full-bridge", presets_doc)
+        # the ONE keyboard-safety guard the docstring promised: Enter on the
+        # highest-consequence dialog in the TUI must NOT apply
+        assert captured.get("default_no") is True
+
+    def test_confirm_names_prior_role_and_mask_caveat(self, monkeypatch,
+                                                      presets_doc):
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        mod = _stub_mod(role="collector", actions=[
+            FakeAction("mask", "meshanchor-daemon", desired="masked")])
+        ctx, h = self._ctx_handler()
+        captured = {}
+        ctx.dialog.yesno = lambda t, x, **kw: captured.update(text=x) or False
+        h._apply_flow(mod, "full-bridge", presets_doc)
+        assert "collector" in captured["text"]          # revert target named
+        assert "unmask" in captured["text"]             # mask is not preset-revertible
+
+    def test_confirm_red_flags_high_consequence_units(self, monkeypatch,
+                                                      presets_doc):
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        mod = _stub_mod(actions=[
+            FakeAction("disable", "meshforge-gateway", desired="disabled")])
+        ctx, h = self._ctx_handler()
+        captured = {}
+        ctx.dialog.yesno = lambda t, x, **kw: captured.update(text=x) or False
+        h._apply_flow(mod, "full-bridge", presets_doc)
+        assert "THIS STOPS meshforge-gateway" in captured["text"]
+
+    def test_aborted_apply_reports_nothing_changed(self, monkeypatch,
+                                                   presets_doc):
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        # plan mutates between confirm and apply: second derive differs
+        flip = {"n": 0}
+        acts_confirm = [FakeAction("enable", "meshforge-gateway")]
+        acts_live = [FakeAction("disable", "meshforge-map")]
+        mod = _stub_mod()
+        def _plan(role_def, ov):
+            flip["n"] += 1
+            return acts_confirm if flip["n"] == 1 else acts_live
+        mod.plan = _plan
+        ctx, h = self._ctx_handler()
+        ctx.dialog._yesno_returns = [True]
+        h._apply_flow(mod, "full-bridge", presets_doc)
+        assert "aborted" in (ctx.dialog.last_msgbox_title or "").lower()
+        assert mod.write_role_calls == [] and mod.applied == []
+
+    def test_blocking_warning_never_reports_success(self, monkeypatch,
+                                                    presets_doc):
+        monkeypatch.setattr("os.geteuid", lambda: 0)
+        mod = _stub_mod(actions=[_required_warn()])
+        ctx, h = self._ctx_handler()
+        ctx.dialog._yesno_returns = [True]
+        h._apply_flow(mod, "full-bridge", presets_doc)
+        assert "Applied" not in (ctx.dialog.last_msgbox_title or "")
+        assert "BLOCKING" in (ctx.dialog.last_msgbox_text or "")
+
+    def test_malformed_string_override_renders_not_crashes(self):
+        mod = _stub_mod(role="collector", actions=[],
+                        overrides={"meshforge-map": "disabled"})
+        ctx, h = self._ctx_handler()
+        h._show_current(mod)   # must not raise
+        assert "MALFORMED" in ctx.dialog.last_msgbox_text

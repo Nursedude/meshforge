@@ -191,43 +191,62 @@ class TestNoOrphanHandlerModules:
     handlers/ directory and fails on any such orphan.
     """
 
-    # Modules allowed to define a *Handler class without being registered
-    # (e.g. abstract bases). Keep empty unless a module is deliberately
-    # registration-exempt — and say why here when adding one.
-    EXEMPT_MODULES: set = set()
+    # CLASSES allowed to exist without being registered (e.g. abstract
+    # bases). Keep empty unless a class is deliberately registration-exempt
+    # — and say why here when adding one. Class-level (not module-level)
+    # since 2026-07-05: one registered class must not whitelist an
+    # unregistered sibling in the same file.
+    EXEMPT_CLASSES: set = set()
 
-    def test_every_handler_module_is_registered(self):
+    def _handler_classes_on_disk(self):
+        """{class name: module} for every concrete-looking *Handler class
+        in handlers/ — INCLUDING _-prefixed helper modules (a handler
+        hidden in a 'helper' file is still unreachable, not exempt)."""
         import ast
         from pathlib import Path
 
         handlers_dir = (
             Path(__file__).parent.parent / "src" / "launcher_tui" / "handlers"
         )
-        registered_modules = {
-            cls.__module__.rsplit(".", 1)[-1] for cls in _get_handler_classes()
-        }
-
-        orphans = []
+        found = {}
         for path in sorted(handlers_dir.glob("*.py")):
-            module = path.stem
-            if (module == "__init__" or module.startswith("_")
-                    or module in registered_modules
-                    or module in self.EXEMPT_MODULES):
+            if path.stem == "__init__":
                 continue
             tree = ast.parse(path.read_text())
-            handler_classes = [
-                node.name for node in ast.walk(tree)
-                if isinstance(node, ast.ClassDef)
-                and node.name.endswith("Handler")
-            ]
-            if handler_classes:
-                orphans.append(f"{module} (defines {', '.join(handler_classes)})")
+            for node in ast.walk(tree):
+                if (isinstance(node, ast.ClassDef)
+                        and node.name.endswith("Handler")
+                        # only classes with a menu surface are dispatchable
+                        and any(isinstance(b, ast.FunctionDef)
+                                and b.name == "menu_items"
+                                for b in node.body)):
+                    found[node.name] = path.stem
+        return found
 
+    def test_every_handler_class_is_registered(self):
+        registered = {cls.__name__ for cls in _get_handler_classes()}
+        orphans = [
+            f"{name} (in {module}.py)"
+            for name, module in self._handler_classes_on_disk().items()
+            if name not in registered and name not in self.EXEMPT_CLASSES
+        ]
         assert not orphans, (
-            "Handler module(s) on disk but missing from get_all_handlers() — "
-            "unreachable from the TUI. Add a batch entry in "
-            f"handlers/__init__.py or EXEMPT_MODULES (with a reason): {orphans}"
+            "Handler class(es) on disk but missing from get_all_handlers() — "
+            "unreachable from the TUI (a second class in an already-"
+            "registered module counts; so does one in a _-prefixed file). "
+            "Add a batch entry in handlers/__init__.py or EXEMPT_CLASSES "
+            f"(with a reason): {orphans}"
         )
+
+    def test_exempt_classes_do_not_rot(self):
+        """An EXEMPT_CLASSES entry that no longer exists on disk, or that
+        became registered anyway, is stale — exemptions must be re-earned,
+        not accumulate."""
+        on_disk = set(self._handler_classes_on_disk())
+        registered = {cls.__name__ for cls in _get_handler_classes()}
+        stale = [c for c in self.EXEMPT_CLASSES
+                 if c not in on_disk or c in registered]
+        assert not stale, f"stale EXEMPT_CLASSES entries: {stale}"
 
 
 # ---------------------------------------------------------------------------

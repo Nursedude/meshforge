@@ -479,3 +479,50 @@ class TestConfigDeltaActions:
         a = _by_item(pr.config_delta_actions(_MAP_ROLE, _DEFAULTS), "delta:bbox-anchor")
         assert a is not None and a.verb == "warn" and not a.required
         assert "bbox_filter is OFF" in a.detail
+
+
+class TestWriteRoleClobberGuard:
+    """QA 2026-07-05: write_role must never silently replace an unreadable
+    deployment.json (that destroys service_overrides + profile, hfm #1),
+    and its write is atomic (the old bare write_text was itself a
+    torn-file source on this power-event-prone fleet)."""
+
+    def _patch_path(self, monkeypatch, tmp_path):
+        p = tmp_path / "deployment.json"
+        monkeypatch.setattr(pr, "DEPLOYMENT_JSON", p)
+        return p
+
+    def test_corrupt_existing_file_refused_loud(self, monkeypatch, tmp_path):
+        p = self._patch_path(monkeypatch, tmp_path)
+        p.write_text('{"role": "collector", "service_overrides": {"x"')  # torn
+        with pytest.raises(RuntimeError, match="refusing to overwrite"):
+            pr.write_role("full-gateway")
+        # the torn file is intact for forensics — nothing was clobbered
+        assert "service_overrides" in p.read_text()
+
+    def test_non_object_existing_file_refused(self, monkeypatch, tmp_path):
+        p = self._patch_path(monkeypatch, tmp_path)
+        p.write_text('["not", "an", "object"]')
+        with pytest.raises(RuntimeError, match="not a JSON object"):
+            pr.write_role("full-gateway")
+
+    def test_healthy_file_merges_and_preserves_keys(self, monkeypatch,
+                                                    tmp_path):
+        import json as _json
+        p = self._patch_path(monkeypatch, tmp_path)
+        p.write_text(_json.dumps({
+            "role": "collector", "profile": "monitor",
+            "service_overrides": {"meshforge-map": {
+                "state": "disabled", "reason": "gateway-only box"}}}))
+        pr.write_role("full-gateway")
+        data = _json.loads(p.read_text())
+        assert data["role"] == "full-gateway"
+        assert data["profile"] == "monitor"                    # preserved
+        assert data["service_overrides"]["meshforge-map"]["state"] == \
+            "disabled"                                         # preserved
+
+    def test_fresh_file_created(self, monkeypatch, tmp_path):
+        import json as _json
+        p = self._patch_path(monkeypatch, tmp_path)
+        pr.write_role("collector")
+        assert _json.loads(p.read_text()) == {"role": "collector"}

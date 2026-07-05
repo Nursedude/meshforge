@@ -302,3 +302,29 @@ class TestProfileLookup:
         assert 'display_name' in d
         # Should be JSON-serializable
         json.dumps(d)
+
+
+class TestSaveProfileClobberGuard:
+    """QA 2026-07-05: same clobber class as write_role — an unreadable
+    EXISTING deployment.json must never be silently replaced."""
+
+    def test_corrupt_existing_refused_and_intact(self, monkeypatch, tmp_path):
+        import utils.deployment_profiles as dp
+        p = tmp_path / "deployment.json"
+        p.write_text('{"role": "collector", "service_overr')  # torn
+        monkeypatch.setattr(dp, "_PROFILE_PATH", p)
+        prof = dp.PROFILES[dp.ProfileName.MONITOR]
+        assert dp.save_profile(prof) is False       # refused, loudly logged
+        assert "collector" in p.read_text()          # file untouched
+
+    def test_healthy_existing_merges(self, monkeypatch, tmp_path):
+        import json as _json
+        import utils.deployment_profiles as dp
+        p = tmp_path / "deployment.json"
+        p.write_text('{"role": "collector"}')
+        monkeypatch.setattr(dp, "_PROFILE_PATH", p)
+        prof = dp.PROFILES[dp.ProfileName.MONITOR]
+        assert dp.save_profile(prof) is True
+        data = _json.loads(p.read_text())
+        assert data["role"] == "collector"           # preserved
+        assert data["profile"]                        # merged in

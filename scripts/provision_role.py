@@ -84,6 +84,15 @@ class Action:
     result: str = ""   # filled on apply
 
 
+# The state-changing verbs plan() can emit — THE shared constant for every
+# consumer that filters a plan into a change set (this script's main(),
+# the TUI fleet_provision core, probe_role_drift's test-pin). Three
+# independent hardcodes of this tuple diverged once already
+# (honest_failure_modes #5). foundation_actions() adds 'foundation'
+# separately — it is not a plan() verb.
+PLAN_CHANGE_VERBS = ("enable", "disable", "mask")
+
+
 # --------------------------------------------------------------------------
 # Role resolution (pure)
 # --------------------------------------------------------------------------
@@ -383,15 +392,53 @@ def read_overrides() -> Dict[str, dict]:
 
 
 def write_role(role: str) -> None:
+    """Merge the role into deployment.json — never clobber other keys.
+
+    An existing-but-unreadable file is a refuse-loud error: silently
+    resetting it would destroy ``service_overrides`` and the deployment
+    profile (a torn file after a power event is this fleet's known
+    class, and the old non-atomic write here was itself a torn-file
+    source). Atomic write + ownership fixed back to the operator when
+    invoked under sudo (the TUI apply path is root; a root-created
+    deployment.json breaks every later user-mode writer, MF001 class).
+    """
+    from utils.paths import atomic_write_text
     DEPLOYMENT_JSON.parent.mkdir(parents=True, exist_ok=True)
     data = {}
     if DEPLOYMENT_JSON.exists():
         try:
             data = json.loads(DEPLOYMENT_JSON.read_text())
-        except (json.JSONDecodeError, OSError):
-            data = {}
+        except (json.JSONDecodeError, OSError) as e:
+            raise RuntimeError(
+                f"{DEPLOYMENT_JSON} exists but is unreadable ({e}) — "
+                f"refusing to overwrite it: that would silently destroy "
+                f"service_overrides and the deployment profile. Inspect "
+                f"or remove the file, then retry.") from e
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"{DEPLOYMENT_JSON} is not a JSON object "
+                f"({type(data).__name__}) — refusing to overwrite; "
+                f"inspect the file.")
     data["role"] = role
-    DEPLOYMENT_JSON.write_text(json.dumps(data, indent=2))
+    atomic_write_text(DEPLOYMENT_JSON, json.dumps(data, indent=2))
+    _chown_back_to_operator(DEPLOYMENT_JSON.parent, DEPLOYMENT_JSON)
+
+
+def _chown_back_to_operator(*paths: Path) -> None:
+    """Root-created config artifacts get handed back to the operator
+    (same convention as MeshForgePaths.ensure_directories)."""
+    sudo_user = os.environ.get("SUDO_USER", "")
+    if not sudo_user or sudo_user == "root" or "/" in sudo_user \
+            or ".." in sudo_user:
+        return
+    try:
+        import pwd
+        pw = pwd.getpwnam(sudo_user)
+        for p in paths:
+            if p.exists() and p.stat().st_uid == 0:
+                os.chown(str(p), pw.pw_uid, pw.pw_gid)
+    except (KeyError, OSError):
+        pass  # non-critical: still root-usable; the CLI converge heals it
 
 
 # --------------------------------------------------------------------------
@@ -554,7 +601,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     actions += config_delta_actions(role_def, catalog.get("defaults", {}))
     render(actions, args.apply)
 
-    changes = [a for a in actions if a.verb in ("enable", "disable", "mask", "foundation")]
+    changes = [a for a in actions
+               if a.verb in PLAN_CHANGE_VERBS + ("foundation",)]
     fail_warns = [a for a in actions if a.verb == "warn" and a.required]
 
     if args.apply:

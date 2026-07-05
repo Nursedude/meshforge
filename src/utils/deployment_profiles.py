@@ -330,13 +330,26 @@ def save_profile(profile: ProfileDefinition) -> bool:
         if _PROFILE_PATH.exists():
             try:
                 existing = json.loads(_PROFILE_PATH.read_text())
-                if isinstance(existing, dict):
-                    data = existing
-            except (json.JSONDecodeError, OSError):
-                data = {}
+            except (json.JSONDecodeError, OSError) as e:
+                # An unreadable EXISTING file must never be silently
+                # replaced — that destroys the role + service_overrides
+                # (the same clobber class fixed in write_role, hfm #1).
+                logger.error(
+                    "deployment.json exists but is unreadable (%s) — "
+                    "refusing to overwrite it; profile NOT saved. Inspect "
+                    "or remove %s and retry.", e, _PROFILE_PATH)
+                return False
+            if isinstance(existing, dict):
+                data = existing
+            else:
+                logger.error(
+                    "deployment.json is not a JSON object (%s) — refusing "
+                    "to overwrite; profile NOT saved.",
+                    type(existing).__name__)
+                return False
         data["profile"] = profile.name.value
-        with open(_PROFILE_PATH, 'w') as f:
-            json.dump(data, f, indent=2)
+        from utils.paths import atomic_write_text
+        atomic_write_text(_PROFILE_PATH, json.dumps(data, indent=2))
         logger.info("Saved deployment profile: %s", profile.display_name)
         return True
     except (IOError, OSError) as e:

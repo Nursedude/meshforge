@@ -56,9 +56,21 @@ class HandlerRegistry:
                 f"new: {type(handler).__name__})"
             )
 
+        # Context first (registration order pre-dated the guard; keep the
+        # old invariant that menu_items() only ever runs on a
+        # context-injected handler), then ONE snapshot of menu_items() —
+        # validating one list and indexing another would let a dynamic
+        # implementation dodge the guard.
+        handler.set_context(self._ctx)
+        items = list(handler.menu_items())
+
         # Validate tags BEFORE mutating registry state, so a duplicate
         # leaves the registry unchanged (no half-registered handler).
-        for tag, _desc, _flag in handler.menu_items():
+        # `seen` accumulates THIS handler's own tags too: a copy-pasted
+        # menu row duplicating a tag within one handler used to at least
+        # warn — it must not silently last-write-wins past the guard.
+        seen: set = set()
+        for tag, _desc, _flag in items:
             existing = self._tag_index[handler.menu_section].get(tag)
             if existing is not None:
                 raise ValueError(
@@ -67,17 +79,23 @@ class HandlerRegistry:
                     f"{existing.handler_id!r}, refusing {hid!r} — a "
                     f"duplicate would silently shadow one handler's action"
                 )
+            if tag in seen:
+                raise ValueError(
+                    f"Duplicate tag {tag!r} WITHIN {hid!r}'s own "
+                    f"menu_items() — a copy-pasted menu row would render "
+                    f"twice and silently shadow itself"
+                )
+            seen.add(tag)
 
-        handler.set_context(self._ctx)
         self._handlers[hid] = handler
         self._sections[handler.menu_section].append(handler)
 
-        for tag, _desc, _flag in handler.menu_items():
+        for tag, _desc, _flag in items:
             self._tag_index[handler.menu_section][tag] = handler
 
         logger.debug(
             "Registered handler %s (section=%s, items=%d)",
-            hid, handler.menu_section, len(handler.menu_items()),
+            hid, handler.menu_section, len(items),
         )
 
     def get_handler(self, handler_id: str) -> Optional[CommandHandler]:

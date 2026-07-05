@@ -21,11 +21,37 @@ import logging
 import os
 from typing import List, Optional, Tuple
 
+import yaml
+
 from handler_protocol import BaseHandler
 
 from . import _fleet_provision_core as core
 
 logger = logging.getLogger(__name__)
+
+# Units whose stop/disable deserves an explicit red-flag line in the
+# confirm dialog — the box's bridge, its recovery backstop, and the RNS
+# substrate. Not a denylist (the catalog stays authoritative); a warning
+# the operator cannot miss.
+HIGH_CONSEQUENCE_UNITS = ("meshforge-gateway", "meshforge-watchdog", "rnsd")
+
+
+def _fmt_action(a, indent: str = "  ") -> str:
+    """ONE renderer for plan actions — preview, confirm and report must
+    show the same facts (detail carries the waiver reason / #69 note)."""
+    line = f"{indent}{a.verb:7} {a.item}   ({a.current} -> {a.desired})"
+    detail = getattr(a, "detail", "")
+    return f"{line}  [{detail}]" if detail else line
+
+
+def _warning_lines(warnings, indent: str = "  ") -> List[str]:
+    """Render plan warnings; required ones are BLOCKING (CLI exit-1 class)."""
+    out = []
+    for w in warnings or []:
+        tag = "BLOCKING" if getattr(w, "required", False) else "advisory"
+        detail = getattr(w, "detail", "") or w.desired
+        out.append(f"{indent}⚠ {tag}: {w.item} — {detail}")
+    return out
 
 
 class FleetProvisionHandler(BaseHandler):
@@ -59,7 +85,10 @@ class FleetProvisionHandler(BaseHandler):
             return None, None
         try:
             doc = core.load_presets(core.presets_path())
-        except (OSError, ValueError) as e:
+        except (OSError, ValueError, yaml.YAMLError) as e:
+            # yaml.YAMLError is NOT a ValueError — without it here, a
+            # malformed catalog edit skipped this actionable message and
+            # fell to the generic error pane.
             self.ctx.dialog.msgbox(
                 "Fleet Architecture",
                 f"Could not load docs/fleet_presets.yaml: {e}")
@@ -98,19 +127,38 @@ class FleetProvisionHandler(BaseHandler):
         if ov:
             lines += ["", "service_overrides:"]
             for unit, spec in ov.items():
-                lines.append(
-                    f"  {unit}: {spec.get('state', '?')}  "
-                    f"({spec.get('reason', 'no reason')})")
+                if isinstance(spec, dict):
+                    lines.append(
+                        f"  {unit}: {spec.get('state', '?')}  "
+                        f"({spec.get('reason', 'no reason')})")
+                else:
+                    # the engine tolerates this shape (renders it as a
+                    # hidden-drift warn); the pane must not crash on it
+                    lines.append(f"  {unit}: {spec!r}  "
+                                 f"(MALFORMED — expected {{state, reason}})")
         lines.append("")
         drift = info["drift"]
+        blocking = core.required_warnings(info.get("warnings"))
         if drift is None:
             lines.append("Drift: UNKNOWN (role unset or catalog unavailable).")
-        elif not drift:
+        elif not drift and not blocking:
+            # same predicate probe_role_drift pages on — the TUI and the
+            # watchdog must never disagree about the same plan
             lines.append("Drift: none — box matches its declared role.")
         else:
-            lines.append(f"Drift: {len(drift)} unit(s) would change under converge:")
-            for a in drift:
-                lines.append(f"  {a.verb:7} {a.item}   ({a.current} -> {a.desired})")
+            if drift:
+                lines.append(f"Drift: {len(drift)} unit(s) would change "
+                             f"under converge:")
+                lines += [_fmt_action(a) for a in drift]
+            if blocking:
+                lines.append(f"Blocking: {len(blocking)} required "
+                             f"warning(s) — converge cannot fully succeed:")
+                lines += _warning_lines(blocking)
+        advisories = [w for w in (info.get("warnings") or [])
+                      if not getattr(w, "required", False)]
+        if advisories:
+            lines.append("")
+            lines += _warning_lines(advisories)
         self.ctx.dialog.textbox("Current box", "\n".join(lines))
 
     def _catalog_menu(self, mod, doc) -> None:
@@ -143,18 +191,24 @@ class FleetProvisionHandler(BaseHandler):
             "",
         ]
         try:
-            overrides = core.current_box(mod)["overrides"]
+            overrides = mod.read_overrides()
             prev = core.preview_preset(mod, preset_name, doc, overrides)
         except Exception as e:
             lines.append(f"[could not compute dry-run: {e}]")
             self.ctx.dialog.textbox(f"Preview: {preset_name}", "\n".join(lines))
             return
+        blocking = core.required_warnings(prev["warnings"])
         lines.append("Role converge (DRY-RUN) — units that would change:")
-        if not prev["actions"]:
+        if not prev["actions"] and not blocking:
             lines.append("  (none — this box already matches the preset's role)")
         else:
-            for a in prev["actions"]:
-                lines.append(f"  {a.verb:7} {a.item}   ({a.current} -> {a.desired})")
+            lines += [_fmt_action(a) for a in prev["actions"]]
+        if prev["warnings"]:
+            lines += _warning_lines(prev["warnings"])
+        if prev.get("foundation"):
+            lines.append("  foundation converge (perms, mf.4 class):")
+            lines += [_fmt_action(a, indent="    ")
+                      for a in prev["foundation"]]
         lines.append("")
         overlay = prev["gateway_overlay"]
         if overlay:
@@ -204,7 +258,8 @@ class FleetProvisionHandler(BaseHandler):
                 "  sudo python3 src/launcher_tui/main.py")
             return
 
-        overrides = core.current_box(mod)["overrides"]
+        overrides = mod.read_overrides()
+        prior_role = mod.read_role()
         try:
             prev = core.preview_preset(mod, preset_name, doc, overrides)
         except Exception as e:
@@ -214,18 +269,35 @@ class FleetProvisionHandler(BaseHandler):
 
         role = prev["role"]
         actions = prev["actions"]
+        blocking = core.required_warnings(prev["warnings"])
         overlay = prev["gateway_overlay"]
 
         lines = [f"Apply preset '{preset_name}' to THIS box?", "",
-                 f"  role -> {role}"]
+                 f"  role: {prior_role or '(none set)'} -> {role}"]
         if actions:
             lines.append(f"  converge {len(actions)} unit(s) "
                          "(enable=start, disable=stop, mask):")
-            for a in actions:
-                lines.append(f"    {a.verb:7} {a.item}  "
-                             f"({a.current} -> {a.desired})")
+            lines += [_fmt_action(a, indent="    ") for a in actions]
         else:
             lines.append("  units already match this role — no unit changes")
+        risky = [a.item for a in actions
+                 if a.verb in ("disable", "mask")
+                 and any(a.item.startswith(u) for u in
+                         HIGH_CONSEQUENCE_UNITS)]
+        if risky:
+            lines += ["",
+                      f"  ⚠⚠ THIS STOPS {', '.join(risky)} — the box's "
+                      f"bridge/backstop. If a soak or drill is running, "
+                      f"this resets it. Be sure."]
+        if prev["warnings"]:
+            lines += [""] + _warning_lines(prev["warnings"])
+            if blocking:
+                lines.append("  (BLOCKING warnings mean the converge CANNOT "
+                             "fully succeed — the CLI would exit 1)")
+        if any(a.verb == "mask" for a in actions):
+            lines += ["",
+                      "  NOTE: mask is NOT undone by re-applying a preset —",
+                      "  reverting a mask needs 'systemctl unmask <unit>'."]
         if overlay:
             lines += ["",
                       "Bridge legs (gateway.json) are NOT auto-applied (they need",
@@ -233,18 +305,36 @@ class FleetProvisionHandler(BaseHandler):
                       f"  {core.CONFIGURE_GATEWAY_CMD}",
                       "to set: " + ", ".join(f"{k}={v}" for k, v in overlay.items())]
         lines += ["",
-                  "Reverting = re-apply the box's prior preset. Continue?"]
+                  f"Reverting the role = re-apply the prior preset "
+                  f"(current role: {prior_role or 'none'}). Continue?"]
 
-        if not self.ctx.dialog.yesno("Apply Preset — confirm", "\n".join(lines)):
+        if not self.ctx.dialog.yesno("Apply Preset — confirm",
+                                     "\n".join(lines), default_no=True):
             self.ctx.dialog.msgbox("Apply Preset", "Cancelled — nothing changed.")
             return
 
-        res = core.apply_preset(mod, preset_name, doc, overrides)
+        logger.info("fleet_provision apply: preset=%s role=%s->%s "
+                    "actions=%d blocking_warnings=%d",
+                    preset_name, prior_role, role, len(actions),
+                    len(blocking))
+        res = core.apply_preset(mod, preset_name, doc, overrides,
+                                expected_actions=actions)
+
+        if res.get("aborted"):
+            logger.warning("fleet_provision apply ABORTED: %s",
+                           res["aborted"])
+            self.ctx.report_action(
+                False, "", "", "Preset Apply — aborted (nothing changed)",
+                f"{res['aborted']}\n\nThe box was NOT modified. Re-open the "
+                f"preview to see the current plan.")
+            return
+
         out = [
-            "role set: {0}  ({1})".format(
+            "role set: {0}  ({1}; was: {2})".format(
                 res["role"],
                 "ok" if res["role_written"]
-                else "FAILED: " + str(res["role_err"])),
+                else "FAILED: " + str(res["role_err"]),
+                res.get("prior_role") or "none"),
             "",
         ]
         if not res["results"]:
@@ -255,16 +345,30 @@ class FleetProvisionHandler(BaseHandler):
                     f"  {r['verb']:7} {r['item']}: "
                     f"{'OK' if r['ok'] else 'FAILED'}"
                     f"{('  ' + r['result']) if r['result'] else ''}")
+        if res.get("blocking_warnings"):
+            out.append("")
+            out.append("BLOCKING warnings (converge incomplete — the CLI "
+                       "would exit 1):")
+            for w in res["blocking_warnings"]:
+                out.append(f"  ⚠ {w['item']}: {w['detail']}")
         if overlay and res["ok"]:
             out += ["", f"Next: {core.CONFIGURE_GATEWAY_CMD}  (wire bridge legs)"]
         body = "\n".join(out)
 
+        logger.info("fleet_provision apply result: preset=%s ok=%s "
+                    "failed=%d blocking=%d role_written=%s",
+                    preset_name, res["ok"], len(res["failures"]),
+                    len(res.get("blocking_warnings") or []),
+                    res["role_written"])
         if res["ok"]:
             self.ctx.report_action(True, f"Preset Applied: {preset_name}", body)
         else:
-            nfail = len(res["failures"]) + (0 if res["role_written"] else 1)
+            nfail = (len(res["failures"])
+                     + len(res.get("blocking_warnings") or [])
+                     + (0 if res["role_written"] else 1))
             self.ctx.report_action(
                 False, "", "", "Preset Apply — incomplete",
-                body + f"\n\n{nfail} step(s) failed — the box may be in a "
-                "partial state. Fix the cause and re-apply, or converge via "
-                "'sudo python3 scripts/provision_role.py --apply'.")
+                body + f"\n\n{nfail} step(s) failed/blocking — the box may "
+                "be in a partial state. Fix the cause and re-apply, or "
+                "converge via 'sudo python3 scripts/provision_role.py "
+                "--apply'.")
