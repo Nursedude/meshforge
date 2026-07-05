@@ -318,3 +318,54 @@ class TestExpectShapeValidation:
         p.write_bytes(b'\xff\xfe{"id"}')
         with pytest.raises(lbe.EvalConfigError, match="UTF-8"):
             lbe.load_cases([str(p)])
+
+
+class TestExpectRefusal:
+    """W5.1 refusal-honesty knob (QA session 2026-07-05): an ungroundable
+    question must degrade, never confabulate."""
+
+    def _result(self, tier="rules", answer=None):
+        return {"brain_tier": tier, "answer": answer,
+                "retrieved": [], "sources": [],
+                "confidence": None, "note": "no grounded synthesis"}
+
+    def _case(self):
+        return {"id": "r1", "kind": "oracle",
+                "input": {"question": "Issue #150 root cause?"},
+                "expect": {"expect_refusal": True}}
+
+    def test_refusal_passes(self, monkeypatch):
+        monkeypatch.setattr(lbe.offline_oracle, "ask",
+                            lambda *a, **k: self._result())
+        ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
+        assert ok, reasons
+
+    def test_fabricated_grounded_answer_fails(self, monkeypatch):
+        monkeypatch.setattr(
+            lbe.offline_oracle, "ask",
+            lambda *a, **k: self._result(tier="local",
+                                         answer="Issue #150 was a dns bug"))
+        ok, reasons, _ = lbe.grade_oracle(self._case(), FakeBackend())
+        assert not ok
+        assert any("fabricated" in r for r in reasons)
+
+    def test_validator_rejects_non_bool(self):
+        case = self._case()
+        case["expect"] = {"expect_refusal": "yes"}
+        with pytest.raises(lbe.EvalConfigError, match="bool"):
+            lbe._validate_expect(case, "x:1")
+
+    def test_validator_rejects_conflicting_knobs(self):
+        case = self._case()
+        case["expect"] = {"expect_refusal": True,
+                          "answer_contains_any": ["dns"]}
+        with pytest.raises(lbe.EvalConfigError, match="conflicts"):
+            lbe._validate_expect(case, "x:1")
+
+    def test_seed_refusal_case_loads(self):
+        # the shipped case must survive load-time validation
+        import os
+        cases = lbe.load_cases([os.path.join(
+            lbe._REPO_ROOT, "evals", "local_brain", "seed.jsonl")])
+        ids = {c["id"] for c in cases}
+        assert "oracle-refusal-unknown-issue" in ids

@@ -112,6 +112,16 @@ def _validate_expect(case: dict, where: str) -> None:
                  "answer_contains_any"):
         if knob in expect and not isinstance(expect[knob], list):
             raise EvalConfigError(f"{where}: {knob} must be a list")
+    if "expect_refusal" in expect:
+        if not isinstance(expect["expect_refusal"], bool):
+            raise EvalConfigError(f"{where}: expect_refusal must be a bool")
+        if expect["expect_refusal"] and (expect.get("cite_must_include")
+                                         or expect.get("answer_contains_any")):
+            # The author cannot have meant both: a refusal has no grounded
+            # answer to cite or match against (honest_failure_modes #3).
+            raise EvalConfigError(
+                f"{where}: expect_refusal conflicts with cite_must_include/"
+                f"answer_contains_any — a refusal has no answer to grade")
 
 
 def load_cases(paths: List[str]) -> List[dict]:
@@ -265,6 +275,15 @@ def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
     for frag in expect.get("retrieve_must_include") or []:
         if frag not in retrieved_paths:
             reasons.append(f"retrieval missing {frag!r}")
+    if expect.get("expect_refusal"):
+        # Honest-refusal case (the substitute-and-narrate-success wart, W5.1):
+        # the ONLY passing behavior for an ungroundable question is declining
+        # to answer — a confident grounded-looking answer IS the failure.
+        if result.get("brain_tier") == "local":
+            reasons.append(
+                f"fabricated a grounded answer where honest output is a "
+                f"refusal: {str(result.get('answer', ''))[:160]}")
+        return not reasons, reasons, result
     if expect.get("require_answer", True):
         if result.get("brain_tier") != "local":
             reasons.append(f"no grounded answer: "

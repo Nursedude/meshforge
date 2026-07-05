@@ -59,7 +59,19 @@ verify → FAIL verdict):
 */10 * * * * cd /opt/meshforge && PYTHONPATH=src timeout 570 python3 -m kilo collect --transport mqtt --seconds 480 --broker localhost --port 1883 --root-topic msh/2/e --channel "+" >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh kilo_collect $?
 # claw-brain box (tick file only, instant):
 */10 * * * * cd /opt/meshforge && PYTHONPATH=src timeout 60 python3 -m kilo collect --transport claw >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh kilo_collect $?
+# K1 matrix watch — EDGE-BEARING boxes only (mqtt collect feeds edges; a
+# claw-only box has no edges and would emit a permanently-vacuous OK —
+# unobservable must not read healthy). Hourly: matrix is a read-side view
+# over the */10 collect stream. Exit 1 = an edge SHIFTED beyond its own
+# baseline band (real page); exit 2 = could not verify (crash/registry —
+# never counted as pass; the 2026-07-05 error-boundary fix makes this
+# honest). First ~24h after edge capture starts, every cell is SPARSE by
+# construction — the matrix prints the baseline-horizon witness for that.
+7 * * * * cd /opt/meshforge && PYTHONPATH=src timeout 120 python3 -m kilo matrix --window-hours 24 >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh kilo_matrix $?
 ```
+
+Wired live: `kilo_matrix` on **moc only** (2026-07-05 QA session) — moc2's
+collect is claw-transport (no edges; vacuous-OK refused by design).
 
 ## Next concrete steps
 
