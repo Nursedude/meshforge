@@ -394,10 +394,34 @@ class ReticulumPaths:
         location makes the resourcepath deterministic. Pinned by
         ``TestReticulumClientConfigdir`` + the determinism regression guard.
         """
+        import stat
         import tempfile
 
         d = Path(tempfile.gettempdir()) / cls.RNS_CLIENT_DIRNAME
-        d.mkdir(exist_ok=True)
+        # The config holds rnsd's rpc_key (Issue #41) — a shared-instance
+        # management credential. This dir has a FIXED, world-predictable
+        # name in a possibly-shared /tmp (the gateway unit sets PrivateTmp,
+        # but map/TUI/manual callers reach this helper WITHOUT it). Own the
+        # dir 0700 and REFUSE a pre-existing dir owned by someone else —
+        # otherwise a local user pre-creates it (or a 'config' symlink) and
+        # either harvests the key or redirects our write (a /tmp symlink
+        # attack; write_text follows links).
+        d.mkdir(mode=0o700, exist_ok=True)
+        st = d.lstat()
+        if not stat.S_ISDIR(st.st_mode) or stat.S_ISLNK(st.st_mode):
+            raise RuntimeError(
+                f"RNS client configdir {d} is not a real directory "
+                f"(symlink or file) — refusing to use it")
+        if st.st_uid != os.getuid():
+            raise RuntimeError(
+                f"RNS client configdir {d} is owned by uid {st.st_uid}, "
+                f"not this process ({os.getuid()}) — refusing to write "
+                f"rnsd's rpc_key into a foreign-owned dir")
+        # Re-assert 0700 in case an old run created it world-readable.
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
         instance_name = cls.get_configured_instance_name()
         lines = [
             "# MeshForge gateway RNS client config (auto-generated — NO interfaces).",
@@ -412,7 +436,19 @@ class ReticulumPaths:
         rpc_key = cls.get_shared_rpc_key()
         if rpc_key:
             lines.append(f"rpc_key = {rpc_key}")
-        (d / "config").write_text("\n".join(lines) + "\n")
+        cfg = d / "config"
+        # Refuse to write THROUGH a symlink (the classic /tmp redirect);
+        # then atomic write at 0600 so the credential is never world-
+        # readable and never torn by a concurrent writer.
+        if cfg.is_symlink():
+            raise RuntimeError(
+                f"{cfg} is a symlink — refusing to write rnsd's rpc_key "
+                f"through it")
+        atomic_write_text(cfg, "\n".join(lines) + "\n")
+        try:
+            os.chmod(cfg, 0o600)
+        except OSError:
+            pass
         return str(d)
 
 

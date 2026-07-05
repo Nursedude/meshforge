@@ -262,3 +262,78 @@ def test_from_env_rns_leg_uses_separate_allowlist_and_transport():
     assert r.handle("deadbeefcafe", "status")
     assert r.handle("!meshnode", "status") is None
     assert logs[-1]["transport"] == "rns"
+
+
+# ---------------------------------------------------------------------------
+# QA review 2026-07-05 — RF-egress + identity hardening
+# ---------------------------------------------------------------------------
+def test_cooldown_uses_monotonic_not_wallclock():
+    # separate monotonic clock drives cooldown; wall-clock (now_fn) only
+    # timestamps records — a backward wall-clock step can't strand a sender
+    wall = _Clock()
+    mono = _Clock()
+    sent, logs = [], []
+    r = MeshOracleResponder(
+        snapshot_fn=_snap, send_fn=lambda t, d, c: sent.append(1) or True,
+        log_fn=logs.append, now_fn=wall, monotonic_fn=mono,
+        allowlist={"!n"}, cooldown_s=30.0)
+    assert r.handle("!n", "status") is not None       # answered, mono=t0
+    wall.t -= 10_000.0                                 # NTP steps wall back
+    mono.t += 40.0                                     # real time advanced
+    assert r.handle("!n", "status") is not None        # cooldown expired on mono
+    assert len(sent) == 2
+
+
+def test_cooldown_backward_monotonic_step_does_not_strand():
+    mono = _Clock()
+    sent = []
+    r = MeshOracleResponder(
+        snapshot_fn=_snap, send_fn=lambda t, d, c: sent.append(1) or True,
+        now_fn=_Clock(), monotonic_fn=mono, allowlist={"!n"}, cooldown_s=30.0)
+    assert r.handle("!n", "status") is not None
+    mono.t -= 5.0                                      # impossible, but be safe
+    assert r.handle("!n", "status") is not None         # negative delta = expired
+    assert len(sent) == 2
+
+
+def test_last_answer_map_is_bounded():
+    from oracle import responder as rmod
+    mono = _Clock()
+    r = MeshOracleResponder(
+        snapshot_fn=_snap, send_fn=lambda t, d, c: True,
+        now_fn=_Clock(), monotonic_fn=mono, answer_all=True, cooldown_s=30.0)
+    # spoofed distinct ids, all older than cooldown once we advance
+    for i in range(rmod._LAST_ANSWER_CAP + 200):
+        r.handle(f"!{i:08x}", "status")
+        mono.t += 0.001
+    mono.t += 100.0                                    # age them past cooldown
+    r.handle("!ffffffff", "status")                    # triggers a prune
+    assert len(r._last_answer) <= rmod._LAST_ANSWER_CAP + 1
+
+
+def test_answer_all_star_anywhere_in_list():
+    import os
+    env = {"MESHFORGE_ORACLE_ENABLED": "1",
+           "MESHFORGE_ORACLE_ALLOWLIST": "*,!abc12345"}
+    r = MeshOracleResponder.from_env(
+        snapshot_fn=_snap, send_fn=lambda t, d, c: True, env=env)
+    assert r is not None and r._answer_all is True   # not a dead '!*' literal
+
+
+def test_numeric_from_id_normalizes_to_hex_key():
+    from oracle.responder import _norm
+    # a numeric sender folds to the same !hex an operator wrote (node_num_to_id)
+    assert _norm(3792937512) == "!e213a228"
+    assert _norm("3792937512") == "!e213a228"
+    assert _norm("!E213A228") == "!e213a228"
+
+
+def test_no_reply_can_satisfy_is_query_loop_guard():
+    # the oracle's only loop-safety is that its OWN replies are not queries;
+    # pin it so a future reply-format change fails HERE, not in the field
+    from oracle import NocSnapshot
+    from oracle.intents import _QUERY_HEADS, answer, is_query
+    snap = NocSnapshot(box="moc3", now=1000.0)
+    for head in _QUERY_HEADS:
+        reply = answer(head, snap)
+        assert not is_query(reply), f"reply to {head!r} loops: {reply!r}"

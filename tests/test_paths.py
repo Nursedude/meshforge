@@ -534,3 +534,47 @@ class TestReticulumClientConfigdir:
         with open(os.path.join(d, "config"), encoding="utf-8") as fh:
             cfg = fh.read()
         assert "rpc_key" not in cfg
+
+    def test_config_and_dir_are_not_world_readable(self, tmp_path):
+        # QA 2026-07-05: the config holds rnsd's rpc_key (a shared-instance
+        # credential) in a possibly-shared /tmp — dir 0700, file 0600.
+        import stat
+        d = self._call(tmp_path)
+        dmode = stat.S_IMODE(os.stat(d).st_mode)
+        fmode = stat.S_IMODE(os.stat(os.path.join(d, "config")).st_mode)
+        assert dmode == 0o700, oct(dmode)
+        assert fmode == 0o600, oct(fmode)
+
+    def test_refuses_foreign_owned_dir(self, tmp_path, monkeypatch):
+        # a pre-existing dir owned by someone else must not be written into.
+        # The real dir is owned by getuid(); make getuid() report a DIFFERENT
+        # uid so the ownership check sees the dir as foreign.
+        d = tmp_path / "meshforge_rns_client"
+        d.mkdir(mode=0o700)
+        import utils.paths as up
+        real_uid = os.getuid()
+        monkeypatch.setattr(up.os, "getuid", lambda: real_uid + 12345)
+        with patch("tempfile.gettempdir", return_value=str(tmp_path)), \
+             patch.object(up.ReticulumPaths, "get_configured_instance_name",
+                          return_value="x"), \
+             patch.object(up.ReticulumPaths, "get_shared_rpc_key",
+                          return_value="k"):
+            with pytest.raises(RuntimeError, match="foreign-owned|owned by"):
+                up.ReticulumPaths.ensure_rns_client_configdir()
+
+    def test_refuses_symlinked_config(self, tmp_path):
+        # a 'config' symlink (the /tmp redirect attack) must be refused, not
+        # written through
+        d = tmp_path / "meshforge_rns_client"
+        d.mkdir(mode=0o700)
+        target = tmp_path / "victim"
+        (d / "config").symlink_to(target)
+        import utils.paths as up
+        with patch("tempfile.gettempdir", return_value=str(tmp_path)), \
+             patch.object(up.ReticulumPaths, "get_configured_instance_name",
+                          return_value="x"), \
+             patch.object(up.ReticulumPaths, "get_shared_rpc_key",
+                          return_value="k"):
+            with pytest.raises(RuntimeError, match="symlink"):
+                up.ReticulumPaths.ensure_rns_client_configdir()
+        assert not target.exists()  # the symlink target was never written

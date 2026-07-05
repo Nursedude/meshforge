@@ -709,10 +709,15 @@ class MeshtasticHandler(BaseMessageHandler):
 
         # Mesh oracle (read-only): answer a query (status/whatsup/...) DIRECTED
         # back to the sender — off-grid, no cloud. Default OFF; never breaks the
-        # bridge; a handled query is consumed (not bridged onward).
+        # bridge. Consume only when the leg's consume flag is set — same as the
+        # MQTT/MeshCore/RNS legs; previously this leg ALWAYS consumed, silently
+        # dead-lettering MESHFORGE_ORACLE_CONSUME=0 (bridge-through) on the
+        # PhoneAPI/TCP path.
         if self._oracle is not None:
             try:
-                if self._oracle.handle(from_id, text, packet.get('channel', 0)):
+                reply = self._oracle.handle(from_id, text,
+                                            packet.get('channel', 0))
+                if reply is not None and self._oracle.consume:
                     return
             except Exception as e:
                 logger.debug(f"mesh oracle handle error: {e}")

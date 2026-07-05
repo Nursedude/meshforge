@@ -51,8 +51,12 @@ STATUS_URL = "http://localhost:5000/api/status"
 # resolve the same file — kilo test-pins its path formula to _tick_path().
 
 
-DEFAULT_ENV_PATH = os.path.join(os.path.expanduser("~"),
-                                ".config", "meshforge", "mini_dudeai_claw.env")
+# get_real_user_home, NOT expanduser: the tick writer below resolves the
+# operator home, and this path anchors _tick_basename_for's primary-vs-
+# secondary realpath comparison — two different "home"s in one identity
+# decision would fork the primary tick under sudo (MF001 class).
+DEFAULT_ENV_PATH = str(get_real_user_home() / ".config" / "meshforge"
+                       / "mini_dudeai_claw.env")
 
 
 def _tick_path(basename: str = CLAW_TICK_BASENAME) -> str:
@@ -71,7 +75,17 @@ def _tick_basename_for(env_path: "str | None", device: str) -> str:
     if env_path is None or \
             os.path.realpath(env_path) == os.path.realpath(DEFAULT_ENV_PATH):
         return CLAW_TICK_BASENAME
-    return secondary_tick_basename(device)
+    basename = secondary_tick_basename(device)
+    if basename != f"claw_last_tick.{device}.json":
+        # The fold ('dudeclaw.02' → 'dudeclaw-02') means two DISTINCT
+        # device names could silently share one tick file, alternating
+        # overwrites — refuse loud at the writer, where the operator can
+        # fix the env, instead of flapping a healthy claw toward DARK.
+        raise SystemExit(
+            f"claw_metrics: device name {device!r} contains characters "
+            f"that fold in the tick filename ({basename}) — rename the "
+            f"device to [A-Za-z0-9_-]+ in its env file")
+    return basename
 
 
 def _load_claw_env(path: "str | None" = None) -> dict:

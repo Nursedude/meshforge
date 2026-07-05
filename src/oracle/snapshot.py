@@ -40,25 +40,52 @@ def _http_get(url: str, timeout: float):
         return resp.read()
 
 
+# Short-TTL cache for the blocking /api/status GET. The oracle calls this
+# SYNCHRONOUSLY on the transport RX thread (paho on_message / the LXMF
+# callback / the MeshCore asyncio loop), so when the map is wedged each
+# allowed query would otherwise stall that thread up to `timeout` seconds —
+# back-pressuring /e/ ACK consumption and bridged delivery exactly when
+# operators query 'status' most (#70/#71 GIL-wedge class). Facts tick at a
+# 30s cadence, so a few-second TTL is behavior-preserving and collapses a
+# burst of queries onto one GET. Keyed by url so tests/Phase-1 overrides
+# don't collide.
+_STATUS_CACHE_TTL_S = 5.0
+_status_cache: Dict[str, Tuple[float, Optional[dict]]] = {}
+
+
 def fetch_api_status(url: str = DEFAULT_STATUS_URL, timeout: float = 3.0,
-                     _get=None) -> Optional[dict]:
+                     _get=None, _now=time.monotonic,
+                     use_cache: bool = True) -> Optional[dict]:
     """Read-only fetch of the local ``/api/status`` summary, or ``None`` on any
     failure.
 
     A short, bounded localhost GET that degrades to ``None`` on timeout / non-200
     / bad JSON — so the snapshot stays honestly *unknown* (``fleet:?``) rather
     than fabricating fleet numbers. This is read-only (the same data the map
-    serves) and never perturbs the radio. ``_get`` is injectable for tests.
+    serves) and never perturbs the radio. Cached for ``_STATUS_CACHE_TTL_S`` so
+    a burst of queries on the RX thread costs at most one GET. ``_get``/``_now``
+    are injectable for tests; ``use_cache=False`` forces a fresh read.
     """
+    # An injected getter (tests / Phase-1) always reads fresh — the shared
+    # cache is a production-only optimization for the real localhost GET.
+    cache = use_cache and _get is None
+    now = _now()
+    if cache:
+        hit = _status_cache.get(url)
+        if hit is not None and (now - hit[0]) < _STATUS_CACHE_TTL_S:
+            return hit[1]
     getter = _get or _http_get
     try:
         raw = getter(url, timeout)
-        if not raw:
-            return None
-        payload = json.loads(raw)
-        return payload if isinstance(payload, dict) else None
+        result = None
+        if raw:
+            payload = json.loads(raw)
+            result = payload if isinstance(payload, dict) else None
     except Exception:
-        return None
+        result = None
+    if cache:
+        _status_cache[url] = (now, result)
+    return result
 
 
 @dataclass

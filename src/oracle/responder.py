@@ -25,10 +25,30 @@ from .intents import answer, is_query
 
 _TRUE = {"1", "true", "yes", "on"}
 _DEFAULT_COOLDOWN_S = 30.0
+# Cap on the per-sender cooldown map: the key is the unauthenticated,
+# spoofable mesh `from` id, so an attacker (or a buggy node) rotating it
+# would otherwise grow this dict without bound (a witness-less RAM leak on
+# 1-2GB Pis, the #73 class in memory). Once past the cap we prune entries
+# already older than the cooldown — they can no longer gate any decision.
+_LAST_ANSWER_CAP = 4096
 
 
-def _norm(node_id: str) -> str:
-    """Canonical node-id key for allowlist + cooldown ('!' + lowercase hex)."""
+def _norm(node_id) -> str:
+    """Canonical node-id key for allowlist + cooldown.
+
+    Routes through ``node_num_to_id`` (THE shared canonicalizer) so a
+    numeric or numeric-string ``from`` (the #34 foreign-publisher class)
+    folds to the same ``!hex`` an operator wrote in the allowlist, instead
+    of a bare-number key that could never match. Non-numeric junk keeps the
+    legacy casing so an already-``!hex`` id is unchanged.
+    """
+    try:
+        from monitoring._mqtt_types import node_num_to_id
+        canonical = node_num_to_id(node_id)
+        if canonical is not None:
+            return canonical
+    except Exception:
+        pass
     return "!" + str(node_id).lstrip("!").lower()
 
 
@@ -52,6 +72,7 @@ class MeshOracleResponder:
         send_fn: Callable[[str, str, int], bool],
         log_fn: Optional[Callable[[dict], None]] = None,
         now_fn: Callable[[], float] = time.time,
+        monotonic_fn: Optional[Callable[[], float]] = None,
         allowlist: Optional[Set[str]] = None,
         allowed_channels: Optional[Set[int]] = None,
         answer_all: bool = False,
@@ -63,6 +84,13 @@ class MeshOracleResponder:
         self._send_fn = send_fn
         self._log_fn = log_fn
         self._now = now_fn
+        # Cooldown durations anchor on a MONOTONIC clock, never wall-clock:
+        # RTC-less Pis boot on fake-hwclock and NTP steps them, and a
+        # backward step made (now-last) negative → a sender stuck
+        # suppressed for hours (hfm #6). Records still use wall-clock
+        # (now_fn) — a timestamp is what an audit line wants. Defaults to
+        # now_fn when a test injects a clock for both.
+        self._mono = monotonic_fn or now_fn
         self._allowlist = {_norm(a) for a in (allowlist or set())}
         # Channel tokens are whatever the leg keys on: numeric slot INDICES on
         # the PhoneAPI/MeshCore legs, or channel NAME strings on the MQTT leg
@@ -112,9 +140,12 @@ class MeshOracleResponder:
             self._record(from_id, text, intent=None, reply=None,
                          delivered=False, reason="not_allowlisted")
             return None
-        now = self._now()
+        mono = self._mono()
         last = self._last_answer.get(node)
-        if last is not None and (now - last) < self._cooldown_s:
+        if last is not None and 0.0 <= (mono - last) < self._cooldown_s:
+            # 0.0 <= delta guards a backward clock step: a negative delta is
+            # a step, not a fresh answer — treat it as expired, don't strand
+            # the sender.
             self._record(from_id, text, intent=None, reply=None,
                          delivered=False, reason="cooldown")
             return None
@@ -122,7 +153,8 @@ class MeshOracleResponder:
         snap = self._snapshot_fn()
         reply = answer(text, snap)
         # Rate-limit on ATTEMPT (airtime is spent whether or not it lands).
-        self._last_answer[node] = now
+        self._last_answer[node] = mono
+        self._prune_cooldowns(mono)
         try:
             delivered = bool(self._send_fn(reply, from_id, channel))
         except Exception as exc:  # a send must never raise into the bridge
@@ -133,6 +165,16 @@ class MeshOracleResponder:
         self._record(from_id, text, intent=_intent_of(text), reply=reply,
                      delivered=delivered, facts_stale=_facts_stale(snap))
         return reply
+
+    def _prune_cooldowns(self, mono: float) -> None:
+        """Bound the cooldown map (spoofable-key RAM-leak guard). Only runs
+        past the cap; drops entries already older than the cooldown, which
+        can no longer gate any decision."""
+        if len(self._last_answer) <= _LAST_ANSWER_CAP:
+            return
+        cutoff = mono - self._cooldown_s
+        self._last_answer = {k: v for k, v in self._last_answer.items()
+                             if v > cutoff}
 
     def _record(self, from_id, text, *, intent, reply, delivered,
                 reason=None, facts_stale=None) -> None:
@@ -202,10 +244,12 @@ class MeshOracleResponder:
             return None
         consume = str(env.get(consume_env, "1")).strip().lower() in _TRUE
         raw = str(env.get(allowlist_env, "")).strip()
-        answer_all = raw == "*"
-        allowlist = set() if answer_all else {
-            tok.strip() for tok in raw.split(",") if tok.strip()
-        }
+        tokens = {tok.strip() for tok in raw.split(",") if tok.strip()}
+        # '*' ANYWHERE in the list means answer-all — the old `raw == "*"`
+        # silently turned '*,!abc' into a dead literal '!*' node key, losing
+        # the wildcard intent with no warning.
+        answer_all = "*" in tokens
+        allowlist = set() if answer_all else tokens
         try:
             cooldown = float(env.get("MESHFORGE_ORACLE_COOLDOWN_S", "") or _DEFAULT_COOLDOWN_S)
         except (TypeError, ValueError):
@@ -214,6 +258,7 @@ class MeshOracleResponder:
             snapshot_fn=snapshot_fn,
             send_fn=send_fn,
             log_fn=log_fn,
+            monotonic_fn=time.monotonic,
             allowlist=allowlist,
             allowed_channels=allowed_channels,
             answer_all=answer_all,

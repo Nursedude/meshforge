@@ -15,7 +15,6 @@ from src.utils.config_drift import (
     ShadowResult,
     detect_rnsd_config_drift,
     detect_config_shadowing,
-    get_rnsd_effective_config_dir,
     validate_gateway_rns_config,
     _get_rnsd_pid,
     _get_rnsd_config_from_proc,
@@ -231,40 +230,6 @@ class TestDetectRnsdConfigDrift:
 
         assert not result.drifted
         assert "not determinable" in result.message
-
-
-class TestGetRnsdEffectiveConfigDir:
-    """Tests for get_rnsd_effective_config_dir."""
-
-    @patch('src.utils.config_drift._get_rnsd_effective_config')
-    def test_returns_rnsd_path_when_available(self, mock_effective):
-        """Test returns rnsd's actual path when determinable."""
-        mock_effective.return_value = (
-            Path('/etc/reticulum'), 1234, "proc_cmdline"
-        )
-        result = get_rnsd_effective_config_dir()
-        assert result == Path('/etc/reticulum')
-
-    @patch('src.utils.config_drift._get_rnsd_effective_config')
-    @patch('src.utils.config_drift.ReticulumPaths.get_config_dir')
-    @patch('os.geteuid', return_value=1000)
-    def test_falls_back_to_default_for_non_root(self, mock_euid,
-                                                  mock_gw_dir, mock_effective):
-        """Test fallback to ReticulumPaths when rnsd config unknown."""
-        mock_effective.return_value = (None, None, "rnsd_not_running")
-        mock_gw_dir.return_value = Path('/home/user/.reticulum')
-        result = get_rnsd_effective_config_dir()
-        assert result == Path('/home/user/.reticulum')
-
-    @patch('src.utils.config_drift._get_rnsd_effective_config')
-    @patch('os.geteuid', return_value=0)
-    def test_prefers_etc_for_root(self, mock_euid, mock_effective):
-        """Test root prefers /etc/reticulum when config exists."""
-        mock_effective.return_value = (None, None, "rnsd_not_running")
-
-        with patch.object(Path, 'is_file', return_value=True):
-            result = get_rnsd_effective_config_dir()
-            assert result == Path('/etc/reticulum')
 
 
 class TestValidateGatewayRnsConfig:

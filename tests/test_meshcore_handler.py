@@ -702,3 +702,59 @@ class TestMeshOracleMeshcoreWiring:
         finally:
             loop.close()
         assert not handler._message_queue.empty()
+
+
+# =============================================================================
+# QA review 2026-07-05 — oracle reply must be DM-or-drop, never broadcast
+# =============================================================================
+class TestOracleDmOnlySend:
+    class _Cmds:
+        def __init__(self):
+            self.dm_sent = []
+            self.broadcasts = []
+
+        async def get_contacts(self):
+            return []  # asker is not a known contact
+
+        async def send_msg(self, contact, text):
+            self.dm_sent.append((contact, text))
+
+        async def send_channel_txt_msg(self, text):
+            self.broadcasts.append(text)
+
+    class _MC:
+        def __init__(self, cmds):
+            self.commands = cmds
+
+    def test_dm_only_unknown_contact_drops_not_broadcasts(self, handler):
+        cmds = self._Cmds()
+        handler._meshcore = self._MC(cmds)
+        handler._connected = True
+
+        async def _run():
+            return await handler._send_message(
+                "dude-AI@moc3: fleet:?", destination="!stranger",
+                broadcast_fallback=False)
+        ok = asyncio.run(_run())
+        assert ok is False               # dropped
+        assert cmds.broadcasts == []     # NOT broadcast to the channel
+
+    def test_default_still_broadcasts_for_bridge_paths(self, handler):
+        cmds = self._Cmds()
+        handler._meshcore = self._MC(cmds)
+        handler._connected = True
+
+        async def _run():
+            return await handler._send_message(
+                "bridged text", destination="!stranger")  # default fallback
+        ok = asyncio.run(_run())
+        assert ok is True
+        assert cmds.broadcasts == ["bridged text"]  # legacy behavior intact
+
+    def test_oracle_send_text_marks_dm_only(self, handler):
+        handler._connected = True
+        sent = handler.send_text("reply", destination="!asker",
+                                 channel=0, dm_only=True)
+        assert sent is True
+        queued = handler._send_queue.get_nowait()
+        assert (queued.metadata or {}).get("dm_only") is True

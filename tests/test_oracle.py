@@ -236,6 +236,19 @@ def test_is_query():
         assert not is_query(not_q), not_q
 
 
+def test_is_query_natural_language_starting_with_a_head_is_not_a_query():
+    # QA 2026-07-05: a lone command triggers, but a head that merely LEADS a
+    # natural-language sentence must not — matching those consumed 'help me…'
+    # off a HAM channel, dropping it from cross-mesh bridging.
+    for not_q in ["help me at the pavilion", "sup everyone",
+                  "status update: heading out", "help please",
+                  "s good to see you"]:
+        assert not is_query(not_q), not_q
+    # '?'-prefix and arg-heads with args still work
+    for q in ["?help me", "node !abc please", "link !a !b now"]:
+        assert is_query(q), q
+
+
 # --------------------------------------------------------------------------- #
 # Budget + truncation
 # --------------------------------------------------------------------------- #

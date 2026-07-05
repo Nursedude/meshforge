@@ -16,9 +16,6 @@ Usage:
         logger.warning(result.message)
         if result.fix_hint:
             logger.info(result.fix_hint)
-
-    # Active fix: get the correct config dir for gateway to use
-    config_dir = get_rnsd_effective_config_dir()
 """
 
 import logging
@@ -320,33 +317,6 @@ def detect_rnsd_config_drift() -> DriftResult:
         ),
         severity="warning",
     )
-
-
-def get_rnsd_effective_config_dir() -> Path:
-    """Get the config directory the gateway should use, preferring rnsd's actual path.
-
-    Active fix: If rnsd is running and using a different config than what
-    ReticulumPaths would resolve, return rnsd's path instead. This ensures
-    the gateway reads the same config as the running daemon.
-
-    For system deploys (rnsd as systemd service), this prefers /etc/reticulum/.
-
-    Returns:
-        Path to the config directory the gateway should use.
-    """
-    rnsd_dir, rnsd_pid, method = _get_rnsd_effective_config()
-
-    if rnsd_dir is not None:
-        logger.debug("Using rnsd's config dir: %s (detected via %s)", rnsd_dir, method)
-        return rnsd_dir
-
-    # rnsd not running or config not determinable - prefer system path
-    # for system deploys, fall back to ReticulumPaths default resolution
-    if os.geteuid() == 0 and Path('/etc/reticulum/config').is_file():
-        logger.debug("Running as root, preferring /etc/reticulum")
-        return Path('/etc/reticulum')
-
-    return ReticulumPaths.get_config_dir()
 
 
 def validate_gateway_rns_config(config) -> list:

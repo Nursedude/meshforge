@@ -42,6 +42,12 @@ _ALIASES = {"?": "status", "s": "status", "sup": "whatsup", "watchdog": "wd"}
 _QUERY_HEADS = {
     "status", "s", "whatsup", "sup", "node", "wd", "watchdog", "link", "help",
 }
+# Heads that legitimately take arguments (``node <id>``, ``link <a> <b>``);
+# every other head is a lone command. A head followed by natural-language
+# words is NOT a command — matching those consumed 'help me at the pavilion'
+# and 'sup everyone' off a HAM channel, dropping them from cross-mesh
+# bridging (the word most likely to lead an urgent message).
+_ARG_HEADS = {"node", "link"}
 
 
 # --------------------------------------------------------------------------- #
@@ -60,17 +66,25 @@ def _parse(query: str) -> Tuple[str, List[str]]:
 def is_query(text: str) -> bool:
     """True if inbound mesh text looks like an oracle query.
 
-    Conservative on purpose: an exact known head (or a leading '?') triggers,
-    arbitrary chatter does not — so the responder never answers random traffic
-    or its own replies. Phase 1 adds an address prefix + sender allowlist on
-    top of this; this gate stays the floor.
+    Conservative on purpose: a leading '?' triggers; otherwise a query is a
+    LONE known head ('status', 'help') or an arg-head with its arguments
+    ('node !abc', 'link !a !b'). A head that is merely the FIRST word of a
+    natural-language sentence ('help me…', 'status update: heading out')
+    does NOT trigger — matching those dropped real traffic from bridging.
+    Phase 1 adds an address prefix + sender allowlist on top of this floor.
     """
     s = (text or "").strip()
     if not s:
         return False
     if s.startswith("?"):
         return True
-    return s.split()[0].lower() in _QUERY_HEADS
+    toks = s.split()
+    head = toks[0].lower()
+    if head not in _QUERY_HEADS:
+        return False
+    intent = _ALIASES.get(head, head)
+    # a lone command, or an arg-head carrying arguments
+    return len(toks) == 1 or intent in _ARG_HEADS
 
 
 def answer(query: str, snap: NocSnapshot) -> str:

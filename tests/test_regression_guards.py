@@ -342,8 +342,12 @@ class TestConfigPathContract:
         (gw-resourcepath-determinism, 2026-06-27). A new inline
         ``/tmp/meshforge_rns_client`` builder in either file would reintroduce
         the race the helper fixes."""
+        # utils/_map_collector_rns.py added 2026-07-05: it was a THIRD
+        # inline builder invisible to this guard (different config format,
+        # no rpc_key 0600 hardening) — the map + gateway share one /tmp.
         for rel in ("gateway/_rns_bridge_connection.py",
-                    "gateway/node_tracker.py"):
+                    "gateway/node_tracker.py",
+                    "utils/_map_collector_rns.py"):
             fp = os.path.join(SRC_DIR, rel)
             with open(fp, encoding="utf-8") as fh:
                 src = fh.read()

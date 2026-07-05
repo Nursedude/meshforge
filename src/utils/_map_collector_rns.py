@@ -282,24 +282,14 @@ def init_rns_singleton() -> bool:
         return False
     if _rns_is_initialized():
         return True
-    import tempfile
     from utils.paths import ReticulumPaths
-    instance_name = ReticulumPaths.get_configured_instance_name()
 
-    client_config_dir = Path(tempfile.gettempdir()) / "meshforge_rns_client"
-    client_config_dir.mkdir(exist_ok=True)
-    client_config_file = client_config_dir / "config"
-    lines = [
-        "[reticulum]",
-        "  share_instance = Yes",
-        "  shared_instance_port = 37428",
-        "  instance_control_port = 37429",
-        f"  instance_name = {instance_name}",
-    ]
-    rpc_key = ReticulumPaths.get_shared_rpc_key()
-    if rpc_key:
-        lines.append(f"  rpc_key = {rpc_key}")
-    client_config_file.write_text("\n".join(lines) + "\n")
+    # THE canonical client configdir builder (one owner) — was a third
+    # hand-rolled copy of this config here, in a DIFFERENT format, invisible
+    # to the 8bfa4f3e determinism regression guard and lacking the rpc_key
+    # 0600/symlink hardening. Share the helper so a future change (rpc_key
+    # handling, a new option) can't drift the map away from the gateway.
+    client_config_dir = ReticulumPaths.ensure_rns_client_configdir()
 
     # Route through the guarded RNS-init chokepoint. require_listener=True is
     # the belt-and-suspenders that keeps the map a pure RNS *consumer*: it

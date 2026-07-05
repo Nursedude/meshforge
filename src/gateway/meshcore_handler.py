@@ -276,7 +276,13 @@ class MeshCoreHandler(BaseMessageHandler):
             return read_snapshot(status=fetch_api_status())
 
         def _send(text: str, dest: str, channel) -> bool:
-            return self.send_text(text, destination=dest, channel=channel or 0)
+            # dm_only: an oracle reply is a DIRECTED answer — if the asker
+            # isn't a known contact it must be DROPPED, never fall through
+            # to a channel broadcast (the "broadcast is not auto-answered"
+            # rail; a stranger on a whitelisted channel would otherwise get
+            # the whole channel spammed with a reply meant only for them).
+            return self.send_text(text, destination=dest,
+                                  channel=channel or 0, dm_only=True)
 
         def _log(record: dict) -> None:
             try:
@@ -541,6 +547,26 @@ class MeshCoreHandler(BaseMessageHandler):
             msg = CanonicalMessage.from_meshcore(event)
             msg.is_broadcast = True
 
+            # Track for dual-path reconciliation BEFORE the oracle may
+            # consume: registering the hash first means a consumed query is
+            # marked event-seen, so _poll_channel_messages won't count it
+            # 'event_missed' and re-bridge the very message the oracle took
+            # off the wire (the consume invariant — a consumed query must
+            # never reach the far mesh).
+            content_hash = self._compute_channel_hash(msg)
+            now = time.monotonic()
+            is_poll_dup = False
+
+            with self._channel_hash_lock:
+                self._event_msg_hashes[content_hash] = now
+                self._channel_metrics['event_received'] += 1
+                self._channel_metrics['last_event_time'] = datetime.now().isoformat()
+
+                # Check if polling already found this message
+                if content_hash in self._poll_msg_hashes:
+                    self._channel_metrics['duplicate_reconciled'] += 1
+                    is_poll_dup = True
+
             # Mesh oracle (read-only): a query on a whitelisted channel is
             # answered DIRECTED back to the asker (a DM, never a channel
             # broadcast — honors the "broadcast is not auto-answered" rail) and
@@ -556,21 +582,6 @@ class MeshCoreHandler(BaseMessageHandler):
                         return
                 except Exception as e:
                     logger.debug(f"meshcore oracle (channel) handle error: {e}")
-
-            # Track for dual-path reconciliation
-            content_hash = self._compute_channel_hash(msg)
-            now = time.monotonic()
-            is_poll_dup = False
-
-            with self._channel_hash_lock:
-                self._event_msg_hashes[content_hash] = now
-                self._channel_metrics['event_received'] += 1
-                self._channel_metrics['last_event_time'] = datetime.now().isoformat()
-
-                # Check if polling already found this message
-                if content_hash in self._poll_msg_hashes:
-                    self._channel_metrics['duplicate_reconciled'] += 1
-                    is_poll_dup = True
 
             if is_poll_dup:
                 logger.debug("Channel message already delivered via poll, skipping event path")
@@ -826,17 +837,21 @@ class MeshCoreHandler(BaseMessageHandler):
             return
 
         try:
+            dm_only = False
             if isinstance(msg, CanonicalMessage):
                 text = msg.to_meshcore_text()
                 dest = msg.destination_address
+                dm_only = bool((msg.metadata or {}).get('dm_only'))
             elif isinstance(msg, dict):
                 text = msg.get('message', '')
                 dest = msg.get('destination')
+                dm_only = bool(msg.get('dm_only'))
             else:
                 text = str(msg)
                 dest = None
 
-            success = await self._send_message(text, dest)
+            success = await self._send_message(
+                text, dest, broadcast_fallback=not dm_only)
 
             if success:
                 with self._stats_lock:
@@ -851,7 +866,8 @@ class MeshCoreHandler(BaseMessageHandler):
         except Exception as e:
             logger.error(f"Error processing outbound MeshCore message: {e}")
 
-    async def _send_message(self, text: str, destination: Optional[str] = None) -> bool:
+    async def _send_message(self, text: str, destination: Optional[str] = None,
+                            broadcast_fallback: bool = True) -> bool:
         """
         Send a text message to the MeshCore network.
 
@@ -874,11 +890,17 @@ class MeshCoreHandler(BaseMessageHandler):
                     if contact:
                         await self._meshcore.commands.send_msg(contact, text)
                         return True
-                    else:
+                    if not broadcast_fallback:
+                        # DM-only (oracle reply): a directed answer to an
+                        # unknown contact is DROPPED, never broadcast to the
+                        # whole channel.
                         logger.warning(
                             f"MeshCore contact not found for {destination}, "
-                            f"sending as channel broadcast"
-                        )
+                            f"dm_only set — dropping (not broadcasting)")
+                        return False
+                    logger.warning(
+                        f"MeshCore contact not found for {destination}, "
+                        f"sending as channel broadcast")
                 # Fall through to broadcast
                 await self._meshcore.commands.send_channel_txt_msg(text)
                 return True
@@ -931,7 +953,7 @@ class MeshCoreHandler(BaseMessageHandler):
         return None
 
     def send_text(self, message: str, destination: str = None,
-                  channel: int = 0) -> bool:
+                  channel: int = 0, dm_only: bool = False) -> bool:
         """
         Send a text message to MeshCore (synchronous interface).
 
@@ -941,6 +963,9 @@ class MeshCoreHandler(BaseMessageHandler):
             message: Text content to send
             destination: Destination address (None for broadcast)
             channel: Channel index (MeshCore uses channels differently)
+            dm_only: when True with a destination, a contact-not-found DROPS
+                the message instead of falling through to a channel
+                broadcast (oracle replies are directed-or-nothing).
 
         Returns:
             True if queued successfully, False otherwise.
@@ -955,6 +980,7 @@ class MeshCoreHandler(BaseMessageHandler):
                 destination_address=destination,
                 is_broadcast=destination is None,
                 source_network=Protocol.MESHCORE.value,
+                metadata={"dm_only": True} if dm_only else {},
             )
             self._send_queue.put_nowait(msg)
             return True
