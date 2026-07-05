@@ -328,3 +328,22 @@ class TestSaveProfileClobberGuard:
         data = _json.loads(p.read_text())
         assert data["role"] == "collector"           # preserved
         assert data["profile"]                        # merged in
+
+
+class TestSaveProfileChownBack:
+    """QA re-review 2026-07-05: save_profile writing as root into the
+    operator's home must chown-back (parity with write_role), or the file
+    goes root-owned and locks out every later user-mode reader — and then
+    the new clobber-guard fires (unreadable -> refuse)."""
+
+    def test_calls_chown_to_operator(self, monkeypatch, tmp_path):
+        import utils.deployment_profiles as dp
+        p = tmp_path / "deployment.json"
+        monkeypatch.setattr(dp, "_PROFILE_PATH", p)
+        called = []
+        import utils.paths as up
+        monkeypatch.setattr(up, "chown_to_operator",
+                            lambda *paths: called.append(paths))
+        prof = dp.PROFILES[dp.ProfileName.MONITOR]
+        assert dp.save_profile(prof) is True
+        assert called and p in called[0]  # the file was handed back

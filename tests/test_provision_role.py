@@ -526,3 +526,26 @@ class TestWriteRoleClobberGuard:
         p = self._patch_path(monkeypatch, tmp_path)
         pr.write_role("collector")
         assert _json.loads(p.read_text()) == {"role": "collector"}
+
+
+class TestSetRoleCleanExit:
+    """QA re-review 2026-07-05: --set-role on a torn deployment.json must
+    exit 2 (clean 'could not proceed'), not dump an uncaught traceback."""
+
+    def test_set_role_torn_file_exits_2_not_traceback(self, monkeypatch,
+                                                      tmp_path, capsys):
+        p = tmp_path / "deployment.json"
+        p.write_text('{"role": "x", "service_over')  # torn
+        monkeypatch.setattr(pr, "DEPLOYMENT_JSON", p)
+        rc = pr.main(["--set-role", "primary"])
+        assert rc == 2
+        assert "ERROR" in capsys.readouterr().err
+        assert "service_over" in p.read_text()  # file preserved
+
+    def test_set_role_healthy_file_still_works(self, monkeypatch, tmp_path):
+        import json as _json
+        p = tmp_path / "deployment.json"
+        monkeypatch.setattr(pr, "DEPLOYMENT_JSON", p)
+        rc = pr.main(["--set-role", "collector"])
+        assert rc == 0
+        assert _json.loads(p.read_text())["role"] == "collector"

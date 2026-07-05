@@ -465,10 +465,22 @@ class SetupWizard:
             profile = profiles[idx]
             self._print(f"\nSelected: {profile.display_name}", "success")
 
-        _save_profile(profile)
-        self._record_decision("deployment", "Deployment profile?", profile.display_name,
-                              f"Saved as {profile.name.value}")
-        self._log(f"Deployment profile selected: {profile.display_name}")
+        # save_profile now returns False (writing nothing) when
+        # deployment.json exists but is torn/unreadable — don't claim
+        # "Saved" over a write that was refused (a torn file is this
+        # fleet's post-power-event class).
+        if _save_profile(profile):
+            self._record_decision("deployment", "Deployment profile?",
+                                  profile.display_name,
+                                  f"Saved as {profile.name.value}")
+            self._log(f"Deployment profile selected: {profile.display_name}")
+        else:
+            self._print(
+                "\nCould not save the deployment profile — deployment.json "
+                "exists but is unreadable. Inspect or remove it, then retry.",
+                "error")
+            self._record_decision("deployment", "Deployment profile?",
+                                  profile.display_name, "SAVE FAILED (unreadable file)")
 
     def run_interactive_setup(self):
         """Run the interactive setup wizard"""

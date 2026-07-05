@@ -5627,3 +5627,21 @@ class TestContentIdViewPublishHookStep4c:
                             types.SimpleNamespace(monotonic=lambda: 5.0))
         # Must not propagate — bridge stability over a publish failure.
         rns_bridge.RNSMeshtasticBridge._maybe_publish_content_id_view(self._fake())
+
+
+class TestRnsConfigdirGuardDegrades:
+    """QA re-review 2026-07-05: ensure_rns_client_configdir now RAISES on a
+    compromised /tmp (foreign-owned dir / 'config' symlink). The gateway
+    main-thread pre-init must DEGRADE (Meshtastic leg keeps serving), not
+    let the raise abort start() — a local user pre-creating the dir must
+    not DoS the bridge."""
+
+    def test_configdir_raise_degrades_not_aborts(self, bridge):
+        bridge.config.rns.config_dir = None  # force the canonical-dir path
+        with patch("gateway._rns_bridge_connection.ReticulumPaths."
+                   "ensure_rns_client_configdir",
+                   side_effect=RuntimeError("foreign-owned /tmp dir")):
+            # must NOT raise out of the pre-init — the security guard's
+            # RuntimeError has to degrade like a wedged rnsd, not crash start()
+            bridge._init_rns_main_thread()
+        assert bridge._rns_pre_initialized is False  # degraded, not crashed

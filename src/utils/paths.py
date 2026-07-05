@@ -72,6 +72,32 @@ def get_real_username() -> str:
     return os.environ.get('USER', 'unknown')
 
 
+def chown_to_operator(*paths) -> None:
+    """Hand root-created config artifacts back to the real operator.
+
+    Under sudo a file written by root in the operator's home stays
+    root-owned, which breaks every later user-mode reader/writer (MF001
+    class). Any writer that persists to ``get_real_user_home()`` while
+    possibly running as root must call this — the same fix
+    ``MeshForgePaths.ensure_directories`` applies to the dirs, factored
+    out so ``write_role`` and ``save_profile`` (and future writers) share
+    ONE implementation instead of drifting copies. Best-effort: a chown
+    failure leaves the file root-usable, never raises."""
+    sudo_user = os.environ.get('SUDO_USER', '')
+    if not sudo_user or sudo_user == 'root' or '/' in sudo_user \
+            or '..' in sudo_user:
+        return
+    try:
+        import pwd
+        pw = pwd.getpwnam(sudo_user)
+        for p in paths:
+            p = Path(p)
+            if p.exists() and p.stat().st_uid == 0:
+                os.chown(str(p), pw.pw_uid, pw.pw_gid)
+    except (KeyError, OSError):
+        pass  # non-critical: still root-usable
+
+
 # ============================================================================
 # Path classes
 # ============================================================================

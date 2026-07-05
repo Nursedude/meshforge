@@ -120,14 +120,20 @@ class RNSConnectionMixin:
         # node_tracker's /tmp). The canonical config is built from the box's
         # instance_name + rnsd's rpc_key, so it never drifts from rnsd.
         config_dir = self.config.rns.config_dir or None
-        if config_dir:
-            logger.info(f"Using explicit RNS config dir: {config_dir}")
-        else:
-            config_dir = ReticulumPaths.ensure_rns_client_configdir()
-            logger.info("Using canonical gateway RNS client config dir: %s",
-                        config_dir)
 
         try:
+            if config_dir:
+                logger.info(f"Using explicit RNS config dir: {config_dir}")
+            else:
+                # May RAISE on a compromised /tmp (foreign-owned dir or a
+                # 'config' symlink) — keep it INSIDE the try so that
+                # degrades RNS pre-init (the Meshtastic leg keeps serving)
+                # instead of aborting start(); a local user pre-creating
+                # the dir must not be able to DoS the whole bridge.
+                config_dir = ReticulumPaths.ensure_rns_client_configdir()
+                logger.info("Using canonical gateway RNS client config dir: %s",
+                            config_dir)
+
             if rns_pids:
                 logger.info(f"rnsd detected (PID: {rns_pids[0]}), "
                            "connecting as shared instance client")

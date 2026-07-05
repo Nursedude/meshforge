@@ -348,8 +348,12 @@ def save_profile(profile: ProfileDefinition) -> bool:
                     type(existing).__name__)
                 return False
         data["profile"] = profile.name.value
-        from utils.paths import atomic_write_text
+        from utils.paths import atomic_write_text, chown_to_operator
         atomic_write_text(_PROFILE_PATH, json.dumps(data, indent=2))
+        # Root (sudo TUI) writing into the operator's home would leave the
+        # file root-owned, locking out every later user-mode reader/writer
+        # — the same chown-back write_role does (MF001 class).
+        chown_to_operator(_PROFILE_PATH, _PROFILE_PATH.parent)
         logger.info("Saved deployment profile: %s", profile.display_name)
         return True
     except (IOError, OSError) as e:

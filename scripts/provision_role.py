@@ -421,24 +421,8 @@ def write_role(role: str) -> None:
                 f"inspect the file.")
     data["role"] = role
     atomic_write_text(DEPLOYMENT_JSON, json.dumps(data, indent=2))
-    _chown_back_to_operator(DEPLOYMENT_JSON.parent, DEPLOYMENT_JSON)
-
-
-def _chown_back_to_operator(*paths: Path) -> None:
-    """Root-created config artifacts get handed back to the operator
-    (same convention as MeshForgePaths.ensure_directories)."""
-    sudo_user = os.environ.get("SUDO_USER", "")
-    if not sudo_user or sudo_user == "root" or "/" in sudo_user \
-            or ".." in sudo_user:
-        return
-    try:
-        import pwd
-        pw = pwd.getpwnam(sudo_user)
-        for p in paths:
-            if p.exists() and p.stat().st_uid == 0:
-                os.chown(str(p), pw.pw_uid, pw.pw_gid)
-    except (KeyError, OSError):
-        pass  # non-critical: still root-usable; the CLI converge heals it
+    from utils.paths import chown_to_operator
+    chown_to_operator(DEPLOYMENT_JSON.parent, DEPLOYMENT_JSON)
 
 
 # --------------------------------------------------------------------------
@@ -544,7 +528,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.set_role:
-        write_role(args.set_role)
+        # write_role now REFUSES (raises) on a torn/unreadable deployment.json
+        # rather than clobbering it — surface that as the codebase's clean
+        # "could not proceed" exit 2, not an uncaught traceback.
+        try:
+            write_role(args.set_role)
+        except (RuntimeError, OSError) as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            return 2
         print(f"role set to '{args.set_role}' in {DEPLOYMENT_JSON}")
         return 0
 
