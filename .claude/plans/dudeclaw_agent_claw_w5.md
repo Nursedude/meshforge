@@ -50,8 +50,17 @@
 > ok:false on that half forever; kilo status judges expected_metrics
 > only). LIVE: both claws 🟢 OK exit 0; claw-02 tier-F glyph painted.
 > Multi-claw /fleet + /api/status.claw display = future work;
-> (3) cold-turn latency — options: qwen2.5:1.5b repoint (gate-passed 8/8),
-> longer claw HTTP timeout (rebuild), Ollama keep_alive tuning.
+> (3) cold-turn latency — **RE-MEASURED 2026-07-04 post-charter: MITIGATED,
+> thin margin.** Fully cold (model unloaded, worst case): 111 s — now
+> INSIDE the claw's 120 s HTTP timeout (was >120 s → "[error]"), but only
+> ~9 s of headroom; prompt is 1,220 tokens at ~15.7 tok/s (charter saved
+> ~300 tok; the rest is the tools JSON, irreducible without cutting
+> tools). Warm: 16.6 s (was 39-62 s). DECISION: keep the ratified
+> qwen3:4b; if "[error]" first-turns recur in practice, the hot fallback
+> is a model repoint to qwen2.5:1.5b-instruct (gate-passed 8/8, ~3-4×
+> prompt speed → cold ≈ 40 s) via the claw's /api/config model field —
+> no reflash. Prompt-eval harness for any future prompt/model change:
+> fork `tools/prompt_eval.py` (measure candidates off-device, flash once).
 > Firmware: fork branch `pr/agent-profile` (merged into `dudeclaw` deploy).
 > Research: `.claude/research/dudeclaw_local_brain_2026_07_03.md` §2.5/§4-W5.
 
