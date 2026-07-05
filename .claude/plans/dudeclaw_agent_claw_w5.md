@@ -23,8 +23,23 @@
 > (39 s) · 4e cold first turn EXCEEDS the claw's 120 s HTTP timeout
 > ("[error]", Ollama logs show client-cancel at 2m0s mid-prompt-processing
 > ~16.6 tok/s); warm turns 39–62 s.
-> **W5.1 follow-ups**: (1) system-prompt hardening — "never claim an action
-> you did not perform; if a tool is unavailable say so"; (2) ~~telemetry
+> **W5.1 follow-ups**: (1) ~~system-prompt hardening~~ **DONE 2026-07-04**.
+> ROOT CAUSE was not prompt wording: the FS image's `data/system_prompt.txt`
+> OVERRIDES the compiled default and is a full-toolset charter ("you MUST
+> call the appropriate tool to perform any action", gpio/file/rule
+> instructions) — on the restricted build it taught the model to substitute
+> allowed tools and narrate success. Off-device eval (exact filtered tool
+> list, local Ollama) showed all candidate prompts 5/5 honest — the text
+> was never the problem; the wrong prompt was live. Fix: restricted charter
+> prompt (exact tool list + "reply 'I cannot'" + never-claim-unperformed),
+> POSTed live via `/api/prompt` (hot-reload, no reflash) AND durable in the
+> fork as `data_agent/` + per-env `extra_scripts` data-dir swap (agent
+> buildfs verified from data_agent, lean env untouched). On-device: gpio
+> confabulation case 3/3 honest refusals despite contaminated history;
+> temperature + secrets paths intact. Bonus: charter is ~4× shorter →
+> less cold-turn prompt processing. Eval harness kept at the session
+> scratchpad pattern; add a refusal-honesty case to local_brain_evals on
+> the next gate re-run. (2) ~~telemetry
 > enrollment~~ **DONE 2026-07-04 (`cd500d8c`)**: pusher `--env` multi-
 > instance (per-device secondary tick `claw_last_tick.<device>.json`,
 > naming owned by claw_telemetry; primary tick + single-claw display
