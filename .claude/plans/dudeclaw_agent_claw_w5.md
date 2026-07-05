@@ -61,6 +61,11 @@
 > prompt speed → cold ≈ 40 s) via the claw's /api/config model field —
 > no reflash. Prompt-eval harness for any future prompt/model change:
 > fork `tools/prompt_eval.py` (measure candidates off-device, flash once).
+> Known interaction (observed 2026-07-05 00:45Z): a long agent turn blocks
+> the claw's single-threaded loop, so a colliding claw02_metrics pusher
+> run gets no tool_exec reply → ONE FAIL verdict, self-heals next pass
+> (proven 00:50Z OK). Expected-rare (chats are operator-driven); a
+> REPEATING claw02_metrics FAIL with no active chat is a real signal.
 > Firmware: fork branch `pr/agent-profile` (merged into `dudeclaw` deploy).
 > Research: `.claude/research/dudeclaw_local_brain_2026_07_03.md` §2.5/§4-W5.
 
