@@ -24,10 +24,17 @@
 > ("[error]", Ollama logs show client-cancel at 2m0s mid-prompt-processing
 > ~16.6 tok/s); warm turns 39–62 s.
 > **W5.1 follow-ups**: (1) system-prompt hardening — "never claim an action
-> you did not perform; if a tool is unavailable say so"; (2) telemetry
-> enrollment DECIDED YES, not yet wired — second claw_metrics_push env +
-> tick path + cron on the brain box, plus kilo claw-anchor registration
-> (multi-claw tick design beat first: one basename today, two consumers);
+> you did not perform; if a tool is unavailable say so"; (2) ~~telemetry
+> enrollment~~ **DONE 2026-07-04 (`cd500d8c`)**: pusher `--env` multi-
+> instance (per-device secondary tick `claw_last_tick.<device>.json`,
+> naming owned by claw_telemetry; primary tick + single-claw display
+> surfaces untouched), kilo `collect_claw_all` ingests every tick
+> (glob pair-pinned to the writer), moc2 wired: `mini_dudeai_claw02.env`
+> + `claw02_metrics` cron/verdict + registry `moc5-usb-dudeclaw02`
+> (no BLE expected — agent build answers "no BLE scanner", tick honestly
+> ok:false on that half forever; kilo status judges expected_metrics
+> only). LIVE: both claws 🟢 OK exit 0; claw-02 tier-F glyph painted.
+> Multi-claw /fleet + /api/status.claw display = future work;
 > (3) cold-turn latency — options: qwen2.5:1.5b repoint (gate-passed 8/8),
 > longer claw HTTP timeout (rebuild), Ollama keep_alive tuning.
 > Firmware: fork branch `pr/agent-profile` (merged into `dudeclaw` deploy).
