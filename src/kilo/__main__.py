@@ -18,10 +18,12 @@ import argparse
 import json
 import sys
 import time
-from typing import List, Optional, Tuple
+import traceback
+from typing import List, Optional
 
-from kilo.registry import OBSERVABLE_ANCHORS, KiloNode, load_registry, \
-    observable_anchor_map, registry_path
+from kilo.edges import DEFAULT_WINDOW_S
+from kilo.registry import KiloNode, load_registry, observable_anchor_map, \
+    observable_anchor_values, registry_path
 from kilo.store import UNITS, db_path, latest_by_key, open_db, prune, \
     prune_edges, seen_keys
 
@@ -51,10 +53,8 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
                              f"{sorted(n.ids)} — unobservable ≠ dark")
             out.append(row)
             continue
-        anchors = [n.ids[k].lower() for k in OBSERVABLE_ANCHORS
-                   if n.ids.get(k)]
+        anchors = observable_anchor_values(n)
         fresh = stale = 0
-        newest = None
         for metric in n.expected_metrics:
             # a node may carry several observable anchors (meshtastic +
             # claw); the newest reading across ALL of its keys wins
@@ -66,7 +66,6 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
                 continue
             ts, value = hit
             age = now - ts
-            newest = ts if newest is None else max(newest, ts)
             ok = age <= DARK_AFTER_CADENCES * n.cadence_s
             row["metrics"][metric] = {
                 "value": value, "unit": UNITS.get(metric, ""),
@@ -74,12 +73,24 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
             fresh += 1 if ok else 0
             stale += 0 if ok else 1
         if not n.expected_metrics:
-            row["state"] = "OK" if latest_any(latest, anchors, now,
-                                              n.cadence_s) else "NEVER"
-            row["detail"] = "no expected_metrics declared — presence only"
+            age = newest_age(latest, anchors, now)
+            if age is None:
+                row["state"] = "NEVER"
+                row["detail"] = ("no expected_metrics declared — presence "
+                                 "only; never seen")
+            elif age <= DARK_AFTER_CADENCES * n.cadence_s:
+                row["state"] = "OK"
+                row["detail"] = ("no expected_metrics declared — presence "
+                                 "only")
+            else:
+                # seen-then-silent is NOT "never seen" — a went-dark node
+                # sends the operator to the antenna, not the registry.
+                row["state"] = "DEGRADED"
+                row["detail"] = (f"presence only; went dark — newest "
+                                 f"reading {age:.0f}s ago")
         elif fresh and not stale and not row["missing"]:
             row["state"] = "OK"
-        elif fresh or (newest is not None):
+        elif fresh or stale:
             row["state"] = "DEGRADED"
             row["detail"] = (f"{stale} stale, {len(row['missing'])} "
                              f"never-seen metric(s)")
@@ -90,21 +101,18 @@ def build_status(nodes: List[KiloNode], latest, now: Optional[float] = None
     return out
 
 
-def latest_any(latest, anchors: List[str], now: float,
-               cadence_s: float) -> bool:
+def newest_age(latest, anchors: List[str], now: float) -> Optional[float]:
+    """Age of the newest reading across the node's anchors, or None if no
+    reading has ever landed — None and 'stale' must stay distinguishable."""
     ages = [now - ts for (key, _m), (ts, _v) in latest.items()
             if key in anchors]
-    return bool(ages) and min(ages) <= DARK_AFTER_CADENCES * cadence_s
+    return min(ages) if ages else None
 
 
-def split_seen(seen: List[dict], nodes: List[KiloNode]
-               ) -> Tuple[List[dict], List[dict]]:
-    """(registered, unregistered) senders, judged against the CURRENT
-    anchors of every observable kind."""
+def unregistered_seen(seen: List[dict], nodes: List[KiloNode]) -> List[dict]:
+    """Senders not matching any CURRENT observable anchor."""
     anchors = observable_anchor_map(nodes)
-    reg = [s for s in seen if s["node_key"].lower() in anchors]
-    unreg = [s for s in seen if s["node_key"].lower() not in anchors]
-    return reg, unreg
+    return [s for s in seen if s["node_key"].lower() not in anchors]
 
 
 def _cmd_status(args) -> int:
@@ -115,10 +123,8 @@ def _cmd_status(args) -> int:
         return 2
     conn = open_db(args.db)
     try:
-        prune(conn)
-        prune_edges(conn)
         rows = build_status(nodes, latest_by_key(conn))
-        _reg, unreg = split_seen(seen_keys(conn), nodes)
+        unreg = unregistered_seen(seen_keys(conn), nodes)
     finally:
         conn.close()
     if args.json:
@@ -142,6 +148,12 @@ def _cmd_status(args) -> int:
             if r["detail"]:
                 print(f"        {r['detail']}")
     observable = [r for r in rows if r["state"] != "UNKNOWN"]
+    if not observable:
+        # Zero observable nodes = nothing was verifiable. all([]) would
+        # read vacuously green; "could not verify" is exit 2, never a pass.
+        print("kilo: no observable registered nodes — could not verify",
+              file=sys.stderr)
+        return 2
     return 0 if all(r["state"] == "OK" for r in observable) else 1
 
 
@@ -155,7 +167,7 @@ def _cmd_discover(args) -> int:
         nodes = []
     conn = open_db(args.db)
     try:
-        _reg, unreg = split_seen(seen_keys(conn), nodes)
+        unreg = unregistered_seen(seen_keys(conn), nodes)
     finally:
         conn.close()
     if args.json:
@@ -197,8 +209,11 @@ def _cmd_collect(args) -> int:
     summary = {"ok": True, "mqtt": None, "claw": None}
     conn = open_db(args.db)
     try:
-        prune(conn)
-        prune_edges(conn)
+        # Retention runs on the write path only (status/matrix/discover are
+        # pure reads). Counts are surfaced: a clock-step mass-prune must
+        # leave a witness, not vanish (honest_failure_modes #9).
+        summary["pruned"] = {"readings": prune(conn),
+                             "edges": prune_edges(conn)}
         if args.transport in ("all", "claw"):
             # instant (file reads) — runs before the mqtt window. Default
             # ingests EVERY tick on the box (multi-claw, W5.1); an explicit
@@ -233,8 +248,6 @@ def _cmd_matrix(args) -> int:
         nodes = []
     conn = open_db(args.db)
     try:
-        prune(conn)
-        prune_edges(conn)
         m = build_matrix(conn, nodes, window_s=args.window_hours * 3600.0,
                          direct_only=not args.all_hops)
     finally:
@@ -252,6 +265,13 @@ def _cmd_matrix(args) -> int:
               f"{t['edges_direct']} direct + {t['edges_relayed']} relayed "
               f"+ {t['edges_unknown_hops']} unknown-hop "
               f"({t['edges_no_snr']} without snr)")
+        h = m["baseline_horizon"]
+        if h["empty_by_construction"]:
+            # 100% SPARSE is guaranteed here — say WHY, or the operator
+            # bug-hunts a per-edge data problem that is one global fact.
+            print(f"  ⚠ baseline horizon empty by construction: {h['why']} "
+                  f"— every cell reads SPARSE until the store outgrows "
+                  f"the window")
         if not m["cells"]:
             print("  no edges in the store yet — run `kilo collect` on a "
                   "box whose gateway uplinks json")
@@ -313,7 +333,8 @@ def main(argv=None) -> int:
     p.set_defaults(fn=_cmd_collect)
     p = sub.add_parser("matrix", help="receivers × senders link matrix "
                                       "with per-edge baseline drift (K1)")
-    p.add_argument("--window-hours", type=float, default=24.0,
+    p.add_argument("--window-hours", type=float,
+                   default=DEFAULT_WINDOW_S / 3600.0,
                    help="recent window; older edges form the baseline")
     p.add_argument("--all-hops", action="store_true",
                    help="include relayed/unknown-hop edges (snr is "
@@ -321,7 +342,13 @@ def main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_matrix)
     args = ap.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except Exception:
+        # A crash must never read as a measured DARK/SHIFTED verdict to a
+        # cron_verdict wire — exit 2 is the docstring's "could not verify".
+        traceback.print_exc()
+        return 2
 
 
 if __name__ == "__main__":

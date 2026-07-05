@@ -17,6 +17,29 @@ VALID_SNR_RANGE = (-50.0, 50.0)  # dB
 VALID_RSSI_RANGE = (-200, 0)  # dBm
 
 
+def node_num_to_id(value) -> Optional[str]:
+    """Canonical ``!%08x`` node id from a wire ``from``/``to`` value.
+
+    THE node-number canonicalizer — accepts an int or a numeric string
+    (foreign publishers on shared MQTT roots json-encode numbers as
+    strings, the #34 class) and masks to 32 bits so a negative or 64-bit
+    value can never mint a malformed id like ``!-0000001``. Returns the
+    value unchanged when it is already a ``!hex`` id, and None for
+    bools/None/non-numeric — the caller keeps its own witness for that.
+    Two independent copies of this formula (kilo edges vs the decoder)
+    once disagreed on numeric strings, splitting one radio's identity
+    across two keys; one shared function retires the class.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, str) and value.startswith("!"):
+        return value.lower()
+    try:
+        return f"!{int(value) & 0xFFFFFFFF:08x}"
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class MQTTNode:
     """Node discovered via MQTT."""

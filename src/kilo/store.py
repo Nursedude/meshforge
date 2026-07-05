@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from utils.db_helpers import connect_tuned
-from utils.paths import get_real_user_home
+from utils.paths import MeshForgePaths
 
 DB_BASENAME = "kilo_telemetry.db"
 RETENTION_DAYS = 30  # pinned to the DBSpec entry by test
@@ -46,8 +46,7 @@ UNITS = {
 
 
 def db_path() -> Path:
-    return (get_real_user_home() / ".local" / "share" / "meshforge"
-            / DB_BASENAME)
+    return MeshForgePaths.get_data_dir() / DB_BASENAME
 
 
 def open_db(path: Optional[str] = None):
@@ -92,75 +91,89 @@ def open_db(path: Optional[str] = None):
             UNIQUE (receiver, sender, packet_id)
         )
     """)
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_pair "
-                 "ON edges (receiver, sender, ts)")
+    # idx_edges_pair had NO reader (dedup rides the UNIQUE auto-index;
+    # every query filters on ts) — pure per-insert write amplification on
+    # SD. Dropped 2026-07-05; the DROP cleans existing fleet DBs.
+    conn.execute("DROP INDEX IF EXISTS idx_edges_pair")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_edges_ts "
                  "ON edges (ts)")
     conn.commit()
     return conn
 
 
-def record_readings(conn, rows: List[Tuple[float, str, str, Optional[str],
-                                           str, float]]) -> int:
-    """INSERT OR IGNORE rows of (ts, transport, node_key, kilo_id, metric,
-    value); returns how many actually landed (idempotent re-observation)."""
+def _insert_ignore(conn, sql: str, rows: List[tuple],
+                   commit: bool = True) -> int:
+    """Shared INSERT OR IGNORE mechanics for both tables — returns how
+    many rows actually landed. ``commit=False`` lets a bounded collect
+    window batch its per-tick writes into one WAL commit (SD wear)."""
     if not rows:
         return 0
     before = conn.total_changes
-    conn.executemany(
-        "INSERT OR IGNORE INTO readings "
-        "(ts, transport, node_key, kilo_id, metric, value) "
-        "VALUES (?, ?, ?, ?, ?, ?)", rows)
+    conn.executemany(sql, rows)
+    if commit:
+        conn.commit()
+    return conn.total_changes - before
+
+
+def _delete_older_than(conn, table: str, retention_days: float,
+                       now: Optional[float]) -> int:
+    """Shared retention mechanics; returns rows removed. ``table`` is one
+    of this module's two literals, never caller input."""
+    now = time.time() if now is None else now
+    cutoff = now - retention_days * 86400.0
+    before = conn.total_changes
+    conn.execute(f"DELETE FROM {table} WHERE ts < ?", (cutoff,))  # nosec — literal
     conn.commit()
     return conn.total_changes - before
+
+
+def record_readings(conn, rows: List[Tuple[float, str, str, Optional[str],
+                                           str, float]],
+                    commit: bool = True) -> int:
+    """INSERT OR IGNORE rows of (ts, transport, node_key, kilo_id, metric,
+    value); returns how many actually landed (idempotent re-observation)."""
+    return _insert_ignore(
+        conn,
+        "INSERT OR IGNORE INTO readings "
+        "(ts, transport, node_key, kilo_id, metric, value) "
+        "VALUES (?, ?, ?, ?, ?, ?)", rows, commit=commit)
 
 
 def prune(conn, retention_days: float = RETENTION_DAYS,
           now: Optional[float] = None) -> int:
     """Drop readings older than the retention window; returns rows removed."""
-    now = time.time() if now is None else now
-    cutoff = now - retention_days * 86400.0
-    before = conn.total_changes
-    conn.execute("DELETE FROM readings WHERE ts < ?", (cutoff,))
-    conn.commit()
-    return conn.total_changes - before
+    return _delete_older_than(conn, "readings", retention_days, now)
 
 
-def record_edges(conn, rows: List[tuple]) -> int:
+def record_edges(conn, rows: List[tuple], commit: bool = True) -> int:
     """INSERT OR IGNORE rows of (ts, receiver, sender, channel, snr, rssi,
     hops_away, hop_start, relay_partial, packet_id); returns how many
     landed. First-heard wins for a re-observed packet id."""
-    if not rows:
-        return 0
-    before = conn.total_changes
-    conn.executemany(
+    return _insert_ignore(
+        conn,
         "INSERT OR IGNORE INTO edges "
         "(ts, receiver, sender, channel, snr, rssi, hops_away, hop_start, "
         "relay_partial, packet_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        rows)
-    conn.commit()
-    return conn.total_changes - before
+        rows, commit=commit)
 
 
 def prune_edges(conn, retention_days: float = EDGE_RETENTION_DAYS,
                 now: Optional[float] = None) -> int:
     """Drop edges older than the edge retention window; returns rows
-    removed. Runs alongside prune() at every CLI open."""
-    now = time.time() if now is None else now
-    cutoff = now - retention_days * 86400.0
-    before = conn.total_changes
-    conn.execute("DELETE FROM edges WHERE ts < ?", (cutoff,))
-    conn.commit()
-    return conn.total_changes - before
+    removed. Runs on the write path (`kilo collect`) only — status/matrix
+    /discover are pure reads."""
+    return _delete_older_than(conn, "edges", retention_days, now)
 
 
 def edges_since(conn, since_ts: float) -> List[tuple]:
-    """(ts, receiver, sender, channel, snr, hops_away) for every edge at or
-    after ``since_ts`` — the matrix/baseline working set. Receiver/sender
-    are stored lowercased at parse time, so no read-time folding here."""
+    """(ts, receiver, sender, snr, hops_away) for every edge at or after
+    ``since_ts`` — the matrix/baseline working set. Receiver/sender are
+    stored lowercased at parse time, so no read-time folding here. No
+    ORDER BY: the sole consumer (build_matrix) buckets and takes medians,
+    which are order-independent."""
     return conn.execute(
-        "SELECT ts, receiver, sender, channel, snr, hops_away FROM edges "
-        "WHERE ts >= ? ORDER BY ts", (since_ts,)).fetchall()
+        "SELECT ts, receiver, sender, snr, hops_away FROM edges "
+        "WHERE ts >= ?", (since_ts,)).fetchall()
 
 
 def latest_by_key(conn) -> Dict[Tuple[str, str], Tuple[float, float]]:
@@ -174,7 +187,14 @@ def latest_by_key(conn) -> Dict[Tuple[str, str], Tuple[float, float]]:
     for key, metric, ts, value in conn.execute(
             "SELECT node_key, metric, MAX(ts), value FROM readings "
             "GROUP BY node_key, metric"):
-        out[(str(key).lower(), metric)] = (ts, value)
+        # GROUP BY is case-sensitive but the fold key is lowercased — two
+        # case-variant groups for one identity must resolve newest-wins,
+        # never iteration-order-wins (an older group would fabricate a
+        # stale age for a live node).
+        k = (str(key).lower(), metric)
+        cur = out.get(k)
+        if cur is None or ts > cur[0]:
+            out[k] = (ts, value)
     return out
 
 

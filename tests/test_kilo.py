@@ -203,7 +203,8 @@ class _FakeSubscriber:
 
 
 class TestCollectMQTT:
-    def test_bounded_window_collects_and_stops(self, tmp_path):
+    def test_bounded_window_collects_and_borrowed_sub_not_stopped(
+            self, tmp_path):
         conn = kstore.open_db(str(tmp_path / "kilo.db"))
         reg = _registry_one(tmp_path)
         sub = _FakeSubscriber([_mqtt_node(temperature=21.5)])
@@ -213,7 +214,9 @@ class TestCollectMQTT:
         assert summary["samples"] >= 1
         assert summary["readings_written"] == 1  # dedup across samples
         assert summary["registered_seen"] == ["bench1-esp32-env"]
-        assert sub.stopped
+        # a caller-passed subscriber is BORROWED — the window must never
+        # stop the owner's live feed (#75 shared-resource class)
+        assert not sub.stopped
 
     def test_connect_failure_is_ok_false_not_quiet_air(self, tmp_path):
         conn = kstore.open_db(str(tmp_path / "kilo.db"))
@@ -734,7 +737,12 @@ class TestSubscriberPacketHook:
         sub.add_packet_callback(lambda t, d: got.append((t, d)))
         sub._handle_json_message(LIVE_TOPIC,
                                  json.dumps(LIVE_DATA).encode())
-        assert got == [(LIVE_TOPIC, LIVE_DATA)]
+        # observers see the ENTRY-canonicalized packet: numeric from/to
+        # are already '!hex' (one identity vocabulary for every consumer)
+        expected = dict(LIVE_DATA)
+        expected["from"] = f"!{LIVE_DATA['from'] & 0xFFFFFFFF:08x}"
+        expected["to"] = f"!{LIVE_DATA['to'] & 0xFFFFFFFF:08x}"
+        assert got == [(LIVE_TOPIC, expected)]
 
     def test_undecodable_payload_never_fires(self):
         sub = self._sub()
@@ -840,3 +848,303 @@ class TestMultiClawIngest:
         summary = collect_claw_all(conn, [], home=tmp_path)
         assert summary["ok"] is False          # error leg pages (exit 2)
         assert summary["readings_written"] > 0  # good leg still landed
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# QA review 2026-07-05 pins — every fix from the kilo-arc xhigh pass.
+
+
+class TestMainErrorBoundary:
+    """V7.1: a crash must exit 2 ('could not verify'), never 1 — exit 1
+    is a MEASURED DARK/SHIFTED verdict to a cron_verdict wire."""
+
+    def test_unhandled_exception_exits_2(self, monkeypatch, capsys):
+        from kilo import __main__ as kmain
+
+        def _boom(_args):
+            raise RuntimeError("synthetic crash")
+        monkeypatch.setitem(kmain.__dict__, "_cmd_status", _boom)
+        # re-register the subparser default via a fresh parse: main wires
+        # fn=_cmd_status at parser build time, so patch through argv
+        monkeypatch.setattr(kmain, "_cmd_status", _boom)
+        rc = kmain.main(["status"])
+        assert rc == 2
+        assert "synthetic crash" in capsys.readouterr().err
+
+
+class TestStatusVacuousGreen:
+    """V7.3: zero observable nodes = nothing verifiable = exit 2. all([])
+    must never read as green."""
+
+    def _run_status(self, tmp_path, nodes_raw):
+        from kilo import __main__ as kmain
+        reg = _write_registry(tmp_path, nodes_raw)
+        return kmain.main(["--registry", reg,
+                           "--db", str(tmp_path / "kilo.db"), "status"])
+
+    def test_all_unknown_registry_exits_2(self, tmp_path):
+        rc = self._run_status(tmp_path, [_node_raw(
+            ids={"rns": "aa" * 16}, expected_metrics=[])])
+        assert rc == 2
+
+    def test_empty_registry_exits_2(self, tmp_path):
+        rc = self._run_status(tmp_path, [])
+        assert rc == 2
+
+    def test_observable_dark_node_still_exits_1(self, tmp_path):
+        rc = self._run_status(tmp_path, [_node_raw()])
+        assert rc == 1  # observable, never seen → NEVER → 1, not 2
+
+
+class TestPresenceOnlyWentDark:
+    """V7.6: seen-then-silent is NOT 'never seen' — a went-dark node
+    sends the operator to the antenna, not the registry."""
+
+    def _nodes(self, tmp_path):
+        nodes, errs = kreg.load_registry(_write_registry(
+            tmp_path, [_node_raw(expected_metrics=[])]))
+        assert errs == []
+        return nodes
+
+    def test_fresh_presence_only_is_ok(self, tmp_path):
+        latest = {("!0a0b0c0d", "temperature"): (NOW - 60, 21.0)}
+        rows = build_status(self._nodes(tmp_path), latest, now=NOW)
+        assert rows[0]["state"] == "OK"
+
+    def test_never_seen_presence_only_is_never(self, tmp_path):
+        rows = build_status(self._nodes(tmp_path), {}, now=NOW)
+        assert rows[0]["state"] == "NEVER"
+
+    def test_went_dark_presence_only_is_degraded_not_never(self, tmp_path):
+        latest = {("!0a0b0c0d", "temperature"): (NOW - 10_000, 21.0)}
+        rows = build_status(self._nodes(tmp_path), latest, now=NOW)
+        assert rows[0]["state"] == "DEGRADED"
+        assert "went dark" in rows[0]["detail"]
+
+
+class TestBaselineHorizonWitness:
+    """V7.2: 100% SPARSE is GUARANTEED while the store is younger than
+    the window (or the window swallows the retention) — that global fact
+    must be a witness in the result, not a per-edge bug hunt."""
+
+    def _edge(self, ts, packet_id):
+        return (ts, "!aa000001", "!bb000002", "LongFast", 5.0, -60.0,
+                0, 7, None, str(packet_id))
+
+    def test_young_store_reads_empty_by_construction(self, tmp_path):
+        from kilo.edges import build_matrix
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        kstore.record_edges(conn, [self._edge(NOW - 3600 * i, i)
+                                   for i in range(5)])
+        m = build_matrix(conn, [], window_s=24 * 3600.0, now=NOW)
+        assert m["baseline_horizon"]["empty_by_construction"] is True
+        assert "younger than" in m["baseline_horizon"]["why"]
+
+    def test_window_swallowing_retention_reads_permanent(self, tmp_path):
+        from kilo.edges import build_matrix
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        m = build_matrix(conn, [], window_s=200 * 3600.0, now=NOW)
+        assert m["baseline_horizon"]["empty_by_construction"] is True
+        assert "retention" in m["baseline_horizon"]["why"]
+
+    def test_mature_store_reads_false(self, tmp_path):
+        from kilo.edges import build_matrix
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        kstore.record_edges(conn, [
+            self._edge(NOW - 6 * 86400.0, 1),   # baseline-age edge
+            self._edge(NOW - 60, 2)])           # recent edge
+        m = build_matrix(conn, [], window_s=24 * 3600.0, now=NOW)
+        assert m["baseline_horizon"]["empty_by_construction"] is False
+
+
+class TestRegistryDuplicateGuards:
+    """V7.4 + sweep S3: authoring errors the author cannot have meant."""
+
+    def test_duplicate_anchor_value_refused(self, tmp_path):
+        nodes, errs = kreg.load_registry(_write_registry(tmp_path, [
+            _node_raw(kid="bench1"),
+            _node_raw(kid="bench2", ids={"meshtastic": "!0A0B0C0D"})]))
+        assert nodes is None
+        assert any("duplicate anchor" in e for e in errs)
+
+    def test_duplicate_json_key_refused(self, tmp_path):
+        p = tmp_path / "dup.json"
+        p.write_text('{"nodes": [{"kilo_id": "a"}], "nodes": []}')
+        nodes, errs = kreg.load_registry(str(p))
+        assert nodes is None
+        assert any("duplicate JSON key" in e for e in errs)
+
+
+class TestLatestByKeyNewestWins:
+    """V7.5: two case-variant groups for one identity must resolve
+    newest-wins, never GROUP-BY-iteration-order-wins."""
+
+    def test_older_lowercase_group_cannot_shadow_newer_upper(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        kstore.record_readings(conn, [
+            (NOW - 5000, "mqtt", "!0a0b0c0d", None, "temperature", 11.0),
+            (NOW - 10, "mqtt", "!0A0B0C0D", None, "temperature", 22.0)])
+        latest = kstore.latest_by_key(conn)
+        ts, value = latest[("!0a0b0c0d", "temperature")]
+        assert value == 22.0 and ts == NOW - 10
+
+
+class TestSnapshotFreshnessHonesty:
+    """V1.1 + V1.2: wrong-subject snr/rssi are out of NODE_METRICS, and a
+    retained value must not re-record with a fabricated fresher ts."""
+
+    def test_snr_rssi_not_in_node_metrics(self):
+        from kilo.ingest import NODE_METRICS
+        assert "snr" not in NODE_METRICS
+        assert "rssi" not in NODE_METRICS
+
+    def test_unchanged_value_with_advanced_last_seen_not_rerecorded(
+            self, tmp_path):
+        reg = _registry_one(tmp_path)
+        node = _mqtt_node(temperature=21.5)
+        seen = {}
+        assert snapshot_readings([node], reg, seen)
+        node.last_seen = datetime.fromtimestamp(NOW + 30)  # any packet
+        assert snapshot_readings([node], reg, seen) == []
+
+    def test_changed_value_still_records(self, tmp_path):
+        reg = _registry_one(tmp_path)
+        node = _mqtt_node(temperature=21.5)
+        seen = {}
+        assert snapshot_readings([node], reg, seen)
+        node.temperature = 25.0
+        node.last_seen = datetime.fromtimestamp(NOW + 30)
+        assert len(snapshot_readings([node], reg, seen)) == 1
+
+
+class TestObservableAnchorsClosedGate:
+    """V4.2: adding an anchor kind before its collector exists would flip
+    honest UNKNOWN into red NEVER fleet-wide. This gate FAILS until the
+    new kind ships with a collector and is added here deliberately."""
+
+    def test_every_observable_kind_has_a_collector(self):
+        from kilo.ingest import collect_claw, collect_mqtt
+        collectors = {"meshtastic": collect_mqtt, "claw": collect_claw}
+        assert set(kreg.OBSERVABLE_ANCHORS) == set(collectors), (
+            "OBSERVABLE_ANCHORS grew without a collector (or vice versa) —"
+            " ship the ingest adapter and update this map in the same"
+            " commit, or nodes flip UNKNOWN→NEVER with nothing observing"
+            " them")
+
+
+class TestDispositionsClosed:
+    """Simplification finding: DISPOSITIONS was dead documentation — now
+    it is the enforced closed vocabulary."""
+
+    def test_parse_edge_dispositions_are_in_the_closed_set(self):
+        from kilo.edges import DISPOSITIONS, parse_edge
+        cases = [
+            ("msh/2/json/LongFast/!aa000001", {"from": 2}, "ok"),
+            ("msh/2/json/LongFast/!aa000001", {"from": 0xAA000001}, "self"),
+            ("nope", {"from": 2}, "no_receiver"),
+            ("msh/2/json/LongFast/!aa000001", {"from": None}, "no_sender"),
+            ("msh/2/json/LongFast/!aa000001", "notadict", "unparseable"),
+        ]
+        for topic, data, expected in cases:
+            _row, disp = parse_edge(topic, data)
+            assert disp == expected
+            assert disp in DISPOSITIONS
+
+    def test_overflow_is_witnessed_not_silent(self, monkeypatch):
+        from kilo import edges as kedges
+        monkeypatch.setattr(kedges, "EDGE_BUFFER_MAX_ROWS", 2)
+        buf = kedges.EdgeBuffer()
+        for i in range(4):
+            buf.on_packet("msh/2/json/LongFast/!aa000001",
+                          {"from": 100 + i, "id": i})
+        assert len(buf.drain()) == 2
+        counts = buf.counts()
+        assert counts["overflow"] == 2
+        assert "overflow" in kedges.DISPOSITIONS
+
+
+class TestCollectClawWitnesses:
+    """V1.3 + sweep S5: the tick's own health verdict surfaces, and a
+    bool captured_at cannot masquerade as an epoch."""
+
+    def _tick(self, tmp_path, ok, errors, captured_at=NOW):
+        p = tmp_path / "claw_last_tick.json"
+        p.write_text(json.dumps({
+            "device": "dudeclaw-01", "captured_at": captured_at,
+            "ok": ok, "errors": errors,
+            "device_info": {"heap_free_bytes": 100000}}))
+        return str(p)
+
+    def test_half_dead_tick_carries_its_verdict(self, tmp_path):
+        from kilo.ingest import collect_claw
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        leg = collect_claw(conn, [], tick_path=self._tick(
+            tmp_path, ok=False, errors=["ble_stats"]))
+        assert leg["state"] == "ok"          # rows landed
+        assert leg["tick_ok"] is False       # but the verdict is visible
+        assert leg["tick_errors"] == 1
+
+    def test_bool_captured_at_is_shape_drift_error(self, tmp_path):
+        from kilo.ingest import collect_claw
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        leg = collect_claw(conn, [], tick_path=self._tick(
+            tmp_path, ok=True, errors=[], captured_at=True))
+        assert leg["state"] == "error"
+        assert leg["ok"] is False
+
+
+class TestBorrowedSubscriberContract:
+    """Sweep S2 + V8.3: register/remove must pair on a borrowed
+    subscriber, including the connect-failure early return."""
+
+    class _HookedSub(_FakeSubscriber):
+        def __init__(self, nodes, start_ok=True):
+            super().__init__(nodes, start_ok)
+            self.callbacks = []
+
+        def add_packet_callback(self, cb):
+            self.callbacks.append(cb)
+
+        def remove_packet_callback(self, cb):
+            self.callbacks.remove(cb)
+
+    def test_window_end_detaches_callback_and_never_stops(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        sub = self._HookedSub([_mqtt_node(temperature=21.5)])
+        summary = collect_mqtt(conn, [], seconds=0.1, sample_every=0.05,
+                               subscriber=sub)
+        assert summary["ok"] is True
+        assert sub.callbacks == []      # detached
+        assert not sub.stopped          # borrowed, never stopped
+
+    def test_connect_failure_also_detaches(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        sub = self._HookedSub([], start_ok=False)
+        summary = collect_mqtt(conn, [], seconds=0.1, subscriber=sub)
+        assert summary["ok"] is False
+        assert sub.callbacks == []
+
+
+class TestCollectKnobGuards:
+    """Sweep S1: a zero cadence must not busy-loop a write-per-iteration
+    hot loop for the whole window."""
+
+    def test_zero_sample_every_completes_with_bounded_samples(self,
+                                                              tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        sub = _FakeSubscriber([_mqtt_node(temperature=21.5)])
+        t0 = time.monotonic()
+        summary = collect_mqtt(conn, [], seconds=0.2, sample_every=0,
+                               subscriber=sub)
+        assert time.monotonic() - t0 < 5.0
+        assert summary["samples"] <= 2  # sanitized cadence, not a hot loop
+
+    def test_non_finite_seconds_is_bounded(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        stop = threading.Event()
+        stop.set()  # window exits immediately; the pin is the sanitize
+        sub = _FakeSubscriber([])
+        summary = collect_mqtt(conn, [], seconds=float("inf"),
+                               sample_every=5.0, stop_event=stop,
+                               subscriber=sub)
+        assert summary["window_s"] != float("inf")

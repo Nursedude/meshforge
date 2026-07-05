@@ -82,13 +82,22 @@ def log_info(msg):
     print(f"{_journal_prio(6)}{msg}", flush=True)
 
 
+# Sentinel for the file-absent leg — importable so consumers branching on
+# "absent vs unreadable" (kilo's inert leg) don't hardcode the string.
+READ_JSON_NOT_FOUND = "not found"
+
+
 def read_json(path):
-    """Return (data, None) on success, (None, error_str) on failure. Never raises."""
+    """Return (data, None) on success, (None, error_str) on failure. Never raises.
+
+    File-absent returns (None, READ_JSON_NOT_FOUND) — distinguishable from
+    unreadable/corrupt, because absence and breakage are different facts.
+    """
     try:
-        with open(path) as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f), None
     except FileNotFoundError:
-        return None, "not found"
+        return None, READ_JSON_NOT_FOUND
     except (OSError, ValueError) as e:
         return None, f"{type(e).__name__}: {e}"
 

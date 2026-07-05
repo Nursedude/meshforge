@@ -286,6 +286,66 @@ class TestNumericFromCanonicalized:
         assert node.node_id == "!node9"
 
 
+class TestEntryCanonicalization:
+    """QA review 2026-07-05 (V2.1): fixing only _ensure_node left
+    _handle_text_message shipping numeric from_id to the messages DB/WS/
+    TUI feed, and numeric to=4294967295 never matched the '!ffffffff'
+    broadcast check. Canonicalization now happens ONCE at
+    _handle_json_message entry — these pin every leg."""
+
+    def test_text_message_numeric_from_and_to_are_canonical(self,
+                                                            subscriber):
+        data = {"from": 3792937512, "to": 4294967295, "type": "text",
+                "payload": {"text": "aloha"}}
+        subscriber._handle_json_message("msh/2/json/LongFast/!32962f10",
+                                        json.dumps(data).encode())
+        msgs = subscriber.get_messages()
+        assert msgs, "text message must land"
+        assert msgs[-1].from_id == "!e213a228"  # not 3792937512
+        assert msgs[-1].to_id == "!ffffffff"    # broadcast reads as such
+
+    def test_numeric_string_from_is_canonicalized(self, subscriber):
+        # foreign/malformed publishers on shared roots json-encode numbers
+        # as strings (#34 class); both new canonicalizers must agree
+        data = {"from": "3792937512", "type": "position",
+                "payload": {"latitude_i": 197749000,
+                            "longitude_i": -1559000000}}
+        subscriber._handle_json_message("msh/2/json/LongFast/!32962f10",
+                                        json.dumps(data).encode())
+        assert subscriber.get_node("!e213a228") is not None
+        assert subscriber.get_node("3792937512") is None
+
+    def test_preformed_hex_ids_pass_untouched(self, subscriber):
+        data = {"from": "!ABC0FFEE", "type": "position",
+                "payload": {"latitude_i": 197749000,
+                            "longitude_i": -1559000000}}
+        subscriber._handle_json_message("msh/2/json/LongFast/!32962f10",
+                                        json.dumps(data).encode())
+        # pre-formed '!…' strings keep their exact form (no re-fold at
+        # entry — case handling stays wherever it always lived)
+        assert subscriber.get_node("!ABC0FFEE") is not None
+
+
+class TestRemovePacketCallback:
+    """add/remove must pair (QA sweep S2): a shared long-lived subscriber
+    must not accumulate one dead observer per bounded collect window."""
+
+    def test_removed_callback_no_longer_fires(self, subscriber):
+        got = []
+        cb = lambda t, d: got.append(1)  # noqa: E731
+        subscriber.add_packet_callback(cb)
+        subscriber.remove_packet_callback(cb)
+        subscriber._handle_json_message(
+            "msh/2/json/LongFast/!32962f10",
+            json.dumps({"from": 1, "type": "position",
+                        "payload": {}}).encode())
+        assert got == []
+
+    def test_removing_unregistered_callback_is_noop(self, subscriber):
+        # detach paths run in finally blocks — must never raise
+        subscriber.remove_packet_callback(lambda t, d: None)
+
+
 class TestTelemetryValidation:
     def test_valid_telemetry(self, subscriber):
         """Valid telemetry values accepted."""

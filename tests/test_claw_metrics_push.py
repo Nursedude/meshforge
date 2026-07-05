@@ -326,3 +326,47 @@ class TestMultiClawTickRouting:
     def test_load_claw_env_missing_custom_path_exits(self, tmp_path):
         with pytest.raises(SystemExit):
             cmp_mod._load_claw_env(str(tmp_path / "absent.env"))
+
+
+class TestQaFixes20260705:
+    """QA review pins: MF001-consistent env anchor (V3.1), device-name
+    fold refuse (sweep S4), and the end-to-end --env routing the wired
+    fixture's `lambda *_a` had silently stopped covering (V8.2)."""
+
+    def test_default_env_path_uses_real_user_home(self):
+        from utils.paths import get_real_user_home
+        assert cmp_mod.DEFAULT_ENV_PATH == str(
+            get_real_user_home() / ".config" / "meshforge"
+            / "mini_dudeai_claw.env")
+
+    def test_folding_device_name_refused_loud(self, tmp_path):
+        env = tmp_path / "claw.env"
+        env.write_text("MINI_DUDEAI_CLAW_DEVICE=dude.claw-03\n")
+        with pytest.raises(SystemExit, match="fold"):
+            cmp_mod._tick_basename_for(str(env), "dude.claw-03")
+
+    def test_main_env_flag_routes_tick_to_per_device_file(
+            self, monkeypatch, tmp_path):
+        # END-TO-END: main(["--env", ...]) must thread the basename into
+        # the write — a refactor reverting to bare _tick_path() must fail
+        # HERE, not silently clobber the primary tick in production.
+        env = tmp_path / "claw02.env"
+        env.write_text("MINI_DUDEAI_NATS_SERVER=nats://x\n"
+                       "MINI_DUDEAI_CLAW_DEVICE=dudeclaw-02\n")
+        monkeypatch.setattr(cmp_mod, "build_rows", lambda: ["row0"])
+        monkeypatch.setattr(cmp_mod, "_probe_tier", lambda _e: (None, ""))
+        written = []
+        monkeypatch.setattr(
+            cmp_mod, "_tick_path",
+            lambda basename=None: written.append(basename) or str(
+                tmp_path / (basename or "claw_last_tick.json")))
+        monkeypatch.setattr(cmp_mod, "NatsConnection", lambda *a, **k: _FakeNC({
+            "device_info": {"ok": True, "result": DI},
+            "ble_stats": {"ok": True, "result": BS},
+            "display_print": {"ok": True},
+        }))
+        rc = cmp_mod.main(["--env", str(env)])
+        assert rc == 0
+        assert written == ["claw_last_tick.dudeclaw-02.json"]
+        assert (tmp_path / "claw_last_tick.dudeclaw-02.json").exists()
+        assert not (tmp_path / "claw_last_tick.json").exists()

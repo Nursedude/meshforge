@@ -146,10 +146,16 @@ def build_tick(now: float, host: str, device: str,
 
 # The basename of the persisted last-tick capture. Owned HERE because this
 # module owns the tick's shape (build_tick); consumers (the pusher's writer
-# path, /api/status's reader, kilo's claw adapter) import it rather than
-# re-hardcoding (honest_failure_modes #5). The full path formula lives with
-# consumers that may resolve home differently — they test-pin each other.
+# path, /api/status's reader in _map_status_endpoints, the rollup card,
+# kilo's claw adapter) import it rather than re-hardcoding
+# (honest_failure_modes #5). The full path formula lives with consumers
+# that may resolve home differently — they test-pin each other.
 CLAW_TICK_BASENAME = "claw_last_tick.json"
+
+# Glob matching every SECONDARY tick (the secondary_tick_basename family)
+# — the reader-side twin of that formula, owned next to it so a rename is
+# one edit, not a hunt.
+SECONDARY_TICK_GLOB = "claw_last_tick.*.json"
 
 
 def secondary_tick_basename(device: str) -> str:

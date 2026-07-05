@@ -40,6 +40,8 @@ from statistics import median
 from typing import Dict, List, Optional, Tuple
 
 from kilo.registry import KiloNode, anchor_map
+from monitoring._mqtt_types import VALID_RSSI_RANGE, VALID_SNR_RANGE, \
+    node_num_to_id
 
 # ── drift constants (two consumers — classify_drift and the tests — one
 #    place). Band = max(DRIFT_BAND_SIGMAS robust-σ, floor): Meshtastic snr
@@ -50,15 +52,24 @@ DRIFT_MIN_RECENT = 5      # samples before the recent window is believable
 DRIFT_BAND_FLOOR_DB = 2.0
 DRIFT_MAD_SIGMA = 1.4826  # MAD → σ for normally-distributed data
 DRIFT_BAND_SIGMAS = 2.0
+DRIFT_SHIFTED_BAND_MULT = 2.0  # beyond this × band = SHIFTED (pages once
+# the matrix is cron_verdict-wired — named so tuning finds it here, not
+# hunting an inline literal)
 
 DEFAULT_WINDOW_S = 24 * 3600.0  # recent window; older-than-this = baseline
 
 DRIFT_GLYPHS = {"OK": "🟢", "DRIFTING": "🟡", "SHIFTED": "🔴",
                 "SPARSE": "⚪"}
 
-# parse_edge dispositions — witness-counter vocabulary (closed; the
-# buffer counts every packet under exactly one of these).
-DISPOSITIONS = ("ok", "self", "no_receiver", "no_sender", "unparseable")
+# parse_edge/EdgeBuffer dispositions — witness-counter vocabulary (closed;
+# the buffer counts every packet under exactly one of these; pinned by
+# TestDispositionsClosed).
+DISPOSITIONS = ("ok", "self", "no_receiver", "no_sender", "unparseable",
+                "overflow")
+
+# EdgeBuffer hard cap — a leaked/unstopped callback must not grow without
+# bound on the paho thread; drops land in the "overflow" witness counter.
+EDGE_BUFFER_MAX_ROWS = 50_000
 
 
 def parse_edge(topic: str, data: dict, now: Optional[float] = None
@@ -80,18 +91,14 @@ def parse_edge(topic: str, data: dict, now: Optional[float] = None
     channel = parts[-2]  # channel NAME from the topic — the numeric
     # payload "channel" is the box-LOCAL slot index and differs per box
 
-    frm = data.get("from")
-    if isinstance(frm, bool):
-        return None, "no_sender"
-    try:
-        sender = f"!{int(frm) & 0xFFFFFFFF:08x}"
-    except (TypeError, ValueError):
+    sender = node_num_to_id(data.get("from"))
+    if sender is None:
         return None, "no_sender"
     if sender == receiver:
         return None, "self"
 
-    snr = _bounded_float(data.get("snr"), -50.0, 50.0)
-    rssi = _bounded_float(data.get("rssi"), -200.0, 0.0)
+    snr = _bounded_float(data.get("snr"), *VALID_SNR_RANGE)
+    rssi = _bounded_float(data.get("rssi"), *VALID_RSSI_RANGE)
     hops_away = _bounded_int(data.get("hops_away"), 0, 15)
     hop_start = _bounded_int(data.get("hop_start"), 0, 15)
     relay = _bounded_int(data.get("relay_node", data.get("relayNode")),
@@ -142,6 +149,8 @@ class EdgeBuffer:
         except Exception:  # a swallow with a witness, never a broken decode
             row, disp = None, "unparseable"
         with self._lock:
+            if row is not None and len(self._rows) >= EDGE_BUFFER_MAX_ROWS:
+                row, disp = None, "overflow"
             self._counts[disp] = self._counts.get(disp, 0) + 1
             if row is not None:
                 self._rows.append(row)
@@ -182,7 +191,7 @@ def classify_drift(baseline: List[float], recent: List[float]) -> dict:
     out["deviation_db"] = round(dev, 2)
     if abs(dev) <= band:
         out["state"] = "OK"
-    elif abs(dev) <= 2 * band:
+    elif abs(dev) <= DRIFT_SHIFTED_BAND_MULT * band:
         out["state"] = "DRIFTING"
     else:
         out["state"] = "SHIFTED"
@@ -207,7 +216,8 @@ def build_matrix(conn, nodes: List[KiloNode],
     from kilo.store import EDGE_RETENTION_DAYS, edges_since
 
     now = time.time() if now is None else now
-    raw = edges_since(conn, now - EDGE_RETENTION_DAYS * 86400.0)
+    retention_s = EDGE_RETENTION_DAYS * 86400.0
+    raw = edges_since(conn, now - retention_s)
     anchors = anchor_map(nodes) if nodes else {}
     recent_cut = now - window_s
 
@@ -216,7 +226,9 @@ def build_matrix(conn, nodes: List[KiloNode],
     counts: Dict[Tuple[str, str], int] = {}
     recent: Dict[Tuple[str, str], List[float]] = {}
     baseline: Dict[Tuple[str, str], List[float]] = {}
-    for ts, receiver, sender, _channel, snr, hops in raw:
+    oldest_ts: Optional[float] = None
+    for ts, receiver, sender, snr, hops in raw:
+        oldest_ts = ts if oldest_ts is None else min(oldest_ts, ts)
         totals["edges_total"] += 1
         if hops is None:
             totals["edges_unknown_hops"] += 1
@@ -248,7 +260,33 @@ def build_matrix(conn, nodes: List[KiloNode],
             "median_snr": round(median(rec), 2) if rec else None,
             "drift": classify_drift(baseline.get(pair, []), rec),
         })
+    # Baseline-horizon honesty: 100% SPARSE is GUARANTEED while the store
+    # is younger than the window (baseline = older-than-window only) or
+    # the window swallows the whole retention. That global fact must be a
+    # witness in the result, or the operator bug-hunts per-edge "sparse"
+    # cells that cannot possibly be anything else.
+    if window_s >= retention_s:
+        horizon = {"empty_by_construction": True,
+                   "why": (f"window {window_s / 3600.0:g}h ≥ retention "
+                           f"{retention_s / 3600.0:g}h — baseline can "
+                           f"never fill; use --window-hours < "
+                           f"{retention_s / 3600.0:g}")}
+    elif oldest_ts is None:
+        horizon = {"empty_by_construction": True,
+                   "why": "no edges stored yet"}
+    elif oldest_ts >= recent_cut:
+        horizon = {"empty_by_construction": True,
+                   "why": (f"store's oldest edge is "
+                           f"{(now - oldest_ts) / 3600.0:.1f}h old — "
+                           f"younger than the {window_s / 3600.0:g}h "
+                           f"window, so no edge predates it")}
+    else:
+        horizon = {"empty_by_construction": False, "why": ""}
+    horizon["oldest_edge_age_s"] = (round(now - oldest_ts, 1)
+                                    if oldest_ts is not None else None)
+
     return {"window_s": window_s, "direct_only": direct_only,
             "receivers": sorted({c["receiver"] for c in cells}),
             "senders": sorted({c["sender"] for c in cells}),
-            "cells": cells, "totals": totals}
+            "cells": cells, "totals": totals,
+            "baseline_horizon": horizon}

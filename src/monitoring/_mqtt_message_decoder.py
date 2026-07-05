@@ -31,6 +31,7 @@ from monitoring._mqtt_types import (
     VALID_LON_RANGE,
     VALID_SNR_RANGE,
     VALID_RSSI_RANGE,
+    node_num_to_id,
 )
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,21 @@ class MQTTMessageDecoderMixin:
             data = json.loads(payload.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
             return
+
+        # Canonicalize wire identities ONCE at entry — live uplinks carry
+        # from/to as NUMBERS, so every downstream handler and observer
+        # must see one vocabulary ('!hex'). Fixing only _ensure_node left
+        # _handle_text_message shipping numeric from_id to the messages
+        # DB/WS/TUI feed, and numeric to=4294967295 never matched the
+        # '!ffffffff' broadcast check. Pre-formed '!…' strings pass
+        # untouched; non-numeric junk stays as-is (parse witnesses fire).
+        for _k in ("from", "to"):
+            _v = data.get(_k)
+            if _v is not None and not (isinstance(_v, str)
+                                       and _v.startswith("!")):
+                _canonical = node_num_to_id(_v)
+                if _canonical is not None:
+                    data[_k] = _canonical
 
         # Raw packet observers first (any type, before type handling) —
         # snapshot for thread-safe iteration, never let one break decode.
@@ -96,7 +112,8 @@ class MQTTMessageDecoderMixin:
         """Process a successfully decrypted text message."""
         try:
             sender_num = result.get("sender", 0)
-            sender_id = f"!{sender_num:08x}" if sender_num else ""
+            sender_id = (node_num_to_id(sender_num) or "") if sender_num \
+                else ""
             text = result.get("text", "")
             if not text or not sender_id:
                 return
@@ -128,16 +145,23 @@ class MQTTMessageDecoderMixin:
     def _ensure_node(self, node_id) -> MQTTNode:
         """Ensure a node exists in our tracking.
 
-        Accepts the canonical '!hex' string OR a raw integer node number:
-        live meshtasticd json uplinks carry ``from`` as a NUMBER, and the
-        position/telemetry handlers key on it — before this canonicalized,
-        every such packet died on a swallowed AttributeError and those
-        handlers were silently dead for numeric senders (found 2026-07-04
-        by Kilo K1's live-payload tests; test fixtures had used string
-        ``from`` values, masking it).
+        Accepts the canonical '!hex' string OR a raw numeric node number
+        (int or numeric string): live meshtasticd json uplinks carry
+        ``from`` as a NUMBER. History note (corrected 2026-07-05): before
+        canonicalization, only the FIRST packet per numeric sender died on
+        the swallowed AttributeError — the dict insert preceded the raise,
+        so packets 2+ landed position/telemetry on int-KEYED ghost nodes
+        that persisted into mqtt_nodes.json and the node_history
+        directory. No migration re-keys those rows; they age out via
+        retention, and a long-running subscriber keeps writing them until
+        its service restarts on the fixed code (deploy-restart gap, #79
+        class). _handle_json_message now canonicalizes at entry; this
+        guard stays as defense-in-depth for other callers.
         """
-        if isinstance(node_id, int) and not isinstance(node_id, bool):
-            node_id = f"!{node_id & 0xFFFFFFFF:08x}"
+        if not (isinstance(node_id, str) and node_id.startswith("!")):
+            _canonical = node_num_to_id(node_id)
+            if _canonical is not None:
+                node_id = _canonical
         with self._nodes_lock:
             if node_id not in self._nodes:
                 self._nodes[node_id] = MQTTNode(node_id=node_id)

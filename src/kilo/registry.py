@@ -45,7 +45,8 @@ _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$")
 
 
 def registry_path() -> Path:
-    return get_real_user_home() / ".config" / "meshforge" / REGISTRY_BASENAME
+    from utils.paths import MeshForgePaths
+    return MeshForgePaths.get_config_dir() / REGISTRY_BASENAME
 
 
 @dataclass
@@ -104,13 +105,27 @@ def _validate_node(raw: dict, i: int, errors: List[str]) -> Optional[KiloNode]:
     )
 
 
+def _reject_duplicate_keys(pairs):
+    out: Dict = {}
+    for k, v in pairs:
+        if k in out:
+            raise ValueError(f"duplicate JSON key {k!r} — the second copy "
+                             f"would silently replace the first")
+        out[k] = v
+    return out
+
+
 def load_registry(path: Optional[str] = None
                   ) -> Tuple[Optional[List[KiloNode]], List[str]]:
     """(nodes, []) on success — including a legitimately empty registry;
     (None, errors) on unreadable/invalid. Never error→empty."""
     p = Path(path) if path else registry_path()
     try:
-        data = json.loads(p.read_text(encoding="utf-8"))
+        # json.loads silently last-wins on duplicate object keys — a merge
+        # artifact like a second "nodes" key would load as a legitimately-
+        # empty registry (error reads as valid, the #80 class). Refuse.
+        data = json.loads(p.read_text(encoding="utf-8"),
+                          object_pairs_hook=_reject_duplicate_keys)
     except FileNotFoundError:
         return None, [f"registry not found: {p} — copy "
                       f"configs/kilo_nodes.example.json there and edit"]
@@ -138,6 +153,21 @@ def load_registry(path: Optional[str] = None
             continue
         seen.add(node.kilo_id)
         nodes.append(node)
+    # Duplicate anchor VALUES are an authoring error the author cannot
+    # have meant (a copy-pasted stanza): anchor_map would silently
+    # last-win and one node would mirror the other's readings as its own
+    # — a phantom-healthy duplicate. Refuse loud instead.
+    claimed: Dict[Tuple[str, str], str] = {}
+    for n in nodes:
+        for kind, val in n.ids.items():
+            key = (kind, val.lower())
+            if key in claimed:
+                errors.append(
+                    f"duplicate anchor: ids[{kind!r}] = {val!r} claimed by "
+                    f"both {claimed[key]!r} and {n.kilo_id!r} — one device "
+                    f"cannot be two nodes")
+            else:
+                claimed[key] = n.kilo_id
     if errors:
         return None, errors
     return nodes, []
@@ -164,3 +194,12 @@ def observable_anchor_map(nodes: List[KiloNode]) -> Dict[str, str]:
     for kind in OBSERVABLE_ANCHORS:
         out.update(anchor_map(nodes, kind))
     return out
+
+
+def observable_anchor_values(node: KiloNode) -> List[str]:
+    """One node's own observable anchor values, lowercased — THE join-key
+    derivation for the read side (build_status). Lives here, next to
+    anchor_map, so write-side and read-side key folding cannot drift
+    (honest_failure_modes #5: two consumers, one derivation)."""
+    return [node.ids[k].lower() for k in OBSERVABLE_ANCHORS
+            if node.ids.get(k)]

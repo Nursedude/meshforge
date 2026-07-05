@@ -30,6 +30,7 @@ import sys
 import time
 
 from ._util import read_json, resolve_home
+from .claw_telemetry import CLAW_TICK_BASENAME
 
 from .brief import (
     DEFAULT_STALE_S,
@@ -51,8 +52,10 @@ _DEEP_SENTINEL = "__MINI_DUDEAI_DEEP_SENTINEL__"
 _DEEP_FIRES_CAP = 20
 #: dude-claw last-tick capture, cat'd in the same breadth round trip (most
 #: boxes have no claw -> the second cat is empty and no card renders). Same
-#: shell-safe charset constraint as _DEEP_SENTINEL.
-_CLAW_BASENAME = "claw_last_tick.json"
+#: shell-safe charset constraint as _DEEP_SENTINEL. Aliased from the
+#: tick-shape owner (imported at top) — a basename rename must move every
+#: reader at once.
+_CLAW_BASENAME = CLAW_TICK_BASENAME
 _CLAW_SENTINEL = "__MINI_DUDEAI_CLAW_SENTINEL__"
 #: 3x the */5-min claw_metrics capture cadence (matches _read_claw_state_block).
 CLAW_STALE_S = 900.0

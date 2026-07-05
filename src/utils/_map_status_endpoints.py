@@ -491,8 +491,9 @@ class StatusEndpointsMixin:
         shape rather than a missing key.
         """
         try:
+            from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
             from utils.paths import get_real_user_home
-            path = get_real_user_home() / "claw_last_tick.json"
+            path = get_real_user_home() / CLAW_TICK_BASENAME
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {"installed": False, "reason": "no_state_file"}

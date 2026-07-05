@@ -807,6 +807,22 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         """
         self._packet_callbacks.append(callback)
 
+    def remove_packet_callback(
+            self, callback: Callable[[str, Dict[str, Any]], None]) -> None:
+        """Detach a packet observer registered via add_packet_callback.
+
+        Register/remove must pair, or a shared long-lived subscriber
+        accumulates one dead observer per bounded window (each parsing
+        every packet forever). Removing an unregistered callback is a
+        no-op — detach paths run in ``finally`` blocks and must not raise.
+        The decoder iterates a snapshot (``list(...)``), so removal from
+        another thread mid-dispatch is safe.
+        """
+        try:
+            self._packet_callbacks.remove(callback)
+        except ValueError:
+            pass
+
     def get_geojson(self) -> Dict:
         """Get nodes as GeoJSON FeatureCollection for mapping.
 
