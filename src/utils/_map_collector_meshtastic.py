@@ -312,13 +312,15 @@ class MeshtasticDataCollectorMixin:
 
         Returns ``(features, total_nodes, timed_out)``.
         """
-        result = {"features": [], "no_position": [], "total": 0}
+        result = {"features": [], "no_position": [], "total": 0,
+                  "lock_contended": False}
 
         def _worker():
             # Full lifecycle under the connection-manager lock. acquire_lock
             # is bounded (5s); a concurrent/abandoned holder makes us fail-fast.
             if not manager.acquire_lock(timeout=5.0):
                 logger.debug("Could not acquire %s lock (in use)", source)
+                result["lock_contended"] = True
                 return
             try:
                 manager._wait_for_cooldown()
@@ -354,6 +356,22 @@ class MeshtasticDataCollectorMixin:
                 reason_if_zero="collect_timeout",
                 notes=(f"nodedb sync exceeded {timeout:.0f}s — abandoned; "
                        "worker cleans up + holds lock in background"),
+            )
+            return [], 0, True
+        if result["lock_contended"]:
+            # A prior cycle's worker still holds the connection lock — almost
+            # always an abandoned worker on a wedged meshtasticd keeping a
+            # PhoneAPI TCP open (up to ~300s). Report WEDGED (timed_out=True) so
+            # _collect_meshtasticd SKIPS the CLI fallback; otherwise the fallback
+            # opens ANOTHER `meshtastic --host` PhoneAPI stream against the same
+            # wedged daemon every cycle — the #17/#75 leak (persistent
+            # unaccounted TCP starving :9443). Before, this branch returned
+            # timed_out=False with NO diagnostic, so the degraded state had no
+            # witness and the fallback thrashed the daemon.
+            self._record_diagnostic(
+                source, attempted=0, yielded=0,
+                reason_if_zero="lock_contended",
+                notes="prior collect still holds the connection lock (wedged daemon?)",
             )
             return [], 0, True
         # Clean join — publish from THIS thread. The worker never touches self's

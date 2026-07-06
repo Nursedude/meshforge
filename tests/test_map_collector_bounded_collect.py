@@ -69,7 +69,14 @@ class TestBoundedCleanJoin:
         close.assert_called_once()
         manager.release_lock.assert_called_once()
 
-    def test_lock_contention_returns_empty_fast_no_timeout(self, collector):
+    def test_lock_contention_reports_wedged_and_records_diagnostic(self, collector):
+        # QA maps audit 2026-07-05: a lock-contention miss almost always means a
+        # PRIOR cycle's worker still holds the connection lock (abandoned worker
+        # on a wedged meshtasticd keeping a PhoneAPI TCP open). It now reports
+        # WEDGED (timed_out=True) so _collect_meshtasticd SKIPS the CLI fallback
+        # — which would otherwise open ANOTHER PhoneAPI stream every cycle
+        # (#17/#75 leak) — and leaves a `lock_contended` witness. Before, this
+        # returned timed_out=False with no diagnostic and the fallback thrashed.
         manager = MagicMock()
         manager.acquire_lock.return_value = False  # someone else holds it
 
@@ -79,11 +86,11 @@ class TestBoundedCleanJoin:
         )
         elapsed = time.perf_counter() - start
 
-        assert (feats, total, timed_out) == ([], 0, False)
+        assert (feats, total, timed_out) == ([], 0, True)  # wedged → skip CLI fallback
         assert elapsed < 1.0  # never waited the 5s cap
         manager._create_interface.assert_not_called()
-        # A lock-contention miss is NOT a wedge — no timeout diagnostic.
-        assert "meshtasticd" not in collector.get_source_diagnostics()
+        diag = collector.get_source_diagnostics()
+        assert diag["meshtasticd"]["reason_if_zero"] == "lock_contended"
 
 
 class TestBoundedTimeout:
