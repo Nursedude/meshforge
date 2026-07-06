@@ -1051,3 +1051,45 @@ class TestIsNodeOnlineFutureClampQA20260705:
 
     def test_zero_is_unknown_not_online(self, collector):
         assert collector._is_node_online(0, source="meshtastic") is False
+
+
+class TestSaveCacheRoundTripQA20260705:
+    """Fix-introduced-defect guard (2026-07-05 self-re-review): the atomic
+    _save_cache used os.fsync/os.replace but `os` was never imported →
+    NameError swallowed at DEBUG → the node cache was never written and the
+    last-known-cache fallback cold-started empty forever."""
+
+    def test_save_then_load_roundtrip(self, collector):
+        geojson = {
+            "type": "FeatureCollection",
+            "features": [
+                {"type": "Feature",
+                 "geometry": {"type": "Point", "coordinates": [0.1, 0.2]},
+                 "properties": {"id": "!abc", "name": "n"}}
+            ],
+        }
+        collector._save_cache(geojson)  # must actually persist, not NameError
+        assert collector._cache_file.exists()
+        loaded = collector._load_cache()
+        assert any(f["properties"]["id"] == "!abc" for f in loaded)
+
+
+class TestIsNodeOnlineNonNumericQA20260705:
+    """Fix-introduced-defect guard (2026-07-05 self-re-review): a stamped
+    ISO-string last_heard (RNS cache last_seen) reached _is_node_online →
+    `str <= 0` TypeError → the collector's except DROPPED the node."""
+
+    def test_iso_string_does_not_raise_and_is_fresh(self, collector):
+        from datetime import datetime, timezone
+        iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+        assert collector._is_node_online(iso, source="rns") is True
+
+    def test_garbage_string_is_offline_not_raised(self, collector):
+        assert collector._is_node_online("not-a-timestamp", source="rns") is False
+
+    def test_coerce_epoch(self, collector):
+        assert collector._coerce_epoch(1700000000) == 1700000000.0
+        assert collector._coerce_epoch("1700000000") == 1700000000.0
+        assert collector._coerce_epoch("garbage") == 0.0
+        assert collector._coerce_epoch(None) == 0.0
+        assert collector._coerce_epoch(True) == 0.0

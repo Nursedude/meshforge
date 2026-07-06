@@ -16,6 +16,7 @@ Usage:
 import json
 import logging
 import math
+import os
 import threading
 import time
 from datetime import datetime
@@ -620,19 +621,53 @@ class MapDataCollector(
             minutes = default
         return int(minutes * 60)
 
-    def _is_node_online(self, last_heard: float, source: str = "meshtastic") -> bool:
+    @staticmethod
+    def _coerce_epoch(v) -> float:
+        """Best-effort convert a timestamp to a Unix-epoch float.
+
+        Accepts int/float, a numeric string, or an ISO-8601 string; returns 0.0
+        (== "unknown") for anything unparseable, and NEVER raises. A node cache
+        can carry `last_seen` as an ISO string (MeshNode.to_dict); passing that
+        straight into a `<= 0` comparison raises TypeError, which a collector's
+        `except` turns into a DROPPED node — worse than rendering it offline.
+        """
+        if v is None:
+            return 0.0
+        if isinstance(v, bool):
+            return 0.0
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return 0.0
+            try:
+                return float(s)
+            except ValueError:
+                pass
+            try:
+                from datetime import datetime
+                return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+            except ValueError:
+                return 0.0
+        return 0.0
+
+    def _is_node_online(self, last_heard, source: str = "meshtastic") -> bool:
         """Determine if a node is online based on last_heard timestamp.
 
         Single source of truth for online status determination.
         Uses per-source thresholds for accurate status across network types.
 
         Args:
-            last_heard: Unix timestamp of last communication (0 or None = unknown)
+            last_heard: Unix timestamp of last communication (0/None/unparseable
+                = unknown). Coerced defensively — a non-numeric value must never
+                raise out of the SSOT (honest_failure_modes).
             source: Network source type for threshold lookup
 
         Returns:
             True if the node was heard within the source's threshold window
         """
+        last_heard = self._coerce_epoch(last_heard)
         if not last_heard or last_heard <= 0:
             return False
         age = time.time() - last_heard

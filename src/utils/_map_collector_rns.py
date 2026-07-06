@@ -486,8 +486,13 @@ class RNSDataCollectorMixin:
                             # Stamp freshness so path-table nodes aren't rendered
                             # permanently offline: the cache never carried
                             # last_heard, so _is_node_online(0) was always False.
-                            "last_heard": (node.get("last_heard") or node.get("last_seen")
-                                           or node.get("timestamp") or 0),
+                            # Coerce to a numeric epoch — `last_seen` is an ISO
+                            # string in this cache (MeshNode.to_dict), and an ISO
+                            # string reaching `_is_node_online` used to TypeError
+                            # → the node got DROPPED.
+                            "last_heard": self._coerce_epoch(
+                                node.get("last_heard") or node.get("last_seen")
+                                or node.get("timestamp") or 0),
                         }
             except Exception as e:
                 logger.debug(f"RNS position cache load error: {e}")
@@ -511,8 +516,9 @@ class RNSDataCollectorMixin:
                             positions[rns_hash] = {
                                 "lat": lat, "lon": lon,
                                 "name": node.get("name", ""),
-                                "last_heard": (node.get("last_heard") or node.get("last_seen")
-                                               or node.get("timestamp") or 0),
+                                "last_heard": self._coerce_epoch(
+                                    node.get("last_heard") or node.get("last_seen")
+                                    or node.get("timestamp") or 0),
                             }
             except Exception:
                 pass
