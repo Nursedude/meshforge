@@ -131,11 +131,12 @@ Track drift against this list; a change here = a bot-visible risk.
 4. ✅ Honest error paths + cause-preserving logs (`ef746cb`); extended to UK/crime/hfcond/satpass/drap/quake-shape/volcano-ignore-list in the review pass (`d9cac65`).
 5. ✅ `modules/fetch_cache.py` TTL cache (`996d17a`); review pass made NO_ALERTS never-cached (a stale all-clear on a safety command is the #80 class in cache form).
 
-⚠️ **Branch deliberately NOT merged into `meshforge`** until the bot-box fork
-deploy (ledger `meshing-around-fork-deploy`) lands and verifies — preserves the
-zero-code-delta repoint guarantee. After deploy verify: ff-merge
-`audit-fixes-2026-07-06` → `meshforge`, pull on the bot box, restart, watch one
-canary cycle.
+✅ **Deploy + merge COMPLETE 2026-07-06 (operator-present session):** zero-delta
+repoint verified first (clean start 10:26 HST + live canary ACK 10:43:51 over RF),
+THEN `audit-fixes-2026-07-06` ff-merged into `meshforge` (`d9cac65`), pulled +
+restarted on the bot box (clean start 10:45, 0 tracebacks). Ledger task
+`meshing-around-fork-deploy` closed. The production bot now runs the fully
+reviewed fork code.
 
 **Still fork-queued (deliberately deferred, upstream-PR-sized):** guarded-fetch
 chokepoint (one `_get_or_error()` for the whole class), UA consolidation
