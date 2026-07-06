@@ -86,33 +86,57 @@ logger = logging.getLogger(__name__)
 # 2026-07-05). 64 KB is far above any real query string.
 _MAX_QUERY_BODY = 64 * 1024
 
-# Shared node data cache to avoid repeated MapDataCollector instantiation
+# Shared node data cache. Guarded by a lock (unsynchronized module globals
+# raced across scrape threads) with single-flight on the miss, and the collector
+# is built ONCE and reused — a fresh MapDataCollector per cache-miss scrape
+# (mkdir + settings load + federation bootstrap) was wasteful and could
+# double-run the full collection under concurrent scrapes. (QA deferred low/perf,
+# 2026-07-06.)
 _node_geojson_cache: Dict[str, Any] = {}
 _node_geojson_cache_time: float = 0.0
 _NODE_CACHE_TTL: float = 5.0  # seconds
+_node_cache_lock = threading.Lock()
+_shared_collector = None
+
+# Cap per-node label cardinality on the env/air-quality metric loops (emit for
+# at most the N most-recently-seen sensor nodes). node_id is attacker-
+# influenceable (any mesh participant), so an unbounded loop churns the TSDB —
+# matches the SNR/RSSI [:100] discipline. (QA deferred low/perf, 2026-07-06.)
+_PER_NODE_LABEL_CAP = 200
+
+
+def _get_shared_collector():
+    """Return the process-wide MapDataCollector (built once). collect() is
+    internally serialized + idempotent, so reuse is safe and avoids per-scrape
+    construction."""
+    global _shared_collector
+    if _shared_collector is None:
+        _shared_collector = MapDataCollector(enable_history=False)
+    return _shared_collector
 
 
 def _collect_node_geojson() -> Dict[str, Any]:
-    """Collect node GeoJSON from MapDataCollector with short-lived cache.
-
-    Returns cached data if called within _NODE_CACHE_TTL seconds.
-    Returns empty dict if MapDataCollector is unavailable.
-    """
+    """Collect node GeoJSON with a short-lived, locked, single-flight cache.
+    Returns cached data within _NODE_CACHE_TTL; empty dict if unavailable."""
     global _node_geojson_cache, _node_geojson_cache_time
     now = time.time()
+    # Fast path: fresh cache, lock-free read (single dict ref is atomic).
     if now - _node_geojson_cache_time < _NODE_CACHE_TTL and _node_geojson_cache:
         return _node_geojson_cache
     if not _HAS_MAP_COLLECTOR:
         return {}
-    try:
-        collector = MapDataCollector(enable_history=False)
-        geojson = collector.collect(max_age_seconds=60)
-        _node_geojson_cache = geojson
-        _node_geojson_cache_time = now
-        return geojson
-    except Exception as e:
-        logger.debug(f"MapDataCollector error: {e}")
-        return _node_geojson_cache if _node_geojson_cache else {}
+    with _node_cache_lock:
+        now = time.time()
+        if now - _node_geojson_cache_time < _NODE_CACHE_TTL and _node_geojson_cache:
+            return _node_geojson_cache
+        try:
+            geojson = _get_shared_collector().collect(max_age_seconds=60)
+            _node_geojson_cache = geojson
+            _node_geojson_cache_time = now
+            return geojson
+        except Exception as e:
+            logger.debug(f"MapDataCollector error: {e}")
+            return _node_geojson_cache if _node_geojson_cache else {}
 
 
 class PrometheusExporter:
@@ -615,6 +639,10 @@ class PrometheusExporter:
 
             # Environment sensors (BME280/BME680/BMP280)
             env_nodes = subscriber.get_nodes_with_environment_metrics()
+            env_nodes = sorted(
+                env_nodes or [], key=lambda n: getattr(n, "last_seen", 0) or 0,
+                reverse=True,
+            )[:_PER_NODE_LABEL_CAP]
             if env_nodes:
                 # Temperature
                 temp_nodes = [n for n in env_nodes if n.temperature is not None]
@@ -662,6 +690,10 @@ class PrometheusExporter:
 
             # Air quality sensors (PMSA003I, SCD4X)
             aq_nodes = subscriber.get_nodes_with_air_quality()
+            aq_nodes = sorted(
+                aq_nodes or [], key=lambda n: getattr(n, "last_seen", 0) or 0,
+                reverse=True,
+            )[:_PER_NODE_LABEL_CAP]
             if aq_nodes:
                 pm25_nodes = [n for n in aq_nodes if n.pm25_standard is not None]
                 if pm25_nodes:
