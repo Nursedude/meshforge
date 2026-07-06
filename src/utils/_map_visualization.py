@@ -17,6 +17,7 @@ from __future__ import annotations
 import gzip
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -37,9 +38,14 @@ class VisualizationEndpointsMixin:
       assessment, cached 15 min.
     """
 
-    # Cache space weather data (refreshes every 15 minutes).
+    # Cache space weather data (refreshes every 15 minutes). Class-level state
+    # shared across ThreadingHTTPServer request threads, so guard the
+    # check-and-set with a lock: without it, N concurrent cold-cache requests
+    # each fire an independent NOAA fetch (thundering herd) and an unsynchronized
+    # reader can observe a half-populated cache dict.
     _weather_cache: Optional[Dict] = None
     _weather_cache_time: float = 0
+    _weather_cache_lock = threading.Lock()
     _WEATHER_CACHE_TTL = 900  # 15 minutes
 
     def _serve_network_topology(self):
@@ -197,13 +203,27 @@ class VisualizationEndpointsMixin:
         """
         now = time.time()
 
-        # Return cached data if still fresh
+        # Fast path: serve a fresh cache without the lock (a single dict read is
+        # atomic under CPython's GIL).
         cls = type(self)
-        if (cls._weather_cache
-                and (now - cls._weather_cache_time) < self._WEATHER_CACHE_TTL):
-            self._serve_json(cls._weather_cache)
+        cached = cls._weather_cache
+        if cached and (now - cls._weather_cache_time) < self._WEATHER_CACHE_TTL:
+            self._serve_json(cached)
             return
 
+        # Miss: serialize the refetch so a burst of concurrent misses collapses
+        # to a single NOAA round-trip instead of a thundering herd.
+        with cls._weather_cache_lock:
+            now = time.time()
+            cached = cls._weather_cache
+            if cached and (now - cls._weather_cache_time) < self._WEATHER_CACHE_TTL:
+                self._serve_json(cached)
+                return
+            self._fetch_and_serve_weather(cls, now)
+
+    def _fetch_and_serve_weather(self, cls, now):
+        """Fetch space weather from NOAA and serve it, refreshing the shared
+        cache. Called under ``_weather_cache_lock`` (single-flight)."""
         try:
             from commands.propagation import get_space_weather, get_band_conditions
 

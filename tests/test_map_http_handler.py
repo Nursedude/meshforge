@@ -1790,3 +1790,84 @@ class TestServeFleetDupsStep4c:
         h = self._h()
         h._serve_fleet_dups()
         assert h._captured["payload"]["freshness"]["stale"] is True
+
+
+class TestCorsOriginHardening:
+    """QA maps audit 2026-07-05: CORS used origin.startswith(prefix), so a
+    subdomain-suffix origin bypassed the allow-list (an attacker page could
+    read the whole NOC API cross-origin, and drive the RF-transmit POST via
+    the reflected preflight). _origin_allowed tail-anchors the match while
+    preserving the /24 intent of the `http://192.168.86.` prefix."""
+
+    ALLOWED = ['http://localhost', 'http://127.0.0.1', 'http://192.168.86.']
+
+    def test_exact_host_and_port_allowed(self):
+        from utils.map_http_handler import _origin_allowed
+        assert _origin_allowed('http://localhost', self.ALLOWED)
+        assert _origin_allowed('http://localhost:5000', self.ALLOWED)
+        assert _origin_allowed('http://127.0.0.1', self.ALLOWED)
+
+    def test_lan_slash24_octet_allowed(self):
+        from utils.map_http_handler import _origin_allowed
+        assert _origin_allowed('http://192.168.86.41', self.ALLOWED)
+        assert _origin_allowed('http://192.168.86.41:5000', self.ALLOWED)
+
+    def test_subdomain_suffix_bypass_rejected(self):
+        from utils.map_http_handler import _origin_allowed
+        # These all passed the old startswith() check.
+        assert not _origin_allowed('http://192.168.86.evil.com', self.ALLOWED)
+        assert not _origin_allowed('http://192.168.86.41.evil.com', self.ALLOWED)
+        assert not _origin_allowed('http://localhost.attacker.example', self.ALLOWED)
+        assert not _origin_allowed('http://127.0.0.10', self.ALLOWED)
+
+    def test_scheme_mismatch_and_empty_rejected(self):
+        from utils.map_http_handler import _origin_allowed
+        assert not _origin_allowed('https://192.168.86.41', self.ALLOWED)
+        assert not _origin_allowed('', self.ALLOWED)
+        assert not _origin_allowed('http://localhost', None)
+
+
+class TestClientTrustGate:
+    """QA maps audit 2026-07-05: state-changing (RF transmit, fleet test-runner)
+    and journal-leaking (/fleet/logs) endpoints were reachable by any host that
+    could reach 0.0.0.0:5000. _client_ip_trusted narrows them to loopback + the
+    configured LAN /24, non-breaking for the LAN dashboard."""
+
+    ALLOWED = ['http://localhost', 'http://127.0.0.1', 'http://192.168.86.']
+
+    def test_loopback_trusted(self):
+        from utils.map_http_handler import _client_ip_trusted
+        assert _client_ip_trusted('127.0.0.1', self.ALLOWED)
+        assert _client_ip_trusted('::1', self.ALLOWED)
+
+    def test_configured_lan_trusted(self):
+        from utils.map_http_handler import _client_ip_trusted
+        assert _client_ip_trusted('192.168.86.99', self.ALLOWED)
+
+    def test_other_networks_not_trusted(self):
+        from utils.map_http_handler import _client_ip_trusted
+        # AREDN / wg-VPN / adjacent-/24 hosts must not reach action endpoints.
+        assert not _client_ip_trusted('10.44.0.5', self.ALLOWED)
+        assert not _client_ip_trusted('192.168.87.1', self.ALLOWED)
+        assert not _client_ip_trusted('not-an-ip', self.ALLOWED)
+
+    def test_no_cors_configured_means_loopback_only(self):
+        from utils.map_http_handler import _client_ip_trusted
+        assert _client_ip_trusted('127.0.0.1', None)
+        assert not _client_ip_trusted('192.168.86.99', None)
+
+    def test_reject_if_untrusted_sends_403(self):
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        h.allowed_origins = self.ALLOWED
+        h.client_address = ('10.44.0.5', 5000)
+        captured = {}
+        h._serve_json = lambda payload, status=200: captured.update(payload=payload, status=status)
+        assert h._reject_if_untrusted() is True
+        assert captured["status"] == 403
+
+    def test_reject_if_untrusted_allows_lan(self):
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        h.allowed_origins = self.ALLOWED
+        h.client_address = ('192.168.86.41', 5000)
+        h._serve_json = lambda payload, status=200: None
+        assert h._reject_if_untrusted() is False

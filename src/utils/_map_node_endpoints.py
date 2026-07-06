@@ -626,8 +626,19 @@ class NodeDataEndpointsMixin:
         try:
             parsed = urlparse(self.path)
             params = parse_qs(parsed.query)
-            timestamp = float(params.get('timestamp', [str(time.time())])[0])
-            window = int(params.get('window', ['300'])[0])
+            try:
+                timestamp = float(params.get('timestamp', [str(time.time())])[0])
+            except (ValueError, TypeError):
+                timestamp = time.time()
+            # Clamp the window: an unbounded ?window= forces a large DB scan +
+            # GIL-heavy serialization directly on the request thread (this
+            # endpoint is not behind the ResponseByteCache), letting one crafted
+            # request stall other request threads. 1h is ample for playback.
+            try:
+                window = int(params.get('window', ['300'])[0])
+            except (ValueError, TypeError):
+                window = 300
+            window = max(1, min(window, 3600))
 
             if not self.collector or not self.collector._history:
                 self._serve_json({"error": "history not available", "features": []})

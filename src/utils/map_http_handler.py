@@ -123,6 +123,65 @@ except Exception:
     _SERVER_VERSION = "MeshForge"
 
 
+def _origin_allowed(origin: str, allowed: Optional[List[str]]) -> bool:
+    """Exact-or-/24 CORS origin match (tail-anchored).
+
+    ``allowed`` holds the prefixes passed via ``--cors-origins``. Two shapes:
+      * exact host  (``http://localhost``) — the request origin must equal it,
+        optionally with a ``:port`` suffix and nothing else after.
+      * IP /24 prefix (``http://192.168.86.`` — trailing dot) — the origin must
+        complete the final octet with 1-3 digits (+ optional ``:port``).
+
+    A bare ``origin.startswith(prefix)`` let ``http://192.168.86.evil.com`` and
+    ``http://localhost.attacker.example`` pass the check (subdomain-suffix CORS
+    bypass — an attacker page reads the whole NOC API cross-origin). Anchoring
+    the tail with ``$`` closes that while preserving the /24 intent.
+    """
+    if not origin or not allowed:
+        return False
+    for prefix in allowed:
+        if not prefix:
+            continue
+        esc = re.escape(prefix)
+        # trailing-dot prefix completes an IP octet; otherwise exact host+port
+        pat = esc + (r'\d{1,3}(?::\d+)?$' if prefix.endswith('.') else r'(?::\d+)?$')
+        if re.match(pat, origin):
+            return True
+    return False
+
+
+def _trusted_networks_from_origins(allowed: Optional[List[str]]):
+    """Parse the CORS allow-list host parts into ``ip_network`` objects, used to
+    gate state-changing / log-exposing endpoints by client IP on a ``0.0.0.0``
+    bind. A ``.``-terminated prefix (``http://192.168.86.``) → the /24; a bare IP
+    host → /32. Non-IP hosts (``localhost``) are skipped."""
+    nets = []
+    for prefix in allowed or []:
+        if not prefix:
+            continue
+        host = prefix.split('://', 1)[-1].split(':', 1)[0].rstrip('.')
+        cidr = host + '.0/24' if prefix.endswith('.') else host + '/32'
+        try:
+            nets.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            continue  # non-IP host (localhost) or malformed prefix
+    return nets
+
+
+def _client_ip_trusted(client_host: str, allowed: Optional[List[str]]) -> bool:
+    """True if ``client_host`` is loopback or inside a configured LAN origin.
+
+    With no ``--cors-origins`` configured (``allowed`` None/empty) only loopback
+    is trusted — the secure default for a box that never opted a LAN in."""
+    try:
+        ip = ipaddress.ip_address(client_host)
+    except ValueError:
+        return False
+    if ip.is_loopback:
+        return True
+    return any(ip in net for net in _trusted_networks_from_origins(allowed))
+
+
 class MapRequestHandler(
     RadioEndpointsMixin,
     MeshtasticProxyMixin,
@@ -215,9 +274,34 @@ class MapRequestHandler(
         if not origin:
             return
         origins = self.allowed_origins if self.allowed_origins is not None else self._DEFAULT_ORIGINS
-        if any(origin.startswith(allowed) for allowed in origins):
+        if _origin_allowed(origin, origins):
             self.send_header('Access-Control-Allow-Origin', origin)
             self.send_header('Vary', 'Origin')
+
+    def _client_is_trusted(self) -> bool:
+        """True when the request comes from loopback or a configured LAN origin.
+
+        Gate for state-changing (RF transmit, fleet test-runner) and
+        data-leaking (journal logs) endpoints. The map binds ``0.0.0.0`` so a
+        multi-homed box (AREDN 10.x, wg VPN) otherwise exposes those to
+        untrusted networks; this narrows them to the operator's own LAN/loopback
+        without breaking the LAN dashboard (the operator's browser is on the
+        LAN, so its client IP is inside the CORS /24)."""
+        try:
+            host = self.client_address[0]
+        except (IndexError, AttributeError):
+            return False
+        return _client_ip_trusted(host, self.allowed_origins)
+
+    def _reject_if_untrusted(self) -> bool:
+        """Send 403 + return True when the caller isn't loopback/LAN-trusted."""
+        if self._client_is_trusted():
+            return False
+        self._serve_json(
+            {"error": "forbidden",
+             "detail": "endpoint restricted to loopback or a configured LAN origin"},
+            status=403)
+        return True
 
     def send_response(self, code, message=None):
         """Override to capture status code for /metrics instrumentation.
@@ -494,7 +578,14 @@ class MapRequestHandler(
 
         Uses HTTP protobuf (send_text_direct) to avoid TCP contention
         with the meshtasticd web UI — fromradio is single-consumer.
+
+        Keying a licensed transmitter is a state-changing action, so it is
+        gated to loopback / the configured LAN (never an arbitrary host that
+        can merely reach ``0.0.0.0:5000``). Unattended third-party RF control
+        from an untrusted network is an operator/FCC problem.
         """
+        if self._reject_if_untrusted():
+            return
         try:
             content_length = int(self.headers.get('Content-Length', 0))
             if content_length <= 0 or content_length > self._MAX_MESSAGE_BODY:
@@ -525,6 +616,12 @@ class MapRequestHandler(
                         dest_num = int(destination)
                 except (ValueError, IndexError):
                     self._serve_json({"error": "Invalid destination format"}, status=400)
+                    return
+                # Meshtastic node numbers are unsigned 32-bit; reject anything
+                # outside that range before it reaches send_text_direct (the
+                # _VALID_DESTINATION regex allows arbitrarily long digit runs).
+                if not (0 <= dest_num <= 0xFFFFFFFF):
+                    self._serve_json({"error": "destination out of range"}, status=400)
                     return
 
             # Prefer HTTP protobuf — no TCP contention with web UI
@@ -583,14 +680,18 @@ class MapRequestHandler(
         else:
             file_path = Path(__file__).parent.parent.parent / "web" / path_only
 
-        # Security: prevent path traversal
+        # Security: prevent path traversal. Use relative_to on the resolved
+        # paths, not a string prefix — `startswith(base)` also matches a
+        # sibling dir sharing the prefix (base `web` → `web-secret`), a
+        # one-rename-away escape. Mirrors _serve_mesh_web_client's guard.
         try:
             base_dir = Path(self.web_dir) if self.web_dir else Path(__file__).parent.parent.parent / "web"
             file_path = file_path.resolve()
             base_dir = base_dir.resolve()
-            if not str(file_path).startswith(str(base_dir)):
-                self.send_error(403, "Forbidden")
-                return
+            file_path.relative_to(base_dir)
+        except ValueError:
+            self.send_error(403, "Forbidden")
+            return
         except Exception:
             self.send_error(400, "Invalid path")
             return
@@ -907,10 +1008,17 @@ class MapRequestHandler(
         This endpoint returns messages RECEIVED from the mesh, stored by
         the MessageListener. Use /api/messages/queue for pending OUTBOUND messages.
         """
-        # Parse query parameters
+        # Parse query parameters. Clamp limit defensively — a bare int() here
+        # (outside the try below) turned ?limit=abc into an uncaught 500 and
+        # ?limit=-1 into SQLite `LIMIT -1` (unbounded table dump on the request
+        # thread).
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
-        limit = int(params.get('limit', ['50'])[0])
+        try:
+            limit = int(params.get('limit', ['50'])[0])
+        except (ValueError, TypeError):
+            limit = 50
+        limit = max(1, min(limit, 500))
         network = params.get('network', ['all'])[0]
         since = params.get('since', [None])[0]
 

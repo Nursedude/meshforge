@@ -22,6 +22,7 @@ import logging
 import math
 import mimetypes
 import re
+import socket
 from datetime import datetime
 from pathlib import Path
 
@@ -60,7 +61,18 @@ class RadioEndpointsMixin:
         # This avoids MeshForge consuming fromradio packets that the native
         # web client needs.
         if not self.api_proxy:
-            host = self.headers.get('Host', 'localhost:5000').split(':')[0]
+            # The redirect target must come from the address the client used to
+            # reach us (the Host header) so the same box's :9443 is right — but
+            # a raw `Host: evil.com/@x` would make `Location: https://evil.com...`
+            # (open-redirect / header-injection gadget). Accept only a strict
+            # hostname/IP (no scheme, path, `@`, or CRLF); fall back to this
+            # host's own name otherwise. Full canonicalization would need a
+            # configured public hostname, which the map service does not have.
+            raw_host = (self.headers.get('Host', '') or '').split(':', 1)[0]
+            if re.match(r'^[A-Za-z0-9.\-]{1,253}$', raw_host):
+                host = raw_host
+            else:
+                host = socket.gethostname() or 'localhost'
             redirect_url = f"https://{host}:9443/"
             self.send_response(302)
             self.send_header('Location', redirect_url)

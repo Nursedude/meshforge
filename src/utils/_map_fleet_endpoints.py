@@ -301,8 +301,14 @@ class FleetEndpointsMixin:
 
         Errors:
           400 if unit unknown or n/priority out of range
+          403 if the caller is not loopback / a configured LAN origin
           500 on journalctl failure (returns lines:[] + error string)
         """
+        # Journal slices routinely carry LAN IPs, peer hostnames, and debug
+        # secrets; on a 0.0.0.0 bind this must not be readable by an untrusted
+        # network. The MA dashboard fetches it from the LAN, so LAN is trusted.
+        if self._reject_if_untrusted():
+            return
         from urllib.parse import urlparse, parse_qs
 
         qs = parse_qs(urlparse(self.path).query)
@@ -512,7 +518,13 @@ class FleetEndpointsMixin:
 
         Body: {"test": "<id>"}     # id must be a key of _FLEET_TESTS
         Returns: {ok, test, unit, scope, started_at_unix, error}
+
+        Firing fleet lab units (LXMF pings, synth-soak) is a state-changing
+        action, gated to loopback / the configured LAN like the RF-transmit
+        endpoint — not any host that can reach 0.0.0.0:5000.
         """
+        if self._reject_if_untrusted():
+            return
         import json as _json
         import socket as _socket
 
