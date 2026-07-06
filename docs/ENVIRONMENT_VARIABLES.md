@@ -16,7 +16,7 @@
 
 | Variable | Read by | Purpose |
 |----------|---------|---------|
-| `ANTHROPIC_API_KEY` | `utils/claude_assistant.py`, `utils/audit.py`, TUI AI tools | Enables PRO-tier AI features (assistant, auto-review, diagnostics). Absent = Standalone tier. |
+| `ANTHROPIC_API_KEY` | `utils/claude_assistant.py`, `mini_dudeai/audit.py`, TUI AI tools | Enables PRO-tier AI features (assistant, auto-review, diagnostics). Absent = Standalone tier. |
 
 ## Gateway / RNS reliability knobs
 
@@ -30,11 +30,21 @@
 
 ## Oracle (mesh chat assistant)
 
+All oracle vars are read at `meshforge-gateway` startup (handler construction) —
+set via a unit drop-in and restart the gateway to apply; gateway-profile boxes only.
+
 | Variable | Read by | Purpose |
 |----------|---------|---------|
-| `MESHFORGE_ORACLE_ENABLED` | gateway + monitoring handlers | Master switch for the mesh oracle. |
-| `MESHFORGE_ORACLE_CHANNELS` | `oracle_phoneapi_tap.py`, `meshtastic_handler.py` | Channels the oracle listens/answers on. |
-| `MESHFORGE_ORACLE_PHONEAPI_TAP` | `oracle_phoneapi_tap.py` | Enables the PhoneAPI tap ingest path. |
+| `MESHFORGE_ORACLE_ENABLED` | gateway handlers + `oracle/responder.py` | Master switch for the mesh oracle (default OFF; fail-closed). |
+| `MESHFORGE_ORACLE_CHANNELS` | `oracle_phoneapi_tap.py`, `meshtastic_handler.py`, `mqtt_bridge_handler.py` | Meshtastic/PhoneAPI channel NAMES (CSV) the oracle answers on. |
+| `MESHFORGE_ORACLE_PHONEAPI_TAP` | `oracle_phoneapi_tap.py` | Enables the multi-hop PhoneAPI tap ingest path. |
+| `MESHFORGE_ORACLE_ALLOWLIST` | `oracle/responder.py` (Meshtastic/MQTT leg) | CSV of sender node-ids allowed to query, or `*` (anywhere in the list) for answer-all. Empty + no channel = answers no one. |
+| `MESHFORGE_ORACLE_RNS_ALLOWLIST` | `gateway/rns_bridge.py` | Allowlist for the RNS→Mesh oracle leg (LXMF source hashes). |
+| `MESHFORGE_ORACLE_MESHCORE_ALLOWLIST` | `gateway/meshcore_handler.py` | Allowlist for the MeshCore oracle leg (source_address/pubkey-prefix/adv_name). |
+| `MESHFORGE_ORACLE_MESHCORE_CHANNELS` | `gateway/meshcore_handler.py` | MeshCore channel INDICES (CSV, numeric) the oracle answers on. |
+| `MESHFORGE_ORACLE_CONSUME` | `oracle/responder.py` (inbound-Mesh legs) | `1` (default) consume a handled query; `0` = bridge-through so the far mesh's NOC sees it. |
+| `MESHFORGE_ORACLE_RNS_CONSUME` | `gateway/rns_bridge.py` | Per-direction consume for the RNS→Mesh leg (default consume, so an LXMF query is never rebroadcast onto RF). |
+| `MESHFORGE_ORACLE_COOLDOWN_S` | `oracle/responder.py` | Per-sender minimum seconds between answers (default 30; monotonic-anchored). |
 
 ## Observability / state-path overrides
 
@@ -42,7 +52,7 @@
 |----------|---------|---------|
 | `MESHFORGE_DELIVERY_COUNTERS_DB` | `gateway/delivery_counters.py` | Delivery-counters DB path override (#63). |
 | `MESHFORGE_CONTENT_ID_VIEW_STATE` | `gateway/delivery_counters.py` | Confirmation-view state path (#74). |
-| `CALIBRATION_LEDGER_PATH` | `utils/calibration_ledger.py` | Calibration ledger location override. |
+| `CALIBRATION_LEDGER_PATH` | `mini_dudeai/calibration_ledger.py` | Calibration ledger location override. |
 | `HONEST_VERDICT_PATH` | `mini_dudeai/warmstart.py` | honest_status verdict file consumed by the warm brief. |
 | `MESHFORGE_REPO` | `mini_dudeai/warmstart.py` | Repo root override for warm-brief pointers. |
 | `FLEET_HOSTS` | `utils/fleet_dup_collector.py` | Override for the fleet host list (`~/.config/meshforge/fleet_hosts`). |
@@ -58,6 +68,7 @@
 | `MINI_DUDEAI_OLLAMA_URL` / `MINI_DUDEAI_OLLAMA_MODEL` | `chat.py`, engine | Local-LLM chat backend (de-prioritized; Claude-first). |
 | `MINI_DUDEAI_CLAW_DEVICE` / `MINI_DUDEAI_CLAW_SENSORS` / `MINI_DUDEAI_CLAW_TEMP_THRESHOLD` | standalone (dude-claw) | ESP32 claw serial device + sensor config. |
 | `MINI_DUDEAI_ENABLE_BOOT_HEALTH` / `MINI_DUDEAI_ENABLE_DIGEST` / `MINI_DUDEAI_ENABLE_FEDERATION` | `presets/meshforge_fleet.py` | Feature toggles for the fleet preset. |
+| `MESHFORGE_CALIB_DRIFT_RECENT_DAYS` | `utils/watchdog_probes_mini.py` | Recency window (days) for the `calibration_drift` probe — broke claims older than this stop firing (default 7). |
 | `MINI_DUDEAI_CADENCE_MODEL` | `scripts/mini_cadence_launch.sh` | Model used for the cadence PROPOSE run (default opus). |
 | `MINI_DUDEAI_TIER_SLO_URL` | `scripts/claw_metrics_push.py` | `/fleet/slo` URL of the box running the frontier cadence cron — enables the claw OLED brain-tier glyph (F/L/R via `display_tier`, firmware ≥0.4.0+dudeclaw.15). Unset = tier feed disabled (glass decays to SOLO). |
 | `MINI_CADENCE_LOCAL_TIMEOUT_S` | `scripts/mini_cadence_launch.sh` | Bound on the W1 local-tier triage fallback (`mini_dudeai.cadence_fallback`, default 600 s — sized for qwen3-4B at ~30 s/entry × the 12-entry fed cap). The fallback triages the proposed-delta backlog when the frontier session fails; it never ratifies and never turns the verdict OK. |
