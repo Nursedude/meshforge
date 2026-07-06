@@ -1538,3 +1538,53 @@ class TestRssiCapture:
         feat = _feature("!mig")
         feat["properties"]["rssi"] = -99
         assert h.record_observations([feat]) == 1
+
+
+class TestBadCoordinateIsolationIssueQA20260705:
+    """QA maps audit 2026-07-05: a single malformed coordinate (string/None
+    from a source cache) used to raise round(lat,6) and abort the ENTIRE
+    record_observations batch — every node's write lost that cycle, swallowed
+    at DEBUG. Now the bad feature is skipped, the rest persist."""
+
+    def _feat(self, nid, lon, lat):
+        return {
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [lon, lat]},
+            "properties": {"id": nid, "name": nid, "is_online": True,
+                           "network": "meshtastic"},
+        }
+
+    def test_string_coord_does_not_abort_batch(self, hist):
+        feats = [
+            self._feat("!good1", 0.1, 0.2),
+            self._feat("!bad", "not-a-number", "19.4"),  # would crash round()
+            self._feat("!good2", 0.3, 0.4),
+        ]
+        n = hist.record_observations(feats)  # must NOT raise
+        assert n == 2  # both good rows written, bad one skipped
+        assert hist.get_trajectory("!good1", hours=24)
+        assert hist.get_trajectory("!good2", hours=24)
+        assert hist.get_trajectory("!bad", hours=24) == [] or \
+            not hist.get_trajectory("!bad", hours=24)
+
+    def test_numeric_string_coords_are_coerced(self, hist):
+        # A source handing floats-as-strings should still record (coerced).
+        n = hist.record_observations([self._feat("!s", "0.11", "0.22")])
+        assert n == 1
+
+
+class TestCanonicalMeshtasticIdIssueQA20260705:
+    """QA maps audit 2026-07-05: the CLI fallback keyed nodes by the numeric
+    `num` verbatim (decimal string), breaking dedup vs the same node's !hex id
+    from other sources (fleet-wide numeric-key class)."""
+
+    def test_decimal_string_never_passes_through(self):
+        from utils._map_collector_meshtastic import MeshtasticDataCollectorMixin as M
+        # !hex string wins
+        assert M._canonical_meshtastic_id("!499602d2", 1234567890) == "!499602d2"
+        # numeric num formats to hex, decimal string does NOT pass through
+        assert M._canonical_meshtastic_id(None, 1234567890) == "!499602d2"
+        assert M._canonical_meshtastic_id("1234567890", 1234567890) == "!499602d2"
+        # no usable id
+        assert M._canonical_meshtastic_id(None, 0) == "unknown"
+        assert M._canonical_meshtastic_id("", None) == "unknown"

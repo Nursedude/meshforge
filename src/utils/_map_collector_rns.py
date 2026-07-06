@@ -384,7 +384,7 @@ class RNSDataCollectorMixin:
                             lon = pos.get("lon") if pos else None
                             name = (pos.get("name") if pos else None) or f"RNS:{hash_hex[:8]}"
 
-                            if lat and lon:
+                            if self._is_valid_coordinate(lat, lon):
                                 rns_last_heard = pos.get("last_heard", 0) if pos else 0
                                 feature = self._make_feature(
                                     node_id=node_id,
@@ -479,10 +479,15 @@ class RNSDataCollectorMixin:
                         rns_hash = rns_hash.replace("rns_", "")[:16]
                     lat = node.get("latitude") or node.get("lat")
                     lon = node.get("longitude") or node.get("lon")
-                    if lat and lon and rns_hash:
+                    if lat is not None and lon is not None and rns_hash:
                         positions[rns_hash] = {
                             "lat": lat, "lon": lon,
                             "name": node.get("name", node.get("display_name", "")),
+                            # Stamp freshness so path-table nodes aren't rendered
+                            # permanently offline: the cache never carried
+                            # last_heard, so _is_node_online(0) was always False.
+                            "last_heard": (node.get("last_heard") or node.get("last_seen")
+                                           or node.get("timestamp") or 0),
                         }
             except Exception as e:
                 logger.debug(f"RNS position cache load error: {e}")
@@ -502,10 +507,12 @@ class RNSDataCollectorMixin:
                             rns_hash = rns_hash.replace("rns_", "")[:16]
                         lat = node.get("latitude") or node.get("lat")
                         lon = node.get("longitude") or node.get("lon")
-                        if lat and lon and rns_hash:
+                        if lat is not None and lon is not None and rns_hash:
                             positions[rns_hash] = {
                                 "lat": lat, "lon": lon,
                                 "name": node.get("name", ""),
+                                "last_heard": (node.get("last_heard") or node.get("last_seen")
+                                               or node.get("timestamp") or 0),
                             }
             except Exception:
                 pass
@@ -544,7 +551,7 @@ class RNSDataCollectorMixin:
         lat = peer.get('lat')
         lon = peer.get('lon')
 
-        if not lat or not lon:
+        if not self._is_valid_coordinate(lat, lon):
             return None
 
         peer_hash = peer.get('hash', 'unknown')
@@ -561,11 +568,20 @@ class RNSDataCollectorMixin:
         lat = node.get("latitude") or node.get("lat")
         lon = node.get("longitude") or node.get("lon")
 
-        if not lat or not lon:
+        if not self._is_valid_coordinate(lat, lon):
             pos = node.get("position", {})
             if pos:
-                lat = pos.get("latitude") or (pos.get("latitudeI", 0) / 1e7)
-                lon = pos.get("longitude") or (pos.get("longitudeI", 0) / 1e7)
+                # Convert *I forms only when actually present — a missing axis
+                # must stay None, not become 0.0 (which validate-accepts as a
+                # legit one-axis-zero → a phantom node on the equator/meridian).
+                lat_i = pos.get("latitudeI")
+                lon_i = pos.get("longitudeI")
+                lat = pos.get("latitude")
+                if lat is None and lat_i is not None:
+                    lat = lat_i / 1e7
+                lon = pos.get("longitude")
+                if lon is None and lon_i is not None:
+                    lon = lon_i / 1e7
 
         if not self._is_valid_coordinate(lat, lon):
             return None

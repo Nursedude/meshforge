@@ -763,18 +763,24 @@ class MapDataCollector(
             pass
 
     def _timed_collect(self, source: str, fn, *args, **kwargs):
-        """Run `fn` and record its wall-time latency under `source`.
+        """Run `fn`, record its wall-time latency under `source`, and ISOLATE it.
 
         The collector function still calls `_record_diagnostic` itself; this
         wrapper just stamps `latency_ms` into the diagnostic dict before AND
         after, so the value survives the diagnostic's overwrite. On exception,
-        records a synthetic `unreachable` diagnostic with the latency that was
-        spent before the exception, then re-raises.
+        records a synthetic `unreachable` diagnostic with the latency spent and
+        returns an empty list so ONE failing source can't abort the whole
+        cycle (every call site iterates the result as a feature list). Before,
+        this re-raised into `_collect_locked`, whose promised except block never
+        existed — so a single malformed source killed the whole collect,
+        dropped every other source, and returned a 500 instead of serving the
+        still-good cache (honest_failure_modes: error-isolation).
         """
         start = time.perf_counter()
         # Pre-stamp so _record_diagnostic preserves it via the existing-entry
-        # carry-over; if the source raises before recording, _collect_locked's
-        # except block catches and we still have the timing.
+        # carry-over; if the source raises before recording, the except branch
+        # below completes the synthetic diagnostic so the degraded source keeps
+        # a witness instead of a bare latency stub.
         self._source_diagnostics[source] = {"latency_ms": 0}
         try:
             result = fn(*args, **kwargs)
@@ -783,16 +789,17 @@ class MapDataCollector(
             entry["latency_ms"] = elapsed_ms
             self._source_diagnostics[source] = entry
             return result
-        except Exception:
+        except Exception as e:
             elapsed_ms = int((time.perf_counter() - start) * 1000)
             entry = self._source_diagnostics.get(source, {})
             entry.setdefault("attempted", 0)
             entry.setdefault("yielded", 0)
-            entry.setdefault("reason_if_zero", "unreachable")
-            entry.setdefault("notes", "exception during collect")
+            entry["reason_if_zero"] = "unreachable"
+            entry["notes"] = f"exception during collect: {type(e).__name__}"
             entry["latency_ms"] = elapsed_ms
             self._source_diagnostics[source] = entry
-            raise
+            logger.warning("Source %r raised during collect (isolated): %s", source, e)
+            return []
 
     def _info_log_rate_limited(self, source: str, message: str, cooldown_s: float = 300.0) -> None:
         """Emit an INFO log for `source` at most once per cooldown window.
@@ -920,6 +927,11 @@ class MapDataCollector(
         # Reset per-call state so diagnostics/nodes_without_position reflect THIS run only.
         self._nodes_without_position = []
         self._source_diagnostics = {}
+        # Reset the meshtasticd node count too — else when the radio goes dark
+        # (or defers to the gateway) geojson `total_nodes` and the meshtasticd
+        # diagnostic's `attempted` carry the LAST good cycle's count forever, so
+        # a dead source reads as a healthy inventory (#74 display-lie class).
+        self._total_nodes_seen = 0
         # Reset bbox-filter counters so /api/status reflects the most
         # recent cycle. Resolve the bbox once per collect() — the
         # operator can change settings or operator_position.json at any
@@ -1449,16 +1461,33 @@ class MapDataCollector(
                                 feature["properties"]["last_seen"] = "cached"
                         return data.get("features", [])
             except Exception as e:
-                logger.debug(f"Cache load error: {e}")
+                # The exists() guard above means this is a read/parse failure on
+                # a present file — torn/corrupt cache, not routine absence. Say
+                # so loudly; the atomic _save_cache should prevent it.
+                logger.warning(f"Node cache unreadable (corrupt?), ignoring: {e}")
         return []
 
     def _save_cache(self, geojson: Dict) -> None:
-        """Persist current node state to disk."""
+        """Persist current node state to disk atomically.
+
+        Write to a temp file + os.replace so a crash / power-cut mid-write
+        (RTC-less Pi) can never leave torn JSON — _load_cache would silently map
+        that to `[]` at DEBUG, and the last-known-cache fallback (Source 7) would
+        cold-start empty (honest_failure_modes #8: durability)."""
+        tmp = self._cache_file.with_suffix(self._cache_file.suffix + '.tmp')
         try:
-            with open(self._cache_file, 'w') as f:
+            with open(tmp, 'w') as f:
                 json.dump(geojson, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._cache_file)
         except Exception as e:
             logger.debug(f"Cache save error: {e}")
+            try:
+                if tmp.exists():
+                    tmp.unlink()
+            except OSError:
+                pass
 
     def _get_source_summary(
         self, tcp: List, mqtt: List, tracker: List, aredn: List = None,

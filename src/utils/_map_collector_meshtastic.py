@@ -30,6 +30,11 @@ from utils.meshtastic_connection import (
 
 logger = logging.getLogger(__name__)
 
+# A lastHeard more than this many seconds in the FUTURE is implausible (clock
+# skew / forged stamp) → treated as unknown, not fresh. Matches the ±300s skew
+# tolerance used by cloud_map_freshness.sh.
+_FUTURE_SKEW_TOLERANCE_S = 300
+
 
 class MeshtasticDataCollectorMixin:
     """Mixin providing meshtasticd / direct-radio collection methods.
@@ -414,6 +419,26 @@ class MeshtasticDataCollectorMixin:
             self._total_nodes_seen = total
         return features
 
+    @staticmethod
+    def _canonical_meshtastic_id(id_val, num):
+        """Canonical ``!hex`` meshtastic node id.
+
+        Prefer an explicit ``!hex`` string; else format the numeric node number
+        as ``!{num:08x}``; else stringify what we have. A numeric ``num`` must
+        NEVER become the id verbatim — the decimal string breaks dedup against
+        the same node's ``!hex`` id from MQTT/tracker sources and double-writes
+        the directory (the fleet-wide numeric-key bug class, K1's _ensure_node
+        lesson)."""
+        if isinstance(id_val, str) and id_val.startswith('!'):
+            return id_val
+        try:
+            n = int(num)
+        except (TypeError, ValueError):
+            n = 0
+        if n:
+            return f"!{n:08x}"
+        return str(id_val) if id_val not in (None, '') else 'unknown'
+
     def _parse_tcp_node(self, node_id: str, data: dict, now: float,
                         online_threshold_seconds: int = 900) -> Optional[Dict]:
         """Parse a single node from the TCP interface nodes dict.
@@ -441,15 +466,20 @@ class MeshtasticDataCollectorMixin:
         device_metrics = data.get('deviceMetrics', {})
 
         last_heard = data.get('lastHeard', 0)
-        if last_heard and (now - last_heard) <= online_threshold_seconds:
-            is_online = True
-        elif last_heard:
-            is_online = False
-        else:
-            is_online = False
+        # Wall clock is forgeable (RTC-less Pis, NTP steps, a hostile sender): a
+        # future lastHeard makes (now - last_heard) negative → "online" forever
+        # and a nonsense "-42s ago" string. Treat a meaningfully-future stamp as
+        # unknown; a small negative (benign skew) rounds to "0s ago".
+        age_seconds = int(now - last_heard) if last_heard else None
+        if age_seconds is not None and age_seconds < -_FUTURE_SKEW_TOLERANCE_S:
+            last_heard = 0
+            age_seconds = None
 
-        if last_heard:
-            age_seconds = int(now - last_heard)
+        is_online = (age_seconds is not None
+                     and age_seconds <= online_threshold_seconds)
+
+        if age_seconds is not None:
+            age_seconds = max(0, age_seconds)
             if age_seconds < 60:
                 last_seen = f"{age_seconds}s ago"
             elif age_seconds < 3600:
@@ -461,13 +491,7 @@ class MeshtasticDataCollectorMixin:
         else:
             last_seen = "unknown"
 
-        node_num = data.get('num', 0)
-        if isinstance(node_id, str) and node_id.startswith('!'):
-            formatted_id = node_id
-        elif node_num:
-            formatted_id = f"!{node_num:08x}"
-        else:
-            formatted_id = str(node_id)
+        formatted_id = self._canonical_meshtastic_id(node_id, data.get('num', 0))
 
         env_metrics = data.get('environmentMetrics', {})
 
@@ -500,13 +524,7 @@ class MeshtasticDataCollectorMixin:
         user = data.get('user', {})
         device_metrics = data.get('deviceMetrics', {})
 
-        node_num = data.get('num', 0)
-        if isinstance(node_id, str) and node_id.startswith('!'):
-            formatted_id = node_id
-        elif node_num:
-            formatted_id = f"!{node_num:08x}"
-        else:
-            formatted_id = str(node_id)
+        formatted_id = self._canonical_meshtastic_id(node_id, data.get('num', 0))
 
         last_heard = data.get('lastHeard', 0)
         is_online = self._is_node_online(last_heard, source="meshtastic")
@@ -598,7 +616,8 @@ class MeshtasticDataCollectorMixin:
                             device_metrics = data.get('deviceMetrics', {})
                             cli_last_heard = data.get('lastHeard', 0)
                             feature = self._make_feature(
-                                node_id=data.get('num', data.get('id', 'unknown')),
+                                node_id=self._canonical_meshtastic_id(
+                                    data.get('id') or user.get('id'), data.get('num')),
                                 name=user.get('longName', ''),
                                 lat=lat, lon=lon,
                                 network='meshtastic',

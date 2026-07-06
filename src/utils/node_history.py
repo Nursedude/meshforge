@@ -207,8 +207,16 @@ class NodeObservation:
 class NodeHistoryDB:
     """SQLite database for node position and state history.
 
-    Thread-safe. Records node observations over time and provides
-    query methods for playback, trajectories, and network snapshots.
+    Records node observations over time and provides query methods for
+    playback, trajectories, and network snapshots.
+
+    Concurrency contract: DB access (`self._lock`) is thread-safe and the
+    WAL-backed read queries are safe to call from any thread. The write path
+    `record_observations` is SINGLE-WRITER — its throttle maps
+    (`_last_recorded`/`_last_value`) and `_maybe_prune`'s `_last_prune_ts` are
+    read-modified OUTSIDE `self._lock`, so it must be driven by exactly one
+    writer at a time (today: the collector cycle, serialized by
+    `_collect_lock`). A second concurrent writer would race the throttle maps.
     """
 
     def __init__(self, db_path: Optional[Path] = None,
@@ -692,6 +700,18 @@ class NodeHistoryDB:
             if len(coords) < 2:
                 continue
 
+            # Coerce coords to float up front. A source cache can hand us a
+            # string ("19.4") or None; left raw, round(lat, 6) below raises and
+            # aborts the ENTIRE batch (every node's time-series write lost that
+            # cycle, swallowed at DEBUG by the caller). Skip only the bad
+            # feature — one malformed entry must not blank the whole pipeline
+            # (honest_failure_modes: error isolation).
+            try:
+                lon = float(coords[0])
+                lat = float(coords[1])
+            except (TypeError, ValueError):
+                continue
+
             node_id = props.get("id", "")
             if not node_id:
                 continue
@@ -710,7 +730,7 @@ class NodeHistoryDB:
             if now - last < MIN_RECORD_INTERVAL:
                 continue
 
-            lon, lat = coords[0], coords[1]
+            # lon/lat were coerced to float above.
             network = props.get("network", "meshtastic")
 
             # Value-dedup: skip when (lat, lon, network) match the last

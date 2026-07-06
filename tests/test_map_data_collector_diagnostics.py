@@ -931,17 +931,24 @@ class TestTimedCollectLatency:
         assert "latency_ms" in d["test_src"]
         assert d["test_src"]["latency_ms"] >= 5  # at least ~5 ms
 
-    def test_timed_collect_records_latency_on_exception(self, collector):
+    def test_timed_collect_isolates_source_exception(self, collector):
+        # QA maps audit 2026-07-05: _timed_collect used to RE-RAISE (into a
+        # _collect_locked except block that never existed), so one bad source
+        # aborted the whole cycle and dropped every other source. It now
+        # ISOLATES: records the synthetic 'unreachable' diagnostic (with the
+        # latency spent) and returns [] so the cycle continues.
         def boom():
             import time
             time.sleep(0.005)
             raise RuntimeError("source went sideways")
 
-        with pytest.raises(RuntimeError):
-            collector._timed_collect("test_src", boom)
+        result = collector._timed_collect("test_src", boom)  # must NOT raise
+        assert result == []
         d = collector.get_source_diagnostics()
         assert "latency_ms" in d["test_src"]
         assert d["test_src"]["reason_if_zero"] == "unreachable"
+        assert d["test_src"]["attempted"] == 0
+        assert "RuntimeError" in d["test_src"]["notes"]
 
     def test_record_diagnostic_preserves_latency_across_calls(self, collector):
         # Pre-stamp simulates _timed_collect's pre-write.
