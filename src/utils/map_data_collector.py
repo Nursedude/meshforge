@@ -735,8 +735,14 @@ class MapDataCollector(
 
         Returns list of dicts with id, name, last_seen, network info.
         Updated after each collect() call.
+
+        Returns a point-in-time COPY: the background collect thread resets this
+        list to [] and extends it across a cycle, so an /api/status request
+        thread reading the live reference could observe a half-populated (or
+        just-reset empty) list. The copy gives the reader a stable snapshot
+        without blocking on collection. (QA deferred low/perf, 2026-07-06.)
         """
-        return self._nodes_without_position
+        return list(self._nodes_without_position)
 
     def get_source_diagnostics(self) -> Dict[str, Dict[str, Any]]:
         """Per-source collection diagnostics from the most recent collect().
