@@ -243,8 +243,9 @@ class TrackerDataCollectorMixin:
         else:
             logger.debug(f"node_cache.json not found at: {cache_path}")
 
-        # Check RNS nodes temp file
-        rns_cache = Path("/tmp/meshforge_rns_nodes.json")
+        # Check RNS nodes cache (operator-owned; shared path via the writer)
+        from utils.paths import MeshForgePaths
+        rns_cache = MeshForgePaths.rns_nodes_cache_path()
         if rns_cache.exists():
             rns_count = 0
             try:

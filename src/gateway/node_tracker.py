@@ -753,16 +753,22 @@ class UnifiedNodeTracker:
             from utils.paths import atomic_write_text
             atomic_write_text(cache_file, json.dumps(cache_data, indent=2))
 
-            # Also save to /tmp for web API access (cross-process sharing)
+            # Also save an operator-owned cache for cross-process web-API access.
+            # Under ~/.cache/meshforge (not world-writable /tmp) so another local
+            # user can't pre-create it with hostile node data; keep the symlink /
+            # O_NOFOLLOW guard as defense-in-depth. (QA deferred low/perf.)
             try:
-                tmp_path = '/tmp/meshforge_rns_nodes.json'
+                from utils.paths import MeshForgePaths
+                cache_path = MeshForgePaths.rns_nodes_cache_path()
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = str(cache_path)
                 if os.path.islink(tmp_path):
                     logger.warning(f"Refusing to write to symlink: {tmp_path}")
                 else:
                     fd = os.open(
                         tmp_path,
                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                        0o644
+                        0o600
                     )
                     with os.fdopen(fd, 'w') as f:
                         json.dump(cache_data, f)

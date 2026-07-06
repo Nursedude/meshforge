@@ -461,13 +461,14 @@ class RNSDataCollectorMixin:
     def _load_rns_position_cache(self) -> Dict[str, Dict]:
         """Load RNS node position cache for coordinate lookup.
 
-        Reads from /tmp/meshforge_rns_nodes.json and node_cache.json
-        to build a hash -> {lat, lon, name} mapping.
+        Reads the RNS nodes cache (MeshForgePaths.rns_nodes_cache_path) and
+        node_cache.json to build a hash -> {lat, lon, name} mapping.
         """
         positions: Dict[str, Dict] = {}
 
-        # Source 1: RNS temp cache
-        rns_cache = Path("/tmp/meshforge_rns_nodes.json")
+        # Source 1: RNS nodes cache (operator-owned; shared path via the writer)
+        from utils.paths import MeshForgePaths
+        rns_cache = MeshForgePaths.rns_nodes_cache_path()
         if rns_cache.exists():
             try:
                 with open(rns_cache) as f:

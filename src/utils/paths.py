@@ -535,6 +535,16 @@ class MeshForgePaths:
         return get_real_user_home() / '.cache' / 'meshforge'
 
     @classmethod
+    def rns_nodes_cache_path(cls) -> Path:
+        """RNS nodes position cache — written by gateway.node_tracker, read by
+        the RNS + tracker map collectors. SINGLE source of this path (writer and
+        readers import it here so they can't drift — honest_failure_modes #5).
+        Under ~/.cache/meshforge (operator-owned) instead of the world-writable
+        /tmp so another local user can't pre-create it with hostile node data.
+        (QA deferred low/perf, 2026-07-06.)"""
+        return cls.get_cache_dir() / 'rns_nodes.json'
+
+    @classmethod
     def get_plugins_dir(cls) -> Path:
         """Get user plugins directory"""
         return cls.get_config_dir() / 'plugins'
