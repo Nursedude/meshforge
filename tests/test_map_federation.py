@@ -1378,3 +1378,33 @@ class TestBackoffExtendedCapIssue65:
         )
         assert DEFAULT_BACKOFF_EXTENDED_THRESHOLD == 40
         assert DEFAULT_BACKOFF_EXTENDED_MAX_MULTIPLIER == 60
+
+
+class TestExtractFeaturesNodeCapQA20260705:
+    """QA maps audit 2026-07-05: a hostile/misconfigured peer returning millions
+    of tiny node objects could OOM-crashloop the map service. _extract_features
+    now caps per-peer node count and drops the remainder WITH a witness."""
+
+    def test_cap_bounds_extracted_nodes(self, monkeypatch):
+        import utils.map_federation as mf
+        monkeypatch.setattr(mf, "DEFAULT_MAX_NODES_PER_PEER", 5)
+        payload = {"features": [
+            {"properties": {"id": f"!{i:08x}", "network": "meshtastic"},
+             "geometry": {"type": "Point", "coordinates": [0.1, 0.2]}}
+            for i in range(20)
+        ]}
+        out = mf._extract_features(payload, "evilpeer")
+        assert len(out) == 5  # capped, not 20
+
+    def test_position_less_also_capped(self, monkeypatch):
+        import utils.map_federation as mf
+        monkeypatch.setattr(mf, "DEFAULT_MAX_NODES_PER_PEER", 3)
+        payload = {
+            "features": [{"properties": {"id": "!aaaa0001", "network": "rns"},
+                          "geometry": {"type": "Point", "coordinates": [0.1, 0.2]}}],
+            "nodes_without_position": [
+                {"id": f"!bbbb{i:04x}", "network": "rns"} for i in range(10)
+            ],
+        }
+        out = mf._extract_features(payload, "evilpeer")
+        assert len(out) == 3

@@ -24,6 +24,11 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+# A last_heard more than this many seconds in the FUTURE is implausible (upstream
+# clock skew / a hostile injected stamp) and must not read as "online". Matches
+# the ±300s tolerance used by _map_collector_meshtastic and cloud_map_freshness.
+_ONLINE_FUTURE_SKEW_TOLERANCE_S = 300
+
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 from utils.common import SettingsManager
@@ -630,8 +635,15 @@ class MapDataCollector(
         """
         if not last_heard or last_heard <= 0:
             return False
+        age = time.time() - last_heard
+        # A forgeable/hostile FUTURE timestamp (upstream clock skew or an
+        # injected "last seen 2099") makes age negative → online forever. Reject
+        # anything meaningfully in the future; a small negative (benign skew)
+        # still counts as fresh. Defends meshcore/public/CLI callers at the SSOT.
+        if age < -_ONLINE_FUTURE_SKEW_TOLERANCE_S:
+            return False
         threshold = self.get_source_threshold_seconds(source)
-        return (time.time() - last_heard) < threshold
+        return age < threshold
 
     def get_meshtasticd_host(self) -> str:
         """Get meshtasticd host setting."""

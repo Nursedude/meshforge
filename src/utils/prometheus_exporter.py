@@ -81,6 +81,11 @@ get_topology_snapshot_store, _HAS_TOPOLOGY_SNAPSHOT = safe_import(
 
 logger = logging.getLogger(__name__)
 
+# PromQL query bodies are tiny; cap the POST body read so a huge declared
+# Content-Length can't force a large RAM allocation before parse (QA maps audit
+# 2026-07-05). 64 KB is far above any real query string.
+_MAX_QUERY_BODY = 64 * 1024
+
 # Shared node data cache to avoid repeated MapDataCollector instantiation
 _node_geojson_cache: Dict[str, Any] = {}
 _node_geojson_cache_time: float = 0.0
@@ -979,7 +984,7 @@ class MetricsHTTPHandler(http.server.BaseHTTPRequestHandler):
         else:
             # Read POST body
             content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > 0:
+            if 0 < content_length <= _MAX_QUERY_BODY:
                 body = self.rfile.read(content_length).decode('utf-8')
                 params = urllib.parse.parse_qs(body)
                 query = params.get("query", [""])[0]
@@ -1077,7 +1082,7 @@ class MetricsHTTPHandler(http.server.BaseHTTPRequestHandler):
             query = params.get("query", [""])[0]
         else:
             content_length = int(self.headers.get('Content-Length', 0))
-            if content_length > 0:
+            if 0 < content_length <= _MAX_QUERY_BODY:
                 body = self.rfile.read(content_length).decode('utf-8')
                 params = urllib.parse.parse_qs(body)
                 query = params.get("query", [""])[0]
@@ -1368,16 +1373,18 @@ Grafana Setup (Option 2 - Infinity plugin):
             'services': {},
         }
 
-        # Check services
+        # Check services via the SSOT service layer, not raw `systemctl`
+        # (MF008): check_service() carries the sudo/degraded-daemon semantics and
+        # the fleet's ServiceState vocabulary. Reports the enum value
+        # (available/not_running/failed/…), not the bare `systemctl is-active`
+        # string.
         for svc in ['meshtasticd', 'rnsd', 'mosquitto', 'grafana-server']:
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ['systemctl', 'is-active', svc],
-                    capture_output=True, text=True, timeout=5
-                )
-                status['services'][svc] = result.stdout.strip()
-            except Exception:
+            if _HAS_SERVICE_CHECK:
+                try:
+                    status['services'][svc] = check_service(svc).state.value
+                except Exception:
+                    status['services'][svc] = 'unknown'
+            else:
                 status['services'][svc] = 'unknown'
 
         self.send_response(200)

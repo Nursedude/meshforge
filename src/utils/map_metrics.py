@@ -190,6 +190,34 @@ def record_collect(source: str, yielded: int, reason_if_zero: str) -> None:
     COLLECTOR_NODES_LAST_RUN.labels(source=source).set(yielded)
 
 
+# Networks exposed as Prometheus labels. A federated peer's `network` string is
+# UNTRUSTED — a hostile peer could emit one position-less node per fabricated
+# network ("net-000001"…) to explode /metrics cardinality and the fleet TSDB
+# (QA maps audit 2026-07-05, F3). Anything outside this set buckets to "other"
+# so label cardinality stays bounded.
+_KNOWN_NETWORKS = frozenset(
+    {"meshtastic", "meshcore", "rns", "reticulum", "aredn", "hamclock"}
+)
+# Remember the label set written last cycle so a network that drops to zero gets
+# an explicit .set(0) — else its gauge freezes at the last non-zero value
+# forever (F6, honest_failure_modes #2: absence read as a stale valid value).
+_prev_without_position_networks: set = set()
+_prev_directory_networks: set = set()
+
+
+def _bucket_network(name) -> str:
+    n = str(name or "unknown").lower()
+    return n if n in _KNOWN_NETWORKS else "other"
+
+
+def _bucket_counts(by_network: dict) -> dict:
+    out: dict = {}
+    for network, count in (by_network or {}).items():
+        b = _bucket_network(network)
+        out[b] = out.get(b, 0) + (count or 0)
+    return out
+
+
 def set_node_inventory(
     with_position: int, without_position_by_network: dict
 ) -> None:
@@ -200,12 +228,14 @@ def set_node_inventory(
     """
     if not _HAS_PROM:
         return
+    global _prev_without_position_networks
     NODES_WITH_POSITION.set(with_position)
-    # Don't reset; new networks accumulate. In practice the network
-    # set is small (meshtastic, meshcore, aredn, reticulum, hamclock)
-    # and stable, so set() per-label is correct for "current state".
-    for network, count in (without_position_by_network or {}).items():
+    bucketed = _bucket_counts(without_position_by_network)
+    for network, count in bucketed.items():
         NODES_WITHOUT_POSITION.labels(network=network).set(count)
+    for gone in _prev_without_position_networks - bucketed.keys():
+        NODES_WITHOUT_POSITION.labels(network=gone).set(0)
+    _prev_without_position_networks = set(bucketed.keys())
 
 
 def set_directory_inventory(total: int, by_network: dict) -> None:
@@ -218,9 +248,14 @@ def set_directory_inventory(total: int, by_network: dict) -> None:
     """
     if not _HAS_PROM:
         return
+    global _prev_directory_networks
     DIRECTORY_TOTAL.set(total)
-    for network, count in (by_network or {}).items():
+    bucketed = _bucket_counts(by_network)
+    for network, count in bucketed.items():
         DIRECTORY_BY_NETWORK.labels(network=network).set(count)
+    for gone in _prev_directory_networks - bucketed.keys():
+        DIRECTORY_BY_NETWORK.labels(network=gone).set(0)
+    _prev_directory_networks = set(bucketed.keys())
 
 
 def record_http(method: str, endpoint: str, status_code: int, duration_s: float) -> None:

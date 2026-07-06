@@ -1028,3 +1028,26 @@ class TestCollectIsThreadSafe:
             release.set()
             holder.join(timeout=3)
             assert not holder.is_alive()
+
+
+class TestIsNodeOnlineFutureClampQA20260705:
+    """QA maps audit 2026-07-05: a FUTURE last_heard (upstream clock skew /
+    hostile injected stamp) made (now - last_heard) negative → online forever.
+    _is_node_online now rejects a meaningfully-future stamp at the SSOT."""
+
+    def test_future_timestamp_not_online(self, collector):
+        import time
+        future = time.time() + 10_000  # ~2.7h ahead → implausible
+        assert collector._is_node_online(future, source="meshcore") is False
+
+    def test_small_skew_still_online(self, collector):
+        import time
+        # A benign few-second future skew should still count as fresh.
+        assert collector._is_node_online(time.time() + 5, source="meshtastic") is True
+
+    def test_recent_past_online(self, collector):
+        import time
+        assert collector._is_node_online(time.time() - 10, source="meshtastic") is True
+
+    def test_zero_is_unknown_not_online(self, collector):
+        assert collector._is_node_online(0, source="meshtastic") is False

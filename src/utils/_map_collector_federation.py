@@ -300,6 +300,7 @@ class FederationDataCollectorMixin:
         for s in snap.peer_status.values():
             peer_status_list.append({
                 "hostname": s.hostname,
+                "peer_name": s.peer_name,
                 "ok": s.ok,
                 "last_sync": s.last_sync,
                 "last_attempt": s.last_attempt,
@@ -307,6 +308,14 @@ class FederationDataCollectorMixin:
                 "last_count": s.last_count,
                 "last_latency_ms": s.last_latency_ms,
                 "consecutive_failures": s.consecutive_failures,
+                # Backoff state (Issue #59/#65). Present on FederationPeerStatus
+                # but never plumbed to /api/status until the 2026-07-05 QA audit
+                # — so the mini-dudeai FederationPeerSource (reads in_backoff /
+                # backoff_multiplier) and the operator couldn't tell "actively
+                # failing" from "in backoff, not polled for the next hour".
+                "in_backoff": s.in_backoff,
+                "backoff_multiplier": s.backoff_multiplier,
+                "next_eligible_poll_ts": s.next_eligible_poll_ts,
             })
 
         return {

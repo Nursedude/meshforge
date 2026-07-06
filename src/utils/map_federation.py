@@ -60,11 +60,19 @@ DEFAULT_TIMEOUT = 30.0            # per-peer HTTP timeout (was 5.0 pre-2026-05-1
 DEFAULT_PORT = 5000               # peer map service port
 DEFAULT_MAX_RESPONSE_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per peer (wire bytes)
 # Cap on the DECOMPRESSED size when the peer returned Content-Encoding: gzip.
-# Bound is 10× the wire cap because GeoJSON-shaped data gzips at ~5-10× —
-# anything past 500 MB decompressed from a 50 MB compressed body is either a
-# zip-bomb or a misconfigured peer. We trust our own fleet but the cap is
-# cheap defense-in-depth. Issue #64.
-DEFAULT_MAX_DECOMPRESSED_BYTES = DEFAULT_MAX_RESPONSE_BYTES * 10
+# This is the pre-PARSE OOM lever: json.loads runs on the full decompressed
+# body before _extract_features ever sees it, and on a Pi that parse balloons
+# ~5-10× in RAM. The real fleet directory is ~35 MB decompressed (#56); 200 MB
+# is ~5.7× headroom for growth while staying survivable, vs the old 500 MB
+# which could OOM a Pi outright. A hostile/misconfigured peer past this is
+# rejected loud, not parsed. Issue #64 + QA maps audit 2026-07-05.
+DEFAULT_MAX_DECOMPRESSED_BYTES = 200 * 1024 * 1024
+# Cap on the NUMBER of federated node dicts kept from one peer. Bounds
+# post-parse object growth independently of byte size (a body full of tiny
+# node objects). The whole fleet federates ~59k nodes total across all peers;
+# 200k is far above any single legit peer. Past it, extras are dropped WITH a
+# witness (never silently truncated to look complete). QA maps audit 2026-07-05.
+DEFAULT_MAX_NODES_PER_PEER = 200_000
 
 # Federation backpressure: skip polls when the node_history.db WAL is bigger
 # than this. 64 MB is the journal_size_limit set in db_helpers.connect_tuned,
@@ -243,6 +251,11 @@ def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict
     out: List[Dict[str, Any]] = []
     features = directory_payload.get("features") or []
     for feat in features:
+        if len(out) >= DEFAULT_MAX_NODES_PER_PEER:
+            logger.warning(
+                "Peer %r directory exceeded %d nodes — dropping the remainder "
+                "(possible hostile/misconfigured peer)", peer, DEFAULT_MAX_NODES_PER_PEER)
+            return out
         if not isinstance(feat, dict):
             continue
         props = feat.get("properties") or {}
@@ -273,6 +286,11 @@ def _extract_features(directory_payload: Dict[str, Any], peer: str) -> List[Dict
 
     # Position-less entries
     for entry in directory_payload.get("nodes_without_position") or []:
+        if len(out) >= DEFAULT_MAX_NODES_PER_PEER:
+            logger.warning(
+                "Peer %r directory exceeded %d nodes (with position-less) — "
+                "dropping the remainder", peer, DEFAULT_MAX_NODES_PER_PEER)
+            return out
         if not isinstance(entry, dict):
             continue
         nid = entry.get("id")
