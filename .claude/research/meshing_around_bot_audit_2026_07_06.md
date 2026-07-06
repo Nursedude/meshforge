@@ -122,13 +122,25 @@ Track drift against this list; a change here = a bot-visible risk.
 
 ## Fix roadmap
 
-**Fork-first (no upstream dependency), in order:**
-1. Wrap dispatch at `mesh_bot.py:183` — honest "command failed" instead of silence.
-2. `isinstance(tuple)` guard at `mesh_bot.py:484` (#324 fix).
-3. Identifying User-Agent on all NOAA-family calls + timeouts on wx_meteo/dxspot.
-4. Error paths: log `type(e).__name__` + status code (makes the next tide
-   outage diagnosable); failure ≠ `NO_ALERTS` on safety commands.
-5. Small TTL cache in front of NOAA-family calls (channel-spam shield).
+**Fork-first — DONE 2026-07-06 on fork branch `audit-fixes-2026-07-06`
+(`7c48261..d9cac65`, 6 commits + 74-test pytest suite; see
+`.claude/audits/review_provenance.md` row "meshing-around FORK FIX PASS"):**
+1. ✅ Dispatch guard (`7c48261`) — crashed handler → honest "command failed" + logged traceback.
+2. ✅ `isinstance(tuple)` guard (`07f14b3`, #324).
+3. ✅ `API_USER_AGENT` on all NOAA-family calls + timeouts wx_meteo/dxspot/llm (`d2a266d`, `d9cac65`).
+4. ✅ Honest error paths + cause-preserving logs (`ef746cb`); extended to UK/crime/hfcond/satpass/drap/quake-shape/volcano-ignore-list in the review pass (`d9cac65`).
+5. ✅ `modules/fetch_cache.py` TTL cache (`996d17a`); review pass made NO_ALERTS never-cached (a stale all-clear on a safety command is the #80 class in cache form).
+
+⚠️ **Branch deliberately NOT merged into `meshforge`** until the bot-box fork
+deploy (ledger `meshing-around-fork-deploy`) lands and verifies — preserves the
+zero-code-delta repoint guarantee. After deploy verify: ff-merge
+`audit-fixes-2026-07-06` → `meshforge`, pull on the bot box, restart, watch one
+canary cycle.
+
+**Still fork-queued (deliberately deferred, upstream-PR-sized):** guarded-fetch
+chokepoint (one `_get_or_error()` for the whole class), UA consolidation
+(dxspot/wiki/rss own UAs), single-flight on cache miss (documented limitation
+in fetch_cache.py).
 
 **Upstream filed:** #324 (wxalert mangle), #325 (NINA dead endpoint).
 **Upstream queue (file as PRs mature):** failure→NO_ALERTS class, missing
