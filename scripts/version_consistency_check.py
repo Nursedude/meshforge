@@ -40,6 +40,16 @@ DEFAULT_SSOT = "src/__version__.py"
 PYPROJECT = "pyproject.toml"
 README = "README.md"
 
+# Known SSOT locations across the fleet's repos, most-specific first. Auto-detect
+# walks these so ONE byte-identical guard works in meshforge (src/__version__.py),
+# meshforge-maps (src/__init__.py), and the meshing_around client
+# (meshing_around_clients/__init__.py) without per-repo edits. Pass --ssot to override.
+CANDIDATE_SSOTS = [
+    "src/__version__.py",
+    "src/__init__.py",
+    "meshing_around_clients/__init__.py",
+]
+
 _VERSION_RE = re.compile(r"""^\s*__version__\s*=\s*["']([^"']+)["']""", re.M)
 
 
@@ -119,20 +129,35 @@ def read_readme_whatworks_version(repo_root: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def resolve_ssot(repo_root: str, ssot_rel: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """Return (ssot_rel_used, version). If ssot_rel is given, use it verbatim.
+    Otherwise walk CANDIDATE_SSOTS and use the first that declares __version__ —
+    so the same guard works in every repo. Returns (candidates[0], None) if none
+    declare a version (the caller treats None as a failure, never "consistent")."""
+    if ssot_rel:
+        return ssot_rel, read_ssot_version(repo_root, ssot_rel)
+    for cand in CANDIDATE_SSOTS:
+        v = read_ssot_version(repo_root, cand)
+        if v is not None:
+            return cand, v
+    return CANDIDATE_SSOTS[0], None
+
+
 def check(
     repo_root: str = ".",
-    ssot_rel: str = DEFAULT_SSOT,
+    ssot_rel: Optional[str] = None,
 ) -> Tuple[Optional[str], List[str]]:
     """Return (ssot_version, [mismatch messages]).
 
     An empty message list with a non-None ssot means consistent. A None ssot
     means the SSOT could not be read — the caller must treat that as a failure
-    (exit 2), never as "consistent".
+    (exit 2), never as "consistent". ``ssot_rel=None`` auto-detects the SSOT file.
     """
-    ssot = read_ssot_version(repo_root, ssot_rel)
+    ssot_rel, ssot = resolve_ssot(repo_root, ssot_rel)
     problems: List[str] = []
     if ssot is None:
-        return None, [f"SSOT version unreadable in {ssot_rel} ({repo_root})"]
+        tried = ssot_rel if ssot_rel else ", ".join(CANDIDATE_SSOTS)
+        return None, [f"SSOT version unreadable (tried {tried}) in {repo_root}"]
 
     # Each consumer is compared only when it declares a version. A consumer that
     # declares nothing (e.g. no [project].version, no badge) is "not asserted
@@ -162,8 +187,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="MeshForge version-consistency guard")
     parser.add_argument("--repo", default=None,
                         help="Repo root (default: the repo this script lives in)")
-    parser.add_argument("--ssot", default=DEFAULT_SSOT,
-                        help=f"SSOT file relative to repo root (default: {DEFAULT_SSOT})")
+    parser.add_argument("--ssot", default=None,
+                        help="SSOT file relative to repo root (default: auto-detect "
+                             f"from {', '.join(CANDIDATE_SSOTS)})")
     args = parser.parse_args()
 
     repo_root = args.repo or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -113,5 +113,34 @@ class TestCheck(unittest.TestCase):
             self.assertTrue(problems)
 
 
+class TestAutoDetectSSOT(unittest.TestCase):
+    """One byte-identical guard must find the SSOT wherever a repo keeps it."""
+
+    def test_detects_src_init(self):
+        # meshforge-maps keeps __version__ in src/__init__.py, not src/__version__.py.
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "src/__init__.py", '__version__ = "0.7.4-beta"\n')
+            rel, ver = vcc.resolve_ssot(d)
+            self.assertEqual((rel, ver), ("src/__init__.py", "0.7.4-beta"))
+
+    def test_detects_meshing_around_client(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "meshing_around_clients/__init__.py", '__version__ = "0.6.0"\n')
+            rel, ver = vcc.resolve_ssot(d)
+            self.assertEqual((rel, ver), ("meshing_around_clients/__init__.py", "0.6.0"))
+
+    def test_explicit_ssot_overrides_autodetect(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "src/__version__.py", '__version__ = "9.9.9"\n')
+            _write(d, "custom/ver.py", '__version__ = "1.2.3"\n')
+            rel, ver = vcc.resolve_ssot(d, "custom/ver.py")
+            self.assertEqual((rel, ver), ("custom/ver.py", "1.2.3"))
+
+    def test_no_candidate_returns_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            rel, ver = vcc.resolve_ssot(d)
+            self.assertIsNone(ver)  # caller treats None as failure, never "consistent"
+
+
 if __name__ == "__main__":
     unittest.main()
