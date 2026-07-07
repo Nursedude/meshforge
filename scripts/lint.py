@@ -25,6 +25,7 @@ Checks:
 - MF021: subprocess/systemctl/os.system/Popen/shell=True in the mini-dudeai engine/sources/actions (observation-only invariant — mini observes, never executes)
 - MF022: bare/exit-code-masked pip & swallowed apt in shell installers (must route through scripts/lib/install_common.sh — pip-presence + PEP 668 + checked rc; install-hardening arc)
 - MF023: blocking meshtastic interface creation (_create_interface — the nodedb sync) in the map collector outside the bounded helper _collect_interface_bounded (serving must never block on collection; 2026-06-23 moc1 spin)
+- MF024: version SSOT (src/__version__.py) vs pyproject/README badge+heading drift (the 4-way-drift guard; delegates to scripts/version_consistency_check.py)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -659,6 +660,29 @@ def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
+def check_version_consistency(repo_root: str = '.') -> List[LintIssue]:
+    """MF024: the version SSOT (src/__version__.py) must agree with pyproject +
+    README badge/heading. Prevents the 4-way version drift the 2026-07-07 audit
+    found. Delegates to scripts/version_consistency_check.py (the standalone,
+    also runnable on its own and mirrored to sister repos)."""
+    issues: List[LintIssue] = []
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    if script_dir not in sys.path:
+        sys.path.insert(0, script_dir)
+    try:
+        import version_consistency_check as vcc
+    except ImportError as e:
+        # Missing the guard itself is a real gap — unobservable is never a pass.
+        return [LintIssue("scripts/version_consistency_check.py", 0, Severity.WARNING,
+                          "MF024", f"version guard unavailable: {e}")]
+    ssot, problems = vcc.check(repo_root)
+    if ssot is None:
+        return [LintIssue("src/__version__.py", 0, Severity.ERROR, "MF024", problems[0])]
+    for msg in problems:
+        issues.append(LintIssue("(version)", 0, Severity.ERROR, "MF024", msg))
+    return issues
+
+
 # MF017: hardened systemd units (ProtectHome=read-only) must whitelist all three
 # canonical MeshForge data buckets in ReadWritePaths=. The bucket-class taxonomy
 # is the contract documented in utils/sandbox_check.py:meshforge_writable_paths.
@@ -1200,6 +1224,11 @@ def main():
     # MF012: doc-size cap (skip in --staged mode — only relevant to whole-repo checks)
     if not args.staged:
         issues.extend(check_context_doc_sizes())
+
+    # MF024: version SSOT vs pyproject/README drift (repo-level; the 4-way-drift
+    # guard). Whole-repo only — a one-file --staged PR shouldn't pay the audit.
+    if not args.staged:
+        issues.extend(check_version_consistency())
 
     # MF014: operator-value blocklist (broader than .py — scans templates/scripts/docs too)
     if args.staged:

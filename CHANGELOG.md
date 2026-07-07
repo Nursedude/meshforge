@@ -5,6 +5,75 @@ All notable changes to MeshForge will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+> Entries 0.5.5-beta through 0.6.2-beta below were reconstructed 2026-07-07 from
+> the `VERSION_HISTORY` list in `src/__version__.py` (the change SSOT) after an
+> audit found this file frozen at 0.5.4-beta. `src/__version__.py` remains the
+> authoritative changelog; keep both in sync (guarded by
+> `scripts/version_consistency_check.py`).
+
+## [0.6.2-beta] - 2026-06-12
+
+### Added
+- **AREDN**: Meshtastic↔AREDN bridge field-proven via Raven (the AREDN core team's ucode bridge) on the AREDN-site collector — both directions verified over real RF, then a 24h soak clean (0 restarts, flat RSS). Raven's Meshtastic leg rides UDP-over-LAN multicast (224.0.0.69:4403), never the PhoneAPI TCP stream, so Issue #17 contention is structurally absent. Pilot log + build recipe: `.claude/plans/aredn_raven_moc5_pilot.md`.
+
+### Changed
+- **Fleet**: bridge box `device.role` flipped CLIENT_MUTE→CLIENT so the reverse leg reaches the RF mesh; Raven soak watch wired into the cron-verdict regime (Issue #78).
+
+## [0.6.1-beta] - 2026-06-04
+
+### Added
+- **Fleet**: first *routed* RNS leaf onboarded — an AREDN-sited collector behind a MikroTik hAP joins via `TCPClientInterface`, federates ~2.7k mesh-side nodes.
+- **Watchdog**: `probe_channel_feed_dark` — the silence canary; hours of json-uplink silence while the pipeline is alive fires `channel_feed_dark` (the tell for a missed PSK re-key, a deaf radio, or a dead uplink). Born from the 2026-06-04 dark-feed incident.
+
+### Fixed
+- **Lab**: `lxmf_echo` routed-leaf ACK fix — bounded `RNS.Transport.request_path()` on `Identity.recall()` miss.
+- **Federation**: `peer_name` plumbing completed for every peer (Issue #54 close-out).
+
+### Changed
+- meshtasticd 2.7.24 rolled fleet-wide (24h soak, 0 crash signatures; 2.7.15 double-free class confirmed fixed).
+
+## [0.6.0-beta] - 2026-05-02
+
+### Added
+- **Gateway**: dual-gateway cross-preset bridging proof-of-concept — two active gateways (moc LongFast + moc3 SHORT_TURBO), each with a distinct `rns.gateway_name` + per-box `meshtastic.gateway_node_id` self-echo filter.
+- **MeshChatX**: side-by-side LXMF web client integrated as an opt-in NomadNet sibling — idempotent installer, refuse-loud on `rpc_key` drift, `Type=simple` systemd-user unit on 127.0.0.1:8000 (+51 tests).
+
+### Changed
+- **Gateway**: `scripts/configure_gateway.sh` canonicalizes two device-level meshtasticd MQTT prereqs — `mqtt.json_enabled = true` and `mqtt.address = localhost` (found when a clean deploy bridged 0/0 for half an hour).
+- `scripts/fleet_sync.sh` now restarts `meshforge-map.service` alongside `meshforge-gateway` + `meshforge-maps` (Issue #53 stale-daemon prevention).
+
+## [0.5.7-beta] - 2026-04-24
+
+### Changed
+- **Gateway**: composable bridges — `bridge_mode` is now an advisory display label, not a selector; each bridge is gated by its own `.enabled` flag (`rns_bridge_enabled`, `mesh_bridge.enabled`, `rns_transport.enabled`) and any combination runs concurrently.
+- **Gateway**: refusal-on-inconsistency contract — `validate_bridge_conflicts()` exits code 2 with a CONFIG ERRORS block instead of silently auto-correcting.
+
+### Added
+- **Gateway**: `connection_type="serial"` — dual-radio gateways bridge a HAT primary with a USB-attached Meshtastic secondary.
+- **Gateway**: `scripts/configure_gateway.sh` idempotent deployment helper (DRY_RUN=1 preview).
+- **Docs**: `docs/GATEWAY_DEPLOYMENT.md` — canonical deployment guide (architecture, prereqs, composable bridges, RNode variant, fleet truth table, gotchas).
+
+## [0.5.6-beta] - 2026-04-21
+
+### Fixed
+- **Gateway**: RNS→Mesh (R→M) path unblocked end-to-end — bytes content decoded, HTTP TX route forced (Issue #40).
+- **Gateway**: MQTT bridge topic shape now matches meshtasticd 2.7.x publishes (region-less + region-ful both subscribed; `region=""` default) (Issue #34).
+- **Gateway**: `rpc_key` propagation into gateway client configs closes `AuthenticationError` on identity-split boxes (Issue #41).
+- **NomadNet**: `AuthenticationError` wrapper so rnsd/NomadNet `rpc_key` drift no longer crashes the TUI at startup (Issue #37).
+
+### Added
+- **Gateway**: identifying, two-way-directable bridge — originating mesh node in the LXMF title/fields; `@!id`/`@shortname` from RNS parses to a directed Meshtastic DM (Issue #39).
+- **NomadNet**: single-identity tmux-detached systemd-user pattern for fleet rollout (Issue #38).
+- **Tools**: `scripts/validate_rns_to_mesh.py` — shell-runnable LXMF sender for R→M acceptance without the NomadNet TUI.
+
+## [0.5.5-beta] - 2026-03-09
+
+### Removed
+- MeshChat handler (2,683 lines), plugin, deployment profile (6→5 profiles), and 114 tests — upstream unmaintained (11+ bugs).
+
+### Changed
+- NomadNet is MeshForge's supported LXMF messaging client; core mission refocused on gateway/bridge, maps, monitoring, and RF tools.
+
 ## [0.5.4-beta] - 2026-02-11
 
 ### Changed

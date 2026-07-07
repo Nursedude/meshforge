@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.1--beta-blue.svg" alt="Version"></a>
+  <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.2--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
   <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-6318%20passing-brightgreen.svg" alt="Tests"></a>
@@ -47,8 +47,13 @@ Optional add-ons (install from TUI when you need them):
 | Extension | Description | Port | Repo |
 |-----------|-------------|------|------|
 | **[MeshForge Maps](https://github.com/Nursedude/meshforge-maps)** | Multi-source map (Meshtastic, AREDN, MeshCore, MQTT, RNS) | 8808 | `Nursedude/meshforge-maps` |
-| **Meshing Around** | Bot framework integration for Meshtastic mesh bots | — | `Nursedude/meshing_around_meshforge` |
+| **Meshing Around** (client/monitor) | Alerting + maps-writer layer for the meshing-around bot — **not** the bot itself | — | `Nursedude/meshing_around_meshforge` |
 | **MeshChatX** ([setup](docs/MESHCHATX_IN_MESHFORGE.md)) | Browser-based LXMF chat client — sibling to NomadNet (isolated RNS, propagation, gateway-enrolled) | 8000 | RNS-Things / Quad4-Software |
+
+> **Two "meshing-around" repos — don't conflate them:** `Nursedude/meshing_around_meshforge`
+> (above) is the **client/monitor + alerting** layer (v0.6.0). The actual command
+> **bot** is a separate fork, `Nursedude/meshing-around` (a T2 fork of
+> `SpudGunMan/meshing-around`, floating upstream v1.9.9.x, governed by its `FORK.md`).
 
 Extensions are managed as systemd services. The TUI handles the full lifecycle:
 - **Install**: clone, venv, deps, service setup — one click
@@ -259,7 +264,7 @@ Main Menu (MeshForge NOC)
 
 ---
 
-## What Works (v0.6.1-beta)
+## What Works (v0.6.2-beta)
 
 ### Status Definitions
 
@@ -1137,7 +1142,7 @@ See [CLAUDE.md](CLAUDE.md) for details.
 
 | Branch | Version | Focus |
 |--------|---------|-------|
-| `main` | `0.6.1-beta` | Meshtastic-primary NOC, production use |
+| `main` | `0.6.2-beta` | Meshtastic-primary NOC, production use |
 
 **Sister project:** [MeshAnchor](https://github.com/Nursedude/meshanchor) is the
 MeshCore-primary NOC — extracted from this repo on 2026-04-01.

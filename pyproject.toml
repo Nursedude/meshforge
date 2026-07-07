@@ -10,7 +10,7 @@
 
 [project]
 name = "meshforge"
-version = "0.5.5-beta"
+version = "0.6.2-beta"
 description = "Network Operations Center bridging Meshtastic and Reticulum mesh networks"
 readme = "README.md"
 requires-python = ">=3.9"
