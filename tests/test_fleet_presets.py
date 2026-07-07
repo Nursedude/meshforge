@@ -150,6 +150,68 @@ def test_code_default_dual_path_dedup_true():
     assert RNSConfig().dual_path_dedup_enabled is True
 
 
+def test_template_vs_code_rns_defaults_consistency():
+    """Transport-truth soak review 2026-07-07 (Option B, closes review2 residual
+    (C)): the gateway.json TEMPLATE rns defaults must equal the RNSConfig code
+    defaults EXCEPT for an explicit, documented allowlist. The template is the
+    DEPLOYMENT default (governs every provisioned gateway); the code default is
+    the conservative, MagicMock-safe fallback (base_handler strict read,
+    test_rns_bridge.py::test_enabled_default_false).
+
+    ``true_origin_downlink_enabled`` INTENTIONALLY diverges — template ``True``
+    (Option-A cross-box recognition, inherited by provisioned gateways) vs code
+    ``False`` (the deliberate defensive default). The 2026-07-07 soak proved it
+    safe: ~7d live on moc+moc3, /fleet/dups 0 duplicate pairs, 100% confirmed.
+    The operator confirmed the *deployment* default stays True; keeping the code
+    default False (Option B) preserves the tested defensive contract.
+
+    This is a closed consumer BOTH ways (honest_failure_modes #5): a NEW,
+    undocumented template-vs-code divergence fails, AND if the allowlisted
+    divergence ever disappears (defaults converge), the stale allowlist entry
+    must be removed. So the divergence stays *sanctioned*, never accidental."""
+    import json
+    from gateway.config import RNSConfig
+
+    # Template values sourced from an operator @TOKEN@, not a default — skip.
+    PLACEHOLDER_KEYS = {"default_lxmf_destination"}
+    # Sanctioned template != code divergences: key -> (template_value, code_value).
+    INTENTIONAL_DIVERGENCE = {
+        "true_origin_downlink_enabled": (True, False),
+    }
+
+    template = REPO / "templates" / "gateway" / "gateway.json.template"
+    rendered = (template.read_text()
+                .replace("@MESHFORGE_CHANNEL_INDEX@", "2")
+                .replace("@LXMF_DESTINATION@", "test_dest"))
+    tmpl_rns = json.loads(rendered)["rns"]
+    code = RNSConfig()
+
+    unexpected = {}
+    for key, tmpl_val in tmpl_rns.items():
+        if key in PLACEHOLDER_KEYS or not hasattr(code, key):
+            continue
+        code_val = getattr(code, key)
+        if tmpl_val == code_val:
+            continue
+        if key not in INTENTIONAL_DIVERGENCE:
+            unexpected[key] = (tmpl_val, code_val)
+        else:
+            assert (tmpl_val, code_val) == INTENTIONAL_DIVERGENCE[key], (
+                f"{key} divergence changed to template={tmpl_val!r} "
+                f"code={code_val!r}; update INTENTIONAL_DIVERGENCE or align them")
+    assert not unexpected, (
+        f"template diverges from RNSConfig code defaults on non-allowlisted "
+        f"keys: {unexpected}. Align them, or add a documented allowlist entry.")
+
+    # Allowlisted divergences must still be REAL (defaults haven't converged).
+    for key, (exp_t, exp_c) in INTENTIONAL_DIVERGENCE.items():
+        assert key in tmpl_rns and hasattr(code, key), (
+            f"allowlist entry {key!r} no longer present in template/RNSConfig")
+        assert tmpl_rns[key] != getattr(code, key), (
+            f"{key} no longer diverges (template==code); remove it from "
+            f"INTENTIONAL_DIVERGENCE")
+
+
 def test_no_preset_references_an_external_role():
     """QA 2026-07-05: the CLI refuses provisioned_by roles (exit 2, the
     #69 rival-host class); the TUI apply now refuses too — and no preset
