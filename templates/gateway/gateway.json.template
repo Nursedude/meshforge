@@ -13,8 +13,8 @@
     "mqtt_broker": "localhost",
     "mqtt_port": 1883,
     "mqtt_channel": "meshforge",
-    "mqtt_region": "US",
-    "http_port": 443,
+    "mqtt_region": "",
+    "http_port": 9443,
     "preset": "",
     "name": "primary"
   },
@@ -34,7 +34,7 @@
     "username": "",
     "password": "",
     "root_topic": "msh",
-    "region": "US",
+    "region": "",
     "channel": "meshforge",
     "json_enabled": true
   },

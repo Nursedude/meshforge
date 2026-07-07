@@ -4,11 +4,17 @@ Deployment recipes for a MeshForge gateway box — a Pi that bridges a local
 Meshtastic mesh to Reticulum/LXMF (and, optionally, to an RNode for LoRa-RNS
 egress). Field-validated across the moc/fleet-host-1/fleet-host-2/fleet-host-3 fleet 2026-04-24.
 
-> **Choosing a config shape?** See
-> [`GATEWAY_BRIDGE_CONFIG_GUIDE.md`](GATEWAY_BRIDGE_CONFIG_GUIDE.md) for the
-> deployment variants (standalone / fleet roles / dual-radio / LAB flags) and
-> [`gateway_config_templates/`](gateway_config_templates/README.md) for
-> validated per-variant `gateway.json` templates.
+> **This is the canonical, end-to-end SF ↔ MeshForge ↔ RNS runbook** — bare box to
+> a verified bridged message. The gateway doc set:
+>
+> | Doc | Use it for |
+> |-----|-----------|
+> | **`GATEWAY_DEPLOYMENT.md`** (this file) | the runbook + the "[where every knob lives](#where-every-knob-lives-the-sf--meshforge--rns-map)" map + end-to-end verify |
+> | [`GATEWAY_BRIDGE_CONFIG_GUIDE.md`](GATEWAY_BRIDGE_CONFIG_GUIDE.md) | **variant reference** — choose a config shape (standalone / fleet roles / dual-radio / MeshCore / LAB flags) |
+> | [`gateway_config_templates/`](gateway_config_templates/README.md) | validated per-variant `gateway.json` starting points |
+>
+> (The older `.claude/research/gateway_setup_guide.md` is **superseded** — its
+> body was removed 2026-07-07; it documented a config shape the code no longer uses.)
 
 ## What the gateway does
 
@@ -48,6 +54,37 @@ Messages on the Meshtastic `meshforge` channel get picked up via MQTT,
 forwarded as LXMF to a local or remote NomadNet, and vice versa. The RNode
 (when attached) carries RNS packets over LoRa to other RNode-equipped
 peers out of WiFi range.
+
+## Where every knob lives (the SF ↔ MeshForge ↔ RNS map)
+
+Standing up one gateway touches **eight config planes that don't reference each
+other**. This is the single biggest source of "green logs, zero throughput"
+confusion. Here is every knob, where it lives, and what drives it — so you never
+have to guess which of eight files owns a setting.
+
+| Plane | Lives in | Key knobs | How to set it |
+|-------|----------|-----------|---------------|
+| **Radio LoRa** | the Meshtastic device | `lora.region`, `lora.modem_preset` **(← SF lives here, implicitly)**, `lora.channel_num`, `lora.tx_power`, `lora.hop_limit` | `sudo scripts/configure_lora.sh <profile>` (baked profiles: `us_default`, `us_longrange`, `us_fast`, `eu_default`, `au_default`) |
+| **Channel** | the Meshtastic device | the `meshforge` channel PSK, per-channel `uplink_enabled` + `downlink_enabled` | `configure_gateway.sh` sets the uplink/downlink flags (both required — see gotcha #2) |
+| **MQTT uplink** | the Meshtastic device | `mqtt.json_enabled = true`, `mqtt.address = localhost` | `configure_gateway.sh` (both required — a remote `mqtt.address` silently starves the bridge) |
+| **HAT pins** | `/etc/meshtasticd/config.d/` | SPI / CS / IRQ / Busy / Reset / gpiochip | TUI → Meshtasticd LoRa handler (`handlers/meshtasticd_lora.py`) — hardware wiring, not modem params |
+| **Bridge** | `~/.config/meshforge/gateway.json` | `rns_bridge_enabled`, `meshtastic.{channel, http_port=9443, mqtt_channel}`, `mqtt_bridge.{root_topic, region, channel}` | `configure_gateway.sh` renders it from `templates/gateway/gateway.json.template`; TUI Gateway menu edits it |
+| **RNS / rnsd** | `/etc/reticulum/config` (search order `/etc` → `~/.config/reticulum` → `~/.reticulum` → `/root/.reticulum`) | **`rpc_key`** (the most error-prone knob), optional `[[RNode LoRa]]` block with an **explicit `spreadingfactor =`** | pin `rpc_key` once per box (see "rpc_key pinning"); RNode SF is a literal integer here |
+| **Role** | `~/.config/meshforge/deployment.json` (`role`) | whether this box runs a gateway unit *at all* | `sudo scripts/provision_role.py --set-role <role> --apply` (catalog: `docs/fleet_roles.yaml`) |
+| **Service** | systemd | `meshforge-gateway.service` | `sudo scripts/install_gateway_service.sh` |
+
+### "Spreading factor" is two different knobs — say which radio
+
+- **Meshtastic leg**: SF is **implicit** in `lora.modem_preset`. There is no
+  `spreadingfactor` field on the Meshtastic side — the preset picks it
+  (`SHORT_TURBO`≈SF7, `LONG_FAST`≈SF11, `VERY_LONG_SLOW`≈SF12). Set it with
+  `configure_lora.sh`, *not* in `gateway.json` (the `preset` field in
+  `gateway.json` is a documentation string only; it does not touch the radio).
+- **RNS / RNode leg**: SF is an **explicit integer** — `spreadingfactor = 7` in
+  the `[[RNode LoRa]]` interface block of `/etc/reticulum/config`.
+
+So "set the spreading factor" means `configure_lora.sh` for the mesh radio, or
+the rnsd RNode block for the LoRa-RNS egress radio — never `gateway.json`.
 
 ## Configs supported
 
@@ -411,3 +448,45 @@ A valid downlink publishes JSON with `"channel": <N>` and optionally
 `"to": <numeric>`. Issue #40 documents the HTTP TX path this uses
 (`send_text_direct()` via meshtasticd's `/api/v1/toradio`) and why MQTT
 publish was never the TX contract.
+
+### Green-but-dead: the two silent zero-throughput traps
+
+The gateway can log a clean startup and bridge **nothing** in either direction.
+Two field incidents (Issues #34 and #40) both presented as healthy logs with
+0 RX/0 TX. Test the data path directly instead of trusting the logs.
+
+**Trap #34 — MQTT topic-shape mismatch.** meshtasticd 2.7.x publishes on
+`{root}/2/json/{channel}/{node}` (no region segment); a region-ful subscription
+sits at 0 RX with green logs. The validated default is now `region=""` (both the
+render template and the RX subscriber accept the region-less and region-ful
+shapes). Prove RX by injecting a synthetic publish the bridge must pick up:
+
+```bash
+# Synthetic RX probe — publish a fake mesh text on the meshforge channel and
+# confirm the gateway ingests it (watch `journalctl -u meshforge-gateway -f`).
+mosquitto_pub -h 127.0.0.1 -t 'msh/US/2/json/meshforge/!deadbeef' \
+  -m '{"payload":{"text":"rx-probe"},"sender":"!deadbeef","type":"text","channel":2,"to":4294967295,"from":3735928559,"id":9999001}'
+```
+
+If the gateway logs the received text, the M→R (mesh→RNS) leg is live. If it
+sees nothing, the channel index / topic shape / uplink flags are wrong — walk
+the knob map above.
+
+**Trap #40 — R→M bytes + wrong downlink topic.** The RNS→Mesh leg was silently
+dead because LXMF `message.content` arrives as **bytes** (crashed the str path)
+and the downlink was published to a channel-named topic instead of the literal
+`toradio` HTTP contract. Both are fixed; the R→M acceptance test that does not
+need the NomadNet TUI is:
+
+```bash
+python3 scripts/validate_rns_to_mesh.py    # shell-runnable LXMF sender for R→M
+```
+
+Downlink lands on the radio via `send_text_direct()` → meshtasticd
+`/api/v1/toradio` (never an MQTT publish). If `validate_rns_to_mesh.py` reports
+delivery but nothing hits the radio, check `rpc_key` pinning (Issue #41) — a key
+mismatch fails every rnsd RPC and aborts inbound LXMF with `AuthenticationError`.
+
+> **Rule of thumb:** a gateway is only "verified" when a real or synthetic packet
+> is observed crossing — not when the service is `active` and the logs are quiet.
+> Silence is a failure mode, not a pass.
