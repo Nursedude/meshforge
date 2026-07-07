@@ -257,4 +257,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.offline_oracle import OfflineOracleHandler
     handlers.append(OfflineOracleHandler)
 
+    # Batch 27 — Gateway Wizard (guided SF↔MeshForge↔RNS setup; MF018 — no shell eject)
+    from handlers.gateway_wizard import GatewayWizardHandler
+    handlers.append(GatewayWizardHandler)
+
     return handlers
