@@ -171,5 +171,73 @@ def test_nomadnet_identity_mismatch(tmp_path, monkeypatch):
         "handlers.gateway_preflight.get_real_user_home", lambda: fake_home
     )
     status, msg, fix = h._check_nomadnet_identity_match()
-    assert fix is not None and "update" in fix.lower()
+    assert fix is not None and "add" in fix.lower()
     assert "aaaaaaaa" in msg or "bbbbbbbb" in msg
+
+
+def _identity_fixture(tmp_path, monkeypatch, dests, nomadnet_hash):
+    from handlers.gateway_preflight import GatewayPreflightHandler
+    h = GatewayPreflightHandler()
+    (tmp_path / ".config" / "meshforge").mkdir(parents=True)
+    (tmp_path / ".config" / "meshforge" / "gateway.json").write_text(json.dumps({
+        "rns": {"default_lxmf_destination": dests},
+    }))
+    (tmp_path / ".nomadnetwork").mkdir()
+    (tmp_path / ".nomadnetwork" / "logfile").write_text(
+        f"LXMF Router ready to receive on: <{nomadnet_hash}>\n"
+    )
+    monkeypatch.setattr(
+        "handlers.gateway_preflight.get_real_user_home", lambda: tmp_path
+    )
+    return h
+
+
+def test_nomadnet_identity_membership_in_list(tmp_path, monkeypatch):
+    """MEMBERSHIP is the contract (multi-recipient fan-out, #39/#47): NomadNet
+    being ONE of the recipients is OK. Exact-equality false-FAILed every
+    multi-recipient box (2026-07-09 field test on the reference gateway)."""
+    h = _identity_fixture(
+        tmp_path, monkeypatch,
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+         "d69f7e802960b39561768588fc6e6082",
+         "cccccccccccccccccccccccccccccccc"],
+        "d69f7e802960b39561768588fc6e6082")
+    status, msg, fix = h._check_nomadnet_identity_match()
+    assert fix is None
+    assert "one of 3" in msg
+
+
+def test_nomadnet_identity_not_in_list_fails(tmp_path, monkeypatch):
+    h = _identity_fixture(
+        tmp_path, monkeypatch,
+        ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+         "cccccccccccccccccccccccccccccccc"],
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+    status, msg, fix = h._check_nomadnet_identity_match()
+    assert fix is not None and "add bbbbbbbb" in fix
+    assert "not among" in msg
+
+
+def test_nomadnet_identity_list_no_logfile_shows_count_not_repr(tmp_path, monkeypatch):
+    """A list value must not be string-sliced in the warn branches — the old
+    code rendered default_dest[:12] of a LIST."""
+    from handlers.gateway_preflight import GatewayPreflightHandler
+    h = GatewayPreflightHandler()
+    (tmp_path / ".config" / "meshforge").mkdir(parents=True)
+    (tmp_path / ".config" / "meshforge" / "gateway.json").write_text(json.dumps({
+        "rns": {"default_lxmf_destination": [
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "cccccccccccccccccccccccccccccccc"]},
+    }))
+    monkeypatch.setattr(
+        "handlers.gateway_preflight.get_real_user_home", lambda: tmp_path
+    )
+    status, msg, fix = h._check_nomadnet_identity_match()
+    assert "(+1 more)" in msg
+    assert "[" not in msg  # no raw list repr
+
+
+def test_nomadnet_identity_empty_list_warns(tmp_path, monkeypatch):
+    h = _identity_fixture(tmp_path, monkeypatch, [], "d69f7e802960b39561768588fc6e6082")
+    status, msg, fix = h._check_nomadnet_identity_match()
+    assert "no default_lxmf_destination" in msg

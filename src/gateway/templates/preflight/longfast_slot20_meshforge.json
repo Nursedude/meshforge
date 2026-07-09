@@ -1,12 +1,11 @@
 {
   "$schema_version": 1,
-  "name": "shortturbo-slot8-meshforge-bridge",
-  "description": "MeshForge NOC bridge: Meshtastic HAT on US/SHORT_TURBO/channel_num=8 ↔ MeshForge Gateway (mqtt_bridge mode, 'meshforge' channel) ↔ RNS/NomadNet. First validated end-to-end on 2026-04-18 (see persistent_issues.md Issue #33).",
+  "name": "longfast-slot20-meshforge-bridge",
+  "description": "MeshForge NOC bridge: Meshtastic HAT on US/LONG_FAST/channel_num=20 ↔ MeshForge Gateway (mqtt_bridge mode, 'meshforge' channel) ↔ RNS/NomadNet. First validated end-to-end 2026-04-18 as SHORT_TURBO/slot8 (Issue #33); re-exported 2026-07-09 from the live reference gateway after the fleet's soak-proven baseline moved to LONG_FAST/slot20 (the old template false-FAILed every healthy box).",
   "maintainer": "MeshForge",
-  "validated_date": "2026-04-18",
+  "validated_date": "2026-07-09",
   "validated_on": "meshforge-reference-fleet",
   "region_compliance": "US (FCC ISM 902-928 MHz)",
-
   "meshtastic": {
     "region": {
       "expected": "US",
@@ -14,11 +13,11 @@
       "note": "Regulatory region. Must match your jurisdiction; don't blindly copy across sites."
     },
     "modem_preset": {
-      "expected": "SHORT_TURBO",
+      "expected": "LONG_FAST",
       "severity": "fail"
     },
     "channel_num": {
-      "expected": 8,
+      "expected": 20,
       "severity": "fail",
       "note": "All nodes on this mesh must use the same slot + preset."
     },
@@ -36,7 +35,6 @@
       "severity": "fail"
     }
   },
-
   "gateway": {
     "bridge_mode": {
       "expected": "mqtt_bridge",
@@ -58,7 +56,6 @@
       "note": "Required for broadcast routing to NomadNet. Can be unset if only DMs via contact_mapping."
     }
   },
-
   "packages": {
     "rns": {
       "min_version": "1.1.1",
@@ -71,13 +68,20 @@
       "install": "pip3 install --user --break-system-packages lxmf"
     }
   },
-
   "services": {
-    "meshtasticd": {"expected": "active", "severity": "fail"},
-    "rnsd":        {"expected": "active", "severity": "fail"},
-    "mosquitto":   {"expected": "active", "severity": "fail"}
+    "meshtasticd": {
+      "expected": "active",
+      "severity": "fail"
+    },
+    "rnsd": {
+      "expected": "active",
+      "severity": "fail"
+    },
+    "mosquitto": {
+      "expected": "active",
+      "severity": "fail"
+    }
   },
-
   "rns_shared_instance": {
     "reachable": {
       "expected": true,
@@ -85,7 +89,6 @@
       "note": "Verified via check_rns_shared_instance (Unix socket / TCP / UDP fallback)."
     }
   },
-
   "nomadnet": {
     "identity_matches_default_lxmf_destination": {
       "expected": true,

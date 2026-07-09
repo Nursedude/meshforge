@@ -23,10 +23,12 @@ def test_default_template_loads():
     assert "meshtastic" in t and "gateway" in t and "packages" in t
 
 
-def test_list_templates_finds_shortturbo():
+def test_list_templates_finds_longfast():
+    # Re-exported 2026-07-09 from the live reference gateway (was
+    # shortturbo_slot8; the fleet's soak-proven baseline is LONG_FAST/slot20).
     from handlers import _gateway_preflight_template as tmpl
     paths = tmpl.list_templates()
-    assert any("shortturbo" in p.name for p in paths)
+    assert any("longfast" in p.name for p in paths)
 
 
 def test_drift_all_match():

@@ -297,19 +297,32 @@ class GatewayPreflightHandler(BaseHandler):
             cfg = json.loads(cfg_path.read_text())
         except (FileNotFoundError, OSError, json.JSONDecodeError):
             return (_WARN, "gateway.json not readable — skipping NomadNet identity check", None)
-        default_dest = cfg.get("rns", {}).get("default_lxmf_destination")
-        if not default_dest:
+        raw = cfg.get("rns", {}).get("default_lxmf_destination")
+        # default_lxmf_destination may be one hash or a LIST of recipients
+        # (multi-recipient broadcast fan-out, Issue #39/#47). MEMBERSHIP is the
+        # contract: NomadNet must be one of the recipients, not the only one —
+        # exact-equality false-FAILed every multi-recipient box while the
+        # template-drift leg passed the same fact (2026-07-09 field test).
+        if isinstance(raw, str):
+            dests = [raw]
+        elif isinstance(raw, list):
+            dests = [d for d in raw if isinstance(d, str) and d]
+        else:
+            dests = []
+        if not dests:
             return (
                 _WARN,
                 "gateway.json has no default_lxmf_destination "
                 "(broadcasts won't route to NomadNet)",
                 "set rns.default_lxmf_destination to NomadNet's LXMF hash",
             )
+        shown = dests[0][:12] + ("…" if len(dests[0]) > 12 else "") \
+            + (f" (+{len(dests) - 1} more)" if len(dests) > 1 else "")
         nomadnet_log = get_real_user_home() / ".nomadnetwork" / "logfile"
         if not nomadnet_log.exists():
             return (
                 _WARN,
-                f"default_lxmf_destination={default_dest[:12]}… (NomadNet logfile missing, "
+                f"default_lxmf_destination={shown} (NomadNet logfile missing, "
                 f"cannot verify)",
                 None,
             )
@@ -322,17 +335,21 @@ class GatewayPreflightHandler(BaseHandler):
         if not matches:
             return (
                 _WARN,
-                f"default_lxmf_destination={default_dest[:12]}… "
+                f"default_lxmf_destination={shown} "
                 f"(no NomadNet 'LXMF Router ready' line found yet)",
                 "start NomadNet once with: nomadnet --rnsconfig /etc/reticulum --daemon",
             )
         nomadnet_hash = matches[-1]  # most recent
-        if nomadnet_hash == default_dest:
-            return (_OK, f"default_lxmf_destination matches NomadNet identity ({default_dest})", None)
+        if nomadnet_hash in dests:
+            if len(dests) == 1:
+                return (_OK, f"default_lxmf_destination matches NomadNet identity ({nomadnet_hash})", None)
+            return (_OK, f"NomadNet identity {nomadnet_hash} is one of "
+                         f"{len(dests)} default_lxmf_destination recipients", None)
         return (
             _FAIL,
-            f"default_lxmf_destination={default_dest} but NomadNet is on {nomadnet_hash}",
-            f"update rns.default_lxmf_destination in {cfg_path} to {nomadnet_hash}",
+            f"NomadNet is on {nomadnet_hash} but it is not among the "
+            f"{len(dests)} default_lxmf_destination recipient(s) ({shown})",
+            f"add {nomadnet_hash} to rns.default_lxmf_destination in {cfg_path}",
         )
 
     # ------------------------------------------------------------------
