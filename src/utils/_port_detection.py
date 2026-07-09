@@ -312,7 +312,7 @@ def get_udp_port_owner(port: int) -> Optional[Tuple[str, int]]:
     return None
 
 
-def check_rns_shared_instance(instance_name: str = 'default',
+def check_rns_shared_instance(instance_name: Optional[str] = None,
                                port: int = 37428) -> bool:
     """Check if the RNS shared instance is available.
 
@@ -325,7 +325,11 @@ def check_rns_shared_instance(instance_name: str = 'default',
         3. UDP port via ``check_udp_port()`` (legacy)
 
     Args:
-        instance_name: RNS instance name (default: ``'default'``).
+        instance_name: RNS instance name. None (default) derives it from the
+            box's live RNS config — a hardcoded ``'default'`` is blind to a
+            custom ``instance_name`` (the Issue #82 class; found again on the
+            2026-07-09 preflight sweep, where ``@rns/volcano ai rns`` read as
+            unreachable).
         port: Shared instance port for TCP/UDP fallback (default: 37428).
 
     Returns:
@@ -361,7 +365,7 @@ def _check_proc_net_unix(socket_name: str) -> bool:
     return False
 
 
-def get_rns_shared_instance_info(instance_name: str = 'default',
+def get_rns_shared_instance_info(instance_name: Optional[str] = None,
                                   port: int = 37428) -> dict:
     """Get detailed shared instance connectivity info for diagnostics.
 
@@ -372,9 +376,22 @@ def get_rns_shared_instance_info(instance_name: str = 'default',
         - ``detail`` (str): Human-readable connection detail.
 
     Args:
-        instance_name: RNS instance name (default: ``'default'``).
+        instance_name: RNS instance name. None (default) derives it from the
+            box's live RNS config via
+            ``ReticulumPaths.get_configured_instance_name()`` — the ONE
+            derivation chokepoint, so every caller is instance-agnostic
+            (Issue #82). Pass an explicit name only to probe a foreign
+            instance.
         port: Shared instance port for TCP/UDP fallback (default: 37428).
     """
+    if instance_name is None:
+        try:
+            from utils.paths import ReticulumPaths
+            instance_name = ReticulumPaths.get_configured_instance_name()
+        except Exception:
+            # Derivation must never break the probe — fall back to the RNS
+            # default rather than failing the availability check itself.
+            instance_name = 'default'
     # Wrap the entire probe path so a stalled rnsd-availability check
     # (most often caused by the unix-socket scan or fallback TCP connect)
     # produces a forensic. Per-tier timing (proc/net/unix scan vs.

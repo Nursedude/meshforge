@@ -117,6 +117,154 @@ def test_drift_bridge_channel_name():
     assert r_empty[0][0] == tmpl._WARN
 
 
+def test_load_templates_finds_both_radio_legs():
+    """The fleet deliberately runs TWO radio profiles (operator decision
+    2026-07-09): LONG_FAST/slot20 + SHORT_TURBO/slot8 joined by a
+    cross-preset bridge. Both must ship as templates."""
+    from handlers import _gateway_preflight_template as tmpl
+    names = [t.get("name") for t in tmpl.load_templates()]
+    assert "longfast-slot20-meshforge-bridge" in names
+    assert "shortturbo-slot8-meshforge-bridge" in names
+
+
+def _leg_template(preset, cnum, name):
+    return {
+        "name": name,
+        "meshtastic": {
+            "modem_preset": {"expected": preset, "severity": "fail"},
+            "channel_num": {"expected": cnum, "severity": "fail"},
+        },
+    }
+
+
+_LEGS = [_leg_template("LONG_FAST", 20, "longfast"),
+         _leg_template("SHORT_TURBO", 8, "shortturbo")]
+
+
+def test_best_match_picks_each_boxes_own_leg():
+    """A SHORT_TURBO/8 box must be judged against the SHORT_TURBO template
+    (0 fails), not false-failed by the LONG_FAST one — and vice versa."""
+    from handlers import _gateway_preflight_template as tmpl
+    live_st = {"meshtastic": {"modem_preset": "SHORT_TURBO", "channel_num": 8}}
+    results, chosen, total = tmpl.check_template_drift_best(live_st, _LEGS)
+    assert chosen == "shortturbo" and total == 2
+    assert all(r[0] != tmpl._FAIL for r in results)
+
+    live_lf = {"meshtastic": {"modem_preset": "LONG_FAST", "channel_num": 20}}
+    results, chosen, _ = tmpl.check_template_drift_best(live_lf, _LEGS)
+    assert chosen == "longfast"
+    assert all(r[0] != tmpl._FAIL for r in results)
+
+
+def test_best_match_no_leg_matches_stays_loud():
+    """A genuinely drifted radio (matches NO template) still reports fails."""
+    from handlers import _gateway_preflight_template as tmpl
+    live = {"meshtastic": {"modem_preset": "MEDIUM_SLOW", "channel_num": 3}}
+    results, chosen, _ = tmpl.check_template_drift_best(live, _LEGS)
+    assert chosen in ("longfast", "shortturbo")
+    assert sum(1 for r in results if r[0] == tmpl._FAIL) == 2
+
+
+def test_best_match_no_templates_is_empty():
+    from handlers import _gateway_preflight_template as tmpl
+    results, chosen, total = tmpl.check_template_drift_best({}, [])
+    assert results == [] and chosen is None and total == 0
+
+
+def test_unobservable_radio_is_warn_not_fail():
+    """A failed `meshtastic --info` leaves live values None/missing —
+    unobservable is never drift (honest_failure_modes #1/#2; the 2026-07-09
+    sweep manufactured 5 FAILs on a box whose radio query failed)."""
+    from handlers import _gateway_preflight_template as tmpl
+    template = {
+        "meshtastic": {
+            "region": {"expected": "US", "severity": "fail"},
+            "modem_preset": {"expected": "LONG_FAST", "severity": "fail"},
+            "bridge_channel_name": {"expected": "meshforge", "severity": "warn"},
+            "bridge_channel_uplink_enabled": {"expected": True, "severity": "fail"},
+        },
+    }
+    live = {"meshtastic": {}}  # --info never ran
+    results = tmpl.check_template_drift(template, live)
+    assert all(r[0] == tmpl._WARN for r in results), results
+    assert all("unobservable" in r[1] for r in results)
+
+
+def test_absent_gateway_config_is_warn_not_fail():
+    """A box with no gateway.json (never a gateway) must read 'cannot
+    verify', not 'drift' — the sweep false-FAILed every non-gateway box."""
+    from handlers import _gateway_preflight_template as tmpl
+    template = {
+        "gateway": {
+            "bridge_mode": {"expected": "mqtt_bridge", "severity": "fail"},
+            "mqtt_region": {"expected": "US", "severity": "fail"},
+        },
+    }
+    live = {"gateway": {}}
+    results = tmpl.check_template_drift(template, live)
+    assert all(r[0] == tmpl._WARN for r in results)
+
+
+def test_observed_empty_channels_still_fail():
+    """--info ran and returned NO uplinked channels: that is OBSERVED
+    absence, and keeps its loud semantics (unobservable ≠ observed-empty)."""
+    from handlers import _gateway_preflight_template as tmpl
+    template = {
+        "meshtastic": {
+            "bridge_channel_uplink_enabled": {"expected": True, "severity": "fail"},
+        },
+    }
+    live = {"meshtastic": {"bridge_channels": []}}
+    results = tmpl.check_template_drift(template, live)
+    assert results[0][0] == tmpl._FAIL
+
+
+def test_present_but_null_gateway_field_is_observed_drift():
+    """gateway.json was READ and lacks the field (key present, value None):
+    that is OBSERVED misconfiguration, not unobservable — it must FAIL.
+    (Fix re-review 2026-07-09: value-None conflated this with file-absent.)"""
+    from handlers import _gateway_preflight_template as tmpl
+    template = {"gateway": {"bridge_mode": {"expected": "mqtt_bridge", "severity": "fail"}}}
+    live = {"gateway": {"bridge_mode": None, "mqtt_channel": "meshforge"}}
+    results = tmpl.check_template_drift(template, live)
+    assert results[0][0] == tmpl._FAIL
+    assert "unobservable" not in results[0][1]
+
+
+def test_observed_false_still_fails():
+    """An observed wrong value (not None) keeps failing — the unobservable
+    guard must not soften real drift."""
+    from handlers import _gateway_preflight_template as tmpl
+    template = {"gateway": {"bridge_mode": {"expected": "mqtt_bridge", "severity": "fail"}}}
+    live = {"gateway": {"bridge_mode": "rns_transport"}}
+    results = tmpl.check_template_drift(template, live)
+    assert results[0][0] == tmpl._FAIL
+
+
+def test_shared_instance_probe_derives_instance_name(monkeypatch):
+    """Issue #82 class: with no explicit instance_name the probe must derive
+    the box's configured one (e.g. 'volcano ai rns' → @rns/volcano ai rns),
+    never assume 'default' — the 2026-07-09 sweep read a healthy custom-named
+    rnsd as unreachable."""
+    from utils import _port_detection as pd
+    from utils.paths import ReticulumPaths
+    seen = {}
+
+    def fake_proc_check(socket_name):
+        seen["socket"] = socket_name
+        return True
+
+    monkeypatch.setattr(pd, "_check_proc_net_unix", fake_proc_check)
+    monkeypatch.setattr(ReticulumPaths, "get_configured_instance_name",
+                        classmethod(lambda cls: "volcano ai rns"))
+    info = pd.get_rns_shared_instance_info()
+    assert info["available"] is True
+    assert seen["socket"] == "rns/volcano ai rns"
+    # Explicit name still wins over derivation.
+    pd.get_rns_shared_instance_info("other")
+    assert seen["socket"] == "rns/other"
+
+
 def test_export_round_trip(tmp_path):
     """Exporting and re-parsing a live state works."""
     from handlers import _gateway_preflight_template as tmpl

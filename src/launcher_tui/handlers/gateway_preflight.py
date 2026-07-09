@@ -130,14 +130,22 @@ class GatewayPreflightHandler(BaseHandler):
             print()
 
     def _run_template_drift(self) -> List[Tuple[str, str, Optional[str]]]:
-        """Load default template, capture live state, return drift results."""
+        """Judge live state against the built-in templates (best match wins).
+
+        The fleet deliberately runs multiple radio profiles (LONG_FAST/slot20
+        and SHORT_TURBO/slot8 legs joined by a cross-preset bridge), so each
+        box is judged against whichever template it matches best — a single
+        default template false-failed one leg or the other (2026-07-09)."""
         from handlers import _gateway_preflight_template as tmpl_mod
-        template = tmpl_mod.load_default_template()
-        if template is None:
-            return []
         info_text = tmpl_mod.run_meshtastic_info()
         live = tmpl_mod.capture_live_state(info_text)
-        return tmpl_mod.check_template_drift(template, live)
+        results, chosen, total = tmpl_mod.check_template_drift_best(live)
+        if not results:
+            return []
+        if total > 1:
+            results.insert(0, (_OK, f"judged against template '{chosen}' "
+                                    f"(best match of {total})", None))
+        return results
 
     def _run_export(self):
         """Snapshot current live state as a JSON template for the fleet."""

@@ -54,7 +54,7 @@ class TestZombieSharedInstance:
     def test_rnsd_running_no_socket_returns_diagnostic(
             self, mock_unix, mock_tcp, mock_udp, mock_proc):
         """When rnsd runs but no shared instance found, include diagnostic."""
-        result = get_rns_shared_instance_info()
+        result = get_rns_shared_instance_info('default')
 
         assert result['available'] is False
         assert result['method'] == 'none'
@@ -68,7 +68,7 @@ class TestZombieSharedInstance:
     def test_rnsd_not_running_no_diagnostic(
             self, mock_unix, mock_tcp, mock_udp, mock_proc):
         """When rnsd is not running, no zombie diagnostic needed."""
-        result = get_rns_shared_instance_info()
+        result = get_rns_shared_instance_info('default')
 
         assert result['available'] is False
         assert result['method'] == 'none'
@@ -77,7 +77,7 @@ class TestZombieSharedInstance:
     @patch(f'{_PD}._check_proc_net_unix', return_value=True)
     def test_socket_available_no_zombie_check(self, mock_unix):
         """When shared instance is available, skip zombie detection."""
-        result = get_rns_shared_instance_info()
+        result = get_rns_shared_instance_info('default')
 
         assert result['available'] is True
         assert result['method'] == 'unix_socket'
@@ -97,7 +97,7 @@ class TestZombieDetection:
     @patch(f'{_PD}._check_proc_net_unix', return_value=True)
     def test_socket_exists_returns_available(self, mock_unix, mock_tcp, mock_udp):
         """Socket in /proc/net/unix => shared instance available."""
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert info['available'] is True
         assert info['method'] == 'unix_socket'
         assert '@rns/default' in info['detail']
@@ -107,7 +107,7 @@ class TestZombieDetection:
     @patch(f'{_PD}._check_proc_net_unix', return_value=False)
     def test_no_socket_no_ports_returns_unavailable(self, mock_unix, mock_tcp, mock_udp):
         """No socket, no ports => shared instance not available."""
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert info['available'] is False
         assert info['method'] == 'none'
 
@@ -116,7 +116,7 @@ class TestZombieDetection:
     @patch(f'{_PD}._check_proc_net_unix', return_value=False)
     def test_tcp_fallback_when_no_socket(self, mock_unix, mock_tcp, mock_udp):
         """TCP port listening but no unix socket => fallback to TCP."""
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert info['available'] is True
         assert info['method'] == 'tcp'
 
@@ -125,7 +125,7 @@ class TestZombieDetection:
     @patch(f'{_PD}._check_proc_net_unix', return_value=False)
     def test_udp_fallback_when_no_socket_no_tcp(self, mock_unix, mock_tcp, mock_udp):
         """UDP port open, no socket, no TCP => fallback to UDP."""
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert info['available'] is True
         assert info['method'] == 'udp'
 
@@ -134,7 +134,7 @@ class TestZombieDetection:
     @patch(f'{_PD}._check_proc_net_unix', return_value=False)
     def test_detail_includes_all_checked_methods(self, mock_unix, mock_tcp, mock_udp):
         """When unavailable, detail should list what was checked."""
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert '@rns/default' in info['detail']
         assert 'TCP' in info['detail']
         assert 'UDP' in info['detail']
@@ -144,7 +144,7 @@ class TestZombieDetection:
     @patch(f'{_PD}._check_proc_net_unix', return_value=True)
     def test_unix_socket_takes_priority_over_tcp(self, mock_unix, mock_tcp, mock_udp):
         """Unix socket should win even if TCP port is also open."""
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert info['method'] == 'unix_socket'
 
     @patch(f'{_PD}._check_proc_net_unix', return_value=True)
@@ -437,7 +437,7 @@ class TestRnsdHungDuringInit:
         mock_run.return_value = MagicMock(returncode=0, stdout="1234\n")
         assert check_process_running('rnsd') is True
 
-        info = get_rns_shared_instance_info()
+        info = get_rns_shared_instance_info('default')
         assert info['available'] is False
 
     @patch(f'{_PD}.check_udp_port', return_value=False)
@@ -447,10 +447,10 @@ class TestRnsdHungDuringInit:
         """Simulate rnsd finishing init: socket absent then present."""
         mock_unix.side_effect = [False, True]
 
-        info1 = get_rns_shared_instance_info()
+        info1 = get_rns_shared_instance_info('default')
         assert info1['available'] is False
 
-        info2 = get_rns_shared_instance_info()
+        info2 = get_rns_shared_instance_info('default')
         assert info2['available'] is True
         assert info2['method'] == 'unix_socket'
 

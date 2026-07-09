@@ -65,6 +65,49 @@ def list_templates() -> List[Path]:
     return sorted(TEMPLATE_DIR.glob("*.json"))
 
 
+def load_templates() -> List[Dict[str, Any]]:
+    """Load every parseable built-in template (unparseable ones logged, skipped)."""
+    out: List[Dict[str, Any]] = []
+    for path in list_templates():
+        try:
+            out.append(json.loads(path.read_text()))
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Failed to load template %s: %s", path, e)
+    return out
+
+
+def check_template_drift_best(
+    live: Dict[str, Any],
+    templates: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[List[Tuple[str, str, Optional[str]]], Optional[str], int]:
+    """Judge live state against EVERY template; report the best match.
+
+    The fleet deliberately runs more than one radio profile (e.g. a
+    LONG_FAST/slot20 leg and a SHORT_TURBO/slot8 leg joined by moc's
+    cross-preset bridge — operator decision, 2026-07-09), so a single
+    default template structurally false-fails whichever leg it wasn't
+    exported from. Each box is judged against the template it matches
+    best (fewest fails, then fewest warns); a box matching NO template
+    still reports the closest one's failures loudly.
+
+    Returns (results, chosen_template_name, template_count);
+    ([], None, 0) when no templates exist.
+    """
+    if templates is None:
+        templates = load_templates()
+    if not templates:
+        return [], None, 0
+    best = None
+    for template in templates:
+        results = check_template_drift(template, live)
+        fails = sum(1 for s, _, _ in results if s == _FAIL)
+        warns = sum(1 for s, _, _ in results if s == _WARN)
+        name = str(template.get("name", "unnamed"))
+        if best is None or (fails, warns) < (best[0], best[1]):
+            best = (fails, warns, results, name)
+    return best[2], best[3], len(templates)
+
+
 # ---------------------------------------------------------------------------
 # Live state capture (shared between drift-check and export)
 # ---------------------------------------------------------------------------
@@ -221,6 +264,35 @@ def _check_one(
 
     actual = _resolve_live_value(category, field, live)
     label = f"{category}.{field}"
+
+    # UNOBSERVABLE is never drift (honest_failure_modes #1/#2): a failed
+    # radio query or an absent gateway.json leaves live values None/missing,
+    # and comparing None against an expectation manufactured FAILs on every
+    # non-gateway box (2026-07-09 fleet sweep). Categories below with their
+    # own branches (packages/services/rns_shared_instance/nomadnet) always
+    # OBSERVE their values, so they keep their loud failure semantics.
+    if category == "meshtastic" and field in {
+        "bridge_channel_name",
+        "bridge_channel_uplink_enabled",
+        "bridge_channel_downlink_enabled",
+    } and "bridge_channels" not in (live.get("meshtastic") or {}):
+        # --info never ran: channel data unobservable (an OBSERVED empty
+        # list — info ran, nothing uplinked — still fails below).
+        return (_WARN, f"{label}: unobservable — cannot verify "
+                       f"(meshtastic --info unavailable)", None)
+    if category not in {"packages", "services", "rns_shared_instance",
+                        "nomadnet"} and field not in {
+        "bridge_channel_name", "bridge_channel_uplink_enabled",
+        "bridge_channel_downlink_enabled",
+    } and field not in (live.get(category) or {}):
+        # KEY-presence, not value-None: capture_live_state omits keys it could
+        # not observe (no --info, no gateway.json) but stores an explicit None
+        # when the source was READ and the field was missing — that is
+        # OBSERVED drift and must keep failing below (fix re-review,
+        # 2026-07-09: `actual is None` conflated the two and silently
+        # downgraded a misconfigured gateway.json to 'unobservable').
+        return (_WARN, f"{label}: unobservable — cannot verify "
+                       f"(expected {expected!r})", None)
 
     # Package version checks use min_version semantics
     if category == "packages":

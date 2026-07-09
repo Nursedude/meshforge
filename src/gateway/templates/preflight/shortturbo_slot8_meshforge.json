@@ -1,7 +1,7 @@
 {
   "$schema_version": 1,
-  "name": "longfast-slot20-meshforge-bridge",
-  "description": "MeshForge NOC bridge, LONG_FAST leg: Meshtastic HAT on US/LONG_FAST/channel_num=20 ↔ MeshForge Gateway (mqtt_bridge mode, 'meshforge' channel) ↔ RNS/NomadNet. Exported 2026-07-09 from the live reference gateway. The fleet deliberately runs TWO radio profiles (this + shortturbo_slot8) joined by a cross-preset bridge — the drift check judges each box against its best-matching template.",
+  "name": "shortturbo-slot8-meshforge-bridge",
+  "description": "MeshForge NOC bridge, SHORT_TURBO leg: Meshtastic HAT on US/SHORT_TURBO/channel_num=8 ↔ MeshForge Gateway (mqtt_bridge mode, 'meshforge' channel) ↔ RNS/NomadNet. First validated end-to-end 2026-04-18 (Issue #33); re-validated 2026-07-09 live on the SHORT_TURBO production gateway. The fleet deliberately runs TWO radio profiles (this + longfast_slot20) joined by a cross-preset bridge — the drift check judges each box against its best-matching template.",
   "maintainer": "MeshForge",
   "validated_date": "2026-07-09",
   "validated_on": "meshforge-reference-fleet",
@@ -13,11 +13,11 @@
       "note": "Regulatory region. Must match your jurisdiction; don't blindly copy across sites."
     },
     "modem_preset": {
-      "expected": "LONG_FAST",
+      "expected": "SHORT_TURBO",
       "severity": "fail"
     },
     "channel_num": {
-      "expected": 20,
+      "expected": 8,
       "severity": "fail",
       "note": "All nodes on this mesh must use the same slot + preset."
     },
