@@ -137,9 +137,15 @@ class GatewayPreflightHandler(BaseHandler):
         box is judged against whichever template it matches best — a single
         default template false-failed one leg or the other (2026-07-09)."""
         from handlers import _gateway_preflight_template as tmpl_mod
+        templates = tmpl_mod.load_templates()
+        if not templates:
+            # No templates installed: return BEFORE touching the radio — the
+            # capture's `meshtastic --info` is a PhoneAPI query (#17 class)
+            # and must not run when there is nothing to judge against.
+            return []
         info_text = tmpl_mod.run_meshtastic_info()
         live = tmpl_mod.capture_live_state(info_text)
-        results, chosen, total = tmpl_mod.check_template_drift_best(live)
+        results, chosen, total = tmpl_mod.check_template_drift_best(live, templates)
         if not results:
             return []
         if total > 1:
