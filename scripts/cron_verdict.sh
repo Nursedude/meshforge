@@ -20,10 +20,18 @@
 #   $3+ message        optional free text
 #
 # Log shape: <ISO-8601-UTC> <name> <STATUS> <message>
-# Self-truncating to the last 1000 lines (SD-card friendly).
+# Self-truncating (SD-card friendly) — but retention is PER-NAME aware: the
+# newest KEEP_PER_NAME lines of every cron survive truncation even when
+# high-churn crons (5-min cadence) push them past MAX_LINES. Without this, a
+# daily cron's single verdict scrolled out ~23.5h after its run and
+# probe_cron_verdict_stale (Issue #78) read healthy crons as "silent: never"
+# — the reader/writer retention drift found 2026-07-09 (the retention floor
+# must exceed the slowest wired cadence x the probe's CADENCE_MULT).
+# Bound: MAX_LINES + (#names x KEEP_PER_NAME).
 
 LOG="${CRON_VERDICT_LOG:-$HOME/cron_verdicts.log}"
 MAX_LINES=1000
+KEEP_PER_NAME=30
 
 name="${1:?usage: cron_verdict.sh <name> <exit-code|OK|FAIL|CONCERN> [msg]}"
 raw="${2:?missing status}"
@@ -39,10 +47,21 @@ esac
 
 printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$status" "$msg" >> "$LOG"
 
-# Truncate (atomic-ish; losing a race here only costs old lines).
+# Truncate (atomic-ish; losing a race here only costs old lines). Keep the
+# newest MAX_LINES overall PLUS the newest KEEP_PER_NAME lines of every name,
+# so a slow-cadence cron's verdicts survive high-churn neighbors.
 lines=$(wc -l < "$LOG" 2>/dev/null || echo 0)
 if [ "$lines" -gt "$MAX_LINES" ]; then
     tmp=$(mktemp "${LOG}.XXXXXX") || exit 0
-    tail -n "$MAX_LINES" "$LOG" > "$tmp" && mv "$tmp" "$LOG"
+    awk -v max="$MAX_LINES" -v keep="$KEEP_PER_NAME" '
+        { line[NR] = $0; nm[NR] = $2 }
+        END {
+            start = NR - max + 1; if (start < 1) start = 1
+            for (i = NR; i >= 1; i--) {
+                seen[nm[i]]++
+                if (i >= start || seen[nm[i]] <= keep) keep_line[i] = 1
+            }
+            for (i = 1; i <= NR; i++) if (i in keep_line) print line[i]
+        }' "$LOG" > "$tmp" && mv "$tmp" "$LOG"
 fi
 exit 0

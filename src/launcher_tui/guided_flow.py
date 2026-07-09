@@ -100,7 +100,6 @@ def run_script_action(
     *,
     timeout: int = 120,
     requires_admin: bool = True,
-    cwd: Optional[str] = None,
     env: Optional[dict] = None,
 ):
     """Wrap an idempotent shell/CLI backend as a ``RemediationAction``.
@@ -121,7 +120,7 @@ def run_script_action(
         try:
             r = subprocess.run(
                 argv, capture_output=True, text=True,
-                timeout=timeout, cwd=cwd, env=env,
+                timeout=timeout, env=env,
             )
         except subprocess.TimeoutExpired:
             return (False, f"{argv[0]} timed out after {timeout}s")
@@ -196,18 +195,30 @@ class GuidedFlow:
         path = self._state_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            from utils.paths import atomic_write_text
+            from utils.paths import atomic_write_text, chown_to_operator
             atomic_write_text(path, json.dumps(state, indent=2, sort_keys=True))
+            # The TUI's documented primary launch is `sudo ...`, so this file
+            # (and the wizard_state dir) may be root-created inside the
+            # OPERATOR's home — hand it back or later Viewer-mode runs can
+            # neither resume nor save (chown_to_operator's own contract).
+            chown_to_operator(path.parent, path)
         except OSError as e:
             # Persistence failure must be visible, not silently swallowed
             # (honest_failure_modes #9) — but must not crash the flow.
             logger.error("guided_flow %s: could not save state: %s", self.flow_id, e)
 
-    def clear_state(self) -> None:
+    def clear_state(self) -> bool:
+        """Remove persisted state. Returns False (and logs) when the file
+        exists but could not be removed — the caller must not pretend a
+        "start over" happened (honest_failure_modes #9)."""
         try:
             self._state_path().unlink()
-        except (OSError, FileNotFoundError):
-            pass
+            return True
+        except FileNotFoundError:
+            return True
+        except OSError as e:
+            logger.error("guided_flow %s: could not clear state: %s", self.flow_id, e)
+            return False
 
     # -- helpers -----------------------------------------------------------
 
@@ -216,10 +227,16 @@ class GuidedFlow:
 
     def _first_unfinished_index(self, state: dict) -> int:
         completed = state.get("_completed", {})
+        verify = state.get("verify", {})
         for i, step in enumerate(self.steps):
             if completed.get(step.key) != StepStatus.DONE.value:
                 return i
-        return len(self.steps)  # all done
+            # A DONE step whose verify FAILED is not finished — resume must
+            # re-offer it, not silently skip past an unconfirmed step.
+            v = verify.get(step.key)
+            if v is not None and not v.get("ok"):
+                return i
+        return len(self.steps)  # all done (and verified where checked)
 
     def _safe_run(self, step: WizardStep, ctx, state: dict) -> StepResult:
         try:
@@ -302,8 +319,17 @@ class GuidedFlow:
             if choice == "cancel" or choice is None:
                 return state
             if choice == "restart":
-                self.clear_state()
+                cleared = self.clear_state()
                 state = self.load_state()
+                if not cleared and state.get("_completed"):
+                    # The old state survived the unlink — say so instead of
+                    # silently resuming what the operator asked to discard.
+                    ctx.dialog.msgbox(
+                        self.title,
+                        "Saved progress could not be cleared (see log) — "
+                        "the previous state is still loaded. Steps shown as "
+                        "done are from the OLD run.",
+                    )
             else:
                 start_idx = resume_from
 
@@ -326,6 +352,9 @@ class GuidedFlow:
                 continue
             if nav == NAV_SKIP:
                 self._record(state, step, StepStatus.SKIPPED)
+                # A stale verify record from an earlier DONE run must not
+                # survive a skip — the summary would show 'skipped [verified]'.
+                state.get("verify", {}).pop(step.key, None)
                 self.save_state(state)
                 idx += 1
                 continue
@@ -335,6 +364,10 @@ class GuidedFlow:
             if result.data:
                 state.setdefault("data", {}).update(result.data)
             self._record(state, step, result.status)
+            if result.status != StepStatus.DONE:
+                # Same staleness rule for a re-run that failed: drop the old
+                # verify record so 'failed [verified]' can never render.
+                state.get("verify", {}).pop(step.key, None)
 
             if step.verify is not None and result.status == StepStatus.DONE:
                 vok, vmsg = self._safe_verify(step, ctx, state)

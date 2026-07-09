@@ -66,16 +66,16 @@ class GatewayPreflightHandler(BaseHandler):
     # Main flow
     # ------------------------------------------------------------------
 
-    def _run_preflight(self):
-        from backend import clear_screen
-        clear_screen()
+    def collect_results(self) -> Tuple[List[Tuple[str, str, Optional[str]]],
+                                       List[Tuple[str, str, Optional[str]]]]:
+        """Run every pre-flight check; return (core_results, template_results),
+        each a list of (status, message, fix-hint) tuples.
 
-        print(f"\n{_BOLD}{_CYAN}Gateway Bridge Pre-Flight Check{_RESET}\n")
-        print(f"{_CYAN}{'─' * 60}{_RESET}\n")
-
+        SSOT check inventory — shared by this handler's menu run AND the Gateway
+        Wizard's step 5. Add new checks HERE so both consumers get them; a
+        hand-copied call list in a second consumer is exactly the drift that let
+        the wizard silently omit the template-drift check (2026-07-09 review)."""
         results: List[Tuple[str, str, Optional[str]]] = []
-        # Each entry: (status, message, optional fix hint)
-
         results.append(self._check_lxmf())
         results.append(self._check_meshtasticd())
         results.append(self._check_rnsd())
@@ -84,6 +84,16 @@ class GatewayPreflightHandler(BaseHandler):
         results.append(self._check_gateway_config_channel(uplinked_names))
         results.append(self._check_gateway_identity())
         results.append(self._check_nomadnet_identity_match())
+        return results, self._run_template_drift()
+
+    def _run_preflight(self):
+        from backend import clear_screen
+        clear_screen()
+
+        print(f"\n{_BOLD}{_CYAN}Gateway Bridge Pre-Flight Check{_RESET}\n")
+        print(f"{_CYAN}{'─' * 60}{_RESET}\n")
+
+        results, template_results = self.collect_results()
 
         for status, msg, fix in results:
             print(f"  {status}  {msg}")
@@ -92,7 +102,6 @@ class GatewayPreflightHandler(BaseHandler):
             print()
 
         # Template drift — if a known-good template is present, compare.
-        template_results = self._run_template_drift()
         if template_results:
             print(f"\n{_BOLD}{_CYAN}Template Drift Check{_RESET}")
             print(f"{_CYAN}{'─' * 60}{_RESET}\n")

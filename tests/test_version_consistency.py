@@ -113,6 +113,81 @@ class TestCheck(unittest.TestCase):
             self.assertTrue(problems)
 
 
+class TestChangelogConsumer(unittest.TestCase):
+    """The CHANGELOG was one of the four drifted legs (commit 701e4b87) but the
+    original guard had no consumer for it — that leg could recur unguarded
+    (2026-07-09 review)."""
+
+    def test_changelog_top_heading_read(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "CHANGELOG.md",
+                   "# Changelog\n\n## [0.6.2-beta] - 2026-06-12\n\n### Added\n")
+            self.assertEqual(vcc.read_changelog_version(d), "0.6.2-beta")
+
+    def test_unreleased_section_skipped(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "CHANGELOG.md",
+                   "# Changelog\n\n## [Unreleased]\n\n## [0.6.1-beta] - 2026-06-01\n")
+            self.assertEqual(vcc.read_changelog_version(d), "0.6.1-beta")
+
+    def test_absent_changelog_is_none(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertIsNone(vcc.read_changelog_version(d))
+
+    def test_changelog_drift_is_reported(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "src/__version__.py", '__version__ = "0.6.2-beta"\n')
+            _write(d, "pyproject.toml", '[project]\nname="x"\nversion = "0.6.2-beta"\n')
+            _write(d, "CHANGELOG.md", "## [0.5.4-beta] - 2026-01-01\n")
+            ssot, problems = vcc.check(d)
+            self.assertEqual(ssot, "0.6.2-beta")
+            self.assertEqual(len(problems), 1)
+            self.assertIn("CHANGELOG", problems[0])
+
+    def test_changelog_agreeing_is_clean(self):
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "src/__version__.py", '__version__ = "0.6.2-beta"\n')
+            _write(d, "pyproject.toml", '[project]\nname="x"\nversion = "0.6.2-beta"\n')
+            _write(d, "CHANGELOG.md", "## [Unreleased]\n\n## [0.6.2-beta] - 2026-06-12\n")
+            ssot, problems = vcc.check(d)
+            self.assertEqual(problems, [])
+
+
+class TestUnreadableIsNotAbsent(unittest.TestCase):
+    """honest_failure_modes #1: a permission-denied consumer must fail loud,
+    never silently read as 'not declared here' (2026-07-09 review)."""
+
+    def test_unreadable_pyproject_fails_loud(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file modes")
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "src/__version__.py", '__version__ = "0.6.2-beta"\n')
+            _write(d, "pyproject.toml", '[project]\nname="x"\nversion = "0.5.0"\n')
+            _write(d, "README.md",
+                   "![V](https://img.shields.io/badge/version-0.6.2--beta-blue.svg)\n")
+            os.chmod(os.path.join(d, "pyproject.toml"), 0o000)
+            try:
+                ssot, problems = vcc.check(d)
+            finally:
+                os.chmod(os.path.join(d, "pyproject.toml"), 0o644)
+            self.assertEqual(ssot, "0.6.2-beta")
+            self.assertTrue(any("unreadable" in p for p in problems))
+
+    def test_unreadable_readme_fails_loud(self):
+        if os.geteuid() == 0:
+            self.skipTest("root ignores file modes")
+        with tempfile.TemporaryDirectory() as d:
+            _write(d, "src/__version__.py", '__version__ = "0.6.2-beta"\n')
+            _write(d, "pyproject.toml", '[project]\nname="x"\nversion = "0.6.2-beta"\n')
+            _write(d, "README.md", "x\n")
+            os.chmod(os.path.join(d, "README.md"), 0o000)
+            try:
+                ssot, problems = vcc.check(d)
+            finally:
+                os.chmod(os.path.join(d, "README.md"), 0o644)
+            self.assertTrue(any("unreadable" in p for p in problems))
+
+
 class TestAutoDetectSSOT(unittest.TestCase):
     """One byte-identical guard must find the SSOT wherever a repo keeps it."""
 

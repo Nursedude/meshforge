@@ -182,6 +182,70 @@ class TestCorruptState(unittest.TestCase):
             self.assertEqual(loaded["_completed"], {})  # not a spurious "done"
 
 
+class TestResumeHonesty(unittest.TestCase):
+    """2026-07-09 review: resume must not skip past a DONE-but-unverified step,
+    and stale [verified] records must not survive a failed re-run or a skip."""
+
+    def test_resume_reoffers_done_but_unverified_step(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            steps = [_step("a", StepResult.done(),
+                           verify=lambda ctx, st: (False, "service crashlooping")),
+                     _step("b", StepResult.done())]
+            flow = _flow(steps, tmp)
+            # First run: a runs DONE but verify FAILS; operator quits.
+            flow.run(FakeCtx(FakeDialog(menu=[NAV_RUN, NAV_QUIT], yesno=[True])))
+            state = flow.load_state()
+            self.assertEqual(state["_completed"]["a"], "done")
+            self.assertFalse(state["verify"]["a"]["ok"])
+            # The unverified step counts as UNFINISHED for resume.
+            self.assertEqual(flow._first_unfinished_index(state), 0)
+
+    def test_all_done_and_verified_resumes_past_end(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            steps = [_step("a", StepResult.done(),
+                           verify=lambda ctx, st: (True, "observed"))]
+            flow = _flow(steps, tmp)
+            state = flow.run(FakeCtx(FakeDialog(menu=[NAV_RUN])))
+            self.assertEqual(flow._first_unfinished_index(state), 1)
+
+    def test_failed_rerun_clears_stale_verified_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outcomes = [StepResult.done(), StepResult.failed("second run broke")]
+            step_a = WizardStep("a", "A", describe=lambda c, s: "x",
+                                run=lambda c, s: outcomes.pop(0),
+                                verify=lambda c, s: (True, "ok"), optional=True)
+            step_b = _step("b", StepResult.done())
+            # a:RUN (done, verified) -> b:BACK -> a:RUN (fails, stays) ->
+            # a:SKIP -> b:RUN. 'failed [verified]' must never render.
+            dlg = FakeDialog(menu=[NAV_RUN, NAV_BACK, NAV_RUN, NAV_SKIP, NAV_RUN])
+            state = _flow([step_a, step_b], tmp).run(FakeCtx(dlg))
+            self.assertNotIn("a", state.get("verify", {}))
+
+    def test_skip_clears_stale_verified_record(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            step_a = _step("a", StepResult.done(),
+                           verify=lambda c, s: (True, "ok"))
+            step_b = _step("b", StepResult.done())
+            # a:RUN (done, verified) -> b:BACK -> a:SKIP -> b:RUN.
+            dlg = FakeDialog(menu=[NAV_RUN, NAV_BACK, NAV_SKIP, NAV_RUN])
+            state = _flow([step_a, step_b], tmp).run(FakeCtx(dlg))
+            self.assertEqual(state["_completed"]["a"], "skipped")
+            self.assertNotIn("a", state.get("verify", {}))
+
+    def test_clear_state_failure_is_surfaced_on_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            steps = [_step("a", StepResult.done()), _step("b", StepResult.done())]
+            flow = _flow(steps, tmp)
+            flow.run(FakeCtx(FakeDialog(menu=[NAV_RUN, NAV_QUIT], yesno=[True])))
+            # Make clear_state fail while load still returns the old state.
+            dlg = FakeDialog(menu=["restart", NAV_QUIT], yesno=[True])
+            ctx = FakeCtx(dlg)
+            import unittest.mock as um
+            with um.patch.object(flow, "clear_state", return_value=False):
+                flow.run(ctx)
+            self.assertTrue(any("could not be cleared" in t for _, t in dlg.msgboxes))
+
+
 class TestRunScriptAction(unittest.TestCase):
     def test_success_rc0(self):
         act = run_script_action("echo", "prints", ["true"], requires_admin=False, timeout=10)

@@ -660,13 +660,19 @@ def check_context_doc_sizes(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
-def check_version_consistency(repo_root: str = '.') -> List[LintIssue]:
+def check_version_consistency(repo_root: Optional[str] = None) -> List[LintIssue]:
     """MF024: the version SSOT (src/__version__.py) must agree with pyproject +
-    README badge/heading. Prevents the 4-way version drift the 2026-07-07 audit
-    found. Delegates to scripts/version_consistency_check.py (the standalone,
-    also runnable on its own and mirrored to sister repos)."""
+    README badge/heading + CHANGELOG. Prevents the 4-way version drift the
+    2026-07-07 audit found. Delegates to scripts/version_consistency_check.py
+    (the standalone, also runnable on its own and mirrored to sister repos).
+
+    repo_root defaults to THIS script's repo (not the cwd — a cwd-relative
+    default made `lint.py --all` from any other directory emit a false hard
+    ERROR, 2026-07-09 review)."""
     issues: List[LintIssue] = []
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    if repo_root is None:
+        repo_root = os.path.dirname(script_dir)
     if script_dir not in sys.path:
         sys.path.insert(0, script_dir)
     try:

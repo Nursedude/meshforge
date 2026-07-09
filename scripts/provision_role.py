@@ -519,6 +519,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("--set-role", help="write role into deployment.json and exit")
     p.add_argument("--print-role", action="store_true",
                    help="print this box's assigned role and exit (machine-readable)")
+    p.add_argument("--print-unit-state", metavar="UNIT",
+                   help="print the effective desired state of one unit for this "
+                        "box's role (enabled|disabled|absent|unspecified, or "
+                        "waived:<state> for a reasoned deployment.json override) "
+                        "and exit (machine-readable; combine with --role)")
     p.add_argument("--fleet-check", action="store_true",
                    help="gather roles across fleet_hosts and validate singleton invariants")
     args = p.parse_args(argv)
@@ -573,6 +578,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"ERROR: unknown role '{role}'. available: {', '.join(catalog['roles'])}",
               file=sys.stderr)
         return 2
+
+    if args.print_unit_state:
+        # Machine-readable single token for other tooling (e.g. the Gateway
+        # Wizard gates its service-install step on this so it can't install a
+        # unit the box's role declares disabled/absent). Effective state =
+        # role's service map after inheritance, with a REASONED
+        # deployment.json override surfaced as waived:<state> (an unexplained
+        # override is not honored, matching plan()).
+        unit = args.print_unit_state
+        ov = read_overrides().get(unit)
+        if isinstance(ov, dict) and (ov.get("reason") or "").strip():
+            print(f"waived:{ov.get('state', '?')}")
+        else:
+            print(role_def.get("services", {}).get(unit, "unspecified"))
+        return 0
 
     if role_def.get("provisioned_by"):
         print(f"role '{role}' is EXTERNAL (provisioned_by: {role_def['provisioned_by']}) "

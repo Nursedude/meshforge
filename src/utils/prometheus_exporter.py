@@ -100,9 +100,27 @@ _shared_collector = None
 
 # Cap per-node label cardinality on the env/air-quality metric loops (emit for
 # at most the N most-recently-seen sensor nodes). node_id is attacker-
-# influenceable (any mesh participant), so an unbounded loop churns the TSDB —
-# matches the SNR/RSSI [:100] discipline. (QA deferred low/perf, 2026-07-06.)
+# influenceable (any mesh participant), so an unbounded loop churns the TSDB.
+# (The SNR/RSSI families use a separate limit=100 at query time.)
 _PER_NODE_LABEL_CAP = 200
+_capped_families_logged: set = set()
+
+
+def _cap_recent(nodes, family: str):
+    """Newest-N by last_seen (the per-node label cap), shared by the env and
+    air-quality families. When the cap actually drops nodes, log once per
+    family — a capped node's series vanishing must not be silent, since
+    absence is indistinguishable from sensor-offline (honest_failure_modes #9)."""
+    nodes = sorted(nodes or [], key=lambda n: getattr(n, "last_seen", 0) or 0,
+                   reverse=True)
+    if len(nodes) > _PER_NODE_LABEL_CAP and family not in _capped_families_logged:
+        _capped_families_logged.add(family)
+        logger.info(
+            "prometheus %s: %d sensor nodes exceed the per-node label cap %d — "
+            "emitting the newest %d only (older nodes' series stop, which reads "
+            "like sensor-offline)", family, len(nodes), _PER_NODE_LABEL_CAP,
+            _PER_NODE_LABEL_CAP)
+    return nodes[:_PER_NODE_LABEL_CAP]
 
 
 def _get_shared_collector():
@@ -127,16 +145,19 @@ def _collect_node_geojson() -> Dict[str, Any]:
         return {}
     with _node_cache_lock:
         now = time.time()
-        if now - _node_geojson_cache_time < _NODE_CACHE_TTL and _node_geojson_cache:
+        # Time-only check (no truthiness): an empty-but-fresh result and a
+        # just-failed collect both hold for the TTL. Without this, failing or
+        # empty collects re-ran serially under the lock on EVERY scrape —
+        # worse than pre-lock behavior when rnsd is wedged (2026-07-09 review).
+        if now - _node_geojson_cache_time < _NODE_CACHE_TTL:
             return _node_geojson_cache
         try:
             geojson = _get_shared_collector().collect(max_age_seconds=60)
             _node_geojson_cache = geojson
-            _node_geojson_cache_time = now
-            return geojson
         except Exception as e:
             logger.debug(f"MapDataCollector error: {e}")
-            return _node_geojson_cache if _node_geojson_cache else {}
+        _node_geojson_cache_time = now
+        return _node_geojson_cache if _node_geojson_cache else {}
 
 
 class PrometheusExporter:
@@ -638,11 +659,8 @@ class PrometheusExporter:
                 return lines
 
             # Environment sensors (BME280/BME680/BMP280)
-            env_nodes = subscriber.get_nodes_with_environment_metrics()
-            env_nodes = sorted(
-                env_nodes or [], key=lambda n: getattr(n, "last_seen", 0) or 0,
-                reverse=True,
-            )[:_PER_NODE_LABEL_CAP]
+            env_nodes = _cap_recent(
+                subscriber.get_nodes_with_environment_metrics(), "env")
             if env_nodes:
                 # Temperature
                 temp_nodes = [n for n in env_nodes if n.temperature is not None]
@@ -689,11 +707,8 @@ class PrometheusExporter:
                         ))
 
             # Air quality sensors (PMSA003I, SCD4X)
-            aq_nodes = subscriber.get_nodes_with_air_quality()
-            aq_nodes = sorted(
-                aq_nodes or [], key=lambda n: getattr(n, "last_seen", 0) or 0,
-                reverse=True,
-            )[:_PER_NODE_LABEL_CAP]
+            aq_nodes = _cap_recent(
+                subscriber.get_nodes_with_air_quality(), "air_quality")
             if aq_nodes:
                 pm25_nodes = [n for n in aq_nodes if n.pm25_standard is not None]
                 if pm25_nodes:

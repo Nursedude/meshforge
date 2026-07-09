@@ -755,23 +755,29 @@ class UnifiedNodeTracker:
 
             # Also save an operator-owned cache for cross-process web-API access.
             # Under ~/.cache/meshforge (not world-writable /tmp) so another local
-            # user can't pre-create it with hostile node data; keep the symlink /
-            # O_NOFOLLOW guard as defense-in-depth. (QA deferred low/perf.)
+            # user can't pre-create it with hostile node data. atomic_write_text
+            # (mkstemp 0600 + fsync + replace) is symlink-safe AND atomic — the
+            # old O_TRUNC fd-dance could expose a torn/empty JSON to the map
+            # collectors mid-write. chown_to_operator hands a sudo-created file
+            # back so a root first-write can't wedge later operator-uid
+            # writers/readers (2026-07-09 review).
             try:
-                from utils.paths import MeshForgePaths
+                from utils.paths import (MeshForgePaths, atomic_write_text as _awt,
+                                         chown_to_operator)
                 cache_path = MeshForgePaths.rns_nodes_cache_path()
-                cache_path.parent.mkdir(parents=True, exist_ok=True)
-                tmp_path = str(cache_path)
-                if os.path.islink(tmp_path):
-                    logger.warning(f"Refusing to write to symlink: {tmp_path}")
+                if cache_path.is_symlink():
+                    logger.warning(f"Refusing to write to symlink: {cache_path}")
                 else:
-                    fd = os.open(
-                        tmp_path,
-                        os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
-                        0o600
-                    )
-                    with os.fdopen(fd, 'w') as f:
-                        json.dump(cache_data, f)
+                    _awt(cache_path, json.dumps(cache_data))
+                    chown_to_operator(cache_path.parent, cache_path)
+            except PermissionError as e:
+                # A permission failure here silently freezes RNS positions on
+                # the map — it must be visible (honest_failure_modes #9).
+                if not getattr(self, "_web_cache_perm_warned", False):
+                    self._web_cache_perm_warned = True
+                    logger.warning(
+                        f"Could not save web API cache (permissions — a "
+                        f"root-owned leftover? chown it to the operator): {e}")
             except Exception as e:
                 logger.debug(f"Could not save web API cache: {e}")
 
