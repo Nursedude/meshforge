@@ -907,3 +907,67 @@ class TestUserScopeSystemctl:
             is_service_unit_installed("nomadnet", user=True)
         argv = mock_run.call_args.args[0]
         assert argv == ['systemctl', '--user', 'cat', 'nomadnet']
+
+
+class TestFrontierReviewFixes20260709:
+    """Pins for the 2026-07-09 frontier worklist Pri-4 pass (see
+    review_provenance.md): read-only status queries never sudo-prefix
+    (the Issue #20 wrong-state class), and _sudo_write's root path is
+    atomic."""
+
+    def test_query_argv_never_sudo_system_scope(self):
+        """Read-only queries build plain `systemctl <verb>` — never sudo —
+        so a non-passwordless-sudo box can't misread a running service as
+        NOT_INSTALLED."""
+        from src.utils.service_check import _systemctl_query_argv
+        with patch('os.geteuid', return_value=1000):
+            argv = _systemctl_query_argv(['is-active', 'meshtasticd'])
+        assert argv == ['systemctl', 'is-active', 'meshtasticd']
+
+    def test_query_argv_user_scope(self):
+        from src.utils.service_check import _systemctl_query_argv
+        argv = _systemctl_query_argv(['is-active', 'nomadnet'], user=True)
+        assert argv == ['systemctl', '--user', 'is-active', 'nomadnet']
+
+    def test_check_service_is_active_call_is_unprivileged(self):
+        """check_service's is-active call must NOT carry sudo even when the
+        process is a non-root user."""
+        with patch('os.geteuid', return_value=1000), \
+             patch('subprocess.run') as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout='active\n'),
+                MagicMock(returncode=0, stdout='SubState=running\n'),
+            ]
+            check_service('meshtasticd')
+        first_argv = mock_run.call_args_list[0].args[0]
+        assert first_argv[0] == 'systemctl', \
+            f"is-active must not be sudo-prefixed, got {first_argv}"
+        assert 'sudo' not in first_argv
+
+    def test_sudo_write_root_path_atomic_and_correct(self, tmp_path):
+        """As root, _sudo_write lands the exact content via a temp+rename
+        (no orphan temp files left behind, mode 0644)."""
+        from src.utils.service_check import _sudo_write
+        target = tmp_path / "sub" / "my.service"
+        with patch('os.geteuid', return_value=0):
+            ok, msg = _sudo_write(str(target), "[Unit]\nDescription=x\n")
+        assert ok is True
+        assert target.read_text() == "[Unit]\nDescription=x\n"
+        assert (target.stat().st_mode & 0o777) == 0o644
+        # no leftover .my.service.*.tmp files from the atomic write
+        leftovers = list((tmp_path / "sub").glob(".my.service.*"))
+        assert leftovers == [], f"atomic temp not cleaned: {leftovers}"
+
+    def test_sudo_write_root_no_partial_on_write_error(self, tmp_path):
+        """If the write fails mid-flight, the destination is never left
+        truncated — the pre-existing file (if any) is untouched and no temp
+        file is orphaned."""
+        from src.utils.service_check import _sudo_write
+        target = tmp_path / "existing.conf"
+        target.write_text("ORIGINAL")
+        with patch('os.geteuid', return_value=0), \
+             patch('os.fsync', side_effect=OSError("disk full")):
+            ok, _ = _sudo_write(str(target), "NEW CONTENT")
+        assert ok is False
+        assert target.read_text() == "ORIGINAL"  # untouched
+        assert list(tmp_path.glob(".existing.conf.*")) == []

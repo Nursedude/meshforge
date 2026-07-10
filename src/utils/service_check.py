@@ -25,11 +25,13 @@ Usage:
         show_fix(status.fix_hint)
 """
 
+import contextlib
 import os
 import re
 import socket
 import subprocess
 import logging
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -74,6 +76,28 @@ def _systemctl_argv(verbs: List[str], user: bool = False) -> List[str]:
     if user:
         return ['systemctl', '--user'] + verbs
     return _sudo_cmd(['systemctl'] + verbs)
+
+
+def _systemctl_query_argv(verbs: List[str], user: bool = False) -> List[str]:
+    """Build argv for a READ-ONLY systemctl query — never sudo-prefixed.
+
+    ``is-active``, ``show``, ``list-unit-files``, ``cat``, ``is-enabled``
+    all work as any user; they never need root. Routing them through
+    ``_sudo_cmd`` (which the mutating :func:`_systemctl_argv` does) is not
+    just wasteful — on a box WITHOUT passwordless sudo, ``sudo systemctl
+    is-active`` fails with an empty stdout, so ``check_service`` read the
+    blank as "not active", fell through to a (also-failing) sudo
+    ``list-unit-files``, and reported a RUNNING service as NOT_INSTALLED
+    (the Issue #20 wrong-state class). The sibling read-only helpers
+    (``is_service_enabled``/``is_service_masked``/``is_service_unit_installed``)
+    already build argv without sudo; this aligns ``check_service`` with them
+    (2026-07-09 frontier review Pri-4). Behaviour-identical on the fleet
+    (passwordless sudo) and as root; only the no-/password-sudo box changes,
+    from wrong to correct.
+    """
+    if user:
+        return ['systemctl', '--user'] + verbs
+    return ['systemctl'] + verbs
 
 # Public API - these are the functions/classes intended for external use
 __all__ = [
@@ -230,9 +254,9 @@ def check_service(
     # =========================================================================
     if is_systemd:
         try:
-            # Single source of truth: systemctl is-active
+            # Single source of truth: systemctl is-active (read-only, no sudo)
             result = subprocess.run(
-                _systemctl_argv(['is-active', systemd_name], user=user),
+                _systemctl_query_argv(['is-active', systemd_name], user=user),
                 capture_output=True,
                 text=True,
                 timeout=5
@@ -245,7 +269,7 @@ def check_service(
             sub_state = ""
             if is_active:
                 state_result = subprocess.run(
-                    _systemctl_argv(
+                    _systemctl_query_argv(
                         ['show', systemd_name, '--property=SubState'],
                         user=user,
                     ),
@@ -392,9 +416,9 @@ def check_service(
                     detection_method="systemctl --user" if user else "systemctl"
                 )
 
-            # Check if service unit exists
+            # Check if service unit exists (read-only, no sudo)
             check_result = subprocess.run(
-                _systemctl_argv(
+                _systemctl_query_argv(
                     ['list-unit-files', f'{systemd_name}.service'],
                     user=user,
                 ),
@@ -1164,11 +1188,28 @@ def _sudo_write(file_path: str, content: str, timeout: int = 10) -> Tuple[bool, 
     """
     try:
         if os.geteuid() == 0:
-            # Already root — write directly
-            Path(file_path).parent.mkdir(parents=True, exist_ok=True)
-            with open(file_path, 'w') as f:
-                f.write(content)
-            logger.debug(f"Wrote {file_path} (as root)")
+            # Already root — write atomically (temp in the same dir + rename).
+            # A direct open('w') truncates first: a crash or ENOSPC mid-write
+            # leaves a half-written systemd unit / /etc config, which then
+            # fails to parse on the next daemon-reload — a silent brick of
+            # the very service this call is provisioning (#60 write-failure
+            # class). os.replace is atomic within one filesystem.
+            dest = Path(file_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(dest.parent), prefix=f".{dest.name}.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, 'w') as f:
+                    f.write(content)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.chmod(tmp_path, 0o644)  # mkstemp is 0600; unit files 0644
+                os.replace(tmp_path, file_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp_path)
+                raise
+            logger.debug(f"Wrote {file_path} (as root, atomic)")
             return True, f"Wrote {file_path}"
 
         # Not root — use sudo tee to write with elevation
