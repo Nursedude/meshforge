@@ -332,6 +332,106 @@ def _fetch_persistent_owner(
         return False, None
 
 
+DEFAULT_VSZ_LEAK_THRESHOLD_GB = 768.0
+
+
+def _read_vm_size_gb(
+    pid: int, *, proc_root: str = "/proc",
+) -> Optional[Tuple[float, Optional[int]]]:
+    """Return ``(VmSize in GB, Threads)`` for ``pid`` or None.
+
+    Parsed from ``/proc/<pid>/status`` (world-readable, no sudo — sandbox
+    safe). Returns None on any read/parse failure so an unreadable target
+    never alarms (a different probe owns "not running")."""
+    status_path = Path(proc_root) / str(pid) / "status"
+    try:
+        text = status_path.read_text()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    vm_kb = None
+    threads = None
+    for line in text.splitlines():
+        if line.startswith("VmSize:"):
+            m = re.search(r"(\d+)\s*kB", line)
+            if m:
+                vm_kb = int(m.group(1))
+        elif line.startswith("Threads:"):
+            m = re.search(r"(\d+)", line)
+            if m:
+                threads = int(m.group(1))
+    if vm_kb is None:
+        return None
+    return vm_kb / (1024.0 * 1024.0), threads
+
+
+def probe_meshtasticd_vsz_leak(
+    *,
+    service_name: str = "meshtasticd",
+    proc_root: str = "/proc",
+    systemctl_path: str = "systemctl",
+    threshold_gb: float = DEFAULT_VSZ_LEAK_THRESHOLD_GB,
+    main_pid: Optional[int] = None,
+) -> Optional[Signal]:
+    """Guard the band-aid for upstream meshtastic/firmware#10468.
+
+    meshtasticd on Pi 5 + USB radio leaks the pthread stacks of exited
+    threads (~8.06 MB VSZ each, ~9-10 spawns/min): the operator's own
+    2026-05-13 upstream report, RE-CONFIRMED live 2026-07-10 on both fleet
+    Pi 5 boxes at 2.7.24.58 (~561 GB VSZ / 71k anon maps after 5 days). RSS
+    stays bounded so nothing else notices until address space or swap dies
+    (upstream saw VmPeak ~915 GB + VmSwap growth). The fleet's mitigation is
+    the weekly ``meshtasticd-restart.timer`` — WHICH NOTHING WATCHED: if the
+    timer silently dies, VSZ grows unbounded and the failure surfaces days
+    later as mmap/OOM weirdness.
+
+    This probe is calibrated to "the weekly restart missed", NOT "the leak
+    exists": at the measured ~110 GB/day leak rate a healthy weekly cadence
+    peaks near ~780 GB, so the default 768 GB threshold fires only when the
+    restart is overdue or the leak rate materially worsened — both worth a
+    page. Leaking-but-managed boxes stay silent (no alert fatigue); Pi 4 /
+    SPI boxes idle near 0.3 GB and can never trip it.
+
+    Read-only, no sudo (``/proc/<pid>/status`` is world-readable). None when
+    the service is not running (another probe owns that) or /proc is
+    unreadable — unobservable is silent here, never "healthy-shaped" data.
+    Severity ``degraded``: the daemon still serves; the pin is remediation
+    lead time. Fix: ``systemctl restart meshtasticd`` then verify
+    ``systemctl list-timers meshtasticd-restart.timer``. Documented inline
+    (persistent_issues MF012 cap precedent); upstream ref in detail.
+    """
+    pid = main_pid if main_pid is not None else _resolve_main_pid(
+        service_name, systemctl_path=systemctl_path
+    )
+    if pid is None:
+        return None
+
+    reading = _read_vm_size_gb(pid, proc_root=proc_root)
+    if reading is None:
+        return None
+    vsz_gb, threads = reading
+
+    if vsz_gb < threshold_gb:
+        return None
+
+    detail = (
+        f"{service_name} (pid {pid}) VSZ is {vsz_gb:.0f} GB — past the "
+        f"{threshold_gb:.0f} GB envelope of the weekly restart mitigation for "
+        f"the Pi5/USB pthread-stack leak (meshtastic/firmware#10468). Either "
+        f"meshtasticd-restart.timer missed or the leak rate worsened. "
+        f"Live threads: {threads if threads is not None else 'unknown'}. "
+        f"Fix: systemctl restart {service_name}; then verify the timer: "
+        f"systemctl list-timers meshtasticd-restart.timer"
+    )
+    return Signal(
+        cls="meshtasticd_vsz_leak",
+        subject=service_name,
+        severity="degraded",
+        detail=detail,
+        extra={"vsz_gb": round(vsz_gb, 1), "threads": threads,
+               "threshold_gb": threshold_gb},
+    )
+
+
 def probe_phoneapi_tcp_leak(
     service_name: str = "meshforge-map.service",
     *,

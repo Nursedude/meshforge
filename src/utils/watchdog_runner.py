@@ -67,6 +67,7 @@ from utils.watchdog_probes import (
     probe_memory_index_oversize,
     probe_meshtasticd_phoneapi_wedge,
     probe_oracle_delivery_degraded,
+    probe_meshtasticd_vsz_leak,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
     probe_rules_seed_drift,
@@ -304,6 +305,15 @@ def run_all_probes(
     # Catches meshforge-echo.service and similar user-scope units that
     # would otherwise need DBUS env setup to query by name.
     signals.extend(probe_lxmf_process_wedge())
+
+    # meshtasticd VSZ leak (upstream meshtastic/firmware#10468) — guards the
+    # weekly restart band-aid: fires only past the weekly leak envelope
+    # (768 GB default), i.e. meshtasticd-restart.timer missed or the leak
+    # rate worsened. Unconditional: self-guards None when meshtasticd isn't
+    # running; Pi4/SPI boxes idle ~0.3 GB and cannot trip it.
+    sig = probe_meshtasticd_vsz_leak()
+    if sig is not None:
+        signals.append(sig)
 
     # HTTP local probe — only if the map service is supposed to be
     # active. A bound-but-wedged port is the Issue #61 class.

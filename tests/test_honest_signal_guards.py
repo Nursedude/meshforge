@@ -374,9 +374,13 @@ class TestSwallowedErrorTailS7:
 
     def test_updates_service_step_failure_surfaces(self):
         src = _src_or_skip(UPDATES_HANDLER)
-        assert "(service update error:" in src, (
-            "the service-file update step must surface an unexpected failure in "
-            "the completion dialog, not pass so 'Update Complete' reads clean (S7)"
+        # 2026-07-10 self-update redesign: the unit-file step returns
+        # (ok, detail) into the per-step completion report — a failure becomes
+        # a [FAIL] line in the dialog instead of an inline "(service update
+        # error:" note. Pin the new mechanism.
+        assert "_refresh_service_files" in src and "unit-file refresh error" in src, (
+            "the unit-file refresh step must surface an unexpected failure into "
+            "the per-step completion report, not pass so the update reads clean (S7)"
         )
 
     def test_nomadnet_storage_prep_failure_surfaced(self):

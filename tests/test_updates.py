@@ -380,6 +380,7 @@ class TestCheckAllVersionsFleetFloor:
             patch.object(vc, 'read_floor', return_value=floor),
             patch.object(vc, 'get_meshforge_version', return_value=None),
             patch.object(vc, 'get_latest_meshforge_version', return_value=None),
+            patch.object(vc, 'get_meshforge_git_snapshot', return_value=None),
             patch.object(vc, 'get_meshtasticd_apt_snapshot', return_value=None),
             patch.object(vc, 'get_meshtasticd_version', return_value=None),
             patch.object(vc, 'get_latest_meshtasticd_version', return_value=None),
@@ -640,6 +641,7 @@ class TestCheckAllVersionsMeshtasticdApt:
                 patch.object(vc, 'read_floor', return_value='2.7.9'),
                 patch.object(vc, 'get_meshforge_version', return_value=None),
                 patch.object(vc, 'get_latest_meshforge_version', return_value=None),
+                patch.object(vc, 'get_meshforge_git_snapshot', return_value=None),
                 patch.object(vc, 'get_meshtasticd_version', return_value=None),
                 patch.object(vc, 'get_latest_meshtasticd_version', return_value=None),
                 patch.object(vc, 'get_node_firmware_version', return_value=None),
@@ -682,3 +684,130 @@ class TestCheckAllVersionsMeshtasticdApt:
         # legacy getters are patched to None → quiet, no phantom state
         assert info.installed is None
         assert info.update_available is False
+
+
+class TestUpdateMeshforgeGitFlow:
+    """The 2026-07-10 self-update redesign: git truth, --ff-only, per-step
+    honest report, and the running services actually restarted."""
+
+    def _state(self, **kw):
+        from updates.meshforge_git import MeshForgeGitState
+        defaults = dict(is_git_repo=True, repo_dir='/opt/x', head='a' * 40,
+                        remote_head='b' * 40, behind=2, ahead=0, dirty=False,
+                        update_available=True, fetch_ok=True)
+        defaults.update(kw)
+        return MeshForgeGitState(**defaults)
+
+    def test_up_to_date_verified_against_fetch(self):
+        h = _handler()
+        state = self._state(behind=0, remote_head='a' * 40,
+                            update_available=False)
+        with patch('handlers.updates.get_meshforge_git_state',
+                   return_value=state), \
+                patch('handlers.updates.run_meshforge_git_update') as run:
+            h._update_meshforge()
+        assert 'Up To Date' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+    def test_offline_is_unknown_not_up_to_date(self):
+        h = _handler()
+        state = self._state(fetch_ok=False, error='fetch failed: no route')
+        with patch('handlers.updates.get_meshforge_git_state',
+                   return_value=state), \
+                patch('handlers.updates.run_meshforge_git_update') as run:
+            h._update_meshforge()
+        assert 'Cannot Verify Remote' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+    def test_dirty_tree_refuses(self):
+        h = _handler()
+        with patch('handlers.updates.get_meshforge_git_state',
+                   return_value=self._state(dirty=True)), \
+                patch('handlers.updates.run_meshforge_git_update') as run:
+            h._update_meshforge()
+        assert 'Local Changes Present' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+    def test_git_step_failure_aborts_with_report(self):
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        with patch('handlers.updates.get_meshforge_git_state',
+                   return_value=self._state()), \
+                patch('handlers.updates.meshforge_services_to_restart',
+                      return_value=['meshforge']), \
+                patch('handlers.updates.run_meshforge_git_update',
+                      return_value=(False, 'ff failed')), \
+                patch('handlers.updates.requirements_changed') as req, \
+                patch('handlers.updates._apply_config_and_restart') as restart:
+            h._update_meshforge()
+        assert 'Update Failed' in _msgbox_titles(h.ctx.dialog)
+        req.assert_not_called()       # aborted before the deps step
+        restart.assert_not_called()   # and before any restart
+
+    def test_full_path_restarts_active_services(self):
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        h._refresh_service_files = MagicMock(return_value=(True, 'meshforge.service'))
+        after = self._state(head='b' * 40, behind=0, update_available=False)
+        with patch('handlers.updates.get_meshforge_git_state',
+                   side_effect=[self._state(), after]), \
+                patch('handlers.updates.meshforge_services_to_restart',
+                      return_value=['meshforge', 'meshforge-map']), \
+                patch('handlers.updates.run_meshforge_git_update',
+                      return_value=(True, 'updated aaaa -> bbbb (verified)')), \
+                patch('handlers.updates.requirements_changed',
+                      return_value=False), \
+                patch('handlers.updates._apply_config_and_restart',
+                      return_value=(True, 'restarted')) as restart:
+            h._update_meshforge()
+        assert restart.call_count == 2
+        restarted = [c.args[0] for c in restart.call_args_list]
+        assert restarted == ['meshforge', 'meshforge-map']
+        assert 'Update Applied' in _msgbox_titles(h.ctx.dialog)
+
+    def test_deps_step_runs_when_diff_unknown(self):
+        """None (could-not-determine) must run the deps step — skipping on
+        unknown is the silent-failure direction."""
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        h._refresh_service_files = MagicMock(return_value=(True, 'ok'))
+        after = self._state(head='b' * 40)
+        with patch('handlers.updates.get_meshforge_git_state',
+                   side_effect=[self._state(), after]), \
+                patch('handlers.updates.meshforge_services_to_restart',
+                      return_value=[]), \
+                patch('handlers.updates.run_meshforge_git_update',
+                      return_value=(True, 'updated (verified)')), \
+                patch('handlers.updates.requirements_changed',
+                      return_value=None), \
+                patch('handlers.updates.repo_root',
+                      return_value=pathlib.Path('/nonexistent-repo')), \
+                patch('handlers.updates.pip_install') as pi:
+            h._update_meshforge()
+        # requirements.txt missing at the fake root -> deps step FAILS loudly
+        # (never silently skipped); pip itself was not reachable.
+        titles = _msgbox_titles(h.ctx.dialog)
+        assert 'Update Failed' in titles
+
+    def test_restart_failure_is_a_fail_line_not_masked(self):
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        h._refresh_service_files = MagicMock(return_value=(True, 'ok'))
+        after = self._state(head='b' * 40)
+        with patch('handlers.updates.get_meshforge_git_state',
+                   side_effect=[self._state(), after]), \
+                patch('handlers.updates.meshforge_services_to_restart',
+                      return_value=['meshforge']), \
+                patch('handlers.updates.run_meshforge_git_update',
+                      return_value=(True, 'updated (verified)')), \
+                patch('handlers.updates.requirements_changed',
+                      return_value=False), \
+                patch('handlers.updates._apply_config_and_restart',
+                      return_value=(False, 'unit crashed')):
+            h._update_meshforge()
+        assert 'Update Failed' in _msgbox_titles(h.ctx.dialog)
+        # The failing unit is named in the report body.
+        body = [c.args[1] for c in h.ctx.dialog.msgbox.call_args_list
+                if c.args and c.args[0] == 'Update Failed'][0]
+        assert 'restart meshforge' in body
+        assert 'unit crashed' in body

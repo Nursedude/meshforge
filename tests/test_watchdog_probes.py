@@ -153,6 +153,7 @@ def test_signal_classes_closed_enum_is_documented():
         "oracle_delivery_degraded",     # 2026-06-22 mesh-oracle health — the read-only "ask dude-AI over the mesh" responder's confirmable delivery rate fell below threshold; declines (cooldown/not_allowlisted) + benign non-deliveries (RNS no-path / MeshCore restart race) excluded from the failure set + surfaced; the one live service with NO automated probe; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded)
         "inherited_app_drift",          # 2026-06-21 upstream-app ownership Action 5 — an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch (one `git pull` from silent deletion; policy §4.2); LOCAL problem-class detection (scans operator home + /opt, classifies by .git/config, filters untracked artifacts + machine-generated manifests); floating-main/pin-drift leg deliberately NOT a local fire (the fleet enforces pins by ledger, not detached HEAD); INERT off a box with no inherited checkouts; documented inline in the SIGNAL_CLASSES comment + .claude/plans/upstream_app_ownership_policy_2026_06_21.md §9 (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded)
         "gateway_dup_degraded",         # 2026-06-29 dedup/identity arc STEP 5 — cross-gateway duplicate delivery from the 4c /fleet/dups rollup (same (content_id, recipient) confirmed by >1 gateway = the live dup-A); degraded only; INERT off the manager box + on an indeterminate/stale rollup (built on the 4c JOIN <2-gateway gate); 2-tick debounce; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded). No own issue#.
+        "meshtasticd_vsz_leak",         # 2026-07-10 (upstream meshtastic/firmware#10468, the operator's own 2026-05-13 report, re-confirmed live 07-10 on both fleet Pi5 boxes at 2.7.24.58) — meshtasticd on Pi5+USB leaks exited pthread stacks (~110 GB VSZ/day, RSS bounded); the weekly meshtasticd-restart.timer band-aid was UNWATCHED; fires only past the weekly envelope (768 GB default) = the restart missed or the rate worsened; Pi4/SPI boxes idle ~0.3 GB and cannot trip it; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_dup_degraded). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -5704,3 +5705,72 @@ class TestProbeGatewayDupDegraded:
 
     def test_registered_in_signal_classes(self):
         assert "gateway_dup_degraded" in SIGNAL_CLASSES
+
+
+class TestMeshtasticdVszLeak:
+    """probe_meshtasticd_vsz_leak (upstream meshtastic/firmware#10468) —
+    guards the weekly-restart band-aid: fires ONLY past the weekly leak
+    envelope, never on a leaking-but-managed box (no alert fatigue)."""
+
+    def _proc(self, tmp_path, pid=1234, vm_kb=None, threads=4, status=True):
+        d = tmp_path / str(pid)
+        d.mkdir()
+        if status:
+            lines = ["Name:\tmeshtasticd"]
+            if vm_kb is not None:
+                lines.append(f"VmSize:\t{vm_kb} kB")
+            lines.append(f"Threads:\t{threads}")
+            (d / "status").write_text("\n".join(lines) + "\n")
+        return tmp_path
+
+    def test_none_when_service_not_running(self):
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        with patch("utils.watchdog_probes_service._resolve_main_pid",
+                   return_value=None):
+            assert probe_meshtasticd_vsz_leak() is None
+
+    def test_healthy_pi4_box_is_silent(self, tmp_path):
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        proc = self._proc(tmp_path, vm_kb=300_000)  # ~0.3 GB
+        sig = probe_meshtasticd_vsz_leak(proc_root=str(proc), main_pid=1234)
+        assert sig is None
+
+    def test_leaking_but_managed_pi5_is_silent(self, tmp_path):
+        # ~561 GB at day 5 of a healthy weekly cadence (the live 07-10
+        # reading) must NOT fire — the band-aid is working.
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        proc = self._proc(tmp_path, vm_kb=561 * 1024 * 1024)
+        sig = probe_meshtasticd_vsz_leak(proc_root=str(proc), main_pid=1234)
+        assert sig is None
+
+    def test_past_weekly_envelope_fires_degraded(self, tmp_path):
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        proc = self._proc(tmp_path, vm_kb=800 * 1024 * 1024)  # 800 GB
+        sig = probe_meshtasticd_vsz_leak(proc_root=str(proc), main_pid=1234)
+        assert sig is not None
+        assert sig.cls == "meshtasticd_vsz_leak"
+        assert sig.severity == "degraded"
+        assert "10468" in sig.detail
+        assert "meshtasticd-restart.timer" in sig.detail
+        assert sig.extra["vsz_gb"] == 800.0
+
+    def test_unreadable_status_is_silent_not_healthy_shaped(self, tmp_path):
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        proc = self._proc(tmp_path, status=False)
+        sig = probe_meshtasticd_vsz_leak(proc_root=str(proc), main_pid=1234)
+        assert sig is None
+
+    def test_status_without_vmsize_is_silent(self, tmp_path):
+        # A kernel-thread-shaped status (no VmSize) must not crash or fire.
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        proc = self._proc(tmp_path, vm_kb=None)
+        sig = probe_meshtasticd_vsz_leak(proc_root=str(proc), main_pid=1234)
+        assert sig is None
+
+    def test_threshold_configurable(self, tmp_path):
+        from utils.watchdog_probes import probe_meshtasticd_vsz_leak
+        proc = self._proc(tmp_path, vm_kb=100 * 1024 * 1024)  # 100 GB
+        sig = probe_meshtasticd_vsz_leak(proc_root=str(proc), main_pid=1234,
+                                         threshold_gb=64.0)
+        assert sig is not None
+        assert sig.extra["threshold_gb"] == 64.0

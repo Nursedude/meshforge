@@ -182,6 +182,29 @@ def get_meshtasticd_version() -> Optional[str]:
     return None
 
 
+def get_meshforge_git_snapshot():
+    """git-layer truth for the MeshForge checkout (patchable seam).
+
+    Cached for the module TTL — check_all_versions runs on TUI startup and
+    in quick actions, and a `git fetch` per call would hammer the network.
+    Returns None when the git layer errors out, so the caller falls back to
+    the version-string compare rather than trusting a half-read state.
+    """
+    cache_key = 'meshforge_git_state'
+    if cache_key in _version_cache:
+        cached = _version_cache[cache_key]
+        if datetime.now() - cached['timestamp'] < _cache_ttl:
+            return cached['state']
+    try:
+        from updates.meshforge_git import get_meshforge_git_state
+        state = get_meshforge_git_state(fetch=True)
+    except Exception as e:
+        logger.debug(f"git state read failed: {e}")
+        return None
+    _version_cache[cache_key] = {'state': state, 'timestamp': datetime.now()}
+    return state
+
+
 def get_meshtasticd_apt_snapshot():
     """apt-layer truth for meshtasticd (installed/candidate/held), no simulation.
 
@@ -460,12 +483,32 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     """Check all component versions and return status"""
     results = {}
 
-    # MeshForge itself
+    # MeshForge itself — judged by GIT truth (HEAD vs origin/main), not
+    # release version strings: this repo ships continuously by commit, and a
+    # version string that only moves on releases NEVER showed an update — the
+    # operator could not successfully update from the TUI (2026-07-10
+    # follow-up). Version-string compare remains the non-git fallback.
     meshforge = VersionInfo(name='MeshForge')
     meshforge.installed = get_meshforge_version()
-    meshforge.latest = get_latest_meshforge_version()
-    if meshforge.installed and meshforge.latest:
-        meshforge.update_available = compare_versions(meshforge.installed, meshforge.latest)
+    git_state = get_meshforge_git_snapshot()
+    if git_state is not None and git_state.is_git_repo and git_state.head:
+        head = (git_state.head or '')[:8]
+        remote = (git_state.remote_head or '')[:8]
+        meshforge.installed = f"{meshforge.installed or '?'} @ {head}"
+        meshforge.latest = f"{meshforge.installed.split(' @ ')[0]} @ {remote or '?'}"
+        meshforge.update_available = git_state.update_available
+        if git_state.fetch_ok is False:
+            # Offline: judged against the last-known remote ref — say so
+            # instead of reading as verified-current (unobservable ≠ healthy).
+            meshforge.notes = 'remote unverified (git fetch failed — offline?)'
+        elif git_state.behind:
+            meshforge.notes = f'{git_state.behind} commit(s) behind origin/main'
+        elif git_state.ahead:
+            meshforge.notes = f'{git_state.ahead} commit(s) AHEAD of origin/main (dev box)'
+    else:
+        meshforge.latest = get_latest_meshforge_version()
+        if meshforge.installed and meshforge.latest:
+            meshforge.update_available = compare_versions(meshforge.installed, meshforge.latest)
     meshforge.update_command = 'meshforge-update'  # Special command handled by TUI
     results['meshforge'] = meshforge
 

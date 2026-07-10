@@ -18,6 +18,13 @@ from updates.meshtasticd_apt import (
     get_meshtasticd_apt_state,
     run_meshtasticd_upgrade,
 )
+from updates.meshforge_git import (
+    get_meshforge_git_state,
+    meshforge_services_to_restart,
+    repo_root,
+    requirements_changed,
+    run_meshforge_git_update,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -743,14 +750,23 @@ class UpdatesHandler(BaseHandler):
         )
 
     def _update_meshforge(self):
-        """Update MeshForge itself (git pull + pip install)."""
-        from pathlib import Path
-        from utils.paths import get_real_user_home
+        """Update MeshForge itself — git truth, verified, per-step honest.
 
-        meshforge_dir = Path(__file__).parent.parent.parent.parent
+        2026-07-10 redesign ("I have not successfully updated MeshForge"):
+        the old flow compared release version strings (which only move on
+        releases, so a continuously-shipped repo never showed an update),
+        ran a merging `git pull` as root, and closed with "Update Complete"
+        while the RUNNING services kept executing old code. Now: state =
+        HEAD vs origin/main after a real fetch (as the repo owner),
+        ``--ff-only`` with dirty/diverged surfaced honestly, deps step only
+        when requirements changed, the active meshforge services are
+        restarted with per-unit verified results, and the closing dialog is
+        a per-step status report — never a blanket success.
+        """
+        self.ctx.dialog.infobox("MeshForge", "Reading git state (fetching origin)...")
+        state = get_meshforge_git_state(fetch=True)
 
-        git_dir = meshforge_dir / '.git'
-        if not git_dir.exists():
+        if not state.is_git_repo:
             self.ctx.dialog.msgbox(
                 "Not a Git Repository",
                 "MeshForge is not installed via git.\n\n"
@@ -758,71 +774,123 @@ class UpdatesHandler(BaseHandler):
                 "curl -sSL https://raw.githubusercontent.com/Nursedude/meshforge/main/install.sh | sudo bash"
             )
             return
+        if state.fetch_ok is False:
+            self.ctx.dialog.msgbox(
+                "Cannot Verify Remote",
+                "git fetch failed, so the remote state is UNKNOWN — refusing\n"
+                "to claim either 'up to date' or 'update available'.\n\n"
+                f"{state.error or ''}"
+            )
+            return
+        if state.dirty:
+            self.ctx.dialog.msgbox(
+                "Local Changes Present",
+                "The working tree has uncommitted local modifications —\n"
+                "refusing to update over them.\n\n"
+                "Review with: git -C " + (state.repo_dir or '') + " status"
+            )
+            return
+        if state.ahead:
+            self.ctx.dialog.msgbox(
+                "Local Branch Ahead",
+                f"This checkout is {state.ahead} commit(s) AHEAD of\n"
+                "origin/main — a fast-forward update is impossible.\n\n"
+                "Push the local commits (git push origin main) or reset\n"
+                "deliberately; the updater will not merge for you."
+            )
+            return
+        if not state.update_available:
+            self.ctx.dialog.msgbox(
+                "Up To Date",
+                "MeshForge is at origin/main.\n\n"
+                f"HEAD: {(state.head or 'unknown')[:12]}\n"
+                "(verified against a live fetch)"
+            )
+            return
 
+        services = meshforge_services_to_restart()
+        svc_note = (", ".join(services) if services
+                    else "none active")
         if not self.ctx.dialog.yesno(
             "Update MeshForge",
-            "This will:\n\n"
-            "1. Pull latest code from GitHub (git pull)\n"
-            "2. Install/update Python dependencies\n"
-            "3. Update systemd service files\n\n"
+            f"origin/main is {state.behind} commit(s) ahead.\n"
+            f"  {(state.head or '')[:12]} -> {(state.remote_head or '')[:12]}\n\n"
+            "This will:\n"
+            "1. Fast-forward the checkout (as the repo owner)\n"
+            "2. Update Python dependencies (only if requirements changed)\n"
+            "3. Refresh systemd unit files\n"
+            f"4. Restart the active MeshForge services ({svc_note})\n\n"
             "Continue?"
         ):
             return
 
-        self.ctx.dialog.infobox("Updating MeshForge", "Step 1/3: Pulling latest code from GitHub...")
+        steps = []  # (step, ok/None=skipped, detail)
 
-        try:
-            result = subprocess.run(
-                ['git', 'pull', 'origin', 'main'],
-                cwd=str(meshforge_dir),
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            git_output = result.stdout + result.stderr
-
-            if result.returncode != 0:
-                self.ctx.dialog.msgbox(
-                    "Git Pull Failed",
-                    f"Failed to pull updates:\n\n{git_output[:500]}"
-                )
-                return
-
-        except subprocess.TimeoutExpired:
-            self.ctx.dialog.msgbox("Error", "Git pull timed out after 60 seconds.")
-            return
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", f"Git pull failed: {e}")
+        # Step 1: git fast-forward, success re-derived from HEAD.
+        self.ctx.dialog.infobox("Updating MeshForge", "Step 1/4: git fast-forward...")
+        old_head = state.head
+        ok, detail = run_meshforge_git_update()
+        steps.append(("git", ok, detail))
+        if not ok:
+            self._show_update_report(steps, aborted=True)
             return
 
-        self.ctx.dialog.infobox("Updating MeshForge", "Step 2/3: Installing Python dependencies...")
+        # Step 2: deps — only when a requirements file changed old..new
+        # (unknown diff = run the step; skipping on unknown is the
+        # silent-failure direction).
+        new_state = get_meshforge_git_state(fetch=False)
+        req_changed = requirements_changed(old_head, new_state.head or 'HEAD')
+        if req_changed is False:
+            steps.append(("deps", None, "skipped — no requirements change"))
+        else:
+            self.ctx.dialog.infobox("Updating MeshForge",
+                                    "Step 2/4: updating Python dependencies...")
+            requirements_file = repo_root() / 'requirements.txt'
+            if requirements_file.exists():
+                result = pip_install([], requirements_file=requirements_file,
+                                     timeout=300)
+                steps.append(("deps", result.ok,
+                              result.detail[:200] if not result.ok else "installed"))
+            else:
+                steps.append(("deps", False, "requirements.txt not found"))
 
-        requirements_file = meshforge_dir / 'requirements.txt'
-        if not requirements_file.exists():
-            self.ctx.dialog.msgbox("Error", "requirements.txt not found!")
-            return
+        # Step 3: unit files (best-effort, witnessed).
+        self.ctx.dialog.infobox("Updating MeshForge", "Step 3/4: refreshing unit files...")
+        ok, detail = self._refresh_service_files()
+        steps.append(("unit files", ok, detail))
 
-        # Route through the hardened helper: SSOT venv-vs-system resolution
-        # (`get_meshforge_venv_dir`) + ensure_pip + return-code check, replacing
-        # the hand-rolled venv gate that bypassed the SSOT.
-        result = pip_install([], requirements_file=requirements_file, timeout=300)
-        if not result.ok:
-            self.ctx.dialog.msgbox(
-                "Pip Install Failed",
-                f"Failed to install dependencies:\n\n{result.detail[:500]}"
-            )
-            return
+        # Step 4: restart the services that host the updated code — the gap
+        # that made updates look like no-ops (running daemons kept old code).
+        if services and _HAS_SERVICE_CHECK:
+            for svc in services:
+                self.ctx.dialog.infobox("Updating MeshForge",
+                                        f"Step 4/4: restarting {svc}...")
+                r_ok, r_msg = _apply_config_and_restart(svc)
+                steps.append((f"restart {svc}", r_ok,
+                              "restarted" if r_ok else r_msg[:200]))
+        elif services:
+            steps.append(("restarts", False,
+                          "service control unavailable — restart manually: "
+                          + ", ".join(services)))
+        else:
+            steps.append(("restarts", None, "no active MeshForge services"))
 
-        self.ctx.dialog.infobox("Updating MeshForge", "Step 3/3: Updating service files...")
+        self._show_update_report(steps)
 
-        svc_msgs = []
+    def _refresh_service_files(self) -> Tuple[bool, str]:
+        """Copy updated systemd unit files into place (system + user)."""
+        from pathlib import Path
+        from utils.paths import get_real_user_home
+        import shutil
+
+        meshforge_dir = repo_root()
+        copied = []
         try:
             svc_src = meshforge_dir / 'scripts' / 'meshforge.service'
             svc_dst = Path('/etc/systemd/system/meshforge.service')
             if svc_src.exists() and svc_dst.exists():
-                import shutil
                 shutil.copy2(str(svc_src), str(svc_dst))
-                svc_msgs.append("meshforge.service")
+                copied.append("meshforge.service")
 
             user_svc_dir = get_real_user_home() / '.config' / 'systemd' / 'user'
             templates_dir = meshforge_dir / 'templates' / 'systemd'
@@ -830,32 +898,42 @@ class UpdatesHandler(BaseHandler):
                 user_svc_dir.mkdir(parents=True, exist_ok=True)
                 for tmpl in templates_dir.glob('*-user.service'):
                     svc_name = tmpl.name.replace('-user.service', '.service')
-                    dst = user_svc_dir / svc_name
-                    import shutil
-                    shutil.copy2(str(tmpl), str(dst))
-                    svc_msgs.append(svc_name)
+                    shutil.copy2(str(tmpl), str(user_svc_dir / svc_name))
+                    copied.append(svc_name)
 
-            if svc_msgs:
+            if copied:
                 daemon_reload()
         except (OSError, PermissionError) as e:
-            svc_msgs.append(f"(warning: {e})")
+            return False, f"{', '.join(copied)} then failed: {e}"
         except Exception as e:
-            # Surface unexpected service-step failures in the completion dialog
-            # instead of "Update Complete" implying the step ran clean (S7).
-            svc_msgs.append(f"(service update error: {e})")
+            return False, f"unit-file refresh error: {e}"
+        return True, ", ".join(copied) if copied else "none to refresh"
 
-        svc_info = ""
-        if svc_msgs:
-            svc_info = f"\nServices updated: {', '.join(svc_msgs)}\n"
-
+    def _show_update_report(self, steps, aborted: bool = False):
+        """Per-step honest completion report — never a blanket 'Complete'."""
+        lines = ["MESHFORGE UPDATE " + ("ABORTED" if aborted else "REPORT"),
+                 "=" * 40, ""]
+        any_fail = aborted
+        for name, ok, detail in steps:
+            if ok is None:
+                mark = "SKIP"
+            elif ok:
+                mark = "OK  "
+            else:
+                mark = "FAIL"
+                any_fail = True
+            lines.append(f"[{mark}] {name}: {detail}")
+        lines.append("")
+        if any_fail:
+            lines.append("One or more steps did NOT complete — the box may be")
+            lines.append("running mixed old/new code. Fix the failed step and")
+            lines.append("re-run this update.")
+        else:
+            lines.append("All steps verified. Restart this TUI to load the")
+            lines.append("new code in the menu you are looking at: meshforge")
         self.ctx.dialog.msgbox(
-            "Update Complete",
-            "MeshForge has been updated!\n\n"
-            f"Git: {git_output.strip()[:200]}\n"
-            f"{svc_info}\n"
-            "Please restart MeshForge to apply changes.\n\n"
-            "Run: meshforge"
-        )
+            "Update " + ("Failed" if any_fail else "Applied"),
+            "\n".join(lines), width=70)
 
     def _run_update_command(self, component: str, command: str) -> Tuple[bool, str]:
         """Execute an update command safely."""

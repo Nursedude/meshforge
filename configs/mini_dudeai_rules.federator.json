@@ -664,6 +664,19 @@
       "annotation": "2026-06-09 version-updates arc \u2014 a newer same-flavor kernel is installed under /lib/modules than the running one (or /var/run/reboot-required exists); moc1 ran 6.12.75 for days with 6.18.33 installed and nothing paged. Fix: schedule a clean reboot (planned reboots through clean shutdown record boot_health clean-exit). Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
+      "id": "meshtasticd_vsz_leak_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "meshtasticd_vsz_leak",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-10 (upstream meshtastic/firmware#10468, operator's own 2026-05-13 report): meshtasticd on Pi5+USB leaks exited pthread stacks; VSZ past the weekly-restart envelope (768 GB) means meshtasticd-restart.timer missed or the leak rate worsened. Fix: systemctl restart meshtasticd, then verify the timer (systemctl list-timers meshtasticd-restart.timer). Side-effect-free escalation; degraded, not an outage."
+    },
+    {
       "id": "aredn_source_dark_any",
       "match": {
         "kind": "signal_class",
