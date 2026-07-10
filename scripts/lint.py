@@ -92,16 +92,31 @@ class MeshForgeLinter:
 
         content = ''.join(lines)
 
-        # Check each line
+        # Check each line. Track the running char offset of each line so the
+        # lookahead/lookback rules (MF001/MF004/MF009/MF010) use THIS line's
+        # position, not content.find(line) — which returns the FIRST textual
+        # occurrence. Identical line text is common (`time.sleep(1)`,
+        # `result = subprocess.run(`), so recomputing by text made a real
+        # violation on a later duplicate line resolve its context from an
+        # earlier twin — a silent gate miss (2026-07-09 frontier review of
+        # the gates themselves).
+        offset = 0
         for i, line in enumerate(lines, 1):
-            issues.extend(self._check_line(filepath, i, line, content))
+            issues.extend(self._check_line(filepath, i, line, content, offset))
+            offset += len(line)
 
         return issues
 
-    def _check_line(self, filepath: str, lineno: int, line: str, content: str) -> List[LintIssue]:
+    def _check_line(self, filepath: str, lineno: int, line: str, content: str,
+                    line_offset: int = -1) -> List[LintIssue]:
         """Check a single line for issues."""
         issues = []
         stripped = line.strip()
+        # Backward-compatible fallback: callers that don't pass the true
+        # offset get the legacy (first-occurrence) behaviour rather than a
+        # crash. lint_file always passes the exact offset.
+        if line_offset < 0:
+            line_offset = content.find(line)
 
         # Skip comments
         if stripped.startswith('#'):
@@ -135,8 +150,8 @@ class MeshForgeLinter:
                 ('def get_real_user_home' in content and 'Path.home()' in line)
             )
             # Also check if this is in an except block after trying to import paths
-            context_start = max(0, content.find(line) - 500)
-            nearby_context = content[context_start:content.find(line) + len(line)]
+            context_start = max(0, line_offset - 500)
+            nearby_context = content[context_start:line_offset + len(line)]
             has_import_fallback = (
                 'from utils.paths import' in nearby_context and
                 'except ImportError' in nearby_context
@@ -193,7 +208,7 @@ class MeshForgeLinter:
                 pass  # Skip changelog/documentation/pattern strings
             else:
                 # Look ahead for timeout in the same statement
-                start_idx = content.find(line)
+                start_idx = line_offset
                 if start_idx != -1:
                     # Get the call text (matching parens)
                     context = content[start_idx:start_idx + 500]
@@ -306,7 +321,7 @@ class MeshForgeLinter:
             ))
             if not is_test and not is_comment and not is_string and is_actual_call:
                 # Check if configdir is on the next few lines (multi-line call)
-                line_idx = content.find(line)
+                line_idx = line_offset
                 if line_idx != -1:
                     following = content[line_idx:line_idx + 300]
                     if 'configdir' not in following.split(')')[0]:
@@ -443,7 +458,7 @@ class MeshForgeLinter:
             is_comment = stripped.startswith('#')
             if not is_string and not is_comment:
                 # Check if we're inside a daemon loop method
-                func_match = content.rfind('def ', 0, content.find(line))
+                func_match = content.rfind('def ', 0, line_offset)
                 if func_match != -1:
                     func_sig = content[func_match:func_match + 200].split('\n')[0]
                     daemon_patterns = ('_loop', '_run', 'run_forever', '_poll', '_monitor')
