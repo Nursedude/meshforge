@@ -487,12 +487,17 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             return cursor.rowcount > 0
 
     def mark_delivered(self, msg_id: str) -> bool:
-        """Mark message as successfully delivered."""
+        """Mark message as successfully delivered.
+
+        Idempotent: a second call on an already-delivered row returns False
+        (an unguarded UPDATE re-matched the row, double-counting the
+        delivered stat and recording a duplicate SENT transition).
+        """
         with self._get_connection() as conn:
             cursor = conn.execute("""
                 UPDATE messages
                 SET status = 'delivered', updated_at = ?
-                WHERE id = ?
+                WHERE id = ? AND status != 'delivered'
             """, (datetime.now().isoformat(), msg_id))
 
             if cursor.rowcount > 0:
@@ -750,21 +755,26 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         """
         now = datetime.now().isoformat()
         with self._get_connection() as conn:
+            # The UPDATE is the gate: a SELECT-then-UPDATE let two concurrent
+            # callers (an LXMF delivery callback racing the overdue-ack
+            # sweep, or a re-fired callback) both read 'pending' and both
+            # return the origin — a double synthetic ACK on the origin
+            # network. Exactly one caller wins this row (2026-07-09 review).
             cursor = conn.execute("""
-                SELECT id, ack_origin_network, ack_origin_address, ack_status
-                  FROM messages
-                 WHERE id = ? AND ack_required = 1
-            """, (message_id,))
-            row = cursor.fetchone()
-            if not row or row['ack_status'] != 'pending':
-                return None
-            conn.execute("""
                 UPDATE messages
                    SET ack_status = 'acked',
                        ack_at = ?,
                        updated_at = ?
-                 WHERE id = ?
+                 WHERE id = ? AND ack_required = 1
+                   AND ack_status = 'pending'
             """, (now, now, message_id))
+            if cursor.rowcount == 0:
+                return None
+            row = conn.execute("""
+                SELECT id, ack_origin_network, ack_origin_address
+                  FROM messages
+                 WHERE id = ?
+            """, (message_id,)).fetchone()
             return {
                 'message_id': row['id'],
                 'origin_network': row['ack_origin_network'],
@@ -964,6 +974,15 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         self._stop_event.set()
         if self._process_thread:
             self._process_thread.join(timeout=5)
+            if self._process_thread.is_alive():
+                # A send_fn wedged past the join budget: the loop will still
+                # exit at its next iteration, but claiming "stopped" now
+                # would be false.
+                logger.warning(
+                    "Message queue processing did not stop within 5s "
+                    "(worker still in a send callback); it will exit "
+                    "after the current dispatch.")
+                return
         logger.info("Message queue processing stopped")
 
     def get_stats(self) -> Dict[str, Any]:
@@ -1028,17 +1047,18 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         with self._get_connection() as conn:
             # Find candidates: pending, lowest priority first, oldest first
             cursor = conn.execute("""
-                SELECT id FROM messages
+                SELECT id, destination FROM messages
                 WHERE status = 'pending'
                 AND priority <= ?
                 ORDER BY priority ASC, created_at ASC
                 LIMIT ?
             """, (MessagePriority.NORMAL.value, count))
 
-            ids = [row["id"] for row in cursor.fetchall()]
-            if not ids:
+            rows = [(row["id"], row["destination"]) for row in cursor.fetchall()]
+            if not rows:
                 return 0
 
+            ids = [r[0] for r in rows]
             placeholders = ",".join("?" * len(ids))
             conn.execute(
                 "DELETE FROM messages WHERE id IN ({})".format(placeholders), ids
@@ -1048,7 +1068,20 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             with self._lock:
                 self._stats["shed"] += shed_count
             logger.info(f"Queue overflow: shed {shed_count} low-priority messages")
-            return shed_count
+
+        # Fork C: each shed message was recorded QUEUED at enqueue — without
+        # a terminal DROPPED here its lifecycle reads QUEUED-then-nothing
+        # forever, and the shed silently vanishes from the delivery-counter
+        # populations. QUEUE_SHED existed in the closed taxonomy with no
+        # recording site until 2026-07-09 (frontier review Pri-2).
+        for msg_id, destination in rows:
+            _dc.record(
+                _dc.DeliveryState.DROPPED,
+                msg_id=msg_id,
+                protocol=destination,
+                drop_reason=_dc.DropReason.QUEUE_SHED,
+            )
+        return shed_count
 
     def _maybe_auto_cleanup(self) -> None:
         """Periodically clean up old delivered/dead_letter messages.

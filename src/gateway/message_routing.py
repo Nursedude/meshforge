@@ -151,8 +151,12 @@ class MessageRouter:
                 f"Message bounced (confidence {result.confidence:.2f}): "
                 f"{source_id[:8]}... -> {result.bounce_reason}"
             )
-            # Bounced messages go to queue category, don't bridge immediately
-            return result.category == RoutingCategory.QUEUE.value
+            # Bounced = low confidence: held in the bouncer's review queue,
+            # never bridged immediately. (Was `category == QUEUE` — always
+            # False today since the classifier never emits QUEUE with
+            # action="queue", but if that ever changed it would have bridged
+            # exactly the messages held for review — the inverse of intent.)
+            return False
 
         # Log classification decision
         if result.confidence < 0.7:
@@ -321,7 +325,6 @@ class MessageRouter:
                 continue
 
             # Check if any routing rule allows this direction
-            direction_key = f"{source}_to_{dest}"
             if self._has_matching_rule(source, dest):
                 destinations.append(dest)
             elif self.config.default_route in ('bidirectional', 'all_to_all'):

@@ -285,6 +285,7 @@ class TestDeduplication:
         on the TEXT PRIMARY KEY and the second INSERT failed (the
         test_dedup_disabled flake on fast boxes). Clock frozen so the
         collision shape is deterministic, not timing-dependent."""
+        from unittest.mock import patch
         import gateway.message_queue as mq
         monkeypatch.setattr(mq.time, "time", lambda: 1759000000.123)
         id1 = queue.enqueue({"text": "hello"}, "meshtastic", deduplicate=False)
@@ -298,6 +299,7 @@ class TestDeduplication:
         """Same latent collision, the other legitimate shape: same content
         to two destinations in one millisecond (dedup is per-destination,
         so both must enqueue — and the PRIMARY KEY must not collide)."""
+        from unittest.mock import patch
         import gateway.message_queue as mq
         monkeypatch.setattr(mq.time, "time", lambda: 1759000000.456)
         id1 = queue.enqueue({"text": "hello"}, "meshtastic")
@@ -1254,3 +1256,80 @@ class TestTxPacing:
 
         pending = queue.get_pending(destination="meshtastic")
         assert [m.payload["text"] for m in pending] == ["c1", "c2"]
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-09 frontier review Pri-2 fixes
+# ---------------------------------------------------------------------------
+
+class TestFrontierReviewFixes20260709:
+    """Pins for the message_queue findings of the 2026-07-09 frontier
+    worklist Pri-2 pass (see review_provenance.md): shed messages leave a
+    QUEUE_SHED witness, mark_acked has exactly one winner under
+    concurrency, mark_delivered is idempotent."""
+
+    def test_shed_records_queue_shed_witness(self, queue):
+        """A shed message was recorded QUEUED at enqueue — without a
+        terminal DROPPED/QUEUE_SHED its lifecycle reads QUEUED-then-nothing
+        forever. QUEUE_SHED was in the closed DropReason taxonomy with NO
+        recording site before this fix."""
+        from unittest.mock import patch
+        import gateway.message_queue as mq
+        msg_id = queue.enqueue(
+            {"text": "sheddable"}, "rns", priority=MessagePriority.LOW)
+        assert msg_id is not None
+        with patch.object(mq._dc, "record") as record:
+            shed = queue._shed_overflow(count=1)
+        assert shed == 1
+        dropped = [
+            c for c in record.call_args_list
+            if c.args and c.args[0] == mq._dc.DeliveryState.DROPPED
+        ]
+        assert len(dropped) == 1
+        kwargs = dropped[0].kwargs
+        assert kwargs["msg_id"] == msg_id
+        assert kwargs["protocol"] == "rns"
+        assert kwargs["drop_reason"] == mq._dc.DropReason.QUEUE_SHED
+
+    def test_mark_acked_concurrent_single_winner(self, queue):
+        """The documented idempotency contract ('second call returns None')
+        must hold for CONCURRENT calls too: an LXMF delivery callback racing
+        the overdue-ack sweep used to both read 'pending' via
+        SELECT-then-UPDATE and both emit a synthetic ACK."""
+        import threading
+        msg_id = queue.enqueue({"text": "ack me"}, "rns")
+        assert queue.register_pending_ack(
+            msg_id, origin_network="meshcore", origin_address="abc123",
+        ) is True
+
+        n = 8
+        barrier = threading.Barrier(n)
+        results = []
+        lock = threading.Lock()
+
+        def worker():
+            barrier.wait()
+            r = queue.mark_acked(msg_id)
+            with lock:
+                results.append(r)
+
+        threads = [threading.Thread(target=worker) for _ in range(n)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=15)
+
+        winners = [r for r in results if r is not None]
+        assert len(results) == n
+        assert len(winners) == 1, (
+            f"expected exactly one mark_acked winner, got {len(winners)}")
+        assert winners[0]["origin_network"] == "meshcore"
+        assert queue.get_ack_status(msg_id) == "acked"
+
+    def test_mark_delivered_idempotent(self, queue):
+        """Second mark_delivered on the same row returns False and neither
+        double-counts the delivered stat nor re-records SENT."""
+        msg_id = queue.enqueue({"text": "once"}, "rns")
+        assert queue.mark_delivered(msg_id) is True
+        assert queue.mark_delivered(msg_id) is False
+        assert queue._stats["delivered"] == 1
