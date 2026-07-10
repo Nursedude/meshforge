@@ -101,6 +101,14 @@ DEFAULT_WAIT_FOR_RNSD_TIMEOUT_S = float(
 # as a client.
 _RNS_LISTENER_ALLOWED_PATTERNS = ("rnsd", "reticulum")
 
+# Serializes the check-then-construct window in open_reticulum(). RNS is a
+# process singleton: without this, two threads that both pass the
+# _existing_instance() check race RNS.Reticulum(), and the loser sees
+# OSError("Attempt to reinitialise Reticulum") — boilerplate that callers
+# (rns_bridge pre-init, map collector) had to re-implement even though
+# absorbing it is this chokepoint's stated contract (module docstring #2).
+_CONSTRUCT_LOCK = threading.Lock()
+
 
 def cmdline_is_rnsd_shaped(cmdline: str) -> bool:
     """STRICT owner test: is this cmdline rnsd itself (the fleet's designated
@@ -194,7 +202,9 @@ def _read_instance_name_from_config(configdir: Union[str, os.PathLike]) -> Optio
     return None
 
 
-def check_rns_listener_owner(instance_name: str) -> Optional[str]:
+def check_rns_listener_owner(
+    instance_name: str, _retry_on_vanished: bool = True
+) -> Optional[str]:
     """Verify ``@rns/<instance_name>`` LISTEN owner looks like a real RNS
     process. Returns None on pass (or no listener found — let
     ``RNS.Reticulum()`` create one). Raises ``RuntimeError`` with a
@@ -208,6 +218,14 @@ def check_rns_listener_owner(instance_name: str) -> Optional[str]:
     ``rpc_connection.recv()`` deep inside RNS — a trace that takes 30+
     minutes to root-cause. This preflight surfaces the collision in one line
     at process start (Issue #69).
+
+    Owner vanished between ``ss`` and the ``/proc`` read: a dead pid cannot
+    hold an abstract socket, so the realistic cause is listener teardown in
+    progress (an rnsd restart racing this preflight), not a squatter. One
+    fresh re-scan resolves that race — teardown finished (no listener) or
+    the new owner is readable — instead of failing loud with a directive to
+    ``kill`` a pid that already exited. An owner that is STILL unreadable on
+    the second scan keeps the fail-loud contract (cannot prove it's allowed).
     """
     try:
         proc = subprocess.run(
@@ -234,6 +252,7 @@ def check_rns_listener_owner(instance_name: str) -> Optional[str]:
     # identical for rnsd and any rogue python daemon. Read the full cmdline
     # from /proc to make the allowed-vs-suspicious determination.
     suspicious = []
+    vanished = []
     full_cmdlines: dict = {}
     for pid in pids:
         try:
@@ -241,12 +260,24 @@ def check_rns_listener_owner(instance_name: str) -> Optional[str]:
                 cmdline = fh.read().replace(b"\x00", b" ").decode(
                     "utf-8", errors="replace").strip()
         except OSError:
-            # Process died between ss and /proc read — treat as gone, no
-            # diagnostic possible.
-            cmdline = ""
+            # Process died between ss and /proc read. A dead pid cannot own
+            # the socket — defer judgment to one fresh re-scan below rather
+            # than declaring a squatter we cannot name.
+            full_cmdlines[pid] = ""
+            vanished.append(pid)
+            continue
         full_cmdlines[pid] = cmdline
         if not cmdline_is_rns_family(cmdline):
             suspicious.append(pid)
+
+    if not suspicious and vanished:
+        if _retry_on_vanished:
+            time.sleep(0.2)
+            return check_rns_listener_owner(
+                instance_name, _retry_on_vanished=False)
+        # Still unreadable on the fresh scan: cannot prove it's allowed —
+        # keep the fail-loud contract with the honest dead-pid diagnostic.
+        suspicious = vanished
 
     if suspicious:
         pid = suspicious[0]
@@ -557,52 +588,75 @@ def open_reticulum(
     if existing is not None:
         return existing
 
-    instance_name = _read_instance_name_from_config(configdir) if configdir else None
-    if not instance_name:
-        # Fall back to the box's configured instance so the preflight/probe
-        # still have a target even when configdir is None/unparseable.
-        try:
-            from utils.paths import ReticulumPaths
-            instance_name = ReticulumPaths.get_configured_instance_name()
-        except Exception:
-            instance_name = None
+    # Serialize check-then-construct: a second thread blocks here and finds
+    # the singleton on its own re-check instead of racing the constructor.
+    with _CONSTRUCT_LOCK:
+        existing = _existing_instance()
+        if existing is not None:
+            return existing
 
-    if instance_name:
-        # (3) fail-LOUD on a foreign listener owner.
-        check_rns_listener_owner(instance_name)
+        instance_name = (
+            _read_instance_name_from_config(configdir) if configdir else None
+        )
+        if not instance_name:
+            # Fall back to the box's configured instance so the preflight/
+            # probe still have a target even when configdir is
+            # None/unparseable.
+            try:
+                from utils.paths import ReticulumPaths
+                instance_name = ReticulumPaths.get_configured_instance_name()
+            except Exception:
+                instance_name = None
 
-        # (4) fail-OPEN on absent (for consumers) or wedged rnsd.
-        if probe:
-            listener_present = _shared_instance_listener_present(instance_name)
-            if not listener_present and _rnsd_unit_enabled():
-                # Issue #69 boot race: rnsd is the designated host but hasn't
-                # claimed yet (it's probably still starting). Wait instead of
-                # boot-claiming the instance out from under it.
-                listener_present = _wait_for_rnsd_listener(instance_name)
+        if instance_name:
+            # (3) fail-LOUD on a foreign listener owner.
+            check_rns_listener_owner(instance_name)
+
+            # (4) fail-OPEN on absent (for consumers) or wedged rnsd.
+            if probe:
+                listener_present = _shared_instance_listener_present(
+                    instance_name)
+                if not listener_present and _rnsd_unit_enabled():
+                    # Issue #69 boot race: rnsd is the designated host but
+                    # hasn't claimed yet (it's probably still starting). Wait
+                    # instead of boot-claiming the instance out from under it.
+                    listener_present = _wait_for_rnsd_listener(instance_name)
+                    if not listener_present:
+                        # rnsd never showed. Constructing standalone here
+                        # would poison the box the moment rnsd recovers, so
+                        # degrade regardless of require_listener.
+                        return None
                 if not listener_present:
-                    # rnsd never showed. Constructing standalone here would
-                    # poison the box the moment rnsd recovers, so degrade
-                    # regardless of require_listener.
+                    if require_listener:
+                        logger.warning(
+                            "rns_init: @rns/%s shared instance not present "
+                            "and require_listener=True — skipping RNS init "
+                            "so this process never becomes the @rns host "
+                            "(rnsd must host it). Degraded; retry on a "
+                            "later cycle.",
+                            instance_name,
+                        )
+                        return None
+                    # else: no listener, rnsd not enabled — standalone
+                    # construction is legitimate (e.g. gateway with no rnsd).
+                elif not _probe_shared_instance_connect(
+                    instance_name, connect_probe_timeout_s
+                ):
+                    # Listener present but wedged (or stopped mid-probe) —
+                    # degrade.
                     return None
-            if not listener_present:
-                if require_listener:
-                    logger.warning(
-                        "rns_init: @rns/%s shared instance not present and "
-                        "require_listener=True — skipping RNS init so this "
-                        "process never becomes the @rns host (rnsd must host "
-                        "it). Degraded; retry on a later cycle.",
-                        instance_name,
-                    )
-                    return None
-                # else: no listener, rnsd not enabled — standalone
-                # construction is legitimate (e.g. gateway with no rnsd).
-            elif not _probe_shared_instance_connect(
-                instance_name, connect_probe_timeout_s
-            ):
-                # Listener present but wedged (or stopped mid-probe) — degrade.
-                return None
 
-    # (5) construct under the watchdog backstop.
-    return _construct_reticulum_with_watchdog(
-        configdir, loglevel=loglevel, timeout_s=init_timeout_s,
-    )
+        # (5) construct under the watchdog backstop. Absorb the singleton
+        # "reinitialise" race with anything that constructed outside this
+        # lock (module docstring #2 — callers must never need this catch).
+        try:
+            return _construct_reticulum_with_watchdog(
+                configdir, loglevel=loglevel, timeout_s=init_timeout_s,
+            )
+        except OSError as exc:
+            msg = str(exc).lower()
+            if "reinitialise" in msg or "already running" in msg:
+                existing = _existing_instance()
+                if existing is not None:
+                    return existing
+            raise

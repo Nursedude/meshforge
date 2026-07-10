@@ -354,11 +354,10 @@ def test_preflight_handles_ss_missing(monkeypatch):
 
 
 def test_preflight_handles_process_vanished_between_ss_and_proc(monkeypatch):
-    """The owner process may exit in the microsecond between `ss` reading
-    /proc/net/unix and us reading /proc/<pid>/cmdline. Treat the empty
-    cmdline as suspicious (because we can't prove it's allowed), so the
-    operator still gets a diagnostic — but only one pid is involved, so
-    the message names it."""
+    """Owner unreadable on BOTH scans (2026-07-09 review: one fresh re-scan
+    resolves teardown races first) — still fail loud: we can't prove it's
+    allowed, so the operator gets a diagnostic naming the pid."""
+    monkeypatch.setattr("utils.rns_init.time.sleep", lambda s: None)
     _patch_ss_and_proc(
         monkeypatch,
         _SS_OUTPUT_ROGUE,
@@ -367,6 +366,81 @@ def test_preflight_handles_process_vanished_between_ss_and_proc(monkeypatch):
     with pytest.raises(RuntimeError) as exc_info:
         check_rns_listener_owner("fleet-test")
     assert "process exited" in str(exc_info.value)
+
+
+def _patch_ss_sequence_and_proc(monkeypatch, ss_outputs, cmdlines):
+    """Like _patch_ss_and_proc but `ss` output changes per call — the
+    vanished-owner re-scan sees fresh state, not the first snapshot."""
+    import subprocess
+
+    calls = {"n": 0}
+
+    def _fake_run(cmd, **kwargs):
+        assert cmd == ["ss", "-xnpl"]
+
+        class _FakeResult:
+            stdout = ss_outputs[min(calls["n"], len(ss_outputs) - 1)]
+        calls["n"] += 1
+        return _FakeResult()
+
+    monkeypatch.setattr(subprocess, "run", _fake_run)
+
+    real_open = open
+
+    def _fake_open(path, *args, **kwargs):
+        if isinstance(path, str) and path.startswith("/proc/") \
+                and path.endswith("/cmdline"):
+            pid = int(path.split("/")[2])
+            entry = cmdlines.get(pid)
+            if isinstance(entry, OSError):
+                raise entry
+            import io
+            return io.BytesIO((entry or "").encode("utf-8") + b"\x00")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", _fake_open)
+
+
+def test_preflight_vanished_owner_rescan_listener_gone_passes(monkeypatch):
+    """The realistic vanished-pid cause is listener teardown in progress
+    (an rnsd restart racing the preflight): the fresh re-scan finds no
+    listener at all — pass, never a RuntimeError telling the operator to
+    kill a pid that already exited (2026-07-09 frontier review)."""
+    monkeypatch.setattr("utils.rns_init.time.sleep", lambda s: None)
+    _patch_ss_sequence_and_proc(
+        monkeypatch,
+        [_SS_OUTPUT_ROGUE, _SS_OUTPUT_NO_LISTENER],
+        {129485: OSError("process gone")},
+    )
+    assert check_rns_listener_owner("fleet-test") is None
+
+
+def test_preflight_vanished_owner_rescan_new_rnsd_passes(monkeypatch):
+    """rnsd restart completed between the scans: the re-scan sees the NEW
+    rnsd pid with a readable cmdline — pass as a normal healthy owner."""
+    monkeypatch.setattr("utils.rns_init.time.sleep", lambda s: None)
+    _patch_ss_sequence_and_proc(
+        monkeypatch,
+        [_SS_OUTPUT_ROGUE, _SS_OUTPUT_HEALTHY],
+        {
+            129485: OSError("process gone"),
+            206118: "/usr/bin/python3 /usr/local/bin/rnsd "
+                    "--config /etc/reticulum --service",
+        },
+    )
+    assert check_rns_listener_owner("fleet-test") is None
+
+
+def test_preflight_live_squatter_not_masked_by_vanished_peer(monkeypatch):
+    """A READABLE non-RNS owner fails loud immediately — the vanished-pid
+    re-scan must never grant a live squatter a second chance window."""
+    _patch_ss_and_proc(
+        monkeypatch,
+        _SS_OUTPUT_ROGUE,
+        {129485: "python3 /opt/meshanchor/src/daemon.py start"},
+    )
+    with pytest.raises(RuntimeError, match="not an RNS process"):
+        check_rns_listener_owner("fleet-test")
 
 
 def test_read_instance_name_from_config_handles_missing_file(tmp_path):

@@ -299,3 +299,93 @@ class TestExistingInstance:
         with patch.object(ri, "_HAS_RNS", True), \
              patch.object(ri, "_RNS", fake_rns):
             assert ri._existing_instance() is sentinel
+
+
+# --------------------------------------------- construct lock + reinitialise
+
+class TestConstructConcurrencyAndReinitialise:
+    """The chokepoint owns singleton idempotency under concurrency (2026-07-09
+    frontier review of the rns_init seam): two racing threads produce ONE
+    construct, and RNS's 'Attempt to reinitialise' OSError is absorbed into
+    the existing instance — never re-exported to callers (module docstring
+    contract #2; rns_bridge and the map collector had each re-implemented
+    the catch)."""
+
+    def test_concurrent_callers_single_construct(self):
+        import threading
+        import time as _time
+
+        holder = {"inst": None}
+        construct_calls = []
+        instance = object()
+
+        def fake_existing():
+            return holder["inst"]
+
+        def fake_construct(configdir, *, loglevel, timeout_s):
+            construct_calls.append(threading.get_ident())
+            _time.sleep(0.15)  # widen the race window
+            holder["inst"] = instance
+            return instance
+
+        results = []
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", side_effect=fake_existing), \
+             patch.object(ri, "_read_instance_name_from_config",
+                          return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          side_effect=fake_construct):
+            threads = [
+                threading.Thread(
+                    target=lambda: results.append(
+                        ri.open_reticulum("/tmp/x", probe=False)))
+                for _ in range(2)
+            ]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(timeout=10)
+
+        assert len(construct_calls) == 1, (
+            f"expected exactly one construct, got {len(construct_calls)}")
+        assert results == [instance, instance]
+
+    def test_reinitialise_absorbed_returns_existing(self):
+        sentinel = object()
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance",
+                          side_effect=[None, None, sentinel]), \
+             patch.object(ri, "_read_instance_name_from_config",
+                          return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(
+                 ri, "_construct_reticulum_with_watchdog",
+                 side_effect=OSError("Attempt to reinitialise Reticulum")):
+            assert ri.open_reticulum("/tmp/x", probe=False) is sentinel
+
+    def test_reinitialise_without_existing_reraises(self):
+        """Absorption requires a real instance to hand back — a reinitialise
+        error with NO retrievable singleton stays loud (never maps a broken
+        state to a healthy-looking return)."""
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config",
+                          return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(
+                 ri, "_construct_reticulum_with_watchdog",
+                 side_effect=OSError("Attempt to reinitialise Reticulum")):
+            with pytest.raises(OSError, match="reinitialise"):
+                ri.open_reticulum("/tmp/x", probe=False)
+
+    def test_unrelated_oserror_propagates(self):
+        with patch.object(ri, "_HAS_RNS", True), \
+             patch.object(ri, "_existing_instance", return_value=None), \
+             patch.object(ri, "_read_instance_name_from_config",
+                          return_value="inst"), \
+             patch.object(ri, "check_rns_listener_owner", return_value=None), \
+             patch.object(ri, "_construct_reticulum_with_watchdog",
+                          side_effect=OSError("boom")):
+            with pytest.raises(OSError, match="boom"):
+                ri.open_reticulum("/tmp/x", probe=False)
