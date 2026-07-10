@@ -2912,3 +2912,39 @@ debounce (parity-style streak file) rides out an operator mid-rotation. Fix:
 gateway.json if the radio is the intended truth). Tests: 9
 (`test_mqtt_root_drift_*` + `test_read_declared_root_topic_*`) + closed-enum
 gate bump. Journal line shape pinned live on moc 2026-06-07 01:25 HST.
+
+---
+
+## Issue #80: mini-dudeai honest-failure-modes review — one defect class, 18/18 confirmed (2026-06-09; archived from persistent_issues.md 2026-07-09)
+
+Full-effort review of the engine: 18 candidates verified, 18 survived — ALL
+one class: **a degraded internal state mapped to a valid-looking value**
+(read error→empty ruleset→"nothing active"; source error→absent conditions→
+"recovered"/false CLEARED; `{"rules": null}`→zero validation errors→promotion
+wipes alerting; typo'd match key→extras filter→rule silently dead). Fixed in
+one pass; pinned by `tests/test_mini_dudeai_honest_failure_modes.py` (30) +
+seed-coverage gate. Key cures: unreadable rules / erroring sources now **HOLD
+edge state** (last-good ruleset cache + per-source condition hold persisted in
+`state.source_hold` — unobservable ≠ resolved); empty/null candidates can't
+wipe canonical; `lint_rules_document` warns on non-structural match keys at
+authoring+promotion; grace needs OBSERVED ticks (`pending_ticks`, NTP/restart
+can't forge the span) + cooldown clamps backward clock steps + run() resets
+streaks; single-instance flock (`--once` vs daemon race); `_util._atomic_write`
+(mkstemp+fsync) + shared `append_jsonl` (torn-tail repair) across history/
+audit/dreams; boot_health latches on kernel **boot_id**, definitive verdicts
+immutable, `indeterminate` re-assessed post-NTP from STORED pre-boot facts
+(catches the short-power-cut class the ±120s time key missed); **both role
+seeds now route all 23 signal classes** (6 were firing into a void:
+phoneapi_tcp_leak #75, mqtt_root_drift #77, cron_verdict_stale #78 + the 3 #79
+self-probes) and `TestSeedCoversSignalClasses` FAILS on any future unrouted
+class; probe fixes — `_ROLE_TO_MINI_SEED` covers collector/cloud-publisher,
+history-stall baseline = `state.history_appends_total` (counts edge_downs),
+memory-index limit imports the writer's constant; config-mode boot_health
+plumbs `clean_exit_path` (reader/writer pair). **THE LESSON — apply at WRITE
+time:** `.claude/rules/honest_failure_modes.md` (9-point checklist; every
+`except`/`or []`/`.get(default)` must answer "what does the consumer SEE?").
+**Residual closed (`1899261`, same day): seed-CONTENT drift.** `seed_provenance`
+stamped in-document by `candidate.merge_seed_rules` (THE merge path); probe
+gains a STALE leg via the writer's `rule_body_sha` (guarded import, no fallback
+hasher): live==stamp but seed moved → fire; tuned/unstamped → exempt (stamps
+ratchet in via merges; unstamped boxes can't false-alarm).

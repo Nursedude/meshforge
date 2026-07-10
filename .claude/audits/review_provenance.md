@@ -30,6 +30,22 @@
 - `20d0b643` (revert of durable r2m reverse-routing) — a revert, not a
   review target.
 
+## Frontier worklist — queued upshift ranges (added 2026-07-09, model-advisor companion)
+
+> The model advisor's upshift path lands HERE: when a session judges work
+> review-shaped but isn't running on a frontier-class model, it appends a row
+> instead of faking the pass. Next frontier session: pick from the top.
+> Remove a row only by running the pass (its results become a row in the
+> table above).
+
+| Pri | Scope | Why it's frontier-shaped |
+|-----|-------|--------------------------|
+| 1 | `src/utils/rns_init.py` + the `open_reticulum()` seam (never adversarially reviewed as a unit) | THE fleet chokepoint (#68/#69/#72 all live here); byte-parity-locked with MeshAnchor so one pass fixes two repos; failure mode = every RNS consumer on every box |
+| 2 | `src/gateway/message_queue.py` + `message_routing.py` | SQLite delivery spine, predates the review era; silent-loss defects here are the #16/#74 class at the source |
+| 3 | `src/monitoring/mqtt_subscriber.py` + `packet_dissectors.py` | external-input parsing surface (hostile-input-shaped = security review, not correctness skim); #73 fd-leak lived here |
+| 4 | `src/utils/service_check.py` | SSOT for privileged systemd ops fleet-wide; a subtle state-vs-capability bug propagates to every caller (#20 class) |
+| 5 | `scripts/lint.py` + `tests/test_regression_guards.py` | the gates themselves — a defect here silently weakens EVERY other guarantee; nobody reviews the reviewers |
+
 ## Conventions for future passes
 
 1. When a review pass closes, add its row HERE in the same commit as the

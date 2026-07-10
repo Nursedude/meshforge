@@ -60,6 +60,13 @@ satisfied; the truth wasn't.
    counter, a marker, or a signal a PROBE can see (history_appends_total,
    consecutive_write_errors, preflight keys). If failure leaves no artifact,
    it never happened — until the operator finds out outside the app.
+10. **A resolved incident compiles down to THREE artifacts, not two.** When a
+    frontier session root-causes an incident, the write-time deliverables are
+    the probe/rule (→R), the persistent_issues/runbook entry (→R), **and an
+    eval case in `evals/local_brain/` (→L)** proving the local tier can triage
+    the class next time. Without the eval case the fallback brain's competence
+    on this class stays permanently BELIEVED — the check is the weekly
+    `local_brain_eval --gate` cron verdict (2026-07-09, cross-model arc).
 
 ## How to apply
 

@@ -360,6 +360,14 @@ wired cron that's FAIL/CONCERN, silent-past-threshold, or never-reported. **INER
 `_parse_crontab`/`_parse_cron_verdicts` from `fleet_snapshot`. Tests:
 `TestCronVerdictStale` (11) + closed-enum gate bump.
 
+**Addendum 2026-07-09 (QA audit): the "silent(never)" leg was FALSE until
+07-10.** `cron_verdict.sh`'s GLOBAL log-cap retention truncated a daily cron's
+verdicts out of the log faster than its cadence — manufacturing "never
+reported" pages for healthy wired crons. Fix `d0254dae`: per-name retention
+(each cron keeps its own newest verdicts). Post-07-10 a "silent(never)" page
+is REAL — investigate the cron, don't suspect the probe. Tier-L eval case
+`oracle-cron-silent-never-was-false` pins this lore.
+
 
 ---
 
@@ -390,39 +398,16 @@ All 3 new probes wired in `run_all_probes`, classes in the closed enum (issue_re
 
 ---
 
-## Issue #80: mini-dudeai honest-failure-modes review — one defect class, 18/18 confirmed (2026-06-09)
+## Issue #80: mini-dudeai honest-failure-modes review — RESOLVED, body in archive (trimmed 2026-07-09)
 
-Full-effort review of the engine: 18 candidates verified, 18 survived — ALL
-one class: **a degraded internal state mapped to a valid-looking value**
-(read error→empty ruleset→"nothing active"; source error→absent conditions→
-"recovered"/false CLEARED; `{"rules": null}`→zero validation errors→promotion
-wipes alerting; typo'd match key→extras filter→rule silently dead). Fixed in
-one pass; pinned by `tests/test_mini_dudeai_honest_failure_modes.py` (30) +
-seed-coverage gate. Key cures: unreadable rules / erroring sources now **HOLD
-edge state** (last-good ruleset cache + per-source condition hold persisted in
-`state.source_hold` — unobservable ≠ resolved); empty/null candidates can't
-wipe canonical; `lint_rules_document` warns on non-structural match keys at
-authoring+promotion; grace needs OBSERVED ticks (`pending_ticks`, NTP/restart
-can't forge the span) + cooldown clamps backward clock steps + run() resets
-streaks; single-instance flock (`--once` vs daemon race); `_util._atomic_write`
-(mkstemp+fsync) + shared `append_jsonl` (torn-tail repair) across history/
-audit/dreams; boot_health latches on kernel **boot_id**, definitive verdicts
-immutable, `indeterminate` re-assessed post-NTP from STORED pre-boot facts
-(catches the short-power-cut class the ±120s time key missed); **both role
-seeds now route all 23 signal classes** (6 were firing into a void:
-phoneapi_tcp_leak #75, mqtt_root_drift #77, cron_verdict_stale #78 + the 3 #79
-self-probes) and `TestSeedCoversSignalClasses` FAILS on any future unrouted
-class; probe fixes — `_ROLE_TO_MINI_SEED` covers collector/cloud-publisher,
-history-stall baseline = `state.history_appends_total` (counts edge_downs),
-memory-index limit imports the writer's constant; config-mode boot_health
-plumbs `clean_exit_path` (reader/writer pair). **THE LESSON — apply at WRITE
-time:** `.claude/rules/honest_failure_modes.md` (9-point checklist; every
-`except`/`or []`/`.get(default)` must answer "what does the consumer SEE?").
-**Residual closed (`1899261`, same day): seed-CONTENT drift.** `seed_provenance`
-stamped in-document by `candidate.merge_seed_rules` (THE merge path); probe
-gains a STALE leg via the writer's `rule_body_sha` (guarded import, no fallback
-hasher): live==stamp but seed moved → fire; tuned/unstamped → exempt (stamps
-ratchet in via merges; unstamped boxes can't false-alarm).
+18/18 confirmed findings, ALL one class: **degraded internal state mapped to
+a valid-looking value** (error reads as empty/recovered/valid). Cures pinned
+by `tests/test_mini_dudeai_honest_failure_modes.py` (30) + seed-coverage
+gate; key patterns: HOLD edge state on unobservable, observed-tick grace,
+atomic writes + torn-tail repair, boot_id latching, all signal classes
+seed-routed. **THE LESSON** = `.claude/rules/honest_failure_modes.md` (the
+write-time checklist, now 10 points). Residual seed-CONTENT drift closed same
+day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
 
 
 ---
