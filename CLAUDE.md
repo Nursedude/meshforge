@@ -6,6 +6,7 @@
 <!-- Auto-loaded by Claude Code -->
 @.claude/rules/security.md
 @.claude/rules/calibrated_claims.md
+@.claude/rules/model_advisor.md
 @.claude/foundations/persistent_issues.md
 
 ---
