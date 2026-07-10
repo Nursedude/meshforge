@@ -134,14 +134,20 @@ class TestUpdateAllRoutesMeshtasticLib:
         }
         h._pip_install_meshtastic = MagicMock(return_value=(True, 'lib ok'))
         h._run_update_command = MagicMock(return_value=(True, 'apt ok'))
-        with patch('handlers.updates._check_all_versions', return_value=versions):
+        with patch('handlers.updates._check_all_versions', return_value=versions), \
+                patch('handlers.updates.run_meshtasticd_upgrade',
+                      return_value=(True, 'apt verified')) as apt_run, \
+                patch('handlers.updates._apply_config_and_restart',
+                      return_value=(True, 'restarted')):
             h._update_all()
 
         # The library is routed through the helper (PEP 668 + #24 handled)...
         h._pip_install_meshtastic.assert_called_once_with(upgrade=True)
-        # ...and NOT through the raw-command path; other components still are.
+        # ...meshtasticd through the verified apt runner (2026-07-10 audit)...
+        apt_run.assert_called_once_with()
+        # ...and neither through the raw-command path.
         routed = [c.args[0] for c in h._run_update_command.call_args_list]
-        assert 'meshtasticd' in routed
+        assert 'meshtasticd' not in routed
         assert 'meshtastic_lib' not in routed
 
     def test_cli_uses_pipx_helper_not_raw_command(self):
@@ -162,23 +168,31 @@ class TestUpdateAllRoutesMeshtasticLib:
         }
         h._pipx_upgrade_cli = MagicMock(return_value=(True, 'cli ok'))
         h._run_update_command = MagicMock(return_value=(True, 'apt ok'))
-        with patch('handlers.updates._check_all_versions', return_value=versions):
+        with patch('handlers.updates._check_all_versions', return_value=versions), \
+                patch('handlers.updates.run_meshtasticd_upgrade',
+                      return_value=(True, 'apt verified')) as apt_run, \
+                patch('handlers.updates._apply_config_and_restart',
+                      return_value=(True, 'restarted')):
             h._update_all()
 
         h._pipx_upgrade_cli.assert_called_once_with()
         routed = [c.args[0] for c in h._run_update_command.call_args_list]
         assert 'cli' not in routed
-        assert 'meshtasticd' in routed
+        assert 'meshtasticd' not in routed
+        apt_run.assert_called_once_with()
 
 
 class TestPipxUpgradeCliTargetsOwner:
-    """`_pipx_upgrade_cli` must run pipx as the OWNER of the resolved CLI binary
-    so the upgrade lands in the pipx home the reader reads from."""
+    """`_pipx_upgrade_cli` must run pipx as the OWNER of the resolved CLI
+    binary (so the write lands in the pipx home the reader reads from) AND
+    target the reviewed fleet floor, never PyPI-latest (2026-07-10 audit:
+    `pipx upgrade` overshoots the reviewed pin the moment PyPI moves)."""
 
     def test_drops_to_owner_when_owner_differs_from_euid(self):
         h = _handler()
         with patch('utils.cli.find_meshtastic_cli',
                    return_value='/home/op/.local/bin/meshtastic'), \
+                patch('handlers.updates.read_floor', return_value='2.7.9'), \
                 patch('os.stat', return_value=MagicMock(st_uid=1000)), \
                 patch('pwd.getpwuid', return_value=MagicMock(pw_name='op')), \
                 patch('os.geteuid', return_value=0), \
@@ -188,12 +202,13 @@ class TestPipxUpgradeCliTargetsOwner:
         assert success is True
         cmd = run.call_args.args[0]
         assert cmd[:4] == ['sudo', '-u', 'op', '-H']
-        assert cmd[-3:] == ['pipx', 'upgrade', 'meshtastic']
+        assert cmd[-4:] == ['pipx', 'install', '--force', 'meshtastic==2.7.9']
 
     def test_plain_pipx_when_owner_is_current_user(self):
         h = _handler()
         with patch('utils.cli.find_meshtastic_cli',
                    return_value='/usr/local/bin/meshtastic'), \
+                patch('handlers.updates.read_floor', return_value='2.7.9'), \
                 patch('os.stat', return_value=MagicMock(st_uid=0)), \
                 patch('pwd.getpwuid', return_value=MagicMock(pw_name='root')), \
                 patch('os.geteuid', return_value=0), \
@@ -202,15 +217,33 @@ class TestPipxUpgradeCliTargetsOwner:
             success, _msg = h._pipx_upgrade_cli()
         assert success is True
         cmd = run.call_args.args[0]
-        assert cmd == ['pipx', 'upgrade', 'meshtastic']
+        assert cmd == ['pipx', 'install', '--force', 'meshtastic==2.7.9']
         assert 'sudo' not in cmd
 
-    def test_no_cli_found_returns_false(self):
+    def test_no_cli_targets_real_user_fresh_install(self):
+        """No resolved binary → install into the OPERATOR's pipx home
+        (SUDO_USER under sudo), never root's by accident — the old install
+        path ran `pipx install` in the current (root) context."""
         h = _handler()
-        with patch('utils.cli.find_meshtastic_cli', return_value=None):
+        with patch('utils.cli.find_meshtastic_cli', return_value=None), \
+                patch('handlers.updates.read_floor', return_value='2.7.9'), \
+                patch('utils.paths.get_real_username', return_value='op'), \
+                patch('pwd.getpwnam', return_value=MagicMock(pw_uid=1000)), \
+                patch('os.geteuid', return_value=0), \
+                patch('handlers.updates.subprocess.run',
+                      return_value=_result(0)) as run:
+            success, _msg = h._pipx_upgrade_cli()
+        assert success is True
+        cmd = run.call_args.args[0]
+        assert cmd[:4] == ['sudo', '-u', 'op', '-H']
+        assert cmd[-1] == 'meshtastic==2.7.9'
+
+    def test_unreadable_floor_refuses_blind_upgrade(self):
+        h = _handler()
+        with patch('handlers.updates.read_floor', return_value=None):
             success, msg = h._pipx_upgrade_cli()
         assert success is False
-        assert 'not found' in msg.lower()
+        assert 'baseline' in msg.lower()
 
 
 class TestLibVersionReadsWriteTarget:
@@ -347,6 +380,7 @@ class TestCheckAllVersionsFleetFloor:
             patch.object(vc, 'read_floor', return_value=floor),
             patch.object(vc, 'get_meshforge_version', return_value=None),
             patch.object(vc, 'get_latest_meshforge_version', return_value=None),
+            patch.object(vc, 'get_meshtasticd_apt_snapshot', return_value=None),
             patch.object(vc, 'get_meshtasticd_version', return_value=None),
             patch.object(vc, 'get_latest_meshtasticd_version', return_value=None),
             patch.object(vc, 'get_node_firmware_version', return_value=None),
@@ -386,3 +420,265 @@ class TestCheckAllVersionsFleetFloor:
         assert lib['fleet_floor'] == '2.7.9'
         assert lib['pypi_latest'] == '2.7.10'
         assert lib['update_available'] is False
+
+
+class TestUpdateMeshtasticdFlow:
+    """The 2026-07-10 rework: _update_meshtasticd drives the apt state machine
+    (candidate truth, hold as deliberate pin, dry-run installability, guided
+    mismatched-repo repair) instead of a blind `apt upgrade` string."""
+
+    def _state(self, **kw):
+        from updates.meshtasticd_apt import MeshtasticdAptState
+        defaults = dict(
+            apt_available=True,
+            installed='2.7.24.58~obs472b14c~alpha',
+            candidate='2.7.26.61~obs54e0d8d~beta',
+            held=False, update_available=True, candidate_installable=True,
+        )
+        defaults.update(kw)
+        return MeshtasticdAptState(**defaults)
+
+    def test_up_to_date_reports_no_update(self):
+        h = _handler()
+        state = self._state(candidate='2.7.24.58~obs472b14c~alpha',
+                            update_available=False, candidate_installable=None)
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   return_value=state), \
+                patch('handlers.updates.run_meshtasticd_upgrade') as run:
+            h._update_meshtasticd()
+        assert 'No Update' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+    def test_held_decline_runs_nothing(self):
+        """A hold is a deliberate pin: declining the unhold prompt must end
+        the flow with zero writes."""
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=False)
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   return_value=self._state(held=True)), \
+                patch('handlers.updates.run_meshtasticd_upgrade') as run:
+            h._update_meshtasticd()
+        run.assert_not_called()
+        # And the pin prompt is default-no.
+        assert h.ctx.dialog.yesno.call_args.kwargs.get('default_no') is True
+
+    def test_held_accept_unholds_and_reholds(self):
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   return_value=self._state(held=True)), \
+                patch('handlers.updates.run_meshtasticd_upgrade',
+                      return_value=(True, 'ok 2.7.24 -> 2.7.26')) as run, \
+                patch('handlers.updates._apply_config_and_restart',
+                      return_value=(True, 'restarted')):
+            h._update_meshtasticd()
+        run.assert_called_once_with(unhold=True, rehold=True)
+
+    def test_broken_candidate_without_repo_diagnosis_stops_honestly(self):
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        state = self._state(candidate_installable=False,
+                            blocking_detail='E: unmet deps: libc6 (>= 2.42)',
+                            mismatched_repos=[])
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   return_value=state), \
+                patch('handlers.updates.run_meshtasticd_upgrade') as run:
+            h._update_meshtasticd()
+        assert 'Candidate Not Installable' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+    def test_broken_candidate_guided_repair_then_upgrade(self):
+        """The 2026-07-10 field class: mismatched Debian_Testing repo → operator
+        accepts the repair → repo disabled, apt refreshed, state RE-DERIVED,
+        upgrade proceeds on the new state."""
+        from updates.meshtasticd_apt import RepoLine
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        bad = RepoLine('/etc/apt/sources.list.d/meshtastic.list', 1,
+                       'deb .../Meshtastic:/beta/Debian_Testing/ /')
+        broken = self._state(candidate_installable=False,
+                             blocking_detail='E: libc6 (>= 2.42)',
+                             mismatched_repos=[bad])
+        repaired = self._state(candidate_installable=True)
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   side_effect=[broken, repaired]) as get_state, \
+                patch('handlers.updates.disable_repo_lines',
+                      return_value=(True, 'disabled')) as disable, \
+                patch('handlers.updates.apt_update',
+                      return_value=(True, 'refreshed')), \
+                patch('handlers.updates.run_meshtasticd_upgrade',
+                      return_value=(True, 'verified')) as run, \
+                patch('handlers.updates._apply_config_and_restart',
+                      return_value=(True, 'restarted')):
+            h._update_meshtasticd()
+        disable.assert_called_once_with([bad])
+        assert get_state.call_count == 2  # never proceeds on the stale state
+        run.assert_called_once()
+
+    def test_repair_that_does_not_cure_stops(self):
+        from updates.meshtasticd_apt import RepoLine
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        bad = RepoLine('/etc/apt/x.list', 1, 'deb bad /')
+        broken = self._state(candidate_installable=False,
+                             blocking_detail='E: nope', mismatched_repos=[bad])
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   side_effect=[broken, broken]), \
+                patch('handlers.updates.disable_repo_lines',
+                      return_value=(True, 'disabled')), \
+                patch('handlers.updates.apt_update', return_value=(True, 'ok')), \
+                patch('handlers.updates.run_meshtasticd_upgrade') as run:
+            h._update_meshtasticd()
+        assert 'Still Blocked' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+    def test_not_installed_points_at_installer(self):
+        h = _handler()
+        with patch('handlers.updates.get_meshtasticd_apt_state',
+                   return_value=self._state(installed=None,
+                                            update_available=False,
+                                            candidate_installable=None)), \
+                patch('handlers.updates.run_meshtasticd_upgrade') as run:
+            h._update_meshtasticd()
+        assert 'Not Installed' in _msgbox_titles(h.ctx.dialog)
+        run.assert_not_called()
+
+
+class TestCliFragmentationRepair:
+    """A pip --user script shadowing the pipx shim means pipx upgrades never
+    reach what runs — _update_cli must surface and repair it (2026-07-10)."""
+
+    def _versions(self, installed='2.7.9'):
+        from types import SimpleNamespace
+        return {'cli': SimpleNamespace(
+            name='Meshtastic CLI', installed=installed, latest='2.7.9',
+            fleet_floor='2.7.9', update_available=False,
+            install_command='pipx install meshtastic',
+            update_command='pipx upgrade meshtastic')}
+
+    def test_fragmented_cli_offers_and_runs_repair(self):
+        h = _handler()
+        h.ctx.dialog.yesno = MagicMock(return_value=True)
+        h._pipx_upgrade_cli = MagicMock(return_value=(True, 'ok'))
+        diag = {'path': '/home/op/.local/bin/meshtastic',
+                'kind': 'pip-script', 'shebang': '#!/usr/bin/python3'}
+        with patch('handlers.updates._check_all_versions',
+                   return_value=self._versions()), \
+                patch('utils.cli.diagnose_meshtastic_cli', return_value=diag):
+            h._update_cli()
+        h._pipx_upgrade_cli.assert_called_once_with()
+        assert 'Repaired' in _msgbox_titles(h.ctx.dialog)
+
+    def test_pipx_owned_cli_skips_repair(self):
+        h = _handler()
+        h._pipx_upgrade_cli = MagicMock(return_value=(True, 'ok'))
+        diag = {'path': '/home/op/.local/bin/meshtastic', 'kind': 'pipx',
+                'shebang': '#!/home/op/.local/share/pipx/venvs/meshtastic/bin/python'}
+        with patch('handlers.updates._check_all_versions',
+                   return_value=self._versions()), \
+                patch('utils.cli.diagnose_meshtastic_cli', return_value=diag):
+            h._update_cli()
+        h._pipx_upgrade_cli.assert_not_called()
+        assert 'No Update' in _msgbox_titles(h.ctx.dialog)
+
+
+class TestPipInstallMeshtasticFloorPinned:
+    """The lib writer must land ON the reviewed floor, not PyPI-latest."""
+
+    def test_upgrade_pins_to_floor(self):
+        h = _handler()
+        pi = MagicMock(side_effect=[PipResult(True, stdout='ok', verified=True)])
+        with patch.object(pathlib.Path, "exists", _path_exists(False)), \
+                patch('handlers.updates.read_floor', return_value='2.7.9'), \
+                patch("handlers.updates.pip_install", pi):
+            success, _ = h._pip_install_meshtastic(upgrade=True)
+        assert success is True
+        assert pi.call_args_list[0].args[0] == ['meshtastic==2.7.9']
+
+    def test_upgrade_without_floor_refuses(self):
+        h = _handler()
+        pi = MagicMock()
+        with patch('handlers.updates.read_floor', return_value=None), \
+                patch("handlers.updates.pip_install", pi):
+            success, msg = h._pip_install_meshtastic(upgrade=True)
+        assert success is False
+        assert 'baseline' in msg.lower()
+        pi.assert_not_called()
+
+    def test_bootstrap_install_without_floor_proceeds_unpinned(self):
+        h = _handler()
+        pi = MagicMock(side_effect=[PipResult(True, stdout='ok', verified=True)])
+        with patch.object(pathlib.Path, "exists", _path_exists(False)), \
+                patch('handlers.updates.read_floor', return_value=None), \
+                patch("handlers.updates.pip_install", pi):
+            success, _ = h._pip_install_meshtastic(upgrade=False)
+        assert success is True
+        assert pi.call_args_list[0].args[0] == ['meshtastic']
+
+
+class TestCheckAllVersionsMeshtasticdApt:
+    """check_all_versions judges meshtasticd by the apt CANDIDATE and treats a
+    hold as a deliberate pin (surfaced in notes, never a nagging update)."""
+
+    def _snapshot(self, **kw):
+        from updates.meshtasticd_apt import MeshtasticdAptState
+        defaults = dict(apt_available=True, installed='2.7.24', candidate='2.7.26',
+                        held=False, update_available=True)
+        defaults.update(kw)
+        return MeshtasticdAptState(**defaults)
+
+    def _run_check(self, vc, snapshot):
+        import contextlib
+        with contextlib.ExitStack() as stack:
+            for p in [
+                patch.object(vc, 'get_meshtasticd_apt_snapshot',
+                             return_value=snapshot),
+                patch.object(vc, 'get_meshtastic_cli_version', return_value=None),
+                patch.object(vc, 'get_meshtastic_lib_version', return_value=None),
+                patch.object(vc, 'get_latest_meshtastic_cli_version',
+                             return_value=None),
+                patch.object(vc, 'read_floor', return_value='2.7.9'),
+                patch.object(vc, 'get_meshforge_version', return_value=None),
+                patch.object(vc, 'get_latest_meshforge_version', return_value=None),
+                patch.object(vc, 'get_meshtasticd_version', return_value=None),
+                patch.object(vc, 'get_latest_meshtasticd_version', return_value=None),
+                patch.object(vc, 'get_node_firmware_version', return_value=None),
+                patch.object(vc, 'get_latest_firmware_version', return_value=None),
+            ]:
+                stack.enter_context(p)
+            return vc.check_all_versions()
+
+    def test_candidate_is_the_latest_source(self):
+        import updates.version_checker as vc
+        results = self._run_check(vc, self._snapshot())
+        info = results['meshtasticd']
+        assert info.installed == '2.7.24'
+        assert info.latest == '2.7.26'
+        assert info.update_available is True
+        assert info.held is False
+
+    def test_hold_is_a_pin_not_a_nag(self):
+        import updates.version_checker as vc
+        results = self._run_check(vc, self._snapshot(held=True))
+        info = results['meshtasticd']
+        assert info.update_available is False
+        assert info.held is True
+        assert 'pinned' in info.notes
+        assert '2.7.26' in info.notes  # the waiting candidate is visible
+
+    def test_hold_at_candidate_notes_plain_pin(self):
+        import updates.version_checker as vc
+        results = self._run_check(
+            vc, self._snapshot(held=True, installed='2.7.26',
+                               update_available=False))
+        info = results['meshtasticd']
+        assert info.update_available is False
+        assert 'pinned' in info.notes
+
+    def test_apt_unavailable_falls_back_to_legacy(self):
+        import updates.version_checker as vc
+        results = self._run_check(vc, None)
+        info = results['meshtasticd']
+        # legacy getters are patched to None → quiet, no phantom state
+        assert info.installed is None
+        assert info.update_available is False

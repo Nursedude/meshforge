@@ -54,6 +54,12 @@ class VersionInfo:
     # feedback_version_env_rigor (the 2026-06-17 phantom-update class).
     fleet_floor: Optional[str] = None
     pypi_latest: Optional[str] = None
+    # apt-managed components (meshtasticd): a hold is a DELIBERATE pin on this
+    # fleet (canary rolls) — surfaced as its own state, never as a nagging
+    # "update available" nor silently hidden. ``notes`` carries operator-facing
+    # context (pin state, candidate waiting behind the pin, ...).
+    held: bool = False
+    notes: Optional[str] = None
 
 
 def parse_version(version_str: str) -> tuple:
@@ -174,6 +180,22 @@ def get_meshtasticd_version() -> Optional[str]:
         logger.debug(f"Error getting meshtasticd version: {e}")
 
     return None
+
+
+def get_meshtasticd_apt_snapshot():
+    """apt-layer truth for meshtasticd (installed/candidate/held), no simulation.
+
+    Thin, patchable seam over ``updates.meshtasticd_apt`` — the check-all path
+    wants the cheap state read; the update FLOW runs its own dry-run
+    simulation. Returns None when the apt layer itself errors out, so the
+    caller can fall back rather than trust a half-read state.
+    """
+    try:
+        from updates.meshtasticd_apt import get_meshtasticd_apt_state
+        return get_meshtasticd_apt_state(simulate=False)
+    except Exception as e:
+        logger.debug(f"apt state read failed: {e}")
+        return None
 
 
 def get_meshtastic_cli_version() -> Optional[str]:
@@ -447,13 +469,40 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     meshforge.update_command = 'meshforge-update'  # Special command handled by TUI
     results['meshforge'] = meshforge
 
-    # meshtasticd
+    # meshtasticd — judged against the apt CANDIDATE (what apt can actually
+    # install on this box), not GitHub firmware releases: the GitHub tag says
+    # nothing about what the configured OBS repos serve, and comparing against
+    # it produced both phantom updates and blindness to broken candidates
+    # (2026-07-10 audit). GitHub remains the fallback for non-apt systems only.
     meshtasticd = VersionInfo(name='meshtasticd')
-    meshtasticd.installed = get_meshtasticd_version()
-    meshtasticd.latest = get_latest_meshtasticd_version()
-    if meshtasticd.installed and meshtasticd.latest:
-        meshtasticd.update_available = compare_versions(meshtasticd.installed, meshtasticd.latest)
-    meshtasticd.update_command = 'sudo apt update && sudo apt upgrade meshtasticd'
+    apt_state = get_meshtasticd_apt_snapshot()
+    if apt_state is not None and apt_state.apt_available and (
+            apt_state.installed or apt_state.candidate):
+        meshtasticd.installed = apt_state.installed
+        meshtasticd.latest = apt_state.candidate
+        meshtasticd.held = apt_state.held
+        if apt_state.held:
+            # A hold is a deliberate pin — not a laggard. Don't nag, but do
+            # surface a candidate waiting behind the pin.
+            meshtasticd.update_available = False
+            if (apt_state.installed and apt_state.candidate
+                    and apt_state.installed != apt_state.candidate):
+                meshtasticd.notes = (
+                    f'pinned by apt hold; candidate {apt_state.candidate} '
+                    'waiting — use "Update meshtasticd" to unhold deliberately'
+                )
+            else:
+                meshtasticd.notes = 'pinned by apt hold (deliberate)'
+        else:
+            meshtasticd.update_available = apt_state.update_available
+        if apt_state.error:
+            meshtasticd.error = apt_state.error
+    else:
+        meshtasticd.installed = get_meshtasticd_version()
+        meshtasticd.latest = get_latest_meshtasticd_version()
+        if meshtasticd.installed and meshtasticd.latest:
+            meshtasticd.update_available = compare_versions(meshtasticd.installed, meshtasticd.latest)
+    meshtasticd.update_command = 'sudo apt-get install --only-upgrade -y meshtasticd'
     results['meshtasticd'] = meshtasticd
 
     # Meshtastic CLI — gated against the fleet floor, not PyPI-latest (same
@@ -461,8 +510,14 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     cli = VersionInfo(name='Meshtastic CLI')
     cli.installed = get_meshtastic_cli_version()
     _apply_fleet_floor(cli, get_latest_meshtastic_cli_version())
-    cli.update_command = 'pipx upgrade meshtastic'
-    cli.install_command = 'pipx install meshtastic'
+    # Display/manual-copy form: the writer targets the reviewed floor, never
+    # PyPI-latest (`pipx upgrade` overshoots the pin the moment PyPI moves).
+    if cli.fleet_floor:
+        cli.update_command = f'pipx install --force meshtastic=={cli.fleet_floor}'
+        cli.install_command = f'pipx install meshtastic=={cli.fleet_floor}'
+    else:
+        cli.update_command = 'pipx install --force meshtastic'
+        cli.install_command = 'pipx install meshtastic'
     results['cli'] = cli
 
     # Meshtastic Python Library (protobuf definitions) — fleet-floor gated.
@@ -475,8 +530,10 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     # TUI's Update flow routes execution through _pip_install_meshtastic (which
     # also handles venv + the rnsd dual-install, #24); this string is the
     # display/manual-copy form.
-    lib.update_command = 'pip3 install --break-system-packages --upgrade meshtastic'
-    lib.install_command = 'pip3 install --break-system-packages meshtastic'
+    _lib_spec = (f'meshtastic=={lib.fleet_floor}' if lib.fleet_floor
+                 else 'meshtastic')
+    lib.update_command = f'pip3 install --break-system-packages --upgrade {_lib_spec}'
+    lib.install_command = f'pip3 install --break-system-packages {_lib_spec}'
     results['meshtastic_lib'] = lib
 
     # Node Firmware
@@ -514,6 +571,8 @@ def get_version_summary() -> Dict[str, Any]:
             # consumer can distinguish "below the fleet floor" from "PyPI moved".
             'fleet_floor': info.fleet_floor,
             'pypi_latest': info.pypi_latest,
+            'held': info.held,
+            'notes': info.notes,
         }
         summary['components'].append(component)
 

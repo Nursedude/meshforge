@@ -11,6 +11,13 @@ from typing import Dict, Any, Optional, Tuple
 from handler_protocol import BaseHandler
 from utils.safe_import import safe_import
 from utils.pip_install import pip_install
+from utils.requirements_floor import read_floor
+from updates.meshtasticd_apt import (
+    apt_update,
+    disable_repo_lines,
+    get_meshtasticd_apt_state,
+    run_meshtasticd_upgrade,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +125,8 @@ class UpdatesHandler(BaseHandler):
             else:
                 latest = info.latest or "Unknown"
                 lines.append(f"  Latest:    {latest}{status}")
+            if getattr(info, "notes", None):
+                lines.append(f"  Note:      {info.notes}")
             if info.error:
                 lines.append(f"  Error:     {info.error}")
             lines.append("")
@@ -191,6 +200,17 @@ class UpdatesHandler(BaseHandler):
                 # pipx upgrade must run in the pipx that owns the resolved CLI,
                 # not the sudo'd (root) context — read/write split, #24 sibling.
                 success, msg = self._pipx_upgrade_cli()
+            elif key == 'meshtasticd':
+                # apt path with the re-derived success gate (a pinned/held
+                # package never reaches here — update_available is False).
+                success, msg = run_meshtasticd_upgrade()
+                if success and _HAS_SERVICE_CHECK:
+                    restart_ok, restart_msg = _apply_config_and_restart('meshtasticd')
+                    if not restart_ok:
+                        success = False
+                        msg = (f"package updated ({msg}) but the service "
+                               f"restart FAILED: {restart_msg} — check "
+                               "meshtasticd in Service Control")
             else:
                 success, msg = self._run_update_command(key, info.update_command)
             results.append((info.name, success, msg))
@@ -200,44 +220,104 @@ class UpdatesHandler(BaseHandler):
             status = "SUCCESS" if success else "FAILED"
             lines.append(f"{name}: {status}")
             if not success and msg:
-                lines.append(f"  Error: {msg[:60]}...")
+                lines.append(f"  Error: {msg[:200]}")
             lines.append("")
 
         self.ctx.dialog.msgbox("Update Complete", "\n".join(lines), width=60)
 
     def _update_meshtasticd(self):
-        """Update meshtasticd package."""
-        try:
-            versions = _check_all_versions()
-            info = versions.get('meshtasticd')
-        except Exception as e:
-            self.ctx.dialog.msgbox("Error", f"Failed to check version:\n{e}")
-            return
+        """Update meshtasticd via the apt state machine (2026-07-10 audit).
 
-        if not info:
-            self.ctx.dialog.msgbox("Error", "Could not get meshtasticd version info.")
-            return
+        Reads the truth apt acts on (candidate, hold, dry-run installability)
+        instead of GitHub tags, walks the operator through the real blockers
+        (deliberate pin → explicit unhold; mismatched OBS repo → guided
+        repair), and only ever claims success from a re-derived version.
+        """
+        self.ctx.dialog.infobox("meshtasticd", "Reading apt package state...")
+        state = get_meshtasticd_apt_state(simulate=True)
 
-        if not info.update_available:
+        if not state.apt_available:
             self.ctx.dialog.msgbox(
-                "No Update",
-                f"meshtasticd is already at the latest version.\n\n"
-                f"Installed: {info.installed}\n"
-                f"Latest: {info.latest}"
+                "apt Unavailable",
+                "This system does not use apt — meshtasticd updates must be\n"
+                "managed by your platform's package manager."
+            )
+            return
+        if state.error and not (state.installed or state.candidate):
+            self.ctx.dialog.msgbox(
+                "Error", f"Could not read meshtasticd apt state:\n\n{state.error}")
+            return
+        if not state.installed:
+            self.ctx.dialog.msgbox(
+                "Not Installed",
+                "meshtasticd is not installed via apt on this box.\n\n"
+                "Install it from the meshtasticd Service menu or the\n"
+                "official Meshtastic apt repository."
             )
             return
 
+        # Gate on the dpkg-derived comparison, not string inequality — a
+        # candidate that merely DIFFERS (e.g. a manually installed .deb newer
+        # than any repo) is not an update.
+        if not state.update_available:
+            self.ctx.dialog.msgbox(
+                "No Update",
+                "meshtasticd is already at the newest version apt can\n"
+                f"install on this box.\n\n"
+                f"Installed:     {state.installed}\n"
+                f"apt candidate: {state.candidate or 'unknown'}"
+                + ("\n\nNote: package is on apt hold (deliberate pin)."
+                   if state.held else "")
+            )
+            return
+
+        # Deliberate pin: require an explicit, default-no decision to lift it.
+        unhold = False
+        if state.held:
+            if not self.ctx.dialog.yesno(
+                "meshtasticd is PINNED",
+                f"meshtasticd is on apt hold at {state.installed} — on this\n"
+                "fleet a hold is a DELIBERATE pin (canary/baseline roll).\n\n"
+                f"apt candidate: {state.candidate}\n\n"
+                "Unhold, update to the candidate, then RE-APPLY the hold at\n"
+                "the new version?",
+                default_no=True,
+            ):
+                return
+            unhold = True
+
+        # Dry-run said the candidate cannot install (the mismatched-repo
+        # class): show apt's real error and offer the guided repair.
+        if state.candidate_installable is False:
+            if not self._repair_broken_candidate(state):
+                return
+            # Re-derive after the repair — never proceed on the old state.
+            self.ctx.dialog.infobox("meshtasticd", "Re-checking apt state after repair...")
+            state = get_meshtasticd_apt_state(simulate=True)
+            if state.candidate_installable is False or not state.candidate:
+                self.ctx.dialog.msgbox(
+                    "Still Blocked",
+                    "The candidate is still not installable after the repair:\n\n"
+                    f"{(state.blocking_detail or 'unknown blocker')[:500]}"
+                )
+                return
+
         if not self.ctx.dialog.yesno(
             "Update meshtasticd",
-            f"Update meshtasticd from {info.installed} to {info.latest}?\n\n"
-            f"Command: {info.update_command}\n\n"
-            "Note: The meshtasticd service will be restarted after the update."
+            f"Update meshtasticd {state.installed} -> {state.candidate}?\n\n"
+            "Runs: apt-get update, then\n"
+            "apt-get install --only-upgrade -y meshtasticd\n"
+            + ("(hold will be lifted for the update and re-applied)\n"
+               if unhold else "")
+            + "\nNote: The meshtasticd service will be restarted after the update."
         ):
             return
 
-        self.ctx.dialog.infobox("Updating meshtasticd", "Running apt update and upgrade...\n\nThis may take a while...")
+        self.ctx.dialog.infobox(
+            "Updating meshtasticd",
+            "Running apt-get update + only-upgrade...\n\nThis may take a while...")
 
-        success, msg = self._run_update_command('meshtasticd', info.update_command)
+        success, msg = run_meshtasticd_upgrade(unhold=unhold, rehold=unhold)
 
         if success:
             if _HAS_SERVICE_CHECK:
@@ -247,10 +327,11 @@ class UpdatesHandler(BaseHandler):
                 self.ctx.report_action(
                     restart_ok,
                     "Update Complete",
-                    "meshtasticd has been updated successfully!\n\n"
+                    f"{msg}\n\n"
                     "The service has been restarted.",
                     "Updated — Restart FAILED",
-                    "meshtasticd was updated but did NOT restart cleanly:\n"
+                    f"{msg}\n\n"
+                    "...but meshtasticd did NOT restart cleanly:\n"
                     f"{restart_msg}\n\n"
                     "The radio daemon may be down or running the old version.\n"
                     "Check meshtasticd in Service Control.",
@@ -270,6 +351,60 @@ class UpdatesHandler(BaseHandler):
                 f"Failed to update meshtasticd.\n\n{msg}"
             )
 
+    def _repair_broken_candidate(self, state) -> bool:
+        """Guided fix for an unsatisfiable apt candidate.
+
+        The known class: a distro-mismatched Meshtastic OBS repo (e.g. a
+        ``Debian_Testing`` line on a Debian 13 box) publishes the SAME version
+        string built against a newer libc; apt binds the candidate to the
+        uninstallable stanza and every upgrade dies with "held broken
+        packages". Repair = comment out the mismatched line(s) (backup kept)
+        and refresh apt, IN-APP (MF018). Returns True when a repair was
+        applied and the caller should re-derive state.
+        """
+        blocker = (state.blocking_detail or 'unknown dependency problem')[:400]
+
+        if not state.mismatched_repos:
+            self.ctx.dialog.msgbox(
+                "Candidate Not Installable",
+                f"apt cannot install {state.candidate}:\n\n{blocker}\n\n"
+                "No distro-mismatched Meshtastic repo was found, so this\n"
+                "needs manual investigation:\n"
+                "  apt-cache policy meshtasticd\n"
+                "  ls /etc/apt/sources.list.d/"
+            )
+            return False
+
+        repo_list = "\n".join(f"  {r.path}:{r.lineno}" for r in state.mismatched_repos)
+        if not self.ctx.dialog.yesno(
+            "Mismatched Repo Detected",
+            f"apt cannot install {state.candidate}:\n\n{blocker[:200]}\n\n"
+            "Likely cause — Meshtastic repo(s) for the WRONG distro release\n"
+            "(their builds need newer system libraries than this box has):\n\n"
+            f"{repo_list}\n\n"
+            "Disable these line(s) (a .meshforge-bak backup is kept) and\n"
+            "refresh apt?"
+        ):
+            return False
+
+        self.ctx.dialog.infobox("Repairing", "Disabling mismatched repo line(s)...")
+        ok, detail = disable_repo_lines(state.mismatched_repos)
+        if not ok:
+            self.ctx.dialog.msgbox(
+                "Repair Failed", f"Could not disable the repo line(s):\n\n{detail}")
+            return False
+
+        self.ctx.dialog.infobox("Repairing", "Refreshing apt package lists...")
+        ok, detail = apt_update()
+        if not ok:
+            self.ctx.dialog.msgbox(
+                "apt Refresh Problem",
+                "Repo line(s) disabled, but the apt refresh reported:\n\n"
+                f"{detail[:400]}\n\n"
+                "Continuing with the freshest lists available."
+            )
+        return True
+
     def _update_cli(self):
         """Update Meshtastic CLI."""
         try:
@@ -287,34 +422,64 @@ class UpdatesHandler(BaseHandler):
             if self.ctx.dialog.yesno(
                 "Install Meshtastic CLI",
                 "Meshtastic CLI is not installed.\n\n"
-                f"Install command: {info.install_command}\n\n"
+                "It will be installed with pipx, pinned to the fleet\n"
+                f"baseline ({info.fleet_floor or 'requirements/core.txt'}), "
+                "in the operator's pipx home.\n\n"
                 "Install now?"
             ):
                 self.ctx.dialog.infobox("Installing", "Installing Meshtastic CLI via pipx...")
-                success, msg = self._run_update_command('cli', info.install_command)
+                success, msg = self._pipx_upgrade_cli()
                 if success:
                     self.ctx.dialog.msgbox("Installed", "Meshtastic CLI installed successfully!")
                 else:
                     self.ctx.dialog.msgbox("Failed", f"Installation failed:\n{msg}")
             return
 
+        # Ownership check BEFORE any version verdict: a pip --user script
+        # shadowing the pipx shim means pipx upgrades a venv that never runs —
+        # every future update silently no-ops (the read/write split at the
+        # binary level, found live 2026-07-10).
+        from utils.cli import diagnose_meshtastic_cli
+        diag = diagnose_meshtastic_cli()
+        if diag['kind'] == 'pip-script':
+            if self.ctx.dialog.yesno(
+                "CLI Install Fragmented",
+                f"The meshtastic CLI at\n  {diag['path']}\n"
+                "is a pip console script, NOT the pipx-managed shim — so\n"
+                "pipx upgrades land in a venv this script never executes,\n"
+                "and CLI updates silently do nothing.\n\n"
+                "Repair now? (pipx install --force at the fleet baseline —\n"
+                "makes pipx the single owner of the CLI)"
+            ):
+                self.ctx.dialog.infobox("Repairing CLI", "Running pipx install --force...")
+                success, msg = self._pipx_upgrade_cli()
+                if success:
+                    self.ctx.dialog.msgbox(
+                        "Repaired",
+                        "The CLI is now pipx-owned at the fleet baseline.")
+                else:
+                    self.ctx.dialog.msgbox("Repair Failed", f"{msg}")
+            return
+
         if not info.update_available:
             self.ctx.dialog.msgbox(
                 "No Update",
-                f"Meshtastic CLI is already at the latest version.\n\n"
+                f"Meshtastic CLI is at the fleet baseline.\n\n"
                 f"Installed: {info.installed}\n"
-                f"Latest: {info.latest}"
+                f"Baseline:  {info.latest}"
             )
             return
 
         if not self.ctx.dialog.yesno(
             "Update Meshtastic CLI",
-            f"Update CLI from {info.installed} to {info.latest}?\n\n"
-            f"Command: {info.update_command}"
+            f"Update CLI from {info.installed} to the fleet baseline "
+            f"{info.latest}?\n\n"
+            "Runs: pipx install --force meshtastic==<baseline>\n"
+            "(in the pipx that owns the running CLI)"
         ):
             return
 
-        self.ctx.dialog.infobox("Updating CLI", "Running pipx upgrade...")
+        self.ctx.dialog.infobox("Updating CLI", "Running pipx install --force...")
         success, msg = self._pipx_upgrade_cli()
 
         if success:
@@ -403,45 +568,68 @@ class UpdatesHandler(BaseHandler):
             )
 
     def _pipx_upgrade_cli(self) -> Tuple[bool, str]:
-        """Upgrade the meshtastic CLI in the pipx that OWNS the resolved binary.
+        """Install/upgrade/repair the meshtastic CLI: floor-pinned, owner-aware.
 
-        `find_meshtastic_cli()` — the reader, and what MeshForge actually runs —
-        prefers the operator's `~/.local/bin` under sudo, but a bare
-        `pipx upgrade meshtastic` runs in the CURRENT context (root, when the
-        TUI is launched with sudo) and upgrades ROOT's pipx instead. Read and
-        write then target different pipx homes, so the upgrade no-ops on root's
-        already-current copy and the flag never clears (the read/write split,
-        feedback_version_env_rigor). Run pipx as the binary's owner.
+        Two disciplines meet here (feedback_version_env_rigor):
+
+        1. TARGET the reviewed fleet baseline, never PyPI-latest. The checker
+           judges the CLI against requirements/core.txt's floor, so the writer
+           must land exactly there — a bare `pipx upgrade` overshoots the
+           reviewed pin the moment PyPI moves. No readable floor → refuse
+           loudly rather than blind-upgrade.
+        2. Run pipx as the OWNER of what actually runs. Under sudo, a bare
+           pipx call writes ROOT's pipx home while the resolved CLI lives in
+           the operator's — the upgrade no-ops forever (the read/write split).
+
+        `pipx install --force meshtastic==<floor>` also REPAIRS the
+        fragmented-shim case (a pip --user script shadowing the pipx shim):
+        pipx rewrites ~/.local/bin/meshtastic to point at its own venv,
+        making pipx the single owner again.
         """
         import os
         import pwd
         from utils.cli import find_meshtastic_cli
 
+        floor = read_floor('meshtastic')
+        if not floor:
+            return False, (
+                "fleet baseline (requirements/core.txt) unreadable — "
+                "refusing a blind upgrade past the reviewed pin"
+            )
+
         cli_path = find_meshtastic_cli()
-        if not cli_path:
-            return False, "meshtastic CLI not found"
+        if cli_path:
+            try:
+                owner_uid = os.stat(cli_path).st_uid
+                owner_name = pwd.getpwuid(owner_uid).pw_name
+            except (OSError, KeyError) as e:
+                return False, f"could not resolve CLI owner ({cli_path}): {e}"
+        else:
+            # Fresh install: no binary to own yet — target the OPERATOR's
+            # pipx home (SUDO_USER under sudo), never root's by accident.
+            from utils.paths import get_real_username
+            owner_name = get_real_username()
+            try:
+                owner_uid = pwd.getpwnam(owner_name).pw_uid
+            except KeyError as e:
+                return False, f"could not resolve user {owner_name}: {e}"
 
-        try:
-            owner_uid = os.stat(cli_path).st_uid
-            owner_name = pwd.getpwuid(owner_uid).pw_name
-        except (OSError, KeyError) as e:
-            return False, f"could not resolve CLI owner ({cli_path}): {e}"
-
+        base = ['pipx', 'install', '--force', f'meshtastic=={floor}']
         if owner_uid == os.geteuid():
-            cmd = ['pipx', 'upgrade', 'meshtastic']
+            cmd = base
         else:
             # Drop to the owning user so pipx uses THEIR pipx home
             # (~/.local/share/pipx) rather than the current (root) one.
-            cmd = ['sudo', '-u', owner_name, '-H', 'pipx', 'upgrade', 'meshtastic']
+            cmd = ['sudo', '-u', owner_name, '-H'] + base
 
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
             if result.returncode == 0:
-                logger.info("Upgraded meshtastic CLI in %s's pipx", owner_name)
+                logger.info("Installed meshtastic==%s CLI in %s's pipx", floor, owner_name)
                 return True, result.stdout
             return False, result.stderr or result.stdout or f"Exit code: {result.returncode}"
         except subprocess.TimeoutExpired:
-            return False, "pipx upgrade timed out after 5 minutes"
+            return False, "pipx install timed out after 5 minutes"
         except Exception as e:
             return False, str(e)
 
@@ -458,9 +646,26 @@ class UpdatesHandler(BaseHandler):
         """
         from pathlib import Path
 
+        # Target the reviewed fleet baseline, not PyPI-latest: the checker
+        # flags "update available" only when BELOW the floor, so the writer
+        # must land exactly ON it — a bare `--upgrade meshtastic` overshoots
+        # the reviewed pin. Refuse a blind upgrade when the floor is
+        # unreadable; a bare bootstrap INSTALL (nothing present yet) may
+        # still proceed unpinned.
+        floor = read_floor('meshtastic')
+        if floor:
+            spec = f'meshtastic=={floor}'
+        elif upgrade:
+            return False, (
+                "fleet baseline (requirements/core.txt) unreadable — "
+                "refusing a blind upgrade past the reviewed pin"
+            )
+        else:
+            spec = 'meshtastic'
+
         # Primary install into MeshForge's interpreter (venv if present, else
         # system pip with --break-system-packages auto-applied).
-        primary = pip_install(['meshtastic'], upgrade=upgrade,
+        primary = pip_install([spec], upgrade=upgrade,
                               verify_import='meshtastic', timeout=120)
         if not primary.ok:
             return False, primary.detail
@@ -475,7 +680,7 @@ class UpdatesHandler(BaseHandler):
                 "Also installing system-wide for rnsd..."
             )
             rnsd_result = pip_install(
-                ['meshtastic'], python='python3', sudo=True, break_system=True,
+                [spec], python='python3', sudo=True, break_system=True,
                 ignore_installed=True, upgrade=upgrade,
                 verify_import='meshtastic', timeout=120,
             )
