@@ -371,8 +371,14 @@ class RNSDissector(PacketDissector):
         return packet
 
     def _build_tree(self, packet: MeshPacket, metadata: Dict[str, Any],
-                    raw_data: bytes) -> PacketTree:
-        """Build hierarchical protocol tree for RNS."""
+                    raw_data: bytes = b"") -> PacketTree:
+        """Build hierarchical protocol tree for RNS.
+
+        ``raw_data`` defaults to empty: the storage layer's tree-rebuild
+        path calls every dissector's ``_build_tree(packet, metadata)`` with
+        two args — the missing third arg raised TypeError for every stored
+        RNS packet and killed the whole packet-list query (2026-07-09).
+        """
         tree = PacketTree()
 
         # Frame layer
@@ -525,8 +531,12 @@ class RNSDissector(PacketDissector):
             if lxmf_stamp:
                 tree.add_field(lxmf, "Stamp", "rns.lxmf.stamp", lxmf_stamp, FieldType.STRING)
 
-        # Payload size
-        payload_size = metadata.get("payload_size", len(raw_data) - 19 if len(raw_data) > 19 else 0)
+        # Payload size. The fallback must tolerate raw_data=None (MeshPacket
+        # itself treats data-less capture as legal) — and dict.get evaluates
+        # its default EAGERLY, so the guard lives in the expression.
+        payload_size = metadata.get(
+            "payload_size",
+            len(raw_data) - 19 if raw_data and len(raw_data) > 19 else 0)
         if payload_size > 0:
             tree.add_field(rns, "Payload Size", "rns.payload_size", payload_size, FieldType.INTEGER,
                           "Data payload size in bytes")

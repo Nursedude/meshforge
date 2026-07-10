@@ -148,6 +148,8 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         self._stats = {
             "messages_received": 0,
             "messages_rejected": 0,
+            "processing_errors": 0,   # witnessed _on_message swallows
+            "nodes_rejected": 0,      # implausible node keys refused
             "nodes_discovered": 0,
             "nodes_discovered_via_relay": 0,  # Nodes found through relay_node field
             "relay_nodes_merged": 0,  # Partial relay nodes matched to full IDs
@@ -196,13 +198,18 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         }
 
     def save_config(self) -> bool:
-        """Save current configuration to file."""
+        """Save current configuration to file.
+
+        The config may carry broker credentials — written 0600 (a plain
+        write_text left the password world-readable on multi-user boxes).
+        """
         config_dir = get_real_user_home() / ".config" / "meshforge"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "mqtt_nodeless.json"
 
         try:
             config_path.write_text(json.dumps(self._config, indent=2))
+            config_path.chmod(0o600)
             return True
         except Exception as e:
             logger.error(f"Failed to save MQTT nodeless config: {e}")
@@ -239,8 +246,11 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
             self._disconnect()
 
         try:
-            # Create client - compatible with paho-mqtt v1.x and v2.x
-            client_id = f"meshforge_nodeless_{int(time.time())}"
+            # Create client - compatible with paho-mqtt v1.x and v2.x.
+            # Random suffix: two processes minting an id in the same second
+            # collide on the broker and kick each other off.
+            client_id = (f"meshforge_nodeless_{int(time.time())}"
+                         f"_{random.randint(0, 0xFFFF):04x}")
             if hasattr(mqtt, 'CallbackAPIVersion'):
                 # paho-mqtt v2.x requires callback_api_version
                 self._client = mqtt.Client(
@@ -385,7 +395,8 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
         """MQTT connection callback."""
         if rc == 0:
             self._connected = True
-            self._stats["connect_time"] = datetime.now()
+            with self._stats_lock:
+                self._stats["connect_time"] = datetime.now()
             logger.info("Connected to MQTT broker (nodeless mode)")
 
             # Subscribe to topics based on configured regions
@@ -524,7 +535,21 @@ class MQTTNodelessSubscriber(MQTTMessageDecoderMixin):
                 self._last_cleanup = now
 
         except Exception as e:
-            logger.debug(f"Error processing MQTT message: {e}")
+            # Witnessed swallow: a repeating handler bug used to be 100%
+            # invisible (debug-level only) while messages_received kept
+            # climbing — processing looked alive while every packet died.
+            with self._stats_lock:
+                self._stats["processing_errors"] = \
+                    self._stats.get("processing_errors", 0) + 1
+            now_ts = time.time()
+            if now_ts - getattr(self, "_last_processing_error_warn", 0) > 60:
+                self._last_processing_error_warn = now_ts
+                logger.warning(
+                    f"MQTT message processing error (witnessed in stats as "
+                    f"processing_errors; further errors this minute at "
+                    f"debug): {e}")
+            else:
+                logger.debug(f"Error processing MQTT message: {e}")
 
     def _persist_map_cache(self):
         """Write current node GeoJSON to disk for map data service.

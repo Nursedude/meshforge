@@ -85,3 +85,46 @@ class TestTrafficCaptureRetention:
         with cap._get_connection() as conn:
             ids = [r[0] for r in conn.execute("SELECT id FROM packets").fetchall()]
         assert "ancient" in ids, "retention=0 should not delete by time"
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-09 frontier review Pri-3 fixes
+# ---------------------------------------------------------------------------
+
+class TestFrontierReviewFixes20260709:
+    """Pins for the dissector-seam findings of the 2026-07-09 frontier
+    worklist Pri-3 pass: RNS tree-rebuild arity, None-data tolerance, and
+    the witnessed dissect-failure fallback in capture_packet."""
+
+    def test_rns_build_tree_two_arg_rebuild_shape(self):
+        """The storage rebuild path calls _build_tree(packet, metadata) with
+        two args on EVERY dissector — RNSDissector's missing third arg
+        raised TypeError for every stored RNS row and killed the whole
+        packet-list query."""
+        from monitoring.packet_dissectors import RNSDissector
+        from monitoring.traffic_models import MeshPacket, PacketProtocol
+        packet = MeshPacket(protocol=PacketProtocol.RNS, raw_bytes=b"",
+                            size=0)
+        tree = RNSDissector()._build_tree(packet, {})
+        assert tree is not None
+
+    def test_rns_dissect_none_data_no_crash(self):
+        """MeshPacket treats data-less capture as legal, but the payload-size
+        fallback ran len(raw_data) eagerly — dissect(None, ...) crashed."""
+        from monitoring.packet_dissectors import RNSDissector
+        packet = RNSDissector().dissect(None, {"protocol": "rns"})
+        assert packet is not None
+        assert packet.size == 0
+
+    def test_capture_packet_dissector_crash_degrades_with_witness(
+            self, capture):
+        """A malformed packet (junk channel string) must degrade to the
+        basic UNKNOWN packet with a dissect_errors stats witness — never
+        kill the capture path."""
+        from monitoring.traffic_models import PacketProtocol
+        packet = capture.capture_packet(
+            b"x", {"from": "!aabbccdd", "to": "!11223344",
+                   "channel": "not-a-number"})
+        assert packet is not None
+        assert packet.protocol == PacketProtocol.UNKNOWN
+        assert capture.get_stats()["dissect_errors"] == 1

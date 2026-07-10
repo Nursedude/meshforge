@@ -36,6 +36,34 @@ from monitoring._mqtt_types import (
 
 logger = logging.getLogger(__name__)
 
+# Hostile-input bounds (2026-07-09 frontier review Pri-3). Broker peers are
+# untrusted — in nodeless mode this parses mqtt.meshtastic.org, where any
+# internet stranger authors the JSON. Canonical node keys are 9 chars
+# ("!%08x"); partial relay keys 7 ("!????xx"). Anything much longer is not a
+# node id, and unbounded attacker strings otherwise become dict keys and
+# cached/persisted labels (64 KB payload cap × 10k node cap = memory, disk
+# and downstream-consumer exhaustion).
+_MAX_NODE_KEY_LEN = 16
+_MAX_LONG_NAME = 64
+_MAX_SHORT_NAME = 16
+_MAX_HW_MODEL = 48
+_MAX_ROLE = 32
+_MAX_TEXT_LEN = 2048  # LoRa text tops out ~237 bytes; generous ceiling
+_MAX_MSG_ID_LEN = 64
+
+
+def _clean_label(value: Any, max_len: int) -> Optional[str]:
+    """Coerce an untrusted label field to a bounded string.
+
+    Accepts str (clamped) and the numeric enum forms live firmwares emit
+    for hardware/role; rejects containers and None so junk can never
+    replace a previously-valid label (error must not read as data)."""
+    if isinstance(value, str):
+        return value[:max_len]
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)[:max_len]
+    return None
+
 
 class MQTTMessageDecoderMixin:
     """Mixin providing MQTT message decoding and node update methods."""
@@ -142,8 +170,10 @@ class MQTTMessageDecoderMixin:
         except Exception:
             pass  # Decrypted text processing is best-effort
 
-    def _ensure_node(self, node_id) -> MQTTNode:
-        """Ensure a node exists in our tracking.
+    def _ensure_node(self, node_id) -> Optional[MQTTNode]:
+        """Ensure a node exists in our tracking. Returns None (with a
+        ``nodes_rejected`` stats witness) for keys that survive
+        canonicalization but are not plausible node ids — callers skip.
 
         Accepts the canonical '!hex' string OR a raw numeric node number
         (int or numeric string): live meshtasticd json uplinks carry
@@ -162,6 +192,17 @@ class MQTTMessageDecoderMixin:
             _canonical = node_num_to_id(node_id)
             if _canonical is not None:
                 node_id = _canonical
+        # Hostile-key gate: after canonicalization the only acceptable keys
+        # are short "!"-prefixed strings. Arbitrary attacker strings (up to
+        # the 64 KB payload cap) must never become node-dict keys — the
+        # MAX_NODES prune bounds COUNT, not per-key SIZE. Rejection leaves
+        # a stats witness, never a silent drop.
+        if not (isinstance(node_id, str) and node_id.startswith("!")
+                and 0 < len(node_id) <= _MAX_NODE_KEY_LEN):
+            with self._stats_lock:
+                self._stats["nodes_rejected"] = \
+                    self._stats.get("nodes_rejected", 0) + 1
+            return None
         with self._nodes_lock:
             if node_id not in self._nodes:
                 self._nodes[node_id] = MQTTNode(node_id=node_id)
@@ -312,6 +353,8 @@ class MQTTMessageDecoderMixin:
     def _update_node_from_json(self, node_id: str, data: Dict) -> None:
         """Update node info from JSON message with input validation."""
         node = self._ensure_node(node_id)
+        if node is None:
+            return
 
         # Validate and update fields
         if "snr" in data:
@@ -365,10 +408,21 @@ class MQTTMessageDecoderMixin:
             return
 
         node = self._ensure_node(node_id)
-        node.long_name = payload.get("longname", node.long_name)
-        node.short_name = payload.get("shortname", node.short_name)
-        node.hardware_model = payload.get("hardware", node.hardware_model)
-        node.role = payload.get("role", node.role)
+        if node is None:
+            return
+        # Bounded, type-checked label updates: attacker-authored containers
+        # or multi-KB strings must neither replace a valid label nor bloat
+        # the node cache / mqtt_nodes.json / downstream map consumers.
+        for attr, key, cap in (
+            ("long_name", "longname", _MAX_LONG_NAME),
+            ("short_name", "shortname", _MAX_SHORT_NAME),
+            ("hardware_model", "hardware", _MAX_HW_MODEL),
+            ("role", "role", _MAX_ROLE),
+        ):
+            if key in payload:
+                cleaned = _clean_label(payload.get(key), cap)
+                if cleaned is not None:
+                    setattr(node, attr, cleaned)
 
     def _handle_position(self, data: Dict) -> None:
         """Handle position message with coordinate validation."""
@@ -378,6 +432,8 @@ class MQTTMessageDecoderMixin:
             return
 
         node = self._ensure_node(node_id)
+        if node is None:
+            return
 
         # Position may be in different formats
         lat = None
@@ -414,6 +470,8 @@ class MQTTMessageDecoderMixin:
             return
 
         node = self._ensure_node(node_id)
+        if node is None:
+            return
 
         # Device metrics
         device = payload.get("device_metrics", {})
@@ -509,18 +567,25 @@ class MQTTMessageDecoderMixin:
         """Handle text message."""
         payload = data.get("payload", {})
         text = payload.get("text") or data.get("text", "")
-        if not text:
+        # Type + size gate: a truthy non-string (attacker dict/list) passed
+        # the old check and rode into the messages feed/DB as junk; an
+        # unbounded string is a memory/storage vector (payload cap is 64 KB,
+        # real LoRa text ~237 bytes).
+        if not isinstance(text, str) or not text:
             return
+        text = text[:_MAX_TEXT_LEN]
 
+        from_id = data.get("from", "")
+        to_id = data.get("to", "")
         msg = MQTTMessage(
-            message_id=str(data.get("id", time.time())),
-            from_id=data.get("from", ""),
-            to_id=data.get("to", ""),
+            message_id=str(data.get("id", time.time()))[:_MAX_MSG_ID_LEN],
+            from_id=from_id if isinstance(from_id, str) else "",
+            to_id=to_id if isinstance(to_id, str) else "",
             text=text,
-            channel=data.get("channel", 0),
-            snr=data.get("snr"),
-            rssi=data.get("rssi"),
-            hop_start=data.get("hop_start"),
+            channel=self._safe_int(data.get("channel"), 0, 255) or 0,
+            snr=self._safe_float(data.get("snr"), *VALID_SNR_RANGE),
+            rssi=self._safe_int(data.get("rssi"), *VALID_RSSI_RANGE),
+            hop_start=self._safe_int(data.get("hop_start"), 0, 15),
         )
 
         with self._messages_lock:

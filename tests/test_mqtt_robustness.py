@@ -833,3 +833,102 @@ class TestReconnectFdLeak:
             subscriber._connect()
 
         assert mock_register.call_count == 1
+
+
+# =============================================================================
+# 2026-07-09 frontier review Pri-3 fixes (hostile-input hardening)
+# =============================================================================
+
+class TestFrontierReviewFixes20260709:
+    """Pins for the Pri-3 pass: broker peers are untrusted (nodeless mode
+    parses the public broker) — labels are bounded and type-checked, junk
+    node keys are refused with a witness, text-message fields are
+    sanitized, credentials are written 0600, and _on_message swallows
+    leave a stats witness."""
+
+    def _json(self, subscriber, data):
+        import json as _json
+        subscriber._handle_json_message("msh/US/2/json/LongFast/!gw",
+                                        _json.dumps(data).encode())
+
+    def test_nodeinfo_labels_clamped_and_type_checked(self, subscriber):
+        self._json(subscriber, {
+            "from": 0xAABBCCDD, "type": "nodeinfo",
+            "payload": {"id": "!aabbccdd",
+                        "longname": "A" * 10000,
+                        "shortname": {"evil": 1},
+                        "hardware": 31,
+                        "role": "B" * 500},
+        })
+        node = subscriber.get_node("!aabbccdd")
+        assert node is not None
+        assert len(node.long_name) == 64          # clamped
+        assert node.short_name == ""              # dict rejected, old kept
+        assert node.hardware_model == "31"        # numeric enum accepted
+        assert len(node.role) == 32               # clamped
+
+    def test_garbage_node_key_refused_with_witness(self, subscriber):
+        self._json(subscriber, {
+            "sender": "A" * 5000, "type": "position",
+            "payload": {"latitude": 10.0, "longitude": 10.0},
+        })
+        assert subscriber.get_nodes() == []
+        assert subscriber._stats["nodes_rejected"] >= 1
+
+    def test_numeric_sender_still_canonicalized(self, subscriber):
+        """The hostile-key gate must not break the legit numeric path."""
+        self._json(subscriber, {
+            "from": 0x11223344, "type": "position",
+            "payload": {"latitude": 21.3, "longitude": -157.8},
+        })
+        node = subscriber.get_node("!11223344")
+        assert node is not None
+        assert node.latitude == 21.3
+
+    def test_text_message_fields_sanitized(self, subscriber):
+        self._json(subscriber, {
+            "from": 0x11223344, "to": 0xFFFFFFFF, "type": "text",
+            "id": 12345,
+            "payload": {"text": "T" * 100000},
+            "channel": "junk", "snr": "junk", "rssi": [1],
+            "hop_start": 9999,
+        })
+        msgs = subscriber.get_messages()
+        assert len(msgs) == 1
+        m = msgs[0]
+        assert len(m.text) == 2048           # clamped
+        assert m.channel == 0                # junk coerced
+        assert m.snr is None and m.rssi is None
+        assert m.hop_start is None           # out of 0-15 range
+        assert m.from_id == "!11223344"      # canonical survived
+
+    def test_dict_text_ignored(self, subscriber):
+        self._json(subscriber, {
+            "from": 0x11223344, "type": "text",
+            "payload": {"text": {"evil": True}},
+        })
+        assert subscriber.get_messages() == []
+
+    def test_save_config_writes_0600(self, subscriber, tmp_path,
+                                     monkeypatch):
+        import monitoring.mqtt_subscriber as ms
+        monkeypatch.setattr(ms, "get_real_user_home", lambda: tmp_path)
+        assert subscriber.save_config() is True
+        mode = (tmp_path / ".config" / "meshforge"
+                / "mqtt_nodeless.json").stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_on_message_swallow_leaves_witness(self, subscriber,
+                                               monkeypatch):
+        """A repeating handler bug used to be invisible (debug-only) while
+        messages_received kept climbing."""
+        monkeypatch.setattr(
+            subscriber, "_handle_json_message",
+            lambda *a: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        class FakeMsg:
+            topic = "msh/US/2/json/LongFast/!gw"
+            payload = b"{}"
+
+        subscriber._on_message(None, None, FakeMsg())
+        assert subscriber._stats["processing_errors"] == 1

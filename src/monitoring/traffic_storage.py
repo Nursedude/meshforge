@@ -97,6 +97,7 @@ class TrafficCapture:
             "packets_meshtastic": 0,
             "packets_rns": 0,
             "bytes_captured": 0,
+            "dissect_errors": 0,  # witnessed per-packet dissector failures
         }
 
         self._init_db()
@@ -191,11 +192,22 @@ class TrafficCapture:
         Returns:
             Dissected MeshPacket, or None if cannot dissect
         """
-        # Find appropriate dissector
+        # Find appropriate dissector. One malformed packet (junk channel
+        # string, non-dict "decoded", None data) must degrade to the basic
+        # UNKNOWN packet below with a stats witness — never kill the
+        # capture path (2026-07-09 review).
         packet = None
         for dissector in self._dissectors:
-            if dissector.can_dissect(data, metadata):
-                packet = dissector.dissect(data, metadata)
+            try:
+                if dissector.can_dissect(data, metadata):
+                    packet = dissector.dissect(data, metadata)
+                    break
+            except Exception as e:
+                with self._lock:
+                    self._stats["dissect_errors"] = \
+                        self._stats.get("dissect_errors", 0) + 1
+                logger.debug(f"Dissector {type(dissector).__name__} "
+                             f"failed, falling back to basic packet: {e}")
                 break
 
         if packet is None:
@@ -344,7 +356,10 @@ class TrafficCapture:
 
                     packets.append(packet)
 
-                except (json.JSONDecodeError, KeyError) as e:
+                except Exception as e:
+                    # Wider than JSON/Key: a tree-rebuild TypeError from a
+                    # stored RNS row used to kill the WHOLE list query —
+                    # one bad row must only cost that row.
                     logger.debug(f"Error parsing packet: {e}")
 
         return packets
