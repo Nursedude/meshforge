@@ -9,8 +9,15 @@ stop it — this tool + the `psk_leak_guard` PreToolUse hook make the leak-prone
 commands impossible instead (calibrated_claims: harness enforces, not disposition).
 
 Every path here emits at most a sha256 PREFIX of a key, never the key bytes, never
-a channel URL (URLs encode the PSK). Keys are only ever SET from a file, never a
-literal argument.
+a channel URL (URLs encode the PSK) — into stdout/the transcript. Keys are read
+from a FILE, never typed as a literal argument to THIS tool.
+
+CAVEAT (inherent to the meshtastic CLI): `setpsk` passes `base64:<key>` as an
+argv to the `meshtastic` child, so the key is briefly visible in that child's
+/proc/<pid>/cmdline (and to argv-logging like auditd/psacct) for the duration of
+the call. It never enters the transcript, but do not run `setpsk` while
+untrusted processes or argv accounting are active on the target box. The upstream
+CLI has no single-channel file/stdin form to avoid this.
 
 Subcommands:
   info    <host[:port]>                 full --info with every psk + channel URL redacted
@@ -26,13 +33,27 @@ import re
 import subprocess
 import sys
 
-PSK_RE = re.compile(r'("psk"\s*:\s*")([A-Za-z0-9+/=]{8,})(")')
+# PSK values are base64 of 1/16/32-byte keys → 4/24/44 chars. Floor of 2 (not
+# 8) so the 1-byte default/simple key "AQ==" is redacted here AND found by
+# _channel_psk — an 8-char floor made a default-psk channel read "channel not
+# found" and printed "AQ==" unredacted.
+PSK_RE = re.compile(r'("psk"\s*:\s*")([A-Za-z0-9+/=]{2,})(")')
 URL_RE = re.compile(r'https://meshtastic\.org/e/#[A-Za-z0-9_\-]+')
 B64_32 = re.compile(r'^[A-Za-z0-9+/]{43}=$')  # 32-byte base64
+
+# Tri-state channel-lookup status (honest_failure_modes point 1: a transport
+# failure must NOT read as a valid domain answer of "channel absent").
+CH_OK = "ok"
+CH_ABSENT = "absent"
+CH_ERROR = "error"
 
 
 def _hash8(s: str) -> str:
     return hashlib.sha256(s.encode()).hexdigest()[:8]
+
+
+def _hash16(s: str) -> str:
+    return hashlib.sha256(s.encode()).hexdigest()[:16]
 
 
 def _redact(text: str) -> str:
@@ -41,28 +62,42 @@ def _redact(text: str) -> str:
     return text
 
 
-def _run_info(host: str) -> str:
-    r = subprocess.run(
+def _raw_info(host: str) -> subprocess.CompletedProcess:
+    """Single `meshtastic --info` round-trip. The ONE place the command shape
+    (argv, timeout) lives — info + channel lookup both go through it so their
+    transport semantics can never diverge."""
+    return subprocess.run(
         ["meshtastic", "--host", host, "--info"],
         capture_output=True, text=True, timeout=90,
     )
+
+
+def _run_info(host: str):
+    """Return (redacted_text, returncode). rc is propagated so callers never
+    report an unreachable radio as a successful dump."""
+    r = _raw_info(host)
     # redact BOTH streams before anything can be printed
-    return _redact(r.stdout) + (_redact(r.stderr) if r.returncode else "")
+    text = _redact(r.stdout) + (_redact(r.stderr) if r.returncode else "")
+    return text, r.returncode
 
 
 def _channel_psk(host: str, name: str):
-    """Return the raw psk string for a channel by name — used INTERNALLY only,
-    never printed. Callers must reduce to a hash before output."""
-    raw = subprocess.run(
-        ["meshtastic", "--host", host, "--info"],
-        capture_output=True, text=True, timeout=90,
-    ).stdout
-    for line in raw.splitlines():
+    """Return (status, psk) where status is CH_OK/CH_ABSENT/CH_ERROR. psk is
+    the raw key (INTERNAL only — callers must reduce to a hash before output).
+    A nonzero meshtastic exit yields CH_ERROR, distinct from CH_ABSENT, so a
+    momentarily-unreachable box is never misreported as "channel not found"."""
+    r = _raw_info(host)
+    if r.returncode != 0:
+        return CH_ERROR, None
+    # NOTE: relies on meshtastic --info rendering a channel's "name" and "psk"
+    # on the same line (its compact JSON-per-channel form). A future CLI format
+    # change surfaces as CH_ABSENT, never as a wrong key.
+    for line in r.stdout.splitlines():
         if f'"name": "{name}"' in line:
             m = PSK_RE.search(line)
             if m:
-                return m.group(2)
-    return None
+                return CH_OK, m.group(2)
+    return CH_ABSENT, None
 
 
 def _load_key(keyfile: str) -> str:
@@ -70,30 +105,41 @@ def _load_key(keyfile: str) -> str:
         return f.read().strip()
 
 
+def _report_lookup_failure(name, status):
+    """Emit the right message + exit code for a non-OK channel lookup. Keeps
+    CH_ERROR (transport, rc 4) distinct from CH_ABSENT (rc 3)."""
+    if status == CH_ERROR:
+        print(f"{name}: could not read radio (unreachable / CLI error)", file=sys.stderr)
+        return 4
+    print(f"{name}: channel not found", file=sys.stderr)
+    return 3
+
+
 def cmd_info(host):
-    print(_run_info(host))
+    text, rc = _run_info(host)
+    print(text)
+    if rc != 0:
+        print(f"info: meshtastic exited {rc} (radio unreachable / error)", file=sys.stderr)
+        return 4
     return 0
 
 
 def cmd_keyhash(host, name):
-    psk = _channel_psk(host, name)
-    if psk is None:
-        print(f"{name}: channel not found", file=sys.stderr)
-        return 3
-    print(f"{name}: sha256:{hashlib.sha256(psk.encode()).hexdigest()[:16]}")
+    status, psk = _channel_psk(host, name)
+    if status != CH_OK:
+        return _report_lookup_failure(name, status)
+    print(f"{name}: sha256:{_hash16(psk)}")
     return 0
 
 
 def cmd_verify(host, name, keyfile):
-    psk = _channel_psk(host, name)
-    if psk is None:
-        print(f"{name}: channel not found", file=sys.stderr)
-        return 3
+    status, psk = _channel_psk(host, name)
+    if status != CH_OK:
+        return _report_lookup_failure(name, status)
     want = _load_key(keyfile)
     same = psk == want
     print(f"{name}: {'MATCH' if same else 'DIFFER'} "
-          f"(box=sha256:{hashlib.sha256(psk.encode()).hexdigest()[:16]} "
-          f"file=sha256:{hashlib.sha256(want.encode()).hexdigest()[:16]})")
+          f"(box=sha256:{_hash16(psk)} file=sha256:{_hash16(want)})")
     return 0 if same else 1
 
 
@@ -108,7 +154,7 @@ def cmd_setpsk(host, index, keyspec):
             print(f"refusing: {keyspec} is not a 32-byte base64 key", file=sys.stderr)
             return 2
         psk_arg = f"base64:{key}"
-        witness = f"sha256:{hashlib.sha256(key.encode()).hexdigest()[:16]}"
+        witness = f"sha256:{_hash16(key)}"
     r = subprocess.run(
         ["meshtastic", "--host", host, "--ch-index", str(index), "--ch-set", "psk", psk_arg],
         capture_output=True, text=True, timeout=90,
