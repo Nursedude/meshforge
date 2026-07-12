@@ -82,9 +82,29 @@ collectd-mod-exec runs as `nobody` (can't read root meshtasticd's
 `/proc/<pid>/maps`), collectd-mod-mqtt TLS is broken upstream
 (openwrt/packages#8288) — plain MQTT inside the tunnel/LAN only.
 
-## Fleet naming templates (Arc 2 — landing later)
+## Fleet naming (Arc 2 Phase 0)
 
-`dnsmasq-fleet.conf.template`, `uci-dnsmasq-fleet.sh.template`,
-`mikrotik-fleet-dns.rsc.template` will live here; generated from the
-operator's `~/.config/meshforge/fleet_naming.json` registry by
-`scripts/fleet_naming_audit.py --emit-*`, never committed with real values.
+The naming layer is **dual-environment by design** (operator decision
+2026-07-11): the main-LAN segment keeps its consumer-router DHCP dependency
+(names-first with an audited `ip_fallback`), while the hardened
+MikroTik/OpenWrt segment gets static DNS + DHCP reservations **generated
+from the operator registry** (`~/.config/meshforge/fleet_naming.json`,
+template `configs/fleet_naming.example.json`):
+
+```sh
+python3 scripts/fleet_naming_audit.py                 # drift audit (exit = findings)
+python3 scripts/fleet_naming_audit.py --emit-mikrotik # RouterOS static DNS + leases
+python3 scripts/fleet_naming_audit.py --emit-uci      # OpenWrt dnsmasq (UCI)
+python3 scripts/fleet_naming_audit.py --emit-dnsmasq  # raw dnsmasq include
+```
+
+`dnsmasq-fleet.conf.template` / `uci-dnsmasq-fleet.sh.template` /
+`mikrotik-fleet-dns.rsc.template` document the SHAPES only — generated
+output carries operator values and is never committed (MF014). Resolution
+SSOT for MeshForge code: `src/utils/fleet_naming.py` (dns → bare →
+ip_fallback → honest unresolved; names stay the connect target so the OS
+re-resolves per request). umdns/avahi are LAN-segment discovery garnish
+only (no cross-subnet reflection) — the namespace authority is DNS, full
+stop. **Standalone**: a router serves names for its own segment.
+**Fleet**: registry + audit (cron_verdict-wireable) + namespace across
+segments.

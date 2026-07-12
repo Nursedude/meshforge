@@ -1,0 +1,10 @@
+# mikrotik-fleet-dns.rsc.template — fleet namespace on RouterOS (the
+# hardened-segment authority: static DNS names + DHCP reservations).
+#
+# SHAPE ONLY (MF014): generate the real .rsc with
+#     python3 scripts/fleet_naming_audit.py --emit-mikrotik
+# and never commit the output. Import on the MikroTik with:
+#     /import file-name=fleet-dns.rsc
+
+/ip dns static add name={{HOSTNAME}}.{{FLEET_DOMAIN}} address={{IP}}
+/ip dhcp-server lease add mac-address={{MAC}} address={{IP}}

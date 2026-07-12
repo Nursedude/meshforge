@@ -56,6 +56,24 @@ class ARENDataCollectorMixin:
         if self._settings:
             raw = self._settings.get("aredn_node_ips", [])
             configured_ips = [raw] if isinstance(raw, str) else list(raw or [])
+        # Names-first (Arc 2): aredn_node_ips entries may be fleet aliases
+        # (AREDNClient already accepts hostnames). A resolvable name passes
+        # through so the OS re-resolves per request; only a registry
+        # ip_fallback substitutes a different target. IP literals and a
+        # missing/broken naming registry keep the legacy behavior.
+        if configured_ips:
+            try:
+                from utils.fleet_naming import (connect_target,
+                                                load_registry_quiet)
+                naming_registry = load_registry_quiet()
+                configured_ips = [
+                    connect_target(str(e), naming_registry)[0]
+                    for e in configured_ips
+                ]
+            except Exception as e:
+                # naming layer is optional here (audit owns loudness) but
+                # the skip leaves a witness (honest_failure_modes #9)
+                logger.debug(f"AREDN naming resolution skipped: {e}")
 
         local_node_ip, gate_status = self._get_aredn_node_ip()
         if not local_node_ip:

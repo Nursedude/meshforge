@@ -157,7 +157,11 @@ try:
         targets = peers[this_host].get('backup_targets', [])
         for t in targets:
             if t in peers:
-                print(f\"{t} {peers[t]['ip']}\")
+                # names-first (Arc 2): a 'name' key wins (ssh/DNS resolves
+                # it fresh each run); 'ip' stays the documented fallback
+                addr = peers[t].get('name') or peers[t].get('ip', '')
+                if addr:
+                    print(f\"{t} {addr}\")
 except (json.JSONDecodeError, KeyError):
     pass
 " 2>/dev/null

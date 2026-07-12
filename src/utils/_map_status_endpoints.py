@@ -48,6 +48,10 @@ def _serialize_peer_status(s: Any) -> Dict[str, Any]:
     return {
         "hostname": s.hostname,
         "peer_name": s.peer_name,
+        # fleet_naming method for how the operator's entry became this
+        # hostname (Arc 2): dns/bare/ip_fallback/ip_literal/unresolved;
+        # None when the naming layer isn't wired.
+        "resolution_method": getattr(s, "resolution_method", None),
         "ok": s.ok,
         "last_sync": s.last_sync,
         "last_attempt": s.last_attempt,

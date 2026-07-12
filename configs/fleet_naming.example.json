@@ -1,0 +1,18 @@
+{
+  "_comment": "Fleet naming registry template. Copy to ~/.config/meshforge/fleet_naming.json and replace the SYNTHETIC values (MF014: no operator values in the repo copy). This is the ADDRESSING overlay — fleet membership SSOT stays fleet_hosts, and host keys here are the same aliases. 'domain' is the fleet namespace suffix (operator-chosen; .internal is ICANN-reserved for private use and never leaks to root servers). Per host: ip_fallback = IPv4 literal used ONLY when the name doesn't resolve (logged + audit-flagged, never silent — an IP is a hint, never an identity; alias keys that look like IPs are refused); mac = for generated DHCP reservations (--emit-dnsmasq/--emit-uci/--emit-mikrotik in scripts/fleet_naming_audit.py); expect_hostkey = SHA256:... ssh host-key fingerprint for --verify-identity (the DHCP-reshuffle 'wrong box answers to the name' smoking gun). A bare null host is legal membership shorthand. Example IPs use RFC 5737 documentation ranges.",
+  "domain": "example.internal",
+  "hosts": {
+    "box1": {
+      "ip_fallback": "192.0.2.10",
+      "mac": "00:00:5e:00:53:01",
+      "expect_hostkey": "SHA256:0000000000000000000000000000000000000000000",
+      "notes": "SYNTHETIC EXAMPLE — main-LAN segment (consumer-router DHCP; names-first with audited fallback)"
+    },
+    "box2": {
+      "ip_fallback": "198.51.100.20",
+      "mac": "00:00:5e:00:53:02",
+      "notes": "SYNTHETIC EXAMPLE — hardened segment (static DNS + reservation generated from this registry)"
+    },
+    "box3": null
+  }
+}

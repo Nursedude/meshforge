@@ -1,0 +1,17 @@
+# dnsmasq-fleet.conf.template — fleet namespace on a dnsmasq authority
+# (OpenWrt box via a conf-file include, or a Pi running dnsmasq).
+#
+# SHAPE ONLY (MF014): the real file is GENERATED from the operator registry —
+#     python3 scripts/fleet_naming_audit.py --emit-dnsmasq
+# — and is never committed. {{PLACEHOLDERS}} show the mapping.
+
+domain={{FLEET_DOMAIN}}
+local=/{{FLEET_DOMAIN}}/
+expand-hosts
+
+# One line per fleet box this authority serves DHCP for —
+# reservation + name in one stroke (kills the DHCP-reshuffle class):
+dhcp-host={{MAC}},{{HOSTNAME}},{{IP}}
+
+# Boxes NOT on this segment (static split-DNS entries):
+address=/{{HOSTNAME}}.{{FLEET_DOMAIN}}/{{IP}}

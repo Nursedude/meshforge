@@ -1,0 +1,19 @@
+# uci-dnsmasq-fleet.sh.template — the dnsmasq-fleet shape in OpenWrt UCI
+# form, for whichever OpenWrt box fronts a fleet segment.
+#
+# SHAPE ONLY (MF014): generate the real script with
+#     python3 scripts/fleet_naming_audit.py --emit-uci
+# and never commit the output.
+
+uci set dhcp.@dnsmasq[0].domain='{{FLEET_DOMAIN}}'
+uci set dhcp.@dnsmasq[0].local='/{{FLEET_DOMAIN}}/'
+uci set dhcp.@dnsmasq[0].expandhosts='1'
+
+# per fleet box on this segment:
+uci add dhcp host
+uci set dhcp.@host[-1].name='{{HOSTNAME}}'
+uci set dhcp.@host[-1].mac='{{MAC}}'
+uci set dhcp.@host[-1].ip='{{IP}}'
+
+uci commit dhcp
+/etc/init.d/dnsmasq restart

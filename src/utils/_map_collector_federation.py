@@ -113,6 +113,26 @@ class FederationDataCollectorMixin:
         peers = self._settings.get("federation_peers") or []
         if not peers:
             return
+        # Names-first (Arc 2): entries may be fleet aliases. Each entry
+        # maps to a connect target (a NAME when it resolves — the OS
+        # re-resolves per request, so a DHCP move never pins a stale IP
+        # here — or a registry ip_fallback, labeled) plus a method the
+        # peer_status row surfaces. Behavior-preserving: IP literals and
+        # unresolved names pass through verbatim; a missing/broken naming
+        # registry degrades to the legacy passthrough (the audit script
+        # is where registry errors get loud).
+        resolution_methods: dict = {}
+        try:
+            from utils.fleet_naming import connect_target, load_registry_quiet
+            naming_registry = load_registry_quiet()
+            resolved = []
+            for entry in peers:
+                target, method = connect_target(str(entry), naming_registry)
+                resolved.append(target)
+                resolution_methods[target] = method
+            peers = resolved
+        except Exception as e:
+            logger.debug(f"Federation naming resolution skipped: {e}")
         try:
             from utils.map_federation import FederationCollector
             # Pass node_history db_path so federation can backpressure-skip
@@ -136,6 +156,7 @@ class FederationDataCollectorMixin:
                 port=int(self._settings.get("federation_port", 5000)),
                 db_path=db_path,
                 peer_names=self._load_fleet_peer_names(),
+                resolution_methods=resolution_methods,
             )
         except ImportError as e:
             logger.warning(f"Federation disabled (import failed): {e}")

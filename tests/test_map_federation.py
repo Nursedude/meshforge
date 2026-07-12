@@ -873,6 +873,55 @@ class TestPeerNamePlumbing:
         assert s.ok is False
         assert "crash" in (s.last_error or "")
 
+
+class TestResolutionMethodPlumbing:
+    """Arc 2 (2026-07-11): federation_peers entries may be fleet aliases;
+    utils.fleet_naming maps each to a connect target + a METHOD, and the
+    method must survive into every peer_status row (construction, success,
+    failure, crash — mirroring peer_name) and the /api serializer, so the
+    operator can see HOW each peer was addressed (dns vs legacy ip_literal
+    vs labeled ip_fallback) without cross-referencing configs."""
+
+    def test_status_carries_method_at_construction(self):
+        fc = FederationCollector(
+            ["peer1.example.internal", "192.0.2.9"], poll_interval=3600,
+            resolution_methods={"peer1.example.internal": "dns",
+                                "192.0.2.9": "ip_literal"},
+        )
+        snap = fc.get_snapshot()
+        assert (snap.peer_status["peer1.example.internal"]
+                .resolution_method == "dns")
+        assert snap.peer_status["192.0.2.9"].resolution_method == "ip_literal"
+
+    def test_method_defaults_to_none_when_unwired(self):
+        fc = FederationCollector(["plain-host"], poll_interval=3600)
+        snap = fc.get_snapshot()
+        assert snap.peer_status["plain-host"].resolution_method is None
+
+    def test_method_stamped_after_poll(self):
+        fc = FederationCollector(
+            ["peer1.example.internal"], poll_interval=10,
+            resolution_methods={"peer1.example.internal": "dns"},
+        )
+        good = FederationPeerStatus(
+            hostname="peer1.example.internal", ok=True,
+            last_sync=time.time(), last_attempt=time.time(),
+        )
+        with patch("utils.map_federation.fetch_peer_directory",
+                   return_value=([], good)):
+            fc.poll_once()
+        snap = fc.get_snapshot()
+        assert (snap.peer_status["peer1.example.internal"]
+                .resolution_method == "dns")
+
+    def test_serializer_exposes_resolution_method(self):
+        from utils._map_status_endpoints import _serialize_peer_status
+        d = _serialize_peer_status(FederationPeerStatus(
+            hostname="peer1.example.internal", resolution_method="dns"))
+        assert d["resolution_method"] == "dns"
+        d2 = _serialize_peer_status(FederationPeerStatus(hostname="x"))
+        assert d2["resolution_method"] is None
+
     def test_unmapped_peer_keeps_name_none_through_poll(self):
         """Mixed fleet: one peer in fleet.json (mapping carries name), one
         operator-added bare hostname (no mapping). The mapped peer gets a

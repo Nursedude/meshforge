@@ -139,6 +139,13 @@ class FederationPeerStatus:
     # use names. `None` when the collector wasn't given a name mapping or
     # the entry is missing from fleet.json.
     peer_name: Optional[str] = None
+    # How the operator's federation_peers entry became this hostname
+    # (utils.fleet_naming METHODS: dns/bare = a NAME the OS re-resolves
+    # per request, ip_fallback = registry substitution because the name
+    # didn't resolve, ip_literal = legacy raw-IP entry the naming audit
+    # flags, unresolved = kept verbatim + expected to fail loud). None
+    # when the collector wasn't given a method map (naming layer absent).
+    resolution_method: Optional[str] = None
     # Exponential backoff state (Issue #59). When `in_backoff` is True the
     # collector is skipping this peer until `next_eligible_poll_ts`. The
     # `backoff_multiplier` records the current wait multiple of poll_interval
@@ -468,6 +475,7 @@ class FederationCollector:
         wal_skip_threshold_bytes: int = DEFAULT_WAL_SKIP_THRESHOLD_BYTES,
         stat_fn: Callable[[Path], int] = _stat_size,
         peer_names: Optional[Dict[str, str]] = None,
+        resolution_methods: Optional[Dict[str, str]] = None,
         backoff_threshold: int = DEFAULT_BACKOFF_THRESHOLD,
         backoff_base: int = DEFAULT_BACKOFF_BASE,
         backoff_max_multiplier: int = DEFAULT_BACKOFF_MAX_MULTIPLIER,
@@ -486,6 +494,9 @@ class FederationCollector:
         # Endpoint → friendly fleet-name lookup. Plumbed in from fleet.json
         # via map_data_collector._init_federation. Empty dict when unknown.
         self._peer_names: Dict[str, str] = dict(peer_names or {})
+        # Endpoint → fleet_naming method (see FederationPeerStatus field).
+        self._resolution_methods: Dict[str, str] = dict(
+            resolution_methods or {})
         # Backoff knobs — `time_fn` is injected so tests can fast-forward
         # without manipulating real wall-clock.
         self._backoff_threshold = max(1, int(backoff_threshold))
@@ -504,6 +515,7 @@ class FederationCollector:
             peer_status={
                 p: FederationPeerStatus(
                     hostname=p, peer_name=self._peer_names.get(p),
+                    resolution_method=self._resolution_methods.get(p),
                 )
                 for p in self._peers
             },
@@ -630,6 +642,7 @@ class FederationCollector:
                 continue
             carried = FederationPeerStatus(**asdict(prior))
             carried.peer_name = self._peer_names.get(peer)
+            carried.resolution_method = self._resolution_methods.get(peer)
             new_status[peer] = carried
 
         if not due_peers:
@@ -666,6 +679,7 @@ class FederationCollector:
                         last_error=f"crash: {type(e).__name__}: {e}",
                         consecutive_failures=prior_failures + 1,
                         peer_name=self._peer_names.get(peer),
+                        resolution_method=self._resolution_methods.get(peer),
                     )
                     in_b, mult, next_t = self._compute_backoff(
                         status.consecutive_failures, attempt_ts,
@@ -729,6 +743,7 @@ class FederationCollector:
                             peer, status.consecutive_failures, mult,
                         )
                 status.peer_name = self._peer_names.get(peer)
+                status.resolution_method = self._resolution_methods.get(peer)
                 new_status[peer] = status
 
                 for entry in entries:
