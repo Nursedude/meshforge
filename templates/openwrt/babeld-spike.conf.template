@@ -1,0 +1,26 @@
+# babeld-spike.conf.template — the Arc 3 canary shape (raw babeld conf,
+# works verbatim on OpenWrt and Debian babeld 1.13.x).
+#
+# SHAPE ONLY (MF014): copy per box, fill {{PLACEHOLDERS}}. The filter
+# block makes the instance STRUCTURALLY unable to import or export
+# anything outside the test range — keep it when adapting.
+#
+# hello-interval 12 + rtt-max 456 + max-rtt-penalty 48: measured
+# 2026-07-12 — a wifi-STA/NAT leg jitters (1→235 ms bursts, 0% loss) and
+# default 4 s hellos flap the neighbour every ~15-25 s. Wired/RF legs may
+# tighten. Full numbers: .claude/research/babel_l3_fabric_spike_2026_07_12.md
+
+random-id true
+interface {{WG_IFACE}} type tunnel hello-interval 12 rtt-max 456 max-rtt-penalty 48
+
+# announce ONLY this box's test prefix
+redistribute ip {{OWN_TEST_PREFIX}} eq 32 allow
+redistribute local ip {{OWN_TEST_PREFIX}} eq 32 allow
+redistribute local deny
+redistribute deny
+
+# accept + install ONLY the shared test range
+in ip {{TEST_RANGE}} le 32 allow
+in deny
+install ip {{TEST_RANGE}} le 32 allow
+install deny
