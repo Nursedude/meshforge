@@ -55,22 +55,42 @@
 | E2E forwarding over learned routes | works | moc2→router-lo 3/3 @1.4 ms; router→moc2-lo 2/3 (first-packet warmup). busybox `ping -I <lo-addr>` variant fails on the router — ping quirk, not fabric (replies with that src flow fine) |
 | failover with a second path | ≤30 s | **NOT MEASURED** — single-path testbed; Phase-2 item |
 
-## THE finding: wifi-STA jitter flaps default-tuned babel
+## THE finding: babel adjacency over the wifi+NAT leg is NOT stable —
+## root cause OPEN after a bounded debug ladder
 
-With defaults (`hello-interval 4`), the router's route to moc2 flapped
-**UP → RETRACT → UP every ~15–25 s** while moc2's route stayed solid —
-one-directional neighbour loss. Inner-tunnel evidence: **0 % packet loss
-but RTT 1.0→235 ms (avg 60, mdev 78)** over 40 pings — the router's
-wifi-STA uplink (contention/scan stalls; powersave already off on all
-its radios) delays frames in bursts that read as missed hellos.
+Routes retract/relearn persistently (initially every ~15–25 s at default
+4 s hellos; still recurring at ~1–10 min scale after every tuning step).
+The debug ladder, with what each rung RULED OUT (all measured live):
 
-**Mitigation (protocol-level, portable)**: `interface wg-spike type
-tunnel hello-interval 12 rtt-max 456 max-rtt-penalty 48` both sides →
-route solid for the whole observation window post-tune; the 48 h soak
-extends the sample. Implication for Phase 2: **any babel adjacency that
-crosses a wifi/NAT leg needs jitter-tolerant timers**; wired/AREDN-RF
-legs can keep faster hellos. This is exactly the kind of environmental
-variable a design-from-docs would have missed.
+1. **Inner-tunnel loss**: 0 % over 40×0.5 s AND over 360×0.5 s pings —
+   not loss. But a **~200 ms sawtooth stall every ~6–7 s** (RTT 225→185→
+   143→103 decay pattern — wifi-scan-like; powersave already off on all
+   router radios) and max 235 ms bursts.
+2. **hello-interval 12 + rtt-max 456 + max-rtt-penalty 48**: reduced flap
+   frequency (13 min clean, then recurrence) — insufficient.
+3. **Multicast-over-wg** (moc2's babeld showed `rxcost 65535`, sparse
+   reach mask 9338, while tcpdump PROVED hellos arriving): switched
+   `unicast true` both sides — flap continued → not (only) mcast joins.
+4. **NAT mapping expiry** (MikroTik fronts the router; moc2 sees endpoint
+   `<mikrotik>:59732`): keepalive 25→5 s — port stayed stable the whole
+   watch, flap continued → not NAT rebind.
+5. **Sender starvation**: 9 hello packets from the router captured in
+   60 s — emission adequate.
+
+Where that leaves it: packets arrive, yet babeld's hello ACCOUNTING sees
+misses (the reach-mask holes are the proximate cause; whether from the
+~6–7 s stall pattern interacting with timestamped hellos, or a
+unicast+multicast dual-seqno-stream accounting subtlety in 1.13.1, is
+UNRESOLVED — deliberately stopped here; a spike is bounded). During the
+same window the rtun ssh tunnel dropped once too — this uplink genuinely
+hiccups.
+
+**The decisive next experiment is hardware, not config**: the OpenWrt
+One has free ethernet — an A/B with a WIRED uplink to the MikroTik
+removes the wifi medium entirely and splits medium-vs-daemon in one
+move. OPERATOR DECISION (a cable run). Until then: babel over THIS
+wifi-STA leg is not production-grade; nothing here implicates wired or
+AREDN-RF legs.
 
 ## Passive AREDN lane: LAN leg is blind
 
@@ -98,11 +118,15 @@ interop parameter table stays honestly EMPTY.
   moc2 mirror + `apt-get remove babeld` optional. Nothing here touches
   production routing, AREDN, the MikroTik, or the gateways.
 
-## Go/no-go read (interim — final after the 48 h soak)
+## Go/no-go read (interim — final after the 48 h soak + wired A/B)
 
-Convergence, withdrawal, containment, memory: **all inside criteria**,
-and the stack is tiny (babeld ~1 MB RSS). The wifi-jitter flap is the
-one real risk surfaced, and it tuned out cleanly. **Interim: GO for a
-Phase-2 design**, conditional on (a) the 48 h soak staying flat/quiet,
-(b) failover-with-second-path measured, (c) AREDN parameters captured
-from observed reality before any interop config is written.
+Protocol mechanics: **all inside criteria** (converge 30 s, withdraw
+≤1 s, relearn 11 s, RSS ≤1.3 MB, zero leakage, E2E forwarding) and the
+stack is tiny. Link stability over the wifi+NAT leg: **NOT acceptable
+as-is, root cause open** (ladder above). **Interim: CONDITIONAL GO** —
+Phase-2 design may proceed for wired/RF legs, gated on (a) the wired-
+uplink A/B isolating the wifi medium (operator: one cable), (b) the
+48 h soaks (which now double as flap-frequency counters — moc2's
+verdict-wired leg will show FAIL samples at each retraction; that
+noise IS the measurement), (c) failover-with-second-path, (d) AREDN
+parameters captured from observed reality before any interop config.
