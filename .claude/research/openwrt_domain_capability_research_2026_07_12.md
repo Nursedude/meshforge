@@ -118,6 +118,29 @@ is buildable, urgent, or blocked on anything but that one sentence.
    babel read and the 07-19 site question interact; neither this research nor
    the soak can resolve that coupling — it's an operator call.
 
+## Addendum 2026-07-12 (operator ground truth, same day): the router is at the AREDN site
+
+The premise "toad duplicates moc's RF vantage" was WRONG — the router sits at
+the **AREDN node site, <15 ft from moc5** (whose radio is `wh6gxz-ube`/ubex,
+LF slot 20, tx_enabled, fixed_position). Consequences:
+
+1. **The babel coupling anchor is now concrete**: the router IS the remote
+   AREDN-segment edge. "Multi-path failover when the tunnel to the remote
+   site dies (inet path ↔ AREDN 10.143/8 path)" is no longer hypothetical —
+   it is this box, this site. The 07-14 babel read should weigh this.
+2. **Redundancy is vs ubex, not moc** — and it's not clean: live check found
+   an RF asymmetry (ubex hears the router; the router's recent-heard table
+   lacked ubex entirely despite 15 ft + same channel) plus a **stale-PKC-key**
+   entry on ubex for the router (07-10 reflash kept the MAC-derived node ID,
+   rotated the keypair → DMs would fail). Stale entry removed from ubex's DB
+   2026-07-12 (verified 0 rows); re-learns on next nodeinfo. The asymmetry is
+   unexplained — if ubex's RF is unhealthy, the toad may be the site's better
+   radio, which reframes "redundant" toward "candidate replacement."
+3. **Router's advertised position is wrong**: set to moc's coords 07-12
+   (operator picked "same as moc" before the site fact surfaced); needs the
+   AREDN site's coordinates (AREDN sysinfo unreachable from moc5; operator to
+   supply).
+
 ## Time-sensitivity
 
 This report is stale after 07-14 (babel read) / 07-19 (gap-site date) /

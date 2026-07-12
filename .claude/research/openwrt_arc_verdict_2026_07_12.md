@@ -6,9 +6,14 @@
 > `babel_l3_fabric_spike_2026_07_12.md` (mechanics SSOT).
 
 **Verdict, first line: as deployed today, this hardware solves no operator
-problem the fleet doesn't already solve.** The router is co-located with moc;
-its toad radio duplicates moc's RF vantage (same room, same traffic — RF is
-everywhere). Everything below is either a cheap keep, a dated bet, or a kill.
+problem the fleet doesn't already solve.** The router sits at the **AREDN node
+site, <15 ft from moc5** (operator ground truth 07-12 — NOT co-located with
+moc as first written); its toad duplicates ubex's (moc5's radio) RF vantage.
+Everything below is either a cheap keep, a dated bet, or a kill.
+⚠️ Caveat on "duplicates": the router↔ubex pair shows an RF asymmetry (ubex
+hears the router; the router's recent-heard list lacked ubex despite 15 ft +
+same LF/20 channel) — if ubex's coverage is unhealthy, the toad may be the
+site's better radio. See the domain research addendum.
 
 ## What was spent
 
