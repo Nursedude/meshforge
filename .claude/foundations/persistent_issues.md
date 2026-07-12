@@ -460,38 +460,15 @@ to `persistent_issues_archive.md` 2026-06-15 (MF012 headroom).**
 
 ---
 
-## Issue #81: mini paging honesty — failed-send retry + per-boot crash identity (2026-06-11)
+## Issue #81 (2026-06-11): mini paging honesty — RESOLVED, body in archive (trimmed 2026-07-12)
 
-Both real 06-11 crash pages were lost to one engine defect pair. (1) **Failed
-sends were recorded honestly then never retried**: crash #4's [RED] ntfy died
-in the boot+15s DNS race (2-for-2 on real crashes); the operator got only the
-min-priority "cleared" notice. Cure: undelivered sends queue in rule state
-(`pending_sends`), retried once per tick until delivered
-(`send_retry_delivered`) or exhausted at 10 total attempts
-(`send_retry_exhausted`, loud); retries bypass cooldown + never touch fire
-bookkeeping; queue survives daemon restarts (a page queued just before a
-second crash delivers from the next boot); per-state cap 4 drops OLDEST
-loudly (`send_retry_dropped`); unknown-action-kind config errors not queued;
-undelivered sends surface in the warm brief. (2) **Back-to-back
-crashes coalesced**: edge state + cooldown key on (rule_id, subject) and the
-subject was the bare hostname — crash #5 (18.5 min after #4, inside
-`cooldown_s=3600`) produced no edge, no page, no digest record.
-Cure: BootHealthSource subject is now `host@boot_id[:8]` from the LATCHED
-assessment (fallback latched boot_time) — each crash boot is a fresh state
-key, so neither `currently_active` nor cooldown carries across boots. Seeds
-+ live rules all match `subject_glob "*"`; no rule changes. Tests:
-10 send-retry + 5 per-boot identity incl. the end-to-end 06-11 double-crash
-timeline (`test_back_to_back_crash_boots_both_fire`).
-
-**LIVE-DRILL VERIFIED 06-11 10:33–10:35 HST** (production daemon, VolcanoAI):
-ntfy.sh blocked via /etc/hosts (block A **and** AAAA — an IPv4-only entry
-leaks through DNS on the AAAA lookup), temp min-priority rule promoted onto
-moc3's steady backoff condition. edge_up ok=false → 3 held
-attempts (state + brief witness) → unblock → `send_retry_delivered` attempt
-4, ~90s after first failure; confirmed server-side via topic poll. fire_count
-stayed 1; removed-while-active deactivated loudly, action not run; hosts/
-ruleset/state/brief verified clean after.
-
+Both real 06-11 crash pages lost to one defect pair: failed sends never
+retried (cure: `pending_sends` queue, retried per tick, 10-attempt cap, loud
+exhaustion, survives restarts) + back-to-back crash boots coalesced by
+cooldown (cure: subject = `host@boot_id[:8]` — each crash boot is a fresh
+state key). LIVE-DRILL VERIFIED 06-11 (ntfy blocked → 3 held attempts →
+delivered on unblock). Tests: 10 send-retry + 5 per-boot identity. Full body
++ drill transcript in `persistent_issues_archive.md`.
 
 ---
 
@@ -542,3 +519,24 @@ error match must be line-anchored (live-caught). MF `fb80819e`, MA `04581964`
 (MA CLI-floor arc unported, queued). Quick check: `apt-get -s install
 --only-upgrade meshtasticd`; `head -1 ~/.local/bin/meshtastic`. Tests:
 `test_meshtasticd_apt.py` + updates-flow suites, both repos.
+
+---
+
+## meshtasticd VSZ leak (firmware#10468) — pthread stacks stranded, USB-radio boxes only (2026-07-10)
+
+Portduino meshtasticd on a **USB (CH341) radio** leaks one joinable 8 MB
+pthread **thread stack** per interrupt cycle (~9/min): the CH341 poll thread
+runs the RadioLib ISR on ITSELF, so `pinedio_deattach_interrupt`'s self-join
+guard SKIPS the join and the stack strands (`pine64/libch341-spi-userspace`;
+strace/gdb-pinned 07-10). Live: ~561 GB VSZ / 71k anon maps @ day 5 (Pi5+USB);
+SPI-radio boxes clean. Neither 2.7.24 nor 2.7.26 fixes **#10468**. Cures:
+(1) upstream PR pine64/libch341-spi-userspace#10 (one-line
+`pthread_detach(pthread_self())`) — patched 2.7.24 builds deployed on all 3
+USB boxes via `/usr/local/sbin/meshtasticd-patched` + `50-canary-pinedio-fix.conf`
+drop-in, validated flat; (2) **weekly restart** band-aid
+`meshtasticd-restart.timer` STAYS until soak proven (backstop-outlives-fix);
+(3) `probe_meshtasticd_vsz_leak` fires only past the 768 GB weekly-restart
+envelope (leaking-but-managed stays silent). Quick check:
+`wc -l /proc/$(pgrep -x meshtasticd)/maps` — climbing over 30 min = leaking;
+flat (≈8 stack pairs) = patched. Detail:
+[[project_updates_design_arc_2026_07_10]].

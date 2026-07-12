@@ -2948,3 +2948,39 @@ stamped in-document by `candidate.merge_seed_rules` (THE merge path); probe
 gains a STALE leg via the writer's `rule_body_sha` (guarded import, no fallback
 hasher): live==stamp but seed moved → fire; tuned/unstamped → exempt (stamps
 ratchet in via merges; unstamped boxes can't false-alarm).
+
+---
+
+## Issue #81: mini paging honesty — failed-send retry + per-boot crash identity (2026-06-11)
+
+> Trimmed from persistent_issues.md 2026-07-12 (MF012 headroom for the #10468 VSZ-leak entry).
+
+Both real 06-11 crash pages were lost to one engine defect pair. (1) **Failed
+sends were recorded honestly then never retried**: crash #4's [RED] ntfy died
+in the boot+15s DNS race (2-for-2 on real crashes); the operator got only the
+min-priority "cleared" notice. Cure: undelivered sends queue in rule state
+(`pending_sends`), retried once per tick until delivered
+(`send_retry_delivered`) or exhausted at 10 total attempts
+(`send_retry_exhausted`, loud); retries bypass cooldown + never touch fire
+bookkeeping; queue survives daemon restarts (a page queued just before a
+second crash delivers from the next boot); per-state cap 4 drops OLDEST
+loudly (`send_retry_dropped`); unknown-action-kind config errors not queued;
+undelivered sends surface in the warm brief. (2) **Back-to-back
+crashes coalesced**: edge state + cooldown key on (rule_id, subject) and the
+subject was the bare hostname — crash #5 (18.5 min after #4, inside
+`cooldown_s=3600`) produced no edge, no page, no digest record.
+Cure: BootHealthSource subject is now `host@boot_id[:8]` from the LATCHED
+assessment (fallback latched boot_time) — each crash boot is a fresh state
+key, so neither `currently_active` nor cooldown carries across boots. Seeds
++ live rules all match `subject_glob "*"`; no rule changes. Tests:
+10 send-retry + 5 per-boot identity incl. the end-to-end 06-11 double-crash
+timeline (`test_back_to_back_crash_boots_both_fire`).
+
+**LIVE-DRILL VERIFIED 06-11 10:33–10:35 HST** (production daemon, VolcanoAI):
+ntfy.sh blocked via /etc/hosts (block A **and** AAAA — an IPv4-only entry
+leaks through DNS on the AAAA lookup), temp min-priority rule promoted onto
+moc3's steady backoff condition. edge_up ok=false → 3 held
+attempts (state + brief witness) → unblock → `send_retry_delivered` attempt
+4, ~90s after first failure; confirmed server-side via topic poll. fire_count
+stayed 1; removed-while-active deactivated loudly, action not run; hosts/
+ruleset/state/brief verified clean after.
