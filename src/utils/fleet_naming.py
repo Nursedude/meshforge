@@ -115,8 +115,15 @@ def _reject_duplicate_keys(pairs):
 
 
 def _validate_host(alias: str, raw, errors: List[str]) -> Optional[FleetHost]:
+    # Store the STRIPPED alias — an incidental trailing space in a hand-
+    # edited key would otherwise register a host no lookup can ever find
+    # (silently absent from resolution and the drift scan).
+    alias = alias.strip()
     where = f"hosts[{alias!r}]"
-    if _IPV4_RE.match(alias.strip()):
+    if not alias:
+        errors.append("hosts: empty/whitespace alias key")
+        return None
+    if _IPV4_RE.match(alias):
         errors.append(f"{where}: alias looks like an IP address — DHCP "
                       f"reassigns those; key hosts by NAME (the moc5 lesson)")
         return None
@@ -176,6 +183,21 @@ def load_registry(path: Optional[str] = None
         host = _validate_host(str(alias), raw, errors)
         if host is not None:
             hosts[host.alias] = host
+    # Duplicate ip_fallback VALUES are an authoring error the author
+    # cannot have meant (a copy-pasted stanza): the audit's ip→alias map
+    # would silently last-win and one box's hardcoded IP would be
+    # attributed to the other. Refuse loud (the kilo duplicate-anchor
+    # precedent).
+    claimed: Dict[str, str] = {}
+    for h in hosts.values():
+        if h.ip_fallback:
+            if h.ip_fallback in claimed:
+                errors.append(
+                    f"duplicate ip_fallback {h.ip_fallback!r} claimed by "
+                    f"both {claimed[h.ip_fallback]!r} and {h.alias!r} — "
+                    f"one address cannot be two boxes")
+            else:
+                claimed[h.ip_fallback] = h.alias
     if errors:
         return None, errors
     return Registry(domain=domain.strip() if domain else None,
@@ -240,9 +262,26 @@ def connect_target(entry: str, registry: Optional[Registry] = None, *,
     return r.target or entry, r.method
 
 
+_QUIET_WARNED = False
+
+
 def load_registry_quiet(path: Optional[str] = None) -> Optional[Registry]:
     """Wiring helper for call sites where naming is OPTIONAL (map
     collectors): a missing/broken registry yields None (legacy IP behavior
-    continues) — the audit script is where registry errors get LOUD."""
-    reg, _errors = load_registry(path)
+    continues) — the audit script is where registry errors get LOUD.
+
+    One honesty exception (#80): "never configured" and "configured but
+    now CORRUPT" must not be the same silence — a registry that WAS
+    working and silently stopped applying is the DHCP-reshuffle class
+    reintroducing itself. A present-but-unloadable file logs one WARNING
+    per process (a witness, not a page)."""
+    global _QUIET_WARNED
+    reg, errors = load_registry(path)
+    if reg is None and errors and not any("not found" in e for e in errors) \
+            and not _QUIET_WARNED:
+        import logging
+        logging.getLogger(__name__).warning(
+            "fleet naming registry present but UNLOADABLE — collectors "
+            "reverted to legacy raw-entry behavior: %s", errors[0])
+        _QUIET_WARNED = True
     return reg

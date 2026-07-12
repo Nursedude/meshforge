@@ -158,10 +158,14 @@ try:
         for t in targets:
             if t in peers:
                 # names-first (Arc 2): a 'name' key wins (ssh/DNS resolves
-                # it fresh each run); 'ip' stays the documented fallback
+                # it fresh each run); 'ip' stays the documented fallback.
+                # A peer with NEITHER is emitted as a SKIP sentinel — the
+                # caller warns, so backup coverage never shrinks silently.
                 addr = peers[t].get('name') or peers[t].get('ip', '')
                 if addr:
                     print(f\"{t} {addr}\")
+                else:
+                    print(f\"SKIP {t}\")
 except (json.JSONDecodeError, KeyError):
     pass
 " 2>/dev/null
@@ -472,6 +476,13 @@ do_push() {
     log_header "Pushing to peer Pis..."
 
     while IFS=' ' read -r peer_name peer_ip; do
+        if [[ "$peer_name" == "SKIP" ]]; then
+            # fleet.json peer with neither 'name' nor 'ip' — coverage
+            # must not shrink silently (honest_failure_modes #9)
+            log_warn "${peer_ip} — no name/ip in fleet.json, backup target skipped"
+            push_fail=$((push_fail + 1))
+            continue
+        fi
         if [[ -z "$peer_name" || -z "$peer_ip" ]]; then
             continue
         fi

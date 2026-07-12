@@ -57,30 +57,34 @@ KEYSCAN_TIMEOUT_S = 8
 # ── per-host audit ────────────────────────────────────────────────────
 
 
-def keyscan_fingerprint(target: str, *,
-                        runner=subprocess.run) -> Tuple[Optional[str], str]:
-    """(SHA256 fingerprint, "") or (None, why-unobservable). Bounded; a
-    dead host is UNKNOWN, never a mismatch."""
+def keyscan_fingerprints(target: str, *,
+                         runner=subprocess.run
+                         ) -> Tuple[List[str], str]:
+    """(ALL SHA256 fingerprints, "") or ([], why-unobservable). A host
+    serves several key types (rsa/ecdsa/ed25519) and the registry's
+    expect_hostkey is ONE of them — comparing only the first scanned
+    type would manufacture false MISMATCHes on healthy hosts
+    (review-caught). Bounded; a dead host is UNKNOWN, never a mismatch."""
     try:
         scan = runner(["ssh-keyscan", "-T", str(KEYSCAN_TIMEOUT_S), target],
                       capture_output=True, text=True,
                       timeout=KEYSCAN_TIMEOUT_S + 4)
         if not scan.stdout.strip():
-            return None, f"keyscan empty (rc={scan.returncode})"
+            return [], f"keyscan empty (rc={scan.returncode})"
         fp = runner(["ssh-keygen", "-lf", "-"], input=scan.stdout,
                     capture_output=True, text=True, timeout=8)
-        for line in fp.stdout.splitlines():
-            m = re.search(r"(SHA256:\S+)", line)
-            if m:
-                return m.group(1), ""
-        return None, "no SHA256 fingerprint in keygen output"
+        fps = [m.group(1) for line in fp.stdout.splitlines()
+               for m in [re.search(r"(SHA256:\S+)", line)] if m]
+        if not fps:
+            return [], "no SHA256 fingerprint in keygen output"
+        return fps, ""
     except (subprocess.TimeoutExpired, OSError) as e:
-        return None, f"keyscan failed: {type(e).__name__}"
+        return [], f"keyscan failed: {type(e).__name__}"
 
 
 def audit_host(alias: str, registry: Optional[Registry], *,
                resolver=None, verify_identity: bool = False,
-               keyscan=keyscan_fingerprint) -> Dict:
+               keyscan=keyscan_fingerprints) -> Dict:
     r: Resolution = resolve(alias, registry,
                             resolver=resolver or default_resolver)
     row: Dict = {"alias": alias, "method": r.method, "target": r.target,
@@ -100,13 +104,13 @@ def audit_host(alias: str, registry: Optional[Registry], *,
         elif r.target is None:
             row["identity"] = "UNKNOWN(unresolved)"
         else:
-            got, why = keyscan(r.target)
-            if got is None:
+            fps, why = keyscan(r.target)
+            if not fps:
                 row["identity"] = f"UNKNOWN({why})"
-            elif got == host.expect_hostkey:
+            elif host.expect_hostkey in fps:
                 row["identity"] = "OK"
             else:
-                row["identity"] = f"MISMATCH({got})"
+                row["identity"] = f"MISMATCH({','.join(fps)})"
                 row["findings"].append("identity_mismatch")
     return row
 
@@ -135,11 +139,30 @@ def _scan_text(name: str, text: str, ip_alias: Dict[str, str],
     return found
 
 
+def _scan_json_values(name: str, values: List[Tuple[str, str]],
+                      ip_alias: Dict[str, str]) -> List[str]:
+    """values = (keypath, string-value); findings cite the KEYPATH, not a
+    line number — a re-serialized JSON has no honest line numbers to give
+    (review-caught: the old re-dump reported everything as line 1)."""
+    found: List[str] = []
+    for keypath, val in values:
+        for ip in _IPV4_RE.findall(str(val)):
+            alias = ip_alias.get(ip)
+            if alias:
+                found.append(f"ip_with_name_available:{name} "
+                             f"{keypath} {ip} -> {alias}")
+    return found
+
+
 def scan_operator_configs(registry: Optional[Registry],
                           home: Optional[Path] = None) -> List[str]:
-    """Flag IP literals in the known DHCP-bitten configs where the
-    registry offers a name. Only files that exist are scanned; nothing is
-    modified. Returns finding strings."""
+    """Flag IP literals in the known DHCP-bitten NAMING SURFACES where the
+    registry offers a name: ~/.ssh/config HostName lines,
+    map_settings.json federation_peers/aredn_node_ips, fleet.json
+    peers.*.ip — and ONLY those (an IP in an unrelated setting is not
+    naming drift). An unparseable JSON config yields an ``unscannable``
+    witness, never a raw full-file sweep (a transient torn write must not
+    manufacture unrelated-looking findings). Read-only."""
     home = home or get_real_user_home()
     ip_alias = _ip_to_alias(registry)
     if not ip_alias:
@@ -152,21 +175,40 @@ def scan_operator_configs(registry: Optional[Registry],
                                             errors="replace"),
             ip_alias,
             line_filter=lambda l: l.strip().lower().startswith("hostname"))
-    for rel, keys in (("map_settings.json",
-                       ("federation_peers", "aredn_node_ips")),
-                      ("fleet.json", None)):
-        p = home / ".config" / "meshforge" / rel
-        if not p.is_file():
-            continue
-        text = p.read_text(encoding="utf-8", errors="replace")
-        if keys is not None:
-            try:
-                doc = json.loads(text)
-                slim = {k: doc.get(k) for k in keys}
-                text = json.dumps(slim)
-            except ValueError:
-                pass    # unparseable → scan raw text; still honest
-        findings += _scan_text(str(p), text, ip_alias)
+    cfg_dir = home / ".config" / "meshforge"
+
+    def _load(p: Path):
+        try:
+            return json.loads(p.read_text(encoding="utf-8",
+                                          errors="replace")), None
+        except ValueError as e:
+            return None, f"unscannable:{p} (invalid JSON: {e})"
+
+    p = cfg_dir / "map_settings.json"
+    if p.is_file():
+        doc, err = _load(p)
+        if err:
+            findings.append(err)
+        else:
+            vals: List[Tuple[str, str]] = []
+            for key in ("federation_peers", "aredn_node_ips"):
+                raw = doc.get(key)
+                entries = [raw] if isinstance(raw, str) else (raw or [])
+                vals += [(key, str(e)) for e in entries]
+            findings += _scan_json_values(str(p), vals, ip_alias)
+    p = cfg_dir / "fleet.json"
+    if p.is_file():
+        doc, err = _load(p)
+        if err:
+            findings.append(err)
+        else:
+            peers = doc.get("peers")
+            vals = []
+            if isinstance(peers, dict):
+                for pname, pdoc in peers.items():
+                    if isinstance(pdoc, dict) and pdoc.get("ip"):
+                        vals.append((f"peers.{pname}.ip", str(pdoc["ip"])))
+            findings += _scan_json_values(str(p), vals, ip_alias)
     return findings
 
 
@@ -201,6 +243,11 @@ def emit_uci(registry: Registry) -> str:
                       f"uci set dhcp.@host[-1].name='{h.alias}'",
                       f"uci set dhcp.@host[-1].mac='{h.mac}'",
                       f"uci set dhcp.@host[-1].ip='{h.ip_fallback}'"]
+        else:
+            # every generator witnesses a skip identically — a host that
+            # silently doesn't appear reads as "config complete" (#80)
+            lines.append(f"# {h.alias}: no mac+ip_fallback in registry — "
+                         f"skipped (dynamic only)")
     lines += ["uci commit dhcp", "/etc/init.d/dnsmasq restart"]
     return "\n".join(lines) + "\n"
 
@@ -212,9 +259,12 @@ def emit_mikrotik(registry: Registry) -> str:
         if h.ip_fallback:
             lines.append(f"/ip dns static add name={h.alias}.{d} "
                          f"address={h.ip_fallback}")
-        if h.mac and h.ip_fallback:
-            lines.append(f"/ip dhcp-server lease add mac-address={h.mac} "
-                         f"address={h.ip_fallback}")
+            if h.mac:
+                lines.append(f"/ip dhcp-server lease add mac-address={h.mac} "
+                             f"address={h.ip_fallback}")
+        else:
+            lines.append(f"# {h.alias}: no ip_fallback in registry — "
+                         f"skipped (dynamic only)")
     return "\n".join(lines) + "\n"
 
 
@@ -224,7 +274,7 @@ def emit_mikrotik(registry: Registry) -> str:
 def run_audit(hosts: List[str], registry: Optional[Registry],
               registry_errors: List[str], *, resolver=None,
               verify_identity: bool = False, home: Optional[Path] = None,
-              keyscan=keyscan_fingerprint) -> Dict:
+              keyscan=keyscan_fingerprints) -> Dict:
     rows = [audit_host(a, registry, resolver=resolver,
                        verify_identity=verify_identity, keyscan=keyscan)
             for a in hosts]

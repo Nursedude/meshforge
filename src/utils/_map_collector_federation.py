@@ -122,15 +122,31 @@ class FederationDataCollectorMixin:
         # registry degrades to the legacy passthrough (the audit script
         # is where registry errors get loud).
         resolution_methods: dict = {}
+        # peer_names comes from fleet.json keyed by the ORIGINAL entry
+        # (IP or bare alias). When resolution substitutes a different
+        # target (dns fqdn / ip_fallback), the names map must be re-keyed
+        # by target too, or peer_name silently reverts to None on exactly
+        # the names-first happy path (#54 regression — review-caught).
+        peer_names = self._load_fleet_peer_names()
         try:
             from utils.fleet_naming import connect_target, load_registry_quiet
             naming_registry = load_registry_quiet()
             resolved = []
+            resolved_names: dict = {}
             for entry in peers:
-                target, method = connect_target(str(entry), naming_registry)
+                entry = str(entry)
+                target, method = connect_target(entry, naming_registry)
                 resolved.append(target)
                 resolution_methods[target] = method
+                name = peer_names.get(entry, peer_names.get(target))
+                if name is None and entry in peer_names.values():
+                    # entry IS the fleet name (alias entry, fleet.json
+                    # keyed by ip) — the alias is its own friendly name
+                    name = entry
+                if name is not None:
+                    resolved_names[target] = name
             peers = resolved
+            peer_names = resolved_names
         except Exception as e:
             logger.debug(f"Federation naming resolution skipped: {e}")
         try:
@@ -155,7 +171,7 @@ class FederationDataCollectorMixin:
                 )),
                 port=int(self._settings.get("federation_port", 5000)),
                 db_path=db_path,
-                peer_names=self._load_fleet_peer_names(),
+                peer_names=peer_names,
                 resolution_methods=resolution_methods,
             )
         except ImportError as e:

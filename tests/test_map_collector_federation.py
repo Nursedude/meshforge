@@ -627,3 +627,68 @@ class TestGeoJSONIncludesFederationBlock:
         assert block["enabled"] is False
         assert block["total"] == 0
         assert block["peers"] == []
+
+
+class TestNamesFirstPeerWiring:
+    """Arc 2 review-caught regression pin: _init_federation replaces the
+    peers list with fleet_naming-resolved TARGETS, so the peer_names map
+    (keyed by the ORIGINAL fleet.json entry) must be re-keyed by target
+    too — or peer_name silently reverts to None on exactly the
+    names-first happy path, breaking the #54 correlation contract."""
+
+    def _build(self, tmp_path, peers, fleet_peers, resolver_table):
+        from utils.fleet_naming import Registry
+        fake_home = tmp_path / "home"
+        cfg_dir = fake_home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "map_settings.json").write_text(json.dumps({
+            "federation_peers": peers}))
+        (cfg_dir / "fleet.json").write_text(json.dumps({
+            "peers": fleet_peers}))
+        reg = Registry(domain="test.internal", hosts={})
+        with patch("utils.map_data_collector.get_real_user_home",
+                   return_value=fake_home), \
+             patch("utils.fleet_naming.load_registry_quiet",
+                   return_value=reg), \
+             patch("utils.fleet_naming.default_resolver",
+                   side_effect=lambda n: resolver_table.get(n)):
+            return MapDataCollector(cache_dir=tmp_path / "cache",
+                                    enable_history=False,
+                                    config_dir=cfg_dir)
+
+    def test_peer_name_survives_dns_resolution(self, tmp_path):
+        """fleet.json entry without ip → peer_names keyed by NAME; the
+        entry resolves to an fqdn target — the name must follow it."""
+        c = self._build(
+            tmp_path, peers=["peerbox"],
+            fleet_peers={"peerbox": {}},
+            resolver_table={"peerbox.test.internal": "192.0.2.44"})
+        fc = c._federation
+        assert fc is not None
+        assert fc._peers == ["peerbox.test.internal"]
+        assert fc._resolution_methods == {"peerbox.test.internal": "dns"}
+        snap = fc.get_snapshot()
+        s = snap.peer_status["peerbox.test.internal"]
+        assert s.peer_name == "peerbox"          # the #54 contract holds
+        assert s.resolution_method == "dns"
+
+    def test_alias_entry_with_ip_keyed_fleet_json(self, tmp_path):
+        """fleet.json keyed by ip, federation_peers carries the alias —
+        the alias IS the fleet name (values-match leg)."""
+        c = self._build(
+            tmp_path, peers=["peerbox"],
+            fleet_peers={"peerbox": {"ip": "192.0.2.44"}},
+            resolver_table={"peerbox.test.internal": "192.0.2.44"})
+        s = c._federation.get_snapshot().peer_status["peerbox.test.internal"]
+        assert s.peer_name == "peerbox"
+
+    def test_ip_literal_entries_keep_legacy_correlation(self, tmp_path):
+        c = self._build(
+            tmp_path, peers=["192.0.2.44"],
+            fleet_peers={"peerbox": {"ip": "192.0.2.44"}},
+            resolver_table={})
+        fc = c._federation
+        assert fc._peers == ["192.0.2.44"]
+        s = fc.get_snapshot().peer_status["192.0.2.44"]
+        assert s.peer_name == "peerbox"
+        assert s.resolution_method == "ip_literal"

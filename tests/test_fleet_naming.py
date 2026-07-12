@@ -89,6 +89,23 @@ class TestRegistryHonesty:
         assert reg is None
         assert any("unreadable" in e for e in errs)
 
+    def test_whitespace_alias_key_is_stored_stripped(self, tmp_path):
+        """A trailing space in a hand-edited key must not register a host
+        no lookup can find (review-caught silent-absence)."""
+        doc = {"hosts": {"box1 ": {"ip_fallback": "192.0.2.10"}}}
+        reg, errs = load_registry(_write(tmp_path, doc))
+        assert errs == []
+        assert "box1" in reg.hosts and "box1 " not in reg.hosts
+
+    def test_duplicate_ip_fallback_refused(self, tmp_path):
+        """Two hosts claiming one ip_fallback is a copy-paste error — the
+        audit's ip→alias map would silently last-win (review-caught)."""
+        doc = {"hosts": {"box1": {"ip_fallback": "192.0.2.10"},
+                         "box2": {"ip_fallback": "192.0.2.10"}}}
+        reg, errs = load_registry(_write(tmp_path, doc))
+        assert reg is None
+        assert any("duplicate ip_fallback" in e for e in errs)
+
 
 class TestResolvePrecedence:
     def _reg(self):

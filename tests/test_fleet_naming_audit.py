@@ -72,14 +72,25 @@ class TestIdentity:
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: ("SHA256:good", ""))
+            keyscan=lambda t: (["SHA256:good"], ""))
+        assert row["identity"] == "OK" and row["findings"] == []
+
+    def test_match_against_any_key_type_is_ok(self):
+        """A host serves several key types; expect_hostkey is ONE of them.
+        Comparing only the first scanned type manufactured false
+        MISMATCHes (review-caught) — a match against ANY fingerprint is
+        OK."""
+        row = audit.audit_host(
+            "box1", self.REG(), resolver=_resolver({}),
+            verify_identity=True,
+            keyscan=lambda t: (["SHA256:rsa-first", "SHA256:good"], ""))
         assert row["identity"] == "OK" and row["findings"] == []
 
     def test_mismatch_is_the_smoking_gun_finding(self):
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: ("SHA256:EVIL", ""))
+            keyscan=lambda t: (["SHA256:EVIL", "SHA256:EVIL2"], ""))
         assert row["identity"].startswith("MISMATCH")
         assert "identity_mismatch" in row["findings"]
 
@@ -87,7 +98,7 @@ class TestIdentity:
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: (None, "keyscan empty (rc=1)"))
+            keyscan=lambda t: ([], "keyscan empty (rc=1)"))
         assert row["identity"].startswith("UNKNOWN")
         assert "identity_mismatch" not in row["findings"]
 
@@ -95,7 +106,7 @@ class TestIdentity:
         reg = _reg(box1=FleetHost("box1", ip_fallback="192.0.2.10"))
         row = audit.audit_host("box1", reg, resolver=_resolver({}),
                                verify_identity=True,
-                               keyscan=lambda t: ("SHA256:x", ""))
+                               keyscan=lambda t: (["SHA256:x"], ""))
         assert row["identity"] == "UNDECLARED"
         assert row["findings"] == []
 
@@ -125,8 +136,10 @@ class TestConfigSweep:
         reg = _reg(box1=FleetHost("box1", ip_fallback="192.0.2.10"))
         findings = audit.scan_operator_configs(reg, home=home)
         assert any(".ssh/config" in f and "-> box1" in f for f in findings)
-        assert any("map_settings.json" in f for f in findings)
-        assert any("fleet.json" in f for f in findings)
+        assert any("map_settings.json" in f and "federation_peers" in f
+                   for f in findings)
+        assert any("fleet.json" in f and "peers.box1.ip" in f
+                   for f in findings)
         # 203.0.113.9 / 198.51.100.3 have no registry name → not flagged
         assert not any("203.0.113.9" in f for f in findings)
         assert not any("198.51.100.3" in f for f in findings)
@@ -146,6 +159,33 @@ class TestConfigSweep:
         findings = audit.scan_operator_configs(reg, home=home)
         ms_hits = [f for f in findings if "map_settings.json" in f]
         assert len(ms_hits) == 1
+
+    def test_fleet_json_scan_is_peers_ip_only(self, tmp_path):
+        """fleet.json is scoped to peers.*.ip — an IP-shaped string in an
+        unrelated field must not be flagged (review-caught: the raw sweep
+        contradicted the docstring and could manufacture false pages)."""
+        home = self._home(tmp_path)
+        p = home / ".config" / "meshforge" / "fleet.json"
+        p.write_text(json.dumps({
+            "peers": {"box1": {"ip": "192.0.2.10"}},
+            "notes": "old lab addr 192.0.2.10 kept for history"}))
+        reg = _reg(box1=FleetHost("box1", ip_fallback="192.0.2.10"))
+        findings = audit.scan_operator_configs(reg, home=home)
+        fj = [f for f in findings if "fleet.json" in f]
+        assert fj == [f"ip_with_name_available:{p} "
+                      f"peers.box1.ip 192.0.2.10 -> box1"]
+
+    def test_unparseable_json_is_a_witness_never_a_raw_sweep(self, tmp_path):
+        """A torn/invalid JSON config yields an `unscannable` witness —
+        never a raw full-file sweep whose findings look like naming
+        drift (review-caught)."""
+        home = self._home(tmp_path)
+        (home / ".config" / "meshforge" / "map_settings.json").write_text(
+            '{"federation_peers": ["192.0.2.10"], torn')
+        reg = _reg(box1=FleetHost("box1", ip_fallback="192.0.2.10"))
+        findings = audit.scan_operator_configs(reg, home=home)
+        ms = [f for f in findings if "map_settings.json" in f]
+        assert len(ms) == 1 and ms[0].startswith("unscannable:")
 
     def test_no_registry_scans_nothing(self, tmp_path):
         assert audit.scan_operator_configs(None,
@@ -196,3 +236,14 @@ class TestEmitters:
         assert "uci set dhcp.@dnsmasq[0].domain='example.internal'" in out
         assert "uci set dhcp.@host[-1].mac='00:00:5e:00:53:01'" in out
         assert "uci commit dhcp" in out
+
+    def test_every_emitter_witnesses_skipped_hosts(self):
+        """A registry host lacking the fields an emitter needs must leave
+        a comment witness in ALL generators — a host that silently doesn't
+        appear reads as 'config complete' (review-caught: only dnsmasq
+        was honest)."""
+        reg = self.REG()   # box3 has neither mac nor ip_fallback
+        for emit in (audit.emit_dnsmasq, audit.emit_uci,
+                     audit.emit_mikrotik):
+            out = emit(reg)
+            assert "box3" in out, f"{emit.__name__} silently dropped box3"
