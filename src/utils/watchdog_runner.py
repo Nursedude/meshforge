@@ -54,6 +54,7 @@ from utils.watchdog_probes import (
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_router_scout_degraded,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
     probe_delivery_confirmation_stall,
@@ -579,6 +580,19 @@ def run_all_probes(
     # self-petted HW watchdog can't catch. Reads ~/host_probe_state.json written
     # by the out-of-band host_probe_check collector; INERT off the claw's brain box.
     sig = probe_host_frozen()
+    if sig is not None:
+        signals.append(sig)
+
+    # router_scout_degraded (2026-07-11 OpenWrt-router arc) — a mirrored
+    # meshforge-scout tick shows the ROUTER-side agent degraded: fresh mirror
+    # but stale captured_at (agent cron dark while the pull re-copies the same
+    # old tick), tick ok=false, or an unparseable mirror. Defense-in-depth
+    # behind the pull's own cron_verdict eval — this adds the /fleet + mini
+    # surface (per-device subject). Reads
+    # ~/.local/share/meshforge/router_scout/ as root; INERT off the manager
+    # box; stale mirror files are skipped (cron_verdict_stale owns the dead
+    # pull cron — router_scout is verdict-wired). degraded only (remote).
+    sig = probe_router_scout_degraded()
     if sig is not None:
         signals.append(sig)
 

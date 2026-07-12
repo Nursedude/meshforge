@@ -586,6 +586,19 @@
       "annotation": "Leg C (2026-06-17) - the dude-claw out-of-band witness (host_probe over NATS, on the watched box's own subnet) reports a target HOST_FROZEN (kernel alive, userspace swap-wedged - the .32 class the box's self-petted HW watchdog can't catch), UNREACHABLE (host/path/SoC down), or a sustained UNKNOWN (the claw witness itself unreachable = lost visibility, not 'healthy'). Surfaced into the warm brief + /fleet. Alert-only - propose_escalation, NO ntfy; the operator decides on the page."
     },
     {
+      "id": "router_scout_degraded_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "router_scout_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-11 OpenWrt-router arc - a mirrored meshforge-scout tick shows the ROUTER-side agent degraded: fresh mirror but stale captured_at (the agent cron died on the router while the pull keeps copying a corpse), tick ok=false (agent's own witnesses: tmpfs data_dir / unreadable proc / dead radio TCP), or an unparseable mirror. Fix: ssh to the router, check its scout crontab + /etc/meshforge/scout.conf, run meshforge-scout check by hand (templates/openwrt/README.md). The pull channel is healthy or this would be cron_verdict_stale instead. degraded only - every observed condition is remote."
+    },
+    {
       "id": "ntfy_loopback_any",
       "match": {
         "kind": "signal_class",

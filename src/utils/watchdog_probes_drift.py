@@ -1461,6 +1461,183 @@ def probe_host_frozen(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Probe: router scout degraded (2026-07-11 OpenWrt-router arc)
+#
+# A router-class fleet member (OpenWrt One, future MikroTik/AREDN boxes)
+# runs the meshforge-scout agent (templates/openwrt/); the manager box's
+# router_scout_pull.sh cron mirrors each tick to
+# ~/.local/share/meshforge/router_scout/<device>_tick.json. This probe
+# READS those mirrors (no ssh in the sandboxed watchdog). It is
+# DEFENSE-IN-DEPTH behind the pull's own eval (which also FAILs
+# cron_verdict on a stale/ok=false tick): its added value is surfacing
+# the per-device verdict into the watchdog spine (/fleet + mini brief,
+# device as subject), and covering ticks that reach the mirror by any
+# path other than the verdict-wired pull. Fires on: fresh mirror + stale
+# captured_at (agent cron dark on the router while the mirror keeps
+# being re-copied), tick ok=false, or an unparseable mirror (the pull
+# validates before writing, so garbage = writer/shape drift). Mirrors
+# host_frozen's file-read pattern + 2-tick debounce. degraded only —
+# every observed condition is REMOTE (tracer_peer_unreachable lesson).
+# Alert-only (propose_escalation).
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_ROUTER_SCOUT_DEBOUNCE_PATH = "/var/lib/meshforge/router_scout_debounce.json"
+ROUTER_SCOUT_MIRROR_SUBDIR = ".local/share/meshforge/router_scout"
+ROUTER_SCOUT_MIRROR_STALE_S = 5400   # 3 × the pull cron's 30-min cadence —
+                                     # older = the pull stopped; skip the file
+                                     # (cron_verdict_stale owns the dead cron)
+ROUTER_SCOUT_TICK_STALE_S = 2700     # 3 × the agent's */15 router cadence —
+                                     # a fresh mirror whose captured_at is
+                                     # older than this = agent dark on-router
+
+
+def _read_router_scout_ticks(home) -> Optional[List[Tuple[str, str, float]]]:
+    """Every mirrored tick as ``(filename, text, mtime)``, read as root
+    in-process (no sudo — watchdog sandbox). None when the mirror dir is
+    absent/unreadable (→ INERT: the pull runs only on the manager box)."""
+    if not home:
+        return None
+    d = os.path.join(str(home), ROUTER_SCOUT_MIRROR_SUBDIR)
+    try:
+        names = sorted(n for n in os.listdir(d) if n.endswith("_tick.json"))
+    except OSError:
+        return None
+    out: List[Tuple[str, str, float]] = []
+    for n in names:
+        p = os.path.join(d, n)
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            out.append((n, text, os.path.getmtime(p)))
+        except OSError:
+            continue   # a vanished/unreadable single file is skipped, not a page
+    return out
+
+
+def probe_router_scout_degraded(
+    *,
+    operator: Optional[Tuple[int, str]] = None,
+    ticks: Optional[List[Tuple[str, str, float]]] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+    mirror_stale_s: float = ROUTER_SCOUT_MIRROR_STALE_S,
+    tick_stale_s: float = ROUTER_SCOUT_TICK_STALE_S,
+) -> Optional[Signal]:
+    """Surface a degraded router-side meshforge-scout agent (2026-07-11).
+
+    Reads the manager box's mirrored scout ticks (written by the
+    verdict-wired ``router_scout_pull.sh``). Defense-in-depth: the pull's
+    own eval also FAILs cron_verdict on these conditions — this probe's
+    added value is the watchdog-spine surface (per-device subject into
+    /fleet + mini) and coverage of mirrors landed by any path other than
+    the pull. Fires ``degraded`` (never wedge — remote conditions) when,
+    for any FRESH mirror:
+
+      * the tick's ``captured_at`` is older than ``tick_stale_s`` — the
+        agent cron died on the router while the pull keeps re-copying the
+        same old tick (a fresh mtime hides the corpse from mtime-only
+        consumers);
+      * the tick self-reports ``ok=false`` (its ``errors[]`` are the
+        agent's own tri-state witnesses: tmpfs data_dir, unreadable
+        /proc, dead radio TCP, ...);
+      * the tick is unparseable (the pull validates JSON before its
+        atomic write, so garbage here is writer/shape drift, not a torn
+        read).
+
+    Self-guards None: no mirror dir (not the manager box → INERT), and a
+    STALE mirror file (mtime past ``mirror_stale_s``) is *skipped* — the
+    pull cron stopped and ``cron_verdict_stale`` owns that alert; reading
+    a frozen mirror as current would be the absence-of-evidence trap.
+    2-tick debounce; observed-clean resets. Alert-only. Never raises into
+    the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_ROUTER_SCOUT_DEBOUNCE_PATH
+
+        if ticks is None:
+            if operator is None:
+                try:
+                    from utils.fleet_test_runner import _find_operator_user
+                    operator = _find_operator_user()
+                except Exception:
+                    operator = None
+            home = None
+            if operator is not None:
+                try:
+                    import pwd
+                    home = pwd.getpwuid(operator[0]).pw_dir
+                except (KeyError, OSError):
+                    home = None
+            ticks = _read_router_scout_ticks(home)
+
+        if not ticks:
+            _save_parity_streak(sp, 0)      # no mirrors here → INERT
+            return None
+
+        bad: List[Tuple[str, str]] = []     # (device-or-filename, why)
+        for name, text, mtime in ticks:
+            if mtime is not None and (now - mtime) > mirror_stale_s:
+                continue    # dead pull cron — cron_verdict_stale's beat
+            try:
+                tick = json.loads(text)
+            except (ValueError, TypeError):
+                bad.append((name, "unparseable mirrored tick — "
+                                  "writer/shape drift"))
+                continue
+            if not isinstance(tick, dict):
+                bad.append((name, "mirrored tick is not an object"))
+                continue
+            device = str(tick.get("device") or name)
+            cap = tick.get("captured_at")
+            if isinstance(cap, bool) or not isinstance(cap, (int, float)):
+                bad.append((device, "tick has no captured_at"))
+                continue
+            age = now - float(cap)
+            if age > tick_stale_s:
+                bad.append((device,
+                            f"agent dark on the router — tick captured "
+                            f"{int(age)}s ago but the mirror is fresh "
+                            f"(pull keeps copying a corpse)"))
+                continue
+            if tick.get("ok") is False:
+                errs = tick.get("errors") or []
+                first = str(errs[0]) if errs else "unspecified"
+                bad.append((device,
+                            f"agent self-report ok=false "
+                            f"({len(errs)} witness(es): {first})"))
+
+        if not bad:
+            _save_parity_streak(sp, 0)
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            return None
+
+        devices = sorted({d for d, _ in bad})
+        descs = [f"{d}: {why}" for d, why in sorted(bad)]
+        return Signal(
+            cls="router_scout_degraded",
+            subject=devices[0] if len(devices) == 1 else "router-scout",
+            severity="degraded",
+            detail=("router scout degraded: " + "; ".join(descs)
+                    + " — check the router's scout cron/conf "
+                    "(/etc/meshforge/, templates/openwrt/README.md); the "
+                    "pull channel itself is healthy or this would be "
+                    "cron_verdict_stale instead."),
+            issue_ref=None,
+            extra={"routers": [{"device": d, "why": w}
+                               for d, w in sorted(bad)],
+                   "streak": streak},
+        )
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: ntfy loopback (2026-06-18 — ntfy receipt-heartbeat Phase 2)
 #
 # The alerting spine's OWN liveness. A manager-box collector cron

@@ -42,6 +42,9 @@ UNITS = {
     "heap_free_bytes": "B", "heap_total_bytes": "B", "uptime_s": "s",
     "wifi_rssi_dbm": "dBm", "ble_adv_age_s": "s", "ble_advs": "",
     "ble_last_rssi_dbm": "dBm",
+    # scout (router-agent tick mirror) vocabulary, 2026-07-11
+    "vsz_kb": "KB", "rss_kb": "KB", "mmap_regions": "",
+    "service_age_s": "s", "load_1m": "", "mem_available_kb": "KB",
 }
 
 

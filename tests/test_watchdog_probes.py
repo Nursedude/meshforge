@@ -41,6 +41,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_router_scout_degraded,
     probe_inherited_app_drift,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
@@ -154,6 +155,7 @@ def test_signal_classes_closed_enum_is_documented():
         "inherited_app_drift",          # 2026-06-21 upstream-app ownership Action 5 — an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch (one `git pull` from silent deletion; policy §4.2); LOCAL problem-class detection (scans operator home + /opt, classifies by .git/config, filters untracked artifacts + machine-generated manifests); floating-main/pin-drift leg deliberately NOT a local fire (the fleet enforces pins by ledger, not detached HEAD); INERT off a box with no inherited checkouts; documented inline in the SIGNAL_CLASSES comment + .claude/plans/upstream_app_ownership_policy_2026_06_21.md §9 (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded)
         "gateway_dup_degraded",         # 2026-06-29 dedup/identity arc STEP 5 — cross-gateway duplicate delivery from the 4c /fleet/dups rollup (same (content_id, recipient) confirmed by >1 gateway = the live dup-A); degraded only; INERT off the manager box + on an indeterminate/stale rollup (built on the 4c JOIN <2-gateway gate); 2-tick debounce; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded). No own issue#.
         "meshtasticd_vsz_leak",         # 2026-07-10 (upstream meshtastic/firmware#10468, the operator's own 2026-05-13 report, re-confirmed live 07-10 on both fleet Pi5 boxes at 2.7.24.58) — meshtasticd on Pi5+USB leaks exited pthread stacks (~110 GB VSZ/day, RSS bounded); the weekly meshtasticd-restart.timer band-aid was UNWATCHED; fires only past the weekly envelope (768 GB default) = the restart missed or the rate worsened; Pi4/SPI boxes idle ~0.3 GB and cannot trip it; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_dup_degraded). No own issue#.
+        "router_scout_degraded",        # 2026-07-11 OpenWrt-router arc — a mirrored meshforge-scout tick (landed by the verdict-wired router_scout_pull.sh) shows the ROUTER-side agent degraded: fresh mirror + stale captured_at (agent cron dark while the pull re-copies the same old tick), tick ok=false, or an unparseable mirror; defense-in-depth behind the pull's own cron_verdict eval — adds the /fleet + mini surface (per-device subject); degraded only (every observed condition is remote — the tracer lesson); INERT off the manager box; stale mirror files skipped (cron_verdict_stale owns the dead pull cron); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as meshtasticd_vsz_leak). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -4190,6 +4192,139 @@ class TestHostFrozen:
                           state_mtime=self.NOW, now=self.NOW,
                           state_path=sp)                                     # heal → 0
         assert json.loads(Path(sp).read_text())["streak"] == 0
+
+
+class TestRouterScoutDegraded:
+    """The router-agent tick mirror consumer (2026-07-11 OpenWrt-router arc).
+    Hermetic: inject the mirrored ticks as (name, text, mtime) tuples.
+    Defense-in-depth behind the pull's own cron_verdict eval: the probe's
+    added value is the watchdog-spine surface (per-device subject into
+    /fleet + mini) and coverage of mirrors landed by any non-pull path.
+    Fires on: fresh mirror + stale captured_at (agent died on the router
+    while the pull re-copies the same old tick), tick ok=false, and
+    unparseable mirrors. STALE mirror files are skipped (dead pull =
+    cron_verdict_stale's beat); no mirrors = INERT. degraded only — every
+    observed condition is remote (the tracer lesson)."""
+
+    NOW = 2_000_000_000.0
+
+    def _tick(self, *, device="owrt-test", age_s=60.0, ok=True, errors=None):
+        return json.dumps({
+            "schema": 1, "device": device,
+            "captured_at": self.NOW - age_s, "ok": ok,
+            "errors": errors or [], "notes": [],
+            "meshtasticd": {"vsz_kb": 18300, "maps": 110},
+        })
+
+    def _fire(self, tmp_path, ticks, **kw):
+        """Run twice (2-tick debounce); return the 2nd."""
+        sp = str(tmp_path / "router_scout_debounce.json")
+        probe_router_scout_degraded(ticks=ticks, now=self.NOW,
+                                    state_path=sp, **kw)
+        return probe_router_scout_degraded(ticks=ticks, now=self.NOW,
+                                           state_path=sp, **kw)
+
+    def test_signal_class_registered(self):
+        assert "router_scout_degraded" in SIGNAL_CLASSES
+
+    def test_no_mirrors_is_inert(self, tmp_path):
+        assert self._fire(tmp_path, None) is None
+        assert self._fire(tmp_path, []) is None
+
+    def test_healthy_fresh_tick_is_none(self, tmp_path):
+        ticks = [("owrt-test_tick.json", self._tick(), self.NOW - 60)]
+        assert self._fire(tmp_path, ticks) is None
+
+    def test_agent_dark_behind_fresh_mirror_fires_degraded(self, tmp_path):
+        """THE case: mirror mtime fresh (pull healthy), captured_at ancient
+        (agent cron died on the router)."""
+        ticks = [("owrt-test_tick.json", self._tick(age_s=90000.0),
+                  self.NOW - 60)]
+        sig = self._fire(tmp_path, ticks)
+        assert sig is not None
+        assert sig.cls == "router_scout_degraded"
+        assert sig.subject == "owrt-test"
+        assert sig.severity == "degraded"
+        assert "corpse" in sig.detail
+        assert sig.extra["routers"][0]["device"] == "owrt-test"
+
+    def test_tick_ok_false_fires_with_witness(self, tmp_path):
+        ticks = [("owrt-test_tick.json",
+                  self._tick(ok=False, errors=["data_dir on tmpfs"]),
+                  self.NOW - 60)]
+        sig = self._fire(tmp_path, ticks)
+        assert sig is not None
+        assert "ok=false" in sig.detail
+        assert "data_dir on tmpfs" in sig.detail
+
+    def test_unparseable_mirror_fires(self, tmp_path):
+        """The pull validates before its atomic write — garbage in a FRESH
+        mirror is writer/shape drift, not a torn read; it must not be
+        silently skipped."""
+        ticks = [("owrt-test_tick.json", "not json {", self.NOW - 60)]
+        sig = self._fire(tmp_path, ticks)
+        assert sig is not None
+        assert "unparseable" in sig.detail
+
+    def test_stale_mirror_is_skipped_not_fired(self, tmp_path):
+        """Mirror mtime past mirror_stale_s = the pull cron stopped —
+        cron_verdict_stale owns that; a frozen mirror must not read as a
+        current agent fault (absence-of-evidence trap)."""
+        ticks = [("owrt-test_tick.json", self._tick(age_s=90000.0),
+                  self.NOW - 90000)]
+        assert self._fire(tmp_path, ticks) is None
+
+    def test_mixed_stale_and_fresh_evaluates_only_fresh(self, tmp_path):
+        ticks = [
+            ("dead-router_tick.json", self._tick(device="dead-router",
+                                                 age_s=90000.0),
+             self.NOW - 90000),                       # stale mirror: skip
+            ("live-router_tick.json", self._tick(device="live-router"),
+             self.NOW - 60),                          # fresh + healthy
+        ]
+        assert self._fire(tmp_path, ticks) is None
+
+    def test_never_wedge(self, tmp_path):
+        """Every condition this probe observes is REMOTE — severity is
+        pinned degraded (the tracer_peer_unreachable lesson)."""
+        ticks = [("a_tick.json", "garbage", self.NOW - 1),
+                 ("b_tick.json", self._tick(device="b", ok=False,
+                                            errors=["x"]), self.NOW - 1),
+                 ("c_tick.json", self._tick(device="c", age_s=90000.0),
+                  self.NOW - 1)]
+        sig = self._fire(tmp_path, ticks)
+        assert sig is not None
+        assert sig.severity == "degraded"
+        assert sig.subject == "router-scout"   # multi-device subject
+
+    def test_debounce_first_tick_silent(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        ticks = [("owrt-test_tick.json", self._tick(ok=False, errors=["x"]),
+                  self.NOW - 60)]
+        first = probe_router_scout_degraded(ticks=ticks, now=self.NOW,
+                                            state_path=sp)
+        assert first is None
+        assert json.loads(Path(sp).read_text())["streak"] == 1
+        second = probe_router_scout_degraded(ticks=ticks, now=self.NOW,
+                                             state_path=sp)
+        assert second is not None
+
+    def test_heal_clears_streak(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        bad = [("owrt-test_tick.json", self._tick(ok=False, errors=["x"]),
+                self.NOW - 60)]
+        good = [("owrt-test_tick.json", self._tick(), self.NOW - 60)]
+        probe_router_scout_degraded(ticks=bad, now=self.NOW, state_path=sp)
+        probe_router_scout_degraded(ticks=good, now=self.NOW, state_path=sp)
+        assert json.loads(Path(sp).read_text())["streak"] == 0
+
+    def test_missing_captured_at_fires(self, tmp_path):
+        ticks = [("owrt-test_tick.json",
+                  json.dumps({"device": "owrt-test", "ok": True}),
+                  self.NOW - 60)]
+        sig = self._fire(tmp_path, ticks)
+        assert sig is not None
+        assert "captured_at" in sig.detail
 
 
 class TestNtfyLoopback:

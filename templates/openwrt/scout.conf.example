@@ -1,0 +1,33 @@
+# meshforge-scout configuration — copy to /etc/meshforge/scout.conf on the
+# router and edit. Plain sh assignments (the agent sources this file).
+# Operator values live HERE, never in the script (MF014).
+
+# Device id reported in every tick. Default: uname -n (the router's
+# hostname). This is the kilo registry anchor value ("scout" anchor) and
+# the mirrored tick's identity — pick something stable and short.
+#SCOUT_DEVICE="owrt-example"
+
+# Service under watch (procd name).
+#SCOUT_SERVICE="meshtasticd"
+
+# Tick + log live under /etc/meshforge so they ride the overlay AND
+# /etc/sysupgrade.conf (add a "/etc/meshforge/" line there) — never /var
+# or /tmp (RAM-backed tmpfs on OpenWrt: gone every reboot).
+#SCOUT_TICK="/etc/meshforge/scout_tick.json"
+#SCOUT_LOG="/etc/meshforge/scout.log"
+#SCOUT_LOG_MAX_LINES=2000
+
+# Restart threshold on the meshtasticd memory-map count (#10468 leak
+# guard). On 32-bit targets the kernel's map cap is ~65530 — keep this
+# WELL below it. A patched build sits near ~110 maps flat; anything in
+# the tens of thousands is the leak.
+#MAPS_RESTART=55000
+
+# Optional VSZ warning threshold in KB (0 = disabled). The leak's VSZ
+# grows ~110 GB/day on a busy USB radio — a warning line here catches a
+# worsening rate between map-count restarts.
+#VSZ_WARN_KB=0
+
+# Radio PhoneAPI TCP probe target (connect-only, no PhoneAPI read — #17).
+#RADIO_HOST="127.0.0.1"
+#RADIO_PORT=4403

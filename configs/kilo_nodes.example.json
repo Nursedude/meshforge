@@ -1,5 +1,5 @@
 {
-  "_comment": "Kilo node registry template. Copy to ~/.config/meshforge/kilo_nodes.json and replace the SYNTHETIC anchors with your real lab nodes (MF014: no operator values in the repo copy). Anchors are RADIO identities — never IP addresses (DHCP reassigns them; the loader refuses IP-shaped anchors loudly). Roles: esp32-sensor | nrf-meshtastic | rnode | claw | gateway | other. cadence_s = the node's own telemetry period; status reads DARK after 3 missed cadences. Metric vocabulary (kilo/ingest.py NODE_METRICS): temperature humidity pressure gas_resistance co2 iaq pm25_standard pm10_standard voltage battery_level channel_utilization air_util_tx. Do NOT expect snr/rssi as node metrics — MQTT snr/rssi describe the last hop into the UPLINKING GATEWAY, not the node; per-link RF truth is the edges table (kilo matrix). Nodes whose anchors have no ingest adapter yet (rns) are reported UNKNOWN — declared, visible, never falsely OK or DARK. For a claw WITH a BLE half, also declare ble_advs/ble_adv_age_s so a dead BLE leg surfaces as DEGRADED instead of reading OK forever.",
+  "_comment": "Kilo node registry template. Copy to ~/.config/meshforge/kilo_nodes.json and replace the SYNTHETIC anchors with your real lab nodes (MF014: no operator values in the repo copy). Anchors are RADIO/DEVICE identities — never IP addresses (DHCP reassigns them; the loader refuses IP-shaped anchors loudly). Roles: esp32-sensor | nrf-meshtastic | rnode | claw | gateway | router | other. cadence_s = the node's own telemetry period; status reads DARK after 3 missed cadences. Metric vocabulary (kilo/ingest.py NODE_METRICS): temperature humidity pressure gas_resistance co2 iaq pm25_standard pm10_standard voltage battery_level channel_utilization air_util_tx. Do NOT expect snr/rssi as node metrics — MQTT snr/rssi describe the last hop into the UPLINKING GATEWAY, not the node; per-link RF truth is the edges table (kilo matrix). Nodes whose anchors have no ingest adapter yet (rns) are reported UNKNOWN — declared, visible, never falsely OK or DARK. For a claw WITH a BLE half, also declare ble_advs/ble_adv_age_s so a dead BLE leg surfaces as DEGRADED instead of reading OK forever. A router node's scout anchor is the meshforge-scout tick's device id (SCOUT_METRICS vocabulary: vsz_kb rss_kb mmap_regions service_age_s uptime_s load_1m mem_available_kb); it may ALSO carry a meshtastic anchor so the router's radio and host telemetry join to ONE node.",
   "nodes": [
     {
       "kilo_id": "bench1-esp32-env",
@@ -36,6 +36,15 @@
       "expected_metrics": ["heap_free_bytes", "uptime_s", "wifi_rssi_dbm"],
       "cadence_s": 300,
       "notes": "SYNTHETIC EXAMPLE — claw anchor = the MINI_DUDEAI_CLAW_DEVICE name; K0.1 adapter ingests claw_last_tick.json (claw_metrics_push's 5-min capture), zero extra device I/O"
+    },
+    {
+      "kilo_id": "closet-openwrt-router",
+      "role": "router",
+      "location": "network closet, OpenWrt radio host",
+      "ids": {"scout": "owrt-example", "meshtastic": "!0d0e0f00"},
+      "expected_metrics": ["vsz_kb", "mmap_regions", "uptime_s"],
+      "cadence_s": 1800,
+      "notes": "SYNTHETIC EXAMPLE — scout anchor = the meshforge-scout tick's device id (templates/openwrt/); adapter ingests the router_scout_pull.sh mirror, zero extra router I/O. cadence_s = the PULL cadence (what this box can observe), not the agent's. The meshtastic anchor joins the router's own radio to the same node."
     }
   ]
 }

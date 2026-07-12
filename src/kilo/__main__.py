@@ -188,7 +188,8 @@ def _cmd_discover(args) -> int:
 
 
 def _cmd_collect(args) -> int:
-    from kilo.ingest import collect_claw, collect_claw_all, collect_mqtt
+    from kilo.ingest import collect_claw, collect_claw_all, collect_mqtt, \
+        collect_scout_all
     nodes, errors = load_registry(args.registry)
     if nodes is None:
         # Collection without a registry is still useful (pure discovery),
@@ -206,7 +207,7 @@ def _cmd_collect(args) -> int:
         overrides["root_topic"] = args.root_topic
     if args.channel:
         overrides["channel"] = args.channel
-    summary = {"ok": True, "mqtt": None, "claw": None}
+    summary = {"ok": True, "mqtt": None, "claw": None, "scout": None}
     conn = open_db(args.db)
     try:
         # Retention runs on the write path only (status/matrix/discover are
@@ -224,6 +225,11 @@ def _cmd_collect(args) -> int:
             else:
                 summary["claw"] = collect_claw_all(conn, nodes)
             summary["ok"] = summary["ok"] and summary["claw"]["ok"]
+        if args.transport in ("all", "scout"):
+            # instant (file reads) — the router-agent tick mirrors landed
+            # by router_scout_pull.sh; inert on boxes with none.
+            summary["scout"] = collect_scout_all(conn, nodes)
+            summary["ok"] = summary["ok"] and summary["scout"]["ok"]
         if args.transport in ("all", "mqtt"):
             summary["mqtt"] = collect_mqtt(
                 conn, nodes, seconds=args.seconds,
@@ -316,8 +322,8 @@ def main(argv=None) -> int:
     p.add_argument("--json", action="store_true")
     p.set_defaults(fn=_cmd_discover)
     p = sub.add_parser("collect", help="bounded collection window "
-                                       "(mqtt window + claw tick read)")
-    p.add_argument("--transport", choices=("all", "mqtt", "claw"),
+                                       "(mqtt window + claw/scout tick reads)")
+    p.add_argument("--transport", choices=("all", "mqtt", "claw", "scout"),
                    default="all")
     p.add_argument("--seconds", type=float, default=120.0)
     p.add_argument("--sample-every", type=float, default=15.0)

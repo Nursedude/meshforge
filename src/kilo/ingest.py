@@ -46,6 +46,7 @@ NODE_METRICS = {
 
 TRANSPORT_MQTT = "mqtt"
 TRANSPORT_CLAW = "claw"
+TRANSPORT_SCOUT = "scout"
 
 # claw_last_tick.json field -> canonical metric name (K0.1 adapter).
 # Dotted paths into the tick; numeric-only — a None half (unreachable
@@ -59,6 +60,26 @@ CLAW_METRICS = {
     "ble.advs": "ble_advs",
     "ble.last_rssi_dbm": "ble_last_rssi_dbm",
 }
+
+# meshforge-scout tick field -> canonical metric name (router-agent
+# adapter, 2026-07-11). Same dotted-path/numeric-only contract as
+# CLAW_METRICS: a null half (degraded read on the router — the agent
+# witnessed it in the tick's own errors[]) yields NOTHING, never a
+# fabricated 0.
+SCOUT_METRICS = {
+    "meshtasticd.vsz_kb": "vsz_kb",
+    "meshtasticd.rss_kb": "rss_kb",
+    "meshtasticd.maps": "mmap_regions",
+    "meshtasticd.age_s": "service_age_s",
+    "host.uptime_s": "uptime_s",
+    "host.load_1m": "load_1m",
+    "host.mem_available_kb": "mem_available_kb",
+}
+
+# Where router_scout_pull.sh mirrors ticks, relative to the operator home.
+# Two consumers, ONE constant: the pull script's default MIRROR_DIR is
+# test-pinned against this (honest_failure_modes #5).
+SCOUT_MIRROR_SUBDIR = ".local/share/meshforge/router_scout"
 
 
 def snapshot_readings(nodes, registry: List[KiloNode],
@@ -211,6 +232,99 @@ def collect_claw(conn, registry: List[KiloNode], tick_path: str) -> dict:
         except (TypeError, ValueError):
             continue
         rows.append((float(ts), TRANSPORT_CLAW, device, kilo_id,
+                     metric, value))
+    leg["readings_written"] = record_readings(conn, rows)
+    leg["state"] = "ok"
+    leg["ok"] = True
+    return leg
+
+
+def scout_tick_paths(home=None) -> List[str]:
+    """Every mirrored router-scout tick on this box —
+    ``<home>/<SCOUT_MIRROR_SUBDIR>/*_tick.json`` (one file per router,
+    written atomically by scripts/router_scout_pull.sh). Sender identity
+    comes from each tick's ``device`` field, never the filename."""
+    from pathlib import Path
+
+    from utils.paths import get_real_user_home
+    home = Path(home) if home else get_real_user_home()
+    return [str(p) for p in
+            sorted((home / SCOUT_MIRROR_SUBDIR).glob("*_tick.json"))]
+
+
+def collect_scout_all(conn, registry: List[KiloNode], home=None) -> dict:
+    """Ingest every mirrored router-scout tick present on this box.
+
+    A box with no mirror dir / no ticks is inert (no router enrolled here —
+    corpus shape, not failure), exactly like the claw legs; ``ok`` is False
+    only when some present tick ERRORED."""
+    legs = [collect_scout(conn, registry, tick_path=p)
+            for p in scout_tick_paths(home)]
+    return {"ok": all(leg["ok"] for leg in legs),
+            "transport": TRANSPORT_SCOUT,
+            "readings_written": sum(leg["readings_written"] for leg in legs),
+            "legs": legs}
+
+
+def collect_scout(conn, registry: List[KiloNode], tick_path: str) -> dict:
+    """Ingest one meshforge-scout tick mirror — ZERO new I/O to the router:
+    router_scout_pull.sh already fetches the tick on cron over the existing
+    ssh channel; this reads that mirror and lands the numeric halves.
+
+    Same tri-state contract as collect_claw (never error→quiet-air):
+      inert  — no tick file (no router mirrored here; not a failure)
+      error  — tick present but unreadable/unparseable (a witness)
+      ok     — parsed; a stale tick simply writes no fresh rows and the
+               node ages toward DARK, which is the truth. The tick's own
+               ``ok=false`` self-report is surfaced as a witness
+               (tick_ok/tick_errors) — alerting stays with the pull cron
+               and the router_scout_degraded probe.
+    """
+    from mini_dudeai._util import READ_JSON_NOT_FOUND, read_json
+
+    from kilo.store import record_readings
+
+    path = tick_path
+    leg = {"ok": False, "state": "inert", "transport": TRANSPORT_SCOUT,
+           "tick_path": path, "device": None, "tick_age_s": None,
+           "readings_written": 0, "error": None}
+    tick, err = read_json(path)
+    if err == READ_JSON_NOT_FOUND:
+        leg["ok"] = True  # absence of a router mirror is corpus shape
+        return leg
+    if err is not None or not isinstance(tick, dict):
+        leg["state"] = "error"
+        leg["error"] = (f"scout tick unreadable: "
+                        f"{err or f'tick not an object: {type(tick).__name__}'}")
+        return leg
+
+    device = str(tick.get("device") or "")
+    ts = tick.get("captured_at")
+    if not device or isinstance(ts, bool) \
+            or not isinstance(ts, (int, float)):
+        leg["state"] = "error"
+        leg["error"] = ("scout tick missing device/captured_at — "
+                        "writer/reader shape drift?")
+        return leg
+    leg["device"] = device
+    leg["tick_age_s"] = round(max(0.0, time.time() - float(ts)), 1)
+    leg["tick_ok"] = bool(tick.get("ok"))
+    leg["tick_errors"] = len(tick.get("errors") or [])
+
+    kilo_id = anchor_map(registry, kind="scout").get(device.lower()) \
+        if registry else None
+    rows = []
+    for dotted, metric in SCOUT_METRICS.items():
+        cur = tick
+        for part in dotted.split("."):
+            cur = cur.get(part) if isinstance(cur, dict) else None
+        if cur is None or isinstance(cur, bool):
+            continue
+        try:
+            value = float(cur)
+        except (TypeError, ValueError):
+            continue
+        rows.append((float(ts), TRANSPORT_SCOUT, device, kilo_id,
                      metric, value))
     leg["readings_written"] = record_readings(conn, rows)
     leg["state"] = "ok"

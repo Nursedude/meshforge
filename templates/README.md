@@ -2,6 +2,10 @@
 
 This directory contains configuration templates for various LoRa HATs and devices supported by meshtasticd.
 
+> Router-class artifacts (OpenWrt/AREDN): see [`openwrt/`](openwrt/README.md) —
+> the `meshforge-scout` router telemetry agent and (Arc 2) the fleet-naming
+> config templates.
+
 ## Directory Structure
 
 ```

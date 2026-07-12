@@ -1024,7 +1024,9 @@ class TestObservableAnchorsClosedGate:
 
     def test_every_observable_kind_has_a_collector(self):
         from kilo.ingest import collect_claw, collect_mqtt
-        collectors = {"meshtastic": collect_mqtt, "claw": collect_claw}
+        from kilo.ingest import collect_scout as _collect_scout
+        collectors = {"meshtastic": collect_mqtt, "claw": collect_claw,
+                      "scout": _collect_scout}
         assert set(kreg.OBSERVABLE_ANCHORS) == set(collectors), (
             "OBSERVABLE_ANCHORS grew without a collector (or vice versa) —"
             " ship the ingest adapter and update this map in the same"
@@ -1148,3 +1150,138 @@ class TestCollectKnobGuards:
                                sample_every=5.0, stop_event=stop,
                                subscriber=sub)
         assert summary["window_s"] != float("inf")
+
+
+# ── 2026-07-11: scout adapter (router-agent tick mirror) ─────────────────
+
+from kilo.ingest import SCOUT_METRICS, SCOUT_MIRROR_SUBDIR, \
+    collect_scout, collect_scout_all  # noqa: E402
+
+
+def _scout_tick(tmp_path, name="owrt-test_tick.json", **overrides):
+    tick = {
+        "schema": 1, "device": "owrt-test", "captured_at": NOW, "ok": True,
+        "errors": [], "notes": [],
+        "service": {"name": "meshtasticd", "running": True, "pid": 100},
+        "meshtasticd": {"vsz_kb": 18300, "rss_kb": 9000, "maps": 110,
+                        "age_s": 4000},
+        "radio_tcp": "ok",
+        "host": {"uptime_s": 5000, "load_1m": 0.15,
+                 "mem_available_kb": 800000, "mem_total_kb": 1000000},
+        "persistence": {"ok": True, "data_dir": "/etc/meshtasticd/data",
+                        "fstype": "ext4"},
+        "opkg_hold": True,
+    }
+    tick.update(overrides)
+    p = tmp_path / name
+    p.write_text(json.dumps(tick))
+    return str(p)
+
+
+def _scout_registry(tmp_path):
+    nodes, errs = kreg.load_registry(_write_registry(tmp_path, [
+        {"kilo_id": "closet-openwrt-router", "role": "router",
+         "ids": {"scout": "OWRT-TEST"},
+         "expected_metrics": ["vsz_kb", "mmap_regions", "uptime_s"],
+         "cadence_s": 1800}]))
+    assert errs == []
+    return nodes
+
+
+class TestCollectScout:
+    def test_full_tick_lands_numeric_halves_with_join(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        reg = _scout_registry(tmp_path)
+        leg = collect_scout(conn, reg, tick_path=_scout_tick(tmp_path))
+        assert leg["ok"] and leg["state"] == "ok"
+        assert leg["device"] == "owrt-test"
+        assert leg["readings_written"] == len(SCOUT_METRICS)
+        latest = kstore.latest_by_key(conn)
+        assert latest[("owrt-test", "mmap_regions")] == (NOW, 110.0)
+        assert latest[("owrt-test", "vsz_kb")] == (NOW, 18300.0)
+
+    def test_absent_tick_is_inert_not_failure(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        leg = collect_scout(conn, [], tick_path=str(tmp_path / "absent.json"))
+        assert leg["ok"] is True and leg["state"] == "inert"
+        assert leg["readings_written"] == 0
+
+    def test_garbage_tick_is_error_witness(self, tmp_path):
+        p = tmp_path / "owrt_tick.json"
+        p.write_text("{torn")
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        leg = collect_scout(conn, [], tick_path=str(p))
+        assert leg["ok"] is False and leg["state"] == "error"
+        assert "unreadable" in leg["error"]
+
+    def test_null_halves_write_nothing_fabricated(self, tmp_path):
+        # a degraded router read lands as null in the tick — None must
+        # never become a fabricated 0 row (the claw_telemetry contract).
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        path = _scout_tick(
+            tmp_path, ok=False,
+            errors=["VmSize unreadable"], meshtasticd=None)
+        leg = collect_scout(conn, [], tick_path=path)
+        assert leg["ok"] and leg["state"] == "ok"
+        assert leg["tick_ok"] is False and leg["tick_errors"] == 1
+        latest = kstore.latest_by_key(conn)
+        assert ("owrt-test", "vsz_kb") not in latest
+        assert latest[("owrt-test", "uptime_s")] == (NOW, 5000.0)
+
+    def test_missing_identity_is_error_witness(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        path = _scout_tick(tmp_path, device="")
+        leg = collect_scout(conn, [], tick_path=path)
+        assert leg["ok"] is False and "shape drift" in leg["error"]
+
+    def test_same_tick_twice_is_idempotent(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        path = _scout_tick(tmp_path)
+        assert collect_scout(conn, [], tick_path=path)["readings_written"] > 0
+        assert collect_scout(conn, [], tick_path=path)["readings_written"] == 0
+
+    def test_collect_scout_all_globs_mirror_dir(self, tmp_path):
+        home = tmp_path / "home"
+        mirror = home / SCOUT_MIRROR_SUBDIR
+        mirror.mkdir(parents=True)
+        _scout_tick(mirror, name="owrt-a_tick.json", device="owrt-a")
+        _scout_tick(mirror, name="owrt-b_tick.json", device="owrt-b")
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        summary = collect_scout_all(conn, [], home=home)
+        assert summary["ok"] is True
+        assert len(summary["legs"]) == 2
+        devices = {leg["device"] for leg in summary["legs"]}
+        assert devices == {"owrt-a", "owrt-b"}
+
+    def test_collect_scout_all_no_mirror_dir_is_inert(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        summary = collect_scout_all(conn, [], home=tmp_path / "empty-home")
+        assert summary["ok"] is True and summary["legs"] == []
+
+    def test_every_scout_metric_has_a_unit(self):
+        # honest_failure_modes #7: third producer joins the vocabulary —
+        # closed consumers stay closed.
+        for metric in SCOUT_METRICS.values():
+            assert metric in kstore.UNITS, f"UNITS missing {metric!r}"
+
+
+class TestScoutRegistry:
+    def test_router_role_and_scout_anchor_accepted(self, tmp_path):
+        nodes = _scout_registry(tmp_path)
+        assert nodes[0].observable()
+
+    def test_ip_shaped_scout_anchor_still_refused(self, tmp_path):
+        nodes, errs = kreg.load_registry(_write_registry(tmp_path, [
+            {"kilo_id": "r1", "role": "router",
+             "ids": {"scout": "192.0.2.10"}, "cadence_s": 1800}]))
+        assert nodes is None
+        assert any("IP address" in e for e in errs)
+
+    def test_scout_join_is_case_insensitive(self, tmp_path):
+        conn = kstore.open_db(str(tmp_path / "kilo.db"))
+        reg = _scout_registry(tmp_path)   # registry anchors "OWRT-TEST"
+        leg = collect_scout(conn, reg, tick_path=_scout_tick(tmp_path))
+        assert leg["readings_written"] == len(SCOUT_METRICS)
+        rows = conn.execute(
+            "SELECT DISTINCT kilo_id FROM readings").fetchall()
+        assert rows == [("closet-openwrt-router",)]

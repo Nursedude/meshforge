@@ -1,0 +1,351 @@
+#!/bin/sh
+# meshforge-scout — router-resident MeshForge telemetry agent (OpenWrt, v1).
+#
+# "A part of MeshForge living on the router": collects meshtasticd + host
+# health into ONE local JSON tick file. Busybox-ash only — no Python, no
+# collectd (collectd-mod-exec runs as nobody and cannot read a root
+# meshtasticd's /proc/<pid>/maps, the #10468 metric that matters most on
+# 65k-mmap-cap 32-bit targets). The tick file is the interface: a v2
+# collectd/MQTT publisher would emit the same JSON and nothing downstream
+# changes.
+#
+# Subcommands:
+#   collect   read everything, write the tick file (atomic tmp+mv)
+#   check     collect + local threshold verdict; over MAPS_RESTART it
+#             performs ONE service restart (absorbs the mapwatch action)
+#             and appends a soak-format log line either way
+#   show      print the current tick
+#
+# Standalone mode = collect + check alone (local tick, local log, local
+# restart). Fleet mode = a manager box ssh-pulls the tick on cron
+# (scripts/router_scout_pull.sh) and lands it in cron_verdict + kilo +
+# the router_scout_degraded watchdog probe.
+#
+# Honest-failure contract (.claude/rules/honest_failure_modes.md): every
+# field is TRI-STATE — a real value, or null plus a line in "errors"
+# (degraded observation) / "notes" (benign unobservable). A read failure
+# never maps to a healthy-looking value; nc-absent is "unavailable",
+# never "ok"; ok=false whenever errors is non-empty.
+#
+# Config: /etc/meshforge/scout.conf (see scout.conf.example). No
+# hostnames/IPs live in this script (MF014). Persist /etc/meshforge/ via
+# /etc/sysupgrade.conf so ticks + config survive sysupgrade flashes.
+#
+# Test seams (env-only, never conf): SCOUT_PROC_ROOT (fake /proc tree),
+# SCOUT_RESTART_CMD (restart stub), SCOUT_OPKG_STATUS (opkg status file),
+# PATH stubs for ubus/uci/nc.
+
+set -u
+
+CONF="${SCOUT_CONF:-/etc/meshforge/scout.conf}"
+[ -f "$CONF" ] && . "$CONF"
+
+DEVICE="${SCOUT_DEVICE:-$(uname -n)}"
+SERVICE="${SCOUT_SERVICE:-meshtasticd}"
+TICK="${SCOUT_TICK:-/etc/meshforge/scout_tick.json}"
+LOG="${SCOUT_LOG:-/etc/meshforge/scout.log}"
+LOG_MAX_LINES="${SCOUT_LOG_MAX_LINES:-2000}"
+MAPS_RESTART="${MAPS_RESTART:-55000}"
+VSZ_WARN_KB="${VSZ_WARN_KB:-0}"          # 0 = disabled
+RADIO_HOST="${RADIO_HOST:-127.0.0.1}"
+RADIO_PORT="${RADIO_PORT:-4403}"
+PROC="${SCOUT_PROC_ROOT:-/proc}"
+OPKG_STATUS="${SCOUT_OPKG_STATUS:-/usr/lib/opkg/status}"
+NC="${SCOUT_NC:-nc}"   # test seam: point at a stub, or at a missing name
+                       # to exercise the nc-absent witness path
+
+# ---------------------------------------------------------------- helpers
+
+# Sanitize a string destined for a JSON value: keep a safe charset so we
+# never need real JSON escaping in ash. 240 keeps a full witness line even
+# when it embeds a deep path.
+sanitize() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._:/@ -' | cut -c1-240; }
+
+# The device id must satisfy the PULL side's filename-safety regex
+# ([A-Za-z0-9._-]{1,64} in router_scout_pull.sh) — writer-legal must be a
+# subset of reader-legal, or a hostname with a space/colon emits ticks the
+# manager rejects forever. Test-pinned against the pull regex.
+sanitize_device() { printf '%s' "$1" | tr -cd 'A-Za-z0-9._-' | cut -c1-64; }
+
+ERRS=""   # newline-separated degraded-observation witnesses (→ ok=false)
+NOTES=""  # newline-separated benign unobservables (informational)
+err()  { ERRS="${ERRS}$(sanitize "$1")
+"; }
+note() { NOTES="${NOTES}$(sanitize "$1")
+"; }
+
+# Emit a newline-separated list as a JSON array of strings (values are
+# pre-sanitized to a quote-free charset, so no escaping is needed).
+json_str_list() {
+    printf '%s' "$1" | awk 'BEGIN{printf "["} NF{printf "%s\"%s\"", (n++?",":""), $0} END{printf "]"}'
+}
+
+# Print $1 if it is a plain integer, else "null" (and no witness — the
+# caller decides whether missing is an error or a note).
+int_or_null() {
+    case "${1:-}" in
+        ''|*[!0-9]*) printf 'null' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# Valid JSON number shape only: digits with at most one interior dot. A
+# torn /proc read yielding ".", "1.2.3", or ".5" must become null, never
+# an unquoted token that breaks json.loads for the whole tick.
+num_or_null() {
+    case "${1:-}" in
+        ''|*[!0-9.]*|.*|*.|*.*.*) printf 'null' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+# --------------------------------------------------------- collectors
+
+SVC_RUNNING="null"; SVC_PID=""
+collect_service() {
+    if ! command -v ubus >/dev/null 2>&1; then
+        # No procd view — try pidof as a degraded fallback so the /proc
+        # metrics can still land, but say how we found the pid.
+        if command -v pidof >/dev/null 2>&1 && SVC_PID=$(pidof "$SERVICE" 2>/dev/null | awk '{print $1}') && [ -n "$SVC_PID" ]; then
+            SVC_RUNNING="true"
+            note "service state via pidof (ubus unavailable)"
+        else
+            SVC_PID=""
+            err "service state unobservable: ubus unavailable and pidof found no $SERVICE"
+        fi
+        return
+    fi
+    _out=$(ubus call service list "{\"name\":\"$SERVICE\"}" 2>/dev/null)
+    _rc=$?
+    if [ "$_rc" -ne 0 ] || [ -z "$_out" ]; then
+        err "service state unobservable: ubus call failed (rc=$_rc)"
+        return
+    fi
+    SVC_PID=$(printf '%s' "$_out" | grep -o '"pid": *[0-9]*' | head -1 | grep -o '[0-9]*')
+    if printf '%s' "$_out" | grep -q '"running": *true'; then
+        SVC_RUNNING="true"
+    elif [ -n "$SVC_PID" ]; then
+        SVC_RUNNING="true"
+    else
+        # ubus answered and the service has no running instance — a real
+        # observation, not a blind spot.
+        SVC_RUNNING="false"
+    fi
+}
+
+MTD_VSZ=""; MTD_RSS=""; MTD_MAPS=""; MTD_AGE=""
+collect_proc() {
+    [ -n "$SVC_PID" ] || return 0
+    if [ ! -d "$PROC/$SVC_PID" ]; then
+        err "pid $SVC_PID has no $PROC entry — service state and process table disagree"
+        return
+    fi
+    MTD_VSZ=$(awk '/^VmSize:/{print $2}' "$PROC/$SVC_PID/status" 2>/dev/null)
+    MTD_RSS=$(awk '/^VmRSS:/{print $2}' "$PROC/$SVC_PID/status" 2>/dev/null)
+    MTD_MAPS=$(wc -l < "$PROC/$SVC_PID/maps" 2>/dev/null | tr -d ' ')
+    [ -n "$MTD_VSZ" ] || err "VmSize unreadable from $PROC/$SVC_PID/status"
+    [ -n "$MTD_MAPS" ] || err "maps count unreadable from $PROC/$SVC_PID/maps"
+    # Validate each operand INDEPENDENTLY: with a concatenated check an
+    # empty starttime slips through and ash arithmetic reads the missing
+    # var as 0, fabricating age == host uptime with no witness (verified
+    # live: `a=1200; b=""; $((a - b/100))` -> 1200).
+    _up=$(cut -d. -f1 "$PROC/uptime" 2>/dev/null)
+    _start=$(awk '{print $22}' "$PROC/$SVC_PID/stat" 2>/dev/null)
+    case "$_up" in
+        ''|*[!0-9]*) err "proc age unobservable: uptime unreadable from $PROC/uptime" ;;
+        *)
+            case "$_start" in
+                ''|*[!0-9]*) err "proc age unobservable: starttime unreadable from $PROC/$SVC_PID/stat" ;;
+                *) MTD_AGE=$(( _up - _start / 100 )) ;;
+            esac
+            ;;
+    esac
+}
+
+RADIO_TCP="null"
+collect_radio() {
+    if ! command -v "$NC" >/dev/null 2>&1; then
+        RADIO_TCP='"unavailable"'
+        err "radio TCP probe unavailable: nc not installed — cannot observe $RADIO_HOST:$RADIO_PORT"
+        return
+    fi
+    if "$NC" -w 3 "$RADIO_HOST" "$RADIO_PORT" </dev/null >/dev/null 2>&1; then
+        RADIO_TCP='"ok"'
+    else
+        RADIO_TCP='"down"'
+    fi
+}
+
+HOST_UPTIME=""; HOST_LOAD=""; HOST_MEM_AVAIL=""; HOST_MEM_TOTAL=""
+collect_host() {
+    # Every host field gets a witness on failure — a silent null with
+    # ok=true would hide a real missing-data condition from every
+    # downstream consumer (the tick's ok is their only self-report).
+    HOST_UPTIME=$(cut -d. -f1 "$PROC/uptime" 2>/dev/null)
+    HOST_LOAD=$(awk '{print $1}' "$PROC/loadavg" 2>/dev/null)
+    HOST_MEM_AVAIL=$(awk '/^MemAvailable:/{print $2}' "$PROC/meminfo" 2>/dev/null)
+    HOST_MEM_TOTAL=$(awk '/^MemTotal:/{print $2}' "$PROC/meminfo" 2>/dev/null)
+    [ -n "$HOST_UPTIME" ] || err "host uptime unreadable from $PROC/uptime"
+    [ -n "$HOST_LOAD" ] || err "load unreadable from $PROC/loadavg"
+    [ -n "$HOST_MEM_AVAIL" ] || err "MemAvailable unreadable from $PROC/meminfo"
+}
+
+PERSIST_OK="null"; PERSIST_DIR=""; PERSIST_FSTYPE=""
+collect_persistence() {
+    # The #1 OpenWrt gotcha: the package defaults data_dir into RAM-backed
+    # tmpfs and every reboot boots blank. Resolve the configured dir and
+    # map it to its filesystem via $PROC/mounts.
+    PERSIST_DIR=""
+    if command -v uci >/dev/null 2>&1; then
+        PERSIST_DIR=$(uci -q get meshtasticd.meshtasticd.data_dir 2>/dev/null)
+    fi
+    if [ -z "$PERSIST_DIR" ]; then
+        # Package default — a GUESS when uci is absent/unset, and the
+        # verdict below is about this guessed path, not necessarily the
+        # router's real configured dir. Say so.
+        PERSIST_DIR="/var/lib/meshtasticd"
+        note "data_dir guessed (uci absent or unset): $PERSIST_DIR"
+    fi
+    _best_len=-1
+    PERSIST_FSTYPE=""
+    while read -r _dev _mnt _fst _rest; do
+        _match=0
+        if [ "$_mnt" = "/" ]; then
+            _match=1
+        else
+            case "$PERSIST_DIR" in
+                "$_mnt"|"$_mnt"/*) _match=1 ;;
+            esac
+        fi
+        if [ "$_match" -eq 1 ] && [ "${#_mnt}" -gt "$_best_len" ]; then
+            _best_len=${#_mnt}
+            PERSIST_FSTYPE=$_fst
+        fi
+    done < "$PROC/mounts" 2>/dev/null
+    if [ -z "$PERSIST_FSTYPE" ]; then
+        err "persistence unobservable: could not map $PERSIST_DIR to a mount in $PROC/mounts"
+        return
+    fi
+    case "$PERSIST_FSTYPE" in
+        tmpfs|ramfs) PERSIST_OK="false"
+                     err "meshtasticd data_dir $PERSIST_DIR is on $PERSIST_FSTYPE — config VANISHES on reboot (set uci meshtasticd.meshtasticd.data_dir onto overlay)" ;;
+        *)           PERSIST_OK="true" ;;
+    esac
+}
+
+OPKG_HOLD="null"
+collect_opkg_hold() {
+    if [ ! -r "$OPKG_STATUS" ]; then
+        # apk-based OpenWrt (25.12+) has no opkg status file — benign
+        # unobservable, not a degraded read.
+        note "opkg hold state unobservable: $OPKG_STATUS unreadable"
+        return
+    fi
+    if awk -v pkg="$SERVICE" '
+            $1=="Package:" { inpkg = (index($2, pkg)==1) }
+            inpkg && $1=="Status:" && /hold/ { found=1 }
+            END { exit found?0:1 }' "$OPKG_STATUS"; then
+        OPKG_HOLD="true"
+    else
+        OPKG_HOLD="false"
+    fi
+}
+
+# ---------------------------------------------------------------- tick
+
+write_tick() {
+    _now=$(date +%s)
+    _ok="true"
+    [ -z "$ERRS" ] || _ok="false"
+    _dir=$(dirname "$TICK")
+    [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null
+    _tmp="${TICK}.tmp.$$"
+    {
+        printf '{\n'
+        printf '  "schema": 1,\n'
+        printf '  "device": "%s",\n' "$(sanitize_device "$DEVICE")"
+        printf '  "captured_at": %s,\n' "$_now"
+        printf '  "ok": %s,\n' "$_ok"
+        printf '  "errors": %s,\n' "$(json_str_list "$ERRS")"
+        printf '  "notes": %s,\n' "$(json_str_list "$NOTES")"
+        printf '  "service": {"name": "%s", "running": %s, "pid": %s},\n' \
+            "$(sanitize "$SERVICE")" "$SVC_RUNNING" "$(int_or_null "$SVC_PID")"
+        printf '  "meshtasticd": {"vsz_kb": %s, "rss_kb": %s, "maps": %s, "age_s": %s},\n' \
+            "$(int_or_null "$MTD_VSZ")" "$(int_or_null "$MTD_RSS")" \
+            "$(int_or_null "$MTD_MAPS")" "$(int_or_null "$MTD_AGE")"
+        printf '  "radio_tcp": %s,\n' "$RADIO_TCP"
+        printf '  "host": {"uptime_s": %s, "load_1m": %s, "mem_available_kb": %s, "mem_total_kb": %s},\n' \
+            "$(int_or_null "$HOST_UPTIME")" "$(num_or_null "$HOST_LOAD")" \
+            "$(int_or_null "$HOST_MEM_AVAIL")" "$(int_or_null "$HOST_MEM_TOTAL")"
+        printf '  "persistence": {"ok": %s, "data_dir": "%s", "fstype": "%s"},\n' \
+            "$PERSIST_OK" "$(sanitize "$PERSIST_DIR")" "$(sanitize "$PERSIST_FSTYPE")"
+        printf '  "opkg_hold": %s\n' "$OPKG_HOLD"
+        printf '}\n'
+    } > "$_tmp" && mv "$_tmp" "$TICK"
+}
+
+do_collect() {
+    collect_service
+    collect_proc
+    collect_radio
+    collect_host
+    collect_persistence
+    collect_opkg_hold
+    write_tick
+}
+
+# ---------------------------------------------------------------- check
+
+scout_log() {
+    _dir=$(dirname "$LOG")
+    [ -d "$_dir" ] || mkdir -p "$_dir" 2>/dev/null
+    printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG"
+    _lines=$(wc -l < "$LOG" 2>/dev/null | tr -d ' ')
+    case "$_lines" in ''|*[!0-9]*) return 0 ;; esac
+    if [ "$_lines" -gt "$LOG_MAX_LINES" ]; then
+        _tmp="${LOG}.tmp.$$"
+        tail -n "$LOG_MAX_LINES" "$LOG" > "$_tmp" 2>/dev/null && mv "$_tmp" "$LOG"
+    fi
+}
+
+service_restart() {
+    if [ -n "${SCOUT_RESTART_CMD:-}" ]; then "$SCOUT_RESTART_CMD"; return; fi
+    "/etc/init.d/$SERVICE" restart >/dev/null 2>&1
+}
+
+do_check() {
+    do_collect
+    _line="uptime=${HOST_UPTIME:-?} maps=${MTD_MAPS:-?} vsz_kb=${MTD_VSZ:-?}"
+    _rc=0
+
+    # Threshold action — absorbs the mapwatch semantics: ONE restart when
+    # the mmap count crosses the leak line (#10468; MAPS_RESTART must sit
+    # well below the ~65k kernel cap on 32-bit targets).
+    if [ -n "$MTD_MAPS" ] && [ "$MTD_MAPS" -gt "$MAPS_RESTART" ] 2>/dev/null; then
+        if service_restart; then
+            scout_log "RESTART $_line — maps>$MAPS_RESTART, $SERVICE restarted"
+        else
+            scout_log "FAIL $_line — maps>$MAPS_RESTART and restart FAILED"
+            _rc=1
+        fi
+    elif [ "$VSZ_WARN_KB" -gt 0 ] 2>/dev/null && [ -n "$MTD_VSZ" ] \
+            && [ "$MTD_VSZ" -gt "$VSZ_WARN_KB" ] 2>/dev/null; then
+        scout_log "WARN $_line — vsz>$VSZ_WARN_KB kb"
+        _rc=1
+    elif [ -n "$ERRS" ]; then
+        scout_log "FAIL $_line — $(printf '%s' "$ERRS" | head -1)"
+        _rc=1
+    else
+        scout_log "OK $_line"
+    fi
+    return "$_rc"
+}
+
+# ---------------------------------------------------------------- main
+
+case "${1:-}" in
+    collect) do_collect ;;
+    check)   do_check ;;
+    show)    cat "$TICK" 2>/dev/null || { echo "no tick at $TICK" >&2; exit 1; } ;;
+    *)       echo "usage: meshforge-scout collect|check|show" >&2; exit 2 ;;
+esac

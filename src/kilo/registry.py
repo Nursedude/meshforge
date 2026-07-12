@@ -32,14 +32,19 @@ REGISTRY_BASENAME = "kilo_nodes.json"
 
 # Closed role vocabulary — a typo'd role is an authoring error, not a new
 # category (closed enums need closed consumers; grow deliberately).
-ROLES = ("esp32-sensor", "nrf-meshtastic", "rnode", "claw", "gateway", "other")
+# "router" since 2026-07-11: a router-class fleet member (OpenWrt/AREDN)
+# whose host telemetry arrives via the meshforge-scout tick mirror.
+ROLES = ("esp32-sensor", "nrf-meshtastic", "rnode", "claw", "gateway",
+         "router", "other")
 
 # Identity-anchor kinds the ingest layer can currently OBSERVE ("claw"
-# since K0.1: the WireClaw last-tick adapter). Anchors of other kinds
+# since K0.1: the WireClaw last-tick adapter; "scout" since 2026-07-11:
+# the router-agent tick mirror — the anchor value is the tick's own
+# `device` id, operator-chosen, never an IP). Anchors of other kinds
 # (rns, mac, ble) are legal in the registry — they mark planned adapters —
 # but a node with no observable anchor is reported UNKNOWN by status,
 # never OK and never DARK.
-OBSERVABLE_ANCHORS = ("meshtastic", "claw")
+OBSERVABLE_ANCHORS = ("meshtastic", "claw", "scout")
 
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}(:\d+)?$")
 
