@@ -57,6 +57,11 @@ def sandbox(tmp_path):
         "/dev/root / ext4 rw 0 0\n"
         "tmpfs /var tmpfs rw 0 0\n"
         "tmpfs /tmp tmpfs rw 0 0\n")
+    # 4403 = 0x1133; st 0A = LISTEN (header line + one listener)
+    (proc / "net").mkdir()
+    (proc / "net" / "tcp").write_text(
+        "  sl  local_address rem_address   st\n"
+        "   0: 00000000:1133 00000000:0000 0A\n")
     (pid / "status").write_text(
         "Name:\tmeshtasticd\nVmSize:\t   18300 kB\nVmRSS:\t    9000 kB\n")
     (pid / "maps").write_text("map-line\n" * 110)
@@ -72,9 +77,6 @@ def sandbox(tmp_path):
     uci.write_text('#!/bin/sh\n[ -n "${SCOUT_TEST_UCI_OUT:-}" ] || exit 1\n'
                    'printf "%s\\n" "$SCOUT_TEST_UCI_OUT"\n')
     uci.chmod(0o755)
-    nc = binp / "nc"
-    nc.write_text('#!/bin/sh\nexit "${SCOUT_TEST_NC_RC:-0}"\n')
-    nc.chmod(0o755)
     restart = binp / "fake_restart"
     restart.write_text('#!/bin/sh\nprintf x >> "$SCOUT_TEST_RESTART_CALLS"\n'
                        'exit "${SCOUT_TEST_RESTART_EXIT:-0}"\n')
@@ -110,7 +112,6 @@ def run(sb, *args, env_extra=None, conf_lines=None):
         "SCOUT_LOG": str(sb.log),
         "SCOUT_PROC_ROOT": str(sb.proc),
         "SCOUT_OPKG_STATUS": str(sb.opkg_status),
-        "SCOUT_NC": str(sb.binp / "nc"),
         "SCOUT_RESTART_CMD": str(sb.restart),
         "SCOUT_TEST_UBUS_OUT": str(sb.ubus_out),
         "SCOUT_TEST_RESTART_CALLS": str(sb.restart_calls),
@@ -197,23 +198,52 @@ class TestCollectDegraded:
         assert tick["ok"] is False
         assert any("VANISHES" in e or "tmpfs" in e for e in tick["errors"])
 
-    def test_nc_absent_reads_unavailable_never_ok(self, sandbox):
+    def test_proc_net_unreadable_is_null_plus_witness(self, sandbox):
+        """No /proc/net/tcp[6] → unobservable, never 'down' (the minimal-
+        busybox-nc lesson: tool failure must not read as an observation)."""
+        import shutil
+        shutil.rmtree(sandbox.proc / "net")
         _, tick, _, _ = run(
             sandbox, "collect",
-            env_extra={"SCOUT_NC": "definitely-not-a-command-mf",
-                       "SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"})
-        assert tick["radio_tcp"] == "unavailable"
+            env_extra={"SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"})
+        assert tick["radio_tcp"] is None
         assert tick["ok"] is False
-        assert any("nc not installed" in e for e in tick["errors"])
+        assert any("unobservable" in e and "tcp" in e
+                   for e in tick["errors"])
 
-    def test_radio_port_down_is_a_real_observation(self, sandbox):
+    def test_no_listener_is_down_a_real_observation(self, sandbox):
+        (sandbox.proc / "net" / "tcp").write_text(
+            "  sl  local_address rem_address   st\n"
+            "   0: 00000000:0016 00000000:0000 0A\n")   # only :22 listening
         _, tick, _, _ = run(
             sandbox, "collect",
-            env_extra={"SCOUT_TEST_NC_RC": "1",
-                       "SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"})
+            env_extra={"SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"})
         assert tick["radio_tcp"] == "down"
-        # a refused port is an observation, not a blind spot — no witness
+        # a missing listener is an observation, not a blind spot
         assert not any("radio" in e.lower() for e in tick["errors"])
+
+    def test_listener_in_tcp6_only_reads_ok(self, sandbox):
+        (sandbox.proc / "net" / "tcp").write_text(
+            "  sl  local_address rem_address   st\n")
+        (sandbox.proc / "net" / "tcp6").write_text(
+            "  sl  local_address rem_address   st\n"
+            "   0: 00000000000000000000000000000000:1133 "
+            "00000000000000000000000000000000:0000 0A\n")
+        _, tick, _, _ = run(
+            sandbox, "collect",
+            env_extra={"SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"})
+        assert tick["radio_tcp"] == "ok"
+
+    def test_established_connection_on_port_is_not_listen(self, sandbox):
+        """Only st 0A (LISTEN) counts — an ESTABLISHED (01) row on the
+        port must not read as a live listener."""
+        (sandbox.proc / "net" / "tcp").write_text(
+            "  sl  local_address rem_address   st\n"
+            "   0: 0100007F:1133 0100007F:E1C4 01\n")
+        _, tick, _, _ = run(
+            sandbox, "collect",
+            env_extra={"SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"})
+        assert tick["radio_tcp"] == "down"
 
     def test_service_not_running_is_false_not_null(self, sandbox):
         sandbox.ubus_out.write_text(UBUS_NOT_RUNNING)

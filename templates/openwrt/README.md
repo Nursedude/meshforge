@@ -15,7 +15,7 @@ Busybox-ash agent collecting meshtasticd + host health into one JSON tick:
 |---|---|
 | `service.running/pid` | procd view via `ubus call service list` (pidof fallback, witnessed) |
 | `meshtasticd.vsz_kb/rss_kb/maps/age_s` | `/proc/<pid>` — `maps` is the #10468 leak metric; FATAL on 32-bit's ~65k mmap cap |
-| `radio_tcp` | TCP connect-only probe of the PhoneAPI port (never reads it — #17) |
+| `radio_tcp` | LISTEN-state of the PhoneAPI port via `/proc/net/tcp` — never connects (a connect kicks the single active PhoneAPI client, #17; minimal busybox `nc` also proved untrustworthy as a probe) |
 | `host.*` | uptime / load / MemAvailable |
 | `persistence` | is the meshtasticd `data_dir` on tmpfs? (the config-vanishes-on-reboot gotcha) |
 | `opkg_hold` | is the package pinned against a stock-feed clobber? (apk boxes: unobservable note) |

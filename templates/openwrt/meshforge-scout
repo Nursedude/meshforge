@@ -33,7 +33,7 @@
 #
 # Test seams (env-only, never conf): SCOUT_PROC_ROOT (fake /proc tree),
 # SCOUT_RESTART_CMD (restart stub), SCOUT_OPKG_STATUS (opkg status file),
-# PATH stubs for ubus/uci/nc.
+# PATH stubs for ubus/uci.
 
 set -u
 
@@ -47,12 +47,9 @@ LOG="${SCOUT_LOG:-/etc/meshforge/scout.log}"
 LOG_MAX_LINES="${SCOUT_LOG_MAX_LINES:-2000}"
 MAPS_RESTART="${MAPS_RESTART:-55000}"
 VSZ_WARN_KB="${VSZ_WARN_KB:-0}"          # 0 = disabled
-RADIO_HOST="${RADIO_HOST:-127.0.0.1}"
 RADIO_PORT="${RADIO_PORT:-4403}"
 PROC="${SCOUT_PROC_ROOT:-/proc}"
 OPKG_STATUS="${SCOUT_OPKG_STATUS:-/usr/lib/opkg/status}"
-NC="${SCOUT_NC:-nc}"   # test seam: point at a stub, or at a missing name
-                       # to exercise the nc-absent witness path
 
 # ---------------------------------------------------------------- helpers
 
@@ -164,12 +161,22 @@ collect_proc() {
 
 RADIO_TCP="null"
 collect_radio() {
-    if ! command -v "$NC" >/dev/null 2>&1; then
-        RADIO_TCP='"unavailable"'
-        err "radio TCP probe unavailable: nc not installed — cannot observe $RADIO_HOST:$RADIO_PORT"
+    # LISTEN-state check via $PROC/net/tcp — creates NO connection. Two
+    # live-derived reasons (2026-07-11, OpenWrt One): an actual connect
+    # would kick meshtasticd's single active PhoneAPI client (#17
+    # force-close churn), and the router's MINIMAL busybox nc (no -w
+    # support) turned its own usage error into a false "down" — tool
+    # failure must never read as an observation.
+    _hex=$(printf '%04X' "$RADIO_PORT" 2>/dev/null)
+    _files=""
+    [ -r "$PROC/net/tcp" ] && _files="$PROC/net/tcp"
+    [ -r "$PROC/net/tcp6" ] && _files="$_files $PROC/net/tcp6"
+    if [ -z "$_files" ] || [ -z "$_hex" ]; then
+        err "radio listen state unobservable: $PROC/net/tcp unreadable"
         return
     fi
-    if "$NC" -w 3 "$RADIO_HOST" "$RADIO_PORT" </dev/null >/dev/null 2>&1; then
+    # shellcheck disable=SC2086 — _files deliberately word-splits
+    if awk -v p=":$_hex" '$2 ~ p"$" && $4 == "0A" {found=1} END{exit found?0:1}' $_files 2>/dev/null; then
         RADIO_TCP='"ok"'
     else
         RADIO_TCP='"down"'

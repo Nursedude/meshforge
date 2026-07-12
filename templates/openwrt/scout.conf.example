@@ -28,6 +28,7 @@
 # worsening rate between map-count restarts.
 #VSZ_WARN_KB=0
 
-# Radio PhoneAPI TCP probe target (connect-only, no PhoneAPI read — #17).
-#RADIO_HOST="127.0.0.1"
+# Radio PhoneAPI port whose LISTEN state is checked via /proc/net/tcp —
+# never connects (a connect would kick the single active PhoneAPI
+# client, #17; and minimal busybox nc can't be trusted to probe).
 #RADIO_PORT=4403
