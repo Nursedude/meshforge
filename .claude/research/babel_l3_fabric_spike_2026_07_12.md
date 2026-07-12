@@ -161,6 +161,46 @@ across the transition — drilled ≤20 s):
 - Rollback at any point: re-enable the STA (`uci set
   wireless.<sta>.disabled=0; wifi`), unplug — pre-A/B state exactly.
 
+## Wired A/B — EXECUTED 2026-07-12 (~10:30Z switch): sawtooth GONE, routes solid
+
+Cable in (One WAN/eth0 → MikroTik switch, leased on the same 88.x
+segment; default route moved to eth0 on lease). STA taken down
+runtime-only (`ifdown meshforge_openwrt`; netdev removed; reboot
+restores). Execution lessons, all live-caught:
+
+1. **busybox has no `nohup`** — the first detached switch script never
+   ran (`ash: nohup: not found` while the session died). The portable
+   detach is a subshell double-fork: `( /script.sh >log 2>&1 & )`.
+2. **The fw4-reload caveat FIRED**: the STA ifdown triggered a firewall
+   reload that silently wiped the runtime `wg-spike` input-accept rule.
+   Signature: router→moc2 flows fine (established), every moc2-initiated
+   packet — pings AND babel hellos — answered with fw4's
+   `Destination Port Unreachable` from the tunnel address. Cure: a
+   durable uci firewall zone (`spike`, input ACCEPT, device wg-spike),
+   `fw4 reload`-proof and reboot-proof; teardown removes it.
+3. **wg roamed on its own** across the uplink switch (endpoint mapping
+   :59732 → :9840, handshake fresh) — keepalive 5 did its job.
+
+**Wired-arm measurements** (same commands as the wifi arm):
+- Inner-tunnel 3-min profile ×2: **360/360, min 0.664 / avg 1.22 /
+  max 16.7 / mdev 1.46 ms**; second run had 4 samples ≥10 ms in 360.
+  Wifi arm: avg 60 / max 235 / mdev 78 ms with a ~200 ms sawtooth every
+  ~6–7 s. **The sawtooth is gone.**
+- Route-stability watch: **20/20 samples over 5 min, both routes UP,
+  zero flaps** (wifi arm never held more than ~5 consecutive samples).
+- Babel re-adjacency after the fw4 fix: both /32s back within 45 s.
+
+**Honest confound**: the wifi arm ran with the RUNTIME nft rule, and a
+mid-arm fw4 reload wiping it was never ruled out for the router-side
+flap phases (it cannot explain moc2-side hello loss — moc2 is
+unfirewalled — so wifi jitter remains implicated there). The arms
+therefore differ by two variables (medium + firewall durability). A
+strict medium-only re-test would re-run a wifi arm WITH the durable
+zone; operationally the wired arm is the production-relevant
+configuration either way. The ≥24 h wired soak (running, durable zone
+in place) is the deciding sample: expect ZERO `babel_routes=0` samples
+on both soak logs for the wired arm vs the wifi arm's flap counts.
+
 ## Go/no-go read (interim — final after the 48 h soak + wired A/B)
 
 Protocol mechanics: **all inside criteria** (converge 30 s, withdraw
