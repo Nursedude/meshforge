@@ -128,14 +128,17 @@ LF slot 20, tx_enabled, fixed_position). Consequences:
    AREDN-segment edge. "Multi-path failover when the tunnel to the remote
    site dies (inet path ↔ AREDN 10.143/8 path)" is no longer hypothetical —
    it is this box, this site. The 07-14 babel read should weigh this.
-2. **Redundancy is vs ubex, not moc** — and it's not clean: live check found
-   an RF asymmetry (ubex hears the router; the router's recent-heard table
-   lacked ubex entirely despite 15 ft + same channel) plus a **stale-PKC-key**
-   entry on ubex for the router (07-10 reflash kept the MAC-derived node ID,
-   rotated the keypair → DMs would fail). Stale entry removed from ubex's DB
-   2026-07-12 (verified 0 rows); re-learns on next nodeinfo. The asymmetry is
-   unexplained — if ubex's RF is unhealthy, the toad may be the site's better
-   radio, which reframes "redundant" toward "candidate replacement."
+2. **Redundancy is vs ubex, not moc — and RESOLVED clean same evening**: the
+   suspected RF asymmetry was an ARTIFACT (ubex TX is infrequent + the
+   router's recent-heard window was fresh post-restart), proven by a live
+   drive test: operator-verified antenna, ubex test broadcast received by the
+   router (22:05Z, quoted journal), ubex nodeinfo received 21:36Z — two-way
+   RF at 30 dBm on the Pi 4 USB port works. The **stale-PKC-key** entry on
+   ubex (07-10 reflash kept the MAC-derived node ID, rotated the keypair →
+   DMs would fail) was removed and ubex re-learned the router with the NEW
+   key + name (verified). So the toad IS redundant RF at this site — ubex
+   covers it — and the router's domain value at this site is the AREDN-edge/
+   babel role, not radio.
 3. **Router's advertised position CORRECTED same day**: operator supplied the
    site coordinates (same as ubex's fixed position — exact values not
    recorded here: public repo, MF015 spirit); router re-pointed and verified
