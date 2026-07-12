@@ -136,10 +136,10 @@ LF slot 20, tx_enabled, fixed_position). Consequences:
    2026-07-12 (verified 0 rows); re-learns on next nodeinfo. The asymmetry is
    unexplained — if ubex's RF is unhealthy, the toad may be the site's better
    radio, which reframes "redundant" toward "candidate replacement."
-3. **Router's advertised position is wrong**: set to moc's coords 07-12
-   (operator picked "same as moc" before the site fact surfaced); needs the
-   AREDN site's coordinates (AREDN sysinfo unreachable from moc5; operator to
-   supply).
+3. **Router's advertised position CORRECTED same day**: operator supplied the
+   site coordinates (same as ubex's fixed position — exact values not
+   recorded here: public repo, MF015 spirit); router re-pointed and verified
+   by re-read. (Was briefly moc's coords from the pre-correction pick.)
 
 ## Time-sensitivity
 
