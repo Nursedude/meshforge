@@ -524,6 +524,8 @@ error match must be line-anchored (live-caught). MF `fb80819e`, MA `04581964`
 
 ## meshtasticd VSZ leak (firmware#10468) — pthread stacks stranded, USB-radio boxes only (2026-07-10)
 
+Symptom: hundreds of GB of **virtual memory** (VSZ) with normal RSS — tens of
+thousands of paired 8MB+64KB **anonymous mappings** in `/proc/<pid>/maps`.
 Portduino meshtasticd on a **USB (CH341) radio** leaks one joinable 8 MB
 pthread **thread stack** per interrupt cycle (~9/min): the CH341 poll thread
 runs the RadioLib ISR on ITSELF, so `pinedio_deattach_interrupt`'s self-join
