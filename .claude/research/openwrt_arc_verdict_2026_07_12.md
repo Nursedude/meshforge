@@ -47,12 +47,16 @@ mechanics were never the question. The bet only converts to a build if BOTH:
 teardown block in the spike doc, close the arc as "measured, not needed."**
 That is a good outcome — the spike existed to make this call cheap.
 
-### 3. The toad radio on the router — PARKED unless it moves
-As sited, redundant (moc hears everything it hears). Its only honest job is
-**coverage-gap edge node**: a site with power + network but no Pi, where one
-$100 router = mesh RF + management plane. **Kill criterion: if no gap site is
-named by 2026-07-19, the toad comes off the roadmap** (stays plugged as a
-spare — zero maintenance, but no further sessions, no features, no MQTT).
+### 3. The toad radio on the router — RESOLVED EARLY 2026-07-12: PULLED for repurpose
+The 07-19 question answered itself the day kiai came up: with a full-stack
+site box carrying RF, a bare daemon's radio had no job left. Operator pulled
+the toad 07-12 night; meshtasticd on the router stopped+disabled, its crons
+(mapwatch, mtd-soak) removed, **scout verified honest post-retirement**
+(tick ok=true, running=false as observation; pull eval OK exit 0) — no false
+pages. The fork-ipk/opkg-hold maintenance retires with it. **Gap-site option
+retained**: if a real site is ever named, router+toad redeploy together
+(re-enable = `/etc/init.d/meshtasticd enable` + plug). Toad's new life:
+go-kit / spare / canary bench — operator's call.
 Decided 07-12: **no MQTT uplink** — it would duplicate moc's feed and add a
 #77-class drift surface with zero new information.
 
@@ -78,7 +82,8 @@ claims: evidence before assertion — here, use case before mechanism.)
 | Piece | Call | Date/gate |
 |---|---|---|
 | scout | keep | earning now |
-| babel fabric | GO only if soak clean AND problem named | 2026-07-14 |
-| toad radio | park; deploy-to-gap or de-roadmap | 2026-07-19 |
+| babel fabric | GO only if soak clean AND problem named (use case ANCHORED: router = AREDN-site edge) | 2026-07-14 |
+| toad radio | **resolved early: pulled + repurposed; gap-site option retained** | 2026-07-12 |
+| router meshtasticd | retired (stop+disable, crons removed, scout stays green) | 2026-07-12 |
 | MQTT uplink | rejected | 2026-07-12 |
 | ipk/#10468 | banked, no further work | done |
