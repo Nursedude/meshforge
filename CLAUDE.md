@@ -23,7 +23,7 @@
 - **NEVER** call `sqlite3.connect()` directly — use `connect_tuned()` from `utils.db_helpers` (MF013). Every new SQLite DB also needs a `DBSpec` entry in `utils.db_inventory`. Run `python3 scripts/db_audit.py` to verify.
 - **NEVER** use `shell=True`, bare `except:`, or skip input validation / subprocess timeouts
 - **ALWAYS** use `_stop_event.wait()` instead of `time.sleep()` in daemon loops
-- **ALWAYS** split files exceeding 1,500 lines
+- **ALWAYS** split files exceeding 1,500 lines — lint-enforced since 2026-07-13 (MF025, frozen baseline for the 5 pre-existing offenders; baseline only shrinks)
 
 **Calibrated claims** (the discipline for what *I* say): never emit a bare
 "100% / verified / all green / it works / done" without a quoted external result.

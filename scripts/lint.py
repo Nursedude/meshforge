@@ -26,6 +26,7 @@ Checks:
 - MF022: bare/exit-code-masked pip & swallowed apt in shell installers (must route through scripts/lib/install_common.sh — pip-presence + PEP 668 + checked rc; install-hardening arc)
 - MF023: blocking meshtastic interface creation (_create_interface — the nodedb sync) in the map collector outside the bounded helper _collect_interface_bounded (serving must never block on collection; 2026-06-23 moc1 spin)
 - MF024: version SSOT (src/__version__.py) vs pyproject/README badge+heading drift (the 4-way-drift guard; delegates to scripts/version_consistency_check.py)
+- MF025: file-size ratchet — src/ python files over 1,500 lines (frozen 2026-07-13 baseline for the 5 known offenders, which may only shrink; split the file, never raise the cap)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -917,6 +918,57 @@ def check_in_domain_escapes(files: List[str], repo_root: str = '.') -> List[Lint
     return issues
 
 
+# MF025: the file-size ratchet. CLAUDE.md has said "ALWAYS split files
+# exceeding 1,500 lines" since the foundation docs — but nothing enforced it,
+# and by 2026-07-13 five src/ files had silently drifted past the cap (the
+# worst, watchdog_probes_drift.py, to 2,625). Same lesson as Issue #29 and
+# the model-agnostic-harness principle: a rule that lives in model memory is
+# a house of cards; a rule that lives in an executable gate survives model
+# handoffs. Ratchet shape mirrors MF018: known offenders are FROZEN at their
+# 2026-07-13 line counts and may only shrink; everything else (and any new
+# file) fails above the limit. When an arc splits a baseline file, delete its
+# entry. DO NOT add entries to grant new headroom — split the file.
+MF025_LINE_LIMIT = 1_500
+
+# Frozen 2026-07-13. Entries may only shrink or be deleted.
+MF025_BASELINE = {
+    'src/utils/watchdog_probes_drift.py': 2625,
+    'src/utils/watchdog_probes_gateway.py': 1638,
+    'src/utils/map_data_collector.py': 1566,
+    'src/gateway/rns_bridge.py': 1544,
+    'src/utils/node_history.py': 1510,
+}
+
+
+def check_file_size_ratchet(files: List[str], repo_root: str = '.') -> List[LintIssue]:
+    """MF025: fail when a src/ python file exceeds 1,500 lines (or, for a
+    frozen-baseline offender, exceeds its frozen size)."""
+    issues: List[LintIssue] = []
+    for f in files:
+        rel = os.path.relpath(f, repo_root) if os.path.isabs(f) else f
+        rel = rel.replace(os.sep, '/')
+        if not rel.startswith('src/') or not rel.endswith('.py'):
+            continue
+        if not os.path.isfile(f):
+            continue
+        try:
+            with open(f, 'r', encoding='utf-8', errors='ignore') as fh:
+                lines = sum(1 for _ in fh)
+        except (IOError, OSError):
+            continue
+        limit = max(MF025_LINE_LIMIT, MF025_BASELINE.get(rel, 0))
+        if lines > limit:
+            frozen = rel in MF025_BASELINE
+            issues.append(LintIssue(
+                rel, lines, Severity.ERROR, "MF025",
+                f"{lines:,} lines exceeds the "
+                f"{'frozen baseline of ' + format(limit, ',') if frozen else '1,500-line cap'}"
+                f" — split the file (CLAUDE.md size rule). The baseline only "
+                f"shrinks; do not add or raise entries to grant headroom.",
+            ))
+    return issues
+
+
 # MF021: the mini-dudeai observation-only invariant. mini-dudeai is a
 # deterministic, dependency-free stdlib rule-loop agent. Its doctrine is that
 # the engine and ALL built-in sources/actions OBSERVE the system (read files,
@@ -1275,6 +1327,12 @@ def main():
     # the audit cost.
     if not args.staged:
         issues.extend(check_systemd_sandbox_paths())
+
+    # MF025: file-size ratchet (1,500-line cap, frozen offender baseline).
+    # Cheap (line counts of the files already selected), so it runs in both
+    # whole-tree and --staged modes — a file blowing past the cap must fail
+    # in the same commit that grew it.
+    issues.extend(check_file_size_ratchet(files))
 
     # MF021: mini-dudeai observation-only invariant. Scans the fixed engine/
     # sources/actions set (cheap), so run it in both whole-tree and --staged
