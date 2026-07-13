@@ -6,76 +6,63 @@ Supports three bridge modes:
 - message_bridge: Translates messages between RNS/LXMF and Meshtastic
 - rns_transport: RNS uses Meshtastic as network transport layer (RNS_Over_Meshtastic)
 - mesh_bridge: Bridges two Meshtastic networks with different LoRa presets
+
+Exports resolve lazily (PEP 562): eager imports here pulled the full
+RNS/LXMF/meshtastic bridge stack (~400 ms, 600+ modules) into EVERY consumer
+of ANY gateway submodule — e.g. the TUI importing gateway.circuit_breaker paid
+for rns_bridge at startup. `from gateway import RNSMeshtasticBridge` still
+works; the submodule loads on first attribute access instead of package import.
 """
 
-from .base_handler import BaseMessageHandler
-from .rns_bridge import RNSMeshtasticBridge
-from .node_tracker import UnifiedNodeTracker
-from .config import (
-    GatewayConfig,
-    RNSOverMeshtasticConfig,
-    MeshtasticConfig,
-    MeshtasticBridgeConfig,
-)
-from .rns_transport import (
-    RNSMeshtasticTransport,
-    RNSMeshtasticInterface,
-    TransportStats,
-    create_rns_transport,
-)
-from .mesh_bridge import (
-    MeshtasticPresetBridge,
-    BridgedMeshMessage,
-    create_mesh_bridge,
-)
-from .meshtastic_protobuf_client import (
-    MeshtasticProtobufClient,
-    get_protobuf_client,
-    reset_protobuf_client,
-    send_text_direct,
-)
-from .meshtastic_protobuf_ops import (
-    ProtobufEventType,
-    ProtobufTransportConfig,
-    DeviceConfigSnapshot,
-    ModuleConfigSnapshot,
-    NeighborEntry,
-    NeighborReport,
-    DeviceMetadataResult,
-    TracerouteResult,
-)
+from importlib import import_module
 
-__all__ = [
+# Public symbol -> defining submodule. Keep in sync with __all__.
+_LAZY_EXPORTS = {
     # Base handler ABC
-    'BaseMessageHandler',
+    'BaseMessageHandler': '.base_handler',
     # RNS-Meshtastic bridge
-    'RNSMeshtasticBridge',
-    'UnifiedNodeTracker',
+    'RNSMeshtasticBridge': '.rns_bridge',
+    'UnifiedNodeTracker': '.node_tracker',
     # Configuration
-    'GatewayConfig',
-    'RNSOverMeshtasticConfig',
-    'MeshtasticConfig',
-    'MeshtasticBridgeConfig',
+    'GatewayConfig': '.config',
+    'RNSOverMeshtasticConfig': '.config',
+    'MeshtasticConfig': '.config',
+    'MeshtasticBridgeConfig': '.config',
     # RNS Transport
-    'RNSMeshtasticTransport',
-    'RNSMeshtasticInterface',
-    'TransportStats',
-    'create_rns_transport',
+    'RNSMeshtasticTransport': '.rns_transport',
+    'RNSMeshtasticInterface': '.rns_transport',
+    'TransportStats': '.rns_transport',
+    'create_rns_transport': '.rns_transport',
     # Mesh preset bridge
-    'MeshtasticPresetBridge',
-    'BridgedMeshMessage',
-    'create_mesh_bridge',
+    'MeshtasticPresetBridge': '.mesh_bridge',
+    'BridgedMeshMessage': '.mesh_bridge',
+    'create_mesh_bridge': '.mesh_bridge',
     # Protobuf-over-HTTP client
-    'MeshtasticProtobufClient',
-    'get_protobuf_client',
-    'reset_protobuf_client',
-    'send_text_direct',
-    'ProtobufEventType',
-    'ProtobufTransportConfig',
-    'DeviceConfigSnapshot',
-    'ModuleConfigSnapshot',
-    'NeighborEntry',
-    'NeighborReport',
-    'DeviceMetadataResult',
-    'TracerouteResult',
-]
+    'MeshtasticProtobufClient': '.meshtastic_protobuf_client',
+    'get_protobuf_client': '.meshtastic_protobuf_client',
+    'reset_protobuf_client': '.meshtastic_protobuf_client',
+    'send_text_direct': '.meshtastic_protobuf_client',
+    'ProtobufEventType': '.meshtastic_protobuf_ops',
+    'ProtobufTransportConfig': '.meshtastic_protobuf_ops',
+    'DeviceConfigSnapshot': '.meshtastic_protobuf_ops',
+    'ModuleConfigSnapshot': '.meshtastic_protobuf_ops',
+    'NeighborEntry': '.meshtastic_protobuf_ops',
+    'NeighborReport': '.meshtastic_protobuf_ops',
+    'DeviceMetadataResult': '.meshtastic_protobuf_ops',
+    'TracerouteResult': '.meshtastic_protobuf_ops',
+}
+
+__all__ = list(_LAZY_EXPORTS)
+
+
+def __getattr__(name):
+    submodule = _LAZY_EXPORTS.get(name)
+    if submodule is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(submodule, __name__), name)
+    globals()[name] = value  # cache: __getattr__ only fires on the first miss
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))

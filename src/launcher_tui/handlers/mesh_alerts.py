@@ -14,7 +14,11 @@ from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
 
-from utils.mesh_alert_engine import get_alert_engine
+def get_alert_engine():
+    """Deferred import: utils.mesh_alert_engine pulls the meshtastic package
+    (~200 ms) — resolved at menu time, never at TUI startup."""
+    from utils.mesh_alert_engine import get_alert_engine as _real
+    return _real()
 
 # Alert type metadata for UI display
 _ALERT_TYPES = [

@@ -9,9 +9,9 @@ import logging
 from handler_protocol import BaseHandler
 from utils.safe_import import safe_import
 
-MapDataCollector, _HAS_MAP_DATA_COLLECTOR = safe_import(
-    'utils.map_data_collector', 'MapDataCollector'
-)
+# utils.map_data_collector is imported where used: at module level it pulls
+# the RNS + meshtastic collector stack (~76 ms + the RNS first-load) into
+# TUI startup for a settings write the session may never perform.
 from commands import propagation
 
 
@@ -219,7 +219,9 @@ class SettingsHandler(BaseHandler):
         underlying save failed — so the caller can render an honest result
         instead of an unconditional "Connection set" (#74 class).
         """
-        if not _HAS_MAP_DATA_COLLECTOR:
+        try:
+            from utils.map_data_collector import MapDataCollector
+        except ImportError:
             return False
         collector = MapDataCollector()
         return bool(collector.set_meshtasticd_connection(host, port))

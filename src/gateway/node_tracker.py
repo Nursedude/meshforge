@@ -53,10 +53,6 @@ from utils.paths import get_real_user_home
 # Import event bus for node update events
 from utils.event_bus import emit_node_update
 
-# Import RNS module (optional - for node discovery)
-_RNS_mod, _HAS_RNS = safe_import('RNS')
-
-
 class UnifiedNodeTracker:
     """
     Tracks nodes from both RNS and Meshtastic networks.
@@ -141,14 +137,15 @@ class UnifiedNodeTracker:
             self._rns_connected = False
             return
 
-        if not _HAS_RNS:
+        # Deferred: importing RNS costs ~180 ms and only this discovery path
+        # needs it — at module level it taxed every status_bar/TUI startup.
+        RNS, _has_rns = safe_import('RNS')
+        if not _has_rns:
             logger.info("RNS module not installed. To enable RNS node discovery:")
             logger.info("  1. Install RNS: pipx install rns")
             logger.info("  2. Start rnsd: sudo systemctl start rnsd")
             logger.info("  3. Restart MeshForge")
             return
-
-        RNS = _RNS_mod
 
         try:
             logger.info("Checking for existing RNS service...")

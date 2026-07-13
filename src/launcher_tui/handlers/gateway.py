@@ -10,14 +10,12 @@ from pathlib import Path
 
 from handler_protocol import BaseHandler
 from utils.paths import get_real_user_home
-from utils.safe_import import safe_import
 from gateway.circuit_breaker import get_all_registries
 
 logger = logging.getLogger(__name__)
 
-_GatewayConfig, _RoutingRule, _HAS_GATEWAY_CONFIG = safe_import(
-    'gateway.config', 'GatewayConfig', 'RoutingRule'
-)
+from gateway.config import GatewayConfig as _GatewayConfig
+from gateway.config import RoutingRule as _RoutingRule
 
 
 class GatewayHandler(BaseHandler):
@@ -37,14 +35,6 @@ class GatewayHandler(BaseHandler):
 
     def _gateway_config_menu(self):
         """Gateway bridge configuration menu."""
-        if not _HAS_GATEWAY_CONFIG:
-            self.ctx.dialog.msgbox(
-                "Gateway Module Missing",
-                "Gateway configuration module not found.\n\n"
-                "Ensure src/gateway/config.py exists."
-            )
-            return
-
         try:
             config = _GatewayConfig.load()
         except Exception as e:

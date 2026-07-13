@@ -14,7 +14,6 @@ from pathlib import Path
 from handler_protocol import BaseHandler
 from backend import clear_screen
 from service_remediation import offer_service_fix
-from commands import rns as rns_mod
 from utils.paths import get_real_user_home, ReticulumPaths
 
 logger = logging.getLogger(__name__)
@@ -866,5 +865,10 @@ class RNSInterfacesHandler(BaseHandler):
         return result
 
     def _import_rns_commands(self):
-        """Import and return the commands.rns module."""
+        """Import and return the commands.rns module.
+
+        Deferred: commands.rns imports the RNS library at module level
+        (~180 ms) — the cost belongs to the RNS menus, not TUI startup.
+        """
+        from commands import rns as rns_mod
         return rns_mod

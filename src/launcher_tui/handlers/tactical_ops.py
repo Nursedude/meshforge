@@ -30,20 +30,30 @@ from tactical.chunker import chunk, TRANSPORT_LIMITS
 from tactical.compliance import get_compliance_badge, validate_ham_compliance
 from tactical.timeline import TacticalTimeline
 
-# Optional: QR code support
-(_encode_qr_terminal, _generate_checkin_qr, _is_qr_available,
- _HAS_QR) = safe_import(
-    'tactical.qr_transport',
-    'encode_qr_terminal', 'generate_checkin_qr', 'is_qr_available',
-)
+def _load_qr_transport():
+    """Deferred import: tactical.qr_transport needs qrcode/PIL (optional deps).
 
-# Optional: Tactical map support (requires folium)
-(_generate_tactical_map, _export_kml, _export_cot_xml,
- _is_map_available, _HAS_MAP) = safe_import(
-    'tactical.tactical_map',
-    'generate_tactical_map', 'export_kml', 'export_cot_xml',
-    'is_map_available',
-)
+    Resolved at menu time so the cost never lands on TUI startup. Returns the
+    module, or None when the QR stack is missing.
+    """
+    try:
+        from tactical import qr_transport
+        return qr_transport
+    except ImportError:
+        return None
+
+
+def _load_tactical_map():
+    """Deferred import: tactical.tactical_map needs folium (optional dep).
+
+    folium alone costs ~180 ms of import — menu-time cost, not startup cost.
+    Returns the module, or None when folium is missing.
+    """
+    try:
+        from tactical import tactical_map
+        return tactical_map
+    except ImportError:
+        return None
 
 
 class TacticalOpsHandler(BaseHandler):
@@ -305,7 +315,8 @@ class TacticalOpsHandler(BaseHandler):
 
     def _tactical_qr_generate(self):
         """Generate a QR code for check-in."""
-        if not _HAS_QR:
+        qr_transport = _load_qr_transport()
+        if qr_transport is None:
             self.ctx.dialog.msgbox(
                 "QR Not Available",
                 "QR code generation requires 'qrcode' package.\n"
@@ -313,7 +324,7 @@ class TacticalOpsHandler(BaseHandler):
             )
             return
 
-        if not _is_qr_available():
+        if not qr_transport.is_qr_available():
             self.ctx.dialog.msgbox(
                 "QR Not Available",
                 "QR code library loaded but not functional."
@@ -335,7 +346,7 @@ class TacticalOpsHandler(BaseHandler):
         print(f"=== QR Check-In: {callsign} ===\n")
 
         try:
-            qr_str = _generate_checkin_qr(callsign)
+            qr_str = qr_transport.generate_checkin_qr(callsign)
             print(qr_str)
             print(f"\nScan this QR to check in as: {callsign}")
             print("QR contains an X1 CHECKIN message.")
@@ -346,7 +357,8 @@ class TacticalOpsHandler(BaseHandler):
 
     def _tactical_map_view(self):
         """View tactical map with zones and check-ins."""
-        if not _HAS_MAP or not _is_map_available():
+        tactical_map = _load_tactical_map()
+        if tactical_map is None or not tactical_map.is_map_available():
             self.ctx.dialog.msgbox(
                 "Map Not Available",
                 "Tactical map requires 'folium' package.\n"
@@ -372,7 +384,7 @@ class TacticalOpsHandler(BaseHandler):
         output_path = output_dir / "tactical_map.html"
 
         try:
-            _generate_tactical_map(zones, checkins, [], output_path)
+            tactical_map.generate_tactical_map(zones, checkins, [], output_path)
             self.ctx.dialog.msgbox(
                 "Tactical Map Generated",
                 f"Map saved to: {output_path}\n\n"
@@ -400,15 +412,16 @@ class TacticalOpsHandler(BaseHandler):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         timestamp_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+        tactical_map = _load_tactical_map()
 
         if choice == "kml":
-            if not _HAS_MAP:
+            if tactical_map is None:
                 self.ctx.dialog.msgbox("Not Available", "KML export requires tactical_map module.")
                 return
             zones = timeline.get_active_zones()
             output_path = output_dir / f"tactical_{timestamp_str}.kml"
             try:
-                _export_kml(zones, [], output_path)
+                tactical_map.export_kml(zones, [], output_path)
                 self.ctx.dialog.msgbox(
                     "KML Exported",
                     f"File: {output_path}\n"
@@ -419,13 +432,13 @@ class TacticalOpsHandler(BaseHandler):
                 self.ctx.dialog.msgbox("Export Error", f"KML export failed: {e}")
 
         elif choice == "cot":
-            if not _HAS_MAP:
+            if tactical_map is None:
                 self.ctx.dialog.msgbox("Not Available", "CoT export requires tactical_map module.")
                 return
             checkins = timeline.get_recent_checkins(minutes=120)
             output_path = output_dir / f"cot_{timestamp_str}.xml"
             try:
-                _export_cot_xml(checkins, output_path)
+                tactical_map.export_cot_xml(checkins, output_path)
                 self.ctx.dialog.msgbox(
                     "CoT XML Exported",
                     f"File: {output_path}\n"

@@ -30,10 +30,6 @@ from utils.service_check import (
     start_service, stop_service, _sudo_cmd, _sudo_write,
     daemon_reload, enable_service, get_udp_port_owner,
 )
-from commands.rns import (
-    get_identity_path, create_identities, list_known_destinations,
-    check_connectivity, get_status,
-)
 from utils.config_drift import detect_rnsd_config_drift
 
 # Error patterns indicating RNS shared instance connectivity failure.

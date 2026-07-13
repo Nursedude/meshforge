@@ -15,15 +15,28 @@ from handler_protocol import BaseHandler
 from utils.service_check import check_udp_port
 from utils.safe_import import safe_import
 
-_get_automation_engine, _HAS_ENGINE = safe_import(
-    'utils.automation_engine', 'get_automation_engine'
-)
-_validate_node_id, _HAS_VALIDATE = safe_import(
-    'utils.automation_engine', 'validate_node_id'
-)
-_NodeInventory, _HAS_INVENTORY = safe_import(
-    'utils.node_inventory', 'NodeInventory'
-)
+# utils.automation_engine pulls the meshtastic protobuf stack (~200 ms);
+# resolve it (and node_inventory) at menu time, never at TUI startup.
+
+
+def _load_engine_fns():
+    """Returns (get_automation_engine, validate_node_id) or (None, None)."""
+    try:
+        from utils.automation_engine import (
+            get_automation_engine, validate_node_id,
+        )
+        return get_automation_engine, validate_node_id
+    except ImportError:
+        return None, None
+
+
+def _load_node_inventory():
+    """Returns the NodeInventory class, or None when unavailable."""
+    try:
+        from utils.node_inventory import NodeInventory
+        return NodeInventory
+    except ImportError:
+        return None
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +121,8 @@ class NetworkToolsHandler(BaseHandler):
 
     def _mesh_traceroute(self):
         """Mesh traceroute submenu — on-demand route tracing."""
-        if not _HAS_ENGINE or _get_automation_engine is None:
+        _get_automation_engine, _ = _load_engine_fns()
+        if _get_automation_engine is None:
             self.ctx.dialog.msgbox(
                 "Not Available",
                 "Automation engine not available.\n"
@@ -147,7 +161,8 @@ class NetworkToolsHandler(BaseHandler):
 
     def _get_online_node_choices(self):
         """Build menu choices from online nodes in inventory."""
-        if not _HAS_INVENTORY or _NodeInventory is None:
+        _NodeInventory = _load_node_inventory()
+        if _NodeInventory is None:
             return []
         try:
             inv = _NodeInventory()
@@ -167,7 +182,7 @@ class NetworkToolsHandler(BaseHandler):
     def _traceroute_single(self):
         """Traceroute to a single node (pick from list or enter ID)."""
         try:
-            engine = _get_automation_engine()
+            engine = _load_engine_fns()[0]()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not get automation engine:\n{e}",
@@ -210,7 +225,8 @@ class NetworkToolsHandler(BaseHandler):
         node_id = node_id.strip()
 
         # Validate node ID format
-        if _HAS_VALIDATE and _validate_node_id:
+        _, _validate_node_id = _load_engine_fns()
+        if _validate_node_id:
             if not _validate_node_id(node_id):
                 self.ctx.dialog.msgbox(
                     "Invalid Node ID",
@@ -278,7 +294,8 @@ class NetworkToolsHandler(BaseHandler):
 
     def _traceroute_all_active(self):
         """Traceroute all active nodes from inventory."""
-        if not _HAS_INVENTORY or _NodeInventory is None:
+        _NodeInventory = _load_node_inventory()
+        if _NodeInventory is None:
             self.ctx.dialog.msgbox(
                 "Not Available",
                 "Node inventory not available.\n"
@@ -288,7 +305,7 @@ class NetworkToolsHandler(BaseHandler):
             return
 
         try:
-            engine = _get_automation_engine()
+            engine = _load_engine_fns()[0]()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not get automation engine:\n{e}",
@@ -371,7 +388,7 @@ class NetworkToolsHandler(BaseHandler):
     def _traceroute_history(self):
         """Quick view of recent traceroute history."""
         try:
-            engine = _get_automation_engine()
+            engine = _load_engine_fns()[0]()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not get automation engine:\n{e}",

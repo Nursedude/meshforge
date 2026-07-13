@@ -11,8 +11,6 @@ from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
 
-from utils.demo_mode import get_demo_manager
-
 
 class DemoHandler(BaseHandler):
     """TUI handler for demo mode control."""
@@ -31,6 +29,9 @@ class DemoHandler(BaseHandler):
 
     def _demo_menu(self):
         """Demo mode submenu."""
+        # Deferred: utils.demo_mode pulls meshing_around_clients + the
+        # meshtastic package (~230 ms) — menu-time cost, not startup cost.
+        from utils.demo_mode import get_demo_manager
         manager = get_demo_manager()
 
         while True:

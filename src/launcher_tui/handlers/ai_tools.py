@@ -27,12 +27,10 @@ from pathlib import Path
 from typing import Optional
 
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
 
-# Map service helpers (live-map start/stop logic still uses these directly).
-MapDataCollector, get_all_ips, _HAS_MAP_SERVICE = safe_import(
-    'utils.map_data_service', 'MapDataCollector', 'get_all_ips'
-)
+# Map service helpers are imported inside the methods that use them:
+# utils.map_data_service transitively pulls the RNS/LXMF collector stack
+# (~700 modules, ~400 ms) and must not load at TUI startup.
 
 # Privileged systemctl helpers used by the live-map control methods.
 from utils.service_check import (

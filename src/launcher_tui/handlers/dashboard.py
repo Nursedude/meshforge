@@ -20,7 +20,8 @@ ServiceRunState, _HAS_STARTUP_CHECKS = safe_import('startup_checks', 'ServiceRun
 get_http_client, reset_http_client, _HAS_MESHTASTIC_HTTP = safe_import(
     'utils.meshtastic_http', 'get_http_client', 'reset_http_client'
 )
-from utils.map_data_collector import MapDataCollector
+# utils.map_data_collector is imported where used (self-test): at module
+# level it pulls the meshtastic collector stack (~280 ms) into TUI startup.
 generate_report, generate_and_save, _HAS_REPORT_GEN = safe_import(
     'utils.report_generator', 'generate_report', 'generate_and_save'
 )
@@ -443,6 +444,7 @@ class DashboardHandler(BaseHandler):
         # Test 5: MapDataCollector
         print("[5/6] Testing MapDataCollector...")
         try:
+            from utils.map_data_collector import MapDataCollector
             collector = MapDataCollector(enable_history=False)
             geojson = collector.collect(max_age_seconds=30)
             props = geojson.get('properties', {})

@@ -19,9 +19,6 @@ from utils.service_check import (
     get_rns_shared_instance_info, get_udp_port_owner,
     start_service, stop_service,
 )
-from commands.rns import (
-    create_identities, check_connectivity, get_status,
-)
 from utils.config_drift import detect_rnsd_config_drift
 
 logger = logging.getLogger(__name__)
@@ -33,6 +30,10 @@ def run_rns_diagnostics(handler):
     Args:
         handler: RNSDiagnosticsHandler instance for TUI interaction.
     """
+    # Deferred: commands.rns imports the RNS library at module level (~400 ms,
+    # hundreds of modules) — the cost belongs to this menu, not TUI startup.
+    from commands.rns import create_identities, check_connectivity, get_status
+
     clear_screen()
     print("=== RNS Diagnostics ===\n")
 

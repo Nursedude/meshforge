@@ -12,10 +12,9 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
-MeshtasticConnection, _HAS_CONN_MGR = safe_import(
-    'utils.connection_manager', 'MeshtasticConnection'
-)
-_TCPInterface, _HAS_TCP_INTERFACE = safe_import('meshtastic.tcp_interface', 'TCPInterface')
+# utils.connection_manager / meshtastic.tcp_interface are imported where used
+# (_sync_favorites_from_device): at module level they pull the meshtastic
+# package (~200 ms) into TUI startup for a sync the session may never run.
 
 
 class FavoritesHandler(BaseHandler):
@@ -360,7 +359,10 @@ class FavoritesHandler(BaseHandler):
     def _sync_favorites_from_device(self):
         self.ctx.dialog.infobox("Syncing...", "Reading favorites from device...")
 
-        if not _HAS_TCP_INTERFACE:
+        try:
+            import meshtastic.tcp_interface  # noqa: F401 — availability probe
+            from utils.connection_manager import MeshtasticConnection
+        except ImportError:
             self.ctx.dialog.msgbox(
                 "Favorites Sync Unavailable",
                 "The isFavorite flag requires the meshtastic Python library\n"

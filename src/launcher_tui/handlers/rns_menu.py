@@ -17,9 +17,11 @@ from pathlib import Path
 from handler_protocol import BaseHandler
 from backend import clear_screen
 from utils.paths import get_real_user_home, ReticulumPaths
-from commands.rns import (
-    get_identity_path, create_identities, list_known_destinations,
-)
+def _rns_cmds():
+    """Deferred import: commands.rns imports the RNS library at module level
+    (~180 ms) — resolved at menu time, never at TUI startup."""
+    from commands import rns
+    return rns
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +187,7 @@ class RNSMenuHandler(BaseHandler):
             # Check identity status for menu hints
             config_dir = ReticulumPaths.get_config_dir()
             rnsd_exists = (config_dir / 'identity').exists()
-            gw_exists = get_identity_path().exists()
+            gw_exists = _rns_cmds().get_identity_path().exists()
 
             choices = [
                 ("show", "Show local identity"),
@@ -227,7 +229,7 @@ class RNSMenuHandler(BaseHandler):
                         print(f"rnsd identity: {rnsd_identity}")
                         print("  Not found — use 'Create identities' to generate.\n")
 
-                    gw_id = get_identity_path()
+                    gw_id = _rns_cmds().get_identity_path()
                     print(f"\nMeshForge gateway identity: {gw_id}")
                     if gw_id.exists():
                         if diag:
@@ -254,7 +256,7 @@ class RNSMenuHandler(BaseHandler):
                     else:
                         print("  Not found (created on first rnsd start)")
 
-                    gw_id = get_identity_path()
+                    gw_id = _rns_cmds().get_identity_path()
                     print(f"\nMeshForge gateway:  {gw_id}")
                     if gw_id.exists():
                         stat = gw_id.stat()
@@ -298,7 +300,7 @@ class RNSMenuHandler(BaseHandler):
 
             # Show current state
             rns_id = config_dir / 'identity'
-            gw_id = get_identity_path()
+            gw_id = _rns_cmds().get_identity_path()
             print(f"RNS identity:     {rns_id}")
             print(f"  Status: {'EXISTS' if rns_id.exists() else 'MISSING'}")
             print(f"Gateway identity: {gw_id}")
@@ -309,7 +311,7 @@ class RNSMenuHandler(BaseHandler):
                 self.ctx.wait_for_enter()
                 return
 
-            result = create_identities()
+            result = _rns_cmds().create_identities()
             if result.success:
                 print(f"OK: {result.message}")
                 created = result.data.get('created', [])
@@ -330,7 +332,7 @@ class RNSMenuHandler(BaseHandler):
         clear_screen()
         print("=== Known RNS Destinations ===\n")
 
-        result = list_known_destinations()
+        result = _rns_cmds().list_known_destinations()
 
         if result.success:
             nodes = result.data.get('nodes', [])

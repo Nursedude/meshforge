@@ -19,9 +19,10 @@ get_metrics_history, MetricType, _HAS_METRICS_HISTORY = safe_import(
     'utils.metrics_history', 'get_metrics_history', 'MetricType'
 )
 from utils.paths import get_real_user_home
-start_metrics_server, _HAS_METRICS_EXPORT = safe_import(
-    'utils.metrics_export', 'start_metrics_server'
-)
+
+# utils.metrics_export is imported where used (_prometheus_start): it pulls
+# utils.prometheus_exporter -> the meshtastic collector stack (~420 ms) and
+# must not load at TUI startup.
 
 
 class MetricsHandler(BaseHandler):
@@ -307,7 +308,9 @@ class MetricsHandler(BaseHandler):
                 self._prometheus_show_curl()
 
     def _prometheus_start(self):
-        if not _HAS_METRICS_EXPORT:
+        try:
+            from utils.metrics_export import start_metrics_server
+        except ImportError:
             self.ctx.dialog.msgbox("Error", "Prometheus exporter module not available.")
             return
         if MetricsHandler._prometheus_server is not None:

@@ -13,9 +13,18 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
-RFAwareness, LoRaBand, _HAS_RF_AWARENESS = safe_import(
-    'utils.rf_awareness', 'RFAwareness', 'LoRaBand'
-)
+
+def _load_lora_band():
+    """Deferred import: utils.rf_awareness needs numpy (~60 ms, 87 modules).
+
+    Resolved at menu time so the cost never lands on TUI startup. Returns the
+    LoRaBand enum, or None when the RF-awareness stack is missing.
+    """
+    try:
+        from utils.rf_awareness import LoRaBand
+        return LoRaBand
+    except ImportError:
+        return None
 
 
 class SDRHandler(BaseHandler):
@@ -38,7 +47,9 @@ class SDRHandler(BaseHandler):
             self._rf_awareness_menu()
 
     def _get_rf_awareness(self):
-        if not _HAS_RF_AWARENESS:
+        try:
+            from utils.rf_awareness import RFAwareness
+        except ImportError:
             return None
         if self._rf_awareness is None:
             self._rf_awareness = RFAwareness()
@@ -118,7 +129,8 @@ class SDRHandler(BaseHandler):
             if not rf.connect():
                 self.ctx.dialog.msgbox("Error", "Failed to connect to SDR")
                 return
-        if _HAS_RF_AWARENESS:
+        LoRaBand = _load_lora_band()
+        if LoRaBand is not None:
             band_choices = [("US_915", "US 915 MHz (902-928 MHz)"), ("EU_868", "EU 868 MHz (863-870 MHz)"), ("EU_433", "EU 433 MHz (433-434 MHz)"), ("AS_923", "Asia 923 MHz (920-925 MHz)"), ("custom", "Custom Frequency"), ("back", "Back")]
         else:
             band_choices = [("custom", "Custom Frequency"), ("back", "Back")]
@@ -155,7 +167,8 @@ class SDRHandler(BaseHandler):
             if not rf.connect():
                 self.ctx.dialog.msgbox("Error", "Failed to connect to SDR")
                 return
-        if not _HAS_RF_AWARENESS:
+        LoRaBand = _load_lora_band()
+        if LoRaBand is None:
             self.ctx.dialog.msgbox("Error", "LoRaBand not available")
             return
         band = LoRaBand.US_915
@@ -210,7 +223,8 @@ class SDRHandler(BaseHandler):
         except ValueError:
             self.ctx.dialog.msgbox("Error", "Invalid duration (1-300 seconds)")
             return
-        band = LoRaBand.US_915 if _HAS_RF_AWARENESS else None
+        LoRaBand = _load_lora_band()
+        band = LoRaBand.US_915 if LoRaBand is not None else None
         self.ctx.dialog.infobox("Measuring...", f"Measuring channel utilization for {duration:.0f} seconds...")
         util = rf.measure_channel_utilization(band=band, duration_sec=duration)
         if util is None:
@@ -246,7 +260,8 @@ class SDRHandler(BaseHandler):
             if not rf.connect():
                 self.ctx.dialog.msgbox("Error", "Failed to connect to SDR")
                 return
-        if not _HAS_RF_AWARENESS:
+        LoRaBand = _load_lora_band()
+        if LoRaBand is None:
             self.ctx.dialog.msgbox("Error", "Module not available")
             return
         band_choices = [("US_915", "US 915 MHz Band"), ("EU_868", "EU 868 MHz Band"), ("back", "Back")]
@@ -298,7 +313,8 @@ class SDRHandler(BaseHandler):
             if not rf.connect():
                 self.ctx.dialog.msgbox("Error", "Failed to connect to SDR")
                 return
-        if not _HAS_RF_AWARENESS:
+        LoRaBand = _load_lora_band()
+        if LoRaBand is None:
             self.ctx.dialog.msgbox("Error", "Module not available")
             return
         band = LoRaBand.US_915

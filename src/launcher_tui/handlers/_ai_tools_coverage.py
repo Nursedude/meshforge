@@ -15,16 +15,32 @@ import subprocess
 import threading
 import webbrowser
 
-from utils.safe_import import safe_import
-
-CoverageMapGenerator, MapNode, _HAS_COVERAGE_MAP = safe_import(
-    'utils.coverage_map', 'CoverageMapGenerator', 'MapNode'
-)
-MapDataCollector, get_all_ips, _HAS_MAP_SERVICE = safe_import(
-    'utils.map_data_service', 'MapDataCollector', 'get_all_ips'
-)
-
 logger = logging.getLogger(__name__)
+
+
+def _load_coverage_map_generator():
+    """Deferred import: utils.coverage_map needs folium (optional dep).
+
+    Returns the class, or None when folium is missing (minimal-deps profile).
+    """
+    try:
+        from utils.coverage_map import CoverageMapGenerator
+        return CoverageMapGenerator
+    except ImportError:
+        return None
+
+
+def _load_map_data_collector():
+    """Deferred import: utils.map_data_service transitively pulls the RNS/LXMF
+    collector stack (~1000 modules, ~900 ms — the single largest TUI startup
+    cost when this lived at module level). The cost belongs to the map menus,
+    not the launcher. Returns the class, or None when the map stack is missing.
+    """
+    try:
+        from utils.map_data_service import MapDataCollector
+        return MapDataCollector
+    except ImportError:
+        return None
 
 
 class CoverageMapAndHeatmapMixin:
@@ -51,7 +67,8 @@ class CoverageMapAndHeatmapMixin:
 
         self.ctx.dialog.infobox("Generating", "Creating coverage map...")
 
-        if not _HAS_COVERAGE_MAP:
+        CoverageMapGenerator = _load_coverage_map_generator()
+        if CoverageMapGenerator is None:
             self.ctx.dialog.msgbox(
                 "Error",
                 "Coverage map generator not available.\n\n"
@@ -66,7 +83,8 @@ class CoverageMapAndHeatmapMixin:
             generator = CoverageMapGenerator()
 
             if choice == "all":
-                if not _HAS_MAP_SERVICE:
+                MapDataCollector = _load_map_data_collector()
+                if MapDataCollector is None:
                     self.ctx.dialog.msgbox("Error", "MapDataCollector not available.")
                     return
                 collector = MapDataCollector()
@@ -158,7 +176,8 @@ class CoverageMapAndHeatmapMixin:
         Args:
             source: Source filter — "meshtasticd", "mqtt", or "rns".
         """
-        if not _HAS_MAP_SERVICE:
+        MapDataCollector = _load_map_data_collector()
+        if MapDataCollector is None:
             return {"type": "FeatureCollection", "features": []}
 
         try:
@@ -223,7 +242,8 @@ class CoverageMapAndHeatmapMixin:
         """Generate a node density heatmap and open in browser."""
         self.ctx.dialog.infobox("Generating", "Creating node density heatmap...")
 
-        if not _HAS_COVERAGE_MAP:
+        CoverageMapGenerator = _load_coverage_map_generator()
+        if CoverageMapGenerator is None:
             self.ctx.dialog.msgbox(
                 "Error",
                 "Coverage map generator not available.\n\n"
@@ -232,7 +252,8 @@ class CoverageMapAndHeatmapMixin:
             )
             return
 
-        if not _HAS_MAP_SERVICE:
+        MapDataCollector = _load_map_data_collector()
+        if MapDataCollector is None:
             self.ctx.dialog.msgbox("Error", "MapDataCollector not available.")
             return
 

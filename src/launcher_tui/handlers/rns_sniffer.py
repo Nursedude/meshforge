@@ -11,11 +11,15 @@ from backend import clear_screen
 from utils.safe_import import safe_import
 
 # Hoist RNS sniffer imports to module level
-_get_rns_sniffer, _start_rns_capture, _stop_rns_capture, _RNSPacketType, _integrate_with_traffic_inspector, _HAS_RNS_SNIFFER = safe_import(
-    'monitoring.rns_sniffer',
-    'get_rns_sniffer', 'start_rns_capture', 'stop_rns_capture',
-    'RNSPacketType', 'integrate_with_traffic_inspector'
-)
+def _load_sniffer_mod():
+    """Deferred import: monitoring.rns_sniffer pulls the RNS library
+    (~180 ms) — resolved at menu time, never at TUI startup. Returns the
+    module, or None when the sniffer stack is missing."""
+    try:
+        from monitoring import rns_sniffer
+        return rns_sniffer
+    except ImportError:
+        return None
 
 
 class RNSSnifferHandler(BaseHandler):
@@ -35,7 +39,8 @@ class RNSSnifferHandler(BaseHandler):
 
     def _rns_traffic_sniffer(self):
         """RNS Traffic Sniffer - Wireshark-grade packet capture for RNS."""
-        if not _HAS_RNS_SNIFFER:
+        sniffer_mod = _load_sniffer_mod()
+        if sniffer_mod is None:
             self.ctx.dialog.msgbox(
                 "RNS Sniffer Not Available",
                 "The RNS traffic sniffer module is not installed.\n\n"
@@ -45,7 +50,7 @@ class RNSSnifferHandler(BaseHandler):
             return
 
         while True:
-            sniffer = _get_rns_sniffer()
+            sniffer = sniffer_mod.get_rns_sniffer()
             capturing = sniffer._running if sniffer else False
             stats = sniffer.get_stats() if sniffer else {}
 
@@ -98,8 +103,11 @@ class RNSSnifferHandler(BaseHandler):
 
     def _rns_sniffer_toggle_capture(self, sniffer, capturing):
         """Toggle RNS packet capture."""
+        sniffer_mod = _load_sniffer_mod()
+        if sniffer_mod is None:
+            return
         if capturing:
-            _stop_rns_capture()
+            sniffer_mod.stop_rns_capture()
             self.ctx.dialog.msgbox(
                 "Capture Stopped",
                 "RNS packet capture has been stopped.\n\n"
@@ -107,7 +115,7 @@ class RNSSnifferHandler(BaseHandler):
                 height=8, width=45
             )
         else:
-            if _start_rns_capture():
+            if sniffer_mod.start_rns_capture():
                 self.ctx.dialog.msgbox(
                     "Capture Started",
                     "RNS packet capture is now active.\n\n"
@@ -205,7 +213,7 @@ class RNSSnifferHandler(BaseHandler):
 
         packets = sniffer.get_packets(
             limit=50,
-            packet_type=_RNSPacketType.ANNOUNCE
+            packet_type=_load_sniffer_mod().RNSPacketType.ANNOUNCE
         )
 
         lines = [
@@ -310,7 +318,7 @@ class RNSSnifferHandler(BaseHandler):
 
         # Start capture if not running
         if not sniffer._running:
-            _start_rns_capture()
+            _load_sniffer_mod().start_rns_capture()
 
         # Probe
         success = sniffer.probe_destination(dest)
@@ -428,7 +436,7 @@ class RNSSnifferHandler(BaseHandler):
 
         # Start capture if not running
         if not sniffer._running:
-            _start_rns_capture()
+            _load_sniffer_mod().start_rns_capture()
 
         if choice == "1":
             success = sniffer.probe_destination(identity_hash)

@@ -13,18 +13,6 @@ from typing import List, Optional, Tuple
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
-
-_AutomationEngine, _HAS_ENGINE = safe_import(
-    'utils.automation_engine', 'AutomationEngine'
-)
-_get_automation_engine, _HAS_GET_ENGINE = safe_import(
-    'utils.automation_engine', 'get_automation_engine'
-)
-_get_traceroute_log_path, _HAS_LOG_PATH = safe_import(
-    'utils.automation_engine', 'get_traceroute_log_path'
-)
-
 logger = logging.getLogger(__name__)
 
 
@@ -45,7 +33,11 @@ class AutomationHandler(BaseHandler):
 
     def _get_engine(self):
         """Get the automation engine instance."""
-        if not _HAS_GET_ENGINE or _get_automation_engine is None:
+        # Deferred: utils.automation_engine pulls the meshtastic protobuf
+        # stack (~200 ms) — menu-time cost, not TUI-startup cost.
+        try:
+            from utils.automation_engine import get_automation_engine
+        except ImportError:
             self.ctx.dialog.msgbox(
                 "Automation Not Available",
                 "The automation engine module is not available.",
@@ -53,7 +45,7 @@ class AutomationHandler(BaseHandler):
             )
             return None
         try:
-            return _get_automation_engine()
+            return get_automation_engine()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Automation Error",
@@ -569,7 +561,9 @@ class AutomationHandler(BaseHandler):
 
     def _view_traceroute_logs(self) -> None:
         """View the traceroute log file."""
-        if not _HAS_LOG_PATH or _get_traceroute_log_path is None:
+        try:
+            from utils.automation_engine import get_traceroute_log_path
+        except ImportError:
             self.ctx.dialog.msgbox(
                 "Not Available",
                 "Traceroute log path not available.",
@@ -578,7 +572,7 @@ class AutomationHandler(BaseHandler):
             return
 
         try:
-            log_path = _get_traceroute_log_path()
+            log_path = get_traceroute_log_path()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not determine log path:\n{e}",

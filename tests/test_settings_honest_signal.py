@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from handler_test_utils import FakeDialog, make_handler_context  # noqa: E402
 
-import handlers.settings as settings_mod  # noqa: E402
 from handlers.settings import SettingsHandler  # noqa: E402
 
 
@@ -63,8 +62,7 @@ def _make_handler(menu_choice, save_result, inputbox=None):
 # localhost branch
 # ---------------------------------------------------------------------------
 
-@patch.object(settings_mod, "_HAS_MAP_DATA_COLLECTOR", True)
-@patch.object(settings_mod, "MapDataCollector", _StubCollector)
+@patch("utils.map_data_collector.MapDataCollector", _StubCollector)
 def test_localhost_failed_save_shows_failure_not_success():
     """A persistence that returns False must NOT read as 'Connection' set."""
     handler, ctx = _make_handler("localhost", save_result=False)
@@ -73,8 +71,7 @@ def test_localhost_failed_save_shows_failure_not_success():
     assert ctx.dialog.last_msgbox_title != "Connection"
 
 
-@patch.object(settings_mod, "_HAS_MAP_DATA_COLLECTOR", True)
-@patch.object(settings_mod, "MapDataCollector", _StubCollector)
+@patch("utils.map_data_collector.MapDataCollector", _StubCollector)
 def test_localhost_successful_save_shows_success():
     """A persisted save shows the success dialog."""
     handler, ctx = _make_handler("localhost", save_result=True)
@@ -86,8 +83,7 @@ def test_localhost_successful_save_shows_success():
 # remote host:port branch
 # ---------------------------------------------------------------------------
 
-@patch.object(settings_mod, "_HAS_MAP_DATA_COLLECTOR", True)
-@patch.object(settings_mod, "MapDataCollector", _StubCollector)
+@patch("utils.map_data_collector.MapDataCollector", _StubCollector)
 def test_remote_failed_save_shows_failure_not_success():
     """The remote-host path must surface the failure, not a false green."""
     handler, ctx = _make_handler(
@@ -98,8 +94,7 @@ def test_remote_failed_save_shows_failure_not_success():
     assert ctx.dialog.last_msgbox_title != "Connection"
 
 
-@patch.object(settings_mod, "_HAS_MAP_DATA_COLLECTOR", True)
-@patch.object(settings_mod, "MapDataCollector", _StubCollector)
+@patch("utils.map_data_collector.MapDataCollector", _StubCollector)
 def test_remote_successful_save_shows_success():
     """A persisted remote save shows the success dialog."""
     handler, ctx = _make_handler(
@@ -134,9 +129,14 @@ def test_serial_branch_does_not_claim_connection_set():
 # _save_meshtasticd_connection returns False when the dependency is missing
 # ---------------------------------------------------------------------------
 
-@patch.object(settings_mod, "_HAS_MAP_DATA_COLLECTOR", False)
+@patch.dict(sys.modules, {"utils.map_data_collector": None})
 def test_save_returns_false_when_collector_unavailable():
-    """No collector backend -> the save is a no-op and reports False."""
+    """No collector backend -> the save is a no-op and reports False.
+
+    handlers.settings imports MapDataCollector inside the save method (a
+    TUI-startup deferral); a None entry in sys.modules makes that import
+    raise ImportError, exercising the unavailable branch.
+    """
     dialog = FakeDialog()
     ctx = make_handler_context(dialog=dialog)
     handler = SettingsHandler()

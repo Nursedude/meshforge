@@ -31,30 +31,41 @@ TCP/IP Monitoring:
     devices = scanner.scan_subnet("192.168.1.0/24")
 """
 
-from .node_monitor import NodeMonitor, NodeInfo, NodeMetrics, NodePosition
-from .tcp_monitor import (
-    TCPMonitor,
-    TCPConnection,
-    TCPState,
-    NetworkScanner,
-    NetworkDevice,
-    measure_connection_rtt,
-    discover_meshtasticd_devices,
-)
+# Exports resolve lazily (PEP 562): node_monitor pulls the meshtastic
+# package (~150 ms) — an eager import here taxed every consumer of ANY
+# monitoring submodule at import time (e.g. TUI startup via
+# utils.map_data_collector -> monitoring.mqtt_subscriber).
+from importlib import import_module
 
-__all__ = [
+# Public symbol -> defining submodule. Keep in sync with __all__.
+_LAZY_EXPORTS = {
     # Node monitoring
-    'NodeMonitor',
-    'NodeInfo',
-    'NodeMetrics',
-    'NodePosition',
+    'NodeMonitor': '.node_monitor',
+    'NodeInfo': '.node_monitor',
+    'NodeMetrics': '.node_monitor',
+    'NodePosition': '.node_monitor',
     # TCP monitoring
-    'TCPMonitor',
-    'TCPConnection',
-    'TCPState',
-    'NetworkScanner',
-    'NetworkDevice',
-    'measure_connection_rtt',
-    'discover_meshtasticd_devices',
-]
+    'TCPMonitor': '.tcp_monitor',
+    'TCPConnection': '.tcp_monitor',
+    'TCPState': '.tcp_monitor',
+    'NetworkScanner': '.tcp_monitor',
+    'NetworkDevice': '.tcp_monitor',
+    'measure_connection_rtt': '.tcp_monitor',
+    'discover_meshtasticd_devices': '.tcp_monitor',
+}
+
+__all__ = list(_LAZY_EXPORTS)
 __version__ = '0.2.0'
+
+
+def __getattr__(name):
+    submodule = _LAZY_EXPORTS.get(name)
+    if submodule is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(submodule, __name__), name)
+    globals()[name] = value  # cache: __getattr__ only fires on the first miss
+    return value
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_EXPORTS))

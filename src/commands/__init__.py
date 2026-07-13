@@ -62,20 +62,15 @@ Usage:
     result = device_backup.restore_backup(backup_id)
 """
 
-from . import meshtastic
-from . import service
-from . import hardware
-from . import gateway
-from . import diagnostics
-from . import propagation
-from . import hamclock
-from . import rns
-from . import messaging
-from . import rnode
-from . import device_backup
+# Submodules resolve lazily (PEP 562): eager imports here pulled every
+# command module (diagnostics -> meshtastic, rns -> RNS, ...) into any
+# consumer of ANY commands submodule — ~350 ms of TUI startup for imports
+# the session may never use. `from commands import meshtastic` still works.
+from importlib import import_module
+
 from .base import CommandResult, CommandError
 
-__all__ = [
+_LAZY_SUBMODULES = (
     'meshtastic',
     'service',
     'hardware',
@@ -87,6 +82,18 @@ __all__ = [
     'messaging',
     'rnode',
     'device_backup',
-    'CommandResult',
-    'CommandError',
-]
+)
+
+__all__ = [*_LAZY_SUBMODULES, 'CommandResult', 'CommandError']
+
+
+def __getattr__(name):
+    if name not in _LAZY_SUBMODULES:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(f'.{name}', __name__)
+    globals()[name] = module  # cache: __getattr__ only fires on the first miss
+    return module
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_LAZY_SUBMODULES))

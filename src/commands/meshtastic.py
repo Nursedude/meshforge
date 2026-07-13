@@ -14,7 +14,9 @@ from pathlib import Path
 
 from .base import CommandResult
 from utils.paths import get_real_user_home
-from utils.message_listener import diagnose_pubsub
+
+# utils.message_listener is imported where used: at module level it pulls the
+# meshtastic package (~200 ms) into every TUI handler importing this module.
 
 logger = logging.getLogger(__name__)
 
@@ -886,6 +888,7 @@ def diagnose_messaging() -> CommandResult:
         )
 
     # Check pubsub (for RX)
+    from utils.message_listener import diagnose_pubsub
     diagnostics['pubsub'] = diagnose_pubsub()
 
     return CommandResult.ok(

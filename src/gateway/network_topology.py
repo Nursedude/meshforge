@@ -24,9 +24,6 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
-# Optional RNS transport for path table monitoring
-_RNS, _HAS_RNS = safe_import('RNS')
-
 
 class TopologyEventType(Enum):
     """Types of topology change events"""
@@ -224,11 +221,13 @@ class PathTableMonitor:
 
     def _check_path_table(self):
         """Check path table for changes and emit events"""
-        if not _HAS_RNS:
+        # Deferred: importing RNS costs ~180 ms and only this monitor path
+        # needs it — at module level it taxed every TUI/status_bar startup.
+        RNS, _has_rns = safe_import('RNS')
+        if not _has_rns:
             return  # RNS not installed
 
         try:
-            RNS = _RNS
 
             # Snapshot path_table inside one timed_boundary block. On a
             # shared-instance client this is a mostly-local read, but

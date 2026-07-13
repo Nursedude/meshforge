@@ -13,9 +13,10 @@ from typing import Optional, Dict, Any
 
 from .base import CommandResult
 from utils.safe_import import safe_import
-from gateway.rns_bridge import RNSMeshtasticBridge
-from gateway.config import RNSOverMeshtasticConfig
-from gateway.rns_transport import create_rns_transport, RNSMeshtasticTransport
+
+# gateway.rns_bridge / rns_transport are imported inside the functions that
+# use them: at module level they pull the full RNS/LXMF/meshtastic stack
+# (~400 ms) into every TUI handler that imports commands.gateway.
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +46,7 @@ def _get_bridge():
         logger.warning("Gateway bridge not available: gateway.rns_bridge not installed")
         return None
 
+    from gateway.rns_bridge import RNSMeshtasticBridge
     _bridge_instance = RNSMeshtasticBridge()
     return _bridge_instance
 
@@ -706,6 +708,9 @@ def start_transport(
         )
 
     try:
+        from gateway.config import RNSOverMeshtasticConfig
+        from gateway.rns_transport import create_rns_transport
+
         # Create configuration
         config = RNSOverMeshtasticConfig(
             enabled=True,

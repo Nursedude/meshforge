@@ -24,11 +24,7 @@ from backend import clear_screen
 
 from utils.paths import get_real_user_home
 
-from utils.safe_import import safe_import
-
-check_process_running, _HAS_SERVICE_CHECK = safe_import(
-    'utils.service_check', 'check_process_running'
-)
+from utils.service_check import check_process_running
 
 logger = logging.getLogger(__name__)
 
@@ -330,9 +326,8 @@ class NomadNetInstallUtilsMixin:
         to direct pgrep for custom filtering.
         """
         # Try unified check first (faster and standardized)
-        if _HAS_SERVICE_CHECK:
-            if check_process_running('nomadnet'):
-                return True
+        if check_process_running('nomadnet'):
+            return True
 
         # Fallback to direct pgrep with custom filtering
         try:
