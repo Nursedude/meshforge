@@ -52,7 +52,8 @@
 
 | Pri | Scope | Why it's frontier-shaped |
 |-----|-------|--------------------------|
-| — | _(worklist empty 2026-07-09 — all queued rows executed; see the table above)_ | Add new upshift rows here as future sessions surface review-shaped work |
+| 1 | **Opus interregnum review** — MF `5083d56d..<opus-HEAD>` + MA `417d57ad..<opus-HEAD>` (Fable→Opus handoff boundary stamped 2026-07-13; Fable time returns ~2026-07-16) | Everything after these SHAs was written under Opus. When Fable time returns: /code-review the ranges (both repos), twin-first on shared files, hand the pass this ledger's overlapping residuals. The boundary SHAs are exact — no scoping pass needed. |
+| — | _(add new upshift rows here as sessions surface review-shaped work)_ | |
 
 ## Conventions for future passes
 
