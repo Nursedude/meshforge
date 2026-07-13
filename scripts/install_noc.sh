@@ -581,10 +581,29 @@ if [[ -f "$ALSA_RULES" ]] && [[ ! -f /etc/udev/rules.d/90-alsa-restore.rules ]];
 fi
 
 # ─────────────────────────────────────────────────────────────────
+# Sync MeshForge source FIRST — later steps read from $INSTALL_DIR
+# (hardware templates in [4/8], requirements/rns.txt in [5/8]). On a
+# fresh box the repo does not exist yet; syncing after those steps
+# broke the kiai 2026-07-12 provision ("Could not open requirements
+# file: .../requirements/rns.txt").
+# ─────────────────────────────────────────────────────────────────
+echo -e "${CYAN}[3/8] Syncing MeshForge source...${NC}"
+
+# Clone/update via the shared helper — honors an optional MESHFORGE_REF pin
+# (unresolvable pin hard-fails) and records the resolved HEAD for provenance.
+if ! mf_git_sync "https://github.com/Nursedude/meshforge.git" "$INSTALL_DIR"; then
+    echo -e "  ${RED}✗ MeshForge source sync failed (MESHFORGE_REF unresolvable?)${NC}" >&2
+    exit 1
+fi
+cd "$INSTALL_DIR"
+
+echo -e "  ${GREEN}✓ MeshForge source ready${NC}"
+
+# ─────────────────────────────────────────────────────────────────
 # Install meshtasticd (auto-detect USB vs SPI)
 # ─────────────────────────────────────────────────────────────────
 if $INSTALL_MESHTASTICD; then
-    echo -e "${CYAN}[3/8] Installing meshtasticd...${NC}"
+    echo -e "${CYAN}[4/8] Installing meshtasticd...${NC}"
 
     # Create udev rules first (needed for detection)
     if [[ ! -f /etc/udev/rules.d/99-meshtastic.rules ]]; then
@@ -1313,7 +1332,7 @@ NO_RADIO_SERVICE
     echo -e "  ${GREEN}✓ meshtasticd installed (${DAEMON_TYPE})${NC}"
     echo -e "  ${GREEN}✓ Config directory: $MESHTASTICD_CONFIG_DIR${NC}"
 else
-    echo -e "${CYAN}[3/8] Skipping meshtasticd...${NC}"
+    echo -e "${CYAN}[4/8] Skipping meshtasticd...${NC}"
     echo -e "  ${YELLOW}⊘ Skipped${NC}"
 fi
 
@@ -1321,7 +1340,7 @@ fi
 # Install Reticulum (RNS)
 # ─────────────────────────────────────────────────────────────────
 if $INSTALL_RNS; then
-    echo -e "${CYAN}[4/8] Installing Reticulum (RNS)...${NC}"
+    echo -e "${CYAN}[5/8] Installing Reticulum (RNS)...${NC}"
 
     # Install pipx (needed for NomadNet install via menu) — non-fatal.
     if ! command -v pipx &>/dev/null; then
@@ -1497,24 +1516,15 @@ RNSD_SERVICE
 
     echo -e "  ${GREEN}✓ Reticulum installed${NC}"
 else
-    echo -e "${CYAN}[4/8] Skipping Reticulum...${NC}"
+    echo -e "${CYAN}[5/8] Skipping Reticulum...${NC}"
     echo -e "  ${YELLOW}⊘ Skipped${NC}"
 fi
 
 # ─────────────────────────────────────────────────────────────────
-# Install/Update MeshForge
+# MeshForge source was synced in [3/8]; re-anchor the working
+# directory for the relative paths below in case a prior step moved.
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[5/8] Installing MeshForge...${NC}"
-
-# Clone/update via the shared helper — honors an optional MESHFORGE_REF pin
-# (unresolvable pin hard-fails) and records the resolved HEAD for provenance.
-if ! mf_git_sync "https://github.com/Nursedude/meshforge.git" "$INSTALL_DIR"; then
-    echo -e "  ${RED}✗ MeshForge source sync failed (MESHFORGE_REF unresolvable?)${NC}" >&2
-    exit 1
-fi
 cd "$INSTALL_DIR"
-
-echo -e "  ${GREEN}✓ MeshForge source ready${NC}"
 
 # ─────────────────────────────────────────────────────────────────
 # Python dependencies
