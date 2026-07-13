@@ -39,6 +39,9 @@ from importlib import import_module
 
 # Public symbol -> defining submodule. Keep in sync with __all__.
 _LAZY_EXPORTS = {
+    # Submodules (the old eager imports bound these as package attributes)
+    'node_monitor': '.node_monitor',
+    'tcp_monitor': '.tcp_monitor',
     # Node monitoring
     'NodeMonitor': '.node_monitor',
     'NodeInfo': '.node_monitor',
@@ -62,7 +65,8 @@ def __getattr__(name):
     submodule = _LAZY_EXPORTS.get(name)
     if submodule is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(submodule, __name__), name)
+    module = import_module(submodule, __name__)
+    value = module if submodule == '.' + name else getattr(module, name)
     globals()[name] = value  # cache: __getattr__ only fires on the first miss
     return value
 

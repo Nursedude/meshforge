@@ -7,7 +7,6 @@ Converted from settings_menu_mixin.py as part of the mixin-to-registry migration
 import logging
 
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
 
 # utils.map_data_collector is imported where used: at module level it pulls
 # the RNS + meshtastic collector stack (~76 ms + the RNS first-load) into
@@ -221,7 +220,13 @@ class SettingsHandler(BaseHandler):
         """
         try:
             from utils.map_data_collector import MapDataCollector
-        except ImportError:
+        except ImportError as e:
+            # Witness the swallow (honest_failure_modes point 9): a missing
+            # collector stack reads as save-failed, and this log line is how
+            # an operator distinguishes it from a real write failure.
+            logging.getLogger(__name__).warning(
+                "meshtasticd connection not persisted: map collector "
+                "stack unavailable (%s)", e)
             return False
         collector = MapDataCollector()
         return bool(collector.set_meshtasticd_connection(host, port))

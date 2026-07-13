@@ -181,8 +181,16 @@ class NetworkToolsHandler(BaseHandler):
 
     def _traceroute_single(self):
         """Traceroute to a single node (pick from list or enter ID)."""
+        get_engine, _ = _load_engine_fns()
+        if get_engine is None:
+            self.ctx.dialog.msgbox(
+                "Not Available",
+                "The automation engine module is not available.",
+                height=6, width=50,
+            )
+            return
         try:
-            engine = _load_engine_fns()[0]()
+            engine = get_engine()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not get automation engine:\n{e}",
@@ -304,8 +312,16 @@ class NetworkToolsHandler(BaseHandler):
             )
             return
 
+        get_engine, _ = _load_engine_fns()
+        if get_engine is None:
+            self.ctx.dialog.msgbox(
+                "Not Available",
+                "The automation engine module is not available.",
+                height=6, width=50,
+            )
+            return
         try:
-            engine = _load_engine_fns()[0]()
+            engine = get_engine()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not get automation engine:\n{e}",
@@ -387,8 +403,16 @@ class NetworkToolsHandler(BaseHandler):
 
     def _traceroute_history(self):
         """Quick view of recent traceroute history."""
+        get_engine, _ = _load_engine_fns()
+        if get_engine is None:
+            self.ctx.dialog.msgbox(
+                "Not Available",
+                "The automation engine module is not available.",
+                height=6, width=50,
+            )
+            return
         try:
-            engine = _load_engine_fns()[0]()
+            engine = get_engine()
         except Exception as e:
             self.ctx.dialog.msgbox(
                 "Error", f"Could not get automation engine:\n{e}",

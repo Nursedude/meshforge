@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 def get_alert_engine():
     """Deferred import: utils.mesh_alert_engine pulls the meshtastic package
-    (~200 ms) — resolved at menu time, never at TUI startup."""
+    (~200 ms) — resolved at menu time, never at TUI startup. Raises
+    ImportError when the stack is missing; _mesh_alerts_menu (the only
+    entry point) converts that to an honest dialog before any other site
+    can run."""
     from utils.mesh_alert_engine import get_alert_engine as _real
     return _real()
 
@@ -48,7 +51,15 @@ class MeshAlertsHandler(BaseHandler):
 
     def _mesh_alerts_menu(self):
         """Main mesh alerts configuration menu."""
-        engine = get_alert_engine()
+        try:
+            engine = get_alert_engine()
+        except ImportError:
+            self.ctx.dialog.msgbox(
+                "Mesh Alerts Not Available",
+                "The alert engine requires the meshtastic Python library.\n"
+                "Install it in-app from Radio > Install/Reinstall CLI.",
+            )
+            return
 
         while True:
             active_count = len(engine.get_active_alerts())

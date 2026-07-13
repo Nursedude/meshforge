@@ -25,6 +25,19 @@ from utils.safe_import import safe_import
 logger = logging.getLogger(__name__)
 
 
+# Deferred RNS availability, resolved ONCE on first use. _check_path_table
+# runs every monitor tick (10 s): re-running a FAILED import there would
+# re-scan sys.path + log every tick forever on RNS-less boxes.
+_RNS_CACHE = None  # (module_or_None, available) after first resolution
+
+
+def _get_rns():
+    global _RNS_CACHE
+    if _RNS_CACHE is None:
+        _RNS_CACHE = safe_import('RNS')
+    return _RNS_CACHE
+
+
 class TopologyEventType(Enum):
     """Types of topology change events"""
     NODE_ADDED = auto()
@@ -221,9 +234,7 @@ class PathTableMonitor:
 
     def _check_path_table(self):
         """Check path table for changes and emit events"""
-        # Deferred: importing RNS costs ~180 ms and only this monitor path
-        # needs it — at module level it taxed every TUI/status_bar startup.
-        RNS, _has_rns = safe_import('RNS')
+        RNS, _has_rns = _get_rns()
         if not _has_rns:
             return  # RNS not installed
 

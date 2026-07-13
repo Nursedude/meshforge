@@ -14,7 +14,6 @@ from pathlib import Path
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
 
 logger = logging.getLogger(__name__)

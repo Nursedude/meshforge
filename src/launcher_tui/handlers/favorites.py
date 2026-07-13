@@ -8,7 +8,6 @@ import logging
 from typing import List
 
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 

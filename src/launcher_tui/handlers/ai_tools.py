@@ -647,11 +647,17 @@ class AIToolsHandler(
                 f"Auto-open map: {state}\n\n"
             )
             if settings["auto_open_map"]:
-                from utils.map_data_service import get_all_ips
-                ips = get_all_ips()
-                urls = ", ".join(f"http://{ip}:5000" for ip in ips[:2])
-                if len(ips) > 2:
-                    urls += ", ..."
+                # The setting above is already saved — an unimportable map
+                # stack must not raise past the OSError handler and misreport
+                # the committed toggle as failed (#74 class).
+                try:
+                    from utils.map_data_service import get_all_ips
+                    ips = get_all_ips()
+                    urls = ", ".join(f"http://{ip}:5000" for ip in ips[:2])
+                    if len(ips) > 2:
+                        urls += ", ..."
+                except ImportError:
+                    urls = "http://<this-box>:5000 (map stack not installed yet)"
                 msg += (
                     "The map server will start automatically\n"
                     "when MeshForge launches.\n\n"

@@ -46,7 +46,13 @@ def _get_bridge():
         logger.warning("Gateway bridge not available: gateway.rns_bridge not installed")
         return None
 
-    from gateway.rns_bridge import RNSMeshtasticBridge
+    try:
+        from gateway.rns_bridge import RNSMeshtasticBridge
+    except ImportError as e:
+        # Deferred import (TUI-startup perf): a broken bridge stack must
+        # still read as cleanly unavailable, not a mid-call traceback.
+        logger.warning("Gateway bridge not available: %s", e)
+        return None
     _bridge_instance = RNSMeshtasticBridge()
     return _bridge_instance
 
@@ -710,7 +716,14 @@ def start_transport(
     try:
         from gateway.config import RNSOverMeshtasticConfig
         from gateway.rns_transport import create_rns_transport
+    except ImportError as e:
+        logger.warning("RNS transport not available: %s", e)
+        return CommandResult.not_available(
+            "Transport module not available",
+            fix_hint="Ensure gateway module is installed"
+        )
 
+    try:
         # Create configuration
         config = RNSOverMeshtasticConfig(
             enabled=True,

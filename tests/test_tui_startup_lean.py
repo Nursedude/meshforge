@@ -44,7 +44,8 @@ loaded = sorted(
     m for m in forbidden
     if m in sys.modules and sys.modules[m] is not None
 )
-print(json.dumps({{"handlers": len(instances), "loaded": loaded}}))
+print(json.dumps({{"handlers": len(instances), "loaded": loaded,
+                   "module_count": len(sys.modules)}}))
 """
 
 
@@ -70,6 +71,16 @@ def test_handler_startup_loads_no_heavy_stacks():
     )
     payload = json.loads(result.stdout.strip().splitlines()[-1])
     assert payload["handlers"] > 0, "no handlers registered — probe is broken"
+    # Budget backstop for unknown-unknowns: the denylist only re-catches
+    # the 7 known stacks; a NEW heavy dep (pandas, matplotlib, ...) at
+    # module level shows up as module-count growth. Post-arc baseline is
+    # ~650 modules; 900 leaves headroom for organic growth while still
+    # firing well before a heavy stack (each adds 100-700 modules).
+    assert payload["module_count"] < 900, (
+        f"{payload['module_count']} modules loaded at TUI startup "
+        f"(budget 900, post-arc baseline ~650) — some import chain grew "
+        f"heavy. Profile with python -X importtime and defer the offender."
+    )
     assert payload["loaded"] == [], (
         f"heavy stacks loaded at TUI startup: {payload['loaded']} — a "
         f"module-level import crept back in. Defer it to menu time "

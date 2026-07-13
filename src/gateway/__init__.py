@@ -18,6 +18,16 @@ from importlib import import_module
 
 # Public symbol -> defining submodule. Keep in sync with __all__.
 _LAZY_EXPORTS = {
+    # Submodules (the old eager imports bound these as package attributes;
+    # `import gateway; gateway.rns_bridge.X` must keep working)
+    'base_handler': '.base_handler',
+    'rns_bridge': '.rns_bridge',
+    'node_tracker': '.node_tracker',
+    'config': '.config',
+    'rns_transport': '.rns_transport',
+    'mesh_bridge': '.mesh_bridge',
+    'meshtastic_protobuf_client': '.meshtastic_protobuf_client',
+    'meshtastic_protobuf_ops': '.meshtastic_protobuf_ops',
     # Base handler ABC
     'BaseMessageHandler': '.base_handler',
     # RNS-Meshtastic bridge
@@ -59,7 +69,8 @@ def __getattr__(name):
     submodule = _LAZY_EXPORTS.get(name)
     if submodule is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    value = getattr(import_module(submodule, __name__), name)
+    module = import_module(submodule, __name__)
+    value = module if submodule == '.' + name else getattr(module, name)
     globals()[name] = value  # cache: __getattr__ only fires on the first miss
     return value
 

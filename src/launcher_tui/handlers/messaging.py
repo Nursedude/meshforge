@@ -8,7 +8,6 @@ import logging
 
 from backend import clear_screen
 from handler_protocol import BaseHandler
-from utils.safe_import import safe_import
 from utils.event_bus import event_bus
 
 logger = logging.getLogger(__name__)

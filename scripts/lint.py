@@ -940,9 +940,16 @@ MF025_BASELINE = {
 }
 
 
-def check_file_size_ratchet(files: List[str], repo_root: str = '.') -> List[LintIssue]:
+def check_file_size_ratchet(files: List[str], repo_root: Optional[str] = None) -> List[LintIssue]:
     """MF025: fail when a src/ python file exceeds 1,500 lines (or, for a
-    frozen-baseline offender, exceeds its frozen size)."""
+    frozen-baseline offender, exceeds its frozen size).
+
+    repo_root defaults to THIS script's repo, not the cwd — a cwd-relative
+    default silently mis-shapes `rel` for absolute-path args run from
+    elsewhere, and the startswith('src/') filter then skips every file
+    (gate reads green while checking nothing — the MF024 lesson)."""
+    if repo_root is None:
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     issues: List[LintIssue] = []
     for f in files:
         rel = os.path.relpath(f, repo_root) if os.path.isabs(f) else f

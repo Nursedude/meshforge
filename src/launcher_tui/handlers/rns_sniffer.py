@@ -8,7 +8,6 @@ import re
 
 from handler_protocol import BaseHandler
 from backend import clear_screen
-from utils.safe_import import safe_import
 
 # Hoist RNS sniffer imports to module level
 def _load_sniffer_mod():
@@ -105,6 +104,11 @@ class RNSSnifferHandler(BaseHandler):
         """Toggle RNS packet capture."""
         sniffer_mod = _load_sniffer_mod()
         if sniffer_mod is None:
+            self.ctx.dialog.msgbox(
+                "RNS Sniffer Not Available",
+                "The RNS traffic sniffer module is not installed.",
+                height=6, width=50,
+            )
             return
         if capturing:
             sniffer_mod.stop_rns_capture()
@@ -211,9 +215,13 @@ class RNSSnifferHandler(BaseHandler):
         if not sniffer:
             return
 
+        sniffer_mod = _load_sniffer_mod()
+        if sniffer_mod is None:
+            return
+
         packets = sniffer.get_packets(
             limit=50,
-            packet_type=_load_sniffer_mod().RNSPacketType.ANNOUNCE
+            packet_type=sniffer_mod.RNSPacketType.ANNOUNCE
         )
 
         lines = [
@@ -317,8 +325,9 @@ class RNSSnifferHandler(BaseHandler):
             return
 
         # Start capture if not running
-        if not sniffer._running:
-            _load_sniffer_mod().start_rns_capture()
+        sniffer_mod = _load_sniffer_mod()
+        if not sniffer._running and sniffer_mod is not None:
+            sniffer_mod.start_rns_capture()
 
         # Probe
         success = sniffer.probe_destination(dest)
@@ -435,8 +444,9 @@ class RNSSnifferHandler(BaseHandler):
             return
 
         # Start capture if not running
-        if not sniffer._running:
-            _load_sniffer_mod().start_rns_capture()
+        sniffer_mod = _load_sniffer_mod()
+        if not sniffer._running and sniffer_mod is not None:
+            sniffer_mod.start_rns_capture()
 
         if choice == "1":
             success = sniffer.probe_destination(identity_hash)
