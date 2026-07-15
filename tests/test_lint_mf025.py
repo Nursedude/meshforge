@@ -76,30 +76,36 @@ class TestRatchetMechanics:
 
 
 class TestFrozenBaseline:
-    def test_baseline_file_at_frozen_size_passes(self, tmp_path):
-        rel = next(iter(lint.MF025_BASELINE))
-        frozen = lint.MF025_BASELINE[rel]
-        _write_py(tmp_path, rel, frozen)
+    """The frozen-offender behavior, exercised against a SYNTHETIC baseline entry
+    so it stays covered even now that the real MF025_BASELINE is empty (all five
+    original offenders were split under the cap 2026-07-14). monkeypatch.setitem
+    injects and cleanly removes the synthetic offender per test."""
+
+    _SYNTH_REL = "src/utils/_synthetic_frozen_offender.py"
+    _SYNTH_FROZEN = 1700  # a hypothetical offender frozen above the 1,500 cap
+
+    def test_baseline_file_at_frozen_size_passes(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(lint.MF025_BASELINE, self._SYNTH_REL, self._SYNTH_FROZEN)
+        _write_py(tmp_path, self._SYNTH_REL, self._SYNTH_FROZEN)
         issues = lint.check_file_size_ratchet(
-            [str(tmp_path / rel)], repo_root=str(tmp_path)
+            [str(tmp_path / self._SYNTH_REL)], repo_root=str(tmp_path)
         )
         assert issues == []
 
-    def test_baseline_file_grown_fails(self, tmp_path):
-        rel = next(iter(lint.MF025_BASELINE))
-        frozen = lint.MF025_BASELINE[rel]
-        _write_py(tmp_path, rel, frozen + 1)
+    def test_baseline_file_grown_fails(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(lint.MF025_BASELINE, self._SYNTH_REL, self._SYNTH_FROZEN)
+        _write_py(tmp_path, self._SYNTH_REL, self._SYNTH_FROZEN + 1)
         issues = lint.check_file_size_ratchet(
-            [str(tmp_path / rel)], repo_root=str(tmp_path)
+            [str(tmp_path / self._SYNTH_REL)], repo_root=str(tmp_path)
         )
         assert len(issues) == 1
         assert "frozen baseline" in issues[0].message
 
-    def test_baseline_file_shrunk_under_cap_passes(self, tmp_path):
-        rel = next(iter(lint.MF025_BASELINE))
-        _write_py(tmp_path, rel, 200)
+    def test_baseline_file_shrunk_under_cap_passes(self, tmp_path, monkeypatch):
+        monkeypatch.setitem(lint.MF025_BASELINE, self._SYNTH_REL, self._SYNTH_FROZEN)
+        _write_py(tmp_path, self._SYNTH_REL, 200)
         issues = lint.check_file_size_ratchet(
-            [str(tmp_path / rel)], repo_root=str(tmp_path)
+            [str(tmp_path / self._SYNTH_REL)], repo_root=str(tmp_path)
         )
         assert issues == []
 
@@ -135,11 +141,9 @@ class TestLiveRepoContract:
         assert stale == [], stale
 
     def test_baseline_never_grows_check(self):
-        """The frozen counts must match the freeze exactly — editing an entry
-        upward is the forbidden move this test pins. Four files were split out
-        (2026-07-14) and their entries deleted (node_history, watchdog_probes_
-        drift, watchdog_probes_gateway, map_data_collector), so the set shrank to
-        one; a deletion via a real split is the sanctioned way the baseline moves."""
-        assert lint.MF025_BASELINE == {
-            'src/gateway/rns_bridge.py': 1544,
-        }
+        """The baseline is now EMPTY — all five original frozen offenders were
+        split under the 1,500-line cap (2026-07-14): node_history, watchdog_probes_
+        drift, watchdog_probes_gateway, map_data_collector, rns_bridge. A deletion
+        via a real split is the sanctioned way the baseline moves; this pins that
+        no entry was re-added to grant headroom."""
+        assert lint.MF025_BASELINE == {}

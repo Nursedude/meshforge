@@ -930,15 +930,13 @@ def check_in_domain_escapes(files: List[str], repo_root: str = '.') -> List[Lint
 # entry. DO NOT add entries to grant new headroom — split the file.
 MF025_LINE_LIMIT = 1_500
 
-# Frozen 2026-07-13. Entries may only shrink or be deleted.
-# 2026-07-14 splits dropped four offenders under the cap → entries DELETED:
-# node_history.py → +node_history_config.py; watchdog_probes_drift.py →
-# +watchdog_probes_liveness.py + watchdog_probes_env.py; watchdog_probes_gateway.py
-# → +watchdog_probes_gateway_flow.py; map_data_collector.py →
-# +_map_collector_config.py (MapCollectorConfigMixin).
-MF025_BASELINE = {
-    'src/gateway/rns_bridge.py': 1544,
-}
+# Frozen 2026-07-13. Entries may only shrink or be deleted — NEVER add one to
+# grant headroom; split the file instead. All five original offenders were split
+# under the 1,500-line cap 2026-07-14 (node_history → node_history_config;
+# watchdog_probes_drift → +liveness +env; watchdog_probes_gateway → +gateway_flow;
+# map_data_collector → +_map_collector_config; rns_bridge → +bridge_rns_events_mixin),
+# so the baseline is now EMPTY: every src/ python file must be ≤ 1,500 lines.
+MF025_BASELINE = {}
 
 
 def check_file_size_ratchet(files: List[str], repo_root: Optional[str] = None) -> List[LintIssue]:
