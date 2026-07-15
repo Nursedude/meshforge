@@ -66,6 +66,22 @@ if ! python3 -m pytest "$REPO_ROOT/tests/test_regression_guards.py" -x -q >/dev/
     exit 1
 fi
 
+# Upshift-witness — compiles model_advisor's "queue, don't fake the frontier
+# pass" behavior into a deterministic gate (scripts/review_provenance_check.py):
+# leg 1 (review-claim commits must leave a provenance row) and leg 2 (a
+# non-frontier session can't stamp a frontier-tier row) block; leg 3 is an
+# advisory nudge. Fails OPEN (warn, exit 0) on anything unobservable. Fast,
+# env-independent (git + the local ledger). The script prints its own remediation
+# incl. the --no-verify override, so the hook just relays its exit code.
+if [ -f "$REPO_ROOT/scripts/review_provenance_check.py" ]; then
+    echo "Pre-push: upshift-witness (review provenance)..."
+    if ! python3 "$REPO_ROOT/scripts/review_provenance_check.py"; then
+        echo ""
+        echo "Upshift-witness gate FAILED (see above)."
+        exit 1
+    fi
+fi
+
 # Parent-CI advisory — don't silently STACK onto an already-red origin/main
 # (the 2026-05-03 cascade: two pushes compounded a red baseline). Best-effort
 # and WARN-only: never blocks (gh/network may be down, or you may be pushing
