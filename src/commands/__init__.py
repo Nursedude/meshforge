@@ -66,7 +66,7 @@ Usage:
 # command module (diagnostics -> meshtastic, rns -> RNS, ...) into any
 # consumer of ANY commands submodule — ~350 ms of TUI startup for imports
 # the session may never use. `from commands import meshtastic` still works.
-from importlib import import_module
+from utils.lazy_exports import make_lazy_exports
 
 from .base import CommandResult, CommandError
 
@@ -84,16 +84,8 @@ _LAZY_SUBMODULES = (
     'device_backup',
 )
 
-__all__ = [*_LAZY_SUBMODULES, 'CommandResult', 'CommandError']
-
-
-def __getattr__(name):
-    if name not in _LAZY_SUBMODULES:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(f'.{name}', __name__)
-    globals()[name] = module  # cache: __getattr__ only fires on the first miss
-    return module
-
-
-def __dir__():
-    return sorted(set(globals()) | set(_LAZY_SUBMODULES))
+# commands lazy-loads its SUBMODULES by name (map each to its own submodule);
+# CommandResult/CommandError stay eager (from .base, which is light).
+__getattr__, __dir__, __all__ = make_lazy_exports(
+    __name__, globals(), {name: f'.{name}' for name in _LAZY_SUBMODULES})
+__all__ = [*__all__, 'CommandResult', 'CommandError']

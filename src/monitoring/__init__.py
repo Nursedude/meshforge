@@ -35,7 +35,7 @@ TCP/IP Monitoring:
 # package (~150 ms) — an eager import here taxed every consumer of ANY
 # monitoring submodule at import time (e.g. TUI startup via
 # utils.map_data_collector -> monitoring.mqtt_subscriber).
-from importlib import import_module
+from utils.lazy_exports import make_lazy_exports
 
 # Public symbol -> defining submodule. Keep in sync with __all__.
 _LAZY_EXPORTS = {
@@ -57,19 +57,6 @@ _LAZY_EXPORTS = {
     'discover_meshtasticd_devices': '.tcp_monitor',
 }
 
-__all__ = list(_LAZY_EXPORTS)
 __version__ = '0.2.0'
 
-
-def __getattr__(name):
-    submodule = _LAZY_EXPORTS.get(name)
-    if submodule is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(submodule, __name__)
-    value = module if submodule == '.' + name else getattr(module, name)
-    globals()[name] = value  # cache: __getattr__ only fires on the first miss
-    return value
-
-
-def __dir__():
-    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+__getattr__, __dir__, __all__ = make_lazy_exports(__name__, globals(), _LAZY_EXPORTS)

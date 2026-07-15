@@ -14,7 +14,7 @@ for rns_bridge at startup. `from gateway import RNSMeshtasticBridge` still
 works; the submodule loads on first attribute access instead of package import.
 """
 
-from importlib import import_module
+from utils.lazy_exports import make_lazy_exports
 
 # Public symbol -> defining submodule. Keep in sync with __all__.
 _LAZY_EXPORTS = {
@@ -62,18 +62,4 @@ _LAZY_EXPORTS = {
     'TracerouteResult': '.meshtastic_protobuf_ops',
 }
 
-__all__ = list(_LAZY_EXPORTS)
-
-
-def __getattr__(name):
-    submodule = _LAZY_EXPORTS.get(name)
-    if submodule is None:
-        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    module = import_module(submodule, __name__)
-    value = module if submodule == '.' + name else getattr(module, name)
-    globals()[name] = value  # cache: __getattr__ only fires on the first miss
-    return value
-
-
-def __dir__():
-    return sorted(set(globals()) | set(_LAZY_EXPORTS))
+__getattr__, __dir__, __all__ = make_lazy_exports(__name__, globals(), _LAZY_EXPORTS)
