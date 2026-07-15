@@ -1,5 +1,18 @@
 # Babel L3 fabric — Arc 3 canary spike (2026-07-12)
 
+> **OUTCOME 2026-07-15: NO-GO — TORN DOWN.** The 48 h wired soak PASSED clean
+> (criterion a: ~71 h, zero `babel_routes=0` flaps both arms, routes 1/1, RSS
+> flat, moc2 30/30 OK), but the value prop was never met: **(c) failover-with-a-
+> second-path was NOT MEASURED** (see the measurements table — single-path
+> testbed) and **(d) AREDN params are unmeasurable** (hAP no-touch; LAN leg
+> blind), and no current fleet problem needs L3 dynamic routing. Per the kill
+> criterion, the teardown block below was run on both arms (router + moc2 fully
+> clean, `fw4 reload` rc=0, rtun survived). This doc stays as the banked record —
+> the spike did its job (made the call cheap + evidence-based); rebuildable if a
+> genuine dual-path failover need is ever NAMED. Decision trail:
+> `openwrt_arc_verdict_2026_07_12.md` §2 + the `project_openwrt_meshtasticd_study`
+> memory (07-15 block).
+
 > OpenWrt-MeshForge arc, Role 3 (plan:
 > `~/.claude/plans/openwrt-meshforge-meshtasticd-use-virtual-music.md`).
 > Goal: measured go/no-go evidence for a Phase-2 fleet L3 fabric that can

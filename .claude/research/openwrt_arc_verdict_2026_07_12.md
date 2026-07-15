@@ -32,7 +32,7 @@ Cost to keep ≈ one cron. **No kill criterion needed — it already earns its
 line.** Pending absorb (mtd-soak/mapwatch) stays gated on the ≥48 h parity
 soak per the arc note.
 
-### 2. Babel L3 fabric (Arc 3) — DATED BET, verdict due 2026-07-14
+### 2. Babel L3 fabric (Arc 3) — NO-GO, TORN DOWN 2026-07-15 ("measured, not needed")
 Mechanics are proven inside criteria (converge 30 s, withdraw ≤1 s, RSS
 ≤1.3 MB, zero leakage; wifi-leg sawtooth GONE on the wired A/B). But
 mechanics were never the question. The bet only converts to a build if BOTH:
@@ -46,6 +46,22 @@ mechanics were never the question. The bet only converts to a build if BOTH:
 **Kill criterion: 07-14 soak read fails (a) or nobody can state (b) → run the
 teardown block in the spike doc, close the arc as "measured, not needed."**
 That is a good outcome — the spike existed to make this call cheap.
+
+**OUTCOME 2026-07-15: NO-GO.** (a) PASSED clean — the ~71 h wired soak read
+zero `babel_routes=0` flaps on both arms, routes 1/1 solid, RSS flat (692 KB
+router / 1348 KB moc2), moc2 30/30 OK verdicts. But (b) does NOT hold: the
+spike's own conditional-GO also required (c) failover-with-a-second-path, which
+was **never measured** (single-path testbed — the dynamic-routing value prop was
+never demonstrated), and (d) AREDN parameters, which are **unmeasurable** (the
+production hAP is a standing no-touch box; moc5's LAN leg saw 0 babel packets).
+No current fleet problem needs L3 dynamic routing (the real recurring pains —
+DHCP reshuffle, map wedges, RNS reliability, the meshtasticd VSZ leak — are not
+routing problems). Per the kill criterion, the teardown block was run on both
+arms (router: babeld + wg-spike + test-/32 + config + soak cron + the durable
+fw `spike` zone; `fw4 reload` rc=0, rtun survived. moc2: same, sudo for the
+root-owned artifacts). Both boxes clean-verified. The spike SUCCEEDED — it made
+this call cheap and evidence-based. Learning banked in this doc + the babeld
+feed; rebuildable if a genuine dual-path failover need is ever NAMED.
 
 ### 3. The toad radio on the router — RESOLVED EARLY 2026-07-12: PULLED for repurpose
 The 07-19 question answered itself the day kiai came up: with a full-stack
@@ -82,7 +98,7 @@ claims: evidence before assertion — here, use case before mechanism.)
 | Piece | Call | Date/gate |
 |---|---|---|
 | scout | keep | earning now |
-| babel fabric | GO only if soak clean AND problem named (use case ANCHORED: router = AREDN-site edge) | 2026-07-14 |
+| babel fabric | **NO-GO — TORN DOWN** (soak passed clean, but failover unmeasured + AREDN unmeasurable + no named current need → "measured, not needed"; both arms clean-verified) | 2026-07-15 |
 | toad radio | **resolved early: pulled + repurposed; gap-site option retained** | 2026-07-12 |
 | router meshtasticd | retired (stop+disable, crons removed, scout stays green) | 2026-07-12 |
 | MQTT uplink | rejected | 2026-07-12 |
