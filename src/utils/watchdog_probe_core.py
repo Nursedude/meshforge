@@ -224,3 +224,41 @@ def signal_to_dict(sig: Signal, *, first_seen_ts: Optional[float] = None) -> dic
     if sig.extra:
         out["extra"] = sig.extra
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Debounce-streak persistence — a consecutive-drift counter used by every
+# drift-family probe to suppress a first-seen transition. Historically named
+# "parity_streak" (born in the parity probe) but generic; lives here so the
+# drift/liveness/env probe modules share ONE copy instead of a per-module fork
+# (honest_failure_modes #5 — one constant, not several).
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _load_parity_streak(state_path: str) -> int:
+    """Read the consecutive-drift streak counter. Best-effort: any error → 0.
+
+    A missing/unreadable/garbage state means 'no confirmed streak yet', which
+    suppresses a first-seen drift — exactly the conservative direction the
+    debounce wants (favour silence on uncertainty, not a false page).
+    """
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            streak = int(json.load(fh).get("streak", 0))
+        return streak if streak >= 0 else 0
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def _save_parity_streak(state_path: str, streak: int) -> None:
+    """Persist the streak counter (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        pass

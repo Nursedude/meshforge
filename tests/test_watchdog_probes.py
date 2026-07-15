@@ -5658,7 +5658,10 @@ class TestInheritedAppDrift:
             captured["argv"] = argv
             return _Proc()
 
-        with patch("utils.watchdog_probes_drift.subprocess.run", _fake_run):
+        # _git_tracked_modifications now lives in watchdog_probes_env (the
+        # 2026-07-14 drift split); patch subprocess in ITS module namespace,
+        # not the drift re-export's (calibrated_claims rule 7 — the source seam).
+        with patch("utils.watchdog_probes_env.subprocess.run", _fake_run):
             assert _git_tracked_modifications("/some/repo") == []
         argv = captured["argv"]
         assert "--untracked-files=no" in argv

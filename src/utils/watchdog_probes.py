@@ -37,7 +37,9 @@ live in the sibling modules and are re-exported below:
 * ``watchdog_probe_core``     — Signal, SIGNAL_CLASSES, shared helpers
 * ``watchdog_probes_rns``     — RNS substrate (#68/#69/#72 class)
 * ``watchdog_probes_service`` — local service health (#61/#73/#75)
-* ``watchdog_probes_drift``   — declared-vs-live drift (#77/#78 + parity)
+* ``watchdog_probes_drift``   — declared-vs-live drift (#77 + parity/version)
+* ``watchdog_probes_liveness``— cron/fleet/host liveness (#78)
+* ``watchdog_probes_env``     — router/ntfy/kernel/aredn/inherited-app
 * ``watchdog_probes_gateway`` — delivery path (#63/#74)
 * ``watchdog_probes_mini``    — mini-dudeai self-observation (#79)
 
