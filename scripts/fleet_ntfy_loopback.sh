@@ -61,35 +61,54 @@ PY
 )"
 [ -n "$prev_misses" ] || prev_misses=0
 
-now_ts="$(date +%s)"
-nonce="lb-$(hostname 2>/dev/null || echo box)-${now_ts}-${RANDOM}"
+# Publish + poll ONE nonce'd heartbeat cycle. Sets published_ok / received /
+# latency_s / nonce / now_ts for the caller. Extracted into a function so a
+# transient first-cycle miss can be retried once before it becomes a FAIL that
+# pages (see the retry below).
+attempt_loopback() {
+    now_ts="$(date +%s)"
+    nonce="lb-$(hostname 2>/dev/null || echo box)-${now_ts}-${RANDOM}"
 
-# 1. Publish a MIN-priority heartbeat carrying the nonce.
-pub_args=( -s --max-time 12 -H "Title: fleet loopback heartbeat"
-           -H "Priority: min" -H "Tags: loopback,heartbeat" )
-[ -n "$TOKEN" ] && pub_args+=( -H "Authorization: Bearer $TOKEN" )
-pub_args+=( --data-raw "$nonce" "https://ntfy.sh/$TOPIC" )
-published_ok=true
-curl "${pub_args[@]}" >/dev/null 2>&1 || published_ok=false
+    # 1. Publish a MIN-priority heartbeat carrying the nonce.
+    pub_args=( -s --max-time 12 -H "Title: fleet loopback heartbeat"
+               -H "Priority: min" -H "Tags: loopback,heartbeat" )
+    [ -n "$TOKEN" ] && pub_args+=( -H "Authorization: Bearer $TOKEN" )
+    pub_args+=( --data-raw "$nonce" "https://ntfy.sh/$TOPIC" )
+    published_ok=true
+    curl "${pub_args[@]}" >/dev/null 2>&1 || published_ok=false
 
-# 2. Poll the topic back for the nonce, up to MAX_WAIT_S.
-received=false
-latency_s=0
-if [ "$published_ok" = true ]; then
-    sleep "$SETTLE_S"
-    waited="$SETTLE_S"
-    while [ "$waited" -le "$MAX_WAIT_S" ]; do
-        poll_args=( -s --max-time 12 )
-        [ -n "$TOKEN" ] && poll_args+=( -H "Authorization: Bearer $TOKEN" )
-        poll_args+=( "https://ntfy.sh/$TOPIC/json?poll=1&since=$POLL_SINCE" )
-        if curl "${poll_args[@]}" 2>/dev/null | grep -qF "$nonce"; then
-            received=true
-            latency_s="$(( $(date +%s) - now_ts ))"
-            break
-        fi
-        sleep 3
-        waited="$(( waited + 3 ))"
-    done
+    # 2. Poll the topic back for the nonce, up to MAX_WAIT_S.
+    received=false
+    latency_s=0
+    if [ "$published_ok" = true ]; then
+        sleep "$SETTLE_S"
+        waited="$SETTLE_S"
+        while [ "$waited" -le "$MAX_WAIT_S" ]; do
+            poll_args=( -s --max-time 12 )
+            [ -n "$TOKEN" ] && poll_args+=( -H "Authorization: Bearer $TOKEN" )
+            poll_args+=( "https://ntfy.sh/$TOPIC/json?poll=1&since=$POLL_SINCE" )
+            if curl "${poll_args[@]}" 2>/dev/null | grep -qF "$nonce"; then
+                received=true
+                latency_s="$(( $(date +%s) - now_ts ))"
+                break
+            fi
+            sleep 3
+            waited="$(( waited + 3 ))"
+        done
+    fi
+}
+
+# One probe cycle, then RETRY ONCE on a miss. The dominant failure on the ntfy.sh
+# free tier is a single transient poll miss — publish returns 200 but the nonce
+# doesn't propagate to the poll API inside the window — which produced FAIL(1)
+# blips that paged via cron_verdict/#78 while the channel was healthy. A fresh
+# publish+poll absorbs that transient (and, re-publishing, a lost publish too). A
+# REAL outage misses BOTH cycles and still escalates on the consecutive-miss
+# accounting below — nothing about the sustained-failure path changes.
+attempt_loopback
+if [ "$received" != true ]; then
+    echo "fleet_ntfy_loopback: first cycle missed (published_ok=$published_ok) — retrying once" >&2
+    attempt_loopback
 fi
 
 # 3. Consecutive-miss accounting.
