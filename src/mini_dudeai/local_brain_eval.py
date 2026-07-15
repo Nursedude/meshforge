@@ -37,6 +37,13 @@ oracle input:  {"question": "...", ["top_k": 6]}
                  ["require_answer": true]}
         (oracle cases must only rely on the REPO corpus — the memory root
         exists on one box and is skipped elsewhere by design)
+
+    Any expect may set ["attempts": N] (default 1): best-of-N retry for a
+    probabilistic tier — the case passes on the first attempt that grades ok,
+    so a CAPABLE-but-non-deterministic model is not failed by single-shot
+    sampling variance. It does NOT relax the assertion (never mask a real
+    miss); each result's ``attempts_used`` surfaces how many tries it needed,
+    so a case creeping toward its cap is a visible degradation tell.
 """
 from __future__ import annotations
 
@@ -96,6 +103,14 @@ def _validate_expect(case: dict, where: str) -> None:
         raise EvalConfigError(f"{where}: coverage_min must be a number")
     if "max_dropped" in expect and not isinstance(expect["max_dropped"], int):
         raise EvalConfigError(f"{where}: max_dropped must be an integer")
+    if "attempts" in expect:
+        # best-of-N knob (bool is an int subclass — reject it explicitly so a
+        # typo'd `true` can't silently mean 1 attempt).
+        if isinstance(expect["attempts"], bool) \
+                or not isinstance(expect["attempts"], int) \
+                or expect["attempts"] < 1:
+            raise EvalConfigError(
+                f"{where}: attempts must be a positive integer")
     for knob in ("fields", "fields_in", "fields_range", "dispositions"):
         if knob in expect and not isinstance(expect[knob], dict):
             raise EvalConfigError(f"{where}: {knob} must be an object")
@@ -310,17 +325,35 @@ def run_cases(cases: List[dict], backend) -> Tuple[List[dict], dict]:
     results: List[dict] = []
     for case in cases:
         t0 = time.monotonic()
-        try:
-            ok, reasons, artifact = _GRADERS[case["kind"]](case, backend)
-        except Exception as e:  # a grader crash is a FAILED case, loudly
-            ok, reasons, artifact = False, [
-                f"grader crashed: {type(e).__name__}: {e}"], {}
+        # best-of-N for a probabilistic tier: a case may set expect.attempts>1
+        # (default 1). The local model is non-deterministic, so a single-shot
+        # coverage/citation assertion on a CAPABLE-but-variable model is a
+        # flaky TEST of a real capability. Retrying up to `attempts` and
+        # passing on the first success tests "the tier CAN produce this" — the
+        # capability question a model-bump acceptance case asks — WITHOUT
+        # lowering the assertion itself (never mask a real miss). `attempts_used`
+        # is recorded so a case that increasingly needs its retries is a visible
+        # degradation tell, not silently absorbed (calibrated-claims: surface
+        # the blind spot, don't average it away).
+        attempts = int(case["expect"].get("attempts", 1))
+        ok, reasons, artifact = False, ["no attempt ran"], {}
+        used = 0
+        for used in range(1, attempts + 1):
+            try:
+                ok, reasons, artifact = _GRADERS[case["kind"]](case, backend)
+            except Exception as e:  # a grader crash is a FAILED case, loudly
+                ok, reasons, artifact = False, [
+                    f"grader crashed: {type(e).__name__}: {e}"], {}
+            if ok:
+                break
         results.append({
             "id": case["id"],
             "kind": case["kind"],
             "ok": ok,
             "reasons": reasons,
             "latency_s": round(time.monotonic() - t0, 1),
+            "attempts": attempts,
+            "attempts_used": used,
             "provenance": case.get("provenance"),
         })
     passed = sum(1 for r in results if r["ok"])

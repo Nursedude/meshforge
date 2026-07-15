@@ -197,6 +197,47 @@ class TestRunAndGate:
         assert lbe.main(["--cases", str(p), "--history", ""]) == 2
 
 
+class TestAttemptsBestOfN:
+    """best-of-N retry: pass on the first attempt that grades ok, WITHOUT
+    lowering the assertion — the honest fix for a flaky test of a
+    CAPABLE-but-non-deterministic tier (triage-w1 acceptance case, 2026-07-15)."""
+
+    def test_retries_until_a_clean_pass(self):
+        case = _triage_case()
+        case["expect"]["attempts"] = 3
+        # attempt 1 under-covers (fail); attempt 2 is complete (pass)
+        be = FakeBackend([_triage_reply(["a"]), _triage_reply(["a", "b"])])
+        results, summary = lbe.run_cases([case], be)
+        assert summary["passed"] == 1 and results[0]["ok"] is True
+        assert results[0]["attempts"] == 3
+        assert results[0]["attempts_used"] == 2      # stopped on first success
+        assert len(be.calls) == 2                    # did NOT burn the 3rd try
+
+    def test_exhausted_attempts_still_fail_never_masking_a_miss(self):
+        case = _triage_case()
+        case["expect"]["attempts"] = 2
+        be = FakeBackend([_triage_reply(["a"]), _triage_reply(["a"])])  # both under
+        results, summary = lbe.run_cases([case], be)
+        assert summary["passed"] == 0 and results[0]["ok"] is False
+        assert results[0]["attempts_used"] == 2      # used every try
+        assert len(be.calls) == 2
+
+    def test_default_is_single_shot_no_retry(self):
+        case = _triage_case()                        # no attempts key
+        be = FakeBackend([_triage_reply(["a"])])     # one under-coverage fail
+        results, _ = lbe.run_cases([case], be)
+        assert results[0]["ok"] is False
+        assert results[0]["attempts"] == 1 and results[0]["attempts_used"] == 1
+        assert len(be.calls) == 1                    # exactly one attempt
+
+    def test_attempts_must_be_positive_int_at_load(self):
+        for bad in (0, -1, "3", 1.5, True):
+            case = _triage_case()
+            case["expect"]["attempts"] = bad
+            with pytest.raises(lbe.EvalConfigError, match="attempts"):
+                lbe._validate_expect(case, "x:1")
+
+
 class TestSeedFileIsValid:
     def test_shipped_seed_cases_load(self):
         import glob as _glob
