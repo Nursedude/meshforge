@@ -115,3 +115,88 @@ zero new drift surface.
 - No plugin/discovery system, no entry-points, no dynamic menu labels.
 - MA twin: MA's TUI has its own registry lineage — port the PATTERN after MF
   soaks, per twin-map tier rules; do not byte-port.
+
+---
+
+## Execution notes (2026-07-14 Opus — machinery scoped, NOT yet executed)
+
+> Operator chose "fresh session" for the execution (this arc is the largest +
+> highest blast radius — it touches the primary TUI's startup + dispatch, and
+> the scoping happened at the tail of a very long session). Everything below is
+> the ground-truth machinery a fresh session needs; the design above is the
+> what, this is the exactly-where.
+
+### Current machinery (verified 2026-07-14, exact refs)
+
+- **`src/launcher_tui/main.py:95-96`** — the flip point (step 2):
+  `for handler_cls in get_all_handlers(): self._registry.register(handler_cls())`.
+  Also: `main.py:354 self._registry.startup_all()` / `:363 shutdown_all()` (the
+  lifecycle hooks), `:121 get_menu_items(section)`, `:619 dispatch("main", choice)`.
+- **`src/launcher_tui/handlers/__init__.py`** (264 lines) — `get_all_handlers()`
+  does batched `from handlers.X import YHandler` for **101** modules, returns
+  `List[Type]`. Step 4 keeps the function but makes it read the manifest.
+- **`src/launcher_tui/handler_registry.py`** (183 lines):
+  - `register(handler)` @42 — snapshots `list(handler.menu_items())` @65, runs the
+    **duplicate-tag validation** @67-94 (this is the block to extract into a
+    shared helper both `register`/`register_lazy` call), then
+    `_tag_index[section][tag] = handler` @94.
+  - `get_menu_items(section)` @109 — iterates `handler.menu_items()` @120 (flag is
+    the 3rd tuple element; flag EVAL happens here, at menu-build, not at snapshot).
+  - `dispatch(section, tag)` @125 — `_tag_index.get(section,{}).get(tag)` @138.
+  - `startup_all` @145 / `shutdown_all` @157 — call `on_startup`/`on_shutdown`
+    where `isinstance(handler, LifecycleHandler)` (Protocol @handler_protocol.py:248).
+- **`scripts/gen_capability_index.py`** (194 lines) — `collect_handlers()` @54 is
+  ALREADY the walker to extend: it does `from handlers import get_all_handlers`,
+  builds a **neutral `TUIContext(dialog=None)`** (feature_enabled→True), then for
+  each cls: `inst = cls(); inst.set_context(neutral_ctx); inst.menu_items()`,
+  recording construction/menu_items errors in an `error` field (never drops).
+  ⚠️ It stores `_clean_desc`'d descriptions for the markdown — the MANIFEST must
+  store the **RAW** `menu_items()` tuples (the register-time equality check
+  compares live `menu_items()` to the manifest snapshot, so they must be the
+  exact live values, not markdown-cleaned).
+- **Drift gate**: `.githooks/pre-commit:53-67` runs
+  `python3 scripts/gen_capability_index.py --check` (exit 1 if regen would differ)
+  AND blocks if the regenerated file isn't staged. The manifest verify extends
+  THIS (one walker, both artifacts, both `--check`ed, both must be staged).
+
+### Step-1 checklist (the no-behavior-change foundation; main.py stays EAGER)
+
+1. Refactor `gen_capability_index.py`: extract the walk into a shared
+   `collect_handler_descriptors()` capturing per handler: `handler_id`,
+   `module = cls.__module__` (e.g. `"handlers.rf_tools"`), `class_name =
+   cls.__name__`, `menu_section`, RAW `menu_items` (list of tuples),
+   `lifecycle = isinstance(inst, LifecycleHandler)`, and the `error` field. Two
+   emitters over it: the existing markdown (applies `_clean_desc`) + a new
+   `write_manifest()` → `src/launcher_tui/handlers/manifest.py`
+   (`# AUTO-GENERATED … DO NOT EDIT` + `HANDLER_MANIFEST = [ {descriptor}, … ]`).
+   Make `--check` verify BOTH artifacts.
+2. Generate + check in `handlers/manifest.py`.
+3. `handler_registry.py`: extract the dup-tag validation into a helper; add
+   `_LazyHandler` sentinel (holds the descriptor); add `register_lazy(descriptor)`
+   (validate from descriptor, `_tag_index[section][tag] = _LazyHandler(desc)`);
+   make `get_menu_items` read a `_LazyHandler`'s descriptor menu_items; make
+   `dispatch` on a `_LazyHandler` hit → `importlib.import_module(module)` →
+   instantiate → `set_context(ctx)` → **assert live `menu_items()` == descriptor
+   snapshot** (raise LOUDLY on mismatch — stale manifest that dodged the gate) →
+   swap real instance into `_handlers`/`_tag_index` → dispatch. Import error →
+   the SAME honest ImportError dialog the perf-arc `_load_x()` shows + a witness
+   (never silent no-op). (honest_failure_modes: walk the checklist over this — it
+   IS a loader.)
+4. Tests: (a) every manifest entry imports+instantiates+`menu_items()`==snapshot
+   (today's startup cost moved to CI); (b) pivot `TestHandlerReachability` to
+   manifest-vs-package-walk (a handler in the package but missing from the
+   manifest = dead UI); (c) manifest drift (regen==checked-in).
+5. **Do NOT touch main.py.** Verify: full suite + lint + the capability-index/
+   manifest drift `--check`. Ship. This is safe/additive — nothing uses
+   `register_lazy` yet.
+
+### Gotchas
+- `lifecycle: True` handlers stay eager (their `on_startup` must run at boot);
+  expect ~0-3. The walker computes it via `isinstance(inst, LifecycleHandler)`.
+- Handlers whose `menu_items()` needs a live ctx: the neutral ctx already handles
+  this (dialog=None, flags→True). If any handler's menu_items truly varies at
+  runtime, it CANNOT be manifest-lazy (design §4) — flags carry dynamism, labels
+  are static per commit; the register-time equality check is the backstop.
+- Steps 2-5 (flip behind `MESHFORGE_TUI_EAGER=1`, leanness-gate ratchet, retire
+  the import list, retire startup-only `_load_x`) are SEPARATE increments — do
+  step 1, soak, then proceed. The leanness gate is `tests/test_tui_startup_lean.py`.
