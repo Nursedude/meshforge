@@ -7,6 +7,7 @@
 @.claude/rules/security.md
 @.claude/rules/calibrated_claims.md
 @.claude/rules/model_advisor.md
+@.claude/rules/honest_failure_modes.md
 @.claude/foundations/persistent_issues.md
 
 ---

@@ -2984,3 +2984,85 @@ attempts (state + brief witness) → unblock → `send_retry_delivered` attempt
 4, ~90s after first failure; confirmed server-side via topic poll. fire_count
 stayed 1; removed-while-active deactivated loudly, action not run; hosts/
 ruleset/state/brief verified clean after.
+
+---
+
+## [Demoted 2026-07-14] Issue #73 addendum — the five watchdog probes of 2026-06-01→06-04 (full body)
+
+Three watchdog probes added 2026-06-01 (audit-organ→Signal→mini pattern,
+[[project_mini_scales_via_watchdog_probes_2026_06_01]]; all `degraded`; **recurring
+trap: derive context from the SERVICE, not the root watchdog env**): `probe_foundation_drift`
+(`/etc/reticulum` root:root under a non-root rnsd; fix `fleet_foundation.py apply`;
+⚠️ INERT 06-01→06-09: `rns_tree_perms` hardcoded `sudo=True` stats, which NoNewPrivileges
+blocks → fields None → never fired; fixed `09bc14a`/MA `91663edb` — never sudo when euid==0),
+`probe_parity_drift` (MeshForge↔MeshAnchor `check_parity()` drift; self-guards if
+`/opt/meshanchor` absent), `probe_rns_version_drift` (rns/lxmf off the `+mf.N` pin —
+reads the rnsd user's `~/.local` site-packages directly, since the watchdog sandbox
+NoNewPrivileges+RestrictSUIDSGID blocks sudo/runuser; fix reviewed `pip install -r
+requirements/rns.txt`). 4th probe 2026-06-03: `probe_role_drift` (`role_drift`) — live
+unit state vs the box's effective declared role via `provision_role.py`'s own dry-run
+`plan()` (base role + deployment.json overrides; documented overrides honored — the moc2
+legibility case, see `.claude/research/fleet_architecture_2026_06_03.md` §7-B); 2-tick
+debounce; fix `provision_role.py --apply` or correct the declared role. 5th probe
+2026-06-04: `probe_channel_feed_dark` (`channel_feed_dark`) — the .32 dark-feed /
+PSK-rotation-canary lesson: **silence is the failure mode**. Watches meshtasticd's
+MQTT-json uplink journal lines (`json/<name>/…"type":"text"` — by channel NAME since
+2026-06-06: `"channel":N` is the box-LOCAL slot index and slot layouts differ, which
+false-alarmed the federator for days; doesn't touch single-consumer `/api/v1/fromradio`,
+#17); no fleet-channel text for ≥6h while the json pipeline is alive → `degraded`. Tell
+for a missed PSK re-key
+(decode gate = hash(name,psk)), deaf radio (`channel_utilization=0.0`), or dead uplink.
+Self-guards None on boxes with no json uplink at all (unobservable ≠ dark — e.g. moc5);
+busy gateways (moc) canary the channel for the whole fleet via mini's signal_class flow.
+
+---
+
+## [Demoted 2026-07-14] Issue #78: cron_verdict_stale probe — the silent-cron guard (full body)
+
+`probe_cron_verdict_stale` (`cron_verdict_stale`, degraded, issue_ref 78): the
+watchdog-LAYER alerter for the "silence is the failure mode" cron class. Origin:
+**7 dead crons firing into a deleted `routine-bin/` undetected since ~May 21**
+(`>/dev/null 2>&1`); the cron-verdict regime (`scripts/cron_verdict.sh`) recorded
+verdicts but had no alerter. **Load-bearing design**: reads the operator crontab
+spool (`/var/spool/cron/crontabs/<user>`) directly as root (no sudo — sandbox;
+same pattern as `probe_rns_version_drift`/`probe_role_drift`), judges ONLY crons
+WIRED to `cron_verdict.sh` (orphan verdicts ignored → no false-alarm), cadence
+from the schedule (`_cron_max_interval × CADENCE_MULT=3`, 2h floor). Fires on a
+wired cron that's FAIL/CONCERN, silent-past-threshold, or never-reported. **INERT
+(None) when no crons wired** — opt-in regime. 2-tick debounce. Reuses
+`_parse_crontab`/`_parse_cron_verdicts` from `fleet_snapshot`. Tests:
+`TestCronVerdictStale` (11) + closed-enum gate bump.
+
+**Addendum 2026-07-09 (QA audit): the "silent(never)" leg was FALSE until
+07-10.** `cron_verdict.sh`'s GLOBAL log-cap retention truncated a daily cron's
+verdicts out of the log faster than its cadence — manufacturing "never
+reported" pages for healthy wired crons. Fix `d0254dae`: per-name retention
+(each cron keeps its own newest verdicts). Post-07-10 a "silent(never)" page
+is REAL — investigate the cron, don't suspect the probe. Tier-L eval case
+`oracle-cron-silent-never-was-false` pins this lore.
+
+---
+
+## [Demoted 2026-07-14] Issue #79: mini-dudeai hardening + the deploy-restart gap class (full body)
+
+Audit of mini-dudeai (MeshForge-OWNED rule-loop agent; no MA twin) found 1 defect +
+risks, fixed in one pass. (1) **DEPLOY GAP** (defect):
+nothing restarted the mini USER daemon after `git pull` (fleet_sync/update.sh restarted
+only the 3 SYSTEM units) — added user-bus `sync_user_unit`/`sync_local_user_unit`, an
+update.sh user-unit restart, and install_noc enrollment of all 3 mini user units.
+**Extended 06-15 (the whole deploy-restart class):** MF `meshforge-echo` +
+`nomadnet-silence-watch` wired into update.sh + fleet_sync; §3b-ii guard
+`TestDeployRestartHook` pins it red-test-first. **MeshAnchor parity**: same fix + the
+ported guard + MA's own #79 entry; MA `update.sh` restarts echo + SYSTEM
+`meshanchor`/`-map` (CODE_CHANGED-gated, no MA fleet_sync). Arc: `honest_dev_env_arc.md`.
+(2) **MEMORY.md over the ~24KB load limit** (defect): `check_index_size` warns (never
+blocks) + `demote_memory` → MEMORY_ARCHIVE.md + `probe_memory_index_oversize`.
+(3) unbounded append growth: `_rotate_if_needed` (atomic, keep-newest, valid JSONL) on
+history/deltas/ledger (1/1/2 MB). (4) cadence pinned `--model`
+(`MINI_DUDEAI_CADENCE_MODEL`, default opus). (5) observation-only invariant (no
+subprocess/systemctl in engine+sources+actions) lint-pinned **MF021** + test-pinned.
+(6) rules promotion writes a `.bak` + `probe_rules_seed_drift`. (8)
+`probe_history_write_failure` (loop alive + fires advancing but history mtime frozen).
+All 3 new probes wired in `run_all_probes`, classes in the closed enum (issue_ref 79).
+(7) schema-vs-validator drift test pins the config schema to the validator. Tests:
++~90. ⚠️ Probes DEGRADED-only, self-guard None off-box; user-bus restart needs linger.

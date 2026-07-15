@@ -53,7 +53,7 @@
 
 | Pri | Scope | Why it's frontier-shaped |
 |-----|-------|--------------------------|
-| 1 | **Opus interregnum review** — MF `5083d56d..<opus-HEAD>` + MA `417d57ad..<opus-HEAD>` (Fable→Opus handoff boundary stamped 2026-07-13; Fable time returns ~2026-07-16) | Everything after these SHAs was written under Opus. When Fable time returns: /code-review the ranges (both repos), twin-first on shared files, hand the pass this ledger's overlapping residuals. The boundary SHAs are exact — no scoping pass needed. |
+| 1 | **Opus interregnum review** — MF `5083d56d..<opus-HEAD>` + MA `417d57ad..<opus-HEAD>` (Fable→Opus handoff boundary stamped 2026-07-13; Fable time returns ~2026-07-16) | Everything after these SHAs was written under Opus. When Fable time returns: /code-review the ranges (both repos), twin-first on shared files, hand the pass this ledger's overlapping residuals. The boundary SHAs are exact — no scoping pass needed. **Amendment 2026-07-14 (Fable thin-budget session):** MF `5e539616` (ENABLE_WATCHDOG gate) + the 07-14 docs/skill commit are Fable-written mid-window — self-reviewed same session (sources-indexing + empty-sources edge checked, no defects; 589 mini tests + live meshanchor-server soak). Spot-check only; the Opus review scope starts after them. |
 | — | _(add new upshift rows here as sessions surface review-shaped work)_ | |
 
 ## Conventions for future passes
