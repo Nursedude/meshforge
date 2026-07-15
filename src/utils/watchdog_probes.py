@@ -40,7 +40,8 @@ live in the sibling modules and are re-exported below:
 * ``watchdog_probes_drift``   — declared-vs-live drift (#77 + parity/version)
 * ``watchdog_probes_liveness``— cron/fleet/host liveness (#78)
 * ``watchdog_probes_env``     — router/ntfy/kernel/aredn/inherited-app
-* ``watchdog_probes_gateway`` — delivery path (#63/#74)
+* ``watchdog_probes_gateway`` — delivery-path core (#63/#74) + dedup
+* ``watchdog_probes_gateway_flow`` — delivery-flow observers (soak/canary/oracle)
 * ``watchdog_probes_mini``    — mini-dudeai self-observation (#79)
 
 NOTE for tests: ``patch()`` targets the module where a name is LOOKED UP,

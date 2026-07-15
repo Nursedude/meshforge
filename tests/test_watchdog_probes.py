@@ -5273,7 +5273,9 @@ class TestGatewayDeliveryDegraded:
         """No meshforge-gateway on this box (MainPID None) → INERT (None),
         never a journalctl call. The moc/moc3-only gate."""
         sp = str(tmp_path / "g.json")
-        with patch("utils.watchdog_probes_gateway._resolve_main_pid",
+        # probe_gateway_delivery_degraded moved to watchdog_probes_gateway_flow
+        # (2026-07-14 gateway split) — patch the source seam, not the re-export.
+        with patch("utils.watchdog_probes_gateway_flow._resolve_main_pid",
                    return_value=None):
             assert probe_gateway_delivery_degraded(state_path=sp) is None
 
@@ -5427,7 +5429,8 @@ class TestGatewayDeliveryRealQuery:
                 raise exc
             return _Result()
 
-        return patch("utils.watchdog_probes_gateway.subprocess.run",
+        # source seam is the flow sibling after the 2026-07-14 gateway split.
+        return patch("utils.watchdog_probes_gateway_flow.subprocess.run",
                      side_effect=_runner), captured
 
     def test_selects_unit_and_block_grep(self):
