@@ -200,3 +200,51 @@ zero new drift surface.
 - Steps 2-5 (flip behind `MESHFORGE_TUI_EAGER=1`, leanness-gate ratchet, retire
   the import list, retire startup-only `_load_x`) are SEPARATE increments — do
   step 1, soak, then proceed. The leanness gate is `tests/test_tui_startup_lean.py`.
+
+### Step 1 SHIPPED (2026-07-14 Opus) — additive foundation, main.py still eager
+
+Landed (full suite 8613 passed/1 skipped, lint `--all` exit 0, drift `--check`
+exit 0, main.py untouched):
+
+- **`scripts/gen_capability_index.py`** — one walker, two artifacts.
+  `collect_handler_descriptors()` is the shared RAW pass (handler_id, module =
+  `cls.__module__`, class_name, menu_section, RAW `menu_items` tuples,
+  `lifecycle = isinstance(inst, LifecycleHandler)`, `error`).
+  `collect_handlers()` is now a thin markdown-preserving adapter over it
+  (capability_index.md byte-identical — verified). New `build_manifest_content()`
+  + `MANIFEST_PATH`; `main()` writes/`--check`s BOTH; `_render_manifest_entry`
+  uses `repr()` so `menu_items` round-trips to the exact live tuples.
+- **`src/launcher_tui/handlers/manifest.py`** — GENERATED, checked in. 80
+  entries, 3 `lifecycle: True` (config_api, first_run, mqtt), 0 errors, uniform
+  7-key schema, 928 lines (under the MF025 cap — do NOT let it exceed 1,500;
+  it's a `src/` .py).
+- **`src/launcher_tui/handler_registry.py`** — `_LazyHandler` sentinel; dup-tag
+  guard extracted to `_validate_tags()` (shared by `register`/`register_lazy`);
+  `register_lazy(descriptor)` (refuses lifecycle + errored descriptors LOUDLY);
+  `_materialize()` (import at first dispatch → honest ImportError dialog via
+  `safe_call` on failure, **dedicated "Handler Manifest Drift" dialog** on
+  live≠snapshot — surfaced in-app per MF018, NOT raised out of the dispatch loop
+  — then swap the real instance into `_handlers`/`_sections`/`_tag_index`);
+  `dispatch()` materializes a `_LazyHandler` hit before executing.
+- **`.githooks/pre-commit`** — the drift block now names both artifacts and the
+  staged-file guard loops over index + manifest.
+- **`tests/test_handler_manifest.py`** (19) — drift/non-vacuity/generated-warning,
+  fidelity (every entry imports+instantiates+`menu_items()`==snapshot, RAW-not-
+  cleaned), manifest-vs-package-walk reachability, and the full `register_lazy` +
+  lazy-dispatch machinery (indexes without import, refuses lifecycle/errored/dup,
+  materialize+execute+swap, drift refusal, import-failure witness).
+
+⚠️ **Deviations from the letter of this design, all intentional:**
+1. **Drift is surfaced in-app, not raised** out of `dispatch()` — a `raise` would
+   crash the primary TUI on a menu keypress (violates MF018). The dedicated loud
+   dialog + ERROR log + refuse-to-dispatch satisfies the intent ("never dispatch
+   on drifted metadata, loudly"). Step-1-dormant regardless (nothing lazy yet).
+2. **`TestHandlerReachability` was NOT pivoted** — a new manifest-vs-package test
+   was ADDED alongside it. `get_all_handlers()` is still the LIVE registration
+   path in step 1, so removing its reachability guard now would lose coverage on
+   the live path. The true pivot belongs in **step 4** (when `get_all_handlers`
+   is retired). Both guards pass today.
+
+**NEXT (step 2):** flip `main.py:95` to manifest registration behind
+`MESHFORGE_TUI_EAGER=1`, keeping lifecycle handlers (`config_api`/`first_run`/
+`mqtt`) eager. Soak step 1 on the fleet first.
