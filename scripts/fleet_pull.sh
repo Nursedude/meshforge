@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# fleet_pull.sh — fast-forward every fleet box to the current HEAD, NO restarts.
+#
+# WHY THIS EXISTS (2026-07-15): the "pull the fleet" operation is a repeated
+# footgun when hand-typed as an ssh loop — the remote `git pull` must run inside
+# the repo dir, but it is easy to bind `cd` to the LOCAL shell and leave the
+# remote command running in the home dir (not a repo → every box mislabeled
+# "unreachable"). That happened 4× in one session. The lesson (cross-model
+# agentic health / calibrated_claims): compile the reliability OUT of model
+# memory and INTO the harness. This script bakes the remote `cd` + repo dir in
+# once, so no operator — human or model, this model or the next — has to
+# remember it. It is the low-risk, restart-free counterpart to fleet_sync.sh:
+# use THIS to deploy a src/doc change the fleet should pull without bouncing any
+# service; use fleet_sync.sh only when services must restart.
+#
+# Usage:
+#   scripts/fleet_pull.sh                 # ff-only pull every box to /opt/meshforge HEAD
+#   scripts/fleet_pull.sh /opt/meshforge-maps   # …of the sister repo instead
+#   REPO_DIR=/path scripts/fleet_pull.sh  # same, via env
+#
+# Host list source (first found), same as fleet_sync.sh:
+#   $MESHFORGE_FLEET_HOSTS  |  ~/.config/meshforge/fleet_hosts  |  /etc/meshforge/fleet_hosts
+# Comments (#) and blank lines are ignored. Hosts resolve via ~/.ssh/config
+# (aliases + ProxyCommand/jump-hosts supported).
+#
+# Behaviour:
+#   - Reads the TARGET sha from the LOCAL repo (this box), then ff-only pulls
+#     each remote to origin/main and reports its post-pull sha vs the target.
+#   - A host failing (unreachable, no repo, diverged) does NOT abort the rest.
+#   - NEVER restarts a service (that is fleet_sync.sh's job).
+#   - Exit code = number of boxes NOT converged on the target (0 = all match).
+
+set -uo pipefail
+
+REPO_DIR="${1:-${REPO_DIR:-/opt/meshforge}}"
+
+# --- resolve the target sha from the local repo -------------------------------
+if ! TARGET_SHORT=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null); then
+    echo "fleet_pull: '$REPO_DIR' is not a git repo on this box — nothing to target." >&2
+    exit 2
+fi
+BRANCH=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "?")
+
+# --- resolve the host list ----------------------------------------------------
+HOSTS_FILE=""
+for f in "${MESHFORGE_FLEET_HOSTS:-}" "$HOME/.config/meshforge/fleet_hosts" /etc/meshforge/fleet_hosts; do
+    [ -n "$f" ] && [ -f "$f" ] && { HOSTS_FILE="$f"; break; }
+done
+if [ -z "$HOSTS_FILE" ]; then
+    echo "fleet_pull: no fleet_hosts list found (set \$MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts)." >&2
+    exit 2
+fi
+
+mapfile -t HOSTS < <(grep -vE '^\s*(#|$)' "$HOSTS_FILE")
+echo "fleet_pull: $REPO_DIR @ ${BRANCH}=${TARGET_SHORT} → ${#HOSTS[@]} host(s) from $(basename "$HOSTS_FILE") (no restarts)"
+
+# The remote command: cd into the repo (bake it in — the whole point), ff-only
+# pull, then print a status token + the resulting short sha. Always prints a
+# sha even on pull failure so a divergence is distinguishable from unreachable.
+remote_cmd=$(cat <<REMOTE
+cd "$REPO_DIR" 2>/dev/null || { echo "NOREPO"; exit 0; }
+if git pull --ff-only origin main >/dev/null 2>&1; then
+    echo "PULLED \$(git rev-parse --short HEAD)"
+else
+    echo "PULLFAIL \$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+fi
+REMOTE
+)
+
+failures=0
+for h in "${HOSTS[@]}"; do
+    out=$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$h" "$remote_cmd" 2>/dev/null)
+    status=${out%% *}
+    sha=${out#* }
+    case "$status" in
+        PULLED)
+            if [ "$sha" = "$TARGET_SHORT" ]; then
+                printf '  %-20s OK        %s\n' "$h" "$sha"
+            else
+                printf '  %-20s MISMATCH  %s (target %s)\n' "$h" "$sha" "$TARGET_SHORT"
+                failures=$((failures + 1))
+            fi
+            ;;
+        PULLFAIL)
+            printf '  %-20s PULL_FAIL %s (diverged / not ff-only — inspect)\n' "$h" "$sha"
+            failures=$((failures + 1))
+            ;;
+        NOREPO)
+            printf '  %-20s NO_REPO   (%s absent on this host)\n' "$h" "$REPO_DIR"
+            failures=$((failures + 1))
+            ;;
+        *)
+            printf '  %-20s UNREACHABLE\n' "$h"
+            failures=$((failures + 1))
+            ;;
+    esac
+done
+
+if [ "$failures" -eq 0 ]; then
+    echo "fleet_pull: all ${#HOSTS[@]} host(s) converged on ${TARGET_SHORT}."
+else
+    echo "fleet_pull: ${failures} host(s) NOT converged — see above."
+fi
+exit "$failures"
