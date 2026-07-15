@@ -135,12 +135,13 @@ class TestLiveRepoContract:
         assert stale == [], stale
 
     def test_baseline_never_grows_check(self):
-        """The frozen counts must match the 2026-07-13 freeze exactly —
-        editing an entry upward is the forbidden move this test pins."""
+        """The frozen counts must match the freeze exactly — editing an entry
+        upward is the forbidden move this test pins. node_history.py was split
+        out (2026-07-14) and its entry deleted, so the set shrank by one; a
+        deletion via a real split is the sanctioned way the baseline moves."""
         assert lint.MF025_BASELINE == {
             'src/utils/watchdog_probes_drift.py': 2625,
             'src/utils/watchdog_probes_gateway.py': 1638,
             'src/utils/map_data_collector.py': 1566,
             'src/gateway/rns_bridge.py': 1544,
-            'src/utils/node_history.py': 1510,
         }
