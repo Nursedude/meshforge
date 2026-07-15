@@ -931,12 +931,12 @@ def check_in_domain_escapes(files: List[str], repo_root: str = '.') -> List[Lint
 MF025_LINE_LIMIT = 1_500
 
 # Frozen 2026-07-13. Entries may only shrink or be deleted.
-# 2026-07-14 splits dropped three offenders under the cap → entries DELETED:
+# 2026-07-14 splits dropped four offenders under the cap → entries DELETED:
 # node_history.py → +node_history_config.py; watchdog_probes_drift.py →
 # +watchdog_probes_liveness.py + watchdog_probes_env.py; watchdog_probes_gateway.py
-# → +watchdog_probes_gateway_flow.py.
+# → +watchdog_probes_gateway_flow.py; map_data_collector.py →
+# +_map_collector_config.py (MapCollectorConfigMixin).
 MF025_BASELINE = {
-    'src/utils/map_data_collector.py': 1566,
     'src/gateway/rns_bridge.py': 1544,
 }
 
