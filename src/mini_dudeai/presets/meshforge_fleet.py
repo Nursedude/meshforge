@@ -114,6 +114,7 @@ def build_engine(
     enable_federation: bool | None = None,
     enable_digest: bool | None = None,
     enable_boot_health: bool | None = None,
+    enable_watchdog: bool | None = None,
 ) -> RuleEngine:
     """Wire up the engine the way the fleet's primary node runs it today.
 
@@ -125,7 +126,15 @@ def build_engine(
     disable, or pass explicitly). The federator (the primary box) runs both; gateway
     boxes that have no local :5000 and no situation_digest set both "0" so mini
     watches only their own watchdog.json (no per-tick source_error noise/pages).
-    The watchdog source is always wired — it is every box's local-health feed.
+
+    enable_watchdog: the box's own /var/lib/meshforge/watchdog.json feed.
+    Defaults ON — it is every MeshForge box's local-health feed, and on those
+    boxes turning it off would blind the source_error_watchdog dead-watchdog
+    rule. Set "0" (env MINI_DUDEAI_ENABLE_WATCHDOG) ONLY on a box that runs no
+    MeshForge watchdog at all (e.g. the MeshAnchor-only box): there the file is
+    DECLARED absent, not a failure — leaving the source wired would page
+    source_error_watchdog forever and pin src_errors=1 in every rollup
+    (honest_failure_modes: declared-absent ≠ unobservable ≠ error).
 
     enable_boot_health: unexpected-reboot detection (BootHealthSource). Defaults
     ON for every box — gateways included; a hard reset is fleet-relevant
@@ -139,6 +148,8 @@ def build_engine(
         enable_digest = os.environ.get("MINI_DUDEAI_ENABLE_DIGEST", "1") != "0"
     if enable_boot_health is None:
         enable_boot_health = os.environ.get("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "1") != "0"
+    if enable_watchdog is None:
+        enable_watchdog = os.environ.get("MINI_DUDEAI_ENABLE_WATCHDOG", "1") != "0"
     from .._util import resolve_home
     home = home or resolve_home()
     rules_path = rules_path or os.path.join(home, "mini_dudeai_rules.json")
@@ -162,15 +173,16 @@ def build_engine(
             "loaded by the systemd unit via EnvironmentFile= (MF014 keeps them out of repo)."
         )
 
-    # The watchdog source is every box's local-health feed — always wired.
-    sources: list[Source] = [
-        JsonFileSource(
+    # The watchdog source is every MeshForge box's local-health feed — wired by
+    # default; "0" only on a box that runs no MF watchdog (declared absent).
+    sources: list[Source] = []
+    if enable_watchdog:
+        sources.append(JsonFileSource(
             path=watchdog_path,
             kind="signal_class",
             extractor=_watchdog_extractor,
             name="watchdog",
-        ),
-    ]
+        ))
     # Federation + digest are federator-specific (the primary box). Gateway boxes
     # disable them so a missing :5000 / digest doesn't emit per-tick source_error.
     if enable_federation:

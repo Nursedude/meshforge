@@ -91,6 +91,37 @@ def test_source_gating_via_env(tmp_path, monkeypatch):
     assert [getattr(s, "name", "?") for s in engine.sources] == ["watchdog", "boot_health"]
 
 
+def test_watchdog_wired_by_default(tmp_path, monkeypatch):
+    """The watchdog source needs NO opt-in — every MeshForge box gets it, so
+    the source_error_watchdog dead-watchdog rule keeps its feed."""
+    monkeypatch.setenv("MINI_DUDEAI_NTFY_TOPIC", "test-topic")
+    engine = build_engine(
+        home=str(tmp_path),
+        watchdog_path=str(tmp_path / "w.json"),
+        enable_federation=False,
+        enable_digest=False,
+    )
+    assert "watchdog" in [getattr(s, "name", "?") for s in engine.sources]
+
+
+def test_watchdog_env_gate_off_for_no_mf_watchdog_box(tmp_path, monkeypatch):
+    """MINI_DUDEAI_ENABLE_WATCHDOG=0 — the MeshAnchor-only box class: no MF
+    watchdog exists there by DESIGN, so the source must not be wired (else
+    source_error_watchdog pages forever and src_errors pins at 1). Declared
+    absent ≠ unobservable ≠ error (meshanchor-server enrollment, 2026-07-14)."""
+    monkeypatch.setenv("MINI_DUDEAI_NTFY_TOPIC", "test-topic")
+    monkeypatch.setenv("MINI_DUDEAI_ENABLE_WATCHDOG", "0")
+    engine = build_engine(
+        home=str(tmp_path),
+        watchdog_path=str(tmp_path / "w.json"),
+        enable_federation=False,
+        enable_digest=False,
+    )
+    names = [getattr(s, "name", "?") for s in engine.sources]
+    assert "watchdog" not in names
+    assert "boot_health" in names    # reboot detection stays — fleet-relevant everywhere
+
+
 # === boot_health wiring (unexpected-reboot, 2026-06-06) ============
 
 
