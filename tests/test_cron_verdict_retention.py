@@ -90,5 +90,85 @@ class TestCronVerdictRetention(unittest.TestCase):
             self.assertIn("churn OK last", lines[-1])
 
 
+class TestCronVerdictConcurrentWriters(unittest.TestCase):
+    """honest_failure_modes #8 — concurrent writers: exclude or merge, never
+    interleave.
+
+    Truncation is a read-modify-write: `awk` snapshots $LOG, writes a tmp, then
+    `mv tmp $LOG` replaces the file. A second cron's atomic append that lands on
+    the OLD inode AFTER that snapshot but BEFORE the mv is silently discarded
+    when mv overwrites — a verdict the caller logged (exit 0, "recorded") that
+    then VANISHES. This is the field shape behind the 2026-07-16 manager_deadman
+    investigation: deadman verdicts missing at 18:50 and 00:30 while the cron
+    demonstrably ran. Every concurrent verdict must survive.
+    """
+
+    def test_concurrent_writers_lose_no_verdict(self):
+        import tempfile
+        from concurrent.futures import ThreadPoolExecutor
+
+        n = 64
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "v.log"
+            # Seed just over MAX_LINES so EVERY writer hits the truncation
+            # (read-modify-write) path — maximizing the overlap window.
+            with open(log, "w") as fh:
+                for i in range(1050):
+                    fh.write(f"2026-07-09T00:00:00Z seed OK s{i}\n")
+
+            def write(i):
+                # Unique name + marker so each verdict is individually findable.
+                return _run(log, f"w{i:03d}", "0", f"MARK{i:03d}")
+
+            with ThreadPoolExecutor(max_workers=n) as ex:
+                results = list(ex.map(write, range(n)))
+
+            # Every writer exited 0 — each claims its verdict was recorded.
+            self.assertTrue(all(r.returncode == 0 for r in results),
+                            "a writer exited non-zero")
+
+            text = log.read_text()
+            missing = [i for i in range(n) if f"MARK{i:03d}" not in text]
+            self.assertEqual(
+                missing, [],
+                f"{len(missing)}/{n} concurrent verdicts lost to the truncation "
+                f"read-modify-write race (honest_failure_modes #8): {missing}",
+            )
+
+    def test_verdict_recorded_when_lock_cannot_be_opened(self):
+        """Fallback #1 — if the lock file itself can't be opened (unwritable
+        dir), the verdict must STILL be recorded, exactly once. Silence is the
+        worse failure than a rare unserialized append (hf_modes #9: every
+        swallow leaves a witness — here the witness is the verdict line)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "v.log"
+            env = dict(os.environ, CRON_VERDICT_LOG=str(log),
+                       CRON_VERDICT_LOCK=str(Path(tmp) / "nodir" / "sub" / "l"))
+            r = subprocess.run(["bash", str(SCRIPT), "lockless_job", "0", "still logged"],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(log.read_text().count("lockless_job"), 1)
+
+    def test_verdict_recorded_when_flock_fails(self):
+        """Fallback #2 — if flock is absent or the lock stays wedged past the
+        timeout (stubbed here as a failing flock), the verdict must STILL be
+        recorded, exactly once (no duplicate from the open-failure fallback)."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            bind = Path(tmp) / "bin"
+            bind.mkdir()
+            stub = bind / "flock"          # shadow flock with a always-fail stub
+            stub.write_text("#!/bin/sh\nexit 1\n")
+            stub.chmod(0o755)
+            log = Path(tmp) / "v.log"
+            env = dict(os.environ, CRON_VERDICT_LOG=str(log),
+                       PATH=f"{bind}:{os.environ.get('PATH', '')}")
+            r = subprocess.run(["bash", str(SCRIPT), "flockless_job", "0", "still logged"],
+                               env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 0)
+            self.assertEqual(log.read_text().count("flockless_job"), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

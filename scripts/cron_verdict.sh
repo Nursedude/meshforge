@@ -45,14 +45,17 @@ case "$raw" in
     *)            status="FAIL($raw)" ;;
 esac
 
-printf '%s %s %s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$status" "$msg" >> "$LOG"
+LOCK="${CRON_VERDICT_LOCK:-${LOG}.lock}"
+ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-# Truncate (atomic-ish; losing a race here only costs old lines). Keep the
-# newest MAX_LINES overall PLUS the newest KEEP_PER_NAME lines of every name,
-# so a slow-cadence cron's verdicts survive high-churn neighbors.
-lines=$(wc -l < "$LOG" 2>/dev/null || echo 0)
-if [ "$lines" -gt "$MAX_LINES" ]; then
-    tmp=$(mktemp "${LOG}.XXXXXX") || exit 0
+_append() { printf '%s %s %s %s\n' "$ts" "$name" "$status" "$msg" >> "$LOG"; }
+
+# Keep the newest MAX_LINES overall PLUS the newest KEEP_PER_NAME lines of every
+# name, so a slow-cadence cron's verdicts survive high-churn neighbors.
+_truncate() {
+    lines=$(wc -l < "$LOG" 2>/dev/null || echo 0)
+    [ "$lines" -gt "$MAX_LINES" ] || return 0
+    tmp=$(mktemp "${LOG}.XXXXXX") || return 0
     awk -v max="$MAX_LINES" -v keep="$KEEP_PER_NAME" '
         { line[NR] = $0; nm[NR] = $2 }
         END {
@@ -63,5 +66,32 @@ if [ "$lines" -gt "$MAX_LINES" ]; then
             }
             for (i = 1; i <= NR; i++) if (i in keep_line) print line[i]
         }' "$LOG" > "$tmp" && mv "$tmp" "$LOG"
+}
+
+# Append + truncate is a read-modify-write on a SHARED file: _truncate snapshots
+# $LOG with awk, then `mv`s a rebuilt copy over it. A concurrent writer's atomic
+# append that lands on the OLD inode AFTER that snapshot but BEFORE the mv is
+# discarded when mv overwrites — a verdict the caller logged (exit 0) that then
+# VANISHES (honest_failure_modes #8; the 2026-07-16 manager_deadman
+# missing-verdict shape). Serialize the whole append+truncate under an exclusive
+# flock. The lock is a SEPARATE file so the mv of $LOG never swaps the locked
+# inode out from under a waiter; closing fd 9 (block scope) releases it.
+#
+# Degrade gracefully — the verdict is ALWAYS recorded (silence is the worse
+# failure, honest_failure_modes #9): if the lock file can't be opened, or flock
+# is absent / stays wedged past the timeout, fall through to a bare append
+# (atomic, O_APPEND). The `:` probe uses a SIMPLE command so a failed 9>"$LOCK"
+# only sets its status — it never exits the shell (unlike a bare `exec`).
+if : 2>/dev/null 9>"$LOCK"; then
+    {
+        if flock -w 10 9 2>/dev/null; then
+            _append
+            _truncate || true
+        else
+            _append   # flock missing / wedged past timeout — record, skip trunc
+        fi
+    } 9>"$LOCK"
+else
+    _append           # lock file unopenable — record anyway
 fi
 exit 0
