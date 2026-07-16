@@ -36,8 +36,15 @@ Honest limit (documented, not hidden): the session model is inferred from the
 ledger's newest ``claim`` event, the only deterministic signal available in the
 hook environment (no transcript, no live model id). It lags by one claim — a
 session that stamps a frontier row BEFORE logging any claim is judged by the
-prior session's model. This still catches the common case (a session that has
-logged ≥1 claim) and never false-blocks (a stale-frontier read is permissive).
+prior session's model. Direction matters (live-caught 2026-07-16, the gate's
+first real firing): a stale-FRONTIER read is permissive (never false-blocks),
+but a stale-NON-frontier read FALSE-BLOCKS the first genuine frontier session
+after an interregnum — exactly the session most likely to stamp a frontier
+row. The sanctioned unblock is NOT --no-verify: record the session's real
+VERIFIED claim to the calibration ledger first (``record_claim(...,
+model_id=<this session's frontier id>, source="manual")`` — calibrated_claims
+rule 6, quoted evidence required), then re-push; the gate re-reads honestly.
+The leg-2 block message names this path.
 """
 from __future__ import annotations
 
@@ -370,7 +377,17 @@ def _fmt_leg2_block(rows, model_id):
     ]
     for _date, mech, raw in rows:
         lines.append(f"  {raw[:100]}")
-    lines += ["", "(Override, sparingly: git push --no-verify)"]
+    lines += [
+        "",
+        "If this session genuinely IS a frontier pass (the ledger model lags by",
+        "one claim — common on the first frontier session after an interregnum):",
+        "record the pass's real VERIFIED claim to the calibration ledger first",
+        "(record_claim(..., model_id=<this session's frontier id>,",
+        "source=\"manual\") — calibrated_claims rule 6, quoted evidence), then",
+        "re-push; this gate re-reads the ledger honestly.",
+        "",
+        "(Override, sparingly: git push --no-verify)",
+    ]
     return "\n".join(lines)
 
 

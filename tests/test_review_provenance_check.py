@@ -378,6 +378,22 @@ class TestWitnessAndFailOpen(unittest.TestCase):
             self.assertTrue(any("leg1" in w for w in warn), warn)
 
 
+class TestLeg2BlockMessage(unittest.TestCase):
+    """The leg-2 block must name the SANCTIONED unblock for a genuinely-frontier
+    session judged by a stale non-frontier ledger read (the gate's first live
+    firing, 2026-07-16: the first Fable session after the Opus interregnum was
+    false-blocked stamping its own real pass). Pointing only at --no-verify
+    trains the override habit; the honest path is a calibrated_claims rule-6
+    manual record_claim, after which the gate re-reads the ledger."""
+
+    def test_leg2_message_names_rule6_manual_claim_path(self):
+        rows = [("2026-07-16", "frontier inline deep review", "| 2026-07-16 | x |")]
+        msg = rpc._fmt_leg2_block(rows, "claude-opus-4-8")
+        self.assertIn("record_claim", msg)
+        self.assertIn("source=\"manual\"", msg)
+        self.assertIn("--no-verify", msg)  # override stays documented, last
+
+
 class TestCliSubprocess(unittest.TestCase):
     """The exact contract .githooks/pre-push depends on: the script run as a
     subprocess exits 1 on a hard-leg violation (with remediation text on stdout)
