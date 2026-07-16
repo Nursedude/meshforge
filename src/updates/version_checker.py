@@ -60,6 +60,35 @@ class VersionInfo:
     # context (pin state, candidate waiting behind the pin, ...).
     held: bool = False
     notes: Optional[str] = None
+    # The update MECHANISM, as a property of the row — so every consumer reads
+    # ONE truth instead of re-deriving its own predicate (the 2026-07-16
+    # "1 available -> nothing to update" nag: the badge counted
+    # ``update_available`` while Update All required an in-app command, so a
+    # firmware tag inflated the badge but Update All did nothing).
+    #  - out_of_band: no in-app apply path at all (firmware = Web Flasher).
+    #    Real, but surfaced informationally — NEVER counted, NEVER batched.
+    #  - dedicated_flow: applied from its OWN menu entry, not the generic
+    #    "Update All" batch (MeshForge self-update via 'Update MeshForge').
+    out_of_band: bool = False
+    dedicated_flow: bool = False
+
+    @property
+    def actionable(self) -> bool:
+        """True iff this update can be applied AND verified by the generic
+        'Update All' batch — i.e. exactly what the status-badge count promises.
+
+        Held (deliberate pin), out-of-band (firmware), and dedicated-flow
+        (MeshForge self-update) updates are all real but are NOT applied by
+        Update All, so counting them is the nag. Badge == actionable-count ==
+        the Update All set, by construction: badge 0 iff Update All is a no-op.
+        """
+        return bool(
+            self.update_available
+            and not self.held
+            and not self.out_of_band
+            and not self.dedicated_flow
+            and self.update_command
+        )
 
 
 def parse_version(version_str: str) -> tuple:
@@ -510,6 +539,7 @@ def check_all_versions() -> Dict[str, VersionInfo]:
         if meshforge.installed and meshforge.latest:
             meshforge.update_available = compare_versions(meshforge.installed, meshforge.latest)
     meshforge.update_command = 'meshforge-update'  # Special command handled by TUI
+    meshforge.dedicated_flow = True  # applied via the 'Update MeshForge' menu, not Update All
     results['meshforge'] = meshforge
 
     # meshtasticd — judged against the apt CANDIDATE (what apt can actually
@@ -586,6 +616,7 @@ def check_all_versions() -> Dict[str, VersionInfo]:
     if firmware.installed and firmware.latest:
         firmware.update_available = compare_versions(firmware.installed, firmware.latest)
     firmware.update_command = 'Use Meshtastic Web Flasher or meshtastic-flasher'
+    firmware.out_of_band = True  # flashed out-of-band; informational, never batched/counted
     results['firmware'] = firmware
 
     return results
@@ -615,11 +646,17 @@ def get_version_summary() -> Dict[str, Any]:
             'fleet_floor': info.fleet_floor,
             'pypi_latest': info.pypi_latest,
             'held': info.held,
+            'out_of_band': info.out_of_band,
+            'dedicated_flow': info.dedicated_flow,
+            'actionable': info.actionable,
             'notes': info.notes,
         }
         summary['components'].append(component)
 
-        if info.update_available:
+        # Count only what Update All can actually apply — a real-but-out-of-band
+        # (firmware) or dedicated-flow (meshforge) update is surfaced in its own
+        # component row, never inflated into this scalar (the 2026-07-16 nag).
+        if info.actionable:
             summary['updates_available'] += 1
 
     return summary

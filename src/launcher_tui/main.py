@@ -403,7 +403,12 @@ class MeshForgeLauncher:
             if not has_checker:
                 return
             versions = check_fn()
-            count = sum(1 for v in versions.values() if v.update_available)
+            # Count only ACTIONABLE updates — those Update All can apply and
+            # verify. A real-but-out-of-band (firmware) or dedicated-flow
+            # (MeshForge self-update) update is not counted here, so the badge
+            # never says "N available" when running the update does nothing
+            # (the 2026-07-16 nag; badge == the Update All set by construction).
+            count = sum(1 for v in versions.values() if v.actionable)
             if count > 0:
                 self._updates_available = count
                 logger.info("Startup update check: %d update(s) available", count)

@@ -108,12 +108,21 @@ class UpdatesHandler(BaseHandler):
 
         lines = ["SOFTWARE UPDATE STATUS", "=" * 40, ""]
 
-        updates_available = []
+        updates_available = []   # actionable via Update All (matches the badge)
+        deferred = []            # real, but applied out-of-band / dedicated flow
         for key, info in versions.items():
             status = ""
-            if info.update_available:
+            if info.actionable:
                 status = " [UPDATE AVAILABLE]"
                 updates_available.append(key)
+            elif info.update_available and getattr(info, 'dedicated_flow', False):
+                status = " [SELF-UPDATE — use 'Update MeshForge']"
+                deferred.append(info.name)
+            elif info.update_available and getattr(info, 'out_of_band', False):
+                status = " [MANUAL — flash out-of-band]"
+                deferred.append(info.name)
+            elif info.update_available and info.held:
+                status = " [HELD — deliberate pin]"
 
             installed = info.installed or "Not installed"
 
@@ -138,13 +147,19 @@ class UpdatesHandler(BaseHandler):
                 lines.append(f"  Error:     {info.error}")
             lines.append("")
 
+        lines.append("=" * 40)
         if updates_available:
-            lines.append("=" * 40)
             lines.append(f"{len(updates_available)} update(s) available!")
             lines.append("Use 'Update All' to install updates.")
         else:
-            lines.append("=" * 40)
-            lines.append("All components are up to date!")
+            lines.append("No updates for 'Update All' to apply.")
+        if deferred:
+            # Real updates that Update All does NOT apply — named so the count
+            # above stays honest (badge == Update All set) without hiding them.
+            lines.append("")
+            lines.append("Applied a different way (not counted above):")
+            for name in deferred:
+                lines.append(f"  - {name}")
 
         self.ctx.dialog.msgbox(
             "Version Status",
@@ -165,18 +180,33 @@ class UpdatesHandler(BaseHandler):
             self.ctx.dialog.msgbox("Error", f"Failed to check versions:\n{e}")
             return
 
-        updates_needed = []
-        for key, info in versions.items():
-            if info.update_available and info.update_command:
-                if key not in ('firmware', 'meshforge'):
-                    updates_needed.append((key, info))
+        # Single source of truth: apply exactly the set the badge counted.
+        # ``actionable`` already excludes held (pinned), out-of-band (firmware),
+        # and dedicated-flow (meshforge self-update) — no per-key magic list to
+        # drift out of sync with the badge (the 2026-07-16 nag was that drift).
+        updates_needed = [(key, info) for key, info in versions.items() if info.actionable]
 
         if not updates_needed:
-            self.ctx.dialog.msgbox(
-                "No Updates",
-                "All components are up to date!\n\n"
-                "No automatic updates available."
-            )
+            # Distinguish "nothing to do" from "real updates exist, just not via
+            # Update All" so the operator is routed instead of told a flat no.
+            deferred = []
+            for info in versions.values():
+                if getattr(info, 'dedicated_flow', False) and info.update_available:
+                    deferred.append(f"  - {info.name}: use its own 'Update {info.name}' menu entry")
+                elif getattr(info, 'out_of_band', False) and info.update_available:
+                    deferred.append(f"  - {info.name}: {info.update_command}")
+            if deferred:
+                self.ctx.dialog.msgbox(
+                    "No Batch Updates",
+                    "Nothing for 'Update All' to apply, but these updates exist\n"
+                    "and are applied a different way:\n\n" + "\n".join(deferred)
+                )
+            else:
+                self.ctx.dialog.msgbox(
+                    "No Updates",
+                    "All components are up to date!\n\n"
+                    "No automatic updates available."
+                )
             return
 
         update_list = "\n".join([f"  - {info.name}" for _, info in updates_needed])

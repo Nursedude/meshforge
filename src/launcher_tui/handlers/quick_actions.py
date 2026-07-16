@@ -487,9 +487,18 @@ class QuickActionsHandler(BaseHandler):
                 installed = info.installed or "Not installed"
                 latest = info.latest or "Unknown"
                 flag = ""
-                if info.update_available:
+                # Count only actionable updates (matches the status badge and
+                # Update All); flag real-but-not-batched ones distinctly so the
+                # scalar never overpromises (the 2026-07-16 nag).
+                if info.actionable:
                     flag = " << UPDATE AVAILABLE"
                     updates_count += 1
+                elif info.update_available and getattr(info, 'out_of_band', False):
+                    flag = " << update: flash manually"
+                elif info.update_available and getattr(info, 'dedicated_flow', False):
+                    flag = " << self-update available"
+                elif info.update_available and info.held:
+                    flag = " << held (pinned)"
                 print(f"  {info.name:<25s} {installed:<12s} -> {latest}{flag}")
 
             print(f"\n  {'=' * 50}")

@@ -122,13 +122,13 @@ class TestUpdateAllRoutesMeshtasticLib:
     """
 
     def test_lib_uses_pip_helper_others_use_run_command(self):
-        from types import SimpleNamespace
+        from updates.version_checker import VersionInfo
         h = _handler()  # ctx is a MagicMock → dialog.yesno() is truthy
         versions = {
-            'meshtastic_lib': SimpleNamespace(
+            'meshtastic_lib': VersionInfo(
                 name='Meshtastic Library', update_available=True,
                 update_command='pip3 install --break-system-packages --upgrade meshtastic'),
-            'meshtasticd': SimpleNamespace(
+            'meshtasticd': VersionInfo(
                 name='meshtasticd', update_available=True,
                 update_command='sudo apt-get install --only-upgrade -y meshtasticd'),
         }
@@ -156,13 +156,13 @@ class TestUpdateAllRoutesMeshtasticLib:
         string — under sudo the raw command hits root's pipx, not the
         operator's, so the upgrade no-ops and the flag never clears (the
         read/write split, feedback_version_env_rigor)."""
-        from types import SimpleNamespace
+        from updates.version_checker import VersionInfo
         h = _handler()
         versions = {
-            'cli': SimpleNamespace(
+            'cli': VersionInfo(
                 name='Meshtastic CLI', update_available=True,
                 update_command='pipx upgrade meshtastic'),
-            'meshtasticd': SimpleNamespace(
+            'meshtasticd': VersionInfo(
                 name='meshtasticd', update_available=True,
                 update_command='sudo apt-get install --only-upgrade -y meshtasticd'),
         }
@@ -811,3 +811,140 @@ class TestUpdateMeshforgeGitFlow:
                 if c.args and c.args[0] == 'Update Failed'][0]
         assert 'restart meshforge' in body
         assert 'unit crashed' in body
+
+
+class TestActionableProperty:
+    """VersionInfo.actionable is the SINGLE predicate every count/apply consumer
+    reads — the 2026-07-16 nag was each consumer re-deriving its own. Only an
+    update Update All can apply-and-verify is 'actionable'."""
+
+    def _vi(self, **kw):
+        from updates.version_checker import VersionInfo
+        return VersionInfo(name='X', **kw)
+
+    def test_normal_update_is_actionable(self):
+        assert self._vi(update_available=True, update_command='apt upgrade x').actionable is True
+
+    def test_out_of_band_is_not_actionable(self):
+        # Firmware: a real update, but flashed out-of-band — never batched/counted.
+        assert self._vi(update_available=True, update_command='Web Flasher',
+                        out_of_band=True).actionable is False
+
+    def test_dedicated_flow_is_not_actionable(self):
+        # MeshForge self-update: applied from its own menu, not Update All.
+        assert self._vi(update_available=True, update_command='meshforge-update',
+                        dedicated_flow=True).actionable is False
+
+    def test_held_is_not_actionable(self):
+        assert self._vi(update_available=True, update_command='apt upgrade x',
+                        held=True).actionable is False
+
+    def test_no_command_is_not_actionable(self):
+        assert self._vi(update_available=True, update_command=None).actionable is False
+
+    def test_not_available_is_not_actionable(self):
+        assert self._vi(update_available=False, update_command='apt upgrade x').actionable is False
+
+
+class TestBadgeCountsActionableOnly:
+    """The status-bar badge (main.py) counts `v.actionable`, not
+    `v.update_available`. Mirror that exact expression so an out-of-band
+    firmware update never inflates the badge (the live '1 available -> nothing
+    to update' nag)."""
+
+    def test_out_of_band_update_yields_zero_badge(self):
+        from updates.version_checker import VersionInfo
+        versions = {
+            'firmware': VersionInfo(name='Node Firmware', installed='2.7.24', latest='2.7.26',
+                                    update_available=True, update_command='Web Flasher',
+                                    out_of_band=True),
+            'meshtasticd': VersionInfo(name='meshtasticd', update_available=False,
+                                       update_command='apt', held=True),
+        }
+        # This is exactly what _check_startup_updates computes for the badge.
+        count = sum(1 for v in versions.values() if v.actionable)
+        assert count == 0
+
+    def test_actionable_and_non_actionable_mix_counts_only_actionable(self):
+        from updates.version_checker import VersionInfo
+        versions = {
+            'firmware': VersionInfo(name='Node Firmware', update_available=True,
+                                    update_command='Web Flasher', out_of_band=True),
+            'meshtastic_lib': VersionInfo(name='Meshtastic Library', update_available=True,
+                                          update_command='pip3 install ...'),
+        }
+        assert sum(1 for v in versions.values() if v.actionable) == 1
+
+
+class TestFirmwareUpdateDoesNotInflateSummary:
+    """End-to-end reproduction of the live nag: a real firmware tag update must
+    NOT increment `updates_available`, and firmware/meshforge carry their
+    mechanism flags so no consumer re-derives the wrong predicate."""
+
+    def _patch_env(self, vc, *, fw_installed, fw_latest):
+        return [
+            patch.object(vc, 'get_meshtastic_cli_version', return_value='2.7.9'),
+            patch.object(vc, 'get_meshtastic_lib_version', return_value='2.7.9'),
+            patch.object(vc, 'get_latest_meshtastic_cli_version', return_value='2.7.9'),
+            patch.object(vc, 'read_floor', return_value='2.7.9'),
+            patch.object(vc, 'get_meshforge_version', return_value=None),
+            patch.object(vc, 'get_latest_meshforge_version', return_value=None),
+            patch.object(vc, 'get_meshforge_git_snapshot', return_value=None),
+            patch.object(vc, 'get_meshtasticd_apt_snapshot', return_value=None),
+            patch.object(vc, 'get_meshtasticd_version', return_value=None),
+            patch.object(vc, 'get_latest_meshtasticd_version', return_value=None),
+            patch.object(vc, 'get_node_firmware_version', return_value=fw_installed),
+            patch.object(vc, 'get_latest_firmware_version', return_value=fw_latest),
+        ]
+
+    def test_firmware_tag_ahead_does_not_count(self):
+        import contextlib
+        import updates.version_checker as vc
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_env(vc, fw_installed='2.7.24.472b14c', fw_latest='2.7.26.54e0d8d'):
+                stack.enter_context(p)
+            results = vc.check_all_versions()
+            summary = vc.get_version_summary()
+        # Firmware genuinely has a newer tag...
+        assert results['firmware'].update_available is True
+        # ...but it is out-of-band, hence not actionable, hence not counted.
+        assert results['firmware'].out_of_band is True
+        assert results['firmware'].actionable is False
+        assert summary['updates_available'] == 0
+
+    def test_structural_mechanism_flags(self):
+        import contextlib
+        import updates.version_checker as vc
+        with contextlib.ExitStack() as stack:
+            for p in self._patch_env(vc, fw_installed=None, fw_latest=None):
+                stack.enter_context(p)
+            results = vc.check_all_versions()
+        assert results['firmware'].out_of_band is True
+        assert results['meshforge'].dedicated_flow is True
+
+
+class TestUpdateAllRoutesNonBatchable:
+    """When the only available update is out-of-band (firmware), Update All must
+    run NOTHING and route the operator instead of applying a command or lying
+    'all up to date' — closing the nag from the action side too."""
+
+    def test_only_firmware_update_runs_no_commands_and_routes(self):
+        from updates.version_checker import VersionInfo
+        h = _handler()
+        versions = {
+            'firmware': VersionInfo(name='Node Firmware', installed='2.7.24', latest='2.7.26',
+                                    update_available=True,
+                                    update_command='Use Meshtastic Web Flasher',
+                                    out_of_band=True),
+        }
+        h._run_update_command = MagicMock()
+        h._pip_install_meshtastic = MagicMock()
+        h._pipx_upgrade_cli = MagicMock()
+        with patch('handlers.updates._check_all_versions', return_value=versions):
+            h._update_all()
+        # Nothing was executed...
+        h._run_update_command.assert_not_called()
+        h._pip_install_meshtastic.assert_not_called()
+        h._pipx_upgrade_cli.assert_not_called()
+        # ...and the operator was routed, not told a flat "No Updates".
+        assert 'No Batch Updates' in _msgbox_titles(h.ctx.dialog)
