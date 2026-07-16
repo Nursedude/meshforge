@@ -18,10 +18,17 @@
 #   scripts/fleet_pull.sh /opt/meshforge-maps   # …of the sister repo instead
 #   REPO_DIR=/path scripts/fleet_pull.sh  # same, via env
 #
-# Host list source (first found), same as fleet_sync.sh:
-#   $MESHFORGE_FLEET_HOSTS  |  ~/.config/meshforge/fleet_hosts  |  /etc/meshforge/fleet_hosts
+# Host list source (first found). A PER-REPO list wins over the generic one
+# (added 2026-07-16: the sister repo lives on 2 boxes, so the shared list made
+# every MA deploy "6 NOT converged" — an exit code that cried wolf):
+#   $MESHFORGE_FLEET_HOSTS                                (explicit override)
+#   ~/.config/meshforge/fleet_hosts.<repo-basename>       (e.g. fleet_hosts.meshanchor)
+#   /etc/meshforge/fleet_hosts.<repo-basename>
+#   ~/.config/meshforge/fleet_hosts                       (generic fallback)
+#   /etc/meshforge/fleet_hosts
 # Comments (#) and blank lines are ignored. Hosts resolve via ~/.ssh/config
-# (aliases + ProxyCommand/jump-hosts supported).
+# (aliases + ProxyCommand/jump-hosts supported). A selected list that yields
+# ZERO hosts is an error, never a silent all-converged no-op.
 #
 # Behaviour:
 #   - Reads the TARGET sha from the LOCAL repo (this box), then ff-only pulls
@@ -41,17 +48,28 @@ if ! TARGET_SHORT=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null); then
 fi
 BRANCH=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "?")
 
-# --- resolve the host list ----------------------------------------------------
+# --- resolve the host list (per-repo list wins over the generic one) ----------
+REPO_BASE="$(basename "$REPO_DIR")"
 HOSTS_FILE=""
-for f in "${MESHFORGE_FLEET_HOSTS:-}" "$HOME/.config/meshforge/fleet_hosts" /etc/meshforge/fleet_hosts; do
+for f in "${MESHFORGE_FLEET_HOSTS:-}" \
+         "$HOME/.config/meshforge/fleet_hosts.$REPO_BASE" \
+         "/etc/meshforge/fleet_hosts.$REPO_BASE" \
+         "$HOME/.config/meshforge/fleet_hosts" \
+         /etc/meshforge/fleet_hosts; do
     [ -n "$f" ] && [ -f "$f" ] && { HOSTS_FILE="$f"; break; }
 done
 if [ -z "$HOSTS_FILE" ]; then
-    echo "fleet_pull: no fleet_hosts list found (set \$MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts)." >&2
+    echo "fleet_pull: no fleet_hosts list found (set \$MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts[.$REPO_BASE])." >&2
     exit 2
 fi
 
 mapfile -t HOSTS < <(grep -vE '^\s*(#|$)' "$HOSTS_FILE")
+if [ "${#HOSTS[@]}" -eq 0 ]; then
+    # An empty list must fail LOUD — falling through to "all 0 host(s)
+    # converged" (exit 0) would read as a successful deploy that pulled nobody.
+    echo "fleet_pull: host list $HOSTS_FILE contains no hosts — refusing the silent no-op." >&2
+    exit 2
+fi
 echo "fleet_pull: $REPO_DIR @ ${BRANCH}=${TARGET_SHORT} → ${#HOSTS[@]} host(s) from $(basename "$HOSTS_FILE") (no restarts)"
 
 # The remote command: cd into the repo (bake it in — the whole point), ff-only
