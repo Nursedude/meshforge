@@ -55,6 +55,8 @@
 | Pri | Scope | Why it's frontier-shaped |
 |-----|-------|--------------------------|
 | — | ~~**Opus interregnum review** (Pri-1)~~ **DONE 2026-07-16** — ran as the completed-table row above (MF `5083d56d..835528e0` + MA `417d57ad..a1f32f93`, 0 confirmed defects). | Removed by running the pass, per convention. |
+| 1 | **meshing_around_meshforge FIRST adversarial pass** — the CLIENT repo (~50 first-party py: mesh_client.py, meshing_around_clients/{core,tui}, configure_bot.py) has NEVER been reviewed (the 2026-07-06 rows covered the BOT fork, a different repo). Scoped by the 2026-07-16 two-app audit: suite 1021 green, no shell=True/bare-except, MF015 test-vector leak fixed `82f68a0` — but zero adversarial coverage of the parse/subprocess/TUI surface. | Whole-repo first pass is frontier-shaped (no prior findings to lean on); hostile-input lens on the mesh-facing parse paths. |
+| 2 | **version_consistency_check 07-09 fix-port to both app mirrors** — maps + client carry the pre-`d0254dae` shape: unreadable-consumer-reads-as-absent (honest_failure_modes #1, in the guard itself), no CHANGELOG leg, double README read. ADAPTED port (keep their `DEFAULT_SSOT` per-repo override — the mirrors forked from `a29bfa92`, not current MF). Small enough for any session; queued here so it isn't lost. | Not frontier-shaped (mechanical port) — queued for visibility, any tier may take it. |
 | — | _(add new upshift rows here as sessions surface review-shaped work)_ | |
 
 ## Conventions for future passes
