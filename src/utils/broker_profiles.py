@@ -37,7 +37,7 @@ from utils.mqtt_defaults import (
     MESHTASTIC_PUBLIC_USERNAME,
 )
 
-from utils.paths import get_real_user_home
+from utils.paths import get_real_user_home, atomic_write_text
 from utils.service_check import check_service as _check_service, apply_config_and_restart as _apply_config_and_restart, enable_service as _enable_service
 
 logger = logging.getLogger(__name__)
@@ -588,8 +588,8 @@ def install_mosquitto_config(profile: BrokerProfile) -> Tuple[bool, str]:
         # Write mosquitto config
         conf_path = conf_dir / "meshforge.conf"
         conf_content = generate_mosquitto_conf(profile)
-        with open(conf_path, 'w') as f:
-            f.write(conf_content)
+        # Atomic: a torn mosquitto.conf can stop the broker from starting.
+        atomic_write_text(conf_path, conf_content)
 
         messages = [f"Config written to {conf_path}"]
 
@@ -616,8 +616,7 @@ def install_mosquitto_config(profile: BrokerProfile) -> Tuple[bool, str]:
         if profile.acl_enabled and not profile.allow_anonymous:
             acl_path = Path("/etc/mosquitto/meshforge_acl")
             acl_content = generate_mosquitto_acl(profile)
-            with open(acl_path, 'w') as f:
-                f.write(acl_content)
+            atomic_write_text(acl_path, acl_content)
             messages.append(f"ACL file written to {acl_path}")
 
         return True, "\n".join(messages)

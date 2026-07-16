@@ -780,8 +780,8 @@ class StationIDTimer:
                 'callsign': self.callsign,
                 'last_id_time': self._last_id_time.isoformat() if self._last_id_time else None,
             }
-            with open(self._state_file, 'w') as f:
-                json.dump(data, f)
+            from utils.paths import atomic_write_text
+            atomic_write_text(self._state_file, json.dumps(data))
         except Exception as e:
             logger.debug(f"Could not save ID timer state: {e}")
 

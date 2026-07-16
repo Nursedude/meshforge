@@ -1188,3 +1188,54 @@ class TestContentIdInvariant:
         finally:
             if SRC_DIR in sys.path:
                 sys.path.remove(SRC_DIR)
+
+
+class TestConfigAtomicityMF026:
+    """MF026: config/state persistence must be atomic (ported from the client
+    repo's MED3 rule). O_TRUNC is banned; new non-atomic config open('w') writes
+    fail against a frozen baseline. Route through utils.paths.atomic_write_text.
+    """
+
+    def _lint(self):
+        scripts_dir = os.path.join(REPO_ROOT, 'scripts')
+        sys.path.insert(0, scripts_dir)
+        try:
+            import importlib
+            return importlib.import_module('lint')
+        finally:
+            if scripts_dir in sys.path:
+                sys.path.remove(scripts_dir)
+
+    def test_no_config_atomicity_violations_above_baseline(self):
+        lint_mod = self._lint()
+        files = lint_mod.get_all_python_files('src')
+        issues = lint_mod.check_config_atomicity(files, REPO_ROOT)
+        violations = [f"{i.file}:{i.line}: {i.message}" for i in issues]
+        assert violations == [], (
+            "MF026: non-atomic config/state write(s) above baseline — route "
+            "through utils.paths.atomic_write_text:\n" + "\n".join(violations)
+        )
+
+    def test_detector_flags_o_trunc(self):
+        lint_mod = self._lint()
+        assert lint_mod.MF026_OTRUNC.search("fd = os.open(p, os.O_WRONLY | os.O_TRUNC)")
+
+    def test_detector_flags_config_openw_but_not_reports(self):
+        lint_mod = self._lint()
+        # config/state paths → hint matches, no exclusion
+        for good in ("open(conf_path, 'w')", "open(self._state_file, 'w')", 'open(overlay_path, "w")'):
+            m = lint_mod.MF026_OPENW.search(good)
+            assert m is not None
+            assert lint_mod.MF026_HINT.search(m.group(1)), good
+            assert not lint_mod.MF026_EXCL.search(m.group(1)), good
+        # report/cache/pid/temp paths → excluded (no false positive)
+        for benign in ("open(output_path, 'w')", "open(temp_path, 'w')", "open(pid_file, 'w')", "open(self._info_cache, 'w')"):
+            m = lint_mod.MF026_OPENW.search(benign)
+            assert m is not None
+            assert lint_mod.MF026_EXCL.search(m.group(1)), benign
+
+    def test_baseline_only_shrinks(self):
+        # The frozen baseline must not silently grow; pin its documented size so
+        # a future edit that adds headroom trips review.
+        lint_mod = self._lint()
+        assert sum(lint_mod.MF026_BASELINE.values()) <= 9

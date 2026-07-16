@@ -94,6 +94,7 @@ SHAPE_SYMBOLS = {
     "scripts/lint.py": (
         "MF009",
         "MF019",
+        "MF026",
     ),
     # Same version-drift tool in both repos (repo-specific docstring only).
     "scripts/rns_version_check.py": (

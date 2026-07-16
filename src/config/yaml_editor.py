@@ -83,11 +83,17 @@ class ConfigYamlEditor:
                 console.print("[yellow]No changes to save.[/yellow]")
                 return True
 
-            with open(overlay_path, 'w') as f:
-                f.write("# MeshForge configuration overrides\n")
-                f.write("# These settings override /etc/meshtasticd/config.yaml\n")
-                f.write("# To reset: sudo rm this file and restart meshtasticd\n\n")
-                yaml.dump(overlay, f, default_flow_style=False, sort_keys=False)
+            # Atomic: a torn meshtasticd overlay is the #58 class (a partial
+            # config.d file silently breaks meshtasticd's port/startup).
+            from utils.paths import atomic_write_text
+
+            overlay_text = (
+                "# MeshForge configuration overrides\n"
+                "# These settings override /etc/meshtasticd/config.yaml\n"
+                "# To reset: sudo rm this file and restart meshtasticd\n\n"
+                + yaml.dump(overlay, default_flow_style=False, sort_keys=False)
+            )
+            atomic_write_text(overlay_path, overlay_text)
 
             console.print(f"[green]Configuration saved to {overlay_path}[/green]")
             console.print("[dim]Main config.yaml is preserved (package-provided)[/dim]")
