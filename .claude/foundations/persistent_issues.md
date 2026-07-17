@@ -44,10 +44,24 @@ but space restarts and verify host-binding before the next box anyway.
   parity (version marker, rnsd ownership, gateway/map/tracer, **public-net interop
   proof**), canary one box, then fleet-roll. Full procedure in each fork's
   `FORK.md`; governance triggers (CVE-no-upstream / wire break / activity ceases)
-  in [[project_upstream_dependency_governance_2026_05_29]]. **Checked 2026-06-09**:
-  GitHub mirror still receives releases — upstream at **1.3.5** (maintenance:
-  announce-dedup, shared-instance RPC, AutoInterface roaming; no CVE/wire change)
-  → DECISION: stay on the 1.2.5+mf.N line; a 1.3.5 merge eval is a future arc.
+  in [[project_upstream_dependency_governance_2026_05_29]].
+- **1.3.8 / 1.0.1 merge arc — PHASE 1+2 DONE, STAGED, NOT FLEET-ROLLED
+  (2026-07-17)**. Supersedes the 2026-06-09 "stay on 1.2.5+mf.N" call (upstream
+  was then 1.3.5, no CVE/wire change). Full record:
+  `.claude/research/rns_138_merge_eval_2026_07_16.md` (PHASE 1/2 EXECUTED).
+  Merges on **integration branches** `meshforge-138` (RNS `1.3.8+mf.0`) +
+  `meshforge-101` (LXMF `1.0.1+mf.0`), pushed; **deployed `meshforge` + fleet
+  still run `1.2.5+mf.5`/`0.9.4+mf.0`** and the SSOT pins (`requirements/rns.txt`
+  MF-FORK-PIN, `rns_version_check`) are UNCHANGED — do NOT bump until the roll or
+  every un-upgraded box fails. Wire-compat cleared (crypto untouched; RPC rewrite
+  is local msgpack IPC). **Two findings for future merges: (1) #72 NOT subsumed**
+  — 1.3.8's `get_rpc_client()` is still unbounded; `_rpc_recv` re-ported onto the
+  msgpack framing (21 sites). **(2) mf.4 re-ported, not carried** — its Lock→RLock
+  flaked LOG_EXTREME resource transfers (A/B: Lock 9/9, RLock 2/5); cured
+  structurally (plain Lock, log() fallback re-logs after releasing it). LXMF: 0
+  functional patches → byte-identical; compression cross-compat safe, no FIELD
+  collision, MF↔MA lockstep verified. **REMAINING: interop proof + canary + soak,
+  THEN coordinated per-box roll → fast-forward `meshforge` + bump SSOT.**
 - **MeshForge-side guards STAY** (`rns_init.py` probe, MF009/MF019 lint, watchdog
   `os._exit` backstop) as defense-in-depth — remove a backstop only after its
   in-library fix has held over a long soak.
