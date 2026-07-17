@@ -227,9 +227,28 @@ class TestEmitters:
     def test_mikrotik_shape(self):
         out = audit.emit_mikrotik(self.REG())
         assert ("/ip dns static add name=box1.example.internal "
-                "address=192.0.2.10") in out
+                "address=192.0.2.10 "
+                f'comment="{audit.MIKROTIK_TAG}"') in out
         assert ("/ip dhcp-server lease add mac-address=00:00:5e:00:53:01 "
                 "address=192.0.2.10") in out
+
+    def test_mikrotik_reimport_is_idempotent(self):
+        """Re-importing the generated .rsc must not duplicate entries:
+        every generated dns-static line carries the tag comment, and the
+        script removes previously-tagged entries FIRST. Leases are NOT
+        auto-removed (pre-existing manual reservations must survive)."""
+        out = audit.emit_mikrotik(self.REG())
+        lines = out.splitlines()
+        remove_idx = next(i for i, l in enumerate(lines)
+                          if l == '/ip dns static remove '
+                                  f'[find comment="{audit.MIKROTIK_TAG}"]')
+        first_add = next(i for i, l in enumerate(lines)
+                         if l.startswith("/ip dns static add"))
+        assert remove_idx < first_add
+        for l in lines:
+            if l.startswith("/ip dns static add"):
+                assert f'comment="{audit.MIKROTIK_TAG}"' in l
+        assert "/ip dhcp-server lease remove" not in out
 
     def test_uci_shape(self):
         out = audit.emit_uci(self.REG())
