@@ -248,3 +248,113 @@ exit 0, main.py untouched):
 **NEXT (step 2):** flip `main.py:95` to manifest registration behind
 `MESHFORGE_TUI_EAGER=1`, keeping lifecycle handlers (`config_api`/`first_run`/
 `mqtt`) eager. Soak step 1 on the fleet first.
+
+---
+
+## Step-2 flip REVIEW — Fable, 2026-07-16 (VERDICT: BLOCKED, fix 2 defects first)
+
+Frontier review of the step-2 flip (window item 4), per model-advisor (Fable
+reviews the hazards + blesses the design; Opus executes). **The flip's
+architecture is sound, but it is NOT safe to ship as written — it has TWO hard
+blockers that would crash or break the primary TUI, both MISSED by the design
+doc and the recorded `fc5be3b2` hazards.** Cleared: `menu_items()` are all 80
+static literals (no ctx-drift), and `__init__`/`set_context` do no deferred work
+(AST-verified). Do not flip until BLOCKER-1 and BLOCKER-2 are fixed.
+
+### BLOCKER-1 — `startup_health` crashes TUI startup after the flip
+`main.py:343` calls `self._registry.get_handler("startup_health").on_startup()`
+**directly** (bypassing `startup_all()`), guarded only by a truthy `if`. But
+`startup_health` implements `on_startup` and **not** `on_shutdown`, so
+`isinstance(inst, LifecycleHandler)` is **False** (the Protocol is
+`@runtime_checkable` and requires BOTH methods) → the generator marks it
+`"lifecycle": False` (manifest.py:820) → the flip registers it **lazy** →
+`get_handler("startup_health")` returns a `_LazyHandler` sentinel (truthy, no
+`on_startup`) → **`AttributeError` at startup**. Its lost work is load-bearing:
+`_patch_rns_transport_race()` (prevents a documented ~12 h rnsd crash) +
+`_check_service_misconfig()` (SPI/USB guard). `first_run` (also called directly
+at `main.py:338`) is SAFE — it has both hooks → `lifecycle: True` → eager.
+
+**Root cause:** two divergent definitions of "must be eager" —
+(a) the manifest `lifecycle` flag = `isinstance(LifecycleHandler)` = *both* hooks,
+(b) `main.py`'s direct `get_handler(id).on_startup()` bypass = *any* startup work.
+An `on_startup`-only handler falls through the crack (honest_failure_modes #5:
+two consumers of one concept, drifted). **Fix (minimal, safe):** widen the
+generator's `lifecycle` detection to flag a handler that overrides `on_startup`
+**OR** `on_shutdown` (compare the bound method to `BaseHandler`'s no-op), so
+`startup_health` (and `ai_tools`) register **eager** → the direct call hits a
+real instance. `register_lazy` already refuses `lifecycle: True`, so no other
+change is needed there. ⚠️ Do NOT "fix" this by moving the direct calls into
+`startup_all()` — `main.py:343` runs UNCONDITIONALLY while `startup_all()` at
+`:354` is daemon-gated; the RNS-patch must run even under a daemon. Preserve the
+two startup phases.
+
+### BLOCKER-2 — cross-handler `get_handler("B")` returns an unmaterialized sentinel
+`get_handler()` is a plain dict lookup (`handler_registry.py:206`). After the
+flip, a not-yet-dispatched non-lifecycle handler is a `_LazyHandler` sentinel, so
+the ~10 runtime cross-handler delegations break:
+- `mqtt.py:307` `get_handler("broker")._broker_menu()` — sentinel truthy → skips
+  the `else`, calls a method the sentinel lacks → **hard AttributeError crash**.
+- `rns_interfaces.py:67` `safe_call(..., get_handler("rns_config")._install_…)` —
+  sentinel truthy → `safe_call` catches the AttributeError → **wrong "Error"
+  dialog**, plugin install silently fails.
+- `startup_health.py:148` `get_handler("service_menu")` — saved by a defensive
+  `hasattr(_, '_fix_spi_config')` guard, but then **falsely reports "not
+  available"** when the fix IS available (just unmaterialized).
+
+**Fix (central, clean):** make `get_handler()` **materialize** a `_LazyHandler`
+before returning (import-on-access, mirroring `dispatch`), returning `None` on
+materialize failure so the existing `if handler:` null-guards degrade honestly.
+Add a test: `get_handler(lazy_id)` returns a real instance. This preserves every
+delegation pattern transparently (the delegating action needs the target's code
+anyway).
+
+### FINDING-3 (pre-existing latent bug, NOT flip-caused) — `ai_tools.on_startup` never runs
+`ai_tools` has `on_startup` (auto-start map via `_maybe_auto_start_map`) but no
+`on_shutdown` → `isinstance(LifecycleHandler)` False → `startup_all()` **skips it
+today** (`main.py:354` comment "AITools, MQTT, ConfigAPI" is aspirational). It is
+invoked nowhere else, so the map auto-start is already dead on `main`. The flip
+does not regress it (skipped before and after). Fix separately: add `on_shutdown`
+(or widen `startup_all` to invoke present hooks). BLOCKER-1's flag-widening makes
+`ai_tools` register eager but does NOT make its hook run — that needs this fix.
+
+### Recorded hazards (`fc5be3b2`) — reconfirmed, lower severity than the above
+- **Crash-vs-skip loop:** the flip loop must wrap each `register`/`register_lazy`
+  in try/except, logging ERROR + collecting failures and surfacing ONE
+  consolidated witness, so a single bad/dup/errored descriptor cannot abort the
+  whole NOC launcher (MF018) — but never silently (honest_failure_modes #9).
+  Note import errors in non-lifecycle modules are now correctly DEFERRED to
+  first-dispatch (an improvement: a broken optional-dep handler no longer blocks
+  startup). Manifest has 0 errors / no dups today (drift gate + 19 tests green),
+  so this path is a backstop.
+- **Headless `_materialize` dialog** (`safe_call`/drift both do
+  `self._ctx.dialog.msgbox`): genuinely DORMANT — `_materialize` only runs at
+  interactive dispatch (real dialog). Becomes live only if headless/automated
+  dispatch is ever added; document, don't block.
+
+### Blessed flip shape (once BLOCKER-1 + BLOCKER-2 are fixed)
+```python
+eager = os.environ.get("MESHFORGE_TUI_EAGER", "").lower() in ("1", "true", "yes")
+if eager:
+    for handler_cls in get_all_handlers():
+        self._registry.register(handler_cls())
+else:
+    from handlers.manifest import HANDLER_MANIFEST
+    failures = []
+    for d in HANDLER_MANIFEST:
+        try:
+            if d.get("lifecycle"):                       # widened predicate (BLOCKER-1)
+                mod = importlib.import_module(d["module"])
+                self._registry.register(getattr(mod, d["class_name"])())
+            else:
+                self._registry.register_lazy(d)
+        except Exception as e:                            # isolate + witness (recorded hazard)
+            failures.append((d.get("handler_id"), e))
+            logger.error("handler registration failed for %s: %s", d.get("handler_id"), e)
+    if failures:
+        ...  # one consolidated status-bar/log witness; TUI still starts (MF018)
+```
+Gates to re-run before flip: the 19 manifest tests, `gen … --check` (both
+artifacts), full suite, lint, AND a new test that boots the TUI on the lazy path
+(default) and asserts `startup_health.on_startup` ran + a cross-handler
+`get_handler` returns a real instance. **Default = lazy; `MESHFORGE_TUI_EAGER=1`
+is the one-env-var rollback.** Soak step-1 first (still true).
