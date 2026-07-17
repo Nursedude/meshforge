@@ -243,3 +243,44 @@ fleet-rolled** (deployed `meshforge` stays `0.9.4+mf.0`). Merge `94b08af`
    drill + multi-day soak, THEN coordinated per-box roll (client+rnsd together;
    RPC is box-local so each box is atomic). Only then fast-forward `meshforge`
    and bump the SSOT.
+
+### PHASE 1 SELF-REVIEW (2026-07-17, Fable) — 2 adversarial reviewers on the RNS resolution
+
+Per [[feedback_review_your_own_fixes]] — the merge resolution is self-applied,
+unreviewed, fleet-critical code. Two adversarial reviewers (RPC reconciliation;
+mf.4/mf.3/#69), every finding verified against source before counting.
+
+**Verdict: the merge is clean — NO stitch defect.** All 21 client recv sites
+route through the bounded `_rpc_recv` (incl. the NEW upstream `is_blackholed`
+site; no raw-recv hang left); server `rpc_loop` recv correctly stays raw;
+`_rpc_recv` faithful; diff-clean vs pure 1.3.8 (only the 6 known patches);
+mf.3 detach bound byte-identical to pre-merge (upstream's new
+`deregister_listeners()` inside the bound); #69 `wanted_host` + listener check
+survive 1.3.8's BackboneInterface `@rns/{name}` binding.
+
+**One code finding, FIXED (F1, LOW/latent):** the mf.4 re-port kept the plain
+Lock but still invoked `logcall()` (LOG_CALLBACK) *inside* the lock — a handler
+that re-logs synchronously would self-deadlock (a coverage narrowing vs mf.4's
+RLock). Unreachable on the fleet (rnsd = LOG_FILE; no `src/` LOG_CALLBACK
+consumer), zero canary effect, but fixed to finish the re-port honestly: the
+callback dispatch now runs OUTSIDE the lock (same structural approach as the
+fallback re-log). Red-test-first (`test_log_does_not_deadlock_when_callback_re_logs`);
+link suite still clean.
+
+**Two OPERATIONAL hazards for the roll runbook (not code defects — record here):**
+- **[HIGH] Wire-format change × #79 deploy-restart gap.** The shared-instance RPC
+  went object-mode (pickle `send/recv`) → msgpack byte-mode (`send_bytes/
+  recv_bytes`) between mf.5 and 1.3.8+mf.0. A box mid-roll where **rnsd flips to
+  1.3.8 but a still-running client on OLD code** (esp. USER daemons — nomadnet,
+  meshforge-map — which #79 historically did NOT restart on `git pull`) has
+  **every** RPC time out at 8s *indefinitely* until that client is manually
+  restarted (map collector gets no path table; `rnstatus` looks wedged).
+  `_rpc_recv` bounds it to 8s-per-call (not an infinite hang — both fork versions
+  carry it), which de-risks but does not remove it. **Roll gate: restart rnsd
+  AND every RNS-importing process on the box together (rnsd-first), and confirm
+  the #79 `sync_user_unit`/update.sh hooks cover nomadnet + meshforge-map BEFORE
+  canarying.**
+- **[LOW] `get_rpc_client()` connect is still unbounded** (bare `Client()`, no
+  timeout — upstream, pre-existing). Connecting to a half-restarted rnsd whose
+  RPC listener exists but isn't accepting can block in `connect()` before
+  `_rpc_recv` is reached. Runbook note; not merge-introduced.
