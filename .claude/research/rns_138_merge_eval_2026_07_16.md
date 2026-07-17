@@ -284,3 +284,50 @@ link suite still clean.
   timeout — upstream, pre-existing). Connecting to a half-restarted rnsd whose
   RPC listener exists but isn't accepting can block in `connect()` before
   `_rpc_recv` is reached. Runbook note; not merge-introduced.
+
+### PHASE 3 EXECUTED (2026-07-17, Fable) — interop proof + canary LIVE on moc3
+
+**Interop proof (wire-compat invariant, empirical leg) — VERIFIED, 3 round-trips:**
+scratch peers on VolcanoAI, A = merged trees via PYTHONPATH (`1.3.8+mf.0`/
+`1.0.1+mf.0`), B = installed fleet pair (`1.2.5+mf.5`/`0.9.4+mf.0`), isolated
+configdirs (`share_instance=no`, no AutoInterface — fleet rnsd untouched).
+1. **Direct TCP** A↔B: LXMF DIRECT-link ping + reply both directions, ~1s.
+2. **Public net**: both peers clients of `aspark.uber.space:44860` (foreign
+   stock transport); announce propagation, path resolve (2 hops), LXMF
+   round-trip THROUGH the public node. (Dublin testnet offline; acehoss
+   IPv6-unreachable, betweentheborders down — aspark + rns.dismail.de were up.)
+3. **Real fleet net**: `lab.lxmf_tracer` from VolcanoAI (1.2.5+mf.5) → moc3's
+   lab-echo running 1.3.8+mf.0 — `result=ok rtt_ms=7315`.
+
+**Canary flip moc3 (06:54–07:00 HST):**
+- **THREE envs flipped** (the roll-surface finding): operator user-site
+  (`~/.local/lib/python3.13/site-packages` — hosts rnsd-as-wh6gxz, gateway,
+  echo), root `/usr/local/.../dist-packages`, and the **nomadnet pipx venv**
+  (`~/.local/share/pipx/venvs/nomadnet`, via `pipx runpip`, no pip binary).
+  ⚠️ That venv was **silently stock rns 1.1.4** — never converged to any fork
+  pin, honestly invisible to `probe_rns_version_drift` (venvs out of scope).
+  **Roll runbook: enumerate + flip every box's pipx venvs with the box.**
+- Order held: stop clients → restart rnsd → clean-stop drill → start clients.
+  Installs by SHA (`rns@6dadb335`, `lxmf@94b08af`), `--no-deps
+  --force-reinstall` (deps present; avoids pip pulling stock rns via lxmf).
+- **Clean-stop drill: 4.5s SIGTERM-clean** ("Deactivated successfully", incl.
+  RNode serial teardown; no 15s SIGKILL) — mf.3/mf.4 behavior held on 1.3.8.
+- **mf.5/#69 LIVE-FIRED, by design**: the drill's tight stop→start let a
+  watchdog-spawned `rnstatus` boot-claim `@rns/default` (#69 race); rnsd came
+  up client, claimant exited, mf.5 exit-75 → systemd restart into host role,
+  ~30s self-heal (log: "no listener remains after 3 reconnect attempts...
+  exiting (code 75)"). NRestarts=1, no crashloop. Space restarts at roll.
+- Transitional skew observed as predicted: new-code `rnstatus` vs old rnsd →
+  one "unpickling stack underflow" server-side; watchdog `rns_rpc_unresponsive`
+  fired during the window and CLEARED 06:57:30.
+- **Post-flip VERIFIED**: `@rns/default` + `/rpc` owned by rnsd; serving 3
+  programs; gateway msgpack RPC ok (`rpc[rnsd.path_table_read] ok 0.000s`);
+  nomadnet tmux up (its `rnstatus` ExecStartPre gate passed on 1.3.8); echo
+  chokepoint preflight OK; `rns_version_drift` fired degraded = the DELIBERATE
+  canary marker (do NOT converge moc3 during the soak).
+
+**REMAINING (Phase 4)**: multi-day soak (mini + wedge probes + kilo edges +
+conf_rate watch moc3), then coordinated per-box roll (rnsd + ALL clients +
+pipx venvs together, rnsd-first), then ff `meshforge` branches + bump SSOT
+(`requirements/rns.txt` MF-FORK-PIN, `rns_version_check`), `parity_check`
+green after.
