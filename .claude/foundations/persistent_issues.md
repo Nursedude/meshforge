@@ -134,6 +134,7 @@ Full history in `persistent_issues_archive.md`.
 | #61 (2026-05-18) | `meshforge-map` daemon-mode SIGTERM deadlock — `socketserver.BaseServer.shutdown()` invariant broken because `serve_forever()` ran on the main thread (signal target). Fix: signal handler spawns `map-shutdown` daemon thread; main thread observes `__shutdown_request` naturally. Body in archive. | `tests/test_map_daemon_shutdown.py` (6) |
 | #62 (2026-05-18) | `SettingsManager.save()` baked every default as a saved value, blocking code-default bumps (#56 timeout bump didn't take). Fix: `_explicit_keys` tracking + `stale_defaults={"k": [OLD]}` migration registry. Body in archive. | `TestExplicitKeyTrackingIssue62` (5) + `TestStaleDefaultsRegistryIssue62` (6) + `TestStaleFederationTimeoutMigrationIssue62` (3) in `tests/test_common.py` + `tests/test_map_collector_federation.py` |
 | #63 (2026-05-18) | `delivery_counters` silent write-path failures (Issue #58 burned 18h before detection). Cure: startup preflight at `__init__` writes/reads `meta.preflight_*` and surfaces via `snapshot()["health"]`; runtime `consecutive_write_errors` counter; ERROR-throttle on first fail, INFO on recovery. Body in archive. | `tests/test_delivery_counters.py` (11): `TestPreflightHealthy` (3), `TestPreflightFailureSurfaces` (2), `TestRuntimeWriteErrorTracking` (4), `TestLastSuccessfulWriteTsHeartbeat` (2) |
+| #64 + #65 (2026-05-18) | Federation directory gzip (35→4.7 MB wire, `size_alarm`) + two-tier backoff cap (`backoff_multiplier=60` = permanent-outage tell). Bodies in archive | `TestGzipNegotiationIssue64` + `TestBackoffExtendedCapIssue65` |
 | #70 (2026-05-22) | `meshforge-map` steady-state `http_local_unresponsive` wedges every few hours. Root cause: `/api/nodes/directory` 35 MB body's `json.dumps`+`gzip.compress` are C extensions that hold GIL ~6-10 s; concurrent federation polls pile up under it, `/healthz` stalls past the watchdog's 2 s probe. Fix: short-TTL response cache (`DirectoryResponseCache`, 5 s) with single-flight rebuild on `MapDataCollector`; cache hits skip json.dumps+gzip entirely. 18 tests including 8-thread/1-build single-flight race + 6-thread handler coalescing. Cache stats surface in `/api/status.directory.cache`. Pattern-audit found `/api/nodes/geojson` is the next instance (47 MB, ~35 s wedge under cold collect+gzip); deferred to Issue #71. Commits `1a52aab` (cache) + handler cache-stats surface. | `tests/test_directory_response_cache.py` (13) + `TestDirectoryHandlerCacheIssue70` (5) + `TestStatusExposesDirectoryCache` (2) |
 | #71 (2026-05-22, GitHub #1168) | Pattern extended to the two remaining instances of the same GIL-bound serialization wedge class. `DirectoryResponseCache` promoted to `ResponseByteCache` (key widened to `Hashable` for tuple keys). New `_geojson_response_cache` (TTL=2s, keyed by `(bbox, region, preset)` since each materially alters the response) wraps `/api/nodes/geojson` (47 MB, ~35 s cold). New `_topology_response_cache` (TTL=5s, single `None` key — no query params) wraps `/api/network/topology` (24 MB, 1.4 s every request). Both surface stats blocks at `/api/status.geojson.cache` and `/api/status.topology.cache` matching the directory shape. Closes the last two known instances of the wedge class — any future `http_local_unresponsive` signal is now a NEW class. Commits `7d0b8e5` (class promotion + alias) + `000201f` (wire both endpoints). | `tests/test_response_byte_cache.py` (32: 19 mirrored + 7 new + 6 alias) + `TestGeojsonHandlerCacheIssue71` (5) + `TestTopologyHandlerCacheIssue71` (5) + `TestStatusExposesGeojsonCache` (2) + `TestStatusExposesTopologyCache` (2) |
 | #68 (2026-05-20) | rnsd hard-wedge → map main thread silent-stuck in `unix_stream_connect`; bg threads kept logging, `:5000` never bound. Cure: bounded AF_UNIX probe in `open_reticulum()` chokepoint (MF019) + FIXED AT SOURCE in fork `rns 1.2.5+mf.1` (`LocalClientInterface.connect` settimeout). Detection/recovery recipes + body in archive. | `TestRNSReticulumChokepoint` + fork test `meshforge_local_connect.py` (4) |
@@ -247,18 +248,6 @@ diagnostic essence; archive carries the reasoning. Trimmed here to
 keep MF012 ≤40k chars headroom open for future entries.
 
 ---
-
-## Issues #64 + #65: federation directory gzip + two-tier backoff cap (2026-05-18)
-
-**Resolved — bodies in `persistent_issues_archive.md` (MF012 trims).**
-#64: `fetch_peer_directory` sends `Accept-Encoding: gzip` + decodes (35 MB →
-4.7 MB wire) + 40 MB `size_alarm` gauge. #65: second-tier backoff cap in
-`map_federation.py` (≈6 h continuous failure → multiplier cap 60 ≈1 h cadence)
-for permanent outages (gateway-only moc3); `backoff_multiplier=60` is the
-operator tell. Tests: `TestGzipNegotiationIssue64` etc. +
-`TestBackoffExtendedCapIssue65` (8). Closed the federation triad
-(#54/#55/#56/#59/#64/#65).
-
 
 ---
 
