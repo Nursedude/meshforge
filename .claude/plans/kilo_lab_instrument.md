@@ -15,7 +15,8 @@
 | **K0** | Node registry (identity/role/cadence expectations) + telemetry ingest spine (SQLite readings) + tri-state presence status + discovery | **SHIPPED + LIVE-VERIFIED 2026-07-04** (`src/kilo/`; moc 🟢) |
 | **K0.1** | Claw adapter (reads `claw_last_tick.json` — zero device I/O) + recurring collect via crontab + cron_verdict (#78 alerting for free) | **SHIPPED 2026-07-04** |
 | K1 | Link-matrix observatory: every packet a channel sounding; per-edge baseline drift; RF-shadow anomalies | **SHIPPED 2026-07-04** (`kilo/edges.py` + `kilo matrix`; edges ride the collect window via the subscriber's new packet hook; drift = median±MAD vs the edge's OWN baseline, tri-state ⚪🟢🟡🔴; design: `kilo_k1_link_matrix_design.md`) |
-| K2 | Sensor trust ledger: co-located cross-checks, per-sensor held/broke record (the calibration ledger applied to hardware) | planned |
+| K1.1 | Relayed-edge resolution: 1-byte `relay_partial` → named relayer, tri-state RESOLVED/AMBIGUOUS/UNKNOWN (never guess a 1-byte match); `kilo matrix --relayed` 2-hop view + `unresolved_relays` witness | **DESIGNED 2026-07-16** (`kilo_k2_trust_ledger_design.md`); ⚠️ gated on a live data-check (relay bytes may be ~absent on current firmware — ship resolver+tests dormant if so) |
+| K2 | Sensor trust ledger: co-located (registry `location`) cross-checks per FIELD metric, consensus = cluster median, per-sensor held/broke + bias, tri-state TRUSTED/SUSPECT/BROKEN/UNKNOWN — the calibration ledger applied to hardware | **DESIGNED 2026-07-16** (`kilo_k2_trust_ledger_design.md`): compute-on-read `kilo trust` (mirrors `kilo matrix`, no new table); **quorum is the core** — n=1 UNKNOWN, n=2-split INDETERMINATE (never blame one of two), n≥3 attributes; silence holds last (≠ broke); FIELD_METRICS ⊂ UNITS (device metrics excluded). Opus executes. |
 | K3 | Meshtastic vs RNS controlled A/B on identical boards, same air: delivery/latency/airtime envelopes, eval-case scoring | planned |
 
 ## K0 surface
