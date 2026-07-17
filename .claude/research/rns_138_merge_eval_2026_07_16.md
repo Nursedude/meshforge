@@ -155,3 +155,66 @@ still *defensible* (no forcing function) — but the drift is now 13 upstream
 releases, our #72-class fixes are confirmed still-needed-not-subsumed, and the
 merge is well-scoped. Recommend scheduling the arc rather than deferring again;
 the longer the drift, the larger the eventual `Reticulum.py` reconciliation.
+
+---
+
+## PHASE 1 EXECUTED (2026-07-17, Fable 5) — fork branch merge + tests
+
+**Status: DONE and validated on the fork integration branch. NOT fleet-rolled.**
+
+- **Branch:** `meshforge-138` (fork `Nursedude/reticulum`), pushed to origin.
+  Merge commit `6a90d2bb` (two parents: `83f4be33` mf.5 + `dca2a928` 1.3.8) +
+  FORK.md `9c8ce788`. The deployed `meshforge` branch **stays at `1.2.5+mf.5`**
+  — fleet-roll is gated on canary+soak (Phase 4 below).
+- **Conflicts** exactly as the eval predicted: `Reticulum.py` (20 RPC hunks) +
+  `_version.py`. Everything else auto-merged; mf.3/mf.4/#68/#69 survived.
+- **#72 re-ported** onto msgpack byte-mode: `_rpc_recv` now does
+  `poll(RPC_TIMEOUT)` then `mp.unpackb(recv_bytes())`; all 21 client sites route
+  through it, keeping upstream's per-site try/except AND the wedge bound. Server
+  `conn.recv_bytes()` untouched. Confirmed the resolved `Reticulum.py` diffs
+  from pure 1.3.8 ONLY by our known patches (RPC_TIMEOUT, `_rpc_recv`, mf.4
+  signal-defer, #69 wanted_host).
+
+### The unpredicted finding — mf.4 RLock had to be re-ported, not carried
+
+Live re-validation on 1.3.8's own link/resource suite (the eval's residual
+risk #1 — "shutdown/logging behavior needs live re-validation") surfaced a real
+regression the textual auto-merge hid: the original mf.4 `logging_lock`
+Lock→**RLock** flaked LOG_EXTREME resource transfers. **Controlled A/B on clean
+1.3.8, same worktree:** plain `Lock` = 9/9 link-suite pass; `RLock` = 2/5 fail
+(proof-delivery timeouts). Root cause: RLock's per-acquire overhead on the hot
+logging path under EXTREME's log volume. Production never hit it (fleet runs low
+log levels), but shipping a merge flakier than upstream is unacceptable.
+
+**Cured structurally, keeping a plain Lock:** the self-deadlock mf.4 used the
+RLock to tolerate — `log()`'s on-write-failure fallback re-calling `log()` under
+the lock — now runs the fallback re-log *after* releasing the lock (fresh
+acquire, no reentry). Normal logging is the upstream path byte-for-byte.
+`meshforge_log_reentrancy` rewritten to pin **deadlock-freedom + plain-Lock**,
+not the RLock impl detail. Link suite: **6/6 clean (~20s, matching upstream).**
+Lesson (now in FORK.md): a carried patch must be re-validated against the new
+base, not assumed correct because the merge was textually clean.
+
+### Validation (PYTHONPATH pinned to the merged working tree)
+- Fork tests: rpc_timeout 3, local_connect 4, log_reentrancy 5, host_loss_exit
+  14, detach_timeout 4/5 (blocking_remote's bound proven by direct exercise; its
+  pytest exit-hang is a pre-existing `daemon=False` harness quirk, identical on
+  clean `meshforge`). rpc_timeout updated for byte-mode framing.
+- Upstream suite: hashes/identity/channel pass; link **6/6 clean**.
+- mf.3 detach bound re-validated directly (remote/local/shared all return within
+  DETACH_TIMEOUT); upstream's new `BackboneInterface.deregister_listeners()` is
+  correctly absorbed *inside* the bound.
+
+### Still owed before fleet-roll (Phases 2–4, need hardware + days + operator)
+1. **LXMF `0.9.4+mf.0` → `1.0.1+mf.0`** (near-trivial, fork has 0 functional
+   patches) — in lockstep with MeshAnchor `canonical_message`; verify
+   compression-signalling cross-compat.
+2. **Phase-1 parity on MeshForge side**: `parity_check.py`, `rns_version_check`,
+   the two RNS-wedge probes — but do NOT bump the fleet SSOT baseline
+   (`requirements/rns.txt` MF-FORK-PIN, `rns_version_check.py`) until the roll,
+   or every un-upgraded box fails the check.
+3. **Public-net interop proof** — observed round-trip to NomadNet/Sideband.
+4. **Canary ONE box** (pip-install `meshforge-138`), wedge probes + clean-stop
+   drill + multi-day soak, THEN coordinated per-box roll (client+rnsd together;
+   RPC is box-local so each box is atomic). Only then fast-forward `meshforge`
+   and bump the SSOT.
