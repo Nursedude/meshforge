@@ -205,10 +205,35 @@ base, not assumed correct because the merge was textually clean.
   DETACH_TIMEOUT); upstream's new `BackboneInterface.deregister_listeners()` is
   correctly absorbed *inside* the bound.
 
-### Still owed before fleet-roll (Phases 2–4, need hardware + days + operator)
-1. **LXMF `0.9.4+mf.0` → `1.0.1+mf.0`** (near-trivial, fork has 0 functional
-   patches) — in lockstep with MeshAnchor `canonical_message`; verify
-   compression-signalling cross-compat.
+### PHASE 2 EXECUTED (2026-07-17, Fable) — LXMF 1.0.1 merge + lockstep proof
+
+**DONE on fork branch `meshforge-101` (LXMF `Nursedude/lxmf`), pushed. NOT
+fleet-rolled** (deployed `meshforge` stays `0.9.4+mf.0`). Merge `94b08af`
+(2 parents: `66c48cf` mf.0 + `a29c4a0` 1.0.1); FORK.md updated.
+
+- **Clean adoption:** the fork has 0 functional patches, so all `LXMF/` library
+  code is **byte-identical to upstream 1.0.1** — merge conflicted only on
+  `_version.py`. Imports as `1.0.1+mf.0`, all modules compile. No test suite
+  ships upstream.
+- **Lockstep verified (MF + MA share this fork; canonical_message is a
+  byte-locked twin — confirmed byte-identical MF↔MA):**
+  - *Compression cross-compat SAFE.* 1.0.1 adds compression *signalling*
+    (`compression_support_from_app_data`), not compression — `RNS.Resource`
+    always defaulted `auto_compress=True`, so 0.9.4 already compressed and
+    decompression is symmetric at the RNS layer. A 1.0.1 sender to a 0.9.4 peer
+    sees a 2-element announce (`len<3` → True) and compresses exactly as before;
+    the new behavior only lets a sender SKIP compression for a peer that
+    explicitly opts out (no MF/MA peer does). Safe across a mixed-version roll —
+    the eval's one cross-version worry is retired.
+  - *No FIELD collision.* New numeric fields (REPLY_TO 0x30, REPLY_QUOTE 0x31,
+    REACTION 0x40, COMMENT 0x41, CONTINUATION 0x42) are additive; both gateways
+    key bridge fields by STRING (`meshforge_*`), which coexist with LXMF's
+    numeric keys in the msgpack fields dict. No new field-key validation in the
+    pack path. **Proven by round-trip** (string+numeric keys survive
+    packb/unpackb, meshforge_* intact) on LXMF 1.0.1+mf.0.
+  - `canonical_message` has no LXMF FIELD/version dependency.
+
+### Still owed before fleet-roll (Phases 3–4, need hardware + days + operator)
 2. **Phase-1 parity on MeshForge side**: `parity_check.py`, `rns_version_check`,
    the two RNS-wedge probes — but do NOT bump the fleet SSOT baseline
    (`requirements/rns.txt` MF-FORK-PIN, `rns_version_check.py`) until the roll,
