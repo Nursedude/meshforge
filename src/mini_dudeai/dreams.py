@@ -501,6 +501,38 @@ def count_pending_deltas(deltas_path: str) -> int:
     return n
 
 
+_TRACK_RECORD_CACHE: dict = {}
+
+
+def proposal_track_record(deltas_path: str) -> dict:
+    """{proposed, ratified, rejected} over the latest status of every key —
+    the local tier's own precision mirror. The 2026-07-18 sweep measured
+    0/164 proposals ratified over 7 weeks; mini itself had no idea. The
+    brief renders this so the proposer sees its own track record, the same
+    way the calibration ledger shows the session its broken VERIFIED
+    claims. Missing/unreadable file = zeros (no data, and the brief omits
+    the line — absence is absence). mtime-cached like count_pending_deltas."""
+    zeros = {"proposed": 0, "ratified": 0, "rejected": 0}
+    try:
+        mtime_ns = os.stat(deltas_path).st_mtime_ns
+    except OSError:
+        return dict(zeros)
+    hit = _TRACK_RECORD_CACHE.get(deltas_path)
+    if hit and hit[0] == mtime_ns:
+        return dict(hit[1])
+    latest: dict = {}
+    for d in _load_deltas(deltas_path):
+        k = d.get("key")
+        if k:
+            latest[k] = d.get("status")
+    rec = dict(zeros)
+    for status in latest.values():
+        if status in rec:
+            rec[status] += 1
+    _TRACK_RECORD_CACHE[deltas_path] = (mtime_ns, rec)
+    return dict(rec)
+
+
 def _read_history_tail(path: str, last: int) -> list[dict]:
     """Last `last` parsed JSONL objects. Skips malformed lines, never raises."""
     try:

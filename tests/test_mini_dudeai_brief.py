@@ -247,3 +247,28 @@ def test_resolved_only_brief_is_not_quiet():
     out = build_brief(_state(rules=rules), hist, NOW)
     assert "cleared earlier" in _brief_section(out, "✅ Recently resolved")
     assert "Quiet" not in out
+
+
+# ---------------------------------------------------------- track-record mirror
+
+
+def test_brief_renders_proposal_track_record():
+    tr = {"proposed": 0, "ratified": 0, "rejected": 164}
+    out = build_brief(_state(), [], NOW, delta_track_record=tr)
+    assert "0/164" in out
+    assert "track record" in out.lower()
+
+
+def test_brief_track_record_omitted_when_nothing_resolved():
+    # No resolutions yet = no precision data = no line (absence is absence).
+    tr = {"proposed": 3, "ratified": 0, "rejected": 0}
+    out = build_brief(_state(), [], NOW, delta_track_record=tr)
+    assert "track record" not in out.lower()
+    out2 = build_brief(_state(), [], NOW, delta_track_record=None)
+    assert "track record" not in out2.lower()
+
+
+def test_brief_track_record_all_rejected_is_self_critical():
+    tr = {"proposed": 2, "ratified": 0, "rejected": 50}
+    out = build_brief(_state(), [], NOW, delta_track_record=tr)
+    assert "skeptic" in out.lower() or "evidence bar" in out.lower()

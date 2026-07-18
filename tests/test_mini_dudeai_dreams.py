@@ -495,3 +495,25 @@ def test_cli_requires_an_action(tmp_path):
         assert False, "expected SystemExit"
     except SystemExit as e:
         assert e.code == 2
+
+
+# ---------------------------------------------------------- track record
+
+
+def test_track_record_counts_latest_status_per_key(tmp_path):
+    from mini_dudeai.dreams import proposal_track_record
+    dp = _deltas_file(
+        tmp_path,
+        {"key": "a", "status": "proposed"},   # superseded by the next row
+        {"key": "a", "status": "rejected"},
+        {"key": "b", "status": "ratified"},
+        {"key": "c", "status": "proposed"},
+    )
+    tr = proposal_track_record(str(dp))
+    assert tr == {"proposed": 1, "ratified": 1, "rejected": 1}
+
+
+def test_track_record_missing_file_is_all_zero(tmp_path):
+    from mini_dudeai.dreams import proposal_track_record
+    tr = proposal_track_record(str(tmp_path / "nope.jsonl"))
+    assert tr == {"proposed": 0, "ratified": 0, "rejected": 0}

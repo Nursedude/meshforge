@@ -112,7 +112,8 @@ def _age(now_ts: float, ts: float | None) -> str:
 def build_brief(state: dict, history: list[dict], now_ts: float,
                 stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0,
                 escalation_window_s: float = ESCALATION_WINDOW_S,
-                cadence_triage: dict | None = None) -> str:
+                cadence_triage: dict | None = None,
+                delta_track_record: dict | None = None) -> str:
     """Render the warm-start brief markdown from mini's state + recent history.
 
     `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
@@ -185,6 +186,24 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append(f"\n## 💭 {pending_deltas} memory-delta(s) await ratification")
         lines.append("- See `mini_dudeai_dreams.md` for the synthesis + evidence; "
                      "ratify/reject via `dreams.resolve_delta()`.")
+
+    # B3-mirror — the proposer's own precision, from resolved history. The
+    # same honesty the calibration ledger points at the session, pointed at
+    # the local tier: a proposer that never sees its hit-rate stays
+    # convincingly wrong at the same rate forever. Rendered only once
+    # resolutions exist (no data = no line, never a fabricated 0%).
+    tr = delta_track_record or {}
+    resolved = tr.get("ratified", 0) + tr.get("rejected", 0)
+    if resolved:
+        lines.append(f"\n## 🪞 dream-proposal track record — "
+                     f"{tr.get('ratified', 0)}/{resolved} ratified")
+        if tr.get("ratified", 0) == 0:
+            lines.append("- Every reviewed proposal was judged not "
+                         "memory-worthy. Be a skeptic of my next one — the "
+                         "evidence bar for proposing should probably rise.")
+        else:
+            lines.append("- Ratification ratio over all reviewed proposals; "
+                         "rejection notes in the deltas file say why.")
 
     # W1 — the cadence ran DEGRADED while the frontier was away. Freshness is
     # re-derived here from the witness ts (a stale witness must not keep
@@ -288,16 +307,19 @@ def write_brief(state_path: str, history_path: str, out_path: str,
         deltas_path = os.path.join(
             os.path.dirname(state_path) or ".", DELTAS_BASENAME)
     pending = 0
+    track_record = None
     if os.path.exists(deltas_path):
-        from .dreams import count_pending_deltas
+        from .dreams import count_pending_deltas, proposal_track_record
         pending = count_pending_deltas(deltas_path)
+        track_record = proposal_track_record(deltas_path)
     # Local-tier cadence witness lives beside the deltas file; unreadable or
     # absent → None (the section simply doesn't render — absence is absence).
     from .cadence_fallback import CADENCE_TRIAGE_BASENAME
     triage, _terr = read_json(os.path.join(
         os.path.dirname(deltas_path) or ".", CADENCE_TRIAGE_BASENAME))
     text = build_brief(state or {}, history, now_ts, pending_deltas=pending,
-                       cadence_triage=triage if isinstance(triage, dict) else None)
+                       cadence_triage=triage if isinstance(triage, dict) else None,
+                       delta_track_record=track_record)
     if not _brief_unchanged(out_path, text):
         atomic_write_text(out_path, text)
     return text
