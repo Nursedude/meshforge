@@ -65,11 +65,118 @@ class FleetProvisionHandler(BaseHandler):
             ("fleet_provision",
              "Fleet Architecture   Reproduce a box to a preset (preview + apply)",
              None),
+            ("fleet_membership",
+             "Fleet Membership     Declare standalone, or fleet + host list",
+             None),
         ]
 
     def execute(self, action: str) -> None:
         if action == "fleet_provision":
             self.ctx.safe_call("Fleet Architecture", self._main_menu)
+        elif action == "fleet_membership":
+            self.ctx.safe_call("Fleet Membership", self._membership_menu)
+
+    # ------------------------------------------------------------------
+    # fleet membership (first-run declaration)
+    # ------------------------------------------------------------------
+    def _membership_menu(self) -> None:
+        from . import _fleet_membership_core as fm
+
+        while True:
+            st = fm.membership_state()
+            if st["mode"] == "fleet":
+                head = (f"Mode: FLEET — {len(st['hosts'])} box(es): "
+                        f"{', '.join(st['hosts'][:6])}"
+                        + (" …" if len(st["hosts"]) > 6 else ""))
+            else:
+                head = ("Mode: STANDALONE — no fleet host list. Rollup and "
+                        "fleet tools cover this box only.")
+                if st["disabled_exists"]:
+                    head += "\n(a disabled host list exists — Edit restores it)"
+            choices = [("edit", "Edit host list   ssh aliases, comma/space separated"),
+                       ("probe", "Probe hosts      ssh-check each declared box")]
+            if st["mode"] == "fleet":
+                choices.append(("standalone",
+                                "Go standalone    set host list aside (reversible)"))
+            choices.append(("back", "Back"))
+            sel = self.ctx.dialog.menu(
+                "Fleet Membership", head + f"\nFile: {st['path']}", choices)
+            if sel in (None, "back"):
+                return
+            if sel == "edit":
+                self._membership_edit(fm, st)
+            elif sel == "probe":
+                self._membership_probe(fm, st)
+            elif sel == "standalone":
+                self._membership_standalone(fm, st)
+
+    def _membership_edit(self, fm, st) -> None:
+        init = ", ".join(st["hosts"])
+        if not st["hosts"] and st["disabled_exists"]:
+            init = ", ".join(
+                fm.membership_state(st["path"] + fm.DISABLED_SUFFIX)["hosts"])
+        text = self.ctx.dialog.inputbox(
+            "Fleet Membership",
+            "Boxes this one should see (ssh aliases/hostnames). Empty = "
+            "standalone.", init=init)
+        if text is None:
+            return
+        try:
+            hosts = fm.parse_host_input(text)
+        except ValueError as e:
+            self.ctx.dialog.msgbox("Fleet Membership", f"Rejected: {e}")
+            return
+        if not hosts:
+            self.ctx.dialog.msgbox(
+                "Fleet Membership",
+                "Empty list — use 'Go standalone' to declare standalone "
+                "explicitly; nothing was changed.")
+            return
+        results = fm.probe_hosts(hosts)
+        down = [h for h, s in results if s != "ok"]
+        summary = "\n".join(f"  {'[ OK ]' if s == 'ok' else '[DOWN]'} {h}"
+                            for h, s in results)
+        warn = ("\n\nUnreachable boxes stay in the list (maybe not racked "
+                "yet) — fleet panes will honestly show them unreachable."
+                if down else "")
+        if not self.ctx.dialog.yesno(
+                "Fleet Membership",
+                f"Write {len(hosts)} host(s)?\n\n{summary}{warn}"):
+            return
+        fm.write_fleet_hosts(st["path"], hosts)
+        self.ctx.dialog.msgbox(
+            "Fleet Membership",
+            f"Wrote {st['path']} ({len(hosts)} hosts). Fleet panes pick "
+            "this up on next run — verify via Dashboard → Fleet Posture.")
+
+    def _membership_probe(self, fm, st) -> None:
+        if not st["hosts"]:
+            self.ctx.dialog.msgbox(
+                "Fleet Membership", "No hosts declared — nothing to probe.")
+            return
+        results = fm.probe_hosts(st["hosts"])
+        lines = [f"  {'[ OK ]' if s == 'ok' else '[DOWN]'} {h}"
+                 for h, s in results]
+        ok = sum(1 for _, s in results if s == "ok")
+        self.ctx.dialog.msgbox(
+            "Fleet Membership",
+            f"{ok}/{len(results)} reachable over ssh:\n\n" + "\n".join(lines)
+            + "\n\n[DOWN] = ssh BatchMode failed: box down, no key, or "
+              "wrong alias. Keys/aliases live in ~/.ssh/config.")
+
+    def _membership_standalone(self, fm, st) -> None:
+        if not self.ctx.dialog.yesno(
+                "Fleet Membership",
+                f"Set the host list aside?\n\n{st['path']}\n→ "
+                f"{st['path']}{fm.DISABLED_SUFFIX}\n\nReversible: 'Edit host "
+                "list' offers the saved list back.",
+                default_no=True):
+            return
+        moved = fm.declare_standalone(st["path"])
+        self.ctx.dialog.msgbox(
+            "Fleet Membership",
+            "Already standalone — no host list present." if moved is None
+            else f"Standalone declared. List preserved at:\n{moved}")
 
     # ------------------------------------------------------------------
     # loading

@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 80 handlers · 110 menu actions (derived from get_all_handlers(), never hand-edited).
+# 80 handlers · 111 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -330,6 +330,7 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('fleet_provision', 'Fleet Architecture   Reproduce a box to a preset (preview + apply)', None),
+            ('fleet_membership', 'Fleet Membership     Declare standalone, or fleet + host list', None),
         ],
     },
     {
