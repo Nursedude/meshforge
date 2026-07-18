@@ -266,3 +266,32 @@ class TestEmitters:
                      audit.emit_mikrotik):
             out = emit(reg)
             assert "box3" in out, f"{emit.__name__} silently dropped box3"
+
+
+class TestHostsFromRegistry:
+    """--hosts-from-registry: per-box drift crons audit the registry's own
+    aliases — only the manager box carries fleet_hosts."""
+
+    def _registry_file(self, tmp_path):
+        p = tmp_path / "fleet_naming.json"
+        p.write_text(json.dumps({
+            "domain": "example.internal",
+            "hosts": {"boxa": {"ip_fallback": "192.0.2.10"},
+                      "boxb": {"ip_fallback": "192.0.2.11"}},
+        }))
+        return p
+
+    def test_audits_registry_aliases_without_fleet_hosts(self, tmp_path, capsys,
+                                                         monkeypatch):
+        # No fleet_hosts anywhere: the flag must still audit boxa+boxb.
+        monkeypatch.setattr(audit, "fleet_hosts_file", lambda: None)
+        rc = audit.main(["--json", "--hosts-from-registry",
+                         "--registry", str(self._registry_file(tmp_path))])
+        doc = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert sorted(h["alias"] for h in doc["hosts"]) == ["boxa", "boxb"]
+
+    def test_flag_with_broken_registry_exits_2(self, tmp_path, capsys):
+        rc = audit.main(["--json", "--hosts-from-registry",
+                         "--registry", str(tmp_path / "nope.json")])
+        assert rc == 2  # UNKNOWN, never an empty-healthy report

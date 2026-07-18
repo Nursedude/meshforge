@@ -90,7 +90,7 @@ def judge(report: dict, waivers: list[str]) -> tuple[int, str]:
 def main() -> int:
     try:
         proc = subprocess.run(
-            [sys.executable, str(AUDIT_PATH), "--json"],
+            [sys.executable, str(AUDIT_PATH), "--json", "--hosts-from-registry"],
             capture_output=True, text=True, timeout=AUDIT_TIMEOUT_S,
         )
         report = json.loads(proc.stdout)

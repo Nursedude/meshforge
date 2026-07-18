@@ -311,6 +311,11 @@ def main(argv=None) -> int:
                     help="ssh-keyscan each resolved target vs expect_hostkey")
     ap.add_argument("--registry", default=None,
                     help="registry path override")
+    ap.add_argument("--hosts-from-registry", action="store_true",
+                    help="audit the registry's own aliases instead of the "
+                         "fleet_hosts ssh-target list (for per-box drift "
+                         "crons — every DNS-client box carries the registry, "
+                         "only the manager carries fleet_hosts)")
     ap.add_argument("--emit-dnsmasq", action="store_true")
     ap.add_argument("--emit-uci", action="store_true")
     ap.add_argument("--emit-mikrotik", action="store_true")
@@ -332,12 +337,20 @@ def main(argv=None) -> int:
             sys.stdout.write(emit_mikrotik(registry))
         return 0
 
-    hosts_path = fleet_hosts_file()
-    if hosts_path is None:
-        print("fleet_naming_audit: no fleet_hosts file found — nothing to "
-              "audit (could not verify)", file=sys.stderr)
-        return 2
-    hosts = parse_fleet_hosts(hosts_path.read_text(encoding="utf-8"))
+    if args.hosts_from_registry:
+        if registry is None:
+            for e in errors:
+                print(f"fleet_naming_audit: registry error: {e}",
+                      file=sys.stderr)
+            return 2
+        hosts = sorted(registry.hosts)
+    else:
+        hosts_path = fleet_hosts_file()
+        if hosts_path is None:
+            print("fleet_naming_audit: no fleet_hosts file found — nothing to "
+                  "audit (could not verify)", file=sys.stderr)
+            return 2
+        hosts = parse_fleet_hosts(hosts_path.read_text(encoding="utf-8"))
 
     doc = run_audit(hosts, registry, errors,
                     verify_identity=args.verify_identity)
