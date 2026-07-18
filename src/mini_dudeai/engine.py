@@ -543,6 +543,13 @@ class RuleEngine:
         ]
         state["fire_count"] = fire_count
         state["host"] = os.uname().nodename
+        # Publish the unratified dream-delta count so the fleet rollup can
+        # surface it — 164 proposals sat invisible for 7 weeks (2026-07-18
+        # sweep) because only the box-local brief ever rendered the number.
+        # count_pending_deltas is mtime-cached, so this is ~free per tick.
+        from .dreams import count_pending_deltas, DELTAS_BASENAME
+        state["pending_deltas"] = count_pending_deltas(os.path.join(
+            os.path.dirname(self.state_store.path) or ".", DELTAS_BASENAME))
         # Append history BEFORE saving state so the appends counter only
         # advances when the write actually landed — probe_history_write_failure
         # reads it as the honest "history should have grown" baseline (the old

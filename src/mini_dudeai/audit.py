@@ -52,7 +52,7 @@ DEGRADED = "degraded"
 
 STATE_FILE = "mini_dudeai_state.json"
 HISTORY_FILE = "mini_dudeai_history.jsonl"
-DELTAS_FILE = "mini_dudeai_memory_deltas.jsonl"
+from .dreams import DELTAS_BASENAME as DELTAS_FILE
 
 # Cap for the append-only honesty ledger (`--ledger`). One verdict line per
 # audit run; left unbounded it grows ~30 KB/day with no ceiling. 2 MB is

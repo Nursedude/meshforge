@@ -102,13 +102,13 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.dream:
-        from .dreams import write_dreams
+        from .dreams import write_dreams, DELTAS_BASENAME
         state_path = engine.state_store.path
         base = os.path.dirname(state_path) or "."
         summary = write_dreams(
             state_path=state_path,
             history_path=engine.history.path,
-            deltas_path=os.path.join(base, "mini_dudeai_memory_deltas.jsonl"),
+            deltas_path=os.path.join(base, DELTAS_BASENAME),
             narrative_path=os.path.join(base, "mini_dudeai_dreams.md"),
         )
         print(f"mini-dudeai dream: detected={summary['detected']} "

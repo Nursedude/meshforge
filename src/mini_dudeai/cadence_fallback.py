@@ -46,6 +46,7 @@ from .chat_compiler import (
     CompilerError,
     OllamaBackend,
 )
+from .dreams import DELTAS_BASENAME
 
 # One constant, two consumers: this module writes the witness, brief.py
 # renders the "cadence ran on LOCAL tier" line from it.
@@ -235,7 +236,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         description="Local-tier cadence fallback: triage proposed memory-"
                     "deltas for the returning frontier. Never ratifies.")
     ap.add_argument("--deltas", default=os.path.join(
-        resolve_home(), "mini_dudeai_memory_deltas.jsonl"))
+        resolve_home(), DELTAS_BASENAME))
     ap.add_argument("--out", default=default_witness_path())
     ap.add_argument("--clear", action="store_true",
                     help="retire the witness (a SUCCESSFUL frontier session "

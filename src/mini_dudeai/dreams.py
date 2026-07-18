@@ -48,6 +48,9 @@ PERSISTENT_MIN_ACTIVE_S = 3600.0      # currently_active >= 1h = a persistent co
 # run until the 24h state window ages out the signal. After the window, if the
 # condition still detects, it re-surfaces (genuinely persistent → worth another look).
 DEFAULT_RESOLVE_SUPPRESS_S = 604800.0  # 7 days
+# One name for the deltas file across every consumer (engine tick counter,
+# daemon, brief, cadence_fallback, audit) — independent hardcodes WILL drift.
+DELTAS_BASENAME = "mini_dudeai_memory_deltas.jsonl"
 
 
 # --- small helpers ------------------------------------------------------------
@@ -524,7 +527,7 @@ def _read_history_tail(path: str, last: int) -> list[dict]:
 
 def _default_deltas_path() -> str:
     """Standard deltas file in the mini home (package convention)."""
-    return os.path.join(resolve_home(), "mini_dudeai_memory_deltas.jsonl")
+    return os.path.join(resolve_home(), DELTAS_BASENAME)
 
 
 def main(argv: list[str] | None = None) -> int:

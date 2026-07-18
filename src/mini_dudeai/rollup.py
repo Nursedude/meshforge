@@ -156,6 +156,9 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
         "rule_count": state.get("rule_count", len(rules)),
         "src_errors": state.get("error_count", 0),
         "source_errors": state.get("source_errors") or [],
+        # None (not 0) when absent — a pre-upgrade daemon's state simply
+        # doesn't carry the count, and unknown must never read as zero.
+        "pending_deltas": state.get("pending_deltas"),
         "active": active,
         "state_host": state.get("host"),
         "claw": parse_claw_posture(claw, now_ts),
@@ -350,6 +353,9 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
                 f"src_errors={p['src_errors']}")
         if p["src_errors"] and p.get("source_errors"):
             head += f" ({'; '.join(p['source_errors'])})"
+        pd = p.get("pending_deltas")
+        if isinstance(pd, int) and pd > 0:
+            head += f" · 💭 {pd} delta(s) pending"
         if p["status"] == "stale":
             head += " · ⚠️ daemon may be down"
         lines.append(head)

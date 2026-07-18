@@ -512,6 +512,39 @@ def test_state_file_has_meta_fields(tmp_path):
         assert k in state, f"missing meta field: {k}"
 
 
+def test_state_carries_pending_deltas_count(tmp_path):
+    """The tick publishes the unratified dream-delta count into state.json so
+    the fleet rollup can surface it — the 2026-07-18 sweep found 164 proposals
+    invisible for 7 weeks because only the local brief ever rendered them."""
+    deltas = tmp_path / "mini_dudeai_memory_deltas.jsonl"
+    deltas.write_text(
+        json.dumps({"key": "a", "status": "proposed"}) + "\n"
+        + json.dumps({"key": "b", "status": "proposed"}) + "\n"
+        + json.dumps({"key": "c", "status": "rejected"}) + "\n")
+    src = StaticSource([])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "none"}}],
+        actions={"none": NoopAction()},
+    )
+    engine.tick()
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["pending_deltas"] == 2
+
+
+def test_state_pending_deltas_zero_when_no_deltas_file(tmp_path):
+    """No deltas file = dreams never proposed anything = honestly zero."""
+    src = StaticSource([])
+    engine = _engine(
+        tmp_path, [src],
+        [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "none"}}],
+        actions={"none": NoopAction()},
+    )
+    engine.tick()
+    state = json.loads((tmp_path / "state.json").read_text())
+    assert state["pending_deltas"] == 0
+
+
 # === grace / debounce (grace_s) ==================================
 
 def test_grace_holds_until_condition_persists(tmp_path, monkeypatch):

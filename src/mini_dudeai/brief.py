@@ -284,8 +284,9 @@ def write_brief(state_path: str, history_path: str, out_path: str,
         state, _ = read_json(state_path)
     history = _read_history_tail(history_path, history_tail)
     if deltas_path is None:
+        from .dreams import DELTAS_BASENAME
         deltas_path = os.path.join(
-            os.path.dirname(state_path) or ".", "mini_dudeai_memory_deltas.jsonl")
+            os.path.dirname(state_path) or ".", DELTAS_BASENAME)
     pending = 0
     if os.path.exists(deltas_path):
         from .dreams import count_pending_deltas

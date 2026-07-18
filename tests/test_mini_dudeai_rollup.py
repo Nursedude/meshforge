@@ -97,6 +97,19 @@ def test_parse_self_box_flag():
     assert p["self_box"] is True
 
 
+def test_parse_carries_pending_deltas():
+    st = {"last_tick_ts": NOW, "pending_deltas": 3}
+    assert parse_state_posture("moc", st, NOW)["pending_deltas"] == 3
+
+
+def test_parse_pending_deltas_absent_is_none_not_zero():
+    """A pre-upgrade daemon's state has no pending_deltas key — that is
+    UNKNOWN, never 0 (honest_failure_modes #1: absence must not overlap the
+    healthy domain)."""
+    p = parse_state_posture("moc", {"last_tick_ts": NOW}, NOW)
+    assert p["pending_deltas"] is None
+
+
 # === collect_remote (injected runner) ============================
 
 def _runner(rc, out, err=""):
@@ -173,6 +186,27 @@ def test_build_rollup_renders_active_rules():
     }]
     out = build_rollup(postures, NOW)
     assert "active: backoff" in out and "in_backoff=True" in out
+
+
+def test_build_rollup_renders_pending_deltas():
+    postures = [{
+        "host": "moc", "status": "fresh", "age": "1s", "rule_count": 8,
+        "src_errors": 0, "self_box": False, "active": [],
+        "pending_deltas": 35,
+    }]
+    out = build_rollup(postures, NOW)
+    assert "35 delta(s) pending" in out
+
+
+def test_build_rollup_omits_pending_deltas_when_zero_or_unknown():
+    postures = [
+        {"host": "moc", "status": "fresh", "age": "1s", "rule_count": 8,
+         "src_errors": 0, "self_box": False, "active": [], "pending_deltas": 0},
+        {"host": "moc2", "status": "fresh", "age": "1s", "rule_count": 8,
+         "src_errors": 0, "self_box": False, "active": []},  # pre-upgrade daemon
+    ]
+    out = build_rollup(postures, NOW)
+    assert "pending" not in out
 
 
 # === claw card (batch-2-5 harness #2) ============================
