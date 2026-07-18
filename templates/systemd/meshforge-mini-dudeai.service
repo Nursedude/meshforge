@@ -19,7 +19,12 @@ WorkingDirectory=/opt/meshforge
 # fail before the file exists; the preset will fail loud if MINI_DUDEAI_NTFY_TOPIC
 # is missing.
 EnvironmentFile=-%h/.config/meshforge/mini_dudeai.env
-ExecStart=/usr/bin/python3 -m mini_dudeai --preset meshforge_fleet --interval 30
+# `auto` follows the box's fleet-membership declaration (the fleet_hosts
+# file the TUI Fleet Membership wizard writes): hosts declared ->
+# meshforge_fleet, none -> standalone. The resolution is logged at
+# startup. To pin a preset regardless of declaration, name it here
+# explicitly (e.g. --preset meshforge_fleet).
+ExecStart=/usr/bin/python3 -m mini_dudeai --preset auto --interval 30
 Restart=on-failure
 RestartSec=10
 ProtectSystem=strict

@@ -12,7 +12,9 @@ EnvironmentFile=-%h/.config/meshforge/mini_dudeai.env
 # Reads ~/mini_dudeai_state.json + _history.jsonl; writes ~/mini_dudeai_dreams.md
 # and appends ~/mini_dudeai_memory_deltas.jsonl. Observation-only — never writes
 # canonical memory; the cloud session ratifies deltas.
-ExecStart=/usr/bin/python3 -m mini_dudeai --preset meshforge_fleet --dream
+# `auto` follows the fleet-membership declaration — same resolution as the
+# main daemon unit (see meshforge-mini-dudeai.service).
+ExecStart=/usr/bin/python3 -m mini_dudeai --preset auto --dream
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

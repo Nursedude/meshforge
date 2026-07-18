@@ -158,3 +158,28 @@ def test_boot_health_env_gate_off(tmp_path, monkeypatch):
     names = [getattr(s, "name", "?") for s in engine.sources]
     assert "boot_health" not in names
     assert engine.clean_exit_path is None    # gate covers writer AND reader
+
+
+# ------------------------------------------------- preset auto-resolution
+
+def test_resolve_preset_name_passthrough():
+    from mini_dudeai.daemon import _resolve_preset_name
+    assert _resolve_preset_name("standalone") == "standalone"
+    assert _resolve_preset_name("meshforge_fleet") == "meshforge_fleet"
+    assert _resolve_preset_name("my.dotted.preset") == "my.dotted.preset"
+
+
+def test_resolve_preset_auto_follows_fleet_declaration(tmp_path, monkeypatch):
+    """--preset auto reads the SAME fleet_hosts SSOT the membership wizard
+    writes: hosts declared -> fleet preset, none -> standalone."""
+    from mini_dudeai.daemon import _resolve_preset_name
+    hosts = tmp_path / "fleet_hosts"
+    hosts.write_text("boxa\nboxb\n")
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(hosts))
+    assert _resolve_preset_name("auto") == "meshforge_fleet"
+
+
+def test_resolve_preset_auto_standalone_when_no_declaration(tmp_path, monkeypatch):
+    from mini_dudeai.daemon import _resolve_preset_name
+    monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "absent"))
+    assert _resolve_preset_name("auto") == "standalone"

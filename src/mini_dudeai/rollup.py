@@ -66,12 +66,17 @@ def resolve_fleet_hosts(env: dict | None = None) -> list[str]:
     $MESHFORGE_FLEET_HOSTS → ~/.config/meshforge/fleet_hosts → /etc/meshforge/fleet_hosts.
     One host per line; '#' comments and blanks ignored. [] if no list exists."""
     env = os.environ if env is None else env
-    candidates = []
     if env.get("MESHFORGE_FLEET_HOSTS"):
-        candidates.append(env["MESHFORGE_FLEET_HOSTS"])
-    home = env.get("HOME") or os.path.expanduser("~")
-    candidates.append(os.path.join(home, ".config", "meshforge", "fleet_hosts"))
-    candidates.append("/etc/meshforge/fleet_hosts")
+        # Explicit override is AUTHORITATIVE: absent/unreadable must yield
+        # [] rather than silently falling through to the box's real config
+        # (degraded state reading as a valid value).
+        candidates = [env["MESHFORGE_FLEET_HOSTS"]]
+    else:
+        home = env.get("HOME") or os.path.expanduser("~")
+        candidates = [
+            os.path.join(home, ".config", "meshforge", "fleet_hosts"),
+            "/etc/meshforge/fleet_hosts",
+        ]
     for path in candidates:
         try:
             with open(path) as f:

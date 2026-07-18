@@ -147,7 +147,9 @@ class FleetProvisionHandler(BaseHandler):
         self.ctx.dialog.msgbox(
             "Fleet Membership",
             f"Wrote {st['path']} ({len(hosts)} hosts). Fleet panes pick "
-            "this up on next run — verify via Dashboard → Fleet Posture.")
+            "this up on next run — verify via Dashboard → Fleet Posture. "
+            "mini units on --preset auto follow this declaration at their "
+            "next restart.")
 
     def _membership_probe(self, fm, st) -> None:
         if not st["hosts"]:
@@ -176,7 +178,9 @@ class FleetProvisionHandler(BaseHandler):
         self.ctx.dialog.msgbox(
             "Fleet Membership",
             "Already standalone — no host list present." if moved is None
-            else f"Standalone declared. List preserved at:\n{moved}")
+            else (f"Standalone declared. List preserved at:\n{moved}\n\n"
+                  "mini units on --preset auto switch to the standalone "
+                  "preset at their next restart."))
 
     # ------------------------------------------------------------------
     # loading

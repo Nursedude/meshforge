@@ -44,6 +44,22 @@ def _acquire_instance_lock(lock_path: str):
     return f
 
 
+def _resolve_preset_name(name: str) -> str:
+    """``auto`` follows the box's fleet-membership declaration — the same
+    fleet_hosts SSOT the TUI Fleet Membership wizard writes and every fleet
+    consumer reads (hosts declared → meshforge_fleet, none → standalone).
+    Any other name passes through untouched, so deployed units that pin an
+    explicit preset keep their exact behavior."""
+    if name != "auto":
+        return name
+    from .rollup import resolve_fleet_hosts
+    hosts = resolve_fleet_hosts()
+    resolved = "meshforge_fleet" if hosts else "standalone"
+    print(f"mini-dudeai: preset auto -> {resolved} "
+          f"({len(hosts)} fleet host(s) declared)")
+    return resolved
+
+
 def _import_preset(name: str):
     """Resolve a preset name to its build_engine() function.
 
@@ -84,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.preset:
-        build_engine = _import_preset(args.preset)
+        build_engine = _import_preset(_resolve_preset_name(args.preset))
         engine = build_engine()
         interval = args.interval if args.interval is not None else 30.0
     else:
