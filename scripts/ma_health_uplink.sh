@@ -88,6 +88,9 @@ fi
 } > "$DETAIL"
 
 if [ "${#fail[@]}" -gt 0 ]; then
+    # FAIL evidence must survive the next OK run's $DETAIL overwrite —
+    # a self-clearing transient is undiagnosable otherwise (honest_failure_modes #9)
+    cp -f "$DETAIL" "$STATE_DIR/ma_health_last_fail.txt" 2>/dev/null
     printf 'ma_health FAIL: %s\n' "$(IFS='; '; echo "${fail[*]}")"
     exit 1
 fi
