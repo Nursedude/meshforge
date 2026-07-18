@@ -95,6 +95,23 @@ class AIToolsHandler(
         """Start map server on TUI launch if user has enabled auto-open."""
         self._maybe_auto_start_map()
 
+    def on_shutdown(self):
+        """Stop the in-process fallback map server, if this TUI started one.
+
+        Without this hook the handler is on_startup-only, which
+        ``startup_all()``'s LifecycleHandler isinstance (both hooks) skips —
+        so the map auto-start silently never ran (step-2 review FINDING-3).
+        The systemd-owned server (meshforge-map) is deliberately left alone;
+        it outlives the TUI.
+        """
+        server = getattr(self, "_map_server", None)
+        if server:
+            try:
+                server.stop()
+            except Exception as e:
+                logger.warning("In-process map server stop failed: %s", e)
+            self._map_server = None
+
     # =========================================================================
     # AI Tools sub-menu
     # =========================================================================

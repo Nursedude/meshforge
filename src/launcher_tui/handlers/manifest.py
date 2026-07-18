@@ -37,7 +37,7 @@ HANDLER_MANIFEST = [
         "module": 'handlers.ai_tools',
         "class_name": 'AIToolsHandler',
         "menu_section": 'maps_viz',
-        "lifecycle": False,
+        "lifecycle": True,
         "error": None,
         "menu_items": [
             ('livemap', 'Live NOC Map        Real-time browser view', None),
@@ -821,7 +821,7 @@ HANDLER_MANIFEST = [
         "module": 'handlers.startup_health',
         "class_name": 'StartupHealthHandler',
         "menu_section": 'system',
-        "lifecycle": False,
+        "lifecycle": True,
         "error": None,
         "menu_items": [],
     },

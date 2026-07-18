@@ -141,9 +141,11 @@ class TestManifestFidelity:
             assert live == snap, (
                 f"menu_items snapshot mismatch for {hid!r} — the manifest is "
                 f"stale.\n live={live}\n snap={snap}")
-            assert isinstance(inst, LifecycleHandler) == d["lifecycle"], (
-                f"lifecycle flag wrong for {hid!r} — a lifecycle handler must "
-                f"stay eager")
+            has_hook = hasattr(inst, "on_startup") or hasattr(inst, "on_shutdown")
+            assert has_hook == d["lifecycle"], (
+                f"lifecycle flag wrong for {hid!r} — a handler with any "
+                f"startup/shutdown hook must stay eager (BLOCKER-1: main.py's "
+                f"direct get_handler(id).on_startup() calls)")
 
     def test_menu_items_are_raw_not_markdown_cleaned(self):
         """The equality check compares live menu_items() to the snapshot, so the
@@ -462,3 +464,93 @@ class TestLazyDispatchMaterialization:
         reg.register_lazy(_descriptor())
         assert reg.dispatch("faketest", "no_such_tag") is False
         assert reg.dispatch("no_such_section", "t1") is False
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# F. Step-2 flip blockers (frontier review 2026-07-16) — the fixes that must
+#    hold BEFORE main.py ever flips to manifest registration
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestDirectCallHandlersStayEagerBlocker1:
+    """main.py calls ``get_handler(id).on_startup()`` DIRECTLY for first_run
+    and startup_health; a lazy registration would hand that call a sentinel
+    (TUI-startup AttributeError). The generator's widened predicate — either
+    hook ⇒ ``lifecycle: True`` — must keep every hook-bearing handler eager."""
+
+    def test_direct_call_handlers_are_lifecycle_in_manifest(self):
+        by_id = {d["handler_id"]: d for d in _live_manifest()}
+        assert by_id["first_run"]["lifecycle"] is True
+        assert by_id["startup_health"]["lifecycle"] is True
+        assert by_id["ai_tools"]["lifecycle"] is True
+
+    def test_predicate_is_wider_than_lifecycle_isinstance(self):
+        # startup_health is on_startup-ONLY: the both-hooks isinstance is
+        # False, yet the manifest must still flag it eager — reverting the
+        # generator to isinstance would regenerate this flag to False and
+        # fail here (via the drift gate).
+        from handlers.startup_health import StartupHealthHandler
+        inst = StartupHealthHandler()
+        assert hasattr(inst, "on_startup")
+        assert not isinstance(inst, LifecycleHandler)
+        by_id = {d["handler_id"]: d for d in _live_manifest()}
+        assert by_id["startup_health"]["lifecycle"] is True
+
+    def test_no_hook_bearing_handler_is_lazy_eligible(self):
+        # The invariant BLOCKER-1 protects, swept across the whole manifest:
+        # any handler whose class defines a startup/shutdown hook must carry
+        # lifecycle True (register_lazy refuses those descriptors).
+        for d in _live_manifest():
+            if d["error"]:
+                continue
+            mod = importlib.import_module(d["module"])
+            cls = getattr(mod, d["class_name"])
+            has_hook = hasattr(cls, "on_startup") or hasattr(cls, "on_shutdown")
+            if has_hook:
+                assert d["lifecycle"] is True, (
+                    f"{d['handler_id']} defines a lifecycle hook but the "
+                    f"manifest marks it lazy-eligible")
+
+
+class TestAiToolsLifecycleFinding3:
+    def test_ai_tools_is_full_lifecycle_handler(self):
+        # isinstance(LifecycleHandler) is the EXACT predicate startup_all()
+        # uses; before the on_shutdown fix ai_tools was on_startup-only, so
+        # its map auto-start hook silently never ran (FINDING-3).
+        from handlers.ai_tools import AIToolsHandler
+        assert isinstance(AIToolsHandler(), LifecycleHandler)
+
+
+class TestGetHandlerMaterializesBlocker2:
+    """Cross-handler delegations (``get_handler("broker")._broker_menu()``)
+    need the target's real code — get_handler must materialize a sentinel."""
+
+    def test_get_handler_materializes_lazy_sentinel(self, monkeypatch):
+        live = [("do", "Do  thing", None)]
+        Fake = _install_fake_module(monkeypatch, "fake_lazy_gethandler", live)
+        ctx, dialog = _make_ctx()
+        reg = HandlerRegistry(ctx)
+        reg.register_lazy(_lazy_desc("fake_lazy_gethandler", live))
+        assert isinstance(reg._handlers["fakeh"], _LazyHandler)
+
+        h = reg.get_handler("fakeh")
+
+        assert h is not None and not isinstance(h, _LazyHandler)
+        assert isinstance(h, Fake)
+        # Swapped in: the next lookup and dispatch are direct.
+        assert reg._handlers["fakeh"] is h
+        assert dialog.msgboxes == []  # clean load, no dialog
+
+    def test_get_handler_returns_none_on_materialize_failure(self):
+        # Un-importable module → None, so callers' existing ``if handler:``
+        # null-guards degrade honestly instead of crashing on a sentinel —
+        # and the failure surfaces a witness, never a silent no-op.
+        ctx, dialog = _make_ctx()
+        reg = HandlerRegistry(ctx)
+        reg.register_lazy(_descriptor())  # module path is un-importable
+        assert reg.get_handler("fake") is None
+        assert len(dialog.msgboxes) >= 1
+
+    def test_get_handler_eager_and_missing_unchanged(self):
+        ctx, _ = _make_ctx()
+        reg = HandlerRegistry(ctx)
+        assert reg.get_handler("no_such_handler") is None

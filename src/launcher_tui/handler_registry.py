@@ -204,12 +204,22 @@ class HandlerRegistry:
         )
 
     def get_handler(self, handler_id: str) -> Optional[CommandHandler]:
-        """Look up a handler by its unique ID.
+        """Look up a handler by its unique ID, materializing a lazy sentinel.
+
+        Cross-handler delegations (``get_handler("broker")._broker_menu()``)
+        need the target's real code, so a ``_LazyHandler`` is imported +
+        instantiated here exactly as ``dispatch`` does (step-2 review
+        BLOCKER-2). On materialize failure this returns None — the witness is
+        surfaced inside ``_materialize`` and callers' existing ``if handler:``
+        null-guards degrade honestly instead of crashing on a sentinel.
 
         Returns:
-            The handler, or None if not found.
+            The handler, or None if not found / failed to load.
         """
-        return self._handlers.get(handler_id)
+        handler = self._handlers.get(handler_id)
+        if isinstance(handler, _LazyHandler):
+            return self._materialize(handler, handler.menu_section)
+        return handler
 
     def get_menu_items(self, section: str) -> List[Tuple[str, str]]:
         """Get filtered menu items for a section, respecting feature flags.

@@ -81,9 +81,11 @@ def collect_handler_descriptors() -> List[dict]:
                           NOT ``_clean_desc``'d. The registry's dispatch-time
                           equality check compares these to the live values, so
                           they must be byte-exact (padded labels, ``flag=None``).
-      * ``lifecycle``   — ``isinstance(inst, LifecycleHandler)``: True → the
-                          handler has on_startup/on_shutdown and MUST stay eager
-                          (its hooks can't run if imported lazily at dispatch).
+      * ``lifecycle``   — True when the handler defines ``on_startup`` OR
+                          ``on_shutdown`` (not the both-hooks LifecycleHandler
+                          isinstance: an on_startup-only handler like
+                          startup_health is invoked directly by main.py and
+                          MUST stay eager too — step-2 review BLOCKER-1).
       * ``error``       — ``"Type: msg"`` if the handler can't be constructed or
                           its ``menu_items()`` raises; ``None`` when healthy. A
                           silently-dropped handler would read as "this part of
@@ -94,7 +96,7 @@ def collect_handler_descriptors() -> List[dict]:
     artifacts can never disagree about the handler set.
     """
     from handlers import get_all_handlers
-    from handler_protocol import TUIContext, LifecycleHandler
+    from handler_protocol import TUIContext
 
     # A neutral context: no dialog, no feature flags. ``feature_enabled()``
     # returns True for everything, so the surface is the FULL command set
@@ -119,7 +121,12 @@ def collect_handler_descriptors() -> List[dict]:
             # Instance attrs win over class attrs if the handler sets them.
             d["handler_id"] = getattr(inst, "handler_id", d["handler_id"]) or d["handler_id"]
             d["menu_section"] = getattr(inst, "menu_section", d["menu_section"]) or d["menu_section"]
-            d["lifecycle"] = isinstance(inst, LifecycleHandler)
+            # Either hook ⇒ eager. isinstance(LifecycleHandler) needs BOTH
+            # hooks, but main.py's direct get_handler(id).on_startup() bypass
+            # makes any startup work eager-load-bearing (BLOCKER-1).
+            d["lifecycle"] = (
+                hasattr(inst, "on_startup") or hasattr(inst, "on_shutdown")
+            )
             # Validate the 3-tuple shape INSIDE the try (a malformed row is an
             # error to record, never a generator crash) and only commit the
             # normalized list once the whole loop succeeds — a mid-list failure
