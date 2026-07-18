@@ -82,6 +82,12 @@ class FleetHost:
     mac: Optional[str] = None
     expect_hostkey: Optional[str] = None
     notes: str = ""
+    # Explicit shared-address declaration: this host's ip_fallback is a NAT
+    # front it legitimately shares with the named alias (e.g. the AREDN hAP
+    # owns the WAN addr that is also moc1's reachable front). Without this,
+    # a duplicate ip_fallback stays a registry ERROR — two boxes silently
+    # claiming one address is the misconfig the validator exists to catch.
+    shares_front_with: Optional[str] = None
 
 
 @dataclass
@@ -149,8 +155,13 @@ def _validate_host(alias: str, raw, errors: List[str]) -> Optional[FleetHost]:
     if key is not None and not isinstance(key, str):
         errors.append(f"{where}: expect_hostkey must be a string")
         return None
+    sfw = raw.get("shares_front_with")
+    if sfw is not None and not isinstance(sfw, str):
+        errors.append(f"{where}: shares_front_with must be a string alias")
+        return None
     return FleetHost(alias=alias, ip_fallback=fb, mac=mac,
-                     expect_hostkey=key, notes=str(raw.get("notes", "")))
+                     expect_hostkey=key, notes=str(raw.get("notes", "")),
+                     shares_front_with=sfw)
 
 
 def load_registry(path: Optional[str] = None
@@ -188,14 +199,25 @@ def load_registry(path: Optional[str] = None
     # would silently last-win and one box's hardcoded IP would be
     # attributed to the other. Refuse loud (the kilo duplicate-anchor
     # precedent).
+    for h in hosts.values():
+        if h.shares_front_with is not None and h.shares_front_with not in hosts:
+            errors.append(
+                f"{h.alias!r}: shares_front_with {h.shares_front_with!r} "
+                f"names no registry host — a dangling declaration would "
+                f"silently re-legalize a real duplicate")
     claimed: Dict[str, str] = {}
     for h in hosts.values():
         if h.ip_fallback:
             if h.ip_fallback in claimed:
-                errors.append(
-                    f"duplicate ip_fallback {h.ip_fallback!r} claimed by "
-                    f"both {claimed[h.ip_fallback]!r} and {h.alias!r} — "
-                    f"one address cannot be two boxes")
+                other = hosts[claimed[h.ip_fallback]]
+                declared = (h.shares_front_with == other.alias
+                            or other.shares_front_with == h.alias)
+                if not declared:
+                    errors.append(
+                        f"duplicate ip_fallback {h.ip_fallback!r} claimed by "
+                        f"both {claimed[h.ip_fallback]!r} and {h.alias!r} — "
+                        f"one address cannot be two boxes (a deliberate NAT "
+                        f"front needs shares_front_with)")
             else:
                 claimed[h.ip_fallback] = h.alias
     if errors:

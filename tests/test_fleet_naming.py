@@ -106,6 +106,34 @@ class TestRegistryHonesty:
         assert reg is None
         assert any("duplicate ip_fallback" in e for e in errs)
 
+    def test_declared_nat_front_allows_shared_ip(self, tmp_path):
+        """One address, two names is LEGAL when explicitly declared — the
+        hap/moc1 case: the NAT device owns the addr that is also the
+        fronted box's only reachable address (2026-07-17)."""
+        doc = {"hosts": {"box1": {"ip_fallback": "192.0.2.10"},
+                         "natdev": {"ip_fallback": "192.0.2.10",
+                                    "shares_front_with": "box1"}}}
+        reg, errs = load_registry(_write(tmp_path, doc))
+        assert errs == []
+        assert reg.hosts["natdev"].shares_front_with == "box1"
+
+    def test_declaration_only_pairs_the_named_alias(self, tmp_path):
+        # A third host on the same addr is still the copy-paste error.
+        doc = {"hosts": {"box1": {"ip_fallback": "192.0.2.10"},
+                         "natdev": {"ip_fallback": "192.0.2.10",
+                                    "shares_front_with": "box1"},
+                         "box9": {"ip_fallback": "192.0.2.10"}}}
+        reg, errs = load_registry(_write(tmp_path, doc))
+        assert reg is None
+        assert any("box9" in e and "duplicate" in e for e in errs)
+
+    def test_dangling_shares_front_with_is_an_error(self, tmp_path):
+        doc = {"hosts": {"natdev": {"ip_fallback": "192.0.2.10",
+                                    "shares_front_with": "ghost"}}}
+        reg, errs = load_registry(_write(tmp_path, doc))
+        assert reg is None
+        assert any("names no registry host" in e for e in errs)
+
 
 class TestResolvePrecedence:
     def _reg(self):
