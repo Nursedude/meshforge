@@ -151,8 +151,10 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append(f"🔴 **STALE** — last tick {age} ago (> {int(stale_s)}s). The watcher itself "
                      f"may be down: `systemctl --user status meshforge-mini-dudeai`.")
     else:
+        err_names = "; ".join(state.get("source_errors") or [])
         lines.append(f"🟢 alive — {state.get('rule_count', len(rules))} rules, "
-                     f"src_errors={state.get('error_count', 0)} this tick.")
+                     f"src_errors={state.get('error_count', 0)} this tick."
+                     + (f" ({err_names})" if err_names else ""))
 
     # Still active now
     active = [rs for rs in rules.values() if isinstance(rs, dict) and rs.get("currently_active")]

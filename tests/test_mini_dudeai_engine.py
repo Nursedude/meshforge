@@ -295,6 +295,31 @@ def test_source_error_emitted_as_condition(tmp_path):
     assert [c[2] for c in rec.calls] == ["edge_up"]
 
 
+def test_source_errors_named_in_state(tmp_path):
+    """The failing source is NAMED in state['source_errors'] so a one-tick
+    transient leaves an identifiable witness (not just a count), capped at
+    8 entries x 160 chars so a mass-failure tick can't bloat the state file."""
+
+    class ManyBroken(Source):
+        name = "many"
+        def collect(self):
+            return [Condition(kind="source_error", subject=f"src{i}",
+                              detail="x" * 500, source="many")
+                    for i in range(12)]
+
+    engine = _engine(tmp_path, [ManyBroken()], [])
+    state = engine.tick()
+    assert state["error_count"] == 12
+    assert len(state["source_errors"]) == 8
+    assert state["source_errors"][0].startswith("src0: xxx")
+    assert all(len(e) <= 160 for e in state["source_errors"])
+    # clean tick -> empty list, never absent (readers can trust the key)
+    (tmp_path / "clean").mkdir(exist_ok=True)
+    engine2 = _engine(tmp_path / "clean", [], [])
+    state2 = engine2.tick()
+    assert state2["source_errors"] == []
+
+
 # === candidate promotion ========================================
 
 def test_candidate_promoted_when_valid(tmp_path):

@@ -155,6 +155,7 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
         "age": _age(now_ts, last_tick) if last_tick else "?",
         "rule_count": state.get("rule_count", len(rules)),
         "src_errors": state.get("error_count", 0),
+        "source_errors": state.get("source_errors") or [],
         "active": active,
         "state_host": state.get("host"),
         "claw": parse_claw_posture(claw, now_ts),
@@ -347,6 +348,8 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
                 f"last tick {p['age']} ago · {p['rule_count']} rules · "
                 f"src_errors={p['src_errors']}")
+        if p["src_errors"] and p.get("source_errors"):
+            head += f" ({'; '.join(p['source_errors'])})"
         if p["status"] == "stale":
             head += " · ⚠️ daemon may be down"
         lines.append(head)

@@ -136,10 +136,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.once:
         state = engine.tick()
+        err_names = "; ".join(state.get("source_errors") or [])
         print(f"mini-dudeai once: rules={state.get('rule_count')} "
               f"conds={state.get('condition_count')} "
               f"fires={state.get('fire_count')} "
-              f"src_errors={state.get('error_count')}")
+              f"src_errors={state.get('error_count')}"
+              + (f" ({err_names})" if err_names else ""))
         return 0
 
     engine.run(interval_s=interval)

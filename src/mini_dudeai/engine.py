@@ -397,7 +397,8 @@ class RuleEngine:
         matched_keys: set[str] = set()
         history_entries: list[dict] = []
         fire_count = 0
-        error_count = sum(1 for c in conds if c.kind == "source_error")
+        source_error_conds = [c for c in conds if c.kind == "source_error"]
+        error_count = len(source_error_conds)
 
         # Ruleset-change provenance: a promotion is the event that most
         # changes mini's behavior — it goes on the same auditable record the
@@ -534,6 +535,12 @@ class RuleEngine:
         state["rule_count"] = len(rules)
         state["condition_count"] = len(conds)
         state["error_count"] = error_count
+        # Name the failing sources so a one-tick transient leaves an
+        # identifiable witness after the next tick overwrites the count
+        # (capped so a mass-failure tick can't bloat the state file).
+        state["source_errors"] = [
+            f"{c.subject}: {c.detail}"[:160] for c in source_error_conds[:8]
+        ]
         state["fire_count"] = fire_count
         state["host"] = os.uname().nodename
         # Append history BEFORE saving state so the appends counter only
@@ -750,9 +757,11 @@ class RuleEngine:
             try:
                 state = self.tick()
                 if state.get("fire_count") or state.get("error_count"):
+                    err_names = "; ".join(state.get("source_errors") or [])
                     log_info(f"tick {state.get('last_tick_iso')}: "
                              f"fires={state.get('fire_count')} "
-                             f"src_errors={state.get('error_count')}")
+                             f"src_errors={state.get('error_count')}"
+                             + (f" ({err_names})" if err_names else ""))
             except Exception as e:
                 # Observation tool must never die on a bad cycle.
                 log_error(f"tick error (continuing): {type(e).__name__}: {e}")
