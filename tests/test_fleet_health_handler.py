@@ -518,11 +518,80 @@ def test_handler_registration_shape():
     assert h.handler_id == "fleet_health"
     assert h.menu_section == "dashboard"
     items = h.menu_items()
-    assert len(items) == 1
+    assert len(items) == 2
     tag, label, gate = items[0]
     assert tag == "stack_health"
     assert "Stack Health" in label
     assert gate is None
+    tag2, label2, gate2 = items[1]
+    assert tag2 == "fleet_posture"
+    assert "Fleet Posture" in label2
+    assert gate2 is None
+
+
+# --------------------------------------------------- fleet posture (T1 pane)
+
+
+def test_plainify_strips_markdown_keeps_content():
+    from handlers.fleet_health import _plainify
+    md = ("# mini-dudeai fleet posture — 9 boxes\n"
+          "_rolled up 2026-07-18 08:21:37 · per-box freshness re-derived now_\n"
+          "\n"
+          "🟢 **boxA** (self) — fresh · 52 rules · src_errors=0\n"
+          "🟢 **boxB** — fresh · 💭 3 delta(s) pending\n")
+    out = _plainify(md)
+    assert "**" not in out
+    assert "boxA" in out and "boxB" in out
+    assert "3 delta(s) pending" in out
+    assert "fleet posture" in out
+
+
+def test_rollup_command_plain_when_not_root():
+    from handlers.fleet_health import _rollup_command
+    cmd, note = _rollup_command(euid=1000, sudo_user=None)
+    assert cmd[-3:] == ["python3", "-m", "mini_dudeai.rollup"]
+    assert "sudo" not in cmd
+    assert note is None
+
+
+def test_rollup_command_drops_to_invoking_user_when_root():
+    """ssh as root has no fleet keys — every box would read 'unreachable',
+    an ambiguous→definitive lie. Root must drop to the invoking user."""
+    from handlers.fleet_health import _rollup_command
+    cmd, note = _rollup_command(euid=0, sudo_user="opuser")
+    assert cmd[:4] == ["sudo", "-n", "-u", "opuser"]
+    assert cmd[-3:] == ["python3", "-m", "mini_dudeai.rollup"]
+    assert "opuser" in (note or "")
+
+
+def test_rollup_command_root_without_sudo_user_warns():
+    from handlers.fleet_health import _rollup_command
+    cmd, note = _rollup_command(euid=0, sudo_user=None)
+    assert "sudo" not in cmd
+    assert note and "root" in note
+
+
+def test_render_fleet_posture_prints_pane(monkeypatch, capsys):
+    h = _handler()
+    h.ctx = MagicMock()
+    monkeypatch.setattr(
+        h, "_run",
+        lambda cmd, timeout=90: "# pane\n🟢 **moc** — fresh\n")
+    with patch("backend.clear_screen", lambda: None):
+        h._render_fleet_posture()
+    out = capsys.readouterr().out
+    assert "moc" in out and "**" not in out
+
+
+def test_render_fleet_posture_honest_on_empty_output(monkeypatch, capsys):
+    """No output ≠ healthy pane — the failure must be said out loud."""
+    h = _handler()
+    h.ctx = MagicMock()
+    monkeypatch.setattr(h, "_run", lambda cmd, timeout=90: None)
+    with patch("backend.clear_screen", lambda: None):
+        h._render_fleet_posture()
+    out = capsys.readouterr().out
+    assert "no output" in out.lower()
 
 
 def test_render_overview_does_not_raise(monkeypatch, capsys):

@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**80 handlers · 109 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**80 handlers · 110 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -53,6 +53,7 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `status` | Service Status — All services with health |  | DashboardHandler |
 | `weather` | Space Weather — SFI, Kp, bands at a glance |  | DashboardHandler |
 | `demo` | Demo Mode — Simulated mesh traffic |  | DemoHandler |
+| `fleet_posture` | Fleet Posture — All boxes: mini daemon, deltas, freshness |  | FleetHealthHandler |
 | `stack_health` | Stack Health — Local: RNS path, NomadNet, bridge, DB |  | FleetHealthHandler |
 | `latency` | Latency Monitor — Service response times |  | LatencyHandler |
 | `metrics` | Historical Trends — Metrics over time |  | MetricsHandler |

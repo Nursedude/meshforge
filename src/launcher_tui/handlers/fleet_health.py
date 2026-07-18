@@ -10,12 +10,16 @@ icon (ok/warn/fail/info) and a single-line "why" hint. The goal is for
 silence-mode failures (daemon up, no activity for days) to surface
 without manual investigation.
 
-Scope is the local box only — cross-box fleet rollup is T1 work.
+T0 = Stack Health (local box). T1 = Fleet Posture: the cross-box
+mini-dudeai rollup pane (per-box daemon freshness, rule counts, source
+errors, pending dream-deltas) rendered in the TUI, so fleet visibility no
+longer requires the CLI module or a Claude session.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import time
@@ -26,6 +30,36 @@ from typing import Callable, List, Optional, Tuple
 from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
+
+# src/ dir for the rollup subprocess PYTHONPATH — derived, not hardcoded,
+# so a non-/opt install keeps working (MF014 spirit).
+_SRC_DIR = Path(__file__).resolve().parents[2]
+
+
+def _plainify(markdown: str) -> str:
+    """Rollup pane markdown → terminal text (strip ** bold, keep the rest)."""
+    return markdown.replace("**", "")
+
+
+def _rollup_command(euid: Optional[int] = None,
+                    sudo_user: Optional[str] = None) -> Tuple[List[str], Optional[str]]:
+    """Build the fleet-rollup invocation (the same CLI the operator runs).
+
+    Under sudo, ssh as root has no fleet keys — every remote box would
+    render 'unreachable', mapping an ambiguous state to a definitive one.
+    So as root we drop to the invoking user (their keys, their mini home).
+    Plain root (no SUDO_USER) can't be dropped; say so instead of lying.
+    """
+    euid = os.geteuid() if euid is None else euid
+    sudo_user = os.environ.get("SUDO_USER") if sudo_user is None else sudo_user
+    base = ["env", f"PYTHONPATH={_SRC_DIR}", "python3", "-m", "mini_dudeai.rollup"]
+    if euid == 0 and sudo_user:
+        return (["sudo", "-n", "-u", sudo_user, "-H"] + base,
+                f"(fleet ssh + mini state read as {sudo_user})")
+    if euid == 0:
+        return base, ("running as plain root — remote boxes may show "
+                      "'unreachable' (root has no fleet ssh keys)")
+    return base, None
 
 STATUS_ICON = {
     "ok": "[ OK ]",
@@ -68,11 +102,46 @@ class FleetHealthHandler(BaseHandler):
                 "Stack Health        Local: RNS path, NomadNet, bridge, DB",
                 None,
             ),
+            (
+                "fleet_posture",
+                "Fleet Posture       All boxes: mini daemon, deltas, freshness",
+                None,
+            ),
         ]
 
     def execute(self, action):
         if action == "stack_health":
             self.ctx.safe_call("Fleet Health", self._render_overview)
+        elif action == "fleet_posture":
+            self.ctx.safe_call("Fleet Posture", self._render_fleet_posture)
+
+    def _render_fleet_posture(self):
+        from backend import clear_screen
+
+        clear_screen()
+        cmd, note = _rollup_command()
+        print("Fleet Posture — mini-dudeai rollup, every box, freshness "
+              "re-derived now")
+        if note:
+            print(f"note: {note}")
+        print("=" * 72)
+        out = self._run(cmd, timeout=90)
+        if not (out or "").strip():
+            print("[FAIL] rollup produced no output — mini may not be "
+                  "installed, or the invocation failed.")
+            print("       Try by hand: PYTHONPATH="
+                  f"{_SRC_DIR} python3 -m mini_dudeai.rollup")
+        else:
+            print(_plainify(out.strip()))
+        print("=" * 72)
+        print("🔴 stale / ❌ unreachable rows: check that box's daemon — "
+              "'systemctl --user status meshforge-mini-dudeai'.")
+        print("💭 deltas pending: mini proposals awaiting review — sweep "
+              "them from a session before they pile up.")
+        try:
+            self.ctx.wait_for_enter("\nPress Enter to return to menu...")
+        except KeyboardInterrupt:
+            print()
 
     def _render_overview(self):
         from backend import clear_screen
