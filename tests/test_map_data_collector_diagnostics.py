@@ -360,6 +360,21 @@ class TestArednReasonIfZero:
             f"expected 1 socket call (custom IP only), got {mock_sock.call_count}"
         )
 
+    def test_get_aredn_node_ip_probes_translated_targets(self, collector):
+        """The gate must probe the names-first-TRANSLATED target, not re-read
+        the raw setting — a bare alias ('hap') in aredn_node_ips is
+        unprobeable raw while the translated name works, so a healthy node
+        read as unreachable (live-caught 2026-07-17; honest_failure_modes #5:
+        two consumers of one setting, one translated)."""
+        collector._settings.set("aredn_node_ips", ["hap"])  # raw alias
+        with patch("socket.socket") as mock_sock:
+            mock_sock.return_value.connect_ex.return_value = 1
+            collector._get_aredn_node_ip(["hap.mf.internal"])  # translated
+        probed = mock_sock.return_value.connect_ex.call_args[0][0][0]
+        assert probed == "hap.mf.internal", (
+            f"gate probed {probed!r} — must probe the translated target, "
+            f"never the raw settings entry")
+
 
 class TestArednFeatureSourceField:
     """AREDN local-collector features must carry source='aredn'.

@@ -75,7 +75,12 @@ class ARENDataCollectorMixin:
                 # the skip leaves a witness (honest_failure_modes #9)
                 logger.debug(f"AREDN naming resolution skipped: {e}")
 
-        local_node_ip, gate_status = self._get_aredn_node_ip()
+        # Pass the TRANSLATED targets — the gate must probe what the client
+        # will connect to. Its legacy raw-settings read left a bare alias
+        # ("hap") unprobeable while the client-side name worked, so a healthy
+        # node read as unreachable (two consumers of one setting, one
+        # translated — honest_failure_modes #5; live-caught 2026-07-17).
+        local_node_ip, gate_status = self._get_aredn_node_ip(configured_ips)
         if not local_node_ip:
             if not configured_ips:
                 reason = "not_configured"
@@ -208,8 +213,13 @@ class ARENDataCollectorMixin:
         )
         return features
 
-    def _get_aredn_node_ip(self) -> Tuple[Optional[str], str]:
+    def _get_aredn_node_ip(self, targets: Optional[List[str]] = None
+                           ) -> Tuple[Optional[str], str]:
         """Find AREDN node on configured IPs, distinguishing slow from down.
+
+        ``targets``, when given, is the names-first-translated list from
+        ``_collect_aredn`` and is probed verbatim. When None (legacy/direct
+        callers), falls back to reading ``aredn_node_ips`` raw.
 
         Only probes when `aredn_node_ips` is configured. On a non-AREDN
         box (the 95% case) the previous default-host walk
@@ -231,11 +241,14 @@ class ARENDataCollectorMixin:
         - ``"unreachable"`` — no configured host's :8080 even accepted a
           connection within the connect timeout (node down / LAN broken).
         """
-        custom_ips = []
-        if self._settings:
-            custom_ips = self._settings.get("aredn_node_ips", [])
-            if isinstance(custom_ips, str):
-                custom_ips = [custom_ips]
+        if targets is not None:
+            custom_ips = list(targets)
+        else:
+            custom_ips = []
+            if self._settings:
+                custom_ips = self._settings.get("aredn_node_ips", [])
+                if isinstance(custom_ips, str):
+                    custom_ips = [custom_ips]
 
         if not custom_ips:
             return None, "unreachable"
