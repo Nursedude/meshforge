@@ -41,9 +41,21 @@ fail=()
 ok=()
 
 # One ssh round-trip carries both checks (cheap on the box, no partial reads).
-remote_out="$(timeout 45 ssh "${SSH_OPTS[@]}" "$HOST" "
+# Transitional unit states (activating/deactivating/reloading) get ONE bounded
+# recheck: a deliberate restart (e.g. a daily restart timer) that coincides
+# with this probe is ambiguous, not failed — mapping it straight to FAIL paged
+# daily when meshanchor-map-restart.timer and this cron shared 04:30
+# (2026-07-19). Still-transitional after the recheck = FAIL (real flapping).
+remote_out="$(timeout 60 ssh "${SSH_OPTS[@]}" "$HOST" "
   for u in $UNITS; do
-    printf 'unit %s %s\n' \"\$u\" \"\$(systemctl is-active \"\$u\" 2>/dev/null)\"
+    s=\"\$(systemctl is-active \"\$u\" 2>/dev/null)\"
+    case \"\$s\" in
+      activating|deactivating|reloading)
+        sleep 8
+        s=\"\$(systemctl is-active \"\$u\" 2>/dev/null)\"
+        ;;
+    esac
+    printf 'unit %s %s\n' \"\$u\" \"\$s\"
   done
   PY=/opt/meshanchor/venv/bin/python
   [ -x \"\$PY\" ] || PY=python3
