@@ -619,6 +619,7 @@ def probe_dep_install_fragmented(
                              reason="no reviewed floor parseable")
             return None  # no reviewed floor → indeterminate, never alarm
 
+        user_scope_dark = False
         if installs is None:
             if service_user is None:
                 try:
@@ -626,13 +627,30 @@ def probe_dep_install_fragmented(
                     service_user = _read_rnsd_user()
                 except Exception:
                     service_user = None
+            # _enumerate_pkg_installs SKIPS the user-site/user-pipx globs
+            # whenever there is no resolvable non-root service user (no rnsd
+            # unit, or rnsd runs as root) — the import-priority user-scope
+            # locations were then never observed, so a would-be-clean exit
+            # ("one location" / "all agree") cannot honestly claim
+            # fragmentation impossible (honest_failure_modes #1).
+            user_scope_dark = not service_user or service_user == "root"
             installs = _enumerate_pkg_installs(pkg, service_user)
+
+        def _note_clean_unless_user_scope_dark():
+            if user_scope_dark:
+                note_disposition(
+                    "dep_install_fragmented", "indeterminate",
+                    reason=("user-scope install locations unobservable "
+                            "(no non-root rnsd user)"))
+            else:
+                note_disposition("dep_install_fragmented", "clean")
 
         if not installs or len(installs) < 2:
             _save_parity_streak(sp, 0)
             if installs:
-                # One location positively observed → fragmentation impossible.
-                note_disposition("dep_install_fragmented", "clean")
+                # One location positively observed → fragmentation impossible
+                # — IF every location was actually observable.
+                _note_clean_unless_user_scope_dark()
             else:
                 note_disposition("dep_install_fragmented", "indeterminate",
                                  reason="no readable install location found")
@@ -640,14 +658,14 @@ def probe_dep_install_fragmented(
         versions = set(installs.values())
         if len(versions) < 2:
             _save_parity_streak(sp, 0)
-            note_disposition("dep_install_fragmented", "clean")
-            return None  # every location agrees — not fragmented
+            _note_clean_unless_user_scope_dark()
+            return None  # every (observed) location agrees — not fragmented
 
         below = {label: v for label, v in installs.items()
                  if _version_below(v, floor)}
         if not below:
             _save_parity_streak(sp, 0)
-            note_disposition("dep_install_fragmented", "clean")
+            _note_clean_unless_user_scope_dark()
             return None  # divergence but nothing below floor (pipx CLI ahead) — benign
 
         streak = _load_parity_streak(sp) + 1
@@ -777,8 +795,12 @@ def probe_role_drift(
     role, overrides = deployment
     if not role:
         _save_parity_streak(state_path, 0)
-        note_disposition("role_drift", "inert",
-                         reason="no declared role (or declaration unreadable)")
+        # _read_deployment_declaration returns (None, {}) for BOTH a
+        # genuinely-undeclared box AND an unreadable/corrupt declaration —
+        # per its own docstring the latter is indeterminate, and the two
+        # cannot be told apart here, so the merged note must be the worse.
+        note_disposition("role_drift", "indeterminate",
+                         reason="no declared role, or declaration unreadable")
         return None  # box not role-declared (or unreadable) → not applicable
 
     if plan_fn is None:
@@ -955,8 +977,12 @@ def probe_mqtt_root_drift(
 
     line = newest_line_fn("JSON publish message to ")
     if line is None:
-        note_disposition("mqtt_root_drift", "inert",
-                         reason="no json uplink in lookback (RX-only box)")
+        # _journal_newest_match None conflates "no publish line in the
+        # lookback" (RX-only box) with "journalctl unavailable/timeout" —
+        # indistinguishable here, so the merged note is the worse one.
+        note_disposition(
+            "mqtt_root_drift", "indeterminate",
+            reason="no json publish line observed (or journal unavailable)")
         return None  # no json uplink at all — unobservable, not drift
     m = _MQTT_PUBLISH_TOPIC_RE.search(line)
     if m is None:

@@ -52,17 +52,26 @@ ROUTER_SCOUT_TICK_STALE_S = 2700     # 3 × the agent's */15 router cadence —
                                      # older than this = agent dark on-router
 
 
-def _read_router_scout_ticks(home) -> Optional[List[Tuple[str, str, float]]]:
+def _read_router_scout_ticks(
+    home, *, skipped: Optional[List[str]] = None,
+) -> Optional[List[Tuple[str, str, float]]]:
     """Every mirrored tick as ``(filename, text, mtime)``, read as root
-    in-process (no sudo — watchdog sandbox). None when the mirror dir is
-    absent/unreadable (→ INERT: the pull runs only on the manager box)."""
+    in-process (no sudo — watchdog sandbox). None ONLY when the mirror dir
+    is positively ABSENT or ``home`` is unset (→ INERT: the pull runs only
+    on the manager box). A dir that EXISTS but can't be listed returns ``[]``
+    with the dir appended to ``skipped``; an unreadable individual file is
+    skipped with its name appended to ``skipped`` — unobservable ≠ absent."""
     if not home:
         return None
     d = os.path.join(str(home), ROUTER_SCOUT_MIRROR_SUBDIR)
     try:
         names = sorted(n for n in os.listdir(d) if n.endswith("_tick.json"))
+    except (FileNotFoundError, NotADirectoryError):
+        return None    # positive absence — legitimately inert
     except OSError:
-        return None
+        if skipped is not None:
+            skipped.append(d)
+        return []      # dir present but unlistable — unobservable, not absent
     out: List[Tuple[str, str, float]] = []
     for n in names:
         p = os.path.join(d, n)
@@ -71,7 +80,11 @@ def _read_router_scout_ticks(home) -> Optional[List[Tuple[str, str, float]]]:
                 text = fh.read()
             out.append((n, text, os.path.getmtime(p)))
         except OSError:
-            continue   # a vanished/unreadable single file is skipped, not a page
+            # a vanished/unreadable single file — counted, never a silent
+            # drop (that router would otherwise read clean-by-omission)
+            if skipped is not None:
+                skipped.append(n)
+            continue
     return out
 
 
@@ -117,6 +130,7 @@ def probe_router_scout_degraded(
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_ROUTER_SCOUT_DEBOUNCE_PATH
 
+        skipped_files: List[str] = []
         if ticks is None:
             if operator is None:
                 try:
@@ -131,14 +145,23 @@ def probe_router_scout_degraded(
                     home = pwd.getpwuid(operator[0]).pw_dir
                 except (KeyError, OSError):
                     home = None
-            ticks = _read_router_scout_ticks(home)
+            ticks = _read_router_scout_ticks(home, skipped=skipped_files)
 
         if not ticks:
-            note_disposition(
-                "router_scout_degraded", "inert",
-                reason="no scout mirror dir (manager-box-only organ)",
-            )
-            _save_parity_streak(sp, 0)      # no mirrors here → INERT
+            if ticks is None:
+                # dir positively ABSENT — not the manager box → INERT
+                note_disposition(
+                    "router_scout_degraded", "inert",
+                    reason="no scout mirror dir (manager-box-only organ)",
+                )
+            else:
+                # dir EXISTS but yielded zero readable ticks (empty, or
+                # every file/listing unreadable) — unobservable ≠ absent
+                note_disposition(
+                    "router_scout_degraded", "indeterminate",
+                    reason="mirror dir present but no readable ticks",
+                )
+            _save_parity_streak(sp, 0)
             return None
 
         bad: List[Tuple[str, str]] = []     # (device-or-filename, why)
@@ -178,7 +201,15 @@ def probe_router_scout_degraded(
                             f"({len(errs)} witness(es): {first})"))
 
         if not bad:
-            note_disposition("router_scout_degraded", "clean")
+            if skipped_files:
+                # some routers' mirrors could not be read this tick — the
+                # readable ones are clean, the rest are UNOBSERVABLE
+                note_disposition(
+                    "router_scout_degraded", "indeterminate",
+                    reason="mirror file(s) unreadable — router(s) unobservable",
+                )
+            else:
+                note_disposition("router_scout_degraded", "clean")
             _save_parity_streak(sp, 0)
             return None
 
@@ -262,6 +293,12 @@ def _read_ntfy_loopback_state(home) -> Tuple[Optional[str], Optional[float]]:
     except (FileNotFoundError, IsADirectoryError):
         return None, None
     except OSError:
+        # EXISTS but unreadable — the loopback verdict is UNOBSERVABLE, not
+        # the positive "not the manager box" absence (worst-wins keeps this).
+        note_disposition(
+            "ntfy_loopback", "indeterminate",
+            reason="loopback state unreadable — channel liveness unobservable",
+        )
         return None, None
 
 
@@ -459,6 +496,12 @@ def _read_ntfy_ack_state(home) -> Tuple[Optional[str], Optional[float]]:
     except (FileNotFoundError, IsADirectoryError):
         return None, None
     except OSError:
+        # EXISTS but unreadable — the ack state is UNOBSERVABLE, not the
+        # positive "not the manager box" absence (worst-wins keeps this).
+        note_disposition(
+            "ntfy_ack_stale", "indeterminate",
+            reason="ack state unreadable — operator receipt unobservable",
+        )
         return None, None
 
 
@@ -1110,6 +1153,7 @@ def _iter_inherited_checkouts(
     exclude=_INHERITED_SCAN_EXCLUDE,
     origin_fn=_read_git_origin_url,
     max_repos: int = 40,
+    skipped_roots: Optional[List[str]] = None,
 ):
     """Yield ``(repo_path, origin_url)`` for each INHERITED (non-owned-origin)
     git checkout at the TOP LEVEL of any ``scan_roots`` dir.
@@ -1117,13 +1161,20 @@ def _iter_inherited_checkouts(
     Top-level only (bounded; deep-nested checkouts like ~/src/wireclaw-dudeclaw
     are separately governed — PINS.md). Owned (Nursedude-origin) repos and the
     explicit excludes are skipped; a repo whose origin can't be read is skipped
-    (can't classify → don't guess). Caps at ``max_repos`` (runaway guard)."""
+    (can't classify → don't guess). Caps at ``max_repos`` (runaway guard).
+    A root that EXISTS but can't be scanned is appended to ``skipped_roots``
+    (unobservable ≠ absent — the caller must not read the sweep as complete);
+    a positively-absent root is legitimate absence, not a skip."""
     seen = 0
     for root in scan_roots:
         try:
             entries = sorted(os.scandir(root), key=lambda e: e.name)
+        except (FileNotFoundError, NotADirectoryError):
+            continue   # root positively absent — legitimate absence
         except OSError:
-            continue
+            if skipped_roots is not None:
+                skipped_roots.append(str(root))
+            continue   # root unobservable — recorded, never read as scanned
         for entry in entries:
             if seen >= max_repos:
                 return
@@ -1249,11 +1300,17 @@ def probe_inherited_app_drift(
         # 1. Build the {inherited checkout → real code patches} list.
         dirty: List[Tuple[str, str, List[str]]] = []
         scanned = 0   # inherited checkouts evaluated (disposition note only)
+        skipped_roots: List[str] = []   # roots we could NOT scan this tick
         if repos is None:
             if scan_roots is None:
                 home = _resolve_operator_home(service_user_fn)
+                if home is None:
+                    # can't resolve where operator checkouts live — that
+                    # root goes UNSCANNED, not silently narrowed to /opt
+                    skipped_roots.append("<operator home unresolvable>")
                 scan_roots = [r for r in (home, "/opt") if r]
-            for path, url in _iter_inherited_checkouts(scan_roots):
+            for path, url in _iter_inherited_checkouts(
+                    scan_roots, skipped_roots=skipped_roots):
                 scanned += 1
                 mods = _git_tracked_modifications(path, git_path)
                 if mods is None:
@@ -1273,7 +1330,15 @@ def probe_inherited_app_drift(
                     dirty.append((path, url, patches))
 
         if not dirty:
-            if scanned:
+            if skipped_roots:
+                # part of the promised sweep never happened — clean/inert
+                # over a partial scan would be the docstring's own lie
+                note_disposition(
+                    "inherited_app_drift", "indeterminate",
+                    reason="scan root(s) unobservable — inherited checkouts "
+                           "partially unscanned",
+                )
+            elif scanned:
                 note_disposition("inherited_app_drift", "clean")
             else:
                 note_disposition(

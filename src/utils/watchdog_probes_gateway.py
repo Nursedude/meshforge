@@ -72,6 +72,15 @@ def probe_delivery_write_canary(
                          reason="no health block in delivery payload")
         return None
 
+    # G3 (2026-07-18): the producer marks the health block unobservable
+    # when its snapshot() DB read failed (delivery DB became unreadable
+    # AFTER startup) — the remaining fields are the reader's stale startup
+    # state, not an observation. Never let that read clean.
+    if health.get("db_unobservable") is True:
+        note_disposition("delivery_write_canary", "indeterminate",
+                         reason="delivery DB unobservable — snapshot failed")
+        return None
+
     preflight_ok = health.get("preflight_ok")
     consecutive = health.get("consecutive_write_errors") or 0
     last_err = health.get("last_write_error")
@@ -508,8 +517,12 @@ def probe_gateway_dup_degraded(
         with urlopen(url, timeout=timeout_s) as resp:
             payload = json.loads(resp.read())
     except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
-        note_disposition("gateway_dup_degraded", "inert",
-                         reason="dups rollup unavailable (manager-only endpoint)")
+        # G1 (2026-07-18): on the manager box (the only observable one) a
+        # crashed map / 5xx lands here too — "unobservable ≠ clean / HOLD"
+        # means this cannot read as benign inert.
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="dups rollup unreachable — manager-map down "
+                                "or not the manager box")
         return None  # transport — HOLD streak (unobservable ≠ clean)
     if not isinstance(payload, dict):
         note_disposition("gateway_dup_degraded", "indeterminate",

@@ -37,6 +37,18 @@ class TestFetchPeer:
         assert snap["status"] == {"app": {}}
         assert snap["answered_at"] is not None
 
+    def test_ip_shaped_hosts_entry_never_becomes_the_alias(self):
+        """2026-07-19 adversarial review (MF014/MF015): an IP-shaped line in
+        fleet_hosts must not surface as the box alias — masked label +
+        ip_literal method instead, no dotted quad anywhere in the snapshot."""
+        import re
+        with patch.object(c, "_http_get_json", return_value=None), \
+             patch.object(c, "_resolve_peer", return_value=("203.0.113.7", "ip_literal")):
+            snap = c._fetch_peer("203.0.113.7", is_self=False, port=5000)
+        assert snap["alias"].startswith("ip-entry-")
+        assert snap["resolution_method"] == "ip_literal"
+        assert not re.search(r"\d+\.\d+\.\d+\.\d+", repr(snap))
+
     def test_self_uses_localhost_no_resolve(self):
         with patch.object(c, "_http_get_json", return_value={"x": 1}), \
              patch.object(c, "_resolve_peer") as res:

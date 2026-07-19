@@ -209,8 +209,15 @@ class FleetEndpointsMixin:
         (no new secret surface), and carries `resolution_method` + `alias` for
         DNS visibility — never a raw LAN IP (MF014/MF015).
         """
-        from utils.fleet_truth_collector import get_fleet_truth
-        self._serve_json(get_fleet_truth())
+        from utils.fleet_truth_collector import DEFAULT_PORT, get_fleet_truth
+        # Self-fetch on the ACTUAL bound port (2026-07-19 review) — a map on a
+        # non-default port previously self-fetched :5000 and read itself dark
+        # (or read whatever else listened there). Mirrors the MA twin.
+        try:
+            port = int(getattr(self.server, "server_port", 0)) or DEFAULT_PORT
+        except (TypeError, ValueError):
+            port = DEFAULT_PORT
+        self._serve_json(get_fleet_truth(port=port))
 
     # Cross-box dedup rollup is considered stale (collector likely dead) past
     # this age — surfaced as its own axis so a frozen file can't read as live.

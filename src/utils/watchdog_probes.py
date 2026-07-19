@@ -87,6 +87,8 @@ from utils.watchdog_probes_service import (
     probe_meshtasticd_vsz_leak,
     probe_phoneapi_tcp_leak,
     probe_service_inactive,
+)
+from utils.watchdog_probes_tracer import (
     probe_tracer_peer_unreachable,
 )
 from utils.watchdog_probes_drift import (

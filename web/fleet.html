@@ -309,6 +309,10 @@
             parts.push('<span class="warn">⚠ fan-out incomplete (' + esc(fanout.hosts_answered) + '/' +
                        esc(fanout.hosts_declared) + ' answered) — the verdict cannot be green.</span>');
         }
+        if (fanout.membership === 'standalone') {
+            parts.push('<span class="warn">⚠ standalone declaration — this is a fleet of ONE box; ' +
+                       'no peers are being watched.</span>');
+        }
         if (fanout.error) parts.push('<span class="warn">build error: ' + esc(fanout.error) + '</span>');
         document.getElementById('verdict-detail').innerHTML = parts.join(' ');
 
@@ -332,19 +336,28 @@
             lastOkAt ? new Date(lastOkAt).toLocaleTimeString() : 'never';
     }
 
-    function methodWarn(m) { return m === 'ip_fallback' || m === 'unresolved' || m === 'error'; }
+    function methodWarn(m) {
+        return m === 'ip_fallback' || m === 'unresolved' || m === 'error' ||
+               m === 'ip_literal';
+    }
+
+    // A box's summary state: the builder's per-box roll-up (worst of
+    // reachability + tainting subsystems), falling back to reachability for
+    // older truth docs. Never lets a reachable-but-faulted box tile green.
+    function boxState(b) {
+        return stClass(b.box_state || (b.reachable && b.reachable.state));
+    }
 
     function renderBoxes(doc) {
         const boxes = doc.boxes || [];
         // Worst-first ordering: failed, then dark, then healthy.
         const rank = { failed: 0, dark: 1, healthy: 2 };
         const sorted = boxes.slice().sort((a, b) =>
-            (rank[stClass(a.reachable && a.reachable.state)] ?? 1) -
-            (rank[stClass(b.reachable && b.reachable.state)] ?? 1));
+            (rank[boxState(a)] ?? 1) - (rank[boxState(b)] ?? 1));
         document.getElementById('boxes-meta').textContent = boxes.length + ' declared';
         document.getElementById('boxes').innerHTML = sorted.map(b => {
             const r = b.reachable || {};
-            const st = stClass(r.state);
+            const st = boxState(b);
             const app = r.app || {};
             const method = r.resolution_method || '?';
             const appLine = app.name
@@ -469,6 +482,7 @@
     }
 
     function renderAll(doc) {
+        document.querySelector('.grid').style.opacity = '';
         renderTopbar(doc, 'ok');
         renderVerdict(doc);
         renderBoxes(doc);
@@ -491,6 +505,8 @@
             '<span class="warn">⚠ /api/fleet/truth unreachable (' + esc(err) +
             ') — everything below is from the last successful read: ' + esc(age) + '.</span>';
         document.getElementById('indicator').className = 'pulse failed';
+        // Visibly age the stale panels — the banner alone under-discloses.
+        document.querySelector('.grid').style.opacity = '0.45';
     }
 
     async function poll() {

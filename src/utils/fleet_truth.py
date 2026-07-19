@@ -58,9 +58,12 @@ def cell(
     ``absent=True`` marks a DARK cell that is dark because the subsystem is
     LEGITIMATELY not present on this box (inert / role-appropriate N-A), as
     opposed to dark because we could not observe something we should
-    (indeterminate / a blind spot). An absent-dark cell is benign — it does NOT
-    taint the fleet verdict — while an unobservable-dark cell does. Both still
-    render dark/grey for the human; the distinction only governs the roll-up.
+    (indeterminate / a blind spot). An absent-dark cell never taints the fleet
+    verdict; an unobservable-dark cell taints ONLY for the core-observability
+    subsystems (see ``_CORE_OBSERVABILITY`` — slo-derived cells cannot express
+    benign absence today, so name-gating keeps role-appropriate gaps from
+    screaming). Both still render dark/grey for the human; the distinction
+    only governs the roll-up.
     """
     if state not in _VALID_STATES:
         # A programming error must not silently become a healthy-looking cell.
@@ -77,11 +80,16 @@ def cell(
 
 # Subsystems whose DARK state means "we are blind to this box's core health" and
 # therefore taints the fleet verdict. Every subsystem's FAILED always taints;
-# but a DARK *optional/role-dependent* subsystem (claw, delivery, radio on a
-# radio-less box) is informational — shown in the matrix, but it does not flip
-# the top-line "is the fleet healthy?" verdict. Reachability is handled
-# separately (an unreachable box always taints).
-_CORE_OBSERVABILITY = ("watchdog", "mini")
+# but a DARK *optional/role-dependent* subsystem (claw, radio on a radio-less
+# box, ci off the dev box) is informational — shown in the matrix, but it does
+# not flip the top-line "is the fleet healthy?" verdict, because today's slo
+# cells cannot express benign absence (absent=True) and would otherwise taint
+# every role-appropriate gap. Reachability is handled separately (an
+# unreachable box always taints). ``services`` is core (2026-07-19 adversarial
+# review): every box that serves the fan-out serves /fleet/slo, so a dark
+# services cell means the slo LEG is dead — without it a fleet-wide dead slo
+# leg read green while half of every box's fan-out was dark.
+_CORE_OBSERVABILITY = ("watchdog", "mini", "services")
 
 
 def _subsystem_taints_verdict(name: str, c: Dict[str, Any]) -> bool:
@@ -233,9 +241,19 @@ def merge_coverage(
     """
     classes: Dict[str, Dict[str, Any]] = {}
 
-    # Active signals — from the watchdog block's signals[] (present today).
+    watchdog_observable = (
+        isinstance(watchdog_block, dict)
+        and watchdog_block.get("installed") is not False
+        and not _reason_is_unobservable(watchdog_block.get("reason"))
+    )
+
+    # Active signals — from the watchdog block's signals[]. ONLY honored when
+    # the block is observable: a FROZEN watchdog serving a stale block still
+    # carries its last signals, and presenting those as currently-active would
+    # pass a stale observation off as a current one (2026-07-19 adversarial
+    # review). Unobservable → those classes fall into the dark bucket below.
     active_by_class: Dict[str, Dict[str, Any]] = {}
-    if isinstance(watchdog_block, dict):
+    if watchdog_observable and isinstance(watchdog_block, dict):
         for sig in watchdog_block.get("signals") or []:
             if isinstance(sig, dict) and sig.get("class"):
                 active_by_class[sig["class"]] = sig
@@ -255,12 +273,6 @@ def merge_coverage(
                     reported[cls] = disp["disp"]
                     if isinstance(disp.get("reason"), str):
                         reported_reason[cls] = disp["reason"]
-
-    watchdog_observable = (
-        isinstance(watchdog_block, dict)
-        and watchdog_block.get("installed") is not False
-        and not _reason_is_unobservable(watchdog_block.get("reason"))
-    )
 
     green = red = dark = 0
     for cls in signal_classes:
@@ -364,8 +376,20 @@ def build_box_truth(
 
     coverage = merge_coverage(watchdog_block, signal_classes)
 
+    # Per-box roll-up (2026-07-19 adversarial review): the box tile / counts
+    # layer previously expressed REACHABILITY only, so a reachable box with an
+    # observed-FAILED subsystem summarized green. box_state is the worst of
+    # reachability + every verdict-tainting subsystem cell — the honest
+    # at-a-glance answer to "is this box OK?".
+    box_states = [reach["state"]]
+    for name, c in subsystems.items():
+        if _subsystem_taints_verdict(name, c):
+            box_states.append(c["state"])
+    box_state = worst_of(box_states)
+
     return {
         "alias": alias,
+        "box_state": box_state,
         "reachable": {**reach, "resolution_method": snap.get("resolution_method"),
                       "app": app},
         "subsystems": subsystems,
@@ -387,13 +411,23 @@ def _cascade_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 def _ci_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """CI tri-state. FAILED only on an OBSERVED failure state; a repo whose
+    state is in_progress/pending/unknown/None is DARK (cannot judge yet),
+    never healthy and never an invented fault (2026-07-19 adversarial review:
+    the old cell flipped the fleet verdict to FAILED on a merely in-progress
+    run, and let a None state slip through to healthy)."""
     if not isinstance(slo, dict) or not isinstance(slo.get("ci_status"), dict):
         return cell(DARK, reason="ci_status unobservable", source="/fleet/slo.ci_status")
-    repos = slo["ci_status"].get("repos") or []
-    bad = [r for r in repos if isinstance(r, dict) and r.get("state") not in ("success", "clean", None)]
-    if bad:
-        names = ", ".join(f"{r.get('name')}:{r.get('state')}" for r in bad[:3])
-        return cell(FAILED, reason=f"ci not-green: {names}", source="/fleet/slo.ci_status")
+    repos = [r for r in (slo["ci_status"].get("repos") or []) if isinstance(r, dict)]
+    failing = [r for r in repos if r.get("state") in ("failure", "error", "cancelled")]
+    if failing:
+        names = ", ".join(f"{r.get('name')}:{r.get('state')}" for r in failing[:3])
+        return cell(FAILED, reason=f"ci failing: {names}", source="/fleet/slo.ci_status")
+    unjudged = [r for r in repos if r.get("state") not in ("success", "clean")]
+    if unjudged:
+        names = ", ".join(f"{r.get('name')}:{r.get('state')}" for r in unjudged[:3])
+        return cell(DARK, reason=f"ci not judgeable yet: {names}",
+                    source="/fleet/slo.ci_status")
     if not repos:
         return cell(DARK, reason="no ci repos reported", source="/fleet/slo.ci_status")
     return cell(HEALTHY, source="/fleet/slo.ci_status")
@@ -424,7 +458,14 @@ def _generic_present_cell(slo: Optional[Dict[str, Any]], key: str, source: str) 
 
 
 def _extract_escalations(mini_block: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Active mini rules → the escalations feed. ONLY from an observable mini
+    block: a frozen/stale mini's last active_rules are a stale observation and
+    must not present as live escalations (2026-07-19 adversarial review). The
+    blindness itself is surfaced by the box's dark mini subsystem cell."""
     if not isinstance(mini_block, dict):
+        return []
+    if (mini_block.get("installed") is False
+            or _reason_is_unobservable(mini_block.get("reason"))):
         return []
     out = []
     for r in (mini_block.get("active_rules") or mini_block.get("active") or []):
@@ -474,13 +515,15 @@ def build_fleet_truth(
     declared = hosts_declared if hosts_declared is not None else len(boxes)
     fanout_stale = answered < declared
 
-    # Worst-of across every reachability + subsystem cell.
+    # Worst-of across every reachability + subsystem cell. counts{} uses the
+    # per-box roll-up (box_state), not bare reachability — a reachable box
+    # with an observed fault counts failed, not healthy (2026-07-19 review).
     all_states: List[str] = []
     counts = {HEALTHY: 0, FAILED: 0, DARK: 0}
     for b in boxes:
-        rs = b["reachable"]["state"]
-        counts[rs] = counts.get(rs, 0) + 1
-        all_states.append(rs)  # reachability always counts (unreachable = blind spot)
+        bs = b.get("box_state") or b["reachable"]["state"]
+        counts[bs] = counts.get(bs, 0) + 1
+        all_states.append(b["reachable"]["state"])  # unreachable = blind spot
         for name, c in b["subsystems"].items():
             if _subsystem_taints_verdict(name, c):
                 all_states.append(c["state"])

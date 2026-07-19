@@ -144,10 +144,19 @@ def probe_history_write_failure(
                     with open(os.path.join(home, _MINI_STATE_NAME),
                               "r", encoding="utf-8") as fh:
                         doc = json.load(fh)
-                except (OSError, ValueError):
+                except FileNotFoundError:
+                    # Positively-observed absence → mini not active here.
                     note_disposition("history_write_stalled", "inert",
-                                     reason="mini state unreadable; mini not active here")
-                    return None  # no readable state → mini not active here
+                                     reason="mini state absent; mini not active here")
+                    return None
+                except (OSError, ValueError):
+                    # N4 (2026-07-18): a PRESENT but unreadable/corrupt state
+                    # file on a box actively running mini is unobservable,
+                    # not absent — inert here would read "not active" on
+                    # exactly the broken box.
+                    note_disposition("history_write_stalled", "indeterminate",
+                                     reason="mini state file unreadable or corrupt")
+                    return None
                 state_doc = doc if isinstance(doc, dict) else {}
             if history_mtime is None:
                 try:
@@ -363,10 +372,18 @@ def probe_rules_seed_drift(
                     with open(os.path.join(home, _MINI_RULES_NAME),
                               "r", encoding="utf-8") as fh:
                         live_doc = json.load(fh)
-                except (OSError, ValueError):
+                except FileNotFoundError:
+                    # Positively-observed absence → mini not seeded here.
                     note_disposition("rules_seed_drift", "inert",
-                                     reason="live rules unreadable; mini not seeded here")
-                    return None  # live file unreadable → mini not seeded here
+                                     reason="live rules absent; mini not seeded here")
+                    return None
+                except (OSError, ValueError):
+                    # N4 (2026-07-18): a PRESENT but unreadable/corrupt rules
+                    # file is unobservable, not "not seeded" — corrupt rules
+                    # on an active mini box must not read as benign absence.
+                    note_disposition("rules_seed_drift", "indeterminate",
+                                     reason="live rules file unreadable or corrupt")
+                    return None
                 live_rules = [r for r in (live_doc.get("rules") or [])
                               if isinstance(r, dict) and r.get("id")]
 
@@ -585,6 +602,26 @@ def probe_calibration_drift(
                                  reason="no calibration ledger; not the dev/manager box")
                 return None  # not the dev/manager box — nothing to judge
             events = _calib.load_events(ledger_path)
+            # N3 (2026-07-18): load_events maps ANY OSError/garbled content
+            # to [] (its never-raises contract) — so an unreadable or
+            # wholly-corrupt ledger would fold to "every claim held" and
+            # note CLEAN. A non-empty file that yielded zero events was NOT
+            # positively observed; only a genuinely empty (0-byte) or
+            # absent ledger keeps its benign disposition.
+            if not events:
+                try:
+                    ledger_size = os.path.getsize(ledger_path)
+                except OSError:
+                    note_disposition(
+                        "calibration_drift", "indeterminate",
+                        reason="ledger size unreadable — ledger unobservable")
+                    return None
+                if ledger_size > 0:
+                    note_disposition(
+                        "calibration_drift", "indeterminate",
+                        reason="ledger non-empty but yielded zero events — "
+                               "unreadable/garbled")
+                    return None
         state = _calib.fold(events)
         broke = state.get("broke", [])
         if not broke:

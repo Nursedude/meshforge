@@ -97,6 +97,14 @@ def _read_operator_crontab_spool(name: Optional[str]) -> Optional[str]:
         except (FileNotFoundError, IsADirectoryError):
             continue
         except OSError:
+            # The spool EXISTS but can't be read — the wired set is
+            # UNOBSERVABLE, not positively absent; the probe's later inert
+            # note must not read as a clean "no wired crons" (fail-dark;
+            # worst-wins keeps this note).
+            note_disposition(
+                "cron_verdict_stale", "indeterminate",
+                reason="crontab spool unreadable — wired set unobservable",
+            )
             return None
     return None
 
@@ -195,10 +203,20 @@ def probe_cron_verdict_stale(
                     reason="verdict log parse failed",
                 )
                 latest = {}
+        # verdicts_text still None here = the log could NOT be read (home
+        # unresolvable or OSError — a POSITIVE empty read is ""). With wired
+        # crons present their verdicts are UNOBSERVABLE — never let this
+        # tick reach the clean note (fail-dark; worst-wins protects).
+        if verdicts_text is None:
+            note_disposition(
+                "cron_verdict_stale", "indeterminate",
+                reason="verdict log unreadable — cron verdicts unobservable",
+            )
 
         # 4. Cross-reference — judge ONLY wired crons (orphans ignored).
         failed: List[str] = []
         stale: List[str] = []
+        reboot_unjudged: List[str] = []
         for name, schedule in sorted(wired.items()):
             v = latest.get(name)
             if v is not None and v.get("status", "").upper().startswith(
@@ -207,7 +225,11 @@ def probe_cron_verdict_stale(
                 continue
             max_age = _cron_max_interval(schedule)
             if max_age == float("inf"):
-                continue   # @reboot — not stale-checkable
+                # @reboot — not stale-checkable. WITH a verdict it can read
+                # clean; with NO verdict it is unjudgeable, not clean.
+                if v is None:
+                    reboot_unjudged.append(name)
+                continue
             threshold = max(CRON_VERDICT_STALE_FLOOR_S,
                             CRON_VERDICT_CADENCE_MULT * max_age)
             if v is None:
@@ -216,7 +238,13 @@ def probe_cron_verdict_stale(
                 stale.append(f"{name}({int(float(v['age_s']) // 3600)}h)")
 
         if not failed and not stale:
-            note_disposition("cron_verdict_stale", "clean")
+            if reboot_unjudged:
+                note_disposition(
+                    "cron_verdict_stale", "indeterminate",
+                    reason="@reboot cron(s) with no verdict observed",
+                )
+            else:
+                note_disposition("cron_verdict_stale", "clean")
             _save_parity_streak(sp, 0)
             return None
 
@@ -282,6 +310,13 @@ def _read_operator_fleet_state(home) -> Tuple[Optional[str], Optional[float]]:
     except (FileNotFoundError, IsADirectoryError):
         return None, None
     except OSError:
+        # The file EXISTS but can't be read — UNOBSERVABLE, not the positive
+        # "not the manager box" absence; the probe's later inert note must
+        # not read as legitimate absence (worst-wins keeps this note).
+        note_disposition(
+            "fleet_box_unreachable", "indeterminate",
+            reason="offline-monitor state unreadable/mid-rewrite",
+        )
         return None, None
 
 
@@ -335,11 +370,21 @@ def probe_fleet_box_unreachable(
             state_text, state_mtime = _read_operator_fleet_state(home)
 
         if not state_text:
-            note_disposition(
-                "fleet_box_unreachable", "inert",
-                reason="no offline-monitor state file (manager-box-only organ)",
-            )
-            _save_parity_streak(sp, 0)      # no monitor here → INERT
+            if state_text is None:
+                # positively ABSENT file — not the manager box → INERT
+                note_disposition(
+                    "fleet_box_unreachable", "inert",
+                    reason="no offline-monitor state file "
+                           "(manager-box-only organ)",
+                )
+            else:
+                # zero-byte read — the writer's mid-rewrite window; an
+                # EMPTY file is not a positive "no monitor here"
+                note_disposition(
+                    "fleet_box_unreachable", "indeterminate",
+                    reason="offline-monitor state unreadable/mid-rewrite",
+                )
+            _save_parity_streak(sp, 0)
             return None
 
         # Stale file = the monitor stopped updating; do NOT read frozen rows as
@@ -455,6 +500,12 @@ def _read_host_probe_verdict(home) -> Tuple[Optional[str], Optional[float]]:
     except (FileNotFoundError, IsADirectoryError):
         return None, None
     except OSError:
+        # EXISTS but unreadable — the witness verdict is UNOBSERVABLE, not
+        # the positive "not the brain box" absence (worst-wins keeps this).
+        note_disposition(
+            "host_frozen", "indeterminate",
+            reason="host-probe state unreadable — witness unobservable",
+        )
         return None, None
 
 

@@ -69,14 +69,23 @@ def probe_rns_namespace_collision(
                          reason="ss unavailable/timed out; listeners unobservable")
         return None
 
-    needle = f"@rns/{instance_name}"
+    # N1 (2026-07-18, the #69/#82 class): ``ss`` splits columns on
+    # whitespace, so a SPACED instance_name ("volcano ai rns") is displayed
+    # truncated at the first space ("@rns/volcano") — an inline
+    # f"@rns/{instance_name}" needle matches NOTHING on exactly the
+    # incident boxes and the probe would note an affirmative CLEAN. Reuse
+    # the twin parser ``utils.rns_init._parse_ss_listener_line`` (Issue #82
+    # fix), which falls back to the truncated-needle form. rns_init imports
+    # no RNS / heavy modules at import time (the probe already imports its
+    # cmdline predicates below).
+    from utils.rns_init import _parse_ss_listener_line
+
     owners: dict = {}  # pid -> ss comm name
     for line in proc.stdout.splitlines():
-        if needle not in line:
-            continue
-        m = re.search(r'users:\(\("([^"]+)",pid=(\d+),', line)
-        if m:
-            owners[int(m.group(2))] = m.group(1)
+        parsed = _parse_ss_listener_line(line, instance_name)
+        if parsed is not None:
+            pid, comm = parsed
+            owners[pid] = comm
 
     if not owners:
         if proc.returncode != 0:
@@ -597,6 +606,16 @@ def probe_rns_interface_down_peer_reachable(
     if status.parse_error:
         note_disposition("rns_interface_down_peer_reachable", "indeterminate",
                          reason="rnstatus errored; interface table unobservable")
+        return None
+    # N2 (2026-07-18): empty rnstatus output / unrecognized error text
+    # yields parse_error=None WITH interfaces=[] — but a healthy rnstatus
+    # always prints at least the shared-instance block, so an empty
+    # interface table means the table was never actually observed. Noting
+    # clean here would be an affirmative green on an unobserved surface.
+    if not status.interfaces:
+        note_disposition("rns_interface_down_peer_reachable", "indeterminate",
+                         reason="rnstatus output empty/unrecognized — "
+                                "interface table unobservable")
         return None
 
     from utils.rns_status_parser import InterfaceStatus

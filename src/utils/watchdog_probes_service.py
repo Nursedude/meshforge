@@ -1,7 +1,8 @@
 """Watchdog probes — local service health failure shapes.
 
 HTTP-local unresponsive (#61/#70), fd exhaustion (#73), PhoneAPI TCP leak
-(#75), service-inactive, tracer peer unreachable, channel feed dark.
+(#75), service-inactive, channel feed dark. Tracer peer unreachable moved
+to ``watchdog_probes_tracer`` (2026-07-19, MF025 split).
 Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 ``utils.watchdog_probes`` hub, not from here.
 """
@@ -17,7 +18,7 @@ import time
 from pathlib import Path
 from typing import List, Optional, Tuple
 from urllib.request import urlopen
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 from utils.watchdog_probe_core import (
     Signal,
@@ -62,12 +63,20 @@ def probe_http_local(
     url = f"http://{host}:{port}{path}"
     try:
         with urlopen(url, timeout=timeout_s) as resp:
-            # Any response (including 503) means the HTTP server loop
-            # is alive. We don't gate on status — /healthz can return
-            # 503 during warming and that's correct, not wedged.
+            # A 2xx response: the HTTP server loop is alive. Non-2xx
+            # statuses RAISE HTTPError from urlopen — handled below as
+            # equally-alive (we don't gate on status; /healthz can
+            # return 503 during warming and that's correct, not wedged).
             _ = resp.read(64)
             note_disposition("http_local_unresponsive", "clean")
             return None
+    except HTTPError:
+        # The server RESPONDED — with an error status, but for THIS class
+        # ("no response at all" is the wedge) any response means the
+        # handler loop is alive. Must be caught before URLError (its
+        # superclass), or a 5xx would falsely read "endpoint unobservable".
+        note_disposition("http_local_unresponsive", "clean")
+        return None
     except socket.timeout:
         pass
     except URLError as exc:
@@ -270,21 +279,28 @@ def _pid_socket_inodes(pid: int, *, proc_root: str = "/proc") -> Optional[set]:
     return inodes
 
 
-def _estab_inodes_to_port(port: int, *, proc_root: str = "/proc") -> set:
+def _estab_inodes_to_port(port: int, *, proc_root: str = "/proc") -> Optional[set]:
     """Inodes of ESTABLISHED TCP sockets whose REMOTE port is ``port``.
 
     Parses ``/proc/net/tcp`` + ``tcp6`` directly (fields: rem_address
     hex ``ip:port`` at [2], state at [3] — ``01`` = ESTABLISHED, inode
     at [9]). Read-only and dependency-free — works inside the hardened
     watchdog sandbox where ``ss``/sudo escalation is blocked.
+
+    Returns ``None`` when NEITHER table could be read — sockets were
+    UNOBSERVABLE, which must never be conflated with "read and empty"
+    (honest_failure_modes #1/#2). A table read successfully but empty
+    still contributes to a real (possibly empty) set.
     """
     inodes: set = set()
+    tables_read = 0
     for name in ("tcp", "tcp6"):
         path = Path(proc_root) / "net" / name
         try:
             lines = path.read_text().splitlines()[1:]
         except OSError:
             continue
+        tables_read += 1
         for line in lines:
             fields = line.split()
             if len(fields) < 10:
@@ -297,6 +313,8 @@ def _estab_inodes_to_port(port: int, *, proc_root: str = "/proc") -> set:
                 continue
             if state == "01" and rem_port == port:
                 inodes.add(inode)
+    if tables_read == 0:
+        return None
     return inodes
 
 
@@ -533,9 +551,18 @@ def probe_phoneapi_tcp_leak(
             reason="/proc/<pid>/fd unreadable; socket inodes unobservable",
         )
         return None
-    candidates = pid_inodes & _estab_inodes_to_port(
-        phoneapi_port, proc_root=proc_root
-    )
+    estab_inodes = _estab_inodes_to_port(phoneapi_port, proc_root=proc_root)
+    if estab_inodes is None:
+        # /proc/net/tcp{,6} unreadable — established sockets UNOBSERVABLE.
+        # HOLD: return without rewriting the persisted inode counts, so a
+        # blind tick can neither reset nor advance the persist-ticks
+        # debounce (the observation failed; nothing was learned).
+        note_disposition(
+            "phoneapi_tcp_leak", "indeterminate",
+            reason="proc/net tcp tables unreadable — sockets unobservable",
+        )
+        return None
+    candidates = pid_inodes & estab_inodes
 
     prev_pid, prev_counts = _load_phoneapi_leak_state(sp)
     # Consecutive-tick count per inode: +1 if seen last tick (same pid),
@@ -738,9 +765,17 @@ def probe_meshtasticd_phoneapi_wedge(
         gateway_unit, systemctl_path=systemctl_path
     )
     if gw_pid is None:
+        # NOTE: a None gw_pid conflates "no gateway unit on this box" (the
+        # overwhelmingly common, legitimate case — inert) with "systemctl
+        # errored" (unit state unobservable). A genuinely dead gateway
+        # pages via service_inactive, so inert is kept; the reason stays
+        # honest about the conflation.
         note_disposition(
             "meshtasticd_phoneapi_wedge", "inert",
-            reason="no running gateway; class gated to gateway boxes",
+            reason=(
+                "no running gateway (or unit state unobservable); "
+                "class gated to gateway boxes"
+            ),
         )
         return None
 
@@ -775,11 +810,19 @@ def probe_meshtasticd_phoneapi_wedge(
     # moc benign case: 40/10min churn, mesh-TX healthy). A real radio-monopolising
     # wedge MUST hold a :4403 connection (you can't monopolise the radio with
     # sub-100ms touches), so a held connection reliably separates harm from noise.
-    # _estab_inodes_to_port reads world-readable /proc/net/tcp — empty means
-    # genuinely no held contender (not unobservable), so suppressing is safe; if
-    # /proc were unreadable it would also be empty, but on a healthy box that
-    # can't coincide with a real wedge (the holder's own socket would be in it).
-    if not _estab_inodes_to_port(phoneapi_port, proc_root=proc_root):
+    # _estab_inodes_to_port reads world-readable /proc/net/tcp{,6} — an EMPTY
+    # set means the tables were read and genuinely show no held contender
+    # (suppressing is safe); None means NEITHER table was readable — sockets
+    # unobservable, which must not execute the benign-churn streak reset
+    # (hold: a blind tick neither confirms nor breaks the streak).
+    estab_inodes = _estab_inodes_to_port(phoneapi_port, proc_root=proc_root)
+    if estab_inodes is None:
+        note_disposition(
+            "meshtasticd_phoneapi_wedge", "indeterminate",
+            reason="proc/net tcp tables unreadable — sockets unobservable",
+        )
+        return None
+    if not estab_inodes:
         _save_phoneapi_wedge_streak(sp, 0)  # brief-touch churn → benign; reset
         note_disposition("meshtasticd_phoneapi_wedge", "clean")
         return None
@@ -1096,235 +1139,6 @@ def probe_nomadnet_crashloop(
             reason="probe raised unexpectedly; unobservable this tick",
         )
         return None
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Probe: tracer peer unreachable across recent fires (today's symptom)
-# ─────────────────────────────────────────────────────────────────────
-
-
-def probe_tracer_peer_unreachable(
-    *,
-    tracer_dir: Optional[Path] = None,
-    persistent_cycles: int = 3,
-    lookback_s: float = 1800.0,
-    now: Optional[float] = None,
-) -> List[Signal]:
-    """Classify peers with recurring no-route/timeout into transient vs persistent.
-
-    Reads recent ``tracer-<unix>.json`` files from ``tracer_dir`` (or
-    ``~/.local/state/meshforge/tracer`` per the lab tooling convention),
-    walks the last ``lookback_s`` seconds of fires, groups results by
-    peer, and emits one Signal per peer whose recent fires are dominated
-    by no-route/timeout.
-
-    Tier-1 (transient): peer failed in the most recent fire but had
-    at least one success in the lookback window. Severity: info.
-
-    Tier-2 (persistent): peer failed in the last ``persistent_cycles``
-    consecutive fires with no successes between. Severity is **degraded**
-    (2026-07-01, the moc2-offline lesson): every condition this probe can
-    observe is a REMOTE one — nothing on THIS observer is wedged and no
-    observer-side action fixes it — so one deliberately powered-off box
-    must not fail the fleet gate as N phantom wedges on its healthy
-    peers. The failure KIND still classifies the tier for the operator:
-
-    - all leading failures ``no-route`` → tier ``absent``: the peer has
-      no RNS path at all — off the mesh (maintenance, power, crash).
-      Check the box.
-    - any ``timeout`` among them → tier ``unresponsive``: an RNS path
-      exists but nothing answers. AMBIGUOUS by construction (detectors
-      never map ambiguous → definitive): either the box is off while
-      observers still hold a stale path (live 07-01: moc1/moc5 read the
-      powered-off moc2 as timeout while moc/moc3 read no-route), or the
-      box is up with a wedged echo / evicted identity (the 06-29 class —
-      recipe: restart the peer's meshforge-echo / re-announce).
-
-    A crashed box still surfaces (degraded on every peer + unreachable in
-    fleet rollups) — unobservable is never silently healthy — just at the
-    honest severity (honest_status: WARN, not FAIL).
-
-    Why a list return: one tracer_dir can report on many peers in one
-    pass; flattening to N Signals keeps the probe API uniform.
-    """
-    if tracer_dir is None:
-        tracer_dir = _default_tracer_dir()
-    if tracer_dir is None or not tracer_dir.is_dir():
-        note_disposition(
-            "tracer_peer_unreachable", "inert",
-            reason="no tracer state dir; tracer not run on this box",
-        )
-        return []
-
-    if now is None:
-        now = time.time()
-    since_unix = now - lookback_s
-
-    fires = _load_recent_fires(tracer_dir, since_unix=since_unix)
-    if not fires:
-        note_disposition(
-            "tracer_peer_unreachable", "indeterminate",
-            reason="no parseable tracer fires within lookback window",
-        )
-        return []
-
-    # Fires sorted newest-first inside _load_recent_fires.
-    # Group results by peer: list of (fire_at_unix, result) newest-first.
-    by_peer: dict = {}
-    for fire in fires:
-        for r in fire.get("results", []):
-            if not isinstance(r, dict):
-                continue
-            peer = r.get("peer")
-            if not isinstance(peer, str) or not peer:
-                continue
-            by_peer.setdefault(peer, []).append(
-                (fire["fire_at_unix"], r.get("result"))
-            )
-
-    signals: List[Signal] = []
-    for peer, history in by_peer.items():
-        # history is newest-first thanks to fires being newest-first.
-        if not history:
-            continue
-        latest_result = history[0][1]
-        if latest_result == "ok":
-            continue  # peer reachable right now → nothing to report
-
-        # Count leading non-ok results.
-        leading_fail = 0
-        for _, result in history:
-            if result == "ok":
-                break
-            leading_fail += 1
-
-        if leading_fail >= persistent_cycles:
-            leading_kinds = {result for _, result in history[:leading_fail]}
-            if leading_kinds == {"no-route"}:
-                # Peer ABSENT from the RNS mesh — no path at all. An
-                # offline/maintenance box, not an RNS wedge on this
-                # observer (the moc2-offline lesson, 2026-07-01).
-                signals.append(Signal(
-                    cls="tracer_peer_unreachable",
-                    subject=peer,
-                    severity="degraded",
-                    detail=(
-                        f"{leading_fail} consecutive no-route tracer fires "
-                        f"— {peer} is ABSENT from the RNS mesh (no path). "
-                        f"Off-line/maintenance or crashed: check the box "
-                        f"itself; nothing on this observer is wedged and "
-                        f"no observer-side action fixes it."
-                    ),
-                    extra={
-                        "leading_fail": leading_fail,
-                        "latest_result": latest_result,
-                        "tier": "absent",
-                    },
-                ))
-                continue
-            # Timeout(s) among the leading failures: an RNS path exists
-            # but nothing answers. Ambiguous — off box behind a stale
-            # path, OR a live box with a wedged echo / evicted identity
-            # (06-29 class). A remote condition either way: degraded,
-            # never a wedge on this observer.
-            signals.append(Signal(
-                cls="tracer_peer_unreachable",
-                subject=peer,
-                severity="degraded",
-                detail=(
-                    f"{leading_fail} consecutive failed tracer fires to "
-                    f"{peer} ({latest_result!r} latest, "
-                    f"kinds={sorted(leading_kinds)}) with an RNS path "
-                    f"present — the box is UNRESPONSIVE: either off-line "
-                    f"behind a stale path, or up with a wedged echo / "
-                    f"evicted identity. Check the box; if it is up, "
-                    f"restart its meshforge-echo / re-announce (06-29 "
-                    f"recipe)."
-                ),
-                extra={
-                    "leading_fail": leading_fail,
-                    "latest_result": latest_result,
-                    "tier": "unresponsive",
-                },
-            ))
-        else:
-            # Has at least one ok in the lookback window OR not enough
-            # leading fails for tier-2. Either way, transient.
-            signals.append(Signal(
-                cls="tracer_peer_unreachable",
-                subject=peer,
-                severity="info",
-                detail=(
-                    f"{leading_fail} recent failed fire(s) to {peer} "
-                    f"({latest_result!r} latest). Transient — cold-start "
-                    f"or single blip; resolves with retries."
-                ),
-                extra={
-                    "leading_fail": leading_fail,
-                    "latest_result": latest_result,
-                    "tier": "transient",
-                },
-            ))
-    if not signals:
-        note_disposition("tracer_peer_unreachable", "clean")
-    return signals
-
-
-def _default_tracer_dir() -> Optional[Path]:
-    """Resolve the tracer state dir per the same XDG/operator-home rules
-    as ``utils/tracer_fires.py::_tracer_dir``. Kept local to avoid
-    pulling in fleet_test_runner during watchdog startup."""
-    import os
-    xdg = os.environ.get("XDG_STATE_HOME")
-    if xdg:
-        return Path(xdg) / "meshforge" / "tracer"
-    # Watchdog runs as root. Fall back to the operator's home via the
-    # same lookup tracer_fires uses.
-    try:
-        from utils.tracer_fires import _operator_home  # noqa: WPS433
-    except ImportError:
-        return None
-    home = _operator_home()
-    if home is None:
-        return None
-    return home / ".local" / "state" / "meshforge" / "tracer"
-
-
-def _load_recent_fires(
-    tracer_dir: Path, *, since_unix: float,
-) -> List[dict]:
-    """Read all tracer-<unix>.json files in ``tracer_dir`` newer than
-    ``since_unix``. Returns newest-first. Skips malformed files."""
-    fires: List[dict] = []
-    try:
-        entries = list(tracer_dir.iterdir())
-    except OSError:
-        return []
-    for fp in entries:
-        name = fp.name
-        if not name.startswith("tracer-") or not name.endswith(".json"):
-            continue
-        try:
-            file_unix = float(name[len("tracer-"):-len(".json")])
-        except (IndexError, ValueError):
-            file_unix = None
-        if file_unix is not None and file_unix < since_unix - 30:
-            continue
-        try:
-            with fp.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        fire_at = data.get("fire_at_unix")
-        if not isinstance(fire_at, (int, float)) or fire_at < since_unix:
-            continue
-        if not isinstance(data.get("results"), list):
-            continue
-        fires.append(data)
-    fires.sort(key=lambda d: d["fire_at_unix"], reverse=True)
-    return fires
 
 
 # ─────────────────────────────────────────────────────────────────────

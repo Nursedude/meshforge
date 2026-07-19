@@ -124,6 +124,19 @@ class TestCoverage:
         assert set(cov["classes"].keys()) == set(SIGNAL_CLASSES)
         assert cov["total"] == len(SIGNAL_CLASSES)
 
+    def test_stale_block_signals_not_presented_as_active(self):
+        """2026-07-19 adversarial review: a FROZEN watchdog serving a stale
+        block still carries its last signals[] — those are a stale
+        observation and must read dark, never currently-active red."""
+        wd = {"installed": True, "ok": False,
+              "reason": "stale: last write 900s ago",
+              "signals": [{"class": "role_drift", "severity": "degraded",
+                           "subject": "s", "detail": "d"}]}
+        cov = ft.merge_coverage(wd, ["role_drift", "service_inactive"])
+        assert cov["red"] == 0
+        assert cov["classes"]["role_drift"]["disp"] != "active"
+        assert cov["dark"] == 2
+
 
 # ── build_box_truth ──────────────────────────────────────────────────────
 class TestBoxTruth:
@@ -165,6 +178,64 @@ class TestBoxTruth:
                           slo={"overall_status": "degraded"})
         b = ft.build_box_truth(snap, now=NOW, signal_classes=["role_drift"])
         assert b["subsystems"]["services"]["state"] == ft.FAILED
+
+    def test_stale_mini_rules_not_presented_as_live_escalations(self):
+        """2026-07-19 adversarial review: a frozen mini's last active_rules
+        are a stale observation — the escalations feed must not show them
+        as live (the dark mini cell surfaces the blindness instead)."""
+        snap = self._snap(status={
+            "mini_dudeai": {"installed": True, "ok": False,
+                            "reason": "stale: last tick 900s ago",
+                            "active_rules": [{"rule_id": "r1", "subject": "s",
+                                              "detail": "old fire"}]}})
+        b = ft.build_box_truth(snap, now=NOW, signal_classes=[])
+        assert b["escalations"] == []
+        assert b["subsystems"]["mini"]["state"] == ft.DARK
+
+    def test_fresh_mini_rules_do_flow_to_escalations(self):
+        snap = self._snap(status={
+            "mini_dudeai": {"installed": True, "ok": True,
+                            "active_rules": [{"rule_id": "r1", "subject": "s",
+                                              "detail": "live fire"}]}})
+        b = ft.build_box_truth(snap, now=NOW, signal_classes=[])
+        assert len(b["escalations"]) == 1
+        assert b["escalations"][0]["rule_id"] == "r1"
+
+
+class TestCiCell:
+    """2026-07-19 adversarial review: FAILED only on an OBSERVED failure;
+    in-progress/unknown/None states are DARK (cannot judge), never healthy
+    and never an invented fault."""
+
+    def _slo(self, repos):
+        return {"ci_status": {"repos": repos}}
+
+    def test_in_progress_is_dark_not_failed(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "in_progress"}]))
+        assert c["state"] == ft.DARK
+        assert "in_progress" in c["reason"]
+
+    def test_none_state_is_dark_not_healthy(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": None}]))
+        assert c["state"] == ft.DARK
+
+    def test_unknown_state_is_dark_not_failed(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "queued"}]))
+        assert c["state"] == ft.DARK
+
+    def test_failure_is_failed(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "failure"},
+                                   {"name": "ma", "state": "success"}]))
+        assert c["state"] == ft.FAILED
+
+    def test_failure_beats_in_progress(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "failure"},
+                                   {"name": "ma", "state": "in_progress"}]))
+        assert c["state"] == ft.FAILED
+
+    def test_all_success_is_healthy(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "success"}]))
+        assert c["state"] == ft.HEALTHY
 
 
 # ── build_fleet_truth: verdict + fan-out honesty ────────────────────────
@@ -222,3 +293,27 @@ class TestFleetTruth:
     def test_schema_tag(self):
         t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc")
         assert t["schema"] == "fleet_truth/v1"
+
+    def test_faulted_box_counts_failed_not_healthy(self):
+        """2026-07-19 adversarial review: counts/tiles were reachability-only,
+        so a reachable box with an observed fault summarized green. box_state
+        is worst-of(reach + tainting subsystems) and drives counts."""
+        bad = self._healthy_snap("moc2")
+        bad["slo"]["overall_status"] = "degraded"
+        t = ft.build_fleet_truth([self._healthy_snap("moc"), bad],
+                                 now=NOW, signal_classes=[], noc_host="moc")
+        assert t["counts"]["failed"] == 1
+        assert t["counts"]["healthy"] == 1
+        bad_box = next(b for b in t["boxes"] if b["alias"] == "moc2")
+        assert bad_box["box_state"] == ft.FAILED
+
+    def test_dead_slo_leg_taints_verdict(self):
+        """2026-07-19 adversarial review: a box whose /api/status answers but
+        whose /fleet/slo leg is dead was reachable-healthy with a dark
+        services cell that tainted NOTHING — a fleet-wide dead slo leg read
+        green. services is now core-observability."""
+        snap = self._healthy_snap("moc")
+        snap["slo"] = None
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] != ft.HEALTHY
+        assert t["boxes"][0]["box_state"] == ft.DARK

@@ -3995,6 +3995,58 @@ class TestCronVerdictStale:
                                  now=self.NOW, state_path=sp)            # heal → 0
         assert json.loads(Path(sp).read_text())["streak"] == 0
 
+    # ----- disposition honesty (fail-dark; adversarial-review fixes) -----
+
+    WIRED_REBOOT = ("@reboot /opt/boot_job.py; "
+                    "/opt/meshforge/scripts/cron_verdict.sh bootjob $?\n")
+
+    @staticmethod
+    def _disp():
+        from utils.watchdog_probe_core import collect_dispositions
+        return collect_dispositions().get("cron_verdict_stale")
+
+    def test_unreadable_verdict_log_is_indeterminate_not_clean(self, tmp_path):
+        """L1a: verdicts_text None (log unreadable / home unresolvable) with
+        wired crons → the verdicts are UNOBSERVABLE; the would-be-clean exit
+        must note indeterminate, never clean (fail-dark). A POSITIVE empty
+        read is '' — None means the observation channel failed."""
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        sig = probe_cron_verdict_stale(
+            crontab_text=self.WIRED_REBOOT, verdicts_text=None,
+            now=self.NOW, state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = self._disp()
+        assert got["disp"] == "indeterminate"
+        assert "verdict log unreadable" in got["reason"]
+
+    def test_reboot_wired_no_verdict_is_indeterminate_not_clean(self, tmp_path):
+        """L1b: an @reboot-wired cron with NO recorded verdict is unjudgeable
+        (max_age inf skips the stale legs) — indeterminate, never clean.
+        verdicts_text='' here is a POSITIVE empty read, isolating this from
+        the L1a unreadable-log leg."""
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        sig = probe_cron_verdict_stale(
+            crontab_text=self.WIRED_REBOOT, verdicts_text="",
+            now=self.NOW, state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = self._disp()
+        assert got["disp"] == "indeterminate"
+        assert "@reboot" in got["reason"]
+
+    def test_reboot_wired_with_ok_verdict_is_clean(self, tmp_path):
+        """An @reboot cron WITH an OK verdict is a judged, healthy cron —
+        clean stays clean (the split must not over-darken)."""
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        sig = probe_cron_verdict_stale(
+            crontab_text=self.WIRED_REBOOT,
+            verdicts_text=self._v("bootjob", "OK", 60),
+            now=self.NOW, state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        assert self._disp()["disp"] == "clean"
+
     def test_cron_max_interval(self):
         assert _cron_max_interval("*/5 * * * *") == 300.0
         assert _cron_max_interval("7 */2 * * *") == 7200.0
@@ -4092,6 +4144,45 @@ class TestFleetBoxUnreachable:
                                     state_mtime=self.NOW, now=self.NOW,
                                     state_path=sp)                          # heal → 0
         assert json.loads(Path(sp).read_text())["streak"] == 0
+
+    def test_zero_byte_state_file_is_indeterminate_not_inert(
+            self, tmp_path, monkeypatch):
+        """L4: a zero-byte state file (the writer's mid-rewrite window) is
+        NOT the positive 'no monitor here' absence — it must note
+        indeterminate, never inert (absence-vs-error split)."""
+        import pwd
+        import types
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions)
+        (tmp_path / "fleet_offline_state.tsv").write_text("")
+        monkeypatch.setattr(
+            pwd, "getpwuid",
+            lambda uid: types.SimpleNamespace(pw_dir=str(tmp_path)))
+        reset_dispositions()
+        sig = probe_fleet_box_unreachable(
+            operator=(1000, "op"), now=time.time(),
+            state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = collect_dispositions()["fleet_box_unreachable"]
+        assert got["disp"] == "indeterminate"
+        assert "mid-rewrite" in got["reason"]
+
+    def test_absent_state_file_stays_inert(self, tmp_path, monkeypatch):
+        """The split's other half: a positively-ABSENT state file is still
+        the legitimate 'not the manager box' inert."""
+        import pwd
+        import types
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions)
+        monkeypatch.setattr(
+            pwd, "getpwuid",
+            lambda uid: types.SimpleNamespace(pw_dir=str(tmp_path)))
+        reset_dispositions()
+        sig = probe_fleet_box_unreachable(
+            operator=(1000, "op"), now=time.time(),
+            state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        assert collect_dispositions()["fleet_box_unreachable"]["disp"] == "inert"
 
 
 class TestHostFrozen:
@@ -4325,6 +4416,57 @@ class TestRouterScoutDegraded:
         sig = self._fire(tmp_path, ticks)
         assert sig is not None
         assert "captured_at" in sig.detail
+
+    # ----- disposition honesty (fail-dark; adversarial-review fixes) -----
+
+    def _home_probe(self, tmp_path, monkeypatch):
+        """Run the probe through the real _read_router_scout_ticks path with
+        tmp_path as the operator home. Returns the collected disposition."""
+        import pwd
+        import types
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions)
+        monkeypatch.setattr(
+            pwd, "getpwuid",
+            lambda uid: types.SimpleNamespace(pw_dir=str(tmp_path)))
+        reset_dispositions()
+        sig = probe_router_scout_degraded(
+            operator=(1000, "op"), now=time.time(),
+            state_path=str(tmp_path / "rs_debounce.json"))
+        assert sig is None
+        return collect_dispositions()["router_scout_degraded"]
+
+    def test_unreadable_mirror_among_healthy_is_indeterminate(
+            self, tmp_path, monkeypatch):
+        """L3a: one unreadable mirror (a directory named *_tick.json —
+        open() raises IsADirectoryError ⊂ OSError, root-proof) among healthy
+        ticks → that router is UNOBSERVABLE; clean must not be noted."""
+        now = time.time()
+        d = tmp_path / ".local/share/meshforge/router_scout"
+        d.mkdir(parents=True)
+        (d / "good_tick.json").write_text(json.dumps(
+            {"schema": 1, "device": "good", "captured_at": now,
+             "ok": True, "errors": [], "notes": []}))
+        (d / "bad_tick.json").mkdir()
+        got = self._home_probe(tmp_path, monkeypatch)
+        assert got["disp"] == "indeterminate"
+        assert "unreadable" in got["reason"]
+
+    def test_mirror_dir_present_but_empty_is_indeterminate(
+            self, tmp_path, monkeypatch):
+        """L3b: dir EXISTS but yields zero readable ticks → indeterminate,
+        not the 'no scout mirror dir' inert."""
+        (tmp_path / ".local/share/meshforge/router_scout").mkdir(parents=True)
+        got = self._home_probe(tmp_path, monkeypatch)
+        assert got["disp"] == "indeterminate"
+        assert "present" in got["reason"]
+
+    def test_mirror_dir_absent_is_inert(self, tmp_path, monkeypatch):
+        """L3b other half: a positively-ABSENT mirror dir stays the
+        legitimate manager-box-only inert."""
+        got = self._home_probe(tmp_path, monkeypatch)
+        assert got["disp"] == "inert"
+        assert "no scout mirror dir" in got["reason"]
 
 
 class TestNtfyLoopback:
@@ -5675,6 +5817,54 @@ class TestInheritedAppDrift:
     def test_signal_class_registered(self):
         assert "inherited_app_drift" in SIGNAL_CLASSES
 
+    def test_home_unresolvable_with_clean_opt_is_indeterminate(
+            self, tmp_path, monkeypatch):
+        """L2: an unresolvable operator home silently narrowed the scan to
+        /opt, then noted clean as if everything promised was scanned —
+        contradicting the docstring's 'skipped (indeterminate)'. A skipped
+        root must surface as indeterminate even when every scanned checkout
+        is clean (partially-unscanned is not clean)."""
+        import utils.watchdog_probes_env as env
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions)
+
+        def _fake_iter(roots, **kw):
+            yield ("/opt/someapp", "https://github.com/upstream/someapp")
+
+        monkeypatch.setattr(env, "_iter_inherited_checkouts", _fake_iter)
+        monkeypatch.setattr(env, "_git_tracked_modifications",
+                            lambda path, git_path="git": [])
+        reset_dispositions()
+        sig = probe_inherited_app_drift(
+            service_user_fn=lambda: None,   # both home resolutions → None
+            state_path=str(tmp_path / "iad_debounce.json"))
+        assert sig is None
+        got = collect_dispositions()["inherited_app_drift"]
+        assert got["disp"] == "indeterminate"
+        assert "unscanned" in got["reason"]
+
+    def test_unscannable_root_is_indeterminate_not_inert(self, tmp_path):
+        """L2: a scan root that EXISTS but errors on scandir is recorded as
+        skipped by _iter_inherited_checkouts and surfaces indeterminate at
+        the exit — never the 'no inherited checkouts' inert."""
+        import utils.watchdog_probes_env as env
+        from unittest.mock import patch as _patch
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions)
+
+        def _boom(root):
+            raise PermissionError(13, "denied", str(root))
+
+        reset_dispositions()
+        with _patch.object(env.os, "scandir", _boom):
+            sig = probe_inherited_app_drift(
+                scan_roots=[str(tmp_path)],
+                state_path=str(tmp_path / "iad_debounce.json"))
+        assert sig is None
+        got = collect_dispositions()["inherited_app_drift"]
+        assert got["disp"] == "indeterminate"
+        assert "unscanned" in got["reason"]
+
 
 # ─────────────────────────────────────────────────────────────────────
 # probe_gateway_dup_degraded (dedup/identity arc STEP 5)
@@ -5915,3 +6105,281 @@ class TestMeshtasticdVszLeak:
                                          threshold_gb=64.0)
         assert sig is not None
         assert sig.extra["threshold_gb"] == 64.0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-18 adversarial-review fixes — FAIL-DARK disposition honesty.
+# A probe may note CLEAN only on a positively-successful observation;
+# ambiguity resolves dark (indeterminate), positively-observed absence
+# resolves inert. (N1/N2/N3/N4/G1/G2/G3.)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _fresh_dispositions():
+    """Reset the per-tick recorder and return the collector."""
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    reset_dispositions()
+    return collect_dispositions
+
+
+class TestRnsCollisionSpacedInstanceName:
+    """N1 — the #69/#82 class: ``ss`` truncates an abstract socket name at
+    the first space, so a spaced instance_name ("volcano ai rns" →
+    displayed "@rns/volcano") never matched the old inline needle. Owners
+    stayed empty and the probe noted affirmative CLEAN on exactly the
+    incident boxes. The probe now reuses the twin parser
+    ``utils.rns_init._parse_ss_listener_line`` (Issue #82 fix)."""
+
+    SPACED = "volcano ai rns"
+
+    def test_foreign_owner_fires_despite_truncated_ss_display(self, tmp_path):
+        """A foreign squatter on a spaced-name box MUST fire, not read clean."""
+        fake_proc = tmp_path / "1"
+        fake_proc.mkdir()
+        (fake_proc / "cmdline").write_bytes(
+            b"/usr/bin/python3\x00/opt/meshanchor/src/daemon.py\x00start\x00"
+        )
+        ss_out = _SS_FOREIGN_OWNED.replace("200825", "1")  # shows @rns/volcano
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_rns.subprocess.run",
+                   side_effect=_make_subprocess_mock(ss_out)):
+            sig = probe_rns_namespace_collision(
+                self.SPACED, proc_root=str(tmp_path))
+        assert sig is not None
+        assert sig.cls == "rns_namespace_collision"
+        assert sig.severity == "wedge"
+        got = collect().get("rns_namespace_collision")
+        assert got is None or got["disp"] != "clean", (
+            "a listener existed — clean must never be noted")
+
+    def test_spaced_name_never_notes_clean_while_listener_exists(self, tmp_path):
+        """The exact pre-fix regression: truncated display + spaced needle →
+        owners empty → affirmative clean. Must be gone."""
+        fake_proc = tmp_path / "1"
+        fake_proc.mkdir()
+        (fake_proc / "cmdline").write_bytes(_NOMADNET_WRAPPER_CMDLINE)
+        ss_out = _SS_FOREIGN_OWNED.replace("200825", "1")
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_rns.subprocess.run",
+                   side_effect=_make_subprocess_mock(ss_out)):
+            sig = probe_rns_namespace_collision(
+                self.SPACED, proc_root=str(tmp_path), rnsd_enabled=True)
+        # RNS-family non-rnsd owner + rnsd enabled → inverted, degraded.
+        assert sig is not None
+        assert sig.extra["tier"] == "inverted"
+        got = collect().get("rns_namespace_collision")
+        assert got is None or got["disp"] != "clean"
+
+    def test_spaced_name_rnsd_owner_resolves_as_before(self, tmp_path):
+        """Ownership resolution works as rns_init's does: comm==rnsd on the
+        truncated line passes (no signal)."""
+        with patch("utils.watchdog_probes_rns.subprocess.run",
+                   side_effect=_make_subprocess_mock(_SS_RNSD_OWNED)):
+            sig = probe_rns_namespace_collision(
+                self.SPACED, proc_root=str(tmp_path), rnsd_enabled=True)
+        assert sig is None
+
+    def test_twin_parser_agreement_on_spaced_fixture(self):
+        """The probe's matching IS rns_init's — pin the twin on the spaced
+        truncated fixture so a future inline reimplementation can't drift."""
+        from utils.rns_init import _parse_ss_listener_line
+        line = ('u_str LISTEN   0      0      @rns/volcano 99999 * 0 '
+                'users:(("python3",pid=42,fd=4))')
+        assert _parse_ss_listener_line(line, self.SPACED) == (42, "python3")
+        # ...and the trailing-space anchor keeps "volcano-x" from matching.
+        assert _parse_ss_listener_line(line, "volcano-x y") is None
+
+
+class TestRnsInterfaceTableUnobservable:
+    """N2 — empty/unrecognized rnstatus output yields parse_error=None with
+    interfaces=[]; a healthy rnstatus always prints at least the
+    shared-instance block, so this is an UNOBSERVED table, never clean."""
+
+    def test_empty_rnstatus_output_is_indeterminate_not_clean(self):
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(rnstatus_text="")
+        assert sig is None
+        got = collect()["rns_interface_down_peer_reachable"]
+        assert got["disp"] == "indeterminate"
+        assert "unobservable" in got["reason"]
+
+    def test_unrecognized_error_text_is_indeterminate_not_clean(self):
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text="some banner nobody taught the parser\n")
+        assert sig is None
+        got = collect()["rns_interface_down_peer_reachable"]
+        assert got["disp"] == "indeterminate"
+
+    def test_real_interface_table_still_notes_clean(self):
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=False):
+            sig = probe_rns_interface_down_peer_reachable(
+                rnstatus_text=_RNSTATUS_UP_BLOCK)
+        assert sig is None
+        assert collect()["rns_interface_down_peer_reachable"]["disp"] == "clean"
+
+
+class TestCalibrationDriftGarbledLedger:
+    """N3 — load_events maps any OSError/garbled content to [] (never-raises
+    contract); a non-empty ledger yielding zero events was NOT observed and
+    must not fold to 'every claim held' (clean)."""
+
+    def test_garbled_ledger_is_indeterminate_not_clean(self, tmp_path):
+        p = tmp_path / "calibration_ledger.jsonl"
+        p.write_text("{{{this is not jsonl\ngarbage line two\n")
+        collect = _fresh_dispositions()
+        sig = probe_calibration_drift(ledger_path=str(p))
+        assert sig is None
+        got = collect()["calibration_drift"]
+        assert got["disp"] == "indeterminate"
+        assert "garbled" in got["reason"] or "unreadable" in got["reason"]
+
+    def test_zero_byte_ledger_keeps_current_disposition(self, tmp_path):
+        p = tmp_path / "calibration_ledger.jsonl"
+        p.write_text("")
+        collect = _fresh_dispositions()
+        sig = probe_calibration_drift(ledger_path=str(p))
+        assert sig is None
+        got = collect()["calibration_drift"]
+        assert got["disp"] != "indeterminate"
+
+    def test_absent_ledger_stays_inert(self, tmp_path):
+        collect = _fresh_dispositions()
+        sig = probe_calibration_drift(ledger_path=str(tmp_path / "nope.jsonl"))
+        assert sig is None
+        assert collect()["calibration_drift"]["disp"] == "inert"
+
+
+class TestMiniFileReadCorruptionIndeterminate:
+    """N4 — a PRESENT but corrupt/unreadable mini file is unobservable, not
+    absent: FileNotFoundError keeps inert; other OSError/ValueError →
+    indeterminate."""
+
+    def test_history_state_corrupt_is_indeterminate(self, tmp_path):
+        (tmp_path / "mini_dudeai_state.json").write_text("{corrupt json")
+        collect = _fresh_dispositions()
+        sig = probe_history_write_failure(
+            mini_home=str(tmp_path), state_path=str(tmp_path / "sp.json"))
+        assert sig is None
+        got = collect()["history_write_stalled"]
+        assert got["disp"] == "indeterminate"
+        assert "corrupt" in got["reason"] or "unreadable" in got["reason"]
+
+    def test_history_state_absent_stays_inert(self, tmp_path):
+        collect = _fresh_dispositions()
+        sig = probe_history_write_failure(
+            mini_home=str(tmp_path), state_path=str(tmp_path / "sp.json"))
+        assert sig is None
+        assert collect()["history_write_stalled"]["disp"] == "inert"
+
+    def test_rules_live_corrupt_is_indeterminate(self, tmp_path):
+        (tmp_path / "mini_dudeai_rules.json").write_text("{corrupt json")
+        repo_root = os.path.join(os.path.dirname(__file__), "..")
+        collect = _fresh_dispositions()
+        sig = probe_rules_seed_drift(
+            mini_home=str(tmp_path), role="primary", meshforge_root=repo_root)
+        assert sig is None
+        got = collect()["rules_seed_drift"]
+        assert got["disp"] == "indeterminate"
+
+    def test_rules_live_absent_stays_inert(self, tmp_path):
+        repo_root = os.path.join(os.path.dirname(__file__), "..")
+        collect = _fresh_dispositions()
+        sig = probe_rules_seed_drift(
+            mini_home=str(tmp_path), role="primary", meshforge_root=repo_root)
+        assert sig is None
+        assert collect()["rules_seed_drift"]["disp"] == "inert"
+
+
+class TestGatewayDupTransportIndeterminate:
+    """G1 — on the manager box (the only observable one) a crashed map /
+    5xx lands in the transport except too: unobservable ≠ benign inert."""
+
+    def test_transport_error_is_indeterminate_not_inert(self, tmp_path):
+        from urllib.error import URLError as _URLError
+
+        def _raise(*args, **kwargs):
+            raise _URLError("connection refused")
+
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_gateway_dup_degraded(
+                debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = collect()["gateway_dup_degraded"]
+        assert got["disp"] == "indeterminate"
+        assert "manager" in got["reason"]
+
+
+class TestFlowProbesOperatorUnresolvable:
+    """G2 — sdir=None means the OPERATOR was unresolvable (early-boot / no
+    user bus), not a positively-observed absent state dir. On a
+    soak-running box that window must not read 'doesn't run it'."""
+
+    def test_synth_soak_operator_unresolvable_is_indeterminate(self, tmp_path):
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway_flow._resolve_synth_soak_dir",
+                   return_value=None):
+            sig = probe_synth_soak_degraded(
+                debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = collect()["synth_soak_degraded"]
+        assert got["disp"] == "indeterminate"
+        assert "operator unresolvable" in got["reason"]
+
+    def test_synth_soak_dir_genuinely_absent_stays_inert(self, tmp_path):
+        collect = _fresh_dispositions()
+        sig = probe_synth_soak_degraded(
+            state_dir=str(tmp_path / "nope"),
+            debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        assert collect()["synth_soak_degraded"]["disp"] == "inert"
+
+    def test_resource_canary_operator_unresolvable_is_indeterminate(
+            self, tmp_path):
+        from utils.watchdog_probes import probe_resource_canary_degraded
+        collect = _fresh_dispositions()
+        with patch(
+                "utils.watchdog_probes_gateway_flow._resolve_resource_canary_dir",
+                return_value=None):
+            sig = probe_resource_canary_degraded(
+                debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = collect()["resource_canary_degraded"]
+        assert got["disp"] == "indeterminate"
+        assert "operator unresolvable" in got["reason"]
+
+    def test_resource_canary_dir_genuinely_absent_stays_inert(self, tmp_path):
+        from utils.watchdog_probes import probe_resource_canary_degraded
+        collect = _fresh_dispositions()
+        sig = probe_resource_canary_degraded(
+            state_dir=str(tmp_path / "nope"),
+            debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        assert collect()["resource_canary_degraded"]["disp"] == "inert"
+
+
+def test_delivery_canary_db_unobservable_is_indeterminate_not_clean():
+    """G3 (probe side) — the producer marks health db_unobservable when its
+    snapshot() DB read failed; the canary must read that as indeterminate,
+    never clean (the #63 class it exists to catch)."""
+    payload = {"health": {
+        "db_unobservable": True,
+        "preflight_ok": None,
+        "consecutive_write_errors": 0,
+        "last_write_error": None,
+        "db_path": "/x/y/z.db",
+    }}
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    reset_dispositions()
+    with patch("utils.watchdog_probes_gateway.urlopen",
+               return_value=_http_json_mock(payload)):
+        sig = probe_delivery_write_canary()
+    assert sig is None
+    got = collect_dispositions()["delivery_write_canary"]
+    assert got["disp"] == "indeterminate"
+    assert "unobservable" in got["reason"]
+    reset_dispositions()

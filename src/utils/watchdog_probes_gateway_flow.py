@@ -195,7 +195,15 @@ def probe_synth_soak_degraded(
     now = _time.time() if now is None else now
 
     sdir = state_dir or _resolve_synth_soak_dir()
-    if not sdir or not os.path.isdir(sdir):
+    if not sdir:
+        # G2 (2026-07-18): sdir is ALSO None when the operator user is
+        # unresolvable (early-boot / no user bus) — on a soak-running box
+        # that window must not read "doesn't run it". Mirrors the oracle
+        # probe's split below.
+        note_disposition("synth_soak_degraded", "indeterminate",
+                         reason="operator unresolvable — state dir unknown")
+        return None
+    if not os.path.isdir(sdir):
         note_disposition("synth_soak_degraded", "inert",
                          reason="synth-soak state dir absent — box doesn't run it")
         return None  # INERT: box doesn't run the synth soak
@@ -776,7 +784,14 @@ def probe_resource_canary_degraded(
     now = _time.time() if now is None else now
 
     sdir = state_dir or _resolve_resource_canary_dir()
-    if not sdir or not os.path.isdir(sdir):
+    if not sdir:
+        # G2 (2026-07-18): sdir None = operator unresolvable (early-boot /
+        # no user bus), NOT a positively-observed absence. Mirrors the
+        # oracle probe's split.
+        note_disposition("resource_canary_degraded", "indeterminate",
+                         reason="operator unresolvable — state dir unknown")
+        return None
+    if not os.path.isdir(sdir):
         note_disposition("resource_canary_degraded", "inert",
                          reason="canary state dir absent — box doesn't run it")
         return None  # INERT: box doesn't run the resource canary

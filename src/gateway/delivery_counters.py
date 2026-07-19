@@ -835,6 +835,14 @@ class DeliveryCounters:
             events_rows = []
             agg_rows = []
             ring_capacity = self._ring_cap
+            # G3 (2026-07-18, honest_failure_modes #2): a DB that became
+            # unreadable AFTER startup must not serve a healthy-looking
+            # health block (stale startup preflight True + local write
+            # errors 0) — mark the snapshot unobservable so the watchdog
+            # canary reads indeterminate, not clean.
+            snapshot_failed = True
+        else:
+            snapshot_failed = False
 
         state_totals: Dict[str, int] = {s.value: 0 for s in DeliveryState}
         drop_reasons: Dict[str, int] = {r.value: 0 for r in DropReason}
@@ -949,6 +957,15 @@ class DeliveryCounters:
                 "last_write_error_ts": write_error_ts,
                 "last_write_error": self._last_write_error,
             }
+            if snapshot_failed:
+                # The DB could not be read THIS call: the preflight value
+                # above is the reader's stale startup state, not an
+                # observation. Emit an honest unobservable marker and
+                # withhold the stale preflight instead of letting a dead
+                # DB read healthy (#63's exact class). Healthy-path shape
+                # is unchanged (no db_unobservable key).
+                health["db_unobservable"] = True
+                health["preflight_ok"] = None
 
         return {
             "state_totals": state_totals,

@@ -1305,3 +1305,47 @@ class TestContentIdViewStateProducerStep4c:
             view="not-a-dict", path=tmp_path / "v2.json")  # type: ignore[arg-type]
         assert ok is False
         assert not (tmp_path / "v2.json").exists()
+
+
+class TestSnapshotDbUnobservable:
+    """G3 (2026-07-18 adversarial review, honest_failure_modes #2): a
+    delivery DB that becomes unreadable AFTER startup must not serve a
+    healthy-looking health block. Before this fix, a snapshot() sqlite3
+    failure fell back to the reader's stale startup preflight (True) +
+    local consecutive_write_errors (0) — so `probe_delivery_write_canary`
+    read CLEAN for exactly the class it exists to catch."""
+
+    def _broken(self, tmp_path):
+        import sqlite3
+        c = DeliveryCounters(db_path=tmp_path / "x.db")
+        # Healthy baseline first — the startup preflight really did pass.
+        assert c.snapshot()["health"]["preflight_ok"] is True
+
+        def broken_connect():
+            raise sqlite3.OperationalError("disk I/O error")
+
+        c._connect = broken_connect  # type: ignore[assignment]
+        return c
+
+    def test_snapshot_failure_marks_health_unobservable(self, tmp_path):
+        health = self._broken(tmp_path).snapshot()["health"]
+        assert health.get("db_unobservable") is True
+
+    def test_snapshot_failure_withholds_stale_preflight(self, tmp_path):
+        """preflight_ok must be None (unobserved), NOT the stale startup
+        True — absence of evidence is not evidence of health."""
+        health = self._broken(tmp_path).snapshot()["health"]
+        assert health["preflight_ok"] is None
+
+    def test_snapshot_failure_still_json_serializable(self, tmp_path):
+        snap = self._broken(tmp_path).snapshot()
+        json.dumps(snap)  # must not raise
+
+    def test_healthy_snapshot_has_no_unobservable_key(self, tmp_path):
+        """Healthy-path shape is unchanged — the marker appears ONLY when
+        the snapshot read actually failed."""
+        c = DeliveryCounters(db_path=tmp_path / "y.db")
+        c.record(DeliveryState.QUEUED, "m", protocol="rns")
+        health = c.snapshot()["health"]
+        assert "db_unobservable" not in health
+        assert health["preflight_ok"] is True
