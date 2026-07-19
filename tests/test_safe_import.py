@@ -72,11 +72,54 @@ class TestSafeImportFailure:
 class TestSafeImportEdgeCases:
     """Test edge cases and special behaviors."""
 
-    def test_missing_attribute_returns_none(self):
-        """If module exists but attribute doesn't, returns None for that attr."""
+    def test_missing_attribute_is_a_failed_import(self):
+        """Module exists but the name is neither attr nor submodule: the
+        flag must be False — (None, True) was the honest-failure-modes lie
+        that broke every cold `safe_import('pubsub', 'pub')` call site."""
         val, ok = safe_import('json', 'nonexistent_function_xyz')
-        assert ok is True  # Module imported successfully
-        assert val is None  # Attribute not found
+        assert ok is False
+        assert val is None
+
+    def test_missing_attr_fails_whole_call(self):
+        """One missing name fails the call: all attrs None, flag False —
+        callers take their designed fallback instead of crashing on the
+        one None in an otherwise-populated tuple."""
+        dumps, missing, ok = safe_import('json', 'dumps', 'nonexistent_xyz')
+        assert ok is False
+        assert dumps is None
+        assert missing is None
+
+    def test_submodule_fallback_from_import_semantics(self, tmp_path):
+        """`safe_import('pkg', 'sub')` must import pkg.sub as a submodule
+        when the package doesn't expose it as an attribute — matching
+        `from pkg import sub` (the pubsub.pub cold-interpreter case)."""
+        import sys
+        pkg = tmp_path / "sipkg_txyz"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "subm.py").write_text("MARKER = 42\n")
+        sys.path.insert(0, str(tmp_path))
+        try:
+            subm, ok = safe_import('sipkg_txyz', 'subm')
+            assert ok is True
+            assert subm is not None
+            assert subm.MARKER == 42
+        finally:
+            sys.path.remove(str(tmp_path))
+            for m in list(sys.modules):
+                if m.startswith('sipkg_txyz'):
+                    del sys.modules[m]
+
+    def test_pubsub_pattern_cold_contract(self):
+        """The documented `pub, ok = safe_import('pubsub', 'pub')` pattern:
+        with pubsub installed, ok=True must come with a usable module (the
+        submodule fallback); without it, (None, False). Never (None, True)."""
+        pub, ok = safe_import('pubsub', 'pub')
+        if ok:
+            assert pub is not None
+            assert hasattr(pub, 'getDefaultTopicMgr')
+        else:
+            assert pub is None
 
     def test_tuple_length_matches_names(self):
         """Return tuple length = len(names) + 1 (for the flag)."""

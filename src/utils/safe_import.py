@@ -35,6 +35,8 @@ from typing import Any, Tuple
 
 logger = logging.getLogger(__name__)
 
+_MISSING = object()  # sentinel: distinguishes absent attrs from None-valued ones
+
 
 def safe_import(module: str, *names: str, package: str = None) -> Tuple[Any, ...]:
     """Import a module and return requested attributes with a success flag.
@@ -48,8 +50,11 @@ def safe_import(module: str, *names: str, package: str = None) -> Tuple[Any, ...
                  calling module.
 
     Returns:
-        Tuple of (*attrs, available_bool). When the import fails every attr
-        is ``None`` and the flag is ``False``.
+        Tuple of (*attrs, available_bool). When the import fails — module
+        missing, OR any requested name neither an attribute nor an
+        importable submodule (from-import semantics) — every attr is
+        ``None`` and the flag is ``False``. The flag is never ``True``
+        alongside a ``None`` for a missing name.
 
     Examples:
         >>> emit, ok = safe_import('utils.event_bus', 'emit_message')
@@ -71,8 +76,31 @@ def safe_import(module: str, *names: str, package: str = None) -> Tuple[Any, ...
         return (mod, True)
 
     attrs = []
+    missing = []
     for name in names:
-        attrs.append(getattr(mod, name, None))
+        val = getattr(mod, name, _MISSING)
+        if val is _MISSING:
+            # from-import semantics: `from pkg import name` falls back to
+            # importing pkg.name as a submodule when the package doesn't
+            # expose it as an attribute (e.g. pubsub.pub, logging.handlers).
+            # Without this, `safe_import('pubsub', 'pub')` returned
+            # (None, True) on a cold interpreter — an honest-failure-modes
+            # lie the flag exists to prevent.
+            try:
+                val = importlib.import_module(f"{module}.{name}",
+                                              package=package)
+            except ImportError:
+                missing.append(name)
+                val = None
+        attrs.append(val)
+
+    if missing:
+        # A requested name the module cannot provide is a failed import,
+        # not a healthy one with holes: every attr None, flag False, so
+        # callers take their designed fallback instead of crashing on None.
+        logger.debug("safe_import: %r imported but has no %s", module,
+                     ", ".join(missing))
+        return tuple([None] * len(names)) + (False,)
 
     return tuple(attrs) + (True,)
 

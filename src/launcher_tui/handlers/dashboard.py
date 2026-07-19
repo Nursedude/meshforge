@@ -459,14 +459,20 @@ class DashboardHandler(BaseHandler):
             print("      \033[0;33mSKIP\033[0m - Module not installed")
         else:
             try:
-                listeners = pub.getDefaultTopicMgr().getTopic('meshtastic.receive', okIfNone=True)
-                if listeners:
-                    count = len(list(listeners.getListeners()))
+                topic = pub.getDefaultTopicMgr().getTopic('meshtastic.receive', okIfNone=True)
+                if topic:
+                    count = len(list(topic.getListeners()))
                     results.append(("pubsub", "OK", f"{count} listener(s) on meshtastic.receive"))
                     print(f"      \033[0;32mOK\033[0m - {count} listener(s) registered")
                 else:
-                    results.append(("pubsub", "WARN", "Topic exists but no listeners"))
-                    print("      \033[0;33mWARN\033[0m - No listeners registered")
+                    # No topic in THIS process is the normal state outside the
+                    # daemon (listeners live in gateway/monitor processes) —
+                    # not a warning.
+                    results.append(("pubsub", "OK",
+                                    "pubsub importable; no live-capture topic "
+                                    "in this process (normal outside the daemon)"))
+                    print("      \033[0;32mOK\033[0m - importable; no topic in "
+                          "this process (normal outside the daemon)")
             except Exception as e:
                 results.append(("pubsub", "WARN", str(e)[:50]))
                 print(f"      \033[0;33mWARN\033[0m - {e}")
