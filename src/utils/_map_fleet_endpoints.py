@@ -197,6 +197,21 @@ class FleetEndpointsMixin:
         from utils.fleet_snapshot import build_slo_snapshot
         self._serve_json(build_slo_snapshot(collector=self.collector))
 
+    def _serve_fleet_truth(self):
+        """Serve the honest fleet-truth SSOT (`/api/fleet/truth`).
+
+        The tri-state whole-domain truth layer that BOTH the visual NOC
+        (`web/fleet.html`) and an incoming Claude session's orientation read —
+        same bytes, so the human view and the machine view can never disagree.
+        Self-aggregates `/fleet/slo`+`/api/status` across `fleet_hosts`
+        (TTL-cached); a peer that can't be reached is a DARK box, never a
+        dropped row. Aggregates only data these two endpoints already LAN-expose
+        (no new secret surface), and carries `resolution_method` + `alias` for
+        DNS visibility — never a raw LAN IP (MF014/MF015).
+        """
+        from utils.fleet_truth_collector import get_fleet_truth
+        self._serve_json(get_fleet_truth())
+
     # Cross-box dedup rollup is considered stale (collector likely dead) past
     # this age — surfaced as its own axis so a frozen file can't read as live.
     _FLEET_DUPS_STALE_S = 1800.0

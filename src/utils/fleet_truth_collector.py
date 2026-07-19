@@ -1,0 +1,158 @@
+"""HTTP fan-out + TTL cache that feeds the honest fleet-truth SSOT.
+
+The NOC box self-aggregates: it fetches ``/fleet/slo`` + ``/api/status`` from
+every host in ``fleet_hosts`` (names-first via ``fleet_naming``, so DHCP-reshuffle
+drift shows up as ``resolution_method``), plus its own via localhost. A peer that
+times out (~3s) becomes a DARK box in the truth schema — never a dropped row.
+Results are TTL-cached (~12s) so the human dashboard's 5s poll and an incoming
+Claude session's orientation coalesce onto ONE fan-out.
+
+Deliberately NOT polling MeshAnchor's ``/fleet/rollup``: that would couple this
+domain's truth to a different domain's daemon (a dead MA would paint the whole MF
+fleet dark). ``/fleet/slo`` + ``/api/status`` are the cross-box contract both
+domains already serve identically.
+
+Kept thin + pure-adjacent: the shaping logic lives in ``fleet_truth`` (unit-
+tested without HTTP); this module only does I/O + caching.
+"""
+from __future__ import annotations
+
+import json
+import socket
+import threading
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Dict, List, Optional
+
+from utils.logging_config import get_logger
+
+logger = get_logger(__name__)
+
+DEFAULT_PORT = 5000
+PEER_TIMEOUT_S = 3.0     # MA-proven /fleet/slo budget on Pi-class hardware
+CACHE_TTL_S = 12.0       # < the human 5s poll would over-fetch; 12s coalesces
+MAX_WORKERS = 16
+
+
+def _http_get_json(url: str, timeout: float) -> Optional[Dict[str, Any]]:
+    """GET a JSON body. Returns the parsed dict, or None on any failure
+    (unreachable / timeout / non-JSON) — the caller treats None as DARK."""
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (LAN)
+            body = r.read()
+        data = json.loads(body)
+        return data if isinstance(data, dict) else None
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError) as e:
+        logger.debug("fleet_truth fetch failed %s: %s", url, e)
+        return None
+
+
+def _resolve_peer(alias: str) -> "tuple[str, str]":
+    """Return (target_host, resolution_method) for a peer alias, names-first.
+    Never raises; falls back to the bare alias. NEVER surfaces the raw IP to
+    callers that put it in the schema — only the method + alias leave here."""
+    try:
+        from utils import fleet_naming
+        reg = fleet_naming.load_registry_quiet()
+        res = fleet_naming.resolve(alias, reg)
+        # res.target is the connectable host (may be a name or, on ip_fallback,
+        # an IP). We use it only to build the fetch URL; the schema carries the
+        # METHOD, never the address (MF014/MF015).
+        target = res.target or alias
+        return target, (res.method or "bare")
+    except Exception as e:  # fleet_naming optional / registry absent
+        logger.debug("peer resolve fallback for %s: %s", alias, e)
+        return alias, "bare"
+
+
+def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
+    """Fetch one box's /fleet/slo + /api/status. Returns a snapshot dict shaped
+    for ``fleet_truth.build_box_truth``."""
+    if is_self:
+        host, method = "localhost", "self"
+    else:
+        host, method = _resolve_peer(alias)
+    base = f"http://{host}:{port}"
+    slo = _http_get_json(f"{base}/fleet/slo", PEER_TIMEOUT_S)
+    status = _http_get_json(f"{base}/api/status", PEER_TIMEOUT_S)
+    error = None
+    if slo is None and status is None:
+        error = f"no response from {alias} ({method})"
+    return {
+        "alias": alias,
+        "resolution_method": method,
+        "status": status,
+        "slo": slo,
+        "error": error,
+        "answered_at": time.time() if (slo or status) else None,
+    }
+
+
+def collect_snapshots(*, port: int = DEFAULT_PORT) -> "tuple[List[Dict[str, Any]], int]":
+    """Fan out to self + every fleet_hosts peer in parallel. Returns
+    ``(snapshots, hosts_declared)``. hosts_declared includes self."""
+    from mini_dudeai.rollup import resolve_fleet_hosts
+    self_host = socket.gethostname()
+    peers = [h for h in resolve_fleet_hosts() if h and h != self_host]
+    declared = len(peers) + 1  # + self
+
+    jobs = [(self_host, True)] + [(p, False) for p in peers]
+    snapshots: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs))) as ex:
+        futs = {ex.submit(_fetch_peer, alias, is_self=is_self, port=port): alias
+                for alias, is_self in jobs}
+        for fut in as_completed(futs):
+            try:
+                snapshots.append(fut.result())
+            except Exception as e:  # a fan-out worker must never sink the whole build
+                alias = futs[fut]
+                logger.warning("fleet_truth fetch worker for %s raised: %s", alias, e)
+                snapshots.append({"alias": alias, "resolution_method": "error",
+                                  "status": None, "slo": None,
+                                  "error": f"fetch worker error: {e}", "answered_at": None})
+    return snapshots, declared
+
+
+# ── TTL-cached singleton ────────────────────────────────────────────────
+_lock = threading.Lock()
+_cache: Dict[str, Any] = {"truth": None, "built_at": 0.0}
+
+
+def get_fleet_truth(*, port: int = DEFAULT_PORT, ttl_s: float = CACHE_TTL_S,
+                    force: bool = False) -> Dict[str, Any]:
+    """Return the current fleet-truth document, refreshing via fan-out when the
+    TTL has expired. Thread-safe single-flight: concurrent callers within the
+    TTL share one fan-out. Never raises — a build error yields a self-describing
+    dark document rather than a 500."""
+    now = time.time()
+    with _lock:
+        cached = _cache["truth"]
+        if not force and cached is not None and (now - _cache["built_at"]) < ttl_s:
+            return cached
+        try:
+            from utils.fleet_truth import build_fleet_truth
+            from utils.watchdog_probe_core import SIGNAL_CLASSES
+            snapshots, declared = collect_snapshots(port=port)
+            truth = build_fleet_truth(
+                snapshots, now=time.time(),
+                signal_classes=list(SIGNAL_CLASSES),
+                noc_host=socket.gethostname(),
+                hosts_declared=declared, ttl_s=ttl_s,
+            )
+        except Exception as e:
+            logger.error("fleet_truth build failed: %s", e)
+            truth = {
+                "schema": "fleet_truth/v1", "generated_at": now,
+                "noc_host": socket.gethostname(),
+                "fleet_state": "dark",
+                "fanout": {"hosts_declared": None, "hosts_answered": 0,
+                           "ttl_s": ttl_s, "stale": True, "error": str(e)},
+                "counts": {"healthy": 0, "failed": 0, "dark": 0},
+                "boxes": [], "structural_dark": [],
+            }
+        _cache["truth"] = truth
+        _cache["built_at"] = time.time()
+        return truth
