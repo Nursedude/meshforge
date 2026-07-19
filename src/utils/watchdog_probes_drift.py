@@ -26,6 +26,7 @@ from utils.watchdog_probe_core import (
     _read_deployment_declaration,
     _resolve_main_pid,
     _save_parity_streak,
+    note_disposition,
 )
 
 # ─────────────────────────────────────────────────────────────────────
@@ -64,16 +65,37 @@ def probe_foundation_drift(
     guess), or when the foundation modules can't be imported.
     """
     try:
-        from utils.rns_tree_perms import logfile_perms_drift, probe_rns_tree_perms
+        from utils.rns_tree_perms import (
+            _USERNAME_RE,
+            logfile_perms_drift,
+            probe_rns_tree_perms,
+        )
     except Exception:
+        note_disposition("foundation_perms_drift", "indeterminate",
+                         reason="foundation tooling unimportable")
         return None  # foundation tooling absent — indeterminate, don't false-alarm
     if perms is None:
         try:
             perms = probe_rns_tree_perms()
         except Exception:
+            note_disposition("foundation_perms_drift", "indeterminate",
+                             reason="RNS tree perms probe raised")
             return None
     reason = logfile_perms_drift(perms)
     if not reason:
+        # Disambiguate the helper's three None meanings (mirrors its guards).
+        user = perms.rnsd_user
+        if not user or user == "root":
+            note_disposition("foundation_perms_drift", "inert",
+                             reason="rnsd runs as root (no perms constraint)")
+        elif not _USERNAME_RE.match(user):
+            note_disposition("foundation_perms_drift", "indeterminate",
+                             reason="rnsd user has unexpected shape")
+        elif perms.configdir_owner is None:
+            note_disposition("foundation_perms_drift", "indeterminate",
+                             reason="RNS tree perms facts not probed")
+        else:
+            note_disposition("foundation_perms_drift", "clean")
         return None
     detail = (
         f"{reason} | born-correct permission foundation drifted (mf.4/#73 perms "
@@ -139,6 +161,8 @@ def probe_parity_drift(
     non-drift result (in_sync / missing / tool error) resets the streak.
     """
     if not os.path.isdir(meshanchor_root):
+        note_disposition("parity_drift", "inert",
+                         reason="no sister repo on this box")
         return None  # both repos required; MeshForge-only box → not applicable
     if state_path is None:
         state_path = DEFAULT_PARITY_DEBOUNCE_PATH
@@ -159,20 +183,31 @@ def probe_parity_drift(
             spec.loader.exec_module(mod)
             check_fn = mod.check_parity
         except Exception:
+            note_disposition("parity_drift", "indeterminate",
+                             reason="parity tool unavailable")
             return None  # parity tool unavailable → indeterminate, don't alarm
     try:
         findings, overall = check_fn(meshforge_root, meshanchor_root)
     except Exception:
         # Indeterminate — don't let a tool error count toward the streak.
         _save_parity_streak(state_path, 0)
+        note_disposition("parity_drift", "indeterminate",
+                         reason="parity check raised")
         return None
     if overall != "drift":
         _save_parity_streak(state_path, 0)  # in_sync / missing → streak broken
+        if overall == "in_sync":
+            note_disposition("parity_drift", "clean")
+        else:
+            note_disposition("parity_drift", "indeterminate",
+                             reason=f"parity result '{overall}' — can't compare")
         return None
 
     streak = _load_parity_streak(state_path) + 1
     _save_parity_streak(state_path, streak)
     if streak < debounce_ticks:
+        note_disposition("parity_drift", "indeterminate",
+                         reason="drift candidate under debounce")
         return None  # drift seen, but not yet confirmed across consecutive ticks
 
     drifted = [f for f in findings if getattr(f, "status", None) == "drift"]
@@ -271,23 +306,33 @@ def probe_rns_version_drift(
             spec.loader.exec_module(mod)
             pins = mod.pinned_versions()
         except Exception:
+            note_disposition("rns_version_drift", "indeterminate",
+                             reason="fork-pin reader failed")
             return None
     if not pins:
+        note_disposition("rns_version_drift", "indeterminate",
+                         reason="no fork pin parseable")
         return None  # no pin parseable (sub-arc A not applied) → indeterminate
 
     if installed is None:
         installed = _read_pkg_versions_for_user(rnsd_user, set(pins))
     if not installed:
+        note_disposition("rns_version_drift", "indeterminate",
+                         reason="service-user env unreadable")
         return None  # couldn't read the service env → indeterminate, no false alarm
 
     drift = []
     for pkg, want in pins.items():
         have = installed.get(pkg)
         if have is None:
+            # Worst-wins: this note keeps a partial read from rendering clean.
+            note_disposition("rns_version_drift", "indeterminate",
+                             reason="pinned pkg not visible in user site")
             continue  # not visible in the user site (venv elsewhere?) — don't guess
         if have != want:
             drift.append(f"{pkg} installed={have} pinned={want}")
     if not drift:
+        note_disposition("rns_version_drift", "clean")
         return None
 
     detail = (
@@ -358,6 +403,8 @@ def probe_dep_version_drift(
                else Path(__file__).resolve().parents[2] / "requirements" / "core.txt")
         floors = _read_requirement_floors(_DEP_VERSION_WATCHED, req)
     if not floors:
+        note_disposition("dep_version_drift", "indeterminate",
+                         reason="no requirements floor parseable")
         return None  # no floor parseable → indeterminate, never false-alarm
 
     if service_user is None:
@@ -383,16 +430,22 @@ def probe_dep_version_drift(
         )
         installed = {watched_pkg: consumer_version} if consumer_version else {}
     if not installed:
+        note_disposition("dep_version_drift", "indeterminate",
+                         reason="consumer-of-record env unreadable")
         return None  # couldn't read the consumer env → indeterminate
 
     stale = []
     for pkg, floor in floors.items():
         have = installed.get(pkg)
         if have is None:
+            # Worst-wins: this note keeps a partial read from rendering clean.
+            note_disposition("dep_version_drift", "indeterminate",
+                             reason="pkg not visible in consumer env")
             continue  # not visible in the consumer env — don't guess
         if _version_below(have, floor):
             stale.append(f"{pkg} installed={have} floor>={floor}")
     if not stale:
+        note_disposition("dep_version_drift", "clean")
         return None
 
     detail = (
@@ -562,6 +615,8 @@ def probe_dep_install_fragmented(
             floor = _read_requirement_floors([pkg], req).get(pkg.lower())
         if not floor:
             _save_parity_streak(sp, 0)
+            note_disposition("dep_install_fragmented", "indeterminate",
+                             reason="no reviewed floor parseable")
             return None  # no reviewed floor → indeterminate, never alarm
 
         if installs is None:
@@ -575,21 +630,31 @@ def probe_dep_install_fragmented(
 
         if not installs or len(installs) < 2:
             _save_parity_streak(sp, 0)
+            if installs:
+                # One location positively observed → fragmentation impossible.
+                note_disposition("dep_install_fragmented", "clean")
+            else:
+                note_disposition("dep_install_fragmented", "indeterminate",
+                                 reason="no readable install location found")
             return None  # 0/1 location → no fragmentation possible
         versions = set(installs.values())
         if len(versions) < 2:
             _save_parity_streak(sp, 0)
+            note_disposition("dep_install_fragmented", "clean")
             return None  # every location agrees — not fragmented
 
         below = {label: v for label, v in installs.items()
                  if _version_below(v, floor)}
         if not below:
             _save_parity_streak(sp, 0)
+            note_disposition("dep_install_fragmented", "clean")
             return None  # divergence but nothing below floor (pipx CLI ahead) — benign
 
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition("dep_install_fragmented", "indeterminate",
+                             reason="fragmentation candidate under debounce")
             return None  # fragmentation seen, not yet confirmed across ticks
 
         consumer = ("venv" if "venv" in installs
@@ -626,6 +691,8 @@ def probe_dep_install_fragmented(
             },
         )
     except Exception:
+        note_disposition("dep_install_fragmented", "indeterminate",
+                         reason="probe raised unexpectedly")
         return None
 
 
@@ -710,6 +777,8 @@ def probe_role_drift(
     role, overrides = deployment
     if not role:
         _save_parity_streak(state_path, 0)
+        note_disposition("role_drift", "inert",
+                         reason="no declared role (or declaration unreadable)")
         return None  # box not role-declared (or unreadable) → not applicable
 
     if plan_fn is None:
@@ -724,9 +793,13 @@ def probe_role_drift(
         actions = []
     except Exception:
         _save_parity_streak(state_path, 0)
+        note_disposition("role_drift", "indeterminate",
+                         reason="role plan tool raised")
         return None  # tool error → indeterminate, don't count toward streak
     if actions is None and not unknown_role:
         _save_parity_streak(state_path, 0)
+        note_disposition("role_drift", "indeterminate",
+                         reason="role tool/catalog unavailable")
         return None
 
     if unknown_role:
@@ -744,11 +817,14 @@ def probe_role_drift(
                 )
     if not items:
         _save_parity_streak(state_path, 0)
+        note_disposition("role_drift", "clean")
         return None
 
     streak = _load_parity_streak(state_path) + 1
     _save_parity_streak(state_path, streak)
     if streak < debounce_ticks:
+        note_disposition("role_drift", "indeterminate",
+                         reason="drift candidate under debounce")
         return None  # divergence seen, not yet confirmed across consecutive ticks
 
     shown = "; ".join(items[:4]) + (f" (+{len(items) - 4} more)" if len(items) > 4 else "")
@@ -867,6 +943,8 @@ def probe_mqtt_root_drift(
         unit, systemctl_path=systemctl_path
     )
     if pid is None:
+        note_disposition("mqtt_root_drift", "indeterminate",
+                         reason="meshtasticd inactive or MainPID unresolvable")
         return None
 
     if newest_line_fn is None:
@@ -877,9 +955,13 @@ def probe_mqtt_root_drift(
 
     line = newest_line_fn("JSON publish message to ")
     if line is None:
+        note_disposition("mqtt_root_drift", "inert",
+                         reason="no json uplink in lookback (RX-only box)")
         return None  # no json uplink at all — unobservable, not drift
     m = _MQTT_PUBLISH_TOPIC_RE.search(line)
     if m is None:
+        note_disposition("mqtt_root_drift", "indeterminate",
+                         reason="publish line shape unrecognized")
         return None  # publish line shape changed — indeterminate, not drift
     observed = m.group(1).strip("/")
 
@@ -892,16 +974,21 @@ def probe_mqtt_root_drift(
             user_fn = _read_rnsd_user
         declared = _read_declared_root_topic(user_fn())
     if not declared:
+        note_disposition("mqtt_root_drift", "indeterminate",
+                         reason="declared consumer root unreadable")
         return None  # declared side indeterminate — never alarm on a guess
 
     sp = state_path or DEFAULT_MQTT_ROOT_DEBOUNCE_PATH
     if observed == declared:
         _save_parity_streak(sp, 0)
+        note_disposition("mqtt_root_drift", "clean")
         return None
 
     streak = _load_parity_streak(sp) + 1
     _save_parity_streak(sp, streak)
     if streak < debounce_ticks:
+        note_disposition("mqtt_root_drift", "indeterminate",
+                         reason="drift candidate under debounce")
         return None  # drift seen, not yet confirmed across consecutive ticks
 
     detail = (

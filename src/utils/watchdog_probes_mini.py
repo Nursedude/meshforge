@@ -12,7 +12,11 @@ import re
 import time
 from typing import Optional
 
-from utils.watchdog_probe_core import Signal, _read_deployment_declaration
+from utils.watchdog_probe_core import (
+    Signal,
+    _read_deployment_declaration,
+    note_disposition,
+)
 
 # ─────────────────────────────────────────────────────────────────────
 # Probes: mini-dudeai self-health (audit 2026-06-09)
@@ -132,6 +136,8 @@ def probe_history_write_failure(
         if state_doc is None or history_mtime is None:
             home = mini_home or _resolve_mini_home()
             if not home:
+                note_disposition("history_write_stalled", "indeterminate",
+                                 reason="operator home unresolvable")
                 return None
             if state_doc is None:
                 try:
@@ -139,6 +145,8 @@ def probe_history_write_failure(
                               "r", encoding="utf-8") as fh:
                         doc = json.load(fh)
                 except (OSError, ValueError):
+                    note_disposition("history_write_stalled", "inert",
+                                     reason="mini state unreadable; mini not active here")
                     return None  # no readable state → mini not active here
                 state_doc = doc if isinstance(doc, dict) else {}
             if history_mtime is None:
@@ -150,6 +158,8 @@ def probe_history_write_failure(
 
         last_tick = float(state_doc.get("last_tick_ts", 0.0) or 0.0)
         if last_tick <= 0.0 or (now - last_tick) > _MINI_LOOP_FRESH_S:
+            note_disposition("history_write_stalled", "indeterminate",
+                             reason="mini loop not ticking; write path unobservable")
             return None  # loop not ticking → not a write-failure (daemon stopped)
 
         # Activity baseline: prefer the engine's history_appends_total counter
@@ -178,6 +188,8 @@ def probe_history_write_failure(
         if prior_fires < 0:
             _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
                                       streak=0)
+            note_disposition("history_write_stalled", "indeterminate",
+                             reason="no baseline yet; first sighting recorded")
             return None
 
         # honest_failure_modes #6 — st_mtime is a WALL-CLOCK value; on this
@@ -193,6 +205,8 @@ def probe_history_write_failure(
         if 0.0 < history_mtime < prior_mtime:
             _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
                                       streak=0)
+            note_disposition("history_write_stalled", "indeterminate",
+                             reason="history mtime regressed (clock step); re-baselined")
             return None
 
         fires_advanced = fires > prior_fires
@@ -202,6 +216,7 @@ def probe_history_write_failure(
         if not stalled:
             _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
                                       streak=0)
+            note_disposition("history_write_stalled", "clean")
             return None
 
         streak += 1
@@ -210,6 +225,8 @@ def probe_history_write_failure(
         _save_history_stall_state(sp, fires=fires, hist_mtime=history_mtime,
                                   streak=streak)
         if streak < debounce_ticks:
+            note_disposition("history_write_stalled", "indeterminate",
+                             reason="stall candidate held by debounce")
             return None
 
         delta = fires - prior_fires
@@ -230,6 +247,8 @@ def probe_history_write_failure(
                    "history_mtime": history_mtime},
         )
     except Exception:
+        note_disposition("history_write_stalled", "indeterminate",
+                         reason="unexpected probe error")
         return None
 
 
@@ -313,9 +332,13 @@ def probe_rules_seed_drift(
                     service_user = None
                 role, _ov = _read_deployment_declaration(service_user)
             if not role:
+                note_disposition("rules_seed_drift", "indeterminate",
+                                 reason="role unresolvable (deployment.json absent/unreadable)")
                 return None  # no declared role → not applicable
             seed_name = _ROLE_TO_MINI_SEED.get(role)
             if not seed_name:
+                note_disposition("rules_seed_drift", "inert",
+                                 reason="role has no mapped mini seed; not applicable")
                 return None  # role has no dedicated mini seed → ambiguous, no guess
 
             if seed_ids is None and seed_rules is None:
@@ -324,6 +347,8 @@ def probe_rules_seed_drift(
                     with open(seed_path, "r", encoding="utf-8") as fh:
                         seed_doc = json.load(fh)
                 except (OSError, ValueError):
+                    note_disposition("rules_seed_drift", "indeterminate",
+                                     reason="role seed file unreadable")
                     return None  # seed unreadable → indeterminate
                 seed_rules = [r for r in (seed_doc.get("rules") or [])
                               if isinstance(r, dict) and r.get("id")]
@@ -331,12 +356,16 @@ def probe_rules_seed_drift(
             if live_ids is None and live_rules is None:
                 home = mini_home or _resolve_mini_home()
                 if not home:
+                    note_disposition("rules_seed_drift", "indeterminate",
+                                     reason="operator home unresolvable")
                     return None
                 try:
                     with open(os.path.join(home, _MINI_RULES_NAME),
                               "r", encoding="utf-8") as fh:
                         live_doc = json.load(fh)
                 except (OSError, ValueError):
+                    note_disposition("rules_seed_drift", "inert",
+                                     reason="live rules unreadable; mini not seeded here")
                     return None  # live file unreadable → mini not seeded here
                 live_rules = [r for r in (live_doc.get("rules") or [])
                               if isinstance(r, dict) and r.get("id")]
@@ -370,6 +399,11 @@ def probe_rules_seed_drift(
                 # else: box-tuned or unstamped → exempt
 
         if not missing and not stale:
+            if _mini_rule_body_sha is None:
+                note_disposition("rules_seed_drift", "indeterminate",
+                                 reason="ID leg clean; content leg off (mini pkg absent)")
+            else:
+                note_disposition("rules_seed_drift", "clean")
             return None  # live is at-or-ahead of the seed → no drift
 
         parts = []
@@ -399,6 +433,8 @@ def probe_rules_seed_drift(
             extra={"missing": missing, "stale": stale, "role": role},
         )
     except Exception:
+        note_disposition("rules_seed_drift", "indeterminate",
+                         reason="unexpected probe error")
         return None
 
 
@@ -443,13 +479,18 @@ def probe_memory_index_oversize(
         if size_bytes is None:
             home = operator_home or _resolve_mini_home()
             if not home:
+                note_disposition("memory_index_oversize", "indeterminate",
+                                 reason="operator home unresolvable")
                 return None
             path = os.path.join(str(home), _MEMORY_INDEX_REL)
             try:
                 size_bytes = os.stat(path).st_size
             except OSError:
+                note_disposition("memory_index_oversize", "inert",
+                                 reason="MEMORY.md absent; not the memory-holding box")
                 return None  # absent / unreadable → not this box, no alarm
         if size_bytes <= limit_bytes:
+            note_disposition("memory_index_oversize", "clean")
             return None
 
         over = size_bytes - limit_bytes
@@ -469,6 +510,8 @@ def probe_memory_index_oversize(
                    "over_bytes": over},
         )
     except Exception:
+        note_disposition("memory_index_oversize", "indeterminate",
+                         reason="unexpected probe error")
         return None
 
 
@@ -526,19 +569,26 @@ def probe_calibration_drift(
     low-false-positive, exactly as the operator chose."""
     try:
         if _calib is None:
+            note_disposition("calibration_drift", "inert",
+                             reason="mini_dudeai unimportable; ledger fold unavailable")
             return None
         if events is None:
             if ledger_path is None:
                 home = _resolve_mini_home()
                 if not home:
+                    note_disposition("calibration_drift", "indeterminate",
+                                     reason="operator home unresolvable")
                     return None
                 ledger_path = os.path.join(home, _CALIB_LEDGER_NAME)
             if not os.path.exists(ledger_path):
+                note_disposition("calibration_drift", "inert",
+                                 reason="no calibration ledger; not the dev/manager box")
                 return None  # not the dev/manager box — nothing to judge
             events = _calib.load_events(ledger_path)
         state = _calib.fold(events)
         broke = state.get("broke", [])
         if not broke:
+            note_disposition("calibration_drift", "clean")
             return None  # every re-checked claim held → no calibration drift
 
         # RECENCY (self-audit-qa-arc §1): fire only on RECENT drift so the alert
@@ -561,6 +611,7 @@ def probe_calibration_drift(
 
         recent = [r for r in broke if _is_recent(r)]
         if not recent:
+            note_disposition("calibration_drift", "clean")
             return None  # all breaks aged out → recovery demonstrated; the
             #              lifetime ratio stays in the warm-brief ledger block
         ratio = state.get("ratio")
@@ -585,6 +636,8 @@ def probe_calibration_drift(
                    "n_total": state.get("n_total", 0), "ratio": ratio},
         )
     except Exception:
+        note_disposition("calibration_drift", "indeterminate",
+                         reason="ledger unreadable or unexpected probe error")
         return None
 
 

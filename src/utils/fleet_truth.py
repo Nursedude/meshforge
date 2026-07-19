@@ -241,7 +241,10 @@ def merge_coverage(
                 active_by_class[sig["class"]] = sig
 
     # Per-class disposition reported by the producer (Phase 0 enrichment).
+    # ``reported_reason`` carries the producer's own wording (e.g. WHY a
+    # class is inert on this box) through to the rendered cell.
     reported: Dict[str, str] = {}
+    reported_reason: Dict[str, str] = {}
     if isinstance(watchdog_block, dict):
         cov = watchdog_block.get("coverage")
         if isinstance(cov, dict):
@@ -250,6 +253,8 @@ def merge_coverage(
                     reported[cls] = disp
                 elif isinstance(disp, dict) and isinstance(disp.get("disp"), str):
                     reported[cls] = disp["disp"]
+                    if isinstance(disp.get("reason"), str):
+                        reported_reason[cls] = disp["reason"]
 
     watchdog_observable = (
         isinstance(watchdog_block, dict)
@@ -270,10 +275,12 @@ def merge_coverage(
             classes[cls] = {"disp": "clean"}
             green += 1
         elif disp == "inert":
-            classes[cls] = {"disp": "inert", "reason": "organ not present on this box"}
+            classes[cls] = {"disp": "inert",
+                            "reason": reported_reason.get(cls) or "organ not present on this box"}
             dark += 1
         elif disp == "indeterminate":
-            classes[cls] = {"disp": "indeterminate", "reason": "probe could not observe"}
+            classes[cls] = {"disp": "indeterminate",
+                            "reason": reported_reason.get(cls) or "probe could not observe"}
             dark += 1
         elif not watchdog_observable:
             classes[cls] = {"disp": "unknown", "reason": "watchdog unobservable on this box"}

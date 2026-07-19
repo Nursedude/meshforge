@@ -13,7 +13,11 @@ import socket
 import subprocess
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
-from utils.watchdog_probe_core import Signal, _resolve_main_pid  # noqa: F401
+from utils.watchdog_probe_core import (  # noqa: F401
+    Signal,
+    _resolve_main_pid,
+    note_disposition,
+)
 
 if TYPE_CHECKING:
     from utils.rns_status_parser import RNSStatus
@@ -52,6 +56,8 @@ def probe_rns_namespace_collision(
     ``rnsd_enabled`` is injectable for tests; None → ask systemd.
     """
     if not instance_name:
+        note_disposition("rns_namespace_collision", "inert",
+                         reason="no rns instance name provided")
         return None
 
     try:
@@ -59,6 +65,8 @@ def probe_rns_namespace_collision(
             [ss_path, "-xnpl"], capture_output=True, text=True, timeout=5,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        note_disposition("rns_namespace_collision", "indeterminate",
+                         reason="ss unavailable/timed out; listeners unobservable")
         return None
 
     needle = f"@rns/{instance_name}"
@@ -71,6 +79,11 @@ def probe_rns_namespace_collision(
             owners[int(m.group(2))] = m.group(1)
 
     if not owners:
+        if proc.returncode != 0:
+            note_disposition("rns_namespace_collision", "indeterminate",
+                             reason="ss exited nonzero; listener table unobservable")
+        else:
+            note_disposition("rns_namespace_collision", "clean")
         return None  # no listener → not a collision
 
     from utils.rns_init import cmdline_is_rns_family, cmdline_is_rnsd_shaped
@@ -114,6 +127,8 @@ def probe_rns_namespace_collision(
         if rnsd_enabled is None:
             rnsd_enabled = _rnsd_unit_enabled()
         if not rnsd_enabled:
+            note_disposition("rns_namespace_collision", "inert",
+                             reason="rnsd not enabled; standalone RNS-family host")
             return None  # standalone RNS-family host is a legitimate deployment
         pid, cmdline = inverted[0]
         cmdline_short = cmdline[:120] or "<process exited>"
@@ -133,6 +148,7 @@ def probe_rns_namespace_collision(
             extra={"pid": pid, "cmdline": cmdline_short, "tier": "inverted"},
         )
 
+    note_disposition("rns_namespace_collision", "clean")
     return None
 
 
@@ -165,6 +181,8 @@ def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, 
         with open(main_stack_path, "r") as fh:
             stack = fh.read()
     except (OSError, PermissionError):
+        note_disposition("main_thread_wedge", "indeterminate",
+                         reason="task stack unreadable; wedge scan impossible")
         return None  # can't read at all — return None, no false clear
 
     matched = next((p for p in _WEDGE_PATTERNS if p in stack), None)
@@ -176,6 +194,8 @@ def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, 
     try:
         tids = [int(name) for name in os.listdir(task_dir) if name.isdigit()]
     except OSError:
+        note_disposition("main_thread_wedge", "indeterminate",
+                         reason="task dir unlistable; worker threads unscanned")
         return None
     for tid in tids:
         if tid == pid:
@@ -188,6 +208,7 @@ def _scan_pid_task_stacks(pid: int, proc_root: str) -> Optional[Tuple[int, str, 
         matched = next((p for p in _WEDGE_PATTERNS if p in worker_stack), None)
         if matched is not None:
             return tid, matched, worker_stack[:300]
+    note_disposition("main_thread_wedge", "clean")
     return None
 
 
@@ -215,6 +236,10 @@ def probe_main_thread_wedge(
     if pid is None:
         pid = _resolve_main_pid(service_name, systemctl_path=systemctl_path)
         if pid is None or pid <= 1:
+            note_disposition(
+                "main_thread_wedge", "indeterminate",
+                reason="MainPID unresolved; service inactive or systemctl error",
+            )
             return None
 
     found = _scan_pid_task_stacks(pid, proc_root)
@@ -279,6 +304,8 @@ def probe_lxmf_process_wedge(
     try:
         entries = os.listdir(proc_root)
     except OSError:
+        note_disposition("main_thread_wedge", "indeterminate",
+                         reason="/proc unlistable; lxmf process scan impossible")
         return signals
 
     for entry in entries:
@@ -327,6 +354,8 @@ def probe_lxmf_process_wedge(
                 "stack_excerpt": excerpt,
             },
         ))
+    if not signals:
+        note_disposition("main_thread_wedge", "clean")
     return signals
 
 
@@ -361,6 +390,8 @@ def probe_rns_shared_instance_responsive(
     Both fire on rnsd-side faults but at different layers.
     """
     if not instance_name:
+        note_disposition("rns_shared_instance_unresponsive", "inert",
+                         reason="no rns instance name provided")
         return None
 
     # Abstract Unix socket address: leading NUL byte then the name.
@@ -373,11 +404,15 @@ def probe_rns_shared_instance_responsive(
     except FileNotFoundError:
         # No such socket — listener doesn't exist; service_inactive owns it.
         sock.close()
+        note_disposition("rns_shared_instance_unresponsive", "indeterminate",
+                         reason="listener absent; rnsd down — service_inactive owns")
         return None
     except ConnectionRefusedError:
         # Listener exists but actively refused — rnsd may be shutting down.
         # Not a wedge in the connect-hang sense; let service state catch it.
         sock.close()
+        note_disposition("rns_shared_instance_unresponsive", "indeterminate",
+                         reason="connect refused; rnsd shutting down or not serving")
         return None
     except socket.timeout:
         sock.close()
@@ -400,6 +435,8 @@ def probe_rns_shared_instance_responsive(
         )
     except OSError:
         sock.close()
+        note_disposition("rns_shared_instance_unresponsive", "indeterminate",
+                         reason="connect OSError; accept path unobservable")
         return None
     # Connected successfully — healthy. Close cleanly without sending
     # any RNS protocol bytes (which would confuse rnsd's accept loop).
@@ -407,6 +444,7 @@ def probe_rns_shared_instance_responsive(
         sock.close()
     except OSError:
         pass
+    note_disposition("rns_shared_instance_unresponsive", "clean")
     return None
 
 
@@ -455,6 +493,11 @@ def probe_rns_rpc_responsive(
         status = rnstatus_status
 
     if not status.timed_out:
+        if status.parse_error:
+            note_disposition("rns_rpc_unresponsive", "indeterminate",
+                             reason="rnstatus failed fast (rnsd down or binary missing)")
+        else:
+            note_disposition("rns_rpc_unresponsive", "clean")
         return None
 
     return Signal(
@@ -552,6 +595,8 @@ def probe_rns_interface_down_peer_reachable(
     # rns_rpc_unresponsive probe owns the rnstatus-timeout (wedged-RPC)
     # case (it keys on RNSStatus.timed_out, not on this parse_error).
     if status.parse_error:
+        note_disposition("rns_interface_down_peer_reachable", "indeterminate",
+                         reason="rnstatus errored; interface table unobservable")
         return None
 
     from utils.rns_status_parser import InterfaceStatus
@@ -575,6 +620,7 @@ def probe_rns_interface_down_peer_reachable(
             qualifying.append((iface.full_name, host, port))
 
     if not qualifying:
+        note_disposition("rns_interface_down_peer_reachable", "clean")
         return None
 
     label, host, port = qualifying[0]

@@ -16,7 +16,11 @@ Design constraints:
 
 * **Pure**: probes take primitive args, return a ``Signal`` (or None).
   No global state, no logger calls — the runner handles edge-transition
-  logging.
+  logging. ONE sanctioned side-channel: ``note_disposition`` (probe_core)
+  records the per-class coverage disposition (clean/inert/indeterminate)
+  at return sites — write-only, reset by the runner each tick, never
+  read by probes. Contract is FAIL-DARK: a return path that doesn't note
+  renders "unknown" (dark) in /fleet coverage, never green.
 * **Bounded**: every external call has an explicit timeout. A probe
   that hangs the runner is worse than a probe that returns None.
 * **Read-only**: probes NEVER restart services, write files, or send
@@ -52,9 +56,13 @@ NOTE for parity: ``scripts/parity_check.py`` asserts the two RNS-wedge
 probe symbols appear in THIS file — keep the re-export lines below.
 """
 from utils.watchdog_probe_core import (
+    DISPOSITIONS,
     SEVERITIES,
     SIGNAL_CLASSES,
     Signal,
+    collect_dispositions,
+    note_disposition,
+    reset_dispositions,
     signal_to_dict,
     _journal_newest_match,
     _read_deployment_declaration,
@@ -128,8 +136,12 @@ from utils.watchdog_probes_mini import (
 __all__ = [
     "SIGNAL_CLASSES",
     "SEVERITIES",
+    "DISPOSITIONS",
     "Signal",
     "signal_to_dict",
+    "note_disposition",
+    "reset_dispositions",
+    "collect_dispositions",
     "probe_rns_namespace_collision",
     "probe_main_thread_wedge",
     "probe_lxmf_process_wedge",

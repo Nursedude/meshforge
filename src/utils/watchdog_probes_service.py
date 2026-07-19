@@ -25,6 +25,7 @@ from utils.watchdog_probe_core import (
     _journal_newest_match,
     _resolve_main_pid,
     _short_unix_ts,
+    note_disposition,
 )
 
 # Same logger name the runner uses (watchdog_runner.py) so a swallowed
@@ -65,6 +66,7 @@ def probe_http_local(
             # is alive. We don't gate on status — /healthz can return
             # 503 during warming and that's correct, not wedged.
             _ = resp.read(64)
+            note_disposition("http_local_unresponsive", "clean")
             return None
     except socket.timeout:
         pass
@@ -72,11 +74,23 @@ def probe_http_local(
         # ConnectionRefused means port isn't bound — usually that's
         # "service is inactive" not "wedged". Don't double-alarm here.
         if "Connection refused" in str(exc):
+            note_disposition(
+                "http_local_unresponsive", "indeterminate",
+                reason="connection refused; port unbound — service_inactive owns that",
+            )
             return None
         # DNS/other URLErrors — return None; this probe doesn't
         # speculate on network configuration.
+        note_disposition(
+            "http_local_unresponsive", "indeterminate",
+            reason="URLError; endpoint unobservable",
+        )
         return None
     except (OSError, ValueError):
+        note_disposition(
+            "http_local_unresponsive", "indeterminate",
+            reason="socket/OS error; endpoint unobservable",
+        )
         return None
 
     return Signal(
@@ -174,15 +188,24 @@ def probe_fd_exhaustion(
         service_name, systemctl_path=systemctl_path
     )
     if pid is None:
+        note_disposition(
+            "fd_exhaustion", "indeterminate",
+            reason="MainPID unresolved; service inactive or systemctl error",
+        )
         return None
 
     usage = _read_fd_usage(pid, proc_root=proc_root)
     if usage is None:
+        note_disposition(
+            "fd_exhaustion", "indeterminate",
+            reason="fd count/soft limit unreadable from /proc",
+        )
         return None
     open_count, soft = usage
 
     ratio = open_count / soft
     if ratio < degraded_ratio:
+        note_disposition("fd_exhaustion", "clean")
         return None
 
     severity = "wedge" if ratio >= wedge_ratio else "degraded"
@@ -403,14 +426,23 @@ def probe_meshtasticd_vsz_leak(
         service_name, systemctl_path=systemctl_path
     )
     if pid is None:
+        note_disposition(
+            "meshtasticd_vsz_leak", "indeterminate",
+            reason="meshtasticd MainPID unresolved; service_inactive owns that",
+        )
         return None
 
     reading = _read_vm_size_gb(pid, proc_root=proc_root)
     if reading is None:
+        note_disposition(
+            "meshtasticd_vsz_leak", "indeterminate",
+            reason="VmSize unreadable from /proc/<pid>/status",
+        )
         return None
     vsz_gb, threads = reading
 
     if vsz_gb < threshold_gb:
+        note_disposition("meshtasticd_vsz_leak", "clean")
         return None
 
     detail = (
@@ -486,12 +518,20 @@ def probe_phoneapi_tcp_leak(
         service_name, systemctl_path=systemctl_path
     )
     if pid is None:
+        note_disposition(
+            "phoneapi_tcp_leak", "indeterminate",
+            reason="MainPID unresolved; service inactive or systemctl error",
+        )
         return None
 
     sp = state_path or DEFAULT_PHONEAPI_LEAK_STATE_PATH
 
     pid_inodes = _pid_socket_inodes(pid, proc_root=proc_root)
     if pid_inodes is None:
+        note_disposition(
+            "phoneapi_tcp_leak", "indeterminate",
+            reason="/proc/<pid>/fd unreadable; socket inodes unobservable",
+        )
         return None
     candidates = pid_inodes & _estab_inodes_to_port(
         phoneapi_port, proc_root=proc_root
@@ -507,16 +547,26 @@ def probe_phoneapi_tcp_leak(
     _save_phoneapi_leak_state(sp, pid, counts)
 
     if not candidates:
+        note_disposition("phoneapi_tcp_leak", "clean")
         return None
     persisted = {i for i, c in counts.items() if c >= persist_ticks}
     if not persisted:
+        note_disposition(
+            "phoneapi_tcp_leak", "indeterminate",
+            reason="candidate socket under persist-ticks debounce",
+        )
         return None  # in-flight collect (lives minutes) — not yet a leak
 
     fetch = owner_fetch or (lambda: _fetch_persistent_owner(status_port))
     found, owner = fetch()
     if not found:
+        note_disposition(
+            "phoneapi_tcp_leak", "indeterminate",
+            reason="radio status endpoint unreachable; http_local owns that",
+        )
         return None  # status endpoint dark — http_local owns that
     if owner:
+        note_disposition("phoneapi_tcp_leak", "clean")
         return None  # accounted persistent connection (listener TCP fallback)
 
     inode_list = sorted(persisted)
@@ -673,6 +723,10 @@ def probe_meshtasticd_phoneapi_wedge(
         unit, systemctl_path=systemctl_path
     )
     if pid is None:
+        note_disposition(
+            "meshtasticd_phoneapi_wedge", "indeterminate",
+            reason="meshtasticd MainPID unresolved; service_inactive owns that",
+        )
         return None
 
     # Gate: the wedge only threatens a GATEWAY's mesh-TX. On a box with no
@@ -684,6 +738,10 @@ def probe_meshtasticd_phoneapi_wedge(
         gateway_unit, systemctl_path=systemctl_path
     )
     if gw_pid is None:
+        note_disposition(
+            "meshtasticd_phoneapi_wedge", "inert",
+            reason="no running gateway; class gated to gateway boxes",
+        )
         return None
 
     sp = state_path or DEFAULT_PHONEAPI_WEDGE_STATE_PATH
@@ -699,9 +757,14 @@ def probe_meshtasticd_phoneapi_wedge(
         # Unobservable (journalctl wedged/absent) — NEVER read as 0/healthy.
         # Break the streak so a blind tick can't carry toward a fire.
         _save_phoneapi_wedge_streak(sp, 0)
+        note_disposition(
+            "meshtasticd_phoneapi_wedge", "indeterminate",
+            reason="journalctl unavailable/timeout; force-close count unobservable",
+        )
         return None
     if count < threshold:
         _save_phoneapi_wedge_streak(sp, 0)  # not sustained → streak broken
+        note_disposition("meshtasticd_phoneapi_wedge", "clean")
         return None
 
     # Harm guard (2026-06-27 moc): force-close churn wedges mesh-TX only when a
@@ -718,11 +781,16 @@ def probe_meshtasticd_phoneapi_wedge(
     # can't coincide with a real wedge (the holder's own socket would be in it).
     if not _estab_inodes_to_port(phoneapi_port, proc_root=proc_root):
         _save_phoneapi_wedge_streak(sp, 0)  # brief-touch churn → benign; reset
+        note_disposition("meshtasticd_phoneapi_wedge", "clean")
         return None
 
     streak = _load_phoneapi_wedge_streak(sp) + 1
     _save_phoneapi_wedge_streak(sp, streak)
     if streak < debounce_ticks:
+        note_disposition(
+            "meshtasticd_phoneapi_wedge", "indeterminate",
+            reason="over-threshold churn held by debounce; awaiting confirm tick",
+        )
         return None  # over threshold once — wait for a confirming tick
 
     detail = (
@@ -777,9 +845,14 @@ def probe_service_inactive(
             capture_output=True, text=True, timeout=3,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        note_disposition(
+            "service_inactive", "indeterminate",
+            reason="systemctl unavailable/timeout; unit state unobservable",
+        )
         return None
     actual = proc.stdout.strip() or "unknown"
     if actual == expected_state:
+        note_disposition("service_inactive", "clean")
         return None
     if actual == "inactive" and expected_state == "active":
         severity = "degraded"
@@ -959,6 +1032,10 @@ def probe_nomadnet_crashloop(
 
         if tslist is None:
             # unobservable — hold; do NOT reset the streak to a healthy 0.
+            note_disposition(
+                "nomadnet_crashloop", "indeterminate",
+                reason="journalctl unavailable/timeout; restarts unobservable",
+            )
             return None
 
         n = len(tslist)
@@ -970,6 +1047,10 @@ def probe_nomadnet_crashloop(
         )
         if not live:
             _save_nomadnet_crashloop_streak(sp, 0)   # below thresh / stale → INERT
+            note_disposition(
+                "nomadnet_crashloop", "inert",
+                reason="no live restart loop (healthy, remediated, or no nomadnet)",
+            )
             return None
 
         # Clamp at the debounce floor: once confirmed, a sustained loop fires
@@ -979,6 +1060,10 @@ def probe_nomadnet_crashloop(
         streak = min(_load_nomadnet_crashloop_streak(sp) + 1, debounce_ticks)
         _save_nomadnet_crashloop_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "nomadnet_crashloop", "indeterminate",
+                reason="live loop candidate held by debounce; awaiting confirm",
+            )
             return None
 
         severity = "wedge" if n >= wedge_n else "degraded"
@@ -1006,6 +1091,10 @@ def probe_nomadnet_crashloop(
             },
         )
     except Exception:
+        note_disposition(
+            "nomadnet_crashloop", "indeterminate",
+            reason="probe raised unexpectedly; unobservable this tick",
+        )
         return None
 
 
@@ -1061,6 +1150,10 @@ def probe_tracer_peer_unreachable(
     if tracer_dir is None:
         tracer_dir = _default_tracer_dir()
     if tracer_dir is None or not tracer_dir.is_dir():
+        note_disposition(
+            "tracer_peer_unreachable", "inert",
+            reason="no tracer state dir; tracer not run on this box",
+        )
         return []
 
     if now is None:
@@ -1069,6 +1162,10 @@ def probe_tracer_peer_unreachable(
 
     fires = _load_recent_fires(tracer_dir, since_unix=since_unix)
     if not fires:
+        note_disposition(
+            "tracer_peer_unreachable", "indeterminate",
+            reason="no parseable tracer fires within lookback window",
+        )
         return []
 
     # Fires sorted newest-first inside _load_recent_fires.
@@ -1168,6 +1265,8 @@ def probe_tracer_peer_unreachable(
                     "tier": "transient",
                 },
             ))
+    if not signals:
+        note_disposition("tracer_peer_unreachable", "clean")
     return signals
 
 
@@ -1285,6 +1384,10 @@ def probe_channel_feed_dark(
         unit, systemctl_path=systemctl_path
     )
     if pid is None:
+        note_disposition(
+            "channel_feed_dark", "indeterminate",
+            reason="meshtasticd MainPID unresolved; service_inactive owns that",
+        )
         return None
 
     # Bound the journal scan to the darkness threshold. journalctl -g -r -n 1
@@ -1313,6 +1416,10 @@ def probe_channel_feed_dark(
     # cannot see channel traffic (mqtt module off) — silence is not dark.
     any_json = newest_line_fn("serialized json message")
     if any_json is None:
+        note_disposition(
+            "channel_feed_dark", "indeterminate",
+            reason="no json-uplink lines observable (mqtt off or journalctl error)",
+        )
         return None
 
     ts_now = now if now is not None else time.time()
@@ -1325,6 +1432,10 @@ def probe_channel_feed_dark(
     # Whole-pipeline-dark is unobservable for channel-SPECIFIC dark.
     json_ts = _short_unix_ts(any_json)
     if json_ts is not None and (ts_now - json_ts) >= dark_after_s:
+        note_disposition(
+            "channel_feed_dark", "indeterminate",
+            reason="json pipeline itself dark; channel-specific dark unobservable",
+        )
         return None
 
     ch_text = newest_line_fn(f'json/{channel_name}/.*"type":"text"')
@@ -1335,9 +1446,14 @@ def probe_channel_feed_dark(
     else:
         last_ts = _short_unix_ts(ch_text)
         if last_ts is None:
+            note_disposition(
+                "channel_feed_dark", "indeterminate",
+                reason="unparseable journal timestamp on newest channel line",
+            )
             return None  # unparseable journal line — indeterminate
         age_s = ts_now - last_ts
         if age_s < dark_after_s:
+            note_disposition("channel_feed_dark", "clean")
             return None  # feed is alive
         age_desc = f"last decoded {age_s / 3600.0:.1f}h ago"
 

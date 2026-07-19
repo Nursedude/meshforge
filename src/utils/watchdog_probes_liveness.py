@@ -19,6 +19,7 @@ from utils.watchdog_probe_core import (
     Signal,
     _load_parity_streak,
     _save_parity_streak,
+    note_disposition,
 )
 
 
@@ -160,8 +161,16 @@ def probe_cron_verdict_stale(
                             job.get("command", "")):
                         wired[name] = job.get("schedule", "")
             except Exception:
+                note_disposition(
+                    "cron_verdict_stale", "indeterminate",
+                    reason="crontab parse failed; wired set unknown",
+                )
                 wired = {}
         if not wired:
+            note_disposition(
+                "cron_verdict_stale", "inert",
+                reason="no crons wired to cron_verdict.sh on this box",
+            )
             _save_parity_streak(sp, 0)   # nothing to watch — clear + inert
             return None
 
@@ -181,6 +190,10 @@ def probe_cron_verdict_stale(
                 for v in _parse_cron_verdicts(verdicts_text, now):
                     latest[v["name"]] = v
             except Exception:
+                note_disposition(
+                    "cron_verdict_stale", "indeterminate",
+                    reason="verdict log parse failed",
+                )
                 latest = {}
 
         # 4. Cross-reference — judge ONLY wired crons (orphans ignored).
@@ -203,6 +216,7 @@ def probe_cron_verdict_stale(
                 stale.append(f"{name}({int(float(v['age_s']) // 3600)}h)")
 
         if not failed and not stale:
+            note_disposition("cron_verdict_stale", "clean")
             _save_parity_streak(sp, 0)
             return None
 
@@ -210,6 +224,10 @@ def probe_cron_verdict_stale(
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "cron_verdict_stale", "indeterminate",
+                reason="unhealthy cron seen; held by 2-tick debounce",
+            )
             return None
 
         bits = []
@@ -229,6 +247,10 @@ def probe_cron_verdict_stale(
                    "wired_count": len(wired)},
         )
     except Exception:
+        note_disposition(
+            "cron_verdict_stale", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None
 
 
@@ -313,12 +335,20 @@ def probe_fleet_box_unreachable(
             state_text, state_mtime = _read_operator_fleet_state(home)
 
         if not state_text:
+            note_disposition(
+                "fleet_box_unreachable", "inert",
+                reason="no offline-monitor state file (manager-box-only organ)",
+            )
             _save_parity_streak(sp, 0)      # no monitor here → INERT
             return None
 
         # Stale file = the monitor stopped updating; do NOT read frozen rows as
         # current (cron_verdict_stale owns the dead-monitor alert).
         if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            note_disposition(
+                "fleet_box_unreachable", "indeterminate",
+                reason="state file stale; cron_verdict_stale owns the dead-cron page",
+            )
             _save_parity_streak(sp, 0)
             return None
 
@@ -344,12 +374,17 @@ def probe_fleet_box_unreachable(
             down.append((parts[0].strip(), down_since, alert_count))
 
         if not down:
+            note_disposition("fleet_box_unreachable", "clean")
             _save_parity_streak(sp, 0)
             return None
 
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "fleet_box_unreachable", "indeterminate",
+                reason="down box seen; held by 2-tick debounce",
+            )
             return None
 
         descs: List[str] = []
@@ -378,6 +413,10 @@ def probe_fleet_box_unreachable(
                    "max_down_min": max_down_min, "streak": streak},
         )
     except Exception:
+        note_disposition(
+            "fleet_box_unreachable", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None
 
 
@@ -469,12 +508,20 @@ def probe_host_frozen(
             state_text, state_mtime = _read_host_probe_verdict(home)
 
         if not state_text:
+            note_disposition(
+                "host_frozen", "inert",
+                reason="no host-probe verdict file (brain-box-only organ)",
+            )
             _save_parity_streak(sp, 0)      # no collector here → INERT
             return None
 
         # Stale file = the collector stopped; do NOT read a frozen verdict as
         # current (cron_verdict_stale owns the dead-collector alert).
         if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            note_disposition(
+                "host_frozen", "indeterminate",
+                reason="state file stale; cron_verdict_stale owns the dead-cron page",
+            )
             _save_parity_streak(sp, 0)
             return None
 
@@ -482,6 +529,10 @@ def probe_host_frozen(
             doc = json.loads(state_text)
             targets = doc.get("targets") or []
         except (ValueError, TypeError, AttributeError):
+            note_disposition(
+                "host_frozen", "indeterminate",
+                reason="unparseable verdict file",
+            )
             _save_parity_streak(sp, 0)      # garbage → don't false-fire
             return None
 
@@ -497,12 +548,17 @@ def probe_host_frozen(
             bad.append((name, verdict, raw))
 
         if not bad:
+            note_disposition("host_frozen", "clean")
             _save_parity_streak(sp, 0)
             return None
 
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "host_frozen", "indeterminate",
+                reason="bad verdict seen; held by 2-tick debounce",
+            )
             return None
 
         wedge = any(v in _HOST_FROZEN_WEDGE_VERDICTS for _, v, _ in bad)
@@ -523,6 +579,10 @@ def probe_host_frozen(
                    "streak": streak},
         )
     except Exception:
+        note_disposition(
+            "host_frozen", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None
 
 

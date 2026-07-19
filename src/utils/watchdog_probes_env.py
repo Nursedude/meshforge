@@ -18,6 +18,7 @@ from utils.watchdog_probe_core import (
     Signal,
     _load_parity_streak,
     _save_parity_streak,
+    note_disposition,
 )
 
 
@@ -133,12 +134,20 @@ def probe_router_scout_degraded(
             ticks = _read_router_scout_ticks(home)
 
         if not ticks:
+            note_disposition(
+                "router_scout_degraded", "inert",
+                reason="no scout mirror dir (manager-box-only organ)",
+            )
             _save_parity_streak(sp, 0)      # no mirrors here → INERT
             return None
 
         bad: List[Tuple[str, str]] = []     # (device-or-filename, why)
         for name, text, mtime in ticks:
             if mtime is not None and (now - mtime) > mirror_stale_s:
+                note_disposition(
+                    "router_scout_degraded", "indeterminate",
+                    reason="mirror stale; cron_verdict_stale owns the dead-cron page",
+                )
                 continue    # dead pull cron — cron_verdict_stale's beat
             try:
                 tick = json.loads(text)
@@ -169,12 +178,17 @@ def probe_router_scout_degraded(
                             f"({len(errs)} witness(es): {first})"))
 
         if not bad:
+            note_disposition("router_scout_degraded", "clean")
             _save_parity_streak(sp, 0)
             return None
 
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "router_scout_degraded", "indeterminate",
+                reason="degraded tick seen; held by 2-tick debounce",
+            )
             return None
 
         devices = sorted({d for d, _ in bad})
@@ -194,6 +208,10 @@ def probe_router_scout_degraded(
                    "streak": streak},
         )
     except Exception:
+        note_disposition(
+            "router_scout_degraded", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None
 
 
@@ -302,15 +320,27 @@ def probe_ntfy_loopback(
             state_text, state_mtime = _read_ntfy_loopback_state(home)
 
         if not state_text:
+            note_disposition(
+                "ntfy_loopback", "inert",
+                reason="no loopback state file (manager-box-only organ)",
+            )
             _save_parity_streak(sp, 0)      # no monitor here → INERT
             return None
 
         try:
             doc = json.loads(state_text)
         except (ValueError, TypeError):
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason="unparseable state file",
+            )
             _save_parity_streak(sp, 0)      # garbage → don't false-fire
             return None
         if not isinstance(doc, dict):
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason="state file is not a JSON object",
+            )
             _save_parity_streak(sp, 0)
             return None
 
@@ -328,6 +358,10 @@ def probe_ntfy_loopback(
 
         # Stale file = the collector stopped; cron_verdict_stale owns that alert.
         if state_mtime is not None and (now - state_mtime) > effective_stale:
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason="state file stale; cron_verdict_stale owns the dead-cron page",
+            )
             _save_parity_streak(sp, 0)
             return None
 
@@ -335,9 +369,14 @@ def probe_ntfy_loopback(
         # Indeterminate (key missing / torn write / not a bool) → HOLD, never
         # read as a miss — absence of evidence is not a failure (#80 class).
         if not isinstance(received, bool):
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason="received missing/not a bool (torn write)",
+            )
             _save_parity_streak(sp, 0)
             return None
         if received:
+            note_disposition("ntfy_loopback", "clean")
             _save_parity_streak(sp, 0)      # looped back → healthy
             return None
 
@@ -345,6 +384,10 @@ def probe_ntfy_loopback(
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason="loopback miss seen; held by 2-tick debounce",
+            )
             return None
 
         published_ok = doc.get("published_ok")
@@ -373,6 +416,10 @@ def probe_ntfy_loopback(
                    "consecutive_misses": misses, "streak": streak},
         )
     except Exception:
+        note_disposition(
+            "ntfy_loopback", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None
 
 
@@ -468,34 +515,66 @@ def probe_ntfy_ack_stale(
             state_text, state_mtime = _read_ntfy_ack_state(home)
 
         if not state_text:
+            note_disposition(
+                "ntfy_ack_stale", "inert",
+                reason="no ack state file (manager-box-only organ)",
+            )
             _save_parity_streak(sp, 0)      # no monitor here → INERT
             return None
 
         if state_mtime is not None and (now - state_mtime) > stale_after_s:
+            note_disposition(
+                "ntfy_ack_stale", "indeterminate",
+                reason="state file stale; cron_verdict_stale owns the dead-cron page",
+            )
             _save_parity_streak(sp, 0)      # cron stopped → cron_verdict_stale owns it
             return None
 
         try:
             doc = json.loads(state_text)
         except (ValueError, TypeError):
+            note_disposition(
+                "ntfy_ack_stale", "indeterminate",
+                reason="unparseable state file",
+            )
             _save_parity_streak(sp, 0)
             return None
         if not isinstance(doc, dict):
+            note_disposition(
+                "ntfy_ack_stale", "indeterminate",
+                reason="state file is not a JSON object",
+            )
             _save_parity_streak(sp, 0)
             return None
 
         unacked = doc.get("consecutive_unacked_pings")
         # Indeterminate (missing / not an int / a JSON bool) → HOLD, never invent.
         if not isinstance(unacked, int) or isinstance(unacked, bool):
+            note_disposition(
+                "ntfy_ack_stale", "indeterminate",
+                reason="consecutive_unacked_pings missing/not an int",
+            )
             _save_parity_streak(sp, 0)
             return None
         if unacked <= 0:
+            if not doc.get("last_ping_ts"):
+                # never pinged (last_ping_ts absent/0) — first-week grace
+                note_disposition(
+                    "ntfy_ack_stale", "inert",
+                    reason="no weekly ping sent yet",
+                )
+            else:
+                note_disposition("ntfy_ack_stale", "clean")
             _save_parity_streak(sp, 0)      # acked (or never pinged) → healthy
             return None
 
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "ntfy_ack_stale", "indeterminate",
+                reason="unacked ping seen; held by 2-tick debounce",
+            )
             return None
 
         return Signal(
@@ -513,6 +592,10 @@ def probe_ntfy_ack_stale(
             extra={"consecutive_unacked_pings": unacked, "streak": streak},
         )
     except Exception:
+        note_disposition(
+            "ntfy_ack_stale", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None
 
 
@@ -633,12 +716,28 @@ def probe_kernel_reboot_pending(
         # Observed-healthy (running == newest same-flavor, no flag) and the
         # indeterminate shapes (unreadable/empty modules dir, unparseable
         # release, no same-flavor sibling) all land here: reset, stay silent.
+        if running_parsed is None:
+            note_disposition(
+                "kernel_reboot_pending", "indeterminate",
+                reason="running kernel release unparseable",
+            )
+        elif newest_installed is None:
+            note_disposition(
+                "kernel_reboot_pending", "indeterminate",
+                reason="no same-flavor kernel entries readable under modules dir",
+            )
+        else:
+            note_disposition("kernel_reboot_pending", "clean")
         _save_parity_streak(sp, 0)
         return None
 
     streak = _load_parity_streak(sp) + 1
     _save_parity_streak(sp, streak)
     if streak < debounce_ticks:
+        note_disposition(
+            "kernel_reboot_pending", "indeterminate",
+            reason="reboot-pending seen; held by 2-tick debounce",
+        )
         return None  # pending seen, not yet confirmed across consecutive ticks
 
     reasons = []
@@ -776,9 +875,17 @@ def probe_aredn_source_dark(
             user_fn = _read_rnsd_user
         ips = _read_configured_aredn_ips(user_fn())
     if ips is None:
+        note_disposition(
+            "aredn_source_dark", "indeterminate",
+            reason="map settings unreadable; intent unknown",
+        )
         return None  # intent unreadable — indeterminate, never alarm
     sp = state_path or DEFAULT_AREDN_SOURCE_DEBOUNCE_PATH
     if not ips:
+        note_disposition(
+            "aredn_source_dark", "inert",
+            reason="aredn_node_ips not configured — organ deliberately off",
+        )
         _save_parity_streak(sp, 0)
         return None  # organ deliberately not configured — inert by design
 
@@ -787,28 +894,50 @@ def probe_aredn_source_dark(
     )
     status = fetch()
     if not isinstance(status, dict):
+        note_disposition(
+            "aredn_source_dark", "indeterminate",
+            reason="local status endpoint unreadable; streak held",
+        )
         return None  # status unreadable — hold streak; http_local owns the wedge
     diags = status.get("source_diagnostics")
     if not isinstance(diags, dict):
+        note_disposition(
+            "aredn_source_dark", "indeterminate",
+            reason="source_diagnostics absent from status",
+        )
         return None  # diagnostics surface absent — indeterminate, hold
     diag = diags.get("aredn")
     if not isinstance(diag, dict):
+        note_disposition(
+            "aredn_source_dark", "indeterminate",
+            reason="no aredn diagnostics yet (no collect since start)",
+        )
         return None  # no aredn entry yet (no collect since start) — hold
 
     yielded = diag.get("yielded")
     reason = diag.get("reason_if_zero")
     if isinstance(yielded, int) and yielded > 0:
+        note_disposition("aredn_source_dark", "clean")
         _save_parity_streak(sp, 0)
         return None  # organ alive
     if reason in ("no_positions", "slow_sysinfo"):
+        note_disposition("aredn_source_dark", "clean")
         _save_parity_streak(sp, 0)
         return None  # reachable (no GPS, or sysinfo slow) — alive, NOT dark
     if reason not in _AREDN_DARK_REASONS:
+        note_disposition(
+            "aredn_source_dark", "indeterminate",
+            reason="unknown diagnostics reason string; held",
+        )
         return None  # unknown/absent reason — indeterminate, hold
 
     streak = _load_parity_streak(sp) + 1
     _save_parity_streak(sp, streak)
     if streak < debounce_ticks:
+        note_disposition(
+            "aredn_source_dark", "indeterminate",
+            reason="dark seen; held by 2-tick debounce",
+        )
         return None  # dark seen, not yet confirmed across consecutive ticks
 
     if reason == "not_configured":
@@ -1119,24 +1248,38 @@ def probe_inherited_app_drift(
     try:
         # 1. Build the {inherited checkout → real code patches} list.
         dirty: List[Tuple[str, str, List[str]]] = []
+        scanned = 0   # inherited checkouts evaluated (disposition note only)
         if repos is None:
             if scan_roots is None:
                 home = _resolve_operator_home(service_user_fn)
                 scan_roots = [r for r in (home, "/opt") if r]
             for path, url in _iter_inherited_checkouts(scan_roots):
+                scanned += 1
                 mods = _git_tracked_modifications(path, git_path)
                 if mods is None:
+                    note_disposition(
+                        "inherited_app_drift", "indeterminate",
+                        reason="git status failed on an inherited checkout",
+                    )
                     continue  # git indeterminate for this repo — skip
                 patches = _real_code_patches(mods)
                 if patches:
                     dirty.append((path, url, patches))
         else:
             for path, url, files in repos:
+                scanned += 1
                 patches = _real_code_patches(list(files))
                 if patches:
                     dirty.append((path, url, patches))
 
         if not dirty:
+            if scanned:
+                note_disposition("inherited_app_drift", "clean")
+            else:
+                note_disposition(
+                    "inherited_app_drift", "inert",
+                    reason="no inherited checkouts on this box",
+                )
             _save_parity_streak(sp, 0)
             return None  # no inherited patch anywhere → INERT / clean
 
@@ -1144,6 +1287,10 @@ def probe_inherited_app_drift(
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition(
+                "inherited_app_drift", "indeterminate",
+                reason="inherited patch seen; held by 2-tick debounce",
+            )
             return None
 
         # 3. Build the signal (one aggregate; subject stable for edge-tracking).
@@ -1182,4 +1329,8 @@ def probe_inherited_app_drift(
             },
         )
     except Exception:
+        note_disposition(
+            "inherited_app_drift", "indeterminate",
+            reason="probe raised; observation failed",
+        )
         return None

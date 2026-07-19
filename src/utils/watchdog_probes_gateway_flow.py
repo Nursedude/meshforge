@@ -22,6 +22,7 @@ from utils.watchdog_probe_core import (
     _journal_count_match,
     _resolve_main_pid,
     _short_unix_ts,
+    note_disposition,
 )
 
 logger = logging.getLogger("watchdog")
@@ -195,12 +196,16 @@ def probe_synth_soak_degraded(
 
     sdir = state_dir or _resolve_synth_soak_dir()
     if not sdir or not os.path.isdir(sdir):
+        note_disposition("synth_soak_degraded", "inert",
+                         reason="synth-soak state dir absent — box doesn't run it")
         return None  # INERT: box doesn't run the synth soak
 
     sp = debounce_path or DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH
 
     newest = _newest_synth_file(sdir)
     if newest is None:
+        note_disposition("synth_soak_degraded", "indeterminate",
+                         reason="no synth result file yet / listing race — held")
         return None  # no result file / transient listing race — hold streak
 
     newest_path, newest_mtime = newest
@@ -260,6 +265,8 @@ def probe_synth_soak_degraded(
         streak = _load_synth_streak(sp) + 1
         _save_synth_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition("synth_soak_degraded", "indeterminate",
+                             reason="degraded candidate held by debounce")
             return None
         return Signal(
             cls="synth_soak_degraded",
@@ -271,6 +278,10 @@ def probe_synth_soak_degraded(
 
     if definitively_healthy:
         _save_synth_streak(sp, 0)  # explicit healthy → reset the streak
+        note_disposition("synth_soak_degraded", "clean")
+    else:
+        note_disposition("synth_soak_degraded", "indeterminate",
+                         reason="pass_envelope absent on parseable envelope")
     return None
 
 
@@ -538,6 +549,8 @@ def probe_gateway_delivery_degraded(
         gw_pid = main_pid if main_pid is not None else _resolve_main_pid(
             unit, systemctl_path=systemctl_path)
         if gw_pid is None:
+            note_disposition("gateway_delivery_degraded", "inert",
+                             reason="gateway not running on this box")
             return None  # INERT: this box doesn't run the gateway
 
         if blocks_fn is None:
@@ -556,6 +569,8 @@ def probe_gateway_delivery_degraded(
         if blocks is None and err is None:
             # Fully unobservable — hold the streak (do NOT reset to a healthy
             # 0, do NOT fire). honest_failure_modes #2.
+            note_disposition("gateway_delivery_degraded", "indeterminate",
+                             reason="journalctl unobservable for both legs")
             return None
 
         findings: List[Tuple[str, str]] = []  # (severity, fragment)
@@ -598,11 +613,18 @@ def probe_gateway_delivery_degraded(
             # Observed at least one leg and nothing crossed a threshold →
             # reset the debounce streak (explicit healthy observation).
             _save_gateway_delivery_streak(sp, 0)
+            if blocks is not None and err is not None:
+                note_disposition("gateway_delivery_degraded", "clean")
+            else:
+                note_disposition("gateway_delivery_degraded", "indeterminate",
+                                 reason="one journal leg unobservable this tick")
             return None
 
         streak = min(_load_gateway_delivery_streak(sp) + 1, debounce_ticks)
         _save_gateway_delivery_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition("gateway_delivery_degraded", "indeterminate",
+                             reason="degraded candidate held by debounce")
             return None
 
         severity = "wedge" if any(s == "wedge" for s, _ in findings) else "degraded"
@@ -624,6 +646,8 @@ def probe_gateway_delivery_degraded(
             extra=extra,
         )
     except Exception:
+        note_disposition("gateway_delivery_degraded", "indeterminate",
+                         reason="probe raised — unobservable this tick")
         return None
 
 
@@ -753,12 +777,16 @@ def probe_resource_canary_degraded(
 
     sdir = state_dir or _resolve_resource_canary_dir()
     if not sdir or not os.path.isdir(sdir):
+        note_disposition("resource_canary_degraded", "inert",
+                         reason="canary state dir absent — box doesn't run it")
         return None  # INERT: box doesn't run the resource canary
 
     envelope = os.path.join(sdir, "last.json")
     try:
         mtime = os.path.getmtime(envelope)
     except OSError:
+        note_disposition("resource_canary_degraded", "indeterminate",
+                         reason="no last.json yet / transient race — held")
         return None  # no last.json yet (never fired) / transient race — hold
 
     sp = debounce_path or DEFAULT_RESOURCE_CANARY_DEBOUNCE_PATH
@@ -811,6 +839,8 @@ def probe_resource_canary_degraded(
         streak = min(_load_resource_canary_streak(sp) + 1, debounce_ticks)
         _save_resource_canary_streak(sp, streak)
         if streak < debounce_ticks:
+            note_disposition("resource_canary_degraded", "indeterminate",
+                             reason="degraded candidate held by debounce")
             return None
         extra["debounce_streak"] = streak
         return Signal(
@@ -823,6 +853,10 @@ def probe_resource_canary_degraded(
 
     if definitively_healthy:
         _save_resource_canary_streak(sp, 0)  # explicit healthy → reset streak
+        note_disposition("resource_canary_degraded", "clean")
+    else:
+        note_disposition("resource_canary_degraded", "indeterminate",
+                         reason="verdict absent/unknown on parseable envelope")
     return None
 
 
@@ -1037,14 +1071,20 @@ def probe_oracle_delivery_degraded(
 
     lp = log_path or _resolve_oracle_log_path()
     if not lp:
+        note_disposition("oracle_delivery_degraded", "indeterminate",
+                         reason="operator unresolvable — cannot locate oracle log")
         return None  # operator unresolvable — indeterminate, never a false alarm
     if not os.path.exists(lp):
+        note_disposition("oracle_delivery_degraded", "inert",
+                         reason="oracle never wrote a log (disabled/never queried)")
         return None  # INERT: the oracle never wrote a log here (disabled/never queried)
 
     sp = debounce_path or DEFAULT_ORACLE_DELIVERY_DEBOUNCE_PATH
 
     parsed = _read_oracle_window(lp, now, window_s, _ORACLE_LOG_READ_BYTES)
     if parsed is None:
+        note_disposition("oracle_delivery_degraded", "indeterminate",
+                         reason="oracle log tail unreadable — streak held")
         return None  # unreadable tail — HOLD the streak (don't reset, don't fire)
     counts, _total = parsed
 
@@ -1052,6 +1092,8 @@ def probe_oracle_delivery_degraded(
     real_failures = counts["send_error"]
     confirmable = delivered + real_failures
     if confirmable < min_sample:
+        note_disposition("oracle_delivery_degraded", "indeterminate",
+                         reason="confirmable sample below minimum — cannot judge")
         return None  # small-N (incl. a quiet window) — can't judge a rate honestly
 
     rate = delivered / confirmable  # confirmable >= min_sample >= 1, safe
@@ -1068,11 +1110,14 @@ def probe_oracle_delivery_degraded(
 
     if rate >= threshold:
         _save_oracle_streak(sp, 0)  # explicit healthy observation → reset
+        note_disposition("oracle_delivery_degraded", "clean")
         return None
 
     streak = min(_load_oracle_streak(sp) + 1, debounce_ticks)
     _save_oracle_streak(sp, streak)
     if streak < debounce_ticks:
+        note_disposition("oracle_delivery_degraded", "indeterminate",
+                         reason="degraded candidate held by debounce")
         return None
     extra["debounce_streak"] = streak
     detail = (

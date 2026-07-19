@@ -46,7 +46,11 @@ from typing import Dict, List, Optional, Tuple
 
 from utils.rns_status_parser import run_rnstatus
 from utils.watchdog_probes import (
+    SIGNAL_CLASSES,
     Signal,
+    collect_dispositions,
+    note_disposition,
+    reset_dispositions,
     probe_aredn_source_dark,
     probe_calibration_drift,
     probe_channel_feed_dark,
@@ -233,7 +237,13 @@ def run_all_probes(
     Order is deliberate: cheap probes first so an expensive probe
     failing late doesn't delay the cheap ones' results in case of a
     future timeout/parallelization refactor.
+
+    Coverage side-channel (fleet-truth Phase 0): the disposition recorder
+    is reset here; runner-level gates note ``inert`` for the probes they
+    skip; probes note their own clean/inert/indeterminate at return sites.
+    ``build_coverage`` assembles the per-class map after the tick.
     """
+    reset_dispositions()
     signals: List[Signal] = []
 
     # Service-state probes — cheap, one subprocess each.
@@ -259,6 +269,9 @@ def run_all_probes(
         sig = probe_rns_namespace_collision(rns_instance_name)
         if sig is not None:
             signals.append(sig)
+    else:
+        note_disposition("rns_namespace_collision", "inert",
+                         reason="no rns instance_name declared on this box")
 
     # RNS shared-instance responsive — Unix socket connect with timeout.
     # Catches today's (2026-05-21 moc1) wedge class where rnsd is alive
@@ -267,6 +280,9 @@ def run_all_probes(
         sig = probe_rns_shared_instance_responsive(rns_instance_name)
         if sig is not None:
             signals.append(sig)
+    else:
+        note_disposition("rns_shared_instance_unresponsive", "inert",
+                         reason="no rns instance_name declared on this box")
 
     # RNS rnstatus-consuming probes share ONE bounded rnstatus call so a
     # wedged rnsd can't stall the 30s tick with two long-timeout
@@ -359,6 +375,11 @@ def run_all_probes(
         )
         if sig is not None:
             signals.append(sig)
+    else:
+        for _cls in ("http_local_unresponsive", "fd_exhaustion",
+                     "phoneapi_tcp_leak", "aredn_source_dark"):
+            note_disposition(_cls, "inert",
+                             reason="meshforge-map not expected active on this box")
 
     # meshtasticd PhoneAPI wedge (2026-06-15) — the COMPANION to the
     # phoneapi_tcp_leak probe above: ≥2 contending single-consumers thrash
@@ -388,6 +409,10 @@ def run_all_probes(
         sig = probe_rns_version_drift()
         if sig is not None:
             signals.append(sig)
+    else:
+        for _cls in ("foundation_perms_drift", "rns_version_drift"):
+            note_disposition(_cls, "inert",
+                             reason="rnsd not expected active on this box")
 
     # MeshForge<->MeshAnchor parity drift — self-guards on /opt/meshanchor being
     # present (only the box holding both repos checks; MeshForge-only boxes no-op).
@@ -657,6 +682,40 @@ def run_all_probes(
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Coverage assembly — the per-class disposition map (fleet-truth Phase 0)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def build_coverage(signals: List[Signal]) -> Dict[str, Dict[str, str]]:
+    """Assemble the per-``SIGNAL_CLASSES`` disposition map for this tick.
+
+    Consumed by ``fleet_truth.merge_coverage`` via the ``coverage`` key of
+    watchdog.json → ``/api/status.watchdog``. Precedence per class:
+
+      1. ``active``  — a Signal of this class was emitted (worst).
+      2. whatever the probes/runner noted (``clean|inert|indeterminate``).
+      3. ``unknown`` — nothing noted: honest fail-dark, renders dark. A
+         probe that hasn't adopted the disposition contract stays dark
+         rather than silently reading green.
+
+    Every member of the closed enum gets an entry — a class silently
+    missing from the map would be indistinguishable from "not watched".
+    """
+    noted = collect_dispositions()
+    active = {s.cls for s in signals}
+    coverage: Dict[str, Dict[str, str]] = {}
+    for cls in SIGNAL_CLASSES:
+        if cls in active:
+            coverage[cls] = {"disp": "active"}
+        elif cls in noted:
+            coverage[cls] = noted[cls]
+        else:
+            coverage[cls] = {"disp": "unknown",
+                             "reason": "no disposition reported this tick"}
+    return coverage
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Output writer
 # ─────────────────────────────────────────────────────────────────────
 
@@ -668,6 +727,7 @@ def write_state(
     now: float,
     probe_count: int,
     active_signals: List[Tuple[Signal, float]],
+    coverage: Optional[Dict[str, Dict[str, str]]] = None,
 ) -> None:
     """Write atomic-rename JSON. Never raises — best-effort.
 
@@ -682,7 +742,12 @@ def write_state(
               "detail": "...", "issue_ref": <int|null>,
               "first_seen": <unix float>, "extra": {...} },
             ...
-          ]
+          ],
+          "coverage": {  # fleet-truth Phase 0; absent on legacy writers
+            "<signal_class>": {"disp": "active|clean|inert|indeterminate|unknown",
+                                "reason": "..."},
+            ...
+          }
         }
     """
     has_wedge = any(s.severity == "wedge" for s, _ in active_signals)
@@ -693,6 +758,8 @@ def write_state(
         "ok": not has_wedge,
         "signals": [signal_to_dict(s, first_seen_ts=fs) for s, fs in active_signals],
     }
+    if coverage is not None:
+        payload["coverage"] = coverage
 
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -967,6 +1034,9 @@ def run_loop(
             # Never let a probe bug kill the watchdog. Log and continue.
             logger.error("watchdog: probe dispatch failed: %s", exc, exc_info=True)
             signals = []
+            coverage = None  # dispatch crashed mid-tick — coverage unknown, not clean
+        else:
+            coverage = build_coverage(signals)
 
         active_with_first_seen, newly_cleared = tracker.update(signals, now=now)
 
@@ -992,6 +1062,7 @@ def run_loop(
             now=now,
             probe_count=probe_count,
             active_signals=active_with_first_seen,
+            coverage=coverage,
         )
 
         # Phase 2 — auto-restart actions. Skipped entirely when
@@ -1106,6 +1177,7 @@ def main(argv=None) -> int:
         write_state(
             args.output, host=host, now=now, probe_count=1,
             active_signals=active_with_first_seen,
+            coverage=build_coverage(signals),
         )
         for sig, _ in active_with_first_seen:
             print(

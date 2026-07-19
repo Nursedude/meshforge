@@ -397,6 +397,12 @@ class StatusEndpointsMixin:
             "probe_count": payload.get("probe_count"),
             "signals": payload.get("signals", []),
         }
+        # Per-class disposition map (fleet-truth Phase 0). Passed through
+        # verbatim for fleet_truth.merge_coverage; absent on legacy
+        # watchdog writers — consumers treat absence as pre-coverage
+        # (every non-active class dark), never as clean.
+        if isinstance(payload.get("coverage"), dict):
+            block["coverage"] = payload["coverage"]
         if stale:
             block["reason"] = (
                 f"stale: last write {age_s:.0f}s ago "

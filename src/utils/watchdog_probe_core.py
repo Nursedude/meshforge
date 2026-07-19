@@ -68,6 +68,63 @@ SIGNAL_CLASSES = (
 
 SEVERITIES = ("info", "degraded", "wedge")
 
+# ─────────────────────────────────────────────────────────────────────
+# Per-tick disposition recorder — the coverage side-channel (fleet-truth
+# Phase 0). A probe returning None conflates three honest answers:
+#
+#     clean          — probe RAN, the observation succeeded, nothing wrong
+#     inert          — the organ is LEGITIMATELY not present on this box
+#     indeterminate  — the probe could NOT observe (journal unavailable,
+#                      parse error, stale input, debounce-pending candidate)
+#
+# Probes disambiguate by calling ``note_disposition`` at their return
+# sites. THE CONTRACT IS FAIL-DARK: a class nothing noted renders
+# "unknown" (dark) in the coverage map — silence can never read green
+# (honest_failure_modes #1/#2). NEVER note ``clean`` unless the
+# observation positively succeeded this tick. Signal-emitting paths need
+# no note — the runner derives ``active`` from the returned Signal, and
+# an active signal outranks any note.
+#
+# Worst-wins merge per class per tick (indeterminate > inert > clean):
+# a probe covering N subjects reads clean only if EVERY subject is clean.
+# The recorder is module-global, reset by the runner at tick start —
+# single-threaded within a tick like the probes themselves.
+# ─────────────────────────────────────────────────────────────────────
+
+DISPOSITIONS = ("clean", "inert", "indeterminate")
+_DISP_RANK = {"clean": 0, "inert": 1, "indeterminate": 2}
+
+_tick_dispositions: dict = {}
+
+
+def reset_dispositions() -> None:
+    """Clear the recorder. The runner calls this at the top of every tick."""
+    _tick_dispositions.clear()
+
+
+def note_disposition(cls: str, disp: str, *, reason: Optional[str] = None) -> None:
+    """Record a probe's per-class disposition for this tick. Never raises.
+
+    An invalid ``disp`` is recorded as ``indeterminate`` (a programming
+    error must not silently become a healthy-looking value). Worst-wins:
+    a later, worse note overrides; a later, better note does not.
+    """
+    if disp not in _DISP_RANK:
+        reason = f"invalid disposition {disp!r} noted (probe bug)"
+        disp = "indeterminate"
+    prev = _tick_dispositions.get(cls)
+    if prev is not None and _DISP_RANK[prev["disp"]] >= _DISP_RANK[disp]:
+        return
+    entry = {"disp": disp}
+    if reason:
+        entry["reason"] = reason
+    _tick_dispositions[cls] = entry
+
+
+def collect_dispositions() -> dict:
+    """Snapshot the recorder (shallow copy — entries are never mutated)."""
+    return dict(_tick_dispositions)
+
 
 @dataclass
 class Signal:

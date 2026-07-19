@@ -25,6 +25,7 @@ from utils.watchdog_probe_core import (
     _journal_count_match,
     _resolve_main_pid,
     _short_unix_ts,
+    note_disposition,
 )
 
 # Same logger name the runner uses (watchdog_runner.py) so a swallowed
@@ -61,10 +62,14 @@ def probe_delivery_write_canary(
         with urlopen(url, timeout=timeout_s) as resp:
             payload = json.loads(resp.read())
     except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        note_disposition("delivery_write_canary", "indeterminate",
+                         reason="delivery API unreachable/unparseable")
         return None  # don't false-alarm on transport problems
 
     health = payload.get("health") if isinstance(payload, dict) else None
     if not isinstance(health, dict):
+        note_disposition("delivery_write_canary", "indeterminate",
+                         reason="no health block in delivery payload")
         return None
 
     preflight_ok = health.get("preflight_ok")
@@ -94,6 +99,9 @@ def probe_delivery_write_canary(
     try:
         consec_int = int(consecutive)
     except (TypeError, ValueError):
+        # Worst-wins: this note outranks the clean note at the exit below.
+        note_disposition("delivery_write_canary", "indeterminate",
+                         reason="consecutive_write_errors unparseable")
         consec_int = 0
     if consec_int >= error_threshold:
         return Signal(
@@ -112,6 +120,7 @@ def probe_delivery_write_canary(
             },
         )
 
+    note_disposition("delivery_write_canary", "clean")
     return None
 
 
@@ -190,8 +199,12 @@ def probe_queue_backlog(
         with urlopen(url, timeout=timeout_s) as resp:
             payload = json.loads(resp.read())
     except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        note_disposition("queue_backlog", "indeterminate",
+                         reason="queue API unreachable/unparseable")
         return None
     if not isinstance(payload, dict) or "queue_depth" not in payload:
+        note_disposition("queue_backlog", "indeterminate",
+                         reason="queue payload missing/misshaped")
         return None
 
     try:
@@ -199,6 +212,8 @@ def probe_queue_backlog(
         max_queue_size = int(payload.get("max_queue_size") or 0)
         dead_letter = int(payload.get("dead_letter") or 0)
     except (TypeError, ValueError):
+        note_disposition("queue_backlog", "indeterminate",
+                         reason="queue counters unparseable")
         return None
 
     findings: List[Tuple[str, str]] = []  # (severity, detail-fragment)
@@ -238,6 +253,14 @@ def probe_queue_backlog(
             ))
 
     if not findings:
+        if max_queue_size <= 0:
+            note_disposition("queue_backlog", "indeterminate",
+                             reason="unlimited queue — no depth ceiling to judge")
+        elif baseline is None:
+            note_disposition("queue_backlog", "indeterminate",
+                             reason="no dead-letter baseline yet (first tick)")
+        else:
+            note_disposition("queue_backlog", "clean")
         return None
 
     severity = "wedge" if any(s == "wedge" for s, _ in findings) else "degraded"
@@ -320,8 +343,12 @@ def probe_delivery_confirmation_stall(
         with urlopen(url, timeout=timeout_s) as resp:
             payload = json.loads(resp.read())
     except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        note_disposition("delivery_confirmation_stall", "indeterminate",
+                         reason="delivery API unreachable/unparseable")
         return None
     if not isinstance(payload, dict):
+        note_disposition("delivery_confirmation_stall", "indeterminate",
+                         reason="delivery payload not a dict")
         return None
 
     # Confirmable = protocols that have ever recorded a `confirmed` event.
@@ -333,10 +360,14 @@ def probe_delivery_confirmation_stall(
         if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
     }
     if not confirmable:
+        note_disposition("delivery_confirmation_stall", "indeterminate",
+                         reason="no confirmable protocol recorded — cannot judge")
         return None
 
     recent = payload.get("recent")
     if not isinstance(recent, list):
+        note_disposition("delivery_confirmation_stall", "indeterminate",
+                         reason="recent-events ring absent/misshaped")
         return None
 
     ring_confirmed = 0
@@ -352,10 +383,13 @@ def probe_delivery_confirmation_stall(
 
     terminal = ring_confirmed + ring_failed
     if terminal < min_terminal:
+        note_disposition("delivery_confirmation_stall", "indeterminate",
+                         reason="too few confirmable terminal events to judge")
         return None
 
     ring_rate = ring_confirmed / terminal
     if ring_rate > rate_degraded:
+        note_disposition("delivery_confirmation_stall", "clean")
         return None
 
     severity = "wedge" if ring_rate <= rate_wedge else "degraded"
@@ -474,21 +508,31 @@ def probe_gateway_dup_degraded(
         with urlopen(url, timeout=timeout_s) as resp:
             payload = json.loads(resp.read())
     except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+        note_disposition("gateway_dup_degraded", "inert",
+                         reason="dups rollup unavailable (manager-only endpoint)")
         return None  # transport — HOLD streak (unobservable ≠ clean)
     if not isinstance(payload, dict):
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="dups payload not a dict")
         return None
 
     # indeterminate / unavailable: <2 gateways covered, or no rollup yet.
     # Cannot observe a cross-gateway dup → HOLD streak, stay INERT. A wired
     # probe treating indeterminate as green would be the exact #2 trap.
     if payload.get("status") != "ok":
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="rollup indeterminate (<2 gateways reachable)")
         return None
     fresh = payload.get("freshness")
     if isinstance(fresh, dict) and fresh.get("stale") is True:
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="rollup stale (collector cron dead)")
         return None  # frozen rollup (dead collector) → HOLD, INERT
 
     dup_pairs = payload.get("fleet_duplicate_pairs")
     if not isinstance(dup_pairs, int) or isinstance(dup_pairs, bool):
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="fleet_duplicate_pairs missing/garbage")
         return None  # shape error → INERT (don't reset on a malformed read)
 
     # STEP 6 — page on HUMAN-facing dups only. A dup whose recipient is
@@ -508,15 +552,20 @@ def probe_gateway_dup_degraded(
     elif isinstance(human_pairs, int) and not isinstance(human_pairs, bool):
         gate_pairs = human_pairs          # new JOIN → human-only gate
     else:
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="fleet_human_duplicate_pairs present but garbage")
         return None                        # present but garbage → INERT/hold
 
     if gate_pairs < min_dup_pairs:
         _save_gateway_dup_streak(sp, 0)  # explicit observed-clean
+        note_disposition("gateway_dup_degraded", "clean")
         return None
 
     streak = min(_load_gateway_dup_streak(sp) + 1, debounce_ticks)
     _save_gateway_dup_streak(sp, streak)
     if streak < debounce_ticks:
+        note_disposition("gateway_dup_degraded", "indeterminate",
+                         reason="dup candidate held by debounce")
         return None
 
     deliveries = payload.get("fleet_duplicate_deliveries")
