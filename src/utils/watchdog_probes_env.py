@@ -852,6 +852,38 @@ def _read_configured_aredn_ips(service_user) -> Optional[List[str]]:
         return None
 
 
+def _read_aredn_expectation(service_user):
+    """Read the box's AREDN declaration from deployment.json
+    ``organ_expectations.aredn`` (per-box overrides layer — the generic
+    fleet_roles.yaml carries no instance values, MF014).
+
+    Returns ``(declared, why)``: ``(True, <reason str>)`` when the box
+    declares it should run the AREDN organ; ``(False, "")`` when the file is
+    absent or carries no declaration (no expectation — benign); ``(None,
+    "")`` when the file exists but is unreadable/unparseable (declaration
+    unknown — indeterminate, never treated as "not declared")."""
+    if not service_user:
+        return None, ""
+    try:
+        import pwd
+        home = pwd.getpwnam(service_user).pw_dir
+    except (KeyError, OSError):
+        return None, ""
+    path = os.path.join(home, ".config", "meshforge", "deployment.json")
+    if not os.path.exists(path):
+        return False, ""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        organs = data.get("organ_expectations")
+        if not isinstance(organs, dict) or "aredn" not in organs:
+            return False, ""
+        why = organs["aredn"]
+        return True, why if isinstance(why, str) else ""
+    except (OSError, ValueError, TypeError):
+        return None, ""
+
+
 def _fetch_local_status_json(status_url: str, timeout_s: float) -> Optional[dict]:
     """GET the local map status JSON. None on ANY failure (indeterminate)."""
     import urllib.request
@@ -875,10 +907,12 @@ def probe_aredn_source_dark(
     configured_ips: Optional[List[str]] = None,
     service_user_fn=None,
     status_fetch_fn=None,
+    expectation_fn=None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
 ) -> Optional[Signal]:
-    """Fire when a CONFIGURED local AREDN sysinfo source has gone dark.
+    """Fire when a CONFIGURED local AREDN sysinfo source has gone dark —
+    or when the box DECLARES the organ but carries no config at all.
 
     Phase 0 of the AREDN arc (2026-06-12): the box at the AREDN site was
     found with its local AREDN organ silently dormant — ``aredn_node_ips``
@@ -897,9 +931,19 @@ def probe_aredn_source_dark(
     direct read) and observation from the local map's ``/api/status``
     ``source_diagnostics.aredn`` block (written fresh on every collect).
 
+    Role-aware leg (2026-07-19, closes the aredn_configured_source_only
+    structural-dark row): a box may DECLARE the AREDN organ in its
+    deployment.json ``organ_expectations.aredn`` (per-box overrides layer;
+    the generic fleet_roles.yaml carries no instance values). Declared +
+    empty/absent ``aredn_node_ips`` = the config-wiped / never-configured
+    site the configured-only probe was structurally blind to → fires
+    degraded after the same debounce. Undeclared boxes keep the old INERT
+    behavior; an unreadable deployment.json is indeterminate, never "not
+    declared".
+
     Honest failure modes: unreadable settings → None (intent unknown, never
-    alarm); empty/absent ``aredn_node_ips`` → None + streak reset (organ
-    deliberately off — INERT by design on the 95% of boxes); status endpoint
+    alarm); empty/absent ``aredn_node_ips`` on an UNDECLARED box → None +
+    streak reset (organ deliberately off — INERT by design); status endpoint
     unreachable/malformed or diagnostics block absent → None with the streak
     HELD (http_local owns the wedge; a one-tick status hiccup must not erase
     confirmed-dark progress); ``no_positions``, ``slow_sysinfo`` or
@@ -910,12 +954,12 @@ def probe_aredn_source_dark(
     (node reboot, transient LAN blip). Severity ``degraded`` — the map keeps
     serving, the AREDN leg is blind.
     """
+    user_fn = service_user_fn
+    if user_fn is None:
+        from utils.rns_tree_perms import _read_rnsd_user
+        user_fn = _read_rnsd_user
     ips = configured_ips
     if ips is None:
-        user_fn = service_user_fn
-        if user_fn is None:
-            from utils.rns_tree_perms import _read_rnsd_user
-            user_fn = _read_rnsd_user
         ips = _read_configured_aredn_ips(user_fn())
     if ips is None:
         note_disposition(
@@ -925,12 +969,51 @@ def probe_aredn_source_dark(
         return None  # intent unreadable — indeterminate, never alarm
     sp = state_path or DEFAULT_AREDN_SOURCE_DEBOUNCE_PATH
     if not ips:
-        note_disposition(
-            "aredn_source_dark", "inert",
-            reason="aredn_node_ips not configured — organ deliberately off",
+        # Role-aware leg: does this box DECLARE the AREDN organ? A declared
+        # box with no config is the wipe class, not a deliberately-off organ.
+        if expectation_fn is not None:
+            declared, why = expectation_fn()
+        else:
+            declared, why = _read_aredn_expectation(user_fn())
+        if declared is None:
+            note_disposition(
+                "aredn_source_dark", "indeterminate",
+                reason="deployment.json unreadable; declaration unknown",
+            )
+            return None  # declaration unknown — never read as "not declared"
+        if not declared:
+            note_disposition(
+                "aredn_source_dark", "inert",
+                reason="aredn_node_ips not configured — organ deliberately off",
+            )
+            _save_parity_streak(sp, 0)
+            return None  # undeclared + unconfigured — inert by design
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            note_disposition(
+                "aredn_source_dark", "indeterminate",
+                reason="declared-unconfigured seen; held by debounce",
+            )
+            return None
+        return Signal(
+            cls="aredn_source_dark",
+            subject="declared-unconfigured",
+            severity="degraded",
+            detail=(
+                "AREDN organ DECLARED for this box (deployment.json "
+                "organ_expectations.aredn"
+                + (f": {why}" if why else "")
+                + ") but aredn_node_ips is empty/absent in "
+                "map_settings.json — the config-wiped / never-configured "
+                "site the configured-only probe couldn't see. Fix: restore "
+                "aredn_node_ips in ~/.config/meshforge/map_settings.json "
+                "then restart meshforge-map, or remove the "
+                "organ_expectations.aredn declaration if the site truly "
+                "changed."
+            ),
+            extra={"declared_reason": why, "debounce_streak": streak},
         )
-        _save_parity_streak(sp, 0)
-        return None  # organ deliberately not configured — inert by design
 
     fetch = status_fetch_fn or (
         lambda: _fetch_local_status_json(status_url, timeout_s)

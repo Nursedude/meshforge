@@ -5465,6 +5465,10 @@ def _asd_kw(tmp_path, diag, *, ips=None, status=None):
     return dict(
         configured_ips=_ASD_IPS if ips is None else ips,
         status_fetch_fn=lambda: body,
+        # Hermetic default: undeclared. The role-aware leg is exercised by
+        # its own tests; without this pin the empty-ips path would read the
+        # HOST's real deployment.json (env-dependent on declared boxes).
+        expectation_fn=lambda: (False, ""),
         state_path=str(tmp_path / "asd_debounce.json"),
     )
 
@@ -5478,6 +5482,80 @@ def test_aredn_source_dark_inert_when_not_configured(tmp_path):
     for _ in range(3):
         assert probe_aredn_source_dark(**_asd_kw(tmp_path, dark, ips=[])) is None
     assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
+
+
+def test_aredn_declared_unconfigured_fires_after_debounce(tmp_path):
+    """The role-aware leg (2026-07-19): a box DECLARING the AREDN organ with
+    empty aredn_node_ips is the config-wiped site — fires, doesn't idle."""
+    kw = _asd_kw(tmp_path, None, ips=[])
+    kw["expectation_fn"] = lambda: (True, "AREDN site box")
+    assert probe_aredn_source_dark(**kw) is None      # tick 1: debounce
+    sig = probe_aredn_source_dark(**kw)               # tick 2: confirmed
+    assert sig is not None
+    assert sig.cls == "aredn_source_dark"
+    assert sig.severity == "degraded"
+    assert sig.subject == "declared-unconfigured"
+    assert "organ_expectations.aredn" in sig.detail
+    assert "AREDN site box" in sig.detail
+    assert sig.extra["declared_reason"] == "AREDN site box"
+
+
+def test_aredn_undeclared_unconfigured_stays_inert(tmp_path):
+    """No declaration + no config = the 95%-of-boxes case, still free."""
+    kw = _asd_kw(tmp_path, None, ips=[])
+    kw["expectation_fn"] = lambda: (False, "")
+    for _ in range(3):
+        assert probe_aredn_source_dark(**kw) is None
+    assert json.loads((tmp_path / "asd_debounce.json").read_text())["streak"] == 0
+
+
+def test_aredn_declaration_unreadable_is_indeterminate_not_inert(tmp_path):
+    """A corrupt deployment.json must never read as 'not declared' — the
+    declaration channel failing is not evidence of no expectation."""
+    kw = _asd_kw(tmp_path, None, ips=[])
+    kw["expectation_fn"] = lambda: (None, "")
+    for _ in range(3):
+        assert probe_aredn_source_dark(**kw) is None
+    # Streak must be HELD (file never written with a reset), not advanced.
+    assert not (tmp_path / "asd_debounce.json").exists()
+
+
+def test_aredn_declared_and_configured_uses_normal_path(tmp_path):
+    """A declared box WITH config behaves exactly as before — the
+    declaration only matters when the config is missing."""
+    healthy = {"attempted": 2, "yielded": 3, "reason_if_zero": None}
+    kw = _asd_kw(tmp_path, healthy)
+    kw["expectation_fn"] = lambda: (True, "AREDN site box")
+    assert probe_aredn_source_dark(**kw) is None
+
+
+def test_read_aredn_expectation_shapes(tmp_path, monkeypatch):
+    """The declaration reader's tri-state on real files."""
+    from utils.watchdog_probes_env import _read_aredn_expectation
+    import pwd as _pwd
+
+    class _Rec:
+        pw_dir = str(tmp_path)
+
+    monkeypatch.setattr(_pwd, "getpwnam", lambda name: _Rec())
+    cfg = tmp_path / ".config" / "meshforge"
+    cfg.mkdir(parents=True)
+    dep = cfg / "deployment.json"
+    # Absent file → not declared.
+    assert _read_aredn_expectation("op") == (False, "")
+    # No organ_expectations key → not declared.
+    dep.write_text(json.dumps({"role": "collector"}))
+    assert _read_aredn_expectation("op") == (False, "")
+    # Declared with a reason string.
+    dep.write_text(json.dumps(
+        {"role": "collector", "organ_expectations": {"aredn": "site box"}}))
+    assert _read_aredn_expectation("op") == (True, "site box")
+    # Declared with a non-string value → declared, empty reason.
+    dep.write_text(json.dumps({"organ_expectations": {"aredn": True}}))
+    assert _read_aredn_expectation("op") == (True, "")
+    # Corrupt file → unknown, never "not declared".
+    dep.write_text("{not json")
+    assert _read_aredn_expectation("op") == (None, "")
 
 
 def test_aredn_source_dark_none_when_intent_unreadable(tmp_path):

@@ -211,8 +211,10 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "re-derivation soaks low-false-positive",
      "ref": "mini_dudeai_rules.federator.json :: calibration_drift"},
     {"id": "aredn_configured_source_only",
-     "detail": "AREDN organ only sees a CONFIGURED source; a box that should run AREDN but "
-               "has it declared-absent isn't covered; slow != dark",
+     "detail": "declared-but-unconfigured now watched (organ_expectations.aredn in "
+               "deployment.json, closed 2026-07-19) alongside the configured-source dark "
+               "legs; a site with NEITHER declaration nor config remains honestly "
+               "invisible; slow != dark",
      "ref": "watchdog_probes_env.py :: probe_aredn_source_dark"},
     {"id": "live_claw_nats_not_wired_to_mini",
      "detail": "nats_sensor/http_json source kinds exist but the fleet preset wires none; "
