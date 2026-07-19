@@ -219,6 +219,19 @@
       "annotation": "2026-07-19: rns/lxmf copies across this box's envs DISAGREE (a roll/install missed a pipx venv or user-site copy -- the moc3 nomadnet-venv lesson; one shared rnsd => every env must carry the identical RNS substrate). Fix: reinstall the odd env(s) to the box's consumer version (pipx runpip <venv> install --force-reinstall -r requirements/rns.txt), re-verify. Side-effect-free escalation; NO ntfy page."
     },
     {
+      "id": "user_unit_inactive_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "user_unit_inactive",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-07-19: an enrolled always-on USER .service is not running (parked failed / stopped-and-forgotten / user manager down with linger off -- the #79 class; nomadnet_crashloop covers only a LIVE loop). Check: systemctl --user status <unit>; recover: systemctl --user reset-failed <unit> && systemctl --user start <unit>; manager-down: loginctl enable-linger <operator>. Side-effect-free escalation; NO ntfy page."
+    },
+    {
       "id": "dep_version_drift_any",
       "match": {
         "kind": "signal_class",

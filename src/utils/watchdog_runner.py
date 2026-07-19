@@ -89,6 +89,7 @@ from utils.watchdog_probes import (
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
     probe_nomadnet_crashloop,
+    probe_user_unit_inactive,
     probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
     probe_resource_canary_degraded,
@@ -262,6 +263,15 @@ def run_all_probes(
     # self-guards None on a healthy/disabled/never-installed unit and when
     # journalctl is unobservable.
     sig = probe_nomadnet_crashloop()
+    if sig is not None:
+        signals.append(sig)
+
+    # Enrolled always-on user .service daemons that are NOT running — the
+    # parked-failed / stopped-and-forgotten / user-manager-down modes the
+    # crashloop probe's own docstring names as uncovered. Bus-free reads:
+    # default.target.wants symlinks (enrollment) vs /run/user invocation
+    # markers (liveness). Self-guards INERT with no operator/enrollment.
+    sig = probe_user_unit_inactive()
     if sig is not None:
         signals.append(sig)
 

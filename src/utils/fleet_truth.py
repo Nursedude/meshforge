@@ -197,9 +197,11 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "system/pipx/user-site copies remain unwatched",
      "ref": "watchdog_probes_drift.py :: probe_rns_env_coherence"},
     {"id": "user_unit_inactivity_blind",
-     "detail": "probe_service_inactive is structurally blind to user systemd units; only "
-               "nomadnet_crashloop patches one unit — general user-unit inactivity uncovered",
-     "ref": "watchdog_probes_service.py :: probe_service_inactive"},
+     "detail": "always-on user .service daemons now watched (invocation-marker probe, "
+               "closed 2026-07-19: parked-failed, stopped, and user-manager-down modes); "
+               "user timers ride the schedules/SLO staleness layer; conditional/nested "
+               "wants and non-operator users remain unwatched",
+     "ref": "watchdog_probes_service.py :: probe_user_unit_inactive"},
     {"id": "mesh_rf_ota_leg_unwatched",
      "detail": "bot output can stop reaching nodes over-the-air while the RNS round-trip "
                "canary stays green — the mesh-RF leg is unwatched",

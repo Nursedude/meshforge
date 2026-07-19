@@ -156,6 +156,7 @@ def test_signal_classes_closed_enum_is_documented():
         "gateway_dup_degraded",         # 2026-06-29 dedup/identity arc STEP 5 — cross-gateway duplicate delivery from the 4c /fleet/dups rollup (same (content_id, recipient) confirmed by >1 gateway = the live dup-A); degraded only; INERT off the manager box + on an indeterminate/stale rollup (built on the 4c JOIN <2-gateway gate); 2-tick debounce; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded). No own issue#.
         "meshtasticd_vsz_leak",         # 2026-07-10 (upstream meshtastic/firmware#10468, the operator's own 2026-05-13 report, re-confirmed live 07-10 on both fleet Pi5 boxes at 2.7.24.58) — meshtasticd on Pi5+USB leaks exited pthread stacks (~110 GB VSZ/day, RSS bounded); the weekly meshtasticd-restart.timer band-aid was UNWATCHED; fires only past the weekly envelope (768 GB default) = the restart missed or the rate worsened; Pi4/SPI boxes idle ~0.3 GB and cannot trip it; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_dup_degraded). No own issue#.
         "router_scout_degraded",        # 2026-07-11 OpenWrt-router arc — a mirrored meshforge-scout tick (landed by the verdict-wired router_scout_pull.sh) shows the ROUTER-side agent degraded: fresh mirror + stale captured_at (agent cron dark while the pull re-copies the same old tick), tick ok=false, or an unparseable mirror; defense-in-depth behind the pull's own cron_verdict eval — adds the /fleet + mini surface (per-device subject); degraded only (every observed condition is remote — the tracer lesson); INERT off the manager box; stale mirror files skipped (cron_verdict_stale owns the dead pull cron); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as meshtasticd_vsz_leak). No own issue#.
+        "user_unit_inactive",           # 2026-07-19 — an enrolled always-on USER .service not running (default.target.wants symlink present, no invocation:* marker in /run/user/<uid>/systemd/units — bus-free root reads both sides) or the user manager itself down while daemons are enrolled (linger off, the #79 class); closes user_unit_inactivity_blind (probe_service_inactive is user-blind; nomadnet_crashloop covers only a LIVE loop — the parked-failed/stopped/manager-down modes had no steady-state detector); timers deliberately out of scope (no invocation marker; schedules/SLO layer owns their staleness); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as rns_stray_env_drift). No own issue#.
         "rns_stray_env_drift",          # 2026-07-19 — rns/lxmf copies across a box's root-readable envs DISAGREE (intra-box coherence; probe_rns_version_drift owns pin compliance): the missed-venv roll hazard, pipx globs wildcarded across venv names because a library rides inside every app venv depending on it (moc3's nomadnet pipx venv sat silently stock 1.1.4, invisible to every prior drift probe); closes the rns/lxmf leg of the dep_version_drift_strays_blind structural-dark row; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as dep_install_fragmented). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
@@ -2652,6 +2653,143 @@ def test_dep_install_fragmented_unparseable_version_does_not_crash(tmp_path):
         floor="2.7.9", installs={"venv": "garbage", "system-dist": "2.7.8"},
         state_path=str(tmp_path / "frag.json"), debounce_ticks=1)
     assert sig is not None and sig.cls == "dep_install_fragmented"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# user_unit_inactive — enrolled always-on user .service not running
+# (parked-failed / stopped / user-manager-down, 2026-07-19)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _user_unit_fixture(tmp_path, enabled_services, active_units):
+    """Build the two on-disk shapes the probe reads: wants symlink names +
+    invocation markers. Returns (user_home, runtime_dir)."""
+    home = tmp_path / "home"
+    wants = home / ".config" / "systemd" / "user" / "default.target.wants"
+    wants.mkdir(parents=True)
+    for name in enabled_services:
+        (wants / name).symlink_to("/dev/null")  # symlink presence is the read
+    run = tmp_path / "run"
+    units = run / "systemd" / "units"
+    units.mkdir(parents=True)
+    for name in active_units:
+        (units / f"invocation:{name}").symlink_to("/dev/null")
+    return str(home), str(run)
+
+
+def test_user_unit_inactive_fires_on_parked_unit(tmp_path):
+    """The crashloop probe's own documented boundary: a unit PARKED failed
+    (no invocation marker) while enabled — steady-state detection."""
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, run = _user_unit_fixture(
+        tmp_path,
+        enabled_services=["meshforge-mini-dudeai.service", "nomadnet.service"],
+        active_units=["meshforge-mini-dudeai.service", "dbus.service"])
+    sig = probe_user_unit_inactive(
+        user_home=home, runtime_dir=run,
+        state_path=str(tmp_path / "s.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.cls == "user_unit_inactive"
+    assert sig.severity == "degraded"
+    assert sig.subject == "nomadnet.service"
+    assert "nomadnet.service" in sig.detail
+    assert sig.extra["inactive"] == ["nomadnet.service"]
+
+
+def test_user_unit_inactive_clean_when_all_enrolled_running(tmp_path):
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, run = _user_unit_fixture(
+        tmp_path,
+        enabled_services=["meshforge-echo.service"],
+        active_units=["meshforge-echo.service", "gpg-agent.socket"])
+    assert probe_user_unit_inactive(
+        user_home=home, runtime_dir=run,
+        state_path=str(tmp_path / "s.json"), debounce_ticks=1) is None
+
+
+def test_user_unit_inactive_manager_down_fires(tmp_path):
+    """Enrolled daemons + no user runtime dir = the manager itself is down
+    (linger off) — every daemon dead, and this must NOT read as inert."""
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, _ = _user_unit_fixture(
+        tmp_path, enabled_services=["meshforge-mini-dudeai.service"],
+        active_units=[])
+    sig = probe_user_unit_inactive(
+        user_home=home, runtime_dir=str(tmp_path / "absent-run"),
+        state_path=str(tmp_path / "s.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.subject == "user-manager"
+    assert "linger" in sig.detail
+
+
+def test_user_unit_inactive_inert_when_nothing_enrolled(tmp_path):
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home = tmp_path / "home"
+    home.mkdir()  # no wants dir at all
+    assert probe_user_unit_inactive(
+        user_home=str(home), runtime_dir=str(tmp_path / "run"),
+        state_path=str(tmp_path / "s.json"), debounce_ticks=1) is None
+
+
+def test_user_unit_inactive_timers_out_of_scope(tmp_path):
+    """A .timer symlink in wants/ must never count as an enrolled service —
+    timers carry no invocation marker and would false-positive forever."""
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, run = _user_unit_fixture(
+        tmp_path, enabled_services=["meshforge-echo.service"],
+        active_units=["meshforge-echo.service"])
+    wants = (tmp_path / "home" / ".config" / "systemd" / "user" /
+             "default.target.wants")
+    (wants / "meshforge-tracer.timer").symlink_to("/dev/null")
+    assert probe_user_unit_inactive(
+        user_home=home, runtime_dir=run,
+        state_path=str(tmp_path / "s.json"), debounce_ticks=1) is None
+
+
+def test_user_unit_inactive_debounce_two_ticks(tmp_path):
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, run = _user_unit_fixture(
+        tmp_path, enabled_services=["nomadnet.service"], active_units=[])
+    args = dict(user_home=home, runtime_dir=run,
+                state_path=str(tmp_path / "s.json"))  # default debounce 2
+    assert probe_user_unit_inactive(**args) is None   # first sighting held
+    sig = probe_user_unit_inactive(**args)            # second: confirmed
+    assert sig is not None and sig.cls == "user_unit_inactive"
+
+
+def test_user_unit_inactive_recovery_resets_streak(tmp_path):
+    """A unit that comes back mid-debounce resets the streak — a deliberate
+    restart window never accumulates into a page."""
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, run = _user_unit_fixture(
+        tmp_path, enabled_services=["nomadnet.service"], active_units=[])
+    sp = str(tmp_path / "s.json")
+    assert probe_user_unit_inactive(
+        user_home=home, runtime_dir=run, state_path=sp) is None  # streak 1
+    # Unit comes back: create its invocation marker.
+    (Path(run) / "systemd" / "units" /
+     "invocation:nomadnet.service").symlink_to("/dev/null")
+    assert probe_user_unit_inactive(
+        user_home=home, runtime_dir=run, state_path=sp) is None  # reset
+    # Gone again: must need TWO fresh ticks, not fire immediately.
+    (Path(run) / "systemd" / "units" /
+     "invocation:nomadnet.service").unlink()
+    assert probe_user_unit_inactive(
+        user_home=home, runtime_dir=run, state_path=sp) is None
+
+
+def test_user_unit_inactive_multiple_units_subject_is_count(tmp_path):
+    from utils.watchdog_probes_service import probe_user_unit_inactive
+    home, run = _user_unit_fixture(
+        tmp_path,
+        enabled_services=["a.service", "b.service", "c.service"],
+        active_units=["c.service"])
+    sig = probe_user_unit_inactive(
+        user_home=home, runtime_dir=run,
+        state_path=str(tmp_path / "s.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.subject == "2 units"
+    assert sig.extra["inactive"] == ["a.service", "b.service"]
 
 
 # ─────────────────────────────────────────────────────────────────────

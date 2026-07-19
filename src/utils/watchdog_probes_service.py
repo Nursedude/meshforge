@@ -1301,3 +1301,188 @@ def probe_channel_feed_dark(
     )
 
 
+
+
+# ─────────────────────────────────────────────────────────────────────
+# user_unit_inactive — enabled user .service daemons that are NOT running
+# (the parked-failed / stopped / user-manager-down class, 2026-07-19)
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_USER_UNIT_INACTIVE_STATE = \
+    "/var/lib/meshforge/user_unit_inactive_debounce.json"
+
+
+def _enabled_user_services(user_home: str) -> Optional[set]:
+    """User ``.service`` names enrolled always-on for the operator: symlinks
+    in ``~/.config/systemd/user/default.target.wants/``. Only that target —
+    nested ``*.service.wants/`` and other targets activate conditionally and
+    would false-positive. ``None`` = the wants dir is unreadable (distinct
+    from an empty enrollment). Timers are deliberately OUT of scope: they
+    carry no invocation marker (verified 2026-07-19) and their staleness is
+    the schedules/SLO layer's job."""
+    wants = os.path.join(user_home, ".config", "systemd", "user",
+                         "default.target.wants")
+    if not os.path.isdir(wants):
+        # No enrollment dir at all — a box with no always-on user daemons.
+        return set()
+    try:
+        return {n for n in os.listdir(wants) if n.endswith(".service")}
+    except OSError:
+        return None
+
+
+def _active_user_units(runtime_dir: str) -> Optional[set]:
+    """Unit names with a live invocation marker under
+    ``/run/user/<uid>/systemd/units/`` (``invocation:<unit>`` symlinks exist
+    exactly while the unit is active — root-readable, no user bus needed).
+    ``None`` = the user manager's runtime dir is absent/unreadable, which is
+    NOT "nothing active" — it usually means the user manager itself is down
+    (the #79 linger lesson) and is judged by the caller."""
+    units_dir = os.path.join(runtime_dir, "systemd", "units")
+    try:
+        return {n[len("invocation:"):] for n in os.listdir(units_dir)
+                if n.startswith("invocation:")}
+    except OSError:
+        return None
+
+
+def probe_user_unit_inactive(
+    *,
+    operator=None,
+    user_home: Optional[str] = None,
+    runtime_dir: Optional[str] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """Fire when an enrolled always-on USER ``.service`` is not running.
+
+    Closes the ``user_unit_inactivity_blind`` structural-dark row:
+    ``probe_service_inactive`` cannot see user units from the root/system
+    context, and ``probe_nomadnet_crashloop`` covers only a LIVE restart
+    loop on one unit — a unit PARKED ``failed`` by StartLimitBurst, stopped
+    by hand and forgotten, or dead because the user manager itself is gone
+    (linger off / logout) had NO steady-state detector (its own docstring
+    says so). Observation is bus-free and root-readable both sides:
+    enrollment from ``default.target.wants/*.service`` symlinks on disk,
+    liveness from ``invocation:*`` markers in ``/run/user/<uid>/systemd/units``.
+
+    Legs: (1) enabled minus active → per-unit inactivity, degraded;
+    (2) enabled non-empty but the user runtime dir absent → the USER MANAGER
+    is down while daemons are enrolled (linger off / crashed), degraded.
+
+    Honest self-guards: no resolvable operator → INERT; empty enrollment →
+    INERT; wants/units dir unreadable → indeterminate (never "all healthy");
+    2-tick debounce rides a deliberate restart window. A live crashloop is
+    NOT this probe's fire (invocation marker present while thrashing —
+    nomadnet_crashloop owns that mode). Never raises into the tick.
+    """
+    try:
+        sp = state_path or DEFAULT_USER_UNIT_INACTIVE_STATE
+
+        if operator is None and (user_home is None or runtime_dir is None):
+            try:
+                from utils.fleet_test_runner import _find_operator_user
+                operator = _find_operator_user()
+            except Exception:
+                operator = None
+            if operator is None:
+                # No live user bus. Fall back to the rnsd service user so the
+                # manager-down leg can still see an enrolled-but-dead setup.
+                try:
+                    from utils.rns_tree_perms import _read_rnsd_user
+                    name = _read_rnsd_user()
+                    if name and name != "root":
+                        import pwd as _pwd
+                        rec = _pwd.getpwnam(name)
+                        operator = (rec.pw_uid, name)
+                except Exception:
+                    operator = None
+            if operator is None:
+                note_disposition("user_unit_inactive", "inert",
+                                 reason="no resolvable operator user")
+                return None
+        if user_home is None or runtime_dir is None:
+            uid, name = operator
+            import pwd as _pwd
+            try:
+                home = _pwd.getpwuid(uid).pw_dir
+            except KeyError:
+                home = f"/home/{name}"
+            user_home = user_home or home
+            runtime_dir = runtime_dir or f"/run/user/{uid}"
+
+        enabled = _enabled_user_services(user_home)
+        if enabled is None:
+            _save_nomadnet_crashloop_streak(sp, 0)
+            note_disposition("user_unit_inactive", "indeterminate",
+                             reason="user wants dir unreadable")
+            return None
+        if not enabled:
+            _save_nomadnet_crashloop_streak(sp, 0)
+            note_disposition("user_unit_inactive", "inert",
+                             reason="no always-on user services enrolled")
+            return None
+
+        active = _active_user_units(runtime_dir)
+        if active is None:
+            # Enrolled daemons + no user manager runtime = everything dead.
+            streak = min(_load_nomadnet_crashloop_streak(sp) + 1,
+                         debounce_ticks)
+            _save_nomadnet_crashloop_streak(sp, streak)
+            if streak < debounce_ticks:
+                note_disposition("user_unit_inactive", "indeterminate",
+                                 reason="manager-down candidate under debounce")
+                return None
+            return Signal(
+                cls="user_unit_inactive",
+                subject="user-manager",
+                severity="degraded",
+                detail=(
+                    f"user systemd manager not running but {len(enabled)} "
+                    f"always-on user service(s) are enrolled "
+                    f"({', '.join(sorted(enabled))}) — every one of them is "
+                    f"dead. Usual cause: linger off after an image/host "
+                    f"change, or the manager crashed. Fix: "
+                    f"`loginctl enable-linger <operator>` then "
+                    f"`systemctl --user daemon-reload` as the operator "
+                    f"(the #79 deploy-restart-gap class)."
+                ),
+                extra={"enabled": sorted(enabled)},
+            )
+
+        inactive = sorted(enabled - active)
+        if not inactive:
+            _save_nomadnet_crashloop_streak(sp, 0)
+            note_disposition("user_unit_inactive", "clean")
+            return None
+
+        streak = min(_load_nomadnet_crashloop_streak(sp) + 1, debounce_ticks)
+        _save_nomadnet_crashloop_streak(sp, streak)
+        if streak < debounce_ticks:
+            note_disposition("user_unit_inactive", "indeterminate",
+                             reason="inactivity candidate under debounce")
+            return None
+
+        subj = inactive[0] if len(inactive) == 1 else f"{len(inactive)} units"
+        return Signal(
+            cls="user_unit_inactive",
+            subject=subj,
+            severity="degraded",
+            detail=(
+                f"enrolled always-on user service(s) NOT running: "
+                f"{', '.join(inactive)} — enabled in default.target.wants "
+                f"but no live invocation marker. Parked `failed` "
+                f"(StartLimitBurst), stopped-and-forgotten, or never started "
+                f"this boot. Check: `systemctl --user status <unit>`; "
+                f"recover: `systemctl --user reset-failed <unit> && "
+                f"systemctl --user start <unit>`; if deliberate, "
+                f"`systemctl --user disable <unit>` so enrollment matches "
+                f"intent."
+            ),
+            extra={"inactive": inactive, "enabled": sorted(enabled),
+                   "streak": streak},
+        )
+    except Exception:
+        note_disposition("user_unit_inactive", "indeterminate",
+                         reason="probe raised unexpectedly")
+        return None
