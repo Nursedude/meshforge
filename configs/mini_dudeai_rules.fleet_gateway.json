@@ -661,10 +661,16 @@
         "subject_glob": "*"
       },
       "action": {
-        "kind": "propose_escalation"
+        "kind": "ntfy",
+        "title": "[AMBER] Calibration drift \u2014 a VERIFIED claim broke",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
       },
       "cooldown_s": 21600,
-      "annotation": "Calibration spine (2026-06-15) -- a VERIFIED completion claim (Claude's 'done/100%/all green') did NOT hold when re-derived against external ground truth (a full honest_status verdict on the head it was claimed on later FAILED). Surfaces 'you said 100% and the math was wrong' as a tracked number instead of a private impression. SSOT .claude/rules/calibrated_claims.md. Side-effect-free escalation; NO ntfy page until the re-derivation soaks low-false-positive (degraded, a trust signal not an outage)."
+      "annotation": "Calibration spine (2026-06-15) -- a VERIFIED completion claim (Claude's 'done/100%/all green') did NOT hold when re-derived against external ground truth (a full honest_status verdict on the head it was claimed on later FAILED). Surfaces 'you said 100% and the math was wrong' as a page, not a private impression. SSOT .claude/rules/calibrated_claims.md. PROMOTED to ntfy 2026-07-19 after the 34-day soak: 2 fires, both TRUE breaks (44b5b92, 2de68ec -- the proxy-verification lessons), 0 false positives; ~monthly frequency, trust-critical class."
     },
     {
       "id": "nomadnet_crashloop_any",

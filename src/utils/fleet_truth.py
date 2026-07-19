@@ -206,10 +206,6 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "detail": "bot output can stop reaching nodes over-the-air while the RNS round-trip "
                "canary stays green — the mesh-RF leg is unwatched",
      "ref": "watchdog_probe_core.py :: meshtasticd_phoneapi_wedge"},
-    {"id": "calibration_drift_not_paging",
-     "detail": "calibration_drift is propose_escalation only (not a pager) until the "
-               "re-derivation soaks low-false-positive",
-     "ref": "mini_dudeai_rules.federator.json :: calibration_drift"},
     {"id": "aredn_configured_source_only",
      "detail": "declared-but-unconfigured now watched (organ_expectations.aredn in "
                "deployment.json, closed 2026-07-19) alongside the configured-source dark "
