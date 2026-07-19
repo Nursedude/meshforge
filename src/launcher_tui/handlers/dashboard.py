@@ -91,6 +91,31 @@ class DashboardHandler(BaseHandler):
             return False
 
     @staticmethod
+    def _classify_http_unavailable(client) -> tuple:
+        """Classify an unavailable meshtastic_http client for the data-path check.
+
+        Issue #76: meshtasticd never serves ``/json/*`` (that API is ESP32
+        firmware only), so the probe's 'absent' state — a live webserver
+        404ing the JSON path — is structural on every meshtasticd box, not a
+        fault. Reporting it FAIL sent operators hunting through meshtasticd
+        logs for a webserver that was serving 200s. Only a genuinely dead
+        webserver (no port answered at all) stays a FAIL.
+
+        Returns ``(status, detail)`` where status is ``"N/A"`` or ``"FAIL"``.
+        """
+        if getattr(client, 'json_api_absent', False):
+            return ("N/A", "meshtasticd serves no /json/* (ESP32-only, "
+                           "Issue #76); webserver alive")
+        try:
+            from utils.meshtastic_http import PROBE_PORTS
+            tried = [client.port] + [p for p in PROBE_PORTS
+                                     if p != client.port]
+            ports = ",".join(str(p) for p in tried)
+            return ("FAIL", f"No webserver answered (tried ports {ports}).")
+        except Exception:
+            return ("FAIL", "No webserver answered.")
+
+    @staticmethod
     def _check_webserver_config() -> str:
         """Check if meshtasticd config.yaml has Webserver section enabled."""
         from pathlib import Path
@@ -412,11 +437,16 @@ class DashboardHandler(BaseHandler):
                                    f"{len(nodes)} nodes via {client._base_url}"))
                     print(f"      \033[0;32mOK\033[0m - {len(nodes)} nodes at {client._base_url}")
                 else:
-                    hint = self._check_webserver_config()
-                    detail = f"Not reachable (tried ports 9443,443,80,4403). {hint}"
-                    results.append(("meshtasticd HTTP", "FAIL", detail))
-                    print(f"      \033[0;31mFAIL\033[0m - HTTP API not reachable")
-                    print(f"      \033[2m{hint}\033[0m")
+                    status, detail = self._classify_http_unavailable(client)
+                    if status == "N/A":
+                        results.append(("meshtasticd HTTP", "N/A", detail))
+                        print(f"      \033[2mN/A \033[0m - {detail}")
+                    else:
+                        hint = self._check_webserver_config()
+                        results.append(("meshtasticd HTTP", "FAIL",
+                                        f"{detail} {hint}"))
+                        print("      \033[0;31mFAIL\033[0m - HTTP API not reachable")
+                        print(f"      \033[2m{hint}\033[0m")
             except Exception as e:
                 err_msg = str(e)[:50]
                 results.append(("meshtasticd HTTP", "FAIL", err_msg))
