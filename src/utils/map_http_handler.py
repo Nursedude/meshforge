@@ -360,7 +360,7 @@ class MapRequestHandler(
             "/api/network/interfaces",
             "/api/region-presets",
             "/api/settings", "/api/websocket/status", "/api/weather",
-            "/fleet/slo", "/fleet/cascade", "/fleet/dups",
+            "/fleet", "/fleet/slo", "/fleet/cascade", "/fleet/dups",
             "/api/fleet/truth",
         ):
             return path_only or "/"
@@ -456,6 +456,8 @@ class MapRequestHandler(
             self._serve_rns_interfaces()
         elif path_only == '/api/weather':
             self._serve_weather()
+        elif path_only == '/fleet':
+            self._serve_fleet_page()
         elif path_only == '/fleet/slo':
             self._serve_fleet_slo()
         elif path_only == '/api/fleet/truth':
@@ -735,6 +737,34 @@ class MapRequestHandler(
             self.wfile.write(data)
         else:
             self.send_error(404, f"Map file not found: {map_path}")
+
+    def _serve_fleet_page(self):
+        """Serve the honest fleet NOC visual (`/fleet` → web/fleet.html).
+
+        The page is a faithful projection of `/api/fleet/truth` — it reads ONLY
+        that endpoint (never re-derives), renders default-dark (any state that
+        isn't exactly healthy/failed is DARK/grey), and carries no raw IPs
+        (aliases + resolution_method only, MF014/MF015).
+        """
+        if self.web_dir:
+            page_path = Path(self.web_dir) / "fleet.html"
+        else:
+            page_path = Path(__file__).parent.parent.parent / "web" / "fleet.html"
+
+        if page_path.exists():
+            with open(page_path, 'rb') as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/html')
+            self.send_header('Content-Length', str(len(data)))
+            self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
+            self._send_security_headers()
+            self.end_headers()
+            self.wfile.write(data)
+        else:
+            self.send_error(404, f"Fleet page not found: {page_path}")
 
     # gzip threshold: payloads smaller than this aren't worth the CPU cost
     # (ratio is poor on small JSON, latency win is sub-millisecond). 10 KB

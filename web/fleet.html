@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fleet Truth — MeshForge NOC</title>
+    <!--
+      The HONEST fleet NOC — a faithful visual projection of /api/fleet/truth.
+
+      Contract (do not break):
+      - This page reads ONLY /api/fleet/truth. It never re-derives state from
+        other endpoints, so the human view and a Claude session's orientation
+        read the SAME bytes and can never disagree.
+      - Rendering is DEFAULT-DARK: any state that is not exactly "healthy" or
+        "failed" renders as DARK/grey (see stClass). No data can never paint
+        green — including a fetch failure of the truth endpoint itself, which
+        renders the whole verdict DARK rather than holding a green banner.
+      - No raw IPs anywhere (MF014/MF015): boxes are aliases; addressing is
+        shown only as its resolution_method.
+    -->
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+            background: #0a0e1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+        body { padding: 16px; }
+
+        /* ── The three truth states — the whole page speaks this palette ── */
+        :root {
+            --healthy: #66bb6a;
+            --healthy-bg: #16301d;
+            --failed: #ef5350;
+            --failed-bg: #351616;
+            --dark: #8a97a8;          /* DARK = unobservable, a first-class state */
+            --dark-bg: #1b2230;
+            --amber: #ffa726;         /* DNS drift / staleness accents only */
+            --amber-bg: #33270f;
+            --card: #141e2e;
+            --card-head: #0f1622;
+            --border: #2a3a4a;
+            --muted: #6a7a8a;
+        }
+
+        /* ── Top bar ── */
+        .topbar {
+            display: flex; align-items: center; justify-content: space-between;
+            flex-wrap: wrap; gap: 8px;
+            padding: 12px 18px; background: var(--card);
+            border: 1px solid var(--border); border-radius: 10px; margin-bottom: 14px;
+        }
+        .topbar h1 { font-size: 18px; font-weight: 600; color: #4fc3f7; letter-spacing: 0.3px; }
+        .topbar .meta { font-size: 12px; color: var(--muted); }
+        .topbar .meta strong { color: #b0c0d0; font-weight: 500; }
+        .pulse {
+            display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+            background: var(--dark); margin-right: 6px; animation: pulse 1.6s infinite;
+        }
+        .pulse.healthy { background: var(--healthy); box-shadow: 0 0 6px rgba(102,187,106,0.7); }
+        .pulse.failed  { background: var(--failed);  box-shadow: 0 0 6px rgba(239,83,80,0.7); }
+        .pulse.dark    { background: var(--dark); }
+        @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* ── Verdict banner — the one question: is the fleet healthy NOW? ── */
+        .verdict {
+            display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+            padding: 18px 22px; margin-bottom: 14px;
+            background: linear-gradient(135deg, #102030 0%, #1a2438 100%);
+            border: 1px solid var(--border); border-radius: 10px;
+        }
+        .verdict .state { font-size: 30px; font-weight: 700; text-transform: uppercase; letter-spacing: 2px; }
+        .verdict .state.healthy { color: var(--healthy); text-shadow: 0 0 14px rgba(102,187,106,0.5); }
+        .verdict .state.failed  { color: var(--failed);  text-shadow: 0 0 14px rgba(239,83,80,0.5); }
+        .verdict .state.dark    { color: var(--dark);    text-shadow: 0 0 14px rgba(138,151,168,0.4); }
+        .verdict .detail { color: #b0c0d0; font-size: 13px; flex: 1; min-width: 260px; }
+        .verdict .detail strong { color: #e0e0e0; }
+        .verdict .warn { color: var(--amber); font-weight: 600; }
+        .verdict .counts { display: flex; gap: 8px; }
+        .count-chip { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 700; }
+        .count-chip.healthy { background: var(--healthy-bg); color: var(--healthy); }
+        .count-chip.failed  { background: var(--failed-bg);  color: var(--failed); }
+        .count-chip.dark    { background: var(--dark-bg);    color: var(--dark); }
+
+        /* ── Legend — DARK is a NAMED state, not an absence of color ── */
+        .legend {
+            display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+            font-size: 11px; color: var(--muted);
+            padding: 8px 16px; margin-bottom: 14px;
+            background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+        }
+        .legend .swatch {
+            display: inline-block; width: 10px; height: 10px; border-radius: 3px;
+            margin-right: 5px; vertical-align: -1px;
+        }
+        .legend .sw-healthy { background: var(--healthy); }
+        .legend .sw-failed  { background: var(--failed); }
+        .legend .sw-dark    { background: var(--dark); }
+        .legend .sw-amber   { background: var(--amber); }
+
+        /* ── Layout ── */
+        .grid { display: grid; grid-template-columns: 1.3fr 1fr; gap: 14px; }
+        .col { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+        @media (max-width: 1000px) { .grid { grid-template-columns: 1fr; } }
+
+        .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+        .card h2 {
+            font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 1px;
+            padding: 10px 16px; background: var(--card-head); color: var(--muted);
+            border-bottom: 1px solid var(--border);
+        }
+        .card h2 .sub { font-size: 10px; text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 8px; }
+        .card .body { padding: 12px 16px; overflow-x: auto; }
+
+        /* ── Box grid tiles ── */
+        .boxes { display: flex; flex-wrap: wrap; gap: 10px; }
+        .box-tile {
+            flex: 1 1 150px; min-width: 150px; max-width: 240px;
+            border-radius: 8px; padding: 10px 12px; border: 1px solid var(--border);
+            background: var(--dark-bg); border-left: 4px solid var(--dark);
+        }
+        .box-tile.healthy { background: var(--healthy-bg); border-left-color: var(--healthy); }
+        .box-tile.failed  { background: var(--failed-bg);  border-left-color: var(--failed); }
+        .box-tile.dark    { background: var(--dark-bg);    border-left-color: var(--dark); }
+        .box-tile .alias { font-size: 14px; font-weight: 700; color: #e0e0e0; }
+        .box-tile .app { font-size: 10px; color: var(--muted); margin-top: 2px; }
+        .box-tile .reason { font-size: 10px; color: var(--dark); margin-top: 4px; word-break: break-word; }
+        .res-chip {
+            display: inline-block; margin-top: 6px; padding: 1px 7px; border-radius: 9px;
+            font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
+            background: #1a2030; color: var(--muted);
+        }
+        .res-chip.warn { background: var(--amber-bg); color: var(--amber); }
+
+        /* ── Subsystem matrix ── */
+        table { border-collapse: collapse; width: 100%; font-size: 11px; }
+        th, td { padding: 5px 7px; text-align: center; }
+        th { color: var(--muted); font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px; }
+        td.rowhead { text-align: left; font-weight: 700; color: #e0e0e0; white-space: nowrap; }
+        .cell {
+            display: inline-block; width: 22px; height: 18px; line-height: 18px;
+            border-radius: 4px; font-size: 11px; font-weight: 700; cursor: help;
+        }
+        .cell.healthy { background: var(--healthy-bg); color: var(--healthy); }
+        .cell.failed  { background: var(--failed-bg);  color: var(--failed); }
+        .cell.dark    { background: var(--dark-bg);    color: var(--dark); }
+        .cell.absent  { opacity: 0.45; }
+
+        /* ── Coverage bars ── */
+        .cov-row { margin-bottom: 10px; }
+        .cov-row summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; }
+        .cov-row summary::-webkit-details-marker { display: none; }
+        .cov-alias { font-weight: 700; font-size: 12px; min-width: 90px; }
+        .cov-bar { flex: 1; height: 12px; border-radius: 6px; overflow: hidden; display: flex; background: var(--dark-bg); min-width: 120px; }
+        .cov-seg-green { background: var(--healthy); height: 100%; }
+        .cov-seg-red   { background: var(--failed); height: 100%; }
+        .cov-seg-dark  { background: #2c3648; height: 100%; }
+        .cov-nums { font-size: 10px; color: var(--muted); white-space: nowrap; }
+        .cov-nums b.g { color: var(--healthy); } .cov-nums b.r { color: var(--failed); } .cov-nums b.d { color: var(--dark); }
+        .cov-classes { margin: 8px 0 4px 100px; display: flex; flex-wrap: wrap; gap: 4px; }
+        .cls-chip {
+            padding: 2px 8px; border-radius: 9px; font-size: 9.5px; font-weight: 600; cursor: help;
+            background: var(--dark-bg); color: var(--dark);
+        }
+        .cls-chip.active { background: var(--failed-bg); color: var(--failed); }
+        .cls-chip.clean  { background: var(--healthy-bg); color: var(--healthy); }
+
+        /* ── Lists (blind spots, escalations, source errors, DNS) ── */
+        .item { padding: 8px 0; border-bottom: 1px solid #1c2635; font-size: 12px; }
+        .item:last-child { border-bottom: none; }
+        .item .id { font-weight: 700; color: var(--dark); }
+        .item .detail { color: #b0c0d0; margin-top: 2px; }
+        .item .ref { color: var(--muted); font-size: 10px; margin-top: 2px; }
+        .item.escal .id { color: var(--failed); }
+        .item.srcerr .detail { color: var(--amber); }
+        .empty { color: var(--muted); font-size: 12px; font-style: italic; }
+        .dns-table td { text-align: left; font-size: 12px; padding: 4px 8px; }
+        .dns-method { font-weight: 700; color: var(--healthy); }
+        .dns-method.warn { color: var(--amber); }
+        .dns-method.dark { color: var(--dark); }
+
+        .footnote { font-size: 10px; color: var(--muted); padding: 6px 16px 12px; }
+    </style>
+</head>
+<body>
+    <div class="topbar">
+        <h1>Fleet Truth — MeshForge NOC</h1>
+        <div class="meta">
+            <span id="indicator" class="pulse"></span>
+            NOC <strong id="noc-host">…</strong>
+            &middot; fan-out <strong id="fanout">…</strong>
+            &middot; updated <strong id="updated">never</strong>
+            &middot; poll <strong>5</strong>s / truth TTL <strong id="ttl">…</strong>
+        </div>
+    </div>
+
+    <div class="verdict">
+        <span id="verdict-state" class="state dark">…</span>
+        <div class="detail" id="verdict-detail">loading /api/fleet/truth…</div>
+        <div class="counts" id="verdict-counts"></div>
+    </div>
+
+    <div class="legend">
+        <span><span class="swatch sw-healthy"></span><b>HEALTHY</b> — observed, and observed OK</span>
+        <span><span class="swatch sw-failed"></span><b>FAILED</b> — observed, and observed BAD</span>
+        <span><span class="swatch sw-dark"></span><b>DARK</b> — unobservable (absent / stale / unreachable) — no data never reads green</span>
+        <span><span class="swatch sw-amber"></span><b>AMBER</b> — naming drift (ip_fallback / unresolved)</span>
+    </div>
+
+    <div class="grid">
+        <div class="col">
+            <div class="card">
+                <h2>Boxes <span class="sub" id="boxes-meta"></span></h2>
+                <div class="body"><div class="boxes" id="boxes"></div></div>
+            </div>
+
+            <div class="card">
+                <h2>Subsystem Matrix <span class="sub">✓ healthy · ✕ failed · ? dark · – not on this box</span></h2>
+                <div class="body" id="matrix"></div>
+            </div>
+
+            <div class="card">
+                <h2>Coverage — what mini is watching, per box <span class="sub">green=verified clean · red=active signal · grey=can't call it clean</span></h2>
+                <div class="body" id="coverage"></div>
+                <div class="footnote">A class is green ONLY when the watchdog explicitly reported it clean.
+                    Grey means "we cannot claim it" — not "it's fine".</div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card">
+                <h2>Known Blind Spots <span class="sub">the corners this NOC knows it is NOT watching</span></h2>
+                <div class="body" id="structural-dark"></div>
+                <div class="footnote">Permanent grey rows from the structural-dark registry — first-class data,
+                    so they can never quietly read healthy. Closing one is a deliberate code change.</div>
+            </div>
+
+            <div class="card">
+                <h2>Escalations <span class="sub">mini's active rules, fleet-wide</span></h2>
+                <div class="body" id="escalations"></div>
+            </div>
+
+            <div class="card">
+                <h2>Naming / DNS <span class="sub">how each box was addressed (never a raw IP)</span></h2>
+                <div class="body" id="dns"></div>
+            </div>
+
+            <div class="card">
+                <h2>Source Errors <span class="sub">producers reporting non-ok</span></h2>
+                <div class="body" id="source-errors"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    'use strict';
+    const TRUTH_URL = '/api/fleet/truth';
+    const POLL_MS = 5000;
+
+    // Subsystem column order (canonical first; unknown keys appended so a
+    // future subsystem still renders — as dark until this list learns it).
+    const SUBSYSTEM_ORDER = ['watchdog', 'mini', 'services', 'radio',
+                             'schedules', 'cascade', 'ci', 'rns_paths', 'claw'];
+
+    let lastOkAt = null;   // wall time of the last successful truth fetch
+
+    // ── DEFAULT-DARK state mapping — the page's core honesty invariant.
+    // Anything that is not exactly 'healthy' or 'failed' renders DARK,
+    // including unknown/new state strings and undefined. Never green.
+    function stClass(s) {
+        if (s === 'healthy') return 'healthy';
+        if (s === 'failed') return 'failed';
+        return 'dark';
+    }
+
+    function esc(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function cellTitle(name, c) {
+        const bits = [name + ': ' + (c && c.state ? c.state : 'dark (no cell)')];
+        if (c && c.reason) bits.push('reason: ' + c.reason);
+        if (c && c.source) bits.push('source: ' + c.source);
+        if (c && typeof c.age_s === 'number') bits.push('age: ' + c.age_s + 's');
+        if (c && c.absent) bits.push('not present on this box (benign)');
+        return bits.join('\n');
+    }
+
+    function renderVerdict(doc) {
+        const el = document.getElementById('verdict-state');
+        const st = stClass(doc.fleet_state);
+        el.className = 'state ' + st;
+        el.textContent = st === 'dark' ? 'DARK' : doc.fleet_state.toUpperCase();
+
+        const fanout = doc.fanout || {};
+        const parts = [];
+        if (st === 'healthy') {
+            parts.push('Every declared box answered and every tainting cell was <strong>observed healthy</strong>.');
+        } else if (st === 'failed') {
+            parts.push('An <strong>observed fault</strong> is present somewhere below — worst-first.');
+        } else {
+            parts.push('The fleet is <strong>partially unobservable</strong> — health cannot be claimed for what we cannot see.');
+        }
+        if (fanout.stale) {
+            parts.push('<span class="warn">⚠ fan-out incomplete (' + esc(fanout.hosts_answered) + '/' +
+                       esc(fanout.hosts_declared) + ' answered) — the verdict cannot be green.</span>');
+        }
+        if (fanout.error) parts.push('<span class="warn">build error: ' + esc(fanout.error) + '</span>');
+        document.getElementById('verdict-detail').innerHTML = parts.join(' ');
+
+        const c = doc.counts || {};
+        document.getElementById('verdict-counts').innerHTML =
+            '<span class="count-chip healthy">' + esc(c.healthy ?? '?') + ' healthy</span>' +
+            '<span class="count-chip failed">' + esc(c.failed ?? '?') + ' failed</span>' +
+            '<span class="count-chip dark">' + esc(c.dark ?? '?') + ' dark</span>';
+    }
+
+    function renderTopbar(doc, fetchState) {
+        document.getElementById('noc-host').textContent = doc && doc.noc_host || '?';
+        const fanout = (doc && doc.fanout) || {};
+        document.getElementById('fanout').textContent =
+            (fanout.hosts_answered ?? '?') + '/' + (fanout.hosts_declared ?? '?');
+        document.getElementById('ttl').textContent =
+            (typeof fanout.ttl_s === 'number' ? fanout.ttl_s + 's' : '?');
+        const ind = document.getElementById('indicator');
+        ind.className = 'pulse ' + (fetchState === 'error' ? 'failed' : stClass(doc && doc.fleet_state));
+        document.getElementById('updated').textContent =
+            lastOkAt ? new Date(lastOkAt).toLocaleTimeString() : 'never';
+    }
+
+    function methodWarn(m) { return m === 'ip_fallback' || m === 'unresolved' || m === 'error'; }
+
+    function renderBoxes(doc) {
+        const boxes = doc.boxes || [];
+        // Worst-first ordering: failed, then dark, then healthy.
+        const rank = { failed: 0, dark: 1, healthy: 2 };
+        const sorted = boxes.slice().sort((a, b) =>
+            (rank[stClass(a.reachable && a.reachable.state)] ?? 1) -
+            (rank[stClass(b.reachable && b.reachable.state)] ?? 1));
+        document.getElementById('boxes-meta').textContent = boxes.length + ' declared';
+        document.getElementById('boxes').innerHTML = sorted.map(b => {
+            const r = b.reachable || {};
+            const st = stClass(r.state);
+            const app = r.app || {};
+            const method = r.resolution_method || '?';
+            const appLine = app.name
+                ? esc(app.name) + ' ' + esc(app.version || '') + (app.role ? ' · ' + esc(app.role) : '')
+                : (st === 'healthy' ? 'app identity not reported' : '');
+            return '<div class="box-tile ' + st + '" title="' + esc(cellTitle('reachable', r)) + '">' +
+                '<div class="alias">' + esc(b.alias) + '</div>' +
+                (appLine ? '<div class="app">' + appLine + '</div>' : '') +
+                (st !== 'healthy' && r.reason ? '<div class="reason">' + esc(r.reason) + '</div>' : '') +
+                '<span class="res-chip' + (methodWarn(method) ? ' warn' : '') + '">' + esc(method) + '</span>' +
+                '</div>';
+        }).join('') || '<div class="empty">no boxes in the truth document</div>';
+    }
+
+    function renderMatrix(doc) {
+        const boxes = doc.boxes || [];
+        // Column set = canonical order + any unknown keys the truth doc carries.
+        const extra = [];
+        boxes.forEach(b => Object.keys(b.subsystems || {}).forEach(k => {
+            if (!SUBSYSTEM_ORDER.includes(k) && !extra.includes(k)) extra.push(k);
+        }));
+        const cols = SUBSYSTEM_ORDER.concat(extra);
+
+        let html = '<table><thead><tr><th></th>' +
+            cols.map(c => '<th>' + esc(c) + '</th>').join('') + '</tr></thead><tbody>';
+        boxes.forEach(b => {
+            html += '<tr><td class="rowhead">' + esc(b.alias) + '</td>';
+            cols.forEach(name => {
+                const c = (b.subsystems || {})[name];
+                const st = stClass(c && c.state);
+                const absent = !!(c && c.absent);
+                const glyph = st === 'healthy' ? '✓' : st === 'failed' ? '✕' : (absent ? '–' : '?');
+                html += '<td><span class="cell ' + st + (absent ? ' absent' : '') +
+                    '" title="' + esc(cellTitle(name, c)) + '">' + glyph + '</span></td>';
+            });
+            html += '</tr>';
+        });
+        html += '</tbody></table>';
+        document.getElementById('matrix').innerHTML =
+            boxes.length ? html : '<div class="empty">no boxes</div>';
+    }
+
+    function renderCoverage(doc) {
+        const boxes = doc.boxes || [];
+        document.getElementById('coverage').innerHTML = boxes.map(b => {
+            const cov = b.coverage || {};
+            const total = cov.total || 0;
+            const g = cov.green || 0, r = cov.red || 0, d = cov.dark || 0;
+            const pct = n => total ? (100 * n / total) + '%' : '0%';
+            const classes = cov.classes || {};
+            const chips = Object.keys(classes).sort((a, b2) => {
+                const rk = { active: 0, clean: 2 };  // active first, dark middle, clean last
+                const ra = rk[classes[a].disp] ?? 1, rb = rk[classes[b2].disp] ?? 1;
+                return ra - rb || a.localeCompare(b2);
+            }).map(cls => {
+                const info = classes[cls];
+                const disp = info.disp || 'unknown';
+                const chipClass = disp === 'active' ? 'active' : disp === 'clean' ? 'clean' : '';
+                const title = [cls + ': ' + disp,
+                               info.reason, info.subject, info.detail].filter(Boolean).join('\n');
+                return '<span class="cls-chip ' + chipClass + '" title="' + esc(title) + '">' +
+                       esc(cls) + '</span>';
+            }).join('');
+            return '<details class="cov-row"><summary>' +
+                '<span class="cov-alias">' + esc(b.alias) + '</span>' +
+                '<span class="cov-bar">' +
+                    '<span class="cov-seg-red" style="width:' + pct(r) + '"></span>' +
+                    '<span class="cov-seg-green" style="width:' + pct(g) + '"></span>' +
+                    '<span class="cov-seg-dark" style="width:' + pct(d) + '"></span>' +
+                '</span>' +
+                '<span class="cov-nums"><b class="g">' + g + '</b> / <b class="r">' + r +
+                    '</b> / <b class="d">' + d + '</b> of ' + total + '</span>' +
+                '</summary><div class="cov-classes">' + chips + '</div></details>';
+        }).join('') || '<div class="empty">no boxes</div>';
+    }
+
+    function renderStructuralDark(doc) {
+        const rows = doc.structural_dark || [];
+        document.getElementById('structural-dark').innerHTML = rows.map(sd =>
+            '<div class="item">' +
+            '<div class="id">' + esc(sd.id) + '</div>' +
+            '<div class="detail">' + esc(sd.detail) + '</div>' +
+            '<div class="ref">' + esc(sd.ref) + '</div>' +
+            '</div>'
+        ).join('') || '<div class="empty">registry empty — suspicious: this domain HAS known blind spots</div>';
+    }
+
+    function renderEscalations(doc) {
+        const items = [];
+        (doc.boxes || []).forEach(b => (b.escalations || []).forEach(e =>
+            items.push({ alias: b.alias, ...e })));
+        document.getElementById('escalations').innerHTML = items.map(e =>
+            '<div class="item escal">' +
+            '<div class="id">' + esc(e.alias) + ' · ' + esc(e.rule_id || '?') + '</div>' +
+            '<div class="detail">' + esc([e.subject, e.detail].filter(Boolean).join(' — ')) + '</div>' +
+            '</div>'
+        ).join('') || '<div class="empty">no active escalations reported</div>';
+    }
+
+    function renderDns(doc) {
+        const rows = (doc.boxes || []).map(b => {
+            const m = (b.reachable && b.reachable.resolution_method) || '?';
+            const cls = methodWarn(m) ? 'warn' : (m === 'dns' || m === 'self') ? '' : 'dark';
+            return '<tr><td class="rowhead">' + esc(b.alias) + '</td>' +
+                   '<td><span class="dns-method ' + cls + '">' + esc(m) + '</span></td></tr>';
+        }).join('');
+        document.getElementById('dns').innerHTML = rows
+            ? '<table class="dns-table"><tbody>' + rows + '</tbody></table>'
+            : '<div class="empty">no boxes</div>';
+    }
+
+    function renderSourceErrors(doc) {
+        const items = [];
+        (doc.boxes || []).forEach(b => (b.source_errors || []).forEach(e =>
+            items.push({ alias: b.alias, err: e })));
+        document.getElementById('source-errors').innerHTML = items.map(it =>
+            '<div class="item srcerr">' +
+            '<div class="id">' + esc(it.alias) + '</div>' +
+            '<div class="detail">' + esc(it.err) + '</div>' +
+            '</div>'
+        ).join('') || '<div class="empty">no source errors reported</div>';
+    }
+
+    function renderAll(doc) {
+        renderTopbar(doc, 'ok');
+        renderVerdict(doc);
+        renderBoxes(doc);
+        renderMatrix(doc);
+        renderCoverage(doc);
+        renderStructuralDark(doc);
+        renderEscalations(doc);
+        renderDns(doc);
+        renderSourceErrors(doc);
+    }
+
+    // A failed fetch of the truth endpoint makes the PAGE ITSELF honest:
+    // the verdict goes DARK with the failure named — never a held green.
+    function renderFetchFailure(err) {
+        const el = document.getElementById('verdict-state');
+        el.className = 'state dark';
+        el.textContent = 'DARK';
+        const age = lastOkAt ? Math.round((Date.now() - lastOkAt) / 1000) + 's ago' : 'never';
+        document.getElementById('verdict-detail').innerHTML =
+            '<span class="warn">⚠ /api/fleet/truth unreachable (' + esc(err) +
+            ') — everything below is from the last successful read: ' + esc(age) + '.</span>';
+        document.getElementById('indicator').className = 'pulse failed';
+    }
+
+    async function poll() {
+        try {
+            const resp = await fetch(TRUTH_URL, { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const doc = await resp.json();
+            lastOkAt = Date.now();
+            renderAll(doc);
+        } catch (e) {
+            renderFetchFailure(e && e.message ? e.message : String(e));
+        } finally {
+            setTimeout(poll, POLL_MS);
+        }
+    }
+    poll();
+    </script>
+</body>
+</html>
