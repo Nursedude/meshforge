@@ -48,6 +48,15 @@ for arg in "$@"; do
 done
 
 SSH="ssh -o ConnectTimeout=8 -o BatchMode=yes"
+
+# Consumer-of-record interpreter (calibrated_claims rule 7; ported from the
+# MA twin 2026-07-19, where bare python3 had no pytest at all and the suite
+# leg read a false shape): the services' ExecStart prefers $REPO/venv/bin/
+# python when present, so the suite/lint legs must test THAT interpreter —
+# its dependency set is the one the fleet actually runs. Falls back to
+# system python3 (venv-less boxes). Gate-local JSON parsing stays python3.
+PY="python3"
+[ -x "$REPO/venv/bin/python" ] && PY="$REPO/venv/bin/python"
 pass=0; fail=0; unknown=0; warns=0
 ok()    { printf '  %-22s \033[32mPASS\033[0m    %s\n' "$1" "$2"; pass=$((pass+1)); }
 bad()   { printf '  %-22s \033[31mFAIL\033[0m    %s\n' "$1" "$2"; fail=$((fail+1)); }
@@ -105,7 +114,7 @@ else ok "fleet SHA drift" "$matched/$total @ $HEAD"; fi
 
 # 3. Full local suite — real exit code + count (file-routed, never a streamed tail).
 if [ "$RUN_TESTS" = 1 ]; then
-  python3 -m pytest "$REPO/tests/" -q -p no:cacheprovider >/tmp/.hs_pytest 2>&1; rc=$?
+  "$PY" -m pytest "$REPO/tests/" -q -p no:cacheprovider >/tmp/.hs_pytest 2>&1; rc=$?
   summ=$(grep -E "[0-9]+ (passed|failed|error)" /tmp/.hs_pytest | tail -1)
   nfail=$(grep -cE "^FAILED|^ERROR" /tmp/.hs_pytest)
   if [ "$rc" = 0 ] && [ "$nfail" = 0 ]; then ok "full suite" "$summ (exit 0)"
@@ -127,7 +136,7 @@ else
 fi
 
 # 4. Lint — real exit code.
-python3 "$REPO/scripts/lint.py" --all >/tmp/.hs_lint 2>&1; rc=$?
+"$PY" "$REPO/scripts/lint.py" --all >/tmp/.hs_lint 2>&1; rc=$?
 if [ "$rc" = 0 ]; then ok "lint" "exit 0"
 else bad "lint" "exit $rc — $(grep -E '\[E\]' /tmp/.hs_lint | tail -1)"; fi
 
