@@ -315,7 +315,10 @@ day one (firmware#9164), and the old availability probe fell through to GET
 60s re-check (#17 class). Fix (`meshtastic_http.py`): tri-state `ok`/`absent`/
 `down` probe, sticky `json_api_absent` + 1h recheck, fromradio probe deleted,
 4403 depinned. Residual: `radio_failover` HTTP polls never worked vs meshtasticd.
-Tests: `TestJsonApiAbsentIssue76` (8). Full body in `persistent_issues_archive.md`.
+Missed consumer fixed 2026-07-19 (`f07480d2`, MA `e89a516a` dormant): TUI
+data-path check read `absent` as FAIL — now N/A via `_classify_http_unavailable`.
+Tests: `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4). Full
+body in `persistent_issues_archive.md`.
 
 
 ---
