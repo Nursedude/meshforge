@@ -2744,6 +2744,56 @@ def test_rns_env_coherence_lxmf_leg_fires_too(tmp_path):
     assert "0.9.4+mf.0" in sig.detail
 
 
+def test_rns_env_coherence_waived_label_is_clean_with_witness(tmp_path):
+    """An operator-waived isolated-instance venv is excluded from coherence,
+    and the clean disposition NAMES it (a visible waiver, never a silent
+    suppression)."""
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    wf = tmp_path / "waivers.json"
+    wf.write_text(json.dumps({"waived": {
+        "user-pipx:reticulum-meshchatx": "isolated own-Reticulum instance"}}))
+    reset_dispositions()
+    sig = probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.2.5+mf.5",
+                          "system-dist": "1.2.5+mf.5",
+                          "user-pipx:reticulum-meshchatx": "1.3.5"},
+                  "lxmf": {}},
+        state_path=str(tmp_path / "stray.json"), waivers_path=str(wf),
+        debounce_ticks=1)
+    assert sig is None
+    disp = collect_dispositions()["rns_stray_env_drift"]
+    assert disp["disp"] == "clean"
+    assert "user-pipx:reticulum-meshchatx" in disp.get("reason", "")
+
+
+def test_rns_env_coherence_unwaived_label_still_fires(tmp_path):
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    wf = tmp_path / "waivers.json"
+    wf.write_text(json.dumps({"waived": {"user-pipx:somethingelse": "x"}}))
+    sig = probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.2.5+mf.5",
+                          "user-pipx:nomadnet": "1.1.4"},
+                  "lxmf": {}},
+        state_path=str(tmp_path / "stray.json"), waivers_path=str(wf),
+        debounce_ticks=1)
+    assert sig is not None and sig.cls == "rns_stray_env_drift"
+
+
+def test_rns_env_coherence_malformed_waiver_file_waives_nothing(tmp_path):
+    """A broken waiver file must never suppress a real signal."""
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    wf = tmp_path / "waivers.json"
+    wf.write_text("{not json")
+    sig = probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.2.5+mf.5",
+                          "user-pipx:reticulum-meshchatx": "1.3.5"},
+                  "lxmf": {}},
+        state_path=str(tmp_path / "stray.json"), waivers_path=str(wf),
+        debounce_ticks=1)
+    assert sig is not None and sig.cls == "rns_stray_env_drift"
+
+
 def test_rns_env_coherence_clean_streak_resets_debounce(tmp_path):
     """One incoherent tick followed by a clean tick (mid-roll window closing)
     must reset the streak — the next incoherent tick starts over."""

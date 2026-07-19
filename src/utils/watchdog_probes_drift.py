@@ -721,6 +721,29 @@ def probe_dep_install_fragmented(
 
 DEFAULT_RNS_STRAY_DEBOUNCE_PATH = "/var/lib/meshforge/rns_stray_debounce.json"
 
+# Operator-declared waivers: {"waived": {"<location-label>": "<reason>"}} —
+# for the ONE legitimate exception to intra-box coherence: an app running an
+# ISOLATED own-Reticulum instance (its RNS never speaks the shared rnsd's
+# RPC, so version agreement buys nothing and a forced downgrade can break
+# the app). A waiver is deliberate and VISIBLE: the clean disposition names
+# every waived label (honest_failure_modes #9 — every swallow leaves a
+# witness). A malformed/unreadable waiver file applies NO waivers — a broken
+# waiver must never suppress a real signal.
+DEFAULT_RNS_STRAY_WAIVERS_PATH = "/etc/meshforge/rns_stray_waivers.json"
+
+
+def _load_stray_waivers(path):
+    """Return the waived-label dict, or {} on absent/malformed (never raise)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        waived = doc.get("waived")
+        if isinstance(waived, dict):
+            return {str(k): str(v) for k, v in waived.items()}
+    except (OSError, ValueError, AttributeError):
+        pass
+    return {}
+
 # Every root-readable location an rns/lxmf library copy can live. Unlike
 # _DEP_INSTALL_SITE_GLOBS, the pipx globs are WILDCARDED across venv names:
 # a LIBRARY rides along inside every app venv that depends on it, not just a
@@ -789,6 +812,7 @@ def probe_rns_env_coherence(
     installs=None,
     pkgs=("rns", "lxmf"),
     state_path=None,
+    waivers_path=None,
     debounce_ticks: int = 2,
 ) -> Optional[Signal]:
     """Fire when rns/lxmf copies across this box's root-readable envs DISAGREE.
@@ -803,6 +827,13 @@ def probe_rns_env_coherence(
     A box mid-roll that missed one venv pages here within 2 ticks instead of
     being operator-discovered. A deliberately-flipped canary box whose envs
     were all moved together stays CLEAN (they agree with each other).
+
+    Waivers (2026-07-19): an app running an ISOLATED own-Reticulum instance
+    (e.g. meshchatx-isolated.service — its RNS never speaks the shared
+    rnsd's RPC) is the one legitimate coherence exception. The operator
+    declares it in DEFAULT_RNS_STRAY_WAIVERS_PATH; waived labels are
+    excluded BUT the clean disposition names them every tick, and a
+    malformed waiver file waives nothing.
 
     Honest failure modes: 0/1 observed locations per pkg → not incoherent,
     never false-alarm; user scope unobservable (no non-root rnsd user) →
@@ -824,6 +855,15 @@ def probe_rns_env_coherence(
             installs = {p: _enumerate_lib_installs(p, service_user)
                         for p in pkgs}
 
+        waivers = _load_stray_waivers(
+            waivers_path or DEFAULT_RNS_STRAY_WAIVERS_PATH)
+        waived_hit = sorted({lbl for locs in installs.values()
+                             for lbl in locs if lbl in waivers})
+        if waivers:
+            installs = {p: {lbl: v for lbl, v in locs.items()
+                            if lbl not in waivers}
+                        for p, locs in installs.items()}
+
         observed_any = any(locs for locs in installs.values())
         incoherent = {p: locs for p, locs in installs.items()
                       if len(set(locs.values())) >= 2}
@@ -838,6 +878,12 @@ def probe_rns_env_coherence(
                     "rns_stray_env_drift", "indeterminate",
                     reason=("user-scope install locations unobservable "
                             "(no non-root rnsd user)"))
+            elif waived_hit:
+                # Clean only BECAUSE of the waiver — say so, every tick.
+                note_disposition(
+                    "rns_stray_env_drift", "clean",
+                    reason=("coherent with %d waived location(s): %s"
+                            % (len(waived_hit), ", ".join(waived_hit))))
             else:
                 note_disposition("rns_stray_env_drift", "clean")
             return None
