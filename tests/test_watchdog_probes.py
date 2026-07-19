@@ -156,6 +156,7 @@ def test_signal_classes_closed_enum_is_documented():
         "gateway_dup_degraded",         # 2026-06-29 dedup/identity arc STEP 5 — cross-gateway duplicate delivery from the 4c /fleet/dups rollup (same (content_id, recipient) confirmed by >1 gateway = the live dup-A); degraded only; INERT off the manager box + on an indeterminate/stale rollup (built on the 4c JOIN <2-gateway gate); 2-tick debounce; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as resource_canary_degraded). No own issue#.
         "meshtasticd_vsz_leak",         # 2026-07-10 (upstream meshtastic/firmware#10468, the operator's own 2026-05-13 report, re-confirmed live 07-10 on both fleet Pi5 boxes at 2.7.24.58) — meshtasticd on Pi5+USB leaks exited pthread stacks (~110 GB VSZ/day, RSS bounded); the weekly meshtasticd-restart.timer band-aid was UNWATCHED; fires only past the weekly envelope (768 GB default) = the restart missed or the rate worsened; Pi4/SPI boxes idle ~0.3 GB and cannot trip it; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_dup_degraded). No own issue#.
         "router_scout_degraded",        # 2026-07-11 OpenWrt-router arc — a mirrored meshforge-scout tick (landed by the verdict-wired router_scout_pull.sh) shows the ROUTER-side agent degraded: fresh mirror + stale captured_at (agent cron dark while the pull re-copies the same old tick), tick ok=false, or an unparseable mirror; defense-in-depth behind the pull's own cron_verdict eval — adds the /fleet + mini surface (per-device subject); degraded only (every observed condition is remote — the tracer lesson); INERT off the manager box; stale mirror files skipped (cron_verdict_stale owns the dead pull cron); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as meshtasticd_vsz_leak). No own issue#.
+        "rns_stray_env_drift",          # 2026-07-19 — rns/lxmf copies across a box's root-readable envs DISAGREE (intra-box coherence; probe_rns_version_drift owns pin compliance): the missed-venv roll hazard, pipx globs wildcarded across venv names because a library rides inside every app venv depending on it (moc3's nomadnet pipx venv sat silently stock 1.1.4, invisible to every prior drift probe); closes the rns/lxmf leg of the dep_version_drift_strays_blind structural-dark row; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as dep_install_fragmented). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -2651,6 +2652,114 @@ def test_dep_install_fragmented_unparseable_version_does_not_crash(tmp_path):
         floor="2.7.9", installs={"venv": "garbage", "system-dist": "2.7.8"},
         state_path=str(tmp_path / "frag.json"), debounce_ticks=1)
     assert sig is not None and sig.cls == "dep_install_fragmented"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# rns_stray_env_drift — rns/lxmf env incoherence (the missed-venv roll
+# hazard; the moc3 nomadnet-pipx-venv lesson, 2026-07-19)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def test_enumerate_lib_installs_finds_foreign_pipx_venv(tmp_path):
+    """The load-bearing difference from _enumerate_pkg_installs: a library
+    inside ANOTHER app's pipx venv (nomadnet carrying rns) is found and
+    labeled per venv."""
+    from utils.watchdog_probes_drift import _enumerate_lib_installs
+    home = tmp_path / "home" / "svc"
+    _make_distinfo(
+        home / ".local" / "share" / "pipx" / "venvs" / "nomadnet" /
+        "lib" / "python3.13" / "site-packages", "rns", "1.1.4")
+    _make_distinfo(home / ".local" / "lib" / "python3.13" / "site-packages",
+                   "rns", "1.2.5+mf.5")
+    found = _enumerate_lib_installs(
+        "rns", "svc", meshforge_root=str(tmp_path / "nowhere"),
+        user_home=str(home))
+    assert found.get("user-pipx:nomadnet") == "1.1.4"
+    assert found.get("user-site") == "1.2.5+mf.5"
+
+
+def test_rns_env_coherence_fires_on_stray_venv(tmp_path):
+    # The moc3 shape: consumer envs on the pin, one pipx venv silently stock.
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    sig = probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.2.5+mf.5",
+                          "system-dist": "1.2.5+mf.5",
+                          "user-pipx:nomadnet": "1.1.4"},
+                  "lxmf": {"user-site": "0.9.4+mf.0"}},
+        state_path=str(tmp_path / "stray.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.cls == "rns_stray_env_drift"
+    assert sig.severity == "degraded"
+    assert sig.subject == "rns"
+    assert "user-pipx:nomadnet=1.1.4" in sig.detail
+    assert sig.extra["installs"]["rns"]["user-pipx:nomadnet"] == "1.1.4"
+
+
+def test_rns_env_coherence_clean_when_all_envs_agree(tmp_path):
+    """A deliberately-flipped canary box whose envs moved TOGETHER is clean —
+    pin compliance is probe_rns_version_drift's job, not this probe's."""
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    assert probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.3.8+mf.0",
+                          "user-pipx:nomadnet": "1.3.8+mf.0"},
+                  "lxmf": {"user-site": "1.0.1+mf.0"}},
+        state_path=str(tmp_path / "stray.json"), debounce_ticks=1) is None
+
+
+def test_rns_env_coherence_none_single_location(tmp_path):
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    assert probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.2.5+mf.5"}, "lxmf": {}},
+        state_path=str(tmp_path / "stray.json"), debounce_ticks=1) is None
+
+
+def test_rns_env_coherence_none_when_nothing_observed(tmp_path):
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    assert probe_rns_env_coherence(
+        installs={"rns": {}, "lxmf": {}},
+        state_path=str(tmp_path / "stray.json"), debounce_ticks=1) is None
+
+
+def test_rns_env_coherence_debounce_two_ticks(tmp_path):
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    sp = str(tmp_path / "stray.json")
+    args = dict(installs={"rns": {"user-site": "1.2.5+mf.5",
+                                  "user-pipx:nomadnet": "1.1.4"},
+                          "lxmf": {}},
+                state_path=sp)  # default debounce_ticks=2
+    assert probe_rns_env_coherence(**args) is None   # first sighting: silent
+    sig = probe_rns_env_coherence(**args)            # second: confirmed
+    assert sig is not None and sig.cls == "rns_stray_env_drift"
+
+
+def test_rns_env_coherence_lxmf_leg_fires_too(tmp_path):
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    sig = probe_rns_env_coherence(
+        installs={"rns": {"user-site": "1.2.5+mf.5"},
+                  "lxmf": {"user-site": "0.9.4+mf.0",
+                           "user-pipx:nomadnet": "0.9.4"}},
+        state_path=str(tmp_path / "stray.json"), debounce_ticks=1)
+    assert sig is not None
+    assert sig.subject == "lxmf"
+    assert "0.9.4+mf.0" in sig.detail
+
+
+def test_rns_env_coherence_clean_streak_resets_debounce(tmp_path):
+    """One incoherent tick followed by a clean tick (mid-roll window closing)
+    must reset the streak — the next incoherent tick starts over."""
+    from utils.watchdog_probes_drift import probe_rns_env_coherence
+    sp = str(tmp_path / "stray.json")
+    bad = dict(installs={"rns": {"user-site": "1.2.5+mf.5",
+                                 "user-pipx:nomadnet": "1.1.4"},
+                         "lxmf": {}},
+               state_path=sp)
+    ok = dict(installs={"rns": {"user-site": "1.2.5+mf.5",
+                                "user-pipx:nomadnet": "1.2.5+mf.5"},
+                        "lxmf": {}},
+              state_path=sp)
+    assert probe_rns_env_coherence(**bad) is None    # streak 1
+    assert probe_rns_env_coherence(**ok) is None     # resolved mid-roll → reset
+    assert probe_rns_env_coherence(**bad) is None    # streak 1 again, not 2
 
 
 # ─────────────────────────────────────────────────────────────────────

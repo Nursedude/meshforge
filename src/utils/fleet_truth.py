@@ -192,9 +192,10 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "cancelled — surfaced but not paged/fixed",
      "ref": "watchdog_probe_core.py :: gateway_dup_degraded"},
     {"id": "dep_version_drift_strays_blind",
-     "detail": "watches only the service-user consumer-of-record; a stale system/pipx/"
-               "user-site copy is invisible",
-     "ref": "watchdog_probes_drift.py :: dep_version_drift"},
+     "detail": "stray-env watch covers meshtastic (install-fragmentation probe) and "
+               "rns/lxmf (env-coherence probe, closed 2026-07-19); other deps' stray "
+               "system/pipx/user-site copies remain unwatched",
+     "ref": "watchdog_probes_drift.py :: probe_rns_env_coherence"},
     {"id": "user_unit_inactivity_blind",
      "detail": "probe_service_inactive is structurally blind to user systemd units; only "
                "nomadnet_crashloop patches one unit — general user-unit inactivity uncovered",

@@ -81,6 +81,7 @@ from utils.watchdog_probes import (
     probe_rns_version_drift,
     probe_dep_version_drift,
     probe_dep_install_fragmented,
+    probe_rns_env_coherence,
     probe_role_drift,
     probe_http_local,
     probe_lxmf_process_wedge,
@@ -438,6 +439,16 @@ def run_all_probes(
     # 2026-06-17 phantom-update; feedback_version_env_rigor). Self-guards None
     # when not fragmented / no floor / single location; 2-tick debounced.
     sig = probe_dep_install_fragmented()
+    if sig is not None:
+        signals.append(sig)
+
+    # RNS/LXMF stray-env coherence — every root-readable rns/lxmf copy on the
+    # box (incl. copies inside OTHER apps' pipx venvs — the moc3 nomadnet-venv
+    # lesson) must agree; a roll that missed one env pages here within 2
+    # ticks. Pin compliance stays probe_rns_version_drift's job. Runs
+    # unconditionally: strays matter on every box with any RNS client.
+    # Self-guards None on 0/1 locations / unobservable user scope.
+    sig = probe_rns_env_coherence()
     if sig is not None:
         signals.append(sig)
 
