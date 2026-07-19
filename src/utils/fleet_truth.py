@@ -216,9 +216,13 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
      "detail": "nats_sensor/http_json source kinds exist but the fleet preset wires none; "
                "claw is seen only via the host_frozen verdict file, not live sensor reads",
      "ref": "mini_dudeai/presets/meshforge_fleet.py"},
-    {"id": "federation_digest_federator_only",
-     "detail": "federation + digest sources are federator-only; a gateway box does not "
-               "locally watch peer/federation health",
+    {"id": "federation_mapless_box_unwatched",
+     "detail": "NARROWED 2026-07-19 (row 6): federation is now watched PER VANTAGE — every "
+               "map-running box polls its OWN :5000 and escalates (never pages) an "
+               "unhealthy peer, so a peer visible from one box and not another is "
+               "distinguishable. Digest stays federator-scoped BY DESIGN (a federator "
+               "artifact). RESIDUAL: a box running no local map has no vantage at all, "
+               "and a box whose federation lists zero peers is inert — not covering",
      "ref": "mini_dudeai/presets/meshforge_fleet.py"},
 ]
 

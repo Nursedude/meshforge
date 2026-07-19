@@ -11,6 +11,24 @@
 
 ## Closed / narrowed
 
+- **federation_digest_federator_only** → **federation_mapless_box_unwatched**,
+  NARROWED 2026-07-19 (row 6, same arc): federation is now watched PER VANTAGE
+  — `MINI_DUDEAI_ENABLE_FEDERATION=1` on every MAP-RUNNING box (the source
+  polls the box's OWN :5000, so it was free data being thrown away), with the
+  two federation rules ported into the gateway seed. The gateway copies
+  ESCALATE ONLY, never ntfy — paging ownership stays with the manager's
+  fleet_offline_check + manager_deadman so one dead peer can't fan out to N
+  pages. The digest half closed BY DECLARATION (federator artifact by design).
+  moc3's known-normal suppression ported alongside (**retire both copies
+  together at the RNS roll**). Env lives in `~/.config/meshforge/mini_dudeai.env`
+  (EnvironmentFile), NOT the unit — the checklist said unit; the live-process
+  env is the consumer of record. Live vantages at closure: VolcanoAI 6 peers,
+  moc 4, kiai 5, moc1/moc2 3 each; moc4/moc5 enabled but 0 peers (inert);
+  moc3 (map stopped for the soak) + meshanchor-server (no federation key)
+  stay 0 — wiring a map-less box would pin src_errors every tick.
+  Runbook + fleet table: `.claude/research/federation_per_vantage_2026_07_19.md`.
+  Eval: `oracle-federation-mapless-box-src-errors`.
+
 - **calibration_drift_not_paging** — REMOVED 2026-07-19 (row 4, same arc;
   the first FULL removal): soak criterion met (34 days: one fire episode,
   2 TRUE breaks — 44b5b92/2de68ec — 0 false positives). Both seeds'
@@ -48,12 +66,12 @@
 | 3 | `dep_version_drift_strays_blind` residual | Either extend `_DEP_VERSION_WATCHED` + coherence to other critical deps (paho, folium…) or formally accept-as-permanent with a dated note | **Haiku/fast** sweep; accept-decision is operator's | small | low value — don't spend frontier on it |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
-| 6 | `federation_digest_federator_only` | POLICY RATIFIED 2026-07-19 (frontier beat, this session) — see "Row 6 policy" below. Implementation is Opus-tier, spec-complete. | impl: **Opus** (fresh session) | small-mod | none — READY TO IMPLEMENT |
+| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | NEXT DEFAULT PICK is row 3 (cheap) or row 7 |
 | 7 | `live_claw_nats_not_wired_to_mini` | Wire `nats_sensor`/`http_json` source kinds into the fleet preset on the brain box; MF021 observation-only invariant applies | **Opus** | moderate | claw NATS reachability from mini's context unverified |
 | 8 | `cross_gateway_dups_unsuppressed` | STEP 6 cross-gateway suppression: distributed coordination (which gateway yields, race windows, idempotency, partition behavior) | **frontier design pass** → Opus impl | full session+ | hardest row; design doc first, never straight to code |
 | 9 | `mesh_rf_ota_leg_unwatched` | RF-side receipt: mesh ACK consumption (#74 T2 step 4) or a second receiver node as OTA witness (reference-node arc fit) | **frontier + operator/field** | multi-session | hardware/field-gated |
 
-## Row 6 policy — RATIFIED 2026-07-19 (implement in a fresh Opus session)
+## Row 6 policy — RATIFIED 2026-07-19, IMPLEMENTED 2026-07-19 (kept as the decision record)
 
 **Facts established (verified this session, MF HEAD `73043bfb`):**
 - `FederationPeerSource` (src/mini_dudeai/presets/meshforge_fleet.py:58)
@@ -85,9 +103,10 @@
    `moc3_federation_backoff_known_normal` annotate rule into the gateway
    seed alongside (retire both copies at the roll).
 
-**Opus implementation checklist:**
-(a) flip `MINI_DUDEAI_ENABLE_FEDERATION=1` (digest stays 0) in each
-    map-running box's mini user unit + `systemctl --user daemon-reload` +
+**Implementation checklist (all executed 2026-07-19; deviations noted inline):**
+(a) DONE — flip `MINI_DUDEAI_ENABLE_FEDERATION=1` (digest stays 0) in each
+    map-running box's `~/.config/meshforge/mini_dudeai.env` (**correction: the
+    env is in the EnvironmentFile, NOT the unit as written here**) + `systemctl --user daemon-reload` +
     restart (linger is on; use the ssh user-bus idiom from this arc);
 (b) add `federation_peer_unhealthy_unexpected` (propose_escalation,
     cooldown 1800) + the moc3 known-normal rule to

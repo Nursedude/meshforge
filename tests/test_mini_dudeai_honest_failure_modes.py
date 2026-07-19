@@ -678,3 +678,69 @@ class TestStateUnreadableRefusesToWipe:
         with pytest.raises(StateLoadError):
             eng.tick()
         assert open(eng.state_store.path).read() == "{ torn json"  # not wiped
+
+
+class TestFederationPerVantageRow6:
+    """Structural-dark row 6 (2026-07-19): federation went from federator-only
+    to watched per-vantage on every map-running box.
+
+    These pin the two invariants that make that safe rather than noisy:
+    the no-fan-out-paging policy, and the reader/writer pair between the two
+    seeds' rules and the prose that DECLARES what each seed watches
+    (honest_failure_modes #4 — a mechanism's halves wire together or fail
+    together; a seed whose comment says "federation omitted" while carrying
+    federation rules is a detector that's confidently wrong about itself).
+    """
+
+    SEEDS = ("configs/mini_dudeai_rules.fleet_gateway.json",
+             "configs/mini_dudeai_rules.federator.json")
+    FED_RULES = ("federation_peer_unhealthy_unexpected",
+                 "moc3_federation_backoff_known_normal")
+
+    def _seed(self, name):
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, name)) as f:
+            return json.load(f)
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_both_seeds_carry_both_federation_rules(self, seed):
+        """The suppression rule and the escalation rule are ONE mechanism —
+        the moc3 known-normal copy exists in both seeds precisely so a gateway
+        vantage can't escalate the deliberate soak backoff. They are retired
+        together at the RNS roll; missing one half is the failure."""
+        ids = {r["id"] for r in self._seed(seed)["rules"]}
+        for rid in self.FED_RULES:
+            assert rid in ids, f"{seed} lost federation rule {rid!r}"
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_moc3_soak_canary_is_excluded_from_escalation(self, seed):
+        """Without the exclude glob the catch-all re-fires on moc3 every
+        cooldown — the canary's backoff is DELIBERATE, not a finding."""
+        rule = next(r for r in self._seed(seed)["rules"]
+                    if r["id"] == "federation_peer_unhealthy_unexpected")
+        assert any("moc3" in g for g in rule["match"].get("subject_exclude_globs", [])), (
+            f"{seed}: unexpected-peer rule no longer excludes the moc3 canary")
+
+    def test_gateway_federation_rules_never_page(self):
+        """THE noise policy, pinned. Box-down paging ownership stays with the
+        manager (fleet_offline_check 3-fail -> ntfy, manager_deadman). If a
+        gateway box's federation rule were ever switched to ntfy, ONE dead
+        peer would fan out to a phone page from every vantage that sees it."""
+        for r in self._seed("configs/mini_dudeai_rules.fleet_gateway.json")["rules"]:
+            if r["id"] in self.FED_RULES:
+                assert r["action"]["kind"] != "ntfy", (
+                    f"gateway rule {r['id']} pages — a peer outage would fan out "
+                    f"to N pages; escalate/annotate only (structural-dark row 6)")
+
+    @pytest.mark.parametrize("seed", SEEDS)
+    def test_seed_comment_does_not_contradict_its_rules(self, seed):
+        """The declaration half of the pair: a seed that carries federation
+        rules must not still tell its reader that federation is omitted."""
+        doc = self._seed(seed)
+        has_fed = any(r.get("match", {}).get("kind") == "federation_peer_unhealthy"
+                      for r in doc["rules"])
+        comment = doc.get("_comment", "")
+        assert has_fed, f"{seed} carries no federation rules (see sibling test)"
+        assert "Federation/digest rules are omitted" not in comment, (
+            f"{seed} _comment still declares federation omitted while carrying "
+            f"federation rules — reader/writer pair drifted")

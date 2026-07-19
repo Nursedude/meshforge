@@ -4,7 +4,10 @@ What this preset configures:
   - WatchdogJsonSource → /var/lib/meshforge/watchdog.json → kind="signal_class"
   - FederationStatusSource → http://localhost:5000/api/status → 2 kinds:
       kind="federation_peer_unhealthy" (per peer in_backoff or unreachable)
-      kind="source_error" (when the URL is unreachable — federator down)
+      kind="source_error" (when the URL is unreachable — local map down)
+    NOTE the URL is the box's OWN map, so this is a PER-VANTAGE reading: since
+    2026-07-19 every MAP-RUNNING box wires it, not just the federator (see
+    enable_federation below).
   - DigestStaleSource → ~/situation_digest.md → kind="digest_stale" if > 30m old
   - BootHealthSource → ~/mini_dudeai_clean_exit (+ state/assessment/power log)
       → kind="unexpected_reboot" on an unclean boot; planned reboots stay
@@ -123,9 +126,20 @@ def build_engine(
 
     enable_federation / enable_digest: which optional sources to wire. Both
     default ON (env MINI_DUDEAI_ENABLE_FEDERATION / _ENABLE_DIGEST = "0" to
-    disable, or pass explicitly). The federator (the primary box) runs both; gateway
-    boxes that have no local :5000 and no situation_digest set both "0" so mini
-    watches only their own watchdog.json (no per-tick source_error noise/pages).
+    disable, or pass explicitly).
+
+    enable_federation is gated on ONE fact: does THIS box run a local :5000 map?
+    The source polls the box's OWN /api/status, so on any map-running box it is
+    a free PER-VANTAGE reading of federation health — box A seeing peer C
+    unhealthy while box B sees it fine is path evidence no single-vantage
+    watcher can produce (structural-dark row 6, 2026-07-19; before that only
+    the federator wired it). A box with NO local map MUST keep it "0": the
+    source would emit a source_error every tick and pin src_errors, which is
+    the declared-absent-vs-error confusion honest_failure_modes exists to stop.
+
+    enable_digest is federator-only BY DESIGN and stays "0" everywhere else:
+    situation_digest.md is a federator artifact, so watching its staleness on a
+    box that never writes one is meaningless, not merely noisy.
 
     enable_watchdog: the box's own /var/lib/meshforge/watchdog.json feed.
     Defaults ON — it is every MeshForge box's local-health feed, and on those
@@ -183,8 +197,9 @@ def build_engine(
             extractor=_watchdog_extractor,
             name="watchdog",
         ))
-    # Federation + digest are federator-specific (the primary box). Gateway boxes
-    # disable them so a missing :5000 / digest doesn't emit per-tick source_error.
+    # Federation reads the box's OWN :5000 — wired on every MAP-RUNNING box for
+    # a per-vantage view (row 6, 2026-07-19), "0" only where no local map exists.
+    # Digest stays federator-only by design (see the docstring above).
     if enable_federation:
         sources.append(FederationPeerSource(url=federator_url))
     if enable_digest:

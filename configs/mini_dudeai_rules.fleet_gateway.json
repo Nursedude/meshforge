@@ -1,5 +1,5 @@
 {
-  "_comment": "mini-dudeai gateway rules seed. Watchdog-only: each box watches its own /var/lib/meshforge/watchdog.json signal classes + the watchdog self-error. Federation/digest rules are omitted (those sources are disabled on gateway boxes via MINI_DUDEAI_ENABLE_FEDERATION=0 / _ENABLE_DIGEST=0). Per-box file; the daemon promotes ~/mini_dudeai_rules.json.candidate over this.",
+  "_comment": "mini-dudeai gateway rules seed. Each box watches its own /var/lib/meshforge/watchdog.json signal classes + the watchdog self-error, PLUS (since structural-dark row 6, 2026-07-19) federation peer health from its OWN local map -- MINI_DUDEAI_ENABLE_FEDERATION=1 on every MAP-RUNNING box, giving a per-vantage view (box A sees peer C unhealthy, box B does not = path problem, not box problem). Those federation rules escalate ONLY (propose_escalation); paging for a down box stays with the manager's fleet_offline_check + manager_deadman, so one dead peer never fans out to N phone pages. FEDERATION STAYS 0 on a box with NO local :5000 (today: moc3, whose map is stopped for the RNS soak) -- wiring the source there would emit a source_error every tick and pin src_errors (honest_failure_modes: declared-absent != unobservable != error). DIGEST STAYS 0 everywhere but the federator BY DESIGN: situation_digest.md is a federator artifact and watching it elsewhere is meaningless. Per-box file; the daemon promotes ~/mini_dudeai_rules.json.candidate over this.",
   "rules": [
     {
       "id": "rns_namespace_collision_any",
@@ -777,6 +777,33 @@
       },
       "cooldown_s": 3600,
       "annotation": "2026-06-30 dedup/identity arc STEP 6 -- HUMAN-facing cross-gateway DUPLICATE delivery from the 4c /fleet/dups rollup: the same (content_id, recipient) CONFIRMED on >1 DISTINCT gateway. The JOIN now classifies the recipient INFRA (itself a gateway/peer hash -- e.g. MeshAnchor 58cecbd0, in BOTH gateways' peer_gateway_destinations, so both legitimately relay there) vs HUMAN (a real NomadNet inbox). This rung pages ONLY on HUMAN dups -- the real reliability defect; the infra-to-infra dup is real but benign AND structurally unsuppressable with zero added loss + no coordination substrate (two gateways confirm-deliver the same content simultaneously; copy #2 can't be cancelled after the fact), so it is surfaced in the detail but NOT paged. degraded only -- a dup is a quality/cost defect, not an outage (delivery still happened). The probe (probe_gateway_dup_degraded) reads /fleet/dups on the manager box; INERT when the rollup is indeterminate (<2 gateways) or stale (dead collector cron); 2-tick debounce. Investigate /fleet/dups fleet_duplicates[] where recipient_kind==human. STEP-0 reconciliation: the earlier 'replace the is_already_bridged loop guard with an identity-based one' C-fix framing was DROPPED -- the bot is mesh node !a2e95ba4 emitting RAW text so the loop guard never drops its reply; the real problem-C fix is identity-correlation (a separate future slice)."
+    },
+    {
+      "id": "moc3_federation_backoff_known_normal",
+      "match": {
+        "kind": "federation_peer_unhealthy",
+        "peer_glob": "*moc3*"
+      },
+      "action": {
+        "kind": "annotate_digest"
+      },
+      "cooldown_s": 86400,
+      "annotation": "PER-VANTAGE port of the federator seed's rule (structural-dark row 6, 2026-07-19). moc3 is gateway-only AND the RNS 1.3.8 soak canary; permanent federation backoff is EXPECTED and shows up in EVERY map-running box's local /api/status view, not just the federator's -- without this suppression each gateway mini would escalate moc3 every 30 min. annotate_digest (not none) so the deliberate non-escalation still leaves an on-box witness (honest_failure_modes #9); the annotations file is written independently of the digest SOURCE, which stays disabled on gateway boxes. RETIRE THIS COPY AND THE FEDERATOR'S TOGETHER when the RNS roll ends and moc3 rejoins federation."
+    },
+    {
+      "id": "federation_peer_unhealthy_unexpected",
+      "match": {
+        "kind": "federation_peer_unhealthy",
+        "subject_glob": "*",
+        "subject_exclude_globs": [
+          "*moc3*"
+        ]
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "Structural-dark row 6 (2026-07-19): federation health is now watched PER VANTAGE, not federator-only. Every map-running box already computes federation.peer_status locally, so box A seeing peer C unhealthy while box B sees it fine is PATH evidence no single-vantage watcher can produce. propose_escalation ONLY -- deliberately NEVER ntfy on a gateway box: box-down PAGING ownership stays with the manager's fleet_offline_check (3-fail -> ntfy) + manager_deadman, so one dead peer can never fan out to N phone pages. subject_exclude_globs skips moc3 (moc3_federation_backoff_known_normal owns it). Per-box pattern unchanged (2026-05-31): a box may add a local *_federation_known_normal annotate rule + a matching exclude glob for a KNOWN cross-project peer that surfaces as a bare IP; those live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014)."
     }
   ]
 }
