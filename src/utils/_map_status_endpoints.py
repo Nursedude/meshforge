@@ -40,6 +40,58 @@ _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
 )
 
 
+WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
+
+
+def watchdog_block_from_payload(
+    payload: Dict[str, Any],
+    *,
+    now: Optional[float] = None,
+    stale_after_s: float = WATCHDOG_STALE_S,
+) -> Dict[str, Any]:
+    """Shape a raw watchdog.json payload into the ``/api/status.watchdog``
+    block, re-deriving staleness at read time.
+
+    Module-level so BOTH consumers — the status handler's
+    ``_read_watchdog_block`` and the fleet-truth ssh-spool fallback (which
+    reads a map-less box's raw watchdog.json over ssh) — share ONE transform
+    and ONE staleness threshold (honest_failure_modes #5: two consumers of
+    one artifact share one constant). A stale payload reads ok=False with a
+    ``stale:`` reason, which the fleet-truth classifier maps to DARK.
+    """
+    if not isinstance(payload, dict):
+        return {"installed": True, "ok": False,
+                "reason": "malformed_json: not an object"}
+
+    ts = payload.get("ts")
+    age_s: Optional[float] = None
+    if isinstance(ts, (int, float)):
+        age_s = max(0.0, (now if now is not None else time.time()) - float(ts))
+
+    stale = bool(age_s is not None and age_s > stale_after_s)
+    block = {
+        "installed": True,
+        "ok": bool(payload.get("ok", True)) and not stale,
+        "ts": ts,
+        "age_s": age_s,
+        "probe_count": payload.get("probe_count"),
+        "signals": payload.get("signals", []),
+    }
+    # Per-class disposition map (fleet-truth Phase 0). Passed through
+    # verbatim for fleet_truth.merge_coverage; absent on legacy watchdog
+    # writers — consumers treat absence as pre-coverage (every non-active
+    # class dark), never as clean.
+    if isinstance(payload.get("coverage"), dict):
+        block["coverage"] = payload["coverage"]
+    if stale:
+        block["reason"] = (
+            f"stale: last write {age_s:.0f}s ago "
+            f"(threshold {stale_after_s:.0f}s) — watchdog "
+            f"daemon may have crashed"
+        )
+    return block
+
+
 def _serialize_peer_status(s: Any) -> Dict[str, Any]:
     """Serialize one FederationPeerStatus into the /api/status.federation
     peer_status[] shape. Extracted so the field set (and the federated `claw`
@@ -350,7 +402,7 @@ class StatusEndpointsMixin:
         }
 
     _WATCHDOG_STATE_PATH = Path("/var/lib/meshforge/watchdog.json")
-    _WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
+    _WATCHDOG_STALE_S = WATCHDOG_STALE_S  # class alias; module constant is the SSOT
 
     def _read_watchdog_block(self) -> Dict[str, Any]:
         """Stitch /var/lib/meshforge/watchdog.json into /api/status.
@@ -383,33 +435,7 @@ class StatusEndpointsMixin:
             return {"installed": True, "ok": False,
                     "reason": "malformed_json: not an object"}
 
-        ts = payload.get("ts")
-        age_s: Optional[float] = None
-        if isinstance(ts, (int, float)):
-            age_s = max(0.0, time.time() - float(ts))
-
-        stale = bool(age_s is not None and age_s > self._WATCHDOG_STALE_S)
-        block = {
-            "installed": True,
-            "ok": bool(payload.get("ok", True)) and not stale,
-            "ts": ts,
-            "age_s": age_s,
-            "probe_count": payload.get("probe_count"),
-            "signals": payload.get("signals", []),
-        }
-        # Per-class disposition map (fleet-truth Phase 0). Passed through
-        # verbatim for fleet_truth.merge_coverage; absent on legacy
-        # watchdog writers — consumers treat absence as pre-coverage
-        # (every non-active class dark), never as clean.
-        if isinstance(payload.get("coverage"), dict):
-            block["coverage"] = payload["coverage"]
-        if stale:
-            block["reason"] = (
-                f"stale: last write {age_s:.0f}s ago "
-                f"(threshold {self._WATCHDOG_STALE_S:.0f}s) — watchdog "
-                f"daemon may have crashed"
-            )
-        return block
+        return watchdog_block_from_payload(payload)
 
     _MINI_STALE_S = 300.0  # 5 min — 10x mini-dudeai's 30s tick
 

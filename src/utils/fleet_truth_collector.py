@@ -45,6 +45,49 @@ READ_DEADLINE_S = 10.0
 
 _IPV4_RE = re.compile(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$")
 
+# ── ssh-spool fallback (2026-07-19) ─────────────────────────────────────
+# Some fleet boxes are unreachable to the HTTP fan-out BY NETWORK DESIGN
+# (kiai: behind the site NAT, ssh rides a reverse tunnel; moc3: no map
+# service at all). scripts/fleet_truth_spool.py — an OPERATOR-context cron,
+# where the fleet ssh keys live (the /fleet/dups precedent: the sandboxed
+# map service never sshes) — ssh-fetches those boxes' localhost endpoints
+# (+ raw watchdog.json for map-less boxes) into this spool. The collector
+# reads it ONLY when the direct fetch failed, and only while FRESH — a
+# stale spool reads dark, never last-known-healthy.
+SPOOL_SCHEMA = "truth_spool/v1"
+SPOOL_STALE_S = 360.0  # 3x the */2min cron cadence
+
+
+def truth_spool_dir() -> "Path":
+    """``$XDG_STATE_HOME/meshforge/truth_spool`` (operator-owned) — shared
+    constant between the cron writer and this reader."""
+    from pathlib import Path
+    from utils.paths import get_real_user_home
+    import os as _os
+    xdg = _os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg) if xdg else get_real_user_home() / ".local" / "state"
+    return base / "meshforge" / "truth_spool"
+
+
+def _read_spool(alias: str, *, now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+    """Fresh spool doc for ``alias``, or None (absent / unreadable / stale /
+    wrong schema). Never raises."""
+    try:
+        path = truth_spool_dir() / f"{alias}.json"
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or doc.get("schema") != SPOOL_SCHEMA:
+            return None
+        fetched_at = doc.get("fetched_at")
+        if not isinstance(fetched_at, (int, float)):
+            return None
+        wall_now = now if now is not None else time.time()
+        if (wall_now - fetched_at) > SPOOL_STALE_S:
+            return None  # stale spool = unobservable, never last-known-healthy
+        return doc
+    except (OSError, ValueError):
+        return None
+
 
 def _mask_ip_alias(alias: str) -> str:
     """An IP-shaped fleet_hosts entry must never surface as the box alias
@@ -122,15 +165,39 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     slo = _http_get_json(f"{base}/fleet/slo", PEER_TIMEOUT_S)
     status = _http_get_json(f"{base}/api/status", PEER_TIMEOUT_S)
     error = None
+    answered_at: Optional[float] = time.time() if (slo or status) else None
+
     if slo is None and status is None:
-        error = f"no response from {display} ({method})"
+        # Direct fan-out failed — try the ssh spool (fresh-only).
+        spool = _read_spool(alias)
+        if spool is not None:
+            status = spool.get("status") if isinstance(spool.get("status"), dict) else None
+            slo = spool.get("slo") if isinstance(spool.get("slo"), dict) else None
+            raw_wd = spool.get("raw_watchdog")
+            if status is None and isinstance(raw_wd, dict):
+                # Map-less box (moc3): synthesize the one block we DO have,
+                # through the same transform + staleness threshold the status
+                # handler uses (shared SSOT — a stale raw file reads dark).
+                from utils._map_status_endpoints import watchdog_block_from_payload
+                status = {"watchdog": watchdog_block_from_payload(raw_wd)}
+            if slo is not None or status is not None:
+                method = "ssh_spool"
+                # Honest observation age: when the spool answered, age runs
+                # from the spool FETCH, not from now.
+                answered_at = float(spool["fetched_at"])
+            else:
+                error = (f"no response from {display} ({method}); "
+                         "ssh spool fresh but empty-handed")
+        else:
+            error = f"no response from {display} ({method})"
+
     return {
         "alias": display,
         "resolution_method": method,
         "status": status,
         "slo": slo,
         "error": error,
-        "answered_at": time.time() if (slo or status) else None,
+        "answered_at": answered_at,
     }
 
 
