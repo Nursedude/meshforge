@@ -140,8 +140,39 @@ convergence logic:
 
 ---
 
+## 7. Fleet operations — distributing a `git` HEAD to a fleet
+
+Two tools push code out to boxes; both read a host list (one host per line) from
+`~/.config/meshforge/fleet_hosts` (or `/etc/meshforge/`).
+
+- **`scripts/fleet_pull.sh [<repo-dir>]`** — ff-only `git pull` on every box, **no
+  service restarts**. The repo is a VARIABLE (arg 1 or `$REPO_DIR`, default
+  `/opt/meshforge`), so the ONE script serves every fleet in the domain:
+  ```bash
+  scripts/fleet_pull.sh                       # MeshForge   (/opt/meshforge)
+  scripts/fleet_pull.sh /opt/meshforge-maps   # the maps sister repo
+  scripts/fleet_pull.sh /opt/meshanchor       # the MeshAnchor (MeshCore) fleet
+  ```
+  Each fleet gets its OWN membership via a **per-repo host list** that wins over
+  the generic one: `fleet_hosts.<repo-basename>` (e.g. `fleet_hosts.meshanchor`,
+  created 2026-07-16). Reports each box's post-pull SHA vs the target; exit 0 =
+  all converged. Use it to deliver a src-only change WITHOUT restarting anything
+  (the safe deploy during a soak — see the fleet_sync caveat below).
+- **`scripts/fleet_sync.sh`** — the heavier deploy: pulls **and restarts** the
+  affected services. ⚠️ Restarts remote `meshforge-gateway` on any `^src/` diff —
+  never run it during an in-flight gateway soak (use `fleet_pull.sh` there).
+
+**Why one parameterized `fleet_pull.sh <repo>`, not `fleet.meshforge.pull.sh` +
+`fleet.meshanchor.pull.sh`:** two near-identical copies drift (honest_failure_modes
+#5). The *fleet* is data (a `fleet_hosts.<repo>` file); the *pull* is code — one
+script, N host lists. Adding a new fleet = drop a host-list file, no new script.
+
+---
+
 ## References
 - `docs/fleet_roles.yaml` — role SSOT · `docs/fleet_presets.yaml` — preset catalog
 - `scripts/provision_role.py` — convergence engine · `scripts/configure_gateway.sh` — leg config
+- `scripts/fleet_pull.sh` — repo-parameterized ff-only fleet pull (no restarts) ·
+  `scripts/fleet_sync.sh` — pull + restart (MeshForge-scoped; soak-unsafe)
 - `.claude/research/fleet_architecture_2026_06_03.md` — live per-box snapshot + §7-B drift lesson
 - `tests/test_fleet_presets.py` — catalog integrity guard
