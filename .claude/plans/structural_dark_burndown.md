@@ -11,6 +11,14 @@
 
 ## Closed / narrowed
 
+- **aredn_configured_source_only** — NARROWED 2026-07-19 (row 5, same arc):
+  role-aware leg on `probe_aredn_source_dark` (MF `514a4951`) — a box
+  declares the organ in deployment.json `organ_expectations.aredn` (per-box
+  overrides layer; fleet_roles.yaml stays instance-free per MF014);
+  declared + empty `aredn_node_ips` fires `declared-unconfigured` (the wipe
+  class). Declarations live on VolcanoAI (hap) + moc5 (site node). Residual:
+  a site with neither declaration nor config stays invisible; kiai (at the
+  AREDN site, survey pending) gets its declaration when the survey lands.
 - **user_unit_inactivity_blind** — NARROWED 2026-07-19 (row 1, same arc):
   `probe_user_unit_inactive` (signal `user_unit_inactive`, MF `8d1e546d`) —
   always-on user `.service` daemons watched bus-free (default.target.wants
