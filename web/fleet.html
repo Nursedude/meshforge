@@ -8,9 +8,18 @@
       The HONEST fleet NOC — a faithful visual projection of /api/fleet/truth.
 
       Contract (do not break):
-      - This page reads ONLY /api/fleet/truth. It never re-derives state from
-        other endpoints, so the human view and a Claude session's orientation
-        read the SAME bytes and can never disagree.
+      - The TRUTH sections (verdict, boxes, matrix, coverage, blind spots,
+        escalations, naming, source errors) read ONLY /api/fleet/truth. They
+        never re-derive state from other endpoints, so the human view and a
+        Claude session's orientation read the SAME bytes and can never
+        disagree. The fleet verdict is computed from the truth document ALONE.
+      - The NOC-LOCAL VISIBILITY section below them (2026-07-19) reads this
+        box's own diagnostics endpoints — /fleet/slo (schedules + cron
+        verdicts), /lab/synth-rollup (soak), /fleet/logs (journal tail) — the
+        drill-down the 1.0 Fleet Monitor had. It is clearly labeled as local,
+        NEVER feeds the fleet verdict, and a fetch failure renders the panel
+        dark in place (no held readings). The fetch surface is allowlisted and
+        test-pinned (tests/test_fleet_page.py).
       - Rendering is DEFAULT-DARK: any state that is not exactly "healthy" or
         "failed" renders as DARK/grey (see stClass). No data can never paint
         green — including a fetch failure of the truth endpoint itself, which
@@ -182,6 +191,50 @@
         .dns-method.dark { color: var(--dark); }
 
         .footnote { font-size: 10px; color: var(--muted); padding: 6px 16px 12px; }
+
+        /* ── NOC-local visibility panels (logging / diag / soak) ── */
+        .vstatus {
+            display: inline-block; padding: 1px 8px; border-radius: 9px;
+            font-size: 10px; font-weight: 700; white-space: nowrap;
+        }
+        .vstatus.ok      { background: var(--healthy-bg); color: var(--healthy); }
+        .vstatus.fail    { background: var(--failed-bg);  color: var(--failed); }
+        .vstatus.concern { background: var(--amber-bg);   color: var(--amber); }
+        .vstatus.dark    { background: var(--dark-bg);    color: var(--dark); }
+        .stale-tag { color: var(--amber); font-size: 9px; font-weight: 700; margin-left: 4px; }
+        .vtable td { text-align: left; font-size: 11px; padding: 4px 7px; }
+        .vtable td.num { text-align: right; color: var(--muted); white-space: nowrap; }
+        .vtable td.msg { color: var(--muted); word-break: break-word; }
+        .mdpre {
+            font-family: inherit; font-size: 11px; line-height: 1.5;
+            white-space: pre-wrap; word-break: break-word; color: #b0c0d0;
+            max-height: 320px; overflow-y: auto;
+        }
+        .panel-err { color: var(--amber); font-size: 12px; }
+        .soak-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+        .controls {
+            display: flex; gap: 8px; padding: 8px 16px; flex-wrap: wrap; align-items: center;
+            background: var(--card-head); border-bottom: 1px solid var(--border);
+        }
+        .controls select, .controls button {
+            background: #1a2434; color: #e0e0e0; border: 1px solid var(--border);
+            border-radius: 6px; font-size: 11px; padding: 4px 8px; font-family: inherit;
+        }
+        .controls button { cursor: pointer; }
+        .controls button:hover { border-color: #4fc3f7; }
+        .controls .meta-inline { font-size: 10px; color: var(--muted); }
+        .logbody { max-height: 300px; overflow-y: auto; }
+        .log-line {
+            font-size: 11px; padding: 2px 0; border-bottom: 1px solid #16202e;
+            display: flex; gap: 8px;
+        }
+        .log-line:last-child { border-bottom: none; }
+        .log-line .lts { color: var(--muted); white-space: nowrap; }
+        .log-line .lvl { font-weight: 700; min-width: 56px; }
+        .log-line .lvl.err  { color: var(--failed); }
+        .log-line .lvl.warn { color: var(--amber); }
+        .log-line .lvl.info { color: var(--muted); }
+        .log-line .lmsg { color: #b0c0d0; word-break: break-word; flex: 1; }
     </style>
 </head>
 <body>
@@ -254,10 +307,78 @@
         </div>
     </div>
 
+    <div class="legend" style="margin-top:14px">
+        <span><b>NOC-LOCAL VISIBILITY</b> — the panels below read THIS box's own
+        diagnostics endpoints (SLO schedules/verdicts, lab soak rollup, journal
+        tails), not the fleet-truth document. They never feed the verdict above.
+        A fetch failure renders the panel dark — never a held reading.</span>
+    </div>
+
+    <div class="grid">
+        <div class="col">
+            <div class="card">
+                <h2>Cron Verdicts <span class="sub">last verdict per job — silence is the failure mode</span></h2>
+                <div class="body" id="verdicts"><div class="empty">loading…</div></div>
+            </div>
+
+            <div class="card">
+                <h2>Schedules &amp; Services <span class="sub">systemd timers on this box · stale = missed cadence</span></h2>
+                <div class="body" id="schedules"><div class="empty">loading…</div></div>
+            </div>
+        </div>
+
+        <div class="col">
+            <div class="card">
+                <h2>Soak — Lab Synth Rollup <span class="sub">the delivery path, exercised on cadence</span></h2>
+                <div class="body" id="soak"><div class="empty">loading…</div></div>
+            </div>
+
+            <div class="card">
+                <h2>Logs <span class="sub">journal tail, allowlisted units, this box only</span></h2>
+                <div class="controls">
+                    <select id="log-unit"></select>
+                    <select id="log-priority">
+                        <option value="warn" selected>warn+</option>
+                        <option value="err">err+</option>
+                        <option value="info">info+</option>
+                    </select>
+                    <button id="log-refresh">refresh</button>
+                    <span id="log-meta" class="meta-inline"></span>
+                </div>
+                <div class="body logbody" id="logs"><div class="empty">loading…</div></div>
+            </div>
+        </div>
+    </div>
+
     <script>
     'use strict';
     const TRUTH_URL = '/api/fleet/truth';
     const POLL_MS = 5000;
+
+    // ── NOC-local visibility (this box only) — deliberately OUTSIDE the
+    //    truth document; these endpoints never influence the fleet verdict.
+    const SLO_URL = '/fleet/slo';
+    const SOAK_URL = '/lab/synth-rollup';
+    const LOGS_URL = '/fleet/logs';
+    const LOCAL_POLL_MS = 30000;
+
+    // Mirrors the server allowlist (_FLEET_LOG_UNITS in
+    // _map_fleet_endpoints.py) — the server stays the authority: an
+    // out-of-date entry here just 400s with the current allowed list.
+    // Drift is test-pinned (tests/test_fleet_page.py).
+    const LOG_UNITS = [
+        ['meshforge-map', 'Map dashboard daemon'],
+        ['meshforge', 'MeshForge gateway'],
+        ['meshforge-maps', 'MeshForge maps :8808'],
+        ['rnsd', 'Reticulum daemon'],
+        ['meshtasticd', 'Meshtastic radio daemon'],
+        ['mosquitto', 'MQTT broker'],
+        ['meshforge-tracer', 'Lab tracer (10-min fire)'],
+        ['meshforge-echo', 'Lab echo responder'],
+        ['meshforge-synth-soak', 'Lab synth soak (hourly fire)'],
+        ['meshforge-lab-rollup', 'Lab rollup writer'],
+        ['nomadnet', 'NomadNet TUI (tmux)'],
+    ];
 
     // Subsystem column order (canonical first; unknown keys appended so a
     // future subsystem still renders — as dark until this list learns it).
@@ -523,6 +644,194 @@
         }
     }
     poll();
+
+    // ════════════════════════════════════════════════════════════════
+    // NOC-local visibility — logging / diag / soak (the 1.0 Fleet
+    // Monitor features, scoped to THIS box). Failures render dark
+    // in-panel; nothing here touches the truth sections above.
+    // ════════════════════════════════════════════════════════════════
+
+    function fmtAge(s) {
+        if (typeof s !== 'number' || !isFinite(s)) return '?';
+        if (s < 0) return '0s';
+        if (s < 90) return Math.round(s) + 's';
+        if (s < 5400) return Math.round(s / 60) + 'm';
+        if (s < 172800) return (s / 3600).toFixed(1) + 'h';
+        return (s / 86400).toFixed(1) + 'd';
+    }
+
+    // Verdict pill class — OK-but-stale is CONCERN (can't claim current),
+    // anything unrecognized is dark. Never green by default.
+    function vstatusClass(status, stale) {
+        const st = String(status || '').toUpperCase();
+        if (st.indexOf('FAIL') === 0) return 'fail';
+        if (st.indexOf('CONCERN') === 0) return 'concern';
+        if (st === 'OK') return stale ? 'concern' : 'ok';
+        return 'dark';
+    }
+
+    function panelErr(id, what, err) {
+        document.getElementById(id).innerHTML =
+            '<div class="panel-err">⚠ ' + esc(what) + ' unreachable (' +
+            esc(err) + ') — no reading, not "fine".</div>';
+    }
+
+    function renderVerdicts(slo) {
+        const el = document.getElementById('verdicts');
+        const v = ((slo || {}).schedules || {}).verdicts || {};
+        if (v.available === false) {
+            el.innerHTML = '<div class="panel-err">⚠ verdicts unavailable: ' +
+                esc(v.reason || 'unknown') + '</div>';
+            return;
+        }
+        const rank = j => (String(j.status).toUpperCase().indexOf('FAIL') === 0 ? 0 :
+                           String(j.status).toUpperCase().indexOf('CONCERN') === 0 ? 1 :
+                           j.stale ? 2 : 3);
+        const jobs = (v.jobs || []).slice().sort((a, b) =>
+            rank(a) - rank(b) || String(a.name).localeCompare(String(b.name)));
+        el.innerHTML = jobs.length
+            ? '<table class="vtable"><tbody>' + jobs.map(j =>
+                '<tr><td class="rowhead">' + esc(j.name) + '</td>' +
+                '<td><span class="vstatus ' + vstatusClass(j.status, j.stale) + '">' +
+                    esc(j.status) + '</span>' +
+                    (j.stale ? '<span class="stale-tag">STALE</span>' : '') + '</td>' +
+                '<td class="num" title="' + esc(j.ts_iso || '') + '">' + fmtAge(j.age_s) + '</td>' +
+                '<td class="msg">' + esc(j.message || '') + '</td></tr>'
+              ).join('') + '</tbody></table>'
+            : '<div class="empty">no verdicts recorded on this box</div>';
+    }
+
+    function renderSchedules(slo) {
+        const el = document.getElementById('schedules');
+        const sch = (slo || {}).schedules || {};
+        const svc = (slo || {}).services || {};
+        const bits = [];
+        if (typeof svc.total === 'number') {
+            const ok = (svc.available ?? 0) >= (svc.required ?? svc.total);
+            bits.push('<div style="margin-bottom:8px">services <span class="vstatus ' +
+                (ok ? 'ok' : 'concern') + '">' + esc(svc.available ?? '?') + '/' +
+                esc(svc.total) + ' available</span>' +
+                (typeof slo.uptime_s === 'number'
+                    ? ' <span class="cov-nums">· uptime ' + fmtAge(slo.uptime_s) + '</span>' : '') +
+                '</div>');
+        }
+        const units = (sch.units || []).slice().sort((a, b) =>
+            ((b.stale === true) - (a.stale === true)) ||
+            String(a.name).localeCompare(String(b.name)));
+        bits.push(units.length
+            ? '<table class="vtable"><tbody>' + units.map(u =>
+                '<tr><td class="rowhead">' + esc(u.name) + '</td>' +
+                '<td class="num">' + esc(u.scope || '?') + '</td>' +
+                '<td class="num">' + (u.age_s == null ? 'never fired' : fmtAge(u.age_s) + ' ago') + '</td>' +
+                '<td>' + (u.stale
+                    ? '<span class="vstatus concern">STALE</span>'
+                    : '<span class="vstatus ok">on cadence</span>') + '</td></tr>'
+              ).join('') + '</tbody></table>'
+            : '<div class="empty">no schedule units reported</div>');
+        const errs = (slo || {}).errors || [];
+        if (errs.length) {
+            bits.push('<div style="margin-top:8px">' + errs.map(e =>
+                '<div class="item srcerr"><div class="detail">' + esc(e) + '</div></div>'
+            ).join('') + '</div>');
+        }
+        el.innerHTML = bits.join('');
+    }
+
+    function renderSoak(text, httpOk, slo) {
+        const chips = [];
+        const v = (((slo || {}).schedules || {}).verdicts || {});
+        (v.jobs || []).filter(j => /soak|synth/i.test(String(j.name))).forEach(j => {
+            chips.push('<span class="vstatus ' + vstatusClass(j.status, j.stale) +
+                '" title="' + esc(j.message || j.ts_iso || '') + '">' +
+                esc(j.name) + ' ' + esc(j.status) + ' · ' + fmtAge(j.age_s) +
+                (j.stale ? ' STALE' : '') + '</span>');
+        });
+        const head = chips.length
+            ? '<div class="soak-chips">' + chips.join('') + '</div>' : '';
+        const body = httpOk
+            ? '<pre class="mdpre">' + esc(text) + '</pre>'
+            : '<div class="panel-err">⚠ soak rollup not readable on this box:</div>' +
+              '<pre class="mdpre">' + esc(text) + '</pre>';
+        document.getElementById('soak').innerHTML = head + body;
+    }
+
+    async function pollLocal() {
+        let slo = null;
+        try {
+            const resp = await fetch(SLO_URL, { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            slo = await resp.json();
+            renderVerdicts(slo);
+            renderSchedules(slo);
+        } catch (e) {
+            const msg = e && e.message ? e.message : String(e);
+            panelErr('verdicts', SLO_URL, msg);
+            panelErr('schedules', SLO_URL, msg);
+        }
+        try {
+            const resp = await fetch(SOAK_URL);
+            const text = await resp.text();
+            renderSoak(text, resp.ok, slo);
+        } catch (e) {
+            panelErr('soak', SOAK_URL, e && e.message ? e.message : String(e));
+        }
+        setTimeout(pollLocal, LOCAL_POLL_MS);
+    }
+    pollLocal();
+
+    // ── Logs — on-demand journal tail (unit change / refresh click) ──
+    function logsUrl() {
+        const unit = document.getElementById('log-unit').value;
+        const pri = document.getElementById('log-priority').value;
+        return LOGS_URL + '?unit=' + encodeURIComponent(unit) +
+               '&priority=' + encodeURIComponent(pri) + '&n=100';
+    }
+
+    async function fetchLogs() {
+        const el = document.getElementById('logs');
+        const meta = document.getElementById('log-meta');
+        el.innerHTML = '<div class="empty">loading…</div>';
+        meta.textContent = '';
+        try {
+            const resp = await fetch(logsUrl(), { headers: { 'Accept': 'application/json' } });
+            const raw = await resp.text();
+            let doc = null;
+            try { doc = JSON.parse(raw); } catch (_) { /* non-JSON error body */ }
+            if (!resp.ok) {
+                throw new Error((doc && doc.error) || ('HTTP ' + resp.status +
+                    (resp.status === 403 ? ' — logs are LAN-gated' : '')));
+            }
+            const lines = (doc && doc.lines) || [];
+            meta.textContent = lines.length + ' line' + (lines.length === 1 ? '' : 's') +
+                (doc && doc.error ? ' · ⚠ ' + doc.error : '');
+            el.innerHTML = lines.map(l => {
+                const lvl = String(l.level || '').toLowerCase();
+                const cls = (lvl.indexOf('err') === 0 || lvl === 'crit' ||
+                             lvl === 'alert' || lvl === 'emerg') ? 'err'
+                          : lvl.indexOf('warn') === 0 ? 'warn' : 'info';
+                const ts = typeof l.ts === 'number'
+                    ? new Date(l.ts * 1000).toLocaleTimeString() : '?';
+                return '<div class="log-line"><span class="lts">' + esc(ts) + '</span>' +
+                       '<span class="lvl ' + cls + '">' + esc(l.level || '?') + '</span>' +
+                       '<span class="lmsg">' + esc(l.msg) + '</span></div>';
+            }).join('') || '<div class="empty">no journal lines at this priority</div>';
+        } catch (e) {
+            el.innerHTML = '<div class="panel-err">⚠ ' +
+                esc(e && e.message ? e.message : String(e)) + '</div>';
+        }
+    }
+
+    function initLogs() {
+        const sel = document.getElementById('log-unit');
+        sel.innerHTML = LOG_UNITS.map(u =>
+            '<option value="' + esc(u[0]) + '">' + esc(u[0]) + ' — ' + esc(u[1]) + '</option>'
+        ).join('');
+        sel.addEventListener('change', fetchLogs);
+        document.getElementById('log-priority').addEventListener('change', fetchLogs);
+        document.getElementById('log-refresh').addEventListener('click', fetchLogs);
+        fetchLogs();
+    }
+    initLogs();
     </script>
 </body>
 </html>
