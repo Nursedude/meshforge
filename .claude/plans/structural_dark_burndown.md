@@ -11,6 +11,13 @@
 
 ## Closed / narrowed
 
+- **user_unit_inactivity_blind** — NARROWED 2026-07-19 (row 1, same arc):
+  `probe_user_unit_inactive` (signal `user_unit_inactive`, MF `8d1e546d`) —
+  always-on user `.service` daemons watched bus-free (default.target.wants
+  enrollment vs `/run/user/<uid>/systemd/units/invocation:*` liveness),
+  covering parked-failed / stopped / user-manager-down (linger). Timers
+  deliberately excluded (NO invocation marker — verified; schedules/SLO
+  layer owns them). Residual: conditional/nested wants, non-operator users.
 - **dep_version_drift_strays_blind** — NARROWED 2026-07-19 (this arc):
   `probe_rns_env_coherence` (signal `rns_stray_env_drift`, MF `621616c7`)
   closes the rns/lxmf leg — every root-readable copy incl. foreign pipx venvs
@@ -22,7 +29,7 @@
 
 | # | Row | Cure shape | Tier | Size | Constraint |
 |---|-----|-----------|------|------|------------|
-| 1 | `user_unit_inactivity_blind` | Generalize `probe_nomadnet_crashloop`'s root-direct `USER_UNIT=` journal read into `probe_user_unit_inactive` over the enrolled user units (mini, tracer, echo, synth-soak, lab-rollup); INERT where a unit was never installed | **Opus** (prior art exists, mechanical-with-care) | ~half session | none — NEXT DEFAULT PICK |
+| 1 | ~~`user_unit_inactivity_blind`~~ | CLOSED 2026-07-19 — see above | — | — | NEXT DEFAULT PICK is now row 2 (post-roll) or row 5 |
 | 2 | `oracle_rns_send_blind` | `send_to_rns` distinguishes no-path from crash; real send errors leave a witness counter and land in the failure set (not the benign bucket) of `oracle_delivery_degraded` | **Opus** | ~half session | gateway-code deploy → wait for RNS-soak close / roll (deliberately deferred out of the mf.5 soak) |
 | 3 | `dep_version_drift_strays_blind` residual | Either extend `_DEP_VERSION_WATCHED` + coherence to other critical deps (paho, folium…) or formally accept-as-permanent with a dated note | **Haiku/fast** sweep; accept-decision is operator's | small | low value — don't spend frontier on it |
 | 4 | `calibration_drift_not_paging` | Read the re-derivation false-positive record since 06-15; if FP≈0, promote the rule from propose_escalation to pager | stats: **Haiku/local**; promote decision: **frontier beat + operator** | small | needs the soak evidence compiled first |
