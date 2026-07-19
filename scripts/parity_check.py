@@ -75,6 +75,14 @@ BYTE_IDENTICAL = (
     "src/utils/lxmface.py",
     "web/js/lxmface.js",
     "tests/fixtures/lxmface_vectors.json",
+    # Honest fleet-truth builder (Phase 4 of the fleet-truth arc, 2026-07-19):
+    # the pure tri-state schema/classifier under both NOCs' /api/fleet/truth.
+    # Stdlib-pure, no domain imports — the classify_block default-dark contract
+    # and the worst-of roll-up MUST agree across the twins so the two domains'
+    # truth documents mean the same thing. Each app keeps its OWN collector
+    # (fleet_truth_collector.py: MF = fleet_hosts + fleet_naming; MA =
+    # fleet.json peers) — the collector is deliberately NOT parity.
+    "src/utils/fleet_truth.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
