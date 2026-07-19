@@ -11,6 +11,12 @@
 
 ## Closed / narrowed
 
+- **calibration_drift_not_paging** — REMOVED 2026-07-19 (row 4, same arc;
+  the first FULL removal): soak criterion met (34 days: one fire episode,
+  2 TRUE breaks — 44b5b92/2de68ec — 0 false positives). Both seeds'
+  `calibration_drift_any` promoted propose_escalation → ntfy ([AMBER],
+  high, 6h cooldown), fleet live-rules refreshed via provenance merge
+  (`refreshed 1` on all 8 boxes). MF `d6ac0fb8`, MA `1749275b`.
 - **aredn_configured_source_only** — NARROWED 2026-07-19 (row 5, same arc):
   role-aware leg on `probe_aredn_source_dark` (MF `514a4951`) — a box
   declares the organ in deployment.json `organ_expectations.aredn` (per-box
@@ -40,7 +46,7 @@
 | 1 | ~~`user_unit_inactivity_blind`~~ | CLOSED 2026-07-19 — see above | — | — | NEXT DEFAULT PICK is now row 2 (post-roll) or row 5 |
 | 2 | `oracle_rns_send_blind` | `send_to_rns` distinguishes no-path from crash; real send errors leave a witness counter and land in the failure set (not the benign bucket) of `oracle_delivery_degraded` | **Opus** | ~half session | gateway-code deploy → wait for RNS-soak close / roll (deliberately deferred out of the mf.5 soak) |
 | 3 | `dep_version_drift_strays_blind` residual | Either extend `_DEP_VERSION_WATCHED` + coherence to other critical deps (paho, folium…) or formally accept-as-permanent with a dated note | **Haiku/fast** sweep; accept-decision is operator's | small | low value — don't spend frontier on it |
-| 4 | `calibration_drift_not_paging` | Read the re-derivation false-positive record since 06-15; if FP≈0, promote the rule from propose_escalation to pager | stats: **Haiku/local**; promote decision: **frontier beat + operator** | small | needs the soak evidence compiled first |
+| 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
 | 6 | `federation_digest_federator_only` | Enable federation/digest mini sources on gateway boxes; needs a noise policy first (who pages on a peer outage — avoid N boxes paging one incident) | policy: **frontier (quick)**; impl: **Opus** | small-mod | design-before-code |
 | 7 | `live_claw_nats_not_wired_to_mini` | Wire `nats_sensor`/`http_json` source kinds into the fleet preset on the brain box; MF021 observation-only invariant applies | **Opus** | moderate | claw NATS reachability from mini's context unverified |
