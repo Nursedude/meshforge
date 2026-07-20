@@ -50,11 +50,76 @@ SSH_TIMEOUT_S = 30  # whole remote round-trip (tunnel handshake + 3 curls)
 _REMOTE_CMD = (
     "echo __TRUTH_SLO__; curl -s -m 6 http://localhost:5000/fleet/slo || true; "
     "echo; echo __TRUTH_STATUS__; curl -s -m 6 http://localhost:5000/api/status || true; "
-    "echo; echo __TRUTH_RAWWD__; cat /var/lib/meshforge/watchdog.json 2>/dev/null || true"
+    "echo; echo __TRUTH_RAWWD__; cat /var/lib/meshforge/watchdog.json 2>/dev/null || true; "
+    # The box's OWN role declaration, read as a FILE — deliberately, because
+    # this is exactly the case where the HTTP surface does not exist. A
+    # gateway-only box declares `meshforge-map: disabled` (too heavy for a
+    # ~1GB board), so /fleet/slo and /api/status above legitimately return
+    # nothing and the NOC has no other way to learn WHY. Without this, a
+    # correctly-provisioned box is indistinguishable from a broken one and
+    # darkens the whole fleet verdict forever (2026-07-20).
+    "echo; echo __TRUTH_DEPLOY__; "
+    "cat ${XDG_CONFIG_HOME:-$HOME/.config}/meshforge/deployment.json 2>/dev/null || true"
 )
-_SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__")
+_SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
+             "__TRUTH_DEPLOY__")
 _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
-                 "__TRUTH_RAWWD__": "raw_watchdog"}
+                 "__TRUTH_RAWWD__": "raw_watchdog",
+                 "__TRUTH_DEPLOY__": "deployment"}
+
+
+#: Service whose absence removes a box's whole HTTP truth surface
+#: (/api/status + /fleet/slo are both served by it).
+_HTTP_SURFACE_SERVICE = "meshforge-map"
+#: Role-catalog service states that mean "this box is not supposed to run it".
+_NOT_EXPECTED = ("disabled", "absent")
+
+
+def http_surface_expected(deployment_raw) -> "Optional[bool]":
+    """Does this box's DECLARED role expect the HTTP truth surface to exist?
+
+    ``True`` / ``False`` when the box's own ``deployment.json`` names a role
+    the catalog knows; ``None`` when we cannot tell — no declaration, unknown
+    role, or an unloadable catalog.
+
+    ``None`` is load-bearing and must never collapse to ``False``: the NOC
+    treats "not expected" as an ACCEPTED blind spot that stops tainting the
+    fleet verdict, so guessing it would silence a genuinely broken box. An
+    undeclared box keeps darkening the verdict, which is the honest default
+    (honest_failure_modes #2 — unobservable is not permission to look away).
+    """
+    if not isinstance(deployment_raw, dict):
+        return None
+    role = deployment_raw.get("role")
+    if not isinstance(role, str) or not role:
+        return None
+    try:
+        import importlib.util
+        script = Path(__file__).resolve().parent / "provision_role.py"
+        spec = importlib.util.spec_from_file_location("provision_role", script)
+        if spec is None or spec.loader is None:
+            return None
+        mod = importlib.util.module_from_spec(spec)
+        # Register BEFORE exec: py3.12+ @dataclass resolves annotations via
+        # sys.modules[cls.__module__], so an unregistered module raises
+        # AttributeError mid-import and this whole check silently degrades to
+        # "undecidable". Same pattern (and same comment) as
+        # watchdog_probes_drift._plan_role_actions — the repo already paid for
+        # this once; a test caught it the second time.
+        sys.modules[spec.name] = mod
+        spec.loader.exec_module(mod)
+        role_def = mod.resolve_role(mod.load_roles(mod.DEFAULT_ROLES_FILE), role)
+    except Exception:
+        return None            # catalog/tooling unavailable → indeterminate
+    services = role_def.get("services")
+    if not isinstance(services, dict):
+        return None
+    state = services.get(_HTTP_SURFACE_SERVICE)
+    if not isinstance(state, str):
+        # The role catalog says nothing about the map for this role. Silence
+        # is not a declaration — stay indeterminate rather than inventing one.
+        return None
+    return state.strip().lower() not in _NOT_EXPECTED
 
 
 def targets_path() -> Path:
@@ -145,6 +210,12 @@ def main() -> int:
             "fetched_at": time.time(),
             **sections,
         }
+        # Resolved HERE, not at the NOC's render time: the role catalog and
+        # the box's declaration are both in hand at this moment, and the
+        # consumer should read a decided boolean rather than re-derive it.
+        # None (undecidable) is written through as null, never as False.
+        doc["http_surface_expected"] = http_surface_expected(
+            sections.get("deployment"))
         got = [k for k, v in sections.items() if v is not None]
         try:
             atomic_write_text(spool_dir / f"{alias}.json",

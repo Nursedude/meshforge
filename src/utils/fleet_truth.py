@@ -91,14 +91,36 @@ def cell(
 # leg read green while half of every box's fan-out was dark.
 _CORE_OBSERVABILITY = ("watchdog", "mini", "services")
 
+#: Subsystems whose ONLY source is the box's HTTP truth surface (/api/status +
+#: /fleet/slo, both served by meshforge-map). On a box whose declared role runs
+#: no map, these are unobservable BY DESIGN. ``watchdog`` is deliberately NOT
+#: here: the spool reads /var/lib/meshforge/watchdog.json as a raw file, so it
+#: stays genuinely observable on a map-less box and must keep tainting when it
+#: goes dark — that is the one core signal a gateway-only box still owes us.
+_HTTP_SURFACE_SUBSYSTEMS = ("mini", "services", "claw", "cascade", "ci",
+                            "radio", "schedules", "rns_paths")
+
 
 def _subsystem_taints_verdict(name: str, c: Dict[str, Any]) -> bool:
     """FAILED always taints. A DARK cell taints only if it's a core-observability
-    subsystem we could not see (not a benign role-absence). HEALTHY never taints."""
+    subsystem we could not see (not a benign role-absence). HEALTHY never taints.
+
+    ``accepted_blind`` (2026-07-20) is the third case, and it is NOT the same as
+    ``absent``. A gateway-only box declares ``meshforge-map: disabled`` (too
+    heavy for a ~1GB board), which removes /api/status and /fleet/slo — the only
+    windows onto its mini and services cells. Those subsystems may well be
+    running perfectly; we simply gave up the ability to see them ON PURPOSE.
+    Calling that ``absent`` would assert they are not there, which we do not
+    know and would be a lie. So it gets its own flag: the cell still renders
+    DARK for the human and is listed in ``accepted_blind_spots``, it just does
+    not raise an alarm about a configuration the fleet deliberately chose.
+    Set ONLY from the box's own declared role — never inferred from silence.
+    """
     st = c.get("state")
     if st == FAILED:
         return True
-    if st == DARK and name in _CORE_OBSERVABILITY and not c.get("absent"):
+    if st == DARK and name in _CORE_OBSERVABILITY and not c.get("absent") \
+            and not c.get("accepted_blind"):
         return True
     return False
 
@@ -492,6 +514,23 @@ def build_box_truth(
     subsystems["rns_paths"] = _generic_present_cell(
         slo, "path_table", "/fleet/slo.path_table")
 
+    # Mark the cells whose ONLY window is the HTTP surface this box's declared
+    # role deliberately does not run. Strictly gated: the flag is applied only
+    # when the collector decided ``False`` from the box's OWN deployment.json
+    # role against the role catalog. None (undeclared / unknown role / catalog
+    # unreadable) leaves every cell exactly as dark and as tainting as before —
+    # an undeclared blind spot is still an alarm, which is what keeps this from
+    # becoming a silence-manufacturing switch.
+    if snap.get("http_surface_expected") is False:
+        for _name in _HTTP_SURFACE_SUBSYSTEMS:
+            _c = subsystems.get(_name)
+            if isinstance(_c, dict) and _c.get("state") == DARK:
+                _c["accepted_blind"] = True
+                _c["reason"] = (
+                    f"{_c.get('reason') or 'unobservable'} — accepted: this "
+                    "box's declared role runs no map server, so it has no "
+                    "HTTP truth surface")
+
     coverage = merge_coverage(watchdog_block, signal_classes)
 
     # Per-box roll-up (2026-07-19 adversarial review): the box tile / counts
@@ -699,6 +738,20 @@ def build_fleet_truth(
     if skew:
         all_states.append(DARK)
 
+    # Accepted blind spots — surfaced as their own line, never averaged into a
+    # healthy-looking summary (honest_failure_modes #5). We stopped ALARMING on
+    # these; we do not get to stop DISCLOSING them. A fleet reading healthy
+    # while carrying accepted blind spots must say so out loud, so the count
+    # can be argued with — and so nobody later mistakes "no alarm" for
+    # "fully observed".
+    accepted: Dict[str, List[str]] = {}
+    for b in boxes:
+        for name, c in (b.get("subsystems") or {}).items():
+            if isinstance(c, dict) and c.get("accepted_blind"):
+                accepted.setdefault(b.get("alias") or "?", []).append(name)
+    for v in accepted.values():
+        v.sort()
+
     fleet_state = worst_of(all_states)
 
     return {
@@ -717,6 +770,9 @@ def build_fleet_truth(
                    "dark": counts.get(DARK, 0)},
         "boxes": boxes,
         "structural_dark": STRUCTURAL_DARK,
+        # {box: [subsystems]} unobservable because that box's DECLARED role
+        # runs no map server. Not alarms — disclosures. Empty is fully observed.
+        "accepted_blind_spots": accepted,
         # {signal_class: [boxes reporting it]} — empty in the steady state.
         # Non-empty = this NOC server's code is older than the fleet's; its
         # coverage maps are partial until the serving process is restarted.

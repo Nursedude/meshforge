@@ -166,6 +166,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     status = _http_get_json(f"{base}/api/status", PEER_TIMEOUT_S)
     error = None
     answered_at: Optional[float] = time.time() if (slo or status) else None
+    # None = undecided. A box that ANSWERED over HTTP obviously has the
+    # surface, so this only ever matters for the spool path below.
+    http_surface_expected: Optional[bool] = None
 
     if slo is None and status is None:
         # Direct fan-out failed — try the ssh spool (fresh-only).
@@ -174,12 +177,25 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             status = spool.get("status") if isinstance(spool.get("status"), dict) else None
             slo = spool.get("slo") if isinstance(spool.get("slo"), dict) else None
             raw_wd = spool.get("raw_watchdog")
+            # Decided by the spool writer (it holds the role catalog). True /
+            # False / None-if-undecidable; None must NEVER become False —
+            # "not expected" is what stops a dark box tainting the verdict.
+            hse = spool.get("http_surface_expected")
+            if isinstance(hse, bool):
+                http_surface_expected = hse
             if status is None and isinstance(raw_wd, dict):
                 # Map-less box (moc3): synthesize the one block we DO have,
                 # through the same transform + staleness threshold the status
                 # handler uses (shared SSOT — a stale raw file reads dark).
                 from utils._map_status_endpoints import watchdog_block_from_payload
                 status = {"watchdog": watchdog_block_from_payload(raw_wd)}
+                # Carry the box's OWN role declaration through in the same
+                # shape an HTTP box reports it (/api/status.app.role), so the
+                # builder needs no map-less special case. Only ever set from
+                # the box's real file — never inferred.
+                deploy = spool.get("deployment")
+                if isinstance(deploy, dict) and isinstance(deploy.get("role"), str):
+                    status["app"] = {"name": "meshforge", "role": deploy["role"]}
             if slo is not None or status is not None:
                 method = "ssh_spool"
                 # Honest observation age: when the spool answered, age runs
@@ -198,6 +214,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "slo": slo,
         "error": error,
         "answered_at": answered_at,
+        "http_surface_expected": http_surface_expected,
     }
 
 

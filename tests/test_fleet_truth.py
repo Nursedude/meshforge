@@ -358,6 +358,77 @@ class TestFleetTruth:
         assert t["server_class_skew"] == {}
         assert t["fleet_state"] == ft.HEALTHY
 
+    # ── accepted blind spots: a role-declared missing map (moc3, 2026-07-20)
+    def _maples_snap(self, alias="moc3", *, expected=False):
+        """A gateway-only box as the spool actually reports it: watchdog from
+        the raw file (healthy), and NOTHING else, because it runs no map."""
+        return {"alias": alias, "resolution_method": "ssh_spool",
+                "answered_at": NOW, "error": None,
+                "http_surface_expected": expected,
+                "status": {"app": {"name": "meshforge", "role": "gateway-only"},
+                           "watchdog": {"installed": True, "ok": True, "signals": []}},
+                "slo": None}
+
+    def test_role_declared_maples_box_does_not_darken_the_fleet(self):
+        """moc3 declares `meshforge-map: disabled` (too heavy for a ~1GB
+        board), which removes the only window onto mini + services. A box
+        configured exactly as designed must not pin the fleet DARK forever."""
+        t = ft.build_fleet_truth(
+            [self._healthy_snap("moc"), self._maples_snap()],
+            now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.HEALTHY
+        assert t["boxes"][1]["box_state"] == ft.HEALTHY
+
+    def test_accepted_blind_spots_are_disclosed_not_hidden(self):
+        """We stopped ALARMING on these; we do not get to stop DISCLOSING
+        them. The cells stay DARK for the human and are listed at the top."""
+        t = ft.build_fleet_truth([self._maples_snap()], now=NOW,
+                                 signal_classes=[], noc_host="moc")
+        subs = t["boxes"][0]["subsystems"]
+        assert subs["mini"]["state"] == ft.DARK        # still dark, not green
+        assert subs["services"]["state"] == ft.DARK
+        assert subs["mini"]["accepted_blind"] is True
+        assert "declared role runs no map server" in subs["mini"]["reason"]
+        assert t["accepted_blind_spots"]["moc3"] == [
+            "cascade", "ci", "claw", "mini", "radio", "rns_paths",
+            "schedules", "services"]
+
+    def test_undeclared_dark_box_still_taints(self):
+        """THE anti-silence guard. Without a declaration (None — undeclared,
+        unknown role, or unreadable catalog) nothing changes: the box is just
+        as dark and just as tainting as before. This must never become a
+        switch that quiets genuinely broken boxes."""
+        snap = self._maples_snap(expected=None)
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.DARK
+        assert t["accepted_blind_spots"] == {}
+        assert "accepted_blind" not in t["boxes"][0]["subsystems"]["mini"]
+
+    def test_watchdog_going_dark_still_taints_on_a_maples_box(self):
+        """The one core signal a gateway-only box still owes us. Its
+        watchdog.json is a RAW FILE the spool reads, so it stays genuinely
+        observable — if it goes dark, that is a real blind spot, not an
+        accepted one, and it must still alarm."""
+        snap = self._maples_snap()
+        snap["status"] = {"app": {"name": "meshforge", "role": "gateway-only"}}
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=[], noc_host="moc")
+        assert t["boxes"][0]["subsystems"]["watchdog"]["state"] == ft.DARK
+        assert not t["boxes"][0]["subsystems"]["watchdog"].get("accepted_blind")
+        assert t["fleet_state"] == ft.DARK
+
+    def test_accepted_blind_never_masks_an_observed_fault(self):
+        """accepted_blind only ever applies to DARK cells. A cell that is
+        FAILED is an observation, and observations always taint."""
+        snap = self._maples_snap()
+        snap["slo"] = {"overall_status": "degraded", "cascade": {},
+                       "ci_status": {}, "radio": {}, "schedules": {},
+                       "path_table": {}}
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=[], noc_host="moc")
+        svc = t["boxes"][0]["subsystems"]["services"]
+        assert svc["state"] == ft.FAILED
+        assert not svc.get("accepted_blind")
+        assert t["fleet_state"] == ft.FAILED
+
     def test_no_skew_leaves_the_verdict_alone(self):
         snaps = [self._healthy_snap("moc")]
         t = ft.build_fleet_truth(snaps, now=NOW, signal_classes=[], noc_host="moc")

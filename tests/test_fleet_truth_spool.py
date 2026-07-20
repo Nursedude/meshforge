@@ -199,3 +199,76 @@ class TestWatchdogBlockFromPayload:
     def test_non_dict_is_malformed_never_healthy(self):
         b = watchdog_block_from_payload(None)  # type: ignore[arg-type]
         assert b["ok"] is False
+
+
+# ── role-declared HTTP-surface expectation (2026-07-20) ──────────────────
+# A gateway-only box declares `meshforge-map: disabled` (too heavy for a ~1GB
+# board), which removes /api/status AND /fleet/slo — the only windows onto its
+# mini + services cells. The spool resolves that declaration into a decided
+# boolean so the NOC can accept the blind spot instead of darkening the whole
+# fleet verdict forever. `None` (undecidable) must never collapse to False.
+class TestHttpSurfaceExpected:
+    def test_gateway_only_role_declares_no_http_surface(self):
+        mod = _load_spool_script()
+        assert mod.http_surface_expected({"role": "gateway-only"}) is False
+
+    def test_a_map_running_role_expects_the_surface(self):
+        mod = _load_spool_script()
+        # Any catalog role that does NOT disable/absent meshforge-map.
+        assert mod.http_surface_expected({"role": "full-noc"}) in (True, None)
+
+    @pytest.mark.parametrize("deploy", [
+        None, {}, {"role": ""}, {"role": 123},
+        {"role": "no-such-role-in-the-catalog"}, "not-a-dict",
+    ])
+    def test_undecidable_is_none_never_false(self, deploy):
+        """THE anti-silence guard, at the source. False is what stops a dark
+        box tainting the verdict, so an absent/unknown/unreadable declaration
+        must stay None — guessing here would quiet a genuinely broken box."""
+        mod = _load_spool_script()
+        assert mod.http_surface_expected(deploy) is None
+
+    def test_unloadable_catalog_is_none(self):
+        mod = _load_spool_script()
+        with patch.object(mod, "Path", side_effect=RuntimeError("boom")):
+            assert mod.http_surface_expected({"role": "gateway-only"}) is None
+
+
+class TestSpoolCarriesTheDeclaration:
+    def test_deployment_section_is_parsed(self):
+        mod = _load_spool_script()
+        raw = ("__TRUTH_SLO__\n\n__TRUTH_STATUS__\n\n__TRUTH_RAWWD__\n\n"
+               '__TRUTH_DEPLOY__\n{"role": "gateway-only"}\n')
+        out = mod.parse_sections(raw)
+        assert out["deployment"] == {"role": "gateway-only"}
+
+    def test_collector_promotes_role_and_expectation(self, tmp_path):
+        """End-to-end through the collector: a map-less box's role reaches the
+        snapshot in the SAME shape an HTTP box reports it, so the builder needs
+        no special case."""
+        doc = {"schema": c.SPOOL_SCHEMA, "alias": "moc3", "fetched_at": time.time(),
+               "slo": None, "status": None,
+               "raw_watchdog": {"ok": True, "written_at": time.time(),
+                                "host": "moc3", "signals": []},
+               "deployment": {"role": "gateway-only"},
+               "http_surface_expected": False}
+        (tmp_path / "moc3.json").write_text(json.dumps(doc))
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path), \
+             patch.object(c, "_http_get_json", return_value=None):
+            snap = c._fetch_peer("moc3", is_self=False, port=5000)
+        assert snap["resolution_method"] == "ssh_spool"
+        assert snap["http_surface_expected"] is False
+        assert snap["status"]["app"]["role"] == "gateway-only"
+
+    def test_collector_defaults_expectation_to_none(self, tmp_path):
+        """A spool doc written by an OLDER writer carries no expectation field;
+        it must read undecided (and keep tainting), not False."""
+        doc = {"schema": c.SPOOL_SCHEMA, "alias": "moc3", "fetched_at": time.time(),
+               "slo": None, "status": None,
+               "raw_watchdog": {"ok": True, "written_at": time.time(),
+                                "host": "moc3", "signals": []}}
+        (tmp_path / "moc3.json").write_text(json.dumps(doc))
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path), \
+             patch.object(c, "_http_get_json", return_value=None):
+            snap = c._fetch_peer("moc3", is_self=False, port=5000)
+        assert snap["http_surface_expected"] is None

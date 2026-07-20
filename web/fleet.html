@@ -87,6 +87,10 @@
         .verdict .detail { color: #b0c0d0; font-size: 13px; flex: 1; min-width: 260px; }
         .verdict .detail strong { color: #e0e0e0; }
         .verdict .warn { color: var(--amber); font-weight: 600; }
+        /* Disclosure, not alarm: accepted blind spots are DARK-coloured (the
+           unobservable state they actually are) and unbolded, so they read as
+           "not seen, on purpose" rather than "something is wrong". */
+        .verdict .note { color: var(--dark); }
         .verdict .counts { display: flex; gap: 8px; }
         .count-chip { padding: 4px 12px; border-radius: 12px; font-size: 12px; font-weight: 700; }
         .count-chip.healthy { background: var(--healthy-bg); color: var(--healthy); }
@@ -451,6 +455,19 @@
                        esc(skewNames.slice(0, 4).join(', ')) +
                        (skewNames.length > 4 ? ', …' : '') +
                        '). Coverage below is PARTIAL until this service is restarted.</span>');
+        }
+        // Accepted blind spots (2026-07-20). We stopped ALARMING on subsystems
+        // a box's declared role legitimately cannot serve (a gateway-only box
+        // runs no map, so it has no HTTP truth surface) — we do NOT get to stop
+        // DISCLOSING them. A fleet reading healthy while carrying blind spots
+        // must say so, or "no alarm" quietly becomes "fully observed".
+        const blind = doc.accepted_blind_spots || {};
+        const blindBoxes = Object.keys(blind);
+        if (blindBoxes.length) {
+            const n = blindBoxes.reduce((a, b) => a + (blind[b] || []).length, 0);
+            parts.push('<span class="note">ℹ ' + esc(n) + ' accepted blind spot(s) on ' +
+                       esc(blindBoxes.join(', ')) + ' — subsystems their declared role ' +
+                       'cannot serve (no map server). Not faults; not observed either.</span>');
         }
         document.getElementById('verdict-detail').innerHTML = parts.join(' ');
 
