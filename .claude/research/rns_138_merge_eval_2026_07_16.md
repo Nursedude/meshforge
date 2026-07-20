@@ -797,13 +797,38 @@ New module `src/utils/watchdog_probes_user.py` rather than an append —
 `watchdog_probes_service.py` sits at 1488 lines, 12 short of the MF025 ratchet.
 
 **Two follow-ups left open, deliberately:**
-1. **meshanchor-server has no declared MeshForge role**, so
-   `promote_seed_rules.py` refuses (correctly — it will not guess). Its mini
-   rules are from 07-14 and already lack `user_unit_inactive_any` and
-   `rns_stray_env_drift_any`, i.e. this drift PREDATES today. It also runs
-   `meshanchor-fleet-watchdog`, not `meshforge-watchdog`, so MF probe classes
-   have no producer there. Needs an operator decision on which seed applies
-   rather than a guess from me.
+1. ~~meshanchor-server has no declared MeshForge role.~~ **RESOLVED
+   2026-07-19 — seeded `fleet_gateway`**, on three independent lines of
+   evidence rather than a guess:
+   - **Lineage**: the live 46 rules are a strict subset of BOTH seeds (zero
+     live-only), so subset alone cannot discriminate — but
+     `fleet_gateway ⊂ federator`, and federator adds exactly three rules
+     (`digest_stale_30m`, `source_error_federator`,
+     `unexpected_reboot_annotate`), **all three absent** from the live file.
+     A federator lineage carrying any of them would have shown them.
+   - **Function**: the role map is `primary → federator` where primary means
+     *the :5000 federator/manager box* — within the MeshForge fleet that is
+     VolcanoAI. meshanchor-server is a peer, however manager-shaped it is for
+     its own MeshAnchor fleet.
+   - **Stakes**: low, and worth knowing. The box has NO `meshforge-watchdog`
+     (unit not found, no unit file, no `/var/lib/meshforge/watchdog.json`),
+     and its mini holds only the `federation` and `boot_health` sources. Most
+     of the seeded rules match MF watchdog signal classes that have **no
+     producer there** — including the new `user_timer_unit_failing_any`. And
+     because `probe_rules_seed_drift` is itself an MF watchdog probe running
+     locally, **nothing on that box was judging the drift** — which is exactly
+     why it sat unnoticed since 07-14.
+
+   Applied 46 → 55 rules (9 added, 45 stamped, 1 local tuning KEPT, none
+   removed; backup at `mini_dudeai_rules.json.promote.bak`). VERIFIED at the
+   live consumer, not the file: after restarting the mini, the running daemon
+   re-derived `rule_count: 55, error_count: 0` on its 21:08 tick.
+
+   **The open question this exposed** (bookkeeping done, design not): MF's
+   mini on that box runs `--preset meshforge_fleet` while only 2 of its
+   sources resolve there. MA now has its own role engine (`meshanchor-noc`)
+   and its own watchdog; a mini source set matched to THOSE producers would
+   earn its keep where the MF seed structurally cannot.
 2. ~~Not ported to MeshAnchor.~~ **PORTED 2026-07-19** (MA `0ed63cda`) as
    `ActiveHealthProbe.check_user_timer_unit_failing`, registered
    unconditionally in `create_gateway_health_probe` per the fd-exhaustion
