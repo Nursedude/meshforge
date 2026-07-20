@@ -51,6 +51,44 @@ boundary below.**
    Strictly better option: stand one up on our own rnsd and point the fleet at
    it. That choice is the operator's, not the detector's.
 
+## Slice 2 — what a fresh session needs to know FIRST (researched 2026-07-20)
+
+**The client/server asymmetry is the whole shape of this slice. Do not assume
+symmetry.**
+
+- **CLIENT side is FULLY WIRED already.** Two live consumers call
+  `set_outbound_propagation_node()`:
+  `src/gateway/_rns_bridge_connection.py:305` (the gateway's LXMF router — the
+  main path) and `src/gateway/meshtastic_broadcast_bridge.py:556`, both fed from
+  `GatewayConfig.rns.propagation_node` (`src/gateway/config.py:434`, default
+  `""`). NomadNet has its own `[client] propagation_node` handler
+  (`src/launcher_tui/handlers/_nomadnet_config_ops.py:306`).
+  → **Adopting an existing node is genuinely just a 32-hex-char config value +
+  a gateway restart.** No code needed.
+- **SERVER side does NOT exist in MeshForge.** `grep` for
+  `enable_propagation|propagation_node=True|announce_propagation` across `src/`
+  returns NOTHING. MeshForge can USE a propagation node; it has never been able
+  to BE one. Standing one up on our own rnsd is therefore an OPS/BUILD task
+  (NomadNet node-mode or an LXMF propagation daemon on an existing rnsd box),
+  not a config flip — size it honestly before promising it.
+
+**So the operator's decision is really three:**
+1. Adopt one of the ~15 heard nodes (fast, but a stranger holds our metadata);
+2. stand up our own (better trust posture, real work, and it becomes a fleet
+   service someone must keep alive — a new organ with its own liveness needs);
+3. leave it, and let the probe keep the gap visible (a legitimate, honest
+   outcome — the row-3/row-8 "accept" precedent).
+
+**If (2) is chosen, remember**: a propagation node the fleet depends on is
+itself an organ that can go dark, so it needs its own liveness leg. And the
+detector shipped in slice 1 goes INERT the moment `propagation_node` is set —
+nothing currently checks that a CONFIGURED node still answers (that would be a
+shape-A leg, and it should land WITH the adoption, not after it).
+
+**Deploy constraint (unchanged)**: adoption edits `gateway.json` and needs a
+`meshforge-gateway` restart. Never mid-soak — the gateway's wedge watchdog
+calls `os._exit(2)`, so new code activates non-deterministically.
+
 ## Design constraints for the detector
 
 - **Observation source must be root-readable and config-free.** Candidates, in
