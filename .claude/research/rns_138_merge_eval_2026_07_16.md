@@ -527,3 +527,81 @@ from timeout.
 neither has a fleet LXMF round-trip witness. The 7-peer tracer from VolcanoAI
 (still `1.2.5+mf.5`) was 7/7 ok including moc3 on 1.3.8 — mixed-version
 delivery healthy — but it cannot cover kiai. Consider adding both.
+
+### ROLL COMPLETE — all 7 MeshForge boxes on 1.3.8+mf.0 / 1.0.1+mf.1 (2026-07-19)
+
+Order executed: `kiai → moc5 → moc4 → moc1 → moc2 → moc → VolcanoAI`, each box
+stop-clients → flip-every-env → restart rnsd → start-clients, verified before
+moving on. moc3 was already the canary. **meshanchor-server deliberately NOT
+rolled** — still `1.2.5+mf.5 / 0.9.4+mf.0`.
+
+| box | envs flipped | rnstatus | serving | failed units |
+|---|---|---|---|---|
+| kiai | user-site, **root user-site** | ok | 2 | 0 (see tracer note) |
+| moc5 | system-local, user-site | ok 1s | 2 | 0 |
+| moc4 | venv (py3.11), system-local | ok 1s | 1 | 0 |
+| moc1 | venv, system-local, user-site, pipx:nomadnet | ok | 3 | 0 |
+| moc2 | venv, system-local, user-site, pipx:nomadnet | ok | 3 | 0 |
+| moc | venv, system-local, user-site, pipx:nomadnet | ok | 5 | 0 |
+| VolcanoAI | user-site, system-local (rns only), root user-site (lxmf only) | ok 1s | 4 | 0 |
+
+Every box: live import in EVERY consumer python reports `1.3.8+mf.0 /
+1.0.1+mf.1`; `pip check` clean for rns/lxmf; `rnsd` owns its `@rns/<instance>`
++ `/rpc`; `NRestarts=0` (no #69 race on any box); zero `-p err` journal
+entries in the roll window.
+
+**Functional proof, both directions of the mixed-version boundary:**
+- BEFORE (VolcanoAI `1.2.5+mf.5` → 7 peers incl. moc3 on 1.3.8): 7/7 ok
+- AFTER (VolcanoAI `1.3.8+mf.0` → 7 peers incl. meshanchor-server still on
+  `1.2.5+mf.5`): 7/7 ok, rtt 1.5–12.5 s
+- Gateway box moc: `Meshtastic: connected RNS: connected` and msgpack RPC live
+  (`rpc[rnsd.path_table_read] ok 0.000s`) after restart; lxmd up. The bridged
+  counter reset to 0 by the restart (was 1355 / M→R 54 / R→M 1301).
+
+### Three roll-path defects found by rolling (none in the fork itself)
+
+1. **Root-owned venv → pip silently falls back to `--user` and refuses.** On
+   moc4 `/opt/meshforge/venv` is root-owned; `venv/bin/python -m pip install`
+   as the operator died with *"Will not install to the user site because it
+   will lack sys.path precedence"* — **after** system-local had already
+   flipped. That left a live mixed-version window (new-code clients restarted
+   against an old-code rnsd) until it was re-run under `sudo`. **Route venv
+   installs through `sudo` whenever `/opt/meshforge/venv/lib` is not
+   user-writable, and treat a partial APPLY as an incident, not a retry.**
+2. **`rnstatus` not on PATH read as WEDGED.** `~/.local/bin` is absent from
+   non-interactive ssh PATH on some boxes. `timeout 8 rnstatus || echo WEDGED`
+   maps command-not-found onto a wedge verdict — honest_failure_modes #1 in the
+   *check*. Roll checks must resolve an explicit binary path and distinguish
+   not-found (rc 127) from timeout (rc 124).
+3. **Shape-preserving installs matter.** VolcanoAI's system-local carries `rns`
+   but not `lxmf`, and its root user-site carries `lxmf` but not `rns`. A
+   blanket "install both pins into every env" would have added packages that
+   were never there. The roll installs only the packages an env already has.
+
+### Standing gaps (pre-existing, NOT roll-caused)
+
+- **kiai has no `~/.config/meshforge/lab_peers` at all** — its
+  `meshforge-tracer.timer` (active since 2026-07-12, every 10 min) has been
+  failing `exit 2 "no peers … nothing to do"` for a week, undetected. Timer-
+  triggered USER-unit failures are invisible to `probe_service_inactive`
+  (user-unit blind, the same structural hole #82 hit). kiai and moc4 are also
+  absent from the other boxes' peer lists, so neither has a fleet LXMF
+  round-trip witness. Worth a probe and a peers-file fix.
+- moc3's service venv still carries `cryptography 49.0.0` (violates
+  `requirements/rns.txt` and its own pyopenssl). `--no-deps` did not touch it.
+
+### REMAINING before this arc closes
+
+1. **meshanchor-server** — deferred by decision. It also carries two
+   pre-existing drifts to settle at the same time: system-local at
+   `1.2.5+mf.4`, and a pipx `nomadnet` venv on **stock** `1.2.5 / 0.9.8`.
+2. **Fast-forward the fork branches** `meshforge-138` → `meshforge` (RNS) and
+   `meshforge-101` → `meshforge` (LXMF).
+3. **Bump the SSOT** — `requirements/rns.txt` MF-FORK-PIN + `rns_version_check`
+   — then `parity_check` green. ⚠️ **Ordering constraint**: bumping the SSOT
+   while meshanchor-server is un-rolled inverts the drift signal — the seven
+   rolled boxes go quiet and the MA box starts failing `rns_version_check`.
+   Either roll MA first, or bump and accept a deliberate MA drift marker the
+   way moc3's was during the soak.
+4. `rns_version_drift` currently fires degraded on ALL rolled boxes (the pin is
+   still the old baseline). That is expected and clears with step 3.
