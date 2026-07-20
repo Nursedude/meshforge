@@ -60,6 +60,13 @@ ExecStartPre=/bin/sh -c 'timeout 120 sh -c "until timeout 5 /usr/local/bin/rnsta
 # of systemd killing start-pre mid-probe (they race at the 90s default).
 TimeoutStartSec=180
 
+# Without this, lxmd's stdout is block-buffered (it is not a tty under
+# systemd), so the journal shows ONLY systemd's own start lines and the
+# daemon reads as dark — verified live on the 2026-07-20 bring-up, where a
+# healthy node produced zero journal output for 12 minutes. A running organ
+# that cannot be observed is the failure mode this fleet keeps paying for.
+Environment=PYTHONUNBUFFERED=1
+
 # NOTE the absent -s/--service flag, deliberately: it redirects lxmd's log to
 # a private file inside the config dir, which would make this daemon dark to
 # journalctl and to any journal-reading probe. Stdout -> journal instead.

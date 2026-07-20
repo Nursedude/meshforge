@@ -19,6 +19,9 @@
 # Install:
 #   sudo install -d -m 0750 /var/lib/lxmd
 #   sudo install -m 0640 templates/lxmd/config.example /var/lib/lxmd/config
+#   # lxmd writes its private identity on first start with default perms;
+#   # the 0750 dir already blocks other users, but tighten it anyway:
+#   sudo chmod 0600 /var/lib/lxmd/identity
 #   # customise node_name below, then:
 #   sudo cp templates/systemd/lxmd.service /etc/systemd/system/
 #   sudo systemctl daemon-reload && sudo systemctl enable --now lxmd
