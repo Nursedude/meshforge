@@ -102,3 +102,78 @@ above, whether row 8 is a build or an accept — and if accept, whether the
 detector's honest coverage (plus the named mesh blind spot) is the whole
 deliverable. That decision is cheap, is the operator's, and it may retire the
 hardest row in the backlog without writing a distributed algorithm.
+
+---
+
+# ADDENDUM — the question was wrong, and the answer survived anyway (2026-07-19)
+
+The operator pushed back on the framing above: *"is time going to change this
+scenario — is the solution not understood because we aren't asking the right
+question?"* That was correct, and it falsifies the reasoning while confirming
+the decision.
+
+## What I measured above was a RATE. Rates decay as evidence.
+
+"0 human dups in 3+ weeks" is a claim about an arrival process. If dups are
+random arrivals, then accepting on a 3-week zero is just a bet that the soak
+was long enough — and time is exactly what breaks that bet.
+
+## So I tested the structural alternative: are dups even POSSIBLE right now?
+
+A cross-gateway dup needs the same `(content_id, recipient)` confirm-delivered
+by both gateways — so the recipient must be reachable from both. If the
+recipient sets were disjoint, 0 would be a topological guarantee, not luck.
+
+**They are not disjoint.** Per-gateway confirmed recipients:
+
+| gateway | recipients |
+|---|---|
+| moc | `f68c2f56`×56, `58cecbd0`×53, **`6b1a0120`×3**, **`7cda0fab`×3**, **`9217147e`×3**, `f0a6899b`×3 |
+| moc3 | `3dfbdb5d`×21, **`6b1a0120`×18**, **`7cda0fab`×18**, **`9217147e`×18** |
+
+`infra_hashes = [3dfbdb5d, f68c2f56, 58cecbd0]` — the two gateway hashes plus
+MeshAnchor. So the three shared recipients are **NOT infra**: they are
+human-class, and **both gateways are confirm-delivering to all three today**.
+`6b1a0120` is the very recipient this module's docstring cites as "the live
+dup-A" — the case that motivated the whole dedup arc.
+
+**Conclusion: the precondition is LIVE.** The zero is not structural immunity;
+it is that the two gateways have not lately carried the *same content* to those
+shared recipients. Coincident ingest is traffic-dependent, so **yes — time can
+and eventually will change the rate.** The operator's instinct was right and the
+rate-based justification was the wrong question.
+
+## The decision stands, on a reason that does not decay
+
+Accept, because of **failure-cost asymmetry**, not frequency:
+
+- an unsuppressed duplicate = the message arrived **twice**. Redundancy.
+- a yield protocol that misfires = gateway A suppresses expecting B to deliver,
+  B fails or the partition heals wrong, and the message arrives **zero** times.
+  Silence.
+
+Coordination converts a benign cost defect into a possible loss mode. On
+emergency-comms infrastructure the correct direction to fail is redundancy.
+That argument is time-invariant: it is just as true at 100 dups/day as at 0, so
+it does not weaken as the soak ages — which is precisely what a rate-based
+justification would do.
+
+## The better question to keep asking
+
+Not *"how many dups occurred"* (an outcome, and partially unobservable — the
+mesh leg has no confirmation to join on), but:
+
+> **"how many recipients are reachable from more than one gateway?"**
+
+That is the PRECONDITION, and it is **routing/configuration state, not a
+confirmation** — so it is observable on the mesh leg where outcome-based dup
+detection structurally cannot see. It is a leading indicator: dual-homing count
+rising means dup exposure rising, visible *before* any duplicate occurs, and it
+answers "is time changing this?" with a number instead of a wait.
+
+Today that number is **3**.
+
+**Recommended next slice** (map/fleet layer — reads published views on the
+manager, touches no gateway code, so NOT blocked by the RNS roll): surface
+`dual_homed_recipients` in the dup rollup and give it a probe. Keep the
+outcome detector as-is; add the leading indicator beside it.
