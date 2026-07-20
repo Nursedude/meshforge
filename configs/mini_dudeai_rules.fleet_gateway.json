@@ -843,6 +843,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "2026-07-19 structural-dark row 7 \u2014 a battery-powered claw's pack is under the 3.5 V single-cell LiPo working floor: hours, not days, before the node drops off and takes its RF/witness coverage with it. This is the warning that did NOT exist on 2026-07-10, when dudeclaw-02 sat ~38 h below floor, bottomed at 2.41 V and died; the battery_v sensor spec that would have caught it was bound to dudeclaw-01, which lives on USB at 4.06 V and can never breach (the alarm pointed at the wrong device). Lower priority than claw_device_dark BY DESIGN \u2014 this is the actionable early warning, not the outage. Charge or swap the pack. Fires only on a concrete voltage from a REACHABLE claw; no gauge reads indeterminate, never 'charged'."
+    },
+    {
+      "id": "claw_rf_silent_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_rf_silent",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-07-19 structural-dark row 9 \u2014 the fleet's ONLY over-the-air witness. Every other mesh-RF check is a box talking about itself: the gateway can read healthy (RNS round-trip canary green, service active, queue draining) while nothing actually leaves the antenna \u2014 deaf radio, wrong region/preset, dead PA, unplugged coax. The claws answer lora_stats from a SEPARATE radio on SEPARATE silicon, which is physical-layer evidence no box can fabricate about itself. Fires only when EVERY reachable claw reporting a reading is silent (one deaf claw is that claw's problem; all of them is the channel). \u26a0\ufe0f propose_escalation, NOT ntfy, DELIBERATELY: the 1800s quiet window is PROVISIONAL \u2014 the operator staged it pending a heard-rate soak across overnight lulls, and that soak data did not exist until the lora_stats capture shipped the same day. A genuine quiet night can reach this threshold. Promote to a pager only from measured quiet-hours data, the way calibration_drift soaked 34 days before promotion; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
     }
   ]
 }

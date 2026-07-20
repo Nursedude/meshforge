@@ -239,7 +239,12 @@ def _capture_tick(nc: NatsConnection, device: str, host: str,
     di = _request_tool(nc, device, "device_info")
     bs = _request_tool(nc, device, "ble_stats")
     bat = _request_tool(nc, device, "battery_read")
-    return build_tick(now, host, device, di, bs, battery_reply=bat)
+    # lora_stats joined 2026-07-19 (row 9): the claw's OVER-THE-AIR witness —
+    # a separate radio on separate silicon reporting what it actually heard on
+    # the channel. No box self-report can corroborate the RF leg; this can.
+    lora = _request_tool(nc, device, "lora_stats")
+    return build_tick(now, host, device, di, bs, battery_reply=bat,
+                      lora_reply=lora)
 
 
 def _push_rows(nc: NatsConnection, rows: list[str], device: str):

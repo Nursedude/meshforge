@@ -11,6 +11,29 @@
 
 ## Closed / narrowed
 
+- **mesh_rf_ota_leg_unwatched** → **mesh_rf_ota_egress_unproven**, NARROWED
+  2026-07-19 (row 9). Its "hardware/field-gated" constraint DISSOLVED on
+  inspection: both claws already answer `lora_stats` and are actively hearing
+  (claw-01 heard_age 4s/158k pkts, claw-02 0s/101k). Shipped: lora_stats
+  captured into each claw tick + `probe_claw_rf_silent` — a SEPARATE radio on
+  separate silicon reporting the air, the first mesh-RF evidence no box can
+  fabricate about itself. Rules: only ALL claws quiet counts (one deaf claw is
+  that claw's problem); unreachable ≠ silent (claw_device_dark owns it); no
+  ears ≠ quiet air.
+  ⚠️ **ESCALATE-ONLY, threshold PROVISIONAL.** The 1800s window was the
+  operator's staged guess marked "SOAK the heard-rate incl. overnight lulls
+  first" — and that soak data COULD NOT EXIST until this capture shipped.
+  Promotion path = the calibration_drift precedent (row 4): accumulate
+  heard_age across full day/night cycles → read the measured quiet-hours max →
+  set the window above it with margin → only then flip the seed rule to ntfy.
+  Runbook: `.claude/research/claw_ota_witness_2026_07_19.md`.
+  Eval: `oracle-claw-rf-silent-is-not-egress-proof`.
+  **RESIDUAL (the real remaining half): this proves traffic EXISTS, not that
+  THIS box's TX reached the air** — a deaf/mute gateway beside chatty
+  neighbours keeps the probe clean. True egress proof needs per-source counters
+  in firmware (`lora_stats` reports only `last from=`) or mesh ACK consumption
+  (#74 T2 step 4).
+
 - **live_claw_nats_not_wired_to_mini** → **claw_edge_rf_coverage_partial**,
   NARROWED 2026-07-19 (row 7). The row's premise was STALE: live sensor reads
   already existed (dudeclaw-01's claw mini, healthy) and claw telemetry already
@@ -112,10 +135,10 @@
 | 3 | ~~`dep_version_drift_strays_blind`~~ | ACCEPTED-PERMANENT 2026-07-19 — see above; scope is deliberate, revisit only on a second installer | — | — | — |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
-| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | NEXT DEFAULT PICK is row 9's claw-ears leg (rows 2+8 wait on the RNS roll) |
+| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | rows 2+8 await the RNS roll; row 9 residual needs firmware/#74 |
 | 7 | ~~`live_claw_nats_not_wired_to_mini`~~ | NARROWED 2026-07-19 — see above; row renamed `claw_edge_rf_coverage_partial`. Residual = per-device sensor instances (claw-02), which feeds row 9 | — | — | NEXT DEFAULT PICK is row 9's claw-ears leg (or rows 2/8 post-roll) |
 | 8 | `cross_gateway_dups_unsuppressed` | STEP 6 cross-gateway suppression: distributed coordination (which gateway yields, race windows, idempotency, partition behavior) | **frontier design pass** → Opus impl | full session+ | hardest row; design doc first, never straight to code |
-| 9 | `mesh_rf_ota_leg_unwatched` | RF-side receipt: mesh ACK consumption (#74 T2 step 4) or a second receiver node as OTA witness (reference-node arc fit) | **frontier + operator/field** | multi-session | hardware/field-gated |
+| 9 | ~~`mesh_rf_ota_leg_unwatched`~~ | NARROWED 2026-07-19 — claw OTA witness shipped (escalate-only, provisional threshold); renamed `mesh_rf_ota_egress_unproven`. Residual = true egress proof (per-source counters or ACK consumption) | **frontier + operator/field** | — | remaining half needs firmware or #74 T2 step 4 |
 
 ## Row 6 policy — RATIFIED 2026-07-19, IMPLEMENTED 2026-07-19 (kept as the decision record)
 

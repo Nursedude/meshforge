@@ -80,6 +80,46 @@ def parse_battery(result: Any) -> Optional[Dict[str, Any]]:
     return {"volts": float(m.group(1)), "raw": result.strip()[:120]}
 
 
+# lora_stats: "mesh_heard_age_s: 4 (heard 158224 pkts, crc_err 1461, runts 1,
+#   last from=!79be01d3 to=!ffffffff ch=0x08 rssi=-41 snr=6.5)"
+_RE_LORA_AGE = re.compile(r"mesh_heard_age_s:\s*(\d+)", re.IGNORECASE)
+_RE_LORA_HEARD = re.compile(r"heard\s*(\d+)\s*pkts", re.IGNORECASE)
+_RE_LORA_CRC = re.compile(r"crc_err\s*(\d+)", re.IGNORECASE)
+_RE_LORA_RUNTS = re.compile(r"runts\s*(\d+)", re.IGNORECASE)
+_RE_LORA_FROM = re.compile(r"last from=(![0-9a-f]+)", re.IGNORECASE)
+_RE_LORA_RSSI = re.compile(r"rssi=(-?\d+)", re.IGNORECASE)
+_RE_LORA_SNR = re.compile(r"snr=(-?[\d.]+)", re.IGNORECASE)
+
+
+def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
+    """Parse a ``lora_stats`` result — the claw's OVER-THE-AIR witness.
+
+    This is the only reading in the fleet that is independent of any box's own
+    self-report: a separate radio, on separate silicon, saying what it actually
+    heard on the channel. ``heard_age_s`` is the load-bearing field (how long
+    since ANY packet), with the counters carried for RF-quality context.
+
+    Returns ``None`` when ``mesh_heard_age_s`` is absent — an unparseable reply
+    must not become "heard something just now". Absent counters stay ``None``
+    (unknown), never 0: a fabricated 0 crc_err would read as a clean channel.
+    """
+    if not isinstance(result, str) or not result.strip():
+        return None
+    age = _int(_RE_LORA_AGE, result)
+    if age is None:
+        return None
+    snr_m = _RE_LORA_SNR.search(result)
+    return {
+        "heard_age_s": age,
+        "heard_pkts": _int(_RE_LORA_HEARD, result),
+        "crc_err": _int(_RE_LORA_CRC, result),
+        "runts": _int(_RE_LORA_RUNTS, result),
+        "last_from": _str(_RE_LORA_FROM, result),
+        "last_rssi_dbm": _int(_RE_LORA_RSSI, result),
+        "last_snr": float(snr_m.group(1)) if snr_m else None,
+    }
+
+
 def parse_device_info(result: Any) -> Optional[Dict[str, Any]]:
     """Parse the ``device_info`` result string into structured fields.
 
@@ -156,7 +196,8 @@ _REQUIRED_HALVES = ("device_info",)
 
 def build_tick(now: float, host: str, device: str,
                device_info_reply: Any, ble_stats_reply: Any,
-               battery_reply: Any = None) -> Dict[str, Any]:
+               battery_reply: Any = None,
+               lora_reply: Any = None) -> Dict[str, Any]:
     """Assemble the ``claw_last_tick.json`` record from the NATS replies.
 
     ``reachable`` is the load-bearing fact: did the device answer ``device_info``?
@@ -189,6 +230,8 @@ def build_tick(now: float, host: str, device: str,
     ble = _extract(ble_stats_reply, parse_ble_stats, "ble_stats", errors)
     battery = (_extract(battery_reply, parse_battery, "battery", errors)
                if battery_reply is not None else None)
+    lora = (_extract(lora_reply, parse_lora_stats, "lora_stats", errors)
+            if lora_reply is not None else None)
     required_errors = [k for k in errors if k in _REQUIRED_HALVES]
     degraded_optional = sorted(k for k in errors if k not in _REQUIRED_HALVES)
     reachable = device_info is not None and not required_errors
@@ -202,6 +245,7 @@ def build_tick(now: float, host: str, device: str,
         "device_info": device_info,
         "ble": ble,
         "battery": battery,
+        "lora": lora,
         "errors": errors,
         "degraded_optional": degraded_optional,
     }

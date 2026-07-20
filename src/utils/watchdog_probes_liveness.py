@@ -899,3 +899,134 @@ def probe_claw_battery_low(
         )
     except Exception:
         return None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# claw LoRa EARS: the fleet's only over-the-air witness (row 9, 2026-07-19)
+#
+# Every other mesh-RF check in this fleet is a box talking about itself. The
+# gateway's own self-report can read healthy — RNS round-trip canary green,
+# service active, queue draining — while nothing actually leaves the antenna
+# (deaf radio, wrong region/preset, dead PA, unplugged coax). That is the
+# `mesh_rf_ota_leg_unwatched` blind spot.
+#
+# The claws answer `lora_stats` from a SEPARATE radio on SEPARATE silicon:
+# "I heard N packets, the last one <age> seconds ago." That is independent
+# physical-layer evidence no box can fabricate about itself. Silence across a
+# claw that normally hears constantly means the CHANNEL went quiet — the one
+# observation that distinguishes "we stopped transmitting" from "we think we
+# transmitted".
+#
+# ⚠️ THRESHOLD IS PROVISIONAL. The operator staged this pending a heard-rate
+# soak across overnight lulls, and that soak data did not exist until this
+# capture shipped. So this probe ESCALATES ONLY — it must not page until the
+# quiet-hours floor is measured, exactly the way calibration_drift soaked 34
+# days before promotion. A pager on an unmeasured threshold is the "worked
+# once" trap wearing an RF hat.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_CLAW_RF_DEBOUNCE_PATH = "/var/lib/meshforge/claw_rf_debounce.json"
+#: Provisional quiet-window. Raise/lower only from measured heard-rate data.
+CLAW_RF_SILENT_S = 1800.0
+
+
+def probe_claw_rf_silent(
+    *,
+    home: Optional[str] = None,
+    ticks: Optional[List[dict]] = None,
+    now: Optional[float] = None,
+    silent_after_s: float = CLAW_RF_SILENT_S,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """No LoRa traffic heard over the air by ANY claw for the quiet window.
+
+    Fires only when EVERY claw reporting a LoRa reading is silent: one deaf
+    claw is that claw's problem, but all of them going quiet at once is the
+    channel. Requires a REACHABLE claw with a parsed reading — an unreachable
+    device is claw_device_dark's call, and a claw whose firmware has no
+    lora_stats is indeterminate, never "the air is quiet".
+
+    Self-guards None: no tick files (INERT), stale/unparseable ticks, no claw
+    reporting a LoRa reading, or any claw hearing traffic inside the window.
+    2-tick debounce. Escalate-only until the heard-rate soak lands (see the
+    module comment). Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_CLAW_RF_DEBOUNCE_PATH
+        if ticks is None:
+            ticks, seen = _read_claw_ticks(home or _operator_home(), now)
+        else:
+            seen = len(ticks)
+
+        if not seen:
+            note_disposition("claw_rf_silent", "inert",
+                             reason="no claw tick files (no claw edge node here)")
+            _save_parity_streak(sp, 0)
+            return None
+        if not ticks:
+            note_disposition("claw_rf_silent", "indeterminate",
+                             reason="claw tick file(s) stale/unparseable")
+            _save_parity_streak(sp, 0)
+            return None
+
+        ages = []
+        for t in ticks:
+            if _tick_reachable(t) is False:
+                continue                      # dark → claw_device_dark's call
+            lora = t.get("lora")
+            age = lora.get("heard_age_s") if isinstance(lora, dict) else None
+            if isinstance(age, (int, float)) and not isinstance(age, bool):
+                ages.append((str(t.get("device")), float(age), lora))
+
+        if not ages:
+            note_disposition(
+                "claw_rf_silent", "indeterminate",
+                reason="no reachable claw reported a LoRa reading (no ears, or "
+                       "a capture predating lora_stats) — unknown is not silence")
+            _save_parity_streak(sp, 0)
+            return None
+
+        hearing = [a for a in ages if a[1] <= silent_after_s]
+        if hearing:
+            youngest = min(a[1] for a in hearing)
+            note_disposition(
+                "claw_rf_silent", "clean",
+                reason=f"{len(hearing)}/{len(ages)} claw(s) hearing traffic; "
+                       f"newest packet {youngest:.0f}s old")
+            _save_parity_streak(sp, 0)
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            note_disposition("claw_rf_silent", "indeterminate",
+                             reason=f"RF-silent candidate, debounce {streak}/{debounce_ticks}")
+            return None
+
+        ages.sort(key=lambda a: a[1])
+        listed = ", ".join(f"{d} {age:.0f}s" for d, age, _ in ages)
+        return Signal(
+            cls="claw_rf_silent",
+            subject=ages[0][0] if len(ages) == 1 else f"{len(ages)} claws",
+            severity="degraded",
+            detail=(
+                f"no LoRa traffic heard over the air for >{silent_after_s:.0f}s "
+                f"by any claw ({listed}). This is an INDEPENDENT receiver, not a "
+                f"box talking about itself: the mesh-RF leg looks silent even if "
+                f"gateway self-reports and the RNS canary read green. Check the "
+                f"radio/antenna/region-preset before trusting any box's own "
+                f"'sent' count. NOTE: the quiet-window threshold is provisional "
+                f"pending the heard-rate soak — a genuine overnight lull can "
+                f"reach this, which is why this escalates and does not page."
+            ),
+            extra={"claws": [{"device": d, "heard_age_s": a,
+                              "heard_pkts": (l or {}).get("heard_pkts"),
+                              "crc_err": (l or {}).get("crc_err")}
+                             for d, a, l in ages],
+                   "silent_after_s": silent_after_s,
+                   "threshold_provisional": True},
+        )
+    except Exception:
+        return None

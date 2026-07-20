@@ -206,10 +206,16 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "user timers ride the schedules/SLO staleness layer; conditional/nested "
                "wants and non-operator users remain unwatched",
      "ref": "watchdog_probes_service.py :: probe_user_unit_inactive"},
-    {"id": "mesh_rf_ota_leg_unwatched",
-     "detail": "bot output can stop reaching nodes over-the-air while the RNS round-trip "
-               "canary stays green — the mesh-RF leg is unwatched",
-     "ref": "watchdog_probe_core.py :: meshtasticd_phoneapi_wedge"},
+    {"id": "mesh_rf_ota_egress_unproven",
+     "detail": "NARROWED 2026-07-19 (row 9): the claws now witness the air from a SEPARATE "
+               "radio on separate silicon (claw_rf_silent), so channel-wide RF silence is "
+               "observable independently of any box's self-report — the first mesh-RF "
+               "evidence no box can fabricate about itself. RESIDUAL: this proves traffic "
+               "EXISTS, not that THIS box's transmission reached the air; per-source "
+               "counters or mesh ACK consumption (#74 T2 step 4) are still needed for true "
+               "egress proof. The quiet-window threshold is PROVISIONAL pending a "
+               "heard-rate soak, so the signal escalates and does not page",
+     "ref": "watchdog_probes_liveness.py :: probe_claw_rf_silent"},
     {"id": "aredn_configured_source_only",
      "detail": "declared-but-unconfigured now watched (organ_expectations.aredn in "
                "deployment.json, closed 2026-07-19) alongside the configured-source dark "

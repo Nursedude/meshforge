@@ -619,3 +619,75 @@ class TestClawEdgeHardwareProbes:
     def _paths(self, tmp_path):
         self.sp = str(tmp_path / "dark.json")
         self.sp2 = str(tmp_path / "bat.json")
+
+
+class TestClawRfSilentWitness:
+    """Structural-dark row 9 (2026-07-19): the fleet's only OVER-THE-AIR witness.
+
+    Every other mesh-RF check is a box talking about itself. The claws answer
+    lora_stats from a separate radio on separate silicon, so "we think we
+    transmitted" becomes distinguishable from "the air is quiet".
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sp(self, tmp_path):
+        self.sp = str(tmp_path / "rf.json")
+
+    def _tick(self, device="dudeclaw-01", reachable=True, age=None):
+        t = {"device": device, "reachable": reachable, "errors": {}}
+        if age is not None:
+            t["lora"] = {"heard_age_s": age, "heard_pkts": 158224,
+                         "crc_err": 1461, "last_from": "!79be01d3"}
+        return t
+
+    def test_no_claw_is_inert(self):
+        from utils.watchdog_probes import probe_claw_rf_silent
+        assert probe_claw_rf_silent(ticks=[], now=1.0, state_path=self.sp) is None
+        assert collect_dispositions()["claw_rf_silent"]["disp"] == "inert"
+
+    def test_hearing_traffic_is_clean(self):
+        from utils.watchdog_probes import probe_claw_rf_silent
+        for _ in range(3):
+            sig = probe_claw_rf_silent(ticks=[self._tick(age=4)], now=1.0,
+                                       state_path=self.sp)
+        assert sig is None
+        assert collect_dispositions()["claw_rf_silent"]["disp"] == "clean"
+
+    def test_all_claws_silent_fires_after_debounce(self):
+        from utils.watchdog_probes import probe_claw_rf_silent
+        t = [self._tick("dudeclaw-01", age=5000),
+             self._tick("dudeclaw-02", age=4200)]
+        assert probe_claw_rf_silent(ticks=t, now=1.0, state_path=self.sp) is None
+        sig = probe_claw_rf_silent(ticks=t, now=2.0, state_path=self.sp)
+        assert sig is not None and sig.cls == "claw_rf_silent"
+        assert sig.extra["threshold_provisional"] is True
+
+    def test_one_claw_still_hearing_keeps_it_clean(self):
+        """One deaf claw is that claw's problem; only ALL of them going quiet
+        is evidence about the CHANNEL. A single-radio failure must not be
+        reported as an RF outage."""
+        from utils.watchdog_probes import probe_claw_rf_silent
+        t = [self._tick("dudeclaw-01", age=5000),
+             self._tick("dudeclaw-02", age=3)]
+        for _ in range(3):
+            assert probe_claw_rf_silent(ticks=t, now=1.0,
+                                        state_path=self.sp) is None
+
+    def test_no_lora_reading_is_indeterminate_not_silence(self):
+        """A claw with no ears — or a capture predating lora_stats — knows
+        nothing about the air. Unknown must not become 'quiet'."""
+        from utils.watchdog_probes import probe_claw_rf_silent
+        for _ in range(3):
+            assert probe_claw_rf_silent(ticks=[self._tick(age=None)], now=1.0,
+                                        state_path=self.sp) is None
+        assert (collect_dispositions()["claw_rf_silent"]["disp"]
+                == "indeterminate")
+
+    def test_unreachable_claw_is_not_counted_as_silence(self):
+        """A dark claw hears nothing by definition; that is
+        claw_device_dark's finding, not an RF-outage claim."""
+        from utils.watchdog_probes import probe_claw_rf_silent
+        t = [self._tick(reachable=False, age=99999)]
+        for _ in range(3):
+            assert probe_claw_rf_silent(ticks=t, now=1.0,
+                                        state_path=self.sp) is None

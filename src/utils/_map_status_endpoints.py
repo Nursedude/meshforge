@@ -572,6 +572,7 @@ class StatusEndpointsMixin:
             # reader and writer move together (honest_failure_modes #4).
             "reachable": reachable if isinstance(reachable, bool) else None,
             "battery": payload.get("battery"),
+            "lora": payload.get("lora"),
             "degraded_optional": payload.get("degraded_optional") or [],
         }
         if stale:

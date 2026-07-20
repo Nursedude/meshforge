@@ -60,6 +60,7 @@ from utils.watchdog_probes import (
     probe_host_frozen,
     probe_claw_device_dark,
     probe_claw_battery_low,
+    probe_claw_rf_silent,
     probe_router_scout_degraded,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
@@ -642,6 +643,14 @@ def run_all_probes(
         signals.append(sig)
 
     sig = probe_claw_battery_low()
+    if sig is not None:
+        signals.append(sig)
+
+    # claw LoRa ears (row 9): the ONLY over-the-air witness in the fleet — a
+    # separate radio on separate silicon reporting what it actually heard, so
+    # "we think we transmitted" can be told from "the air is quiet". Escalate
+    # only; the quiet-window threshold is provisional pending a heard-rate soak.
+    sig = probe_claw_rf_silent()
     if sig is not None:
         signals.append(sig)
 
