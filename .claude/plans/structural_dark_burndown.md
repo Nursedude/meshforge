@@ -137,7 +137,7 @@
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
 | 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | rows 2+8 await the RNS roll; row 9 residual needs firmware/#74 |
 | 7 | ~~`live_claw_nats_not_wired_to_mini`~~ | NARROWED 2026-07-19 — see above; row renamed `claw_edge_rf_coverage_partial`. Residual = per-device sensor instances (claw-02), which feeds row 9 | — | — | NEXT DEFAULT PICK is row 9's claw-ears leg (or rows 2/8 post-roll) |
-| 8 | `cross_gateway_dups_unsuppressed` | STEP 6 cross-gateway suppression: distributed coordination (which gateway yields, race windows, idempotency, partition behavior) | **frontier design pass** → Opus impl | full session+ | hardest row; design doc first, never straight to code |
+| 8 | `cross_gateway_dups_unsuppressed` | **STILL OPEN — inputs MEASURED 2026-07-19, decision first**: 0 human dups ever observed (detector fully covered), bounded by 14,117 unconfirmable mesh sends. Decide BUILD vs ACCEPT before designing coordination — see `.claude/research/cross_gateway_dup_design_inputs_2026_07_19.md`, queued Pri-1 in review_provenance | **frontier** (build-vs-accept call on partly-unobservable evidence) | decision: small; build: full session+ | design doc first, never straight to code; gateway deploy still waits on the RNS roll |
 | 9 | ~~`mesh_rf_ota_leg_unwatched`~~ | NARROWED 2026-07-19 — claw OTA witness shipped (escalate-only, provisional threshold); renamed `mesh_rf_ota_egress_unproven`. Residual = true egress proof (per-source counters or ACK consumption) | **frontier + operator/field** | — | remaining half needs firmware or #74 T2 step 4 |
 
 ## Row 6 policy — RATIFIED 2026-07-19, IMPLEMENTED 2026-07-19 (kept as the decision record)
@@ -189,6 +189,25 @@
 (e) verify: each box's mini brief shows the federation source alive with
     0 source_errors ≥2 ticks; moc3 rows annotate, not escalate; the
     federator's behavior unchanged; suites+lint+CI green; fleet_pull.
+
+## Row 8 — inputs gathered 2026-07-19 (NOT the design pass)
+
+Opus-tier contribution ahead of the frontier pass, since rows 3/7/9 all had
+stale premises: **0 human cross-gateway duplicates have EVER been observed**
+(exactly one `gateway_dup_degraded` fire in the durable history — 2026-06-29,
+recipient `…58…` = the MeshAnchor infra hash, pre-dating the infra/human
+classifier that landed 06-30 and cleared it). Detector is fully covered right
+now (`status ok`, 2/2 contributing gateways, `uncovered []`, 196 confirmed
+pairs, 0 dup pairs of either kind), so that zero is a real observation, not an
+`indeterminate`. **Bound: `unconfirmable_sent: 14117`** — the mesh leg sends
+without confirmation, so dups there are structurally undetectable; the mesh
+half is UNOBSERVABLE, not zero, and closing it is the same ACK-consumption
+dependency as row 9's residual (#74 T2 step 4).
+Implication for the pass: row 8 may be a row-3 (accept + keep the honest
+detector) rather than a build. Distributed coordination adds race windows,
+split-brain and idempotency surface to suppress a fault not yet observed to
+reach a human. **Decide build-vs-accept first; do not open with a design.**
+Full inputs: `.claude/research/cross_gateway_dup_design_inputs_2026_07_19.md`.
 
 ## Sequencing rules
 

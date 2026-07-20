@@ -188,9 +188,15 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "send errors land in the benign bucket, invisible to delivery-rate math",
      "ref": "watchdog_probe_core.py :: oracle_delivery_degraded"},
     {"id": "cross_gateway_dups_unsuppressed",
-     "detail": "two gateways confirm-deliver the same content; copy #2 can't be "
-               "cancelled — surfaced but not paged/fixed",
-     "ref": "watchdog_probe_core.py :: gateway_dup_degraded"},
+     "detail": "STILL OPEN — two gateways confirm-deliver the same content; copy #2 can't "
+               "be cancelled, so it is surfaced but not suppressed. MEASURED 2026-07-19 "
+               "before any design: ZERO human cross-gateway dups have ever been observed "
+               "(one fire ever, infra-class, pre-classifier) with the detector fully "
+               "covered — so a build-vs-accept decision precedes any coordination design. "
+               "That evidence is bounded: unconfirmable mesh sends cannot be dup-checked "
+               "at all, so the mesh half is unobservable, NOT zero (ACK consumption, the "
+               "same dependency as the RF egress row)",
+     "ref": ".claude/research/cross_gateway_dup_design_inputs_2026_07_19.md"},
     {"id": "dep_version_drift_strays_blind",
      "detail": "ACCEPTED-PERMANENT 2026-07-19 (row 3, operator decision on a fleet-wide "
                "survey): stray-env watch covers meshtastic (install-fragmentation) and "
