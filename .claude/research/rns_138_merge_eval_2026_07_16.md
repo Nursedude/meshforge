@@ -666,3 +666,42 @@ clear on all 8 boxes once each has pulled — that signal returns to being a rea
 alarm rather than the deliberate canary marker it has been since 07-17.
 
 **Baseline for all future work: rns `1.3.8+mf.0` / lxmf `1.0.1+mf.1`.**
+
+### POST-ROLL FALLOUT — stale path-table entry after the rolling rnsd restarts (2026-07-19)
+
+`honest_status.sh` went green (exit 0) on the SSOT commit but surfaced a WARN
+worth chasing rather than waving off: `synth_soak_degraded` on the gateway box
+plus `tracer_peer_unreachable` on five boxes.
+
+**Real, and roll-caused — but NOT a fork defect.** The 05:07Z synth soak failed
+its envelope (`ok_ratio=0.80`, threshold 0.95; the 04:07Z run before the roll
+was `1.0`) with `synth-u0->VolcanoAI 0/12 ok (100% fail)`. Bisected:
+
+- VolcanoAI → all 7 peers: **7/7 ok**. moc → VolcanoAI: **timeout**, even at a
+  90 s ack budget. Asymmetric, so not a dead service.
+- `rnprobe` from moc to VolcanoAI's echo: **100% packet loss** — the break was
+  below LXMF, at the RNS path layer.
+- `rnpath -t` on moc: VolcanoAI's echo `is 3 hops away via AutoInterfacePeer`,
+  path learned 18:30:10 — exactly when VolcanoAI's echo restarted. But
+  **VolcanoAI's only fleet link is a TCPClientInterface straight to moc** (moc
+  is that target host), i.e. genuinely ONE hop. moc had latched a bogus 3-hop
+  route through the AutoInterface mesh while announces were sloshing around
+  during the rolling restarts.
+- Cure: `rnpath -d <echo-hash>` on moc → re-resolved to **1 hop, 6.3 ms, 0%
+  loss**; tracer from moc then **7/7**, VolcanoAI 51 ms.
+- Swept the other six boxes: all already reachable, no action. Only the
+  directly-TCP-linked peer latched the bad route, which is why only moc's soak
+  (the soak runs there) showed it.
+
+**Runbook addition — after any fleet-wide rolling rnsd restart**: probe each
+box's path to the peers it must reach and drop stale entries. A path-table
+entry that is *present and fresh-looking* but routes the long way round is the
+honest_failure_modes shape at the network layer — `rnpath -t` reports a valid
+path, so "has a path" reads healthy while delivery is 100% lost. Check with
+`rnprobe`, not with the presence of a path.
+
+Remaining after the fix: `tracer_peer_unreachable` on the other boxes were
+transient during-roll failures (peers were genuinely stopped for their flip)
+and decay on their own; `synth_soak_degraded` on moc is expected to clear at
+the next hourly soak now that the path is repaired — BELIEVED, not yet
+verified, since that run had not fired at the time of writing.
