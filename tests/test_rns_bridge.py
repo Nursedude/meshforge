@@ -556,11 +556,40 @@ class TestSendToRNS:
         assert bool(res) is False and res.reason == "no_lxmf_source"
 
     def test_broadcast_returns_false(self, bridge):
+        import sys
         bridge._connected_rns = True
         bridge._lxmf_source = MagicMock()
-        # No destination hash -> broadcast
-        res = bridge.send_to_rns("broadcast msg", None)
+        # RNS/LXMF are stubbed because the broadcast branch sits AFTER
+        # `import RNS` inside the try: on the minimal-deps CI profile the
+        # import raises and the result is a (correct) send_error, which would
+        # make an unstubbed assertion on `.reason` environment-dependent.
+        with patch.dict(sys.modules, {"RNS": MagicMock(), "LXMF": MagicMock()}):
+            # No destination hash -> broadcast
+            res = bridge.send_to_rns("broadcast msg", None)
         assert bool(res) is False and res.reason == "broadcast_unsupported"
+
+    def test_missing_rns_module_is_a_send_error_not_a_silent_false(self, bridge):
+        """Minimal-deps guard: with RNS absent the import raises inside the try,
+        which is a REAL failure and must be named send_error — not laundered
+        into a benign reason (that is the row-2 defect in miniature)."""
+        import builtins
+        import sys
+        bridge._connected_rns = True
+        bridge._lxmf_source = MagicMock()
+        real_import = builtins.__import__
+
+        def _no_rns(name, *a, **k):
+            if name in ("RNS", "LXMF"):
+                raise ImportError(f"No module named '{name}'")
+            return real_import(name, *a, **k)
+
+        with patch.dict(sys.modules, {}, clear=False):
+            sys.modules.pop("RNS", None)
+            sys.modules.pop("LXMF", None)
+            with patch.object(builtins, "__import__", _no_rns):
+                res = bridge.send_to_rns("msg", b"\xab" * 16)
+        assert bool(res) is False and res.reason == "send_error"
+        assert "No module named" in res.detail
 
 
 # ---------------------------------------------------------------------------
