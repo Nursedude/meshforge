@@ -1,0 +1,100 @@
+# MeshForge — LXMF Propagation Node (lxmd)
+# =========================================
+#
+# Store-and-forward for LXMF: messages addressed to an OFFLINE peer are held
+# here and delivered when that peer returns. Without it, LXMF to an offline
+# peer just fails. Config: templates/lxmd/config.example -> /var/lib/lxmd/config
+# Arc + rationale: .claude/plans/propagation_leg.md
+#
+# lxmd ships inside MeshForge's own LXMF fork, so this organ costs no
+# MeshForge code — but it IS a new fleet dependency: once gateways point
+# their `rns.propagation_node` at it, this daemon going dark is a real loss
+# of delivery coverage. It must therefore carry its own liveness leg (a
+# shape-A probe of the CONFIGURED node), which lands with the adoption
+# commit, not after it. `lxmd --status` / `--peers` is the query surface.
+
+[Unit]
+Description=MeshForge LXMF Propagation Node (store-and-forward)
+Documentation=https://github.com/Nursedude/meshforge
+# Unlike the nomadnet USER unit (where After= against a system unit is a
+# silent no-op), this is a system unit, so this ordering genuinely applies.
+# It is still NOT sufficient: rnsd being "active" does not mean it has
+# claimed the RNS shared instance yet. See the ExecStartPre gate below.
+After=network.target rnsd.service
+Wants=network.target rnsd.service
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# BOOT-RACE GATE — Issues #69 / #82, the fleet's most expensive failure class.
+#
+# lxmd constructs its own RNS.Reticulum() (LXMF/Utilities/lxmd.py:350). If it
+# starts before rnsd has claimed @rns/<instance>, lxmd WINS that race and
+# becomes the shared-instance HOST — with no interfaces of its own — which
+# strands rnsd as a client and takes the box's RNS routing down. That exact
+# shape cost a ~21h fleet-wide outage (2026-05-28) and a 10-day silent
+# crashloop (#82).
+#
+# Gate on `rnstatus` succeeding, NEVER on grepping @rns/<name>: rnsd's
+# instance_name varies per box, and the hardcoded `@rns/default` grep is
+# precisely the #82 regression (7842 restarts, ExecStart never ran).
+#
+# Fail-CLOSED (exit 75), like nomadnet and unlike the map drop-in's fail-open:
+# a map with no RNS still usefully serves :5000, but an lxmd that starts
+# without a hosting rnsd is the bind-race disaster itself. Refusing to start
+# is strictly safer than racing.
+#
+# #68 hang-proofing: `timeout 5` bounds each probe (a wedged rnsd makes
+# rnstatus HANG, not fail); outer `timeout 120` bounds total wall-clock.
+# CRITICAL: no percent signs anywhere in ExecStartPre — systemd expands them
+# as unit specifiers before the shell sees the line, which silently broke a
+# probe and took the federator down twice on 2026-05-30. $$ is systemd's
+# escape for a literal $.
+ExecStartPre=/bin/sh -c 'timeout 120 sh -c "until timeout 5 /usr/local/bin/rnstatus >/dev/null 2>&1; do sleep 2; done"; [ $$? -eq 0 ] || exit 75'
+
+# Must exceed the gate's 120s bound so the fail-closed exit 75 fires instead
+# of systemd killing start-pre mid-probe (they race at the 90s default).
+TimeoutStartSec=180
+
+# NOTE the absent -s/--service flag, deliberately: it redirects lxmd's log to
+# a private file inside the config dir, which would make this daemon dark to
+# journalctl and to any journal-reading probe. Stdout -> journal instead.
+# --rnsconfig /etc/reticulum attaches to the box's shared rnsd (same value
+# the nomadnet unit uses); --config keeps identity + message store under
+# /var/lib/lxmd rather than lxmd's default of a dir under /etc.
+ExecStart=/usr/local/bin/lxmd --config /var/lib/lxmd --rnsconfig /etc/reticulum --propagation-node
+
+Restart=always
+RestartSec=10s
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=lxmd
+
+# /var/lib/lxmd holds the identity and the message store. StateDirectory
+# creates it with the mode below and, crucially, keeps it writable under
+# ProtectSystem=strict (Issue #60: sandbox path drift makes writes fail
+# silently while the unit still reads "active").
+StateDirectory=lxmd
+StateDirectoryMode=0750
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# PrivateNetwork MUST NOT be set: the RNS shared instance is reached over an
+# ABSTRACT unix socket (@rns/<instance>), which is scoped to the network
+# namespace. A private netns would silently cut lxmd off from rnsd.
+
+[Install]
+WantedBy=multi-user.target

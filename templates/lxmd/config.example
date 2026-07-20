@@ -1,0 +1,81 @@
+# MeshForge — LXMF Propagation Node (lxmd) configuration
+# =======================================================
+#
+# Deployed to /var/lib/lxmd/config and consumed by templates/systemd/lxmd.service.
+# See .claude/plans/propagation_leg.md for the arc this belongs to.
+#
+# WHY THIS EXISTS (2026-07-20): MeshForge gateways could always USE an LXMF
+# propagation node (`gateway.json rns.propagation_node`, wired at
+# _rns_bridge_connection.py:305) but the fleet configured none — so LXMF to an
+# offline peer simply FAILED instead of being stored and forwarded. Meanwhile
+# our own gateways parsed ~900-1600 LXMF_PROPAGATION announces/week from a
+# FOREIGN node and threw them away (probe_lxmf_propagation_unused, shipped
+# 2026-07-20, is the detector for exactly that gap).
+#
+# Adopting the stranger would have handed our undelivered-message metadata to
+# an unknown operator. Standing our own up costs no MeshForge code at all:
+# lxmd ships inside our own LXMF fork. This file is that node.
+#
+# Install:
+#   sudo install -d -m 0750 /var/lib/lxmd
+#   sudo install -m 0640 templates/lxmd/config.example /var/lib/lxmd/config
+#   # customise node_name below, then:
+#   sudo cp templates/systemd/lxmd.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now lxmd
+#
+# The destination hash to put in each gateway's `rns.propagation_node` is
+# printed by:  sudo lxmd --config /var/lib/lxmd --rnsconfig /etc/reticulum --status
+
+[propagation]
+
+# The whole point of this daemon.
+enable_node = yes
+
+# Announced name. Operators SHOULD set something identifiable here — the
+# foreign node that prompted this work announces a garbled name, which is
+# precisely why it was hard to assess whether it could be trusted. Be the
+# node you wanted to find. (Kept generic in-repo per MF014 — no operator
+# -specific values in templates; set the real value on the box.)
+node_name = MeshForge Propagation Node
+
+# Announce on start so consumers rediscover us immediately after a restart
+# instead of waiting out the interval. 360 min = the upstream default.
+announce_at_start = yes
+announce_interval = 360
+
+# DELIBERATELY OFF — do not change without re-reading the trust rationale.
+# autopeer=yes makes this node exchange its stored message store with other
+# propagation nodes it discovers, including the foreign ones already
+# announcing on this network. That would push our fleet's undelivered
+# traffic back out to the very stranger we stood this node up to avoid.
+# We serve our own clients; we do not gossip.
+autopeer = no
+
+# Bounded, and stated explicitly rather than relying on the implicit default,
+# so the storage envelope is visible in the config an operator actually reads.
+# 500 MB is upstream's default; the host box has far more, but an unbounded-
+# looking store is how a disk-full incident starts.
+message_storage_limit = 500
+
+# Public: any RNS destination may connect and collect ITS OWN messages.
+# Enabling auth_required means maintaining an `allowed` identity-hash list,
+# and getting it wrong locks out our own gateways in a way that is tedious
+# to debug. With a bounded store and autopeer off, being a good public
+# citizen on the mesh is the better trade. Revisit if the store fills.
+auth_required = no
+
+
+[lxmf]
+
+# lxmd also creates its own LXMF delivery destination. We do not want it
+# announced — this daemon is infrastructure, not a peer anyone should message.
+display_name = MeshForge Propagation Node
+announce_at_start = no
+
+
+[logging]
+
+# 4 = INFO. A newly-introduced organ should be observable while it proves
+# itself; drop to 3 (NOTICE) after the soak if journal volume becomes a
+# concern (fleet boxes run Storage=volatile, so the window is short anyway).
+loglevel = 4
