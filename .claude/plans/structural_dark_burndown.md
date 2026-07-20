@@ -11,6 +11,26 @@
 
 ## Closed / narrowed
 
+- **oracle_rns_send_blind** — NARROWED 2026-07-19 (row 2), deployable half only.
+  Premise refined first: the row said `send_to_rns` "swallows" exceptions, but
+  the `except` block DOES leave witnesses (`stats['errors']` +
+  `record_send_failure`). The real defect is narrower — it returns a **bare
+  bool** collapsing no-path / open-circuit / real-exception into one `False`,
+  so the ORACLE's call site cannot classify and a reason-less non-delivery
+  falls into the probe's benign bucket. MEASURED on moc3's live audit log:
+  103 records → 68 rns delivered, 4 declines, **1 ambiguous** (~1%). Blind spot
+  real but small. SHIPPED (watchdog-only, not roll-blocked):
+  `benign_rns_ambiguous` split out of the blended `benign` count, so the
+  ambiguous slice is sized continuously instead of averaged into a
+  clean-looking figure (honest_failure_modes #5). RESIDUAL: the bare-bool fix
+  touches the LIVE RNS send path (`bridge_send_mixin.send_to_rns`, inside the
+  meshforge-gateway process — the oracle responder is imported by
+  `bridge_rns_events_mixin`) and stays deferred until the 1.3.8 roll closes.
+  ⚠️ Do NOT "land it without restarting": the gateway's own wedge watchdog
+  calls `os._exit(2)` → systemd restart, so landing gateway code activates it
+  non-deterministically mid-soak. Roll state confirmed 2026-07-19: SSOT still
+  pins rns 1.2.5+mf.5, moc3 still carries the deliberate canary drift.
+
 - **mesh_rf_ota_leg_unwatched** → **mesh_rf_ota_egress_unproven**, NARROWED
   2026-07-19 (row 9). Its "hardware/field-gated" constraint DISSOLVED on
   inspection: both claws already answer `lora_stats` and are actively hearing
@@ -131,7 +151,7 @@
 | # | Row | Cure shape | Tier | Size | Constraint |
 |---|-----|-----------|------|------|------------|
 | 1 | ~~`user_unit_inactivity_blind`~~ | CLOSED 2026-07-19 — see above | — | — | NEXT DEFAULT PICK is now row 2 (post-roll) or row 5 |
-| 2 | `oracle_rns_send_blind` | `send_to_rns` distinguishes no-path from crash; real send errors leave a witness counter and land in the failure set (not the benign bucket) of `oracle_delivery_degraded` | **Opus** | ~half session | gateway-code deploy → wait for RNS-soak close / roll (deliberately deferred out of the mf.5 soak) |
+| 2 | ~~`oracle_rns_send_blind`~~ | NARROWED 2026-07-19 — blind spot MEASURED (~1% of oracle records) + `benign_rns_ambiguous` shipped so its size is continuously visible. RESIDUAL = the bare-bool `send_to_rns` fix, still gateway code | **Opus** | small, post-roll | STILL waits on the RNS 1.3.8 roll; do not land gateway code mid-soak (wedge watchdog `os._exit(2)` restarts activate it) |
 | 3 | ~~`dep_version_drift_strays_blind`~~ | ACCEPTED-PERMANENT 2026-07-19 — see above; scope is deliberate, revisit only on a second installer | — | — | — |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |

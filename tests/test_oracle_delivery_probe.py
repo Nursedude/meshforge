@@ -270,3 +270,63 @@ def test_healthy_observation_resets_streak(tmp_path):
 
 def test_read_oracle_window_unreadable_returns_none(tmp_path):
     assert _read_oracle_window(str(tmp_path), NOW, 3600.0, 4096) is None
+
+
+class TestRnsAmbiguousBenignSplit:
+    """Row 2 (2026-07-19): the benign bucket blended a KNOWN blind spot.
+
+    On the Meshtastic/MQTT/MeshCore legs a reason-less non-delivery really is
+    benign — their send_fn lets a real exception reach the responder, so a
+    genuine failure arrives as send_error. On the RNS leg it is AMBIGUOUS:
+    send_to_rns catches exceptions and returns a bare False, so a crash is
+    indistinguishable from a no-path. Reporting one blended "benign" number
+    averages that blind spot into a clean-looking figure; counting the
+    ambiguous leg separately makes its SIZE visible while the root fix waits
+    on the RNS roll (honest_failure_modes #5 — surface it, don't average it).
+    """
+
+    def _fire(self, tmp_path, extra_recs):
+        log = tmp_path / "oracle.jsonl"
+        recs = ([_rec(True) for _ in range(4)]
+                + [_rec(False, reason="send_error: boom") for _ in range(6)]
+                + extra_recs)
+        _write_log(log, recs)
+        sig = _probe(log, tmp_path, debounce_ticks=1)
+        assert sig is not None
+        return sig
+
+    def test_rns_benign_is_counted_as_ambiguous(self, tmp_path):
+        sig = self._fire(tmp_path, [_rec(False, transport="rns") for _ in range(3)])
+        assert sig.extra["benign_nondeliveries_excluded"] == 3
+        assert sig.extra["benign_rns_ambiguous"] == 3   # the whole bucket is ambiguous
+
+    def test_non_rns_benign_is_not_ambiguous(self, tmp_path):
+        """A Meshtastic benign non-delivery is genuinely benign — that leg
+        surfaces real failures as send_error, so it must NOT be counted as
+        blind-spot volume."""
+        sig = self._fire(tmp_path,
+                         [_rec(False, transport="meshtastic") for _ in range(3)])
+        assert sig.extra["benign_nondeliveries_excluded"] == 3
+        assert sig.extra["benign_rns_ambiguous"] == 0
+
+    def test_mixed_legs_split_correctly(self, tmp_path):
+        sig = self._fire(tmp_path,
+                         [_rec(False, transport="rns") for _ in range(2)]
+                         + [_rec(False, transport="meshcore") for _ in range(5)])
+        assert sig.extra["benign_nondeliveries_excluded"] == 7
+        assert sig.extra["benign_rns_ambiguous"] == 2
+
+    def test_ambiguous_count_never_enters_the_failure_set(self, tmp_path):
+        """It measures what we cannot tell apart — it must not become a
+        failure count, or the probe would fire on RNS no-paths."""
+        sig = self._fire(tmp_path, [_rec(False, transport="rns") for _ in range(9)])
+        assert sig.extra["confirmable"] == 10          # 4 delivered + 6 send_error
+        assert sig.extra["rate"] == pytest.approx(0.4, abs=0.01)
+
+    def test_declines_are_not_counted_as_ambiguous(self, tmp_path):
+        """A cooldown decline on the RNS leg is a correct refusal, not an
+        unknown — it has a reason, so it is never blind-spot volume."""
+        sig = self._fire(tmp_path,
+                         [_rec(False, reason="cooldown", transport="rns")
+                          for _ in range(4)])
+        assert sig.extra["benign_rns_ambiguous"] == 0

@@ -1025,7 +1025,17 @@ def _read_oracle_window(
             raw = fh.read()
     except OSError:
         return None
-    counts = {"delivered": 0, "send_error": 0, "decline": 0, "benign": 0}
+    # ``benign_rns`` is a SUBSET of ``benign``, split out 2026-07-19 (row 2).
+    # On the Meshtastic/MQTT/MeshCore legs a reason-less non-delivery really is
+    # benign: their send_fn lets a real exception reach the responder, so a
+    # genuine failure arrives as send_error. On the RNS leg it is AMBIGUOUS —
+    # send_to_rns catches exceptions and returns a bare False, so a crash is
+    # indistinguishable from a no-path. Blending the two legs into one "benign"
+    # number averages a known blind spot into a clean-looking figure; counting
+    # the ambiguous leg separately makes the blind spot's SIZE visible while
+    # the root fix waits on the RNS roll (honest_failure_modes #5).
+    counts = {"delivered": 0, "send_error": 0, "decline": 0, "benign": 0,
+              "benign_rns": 0}
     total = 0
     lo = now - window_s
     hi = now + _ORACLE_TS_FUTURE_SLOP_S
@@ -1048,6 +1058,8 @@ def _read_oracle_window(
         if bucket is None:
             continue
         counts[bucket] += 1
+        if bucket == "benign" and str(rec.get("transport") or "").lower() == "rns":
+            counts["benign_rns"] += 1
         total += 1
     return counts, total
 
@@ -1119,6 +1131,11 @@ def probe_oracle_delivery_degraded(
         "send_errors": real_failures,
         "declines_excluded": counts["decline"],
         "benign_nondeliveries_excluded": counts["benign"],
+        # The ambiguous slice of the line above: RNS-leg non-deliveries that
+        # could be a benign no-path OR a send exception swallowed to a bare
+        # False. NOT a failure count — a measure of what we cannot yet tell
+        # apart. Non-zero means the row-2 blind spot is live at that size.
+        "benign_rns_ambiguous": counts["benign_rns"],
         "rate": round(rate, 3),
         "threshold": threshold,
     }
