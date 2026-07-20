@@ -134,12 +134,25 @@ fi
 # authoritative detector is server_class_skew in /api/fleet/truth, which now
 # renders a banner and forces the verdict DARK rather than under-reporting in
 # silence. This line just puts it in front of whoever ran the deploy.
-if [ "$failures" -eq 0 ] && [ "$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null)" = "$TARGET_SHORT" ]; then
+#
+# Scoped to the MeshForge repo ONLY: meshforge-map serves THIS repo's code, so
+# naming it after a `fleet_pull.sh /opt/meshanchor` run is a confidently wrong
+# line (caught 2026-07-20, minutes after the advisory shipped — the sister repo
+# has its own NOC service and its own restart story).
+if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
+   && [ "$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null)" = "$TARGET_SHORT" ]; then
     if systemctl is-active --quiet meshforge-map 2>/dev/null; then
-        map_started=$(systemctl show meshforge-map -p ActiveEnterTimestampMonotonic --value 2>/dev/null || echo 0)
-        head_age=$(( $(date +%s) - $(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null || date +%s) ))
+        # Both sides in WALL-CLOCK epoch seconds. (First cut used
+        # ActiveEnterTimestampMonotonic, which is time-since-BOOT, not service
+        # uptime — comparing it against a commit age is incommensurate and made
+        # the note fire unconditionally. Caught the same evening; a nag that is
+        # not actually derived from anything is worse than no nag.)
+        map_started_raw=$(systemctl show meshforge-map -p ActiveEnterTimestamp --value 2>/dev/null)
+        map_started=$(date -d "$map_started_raw" +%s 2>/dev/null || echo 0)
+        head_ct=$(git -C "$REPO_DIR" log -1 --format=%ct 2>/dev/null || echo 0)
         # Only nag when HEAD is NEWER than the running process (the risky case).
-        if [ "${map_started:-0}" -gt 0 ] && [ "$head_age" -lt "$(( map_started / 1000000 ))" ]; then
+        if [ "${map_started:-0}" -gt 0 ] && [ "${head_ct:-0}" -gt 0 ] \
+           && [ "$map_started" -lt "$head_ct" ]; then
             echo "fleet_pull: NOTE — meshforge-map on this box started before ${TARGET_SHORT};"
             echo "            it serves /api/fleet/truth from the code it booted with."
             echo "            Check 'server_class_skew' there (or the /fleet banner); if it is"
