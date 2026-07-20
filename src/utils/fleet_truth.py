@@ -657,9 +657,43 @@ def build_fleet_truth(
     # It taints the verdict as DARK rather than FAILED on purpose: nothing is
     # broken out there, we simply cannot see all of it from here, and
     # unobservable must never read healthy (honest_failure_modes #2).
+    # ⚠️ SAME-APP boxes only — caught live on first deploy 2026-07-20.
+    # meshanchor-server immediately reported no_data/http_dead/frozen/
+    # daemon_dead: MeshAnchor's OWN blackout-kind vocabulary, not classes this
+    # NOC is behind on. Ungated, a heterogeneous fleet pins itself DARK forever
+    # on a false "your code is stale" diagnosis. Those classes still RENDER
+    # (per-box coverage keeps them — never drop what a box observed); they just
+    # do not accuse this server of being out of date.
+    #
+    # Rule: only a box running the SAME app can prove this server's enum is
+    # behind. A different app knowing different classes is expected
+    # heterogeneity (MeshForge and MeshAnchor are sister NOCs by design).
+    def _app_name(b: Dict[str, Any]) -> Optional[str]:
+        app = ((b.get("reachable") or {}).get("app")) or {}
+        name = app.get("name") if isinstance(app, dict) else None
+        return name.strip().lower() if isinstance(name, str) else None
+
+    # This server's own app identity. Resolved at RUNTIME from __app_name__ —
+    # the same source /api/status.app uses — so this byte-locked file yields
+    # "meshforge" here and "meshanchor" in the twin without diverging. An
+    # unresolvable identity disables the accusation entirely (below), which is
+    # the safe direction: no diagnosis beats a wrong one.
+    try:
+        from __version__ import __app_name__ as _self_app_raw
+        self_app = (_self_app_raw or "").strip().lower() or None
+    except Exception:
+        self_app = None
     skew: Dict[str, List[str]] = {}
     for b in boxes:
         extra = (b.get("coverage") or {}).get("unknown_to_server") or []
+        if not extra:
+            continue
+        peer_app = _app_name(b)
+        # Unknown app on EITHER side → do NOT accuse. An unidentifiable peer
+        # (or an unresolvable self) is a blind spot, and blind spots must not
+        # manufacture a confident diagnosis.
+        if self_app is None or peer_app is None or peer_app != self_app:
+            continue
         for cls in extra:
             skew.setdefault(cls, []).append(b.get("alias") or "?")
     if skew:

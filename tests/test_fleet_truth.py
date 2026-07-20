@@ -325,6 +325,39 @@ class TestFleetTruth:
         assert t["server_class_skew"] == {"brand_new_probe": ["moc"]}
         assert t["fleet_state"] == ft.DARK
 
+    def test_foreign_app_peer_is_not_a_stale_code_accusation(self):
+        """CAUGHT LIVE on first deploy, 2026-07-20. meshanchor-server instantly
+        reported no_data/http_dead/frozen/daemon_dead — MeshAnchor's OWN
+        blackout-kind vocabulary, not classes this NOC is behind on. Ungated,
+        a heterogeneous fleet pins itself DARK forever on a false 'your code is
+        stale' diagnosis. The classes must still RENDER (never drop what a box
+        observed) while making no accusation about this server's version."""
+        snap = self._healthy_snap("meshanchor-server")
+        snap["status"]["app"] = {"name": "meshanchor"}
+        snap["status"]["watchdog"] = {
+            "installed": True, "ok": True, "signals": [],
+            "coverage": {"no_data": "clean", "frozen": "clean"}}
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=["role_drift"],
+                                 noc_host="moc")
+        assert t["server_class_skew"] == {}          # no accusation
+        assert t["fleet_state"] == ft.HEALTHY        # verdict untainted
+        cov = t["boxes"][0]["coverage"]
+        assert "no_data" in cov["classes"]           # but still rendered
+        assert cov["unknown_to_server"] == ["frozen", "no_data"]
+
+    def test_unidentifiable_peer_makes_no_accusation(self):
+        """A peer whose app can't be read is a blind spot; blind spots must
+        not manufacture a confident 'restart your server' claim."""
+        snap = self._healthy_snap("mystery")
+        snap["status"]["app"] = {}                   # no name
+        snap["status"]["watchdog"] = {
+            "installed": True, "ok": True, "signals": [],
+            "coverage": {"brand_new_probe": "inert"}}
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=["role_drift"],
+                                 noc_host="moc")
+        assert t["server_class_skew"] == {}
+        assert t["fleet_state"] == ft.HEALTHY
+
     def test_no_skew_leaves_the_verdict_alone(self):
         snaps = [self._healthy_snap("moc")]
         t = ft.build_fleet_truth(snaps, now=NOW, signal_classes=[], noc_host="moc")
