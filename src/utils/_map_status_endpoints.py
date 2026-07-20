@@ -548,7 +548,12 @@ class StatusEndpointsMixin:
         if isinstance(ts, (int, float)):
             age_s = max(0.0, time.time() - float(ts))
         stale = bool(age_s is not None and age_s > self._CLAW_STALE_S)
-        tick_ok = bool(payload.get("ok"))
+        # Prefer the EXPLICIT reachability fact (captures since 2026-07-19),
+        # falling back to `ok` for older ticks. Before that split, `ok` folded
+        # in accessory halves, so a BLE-less claw reported here as unreachable.
+        reachable = payload.get("reachable")
+        tick_ok = bool(reachable if isinstance(reachable, bool)
+                       else payload.get("ok"))
 
         block = {
             "installed": True,
@@ -560,6 +565,14 @@ class StatusEndpointsMixin:
             "device": payload.get("device"),
             "device_info": payload.get("device_info"),
             "ble": payload.get("ble"),
+            # Pass the producer's newer fields through: battery is the metric a
+            # dying edge node is judged by, and degraded_optional names the
+            # accessories that missed. Whitelisting the block means a field the
+            # capture writes but this dict omits is invisible fleet-wide —
+            # reader and writer move together (honest_failure_modes #4).
+            "reachable": reachable if isinstance(reachable, bool) else None,
+            "battery": payload.get("battery"),
+            "degraded_optional": payload.get("degraded_optional") or [],
         }
         if stale:
             block["reason"] = (

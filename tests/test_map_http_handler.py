@@ -255,6 +255,47 @@ class TestClawStatusBlock:
         assert block["ble"]["advs"] == 767422
         assert "reason" not in block
 
+    def test_battery_and_reachable_reach_the_status_block(self, tmp_path,
+                                                          monkeypatch):
+        """Reader/writer pair (honest_failure_modes #4). The block WHITELISTS
+        keys, so a field the capture writes but this dict omits is invisible
+        fleet-wide. Battery is the metric a dying edge node is judged by —
+        it must arrive here, or claw_battery_low has a producer and no display."""
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick(
+            reachable=True, battery={"volts": 3.42, "raw": "Battery: 3.42 V"},
+            degraded_optional=["ble_stats"])))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["battery"]["volts"] == 3.42
+        assert block["reachable"] is True
+        assert block["degraded_optional"] == ["ble_stats"]
+
+    def test_ble_less_claw_is_not_reported_unreachable(self, tmp_path,
+                                                       monkeypatch):
+        """The 2026-07-19 bug, pinned: dudeclaw-02 has no BLE scanner, so the
+        old `ok = device_info AND ble` pinned it not-ok in every tick and the
+        display called a healthy claw unreachable. An explicit `reachable`
+        wins over the conflated flag."""
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick(
+            device="dudeclaw-02", ok=False, reachable=True, ble=None,
+            errors={"ble_stats": "no BLE scanner on this device"},
+            degraded_optional=["ble_stats"])))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is True
+        assert "reason" not in block, "a BLE-less claw is not an unreachable claw"
+
+    def test_legacy_tick_without_reachable_still_uses_ok(self, tmp_path,
+                                                        monkeypatch):
+        """Ticks written before the split carry no `reachable`; the fallback
+        must keep reading `ok` rather than treating absent as False."""
+        t = self._tick()
+        t.pop("reachable", None)
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(t))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is True and block["reachable"] is None
+
     def test_stale_flagged_when_capture_old(self, tmp_path, monkeypatch):
         import time as _t
         (tmp_path / "claw_last_tick.json").write_text(
