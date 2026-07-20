@@ -23,6 +23,20 @@ Consequence: LXMF to an offline peer just fails. With a propagation node it is
 stored and forwarded when the peer returns — the same value AREDN buys, on the
 delivery layer instead of the transport layer.
 
+## STATUS: slice 1 SHIPPED 2026-07-20 (MF `6f42d477`, MA mirror)
+
+`probe_lxmf_propagation_unused` is live fleet-wide. Live dispositions read from
+each box's OWN watchdog state (the consumer of record, not the wiring):
+moc `active` — "15 LXMF propagation node(s) heard within 6h (nearest
+rns_360b1aa372f4aee0, 9 min ago)"; moc3 same; moc5 `inert — no gateway.json`;
+moc1/kiai `inert — no RNS node cache`. honest_status 5/6 PASS + 1 truthful WARN
+(the finding itself). Mutation-verified: making the stale-cache branch reset the
+streak fails `test_lxmf_propagation_holds_on_stale_or_unreadable_cache`.
+Eval `oracle-lxmf-propagation-unused-is-a-trust-decision`.
+
+**Slice 2 (adoption) is OPEN and is the operator's call — see the trust
+boundary below.**
+
 ## The two slices — do NOT merge them
 
 1. **DETECTOR (this row, watchdog-only, always-safe per the burn-down's
