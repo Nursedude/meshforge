@@ -459,3 +459,71 @@ carries `cryptography 49.0.0`, which violates BOTH `requirements/rns.txt`
 (`cryptography<47,>=46.0.0`). Not caused by this change (`--no-deps` touched
 nothing else), but a roll that installs the rns requirements could downgrade it
 — decide deliberately rather than discover it mid-roll.
+
+---
+
+## PHASE 4 — PER-BOX ROLL, IN PROGRESS (started 2026-07-19)
+
+Roll order (lowest blast radius first, gateway + manager last):
+`kiai → moc5 → moc4 → moc1 → moc2 → moc → VolcanoAI`. **meshanchor-server
+DEFERRED** by operator decision — it carries two PRE-EXISTING drifts that are a
+separate call from this roll: system-local at `1.2.5+mf.4` (not mf.5) and a
+pipx `nomadnet` venv on **stock** `rns 1.2.5 / lxmf 0.9.8` that never converged
+to any fork pin (same silently-stock class as moc3's 1.1.4 finding).
+
+### ⚠️ ROLL-SURFACE CORRECTION — there is a FIFTH env class: **root user-site**
+
+The canary's roll-surface finding (venv / system-local / user-site / user-pipx)
+is INCOMPLETE. On kiai, `meshforge-watchdog` runs as **root** with
+`/usr/bin/python3`, which resolves `/root/.local/lib/pythonX.Y/site-packages` —
+found there at `1.2.5+mf.5` (rns AND lxmf), invisible to a scan run as the
+operator user. `watchdog_probes_rns.py` imports RNS, so this is a genuine
+consumer-of-record, and leaving it stale is exactly the [HIGH] mixed-version
+hazard: a pickle-RPC client against a msgpack rnsd times out every call at 8s.
+
+**Enumerate SIX locations per box before rolling it**: venv, system-local
+(`/usr/local/lib/*/dist-packages`), user-site, **root user-site**, user-pipx
+venvs, root-pipx venvs. Read each with `-s` (no user site) where relevant —
+`/usr/bin/python3` run as the operator silently reports user-site and will mask
+whether system-local has its own copy.
+
+### kiai — ROLLED + VERIFIED 2026-07-19 18:05–18:10 HST
+
+Two envs flipped (wh6gxz user-site + root user-site; kiai has no venv copy, no
+system-local copy, no nomadnet). Order held: stop clients (`meshforge-map`,
+`meshforge-watchdog`, user `meshforge-echo`, `meshforge-mini-dudeai`) → install
+→ restart rnsd → start clients.
+
+Install command per env, exactly the documented roll path (`--no-deps`, both
+forks in ONE resolution), plus the PEP-668 flags this image needs:
+
+```
+python3 -m pip install --user --break-system-packages --no-deps "$RNSPIN" "$LXPIN"   # user-site
+sudo -H /usr/bin/python3 -m pip install --user --break-system-packages --no-deps ... # root user-site
+```
+
+Both `pip` calls exit 0. VERIFIED after:
+- all env locations + **live imports** report `RNS 1.3.8+mf.0 / LXMF 1.0.1+mf.1`
+  in all three consumer pythons (`/usr/bin/python3` as user, the venv python,
+  `/usr/bin/python3` as root)
+- `rnstatus` 0.45s, Shared Instance Up, **Serving: 2 programs** — the new
+  msgpack RPC round-trip exercised from BOTH the user and root envs, and two
+  1.3.8 clients attached to the 1.3.8 rnsd
+- `rnsd` owns `@rns/default` + `/rpc`, `NRestarts=0`, no #69 race this time
+- all 5 units active; `pip check` clean for rns/lxmf in both envs; no `-p err`
+  journal entries
+- `rns_version_drift` degraded = the DELIBERATE pin marker (as on moc3). Do NOT
+  converge kiai back to the pin.
+
+⚠️ **Verification-tooling trap, caught live**: a `timeout 8 rnstatus || echo
+WEDGED` check reported WEDGED when the real cause was `rnstatus` **not on
+PATH** — `~/.local/bin` is absent from non-interactive ssh PATH on kiai
+(`/usr/local/bin/rnsd` is a symlink into it). Command-not-found mapped to a
+valid-looking failure verdict: honest_failure_modes #1 in the *check* rather
+than the code. Roll checks must use explicit paths and distinguish not-found
+from timeout.
+
+**Gap noted (not roll-caused)**: kiai and moc4 are NOT in `lab_peers`, so
+neither has a fleet LXMF round-trip witness. The 7-peer tracer from VolcanoAI
+(still `1.2.5+mf.5`) was 7/7 ok including moc3 on 1.3.8 — mixed-version
+delivery healthy — but it cannot cover kiai. Consider adding both.
