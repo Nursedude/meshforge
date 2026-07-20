@@ -109,8 +109,17 @@ def test_paint_failure_still_persists_captured_tick_and_pages(wired, monkeypatch
     assert tick["device_info"]["uptime_s"] == 109368
 
 
-def test_half_unreachable_tick_is_not_ok(wired, monkeypatch):
-    # device_info answers, ble_stats times out: tick not ok, ble error recorded.
+def test_accessory_half_failing_keeps_the_device_reachable(wired, monkeypatch):
+    """device_info answers, ble_stats times out.
+
+    REVISED 2026-07-19 (structural-dark row 7). This used to assert
+    ``ok is False`` — an AND over both halves — which pinned BLE-less
+    dudeclaw-02 at not-ok in every tick forever and made the /fleet rollup
+    render a perfectly healthy claw as "unreachable". The device DID answer, so
+    reachable/ok stay True; the accessory miss is reported in errors +
+    degraded_optional rather than collapsed into the liveness flag
+    (honest_failure_modes #1/#3 — declared-absent is not an error, and a
+    permanently-false flag is one nobody reads)."""
     _install_conn(monkeypatch, _FakeNC({
         "device_info": {"ok": True, "result": DI},
         "ble_stats": cmp_mod.NatsError("timeout"),
@@ -119,9 +128,10 @@ def test_half_unreachable_tick_is_not_ok(wired, monkeypatch):
     rc = cmp_mod.main([])
     assert rc == 0
     tick = json.loads(wired.read_text())
-    assert tick["ok"] is False
+    assert tick["reachable"] is True and tick["ok"] is True
     assert tick["device_info"]["uptime_s"] == 109368
     assert tick["ble"] is None and "ble_stats" in tick["errors"]
+    assert "ble_stats" in tick["degraded_optional"]   # surfaced, not swallowed
 
 
 class TestBrainTierPush:

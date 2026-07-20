@@ -216,10 +216,16 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "legs; a site with NEITHER declaration nor config remains honestly "
                "invisible; slow != dark",
      "ref": "watchdog_probes_env.py :: probe_aredn_source_dark"},
-    {"id": "live_claw_nats_not_wired_to_mini",
-     "detail": "nats_sensor/http_json source kinds exist but the fleet preset wires none; "
-               "claw is seen only via the host_frozen verdict file, not live sensor reads",
-     "ref": "mini_dudeai/presets/meshforge_fleet.py"},
+    {"id": "claw_edge_rf_coverage_partial",
+     "detail": "NARROWED 2026-07-19 (row 7): claw edge nodes now have their OWN signals — "
+               "claw_device_dark (fresh capture tick says the DEVICE didn't answer) and "
+               "claw_battery_low (reachable pack under the LiPo floor), read from the "
+               "tick files the capture already writes. Deliberately NOT a second NATS "
+               "poll from the fleet preset: one poller, one threshold set. RESIDUAL: "
+               "thresholded live sensing (temp/anomaly/LoRa-ears) still runs only in the "
+               "per-device claw mini, so a claw without its own instance is watched for "
+               "liveness and battery but not for its sensors",
+     "ref": "watchdog_probes_liveness.py :: probe_claw_device_dark"},
     {"id": "federation_mapless_box_unwatched",
      "detail": "NARROWED 2026-07-19 (row 6): federation is now watched PER VANTAGE — every "
                "map-running box polls its OWN :5000 and escalates (never pages) an "

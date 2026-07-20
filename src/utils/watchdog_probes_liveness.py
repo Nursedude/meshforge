@@ -638,3 +638,264 @@ def probe_host_frozen(
 
 
 # ─────────────────────────────────────────────────────────────────────
+
+
+# ─────────────────────────────────────────────────────────────────────
+# dude-claw EDGE HARDWARE: is the node answering, and is its pack dying?
+#
+# Born 2026-07-19 (structural-dark row 7). dudeclaw-02 — a battery-powered
+# claw, the fleet's out-of-band LoRa/RF eyes — drained to 2.41 V and went dark
+# for 17.4 h. The spine DID notice, but the only thing it could say was
+# "cron_verdict_stale: claw02_metrics FAIL — fix the job", because the capture
+# cron's exit code was the sole downstream witness. A dead radio node was
+# laundered into an infrastructure-noise signal, in the one channel known to
+# flap benignly. Meanwhile the `battery_v lt 3.5` sensor spec that would have
+# caught it was bound to dudeclaw-01, which lives on USB at 4.06 V forever.
+#
+# These probes give the claw its OWN vocabulary, per device, from the tick
+# files the capture cron already writes — no second NATS poll (one poller, one
+# set of thresholds; honest_failure_modes #5) and no subprocess (MF021).
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_CLAW_DARK_DEBOUNCE_PATH = "/var/lib/meshforge/claw_dark_debounce.json"
+DEFAULT_CLAW_BATTERY_DEBOUNCE_PATH = "/var/lib/meshforge/claw_battery_debounce.json"
+#: Capture cadence is */5; tolerate three misses before calling the FILE stale.
+CLAW_TICK_STALE_S = 1200.0
+#: LiPo working floor. Below this a single-cell pack is in its knee and the
+#: node has hours, not days — the warning must land while it can still be acted
+#: on. Physical constant of the chemistry, not an operator value (MF014).
+CLAW_BATTERY_FLOOR_V = 3.5
+_CLAW_TICK_GLOB = "claw_last_tick*.json"
+
+
+def _operator_home() -> Optional[str]:
+    """Resolve the operator's home; the claw ticks live there, and the
+    watchdog runs as root with sudo blocked (never escalate — read directly)."""
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        return None
+    if op is None:
+        return None
+    try:
+        import pwd
+        return pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+
+
+def _read_claw_ticks(home: Optional[str], now: float) -> Tuple[List[dict], int]:
+    """``(fresh_ticks, files_seen)`` for every claw tick file in ``home``.
+
+    A file older than CLAW_TICK_STALE_S is DROPPED from the fresh list but
+    still counted in ``files_seen``: a frozen tick must never be read as a
+    current reading (absence of evidence is not evidence of absence), and
+    cron_verdict_stale already owns the dead-capture-cron page. Unparseable
+    files are likewise counted-but-dropped — a torn mid-write must not read as
+    "no claws here"."""
+    import glob as _glob
+    if not home:
+        return [], 0
+    ticks: List[dict] = []
+    paths = sorted(_glob.glob(os.path.join(home, _CLAW_TICK_GLOB)))
+    for p in paths:
+        try:
+            mtime = os.path.getmtime(p)
+            if (now - mtime) > CLAW_TICK_STALE_S:
+                continue
+            with open(p) as f:
+                doc = json.load(f)
+            if isinstance(doc, dict) and doc.get("device"):
+                ticks.append(doc)
+        except (OSError, ValueError):
+            continue
+    return ticks, len(paths)
+
+
+def _tick_reachable(tick: dict) -> Optional[bool]:
+    """Tri-state reachability for one tick.
+
+    Prefers the explicit ``reachable`` field (written since 2026-07-19). Falls
+    back to "did device_info parse" for ticks written by an older capture — and
+    returns None when neither is decidable, so an unknown never reads as dark.
+    """
+    if isinstance(tick.get("reachable"), bool):
+        return tick["reachable"]
+    if "device_info" in tick:
+        return tick.get("device_info") is not None
+    return None
+
+
+def probe_claw_device_dark(
+    *,
+    home: Optional[str] = None,
+    ticks: Optional[List[dict]] = None,
+    now: Optional[float] = None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """A claw edge node stopped answering while its capture kept running.
+
+    THE distinction this exists to make: the capture cron is alive and writing
+    fresh ticks, and those fresh ticks say the DEVICE did not reply. That is a
+    hardware/RF/power fact about a node, and it is said in those words —
+    not as a failing cron.
+
+    Self-guards None: no tick files (no claw on this box → INERT), every tick
+    stale or unparseable (indeterminate — cron_verdict_stale owns the dead-cron
+    page), reachability undecidable, or every claw answering. 2-tick debounce
+    rides out a single missed poll. Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_CLAW_DARK_DEBOUNCE_PATH
+        if ticks is None:
+            ticks, seen = _read_claw_ticks(home or _operator_home(), now)
+        else:
+            seen = len(ticks)
+
+        if not seen:
+            note_disposition("claw_device_dark", "inert",
+                             reason="no claw tick files (no claw edge node here)")
+            _save_parity_streak(sp, 0)
+            return None
+        if not ticks:
+            note_disposition(
+                "claw_device_dark", "indeterminate",
+                reason="claw tick file(s) stale/unparseable; cron_verdict_stale "
+                       "owns the dead-capture page")
+            _save_parity_streak(sp, 0)
+            return None
+
+        dark = [t for t in ticks if _tick_reachable(t) is False]
+        undecidable = [t for t in ticks if _tick_reachable(t) is None]
+        if not dark:
+            reason = ("all claw devices answering"
+                      if not undecidable
+                      else "no claw reported dark; "
+                           f"{len(undecidable)} tick(s) predate the reachable field")
+            note_disposition("claw_device_dark", "clean", reason=reason)
+            _save_parity_streak(sp, 0)
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            note_disposition("claw_device_dark", "indeterminate",
+                             reason=f"dark candidate, debounce {streak}/{debounce_ticks}")
+            return None
+
+        names = sorted(str(t.get("device")) for t in dark)
+        detail_bits = []
+        for t in sorted(dark, key=lambda d: str(d.get("device"))):
+            err = "; ".join(f"{k}={v}" for k, v in (t.get("errors") or {}).items())
+            detail_bits.append(f"{t.get('device')}"
+                               + (f" ({err[:110]})" if err else ""))
+        return Signal(
+            cls="claw_device_dark",
+            subject=names[0] if len(names) == 1 else f"{len(names)} claws",
+            severity="degraded",
+            detail=(
+                f"claw edge node not answering: {', '.join(detail_bits)}. The "
+                f"capture cron IS running (tick fresh) — the DEVICE is silent: "
+                f"check power/battery, wifi, or the node itself. This is the "
+                f"hardware fact behind what would otherwise surface only as a "
+                f"failing claw metrics cron."
+            ),
+            extra={"devices": names, "claws_seen": seen},
+        )
+    except Exception:
+        return None
+
+
+def probe_claw_battery_low(
+    *,
+    home: Optional[str] = None,
+    ticks: Optional[List[dict]] = None,
+    now: Optional[float] = None,
+    floor_v: float = CLAW_BATTERY_FLOOR_V,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """A battery-powered claw's pack fell below the working floor.
+
+    The warning that was missing on 2026-07-10: dudeclaw-02 spent ~38 h under
+    3.5 V before it died, and nothing said so. Fires only on a CONCRETE
+    voltage from a REACHABLE device.
+
+    Self-guards None: no tick files (INERT), stale/unparseable ticks, a device
+    with no battery gauge or a capture that predates battery collection
+    (unknown is NOT "charged" — it is simply not a low-battery claim), an
+    unreachable device (claw_device_dark owns that), or every pack above the
+    floor. 2-tick debounce. Never raises into the tick.
+    """
+    try:
+        now = time.time() if now is None else now
+        sp = state_path or DEFAULT_CLAW_BATTERY_DEBOUNCE_PATH
+        if ticks is None:
+            ticks, seen = _read_claw_ticks(home or _operator_home(), now)
+        else:
+            seen = len(ticks)
+
+        if not seen:
+            note_disposition("claw_battery_low", "inert",
+                             reason="no claw tick files (no claw edge node here)")
+            _save_parity_streak(sp, 0)
+            return None
+        if not ticks:
+            note_disposition("claw_battery_low", "indeterminate",
+                             reason="claw tick file(s) stale/unparseable")
+            _save_parity_streak(sp, 0)
+            return None
+
+        low, measured = [], 0
+        for t in ticks:
+            if _tick_reachable(t) is False:
+                continue                     # dark → claw_device_dark's call
+            bat = t.get("battery")
+            volts = bat.get("volts") if isinstance(bat, dict) else None
+            if not isinstance(volts, (int, float)) or isinstance(volts, bool):
+                continue                     # no gauge / pre-battery capture
+            measured += 1
+            if volts < floor_v:
+                low.append((str(t.get("device")), float(volts)))
+
+        if not measured:
+            note_disposition(
+                "claw_battery_low", "indeterminate",
+                reason="no claw reported a battery voltage (no gauge, or the "
+                       "capture predates battery collection) — unknown is not charged")
+            _save_parity_streak(sp, 0)
+            return None
+        if not low:
+            note_disposition("claw_battery_low", "clean",
+                             reason=f"{measured} claw pack(s) at/above {floor_v} V")
+            _save_parity_streak(sp, 0)
+            return None
+
+        streak = _load_parity_streak(sp) + 1
+        _save_parity_streak(sp, streak)
+        if streak < debounce_ticks:
+            note_disposition("claw_battery_low", "indeterminate",
+                             reason=f"low candidate, debounce {streak}/{debounce_ticks}")
+            return None
+
+        low.sort(key=lambda p: p[1])
+        worst_dev, worst_v = low[0]
+        listed = ", ".join(f"{d} {v:.2f}V" for d, v in low)
+        return Signal(
+            cls="claw_battery_low",
+            subject=worst_dev,
+            severity="degraded",
+            detail=(
+                f"claw pack below {floor_v} V: {listed}. A single-cell LiPo at "
+                f"{worst_v:.2f} V is in the knee — hours, not days, before the "
+                f"node drops off and its RF/witness coverage goes with it. "
+                f"Charge or swap the pack."
+            ),
+            extra={"low": [{"device": d, "volts": v} for d, v in low],
+                   "floor_v": floor_v, "measured": measured},
+        )
+    except Exception:
+        return None

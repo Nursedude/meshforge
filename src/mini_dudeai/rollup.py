@@ -108,7 +108,13 @@ def parse_claw_posture(claw: dict | None, now_ts: float,
         status = "unknown"
     elif age_s > claw_stale_s:
         status = "stale"
-    elif not claw.get("ok"):
+    elif not (claw.get("reachable")
+              if isinstance(claw.get("reachable"), bool) else claw.get("ok")):
+        # Read the EXPLICIT reachability fact when the capture provides it
+        # (since 2026-07-19), falling back to ok for older ticks. Before that
+        # split, ok folded in accessory halves, so a perfectly reachable claw
+        # that simply has no BLE scanner rendered here as "unreachable" — a
+        # display stating the opposite of the truth.
         status = "unreachable"
     else:
         status = "fresh"

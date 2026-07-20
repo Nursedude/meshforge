@@ -525,3 +525,97 @@ class TestDepWatchedTupleClosedConsumer:
                 "no _DEP_VERSION_WATCHED[0] call sites found — if the "
                 "single-package coupling was refactored away, delete this test "
                 "and the ⚠️ comment above the tuple so they can't rot apart.")
+
+
+class TestClawEdgeHardwareProbes:
+    """Structural-dark row 7 (2026-07-19): give the claw its own vocabulary.
+
+    Origin: dudeclaw-02, a battery-powered claw and the fleet's out-of-band
+    RF/host witness, drained to 2.41 V and went dark for 17.4 h. The spine's
+    only words were "cron_verdict_stale: claw02_metrics FAIL — fix the job" —
+    the capture cron's exit code was the sole downstream witness, so a dead
+    radio node was laundered into an infrastructure-noise signal. These pin the
+    behaviour that makes the claw's own state sayable.
+    """
+
+    def _tick(self, device="dudeclaw-02", reachable=True, volts=None,
+              errors=None):
+        t = {"device": device, "reachable": reachable, "errors": errors or {}}
+        if volts is not None:
+            t["battery"] = {"volts": volts, "raw": f"Battery: {volts} V"}
+        return t
+
+    # ---- claw_device_dark -------------------------------------------------
+    def test_no_claw_on_box_is_inert_not_clean(self):
+        from utils.watchdog_probes import probe_claw_device_dark
+        assert probe_claw_device_dark(ticks=[], now=1000.0,
+                                      state_path=self.sp) is None
+        assert collect_dispositions()["claw_device_dark"]["disp"] == "inert"
+
+    def test_dark_device_fires_after_debounce(self):
+        from utils.watchdog_probes import probe_claw_device_dark
+        t = [self._tick(reachable=False, errors={"device_info": "no reply"})]
+        assert probe_claw_device_dark(ticks=t, now=1.0, state_path=self.sp) is None
+        sig = probe_claw_device_dark(ticks=t, now=2.0, state_path=self.sp)
+        assert sig is not None and sig.cls == "claw_device_dark"
+        assert sig.subject == "dudeclaw-02" and sig.severity == "degraded"
+        # The whole point: it must talk about the DEVICE, not the cron.
+        assert "not answering" in sig.detail
+
+    def test_reachable_device_is_clean(self):
+        from utils.watchdog_probes import probe_claw_device_dark
+        for _ in range(3):
+            sig = probe_claw_device_dark(ticks=[self._tick()], now=1.0,
+                                         state_path=self.sp)
+        assert sig is None
+        assert collect_dispositions()["claw_device_dark"]["disp"] == "clean"
+
+    def test_legacy_tick_without_reachable_is_not_called_dark(self):
+        """A tick from a pre-2026-07-19 capture has no `reachable` key. Absent
+        evidence must not manufacture a dark claim."""
+        from utils.watchdog_probes import probe_claw_device_dark
+        legacy = [{"device": "dudeclaw-01"}]          # no reachable, no device_info
+        for _ in range(3):
+            assert probe_claw_device_dark(ticks=legacy, now=1.0,
+                                          state_path=self.sp) is None
+
+    # ---- claw_battery_low -------------------------------------------------
+    def test_low_pack_fires_with_voltage_in_detail(self):
+        from utils.watchdog_probes import probe_claw_battery_low
+        t = [self._tick(volts=2.41)]
+        assert probe_claw_battery_low(ticks=t, now=1.0, state_path=self.sp2) is None
+        sig = probe_claw_battery_low(ticks=t, now=2.0, state_path=self.sp2)
+        assert sig is not None and sig.cls == "claw_battery_low"
+        assert "2.41" in sig.detail and sig.subject == "dudeclaw-02"
+
+    def test_missing_gauge_is_indeterminate_never_charged(self):
+        """No battery reading is NOT a low-battery claim AND NOT a healthy one
+        — the #1 trap: an unknown must not land in either real-world bucket."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        assert probe_claw_battery_low(ticks=[self._tick(volts=None)], now=1.0,
+                                      state_path=self.sp2) is None
+        assert (collect_dispositions()["claw_battery_low"]["disp"]
+                == "indeterminate")
+
+    def test_dark_device_does_not_also_page_battery(self):
+        """One fault, one owner: an unreachable claw belongs to
+        claw_device_dark; battery must not pile a second page on the same
+        event using a stale/absent reading."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        t = [self._tick(reachable=False, volts=2.41)]
+        for _ in range(3):
+            assert probe_claw_battery_low(ticks=t, now=1.0,
+                                          state_path=self.sp2) is None
+
+    def test_healthy_pack_is_clean(self):
+        from utils.watchdog_probes import probe_claw_battery_low
+        for _ in range(3):
+            sig = probe_claw_battery_low(ticks=[self._tick(volts=4.06)],
+                                         now=1.0, state_path=self.sp2)
+        assert sig is None
+        assert collect_dispositions()["claw_battery_low"]["disp"] == "clean"
+
+    @pytest.fixture(autouse=True)
+    def _paths(self, tmp_path):
+        self.sp = str(tmp_path / "dark.json")
+        self.sp2 = str(tmp_path / "bat.json")

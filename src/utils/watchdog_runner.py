@@ -58,6 +58,8 @@ from utils.watchdog_probes import (
     probe_cron_verdict_stale,
     probe_fleet_box_unreachable,
     probe_host_frozen,
+    probe_claw_device_dark,
+    probe_claw_battery_low,
     probe_router_scout_degraded,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
@@ -626,6 +628,20 @@ def run_all_probes(
     # self-petted HW watchdog can't catch. Reads ~/host_probe_state.json written
     # by the out-of-band host_probe_check collector; INERT off the claw's brain box.
     sig = probe_host_frozen()
+    if sig is not None:
+        signals.append(sig)
+
+    # claw edge hardware (2026-07-19, structural-dark row 7): the claw's OWN
+    # vocabulary. device_dark = a fresh capture tick says the DEVICE didn't
+    # answer (a hardware/power fact, not a failing cron); battery_low = a
+    # reachable pack under the LiPo floor, the warning that lands while the
+    # node can still be saved. Both read the tick files the capture cron
+    # already writes — no second NATS poll. INERT off a claw-brain box.
+    sig = probe_claw_device_dark()
+    if sig is not None:
+        signals.append(sig)
+
+    sig = probe_claw_battery_low()
     if sig is not None:
         signals.append(sig)
 

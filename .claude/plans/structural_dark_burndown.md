@@ -11,6 +11,31 @@
 
 ## Closed / narrowed
 
+- **live_claw_nats_not_wired_to_mini** → **claw_edge_rf_coverage_partial**,
+  NARROWED 2026-07-19 (row 7). The row's premise was STALE: live sensor reads
+  already existed (dudeclaw-01's claw mini, healthy) and claw telemetry already
+  reached the fleet (tick files → /api/status.claw → rollup card). The REAL gap
+  was found by reading the data: **dudeclaw-02 (battery, the out-of-band RF
+  witness) drained to 2.41 V and went dark 17.4 h on 07-10, and the fleet's only
+  words were `cron_verdict_stale: claw02_metrics FAIL — fix the job`** — the
+  capture cron's exit code was the sole downstream witness, so a dead radio node
+  was laundered into infrastructure noise in the channel known to flap benignly.
+  Two compounding instances of the same class: the `battery_v lt 3.5` spec was
+  bound to dudeclaw-01 (USB, 4.06 V forever — can never breach), and
+  `build_tick`'s `ok = device_info AND ble` pinned BLE-less dudeclaw-02 at
+  `ok:false` in every tick ever, so /fleet rendered a healthy claw
+  "unreachable". Cure: `claw_device_dark` + `claw_battery_low` signals read from
+  the tick files the capture already writes (NO second NATS poll — one poller,
+  one threshold set), battery captured per device, `reachable` made explicit.
+  Deliberate: fleet preset still does not poll NATS; one fault one owner; unknown
+  ≠ charged; stale ticks stay cron_verdict_stale's page.
+  Runbook: `.claude/research/claw_edge_hardware_signals_2026_07_19.md`.
+  Eval: `oracle-claw-dark-not-a-failing-cron`.
+  RESIDUAL: thresholded live sensing (temp/anomaly/LoRa-ears) still runs only in
+  a per-device claw mini; claw-02 has none, deferred while its pack was
+  mid-discharge-measurement. The staged `claw_sensors.with_ears.json` (LoRa
+  ears) is the strongest candidate for **row 9's** independent OTA witness.
+
 - **dep_version_drift_strays_blind** — **ACCEPTED-PERMANENT 2026-07-19** (row 3;
   the first row closed by DECISION rather than by code). Operator chose accept
   over extend, on a fleet-wide survey of every root-readable install of 12 deps
@@ -87,8 +112,8 @@
 | 3 | ~~`dep_version_drift_strays_blind`~~ | ACCEPTED-PERMANENT 2026-07-19 — see above; scope is deliberate, revisit only on a second installer | — | — | — |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
-| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | NEXT DEFAULT PICK is row 7 (rows 2+8 wait on the RNS roll) |
-| 7 | `live_claw_nats_not_wired_to_mini` | Wire `nats_sensor`/`http_json` source kinds into the fleet preset on the brain box; MF021 observation-only invariant applies | **Opus** | moderate | claw NATS reachability from mini's context unverified |
+| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | NEXT DEFAULT PICK is row 9's claw-ears leg (rows 2+8 wait on the RNS roll) |
+| 7 | ~~`live_claw_nats_not_wired_to_mini`~~ | NARROWED 2026-07-19 — see above; row renamed `claw_edge_rf_coverage_partial`. Residual = per-device sensor instances (claw-02), which feeds row 9 | — | — | NEXT DEFAULT PICK is row 9's claw-ears leg (or rows 2/8 post-roll) |
 | 8 | `cross_gateway_dups_unsuppressed` | STEP 6 cross-gateway suppression: distributed coordination (which gateway yields, race windows, idempotency, partition behavior) | **frontier design pass** → Opus impl | full session+ | hardest row; design doc first, never straight to code |
 | 9 | `mesh_rf_ota_leg_unwatched` | RF-side receipt: mesh ACK consumption (#74 T2 step 4) or a second receiver node as OTA witness (reference-node arc fit) | **frontier + operator/field** | multi-session | hardware/field-gated |
 

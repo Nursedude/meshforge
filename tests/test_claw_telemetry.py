@@ -240,3 +240,78 @@ class TestSecondaryTickBasename:
         from mini_dudeai.claw_telemetry import secondary_tick_basename
         with pytest.raises(ValueError):
             secondary_tick_basename("   ")
+
+
+class TestAccessoryAbsenceIsNotFailure:
+    """2026-07-19 (structural-dark row 7): a claw with no BLE scanner is a
+    correctly-built device, not a broken one.
+
+    ``ok`` used to be an AND over device_info AND ble, so dudeclaw-02 — which
+    has no BLE radio — sat at ``ok: false`` in every tick forever. A flag that
+    is permanently false is not a conservative default: it trains every reader
+    (human and probe) to ignore it, so a REAL failure hides inside it. Absence
+    of a capability is not an error (honest_failure_modes #1/#3).
+    """
+
+    def test_missing_ble_scanner_still_reads_reachable_and_ok(self):
+        t = build_tick(now=1.0, host="moc2", device="dudeclaw-02",
+                       device_info_reply=_ok(DI),
+                       ble_stats_reply={"ok": False,
+                                        "error": "no BLE scanner on this device"})
+        assert t["reachable"] is True
+        assert t["ok"] is True, "an absent accessory must not read as a failure"
+        assert t["ble"] is None
+
+    def test_the_accessory_failure_still_leaves_a_witness(self):
+        """Not-a-failure must not mean not-recorded: the miss is still in
+        errors AND named in degraded_optional (honest_failure_modes #9), so a
+        real BLE regression stays visible instead of being averaged away."""
+        t = build_tick(now=1.0, host="moc2", device="dudeclaw-02",
+                       device_info_reply=_ok(DI),
+                       ble_stats_reply={"ok": False, "error": "scanner wedged"})
+        assert "ble_stats" in t["errors"]
+        assert t["degraded_optional"] == ["ble_stats"]
+        # ok stays True (the DEVICE answered); accessory health is reported
+        # separately rather than collapsed into one boolean this layer cannot
+        # disambiguate from a permanent hardware absence.
+        assert t["ok"] is True
+
+    def test_unreachable_device_is_never_ok_regardless_of_accessories(self):
+        t = build_tick(now=1.0, host="moc2", device="d",
+                       device_info_reply={"ok": False, "error": "no reply"},
+                       ble_stats_reply=_ok(BS))
+        assert t["reachable"] is False and t["ok"] is False
+
+
+class TestBatteryCapture:
+    """Battery became a first-class fleet metric 2026-07-19: a battery claw
+    drained to 2.41 V and died with the voltage recorded nowhere the fleet
+    could see it."""
+
+    def test_battery_parsed_into_the_tick(self):
+        t = build_tick(now=1.0, host="moc2", device="dudeclaw-02",
+                       device_info_reply=_ok(DI), ble_stats_reply=_ok(BS),
+                       battery_reply=_ok("Battery: 4.06 V (adc 829 mV)"))
+        assert t["battery"]["volts"] == 4.06
+        assert t["ok"] is True
+
+    def test_adc_millivolts_are_not_mistaken_for_the_pack_voltage(self):
+        from mini_dudeai.claw_telemetry import parse_battery
+        assert parse_battery("Battery: 2.41 V (adc 490 mV)")["volts"] == 2.41
+
+    def test_unreadable_battery_is_none_never_zero(self):
+        """A fabricated 0.0 V would breach every low-battery spec and read as a
+        dying node — the degraded value must not overlap the healthy domain."""
+        from mini_dudeai.claw_telemetry import parse_battery
+        assert parse_battery("sensor busy") is None
+        assert parse_battery("") is None
+        assert parse_battery(None) is None
+
+    def test_absent_battery_reply_leaves_no_error_and_stays_ok(self):
+        """A claw with no gauge simply isn't asked/answered — that is not a
+        capture failure."""
+        t = build_tick(now=1.0, host="moc2", device="d",
+                       device_info_reply=_ok(DI), ble_stats_reply=_ok(BS),
+                       battery_reply=None)
+        assert t["battery"] is None and t["ok"] is True
+        assert "battery" not in t["errors"]

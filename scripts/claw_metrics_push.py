@@ -223,12 +223,23 @@ def _request_tool(nc: NatsConnection, device: str, tool: str):
 
 def _capture_tick(nc: NatsConnection, device: str, host: str,
                   now: float) -> dict:
-    """Pull device_info + ble_stats for the /api/status.claw display block.
+    """Pull device_info + ble_stats + battery for the /api/status.claw block.
+
+    Battery joined the capture 2026-07-19: a battery-powered claw drained to
+    2.41 V and died dark for 17 h with the pack voltage recorded NOWHERE the
+    fleet could see it — the only trace was an ad-hoc CSV from a transient
+    unit. Voltage is a first-class fleet metric now, per device, so
+    probe_claw_battery_low can warn BEFORE the node dies instead of the death
+    surfacing as a failing cron.
+
     Best-effort: a half that fails is None + an error in the tick, never a
-    fabricated value (build_tick enforces the honest-failure contract)."""
+    fabricated value (build_tick enforces the honest-failure contract). A claw
+    with no battery gauge simply reports None — an accessory it lacks does not
+    make the device unhealthy."""
     di = _request_tool(nc, device, "device_info")
     bs = _request_tool(nc, device, "ble_stats")
-    return build_tick(now, host, device, di, bs)
+    bat = _request_tool(nc, device, "battery_read")
+    return build_tick(now, host, device, di, bs, battery_reply=bat)
 
 
 def _push_rows(nc: NatsConnection, rows: list[str], device: str):

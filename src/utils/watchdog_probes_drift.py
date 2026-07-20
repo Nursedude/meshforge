@@ -1306,6 +1306,8 @@ from utils.watchdog_probes_liveness import (  # noqa: E402,F401 (back-compat re-
     _HOST_FROZEN_WEDGE_VERDICTS,
     _read_host_probe_verdict,
     probe_host_frozen,
+    probe_claw_device_dark,
+    probe_claw_battery_low,
 )
 from utils.watchdog_probes_env import (  # noqa: E402,F401 (back-compat re-export)
     DEFAULT_ROUTER_SCOUT_DEBOUNCE_PATH,

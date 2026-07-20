@@ -852,6 +852,45 @@
       },
       "cooldown_s": 3600,
       "annotation": "2026-06-30 dedup/identity arc STEP 6 -- HUMAN-facing cross-gateway DUPLICATE delivery from the 4c /fleet/dups rollup: the same (content_id, recipient) CONFIRMED on >1 DISTINCT gateway. The JOIN now classifies the recipient INFRA (itself a gateway/peer hash -- e.g. MeshAnchor 58cecbd0, in BOTH gateways' peer_gateway_destinations, so both legitimately relay there) vs HUMAN (a real NomadNet inbox). This rung pages ONLY on HUMAN dups -- the real reliability defect; the infra-to-infra dup is real but benign AND structurally unsuppressable with zero added loss + no coordination substrate (two gateways confirm-deliver the same content simultaneously; copy #2 can't be cancelled after the fact), so it is surfaced in the detail but NOT paged. degraded only -- a dup is a quality/cost defect, not an outage (delivery still happened). The probe (probe_gateway_dup_degraded) reads /fleet/dups on the manager box; INERT when the rollup is indeterminate (<2 gateways) or stale (dead collector cron); 2-tick debounce. Investigate /fleet/dups fleet_duplicates[] where recipient_kind==human. STEP-0 reconciliation: the earlier 'replace the is_already_bridged loop guard with an identity-based one' C-fix framing was DROPPED -- the bot is mesh node !a2e95ba4 emitting RAW text so the loop guard never drops its reply; the real problem-C fix is identity-correlation (a separate future slice)."
+    },
+    {
+      "id": "claw_device_dark_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_device_dark",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] claw edge node dark",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "electric_plug",
+          "satellite"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-07-19 structural-dark row 7 \u2014 a dude-claw EDGE NODE stopped answering while its capture cron kept writing FRESH ticks, so this is a statement about the DEVICE (power/battery/wifi/hardware), not about a job. It pages because the claw is the fleet's out-of-band witness: when it dies we lose the independent RF/host-probe vantage that exists precisely for when the boxes' own self-reports can't be trusted. On 2026-07-10 a battery claw was dark 17.4 h while the fleet's only words were 'cron_verdict_stale: claw02_metrics FAIL \u2014 fix the job' \u2014 a hardware death laundered into infrastructure noise, in the channel known to flap benignly. Check power/pack, wifi, then the node. INERT off a claw-brain box; stale ticks are cron_verdict_stale's call, not this one."
+    },
+    {
+      "id": "claw_battery_low_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_battery_low",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] claw battery low",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "battery"
+        ]
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-19 structural-dark row 7 \u2014 a battery-powered claw's pack is under the 3.5 V single-cell LiPo working floor: hours, not days, before the node drops off and takes its RF/witness coverage with it. This is the warning that did NOT exist on 2026-07-10, when dudeclaw-02 sat ~38 h below floor, bottomed at 2.41 V and died; the battery_v sensor spec that would have caught it was bound to dudeclaw-01, which lives on USB at 4.06 V and can never breach (the alarm pointed at the wrong device). Lower priority than claw_device_dark BY DESIGN \u2014 this is the actionable early warning, not the outage. Charge or swap the pack. Fires only on a concrete voltage from a REACHABLE claw; no gauge reads indeterminate, never 'charged'."
     }
   ]
 }

@@ -804,6 +804,45 @@
       },
       "cooldown_s": 1800,
       "annotation": "Structural-dark row 6 (2026-07-19): federation health is now watched PER VANTAGE, not federator-only. Every map-running box already computes federation.peer_status locally, so box A seeing peer C unhealthy while box B sees it fine is PATH evidence no single-vantage watcher can produce. propose_escalation ONLY -- deliberately NEVER ntfy on a gateway box: box-down PAGING ownership stays with the manager's fleet_offline_check (3-fail -> ntfy) + manager_deadman, so one dead peer can never fan out to N phone pages. subject_exclude_globs skips moc3 (moc3_federation_backoff_known_normal owns it). Per-box pattern unchanged (2026-05-31): a box may add a local *_federation_known_normal annotate rule + a matching exclude glob for a KNOWN cross-project peer that surfaces as a bare IP; those live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014)."
+    },
+    {
+      "id": "claw_device_dark_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_device_dark",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] claw edge node dark",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "electric_plug",
+          "satellite"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-07-19 structural-dark row 7 \u2014 a dude-claw EDGE NODE stopped answering while its capture cron kept writing FRESH ticks, so this is a statement about the DEVICE (power/battery/wifi/hardware), not about a job. It pages because the claw is the fleet's out-of-band witness: when it dies we lose the independent RF/host-probe vantage that exists precisely for when the boxes' own self-reports can't be trusted. On 2026-07-10 a battery claw was dark 17.4 h while the fleet's only words were 'cron_verdict_stale: claw02_metrics FAIL \u2014 fix the job' \u2014 a hardware death laundered into infrastructure noise, in the channel known to flap benignly. Check power/pack, wifi, then the node. INERT off a claw-brain box; stale ticks are cron_verdict_stale's call, not this one."
+    },
+    {
+      "id": "claw_battery_low_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_battery_low",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] claw battery low",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "battery"
+        ]
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-19 structural-dark row 7 \u2014 a battery-powered claw's pack is under the 3.5 V single-cell LiPo working floor: hours, not days, before the node drops off and takes its RF/witness coverage with it. This is the warning that did NOT exist on 2026-07-10, when dudeclaw-02 sat ~38 h below floor, bottomed at 2.41 V and died; the battery_v sensor spec that would have caught it was bound to dudeclaw-01, which lives on USB at 4.06 V and can never breach (the alarm pointed at the wrong device). Lower priority than claw_device_dark BY DESIGN \u2014 this is the actionable early warning, not the outage. Charge or swap the pack. Fires only on a concrete voltage from a REACHABLE claw; no gauge reads indeterminate, never 'charged'."
     }
   ]
 }

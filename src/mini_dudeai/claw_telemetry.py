@@ -11,9 +11,14 @@ Honest-failure contract (``.claude/rules/honest_failure_modes.md``):
   * a field absent from the string parses to ``None`` (unknown) — never a
     fabricated ``0`` that would read as a real measurement;
   * a failed/absent NATS reply (or an ``ok`` reply whose result we cannot
-    parse) yields ``None`` for that half plus an explicit ``errors`` entry,
-    and forces the top-level ``ok`` False — a degraded capture must not be
-    mistakable for healthy telemetry.
+    parse) yields ``None`` for that half plus an explicit ``errors`` entry —
+    a degraded capture must not be mistakable for healthy telemetry;
+  * ``reachable`` (did the device answer ``device_info``) is the liveness fact
+    consumers must read; ``ok`` tracks it. An ACCESSORY the device does not
+    have — no BLE scanner, no battery gauge — is reported in
+    ``degraded_optional``, NOT folded into ``ok``: pinning a BLE-less claw at
+    ``ok: false`` forever (as this module did until 2026-07-19) teaches every
+    reader to ignore the flag, which is how a real failure hides.
 """
 from __future__ import annotations
 
@@ -51,6 +56,28 @@ def _int(rx: re.Pattern, s: str) -> Optional[int]:
 def _str(rx: re.Pattern, s: str) -> Optional[str]:
     m = rx.search(s)
     return m.group(1).strip() if m else None
+
+
+# battery_read: "Battery: 4.06 V (adc 829 mV)". The FIRST voltage is the pack
+# reading; the parenthesised adc millivolts is a raw sample, never the answer.
+_RE_BATTERY_V = re.compile(r"([\d.]+)\s*V\b", re.IGNORECASE)
+
+
+def parse_battery(result: Any) -> Optional[Dict[str, Any]]:
+    """Parse a ``battery_read`` result into ``{volts, raw}``.
+
+    Returns ``None`` when there is no parseable voltage — the caller records
+    that as a witness and leaves the reading unknown. NEVER returns 0.0 for an
+    unreadable pack: a fabricated 0 V would breach every low-battery spec and
+    read as a dying node (honest_failure_modes #1 — the degraded value must not
+    overlap the healthy domain).
+    """
+    if not isinstance(result, str) or not result.strip():
+        return None
+    m = _RE_BATTERY_V.search(result)
+    if not m:
+        return None
+    return {"volts": float(m.group(1)), "raw": result.strip()[:120]}
 
 
 def parse_device_info(result: Any) -> Optional[Dict[str, Any]]:
@@ -120,27 +147,63 @@ def _extract(reply: Any, parser, err_key: str,
     return parsed
 
 
-def build_tick(now: float, host: str, device: str,
-               device_info_reply: Any, ble_stats_reply: Any) -> Dict[str, Any]:
-    """Assemble the ``claw_last_tick.json`` record from the two NATS replies.
+#: Halves whose failure means THE DEVICE did not answer. ``device_info`` is the
+#: identity/health call every claw firmware supports, so failing it is the
+#: reachability fact. Everything else is an ACCESSORY: a claw with no BLE radio
+#: and a claw with no battery gauge are correctly-built devices, not broken ones.
+_REQUIRED_HALVES = ("device_info",)
 
-    ``ok`` is True only when BOTH halves were read cleanly; any failure leaves
-    that half ``None`` + an ``errors`` entry and forces ``ok`` False.
+
+def build_tick(now: float, host: str, device: str,
+               device_info_reply: Any, ble_stats_reply: Any,
+               battery_reply: Any = None) -> Dict[str, Any]:
+    """Assemble the ``claw_last_tick.json`` record from the NATS replies.
+
+    ``reachable`` is the load-bearing fact: did the device answer ``device_info``?
+    Consumers that need "is this node alive" must read THAT, not ``ok``.
+
+    ``ok`` means "the capture reached the device and its REQUIRED half read
+    cleanly". It is deliberately NOT an AND over all halves any more: the
+    firmware answers in free text, so "no BLE scanner on this device"
+    (permanent, correct) is indistinguishable from "BLE scanner wedged"
+    (a real fault) at this layer — and the old ``ble is not None`` clause
+    resolved that ambiguity the worst possible way, pinning BLE-less
+    dudeclaw-02 at ``ok: false`` in every tick forever (observed 2026-07-19).
+    A permanently-false flag is not a conservative default: it trains every
+    reader, human and probe, to ignore it, so a REAL failure hides inside it.
+
+    Accessory state is therefore REPORTED rather than folded in: consumers that
+    care about BLE or the battery gauge read ``degraded_optional`` (and
+    ``errors``), which name exactly what missed. Nothing is swallowed (#9) —
+    the ambiguity is surfaced at the layer that can resolve it instead of being
+    collapsed into a boolean here (honest_failure_modes #1/#3).
+
+    Every miss still records an ``errors`` witness regardless of whether it
+    affects ``ok`` — nothing is swallowed (#9); ``degraded_optional`` names the
+    accessory halves that failed so a real BLE/battery regression stays visible
+    instead of being averaged away.
     """
     errors: Dict[str, str] = {}
     device_info = _extract(device_info_reply, parse_device_info,
                            "device_info", errors)
     ble = _extract(ble_stats_reply, parse_ble_stats, "ble_stats", errors)
-    captured_iso = iso_or_none(now)
+    battery = (_extract(battery_reply, parse_battery, "battery", errors)
+               if battery_reply is not None else None)
+    required_errors = [k for k in errors if k in _REQUIRED_HALVES]
+    degraded_optional = sorted(k for k in errors if k not in _REQUIRED_HALVES)
+    reachable = device_info is not None and not required_errors
     return {
         "captured_at": now,
-        "captured_iso": captured_iso,
+        "captured_iso": iso_or_none(now),
         "host": host,
         "device": device,
-        "ok": not errors and device_info is not None and ble is not None,
+        "reachable": reachable,
+        "ok": reachable,
         "device_info": device_info,
         "ble": ble,
+        "battery": battery,
         "errors": errors,
+        "degraded_optional": degraded_optional,
     }
 
 
