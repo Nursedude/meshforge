@@ -705,3 +705,40 @@ transient during-roll failures (peers were genuinely stopped for their flip)
 and decay on their own; `synth_soak_degraded` on moc is expected to clear at
 the next hourly soak now that the path is repaired — BELIEVED, not yet
 verified, since that run had not fired at the time of writing.
+
+### GAP CLOSED — kiai + moc4 added to lab_peers (2026-07-19)
+
+The standing gap noted during the roll is fixed. Both boxes are now first-class
+tracer targets, and the fleet peers file went 8 → 10 entries, byte-identical on
+all 8 remote boxes plus the manager (verified by md5).
+
+- **kiai** — echo responder was already enabled and running; only its
+  destination hash was missing from the peers file. Hash obtained with the
+  documented `python3 -m lab.lxmf_echo --init` (idempotent, reuses the existing
+  identity at `~/.config/meshforge/lab_echo_identity`).
+- **moc4** — had **no echo responder at all**, so there was nothing to point a
+  peer entry at. Installed from `templates/systemd/meshforge-echo-user.service`
+  following the procedure in that template's header, `enable --now`, then
+  `--init` for the hash.
+- Distributed to every box with a `.bak-20260719` backup taken first.
+
+**VERIFIED:** tracer from the manager now traces **9 peers, 9/9 ok** (kiai
+483 ms, moc4 3718 ms). **kiai's own tracer — failing `exit 2` every 10 minutes
+since 2026-07-12 because it had no peers file — now exits 0 with all 9 peers
+ok**, and kiai reports 0 failed user units.
+
+Note the file is per-box operator config (`~/.config/meshforge/lab_peers`), NOT
+repo-tracked, so the hashes stay out of the repo per MF014.
+
+**Left deliberately for the operator**: moc4 has no `meshforge-tracer.timer`,
+so it is now a *target* (other boxes measure it) but not a *measurer*. Every
+other fleet box runs the tracer. Enabling it there would make the matrix
+symmetric; it also adds a recurring 10-minute job, so it is a deliberate call
+rather than something to switch on silently.
+
+**The detection gap behind kiai's week of silence is still open**: a
+timer-triggered USER unit that fails every cycle is invisible to
+`probe_service_inactive` (user-unit blind — the same structural hole #82 hit,
+which needed a bespoke `probe_nomadnet_crashloop`). A general
+"failed user units" probe would have caught this in one cycle instead of a
+week. Worth writing.
