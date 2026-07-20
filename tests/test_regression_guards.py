@@ -1239,3 +1239,74 @@ class TestConfigAtomicityMF026:
         # a future edit that adds headroom trips review.
         lint_mod = self._lint()
         assert sum(lint_mod.MF026_BASELINE.values()) <= 9
+
+
+class TestNoUnsatisfiableCIPoll:
+    """Enforce: never poll CI with `gh run list --commit <sha>` (2026-07-20).
+
+    That filter returns an EMPTY list on the gh version this fleet runs, so a
+    poll loop written as::
+
+        until [ "$(gh run list --commit $SHA --json status --jq '.[0].status')" \
+                = "completed" ]; do sleep 20; done
+
+    compares `"" = "completed"` forever — a predicate UNSATISFIABLE BY
+    CONSTRUCTION. One such loop ran 7h33m (~1,350 API calls) for a commit whose
+    CI had been green for 7 hours, and the same filter silently returned
+    nothing for a second session hours later.
+
+    It is the house defect class in shell form: an ABSENT result mapped onto a
+    VALID-LOOKING one ("not finished yet") rather than "cannot observe"
+    (honest_failure_modes #1). The cure is `scripts/wait_for_ci.sh` — list by
+    BRANCH, match the SHA client-side, bound the wait, and exit 2 on UNKNOWN.
+    This guard keeps the footgun from being re-typed from memory.
+    """
+
+    def _scan_files(self):
+        for sub in ("scripts", ".githooks"):
+            base = os.path.join(REPO_ROOT, sub)
+            if not os.path.isdir(base):
+                continue
+            for dirpath, _dirnames, filenames in os.walk(base):
+                for name in filenames:
+                    if name.endswith((".json", ".md")):
+                        continue
+                    yield os.path.join(dirpath, name)
+
+    def test_no_gh_run_list_commit_filter(self):
+        # The cure itself quotes the broken form in its header (the whole point
+        # is to name what not to re-type) and in its UNKNOWN message. Exempt it
+        # by PATH rather than by matching phrases on the offending line —
+        # prose wraps, and a phrase allowlist would silently stop guarding.
+        exempt = {os.path.join("scripts", "wait_for_ci.sh")}
+        offenders = []
+        for path in self._scan_files():
+            rel = os.path.relpath(path, REPO_ROOT)
+            if rel in exempt:
+                continue
+            try:
+                with open(path, errors="replace") as fh:
+                    text = fh.read()
+            except OSError:
+                continue
+            for n, line in enumerate(text.splitlines(), 1):
+                if "gh run list" in line and "--commit" in line:
+                    offenders.append("%s:%d" % (rel, n))
+        assert not offenders, (
+            "`gh run list --commit` returns EMPTY on this gh version — a poll "
+            "loop on it can never exit (7h33m incident, 2026-07-20). Use "
+            "scripts/wait_for_ci.sh, or list by --branch and match the SHA "
+            "client-side as honest_status.sh does. Offenders: " + ", ".join(offenders)
+        )
+
+    def test_wait_for_ci_helper_exists_and_is_bounded(self):
+        """The cure must exist, be executable, and carry a hard timeout —
+        an unbounded 'fixed' version would just be the same bug again."""
+        script = os.path.join(REPO_ROOT, "scripts", "wait_for_ci.sh")
+        assert os.path.isfile(script), "scripts/wait_for_ci.sh missing"
+        assert os.access(script, os.X_OK), "scripts/wait_for_ci.sh not executable"
+        with open(script) as fh:
+            body = fh.read()
+        assert "TIMEOUT" in body, "no timeout ceiling — could loop forever"
+        assert "--branch" in body, "must query by branch, not --commit"
+        assert "exit 2" in body, "must have an UNKNOWN exit path (never a pass)"
