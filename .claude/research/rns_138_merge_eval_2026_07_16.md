@@ -804,5 +804,24 @@ New module `src/utils/watchdog_probes_user.py` rather than an append —
    `meshanchor-fleet-watchdog`, not `meshforge-watchdog`, so MF probe classes
    have no producer there. Needs an operator decision on which seed applies
    rather than a guess from me.
-2. **Not ported to MeshAnchor.** MA owns the equivalent surface in
-   `active_health_probe`; this probe is MF-side only for now.
+2. ~~Not ported to MeshAnchor.~~ **PORTED 2026-07-19** (MA `0ed63cda`) as
+   `ActiveHealthProbe.check_user_timer_unit_failing`, registered
+   unconditionally in `create_gateway_health_probe` per the fd-exhaustion
+   precedent. Same detection logic in MA's idiom (`HealthResult`, framework
+   hysteresis `fails=3` replacing MF's own debounce streak).
+   **Calibrated difference, documented in both docstrings**: MF is tri-state
+   and HOLDS its streak across an unobservable tick, so a journalctl wedge
+   cannot clear an in-flight outage; `HealthResult` is binary, so on MA an
+   unobservable journal necessarily reads healthy (`journal_unobservable`) —
+   the reason string is deliberately greppable so "could not look" stays
+   distinguishable from "looked and it was fine".
+   MA suite **5832 passed / 14 skipped, exit 0**; MA lint exit 0;
+   `parity_check` **in sync**. MA's exact-registered-set gate correctly caught
+   the new registration and was updated deliberately.
+   **Live consumer verified** (rule 7 — and MA is the repo where the canonical
+   proxy-verification failure happened): traced the real host —
+   `meshanchor-daemon` → `HealthProbeService` → `get_health_probe()` → the
+   factory — restarted it, and read back
+   `Health probe: user_timer_units is now HEALTHY` from the daemon's own
+   journal. Live check in the MA venv reports `user_timers_ok_3` (it observed
+   3 enrolled timers; not "no timers", not "unobservable").
