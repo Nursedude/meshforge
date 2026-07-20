@@ -742,6 +742,19 @@
       "annotation": "AREDN Phase 0 (2026-06-12) \u2014 a box with aredn_node_ips configured whose local AREDN sysinfo collection went dark: node unreachable, or the running service predates the config (reports not_configured while the settings file carries IPs \u2014 restart meshforge-map to load). The worldmap fallback masks the loss; found dormant on the AREDN-site box itself. Side-effect-free escalation; NO ntfy page (degraded \u2014 the map serves, the AREDN leg is blind)."
     },
     {
+      "id": "aredn_organ_undeclared_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "aredn_organ_undeclared",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 86400,
+      "annotation": "AREDN organ available but NEVER ADOPTED (2026-07-20) \u2014 an AREDN node answers sysinfo on this box's own LAN (localnode.local.mesh resolves, which it cannot without an AREDN node serving DNS) while the box neither configures aredn_node_ips nor declares organ_expectations.aredn. This is the 2026-06-12 Phase-0 state itself: the organ sits dormant and every AREDN node on the map comes from the worldmap fallback. Both older legs need a statement the operator had to remember to make, so this one is closed by POSITIVE evidence instead. Escalation only, NO ntfy page: lost coverage rather than an outage, and by construction it has already been this way a long time \u2014 a page would arrive years late and nightly. Fix: add the node IP to map_settings.json aredn_node_ips + restart meshforge-map, or write the decision down as an organ_expectations declaration."
+    },
+    {
       "id": "calibration_drift_any",
       "match": {
         "kind": "signal_class",

@@ -140,6 +140,7 @@ def test_signal_classes_closed_enum_is_documented():
         "memory_index_oversize",        # mini-dudeai audit #2
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
+        "aredn_organ_undeclared",       # 2026-07-20 AREDN organ available, never adopted
         "dep_version_drift",            # 2026-06-12 recurring update class
         "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
@@ -5476,6 +5477,186 @@ def _asd_kw(tmp_path, diag, *, ips=None, status=None):
         expectation_fn=lambda: (False, ""),
         state_path=str(tmp_path / "asd_debounce.json"),
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-20 — aredn_organ_undeclared (the AREDN organ is physically
+# available on this box's LAN and nobody ever adopted it). Closes the last
+# leg of the aredn_configured_source_only structural-dark row: both older
+# legs need a statement (config, or declaration) the operator had to
+# remember to make, so the 2026-06-12 origin state itself was invisible.
+# The detector is POSITIVE evidence only — a resolving localnode that
+# answers sysinfo — because "did we forget to declare?" cannot be answered
+# from absence (honest_failure_modes #2).
+# ─────────────────────────────────────────────────────────────────────
+
+_SYSINFO = {"node": "AE7XYZ-hilo-relay", "api_version": "1.13"}
+
+
+_AOU_DEFAULT = object()   # sentinel: "" and None are both meaningful here
+
+
+def _aou_kw(tmp_path, *, ips=(), declared=(False, ""), ip="10.20.30.65",
+            sysinfo=_AOU_DEFAULT):
+    return dict(
+        service_user_fn=lambda: "op",
+        resolve_fn=lambda: ip,
+        sysinfo_fn=lambda _ip: (_SYSINFO if sysinfo is _AOU_DEFAULT else sysinfo),
+        expectation_fn=lambda: declared,
+        state_path=str(tmp_path / "aou_debounce.json"),
+    )
+
+
+def _aou_run(tmp_path, monkeypatch, *, ips=(), state="ok", **kw):
+    """Run one tick with the settings read stubbed to (ips, state).
+
+    Patches watchdog_probes_AREDN (where the probe looks the name up) — the
+    module moved out of watchdog_probes_env under the MF025 cap on 2026-07-20;
+    patching the old module would silently stub nothing.
+    """
+    from utils import watchdog_probes_aredn as _env
+    from utils.watchdog_probes_env import probe_aredn_organ_undeclared
+    monkeypatch.setattr(_env, "_read_configured_aredn_ips_state",
+                        lambda _u: (list(ips) if ips is not None else None, state))
+    base = _aou_kw(tmp_path, **kw)
+    return probe_aredn_organ_undeclared(**base)
+
+
+def test_aredn_organ_undeclared_fires_after_debounce(tmp_path, monkeypatch):
+    """Unconfigured + undeclared + an AREDN node answering on the LAN = the
+    dormant organ. Fires on the second consecutive tick, naming the node."""
+    assert _aou_run(tmp_path, monkeypatch) is None        # tick 1: debounce
+    sig = _aou_run(tmp_path, monkeypatch)                 # tick 2: confirmed
+    assert sig is not None
+    assert sig.cls == "aredn_organ_undeclared"
+    assert sig.severity == "degraded"
+    assert sig.subject == "AE7XYZ-hilo-relay"
+    assert sig.extra["localnode_ip"] == "10.20.30.65"
+    assert "aredn_node_ips" in sig.detail
+
+
+def test_aredn_organ_undeclared_inert_without_an_aredn_lan(tmp_path, monkeypatch):
+    """The 95% case: localnode does not resolve → INERT forever, streak reset.
+    A failed mesh-DNS answer is evidence of nothing else."""
+    for _ in range(4):
+        assert _aou_run(tmp_path, monkeypatch, ip=None) is None
+    assert json.loads((tmp_path / "aou_debounce.json").read_text())["streak"] == 0
+
+
+def test_aredn_organ_undeclared_inert_when_configured(tmp_path, monkeypatch):
+    """A configured box belongs to the configured-source legs — one fault,
+    one owner. Never double-report with probe_aredn_source_dark."""
+    for _ in range(3):
+        assert _aou_run(tmp_path, monkeypatch, ips=["10.20.30.65"]) is None
+
+
+def test_aredn_organ_undeclared_inert_when_declared(tmp_path, monkeypatch):
+    """A DECLARED box is probe_aredn_source_dark's declared-unconfigured leg.
+    Same rule: two probes must not describe one fault."""
+    for _ in range(3):
+        assert _aou_run(tmp_path, monkeypatch,
+                        declared=(True, "AREDN site box")) is None
+
+
+def test_aredn_organ_undeclared_indeterminate_when_declaration_unknown(
+    tmp_path, monkeypatch
+):
+    """An unreadable deployment.json must never read as 'not declared' —
+    that would invent an alarm out of a failed observation."""
+    assert _aou_run(tmp_path, monkeypatch, declared=(None, "")) is None
+    assert _aou_run(tmp_path, monkeypatch, declared=(None, "")) is None
+
+
+def test_aredn_organ_undeclared_indeterminate_when_settings_unreadable(
+    tmp_path, monkeypatch
+):
+    """Unreadable settings = intent unknown → silent, even twice."""
+    assert _aou_run(tmp_path, monkeypatch, ips=None, state="unreadable") is None
+    assert _aou_run(tmp_path, monkeypatch, ips=None, state="unreadable") is None
+
+
+def test_aredn_organ_undeclared_absent_settings_file_is_no_config(
+    tmp_path, monkeypatch
+):
+    """An ABSENT map_settings.json is a real observation ('no configuration is
+    expressed here'), not a failure to observe — the probe may act on it."""
+    assert _aou_run(tmp_path, monkeypatch, state="absent") is None
+    sig = _aou_run(tmp_path, monkeypatch, state="absent")
+    assert sig is not None and sig.extra["settings_state"] == "absent"
+
+
+def test_aredn_organ_undeclared_holds_when_sysinfo_silent(tmp_path, monkeypatch):
+    """localnode resolves but sysinfo does not answer: something owns the name,
+    which is NOT proof of a collectable AREDN node (it may be rebooting). Hold
+    the streak — never fire on a maybe — and never reset it either."""
+    for _ in range(4):
+        assert _aou_run(tmp_path, monkeypatch, sysinfo=None) is None
+    # one real observation now confirms immediately: the streak was HELD at 0,
+    # so a genuine node still needs its full debounce
+    assert _aou_run(tmp_path, monkeypatch) is None
+    assert _aou_run(tmp_path, monkeypatch) is not None
+
+
+def test_aredn_localnode_resolver_is_bounded_and_quiet(monkeypatch):
+    """The resolve runs in a bounded subprocess (the libc resolver ignores
+    socket timeouts, and a blackholed DNS server must not stall the tick).
+    Any failure reads as 'no AREDN LAN', never as an error."""
+    import subprocess as _sp
+    from utils import watchdog_probes_aredn as _env
+
+    calls = {}
+
+    def _fake_run(cmd, **kw):
+        calls.update(cmd=cmd, timeout=kw.get("timeout"))
+        raise _sp.TimeoutExpired(cmd, kw.get("timeout"))
+
+    monkeypatch.setattr(_env.subprocess, "run", _fake_run)
+    assert _env._resolve_aredn_localnode() is None
+    assert calls["cmd"][:2] == ["getent", "hosts"]
+    assert calls["timeout"] and calls["timeout"] <= 5.0
+
+
+def test_aredn_source_dark_declared_names_an_absent_settings_file(tmp_path):
+    """The wipe class includes deleting the whole settings file, not just the
+    key. Before the tri-state read, an absent map_settings.json returned the
+    same None as an unreadable one and the probe bailed BEFORE the declaration
+    leg — so the strongest form of the wipe was invisible on a declared box."""
+    from utils.watchdog_probes_env import probe_aredn_source_dark
+    kw = _asd_kw(tmp_path, None, ips=[])
+    kw["expectation_fn"] = lambda: (True, "AREDN site box")
+    kw.pop("configured_ips")
+    import utils.watchdog_probes_aredn as _env
+    orig = _env._read_configured_aredn_ips_state
+    _env._read_configured_aredn_ips_state = lambda _u: ([], "absent")
+    try:
+        kw["service_user_fn"] = lambda: "op"
+        assert probe_aredn_source_dark(**kw) is None
+        sig = probe_aredn_source_dark(**kw)
+    finally:
+        _env._read_configured_aredn_ips_state = orig
+    assert sig is not None
+    assert sig.extra["settings_state"] == "absent"
+    assert "ABSENT" in sig.detail
+
+
+def test_aredn_settings_state_distinguishes_absent_from_unreadable(tmp_path):
+    """The tri-state itself: absent (no config expressed) must not collapse
+    into unreadable (we cannot tell) — that collapse was the defect."""
+    from utils.watchdog_probes_aredn import _read_configured_aredn_ips_state
+    import pwd
+    from unittest.mock import patch
+
+    cfg = tmp_path / ".config" / "meshforge"
+    cfg.mkdir(parents=True)
+    fake_pw = type("pw", (), {"pw_dir": str(tmp_path)})()
+    with patch.object(pwd, "getpwnam", lambda _u: fake_pw):
+        assert _read_configured_aredn_ips_state("op") == ([], "absent")
+        (cfg / "map_settings.json").write_text("{not json")
+        assert _read_configured_aredn_ips_state("op") == (None, "unreadable")
+        (cfg / "map_settings.json").write_text('{"aredn_node_ips": ["10.1.2.3"]}')
+        assert _read_configured_aredn_ips_state("op") == (["10.1.2.3"], "ok")
+        (cfg / "map_settings.json").write_text('{}')
+        assert _read_configured_aredn_ips_state("op") == ([], "ok")
 
 
 def test_aredn_source_dark_inert_when_not_configured(tmp_path):

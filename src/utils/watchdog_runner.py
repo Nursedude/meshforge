@@ -51,6 +51,7 @@ from utils.watchdog_probes import (
     collect_dispositions,
     note_disposition,
     reset_dispositions,
+    probe_aredn_organ_undeclared,
     probe_aredn_source_dark,
     probe_calibration_drift,
     probe_channel_feed_dark,
@@ -400,9 +401,19 @@ def run_all_probes(
         )
         if sig is not None:
             signals.append(sig)
+
+        # AREDN organ available but never adopted (2026-07-20) — the leg for a
+        # box that neither configured NOR declared the organ, which both probes
+        # above structurally cannot see. Positive evidence only: an AREDN node
+        # answering sysinfo on this box's own LAN. Goes INERT (one bounded
+        # resolve, no scan) on the 95% box with no AREDN path.
+        sig = probe_aredn_organ_undeclared()
+        if sig is not None:
+            signals.append(sig)
     else:
         for _cls in ("http_local_unresponsive", "fd_exhaustion",
-                     "phoneapi_tcp_leak", "aredn_source_dark"):
+                     "phoneapi_tcp_leak", "aredn_source_dark",
+                     "aredn_organ_undeclared"):
             note_disposition(_cls, "inert",
                              reason="meshforge-map not expected active on this box")
 

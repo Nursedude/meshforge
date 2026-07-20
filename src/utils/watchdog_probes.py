@@ -96,6 +96,7 @@ from utils.watchdog_probes_tracer import (
     probe_tracer_peer_unreachable,
 )
 from utils.watchdog_probes_drift import (
+    probe_aredn_organ_undeclared,
     probe_aredn_source_dark,
     probe_cron_verdict_stale,
     probe_dep_install_fragmented,
@@ -191,6 +192,7 @@ __all__ = [
     "probe_cron_verdict_stale",
     "probe_kernel_reboot_pending",
     "probe_aredn_source_dark",
+    "probe_aredn_organ_undeclared",
     "probe_inherited_app_drift",
     "probe_fleet_box_unreachable",
     "probe_host_frozen",

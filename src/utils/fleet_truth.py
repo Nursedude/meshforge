@@ -234,11 +234,20 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "heard-rate soak, so the signal escalates and does not page",
      "ref": "watchdog_probes_liveness.py :: probe_claw_rf_silent"},
     {"id": "aredn_configured_source_only",
-     "detail": "declared-but-unconfigured now watched (organ_expectations.aredn in "
-               "deployment.json, closed 2026-07-19) alongside the configured-source dark "
-               "legs; a site with NEITHER declaration nor config remains honestly "
-               "invisible; slow != dark",
-     "ref": "watchdog_probes_env.py :: probe_aredn_source_dark"},
+     "detail": "CLOSED 2026-07-20 (row 5). Three legs now: configured-source dark, "
+               "declared-but-unconfigured (2026-07-19), and — the last gap — "
+               "probe_aredn_organ_undeclared, which catches a box that made NEITHER "
+               "statement. It cannot be closed by absence ('did we forget to declare?' "
+               "is unfalsifiable), so it is closed by POSITIVE evidence: an AREDN node "
+               "answering sysinfo on the box's own LAN (localnode.local.mesh resolves "
+               "only where an AREDN node serves DNS) while the box collects nothing from "
+               "it — the 2026-06-12 Phase-0 state itself, now detectable without anyone "
+               "having remembered. Companion fix: an ABSENT map_settings.json no longer "
+               "collapses into 'unreadable', so wiping the whole settings file (the "
+               "strongest form of the wipe class) reaches the declaration leg instead of "
+               "returning indeterminate. RESIDUAL: a site with no AREDN LAN path is "
+               "correctly invisible — there is nothing to observe; slow != dark",
+     "ref": "watchdog_probes_env.py :: probe_aredn_organ_undeclared"},
     {"id": "claw_edge_rf_coverage_partial",
      "detail": "NARROWED 2026-07-19 (row 7): claw edge nodes now have their OWN signals — "
                "claw_device_dark (fresh capture tick says the DEVICE didn't answer) and "
