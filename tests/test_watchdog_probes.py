@@ -161,6 +161,7 @@ def test_signal_classes_closed_enum_is_documented():
         "meshtasticd_vsz_leak",         # 2026-07-10 (upstream meshtastic/firmware#10468, the operator's own 2026-05-13 report, re-confirmed live 07-10 on both fleet Pi5 boxes at 2.7.24.58) — meshtasticd on Pi5+USB leaks exited pthread stacks (~110 GB VSZ/day, RSS bounded); the weekly meshtasticd-restart.timer band-aid was UNWATCHED; fires only past the weekly envelope (768 GB default) = the restart missed or the rate worsened; Pi4/SPI boxes idle ~0.3 GB and cannot trip it; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as gateway_dup_degraded). No own issue#.
         "router_scout_degraded",        # 2026-07-11 OpenWrt-router arc — a mirrored meshforge-scout tick (landed by the verdict-wired router_scout_pull.sh) shows the ROUTER-side agent degraded: fresh mirror + stale captured_at (agent cron dark while the pull re-copies the same old tick), tick ok=false, or an unparseable mirror; defense-in-depth behind the pull's own cron_verdict eval — adds the /fleet + mini surface (per-device subject); degraded only (every observed condition is remote — the tracer lesson); INERT off the manager box; stale mirror files skipped (cron_verdict_stale owns the dead pull cron); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as meshtasticd_vsz_leak). No own issue#.
         "user_unit_inactive",           # 2026-07-19 — an enrolled always-on USER .service not running (default.target.wants symlink present, no invocation:* marker in /run/user/<uid>/systemd/units — bus-free root reads both sides) or the user manager itself down while daemons are enrolled (linger off, the #79 class); closes user_unit_inactivity_blind (probe_service_inactive is user-blind; nomadnet_crashloop covers only a LIVE loop — the parked-failed/stopped/manager-down modes had no steady-state detector); timers deliberately out of scope (no invocation marker; schedules/SLO layer owns their staleness); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as rns_stray_env_drift). No own issue#.
+        "user_timer_unit_failing",       # 2026-07-19 — an enabled USER *timer*'s job fails on EVERY firing (repeated "Failed with result" in a short window, newest fresh, no success since); the last uncovered corner of the user-unit blindness class, since user_unit_inactive explicitly excludes timers (no invocation marker; a oneshot is inactive between firings by design) and nomadnet_crashloop covers only a LIVE loop on one unit. Origin: kiai's meshforge-tracer.timer fired every 10 min from 2026-07-12 while its oneshot exited 2 ("no peers in lab_peers") every time — a week silent with every existing leg reading healthy. Documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as user_unit_inactive). No own issue#.
         "rns_stray_env_drift",          # 2026-07-19 — rns/lxmf copies across a box's root-readable envs DISAGREE (intra-box coherence; probe_rns_version_drift owns pin compliance): the missed-venv roll hazard, pipx globs wildcarded across venv names because a library rides inside every app venv depending on it (moc3's nomadnet pipx venv sat silently stock 1.1.4, invisible to every prior drift probe); closes the rns/lxmf leg of the dep_version_drift_strays_blind structural-dark row; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as dep_install_fragmented). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
@@ -6762,3 +6763,176 @@ def test_delivery_canary_db_unobservable_is_indeterminate_not_clean():
     assert got["disp"] == "indeterminate"
     assert "unobservable" in got["reason"]
     reset_dispositions()
+
+
+# ─────────────────────────────────────────────────────────────────────
+# user_timer_unit_failing — a USER timer's job fails on EVERY firing
+# (the 2026-07-12→19 kiai lab_peers class: a week of silence)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _user_timer_fixture(tmp_path, timers):
+    """Build ~/.config/systemd/user/timers.target.wants/ with the given
+    {timer_name: body_or_None}. Returns user_home as str."""
+    home = tmp_path / "home"
+    wants = home / ".config" / "systemd" / "user" / "timers.target.wants"
+    wants.mkdir(parents=True)
+    for name, body in timers.items():
+        (wants / name).write_text(body or "[Timer]\nOnCalendar=*:00/10:00\n")
+    return str(home)
+
+
+def _ts_fn(table):
+    """(unit, pattern) -> timestamps, from a {unit: {pattern: value}} table.
+    A value of None models an unobservable journal."""
+    def fn(unit, pattern):
+        return table.get(unit, {}).get(pattern)
+    return fn
+
+
+def test_user_timer_failing_fires_on_the_kiai_class(tmp_path):
+    """kiai 2026-07-12→19: meshforge-tracer.timer fired every 10 min while
+    its oneshot exited 2 every single time. Inactive-between-firings by
+    design, never crashlooping — invisible to every other user-unit leg."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    now = 1_000_000.0
+    home = _user_timer_fixture(tmp_path, {"meshforge-tracer.timer": None})
+    sig = probe_user_timer_unit_failing(
+        user_home=home, now=now, debounce_ticks=1,
+        state_path=str(tmp_path / "s.json"),
+        ts_fn=_ts_fn({"meshforge-tracer.service": {
+            "Failed with result": [now - 1800, now - 1200, now - 600],
+            "Finished ": [],
+        }}))
+    assert sig is not None
+    assert sig.cls == "user_timer_unit_failing"
+    assert sig.severity == "degraded"
+    assert sig.subject == "meshforge-tracer.service"
+    assert "meshforge-tracer.service" in sig.detail
+    assert sig.extra["failing"][0]["failures"] == 3
+
+
+def test_user_timer_failing_silent_when_it_recovered(tmp_path):
+    """Failures followed by a SUCCESS are a blip, not an outage. This is what
+    makes it an outcome detector rather than an error counter."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    now = 1_000_000.0
+    home = _user_timer_fixture(tmp_path, {"meshforge-tracer.timer": None})
+    assert probe_user_timer_unit_failing(
+        user_home=home, now=now, debounce_ticks=1,
+        state_path=str(tmp_path / "s.json"),
+        ts_fn=_ts_fn({"meshforge-tracer.service": {
+            "Failed with result": [now - 1800, now - 1200],
+            "Finished ": [now - 300],          # newer than the newest failure
+        }})) is None
+
+
+def test_user_timer_failing_silent_on_single_blip(tmp_path):
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    now = 1_000_000.0
+    home = _user_timer_fixture(tmp_path, {"meshforge-tracer.timer": None})
+    assert probe_user_timer_unit_failing(
+        user_home=home, now=now, debounce_ticks=1,
+        state_path=str(tmp_path / "s.json"),
+        ts_fn=_ts_fn({"meshforge-tracer.service": {
+            "Failed with result": [now - 600],   # 1 < min_failures
+            "Finished ": [],
+        }})) is None
+
+
+def test_user_timer_failing_silent_after_remediation(tmp_path):
+    """Post-fix history must not page — the recency gate. Without it a job
+    fixed an hour ago keeps firing off its own journal until the window rolls."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    now = 1_000_000.0
+    home = _user_timer_fixture(tmp_path, {"meshforge-tracer.timer": None})
+    assert probe_user_timer_unit_failing(
+        user_home=home, now=now, debounce_ticks=1, recency_s=3600.0,
+        state_path=str(tmp_path / "s.json"),
+        ts_fn=_ts_fn({"meshforge-tracer.service": {
+            "Failed with result": [now - 9000, now - 8000],   # all stale
+            "Finished ": [],
+        }})) is None
+
+
+def test_user_timer_failing_unobservable_journal_is_indeterminate(tmp_path):
+    """honest_failure_modes #1: a journalctl wedge must NEVER read as
+    'all timers healthy'."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    from utils.watchdog_probe_core import (
+        collect_dispositions, reset_dispositions)
+    reset_dispositions()
+    home = _user_timer_fixture(tmp_path, {"meshforge-tracer.timer": None})
+    sig = probe_user_timer_unit_failing(
+        user_home=home, now=1_000_000.0, debounce_ticks=1,
+        state_path=str(tmp_path / "s.json"),
+        ts_fn=_ts_fn({"meshforge-tracer.service": {
+            "Failed with result": None, "Finished ": None}}))
+    assert sig is None
+    got = collect_dispositions()["user_timer_unit_failing"]
+    assert got["disp"] == "indeterminate"
+    assert "unobservable" in got["reason"]
+    reset_dispositions()
+
+
+def test_user_timer_failing_unobservable_does_not_reset_streak(tmp_path):
+    """The streak must be HELD across an unobservable tick, so a journalctl
+    wedge cannot quietly clear an ongoing outage before it ever fires."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    now = 1_000_000.0
+    sp = tmp_path / "s.json"
+    home = _user_timer_fixture(tmp_path, {"meshforge-tracer.timer": None})
+    failing = {"meshforge-tracer.service": {
+        "Failed with result": [now - 1200, now - 600], "Finished ": []}}
+    # tick 1: candidate, held by the 2-tick debounce
+    assert probe_user_timer_unit_failing(
+        user_home=home, now=now, state_path=str(sp), debounce_ticks=2,
+        ts_fn=_ts_fn(failing)) is None
+    assert json.loads(sp.read_text())["streak"] == 1
+    # tick 2: journal unobservable — streak must survive, not reset to 0
+    assert probe_user_timer_unit_failing(
+        user_home=home, now=now, state_path=str(sp), debounce_ticks=2,
+        ts_fn=_ts_fn({"meshforge-tracer.service": {
+            "Failed with result": None, "Finished ": None}})) is None
+    assert json.loads(sp.read_text())["streak"] == 1
+    # tick 3: observable again → confirms
+    sig = probe_user_timer_unit_failing(
+        user_home=home, now=now, state_path=str(sp), debounce_ticks=2,
+        ts_fn=_ts_fn(failing))
+    assert sig is not None and sig.cls == "user_timer_unit_failing"
+
+
+def test_user_timer_failing_inert_without_timers(tmp_path):
+    """A box with no user timers enrolled is INERT, not clean-by-assumption."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    from utils.watchdog_probe_core import (
+        collect_dispositions, reset_dispositions)
+    reset_dispositions()
+    home = tmp_path / "home"
+    (home / ".config" / "systemd" / "user").mkdir(parents=True)
+    assert probe_user_timer_unit_failing(
+        user_home=str(home), now=1_000_000.0, debounce_ticks=1,
+        state_path=str(tmp_path / "s.json"), ts_fn=_ts_fn({})) is None
+    assert collect_dispositions()["user_timer_unit_failing"]["disp"] == "inert"
+    reset_dispositions()
+
+
+def test_user_timer_failing_honours_unit_override(tmp_path):
+    """A timer with an explicit Unit= must be judged on THAT service, not the
+    stem default — otherwise the probe silently watches a unit that does not
+    exist and reads healthy forever."""
+    from utils.watchdog_probes_user import probe_user_timer_unit_failing
+    now = 1_000_000.0
+    home = _user_timer_fixture(tmp_path, {
+        "wrapper.timer": "[Timer]\nOnCalendar=hourly\nUnit=real-job.service\n"})
+    sig = probe_user_timer_unit_failing(
+        user_home=home, now=now, debounce_ticks=1,
+        state_path=str(tmp_path / "s.json"),
+        ts_fn=_ts_fn({"real-job.service": {
+            "Failed with result": [now - 900, now - 300], "Finished ": []}}))
+    assert sig is not None
+    assert sig.subject == "real-job.service"
+
+
+def test_user_timer_failing_is_in_the_closed_enum():
+    assert "user_timer_unit_failing" in SIGNAL_CLASSES

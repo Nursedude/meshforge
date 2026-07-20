@@ -94,6 +94,7 @@ from utils.watchdog_probes import (
     probe_rns_namespace_collision,
     probe_nomadnet_crashloop,
     probe_user_unit_inactive,
+    probe_user_timer_unit_failing,
     probe_rns_rpc_responsive,
     probe_rns_shared_instance_responsive,
     probe_resource_canary_degraded,
@@ -276,6 +277,15 @@ def run_all_probes(
     # default.target.wants symlinks (enrollment) vs /run/user invocation
     # markers (liveness). Self-guards INERT with no operator/enrollment.
     sig = probe_user_unit_inactive()
+    if sig is not None:
+        signals.append(sig)
+
+    # Timer-triggered user jobs that fail on EVERY firing. The leg above
+    # cannot judge these (a oneshot is inactive between firings by design and
+    # timers carry no invocation marker), which is how kiai's tracer failed
+    # every 10 min for a week in silence. Outcome-based: repeated failures,
+    # newest fresh, and no success since.
+    sig = probe_user_timer_unit_failing()
     if sig is not None:
         signals.append(sig)
 

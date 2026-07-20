@@ -232,6 +232,19 @@
       "annotation": "2026-07-19: an enrolled always-on USER .service is not running (parked failed / stopped-and-forgotten / user manager down with linger off -- the #79 class; nomadnet_crashloop covers only a LIVE loop). Check: systemctl --user status <unit>; recover: systemctl --user reset-failed <unit> && systemctl --user start <unit>; manager-down: loginctl enable-linger <operator>. Side-effect-free escalation; NO ntfy page."
     },
     {
+      "id": "user_timer_unit_failing_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "user_timer_unit_failing",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-07-19: an enabled USER timer's job is failing on EVERY firing (repeated failures, newest fresh, no success since). Invisible to the other user-unit legs -- a oneshot is inactive between firings by design (user_unit_inactive can't judge it) and it never crashloops (nomadnet_crashloop can't either). Origin: kiai's meshforge-tracer.timer exited 2 every 10 min for a WEEK unnoticed because its lab_peers file was missing. Check: systemctl --user status <unit>; journalctl --user -u <unit> -n 50. Usual cause is a missing input (config/peers file) -- the job then fails every cadence forever without paging anyone. Side-effect-free escalation; NO ntfy page."
+    },
+    {
       "id": "dep_version_drift_any",
       "match": {
         "kind": "signal_class",

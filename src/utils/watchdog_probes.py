@@ -89,6 +89,9 @@ from utils.watchdog_probes_service import (
     probe_phoneapi_tcp_leak,
     probe_service_inactive,
 )
+from utils.watchdog_probes_user import (
+    probe_user_timer_unit_failing,
+)
 from utils.watchdog_probes_tracer import (
     probe_tracer_peer_unreachable,
 )
@@ -183,6 +186,7 @@ __all__ = [
     "probe_service_inactive",
     "probe_nomadnet_crashloop",
     "probe_user_unit_inactive",
+    "probe_user_timer_unit_failing",
     "probe_tracer_peer_unreachable",
     "probe_cron_verdict_stale",
     "probe_kernel_reboot_pending",
