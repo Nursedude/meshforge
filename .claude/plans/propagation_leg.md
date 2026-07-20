@@ -37,6 +37,60 @@ Eval `oracle-lxmf-propagation-unused-is-a-trust-decision`.
 **Slice 2 (adoption) is OPEN and is the operator's call — see the trust
 boundary below.**
 
+## STATUS: slice 2 STEP 1 SHIPPED 2026-07-20 (MF `a8848bab` + `4fb6d646`)
+
+**Our own propagation node is LIVE on moc1**: `3968a2eeac25e2e7a7961f25842d3d85`,
+`lxmd 1.0.1+mf.1` on `/usr/bin/python3` (the fleet pin — consumer-of-record
+checked, no venv surprise). Templates are repo-tracked:
+`templates/lxmd/config.example` + `templates/systemd/lxmd.service`.
+
+Siting evidence (all 9 boxes surveyed live): moc1 was the idlest box in the
+fleet (load 0.17/0.08/0.08), had 2× the disk headroom of any candidate (102G),
+healthy rnsd, and hosts no gateway — so the node's fate is not coupled to a
+`meshforge-gateway` restart or its `os._exit(2)` wedge path. Ruled out on
+evidence: moc3 (259M mem free + RNS canary), meshanchor-server (load 3.4),
+moc/moc3 (gateway coupling), VolcanoAI (#4/#5 reset history + already sole manager).
+
+VERIFIED at the consumer of record: **both** gateways independently logged
+`Parsed announce 3968a2ee: type=LXMF_PROPAGATION` within ~1s of start AND of
+restart — RNS reachability moc1→moc/moc3 proven end-to-end, not inferred.
+
+Two live-caught fixes during bring-up, both observability:
+- **`PYTHONUNBUFFERED=1`** — lxmd's stdout is block-buffered under systemd, so
+  a perfectly healthy node produced ZERO journal lines. A running organ nobody
+  can observe is this fleet's recurring tax (honest_failure_modes #9).
+- **no `-s/--service`** — that flag redirects logs to a private file, which
+  would make the daemon dark to journalctl and to any journal-reading probe.
+
+Config posture, deliberate: `autopeer = no` (autopeering would sync our stored
+fleet traffic OUT to the foreign nodes we stood this up to avoid),
+`message_storage_limit = 500` stated explicitly rather than left implicit,
+`auth_required = no` (public service, bounded store), identity 0600.
+
+### ⚠️ CORRECTION to this doc's own trust rationale (verified 2026-07-20)
+
+The "the node currently announcing is FOREIGN (**garbled display name**)" line
+below is partly an artifact of OUR parser, not evidence about that operator.
+Our node, announcing the perfectly ordinary name `WH6GXZ MeshForge PN`, is
+logged by our own gateways as `name=j^x(` — the same shape as the stranger's
+`j]@p@`.
+
+Root cause, source-verified: `LXMFParser.parse` (`src/gateway/rns_services.py:112`)
+serves BOTH `lxmf.delivery` and `lxmf.propagation`, but only understands the
+DELIVERY app_data shape `msgpack([display_name_bytes, stamp_cost])`. A
+propagation announce is a 7-element array whose element 0 is the boolean
+`False` (`LXMRouter.get_propagation_node_app_data`); the real name lives in
+element **6**, `metadata[PN_META_NAME]`, as UTF-8. So the ladder reads a bool /
+falls through to the marker heuristic and renders raw msgpack bytes as a "name".
+
+This is honest_failure_modes #1 in its purest form — an inapplicable parse
+mapped to a valid-looking value (a display name) instead of `unnamed` /
+`undecodable` — and it propagated all the way into a **trust judgment** in this
+very plan. The decision to run our own node still stands on its own merits
+(metadata custody, uptime control), but the "garbled = sketchy stranger"
+evidence was our bug. **Queued as its own row** — parser fix + propagation-shape
+tests + the twin in MeshAnchor; do NOT bolt it onto the adoption commit.
+
 ## The two slices — do NOT merge them
 
 1. **DETECTOR (this row, watchdog-only, always-safe per the burn-down's
