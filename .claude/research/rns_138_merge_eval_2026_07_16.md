@@ -331,3 +331,55 @@ conf_rate watch moc3), then coordinated per-box roll (rnsd + ALL clients +
 pipx venvs together, rnsd-first), then ff `meshforge` branches + bump SSOT
 (`requirements/rns.txt` MF-FORK-PIN, `rns_version_check`), `parity_check`
 green after.
+
+---
+
+## ⛔ PHASE-4 ROLL BLOCKER found 2026-07-19 — read before rolling any box
+
+**`lxmf 1.0.1+mf.0` declares `Requires-Dist: rns>=1.3.5` — unpinned and
+PyPI-resolvable.** Verified on the moc3 canary from the installed METADATA.
+
+Why that blocks the roll:
+
+1. **Stock `rns 1.3.9` OUTRANKS the fork `1.3.8+mf.0`.** Under PEP 440 the
+   release segment decides first (`1.3.8 < 1.3.9`); a `+mf.0` local tag cannot
+   win. So any pip resolution permitted to upgrade `rns` will REPLACE the fork
+   with stock — silently dropping the #72 `_rpc_recv` poll fix, the mf.4
+   logging-lock/RLock cure, and the mf.5 exit-75 stranded-client cure. The
+   version string still looks newer, which is exactly how it would pass a
+   casual eyeball.
+2. **The un-rolled fleet baseline `1.2.5+mf.5` does NOT satisfy `rns>=1.3.5`.**
+   So installing the new LXMF on the seven un-rolled boxes *forces* an rns
+   upgrade. If the rns fork's git pin is not in the SAME resolution, pip takes
+   stock 1.3.9 from PyPI. That is a fleet-wide fork loss in one command.
+
+**This is not theoretical — it already happened on the canary.** moc3's
+`rns_stray_env_drift` fired 2026-07-19 11:58 + 12:33 with
+`venv=1.3.9` beside `system-dist / user-site / user-pipx:nomadnet = 1.3.8+mf.0`
+— stock rns had landed in `/opt/meshforge/venv`, the SERVICE venv. It cleared
+at 12:34 and moc3 is coherent again (re-verified: all five env locations at
+`1.3.8+mf.0` / `1.0.1+mf.0`), but the mechanism that put it there is still live.
+
+### Required before the roll proceeds
+
+- Install BOTH forks from `requirements/rns.txt` in ONE resolution (the file
+  already carries both git pins) — never `pip install lxmf` alone, and never a
+  bare `--upgrade` touching either package.
+- Prefer `--no-deps` for the two fork packages so `rns>=1.3.5` cannot be
+  re-resolved against PyPI at all, installing their real deps separately.
+- After EVERY box, re-run the env scan across all locations (venv,
+  system-dist, system-local, user-site, user-pipx, root-pipx) and confirm
+  `+mf.N` on every copy BEFORE touching the next box. `rns_version_check`
+  alone is not enough — it reads one consumer, not the strays.
+- Consider pinning `rns==1.3.8+mf.0` (or `<1.3.9`) in the lxmf fork's own
+  metadata so the footgun cannot fire from any install path. That is the
+  durable cure; the procedural rules above are the interim guard.
+
+### Soak status at the time of this finding
+
+Canary live since 2026-07-17 (~3 days). RNS-shaped mini fires since:
+`rns_rpc_unresponsive` once at 07-17T06:57 (2.5 min after cutover — the flip
+itself, never recurred) and the two `rns_stray_env_drift` fires above.
+`rns_version_drift` remains the DELIBERATE canary marker. No wedge, no RPC
+failure, no delivery regression in the window — the FORK looks good; it is the
+INSTALL PATH that is unsafe.
