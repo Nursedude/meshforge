@@ -747,3 +747,62 @@ timer-triggered USER unit that fails every cycle is invisible to
 which needed a bespoke `probe_nomadnet_crashloop`). A general
 "failed user units" probe would have caught this in one cycle instead of a
 week. Worth writing.
+
+### DETECTION GAP CLOSED — `probe_user_timer_unit_failing` (2026-07-19)
+
+The gap that let kiai fail silently for a week is now watched. Scoping mattered
+here: a broad "failed user units" probe would have **duplicated** work landed
+earlier the same day. The three existing legs and why each is structurally
+blind to this shape:
+
+| leg | covers | blind to kiai's case because |
+|---|---|---|
+| `probe_service_inactive` | system units | root `systemctl` cannot see user units at all |
+| `probe_nomadnet_crashloop` | one named unit, LIVE restart loop | the tracer never crashloops |
+| `probe_user_unit_inactive` | always-on `default.target.wants` daemons via `invocation:*` markers | its docstring **excludes timers** — no invocation marker, and a oneshot is inactive between firings *by design* |
+
+So the new probe is deliberately narrow: **timer-triggered user jobs that fail
+on every firing**. Outcome-based, not an error counter — it fires only on ≥2
+`Failed with result` events in a 3 h window, newest fresher than 1 h, **and no
+successful run since that newest failure**. A job that fails twice then
+succeeds stays silent; a remediated job stops paging immediately.
+
+**The load-bearing empirical check, done BEFORE trusting the design**: both
+`Failed with result` AND `Finished ` manager lines are root-readable under the
+`USER_UNIT=` journal field (verified `rc=0` on kiai). Had `Finished` lacked
+that field, success-detection would have been silently dead and the probe would
+have paged after every recovery — a textbook honest_failure_modes #1 in the
+detector itself.
+
+**LIVE-FIRE VERIFIED**, not just unit-tested. A disposable
+`mf-probe-drill.timer` (`ExecStart=/bin/false`, 30 s cadence) was armed on
+kiai; after 3 real failures the probe returned `None` on tick 1 (2-tick
+debounce holding) and on tick 2 fired
+`user_timer_unit_failing / mf-probe-drill.service / degraded`,
+`failures=3, newest_age_s=20.9` — while correctly NOT naming the healthy
+`meshforge-tracer.service` beside it. Drill removed; 0 failed units; probe back
+to `clean`.
+
+**Consumer-of-record verified** (calibrated_claims rule 7): a registered probe
+is not a running probe. `fleet_pull` deploys but does not restart, so the
+watchdog was still on pre-probe code everywhere (the #79 gap, live). After
+restarting `meshforge-watchdog` on all 8 MF boxes, the class appears in the
+**emitted** coverage map read back off disk — `user_timer_unit_failing ->
+{'disp': 'clean'}`, 49 classes — on kiai, moc and moc3.
+
+Seeds promoted (`scripts/promote_seed_rules.py --apply`) on all 8 MF boxes:
+`added 1 user_timer_unit_failing_any`, local tunings kept. Minis restarted.
+
+New module `src/utils/watchdog_probes_user.py` rather than an append —
+`watchdog_probes_service.py` sits at 1488 lines, 12 short of the MF025 ratchet.
+
+**Two follow-ups left open, deliberately:**
+1. **meshanchor-server has no declared MeshForge role**, so
+   `promote_seed_rules.py` refuses (correctly — it will not guess). Its mini
+   rules are from 07-14 and already lack `user_unit_inactive_any` and
+   `rns_stray_env_drift_any`, i.e. this drift PREDATES today. It also runs
+   `meshanchor-fleet-watchdog`, not `meshforge-watchdog`, so MF probe classes
+   have no producer there. Needs an operator decision on which seed applies
+   rather than a guess from me.
+2. **Not ported to MeshAnchor.** MA owns the equivalent surface in
+   `active_health_probe`; this probe is MF-side only for now.
