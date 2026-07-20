@@ -21,15 +21,28 @@
 | **Power** | Official 27 W USB-C PD supply | Pi 5 + HAT + NVMe + sustained inference draws hard. Underpowered supply → brownout resets (cf. VolcanoAI external-mains reset class — power integrity is a real failure mode on this fleet). |
 | **Storage** | NVMe SSD via Pi 5 M.2 HAT; **boot from NVMe** | Ollama model files are GB-scale; SD-card wear + load latency hurt a 24/7 node. Bounded JSONL history is tiny, but the model store isn't. NVMe survives the write cycles. |
 | **LoRa radio** | **SPI LoRa HAT — MeshAdv HAT (LF)**, matching moc (`!32962f10`) | **Constraint #1**: SPI, not USB/CH341 → immune to the firmware#10468 leak by construction. MeshAdv is the fleet's known-good SPI reference radio. |
-| **RTC** | Pi 5 **onboard RTC** (RV3028) + coin-cell battery | **Constraint #2** at near-zero cost: Pi 5 ships an onboard RTC with a battery connector. Add the cell and it holds time across a cold boot with no NTP. *Optional upgrade:* external DS3231 I²C module if onboard holdover drifts. |
+| **RTC + GPS** | **GPS+RTC mini HAT** (the `.248` board — model TBC) — supersedes the plain-RTC plan | **Upgraded constraint-#2 answer for a REMOTE node.** An RTC alone only *survives* power cycles; a GPS with **PPS** is an authoritative off-grid time source (effectively stratum-0, **no NTP needed**) — which is exactly what a node 30 mi out with no internet backhaul requires. RTC holds time across cold boot / GPS-denied gaps; GPS+PPS re-disciplines it on every fix. Together they don't just survive the clock-forgery class (honest_failure_modes #6) — they **remove the NTP dependency that caused it.** *Bonus capability below.* Pi 5 onboard RTC + cell remains the fallback if the HAT is absent. |
 
-### Physical-integration note — this is the CM5 motivator
-Pi 5 has **one 40-pin header** and **one PCIe lane**. The SPI LoRa HAT wants the
-40-pin header; the M.2 HAT wants the PCIe (and header standoffs); the active
-cooler sits on top. Stacking all three is the physical friction — solvable on
-Pi 5 with a stacking header / PCIe ribbon, but **this friction is exactly the
-argument for the eventual CM5 carrier board** (one PCB: RTC + SPI header + M.2 +
-clean power, no stack). **Phase 0 accepts the stack; Phase 1 designs it away.**
+### GPS bonus — a domain capability, not just timekeeping
+The GPS half earns its place beyond constraint #2. MeshForge **owns** the RF
+tools (link budget, Fresnel, FSPL — `utils/rf.py`) and coverage maps, all of
+which need accurate node positions. A GPS-disciplined node is **self-locating**:
+it feeds its own coordinates into the RF/coverage math, the node tracker / map
+(no manual position entry), and its Meshtastic position beacons. For a
+*drop-at-a-site* remote deployment (the 30-mi arc), self-location is a real
+operational win — deploy it and it reports where it is. Add a GPS-antenna
+sky-view line to the 30-mi site scorecard.
+
+### Physical-integration note — this is the CM5 motivator (now sharper)
+Pi 5 has **one 40-pin header** and **one PCIe lane**. Contending for them:
+the **SPI LoRa HAT** (SPI + GPIO), the **GPS+RTC mini HAT** (GPS UART/I²C + a
+**PPS GPIO** + RTC I²C), the **M.2 HAT** (PCIe + standoffs), and the active
+cooler on top. ⚠️ **Verify pin conflicts** between the MeshAdv SPI HAT and the
+GPS/RTC HAT before stacking (shared GPIO / the PPS pin). This is *more* header
+contention than the original plan — which **sharpens the CM5 carrier-board
+argument**: the Phase 1 board should integrate RTC + GPS (with PPS routing) +
+SPI LoRa + M.2 + clean power on one PCB, designing the whole stack away.
+**Phase 0 accepts the stack (and proves the pinout); Phase 1 designs it away.**
 
 ---
 
@@ -69,9 +82,13 @@ hardware** — not to assume it. Each gets a pass/fail:
    flat over 30 min. **PASS** = ~8 stack pairs stable, not climbing. (Trivially
    true on SPI — but we *verify*, because the whole thesis is "designed out, not
    watched for.")
-2. **RTC (constraint #2)** — set a known time, power-cycle with **no network**,
-   confirm clock holds without an NTP step. **PASS** = time survives cold boot
-   within RTC drift.
+2. **RTC + GPS time (constraint #2)** — (a) set a known time, power-cycle with
+   **no network**, confirm the RTC holds it without an NTP step; (b) with the
+   network **off**, confirm the GPS gets a fix and **PPS disciplines the clock**
+   (e.g. `gpsd` + `chrony`/`ppstest`) to authoritative time. **PASS** = clock
+   survives cold boot on the RTC *and* re-disciplines off-grid via GPS+PPS with
+   no NTP reachable. Also confirm the node reports its own GPS position into
+   `/api/nodes` / the map.
 3. **:9443 (constraint #3)** — `curl -sf http://localhost:9443` responds after
    reboot; grep `config.d/` confirms no `Webserver: Port: 443` leaked.
    **PASS** = :9443 bound across reboot.

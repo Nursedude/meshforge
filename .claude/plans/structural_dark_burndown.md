@@ -11,6 +11,41 @@
 
 ## Closed / narrowed
 
+- **aredn_configured_source_only** — **CLOSED 2026-07-20 (row 5)**, MF `7b0cb1e6`
+  + ref fix `d62b4210`, MA mirrors `860ba771`/`4773210a`. The row's staged cure
+  ("fleet_roles.yaml declares which boxes SHOULD run AREDN") had already landed
+  on 07-19; what remained was the gap BOTH legs share — they each need a
+  statement the operator had to remember to make, so the 2026-06-12 origin state
+  (organ dormant, never configured, never declared) was still invisible.
+  Closed by POSITIVE evidence instead of absence: `probe_aredn_organ_undeclared`
+  fires only when `localnode.local.mesh` resolves (impossible without an AREDN
+  node serving DNS on that LAN) AND that address answers sysinfo, while the box
+  carries neither statement. Measured: resolves on moc5 to exactly its
+  configured node IP; does not resolve on kiai. Escalation-only (lost coverage,
+  not an outage — and by construction long-standing).
+  **kiai's declaration is NOT pending paperwork — it is measurably unwarranted**:
+  kiai sits on a 192.168.x LAN with no route to the AREDN node and no AREDN DNS,
+  so declaring it would manufacture a page nobody can clear. If that changes, the
+  new probe will say so on its own.
+  Shipped with it: (a) a latent tri-state fix — an ABSENT map_settings.json used
+  to collapse into the same `None` as a CORRUPT one, and the caller returns
+  indeterminate BEFORE the declaration leg, so wiping the whole settings file
+  (the strongest form of the wipe class the declaration exists to catch) was
+  invisible on a declared box; (b) an MF025 split (`watchdog_probes_aredn.py`) —
+  the cap is a split trigger, never a number to raise.
+  **The repo's own honesty invariant caught a real defect pre-ship**:
+  `TestNoDeadArednSysinfoUrl` flagged `/cgi-bin/sysinfo.json`, which AREDN
+  retired and now 307s — a detector aimed at a redirect could never confirm a
+  node. Corrected to `/a/sysinfo`, verified live (api_version 2.0).
+  Live-verified at the consumer of record via `/api/fleet/truth`: moc5
+  `inert — aredn_node_ips configured, the configured-source legs own this box`;
+  kiai `inert — no AREDN LAN here`. Fire path drilled against the LIVE AREDN
+  node with only the two statements stubbed away (tick 1 held, tick 2 fired
+  subject=the real node name).
+  Eval: `oracle-aredn-organ-undeclared-is-positive-evidence`.
+  RESIDUAL: a site with no AREDN LAN path stays invisible — correctly, there is
+  nothing to observe.
+
 - **oracle_rns_send_blind** — **RNS LEG CLOSED 2026-07-20 (row 2)**, executing the
   design below verbatim. `send_to_rns` returns `RnsSendResult` (frozen dataclass,
   `__bool__` → every one of the 8 audited truthiness call sites unchanged) with a
@@ -172,7 +207,7 @@
 | 2 | ~~`oracle_rns_send_blind`~~ | **CLOSED (RNS leg) 2026-07-20** — `RnsSendResult` shipped; see above. Residual = mesh-leg ACK confirmability (#74 T2 step 4) | — | — | NEXT DEFAULT PICK is row 5 (aredn declaration for kiai, survey-gated) or row 8's `dual_homed_recipients` surface |
 | 3 | ~~`dep_version_drift_strays_blind`~~ | ACCEPTED-PERMANENT 2026-07-19 — see above; scope is deliberate, revisit only on a second installer | — | — | — |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
-| 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
+| 5 | ~~`aredn_configured_source_only`~~ | **CLOSED 2026-07-20** — third leg `probe_aredn_organ_undeclared` (positive evidence: an AREDN node answering on the box's own LAN while the box made neither statement); see above | — | — | NEXT DEFAULT PICK is row 8's `dual_homed_recipients` surface (not roll-gated) or row 7/9 residuals |
 | 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | rows 2+8 await the RNS roll; row 9 residual needs firmware/#74 |
 | 7 | ~~`live_claw_nats_not_wired_to_mini`~~ | NARROWED 2026-07-19 — see above; row renamed `claw_edge_rf_coverage_partial`. Residual = per-device sensor instances (claw-02), which feeds row 9 | — | — | NEXT DEFAULT PICK is row 9's claw-ears leg (or rows 2/8 post-roll) |
 | 8 | ~~`cross_gateway_dups_unsuppressed`~~ | **ACCEPTED-PERMANENT 2026-07-19 (operator): keep the detector, do NOT build coordination.** Reason = COST ASYMMETRY (a dup is redundancy; a yield-protocol bug is SILENCE — on emergency comms, fail toward redundancy), NOT a low rate: 3 HUMAN recipients are dual-homed TODAY, so the precondition is live and time WILL move the rate. Residual/leading indicator: dual-homed-recipient COUNT, observable even on the mesh leg. See the addendum in `.claude/research/cross_gateway_dup_design_inputs_2026_07_19.md` | — | — | next slice = surface `dual_homed_recipients` (map layer, NOT roll-blocked) |
