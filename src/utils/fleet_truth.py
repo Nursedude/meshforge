@@ -247,7 +247,7 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "strongest form of the wipe class) reaches the declaration leg instead of "
                "returning indeterminate. RESIDUAL: a site with no AREDN LAN path is "
                "correctly invisible — there is nothing to observe; slow != dark",
-     "ref": "watchdog_probes_env.py :: probe_aredn_organ_undeclared"},
+     "ref": "watchdog_probes_aredn.py :: probe_aredn_organ_undeclared"},
     {"id": "claw_edge_rf_coverage_partial",
      "detail": "NARROWED 2026-07-19 (row 7): claw edge nodes now have their OWN signals — "
                "claw_device_dark (fresh capture tick says the DEVICE didn't answer) and "
