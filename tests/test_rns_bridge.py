@@ -5507,6 +5507,51 @@ class TestMeshOracleRnsWiring:
         monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")
         assert bridge._build_rns_oracle_responder() is not None
 
+    def test_rns_leg_send_fn_forwards_the_reason_not_a_bare_bool(
+        self, bridge, monkeypatch
+    ):
+        """Structural-dark row 2, the wiring half: the RNS leg's send_fn must
+        hand the responder the RnsSendResult ITSELF, so a real send crash is
+        audited as send_error instead of falling into the benign bucket. A
+        `bool(...)` here would still deliver and still log — and would silently
+        re-open the blind spot — so pin the composed path, not just the type.
+        """
+        from gateway.bridge_send_mixin import RnsSendResult
+
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")
+        records = []
+        monkeypatch.setattr(
+            bridge, "send_to_rns",
+            lambda *a, **k: RnsSendResult(False, "send_error", "rnsd wedged"),
+            raising=False,
+        )
+        responder = bridge._build_rns_oracle_responder()
+        assert responder is not None
+        monkeypatch.setattr(responder, "_log_fn", records.append)
+
+        assert responder.handle("ab" * 16, "status")   # consumed
+        assert records[-1]["delivered"] is False
+        assert records[-1]["reason"] == "send_error: rnsd wedged"
+        assert records[-1]["transport"] == "rns"
+
+    def test_rns_leg_send_fn_names_a_benign_no_path(self, bridge, monkeypatch):
+        """The other side of the same wire: benign reasons are RECORDED (so the
+        ambiguity measure can shrink) but must not read as send_error."""
+        from gateway.bridge_send_mixin import RnsSendResult
+
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")
+        records = []
+        monkeypatch.setattr(bridge, "send_to_rns",
+                            lambda *a, **k: RnsSendResult(False, "no_path"),
+                            raising=False)
+        responder = bridge._build_rns_oracle_responder()
+        monkeypatch.setattr(responder, "_log_fn", records.append)
+
+        assert responder.handle("cd" * 16, "status")
+        assert records[-1]["reason"] == "no_path"
+
     def test_lxmf_query_routed_and_consumed(self, bridge):
         from types import SimpleNamespace
         from unittest.mock import MagicMock
