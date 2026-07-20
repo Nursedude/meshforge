@@ -755,6 +755,11 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-ci-status.timer":   ("hand", "manager-box organ (the federator box); ecosystem CI cron (6e0f21f)"),
     "meshforge-fleet-health.service": ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
     "meshforge-fleet-health.timer":   ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
+    "lxmd.service":               ("hand", "single-box organ (moc1), hand-deployed 2026-07-20; LXMF "
+                                            "propagation node / store-and-forward — deliberately ONE "
+                                            "box, not a fleet glob, so a second node can't split the "
+                                            "message store; install steps in templates/lxmd/config.example "
+                                            "(.claude/plans/propagation_leg.md)"),
     "meshtasticd-restart.service": ("hand", "ops band-aid, hand-deployed; weekly meshtasticd restart, upstream VSZ leak (15ea6e4)"),
     "meshtasticd-restart.timer":   ("hand", "ops band-aid, hand-deployed; weekly meshtasticd restart, upstream VSZ leak (15ea6e4)"),
     "nats-server.service":         ("hand", "dude-claw NATS infra, claw-brain box only, hand-deployed (a171fec)"),
