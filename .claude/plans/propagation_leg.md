@@ -105,6 +105,52 @@ tests + the twin in MeshAnchor; do NOT bolt it onto the adoption commit.
    Strictly better option: stand one up on our own rnsd and point the fleet at
    it. That choice is the operator's, not the detector's.
 
+## STATUS: slice 2 STEP 2c SHIPPED EARLY, 2a/2b STILL PENDING (2026-07-20)
+
+**Read this before running anything below.** The 2026-07-20 session that was
+asked to "do step 2" found the node had soaked **28 minutes**, not a day
+(`lxmd` active since 09:37 HST; the step-1 commits landed 09:34–09:36). The
+soak gate below is explicit — *"prove it survived a day before anything
+depends on it"* — so adoption was NOT run. Operator decision, recorded: **do
+2c now, adopt tomorrow.**
+
+So the ordering constraint in §2c ("must land in the same push as adoption")
+is satisfied from the *other* direction — the probe is already in main, which
+is strictly safer than the reverse. **The remaining work is 2a → 2b → 2d.**
+
+Shipped in this push: `probe_lxmf_propagation_node_dark`
+(`watchdog_probes_gateway.py`), signal class + BOTH seeds + probes facade +
+runner + `fleet_truth.py` row (ported byte-identical to MeshAnchor, whose
+registry row is the only mirror slice 1 has too — MA carries no probe body) +
+eval case `oracle-lxmf-propagation-node-dark-vs-rns-wide-wedge` + 9 tests.
+Design notes the next session should not have to re-derive:
+
+- **Evidence** = the same `~/.cache/meshforge/rns_nodes.json` slice 1 reads.
+  Verified live 2026-07-20: both gateways carry our node under the FULL
+  `rns_hash` `3968a2eeac25e2e7a7961f25842d3d85` *and* the short `id` form
+  `rns_3968a2eeac25e2e7`, so the matcher accepts either.
+- **Two legs**: STALE (in cache, silent past the window) vs UNHEARD (hash
+  absent entirely — a wrong/truncated hash, i.e. the failure adoption itself
+  introduces). Different fixes, so they are reported distinctly.
+- **The honesty guard** (the part worth protecting): it fires ONLY when some
+  OTHER propagation announce reached the box inside the window — positive
+  proof the box can hear the class. Otherwise an RNS-wide wedge would read as
+  "our node died". Mutation-verified: deleting that guard fails
+  `test_lxmf_propagation_dark_holds_when_the_box_hears_no_propagation`;
+  letting a forged future stamp count fresh, and collapsing the stale-cache
+  HOLD into a reset, each fail their own test too.
+- **Window** = 3 × the 360-min announce interval (~18h). Passive announce
+  observation cannot beat that, and a stranger's interval is not ours to
+  know. Detection is deliberately late-and-right for a `degraded` signal.
+- **RESIDUAL, state it plainly when claiming this leg**: a node that keeps
+  announcing but silently refuses to STORE still reads clean. Real
+  store-and-forward proof needs a round-trip to a deliberately-offline peer,
+  which nothing exercises yet.
+
+Verified this turn: lint `exit 0`; `parity_check.py` `exit 0` (in sync);
+`test_watchdog_probes/fleet_truth/mini_dudeai/regression_guards` 1174 passed;
+MA `fleet_truth` 60 passed.
+
 ## ▶ STEP 2 — EXECUTE THIS (armed 2026-07-20, earliest run 2026-07-21)
 
 > Operator decision recorded 2026-07-20: **soak the node one day, then adopt.**
@@ -179,7 +225,15 @@ The real end-to-end proof is an LXMF message to an OFFLINE peer that lands when
 it returns. If a cheap version of that isn't available, say so — that claim
 stays BELIEVED, and name it as such.
 
-### 2c. The shape-A probe MUST land in the same push
+### 2c. The shape-A probe — ✅ ALREADY SHIPPED 2026-07-20, do not rebuild it
+
+> Skip to 2d. `probe_lxmf_propagation_node_dark` is in main; see the STATUS
+> block at the top of this file for its design and the mutation evidence.
+> What remains is to confirm it is LIVE at the consumer of record after
+> adoption — see the "Done looks like" line, which is unchanged.
+>
+> The original requirement is kept verbatim below because it explains WHY the
+> ordering matters, and that reasoning is still load-bearing.
 
 The moment `propagation_node` is set, `probe_lxmf_propagation_unused` goes
 INERT by design — so without this, the fleet trades a watched gap for an

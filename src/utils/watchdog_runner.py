@@ -70,6 +70,7 @@ from utils.watchdog_probes import (
     probe_gateway_delivery_degraded,
     probe_gateway_dup_degraded,
     probe_gateway_dual_homed_exposure,
+    probe_lxmf_propagation_node_dark,
     probe_lxmf_propagation_unused,
     probe_fd_exhaustion,
     probe_history_write_failure,
@@ -589,6 +590,18 @@ def run_all_probes(
     # with no gateway.json and no node cache, so it costs nothing off the
     # gateway boxes; a stale cache HOLDS rather than claiming availability.
     sig = probe_lxmf_propagation_unused()
+    if sig is not None:
+        signals.append(sig)
+
+    # The CONFIGURED propagation node stopped answering (2026-07-20) — the
+    # shape-A companion to the leg above, and the reason adoption was never
+    # allowed to ship alone: setting rns.propagation_node makes that probe
+    # INERT by design, so without this one the fleet would swap a watched gap
+    # for an unwatched dependency. Reads the same durable node cache; INERT
+    # when nothing is configured (one fault, one owner) and HOLDS when no
+    # propagation announce reached the box at all, so an RNS-wide wedge is
+    # never relabelled as this node's death.
+    sig = probe_lxmf_propagation_node_dark()
     if sig is not None:
         signals.append(sig)
 

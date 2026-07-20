@@ -250,6 +250,27 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "and once adopted this leg goes INERT — nothing yet checks that a "
                "CONFIGURED propagation node still answers (that would be a shape-A leg)",
      "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_unused"},
+    {"id": "lxmf_propagation_node_unwatched",
+     "detail": "CLOSED 2026-07-20 the same day it was opened, and deliberately so. Setting "
+               "gateway.json rns.propagation_node makes lxmf_propagation_unused go INERT by "
+               "design (one fault, one owner), so adoption ALONE would have traded a WATCHED "
+               "gap for an UNWATCHED dependency — strictly worse than leaving it unadopted, "
+               "because offline-peer delivery would then rest on a node nobody checked. "
+               "probe_lxmf_propagation_node_dark is the shape-A companion, shipped in the same "
+               "push as adoption for exactly that reason. Two legs with different fixes: STALE "
+               "(in the RNS node cache but silent for several announce periods — it answered "
+               "and stopped) and UNHEARD (the hash is absent from the cache entirely, i.e. "
+               "wrong or truncated — the failure adoption itself introduces). Evidence is the "
+               "same durable operator-owned rns_nodes.json, never the journal (Storage=volatile). "
+               "The guard that makes it honest: it fires ONLY when some OTHER propagation "
+               "announce reached the box inside the window, which is positive proof the box can "
+               "hear the class at all — so an RNS-wide wedge HOLDS here and stays with its own "
+               "probes instead of being relabelled as this node's death. RESIDUAL: liveness is "
+               "passive announce observation, so detection is bounded below by several announce "
+               "periods (~18h) and a node that answers announces but refuses to STORE would "
+               "still read clean — true store-and-forward proof needs a round-trip to a "
+               "deliberately-offline peer, which nothing exercises yet",
+     "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_node_dark"},
     {"id": "aredn_configured_source_only",
      "detail": "CLOSED 2026-07-20 (row 5). Three legs now: configured-source dark, "
                "declared-but-unconfigured (2026-07-19), and — the last gap — "

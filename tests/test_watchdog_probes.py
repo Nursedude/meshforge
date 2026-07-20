@@ -142,6 +142,7 @@ def test_signal_classes_closed_enum_is_documented():
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
         "aredn_organ_undeclared",       # 2026-07-20 AREDN organ available, never adopted
         "lxmf_propagation_unused",      # 2026-07-20 propagation nodes available, none adopted
+        "lxmf_propagation_node_dark",   # 2026-07-20 the CONFIGURED propagation node stopped answering (shape-A companion)
         "dep_version_drift",            # 2026-06-12 recurring update class
         "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
@@ -7263,3 +7264,194 @@ def test_lxmf_propagation_config_reader_separates_absent_from_unreadable(tmp_pat
     assert _read_configured_propagation_node(str(home)) == ("abc", "ok")
     (cfg / "gateway.json").write_text(json.dumps({"no_rns_block": True}))
     assert _read_configured_propagation_node(str(home)) == ("", "ok")
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-20 — lxmf_propagation_node_dark: the CONFIGURED propagation
+# node stopped answering. The shape-A companion that had to ship WITH
+# adoption: setting rns.propagation_node makes the probe above INERT by
+# design, so alone, adoption would swap a watched gap for an unwatched
+# dependency. Same durable node-cache evidence, never the journal.
+# ─────────────────────────────────────────────────────────────────────
+
+_NODE = "3968a2eeac25e2e7a7961f25842d3d85"
+_HOUR = 3600.0
+
+
+def _lpd(tmp_path, *, configured=(_NODE, "ok"), ages=None, freshest=600.0,
+         cache_state="ok", ticks=2):
+    from utils.watchdog_probes_gateway import probe_lxmf_propagation_node_dark
+    if ages is None:                       # default: our node is 40 h silent
+        ages = {_NODE: 40 * _HOUR, _NODE[:16]: 40 * _HOUR, "aed1f551": 600.0}
+    return probe_lxmf_propagation_node_dark(
+        home="/nonexistent-but-unused",
+        now=1_784_000_000.0,
+        configured_fn=lambda: configured,
+        liveness_fn=lambda: (ages, freshest, cache_state),
+        state_path=str(tmp_path / "lpd.json"),
+        debounce_ticks=ticks,
+    )
+
+
+def test_lxmf_propagation_dark_stale_leg_fires_after_debounce(tmp_path):
+    """Configured node in the cache but long silent, while OTHER propagation
+    announces still arrive — the box can hear the class, this node is gone."""
+    assert _lpd(tmp_path) is None                       # tick 1: debounce
+    sig = _lpd(tmp_path)                                # tick 2: confirmed
+    assert sig is not None
+    assert sig.cls == "lxmf_propagation_node_dark"
+    assert sig.severity == "degraded"
+    assert sig.subject == _NODE[:16]
+    assert sig.extra["leg"] == "stale"
+    assert sig.extra["age_h"] == 40.0
+    assert "OFFLINE" in sig.detail
+    assert "answered before and stopped" in sig.detail
+
+
+def test_lxmf_propagation_dark_unheard_leg_names_a_wrong_hash(tmp_path):
+    """A configured hash absent from the cache is the failure adoption itself
+    introduces — a truncated/typo'd hash — and must not read as 'stale'."""
+    _lpd(tmp_path, ages={"aed1f551": 600.0})
+    sig = _lpd(tmp_path, ages={"aed1f551": 600.0})
+    assert sig is not None
+    assert sig.extra["leg"] == "unheard"
+    assert sig.extra["age_h"] is None
+    assert "NEVER been heard" in sig.detail
+    assert "truncat" in sig.detail
+
+
+def test_lxmf_propagation_dark_clean_when_the_node_answers(tmp_path):
+    """A fresh announce from the configured node resets the streak, so a
+    later outage still has to serve its full debounce."""
+    _lpd(tmp_path)                                     # prime a streak
+    for _ in range(3):
+        assert _lpd(tmp_path, ages={_NODE: 900.0, "aed1f551": 600.0}) is None
+    assert json.loads((tmp_path / "lpd.json").read_text())["streak"] == 0
+
+
+def test_lxmf_propagation_dark_matches_a_short_form_hash(tmp_path):
+    """The cache carries both the 32-hex rns_hash and the 16-hex id form;
+    a configured full hash must match either without reading as unheard."""
+    _lpd(tmp_path, ages={_NODE[:16]: 900.0, "aed1f551": 600.0})
+    assert _lpd(tmp_path, ages={_NODE[:16]: 900.0, "aed1f551": 600.0}) is None
+
+
+def test_lxmf_propagation_dark_inert_when_nothing_is_configured(tmp_path):
+    """One fault, one owner: the unadopted gap belongs to
+    lxmf_propagation_unused, and this probe must never double-report it."""
+    _lpd(tmp_path)
+    for _ in range(3):
+        assert _lpd(tmp_path, configured=("", "ok")) is None
+    assert json.loads((tmp_path / "lpd.json").read_text())["streak"] == 0
+
+
+def test_lxmf_propagation_dark_inert_without_a_gateway(tmp_path):
+    """ABSENT gateway.json is an observation (INERT); UNREADABLE is a failure
+    to observe (indeterminate) — never collapsed into one."""
+    for _ in range(3):
+        assert _lpd(tmp_path, configured=(None, "absent")) is None
+    for _ in range(3):
+        assert _lpd(tmp_path, configured=(None, "unreadable")) is None
+
+
+def test_lxmf_propagation_dark_holds_on_stale_or_unreadable_cache(tmp_path):
+    """Stale bytes cannot testify about the present. The streak is HELD, not
+    reset and not advanced — unobservable is neither healthy nor dark."""
+    _lpd(tmp_path)                                     # streak = 1
+    for state in ("stale", "unreadable"):
+        assert _lpd(tmp_path, cache_state=state) is None
+    assert json.loads((tmp_path / "lpd.json").read_text())["streak"] == 1
+    assert _lpd(tmp_path) is not None                  # resumes at 2, fires
+
+
+def test_lxmf_propagation_dark_holds_when_the_box_hears_no_propagation(tmp_path):
+    """THE honesty guard. With no propagation announce from ANY node, the
+    box's ability to hear the class is unproven, so our node's silence is
+    unobservable — an RNS-wide wedge must not be relabelled as this node's
+    death (honest_failure_modes #2; those probes own that fault)."""
+    # From cold, it never even reaches the streak — nothing to hold, and no
+    # state file is written at all.
+    for freshest in (None, 40 * _HOUR):
+        for _ in range(4):
+            assert _lpd(tmp_path, freshest=freshest) is None
+    assert not (tmp_path / "lpd.json").exists()
+
+    # And with a streak already running, unobservable HOLDS it — neither
+    # advanced (which would page from blindness) nor reset (which would
+    # forget a real fault mid-confirmation).
+    _lpd(tmp_path)                                     # streak = 1
+    for freshest in (None, 40 * _HOUR):
+        assert _lpd(tmp_path, freshest=freshest) is None
+    assert json.loads((tmp_path / "lpd.json").read_text())["streak"] == 1
+    assert _lpd(tmp_path) is not None                  # resumes at 2, fires
+
+
+def test_lxmf_propagation_dark_reader_discards_future_stamps(tmp_path):
+    """Wall-clock is forgeable on RTC-less Pis. A future last_seen must be
+    DISCARDED, never counted fresh — that direction would hide a dead node."""
+    from utils.watchdog_probes_gateway import _read_propagation_liveness
+    home = tmp_path / "h"
+    cache = home / ".cache" / "meshforge"
+    cache.mkdir(parents=True)
+    now = 1_784_000_000.0
+    path = cache / "rns_nodes.json"
+
+    assert _read_propagation_liveness(str(home), now) == ({}, None, "absent")
+    path.write_text("{torn")
+    assert _read_propagation_liveness(str(home), now) == ({}, None, "unreadable")
+
+    def _write(nodes, saved_offset=0.0):
+        path.write_text(json.dumps({
+            "saved_at": now - saved_offset, "nodes": nodes}))
+
+    _write([], saved_offset=99 * _HOUR)
+    assert _read_propagation_liveness(str(home), now)[2] == "stale"
+
+    _write([
+        {"rns_hash": _NODE, "id": "rns_" + _NODE[:16],
+         "service_type": "LXMF_PROPAGATION", "last_seen": now + 9000.0},
+        {"rns_hash": "aed1f551" * 4, "service_type": "LXMF_PROPAGATION",
+         "last_seen": now - 600.0},
+        {"rns_hash": "dead" * 8, "service_type": "MESHTASTIC",
+         "last_seen": now - 60.0},
+    ])
+    ages, freshest, state = _read_propagation_liveness(str(home), now)
+    assert state == "ok"
+    assert _NODE not in ages          # forged future stamp discarded, not fresh
+    assert ages[("aed1f551" * 4)] == 600.0
+    assert freshest == 600.0
+    assert not any(k.startswith("dead") for k in ages)   # non-propagation ignored
+
+
+def test_lxmf_propagation_dark_reader_handles_the_real_cache_shape(tmp_path):
+    """Pinned to the SHAPE observed live on moc/moc3 2026-07-20, not to a
+    convenient one: rns_nodes.json stores saved_at and last_seen as ISO-8601
+    STRINGS (not epoch floats), and carries every node under both the 32-hex
+    rns_hash and the 'rns_<16hex>' id. A reader that only understood epochs
+    would read every real cache as unparseable and go permanently blind."""
+    import datetime as dt
+    from utils.watchdog_probes_gateway import _read_propagation_liveness
+    home = tmp_path / "h"
+    cache = home / ".cache" / "meshforge"
+    cache.mkdir(parents=True)
+    now = dt.datetime(2026, 7, 20, 10, 6, 56).timestamp()
+
+    def _iso(offset_s):
+        return (dt.datetime.fromtimestamp(now - offset_s)).isoformat()
+
+    (cache / "rns_nodes.json").write_text(json.dumps({
+        "version": 1,
+        "saved_at": _iso(0),
+        "nodes": [
+            {"id": "rns_3968a2eeac25e2e7", "rns_hash": _NODE,
+             "name": "j^x(", "service_type": "LXMF_PROPAGATION",
+             "service_aspect": "lxmf.propagation", "last_seen": _iso(1740.0)},
+            {"id": "rns_481fd6386c50a9fe", "rns_hash": "481fd6386c50a9fe" * 2,
+             "service_type": "LXMF_PROPAGATION", "last_seen": _iso(3 * _HOUR)},
+        ],
+    }))
+    ages, freshest, state = _read_propagation_liveness(str(home), now)
+    assert state == "ok"                       # ISO saved_at parsed, not stale
+    assert ages[_NODE] == 1740.0               # matched on the full hash
+    assert ages[_NODE[:16]] == 1740.0          # and on the short id form
+    assert freshest == 1740.0

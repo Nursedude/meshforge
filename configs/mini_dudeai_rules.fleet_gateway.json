@@ -693,6 +693,19 @@
       "annotation": "LXMF propagation available but UNADOPTED (2026-07-20) \u2014 propagation nodes are announcing on the RNS network (this gateway parses them into its own node cache) while gateway.json rns.propagation_node is empty, so nothing is stored and forwarded: an LXMF message to a peer that is OFFLINE right now fails outright instead of waiting for it to return. Escalation only, NO ntfy page \u2014 lost coverage rather than an outage, and by construction long-standing. \u26a0\ufe0f Adopting is a TRUST decision, not a mechanical fix: a propagation node sees stored-traffic metadata, so prefer standing one up on our own rnsd over pointing at a stranger's. The edit lands in gateway.json and needs a meshforge-gateway restart \u2014 never mid-soak (the wedge watchdog's os._exit(2) activates new code non-deterministically)."
     },
     {
+      "id": "lxmf_propagation_node_dark_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "lxmf_propagation_node_dark",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 86400,
+      "annotation": "CONFIGURED LXMF propagation node has gone quiet (2026-07-20) \u2014 gateway.json rns.propagation_node names a node that is either STALE (it announced before and stopped) or UNHEARD (the hash was never heard on this box at all, i.e. a wrong or truncated hash \u2014 the failure adoption itself introduces). Store-and-forward to OFFLINE peers is degraded: an LXMF message to a peer that is down right now fails outright again, exactly as it did before adoption. LIVE delivery is unaffected, which is why this is escalation only, NO ntfy page. This is the shape-A companion that had to ship WITH adoption: setting propagation_node makes lxmf_propagation_unused INERT by design, so without this leg the fleet would trade a WATCHED gap for an UNWATCHED dependency. It fires ONLY when some OTHER propagation announce reached the box inside the window \u2014 positive proof the box can hear the class \u2014 so an RNS-wide wedge holds here and stays with its own probes. Fix: STALE \u2192 check the node's host (systemctl is-active lxmd + NRestarts, then its rnsd); UNHEARD \u2192 re-check the 32-hex hash for truncation. If the node is genuinely gone, point rns.propagation_node at a replacement or clear it \u2014 clearing hands the gap back to lxmf_propagation_unused, which is honest, not a regression. Any edit needs a meshforge-gateway restart \u2014 never mid-soak."
+    },
+    {
       "id": "calibration_drift_any",
       "match": {
         "kind": "signal_class",

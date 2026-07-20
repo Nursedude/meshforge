@@ -1045,6 +1045,271 @@ def probe_lxmf_propagation_unused(
     )
 
 
+# ─────────────────────────────────────────────────────────────────────
+# Probe: the CONFIGURED LXMF propagation node stopped answering
+# (2026-07-20 — the shape-A leg that must ship WITH adoption).
+#
+# The moment `rns.propagation_node` is set, probe_lxmf_propagation_unused
+# above goes INERT by design (one fault, one owner). Without this leg the
+# fleet would trade a WATCHED gap for an UNWATCHED dependency — strictly
+# worse than before adoption, because offline-peer delivery would now
+# silently depend on a node nobody checks. That is the whole reason the
+# propagation-leg plan forbids splitting adoption from this probe.
+#
+# Evidence is the same durable, operator-owned node cache slice 1 reads —
+# NOT the journal (fleet boxes run Storage=volatile, so an absence of log
+# lines proves nothing). A propagation node re-announces periodically
+# (360 min in our own lxmd template, and the upstream default), so the
+# cache's `last_seen` for the configured hash is a passive, config-free
+# liveness record that survives a gateway restart.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_LXMF_PROPAGATION_DARK_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/lxmf_propagation_node_dark_debounce.json")
+
+#: Announce period of a propagation node — our lxmd template's
+#: ``announce_interval = 360`` (minutes), which is also the upstream default.
+_PROPAGATION_ANNOUNCE_INTERVAL_S = 360 * 60.0
+
+#: A configured node counts as NOT ANSWERING only after several missed
+#: announce periods. Passive announce observation cannot distinguish "down"
+#: from "announces less often than we assumed" any faster than a few periods,
+#: and a stranger's interval is not ours to know — so the window is
+#: deliberately generous. This is a ``degraded`` capability signal, not an
+#: outage page; being late and right beats being fast and wrong.
+_PROPAGATION_DARK_AFTER_S = 3 * _PROPAGATION_ANNOUNCE_INTERVAL_S
+
+
+def _normalize_rns_hash(val) -> str:
+    """Lowercase hex of an RNS destination hash, ``rns_`` prefix stripped."""
+    s = str(val or "").strip().lower()
+    if s.startswith("rns_"):
+        s = s[4:]
+    return s
+
+
+def _read_propagation_liveness(home: str, now: float):
+    """``(ages_by_hash, freshest_any, state)`` from the RNS node cache.
+
+    ``ages_by_hash`` maps every propagation node's hash — indexed under BOTH
+    its full form and its 16-char short form, since the cache carries both —
+    to the age in seconds of its newest announce. ``freshest_any`` is the age
+    of the freshest propagation announce from ANY node, or ``None``.
+
+    That second value is the honesty guard: it is positive proof that this box
+    can currently hear the propagation announce class at all. Without it, an
+    RNS-wide transport failure would read as "the configured node died" —
+    exactly the "degraded state mapped to a confident claim" defect this
+    fleet keeps paying for. State is ok | absent | stale | unreadable.
+    """
+    path = os.path.join(home, ".cache", "meshforge", "rns_nodes.json")
+    if not os.path.exists(path):
+        return {}, None, "absent"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return {}, None, "unreadable"    # incl. a torn read — indeterminate
+
+    import datetime as _dt
+
+    def _epoch(val):
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            try:
+                return _dt.datetime.fromisoformat(val).timestamp()
+            except ValueError:
+                return None
+        return None
+
+    saved = _epoch(data.get("saved_at"))
+    if saved is None or (now - saved) > _PROPAGATION_CACHE_FRESH_S:
+        return {}, None, "stale"
+
+    ages: dict = {}
+    freshest = None
+    for n in data.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        if "PROPAGATION" not in str(n.get("service_type") or "").upper():
+            continue
+        ts = _epoch(n.get("last_seen"))
+        if ts is None:
+            continue
+        age = now - ts
+        # A stamp in the future is a clock artifact, not an observation
+        # (honest_failure_modes #6). Discard it — never let it read as fresh,
+        # which is the direction that would hide a dead node.
+        if age < -_PROPAGATION_FUTURE_SLOP_S:
+            continue
+        age = max(age, 0.0)
+        for key in (_normalize_rns_hash(n.get("rns_hash")),
+                    _normalize_rns_hash(n.get("id"))):
+            if key and (key not in ages or age < ages[key]):
+                ages[key] = age
+        if freshest is None or age < freshest:
+            freshest = age
+    return ages, freshest, "ok"
+
+
+def probe_lxmf_propagation_node_dark(
+    *,
+    home: Optional[str] = None,
+    now: Optional[float] = None,
+    configured_fn=None,
+    liveness_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """The propagation node this gateway is CONFIGURED to use has gone quiet.
+
+    The shape-A companion to :func:`probe_lxmf_propagation_unused`. Adoption
+    makes a node load-bearing for offline-peer delivery; this is the leg that
+    keeps that dependency watched once slice 1 falls silent.
+
+    Two fault legs, reported distinctly because they need different fixes:
+      - **STALE** — the node is in the cache but its newest announce is older
+        than several announce periods: it answered once and stopped.
+      - **UNHEARD** — the configured hash is not in the cache at all: most
+        likely a wrong/typo'd hash, which is precisely the failure adoption
+        itself can introduce.
+
+    Honest failure modes, every one of which prefers silence:
+      - no operator resolvable → indeterminate.
+      - gateway.json ABSENT → INERT (no gateway organ here); UNREADABLE →
+        indeterminate, never read as "unconfigured".
+      - ``propagation_node`` EMPTY → INERT. Slice 1 owns that gap; one fault
+        keeps one owner, and this probe must never double-report it.
+      - node cache ABSENT → INERT; UNREADABLE or STALE → indeterminate with
+        the streak HELD, because stale bytes cannot testify about the present.
+      - **no propagation announce from ANY node within the window** →
+        indeterminate, streak HELD. This box's ability to hear the class is
+        unproven, so silence about our node is unobservable, not dark. An
+        RNS-wide wedge has its own owners (``rns_rpc_unresponsive`` et al.)
+        and must not be relabelled as a propagation-node death here.
+      - 2-tick debounce so one torn cache read cannot page.
+
+    ``degraded``, escalation-only by seed policy: store-and-forward stopping
+    degrades delivery to OFFLINE peers only — live delivery is unaffected —
+    and the generous window means a fire is already hours old and not urgent.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    sp = state_path or DEFAULT_LXMF_PROPAGATION_DARK_DEBOUNCE_PATH
+
+    if home is None:
+        home = _operator_home()
+    if not home:
+        note_disposition("lxmf_propagation_node_dark", "indeterminate",
+                         reason="operator unresolvable — cannot read either side")
+        return None
+
+    if configured_fn is not None:
+        configured, cfg_state = configured_fn()
+    else:
+        configured, cfg_state = _read_configured_propagation_node(home)
+    if cfg_state == "absent":
+        note_disposition("lxmf_propagation_node_dark", "inert",
+                         reason="no gateway.json — box runs no gateway organ")
+        _save_parity_streak(sp, 0)
+        return None
+    if cfg_state != "ok":
+        note_disposition("lxmf_propagation_node_dark", "indeterminate",
+                         reason="gateway.json unreadable — intent unknown")
+        return None
+    if not configured:
+        note_disposition(
+            "lxmf_propagation_node_dark", "inert",
+            reason="no propagation_node configured — lxmf_propagation_unused owns this")
+        _save_parity_streak(sp, 0)
+        return None
+
+    if liveness_fn is not None:
+        ages, freshest_any, cache_state = liveness_fn()
+    else:
+        ages, freshest_any, cache_state = _read_propagation_liveness(home, now)
+    if cache_state == "absent":
+        note_disposition("lxmf_propagation_node_dark", "inert",
+                         reason="no RNS node cache — gateway never ran here")
+        _save_parity_streak(sp, 0)
+        return None
+    if cache_state in ("unreadable", "stale"):
+        note_disposition(
+            "lxmf_propagation_node_dark", "indeterminate",
+            reason=f"node cache {cache_state} — cannot speak for the present; streak held")
+        return None
+
+    # Can this box hear the propagation announce class AT ALL right now? If
+    # not, our node's silence is unobservable — hold, never claim it is dark.
+    if freshest_any is None or freshest_any > _PROPAGATION_DARK_AFTER_S:
+        note_disposition(
+            "lxmf_propagation_node_dark", "indeterminate",
+            reason=("no propagation announce heard from ANY node within the window — "
+                    "this box's ability to hear the class is unproven; streak held"))
+        return None
+
+    want = _normalize_rns_hash(configured)
+    age = ages.get(want)
+    if age is None and len(want) > 16:
+        age = ages.get(want[:16])
+
+    if age is not None and age <= _PROPAGATION_DARK_AFTER_S:
+        note_disposition(
+            "lxmf_propagation_node_dark", "clean",
+            reason=f"configured node answered {age / 60:.0f} min ago")
+        _save_parity_streak(sp, 0)
+        return None
+
+    leg = "stale" if age is not None else "unheard"
+
+    streak = _load_parity_streak(sp) + 1
+    _save_parity_streak(sp, streak)
+    if streak < debounce_ticks:
+        note_disposition("lxmf_propagation_node_dark", "indeterminate",
+                         reason=f"configured node {leg}; held by debounce")
+        return None
+
+    window_h = _PROPAGATION_DARK_AFTER_S / 3600.0
+    if leg == "stale":
+        what = (f"last announced {age / 3600:.1f}h ago (window {window_h:.0f}h) — "
+                "it answered before and stopped")
+        fix = ("Check the node's host: `systemctl is-active lxmd` and its "
+               "NRestarts, then that its rnsd is healthy. ")
+    else:
+        what = (f"has NEVER been heard on this box (window {window_h:.0f}h) — "
+                "most likely a wrong or truncated hash in gateway.json, which "
+                "is the failure adoption itself introduces")
+        fix = ("Re-check the configured hash against the node's own identity "
+               "(32 hex chars, no truncation). ")
+    return Signal(
+        cls="lxmf_propagation_node_dark",
+        subject=want[:16] or "propagation-node",
+        severity="degraded",
+        detail=(
+            f"The CONFIGURED LXMF propagation node {want[:16]} {what}, while "
+            f"{len(set(ages.values()))} other propagation announce(s) reached "
+            f"this box (freshest {freshest_any / 60:.0f} min ago) — so the box "
+            "can hear the class and this node specifically is not answering. "
+            "Store-and-forward to OFFLINE peers is degraded: LXMF to a peer "
+            "that is down right now fails outright again, as it did before "
+            "adoption. Live delivery is unaffected. " + fix +
+            "If the node is genuinely gone, either point rns.propagation_node "
+            "at a replacement or clear it — clearing hands the gap back to "
+            "lxmf_propagation_unused, which is honest, not a regression."
+        ),
+        extra={
+            "leg": leg,
+            "configured": want,
+            "age_h": None if age is None else round(age / 3600.0, 2),
+            "window_h": window_h,
+            "freshest_any_min": round(freshest_any / 60.0, 1),
+            "propagation_nodes_heard": len(set(ages.values())),
+            "debounce_streak": streak,
+        },
+    )
+
+
 from utils.watchdog_probes_gateway_flow import (  # noqa: E402,F401 (back-compat re-export)
     DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH,
     _SYNTH_SOAK_CADENCE_S,
