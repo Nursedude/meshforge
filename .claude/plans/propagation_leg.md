@@ -116,7 +116,10 @@ depends on it"* — so adoption was NOT run. Operator decision, recorded: **do
 
 So the ordering constraint in §2c ("must land in the same push as adoption")
 is satisfied from the *other* direction — the probe is already in main, which
-is strictly safer than the reverse. **The remaining work is 2a → 2b → 2d.**
+is strictly safer than the reverse. **The remaining work is 2a → 2a-bis →
+2b → 2d**, where **2a-bis (prove store-and-forward before adopting) was added
+on the operator's call the same evening** — read it, it changes the sequence
+and carries a hard gate: a drill that does not deliver means do NOT adopt.
 
 Shipped in this push: `probe_lxmf_propagation_node_dark`
 (`watchdog_probes_gateway.py`), signal class + BOTH seeds + probes facade +
@@ -188,6 +191,94 @@ for h in moc moc3; do ssh $h 'sudo journalctl -u meshforge-gateway --since "25 h
 adopting would configure a hash nobody can resolve. Note the fleet journals are
 `Storage=volatile`, so absence after a box reboot is unobservable, not proof —
 re-check with a live `rnstatus`/`rnprobe` before concluding anything.
+
+### 2a-bis. PROVE store-and-forward BEFORE adopting (operator-approved 2026-07-20)
+
+> Inserted after the operator's read of step 2c: *"store and forward pretty
+> important to test out meaningfully… we need the traffic."* He is right, and
+> it exposes a hole in what 2c shipped. **Run this BEFORE 2b.**
+
+**The hole.** `probe_lxmf_propagation_node_dark` watches whether the node
+**announces**. It does NOT watch whether the node **stores and forwards**. A
+node that announces perfectly while silently dropping every stored message
+reads *clean* on that probe, forever. In a 9-box, 2-person lab, traffic to an
+offline peer essentially never happens organically — so the realistic failure
+is: adopt, and the organ is quietly useless for months while every gate stays
+green. That is announce-liveness standing in as a proxy for the property we
+actually care about (honest_failure_modes #1 in a liveness costume).
+
+**So invert the risk.** The plan as originally written adopts first and hopes.
+Prove the node does its job while ZERO boxes depend on it — a failed drill
+then costs nothing, where a failed adoption costs two gateways.
+
+**Gate: if the drill does not deliver, do NOT run 2b.** A node that cannot
+store-and-forward is worse than no node: adopting it would silently swallow
+offline-peer mail that today at least fails loudly.
+
+The drill (one-shot, manual, no gateway config touched):
+
+1. Two throwaway LXMF identities, A (sender) and B (receiver), on separate
+   boxes — NOT the gateway identities, so nothing pollutes real counters.
+2. B is **not running**. Confirm it is genuinely unreachable first (`rnprobe`
+   to B's destination fails) — otherwise a DIRECT delivery would pass the
+   drill while proving nothing about propagation.
+3. A sets the outbound propagation node to ours and sends with the PROPAGATED
+   method, so the message goes to the node's store rather than to B.
+4. A exits. Wait past a path-expiry window so no direct route survives.
+5. Bring B up, point it at the same node, and pull. **B must receive it.**
+
+API facts, verified live 2026-07-20 against the installed `lxmf 1.0.1+mf.1`
+(do not re-derive, and do not guess these — an earlier draft of this arc
+invented a shape and was wrong):
+
+```python
+LXMF.LXMessage.PROPAGATED == 3          # vs DIRECT == 2, OPPORTUNISTIC == 1
+LXMF.LXMessage(dest, source, content, title, desired_method=LXMF.LXMessage.PROPAGATED)
+router.set_outbound_propagation_node(destination_hash)      # sender side
+router.set_inbound_propagation_node(destination_hash)       # receiver side
+router.request_messages_from_propagation_node(identity, max_messages=0)   # the pull
+```
+
+Our node: `3968a2eeac25e2e7a7961f25842d3d85` (lxmd on moc1).
+
+⚠️ **The existing traffic generator cannot do this** — checked, not assumed:
+`src/lab/lxmf_multi_user_synth.py:324` builds `LXMF.LXMessage(...)` with **no
+`desired_method`**, so every synth message is DIRECT, and `grep -rn
+propagation src/lab/*.py` returns NOTHING. The whole synth soak exercises
+live-peer delivery only. That is exactly why store-and-forward is untested
+today, and it is why the drill needs its own sender/receiver rather than a
+flag on the existing tool.
+
+### 2a-ter. Slice 3 — automate the drill; it IS the traffic generator
+
+Once the drill passes once by hand, the durable form is the same artifact the
+operator wants for load/telemetry. Clone the proven pattern rather than
+inventing one: `scripts/lab_synth_soak_fire.sh` +
+`meshforge-synth-soak.timer` write a `pass_envelope` JSON that
+`probe_synth_soak_degraded` consumes, with a SILENCE leg for when the
+exerciser itself stops. The propagation analogue is that plus a deliberately
+offline receiver. Each run also yields the send→stored→synced-on-return
+latency, which is the real SLO of store-and-forward and something nothing in
+the fleet measures today.
+
+Design constraints to honour from the start (each is a trap this repo has
+already paid for once):
+
+- **Tag the synthetic traffic and keep it OUT of `delivery_counters`.** The
+  whole #74 arc was making `confirmation_rate` honest; feeding it manufactured
+  messages would re-corrupt the exact metric we fixed.
+- **`message_storage_limit = 500` was picked blind.** A drill that also
+  pushes toward that boundary is how we learn what eviction actually does.
+  Finding out during a real outage is the bad version.
+- **Silence must be a failure.** Same lesson as synth-soak: a fixed-cadence
+  generator that stops emitting is indistinguishable from "nothing to report"
+  unless staleness is itself the fault.
+- **Atomic publish.** `lab_synth_soak_fire.sh` writes `.partial` then renames
+  precisely because a direct `>"$out"` left the newest envelope unparseable
+  mid-run and false-fired the probe (the 2026-06-15 moc incident). Copy that.
+- Volume, later: rotating sender/receiver pairs across the 9 boxes exercise
+  real multi-hop RNS paths rather than a loopback — closer to what the 30-mile
+  deploy will face ([[project_openwrt_remote_deploy_plan_2026_07_15]]).
 
 ### 2b. Confirm nothing is soaking, then adopt
 
