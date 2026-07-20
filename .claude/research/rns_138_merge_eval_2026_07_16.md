@@ -425,3 +425,37 @@ bump the SSOT (`requirements/rns.txt` MF-FORK-PIN + `rns_version_check`).
 Consider wiring `pip check` into `probe_rns_env_coherence` — it compares across
 envs today but never an env against its own declared requirements, which is
 exactly the deliberate-upgrade gap above.
+
+### Canary updated to `lxmf 1.0.1+mf.1` — 2026-07-19, all envs
+
+moc3 now runs the corrected package in **all four** of its envs. Installed with
+`--no-deps` per env so `rns` was never re-resolved:
+
+| env | install route | lxmf | rns |
+|---|---|---|---|
+| venv `/opt/meshforge/venv` | `venv/bin/pip` | `1.0.1+mf.1` | `1.3.8+mf.0` (untouched) |
+| system-local | `sudo pip --break-system-packages` | `1.0.1+mf.1` | `1.3.8+mf.0` (untouched) |
+| user-site | `pip --user --break-system-packages` | `1.0.1+mf.1` | `1.3.8+mf.0` (untouched) |
+| user-pipx `nomadnet` | `pipx runpip nomadnet` | `1.0.1+mf.1` | `1.3.8+mf.0` (untouched) |
+
+⚠️ **PEP 668 applies to `--user` too** on this image — the user-site install
+fails without `--break-system-packages`. Budget for that on every box in the
+roll; a silent skip there is exactly how one env is left behind.
+
+Verified after: live import in BOTH the venv python and the system python
+reports `rns 1.3.8+mf.0 / lxmf 1.0.1+mf.1`; `pip check` shows NO rns/lxmf
+incompatibility in any env; `rnsd`, `meshforge-gateway`, `meshforge-watchdog`
+all active and `rnstatus` responsive; `probe_rns_env_coherence` →
+**`clean`**, with `rns_version_drift` the only signal (the DELIBERATE canary
+marker — do not converge moc3).
+
+Services were deliberately NOT restarted: the code is byte-identical between
+`+mf.0` and `+mf.1` (only `setup.py`, `_version.py` and `FORK.md` changed), so
+a restart would add canary risk mid-soak for no behavioural gain.
+
+**Unrelated observation worth knowing before the roll**: the moc3 SERVICE venv
+carries `cryptography 49.0.0`, which violates BOTH `requirements/rns.txt`
+(`cryptography>=45.0.7,<47`) and its own `pyopenssl 26.0.0`
+(`cryptography<47,>=46.0.0`). Not caused by this change (`--no-deps` touched
+nothing else), but a roll that installs the rns requirements could downgrade it
+— decide deliberately rather than discover it mid-roll.
