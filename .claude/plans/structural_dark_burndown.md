@@ -43,6 +43,20 @@
   node with only the two statements stubbed away (tick 1 held, tick 2 fired
   subject=the real node name).
   Eval: `oracle-aredn-organ-undeclared-is-positive-evidence`.
+  **FIRST LIVE TICK FOUND A REAL ONE — and it is now ADOPTED (operator, same
+  session).** moc1 sat on the LAN of a second, previously unknown AREDN node
+  (`WH6GXZ-6-BI-ECOM`, "Ecomm Big Island", 172.27.0.1) collecting nothing from
+  it. Fleet adjacency swept: exactly TWO boxes touch an AREDN LAN — moc5
+  (already adopted) and moc1. Adoption discovered the node the same way the
+  probe does rather than writing a hardcoded IP (refuses if no live node
+  answers), backed both files up, wrote atomically at mode 0600, and DECLARED
+  the organ as well as configuring it — so a future wipe now trips the
+  declared-unconfigured leg. Verified: `source_diagnostics.aredn`
+  `attempted 1 / yielded 1 / ok` (950 ms); the node is on the map with
+  `source_origin: aredn_local` (first-party, not the worldmap fallback) at real
+  coordinates; `aredn_organ_undeclared` → INERT ("configured — the
+  configured-source legs own this box"), `aredn_source_dark` → clean;
+  honest_status 6/6 PASS.
   RESIDUAL: a site with no AREDN LAN path stays invisible — correctly, there is
   nothing to observe.
 
