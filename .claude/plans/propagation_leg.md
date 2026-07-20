@@ -105,6 +105,121 @@ tests + the twin in MeshAnchor; do NOT bolt it onto the adoption commit.
    Strictly better option: stand one up on our own rnsd and point the fleet at
    it. That choice is the operator's, not the detector's.
 
+## ▶ STEP 2 — EXECUTE THIS (armed 2026-07-20, earliest run 2026-07-21)
+
+> Operator decision recorded 2026-07-20: **soak the node one day, then adopt.**
+> Written by the session that shipped step 1, for a session that will NOT have
+> its context. Everything needed is here; re-derive nothing from memory.
+> Facts you need: node hash `3968a2eeac25e2e7a7961f25842d3d85`, hosted by
+> `lxmd.service` on **moc1**, config `/var/lib/lxmd/config`.
+
+### 2a. Soak read-back FIRST — do not adopt a node you haven't re-checked
+
+Adoption makes this node load-bearing for LXMF delivery, so prove it survived
+a day before anything depends on it. On moc1:
+
+```bash
+systemctl is-active lxmd; systemctl show lxmd -p NRestarts --value   # expect active / 0
+sudo timeout 20 lxmd --config /var/lib/lxmd --rnsconfig /etc/reticulum --status
+sudo journalctl -u lxmd --no-pager -p warning --since "25 hours ago"  # expect empty
+df -h /; uptime                                                       # host still healthy
+```
+
+**Gate:** `NRestarts` must still be 0 (a restart loop here is the #69/#82
+bind-race gate doing its job — investigate, do NOT adopt). Uptime should read
+~24h. A non-empty warning journal is a stop-and-read, not a proceed.
+
+Independently, announce continuity from a CONSUMER (announce_interval is 360
+min, so expect roughly 4 in 24h — this is the leg that proves the fleet can
+still find it, which is the whole point):
+
+```bash
+for h in moc moc3; do ssh $h 'sudo journalctl -u meshforge-gateway --since "25 hours ago" \
+  --no-pager -o cat | grep -c "Discovered RNS node: 3968a2ee"'; done
+```
+
+**Zero on both boxes = STOP.** The node is unreachable to its future consumers;
+adopting would configure a hash nobody can resolve. Note the fleet journals are
+`Storage=volatile`, so absence after a box reboot is unobservable, not proof —
+re-check with a live `rnstatus`/`rnprobe` before concluding anything.
+
+### 2b. Confirm nothing is soaking, then adopt
+
+⚠️ Adoption restarts `meshforge-gateway` on moc and moc3. The gateway's wedge
+watchdog calls `os._exit(2)`, so a restart mid-soak makes new code activate
+non-deterministically. Ask the operator "anything soaking?" — and never run
+`fleet_sync.sh` for this (it restarts gateways fleet-wide on any `^src/` diff).
+
+Per gateway box (moc, then moc3 — one at a time, verify between):
+
+```bash
+# gateway.json lives under the gateway's config dir; find it, don't assume:
+sudo grep -rl '"propagation_node"' /etc/meshforge /var/lib/meshforge ~/.config/meshforge 2>/dev/null
+# set rns.propagation_node = "3968a2eeac25e2e7a7961f25842d3d85", then:
+sudo systemctl restart meshforge-gateway
+```
+
+Verify at the consumer of record — the gateway's own log proving the LXMF
+router accepted the outbound propagation node, NOT that the file contains the
+string:
+
+```bash
+sudo journalctl -u meshforge-gateway --since "3 min ago" --no-pager -o cat | grep -i propagation
+```
+
+Then prove DELIVERY, not path presence (2026-07-19 lesson: after a rolling
+rnsd restart a box can latch a stale multi-hop path that `rnpath -t` reports
+as fresh while delivery is 100% lost):
+
+```bash
+rnprobe lxmf.propagation 3968a2eeac25e2e7a7961f25842d3d85   # from moc AND moc3
+```
+
+The real end-to-end proof is an LXMF message to an OFFLINE peer that lands when
+it returns. If a cheap version of that isn't available, say so — that claim
+stays BELIEVED, and name it as such.
+
+### 2c. The shape-A probe MUST land in the same push
+
+The moment `propagation_node` is set, `probe_lxmf_propagation_unused` goes
+INERT by design — so without this, the fleet trades a watched gap for an
+UNWATCHED dependency, which is strictly worse than before step 2. Do not split
+these across commits.
+
+New probe (`watchdog_probes_gateway.py`, alongside its slice-1 sibling):
+configured propagation node stopped answering. Honest self-guards, non-negotiable:
+
+- `propagation_node` unset → INERT (the slice-1 probe owns that state; one
+  fault, one owner);
+- gateway not installed/running → INERT;
+- observation source unreadable → indeterminate, streak HELD (an ABSENT file is
+  an observation; an UNREADABLE one is a failure to observe — never collapse them);
+- volatile-journal absence is NOT node-absence;
+- 2-tick debounce; `degraded`; escalation-only seed rule.
+
+Feed EVERY closed-enum gate — they fail until fed, which is the system working:
+`SIGNAL_CLASSES` in `watchdog_probe_core.py`, the documented-enum literal in
+`tests/test_watchdog_probes.py`, BOTH seeds
+(`configs/mini_dudeai_rules.{federator,fleet_gateway}.json`), the probes facade
+`__all__` + `watchdog_probes_drift` re-export, `watchdog_runner`. Plus: a
+mutation check that the guard catches a regression, a registry row in
+`fleet_truth.py` (byte-locked → copy to MeshAnchor), an eval case in
+`evals/local_brain/seed.jsonl` (honest_failure_modes #10), and a
+`TEMPLATE_PROVENANCE`-style honesty pass — `honest_status.sh` will tell you.
+
+### 2d. Ship it
+
+lint + `parity_check.py` + FULL suite **after the final edit** (not before);
+push; `wait_for_ci.sh`; `fleet_pull.sh`; restart `meshforge-watchdog`
+fleet-wide; `python3 /opt/meshforge/scripts/promote_seed_rules.py --apply` per
+box (ABSOLUTE path — remote ssh cwd is $HOME, not the repo). Verify the new
+probe's disposition at the live watchdog via `/api/fleet/truth`, then
+`honest_status.sh` (`exit 0`; UNKNOWN is never a pass).
+
+**Done looks like:** `lxmf_propagation_unused` INERT on moc/moc3 (adoption took)
+and the new shape-A probe `active`/healthy (the dependency is watched). If the
+first is INERT and the second didn't ship, you are worse off than yesterday.
+
 ## Slice 2 — what a fresh session needs to know FIRST (researched 2026-07-20)
 
 **The client/server asymmetry is the whole shape of this slice. Do not assume
