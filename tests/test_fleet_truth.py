@@ -279,11 +279,23 @@ class TestFleetTruth:
         assert t["fleet_state"] == ft.FAILED
 
     def test_structural_dark_always_present(self):
+        """The Known Blind Spots registry is always emitted, non-trivial, and
+        every row is fully formed.
+
+        Pin the SHAPE, not a catalogue of ids: the registry is a work-list, so
+        narrowing a row RENAMES it by design (2026-07-19 renamed four in one
+        day — mesh_rf_ota_leg_unwatched -> mesh_rf_ota_egress_unproven among
+        them). An id-list assertion turns every legitimate closure into a red
+        test that says nothing about correctness. One still-open row stays
+        pinned so this cannot pass vacuously; when THAT row closes, update it
+        here deliberately."""
         t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc")
         assert len(t["structural_dark"]) >= 5
+        for row in t["structural_dark"]:
+            assert row.get("id") and row.get("detail") and row.get("ref"), (
+                f"malformed structural-dark row: {row}")
         ids = {d["id"] for d in t["structural_dark"]}
-        assert "mesh_rf_ota_leg_unwatched" in ids
-        assert "oracle_rns_send_blind" in ids
+        assert "oracle_rns_send_blind" in ids   # still open (row 2, post-roll)
 
     def test_empty_fleet_is_dark_not_healthy(self):
         t = ft.build_fleet_truth([], now=NOW, signal_classes=[], noc_host="moc",
