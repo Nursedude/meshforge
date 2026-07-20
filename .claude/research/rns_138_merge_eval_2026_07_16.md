@@ -605,3 +605,64 @@ entries in the roll window.
    way moc3's was during the soak.
 4. `rns_version_drift` currently fires degraded on ALL rolled boxes (the pin is
    still the old baseline). That is expected and clears with step 3.
+
+### meshanchor-server ROLLED + SSOT BUMPED — ARC CLOSED (2026-07-19)
+
+**MA box rolled**, converging both pre-existing drifts at the same time:
+
+| env | before | after |
+|---|---|---|
+| `/opt/meshanchor/venv` (ALL 5 MA units run from here) | rns `1.2.5+mf.4`, lxmf **`0.9.6` stock** | `1.3.8+mf.0` / `1.0.1+mf.1` |
+| user-site | `1.2.5+mf.5` / `0.9.4+mf.0` | `1.3.8+mf.0` / `1.0.1+mf.1` |
+| system-local (rns only) | `1.2.5+mf.4` (drift) | `1.3.8+mf.0` |
+| pipx `nomadnet` | **stock** `1.2.5` / `0.9.8` | `1.3.8+mf.0` / `1.0.1+mf.1` |
+
+Post-roll: all units active, `rnsd` owns `@rns/default` + `/rpc`, MA's own
+`active_health_probe` reports `rnsd` **HEALTHY** and `rnsd_rpc` **HEALTHY** on
+the new stack. (`meshcore-chat.service` has been failed since 2026-06-24 —
+3.5 weeks, unrelated to this arc.)
+
+#### ⚠️ A SIXTH env class, and a second self-inflicted mixed-version window
+
+`/opt/meshanchor/venv` is the consumer-of-record for **every** MeshAnchor unit,
+and the roll tooling only ever probed `/opt/meshforge/venv` — which does not
+exist on that box. So the first pass flipped rnsd + user-site + system-local +
+pipx and left every MA service on `1.2.5+mf.4`/`0.9.6`. Caught by checking each
+unit's actual `ExecStart` interpreter (calibrated_claims rule 7) rather than
+trusting the env scan. Honest scope of the exposure: the packet wire protocol
+is unchanged, so shared-instance traffic kept flowing and MA's probes read
+HEALTHY — the latent break was the in-process path-table RPC, not everything.
+
+**The generalized rule**: never enumerate envs from a hardcoded venv path.
+Derive the roll surface from `sudo find /opt /home /root /usr/local /srv
+-maxdepth 12 \( -name 'rns-*.dist-info' -o -name 'lxmf-*.dist-info' \)` AND
+from each unit's real `ExecStart` interpreter. Six classes seen across this
+fleet: repo venv (per-repo, name varies), system-local, user-site, **root
+user-site**, user-pipx venvs, root-pipx venvs.
+
+#### Fork branches fast-forwarded
+
+Both were clean fast-forwards, pushed:
+- `Nursedude/reticulum`: `meshforge` `83f4be33` → **`6dadb335`** (`1.3.8+mf.0`)
+- `Nursedude/lxmf`: `meshforge` `66c48cf` → **`69811305`** (`1.0.1+mf.1`)
+
+#### SSOT bumped (both repos, parity-locked block)
+
+`requirements/rns.txt` in MeshForge AND MeshAnchor:
+```
+# MF-FORK-PIN rns 1.3.8+mf.0
+# MF-FORK-PIN lxmf 1.0.1+mf.1
+rns  @ git+https://github.com/Nursedude/reticulum.git@6dadb335b22e83a5aef19cba5cef6996e400a540
+lxmf @ git+https://github.com/Nursedude/lxmf.git@69811305d5084d4007687bf43504bed19e6d5cd3
+```
+
+VERIFIED: `rns_version_check.py` exit 0 in BOTH repos (`installed=1.3.8+mf.0
+pinned=1.3.8+mf.0`, `installed=1.0.1+mf.1 pinned=1.0.1+mf.1`);
+`parity_check.py` **RESULT: in sync** (exit 0); full suite **8924 passed,
+1 skipped** (exit 0); lint exit 0.
+
+The fleet is now uniform on the new baseline, so `rns_version_drift` should
+clear on all 8 boxes once each has pulled — that signal returns to being a real
+alarm rather than the deliberate canary marker it has been since 07-17.
+
+**Baseline for all future work: rns `1.3.8+mf.0` / lxmf `1.0.1+mf.1`.**

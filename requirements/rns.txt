@@ -46,10 +46,10 @@
 # version SSOT enforced by scripts/rns_version_check.py. The baseline is
 # IDENTICAL to stock 1.2.5/0.9.4 except the +mf.N marker + FORK.md/NOTICE, so
 # it stays wire-compatible with the public Reticulum net (NomadNet, Sideband).
-# MF-FORK-PIN rns 1.2.5+mf.5
-# MF-FORK-PIN lxmf 0.9.4+mf.0
-rns @ git+https://github.com/Nursedude/reticulum.git@83f4be330f434336b7f9dd1ad80c02969b6b8a87
-lxmf @ git+https://github.com/Nursedude/lxmf.git@66c48cfff65bce78e645bc79930bbc6b6fd6802a
+# MF-FORK-PIN rns 1.3.8+mf.0
+# MF-FORK-PIN lxmf 1.0.1+mf.1
+rns @ git+https://github.com/Nursedude/reticulum.git@6dadb335b22e83a5aef19cba5cef6996e400a540
+lxmf @ git+https://github.com/Nursedude/lxmf.git@69811305d5084d4007687bf43504bed19e6d5cd3
 
 # Cryptography / PyOpenSSL version alignment:
 # RNS pulls in cryptography 46.x (its constraint is >=3.4.7, so pip grabs latest).
