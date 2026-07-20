@@ -730,11 +730,16 @@ ok**, and kiai reports 0 failed user units.
 Note the file is per-box operator config (`~/.config/meshforge/lab_peers`), NOT
 repo-tracked, so the hashes stay out of the repo per MF014.
 
-**Left deliberately for the operator**: moc4 has no `meshforge-tracer.timer`,
-so it is now a *target* (other boxes measure it) but not a *measurer*. Every
-other fleet box runs the tracer. Enabling it there would make the matrix
-symmetric; it also adds a recurring 10-minute job, so it is a deliberate call
-rather than something to switch on silently.
+**moc4's tracer timer enabled (operator decision, same day)**: installed from
+`templates/systemd/meshforge-tracer-user.{service,timer}` per that template's
+procedure, `enable --now`, linger already on. Fired once manually to prove it:
+`ExecMainStatus=0`, Finished, **9/9 peers ok** (moc4 self-loopback 42 ms).
+
+**The measurement matrix is now symmetric**: all 9 boxes run
+`meshforge-tracer.timer` (10-min cadence) and all 9 answer pings — 8 via
+`meshforge-echo`, meshanchor-server via its own `meshanchor-echo.service`.
+Before today, 2 of 9 boxes were measured by nobody and 1 of those was
+measuring nobody while silently failing.
 
 **The detection gap behind kiai's week of silence is still open**: a
 timer-triggered USER unit that fails every cycle is invisible to
