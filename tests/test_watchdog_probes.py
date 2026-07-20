@@ -141,6 +141,7 @@ def test_signal_classes_closed_enum_is_documented():
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
         "aredn_organ_undeclared",       # 2026-07-20 AREDN organ available, never adopted
+        "lxmf_propagation_unused",      # 2026-07-20 propagation nodes available, none adopted
         "dep_version_drift",            # 2026-06-12 recurring update class
         "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
@@ -7117,3 +7118,148 @@ def test_user_timer_failing_honours_unit_override(tmp_path):
 
 def test_user_timer_failing_is_in_the_closed_enum():
     assert "user_timer_unit_failing" in SIGNAL_CLASSES
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-20 — lxmf_propagation_unused: propagation nodes are announcing
+# and this gateway adopted none. The SECOND shape-C probe (a capability
+# present and unused), after aredn_organ_undeclared. Evidence is the
+# gateway's own operator-owned node cache — deliberately not the journal,
+# which is volatile on fleet boxes, so its silence proves nothing.
+# ─────────────────────────────────────────────────────────────────────
+
+def _lpu(tmp_path, *, configured=("", "ok"), cands=None, cache_state="ok",
+         ticks=2):
+    from utils.watchdog_probes_gateway import probe_lxmf_propagation_unused
+    if cands is None:
+        cands = [(600.0, "rns_aed1f551", "prop-1")]
+    return probe_lxmf_propagation_unused(
+        home="/nonexistent-but-unused",
+        now=1_784_000_000.0,
+        configured_fn=lambda: configured,
+        candidates_fn=lambda: (cands, cache_state),
+        state_path=str(tmp_path / "lpu.json"),
+        debounce_ticks=ticks,
+    )
+
+
+def test_lxmf_propagation_unused_fires_after_debounce(tmp_path):
+    """Fresh propagation nodes + empty propagation_node = the unused
+    capability. Fires on the second consecutive tick."""
+    assert _lpu(tmp_path) is None                     # tick 1: debounce
+    sig = _lpu(tmp_path)                              # tick 2: confirmed
+    assert sig is not None
+    assert sig.cls == "lxmf_propagation_unused"
+    assert sig.severity == "degraded"
+    assert sig.subject == "propagation-unconfigured"  # stable across node churn
+    assert sig.extra["candidates"] == 1
+    assert "OFFLINE" in sig.detail and "TRUST" in sig.detail
+
+
+def test_lxmf_propagation_inert_when_configured(tmp_path):
+    """Adopted = this probe's job is done; the streak resets so a later
+    un-configuring still needs its full debounce."""
+    _lpu(tmp_path)                                    # prime a streak
+    for _ in range(3):
+        assert _lpu(tmp_path, configured=("aed1f551…", "ok")) is None
+    assert json.loads((tmp_path / "lpu.json").read_text())["streak"] == 0
+
+
+def test_lxmf_propagation_inert_without_a_gateway(tmp_path):
+    """No gateway.json = no gateway organ here. ABSENT is an observation the
+    probe may act on (INERT) — it is not the same as unreadable."""
+    for _ in range(3):
+        assert _lpu(tmp_path, configured=(None, "absent")) is None
+
+
+def test_lxmf_propagation_indeterminate_when_config_unreadable(tmp_path):
+    """A corrupt gateway.json must never read as 'unconfigured' — that would
+    invent an alarm from a failure to observe."""
+    assert _lpu(tmp_path, configured=(None, "unreadable")) is None
+    assert _lpu(tmp_path, configured=(None, "unreadable")) is None
+
+
+def test_lxmf_propagation_inert_without_a_node_cache(tmp_path):
+    """No cache = the gateway never ran here → INERT, not 'no nodes'."""
+    for _ in range(3):
+        assert _lpu(tmp_path, cands=[], cache_state="absent") is None
+
+
+def test_lxmf_propagation_holds_on_stale_or_unreadable_cache(tmp_path):
+    """Stale/unreadable bytes cannot testify about the present. HOLD the
+    streak: neither fire (we don't know nodes are up) nor reset (we don't
+    know they're gone) — unobservable is not 'nothing available'."""
+    _lpu(tmp_path)                                    # streak = 1
+    for state in ("stale", "unreadable"):
+        assert _lpu(tmp_path, cands=[], cache_state=state) is None
+    # held, not reset — so ONE more real observation confirms
+    assert json.loads((tmp_path / "lpu.json").read_text())["streak"] == 1
+    assert _lpu(tmp_path) is not None
+
+
+def test_lxmf_propagation_no_fresh_nodes_is_clean(tmp_path):
+    """No propagation node heard = nothing to adopt. That is the ordinary
+    state of a mesh without one, so it resets the streak rather than firing."""
+    _lpu(tmp_path)
+    for _ in range(2):
+        assert _lpu(tmp_path, cands=[]) is None
+    assert json.loads((tmp_path / "lpu.json").read_text())["streak"] == 0
+
+
+def test_lxmf_propagation_cache_reader_rejects_stale_and_skewed(tmp_path):
+    """The real reader: a cache older than the freshness bound is 'stale',
+    and a last_seen from the future is a clock artifact on these RTC-less
+    Pis (honest_failure_modes #6), never evidence."""
+    from utils.watchdog_probes_gateway import _read_fresh_propagation_nodes
+    import datetime as dt
+
+    home = tmp_path / "home"
+    cache = home / ".cache" / "meshforge"
+    cache.mkdir(parents=True)
+    now = 1_784_000_000.0
+    iso = lambda off: dt.datetime.fromtimestamp(now + off).isoformat()
+
+    def write(saved_off, nodes):
+        (cache / "rns_nodes.json").write_text(json.dumps(
+            {"saved_at": iso(saved_off), "nodes": nodes}))
+
+    # fresh cache, one fresh node + one ancient + one from the future
+    write(-60, [
+        {"service_type": "LXMF_PROPAGATION", "node_id": "a", "last_seen": iso(-3600)},
+        {"service_type": "LXMF_PROPAGATION", "node_id": "b", "last_seen": iso(-99 * 3600)},
+        {"service_type": "LXMF_PROPAGATION", "node_id": "c", "last_seen": iso(9 * 3600)},
+        {"service_type": "LXMF_DELIVERY", "node_id": "d", "last_seen": iso(-60)},
+    ])
+    cands, state = _read_fresh_propagation_nodes(str(home), now)
+    assert state == "ok"
+    assert [c[1] for c in cands] == ["a"]      # ancient, future, non-prop all out
+
+    # a cache the gateway stopped updating cannot speak for the present
+    write(-9 * 3600, [
+        {"service_type": "LXMF_PROPAGATION", "node_id": "a", "last_seen": iso(-60)}])
+    assert _read_fresh_propagation_nodes(str(home), now) == ([], "stale")
+
+    # torn/corrupt read → unreadable, never an empty "nothing available"
+    (cache / "rns_nodes.json").write_text("{not json")
+    assert _read_fresh_propagation_nodes(str(home), now) == ([], "unreadable")
+
+    # absent cache → absent (INERT), distinct from unreadable
+    (cache / "rns_nodes.json").unlink()
+    assert _read_fresh_propagation_nodes(str(home), now) == ([], "absent")
+
+
+def test_lxmf_propagation_config_reader_separates_absent_from_unreadable(tmp_path):
+    """The row-5 lesson, applied here at write time rather than found later."""
+    from utils.watchdog_probes_gateway import _read_configured_propagation_node
+    home = tmp_path / "h"
+    cfg = home / ".config" / "meshforge"
+    cfg.mkdir(parents=True)
+    assert _read_configured_propagation_node(str(home)) == (None, "absent")
+    (cfg / "gateway.json").write_text("{oops")
+    assert _read_configured_propagation_node(str(home)) == (None, "unreadable")
+    (cfg / "gateway.json").write_text(json.dumps({"rns": {"propagation_node": ""}}))
+    assert _read_configured_propagation_node(str(home)) == ("", "ok")
+    (cfg / "gateway.json").write_text(json.dumps({"rns": {"propagation_node": "abc"}}))
+    assert _read_configured_propagation_node(str(home)) == ("abc", "ok")
+    (cfg / "gateway.json").write_text(json.dumps({"no_rns_block": True}))
+    assert _read_configured_propagation_node(str(home)) == ("", "ok")

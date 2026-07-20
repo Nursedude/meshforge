@@ -233,6 +233,23 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "egress proof. The quiet-window threshold is PROVISIONAL pending a "
                "heard-rate soak, so the signal escalates and does not page",
      "ref": "watchdog_probes_liveness.py :: probe_claw_rf_silent"},
+    {"id": "lxmf_propagation_unadopted",
+     "detail": "OPENED 2026-07-20 by the optional-organ sweep, and watched from the same "
+               "day. Structural finding behind it: of ~50 signal classes, only ONE watched "
+               "for an available-but-UNADOPTED capability — the domain is excellent at "
+               "watching what it was TOLD about. This is the second such watcher. LXMF "
+               "propagation nodes announce on the RNS network and the gateway already "
+               "parses them into its own node cache (14-15 heard within 6h on both gateway "
+               "boxes, 2026-07-20) while gateway.json rns.propagation_node is empty, so "
+               "nothing is stored and forwarded: LXMF to a peer that is OFFLINE right now "
+               "fails outright instead of waiting for it to return. DELIBERATELY "
+               "REPORT-ONLY: adoption is a TRUST decision (a propagation node sees "
+               "stored-traffic metadata) and standing one up on our own rnsd beats "
+               "pointing at a stranger's, so the probe names the gap and never prescribes "
+               "a node. RESIDUAL until adopted: offline-peer delivery stays best-effort, "
+               "and once adopted this leg goes INERT — nothing yet checks that a "
+               "CONFIGURED propagation node still answers (that would be a shape-A leg)",
+     "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_unused"},
     {"id": "aredn_configured_source_only",
      "detail": "CLOSED 2026-07-20 (row 5). Three legs now: configured-source dark, "
                "declared-but-unconfigured (2026-07-19), and — the last gap — "

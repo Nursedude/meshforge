@@ -23,7 +23,9 @@ from urllib.error import URLError
 from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
+    _load_parity_streak,
     _resolve_main_pid,
+    _save_parity_streak,
     _short_unix_ts,
     note_disposition,
 )
@@ -783,6 +785,263 @@ def probe_gateway_dual_homed_exposure(
         ),
         extra={"new": new, "dual_homed_total": len(current),
                "confirmable_population_only": True},
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Probe: LXMF propagation nodes available but this gateway uses none
+# (2026-07-20 — the second shape-C organ, after aredn_organ_undeclared).
+#
+# Found by the optional-organ sweep: of 50 signal classes, exactly ONE
+# watched for an available-but-UNADOPTED capability. Everything else waits
+# to be told. This is the second, and it was hiding in plain sight — the
+# gateway PARSES LXMF_PROPAGATION announces off the RNS network and files
+# them in its node cache, while `gateway.json rns.propagation_node` sits
+# empty. Measured 2026-07-20: 14-15 propagation nodes heard within 6 h on
+# both gateway boxes, zero configured.
+#
+# What it costs: LXMF to an OFFLINE peer simply fails today. A propagation
+# node stores and forwards it until the peer returns — the delivery-layer
+# analogue of what AREDN buys on the transport layer, and exactly the
+# property emergency comms needs.
+#
+# Evidence is config-free and NOT the journal (fleet boxes run
+# Storage=volatile, so journal absence proves nothing): the gateway's own
+# operator-owned node cache, atomically written, carries service_type +
+# last_seen per node.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_LXMF_PROPAGATION_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/lxmf_propagation_unused_debounce.json")
+
+#: A propagation node counts as AVAILABLE only if heard this recently. Nodes
+#: announce periodically; something last heard days ago is not a capability
+#: we can claim is present right now.
+_PROPAGATION_FRESH_S = 6 * 3600.0
+
+#: The cache is written by the gateway process. Older than this and we are
+#: reading a corpse: the cache cannot testify about the present, so the probe
+#: holds rather than claiming availability from stale bytes.
+_PROPAGATION_CACHE_FRESH_S = 3 * 3600.0
+
+#: Wall-clock is forgeable on RTC-less Pis (honest_failure_modes #6). A
+#: last_seen this far in the future is a clock artifact, not an observation.
+_PROPAGATION_FUTURE_SLOP_S = 900.0
+
+
+def _operator_home() -> Optional[str]:
+    """The operator's home dir, or None. Root-safe read; never escalate."""
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        op = None
+    if not op:
+        return None
+    try:
+        import pwd
+        return pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+
+
+def _read_configured_propagation_node(home: str):
+    """``(value, state)`` where state is ok | absent | unreadable.
+
+    ABSENT gateway.json means this box runs no gateway organ — an observation
+    the caller may act on (INERT). UNREADABLE means we could not determine
+    intent — indeterminate. Collapsing those two was the row-5 defect; it is
+    not repeated here.
+    """
+    path = os.path.join(home, ".config", "meshforge", "gateway.json")
+    if not os.path.exists(path):
+        return None, "absent"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        rns = data.get("rns")
+        if not isinstance(rns, dict):
+            return "", "ok"
+        val = rns.get("propagation_node")
+        return (val if isinstance(val, str) else ""), "ok"
+    except (OSError, ValueError, TypeError):
+        return None, "unreadable"
+
+
+def _read_fresh_propagation_nodes(home: str, now: float):
+    """``(candidates, state)`` — propagation nodes heard within the freshness
+    window, newest first. state is ok | absent | stale | unreadable.
+
+    ``absent`` = no node cache, i.e. no gateway organ ever ran here (INERT).
+    ``stale`` = the cache exists but the gateway stopped updating it, so it
+    cannot speak for the present (HOLD, never fire).
+    """
+    path = os.path.join(home, ".cache", "meshforge", "rns_nodes.json")
+    if not os.path.exists(path):
+        return [], "absent"
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return [], "unreadable"     # incl. a torn read — indeterminate, hold
+
+    import datetime as _dt
+
+    def _epoch(val):
+        if isinstance(val, (int, float)):
+            return float(val)
+        if isinstance(val, str):
+            try:
+                return _dt.datetime.fromisoformat(val).timestamp()
+            except ValueError:
+                return None
+        return None
+
+    saved = _epoch(data.get("saved_at"))
+    if saved is None or (now - saved) > _PROPAGATION_CACHE_FRESH_S:
+        return [], "stale"
+
+    out = []
+    for n in data.get("nodes") or []:
+        if not isinstance(n, dict):
+            continue
+        if "PROPAGATION" not in str(n.get("service_type") or "").upper():
+            continue
+        ts = _epoch(n.get("last_seen"))
+        if ts is None:
+            continue
+        age = now - ts
+        if age < -_PROPAGATION_FUTURE_SLOP_S:
+            continue                 # forged/skewed future stamp — not evidence
+        if age > _PROPAGATION_FRESH_S:
+            continue
+        out.append((max(age, 0.0),
+                    str(n.get("node_id") or n.get("id") or "?"),
+                    str(n.get("display_name") or n.get("long_name") or "")))
+    out.sort(key=lambda r: r[0])
+    return out, "ok"
+
+
+def probe_lxmf_propagation_unused(
+    *,
+    home: Optional[str] = None,
+    now: Optional[float] = None,
+    configured_fn=None,
+    candidates_fn=None,
+    state_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """LXMF propagation nodes are reachable and this gateway is configured
+    to use none — store-and-forward to offline peers is available and unused.
+
+    The shape-C rule (row 5's lesson): a capability nobody adopted cannot be
+    detected from the ABSENCE of configuration, only from POSITIVE evidence
+    that the capability is there. Here that evidence is the gateway's own
+    node cache — it heard the announces and filed them.
+
+    Honest failure modes, every one of which prefers silence:
+      - no operator resolvable → indeterminate (cannot read either side).
+      - gateway.json ABSENT → INERT: no gateway organ on this box. (An
+        UNREADABLE gateway.json is indeterminate — intent unknown, never
+        read as "unconfigured", which would invent an alarm.)
+      - propagation_node already set → INERT + streak reset. Adopted; a
+        future shape-A leg could check the configured one still answers, but
+        one fault keeps one owner.
+      - node cache ABSENT → INERT (the gateway never ran here).
+      - node cache UNREADABLE or STALE → indeterminate, streak HELD: stale
+        bytes cannot testify about the present, and unobservable is not
+        "nothing available" (honest_failure_modes #2).
+      - zero FRESH propagation nodes → explicit healthy-ish observation:
+        nothing to adopt, reset the streak. Absence of an announce is not a
+        fault — it is the ordinary state of a mesh with no propagation node.
+      - 2-tick debounce so one torn cache read cannot page.
+
+    ``degraded``, escalation-only by seed policy: an unadopted capability is
+    lost coverage, not an outage, and has by construction been that way a
+    long time already (row 5 + row 9 precedent).
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    sp = state_path or DEFAULT_LXMF_PROPAGATION_DEBOUNCE_PATH
+
+    if home is None:
+        home = _operator_home()
+    if not home:
+        note_disposition("lxmf_propagation_unused", "indeterminate",
+                         reason="operator unresolvable — cannot read either side")
+        return None
+
+    if configured_fn is not None:
+        configured, cfg_state = configured_fn()
+    else:
+        configured, cfg_state = _read_configured_propagation_node(home)
+    if cfg_state == "absent":
+        note_disposition("lxmf_propagation_unused", "inert",
+                         reason="no gateway.json — box runs no gateway organ")
+        _save_parity_streak(sp, 0)
+        return None
+    if cfg_state != "ok":
+        note_disposition("lxmf_propagation_unused", "indeterminate",
+                         reason="gateway.json unreadable — intent unknown")
+        return None
+    if configured:
+        note_disposition("lxmf_propagation_unused", "inert",
+                         reason="propagation_node configured — capability adopted")
+        _save_parity_streak(sp, 0)
+        return None
+
+    if candidates_fn is not None:
+        cands, cache_state = candidates_fn()
+    else:
+        cands, cache_state = _read_fresh_propagation_nodes(home, now)
+    if cache_state == "absent":
+        note_disposition("lxmf_propagation_unused", "inert",
+                         reason="no RNS node cache — gateway never ran here")
+        _save_parity_streak(sp, 0)
+        return None
+    if cache_state in ("unreadable", "stale"):
+        note_disposition(
+            "lxmf_propagation_unused", "indeterminate",
+            reason=f"node cache {cache_state} — cannot speak for the present; streak held")
+        return None  # HOLD — stale/unreadable is not "nothing available"
+    if not cands:
+        note_disposition("lxmf_propagation_unused", "clean",
+                         reason="no propagation node heard recently — nothing to adopt")
+        _save_parity_streak(sp, 0)
+        return None
+
+    streak = _load_parity_streak(sp) + 1
+    _save_parity_streak(sp, streak)
+    if streak < debounce_ticks:
+        note_disposition("lxmf_propagation_unused", "indeterminate",
+                         reason="unused capability seen; held by debounce")
+        return None
+
+    age_h, node_id, name = cands[0]
+    return Signal(
+        cls="lxmf_propagation_unused",
+        subject="propagation-unconfigured",   # stable: node sets rotate
+        severity="degraded",
+        detail=(
+            f"{len(cands)} LXMF propagation node(s) heard within "
+            f"{int(_PROPAGATION_FRESH_S / 3600)}h (nearest {node_id}"
+            + (f" '{name}'" if name else "")
+            + f", {age_h / 60:.0f} min ago) but gateway.json "
+            "rns.propagation_node is empty — this gateway stores and forwards "
+            "nothing. LXMF to an OFFLINE peer fails outright today; with a "
+            "propagation node it is held until the peer returns. NOTE this is "
+            "a TRUST decision, not a mechanical fix: a propagation node sees "
+            "stored-traffic metadata, so prefer standing one up on our own "
+            "rnsd over adopting a stranger's. Adopting edits gateway.json and "
+            "needs a meshforge-gateway restart — never mid-soak."
+        ),
+        extra={
+            "candidates": len(cands),
+            "nearest": node_id,
+            "nearest_age_min": round(age_h / 60.0, 1),
+            "freshness_window_h": _PROPAGATION_FRESH_S / 3600.0,
+            "debounce_streak": streak,
+        },
     )
 
 

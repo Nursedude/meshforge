@@ -70,6 +70,7 @@ from utils.watchdog_probes import (
     probe_gateway_delivery_degraded,
     probe_gateway_dup_degraded,
     probe_gateway_dual_homed_exposure,
+    probe_lxmf_propagation_unused,
     probe_fd_exhaustion,
     probe_history_write_failure,
     probe_inherited_app_drift,
@@ -577,6 +578,17 @@ def run_all_probes(
     # moves before any duplicate occurs. Fires only on a NEWLY-observed
     # dual-homed recipient; same manager-box/indeterminate guards as above.
     sig = probe_gateway_dual_homed_exposure(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # LXMF propagation available but unadopted (2026-07-20) — the second
+    # shape-C probe: positive evidence that a capability is THERE and nobody
+    # took it up. The gateway already hears propagation-node announces and
+    # files them in its node cache; this reads that cache against
+    # gateway.json's empty rns.propagation_node. Self-guards INERT on a box
+    # with no gateway.json and no node cache, so it costs nothing off the
+    # gateway boxes; a stale cache HOLDS rather than claiming availability.
+    sig = probe_lxmf_propagation_unused()
     if sig is not None:
         signals.append(sig)
 
