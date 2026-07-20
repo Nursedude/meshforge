@@ -383,3 +383,45 @@ itself, never recurred) and the two `rns_stray_env_drift` fires above.
 `rns_version_drift` remains the DELIBERATE canary marker. No wedge, no RPC
 failure, no delivery regression in the window — the FORK looks good; it is the
 INSTALL PATH that is unsafe.
+
+### BLOCKER FIXED 2026-07-19 — lxmf `1.0.1+mf.1`, validated install path
+
+`Nursedude/lxmf@meshforge-101` now pins `install_requires=["rns==1.3.8+mf.0"]`
+(was upstream's `rns>=1.3.5`); version bumped `1.0.1+mf.0` → **`1.0.1+mf.1`**.
+Fork SHAs for the roll:
+
+```
+rns  @ git+https://github.com/Nursedude/reticulum.git@6dadb335b22e83a5aef19cba5cef6996e400a540   # 1.3.8+mf.0
+lxmf @ git+https://github.com/Nursedude/lxmf.git@6981130                                          # 1.0.1+mf.1
+```
+
+**Measured in a disposable venv, not asserted:**
+
+| scenario | result |
+|---|---|
+| `pip install <lxmf-fork>` ALONE | **exit 1, fails loud** — "No matching distribution found for rns==1.3.8+mf.0"; nothing installed |
+| BOTH forks in ONE resolution (the roll path) | **exit 0** — `lxmf 1.0.1+mf.1` + `rns 1.3.8+mf.0`, no stock |
+| explicit `pip install --upgrade rns` afterwards | **still clobbers** → rns 1.3.9; pip only WARNS (exit 0). But `pip check` now reports it |
+
+So the accidental path is closed and the deliberate one is now detectable —
+that is the honest scope of the fix, not total prevention. PyPI's rns list ends
+at **1.3.9**, confirming the stock version `>=1.3.5` would have taken.
+
+**Roll install command (per box, per env):**
+
+```
+pip install --no-deps \
+  "rns @ git+https://github.com/Nursedude/reticulum.git@6dadb335b22e83a5aef19cba5cef6996e400a540" \
+  "lxmf @ git+https://github.com/Nursedude/lxmf.git@6981130"
+```
+
+`--no-deps` keeps `rns==...` from being re-resolved at all; install the forks'
+real deps (cryptography, pyserial) separately if a target env lacks them.
+
+**Still to do before the fleet roll:** update the moc3 canary to `1.0.1+mf.1`
+across ALL its envs (venv / system-local / user-site / user-pipx:nomadnet) and
+re-verify coherence; then per-box roll; then ff the `meshforge` branches and
+bump the SSOT (`requirements/rns.txt` MF-FORK-PIN + `rns_version_check`).
+Consider wiring `pip check` into `probe_rns_env_coherence` — it compares across
+envs today but never an env against its own declared requirements, which is
+exactly the deliberate-upgrade gap above.
