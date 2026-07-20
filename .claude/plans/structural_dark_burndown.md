@@ -229,6 +229,109 @@ split-brain and idempotency surface to suppress a fault not yet observed to
 reach a human. **Decide build-vs-accept first; do not open with a design.**
 Full inputs: `.claude/research/cross_gateway_dup_design_inputs_2026_07_19.md`.
 
+## Row 2 — DESIGN + CALL-SITE AUDIT DONE 2026-07-19 (execute next session)
+
+Roll constraint is **CLEARED** (RNS 1.3.8 fleet-wide 2026-07-19). Deliberately
+NOT executed the same night as the roll: new gateway code on a 2-hour-old RNS
+substrate would confound attribution if delivery wobbled. Everything below is
+read-only analysis, so the next session opens on execution, not re-derivation.
+
+### The defect, precisely
+
+`BridgeSendMixin.send_to_rns` (`src/gateway/bridge_send_mixin.py:24`) collapses
+**five** distinct outcomes into one bare `False`:
+
+| # | return point | true meaning | classification |
+|---|---|---|---|
+| 1 | `not self._connected_rns` | RNS never came up | infrastructure |
+| 2 | `self._lxmf_source is None` | partial RNS init | infrastructure |
+| 3 | `not self.can_send_to(...)` | circuit open (deliberate breaker) | benign |
+| 4 | `not RNS.Transport.has_path(...)` | no path — unannounced/ephemeral peer | **benign** |
+| 5 | `except Exception` | a real send crash | **send_error — the one that matters** |
+| — | broadcast with no destination | unsupported by config | benign/config |
+
+The consumer that cares is the mesh oracle's RNS leg
+(`src/gateway/bridge_rns_events_mixin.py:53`), which does
+`bool(self.send_to_rns(...))`. A genuine RNS exception therefore lands in the
+oracle's *benign* bucket, so `oracle_delivery_degraded` under-counts real
+failures. `benign_rns_ambiguous` (shipped 2026-07-19) SIZES that blind spot
+(~1% of oracle records) but cannot close it.
+
+### The cure — a bool-compatible result (drop-in safe, VERIFIED)
+
+Return a small result object implementing `__bool__` so truthiness is
+unchanged, plus a `.reason` the oracle can classify on:
+
+```python
+@dataclass(frozen=True)
+class RnsSendResult:
+    ok: bool
+    reason: str = ""     # "" | no_path | circuit_open | not_connected
+                         # | no_lxmf_source | broadcast_unsupported | send_error
+    detail: str = ""     # exception text for send_error, else ""
+    def __bool__(self) -> bool: return self.ok
+```
+
+**Every bridge-layer call site was audited tonight — all are bool-context or an
+explicit `bool()`, so the change is ADDITIVE, not a breaking contract change:**
+
+| site | shape | safe? |
+|---|---|---|
+| `_rns_bridge_xform.py:269` | `if dest_bytes and self.send_to_rns(...)` | ✅ bool ctx |
+| `_rns_bridge_xform.py:325` | `if self.send_to_rns(...)` | ✅ bool ctx |
+| `_rns_bridge_xform.py:1173` | `ok = ...` then `if ok:` | ✅ bool ctx |
+| `bridge_ack_mixin.py:192` | `return bool(...)` | ✅ explicit |
+| `bridge_send_mixin.py:374` | `"direct" if ... else None` | ✅ bool ctx |
+| `meshcore_bridge_mixin.py:106` | `sum(1 for dh in dests if ...)` | ✅ truthiness |
+| `bridge_rns_events_mixin.py:53` | `return bool(...)` | ✅ — **and this is the site to CHANGE** |
+| `commands/gateway.py:453` | `success = ...` then `if success:` | ✅ bool ctx |
+
+⚠️ `commands/messaging.py:339` is NOT a bridge call — it targets the
+**commands-layer** `send_to_rns` (`src/commands/gateway.py:430`), which already
+returns a rich `CommandResult`. Do not confuse the two layers.
+
+### MeshAnchor: do NOT port in the same session (evidence-based)
+
+MA's `bridge_send_mixin` is DIVERGED (untracked tier), and the divergence is
+material — measured tonight:
+
+- `bounded_call`: **MF 11 occurrences, MA 0**; `_on_wedge`: **MF 17, MA 0** —
+  MA's copy has none of the #57/#74 wedge-bounding machinery, so its return
+  points are not the same set.
+- **MA has no `bridge_rns_events_mixin.py` at all** — no oracle leg, therefore
+  **no consumer that could use the richer result**.
+
+Porting would be speculative churn on diverged code with zero payoff. Correct
+move: land in MF, and RECORD the divergence deliberately in the twin map rather
+than leaving it to look like drift. Revisit only if MA grows an oracle.
+
+### Execution sequence (next session)
+
+1. Add `RnsSendResult` + return it from all 6 `send_to_rns` return points.
+   Leave `_queue_send_rns` alone (separate contract, queue classifies by raise).
+2. Red-test-first: a test asserting the oracle classifies a raised send as
+   `send_error` and a no-path as benign — it must FAIL before step 3.
+3. Change the oracle leg (`bridge_rns_events_mixin.py:53`) to classify on
+   `.reason` instead of `bool()`.
+4. Verify `benign_rns_ambiguous` shrinks toward 0 in the probe's accounting and
+   the blended bucket splits correctly.
+5. Suites + lint + `parity_check` + CI. **Re-run pytest AFTER the final edit**
+   (standing burn-down warning).
+6. Deploy: `fleet_pull` then **restart `meshforge-gateway` on moc** (the only
+   gateway box) — code on disk is not code running (#79).
+7. Live-verify at the consumer of record: watch the oracle audit log for a real
+   RNS send and confirm the new reason field appears; `honest_status.sh` green.
+
+**Rollback**: single-commit revert + gateway restart. The result type is
+additive, so a revert cannot strand a caller.
+
+### Narrowing text when it lands
+
+Row 2 becomes CLOSED for the RNS leg; the residual note should then read that
+`oracle_delivery_degraded`'s failure set covers all four transports, with the
+mesh leg's own confirmability still bounded by #74 T2 step 4 (row 9's
+dependency), not by this row.
+
 ## Sequencing rules
 
 - Anything deploying into `meshforge-gateway` (#2, #8) waits for the RNS
