@@ -11,6 +11,24 @@
 
 ## Closed / narrowed
 
+- **oracle_rns_send_blind** — **RNS LEG CLOSED 2026-07-20 (row 2)**, executing the
+  design below verbatim. `send_to_rns` returns `RnsSendResult` (frozen dataclass,
+  `__bool__` → every one of the 8 audited truthiness call sites unchanged) with a
+  `.reason` ∈ {no_path, circuit_open, not_connected, no_lxmf_source,
+  broadcast_unsupported, send_error} + `.detail`. The oracle's RNS leg
+  (`bridge_rns_events_mixin.py:53`) now returns the result instead of `bool()`,
+  and `MeshOracleResponder` records the reason via a duck-typed `_send_reason()`
+  (the oracle layer must not import the gateway; a plain bool still yields no
+  reason, so the Meshtastic leg is byte-for-byte unchanged in behavior).
+  **Companion fix the design missed**: `benign_rns_ambiguous` counted ALL benign
+  RNS records, so it could never shrink as reasons landed — it now counts only
+  reason-LESS ones, making it a true measure of what we cannot tell apart.
+  Red-test-first honored (2 failed → cure → green). Suites 8941 passed / lint 0 /
+  parity in sync. Deliberate non-port to MA (diverged mixin, no oracle consumer)
+  recorded in the twin map. Eval: `oracle-rns-send-reason-not-a-bare-bool`.
+  RESIDUAL: the mesh leg's confirmability is still bounded by ACK consumption
+  (#74 T2 step 4), not by this row.
+
 - **oracle_rns_send_blind** — NARROWED 2026-07-19 (row 2), deployable half only.
   Premise refined first: the row said `send_to_rns` "swallows" exceptions, but
   the `except` block DOES leave witnesses (`stats['errors']` +
@@ -151,7 +169,7 @@
 | # | Row | Cure shape | Tier | Size | Constraint |
 |---|-----|-----------|------|------|------------|
 | 1 | ~~`user_unit_inactivity_blind`~~ | CLOSED 2026-07-19 — see above | — | — | NEXT DEFAULT PICK is now row 2 (post-roll) or row 5 |
-| 2 | ~~`oracle_rns_send_blind`~~ | NARROWED 2026-07-19 — blind spot MEASURED (~1% of oracle records) + `benign_rns_ambiguous` shipped so its size is continuously visible. RESIDUAL = the bare-bool `send_to_rns` fix, still gateway code | **Opus** | small, post-roll | STILL waits on the RNS 1.3.8 roll; do not land gateway code mid-soak (wedge watchdog `os._exit(2)` restarts activate it) |
+| 2 | ~~`oracle_rns_send_blind`~~ | **CLOSED (RNS leg) 2026-07-20** — `RnsSendResult` shipped; see above. Residual = mesh-leg ACK confirmability (#74 T2 step 4) | — | — | NEXT DEFAULT PICK is row 5 (aredn declaration for kiai, survey-gated) or row 8's `dual_homed_recipients` surface |
 | 3 | ~~`dep_version_drift_strays_blind`~~ | ACCEPTED-PERMANENT 2026-07-19 — see above; scope is deliberate, revisit only on a second installer | — | — | — |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |

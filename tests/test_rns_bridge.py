@@ -546,18 +546,21 @@ class TestSendToRNS:
 
     def test_returns_false_not_connected(self, bridge):
         bridge._connected_rns = False
-        assert bridge.send_to_rns("msg") is False
+        res = bridge.send_to_rns("msg")
+        assert bool(res) is False and res.reason == "not_connected"
 
     def test_returns_false_no_lxmf_source(self, bridge):
         bridge._connected_rns = True
         bridge._lxmf_source = None
-        assert bridge.send_to_rns("msg") is False
+        res = bridge.send_to_rns("msg")
+        assert bool(res) is False and res.reason == "no_lxmf_source"
 
     def test_broadcast_returns_false(self, bridge):
         bridge._connected_rns = True
         bridge._lxmf_source = MagicMock()
         # No destination hash -> broadcast
-        assert bridge.send_to_rns("broadcast msg", None) is False
+        res = bridge.send_to_rns("broadcast msg", None)
+        assert bool(res) is False and res.reason == "broadcast_unsupported"
 
 
 # ---------------------------------------------------------------------------
@@ -2883,7 +2886,7 @@ class TestSynAckCallbackSymmetry:
         self._prime_bridge_for_send(bridge)
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
             result = bridge.send_to_rns("hello", b"\xab" * 16)
-        assert result is True
+        assert bool(result) is True and result.reason == ""
         assert fake_lxm.register_delivery_callback.called
         assert fake_lxm.register_failed_callback.called
 
@@ -2981,7 +2984,7 @@ class TestSynAckCallbackSymmetry:
         self._prime_bridge_for_send(bridge)
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
             result = bridge.send_to_rns("hello", b"\xab" * 16)
-        assert result is True
+        assert bool(result) is True
 
 
 # ---------------------------------------------------------------------------
@@ -5349,7 +5352,7 @@ class TestCircuitBreakerWiringIssue74:
         bridge._circuit_breaker.can_send.return_value = False
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
             result = bridge.send_to_rns("hello", b"\xab" * 16)
-        assert result is False
+        assert bool(result) is False and result.reason == "circuit_open"
         fake_rns.Transport.has_path.assert_not_called()
         fake_rns.Transport.request_path.assert_not_called()
 
@@ -5358,7 +5361,7 @@ class TestCircuitBreakerWiringIssue74:
         fake_rns, fake_lxmf = self._fake_rns_lxmf_modules()
         self._prime(bridge)
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
-            assert bridge.send_to_rns("hello", b"\xab" * 16) is True
+            assert bool(bridge.send_to_rns("hello", b"\xab" * 16)) is True
         bridge._circuit_breaker.record_success.assert_called_once_with(
             (b"\xab" * 16).hex()[:8]
         )
@@ -5369,7 +5372,10 @@ class TestCircuitBreakerWiringIssue74:
         fake_lxmf.LXMessage.side_effect = RuntimeError("ctor boom")
         self._prime(bridge)
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
-            assert bridge.send_to_rns("hello", b"\xab" * 16) is False
+            res = bridge.send_to_rns("hello", b"\xab" * 16)
+        # row 2: a real crash is now NAMED send_error, not a bare False
+        assert bool(res) is False and res.reason == "send_error"
+        assert "ctor boom" in res.detail
         dest, err = bridge._circuit_breaker.record_failure.call_args[0]
         assert dest == (b"\xab" * 16).hex()[:8]
         assert "ctor boom" in err
@@ -5382,7 +5388,8 @@ class TestCircuitBreakerWiringIssue74:
         # Short-circuit the 50-iteration path-wait loop.
         bridge._stop_event.set()
         with patch.dict(sys.modules, {"RNS": fake_rns, "LXMF": fake_lxmf}):
-            assert bridge.send_to_rns("hello", b"\xab" * 16) is False
+            res = bridge.send_to_rns("hello", b"\xab" * 16)
+        assert bool(res) is False and res.reason == "no_path"
         bridge._stop_event.clear()
         bridge._circuit_breaker.record_failure.assert_called_once_with(
             (b"\xab" * 16).hex()[:8], "no path"
@@ -5479,7 +5486,7 @@ class TestTripOpenFailureVisibleIssue74:
             with caplog.at_level(logging.ERROR):
                 result = bridge.send_to_rns("hello", b"\xab" * 16)
 
-        assert result is False
+        assert bool(result) is False
         assert any(
             "trip_open failed" in r.getMessage() for r in caplog.records
         ), "broken trip_open must be logged, not silently swallowed"

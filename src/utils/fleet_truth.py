@@ -184,14 +184,17 @@ def classify_block(
 # blind spot is a deliberate edit here (an SSOT), not an inference.
 STRUCTURAL_DARK: List[Dict[str, str]] = [
     {"id": "oracle_rns_send_blind",
-     "detail": "NARROWED 2026-07-19 (row 2): the blind spot is now MEASURED and sized, not "
-               "just named — the probe splits benign_rns_ambiguous out of the blended "
-               "benign bucket, so RNS-leg non-deliveries that could be a no-path OR a "
-               "swallowed exception are counted on their own line (live: 1 of 103 records). "
-               "RESIDUAL: send_to_rns still returns a BARE BOOL that collapses no-path, "
-               "open-circuit and real-exception into one False, so the two cannot be told "
-               "apart at the call site. That fix touches the LIVE RNS send path and is "
-               "deliberately deferred until the 1.3.8 fork roll closes",
+     "detail": "CLOSED for the RNS leg 2026-07-20 (row 2): send_to_rns returns an "
+               "RnsSendResult — bool-compatible, so every truthiness call site is "
+               "unchanged, plus a .reason (no_path | circuit_open | not_connected | "
+               "no_lxmf_source | broadcast_unsupported | send_error) the oracle records "
+               "into its audit log. A real send crash is now filed as send_error instead "
+               "of landing in the benign bucket, so oracle_delivery_degraded no longer "
+               "under-counts real failures, and benign_rns_ambiguous counts only "
+               "reason-LESS non-deliveries — it shrinks as the blind spot closes rather "
+               "than holding steady. RESIDUAL: oracle_delivery_degraded's failure set now "
+               "covers all four transports, but the MESH leg's confirmability is still "
+               "bounded by ACK consumption (#74 T2 step 4), not by this row",
      "ref": "watchdog_probes_gateway_flow.py :: probe_oracle_delivery_degraded"},
     {"id": "cross_gateway_dups_unsuppressed",
      "detail": "ACCEPTED-PERMANENT 2026-07-19 (operator): keep the detector, do NOT build "

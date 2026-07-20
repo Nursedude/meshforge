@@ -48,9 +48,14 @@ class BridgeRnsEventsMixin:
         def _snapshot():
             return read_snapshot(status=fetch_api_status())
 
-        def _send(text: str, dest: str, channel: int) -> bool:
+        def _send(text: str, dest: str, channel: int):
+            # Return the RnsSendResult itself, NOT bool(...) — the responder
+            # classifies on `.reason` so a real send exception is recorded as
+            # send_error instead of falling into the benign bucket
+            # (structural-dark row 2, oracle_rns_send_blind). It is still
+            # bool-compatible, so `delivered` is unchanged.
             try:
-                return bool(self.send_to_rns(text, destination_hash=bytes.fromhex(dest)))
+                return self.send_to_rns(text, destination_hash=bytes.fromhex(dest))
             except Exception as e:
                 logger.debug(f"mesh oracle (rns) send failed: {e}")
                 return False

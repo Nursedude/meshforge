@@ -1058,7 +1058,14 @@ def _read_oracle_window(
         if bucket is None:
             continue
         counts[bucket] += 1
-        if bucket == "benign" and str(rec.get("transport") or "").lower() == "rns":
+        # AMBIGUOUS = a benign-bucket RNS non-delivery with NO stated reason —
+        # the row-2 blind spot proper. Once send_to_rns returns an RnsSendResult
+        # the record names its reason (no_path / circuit_open / ...), which is
+        # benign AND explained, so it must stop counting here or the measure
+        # would never shrink as the blind spot closes.
+        if (bucket == "benign"
+                and str(rec.get("transport") or "").lower() == "rns"
+                and not str(rec.get("reason") or "").strip()):
             counts["benign_rns"] += 1
         total += 1
     return counts, total

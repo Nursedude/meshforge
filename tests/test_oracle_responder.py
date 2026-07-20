@@ -337,3 +337,59 @@ def test_no_reply_can_satisfy_is_query_loop_guard():
     for head in _QUERY_HEADS:
         reply = answer(head, snap)
         assert not is_query(reply), f"reply to {head!r} loops: {reply!r}"
+
+
+# ── structural-dark row 2: a send result that can explain itself ──
+# The RNS leg's send_fn now returns an RnsSendResult (bool-compatible, plus a
+# .reason). A non-delivery WITH a reason must reach the audit record so the
+# oracle-delivery probe can tell a real send_error from a benign no-path
+# instead of blending both into `benign_rns_ambiguous`.
+
+class _Res:
+    """Stand-in for gateway.bridge_send_mixin.RnsSendResult (no gateway import
+    in the oracle layer — the responder duck-types on .reason/.detail)."""
+
+    def __init__(self, ok, reason="", detail=""):
+        self.ok, self.reason, self.detail = ok, reason, detail
+
+    def __bool__(self):
+        return self.ok
+
+
+def _make_res(result):
+    logs = []
+    r = MeshOracleResponder(snapshot_fn=_snap, send_fn=lambda *a: result,
+                            log_fn=logs.append, now_fn=_Clock(),
+                            answer_all=True, transport="rns")
+    return r, logs
+
+
+def test_send_error_reason_reaches_the_audit_record():
+    r, logs = _make_res(_Res(False, "send_error", "rnsd wedged"))
+    assert r.handle("!n", "status")
+    assert logs[-1]["delivered"] is False
+    # must classify as a REAL failure, not the benign bucket
+    assert logs[-1]["reason"].startswith("send_error")
+    assert "rnsd wedged" in logs[-1]["reason"]
+
+
+def test_no_path_reason_is_recorded_and_stays_benign():
+    r, logs = _make_res(_Res(False, "no_path"))
+    assert r.handle("!n", "status")
+    assert logs[-1]["delivered"] is False
+    assert logs[-1]["reason"] == "no_path"       # named, so no longer ambiguous
+    assert not logs[-1]["reason"].startswith("send_error")
+
+
+def test_bare_bool_send_fn_still_records_no_reason():
+    # the Meshtastic leg still returns a plain bool — unchanged behavior
+    r, logs = _make_res(False)
+    assert r.handle("!n", "status")
+    assert logs[-1]["delivered"] is False
+    assert "reason" not in logs[-1]
+
+
+def test_successful_result_records_no_reason():
+    r, logs = _make_res(_Res(True))
+    assert r.handle("!n", "status")
+    assert logs[-1]["delivered"] is True and "reason" not in logs[-1]

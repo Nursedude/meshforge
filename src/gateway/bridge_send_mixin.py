@@ -11,11 +11,36 @@ Provided methods: ``send_to_rns``, ``_queue_send_rns``,
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Dict, Optional
 
 from gateway.bounded_rpc import bounded_call, default_on_wedge
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class RnsSendResult:
+    """Outcome of :meth:`BridgeSendMixin.send_to_rns` — a bool that can explain
+    itself (structural-dark row 2, ``oracle_rns_send_blind``).
+
+    The old bare ``bool`` collapsed five distinct outcomes into one ``False``, so
+    a real send exception was indistinguishable from a benign no-path at the
+    call site and landed in the mesh oracle's *benign* bucket — under-counting
+    real failures (honest_failure_modes #1: a degraded state mapped to a
+    valid-looking value). ``__bool__`` keeps every existing truthiness call site
+    working unchanged; ``reason`` is the new information.
+    """
+
+    ok: bool
+    #: "" (success) | no_path | circuit_open | not_connected | no_lxmf_source
+    #: | broadcast_unsupported | send_error
+    reason: str = ""
+    #: exception text for ``send_error``; "" otherwise
+    detail: str = ""
+
+    def __bool__(self) -> bool:
+        return self.ok
 
 
 class BridgeSendMixin:
@@ -27,7 +52,7 @@ class BridgeSendMixin:
         destination_hash: bytes = None,
         title: str = None,
         fields: dict = None,
-    ) -> bool:
+    ) -> RnsSendResult:
         """Send a message to RNS network via LXMF.
 
         Optional ``title`` and ``fields`` let the caller carry structured
@@ -35,14 +60,17 @@ class BridgeSendMixin:
         Meshtastic node's long_name + full id). When omitted, falls back
         to the legacy gateway-branded title with no extra fields — keeps
         the persistent-queue retry call site behavior unchanged.
+
+        Returns an :class:`RnsSendResult` — truthy exactly where the old bare
+        ``bool`` was truthy, plus a ``reason`` the caller can classify on.
         """
         if not self._connected_rns:
             logger.warning("Not connected to RNS")
-            return False
+            return RnsSendResult(False, "not_connected")
 
         if self._lxmf_source is None:
             logger.warning("LXMF source not initialized (partial RNS init)")
-            return False
+            return RnsSendResult(False, "no_lxmf_source")
 
         try:
             import RNS
@@ -61,7 +89,7 @@ class BridgeSendMixin:
                         f"Send to {hash_short} blocked: circuit open "
                         f"(recent wedge/failures; retry after recovery window)"
                     )
-                    return False
+                    return RnsSendResult(False, "circuit_open")
                 # On-wedge composite: trip the circuit breaker for this
                 # destination THEN run the default publish-+-counter hook.
                 # The watchdog calls `os._exit(2)` after we return, so the
@@ -109,7 +137,7 @@ class BridgeSendMixin:
                     # OPEN transition so repeated no-path sends stop
                     # hammering path requests (Issue #74).
                     self.record_send_failure(hash_short, "no path")
-                    return False
+                    return RnsSendResult(False, "no_path")
 
                 dest_identity = bounded_call("rnsd.identity_recall",
                                              RNS.Identity.recall,
@@ -131,7 +159,7 @@ class BridgeSendMixin:
                     "in gateway config to route broadcasts to one (string) or "
                     "many (list) LXMF peer(s)"
                 )
-                return False
+                return RnsSendResult(False, "broadcast_unsupported")
 
             lxm = bounded_call(
                 "rnsd.lxmessage_ctor",
@@ -158,7 +186,7 @@ class BridgeSendMixin:
                          timeout_s=15.0,
                          on_wedge=_on_wedge)
             self.record_send_success(hash_short)
-            return True
+            return RnsSendResult(True)
 
         except Exception as e:
             logger.error(f"Failed to send to RNS: {e}")
@@ -168,7 +196,7 @@ class BridgeSendMixin:
                 self.record_send_failure(
                     destination_hash.hex()[:8], str(e)
                 )
-            return False
+            return RnsSendResult(False, "send_error", str(e))
 
     def _queue_send_rns(self, payload: Dict) -> bool:
         """Send handler for persistent queue - RNS destination."""

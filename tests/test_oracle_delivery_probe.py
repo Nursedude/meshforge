@@ -323,6 +323,28 @@ class TestRnsAmbiguousBenignSplit:
         assert sig.extra["confirmable"] == 10          # 4 delivered + 6 send_error
         assert sig.extra["rate"] == pytest.approx(0.4, abs=0.01)
 
+    def test_named_benign_reason_is_no_longer_ambiguous(self, tmp_path):
+        """Row 2's cure: send_to_rns now returns an RnsSendResult, so a benign
+        RNS non-delivery arrives NAMED (no_path / circuit_open). It stays out of
+        the failure set, but it is explained — so the ambiguity measure must
+        shrink, not hold steady, as the blind spot closes."""
+        sig = self._fire(tmp_path,
+                         [_rec(False, reason="no_path", transport="rns")
+                          for _ in range(3)]
+                         + [_rec(False, reason="circuit_open", transport="rns")
+                            for _ in range(2)])
+        assert sig.extra["benign_nondeliveries_excluded"] == 5  # still excluded
+        assert sig.extra["benign_rns_ambiguous"] == 0           # but not blind
+
+    def test_reasonless_rns_benign_still_counts_as_ambiguous(self, tmp_path):
+        """The measure must keep working for any leg still returning a bare
+        bool — a reason-less non-delivery is exactly what we cannot tell apart
+        (absence of a reason is not evidence of benignity)."""
+        sig = self._fire(tmp_path,
+                         [_rec(False, reason="no_path", transport="rns")]
+                         + [_rec(False, transport="rns") for _ in range(2)])
+        assert sig.extra["benign_rns_ambiguous"] == 2
+
     def test_declines_are_not_counted_as_ambiguous(self, tmp_path):
         """A cooldown decline on the RNS leg is a correct refusal, not an
         unknown — it has a reason, so it is never blind-spot volume."""

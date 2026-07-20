@@ -62,6 +62,29 @@ def _facts_stale(snap) -> bool:
     return bool(getattr(snap, "wd_stale", False) or getattr(snap, "mini_stale", False))
 
 
+def _send_reason(result, delivered: bool) -> Optional[str]:
+    """Extract the non-delivery reason a rich send result carries, or None.
+
+    Structural-dark row 2: the RNS leg returns an ``RnsSendResult`` (bool-
+    compatible, plus ``.reason``/``.detail``); the Meshtastic leg still returns a
+    plain ``bool``. Duck-typed on purpose — the oracle layer must not import the
+    gateway. A plain bool yields None, so the record shape is unchanged there and
+    a reason-less non-delivery still means "we genuinely cannot tell" rather than
+    being silently relabelled (honest_failure_modes #1).
+    """
+    if delivered:
+        return None
+    reason = getattr(result, "reason", "") or ""
+    if not isinstance(reason, str) or not reason:
+        return None
+    detail = getattr(result, "detail", "") or ""
+    # 'send_error: <detail>' is the wire format the oracle-delivery probe's
+    # classifier already keys on — keep the two in lockstep (checklist #5).
+    if reason == "send_error" and detail:
+        return f"send_error: {detail}"
+    return reason
+
+
 class MeshOracleResponder:
     """Reactive read-only query responder (the oracle's sanctioned I/O edge)."""
 
@@ -156,14 +179,16 @@ class MeshOracleResponder:
         self._last_answer[node] = mono
         self._prune_cooldowns(mono)
         try:
-            delivered = bool(self._send_fn(reply, from_id, channel))
+            result = self._send_fn(reply, from_id, channel)
+            delivered = bool(result)
         except Exception as exc:  # a send must never raise into the bridge
             self._record(from_id, text, intent=_intent_of(text), reply=reply,
                          delivered=False, reason=f"send_error: {exc}",
                          facts_stale=_facts_stale(snap))
             return reply
         self._record(from_id, text, intent=_intent_of(text), reply=reply,
-                     delivered=delivered, facts_stale=_facts_stale(snap))
+                     delivered=delivered, reason=_send_reason(result, delivered),
+                     facts_stale=_facts_stale(snap))
         return reply
 
     def _prune_cooldowns(self, mono: float) -> None:
