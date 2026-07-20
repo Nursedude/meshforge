@@ -359,6 +359,25 @@ def probe_rns_version_drift(
 # fork-pin probe (probe_rns_version_drift). The gap this fills: meshtastic, the
 # lib whose update kept FAILING (PEP 668 / wrong env / a box that missed a roll)
 # and which nothing watched. See feedback_version_env_rigor.
+#
+# SCOPE IS DELIBERATE AND ACCEPTED-PERMANENT (structural-dark row 3, decided
+# 2026-07-19 on a fleet-wide survey — see
+# .claude/research/dep_stray_watch_scope_2026_07_19.md). Stray-copy risk is a
+# property of deps installed by COMPETING TOOLS (pip vs pipx vs apt vs fork
+# pin) into competing consumer positions — meshtastic and rns/lxmf. For deps
+# that ship with the OS, a venv/user-site copy shadowing system-dist is the
+# DESIGNED state, not drift: watching them would either page on benign
+# divergence (moc4's system requests 2.28.1 sits below the core.txt floor while
+# the actual consumer runs a compliant venv copy) or never fire at all against
+# floors reality has long outgrown — noise or false assurance, both worse than
+# an honestly-named blind spot.
+#
+# ⚠️ IF YOU EXTEND THIS TUPLE: two call sites below index it as
+# ``_DEP_VERSION_WATCHED[0]`` (the fragmentation probe watches exactly one
+# package). Adding a second entry WITHOUT fixing them silently watches only the
+# first — the closed-enum/open-consumer class. TestDepWatchedTupleClosedConsumer
+# in tests/test_watchdog_coverage.py fails the moment this grows, and names the
+# sites (honest_failure_modes #7: coverage gates, not memory).
 _DEP_VERSION_WATCHED = ("meshtastic",)
 
 # The floor PARSER and the below-floor TEST are shared with the TUI version

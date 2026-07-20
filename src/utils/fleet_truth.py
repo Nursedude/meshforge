@@ -192,10 +192,14 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "cancelled — surfaced but not paged/fixed",
      "ref": "watchdog_probe_core.py :: gateway_dup_degraded"},
     {"id": "dep_version_drift_strays_blind",
-     "detail": "stray-env watch covers meshtastic (install-fragmentation probe) and "
-               "rns/lxmf (env-coherence probe, closed 2026-07-19); other deps' stray "
-               "system/pipx/user-site copies remain unwatched",
-     "ref": "watchdog_probes_drift.py :: probe_rns_env_coherence"},
+     "detail": "ACCEPTED-PERMANENT 2026-07-19 (row 3, operator decision on a fleet-wide "
+               "survey): stray-env watch covers meshtastic (install-fragmentation) and "
+               "rns/lxmf (env-coherence) — the only deps installed by COMPETING TOOLS. "
+               "Other deps' stray copies stay unwatched BY DESIGN: for OS-shipped libs a "
+               "venv copy shadowing system-dist is the designed state, so watching them "
+               "would page on benign divergence or never fire against outgrown floors. "
+               "Revisit only when a dep gains a second installer",
+     "ref": ".claude/research/dep_stray_watch_scope_2026_07_19.md"},
     {"id": "user_unit_inactivity_blind",
      "detail": "always-on user .service daemons now watched (invocation-marker probe, "
                "closed 2026-07-19: parked-failed, stopped, and user-manager-down modes); "

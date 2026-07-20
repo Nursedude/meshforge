@@ -481,3 +481,47 @@ class TestMqttRootNoLineIndeterminate:
         got = collect_dispositions()["mqtt_root_drift"]
         assert got["disp"] == "indeterminate"
         assert "journal unavailable" in got["reason"]
+
+
+class TestDepWatchedTupleClosedConsumer:
+    """Closed-enum gate for ``_DEP_VERSION_WATCHED`` (honest_failure_modes #7).
+
+    ``probe_dep_install_fragmented`` watches exactly ONE package and reaches it
+    as ``_DEP_VERSION_WATCHED[0]``. That is correct while the tuple is a
+    singleton and silently wrong the moment it is not: a second entry would be
+    floor-checked by ``probe_dep_version_drift`` but invisible to the
+    fragmentation probe — a half-watched dep that reads as watched.
+
+    Structural-dark row 3 ACCEPTED this scope as permanent (2026-07-19), so the
+    tuple is expected to stay a singleton. This test exists for the day someone
+    revisits that: it fails loudly and names the sites to fix, rather than
+    relying on the next author reading the comment.
+    """
+
+    def test_indexed_call_sites_require_a_singleton_tuple(self):
+        import re
+        from utils.watchdog_probes_drift import _DEP_VERSION_WATCHED
+
+        src_path = os.path.join(
+            os.path.dirname(__file__), "..", "src", "utils",
+            "watchdog_probes_drift.py")
+        with open(src_path) as f:
+            lines = f.readlines()
+        indexed = [i + 1 for i, ln in enumerate(lines)
+                   if re.search(r"_DEP_VERSION_WATCHED\[0\]", ln)
+                   and not ln.lstrip().startswith("#")]
+
+        if len(_DEP_VERSION_WATCHED) > 1:
+            assert not indexed, (
+                f"_DEP_VERSION_WATCHED grew to {list(_DEP_VERSION_WATCHED)} but "
+                f"{src_path} still indexes [0] at line(s) {indexed} — those "
+                f"consumers watch ONLY the first package. Make them iterate (or "
+                f"take an explicit package argument) before extending the tuple.")
+        else:
+            # Pin the precondition itself: if the [0] sites are ever refactored
+            # away, this branch stops being load-bearing and the guard above is
+            # what matters. Either state is fine; a silent mismatch is not.
+            assert indexed, (
+                "no _DEP_VERSION_WATCHED[0] call sites found — if the "
+                "single-package coupling was refactored away, delete this test "
+                "and the ⚠️ comment above the tuple so they can't rot apart.")

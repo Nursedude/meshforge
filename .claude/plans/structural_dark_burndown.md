@@ -11,6 +11,27 @@
 
 ## Closed / narrowed
 
+- **dep_version_drift_strays_blind** — **ACCEPTED-PERMANENT 2026-07-19** (row 3;
+  the first row closed by DECISION rather than by code). Operator chose accept
+  over extend, on a fleet-wide survey of every root-readable install of 12 deps
+  across all 8 boxes (run with the probes' own enumeration helpers). Finding:
+  the only deps installed by COMPETING TOOLS (pip/pipx/apt/fork-pin) are
+  meshtastic + rns/lxmf — both already watched. For OS-shipped libs a venv copy
+  shadowing system-dist is the DESIGNED state, so extending would either page
+  on benign divergence (moc4's system `requests` 2.28.1 is below the core.txt
+  floor while the venv consumer runs a compliant 2.34.2 — a signal true about a
+  copy nothing imports and false about the box) or never fire at all against
+  floors reality outgrew. paho/folium arrive via pip into the venv only — no
+  second installer, no mechanism. Shipped with it: the `_DEP_VERSION_WATCHED[0]`
+  closed-consumer gate (`TestDepWatchedTupleClosedConsumer`) — two call sites
+  index [0], so growing the tuple silently half-watches the new dep; the test
+  now fails and names the lines. Benign-and-recorded: kiai meshtastic
+  system-dist 2.7.10 vs user-pipx 2.7.9 (probe silent BY DESIGN — below-floor
+  clause), moc5 pypubsub user-site 4.0.3 shadowing system 4.0.7.
+  Note: `.claude/research/dep_stray_watch_scope_2026_07_19.md`.
+  Eval: `oracle-dep-stray-watch-scope-accepted`.
+  **Revisit ONLY when a dep gains a second installer.**
+
 - **federation_digest_federator_only** → **federation_mapless_box_unwatched**,
   NARROWED 2026-07-19 (row 6, same arc): federation is now watched PER VANTAGE
   — `MINI_DUDEAI_ENABLE_FEDERATION=1` on every MAP-RUNNING box (the source
@@ -63,10 +84,10 @@
 |---|-----|-----------|------|------|------------|
 | 1 | ~~`user_unit_inactivity_blind`~~ | CLOSED 2026-07-19 — see above | — | — | NEXT DEFAULT PICK is now row 2 (post-roll) or row 5 |
 | 2 | `oracle_rns_send_blind` | `send_to_rns` distinguishes no-path from crash; real send errors leave a witness counter and land in the failure set (not the benign bucket) of `oracle_delivery_degraded` | **Opus** | ~half session | gateway-code deploy → wait for RNS-soak close / roll (deliberately deferred out of the mf.5 soak) |
-| 3 | `dep_version_drift_strays_blind` residual | Either extend `_DEP_VERSION_WATCHED` + coherence to other critical deps (paho, folium…) or formally accept-as-permanent with a dated note | **Haiku/fast** sweep; accept-decision is operator's | small | low value — don't spend frontier on it |
+| 3 | ~~`dep_version_drift_strays_blind`~~ | ACCEPTED-PERMANENT 2026-07-19 — see above; scope is deliberate, revisit only on a second installer | — | — | — |
 | 4 | ~~`calibration_drift_not_paging`~~ | REMOVED 2026-07-19 — see above | — | — | — |
 | 5 | `aredn_configured_source_only` | Role-aware expectation: `fleet_roles.yaml` declares which boxes SHOULD run AREDN; probe fires on declared-but-unconfigured (covers the "config wiped" case today's probe can't see) | **Opus** | ~half session | touches role engine both repos (MA role port exists) |
-| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | NEXT DEFAULT PICK is row 3 (cheap) or row 7 |
+| 6 | ~~`federation_digest_federator_only`~~ | CLOSED/NARROWED 2026-07-19 — see above; row renamed `federation_mapless_box_unwatched` | — | — | NEXT DEFAULT PICK is row 7 (rows 2+8 wait on the RNS roll) |
 | 7 | `live_claw_nats_not_wired_to_mini` | Wire `nats_sensor`/`http_json` source kinds into the fleet preset on the brain box; MF021 observation-only invariant applies | **Opus** | moderate | claw NATS reachability from mini's context unverified |
 | 8 | `cross_gateway_dups_unsuppressed` | STEP 6 cross-gateway suppression: distributed coordination (which gateway yields, race windows, idempotency, partition behavior) | **frontier design pass** → Opus impl | full session+ | hardest row; design doc first, never straight to code |
 | 9 | `mesh_rf_ota_leg_unwatched` | RF-side receipt: mesh ACK consumption (#74 T2 step 4) or a second receiver node as OTA witness (reference-node arc fit) | **frontier + operator/field** | multi-session | hardware/field-gated |
