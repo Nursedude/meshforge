@@ -137,6 +137,59 @@ class TestCoverage:
         assert cov["classes"]["role_drift"]["disp"] != "active"
         assert cov["dark"] == 2
 
+    # ── server-vs-fleet code skew (the #79 deploy-restart gap, truth-API skin)
+    def test_class_reported_by_box_is_never_dropped(self):
+        """2026-07-20 live incident: meshforge-map imports SIGNAL_CLASSES at
+        process start, so after a fleet_pull that adds a class, every box
+        reports it while the un-restarted server still holds the old list.
+        Iterating the server's list ALONE silently dropped those classes and
+        still published `total` as if the map were complete. The box's own
+        report must win."""
+        wd = {"installed": True, "ok": True, "signals": [],
+              "coverage": {"role_drift": "clean",
+                           "brand_new_probe": {"disp": "inert",
+                                               "reason": "organ absent here"}}}
+        cov = ft.merge_coverage(wd, ["role_drift"])          # server: 1 class
+        assert "brand_new_probe" in cov["classes"]           # NOT dropped
+        assert cov["classes"]["brand_new_probe"]["disp"] == "inert"
+        assert cov["classes"]["brand_new_probe"]["reason"] == "organ absent here"
+        assert cov["unknown_to_server"] == ["brand_new_probe"]
+        assert cov["total"] == 2                             # counts what rendered
+        assert cov["green"] == 1 and cov["dark"] == 1
+
+    def test_active_signal_for_unknown_class_still_reads_red(self):
+        """The dangerous direction: a FIRING probe the server doesn't know
+        must not vanish into a green-looking map."""
+        wd = {"installed": True, "ok": True,
+              "signals": [{"class": "brand_new_probe", "severity": "degraded",
+                           "subject": "s", "detail": "d"}]}
+        cov = ft.merge_coverage(wd, ["role_drift"])
+        assert cov["classes"]["brand_new_probe"]["disp"] == "active"
+        assert cov["red"] == 1
+        assert cov["unknown_to_server"] == ["brand_new_probe"]
+
+    def test_empty_enum_is_not_reported_as_skew(self):
+        """MeshAnchor passes an EMPTY class list when its blackout-kind import
+        fails (its documented honest-zero fallback). Ungated, every reported
+        class would read 'unknown to server', pin the verdict DARK, and blame a
+        stale deploy — one degraded state wearing another's diagnosis, the very
+        defect this fix removes. You cannot be behind a list you don't have."""
+        wd = {"installed": True, "ok": True, "signals": [],
+              "coverage": {"a": "clean", "b": "inert"}}
+        cov = ft.merge_coverage(wd, [])
+        assert cov["unknown_to_server"] == []
+        assert cov["total"] == 0
+        assert cov["green"] == cov["red"] == cov["dark"] == 0
+
+    def test_no_skew_is_the_silent_steady_state(self):
+        """In-sync server: the key exists but is empty, so consumers can tell
+        'no skew' from 'this build never reported skew'."""
+        wd = {"installed": True, "ok": True, "signals": [],
+              "coverage": {"role_drift": "clean"}}
+        cov = ft.merge_coverage(wd, ["role_drift", "service_inactive"])
+        assert cov["unknown_to_server"] == []
+        assert cov["total"] == 2
+
 
 # ── build_box_truth ──────────────────────────────────────────────────────
 class TestBoxTruth:
@@ -255,6 +308,28 @@ class TestFleetTruth:
         assert t["fleet_state"] == ft.HEALTHY
         assert t["counts"]["healthy"] == 2
         assert t["fanout"]["stale"] is False
+
+    def test_server_class_skew_rolls_up_and_forces_non_green(self):
+        """2026-07-20: a per-box unknown_to_server list is true-but-buried.
+        If any box reports a class this server doesn't know, the server is
+        running older code than the fleet and EVERY coverage map it publishes
+        is partial — so it rolls up top-level and taints the verdict DARK.
+        DARK, not FAILED: nothing out there is broken, we just cannot see all
+        of it from here, and unobservable must never read healthy."""
+        snap = self._healthy_snap("moc")
+        snap["status"]["watchdog"] = {
+            "installed": True, "ok": True, "signals": [],
+            "coverage": {"brand_new_probe": "inert"}}
+        t = ft.build_fleet_truth([snap], now=NOW, signal_classes=["role_drift"],
+                                 noc_host="moc")
+        assert t["server_class_skew"] == {"brand_new_probe": ["moc"]}
+        assert t["fleet_state"] == ft.DARK
+
+    def test_no_skew_leaves_the_verdict_alone(self):
+        snaps = [self._healthy_snap("moc")]
+        t = ft.build_fleet_truth(snaps, now=NOW, signal_classes=[], noc_host="moc")
+        assert t["server_class_skew"] == {}
+        assert t["fleet_state"] == ft.HEALTHY
 
     def test_incomplete_fanout_forces_non_green(self):
         snaps = [self._healthy_snap("moc")]  # 1 answered

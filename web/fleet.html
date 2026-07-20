@@ -438,6 +438,20 @@
                        'no peers are being watched.</span>');
         }
         if (fanout.error) parts.push('<span class="warn">build error: ' + esc(fanout.error) + '</span>');
+        // Server-vs-fleet code skew (2026-07-20). Boxes are reporting signal
+        // classes THIS server's code doesn't know, so every coverage map on
+        // this page is partial. Said out loud rather than left as a quietly
+        // short class list — the whole failure was that 49-of-52 looked
+        // complete for a full day.
+        const skew = doc.server_class_skew || {};
+        const skewNames = Object.keys(skew);
+        if (skewNames.length) {
+            parts.push('<span class="warn">⚠ this NOC server is running OLDER code than the fleet — ' +
+                       esc(skewNames.length) + ' signal class(es) reported by boxes are unknown here (' +
+                       esc(skewNames.slice(0, 4).join(', ')) +
+                       (skewNames.length > 4 ? ', …' : '') +
+                       '). Coverage below is PARTIAL until this service is restarted.</span>');
+        }
         document.getElementById('verdict-detail').innerHTML = parts.join(' ');
 
         const c = doc.counts || {};

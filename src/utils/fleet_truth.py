@@ -359,8 +359,36 @@ def merge_coverage(
                     if isinstance(disp.get("reason"), str):
                         reported_reason[cls] = disp["reason"]
 
+    # Classes the BOX reported that this server's SIGNAL_CLASSES doesn't know.
+    #
+    # 2026-07-20, the #79 deploy-restart gap in its truth-API skin: the server
+    # imports SIGNAL_CLASSES once at process start, so after a `fleet_pull`
+    # that adds a class, every box's watchdog reports it while a long-running
+    # meshforge-map still holds the OLD list. Iterating the server's list alone
+    # SILENTLY DROPPED those classes and still published `total` as though the
+    # map were complete — a stale enum rendered as authoritative coverage
+    # (honest_failure_modes #1). Measured that day: 9 boxes reporting 52
+    # classes rendered as 49, hiding two probes shipped hours earlier, with
+    # nothing anywhere saying the view was partial.
+    #
+    # Cure: the box's own report WINS. Never drop a class someone observed —
+    # render it with its real disposition and name the discrepancy, because a
+    # box knowing classes the server doesn't IS the signal that this server is
+    # running older code than the fleet.
+    # ⚠️ Guarded on a NON-EMPTY enum. An empty ``signal_classes`` is its own
+    # distinct condition — MeshAnchor's documented honest-zero posture, and the
+    # fallback its collector uses when the blackout-kind import FAILS — not
+    # evidence of code skew. You cannot be "behind" a list you do not have.
+    # Ungated, a failed enum import on the twin would render every reported
+    # class as unknown, pin the verdict permanently DARK, and blame it on a
+    # stale deploy: one degraded state wearing another's diagnosis, which is
+    # the exact defect this whole fix exists to remove.
+    unknown_to_server = sorted(
+        (set(reported) | set(active_by_class)) - set(signal_classes)
+    ) if signal_classes else []
+
     green = red = dark = 0
-    for cls in signal_classes:
+    for cls in list(signal_classes) + unknown_to_server:
         if cls in active_by_class:
             sig = active_by_class[cls]
             classes[cls] = {"disp": "active", "severity": sig.get("severity"),
@@ -391,9 +419,14 @@ def merge_coverage(
 
     return {
         "watchdog_observable": watchdog_observable,
-        "total": len(signal_classes),
+        # Counts the classes actually RENDERED, not the server's enum length —
+        # otherwise `total` under-reports the very classes we just recovered.
+        "total": len(signal_classes) + len(unknown_to_server),
         "green": green, "red": red, "dark": dark,
         "classes": classes,
+        # Empty is the healthy steady state; non-empty means THIS server's code
+        # is older than the box's (restart it / check the deploy).
+        "unknown_to_server": unknown_to_server,
     }
 
 
@@ -614,6 +647,24 @@ def build_fleet_truth(
                 all_states.append(c["state"])
     if fanout_stale:
         all_states.append(DARK)  # incomplete fan-out taints the verdict
+
+    # Server-vs-fleet code skew (2026-07-20). Rolled up to the top because a
+    # per-box `unknown_to_server` list is exactly the kind of true-but-buried
+    # detail nobody reads. If ANY box reports a signal class this process
+    # doesn't know, this server is running older code than the fleet — the
+    # #79 deploy-restart gap — and every coverage map it publishes is partial.
+    #
+    # It taints the verdict as DARK rather than FAILED on purpose: nothing is
+    # broken out there, we simply cannot see all of it from here, and
+    # unobservable must never read healthy (honest_failure_modes #2).
+    skew: Dict[str, List[str]] = {}
+    for b in boxes:
+        extra = (b.get("coverage") or {}).get("unknown_to_server") or []
+        for cls in extra:
+            skew.setdefault(cls, []).append(b.get("alias") or "?")
+    if skew:
+        all_states.append(DARK)
+
     fleet_state = worst_of(all_states)
 
     return {
@@ -632,4 +683,8 @@ def build_fleet_truth(
                    "dark": counts.get(DARK, 0)},
         "boxes": boxes,
         "structural_dark": STRUCTURAL_DARK,
+        # {signal_class: [boxes reporting it]} — empty in the steady state.
+        # Non-empty = this NOC server's code is older than the fleet's; its
+        # coverage maps are partial until the serving process is restarted.
+        "server_class_skew": skew,
     }
