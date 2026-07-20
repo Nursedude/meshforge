@@ -68,6 +68,7 @@ from utils.watchdog_probes import (
     probe_delivery_write_canary,
     probe_gateway_delivery_degraded,
     probe_gateway_dup_degraded,
+    probe_gateway_dual_homed_exposure,
     probe_fd_exhaustion,
     probe_history_write_failure,
     probe_inherited_app_drift,
@@ -545,6 +546,16 @@ def run_all_probes(
     # own <2-gateway gate means a thin-coverage view never reads as a healthy
     # "0 dups" (honest_failure_modes #2). 2-tick debounce.
     sig = probe_gateway_dup_degraded(port=http_port)
+    if sig is not None:
+        signals.append(sig)
+
+    # Dual-homed recipients (2026-07-19) — the LEADING indicator beside that
+    # outcome detector. Row 8 accepted the duplicate residual on cost
+    # asymmetry, not on dups being rare, so the fleet tracks the PRECONDITION
+    # (a recipient reachable from >1 gateway) which is always countable and
+    # moves before any duplicate occurs. Fires only on a NEWLY-observed
+    # dual-homed recipient; same manager-box/indeterminate guards as above.
+    sig = probe_gateway_dual_homed_exposure(port=http_port)
     if sig is not None:
         signals.append(sig)
 

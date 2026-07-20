@@ -641,6 +641,151 @@ def probe_gateway_dup_degraded(
 # Re-export the moved surface so `from utils.watchdog_probes_gateway import
 # <name>` keeps working; the split is API-preserving.
 # ─────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────
+# Dual-homed recipients — the LEADING indicator behind the row-8 accept
+#
+# Row 8 (cross-gateway duplicate suppression) was ACCEPTED-PERMANENT
+# 2026-07-19 on cost asymmetry: a duplicate is redundancy, a yield-protocol
+# bug is silence, and emergency-comms infrastructure must fail toward
+# redundancy. What that accept does NOT claim is that duplicates are rare
+# forever — three human recipients were already dual-homed on the day it was
+# accepted, so the precondition is live and the rate is traffic-dependent.
+#
+# So we stopped instrumenting only the OUTCOME (a duplicate happened: rare,
+# bursty, and on the mesh leg unobservable) and added the CONDITION THAT
+# PERMITS IT (a recipient reachable from >1 gateway). The condition moves
+# first and is always countable, which turns "will time change this?" from a
+# wait into a number.
+#
+# Fires on a NEWLY-observed dual-homed recipient, never on the count: the
+# count churns as the rollup window rolls, whereas "a recipient we have never
+# seen dual-homed before now is" is a real change in fleet exposure. Once
+# known, a recipient stays known, so this cannot re-fire on churn.
+# ─────────────────────────────────────────────────────────────────────
+
+DEFAULT_DUAL_HOMED_STATE_PATH = "/var/lib/meshforge/gateway_dual_homed_state.json"
+
+
+def _load_known_dual_homed(state_path: str) -> set:
+    """Recipients already known to be dual-homed. Any error → empty set.
+
+    An unreadable state file means we cannot tell new from known, so the next
+    tick re-announces what it sees. That is noisy-but-honest; the alternative
+    (treating unreadable as "everything known") would silently swallow the
+    first real exposure growth after a disk hiccup.
+    """
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            known = json.load(fh).get("known")
+        return {str(h) for h in known} if isinstance(known, list) else set()
+    except (OSError, ValueError, TypeError):
+        return set()
+
+
+def _save_known_dual_homed(state_path: str, known: set) -> None:
+    """Persist the known set (atomic-rename, never raises)."""
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"known": sorted(known)}, fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError:
+        logger.warning("watchdog: dual-homed state write failed at %s", state_path)
+
+
+def probe_gateway_dual_homed_exposure(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 5000,
+    timeout_s: float = 3.0,
+    state_path: Optional[str] = None,
+    payload: Optional[dict] = None,
+) -> Optional["Signal"]:
+    """A recipient became reachable from MORE THAN ONE gateway.
+
+    Not a fault — an EXPOSURE change. Dual-homing is the precondition for a
+    cross-gateway duplicate, so this is the leading indicator for a residual
+    the fleet has deliberately accepted rather than coordinated away.
+
+    Self-guards None: rollup unreachable/not-a-dict (indeterminate — HOLD,
+    this box may not be the manager), ``status != ok`` (<2 gateways: you
+    cannot observe dual-homing with one vantage), stale rollup, the field
+    ABSENT (an un-upgraded JOIN is indeterminate, never a forged zero —
+    honest_failure_modes #2/#4), and no NEW recipient since last tick.
+
+    ⚠️ Derived from the CONFIRMED set, so it inherits that blind spot: a mesh
+    recipient never confirms and so never appears. This measures exposure
+    within the CONFIRMABLE population; extending it to attempted/routing state
+    is gateway-side work and remains the residual.
+    """
+    sp = state_path or DEFAULT_DUAL_HOMED_STATE_PATH
+    if payload is None:
+        url = f"http://{host}:{port}/fleet/dups"
+        try:
+            with urlopen(url, timeout=timeout_s) as resp:
+                payload = json.loads(resp.read())
+        except (URLError, socket.timeout, json.JSONDecodeError, OSError,
+                ValueError):
+            note_disposition("gateway_dual_homed_exposure", "indeterminate",
+                             reason="dups rollup unreachable — manager-map "
+                                    "down or not the manager box")
+            return None
+    if not isinstance(payload, dict):
+        note_disposition("gateway_dual_homed_exposure", "indeterminate",
+                         reason="dups payload not a dict")
+        return None
+    if payload.get("status") != "ok":
+        note_disposition("gateway_dual_homed_exposure", "indeterminate",
+                         reason="rollup indeterminate (<2 gateways reachable) "
+                                "— dual-homing needs two vantages to observe")
+        return None
+    fresh = payload.get("freshness")
+    if isinstance(fresh, dict) and fresh.get("stale") is True:
+        note_disposition("gateway_dual_homed_exposure", "indeterminate",
+                         reason="rollup stale (collector cron dead)")
+        return None
+
+    hashes = payload.get("dual_homed_recipient_hashes")
+    if not isinstance(hashes, list):
+        # Pre-2026-07-19 JOIN: the field does not exist. Absent is NOT zero.
+        note_disposition("gateway_dual_homed_exposure", "indeterminate",
+                         reason="rollup predates dual_homed_recipient_hashes "
+                                "— absent is not zero")
+        return None
+
+    current = {str(h) for h in hashes if h}
+    known = _load_known_dual_homed(sp)
+    new = sorted(current - known)
+    if not new:
+        note_disposition(
+            "gateway_dual_homed_exposure", "clean",
+            reason=f"{len(current)} dual-homed recipient(s), none new")
+        return None
+
+    _save_known_dual_homed(sp, known | current)
+    shown = ", ".join(h[:8] for h in new[:6])
+    return Signal(
+        cls="gateway_dual_homed_exposure",
+        subject=new[0][:8] if len(new) == 1 else f"{len(new)} recipients",
+        severity="degraded",
+        detail=(
+            f"{len(new)} recipient(s) newly reachable from >1 gateway "
+            f"({shown}); {len(current)} dual-homed in total. This is the "
+            f"PRECONDITION for a cross-gateway duplicate, not a duplicate: "
+            f"cross-gateway suppression is deliberately NOT built (a dup is "
+            f"redundancy, a yield-protocol bug is silence), so this tracks the "
+            f"exposure that decision accepts. Rising count = more recipients "
+            f"where a duplicate becomes possible; check whether the routing "
+            f"change was intended."
+        ),
+        extra={"new": new, "dual_homed_total": len(current),
+               "confirmable_population_only": True},
+    )
+
+
 from utils.watchdog_probes_gateway_flow import (  # noqa: E402,F401 (back-compat re-export)
     DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH,
     _SYNTH_SOAK_CADENCE_S,

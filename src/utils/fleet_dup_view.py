@@ -201,6 +201,21 @@ def compute_fleet_dup_view(
             bucket = pairs.setdefault((cid, rcp), {})
             bucket[c["host"]] = bucket.get(c["host"], 0) + n
 
+    # ── LEADING INDICATOR: dual-homed recipients (2026-07-19) ────────────
+    # A duplicate needs the same (content_id, recipient) on two gateways; a
+    # recipient reachable from >1 gateway is the PRECONDITION for that ever
+    # happening. Counting it answers "is our exposure growing?" with a number
+    # that moves BEFORE any duplicate occurs, instead of waiting for the
+    # outcome — the outcome being rare, bursty and (on the mesh leg) partly
+    # unobservable. Infra recipients are excluded: two gateways relaying to a
+    # shared peer destination are dual-homed BY DESIGN and always will be.
+    recipient_hosts: Dict[str, set] = {}
+    for (_cid, rcp), per_host in pairs.items():
+        recipient_hosts.setdefault(rcp, set()).update(per_host)
+    dual_homed = sorted(
+        r for r, hosts in recipient_hosts.items()
+        if len(hosts) > 1 and r.strip().lower() not in fleet_infra_set)
+
     # A FLEET duplicate = a pair confirmed by >1 DISTINCT covered host.
     # Each dup is classified infra (recipient is a known gateway/peer hash)
     # vs human, and the human numbers are kept on their OWN lines so a probe
@@ -281,6 +296,15 @@ def compute_fleet_dup_view(
         ],
         "fleet_duplicate_pairs": fleet_duplicate_pairs,
         "fleet_duplicate_deliveries": fleet_duplicate_deliveries,
+        # Leading indicator (2026-07-19, row 8 accept): recipients confirmed by
+        # >1 gateway, infra excluded. This is the PRECONDITION for a duplicate,
+        # so it moves before the outcome does. ⚠️ Derived from the CONFIRMED
+        # set, so it inherits that set's blind spot: a mesh recipient never
+        # confirms and therefore never appears here. This is exposure within
+        # the CONFIRMABLE population — extending it to attempted/routing state
+        # (true mesh coverage) needs a gateway-side change and is the residual.
+        "dual_homed_recipients": len(dual_homed),
+        "dual_homed_recipient_hashes": dual_homed,
         # STEP 6 honest split: human dups page; infra-to-infra dups are real
         # but benign + structurally residual (kept on their OWN lines, never
         # folded into the human number). ``infra_hashes_known`` = size of the

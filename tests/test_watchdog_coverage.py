@@ -691,3 +691,82 @@ class TestClawRfSilentWitness:
         for _ in range(3):
             assert probe_claw_rf_silent(ticks=t, now=1.0,
                                         state_path=self.sp) is None
+
+
+class TestGatewayDualHomedExposure:
+    """The leading indicator behind the row-8 accept (2026-07-19).
+
+    Row 8 accepted the duplicate residual on cost asymmetry — a dup is
+    redundancy, a yield-protocol bug is silence — NOT on dups being rare.
+    Three human recipients were already dual-homed the day it was accepted, so
+    the fleet instruments the CONDITION that permits a duplicate rather than
+    only the rare, partly-unobservable outcome.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _sp(self, tmp_path):
+        self.sp = str(tmp_path / "dual.json")
+
+    def _payload(self, hashes, status="ok"):
+        return {"status": status, "dual_homed_recipient_hashes": list(hashes),
+                "dual_homed_recipients": len(hashes)}
+
+    def test_new_dual_homed_recipient_fires_once(self):
+        from utils.watchdog_probes import probe_gateway_dual_homed_exposure
+        p = self._payload(["aaaa1111", "bbbb2222"])
+        sig = probe_gateway_dual_homed_exposure(payload=p, state_path=self.sp)
+        assert sig is not None and sig.cls == "gateway_dual_homed_exposure"
+        assert sig.extra["dual_homed_total"] == 2
+        # Once known, a recipient stays known — no re-fire on the next tick.
+        assert probe_gateway_dual_homed_exposure(payload=p,
+                                                 state_path=self.sp) is None
+        assert (collect_dispositions()["gateway_dual_homed_exposure"]["disp"]
+                == "clean")
+
+    def test_only_the_new_recipient_is_reported(self):
+        from utils.watchdog_probes import probe_gateway_dual_homed_exposure
+        probe_gateway_dual_homed_exposure(payload=self._payload(["aaaa1111"]),
+                                          state_path=self.sp)
+        sig = probe_gateway_dual_homed_exposure(
+            payload=self._payload(["aaaa1111", "cccc3333"]), state_path=self.sp)
+        assert sig is not None and sig.extra["new"] == ["cccc3333"]
+
+    def test_count_churn_alone_does_not_fire(self):
+        """The count moves as the rollup window rolls. Only a recipient we
+        have never seen dual-homed is a real exposure change."""
+        from utils.watchdog_probes import probe_gateway_dual_homed_exposure
+        probe_gateway_dual_homed_exposure(
+            payload=self._payload(["aaaa1111", "bbbb2222"]), state_path=self.sp)
+        # count drops to 1 then back to 2 — same recipients, no new exposure
+        assert probe_gateway_dual_homed_exposure(
+            payload=self._payload(["aaaa1111"]), state_path=self.sp) is None
+        assert probe_gateway_dual_homed_exposure(
+            payload=self._payload(["aaaa1111", "bbbb2222"]),
+            state_path=self.sp) is None
+
+    def test_indeterminate_rollup_is_not_zero_exposure(self):
+        """<2 gateways cannot observe dual-homing at all; that must never read
+        as 'no recipients are dual-homed'."""
+        from utils.watchdog_probes import probe_gateway_dual_homed_exposure
+        assert probe_gateway_dual_homed_exposure(
+            payload=self._payload([], status="indeterminate"),
+            state_path=self.sp) is None
+        assert (collect_dispositions()["gateway_dual_homed_exposure"]["disp"]
+                == "indeterminate")
+
+    def test_absent_field_is_indeterminate_never_a_forged_zero(self):
+        """A JOIN predating this indicator omits the key entirely. Absent is
+        not zero (honest_failure_modes #2/#4 — an un-upgraded manager must not
+        forge a clean bill of health)."""
+        from utils.watchdog_probes import probe_gateway_dual_homed_exposure
+        assert probe_gateway_dual_homed_exposure(
+            payload={"status": "ok"}, state_path=self.sp) is None
+        assert (collect_dispositions()["gateway_dual_homed_exposure"]["disp"]
+                == "indeterminate")
+
+    def test_stale_rollup_is_indeterminate(self):
+        from utils.watchdog_probes import probe_gateway_dual_homed_exposure
+        p = self._payload(["aaaa1111"])
+        p["freshness"] = {"stale": True}
+        assert probe_gateway_dual_homed_exposure(payload=p,
+                                                 state_path=self.sp) is None
