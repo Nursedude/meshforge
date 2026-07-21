@@ -234,6 +234,70 @@ proxy-verification trap calibrated_claims rule 7 warns about.
 (address mismatch), which is a completely different fault from `PR_NO_PATH`,
 `PR_LINK_FAILED`, or `PR_NO_ACCESS`.
 
+## STATUS: 2b ADOPTED 2026-07-21 — and it uncovered a real defect
+
+**Adoption is DONE on both gateways.** `rns.propagation_node` =
+`3968a2eeac25e2e7a7961f25842d3d85` in `~/.config/meshforge/gateway.json`
+(timestamped `.bak-pre-propagation-adopt-*` left on each box), moc first then
+moc3, restarted one at a time. VERIFIED at the consumer of record — both LXMF
+router consumers logged it on both boxes:
+
+```
+gateway._rns_bridge_connection      | LXMF propagation node set: 3968a2ee…
+gateway.meshtastic_broadcast_bridge | Meshtastic broadcast propagation node: 3968a2ee…
+```
+
+Post-adoption round-trip re-proven from moc: send → node → pull on moc3, marker
+matched. Watchdog flipped as designed: `lxmf_propagation_unused` → `inert`
+("propagation_node configured — capability adopted") on both boxes.
+
+### ⚠️ 4th plan correction: `rnprobe lxmf.propagation` is NOT a delivery test
+
+§2b tells you to prove delivery with
+`rnprobe lxmf.propagation <hash>`. **It reports 100% packet loss against a
+perfectly healthy node.** The propagation aspect answers no probes.
+
+Controlled check, not an assumption: the same command from **moc3 — which had
+completed a full store-and-forward round-trip through that node 15 minutes
+earlier** — also returned `Sent 1, received 0, packet loss 100.0%`. Had this
+been trusted, a working adoption would have read as a failure and been rolled
+back. Use the LXMF-layer drill (`propagation_drill.py`) as the delivery proof;
+`rnpath -t` still answers for path presence.
+
+### THE FIND: the node cache dropped `service_type` on load (fixed, MF `e383547c` + MA `87cae734`)
+
+Right after adoption, `probe_lxmf_propagation_node_dark` fired its **UNHEARD**
+leg on moc: *"The CONFIGURED LXMF propagation node … has NEVER been heard on
+this box"* — i.e. the wrong-hash fault it exists to catch. It was false. The
+box had heard that node 7× in 25h and had delivered through it 10 minutes
+earlier.
+
+Root cause: `node_models.to_dict()` wrote `service_type`, but
+`node_tracker._load_cache()` restored 14 other fields and silently dropped it.
+Every gateway restart therefore erased the RNS service type of every cached
+node until it announced again. The probe matches propagation nodes by
+`service_type`, so it went blind to our node for up to one 360-min interval —
+**and adoption itself mandates a restart, so this false page was structurally
+guaranteed by following this plan.** Measured on moc 90s after the restart:
+**2 of 9,115** entries carried `service_type`, the oldest stamped *after* the
+restart.
+
+honest_failure_modes #4, a writer with no reader. Fixed red-first in both
+repos (MeshAnchor carried the identical defect; smaller blast radius there
+since it has no probe body). Pinned by `test_load_cache_restores_service_type`
++ a full save→load round-trip test so writer and reader now fail together.
+
+**Consequence for slice 1 too, worth knowing:** `probe_lxmf_propagation_unused`
+reads the same field, so its "N nodes heard within 6h" was really "N heard
+since this gateway process started". Its error direction is silent (undercount
+→ under-report), which is why nobody noticed. The fix repairs both.
+
+**Residual, stated plainly:** the fix restores the field going forward, but the
+on-disk caches still carry entries written by the buggy code, so each node's
+`service_type` is only repaired when it next announces. The probe therefore
+stays falsely `degraded` until our node's next announce (~6h cadence), then
+self-clears. Nothing is wrong with the node during that window.
+
 ## ▶ STEP 2 — EXECUTE THIS (armed 2026-07-20, earliest run 2026-07-21)
 
 > Operator decision recorded 2026-07-20: **soak the node one day, then adopt.**
