@@ -619,6 +619,90 @@ class TestMergePreservesServiceType:
         assert tracker._nodes["rns_abc"].service_type == "UNKNOWN"
 
 
+class TestSelfReportedNameReplacesStaleName:
+    """A node's own announced name must be able to correct a stale cached one.
+
+    Live 2026-07-21: after the propagation parser was fixed, the gateway
+    logged the correct name (`WH6GXZ MeshForge PN`) while the node cache kept
+    showing the pre-fix mojibake `j^x(` — because _merge_node only replaces a
+    name when the existing one is empty or starts with "!". So a name that was
+    once recorded wrong stayed wrong forever, and the fix was invisible to the
+    map/UI for every node already known.
+
+    The existing guard is NOT wrong and must survive: an announce whose name
+    could not be parsed falls back to a hash-derived placeholder, and letting
+    that overwrite a good name would be a real regression. The distinction is
+    PROVENANCE — a name the node reported about itself outranks a placeholder.
+    """
+
+    def _tracker(self, tmp_path):
+        cache_file = tmp_path / "node_cache.json"
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            with patch.object(UnifiedNodeTracker, '_load_cache'):
+                return UnifiedNodeTracker()
+
+    def test_self_reported_name_replaces_stale_garbage(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        stale = UnifiedNode(id="rns_abc", network="rns", name="j^x(")
+        tracker.add_node(stale)
+
+        fresh = UnifiedNode(id="rns_abc", network="rns", name="WH6GXZ MeshForge PN")
+        fresh.name_is_self_reported = True
+        tracker.add_node(fresh)
+
+        assert tracker._nodes["rns_abc"].name == "WH6GXZ MeshForge PN"
+
+    def test_placeholder_never_overwrites_a_good_name(self, tmp_path):
+        """The guard that must NOT regress: an unnamed announce keeps quiet.
+
+        from_rns falls back to name=hash_hex[:8] when no display name could
+        be parsed. That is a placeholder, not an observation about the name.
+        """
+        tracker = self._tracker(tmp_path)
+        good = UnifiedNode(id="rns_abc", network="rns", name="WH6GXZ MeshForge PN")
+        good.name_is_self_reported = True
+        tracker.add_node(good)
+
+        placeholder = UnifiedNode(id="rns_abc", network="rns", name="3968a2ee")
+        tracker.add_node(placeholder)          # name_is_self_reported defaults False
+
+        assert tracker._nodes["rns_abc"].name == "WH6GXZ MeshForge PN"
+
+    def test_meshtastic_style_merge_is_unchanged(self, tmp_path):
+        """Nodes without the provenance flag keep the original conservative rule."""
+        tracker = self._tracker(tmp_path)
+        tracker.add_node(UnifiedNode(id="mesh_1", network="meshtastic", name="Real Name"))
+        tracker.add_node(UnifiedNode(id="mesh_1", network="meshtastic", name="Other"))
+
+        assert tracker._nodes["mesh_1"].name == "Real Name"
+
+    def test_placeholder_still_fills_an_empty_name(self, tmp_path):
+        """Something beats nothing — the original 'empty or !' rule stands."""
+        tracker = self._tracker(tmp_path)
+        tracker.add_node(UnifiedNode(id="rns_abc", network="rns", name=""))
+        tracker.add_node(UnifiedNode(id="rns_abc", network="rns", name="3968a2ee"))
+
+        assert tracker._nodes["rns_abc"].name == "3968a2ee"
+
+    def test_from_rns_marks_a_parsed_display_name_as_self_reported(self):
+        from src.gateway.node_models import ServiceInfo, RNSServiceType
+
+        info = ServiceInfo(service_type=RNSServiceType.LXMF_PROPAGATION,
+                           aspect="lxmf.propagation",
+                           display_name="WH6GXZ MeshForge PN")
+        node = UnifiedNode.from_rns(bytes.fromhex("3968a2eeac25e2e7a7961f25842d3d85"),
+                                    name="WH6GXZ MeshForge PN", service_info=info)
+
+        assert node.name == "WH6GXZ MeshForge PN"
+        assert node.name_is_self_reported is True
+
+    def test_from_rns_hash_fallback_is_not_self_reported(self):
+        """No parseable name -> placeholder -> must not claim self-reported."""
+        node = UnifiedNode.from_rns(bytes.fromhex("3968a2eeac25e2e7a7961f25842d3d85"))
+
+        assert node.name_is_self_reported is False
+
+
 class TestNodeTrackerCache:
     """Tests for cache save/load functionality."""
 

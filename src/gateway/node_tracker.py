@@ -554,8 +554,22 @@ class UnifiedNodeTracker:
         if new.rns_hash:
             existing.rns_hash = new.rns_hash
 
-        # Update name if we have a better one
-        if new.name and (not existing.name or existing.name.startswith("!")):
+        # Update name if we have a better one.
+        #
+        # A SELF-REPORTED name (one the node announced about itself) always
+        # wins: without this, a name recorded once was permanent, so when the
+        # propagation parser was fixed on 2026-07-21 the cache kept serving the
+        # old mojibake `j^x(` while the gateway logged the correct name. A node
+        # must be able to correct what we believe about it.
+        #
+        # The original rule stays for everything else — an announce whose name
+        # could not be parsed falls back to a hash-derived placeholder, and
+        # letting that overwrite a good name would be a genuine regression.
+        if new.name and (
+            getattr(new, "name_is_self_reported", False)
+            or not existing.name
+            or existing.name.startswith("!")
+        ):
             existing.name = new.name
         if new.short_name:
             existing.short_name = new.short_name

@@ -370,6 +370,14 @@ class UnifiedNode:
     firmware_version: Optional[str] = None
     role: Optional[str] = None
 
+    # True when ``name`` is what the node reported about ITSELF in an announce,
+    # as opposed to a hash-derived placeholder. Merge uses this to let a node
+    # correct a stale/garbled cached name while still refusing to let a
+    # placeholder overwrite a good one. Deliberately NOT persisted: it
+    # describes the announce a node object was built from, and every announce
+    # builds a fresh object, so a cached value would be meaningless.
+    name_is_self_reported: bool = False
+
     # RNS service info (enhanced tracking)
     service_type: Optional[str] = None  # RNS service type (LXMF_DELIVERY, NOMAD_PAGE, etc.)
     service_aspect: Optional[str] = None  # Raw aspect filter (lxmf.delivery, nomadnetwork.node, etc.)
@@ -910,6 +918,9 @@ class UnifiedNode:
             # Extract data from ServiceInfo
             if service_info.display_name:
                 node.name = service_info.display_name
+                # The node named itself — this outranks any cached placeholder
+                # or a name recorded by an older, buggier parser.
+                node.name_is_self_reported = True
             if service_info.latitude is not None and service_info.longitude is not None:
                 lat, lon = service_info.latitude, service_info.longitude
                 if -90 <= lat <= 90 and -180 <= lon <= 180:
