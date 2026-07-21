@@ -3066,3 +3066,107 @@ subprocess/systemctl in engine+sources+actions) lint-pinned **MF021** + test-pin
 All 3 new probes wired in `run_all_probes`, classes in the closed enum (issue_ref 79).
 (7) schema-vs-validator drift test pins the config schema to the validator. Tests:
 +~90. ⚠️ Probes DEGRADED-only, self-guard None off-box; user-bus restart needs linger.
+
+
+---
+
+## synth_soak_degraded probe — the unwatched delivery canary (2026-06-15)
+
+Gateway traffic-flow audit found the **hourly LXMF synth soak watched NOTHING**:
+`meshforge-synth-soak.timer` exercises the gateway's real round-trip path + writes
+a `pass_envelope` (0.95 ok-ratio), but the fire script **always `exit 0`** +
+emitted no `cron_verdict` (FIXED 2026-06-27 `c68ed0c0`: now emits a `synth_soak`
+OK/CONCERN/FAIL verdict on /fleet/slo via the orphan stale-gate; the probe still
+owns alerting), and `probe_lxmf_process_wedge` checks the *process* not the
+*result* — so an envelope regression OR a silent timer paged no one. New
+`probe_synth_soak_degraded` (`synth_soak_degraded`, degraded, no issue#,
+`watchdog_probes_gateway.py`), two legs: **SILENCE** (newest `synth-*.json` >~2.5
+cadences old = exerciser stopped — silence IS the failure for a fixed-cadence
+generator, inverse of `delivery_confirmation_stall`) + **ENVELOPE** (`pass_envelope`
+false → ok_ratio + worst pair). Reads operator `~/.local/state/.../synth_soak`
+direct (root-safe via `_find_operator_user`, never escalate). Self-guards: dir
+absent → INERT; no file → held; unparseable newest → candidate but 2-tick debounce
+rides a torn mid-write; `pass_envelope` absent → indeterminate (held, never reads
+healthy). Both seeds (`synth_soak_degraded_any`); 9 tests + closed-enum bump.
+Companion fix same day: the #74 `confirmation_rate` cross-population DISPLAY residual
+(read 1.64) made honest — see the #74 row. Activation: `git pull --ff-only`
+(soak-safe), then restart `meshforge-watchdog` + promote seeds (runbook).
+
+
+---
+
+_(demoted from persistent_issues.md 2026-07-21 for MF012 headroom)_
+
+
+---
+
+## node cache dropped `service_type` on load — the false "NEVER heard" page (2026-07-21)
+
+Found live while adopting the LXMF propagation node (MF `e383547c`, MA
+`87cae734` — identical twin defect). `node_models.to_dict()` has always written
+`service_type`, but `node_tracker._load_cache()` restored 14 other fields and
+silently dropped it — **honest_failure_modes #4, a writer with no reader**. So
+every `meshforge-gateway` restart erased the RNS service type of every cached
+node until that node announced again (up to 360 min for a propagation node).
+
+**Why it bit:** `probe_lxmf_propagation_node_dark` matches the configured node
+by `service_type`, so right after adoption it fired its UNHEARD leg — *"the
+CONFIGURED node has NEVER been heard"*, i.e. the wrong-hash fault it exists to
+catch. It was FALSE: that box had heard the node 7× in 25h and had delivered a
+store-and-forward message through it 10 min earlier. **Adoption mandates a
+restart, so the false page was structurally guaranteed by the procedure.**
+Measured on moc 90s post-restart: **2 of 9,115** entries carried `service_type`,
+the oldest stamped *after* the restart.
+
+**Decision tell** — `lxmf_propagation_node_dark` UNHEARD within ~6h of a gateway
+restart, while the node is otherwise demonstrably alive: suspect this cache gap,
+NOT a wrong hash. Quick check on the box:
+`python3 -c "import json,os;d=json.load(open(os.path.expanduser('~/.cache/meshforge/rns_nodes.json')));print(sum(1 for n in d['nodes'] if n.get('service_type')),'of',len(d['nodes']))"`
+— a handful out of thousands means the cache is still repairing. Fixed going
+forward, but on-disk entries only heal as each node re-announces.
+
+Also silently degraded `probe_lxmf_propagation_unused` (same field): its "N
+heard within 6h" was really "N heard since this process started" — undercount,
+so it under-reported rather than false-paged, which is why it went unnoticed.
+
+Prevention: `test_load_cache_restores_service_type` + a full save→load
+round-trip test, both repos, so writer and reader now fail together.
+⚠️ Companion trap from the same day: **`rnprobe lxmf.propagation` is NOT a
+delivery test** — 100% loss against a healthy node (the propagation aspect
+answers no probes). Controlled: a box that had just completed a full round-trip
+through that node reported the same 100% loss. Prove delivery at the LXMF layer
+(`.claude/plans/propagation_drill.py`), not with `rnprobe`.
+
+---
+
+
+---
+
+## Issue #82: NomadNet boot-race gate hardcoded @rns/default — the #69-fix regression (2026-06-19)
+
+The #69 boot-race gate (commit `121ac59a`) hardcoded `@rns/default` in the
+nomadnet user-unit `ExecStartPre`. On every box whose rnsd `instance_name` ≠
+`default` (VolcanoAI = `volcano ai rns` → rnsd binds `@rns/volcano`) the grep
+matched nothing → gate timed out → `exit 75` → **crashloop, NRestarts=7842,
+ExecStart never ran, UNDETECTED for 10 days**. The fix for #69 became a worse,
+fleet-wide bug ("house of cards"). **Cure**: replace the brittle socket-grep with
+the instance-agnostic `rnstatus` host-wait already proven by
+`meshforge-map.service.d/10-wait-for-rnsd.conf` (fleet-stable since 2026-05-30),
+fail-CLOSED (`exit 75`), 120s window + `TimeoutStartSec=180` so a slow-but-healthy
+rnsd boot isn't parked by `StartLimitBurst`. Installer drops the stale
+`10-wait-rnsd.conf` drop-in; `rns_interfaces.py` + `_port_detection.py`
+de-hardcoded. Commits `96aa3d78` + `c3a62c01`; fleet-remediated all boxes (moc5
+nomadnet intentionally disabled). **Prevention — 2 layers**: (1) lint/test guard
+`TestNoHardcodedRnsDefaultSocket` (templates + src) blocks the CODE regression;
+(2) **`probe_nomadnet_crashloop`** closes the 10-day-silent DETECTION gap —
+`probe_service_inactive` is structurally blind to USER units, so it reads systemd
+`restart counter is at N` lines under the `USER_UNIT=` journal field (root-direct,
+no sudo), short live-window + newest-restart recency gate (post-fix history can't
+false-page), INERT on disabled/unobservable, both seeds. **Bonus**: the
+"multi-chunk RNS reply drops chunks 2..N" symptom was downstream of THIS — a
+dest×chunk re-test proved the gateway delivers all 3 (LXMF-confirmed); the real
+loss was the broken reading client (the box's own NomadNet), NOT the bridge.
+
+---
+
+_(demoted from persistent_issues.md 2026-07-21 for MF012 headroom)_

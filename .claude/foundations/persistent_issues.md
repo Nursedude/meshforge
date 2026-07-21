@@ -391,27 +391,15 @@ debounce; both seeds; 12 tests. **Full body trimmed to
 
 ---
 
-## synth_soak_degraded probe — the unwatched delivery canary (2026-06-15)
+## synth_soak_degraded probe — RESOLVED, body in archive (trimmed 2026-07-21)
 
-Gateway traffic-flow audit found the **hourly LXMF synth soak watched NOTHING**:
-`meshforge-synth-soak.timer` exercises the gateway's real round-trip path + writes
-a `pass_envelope` (0.95 ok-ratio), but the fire script **always `exit 0`** +
-emitted no `cron_verdict` (FIXED 2026-06-27 `c68ed0c0`: now emits a `synth_soak`
-OK/CONCERN/FAIL verdict on /fleet/slo via the orphan stale-gate; the probe still
-owns alerting), and `probe_lxmf_process_wedge` checks the *process* not the
-*result* — so an envelope regression OR a silent timer paged no one. New
-`probe_synth_soak_degraded` (`synth_soak_degraded`, degraded, no issue#,
-`watchdog_probes_gateway.py`), two legs: **SILENCE** (newest `synth-*.json` >~2.5
-cadences old = exerciser stopped — silence IS the failure for a fixed-cadence
-generator, inverse of `delivery_confirmation_stall`) + **ENVELOPE** (`pass_envelope`
-false → ok_ratio + worst pair). Reads operator `~/.local/state/.../synth_soak`
-direct (root-safe via `_find_operator_user`, never escalate). Self-guards: dir
-absent → INERT; no file → held; unparseable newest → candidate but 2-tick debounce
-rides a torn mid-write; `pass_envelope` absent → indeterminate (held, never reads
-healthy). Both seeds (`synth_soak_degraded_any`); 9 tests + closed-enum bump.
-Companion fix same day: the #74 `confirmation_rate` cross-population DISPLAY residual
-(read 1.64) made honest — see the #74 row. Activation: `git pull --ff-only`
-(soak-safe), then restart `meshforge-watchdog` + promote seeds (runbook).
+`probe_synth_soak_degraded` (degraded, no issue#): the hourly LXMF synth soak
+exercised the gateway round-trip but **watched nothing** — fire script always
+`exit 0`, no `cron_verdict` (fixed 2026-06-27 `c68ed0c0`), and
+`probe_lxmf_process_wedge` checks the *process* not the *result*. Two legs:
+**SILENCE** (newest `synth-*.json` >~2.5 cadences old — silence IS the failure
+for a fixed-cadence generator) + **ENVELOPE** (`pass_envelope` false). Full
+body + self-guards in `persistent_issues_archive.md`.
 
 
 ---
@@ -440,30 +428,18 @@ delivered on unblock). Tests: 10 send-retry + 5 per-boot identity. Full body
 
 ---
 
-## Issue #82: NomadNet boot-race gate hardcoded @rns/default — the #69-fix regression (2026-06-19)
+## Issue #82: NomadNet boot-race gate hardcoded `@rns/default` — RESOLVED, body in archive (trimmed 2026-07-21)
 
-The #69 boot-race gate (commit `121ac59a`) hardcoded `@rns/default` in the
-nomadnet user-unit `ExecStartPre`. On every box whose rnsd `instance_name` ≠
-`default` (VolcanoAI = `volcano ai rns` → rnsd binds `@rns/volcano`) the grep
-matched nothing → gate timed out → `exit 75` → **crashloop, NRestarts=7842,
-ExecStart never ran, UNDETECTED for 10 days**. The fix for #69 became a worse,
-fleet-wide bug ("house of cards"). **Cure**: replace the brittle socket-grep with
-the instance-agnostic `rnstatus` host-wait already proven by
-`meshforge-map.service.d/10-wait-for-rnsd.conf` (fleet-stable since 2026-05-30),
-fail-CLOSED (`exit 75`), 120s window + `TimeoutStartSec=180` so a slow-but-healthy
-rnsd boot isn't parked by `StartLimitBurst`. Installer drops the stale
-`10-wait-rnsd.conf` drop-in; `rns_interfaces.py` + `_port_detection.py`
-de-hardcoded. Commits `96aa3d78` + `c3a62c01`; fleet-remediated all boxes (moc5
-nomadnet intentionally disabled). **Prevention — 2 layers**: (1) lint/test guard
-`TestNoHardcodedRnsDefaultSocket` (templates + src) blocks the CODE regression;
-(2) **`probe_nomadnet_crashloop`** closes the 10-day-silent DETECTION gap —
-`probe_service_inactive` is structurally blind to USER units, so it reads systemd
-`restart counter is at N` lines under the `USER_UNIT=` journal field (root-direct,
-no sudo), short live-window + newest-restart recency gate (post-fix history can't
-false-page), INERT on disabled/unobservable, both seeds. **Bonus**: the
-"multi-chunk RNS reply drops chunks 2..N" symptom was downstream of THIS — a
-dest×chunk re-test proved the gateway delivers all 3 (LXMF-confirmed); the real
-loss was the broken reading client (the box's own NomadNet), NOT the bridge.
+The #69 fix became a worse fleet-wide bug: the nomadnet user-unit `ExecStartPre`
+hardcoded `@rns/default`, so every box whose rnsd `instance_name` differs
+crashlooped (NRestarts=7842, ExecStart never ran, **UNDETECTED 10 days**). Cure:
+instance-agnostic `rnstatus` host-wait, fail-CLOSED `exit 75`, 120s window (MF
+`96aa3d78` + `c3a62c01`). Prevention, 2 layers: `TestNoHardcodedRnsDefaultSocket`
+blocks the CODE regression, and **`probe_nomadnet_crashloop`** closes the
+DETECTION gap (`probe_service_inactive` is structurally blind to USER units).
+Bonus: the "multi-chunk RNS reply drops chunks" symptom was downstream of this —
+the bridge was fine, the box's own NomadNet was the broken reader. Full body +
+detection recipe in `persistent_issues_archive.md`.
 
 ---
 
@@ -514,6 +490,30 @@ flat (≈8 stack pairs) = patched. Detail:
 
 ---
 
+
+## node cache dropped `service_type` on load — the false "NEVER heard" page (2026-07-21)
+
+`to_dict()` wrote `service_type`; `_load_cache()` restored 14 other fields and
+dropped it — **honest_failure_modes #4, a writer with no reader**. Every gateway
+restart erased the RNS service type of every cached node until it re-announced
+(≤360 min for a propagation node). `probe_lxmf_propagation_node_dark` matches on
+that field, so right after adoption it fired UNHEARD — *"configured node has
+NEVER been heard"*, the wrong-hash fault it exists to catch — while that box had
+heard the node 7× in 25h and delivered through it 10 min earlier. **Adoption
+mandates a restart, so the false page was structural.** Measured: 2 of 9,115
+entries had `service_type`, oldest stamped AFTER the restart. Fixed MF
+`e383547c` / MA `87cae734` (identical twin) + save→load round-trip tests.
+
+**Decision tell**: UNHEARD within ~6h of a gateway restart + node otherwise
+alive = this cache gap, NOT a typo'd hash; on-disk entries heal only as each
+node re-announces. Same field silently made `lxmf_propagation_unused` undercount
+("heard within 6h" was really "since this process started").
+⚠️ **`rnprobe lxmf.propagation` is NOT a delivery test** — 100% loss against a
+healthy node; a box that had just round-tripped through it reported the same.
+Prove delivery at the LXMF layer (`.claude/plans/propagation_drill.py`).
+Full body in `persistent_issues_archive.md`.
+
+---
 
 ## manager_deadman transient — NAT beat-delivery gap, NOT a dead manager (2026-07-16)
 
