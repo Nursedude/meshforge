@@ -121,6 +121,10 @@ is strictly safer than the reverse. **The remaining work is 2a → 2a-bis →
 on the operator's call the same evening** — read it, it changes the sequence
 and carries a hard gate: a drill that does not deliver means do NOT adopt.
 
+> **UPDATE 2026-07-21: 2a and 2a-bis both PASSED** — the hard gate is cleared,
+> store-and-forward is proven live. Remaining: **2b → 2d**. See the
+> "2a + 2a-bis PASSED" status block below before running anything.
+
 Shipped in this push: `probe_lxmf_propagation_node_dark`
 (`watchdog_probes_gateway.py`), signal class + BOTH seeds + probes facade +
 runner + `fleet_truth.py` row (ported byte-identical to MeshAnchor, whose
@@ -153,6 +157,82 @@ Design notes the next session should not have to re-derive:
 Verified this turn: lint `exit 0`; `parity_check.py` `exit 0` (in sync);
 `test_watchdog_probes/fleet_truth/mini_dudeai/regression_guards` 1174 passed;
 MA `fleet_truth` 60 passed.
+
+## STATUS: 2a + 2a-bis PASSED 2026-07-21 — store-and-forward is PROVEN
+
+**Both gates cleared. 2b (adoption) is the next action and is UNRUN** — it was
+not started because it restarts both gateways and the plan requires the
+operator's "anything soaking?" answer first.
+
+**2a — soak read-back (PASS).** moc1 `lxmd` `active`, `NRestarts=0`, up since
+2026-07-20 09:37 HST = **22h24m** (the plan said ~24h; 22h with a clean journal
+was judged to satisfy "survived a day" — call it if you disagree). Warning
+journal over 25h: `-- No entries --`. Host healthy (load 0.13, 102G free).
+Announce continuity at the CONSUMERS: **7** `Discovered RNS node: 3968a2ee`
+lines in 25h on **both** moc and moc3, latest 03:37 HST, spaced exactly 6h =
+the configured 360-min interval. Node self-status: store 0 B, 0 peers.
+
+**2a-bis — store-and-forward drill (PASS, live).** Sender A on moc, receiver B
+on moc3, throwaway identities under `/tmp/propdrill`, nothing touching gateway
+config or `delivery_counters`.
+
+- B (`fd87b3f39360571c42ff036fc13c1d11`) never announced. Unreachability proven
+  before sending, not assumed: `rnprobe` → `Path request timed out`,
+  `rnpath -t` → `No path known`. A direct delivery was therefore impossible.
+- A sent with `desired_method=PROPAGATED` → `SENT` in 18s.
+- Node stored it under **B's real destination hash** (verified by reading the
+  first 16 bytes of the messagestore file, which is how lxmd itself indexes:
+  `LXMRouter.py:558`).
+- A exited. B came up, pulled → **received the exact message**, marker matched.
+- Confirmed at the node, not the client: `1 propagation messages served to
+  clients`, store drained 2 → 1.
+
+**Retention correction:** `message_storage_limit = 500` is **500 MB**, not 500
+messages (`0.0% utilised of 500.00 MB`). The 2a-ter note about "pushing toward
+that boundary" should be sized in bytes — 288 B per small message means ~1.8M
+messages, so eviction is effectively unreachable by a drill and the real
+boundary worth testing is per-message (`256 KB limit`) or sync (`10.24 MB`).
+
+**Left behind, deliberately:** one 288 B phantom message addressed to
+`108ffbd1f2c010e712ef666d0903b443`, from the first (buggy) send attempt below.
+Its identity has no private key anywhere, so nobody can ever fetch it. Left in
+place rather than deleting files under a running node whose soak evidence
+mattered; it expires on the node's own retention.
+
+### ⚠️ Three upstream API facts this doc got WRONG — corrected live 2026-07-21
+
+The 2a-bis API block was written from source-reading and **three of its four
+calls do not behave as stated**. All three are honest_failure_modes #1 in the
+upstream library (an inapplicable/failed call mapped to a valid-looking value).
+The working drill is saved as `.claude/plans/propagation_drill.py` — promote
+THAT for slice 3 rather than re-deriving:
+
+1. **`set_inbound_propagation_node()` RAISES.** `NotImplementedError:
+   Inbound/outbound propagation node differentiation is currently not
+   implemented` (`LXMRouter.py:428`, lxmf 1.0.1+mf.1). The receiver uses
+   `set_outbound_propagation_node()` too — one setter serves both directions.
+2. **`RNS.Identity.from_bytes()` loads a PRIVATE key, never a public one.** Fed
+   a 64-byte public key it does not fail — it silently constructs a valid-looking
+   but completely different identity. This cost the first drill run: the message
+   was stored at a phantom address and the pull returned `PR_COMPLETE` with zero
+   messages, which reads exactly like "the node dropped it." Use
+   `RNS.Identity(create_keys=False)` + `load_public_key()`.
+3. **`load_public_key()` has no `return` statement.** Its docstring promises
+   `True if the key was loaded, otherwise False`; it returns `None` on success
+   AND failure (`Identity.py:786-802`). Never branch on its return — check that
+   `identity.hash` got populated.
+
+**The guard worth keeping** (now in the drill): before sending, assert the
+computed destination hash equals B's published hash and fail LOUD on mismatch.
+Without it, a misaddressed message still reports `SENT` and the node still
+reports "stored" — a green path that proves nothing. That is the same
+proxy-verification trap calibrated_claims rule 7 warns about.
+
+**Diagnostic that pinpointed it**, worth reusing: poll
+`router.propagation_transfer_state` against the `LXMF.LXMRouter.PR_*` constants.
+`PR_COMPLETE` + zero messages = the node answered and had nothing for you
+(address mismatch), which is a completely different fault from `PR_NO_PATH`,
+`PR_LINK_FAILED`, or `PR_NO_ACCESS`.
 
 ## ▶ STEP 2 — EXECUTE THIS (armed 2026-07-20, earliest run 2026-07-21)
 
