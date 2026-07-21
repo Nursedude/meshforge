@@ -213,107 +213,213 @@ def _state_name(msg) -> str:
     return str(msg.state)
 
 
-def run_round(seq: int, node_hash: str, storage_root: str, *,
-              send_timeout_s: float, pull_timeout_s: float) -> RoundResult:
-    """One send -> store -> pull cycle. Returns a RoundResult, never raises."""
-    import LXMF  # lazy
-    import RNS   # lazy
+def _router_storage(role: str) -> str:
+    """PERSISTENT per-role LXMF storage (ratchets + state).
+
+    ⚠️ Must NOT be a TemporaryDirectory. RNS caches a destination's ratchet
+    public key, so after one successful round the SENDER encrypts to B using a
+    ratchet — while a receiver whose storage was wiped no longer holds the
+    matching private ratchet and silently fails to decrypt ("Decryption with
+    ratchets failed"), dropping the message before the delivery callback. The
+    drill then reports "stored but not retrieved" against a perfectly healthy
+    node.
+
+    Live-caught 2026-07-21: with throwaway storage the drill passed exactly
+    ONCE and failed every run after — the classic pass@1 trap, and a canary
+    that cries wolf is worse than no canary. Real clients persist this; so do we.
+    """
+    from utils.paths import get_real_user_home
+    root = (get_real_user_home() / ".local" / "state" / "meshforge"
+            / "propagation_soak" / f"router_{role}")
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(root, 0o700)
+    except OSError:
+        pass
+    return str(root)
+
+
+def _round_identity_path() -> str:
+    """Path to the CURRENT round's throwaway receiver identity.
+
+    The receiver identity is regenerated EVERY round, deliberately.
+
+    RNS caches a destination's ratchet public key at the SENDER, outside the
+    LXMF router's storage. With a stable receiver, the second and every later
+    round is encrypted to a ratchet, and any receiver whose ratchet store does
+    not still hold the matching private half silently fails to decrypt
+    ("Decryption with ratchets failed") and drops the message before the
+    delivery callback — so the drill reports "stored but not retrieved" against
+    a perfectly healthy node. Clearing the receiver's store makes it worse, not
+    better: the sender's cache still points at the ratchet that was just
+    destroyed.
+
+    A virgin identity per round has no cached ratchet anywhere, so the message
+    is encrypted to the static key and always decryptable. It also models the
+    real case more honestly — an offline peer we have never talked to before.
+
+    Live-caught 2026-07-21 after the drill passed exactly ONCE and then failed
+    every subsequent run (the pass@1 trap; a canary that cries wolf is worse
+    than no canary).
+    """
+    from utils.paths import get_real_user_home
+    root = (get_real_user_home() / ".local" / "state" / "meshforge"
+            / "propagation_soak")
+    root.mkdir(parents=True, exist_ok=True)
+    return str(root / "round_b_identity")
+
+
+def _new_round_identity():
+    """Create + persist a fresh receiver identity for this round."""
+    import RNS
+    path = _round_identity_path()
+    ident = RNS.Identity()
+    ident.to_file(path)
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    return ident
+
+
+def _load_round_identity():
+    """Load the identity the send phase created. None when absent."""
+    import RNS
+    path = _round_identity_path()
+    if not os.path.isfile(path):
+        return None
+    return RNS.Identity.from_file(path)
+
+
+def _src_root() -> str:
+    """The ``src`` dir, so a child process can ``-m lab....`` regardless of cwd."""
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _run_role(role: str, body: str, node_hash: str, timeout_s: float) -> dict:
+    """Run one role in a CHILD PROCESS and return its JSON result.
+
+    ⚠️ Load-bearing design, learned the hard way 2026-07-21: the sender and the
+    receiver must NOT share a process. An earlier version created both
+    LXMRouters in one process (calling ``exit_handler()`` on the first before
+    building the second) and it worked exactly ONCE, then failed every
+    subsequent run at the pull stage — the node had demonstrably served the
+    message (its `served to clients` counter advanced and its store drained)
+    while the in-process receiver's delivery callback never fired. A two-box,
+    two-process drill against the same node passed at the same moment, which is
+    what isolated the fault to process sharing rather than to the node.
+
+    That "worked once, then never" is exactly the pass@1 trap: one green run is
+    not evidence of a working canary. Each role now gets a clean interpreter,
+    mirroring the manual drill that is actually proven.
+    """
+    import subprocess
+
+    cmd = [sys.executable, "-m", "lab.lxmf_propagation_soak",
+           "--role", role, "--body", body, "--propagation-node", node_hash]
+    try:
+        proc = subprocess.run(cmd, cwd=_src_root(), capture_output=True,
+                              text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "reason": f"{role} phase exceeded {timeout_s:.0f}s"}
+    except OSError as exc:
+        return {"ok": False, "reason": f"{role} phase could not start: {exc}"}
+
+    out = (proc.stdout or "").strip().splitlines()
+    for line in reversed(out):                 # last JSON line is the result
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                return json.loads(line)
+            except ValueError:
+                continue
+    err = (proc.stderr or "").strip().splitlines()
+    tail = err[-1] if err else f"rc={proc.returncode}, no result line"
+    return {"ok": False, "reason": f"{role} phase produced no result ({tail})"}
+
+
+def _phase_send(body: str, node_hash: str) -> dict:
+    """Child role: send ONE message with desired_method=PROPAGATED."""
+    import LXMF
+    import RNS
     from lab._lab_common import load_or_create_identity
 
-    body = f"{MARKER} seq={seq} t={int(time.time())}"
     t0 = time.time()
+    ident_a, _ = load_or_create_identity("prop_soak_a")
+    ident_b = _new_round_identity()      # virgin: no cached ratchet anywhere
 
+    store = _router_storage("a")
+    # autopeer=False: a drill client must never peer our fleet's store out
+    # to the foreign nodes we deliberately did not adopt.
+    router = LXMF.LXMRouter(storagepath=store, autopeer=False)
     try:
-        ident_a, _ = load_or_create_identity("prop_soak_a")
-        ident_b, _ = load_or_create_identity("prop_soak_b")
-    except Exception as exc:                       # noqa: BLE001 - reported
-        return RoundResult(seq=seq, ok=False, stage=_STAGE_SEND,
-                           reason=f"identity error: {exc.__class__.__name__}")
-
-    router_a = None
-    router_b = None
-    try:
-        # --- phase 1: A sends PROPAGATED ---------------------------------
-        store_a = os.path.join(storage_root, "a")
-        os.makedirs(store_a, mode=0o700, exist_ok=True)
-        # autopeer=False: a drill client must never peer our fleet's store
-        # outward to foreign nodes.
-        router_a = LXMF.LXMRouter(storagepath=store_a, autopeer=False)
-        source = router_a.register_delivery_identity(ident_a,
-                                                     display_name="propsoak-A")
-        router_a.set_outbound_propagation_node(bytes.fromhex(node_hash))
-
-        # Only an OUT destination here. Constructing B's IN destination would
-        # REGISTER it with Transport in this process, making a local direct
-        # delivery possible — which would pass the drill while proving nothing
-        # about the propagation node. B must stay unreachable until phase 2.
-        out_dest = RNS.Destination(ident_b, RNS.Destination.OUT,
-                                   RNS.Destination.SINGLE, "lxmf", "delivery")
-        msg = LXMF.LXMessage(out_dest, source, body, f"{MARKER} {seq}",
+        source = router.register_delivery_identity(
+            ident_a, display_name="propsoak-A")
+        router.set_outbound_propagation_node(bytes.fromhex(node_hash))
+        # OUT destination only. Constructing B's IN destination would
+        # REGISTER it in this process and make a local direct delivery
+        # possible — passing the drill while proving nothing.
+        dest = RNS.Destination(ident_b, RNS.Destination.OUT,
+                               RNS.Destination.SINGLE, "lxmf", "delivery")
+        msg = LXMF.LXMessage(dest, source, body, MARKER,
                              desired_method=LXMF.LXMessage.PROPAGATED)
-        router_a.handle_outbound(msg)
+        router.handle_outbound(msg)
 
-        deadline = time.time() + send_timeout_s
+        deadline = time.time() + DEFAULT_SEND_TIMEOUT_S
         while time.time() < deadline:
             if msg.state in (LXMF.LXMessage.SENT, LXMF.LXMessage.DELIVERED):
-                break
+                return {"ok": True, "latency_s": round(time.time() - t0, 2)}
             if msg.state in (LXMF.LXMessage.FAILED, LXMF.LXMessage.REJECTED,
                              LXMF.LXMessage.CANCELLED):
-                return RoundResult(seq=seq, ok=False, stage=_STAGE_SEND,
-                                   reason=f"send state {_state_name(msg)}")
+                return {"ok": False,
+                        "reason": f"send state {_state_name(msg)}"}
             time.sleep(2)
-        else:
-            return RoundResult(seq=seq, ok=False, stage=_STAGE_SEND,
-                               reason=f"timeout in state {_state_name(msg)}")
-        store_latency = time.time() - t0
-
+        return {"ok": False,
+                "reason": f"send timeout in state {_state_name(msg)}"}
+    finally:
         try:
-            router_a.exit_handler()
-        except Exception:                          # noqa: BLE001 - best effort
+            router.exit_handler()
+        except Exception:                  # noqa: BLE001 - best effort
             pass
-        router_a = None
 
-        # --- phase 2: B comes up and pulls -------------------------------
-        t1 = time.time()
-        store_b = os.path.join(storage_root, "b")
-        os.makedirs(store_b, mode=0o700, exist_ok=True)
-        router_b = LXMF.LXMRouter(storagepath=store_b, autopeer=False)
-        received: list = []
-        router_b.register_delivery_callback(lambda m: received.append(m))
-        router_b.register_delivery_identity(ident_b, display_name="propsoak-B")
-        # NOT set_inbound_propagation_node() — it raises NotImplementedError
-        # in lxmf 1.0.1+mf.1; one setter serves both directions.
-        router_b.set_outbound_propagation_node(bytes.fromhex(node_hash))
-        router_b.request_messages_from_propagation_node(ident_b, max_messages=0)
 
-        deadline = time.time() + pull_timeout_s
+def _phase_pull(body: str, node_hash: str) -> dict:
+    """Child role: bring the receiver up and pull from the propagation node."""
+    import LXMF
+
+    t0 = time.time()
+    ident_b = _load_round_identity()
+    if ident_b is None:
+        # The send phase owns creating it; its absence means the phases ran out
+        # of order, never that store-and-forward failed. Say which.
+        return {"ok": False,
+                "reason": "no round identity on disk - send phase did not run"}
+
+    store = _router_storage("b")
+    router = LXMF.LXMRouter(storagepath=store, autopeer=False)
+    received: list = []
+    try:
+        router.register_delivery_callback(lambda m: received.append(m))
+        router.register_delivery_identity(ident_b, display_name="propsoak-B")
+        # NOT set_inbound_propagation_node(): it raises NotImplementedError
+        # in lxmf 1.0.1+mf.1 — one setter serves both directions.
+        router.set_outbound_propagation_node(bytes.fromhex(node_hash))
+        router.request_messages_from_propagation_node(ident_b, max_messages=0)
+
+        deadline = time.time() + DEFAULT_PULL_TIMEOUT_S
         while time.time() < deadline:
             if any(_matches(m, body) for m in received):
-                retrieve = time.time() - t1
-                return RoundResult(
-                    seq=seq, ok=True,
-                    store_latency_s=round(store_latency, 2),
-                    retrieve_latency_s=round(retrieve, 2),
-                    total_latency_s=round(time.time() - t0, 2),
-                )
+                return {"ok": True, "latency_s": round(time.time() - t0, 2)}
             time.sleep(2)
-
-        return RoundResult(
-            seq=seq, ok=False, stage=_STAGE_PULL,
-            store_latency_s=round(store_latency, 2),
-            reason=(f"stored but not retrieved within {pull_timeout_s:.0f}s "
-                    f"({len(received)} other message(s) returned)"),
-        )
-    except Exception as exc:                       # noqa: BLE001 - reported
-        return RoundResult(seq=seq, ok=False, stage=_STAGE_PULL,
-                           reason=f"{exc.__class__.__name__}: {exc}")
+        return {"ok": False,
+                "reason": (f"stored but not retrieved within "
+                           f"{DEFAULT_PULL_TIMEOUT_S:.0f}s "
+                           f"({len(received)} other message(s) returned)")}
     finally:
-        for r in (router_a, router_b):
-            if r is not None:
-                try:
-                    r.exit_handler()
-                except Exception:                  # noqa: BLE001 - best effort
-                    pass
+        try:
+            router.exit_handler()
+        except Exception:                  # noqa: BLE001 - best effort
+            pass
 
 
 def _matches(message, body: str) -> bool:
@@ -323,17 +429,41 @@ def _matches(message, body: str) -> bool:
         if isinstance(content, (bytes, bytearray)):
             content = content.decode("utf-8", errors="replace")
         return body in str(content)
-    except Exception:                              # noqa: BLE001 - never raise
+    except Exception:                          # noqa: BLE001 - never raise
         return False
 
 
-def run_soak(*, rounds: int, node_hash: str, storage_root: str,
+def run_round(seq: int, node_hash: str, *, send_timeout_s: float,
+              pull_timeout_s: float, body: Optional[str] = None) -> RoundResult:
+    """One send -> store -> pull cycle, each phase in its own process."""
+    body = body or f"{MARKER} seq={seq} t={int(time.time())}"
+    t0 = time.time()
+
+    sent = _run_role("send", body, node_hash, send_timeout_s + 30.0)
+    if not sent.get("ok"):
+        return RoundResult(seq=seq, ok=False, stage=_STAGE_SEND,
+                           reason=str(sent.get("reason", "unknown")))
+    store_latency = sent.get("latency_s")
+
+    pulled = _run_role("pull", body, node_hash, pull_timeout_s + 30.0)
+    if not pulled.get("ok"):
+        return RoundResult(seq=seq, ok=False, stage=_STAGE_PULL,
+                           store_latency_s=store_latency,
+                           reason=str(pulled.get("reason", "unknown")))
+
+    return RoundResult(seq=seq, ok=True,
+                       store_latency_s=store_latency,
+                       retrieve_latency_s=pulled.get("latency_s"),
+                       total_latency_s=round(time.time() - t0, 2))
+
+
+def run_soak(*, rounds: int, node_hash: str,
              send_timeout_s: float, pull_timeout_s: float,
              ok_ratio_threshold: float) -> SoakReport:
     started = _now_iso()
     results: List[RoundResult] = []
     for seq in range(1, rounds + 1):
-        results.append(run_round(seq, node_hash, storage_root,
+        results.append(run_round(seq, node_hash,
                                  send_timeout_s=send_timeout_s,
                                  pull_timeout_s=pull_timeout_s))
     return build_report(results, propagation_node=node_hash,
@@ -372,6 +502,11 @@ def main(argv=None) -> int:
                     default=DEFAULT_OK_RATIO_THRESHOLD)
     ap.add_argument("--output", choices=("json", "text"), default="text")
     ap.add_argument("--loglevel", default="WARNING")
+    # Internal: the parent re-invokes itself once per role so the sender and
+    # receiver never share a process (see _run_role for why that is required).
+    ap.add_argument("--role", choices=("send", "pull"), default=None,
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--body", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.loglevel.upper(), logging.WARNING))
@@ -386,26 +521,45 @@ def main(argv=None) -> int:
               file=sys.stderr)
         return 0
 
-    import tempfile
-    from utils.rns_init import open_reticulum
+    if args.role:
+        # Child role: init RNS, do the one job, emit ONE JSON line.
+        from utils.rns_init import open_reticulum
+        reticulum = open_reticulum("/etc/reticulum", require_listener=True)
+        if reticulum is None:
+            print("RNS unavailable/degraded — not a store-and-forward verdict",
+                  file=sys.stderr)
+            return 3
+        fn = _phase_send if args.role == "send" else _phase_pull
+        result = fn(args.body or MARKER, node)
+        # flush=True is LOAD-BEARING. stdout is a pipe here (block-buffered),
+        # and RNS/LXMF teardown can reach os._exit(), which skips the
+        # interpreter's flush — the result line is then silently lost and the
+        # parent sees "rc=0, no result line" against a perfectly healthy node.
+        # Live-caught 2026-07-21 as an INTERMITTENT failure (some runs green,
+        # some empty), which is exactly what made it look like a flaky node.
+        print(json.dumps(result), flush=True)
+        return 0 if result.get("ok") else 1
 
-    reticulum = open_reticulum("/etc/reticulum", require_listener=True)
-    if reticulum is None:
-        print("RNS unavailable/degraded — not a store-and-forward verdict",
-              file=sys.stderr)
-        return 3
+    # ⚠️ The ORCHESTRATING parent must NOT initialise RNS. Live-caught
+    # 2026-07-21: with an RNS instance open in the parent, every child exited 0
+    # having written NOTHING to stdout or stderr — silently, so the round was
+    # reported as "send phase produced no result" against a healthy node. The
+    # same silent-empty-child signature also explains the fire script's earlier
+    # zero-byte envelopes. The parent only orchestrates; RNS belongs to the
+    # children that actually speak it.
 
-    with tempfile.TemporaryDirectory(prefix="propsoak-") as tmp:
-        report = run_soak(rounds=max(1, args.rounds), node_hash=node,
-                          storage_root=tmp,
-                          send_timeout_s=args.send_timeout,
-                          pull_timeout_s=args.pull_timeout,
-                          ok_ratio_threshold=args.ok_ratio_threshold)
+    report = run_soak(rounds=max(1, args.rounds), node_hash=node,
+                      send_timeout_s=args.send_timeout,
+                      pull_timeout_s=args.pull_timeout,
+                      ok_ratio_threshold=args.ok_ratio_threshold)
 
+    # flush=True for the same reason as the child result line above: the fire
+    # script redirects stdout to a file and an unflushed envelope publishes as
+    # zero bytes, which the probe would read as a SILENCE failure.
     if args.output == "json":
-        print(json.dumps(report.to_dict(), indent=2))
+        print(json.dumps(report.to_dict(), indent=2), flush=True)
     else:
-        print(render_text(report))
+        print(render_text(report), flush=True)
     return 0 if report.pass_envelope else 1
 
 
