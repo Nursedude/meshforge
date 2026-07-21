@@ -708,6 +708,15 @@ class UnifiedNodeTracker:
                         node._state_machine = NodeStateMachine.from_dict(node_data['state_machine'])
                     except Exception as e:
                         logger.debug(f"Could not restore state machine: {e}")
+                # Restore the RNS service type. to_dict() has always written
+                # this; the loader used to drop it, so every restart erased
+                # the service type of every known node until it announced
+                # again — which for an LXMF propagation node is up to its
+                # 360-min interval. A writer with no reader (honest_failure_
+                # modes #4); it made probe_lxmf_propagation_node_dark report
+                # a healthy configured node as "never heard" (2026-07-21).
+                if node_data.get('service_type'):
+                    node.service_type = node_data['service_type']
                 # Restore favorites from cache (BaseUI 2.7+)
                 node.is_favorite = node_data.get('is_favorite', False)
                 if node_data.get('favorite_updated'):
