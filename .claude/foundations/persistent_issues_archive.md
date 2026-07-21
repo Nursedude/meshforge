@@ -3170,3 +3170,31 @@ loss was the broken reading client (the box's own NomadNet), NOT the bridge.
 ---
 
 _(demoted from persistent_issues.md 2026-07-21 for MF012 headroom)_
+
+
+---
+
+## Issue #83: TUI updates — apt truth, holds, mismatched repo, silent no-op (2026-07-10)
+
+"meshtasticd update failed / CLI issues" audit. Causes: (a) stale
+`Debian_Testing` OBS repo line published the SAME version string as
+`Debian_13` but built vs libc6 2.42 → apt bound the candidate to the
+uninstallable stanza ("held broken packages"); (b) update cmd `apt update &&
+apt upgrade meshtasticd` (no -y → EOF-abort; upgrades everything; conffile
+prompt hangs); (c) "latest" from GitHub firmware tags ≠ apt candidate; (d)
+fleet-wide apt hold (deliberate pin) invisible; (e) success = exit 0 (kept-back
+no-op read as done); (f) CLI: pip --user script SHADOWED the pipx shim →
+`pipx upgrade` wrote a venv that never runs; writers overshot the reviewed
+floor. Cure: `updates/meshtasticd_apt.py`
+SSOT (candidate/hold/dry-run + guided repo repair w/ backup + verified upgrade:
+unhold→only-upgrade noninteractive+confold→RE-READ version→re-hold);
+floor-pinned owner-aware `pipx install --force meshtastic==<floor>` repairs the
+shim; `diagnose_meshtastic_cli()`. ⚠️ apt dry-run banner "NOTE:" ends in 'E:' —
+error match must be line-anchored (live-caught). MF `fb80819e`, MA `04581964`
+(MA CLI-floor arc unported, queued). Quick check: `apt-get -s install
+--only-upgrade meshtasticd`; `head -1 ~/.local/bin/meshtastic`. Tests:
+`test_meshtasticd_apt.py` + updates-flow suites, both repos.
+
+---
+
+_(demoted from persistent_issues.md 2026-07-21 for MF012 headroom)_

@@ -443,26 +443,19 @@ detection recipe in `persistent_issues_archive.md`.
 
 ---
 
-## Issue #83: TUI updates — apt truth, holds, mismatched repo, silent no-op (2026-07-10)
+## Issue #83: TUI updates — apt truth, holds, mismatched repo — RESOLVED, body in archive (trimmed 2026-07-21)
 
-"meshtasticd update failed / CLI issues" audit. Causes: (a) stale
-`Debian_Testing` OBS repo line published the SAME version string as
-`Debian_13` but built vs libc6 2.42 → apt bound the candidate to the
-uninstallable stanza ("held broken packages"); (b) update cmd `apt update &&
-apt upgrade meshtasticd` (no -y → EOF-abort; upgrades everything; conffile
-prompt hangs); (c) "latest" from GitHub firmware tags ≠ apt candidate; (d)
-fleet-wide apt hold (deliberate pin) invisible; (e) success = exit 0 (kept-back
-no-op read as done); (f) CLI: pip --user script SHADOWED the pipx shim →
-`pipx upgrade` wrote a venv that never runs; writers overshot the reviewed
-floor. Cure: `updates/meshtasticd_apt.py`
-SSOT (candidate/hold/dry-run + guided repo repair w/ backup + verified upgrade:
-unhold→only-upgrade noninteractive+confold→RE-READ version→re-hold);
-floor-pinned owner-aware `pipx install --force meshtastic==<floor>` repairs the
-shim; `diagnose_meshtastic_cli()`. ⚠️ apt dry-run banner "NOTE:" ends in 'E:' —
-error match must be line-anchored (live-caught). MF `fb80819e`, MA `04581964`
-(MA CLI-floor arc unported, queued). Quick check: `apt-get -s install
---only-upgrade meshtasticd`; `head -1 ~/.local/bin/meshtastic`. Tests:
-`test_meshtasticd_apt.py` + updates-flow suites, both repos.
+"meshtasticd update failed" audit, 6 causes: stale `Debian_Testing` OBS repo
+published the same version built against a newer libc (apt bound the candidate
+to an uninstallable stanza → "held broken packages"); `apt upgrade` without
+`-y`; GitHub firmware tags ≠ apt candidate; fleet-wide apt hold invisible;
+exit 0 read as success when the package was kept back; and a pip `--user`
+script SHADOWING the pipx shim. Cure: `updates/meshtasticd_apt.py` SSOT
+(candidate/hold/dry-run, guided repo repair, verified upgrade with re-read) +
+floor-pinned `pipx install --force`. ⚠️ apt dry-run banner "NOTE:" ends in
+'E:' — error matching must be line-anchored. Quick check: `apt-get -s install
+--only-upgrade meshtasticd`; `head -1 ~/.local/bin/meshtastic`. Full body in
+`persistent_issues_archive.md`.
 
 ---
 
@@ -514,6 +507,18 @@ ALREADY-KNOWN node did NOT restore it (verified live: fresh `last_seen`,
 ⚠️ **`rnprobe lxmf.propagation` is NOT a delivery test** — 100% loss against a
 healthy node; a box that had just round-tripped through it reported the same.
 Prove delivery at the LXMF layer (`.claude/plans/propagation_drill.py`).
+
+**THIRD fix, same session (`48f5497d` / MA `0657c993`)**: even with the parser
+corrected, the cache kept serving the OLD mojibake name — `_merge_node` only
+replaced a name when the existing one was empty or started with `!`, so a name
+recorded once was PERMANENT and any parser fix stayed invisible in cache/UI.
+Cure: `name_is_self_reported` (set in `from_rns` only when a display name was
+actually parsed) lets a node correct what we believe about it, while a
+hash-derived placeholder still never overwrites a good name. Verified live on
+both gateways: `j^x(` → `WH6GXZ MeshForge PN`. ⚠️ Residual: a propagation node
+advertising NO name keeps its legacy garbage string — only self-reporting
+nodes heal.
+
 Full body in `persistent_issues_archive.md`.
 
 ---
