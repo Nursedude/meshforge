@@ -740,6 +740,7 @@ TEMPLATE_PROVENANCE: dict = {
     "meshtasticd-mudp-guard.timer":        ("installer", "update.sh"),
     # ── update.sh `*-user.service` glob (verified: filename ends -user.service) ──
     "meshforge-synth-soak-user.service":   ("glob", "update.sh *-user.service loop → synth-soak.service"),
+    "meshforge-propagation-soak-user.service": ("glob", "update.sh *-user.service loop → propagation-soak.service (oneshot; inert until the timer is hand-deployed on a gateway box with rns.propagation_node set)"),
     "meshforge-gateway-resource-canary-user.service": ("glob", "update.sh *-user.service loop → gateway-resource-canary.service (inert everywhere until the timer is hand-deployed on a gateway box; oneshot, never enabled/started by the glob)"),
     "meshforge-lab-rollup-user.service":   ("glob", "update.sh *-user.service loop → lab-rollup.service"),
     "moc-drain-snapshot-user.service":     ("glob", "update.sh *-user.service loop → moc-drain-snapshot.service"),
@@ -765,6 +766,10 @@ TEMPLATE_PROVENANCE: dict = {
     "nats-server.service":         ("hand", "dude-claw NATS infra, claw-brain box only, hand-deployed (a171fec)"),
     "meshforge-synth-soak-user.timer":   ("hand", "hand-deployed (live on moc); NOT copied by update.sh's "
                                                   "*-user.service glob — known timer-deploy gap"),
+    "meshforge-propagation-soak-user.timer": ("hand", "hand-deployed on a GATEWAY box that has adopted a "
+                                                  "propagation node (moc/moc3 — the LXMF store-and-forward drill; needs "
+                                                  "loginctl enable-linger); NOT copied by update.sh's *-user.service "
+                                                  "glob — known timer-deploy gap"),
     "meshforge-gateway-resource-canary-user.timer": ("hand", "hand-deployed on a GATEWAY box only (moc/moc3 — "
                                                   "gateway-reliability arc A1 resource canary; RF-bearing, so opt-in per "
                                                   "box); NOT copied by update.sh's *-user.service glob — timer-deploy gap"),

@@ -498,6 +498,26 @@
       "annotation": "MF synth-soak watch (2026-06-15): the hourly LXMF round-trip exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope (pass_envelope=false) or went DARK (no fresh result in ~2.5 cadences). The synth canary was previously unwatched \u2014 the fire script always exits 0 and nothing consumed pass_envelope. Check meshforge-synth-soak.timer (systemd --user) + ~/.local/state/meshforge/synth_soak/fire.log; for an envelope fail, the detail carries the worst pair \u2014 also check /api/gateway/delivery drop_reasons. Self-guards INERT on boxes that don't run the soak."
     },
     {
+      "id": "propagation_soak_degraded_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "propagation_soak_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[AMBER] synth soak degraded/dark",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning",
+          "test_tube"
+        ]
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-07-21 propagation arc slice 3: the LXMF store-and-forward drill (meshforge-propagation-soak.timer -> lab_propagation_soak_fire.sh) either FAILED its envelope or went DARK. This is the OUTCOME leg for the propagation organ: probe_lxmf_propagation_node_dark only watches whether the configured node ANNOUNCES, so a node that announces perfectly while silently dropping every stored message reads clean forever -- announce-liveness standing in for the property we care about. Traffic to an offline peer essentially never occurs organically in a small lab, so the drill manufactures it: a receiver that never announced (no direct path possible) is sent a PROPAGATED message and then pulls it back. Two legs: ENVELOPE (pass_envelope false -- stored but never returned) and SILENCE (newest prop-*.json older than ~2.5 cadences -- for a fixed-cadence generator, going quiet IS the failure). degraded only: offline-peer delivery is impaired while LIVE delivery is unaffected. INERT on boxes that don't run the drill (state dir absent, which includes every box with no propagation_node configured). 2-tick debounce; a torn mid-write envelope is ridden out. Escalation-only."
+    },
+    {
       "id": "unexpected_reboot_alert",
       "match": {
         "kind": "unexpected_reboot",

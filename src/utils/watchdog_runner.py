@@ -103,6 +103,7 @@ from utils.watchdog_probes import (
     probe_resource_canary_degraded,
     probe_service_inactive,
     probe_synth_soak_degraded,
+    probe_propagation_soak_degraded,
     probe_tracer_peer_unreachable,
     signal_to_dict,
 )
@@ -614,6 +615,17 @@ def run_all_probes(
     # self-guards None (INERT) on boxes that don't run the soak. 2-tick
     # debounce rides out a torn mid-write / one slow run.
     sig = probe_synth_soak_degraded()
+    if sig is not None:
+        signals.append(sig)
+
+    # LXMF store-and-forward drill degraded / dark (2026-07-21, propagation
+    # arc slice 3). The OUTCOME leg for the propagation organ: the node_dark
+    # probe only proves the configured propagation node ANNOUNCES, so a node
+    # that announces while silently dropping every stored message reads clean
+    # forever. The hourly drill manufactures offline-peer traffic and this
+    # consumes its envelope. INERT where the drill doesn't run; 2-tick
+    # debounce rides out a torn mid-write envelope.
+    sig = probe_propagation_soak_degraded()
     if sig is not None:
         signals.append(sig)
 

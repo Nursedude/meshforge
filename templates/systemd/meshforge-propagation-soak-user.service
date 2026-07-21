@@ -1,0 +1,56 @@
+# MeshForge — LXMF store-and-forward soak (systemd-user, one-shot)
+# ================================================================
+#
+# Fires one store-and-forward drill (lab.lxmf_propagation_soak) and writes a
+# JSON envelope to
+#   ~/.local/state/meshforge/propagation_soak/prop-<UTC-timestamp>.json
+# consumed by probe_propagation_soak_degraded.
+#
+# WHY this exists (slice 3 of the propagation arc): probe_lxmf_propagation_node_dark
+# watches whether the configured propagation node ANNOUNCES. It does NOT watch
+# whether the node STORES AND FORWARDS. A node that announces perfectly while
+# silently dropping every stored message reads clean on that probe forever, and
+# in a small lab, traffic to an offline peer essentially never happens
+# organically — so the organ could be quietly useless for months with every
+# gate green. This drill manufactures exactly that traffic.
+#
+# Each round: a receiver identity that has NEVER announced (so no direct path
+# to it can exist) is the target of a PROPAGATED send; the receiver then comes
+# up and pulls the message back from the node. Delivery proves store-and-forward.
+#
+# Install (gateway boxes that have rns.propagation_node configured — moc, moc3):
+#   cp /opt/meshforge/templates/systemd/meshforge-propagation-soak-user.service \
+#      ~/.config/systemd/user/meshforge-propagation-soak.service
+#   cp /opt/meshforge/templates/systemd/meshforge-propagation-soak-user.timer \
+#      ~/.config/systemd/user/meshforge-propagation-soak.timer
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now meshforge-propagation-soak.timer
+#
+# ⚠️ USER units need lingering to survive logout:
+#   sudo loginctl enable-linger <operator>
+#
+# Prereqs:
+#   - rns.propagation_node set in ~/.config/meshforge/gateway.json
+#     (unset → the run prints nothing, publishes no envelope, probe stays INERT)
+#   - rnsd running and healthy
+#
+# Per-fire knobs (set in the timer's [Service] Environment= or here):
+#   PROP_ROUNDS, PROP_SEND_TIMEOUT, PROP_PULL_TIMEOUT, PROP_THRESHOLD,
+#   PROP_NODE, STATE_DIR
+
+[Unit]
+Description=MeshForge LXMF store-and-forward soak (propagation drill)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/meshforge
+ExecStart=/opt/meshforge/scripts/lab_propagation_soak_fire.sh
+# Generous: a round is a PROPAGATED send (stamp generation + link) plus a pull
+# on a fresh link. Default timeouts are 180s each, so one round can legitimately
+# take ~6 min before the script gives up and publishes a failed envelope.
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-propagation-soak

@@ -289,10 +289,35 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "hear the class at all — so an RNS-wide wedge HOLDS here and stays with its own "
                "probes instead of being relabelled as this node's death. RESIDUAL: liveness is "
                "passive announce observation, so detection is bounded below by several announce "
-               "periods (~18h) and a node that answers announces but refuses to STORE would "
-               "still read clean — true store-and-forward proof needs a round-trip to a "
-               "deliberately-offline peer, which nothing exercises yet",
+               "periods (~18h). Its OTHER residual — a node that answers announces but "
+               "refuses to STORE would still read clean — was CLOSED 2026-07-21 by "
+               "propagation_soak_degraded (see the next row); this probe deliberately keeps "
+               "owning announce-liveness only",
      "ref": "watchdog_probes_gateway.py :: probe_lxmf_propagation_node_dark"},
+    {"id": "lxmf_store_and_forward_unproven",
+     "detail": "CLOSED 2026-07-21 (propagation arc slice 3). probe_lxmf_propagation_node_dark "
+               "watches whether the configured propagation node ANNOUNCES; it cannot see "
+               "whether that node STORES AND FORWARDS. A node announcing perfectly while "
+               "silently dropping every stored message reads clean forever — announce-liveness "
+               "standing in as a proxy for the property actually being depended on. The gap "
+               "was structural, not theoretical: in a 2-person lab, traffic to an OFFLINE peer "
+               "essentially never occurs organically, so the realistic failure was adopting the "
+               "organ and having it be quietly useless for months with every gate green. The "
+               "pre-existing exerciser could not close it either — lxmf_multi_user_synth builds "
+               "every LXMessage without desired_method, so all synth traffic is DIRECT. Cure: "
+               "an hourly drill that MANUFACTURES the missing traffic — a receiver identity "
+               "that has never announced (so no direct path to it can exist) is the target of a "
+               "PROPAGATED send, then comes up and pulls the message back; delivery proves "
+               "store-and-forward end to end. probe_propagation_soak_degraded consumes the "
+               "envelope with two legs: ENVELOPE (pass_envelope false — accepted but never "
+               "returned) and SILENCE (newest prop-*.json older than ~2.5 cadences, because "
+               "for a fixed-cadence generator going quiet IS the failure). Synthetic traffic is "
+               "isolated from delivery_counters by construction (its own LXMRouter instances "
+               "and throwaway identities) so the #74 confirmation_rate work stays honest. "
+               "RESIDUAL: the drill proves the node serves a CLIENT that pulls; it does not "
+               "exercise node-to-node peering, and it measures one small message, so a "
+               "size- or volume-dependent failure would still read clean",
+     "ref": "watchdog_probes_gateway.py :: probe_propagation_soak_degraded"},
     {"id": "aredn_configured_source_only",
      "detail": "CLOSED 2026-07-20 (row 5). Three legs now: configured-source dark, "
                "declared-but-unconfigured (2026-07-19), and — the last gap — "

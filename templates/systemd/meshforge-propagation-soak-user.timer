@@ -1,0 +1,34 @@
+# MeshForge — LXMF store-and-forward soak timer (hourly)
+# ======================================================
+#
+# Hourly, matching the synth soak's cadence so the two canaries age out on the
+# same schedule and probe_propagation_soak_degraded can use the same ~2.5x
+# staleness window (a fixed-cadence generator going quiet IS the failure).
+#
+# Cost per fire: ONE small LXMF message (a few hundred bytes) through the
+# propagation node, plus a pull. The node's message_storage_limit is 500 MB
+# (megabytes, NOT 500 messages — verified 2026-07-21 against lxmd --status),
+# and a drill message is ~288 B, so retention pressure from this is nil.
+#
+# Mirrors the synth/tracer pattern: Persistent=true so a fire missed across a
+# reboot catches up.
+#
+# To change cadence, edit OnCalendar and run:
+#   systemctl --user daemon-reload
+#   systemctl --user restart meshforge-propagation-soak.timer
+
+[Unit]
+Description=Fire meshforge-propagation-soak hourly
+Requires=meshforge-propagation-soak.service
+
+[Timer]
+# :37 of every hour. Deliberately offset from the synth soak (:07) and off the
+# hour mark: two LXMF exercisers firing together would contend for the same RNS
+# paths and muddy both envelopes, and on-the-hour herds with cron jobs fleet-wide.
+OnCalendar=*-*-* *:37:00
+Persistent=true
+AccuracySec=30s
+RandomizedDelaySec=15s
+
+[Install]
+WantedBy=timers.target

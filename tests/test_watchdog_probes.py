@@ -58,6 +58,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_gateway_delivery_degraded,
     probe_gateway_dup_degraded,
     probe_synth_soak_degraded,
+    probe_propagation_soak_degraded,
     probe_fd_exhaustion,
     probe_phoneapi_tcp_leak,
     probe_meshtasticd_phoneapi_wedge,
@@ -146,6 +147,7 @@ def test_signal_classes_closed_enum_is_documented():
         "dep_version_drift",            # 2026-06-12 recurring update class
         "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
         "synth_soak_degraded",          # 2026-06-15 synth-soak watch
+        "propagation_soak_degraded",  # 2026-07-21 store-and-forward drill
         "calibration_drift",            # 2026-06-15 calibration spine; SSOT .claude/rules/calibrated_claims.md (new subsystem, not a fleet bug → no persistent_issues row; that file is at its MF012 cap)
         "fleet_box_unreachable",        # 2026-06-17 Leg D — fleet liveness surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent as calibration_drift)
         "host_frozen",                  # 2026-06-17 Leg C — dude-claw out-of-band witness verdict (HOST_FROZEN/UNREACHABLE/UNKNOWN) surfaced into mini/+/fleet; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row; same MF012-cap precedent)
@@ -7455,3 +7457,173 @@ def test_lxmf_propagation_dark_reader_handles_the_real_cache_shape(tmp_path):
     assert ages[_NODE] == 1740.0               # matched on the full hash
     assert ages[_NODE[:16]] == 1740.0          # and on the short id form
     assert freshest == 1740.0
+
+
+# ---------------------------------------------------------------------------
+# 2026-07-21 — propagation_soak_degraded (the LXMF store-and-forward drill).
+# The OUTCOME leg for the propagation organ: node_dark proves the configured
+# node ANNOUNCES, this proves it STORES AND FORWARDS.
+# ---------------------------------------------------------------------------
+
+
+def _write_prop_envelope(sdir, *, passed, age_s=60.0, now=None, rounds=None):
+    """Publish a prop-*.json with a controlled mtime."""
+    import os
+    import time as _t
+    now = _t.time() if now is None else now
+    os.makedirs(sdir, exist_ok=True)
+    doc = {
+        "propagation_node": "3968a2eeac25e2e7a7961f25842d3d85",
+        "total_ok": 1 if passed else 0,
+        "total_samples": 1,
+        "ok_ratio_threshold": 1.0,
+        "pass_envelope": passed,
+        "round_results": rounds if rounds is not None else (
+            [{"seq": 1, "ok": True}] if passed else
+            [{"seq": 1, "ok": False, "stage": "pull",
+              "reason": "stored but not retrieved within 180s"}]
+        ),
+    }
+    path = os.path.join(sdir, "prop-20260721T000000Z.json")
+    with open(path, "w") as fh:
+        json.dump(doc, fh)
+    os.utime(path, (now - age_s, now - age_s))
+    return path
+
+
+def test_propagation_soak_inert_when_box_does_not_run_the_drill(tmp_path):
+    """The common case: no state dir means this box has nothing to say."""
+    sig = probe_propagation_soak_degraded(
+        state_dir=str(tmp_path / "absent"), now=1000.0,
+        debounce_path=str(tmp_path / "d.json"))
+    assert sig is None
+
+
+def test_propagation_soak_holds_when_no_envelope_yet(tmp_path):
+    """Freshly installed: dir exists, no result. Never fire on that."""
+    sdir = tmp_path / "propagation_soak"
+    sdir.mkdir()
+    sp = str(tmp_path / "d.json")
+    assert probe_propagation_soak_degraded(
+        state_dir=str(sdir), now=1000.0, debounce_path=sp) is None
+    assert probe_propagation_soak_degraded(
+        state_dir=str(sdir), now=1030.0, debounce_path=sp) is None
+
+
+def test_propagation_soak_clean_on_a_fresh_pass(tmp_path):
+    sdir = str(tmp_path / "propagation_soak")
+    now = 100000.0
+    _write_prop_envelope(sdir, passed=True, age_s=60.0, now=now)
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=str(tmp_path / "d.json")) is None
+
+
+def test_propagation_soak_fires_on_a_failed_envelope_after_debounce(tmp_path):
+    """ENVELOPE leg: stored but never returned."""
+    sdir = str(tmp_path / "propagation_soak")
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+    _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
+
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is None      # streak 1
+    sig = probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp)
+    assert sig is not None
+    assert sig.cls == "propagation_soak_degraded"
+    assert sig.severity == "degraded"
+    assert "store-and-forward" in sig.detail.lower()
+    assert "round 1 failed at pull" in sig.detail
+
+
+def test_propagation_soak_fires_on_silence(tmp_path):
+    """SILENCE leg: for a fixed-cadence generator, going quiet IS the failure."""
+    sdir = str(tmp_path / "propagation_soak")
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+    _write_prop_envelope(sdir, passed=True, age_s=40000.0, now=now)  # ~11h old
+
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is None
+    sig = probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp)
+    assert sig is not None
+    assert "DARK" in sig.detail
+
+
+def test_propagation_soak_a_stale_PASS_still_fires_silence(tmp_path):
+    """MUTATION GUARD. The bug this pins: judging the envelope BEFORE the age.
+
+    A stale pass_envelope=true is the exact shape of "the exerciser died and
+    left a happy file behind" — the most dangerous state, because it looks
+    healthy. If the probe ever checks pass_envelope first, this test fails.
+    """
+    sdir = str(tmp_path / "propagation_soak")
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+    _write_prop_envelope(sdir, passed=True, age_s=99999.0, now=now)
+
+    probe_propagation_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    sig = probe_propagation_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    assert sig is not None, "a stale PASS must fire the SILENCE leg, not read clean"
+
+
+def test_propagation_soak_missing_pass_envelope_is_indeterminate(tmp_path):
+    """A shape regression must never read as healthy."""
+    import os
+    sdir = str(tmp_path / "propagation_soak")
+    os.makedirs(sdir)
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+    path = os.path.join(sdir, "prop-20260721T000000Z.json")
+    with open(path, "w") as fh:
+        json.dump({"total_ok": 1}, fh)          # no pass_envelope
+    os.utime(path, (now - 60, now - 60))
+
+    for _ in range(4):
+        assert probe_propagation_soak_degraded(
+            state_dir=sdir, now=now, debounce_path=sp) is None
+
+
+def test_propagation_soak_torn_write_is_ridden_out_by_debounce(tmp_path):
+    """One unparseable tick must not page; a persistent one must."""
+    import os
+    sdir = str(tmp_path / "propagation_soak")
+    os.makedirs(sdir)
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+    path = os.path.join(sdir, "prop-20260721T000000Z.json")
+    with open(path, "w") as fh:
+        fh.write("{partial")
+    os.utime(path, (now - 60, now - 60))
+
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is None       # ridden out
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is not None   # persistent
+
+
+def test_propagation_soak_recovery_resets_the_streak(tmp_path):
+    """Only an explicit healthy+fresh observation clears the streak."""
+    sdir = str(tmp_path / "propagation_soak")
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+
+    _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is None       # streak 1
+
+    _write_prop_envelope(sdir, passed=True, age_s=60.0, now=now)
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is None       # reset
+
+    _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
+    assert probe_propagation_soak_degraded(
+        state_dir=sdir, now=now, debounce_path=sp) is None       # streak 1 again
+
+
+def test_worst_propagation_round_never_raises_on_junk():
+    from utils.watchdog_probes_gateway import _worst_propagation_round
+    for bad in (None, "x", 7, [None], [{"ok": None}], [{"ok": False}]):
+        _worst_propagation_round(bad)      # must not raise
+    assert _worst_propagation_round([{"ok": True, "seq": 1}]) is None

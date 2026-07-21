@@ -33,6 +33,14 @@ logger = logging.getLogger("watchdog")
 # ─────────────────────────────────────────────────────────────────────
 
 DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH = "/var/lib/meshforge/synth_soak_debounce.json"
+DEFAULT_PROPAGATION_SOAK_DEBOUNCE_PATH = (
+    "/var/lib/meshforge/propagation_soak_debounce.json")
+
+# The propagation soak fires hourly (meshforge-propagation-soak.timer
+# OnCalendar=*:37:00). Same ~2.5-cadence staleness bar as the synth soak: two
+# missed runs, so one slow/skipped fire never false-alarms.
+_PROPAGATION_SOAK_CADENCE_S = 3600.0
+_PROPAGATION_SOAK_STALE_AFTER_S = 9000.0
 
 # The synth soak fires hourly (meshforge-synth-soak.timer OnCalendar=*:07:00).
 # Treat it as DARK only after ~2.5 cadences with no fresh result — two missed
@@ -42,14 +50,15 @@ _SYNTH_SOAK_CADENCE_S = 3600.0
 _SYNTH_SOAK_STALE_AFTER_S = 9000.0
 
 
-def _resolve_synth_soak_dir() -> Optional[str]:
-    """Resolve the operator's synth_soak state dir, root-context safe.
+def _resolve_operator_state_dir(leaf: str) -> Optional[str]:
+    """``~<operator>/.local/state/meshforge/<leaf>``, root-context safe.
 
-    The synth soak runs as the operator's systemd --user timer, so its output
-    lives under the operator home — the watchdog (sandboxed root) derives that
-    home from the operator UID and reads it directly, never escalating (the
-    rns_version_drift / cron_verdict lesson). None when no operator user is
-    resolvable (indeterminate — never a false alarm).
+    Shared by the soak probes: these exercisers run as the operator's
+    systemd --user timers, so their output lives under the operator home. The
+    watchdog (sandboxed root) derives that home from the operator UID and reads
+    it directly, NEVER escalating (the rns_version_drift / cron_verdict lesson).
+    None when no operator user is resolvable — indeterminate, never a false
+    alarm.
     """
     try:
         from utils.fleet_test_runner import _find_operator_user
@@ -63,7 +72,17 @@ def _resolve_synth_soak_dir() -> Optional[str]:
         home = pwd.getpwuid(op[0]).pw_dir
     except (KeyError, OSError):
         return None
-    return os.path.join(home, ".local", "state", "meshforge", "synth_soak")
+    return os.path.join(home, ".local", "state", "meshforge", leaf)
+
+
+def _resolve_synth_soak_dir() -> Optional[str]:
+    """The operator's ``synth_soak`` state dir (see _resolve_operator_state_dir)."""
+    return _resolve_operator_state_dir("synth_soak")
+
+
+def _resolve_propagation_soak_dir() -> Optional[str]:
+    """The operator's ``propagation_soak`` state dir."""
+    return _resolve_operator_state_dir("propagation_soak")
 
 
 def _load_synth_streak(state_path: str) -> int:
@@ -91,17 +110,23 @@ def _save_synth_streak(state_path: str, streak: int) -> None:
         pass
 
 
-def _newest_synth_file(state_dir: str) -> Optional[Tuple[str, float]]:
-    """``(path, mtime)`` of the newest ``synth-*.json`` in ``state_dir``, else None.
+def _newest_synth_file(state_dir: str,
+                      prefix: str = "synth-") -> Optional[Tuple[str, float]]:
+    """``(path, mtime)`` of the newest ``<prefix>*.json`` in ``state_dir``, else None.
 
-    None distinguishes 'no synth output exists' (inert — box never produced a
+    None distinguishes 'no output exists' (inert — box never produced a
     result) from a stale-but-present file (the silence signal). A listing error
     after the dir existed is a transient race → None (caller holds the streak).
+
+    ``prefix`` is parameterised so the propagation soak (``prop-*.json``)
+    reuses this rather than growing a near-identical copy that would drift
+    (honest_failure_modes #5: two consumers of one artifact share ONE
+    implementation). Default preserves the synth soak's behaviour exactly.
     """
     try:
         entries = [
             e for e in os.listdir(state_dir)
-            if e.startswith("synth-") and e.endswith(".json")
+            if e.startswith(prefix) and e.endswith(".json")
         ]
     except OSError:
         return None
@@ -1176,3 +1201,168 @@ def probe_oracle_delivery_degraded(
         extra=extra,
     )
 
+
+# -----------------------------------------------------------------------
+# Probe: propagation soak degraded / silent (2026-07-21, slice 3)
+# -----------------------------------------------------------------------
+
+
+def _worst_propagation_round(round_results) -> Optional[str]:
+    """Compact ``round N failed at <stage>: <reason>`` for the first failure.
+
+    Tolerates any shape - a summary helper must never crash the probe that
+    calls it.
+    """
+    if not isinstance(round_results, list):
+        return None
+    for r in round_results:
+        if not isinstance(r, dict):
+            continue
+        if r.get("ok") is False:
+            return (f"round {r.get('seq')} failed at "
+                    f"{r.get('stage') or '?'}: {r.get('reason') or 'unknown'}")
+    return None
+
+
+def probe_propagation_soak_degraded(
+    *,
+    state_dir: Optional[str] = None,
+    now: Optional[float] = None,
+    stale_after_s: float = _PROPAGATION_SOAK_STALE_AFTER_S,
+    debounce_path: Optional[str] = None,
+    debounce_ticks: int = 2,
+) -> Optional[Signal]:
+    """The configured propagation node stopped STORING AND FORWARDING.
+
+    The gap this closes: ``probe_lxmf_propagation_node_dark`` watches whether
+    the configured node ANNOUNCES. A node that announces perfectly while
+    silently dropping every stored message reads clean on that probe forever -
+    announce-liveness standing in as a proxy for the property we actually care
+    about. In a small lab, traffic to an offline peer essentially never happens
+    organically, so the realistic failure is that the organ is quietly useless
+    for months while every gate stays green.
+
+    ``meshforge-propagation-soak.timer`` -> ``lab_propagation_soak_fire.sh``
+    manufactures that traffic hourly: a receiver that has never announced (so
+    no direct path can exist) is sent a PROPAGATED message, then comes up and
+    pulls it back. This probe consumes the resulting envelope.
+
+    Two legs, ``degraded`` only - offline-peer delivery is impaired while LIVE
+    delivery is unaffected, and ``gateway_delivery_degraded`` /
+    ``delivery_confirmation_stall`` own the hard-failure surface:
+
+      - SILENCE: newest ``prop-*.json`` older than ``stale_after_s`` (~2.5x the
+        hourly cadence) - the exerciser stopped. For a fixed-cadence generator
+        silence IS the failure, exactly as for the synth soak.
+      - ENVELOPE: newest result has ``pass_envelope`` false - a message was
+        accepted by the node and never came back, or was never accepted.
+
+    Honest-failure self-guards (favour silence on uncertainty):
+      - operator unresolvable -> indeterminate (NOT "box doesn't run it": on a
+        soak-running box that early-boot window must not read as inert).
+      - state dir absent -> INERT (this box doesn't run the drill - the common
+        case, including every box with no ``propagation_node`` configured,
+        since the fire script publishes nothing there).
+      - no ``prop-*.json`` yet -> indeterminate, streak HELD (freshly installed).
+      - newest unreadable/garbage -> a candidate, but ridden out by the debounce
+        so a torn mid-write file cannot page.
+      - ``pass_envelope`` absent on a parseable fresh file -> indeterminate; a
+        shape regression must never read as healthy.
+      - only an explicit healthy+fresh observation resets the streak.
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+
+    sdir = state_dir or _resolve_propagation_soak_dir()
+    if not sdir:
+        note_disposition("propagation_soak_degraded", "indeterminate",
+                         reason="operator unresolvable - state dir unknown")
+        return None
+    if not os.path.isdir(sdir):
+        note_disposition(
+            "propagation_soak_degraded", "inert",
+            reason="propagation-soak state dir absent - box doesn't run the drill")
+        return None
+
+    sp = debounce_path or DEFAULT_PROPAGATION_SOAK_DEBOUNCE_PATH
+
+    newest = _newest_synth_file(sdir, prefix="prop-")
+    if newest is None:
+        note_disposition("propagation_soak_degraded", "indeterminate",
+                         reason="no drill result file yet / listing race - held")
+        return None
+
+    newest_path, newest_mtime = newest
+    age = now - newest_mtime
+    extra: dict = {"newest": os.path.basename(newest_path), "age_s": round(age, 1)}
+
+    candidate_detail: Optional[str] = None
+    definitively_healthy = False
+
+    if age > stale_after_s:
+        candidate_detail = (
+            f"LXMF store-and-forward drill went DARK: newest result is "
+            f"{age / 3600.0:.1f}h old (cadence ~1h) - the exerciser stopped "
+            f"producing output, so nothing is proving the propagation node "
+            f"still stores and forwards. Check "
+            f"meshforge-propagation-soak.timer (systemd --user; needs linger) "
+            f"and its fire.log."
+        )
+    else:
+        try:
+            with open(newest_path, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except (OSError, ValueError):
+            doc = None
+        if not isinstance(doc, dict):
+            candidate_detail = (
+                f"propagation drill newest result unreadable "
+                f"({os.path.basename(newest_path)}) - the run wrote no "
+                f"parseable envelope."
+            )
+        elif doc.get("pass_envelope") is True:
+            definitively_healthy = True
+        elif doc.get("pass_envelope") is False:
+            total_ok = doc.get("total_ok")
+            total = doc.get("total_samples")
+            node = doc.get("propagation_node")
+            worst = _worst_propagation_round(doc.get("round_results"))
+            extra.update({
+                "total_ok": total_ok, "total_samples": total,
+                "propagation_node": node, "worst_round": worst,
+            })
+            candidate_detail = (
+                f"LXMF store-and-forward FAILED against the configured "
+                f"propagation node {str(node)[:16]}: {total_ok}/{total} "
+                f"round(s) completed"
+                + (f". {worst}" if worst else "")
+                + ". Messages to an OFFLINE peer are not being stored and "
+                "returned - live delivery is unaffected, but the propagation "
+                "organ is not doing its job. Check lxmd on its host "
+                "(`lxmd --status`: messagestore + 'served to clients'), then "
+                "RNS paths to the node."
+            )
+        # else: pass_envelope absent/None -> indeterminate (held below).
+
+    if candidate_detail is not None:
+        streak = _load_synth_streak(sp) + 1
+        _save_synth_streak(sp, streak)
+        if streak < debounce_ticks:
+            note_disposition("propagation_soak_degraded", "indeterminate",
+                             reason="degraded candidate held by debounce")
+            return None
+        return Signal(
+            cls="propagation_soak_degraded",
+            subject="lxmf-propagation",
+            severity="degraded",
+            detail=candidate_detail,
+            extra=extra,
+        )
+
+    if definitively_healthy:
+        _save_synth_streak(sp, 0)
+        note_disposition("propagation_soak_degraded", "clean")
+    else:
+        note_disposition("propagation_soak_degraded", "indeterminate",
+                         reason="pass_envelope absent on parseable envelope")
+    return None

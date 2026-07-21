@@ -136,6 +136,7 @@ from utils.watchdog_probes_gateway import (
     probe_queue_backlog,
     probe_resource_canary_degraded,
     probe_synth_soak_degraded,
+    probe_propagation_soak_degraded,
 )
 from utils.watchdog_probes_mini import (
     MEMORY_INDEX_LIMIT_BYTES,
@@ -188,6 +189,7 @@ __all__ = [
     "probe_oracle_delivery_degraded",
     "probe_resource_canary_degraded",
     "probe_synth_soak_degraded",
+    "probe_propagation_soak_degraded",
     "probe_service_inactive",
     "probe_nomadnet_crashloop",
     "probe_user_unit_inactive",
