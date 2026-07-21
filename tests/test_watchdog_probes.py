@@ -7622,6 +7622,32 @@ def test_propagation_soak_recovery_resets_the_streak(tmp_path):
         state_dir=sdir, now=now, debounce_path=sp) is None       # streak 1 again
 
 
+def test_propagation_soak_null_envelope_holds_not_fires(tmp_path):
+    """An INDETERMINATE run (pass_envelope=null — node never exercised, e.g.
+    a slow propagation stamp) must HOLD, never fire a CONCERN.
+
+    Live-caught on moc3 2026-07-21: its stamp PoW is slow and variable, so
+    send-stalls are common. The drill now reports those as pass_envelope=null,
+    and the probe must read null as 'held' — mapping 'couldn't test' to 'test
+    failed' is honest_failure_modes #1.
+    """
+    import os
+    sdir = str(tmp_path / "propagation_soak")
+    os.makedirs(sdir)
+    now = 100000.0
+    sp = str(tmp_path / "d.json")
+    path = os.path.join(sdir, "prop-20260721T000000Z.json")
+    with open(path, "w") as fh:
+        json.dump({"pass_envelope": None, "total_indeterminate": 1,
+                   "total_ok": 0, "total_samples": 1}, fh)
+    os.utime(path, (now - 60, now - 60))
+
+    # never fires, no matter how many consecutive ticks
+    for _ in range(4):
+        assert probe_propagation_soak_degraded(
+            state_dir=sdir, now=now, debounce_path=sp) is None
+
+
 def test_worst_propagation_round_never_raises_on_junk():
     from utils.watchdog_probes_gateway import _worst_propagation_round
     for bad in (None, "x", 7, [None], [{"ok": None}], [{"ok": False}]):

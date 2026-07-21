@@ -34,6 +34,22 @@ STATE_DIR="${STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/propagat
 
 mkdir -p "$STATE_DIR"
 
+# Single-writer: never run two fires at once (honest_failure_modes #8). Two
+# concurrent fires in the SAME second collide on the timestamped envelope temp
+# file, and — worse on a memory-constrained gateway — two simultaneous
+# propagation stamps (CPU-bound proof-of-work) spike load and starve each
+# other, which is what made back-to-back runs time out on moc3. flock -n makes
+# a second fire skip cleanly: a skipped fire is NOT a failure (the running one
+# publishes the envelope), so exit 0 with a log line rather than a FAIL verdict.
+# The scheduled hourly timer never overlaps itself (a fire is capped at
+# TimeoutStartSec well under an hour); this guards manual+scheduled overlap.
+exec 9>"$STATE_DIR/.fire.lock"
+if ! flock -n 9; then
+    echo "$(date -u +%Y%m%dT%H%M%SZ) skip: another fire holds the lock" \
+        >>"$STATE_DIR/fire.log"
+    exit 0
+fi
+
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 out="$STATE_DIR/prop-$stamp.json"
 # Write to a hidden temp, rename only once the run produced a COMPLETE
@@ -88,9 +104,15 @@ fi
 # UNWIRED — the fleet snapshot keeps it while FRESH and drops it once stale
 # (2026-06-27 orphan stale-gate). #78 only judges WIRED crons, so no double-page;
 # the watchdog probe still owns alerting.
-#   OK       envelope published, pass_envelope=true
-#   CONCERN  envelope published, pass_envelope=false (store-and-forward broken)
-#   FAIL     no/invalid envelope
+#   OK       pass_envelope=true  (node stored and returned the message)
+#   CONCERN  pass_envelope=false (node had the message and failed to return it)
+#   OK*      pass_envelope=null  (INDETERMINATE — the node was never exercised,
+#            e.g. the sender was too slow generating the propagation stamp; NOT
+#            a delivery failure, so not a CONCERN. The watchdog probe reads the
+#            null envelope as "held" and the SILENCE leg still catches a truly
+#            dead exerciser. Reported OK-status so /fleet/slo stays quiet, with
+#            the message stating plainly that nothing was proven.)
+#   FAIL     envelope present but MISSING the pass_envelope field (shape bug)
 VERDICT_BIN="$REPO_ROOT/scripts/cron_verdict.sh"
 if [ -x "$VERDICT_BIN" ]; then
     if [ -f "$out" ]; then
@@ -113,6 +135,16 @@ try:
                 why = f" — round {r.get('seq')} failed at {r.get('stage')}: {r.get('reason')}"
                 break
         print(f"CONCERN store-and-forward {frac} round(s){why}")
+    elif "pass_envelope" in d:
+        # Explicit null: indeterminate. Say what happened without claiming
+        # failure OR success — the node was never reached.
+        ind = d.get("total_indeterminate")
+        why = ""
+        for r in (d.get("round_results") or []):
+            if isinstance(r, dict) and r.get("stage") == "send" and r.get("ok") is False:
+                why = f" — {r.get('reason')}"
+                break
+        print(f"OK indeterminate: node not exercised ({ind} send-stall){why}")
     else:
         print("FAIL envelope missing pass_envelope field")
 except Exception as e:

@@ -6,6 +6,7 @@ here.
 """
 
 import json
+import os
 import sys
 
 sys.path.insert(0, 'src')
@@ -47,12 +48,13 @@ class TestEnvelopeVerdict:
         """A run that produced nothing has proven nothing.
 
         An empty result set trivially satisfying a ratio test is
-        honest_failure_modes #1 in arithmetic form — the healthiest-looking
-        possible verdict from the least informative possible run.
+        honest_failure_modes #1 in arithmetic form. It is INDETERMINATE (None),
+        never a pass — and never a False either, since nothing was tested.
         """
         r = build_report([], propagation_node="abc",
                          started_at_iso="s", finished_at_iso="f")
-        assert r.pass_envelope is False
+        assert r.pass_envelope is None
+        assert r.pass_envelope is not True
         assert r.ok_ratio == 0.0
 
     def test_threshold_allows_partial_credit_when_asked(self):
@@ -63,6 +65,57 @@ class TestEnvelopeVerdict:
 
     def test_default_threshold_demands_every_round(self):
         assert DEFAULT_OK_RATIO_THRESHOLD == 1.0
+
+
+class TestIndeterminateVsFailure:
+    """A send-stamp timeout is NOT a store-and-forward failure.
+
+    Only a PULL failure (the node had the message and did not return it) proves
+    store-and-forward is broken. A SEND failure means the message never reached
+    the node — most often the sender was too slow generating the propagation
+    stamp (CPU-bound PoW, high variance). Mapping "couldn't test" to "test
+    failed" is honest_failure_modes #1; live-caught on moc3 2026-07-21 where a
+    slow stamp produced a false CONCERN against a healthy node.
+    """
+
+    def _send_fail(self, seq=1):
+        return RoundResult(seq=seq, ok=False, stage="send",
+                           reason="send phase exceeded 330s")
+
+    def test_send_stall_is_none_not_false(self):
+        """The core fix: an all-send-stall run is indeterminate, never a fail."""
+        r = build_report([self._send_fail()], propagation_node="n",
+                         started_at_iso="s", finished_at_iso="f")
+        assert r.pass_envelope is None
+        assert r.total_indeterminate == 1
+
+    def test_pull_failure_is_still_false(self):
+        """A real store-and-forward failure must still page."""
+        r = build_report([_fail(1, stage="pull")], propagation_node="n",
+                         started_at_iso="s", finished_at_iso="f")
+        assert r.pass_envelope is False
+
+    def test_ok_round_beside_a_send_stall_still_passes(self):
+        """The stall round doesn't count against the ratio — the node was
+        exercised once and delivered."""
+        r = build_report([_ok(1), self._send_fail(2)], propagation_node="n",
+                         started_at_iso="s", finished_at_iso="f")
+        assert r.pass_envelope is True
+        assert r.total_indeterminate == 1
+
+    def test_pull_failure_beside_a_send_stall_still_fails(self):
+        r = build_report([_fail(1, stage="pull"), self._send_fail(2)],
+                         propagation_node="n",
+                         started_at_iso="s", finished_at_iso="f")
+        assert r.pass_envelope is False
+
+    def test_none_survives_json_round_trip(self):
+        import json as _j
+        d = _j.loads(_j.dumps(build_report(
+            [self._send_fail()], propagation_node="n",
+            started_at_iso="s", finished_at_iso="f").to_dict()))
+        assert d["pass_envelope"] is None
+        assert d["total_indeterminate"] == 1
 
 
 class TestEnvelopeShape:
@@ -110,6 +163,39 @@ class TestWorstRound:
 
     def test_accepts_dataclass_instances_too(self):
         assert "round 3" in worst_round([_fail(3)])
+
+
+class TestIdentityPathIsUniquePerFire:
+    """A fixed identity filename is a collision, not a convention (hfm #8).
+
+    Live-caught 2026-07-21 on moc3: `enable --now` fired the service while a
+    manual fire was running; both used one fixed-name identity file, so the
+    second fire's send overwrote it and the first fire's pull loaded the wrong
+    identity and retrieved nothing — a false CONCERN against a healthy node.
+    """
+
+    def test_distinct_tokens_give_distinct_paths(self, tmp_path, monkeypatch):
+        from lab import lxmf_propagation_soak as m
+        monkeypatch.setattr("utils.paths.get_real_user_home", lambda: tmp_path)
+        a = m.default_identity_path("111_1")
+        b = m.default_identity_path("222_1")
+        assert a != b
+        assert a.endswith("111_1")
+        assert b.endswith("222_1")
+
+    def test_token_is_filename_sanitised(self, tmp_path, monkeypatch):
+        """A token can come from a PID string; never let it escape the dir."""
+        from lab import lxmf_propagation_soak as m
+        monkeypatch.setattr("utils.paths.get_real_user_home", lambda: tmp_path)
+        path = m.default_identity_path("../../etc/passwd")
+        assert "/etc/passwd" not in path
+        assert os.path.dirname(path) == str(
+            tmp_path / ".local" / "state" / "meshforge" / "propagation_soak")
+
+    def test_empty_token_still_yields_a_path(self, tmp_path, monkeypatch):
+        from lab import lxmf_propagation_soak as m
+        monkeypatch.setattr("utils.paths.get_real_user_home", lambda: tmp_path)
+        assert m.default_identity_path("").endswith("round")
 
 
 class TestPropagationNodeResolution:

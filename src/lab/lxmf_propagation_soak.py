@@ -93,7 +93,14 @@ class SoakReport:
     total_samples: int
     total_ok: int
     ok_ratio_threshold: float
-    pass_envelope: bool
+    # None when the run was INDETERMINATE — it could not exercise the node at
+    # all (every send timed out generating a propagation stamp, a sender-local
+    # CPU condition). The probe reads None as "held, never healthy", never as a
+    # failure: a stamp we were too slow to generate says NOTHING about whether
+    # the node stores and forwards (honest_failure_modes #1 — do not map
+    # "couldn't test" to "test failed").
+    pass_envelope: Optional[bool]
+    total_indeterminate: int = 0
     round_results: List[RoundResult] = field(default_factory=list)
     marker: str = MARKER
 
@@ -126,6 +133,20 @@ class SoakReport:
         return d
 
 
+def _is_indeterminate(r: RoundResult) -> bool:
+    """A round that could not exercise the node.
+
+    Only a PULL-stage failure proves store-and-forward is broken: by then the
+    send succeeded, so the node accepted the message into its store and simply
+    failed to return it. A SEND-stage failure means the message never reached
+    the node at all — most often the sender was too slow generating the
+    propagation stamp (CPU-bound proof-of-work, high variance on a loaded box).
+    That is a sender-local condition and says nothing about the node, so it is
+    indeterminate, never a failure.
+    """
+    return (not r.ok) and r.stage == _STAGE_SEND
+
+
 def build_report(
     round_results: List[RoundResult],
     *,
@@ -136,13 +157,35 @@ def build_report(
 ) -> SoakReport:
     """Assemble the envelope. Pure — no RNS, so tests cover the verdict logic.
 
-    ``pass_envelope`` requires at least one sample: a run that produced NO
-    rounds has proven nothing, and must never read as a pass (an empty result
-    set satisfying a ratio test is honest_failure_modes #1 in arithmetic form).
+    ``pass_envelope`` is tri-state:
+      * True  — at least one round actually exercised the node and the OK ratio
+        over the rounds that DID reach it meets the threshold.
+      * False — a round reached the node's store and the node failed to return
+        it (a PULL-stage failure). This is the only real store-and-forward
+        failure, and it is what the probe pages on.
+      * None  — the run could not exercise the node at all (every round was
+        send-indeterminate) OR produced no rounds. Nothing was proven; the
+        probe holds. Never a pass — an empty/untested result satisfying a ratio
+        test is honest_failure_modes #1 in arithmetic form.
     """
     total = len(round_results)
     ok = sum(1 for r in round_results if r.ok)
-    ratio = (ok / total) if total else 0.0
+    indeterminate = sum(1 for r in round_results if _is_indeterminate(r))
+    real_failures = sum(
+        1 for r in round_results if (not r.ok) and not _is_indeterminate(r))
+    testable = ok + real_failures      # rounds that actually reached the node
+
+    # The threshold applies over the rounds that ACTUALLY reached the node, so
+    # a transient pull hiccup is tolerated exactly as the synth soak tolerates
+    # a dropped ACK — but send-stalls are excluded from the denominator, never
+    # counted as failures. No testable rounds at all → None (nothing proven).
+    if testable == 0:
+        passed: Optional[bool] = None
+    elif (ok / testable) >= ok_ratio_threshold:
+        passed = True
+    else:
+        passed = False
+
     return SoakReport(
         started_at_iso=started_at_iso,
         finished_at_iso=finished_at_iso,
@@ -150,8 +193,9 @@ def build_report(
         rounds=total,
         total_samples=total,
         total_ok=ok,
+        total_indeterminate=indeterminate,
         ok_ratio_threshold=ok_ratio_threshold,
-        pass_envelope=(total > 0 and ratio >= ok_ratio_threshold),
+        pass_envelope=passed,
         round_results=list(round_results),
     )
 
@@ -239,40 +283,44 @@ def _router_storage(role: str) -> str:
     return str(root)
 
 
-def _round_identity_path() -> str:
-    """Path to the CURRENT round's throwaway receiver identity.
+def default_identity_path(token: str) -> str:
+    """Path to a round's throwaway receiver identity, keyed by a UNIQUE token.
 
-    The receiver identity is regenerated EVERY round, deliberately.
+    The receiver identity is regenerated EVERY round, and its filename carries
+    a token unique to THIS fire.
 
-    RNS caches a destination's ratchet public key at the SENDER, outside the
-    LXMF router's storage. With a stable receiver, the second and every later
-    round is encrypted to a ratchet, and any receiver whose ratchet store does
-    not still hold the matching private half silently fails to decrypt
-    ("Decryption with ratchets failed") and drops the message before the
-    delivery callback — so the drill reports "stored but not retrieved" against
-    a perfectly healthy node. Clearing the receiver's store makes it worse, not
-    better: the sender's cache still points at the ratchet that was just
-    destroyed.
+    Two reasons the identity is fresh-per-round and unique-per-fire:
 
-    A virgin identity per round has no cached ratchet anywhere, so the message
-    is encrypted to the static key and always decryptable. It also models the
-    real case more honestly — an offline peer we have never talked to before.
+    * Fresh per round — RNS caches a destination's ratchet public key at the
+      SENDER, outside the LXMF router's storage. With a stable receiver, the
+      second and every later round is ratchet-encrypted, and a receiver that no
+      longer holds the matching private half silently fails to decrypt
+      ("Decryption with ratchets failed") and drops the message before the
+      callback, so the drill reports "stored but not retrieved" against a
+      healthy node. A virgin identity has no cached ratchet anywhere and models
+      a never-seen offline peer honestly. (Live-caught 2026-07-21: the drill
+      passed exactly ONCE then failed every later round — the pass@1 trap.)
 
-    Live-caught 2026-07-21 after the drill passed exactly ONCE and then failed
-    every subsequent run (the pass@1 trap; a canary that cries wolf is worse
-    than no canary).
+    * Unique per fire — a FIXED filename is a collision, not a convention
+      (honest_failure_modes #8). If two fires overlap (a manual run during the
+      scheduled one; ``enable --now`` racing a manual run — live-caught
+      2026-07-21 on moc3), the second fire's send overwrites the shared
+      identity file, so the first fire's pull loads the WRONG identity and
+      retrieves nothing — a false CONCERN against a healthy node. The token
+      (the parent's PID + a monotonic-ish counter) makes concurrent fires
+      independent.
     """
     from utils.paths import get_real_user_home
     root = (get_real_user_home() / ".local" / "state" / "meshforge"
             / "propagation_soak")
     root.mkdir(parents=True, exist_ok=True)
-    return str(root / "round_b_identity")
+    safe = "".join(c for c in token if c.isalnum() or c in "-_")[:64] or "round"
+    return str(root / f"round_b_identity_{safe}")
 
 
-def _new_round_identity():
-    """Create + persist a fresh receiver identity for this round."""
+def _new_round_identity(path: str):
+    """Create + persist a fresh receiver identity at ``path``."""
     import RNS
-    path = _round_identity_path()
     ident = RNS.Identity()
     ident.to_file(path)
     try:
@@ -282,10 +330,9 @@ def _new_round_identity():
     return ident
 
 
-def _load_round_identity():
-    """Load the identity the send phase created. None when absent."""
+def _load_round_identity(path: str):
+    """Load the identity the send phase created at ``path``. None when absent."""
     import RNS
-    path = _round_identity_path()
     if not os.path.isfile(path):
         return None
     return RNS.Identity.from_file(path)
@@ -296,7 +343,8 @@ def _src_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _run_role(role: str, body: str, node_hash: str, timeout_s: float) -> dict:
+def _run_role(role: str, body: str, node_hash: str, timeout_s: float,
+              identity_path: str) -> dict:
     """Run one role in a CHILD PROCESS and return its JSON result.
 
     ⚠️ Load-bearing design, learned the hard way 2026-07-21: the sender and the
@@ -316,7 +364,8 @@ def _run_role(role: str, body: str, node_hash: str, timeout_s: float) -> dict:
     import subprocess
 
     cmd = [sys.executable, "-m", "lab.lxmf_propagation_soak",
-           "--role", role, "--body", body, "--propagation-node", node_hash]
+           "--role", role, "--body", body, "--propagation-node", node_hash,
+           "--identity-path", identity_path]
     try:
         proc = subprocess.run(cmd, cwd=_src_root(), capture_output=True,
                               text=True, timeout=timeout_s)
@@ -338,7 +387,7 @@ def _run_role(role: str, body: str, node_hash: str, timeout_s: float) -> dict:
     return {"ok": False, "reason": f"{role} phase produced no result ({tail})"}
 
 
-def _phase_send(body: str, node_hash: str) -> dict:
+def _phase_send(body: str, node_hash: str, identity_path: str) -> dict:
     """Child role: send ONE message with desired_method=PROPAGATED."""
     import LXMF
     import RNS
@@ -346,7 +395,7 @@ def _phase_send(body: str, node_hash: str) -> dict:
 
     t0 = time.time()
     ident_a, _ = load_or_create_identity("prop_soak_a")
-    ident_b = _new_round_identity()      # virgin: no cached ratchet anywhere
+    ident_b = _new_round_identity(identity_path)   # virgin, unique per fire
 
     store = _router_storage("a")
     # autopeer=False: a drill client must never peer our fleet's store out
@@ -383,12 +432,12 @@ def _phase_send(body: str, node_hash: str) -> dict:
             pass
 
 
-def _phase_pull(body: str, node_hash: str) -> dict:
+def _phase_pull(body: str, node_hash: str, identity_path: str) -> dict:
     """Child role: bring the receiver up and pull from the propagation node."""
     import LXMF
 
     t0 = time.time()
-    ident_b = _load_round_identity()
+    ident_b = _load_round_identity(identity_path)
     if ident_b is None:
         # The send phase owns creating it; its absence means the phases ran out
         # of order, never that store-and-forward failed. Say which.
@@ -439,22 +488,35 @@ def run_round(seq: int, node_hash: str, *, send_timeout_s: float,
     body = body or f"{MARKER} seq={seq} t={int(time.time())}"
     t0 = time.time()
 
-    sent = _run_role("send", body, node_hash, send_timeout_s + 30.0)
-    if not sent.get("ok"):
-        return RoundResult(seq=seq, ok=False, stage=_STAGE_SEND,
-                           reason=str(sent.get("reason", "unknown")))
-    store_latency = sent.get("latency_s")
+    # A token unique to THIS fire so overlapping fires never share an identity
+    # file (honest_failure_modes #8). PID is unique among live processes; seq
+    # separates rounds within one fire.
+    identity_path = default_identity_path(f"{os.getpid()}_{seq}")
+    try:
+        sent = _run_role("send", body, node_hash, send_timeout_s + 30.0,
+                         identity_path)
+        if not sent.get("ok"):
+            return RoundResult(seq=seq, ok=False, stage=_STAGE_SEND,
+                               reason=str(sent.get("reason", "unknown")))
+        store_latency = sent.get("latency_s")
 
-    pulled = _run_role("pull", body, node_hash, pull_timeout_s + 30.0)
-    if not pulled.get("ok"):
-        return RoundResult(seq=seq, ok=False, stage=_STAGE_PULL,
+        pulled = _run_role("pull", body, node_hash, pull_timeout_s + 30.0,
+                           identity_path)
+        if not pulled.get("ok"):
+            return RoundResult(seq=seq, ok=False, stage=_STAGE_PULL,
+                               store_latency_s=store_latency,
+                               reason=str(pulled.get("reason", "unknown")))
+
+        return RoundResult(seq=seq, ok=True,
                            store_latency_s=store_latency,
-                           reason=str(pulled.get("reason", "unknown")))
-
-    return RoundResult(seq=seq, ok=True,
-                       store_latency_s=store_latency,
-                       retrieve_latency_s=pulled.get("latency_s"),
-                       total_latency_s=round(time.time() - t0, 2))
+                           retrieve_latency_s=pulled.get("latency_s"),
+                           total_latency_s=round(time.time() - t0, 2))
+    finally:
+        # Throwaway identity — never leave it lying in state.
+        try:
+            os.remove(identity_path)
+        except OSError:
+            pass
 
 
 def run_soak(*, rounds: int, node_hash: str,
@@ -485,9 +547,17 @@ def render_text(report: SoakReport) -> str:
         if r.ok:
             lines.append(f"  round {r.seq}: OK store={r.store_latency_s}s "
                          f"retrieve={r.retrieve_latency_s}s")
+        elif r.stage == _STAGE_SEND:
+            lines.append(f"  round {r.seq}: INDETERMINATE at send — {r.reason}")
         else:
             lines.append(f"  round {r.seq}: FAIL at {r.stage} — {r.reason}")
-    lines.append(f"  verdict   : {'PASS' if report.pass_envelope else 'FAIL'}")
+    if report.pass_envelope is True:
+        verdict = "PASS"
+    elif report.pass_envelope is False:
+        verdict = "FAIL"
+    else:
+        verdict = "INDETERMINATE (node not exercised — sender too slow?)"
+    lines.append(f"  verdict   : {verdict}")
     return "\n".join(lines)
 
 
@@ -507,6 +577,7 @@ def main(argv=None) -> int:
     ap.add_argument("--role", choices=("send", "pull"), default=None,
                     help=argparse.SUPPRESS)
     ap.add_argument("--body", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--identity-path", default=None, help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.loglevel.upper(), logging.WARNING))
@@ -530,7 +601,8 @@ def main(argv=None) -> int:
                   file=sys.stderr)
             return 3
         fn = _phase_send if args.role == "send" else _phase_pull
-        result = fn(args.body or MARKER, node)
+        ipath = args.identity_path or default_identity_path("adhoc")
+        result = fn(args.body or MARKER, node, ipath)
         # flush=True is LOAD-BEARING. stdout is a pipe here (block-buffered),
         # and RNS/LXMF teardown can reach os._exit(), which skips the
         # interpreter's flush — the result line is then silently lost and the
@@ -560,7 +632,9 @@ def main(argv=None) -> int:
         print(json.dumps(report.to_dict(), indent=2), flush=True)
     else:
         print(render_text(report), flush=True)
-    return 0 if report.pass_envelope else 1
+    # False (real store-and-forward failure) → 1; True or None (indeterminate,
+    # node not exercised) → 0. An indeterminate run is not a failure exit.
+    return 1 if report.pass_envelope is False else 0
 
 
 if __name__ == "__main__":
