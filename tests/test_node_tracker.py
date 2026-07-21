@@ -543,6 +543,82 @@ class TestUnifiedNodeTracker:
             assert len(tracker.get_all_nodes()) == 100
 
 
+class TestMergePreservesServiceType:
+    """An announce from an ALREADY-KNOWN node must refresh its service type.
+
+    Live 2026-07-21, the second half of the service_type story. Fixing the
+    cache loader was not enough: `_merge_node` never touched service_* at
+    all, so once the field was lost it could NEVER come back. The announce
+    path builds a fresh UnifiedNode carrying the right service_type and hands
+    it to add_node(), which merges into the existing node and silently drops
+    it — proven live: after our propagation node announced, its cache entry
+    had a freshly-updated last_seen and service_type STILL None.
+
+    That is why "it heals on the next announce" was wrong: create wrote the
+    field, merge dropped it, so only a node heard for the FIRST time ever
+    had one.
+    """
+
+    def _tracker(self, tmp_path):
+        cache_file = tmp_path / "node_cache.json"
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            with patch.object(UnifiedNodeTracker, '_load_cache'):
+                return UnifiedNodeTracker()
+
+    def test_announce_sets_service_type_on_an_existing_node(self, tmp_path):
+        tracker = self._tracker(tmp_path)
+        known = UnifiedNode(id="rns_abc", network="rns", name="pn")
+        tracker.add_node(known)                      # no service_type yet
+
+        fresh = UnifiedNode(id="rns_abc", network="rns", name="pn")
+        fresh.service_type = "LXMF_PROPAGATION"
+        fresh.service_aspect = "lxmf.propagation"
+        tracker.add_node(fresh)
+
+        assert tracker._nodes["rns_abc"].service_type == "LXMF_PROPAGATION"
+        assert tracker._nodes["rns_abc"].service_aspect == "lxmf.propagation"
+
+    def test_merge_never_clears_a_known_service_type(self, tmp_path):
+        """A later announce carrying nothing must not erase what we know."""
+        tracker = self._tracker(tmp_path)
+        known = UnifiedNode(id="rns_abc", network="rns", name="pn")
+        known.service_type = "LXMF_PROPAGATION"
+        tracker.add_node(known)
+
+        tracker.add_node(UnifiedNode(id="rns_abc", network="rns", name="pn"))
+
+        assert tracker._nodes["rns_abc"].service_type == "LXMF_PROPAGATION"
+
+    def test_unknown_never_overwrites_a_known_service_type(self, tmp_path):
+        """The 2026-04 flapping bug, pinned as a merge invariant.
+
+        A catch-all handler once reclassified LXMF_DELIVERY nodes as UNKNOWN.
+        The handler fix removed the cause; this keeps the merge itself honest
+        so a degraded classification can never replace a real one.
+        """
+        tracker = self._tracker(tmp_path)
+        known = UnifiedNode(id="rns_abc", network="rns", name="pn")
+        known.service_type = "LXMF_DELIVERY"
+        tracker.add_node(known)
+
+        degraded = UnifiedNode(id="rns_abc", network="rns", name="pn")
+        degraded.service_type = "UNKNOWN"
+        tracker.add_node(degraded)
+
+        assert tracker._nodes["rns_abc"].service_type == "LXMF_DELIVERY"
+
+    def test_unknown_is_still_recorded_when_nothing_is_known(self, tmp_path):
+        """UNKNOWN is a real observation when we have no better one."""
+        tracker = self._tracker(tmp_path)
+        tracker.add_node(UnifiedNode(id="rns_abc", network="rns", name="pn"))
+
+        fresh = UnifiedNode(id="rns_abc", network="rns", name="pn")
+        fresh.service_type = "UNKNOWN"
+        tracker.add_node(fresh)
+
+        assert tracker._nodes["rns_abc"].service_type == "UNKNOWN"
+
+
 class TestNodeTrackerCache:
     """Tests for cache save/load functionality."""
 

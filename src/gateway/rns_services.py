@@ -144,6 +144,15 @@ class LXMFParser(ServiceParser):
         if not app_data or len(app_data) == 0:
             return info
 
+        # A propagation announce is a DIFFERENT wire shape from a delivery
+        # announce, and the delivery ladder below cannot read it. Route it to
+        # its own parser and return — never let it fall through, because the
+        # last-resort byte scan renders msgpack header bytes as a "name"
+        # (the fleet-wide `name=j_v((` mojibake, 2026-07-21).
+        if info.service_type == RNSServiceType.LXMF_PROPAGATION:
+            LXMFParser._parse_propagation_announce(app_data, info)
+            return info
+
         name_bytes, telemetry_bytes = LXMFParser._extract_name_and_telemetry(app_data)
 
         if name_bytes and 0 < len(name_bytes) < 128:
@@ -160,6 +169,76 @@ class LXMFParser(ServiceParser):
             LXMFParser._parse_msgpack_telemetry(telemetry_bytes, info)
 
         return info
+
+    # LXMF propagation-node metadata keys (LXMF/LXMF.py). Only the ones we
+    # actually read are mirrored here; the rest stay upstream's business.
+    PN_META_NAME = 0x01
+
+    @staticmethod
+    def _parse_propagation_announce(app_data: bytes, info: 'ServiceInfo') -> None:
+        """Fill ``info`` from an ``lxmf.propagation`` announce, in place.
+
+        Wire shape is ``LXMRouter.get_propagation_node_app_data()`` —
+        ``msgpack([...])`` with 7 positional elements::
+
+            0 legacy-PN flag (bool)      4 per-sync limit
+            1 node timebase (int)        5 [stamp_cost, flex, peering_cost]
+            2 propagation node state     6 metadata dict (name lives here)
+            3 per-transfer limit (KB)
+
+        Element 0 is a BOOLEAN, which is exactly why the delivery parser
+        produced garbage: it reads element 0 as the display name, got a bool,
+        yielded nothing, and the fallback ladder then returned raw msgpack
+        header bytes as a "name".
+
+        Honest failure modes: anything we cannot read is simply LEFT UNSET.
+        An absent, malformed, or non-UTF-8 name yields ``""`` (rendered
+        "unnamed" downstream) — never a decoded byte smear, and never a
+        partially-believable value. Absence of a name is an observation;
+        inventing one from noise is a lie (honest_failure_modes #1).
+        """
+        if not _HAS_MSGPACK:
+            return
+        try:
+            data = msgpack.unpackb(app_data, raw=True, strict_map_key=False)
+        except Exception:
+            return
+        if not isinstance(data, (list, tuple)) or len(data) < 7:
+            return
+
+        metadata = data[6]
+        if isinstance(metadata, dict):
+            raw_name = metadata.get(LXMFParser.PN_META_NAME)
+            if isinstance(raw_name, (bytes, bytearray)):
+                try:
+                    decoded = bytes(raw_name).decode('utf-8')
+                except UnicodeDecodeError:
+                    decoded = ''       # not our name to guess at
+                else:
+                    decoded = ''.join(
+                        c for c in decoded.strip('\x00').strip() if c.isprintable()
+                    )
+                if decoded:
+                    info.display_name = decoded[:64]
+            elif isinstance(raw_name, str):
+                cleaned = ''.join(c for c in raw_name.strip() if c.isprintable())
+                if cleaned:
+                    info.display_name = cleaned[:64]
+
+        # Whether this node will actually propagate for us is the single most
+        # operationally useful bit in the announce — surface it, including the
+        # False case, which is real information and must not be dropped.
+        if isinstance(data[2], bool):
+            info.metadata['propagation_enabled'] = data[2]
+
+        stamp = data[5]
+        if isinstance(stamp, (list, tuple)) and stamp and isinstance(stamp[0], int):
+            info.metadata['stamp_cost'] = stamp[0]
+
+        for key, idx in (('per_transfer_limit_kb', 3), ('per_sync_limit', 4),
+                         ('timebase', 1)):
+            if isinstance(data[idx], int) and not isinstance(data[idx], bool):
+                info.metadata[key] = data[idx]
 
     @staticmethod
     def _extract_name_and_telemetry(app_data: bytes):

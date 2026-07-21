@@ -560,6 +560,29 @@ class UnifiedNodeTracker:
         if new.short_name:
             existing.short_name = new.short_name
 
+        # Refresh RNS service classification from this announce.
+        #
+        # This merge used to ignore service_* entirely, so the field was only
+        # ever set when a node was created — an announce from an ALREADY-KNOWN
+        # node left it untouched. Combined with the loader dropping it, a
+        # node's service_type was unrecoverable once lost, which is why "it
+        # heals on the next announce" was false: proven live 2026-07-21, our
+        # propagation node's cache entry got a fresh last_seen while
+        # service_type stayed None, and the probe that keys on it stayed blind.
+        #
+        # UNKNOWN never displaces a real classification: RNS aspect filters are
+        # not exclusive, and a degraded/catch-all parse must not overwrite a
+        # known-good one (the 2026-04 LXMF_DELIVERY<->UNKNOWN flapping). It is
+        # still recorded when we know nothing better — that is a real
+        # observation, not a downgrade.
+        if new.service_type:
+            if new.service_type != "UNKNOWN" or not existing.service_type:
+                existing.service_type = new.service_type
+        if new.service_aspect:
+            existing.service_aspect = new.service_aspect
+        if new.service_capabilities:
+            existing.service_capabilities = list(new.service_capabilities)
+
         # Update position if newer
         if new.position.is_valid():
             existing.position = new.position

@@ -36,6 +36,127 @@ class TestRNSServiceTypes(unittest.TestCase):
         self.assertEqual(ASPECT_TO_SERVICE['nomadnetwork.node'], RNSServiceType.NOMAD_PAGE)
 
 
+@unittest.skipUnless(_HAS_MSGPACK, "msgpack required to build propagation announce fixtures")
+class TestLXMFPropagationAnnounceParsing(unittest.TestCase):
+    """The propagation announce shape is NOT the delivery shape.
+
+    Live 2026-07-21: our own propagation node, announcing the perfectly
+    ordinary name ``WH6GXZ MeshForge PN``, was logged by both fleet gateways
+    as ``name=j_v((`` — raw msgpack bytes rendered as a display name.
+
+    Root cause: ``LXMFParser.parse`` serves BOTH ``lxmf.delivery`` and
+    ``lxmf.propagation`` but only understood the delivery app_data shape
+    ``msgpack([display_name_bytes, stamp_cost])``. A propagation announce is
+    ``LXMRouter.get_propagation_node_app_data()`` — a 7-element array whose
+    element 0 is the boolean ``False`` (legacy-PN flag) and whose real name
+    lives in element 6, ``metadata[PN_META_NAME]``. Element 0 being a bool
+    made the canonical strategy yield no name, so the ladder fell through to
+    a last-resort byte scan and returned msgpack header bytes.
+
+    honest_failure_modes #1: an inapplicable parse mapped to a valid-looking
+    value. It did real damage — the mojibake was cited in the propagation
+    plan as evidence that a FOREIGN operator was untrustworthy, so a parser
+    bug reached a trust judgement.
+    """
+
+    PN_META_NAME = 0x01
+
+    @staticmethod
+    def _pn_app_data(name=b"WH6GXZ MeshForge PN", node_state=True,
+                     with_name=True, timebase=1784600000):
+        """Build a real propagation announce, mirroring upstream exactly."""
+        metadata = {TestLXMFPropagationAnnounceParsing.PN_META_NAME: name} if with_name else {}
+        return msgpack.packb([
+            False,              # 0: legacy LXMF PN support flag
+            timebase,           # 1: node timebase
+            node_state,         # 2: propagation node state
+            256,                # 3: per-transfer limit (KB)
+            10240,              # 4: per-sync limit
+            [16, 3, 18],        # 5: [stamp_cost, flexibility, peering_cost]
+            metadata,           # 6: node metadata
+        ])
+
+    def test_propagation_name_comes_from_metadata_element_six(self):
+        from gateway.rns_services import LXMFParser
+
+        info = LXMFParser.parse(self._pn_app_data(), 'lxmf.propagation')
+
+        self.assertEqual(info.display_name, 'WH6GXZ MeshForge PN')
+        self.assertEqual(info.service_type.name, 'LXMF_PROPAGATION')
+
+    def test_propagation_never_renders_msgpack_bytes_as_a_name(self):
+        """The actual regression: garbage must never reach display_name."""
+        from gateway.rns_services import LXMFParser
+
+        info = LXMFParser.parse(self._pn_app_data(), 'lxmf.propagation')
+
+        # The pre-fix output was mojibake ('j_v((', 'j^x(', 'j^(') — bytes
+        # from the msgpack header. Listing known junk samples is useless: the
+        # noise varies per announce, and an earlier draft of this test passed
+        # against live-observed garbage simply because that sample was not in
+        # the list. Pin the PROPERTY instead — the only acceptable outputs are
+        # the real name or nothing at all.
+        self.assertIn(info.display_name, ('', 'WH6GXZ MeshForge PN'))
+
+    def test_propagation_without_a_name_is_empty_not_garbage(self):
+        """An absent name is 'unnamed', never a decoded byte smear.
+
+        honest_failure_modes #1: when the parse cannot supply the value,
+        it must yield nothing rather than something that looks like a name.
+        """
+        from gateway.rns_services import LXMFParser
+
+        info = LXMFParser.parse(self._pn_app_data(with_name=False),
+                                'lxmf.propagation')
+
+        self.assertEqual(info.display_name, '')
+
+    def test_propagation_surfaces_node_state_and_stamp_cost(self):
+        from gateway.rns_services import LXMFParser
+
+        info = LXMFParser.parse(self._pn_app_data(node_state=True),
+                                'lxmf.propagation')
+
+        self.assertTrue(info.metadata.get('propagation_enabled'))
+        self.assertEqual(info.metadata.get('stamp_cost'), 16)
+
+    def test_propagation_node_state_false_is_reported_not_dropped(self):
+        """A node announcing itself as NOT propagating is real information."""
+        from gateway.rns_services import LXMFParser
+
+        info = LXMFParser.parse(self._pn_app_data(node_state=False),
+                                'lxmf.propagation')
+
+        self.assertIs(info.metadata.get('propagation_enabled'), False)
+
+    def test_delivery_shape_is_untouched_by_the_propagation_path(self):
+        """The delivery aspect must keep its own parser behaviour."""
+        from gateway.rns_services import LXMFParser
+
+        app_data = msgpack.packb([b'Sideband User', 0])
+        info = LXMFParser.parse(app_data, 'lxmf.delivery')
+
+        self.assertEqual(info.display_name, 'Sideband User')
+        self.assertEqual(info.service_type.name, 'LXMF_DELIVERY')
+
+    def test_malformed_propagation_data_does_not_raise(self):
+        """Truncated/garbage app_data yields no name rather than an exception."""
+        from gateway.rns_services import LXMFParser
+
+        for bad in (b'\x97\x00', b'not msgpack at all', b'\xff\xfe\xfd'):
+            info = LXMFParser.parse(bad, 'lxmf.propagation')
+            self.assertEqual(info.service_type.name, 'LXMF_PROPAGATION')
+            self.assertNotIn('\ufffd', info.display_name)
+
+    def test_propagation_name_that_is_not_utf8_is_dropped(self):
+        from gateway.rns_services import LXMFParser
+
+        info = LXMFParser.parse(self._pn_app_data(name=b'\xff\xfe\xff'),
+                                'lxmf.propagation')
+
+        self.assertEqual(info.display_name, '')
+
+
 class TestLXMFParser(unittest.TestCase):
     """Test LXMF announce parser"""
 

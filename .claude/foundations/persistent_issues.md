@@ -504,9 +504,12 @@ mandates a restart, so the false page was structural.** Measured: 2 of 9,115
 entries had `service_type`, oldest stamped AFTER the restart. Fixed MF
 `e383547c` / MA `87cae734` (identical twin) + save→load round-trip tests.
 
-**Decision tell**: UNHEARD within ~6h of a gateway restart + node otherwise
-alive = this cache gap, NOT a typo'd hash; on-disk entries heal only as each
-node re-announces. Same field silently made `lxmf_propagation_unused` undercount
+**Decision tell**: UNHEARD + node otherwise alive = this cache gap, NOT a
+typo'd hash. ⚠️ **Two defects, both needed**: the loader drop AND
+`_merge_node()` never refreshing `service_*` — so an announce from an
+ALREADY-KNOWN node did NOT restore it (verified live: fresh `last_seen`,
+`service_type` still None). It was unrecoverable once lost, NOT self-healing;
+"wait for the next announce" was a wrong prediction, corrected same day. Same field silently made `lxmf_propagation_unused` undercount
 ("heard within 6h" was really "since this process started").
 ⚠️ **`rnprobe lxmf.propagation` is NOT a delivery test** — 100% loss against a
 healthy node; a box that had just round-tripped through it reported the same.

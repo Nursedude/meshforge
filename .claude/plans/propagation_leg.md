@@ -91,6 +91,22 @@ very plan. The decision to run our own node still stands on its own merits
 evidence was our bug. **Queued as its own row** — parser fix + propagation-shape
 tests + the twin in MeshAnchor; do NOT bolt it onto the adoption commit.
 
+> ✅ **ROW CLOSED 2026-07-21.** `LXMFParser.parse` now routes
+> `lxmf.propagation` to `_parse_propagation_announce()` and never falls
+> through to the delivery ladder; the name comes from element 6's
+> `metadata[PN_META_NAME]`, and an absent/malformed/non-UTF-8 name yields
+> `""` ("unnamed") rather than a byte smear. `propagation_enabled`,
+> `stamp_cost` and the transfer/sync limits are now surfaced too.
+> VERIFIED against REAL captured wire bytes, not a fixture: the 19:38Z
+> announce was captured live off moc
+> (`97c2ce6a5f…c41357483647585a204d657368466f72676520504e`) and both repos
+> decode it to `WH6GXZ MeshForge PN`. Ported to MeshAnchor, whose
+> `rns_services.py` is in the untracked-diverged tier and carried an even
+> older parser — the propagation branch is self-contained, so it ports
+> cleanly. Tests pin the PROPERTY (output is the real name or nothing),
+> after a first draft passed against live mojibake simply because that
+> sample was not in its junk list.
+
 ## The two slices — do NOT merge them
 
 1. **DETECTOR (this row, watchdog-only, always-safe per the burn-down's
@@ -292,11 +308,28 @@ reads the same field, so its "N nodes heard within 6h" was really "N heard
 since this gateway process started". Its error direction is silent (undercount
 → under-report), which is why nobody noticed. The fix repairs both.
 
-**Residual, stated plainly:** the fix restores the field going forward, but the
-on-disk caches still carry entries written by the buggy code, so each node's
-`service_type` is only repaired when it next announces. The probe therefore
-stays falsely `degraded` until our node's next announce (~6h cadence), then
-self-clears. Nothing is wrong with the node during that window.
+**⚠️ CORRECTION (verified 19:44Z, same day): the loader was only HALF the bug,
+and my "heals on the next announce" residual was WRONG.**
+
+The 19:38Z announce was heard — our node's cache entry got a fresh `last_seen`
+of 09:37:54 — and `service_type` was **still `None`**, so the probe kept
+firing on both boxes. Observation falsified the claim within the hour.
+
+Second defect, same class: `_merge_node()` never touched `service_*` at all.
+The announce path builds a NEW `UnifiedNode` carrying the correct
+`service_type` and hands it to `add_node()`, which merges into the existing
+node and drops the field. So `service_type` was only ever written for a node
+heard for the FIRST time; combined with the loader drop, it was
+**unrecoverable** once lost — not self-healing at any interval.
+
+Fixed with the merge now refreshing `service_*`, guarded so `UNKNOWN` never
+displaces a real classification (the 2026-04 `LXMF_DELIVERY`↔`UNKNOWN`
+flapping) while still being recorded when nothing better is known.
+
+The lesson worth keeping: I reported a residual as fact from a plausible
+mechanism instead of waiting for the observation that would test it. The
+announce I was already waiting on disproved it. **A predicted recovery is
+BELIEVED until the recovery is observed.**
 
 ## ▶ STEP 2 — EXECUTE THIS (armed 2026-07-20, earliest run 2026-07-21)
 
