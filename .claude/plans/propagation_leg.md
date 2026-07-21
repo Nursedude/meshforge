@@ -174,6 +174,43 @@ Verified this turn: lint `exit 0`; `parity_check.py` `exit 0` (in sync);
 `test_watchdog_probes/fleet_truth/mini_dudeai/regression_guards` 1174 passed;
 MA `fleet_truth` 60 passed.
 
+## STATUS: SLICE 3 SHIPPED + LIVE 2026-07-21 — the arc is COMPLETE
+
+The store-and-forward drill is automated, deployed, and **self-firing**. On
+moc: `meshforge-propagation-soak.timer` (hourly, :37) fired unattended at
+12:37 HST and published a passing envelope — `verdict: OK store-and-forward
+1/1 round(s) median 41.54s`. `probe_propagation_soak_degraded` reads `clean`
+at the live watchdog. honest_status 6/6 PASS.
+
+Shipped (MF `6e148664` probe+scaffold, `5eb214bf` the four live fixes; MA
+`ceafe52a` byte-locked fleet_truth twin):
+- `src/lab/lxmf_propagation_soak.py` — verdict logic pure (CI-testable),
+  live path in child processes.
+- `scripts/lab_propagation_soak_fire.sh` + both systemd-user templates.
+- `probe_propagation_soak_degraded` (SILENCE + ENVELOPE legs), every
+  closed-enum gate fed, mutation-verified, eval case, TEMPLATE_PROVENANCE.
+
+⚠️ **The canary passed on its FIRST run then failed every run after — and I
+nearly shipped it that way.** Four faults, each found by observation not
+reasoning, all fixed in `5eb214bf`:
+1. `os._exit()` in RNS/LXMF teardown ate buffered stdout → the child's result
+   line was silently lost (`flush=True` is now load-bearing). This one was
+   INTERMITTENT, which is what made a healthy node look flaky.
+2. the orchestrating parent must NOT init RNS (an open parent instance made
+   every child exit 0 silent).
+3. sender and receiver must be separate PROCESSES, not two routers in one.
+4. a stable receiver identity is unusable — RNS caches the ratchet pubkey at
+   the SENDER, so from round 2 the message is ratchet-encrypted and an
+   un-cached receiver silently fails to decrypt. Cure: a virgin receiver
+   identity per round (also the more honest model of a never-seen offline peer).
+
+The meta-lesson, earned twice this session: **a single green run is not a
+working canary.** Verified by REPETITION — 4/4 manual, 2× fire script, then
+the timer firing itself.
+
+To deploy on another gateway box: install both user units, `enable --now` the
+timer, `loginctl enable-linger`. Only moc runs it so far (moc3 is a candidate).
+
 ## STATUS: 2a + 2a-bis PASSED 2026-07-21 — store-and-forward is PROVEN
 
 **Both gates cleared. 2b (adoption) is the next action and is UNRUN** — it was
