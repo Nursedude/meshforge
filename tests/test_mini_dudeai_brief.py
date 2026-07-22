@@ -272,3 +272,24 @@ def test_brief_track_record_all_rejected_is_self_critical():
     tr = {"proposed": 2, "ratified": 0, "rejected": 50}
     out = build_brief(_state(), [], NOW, delta_track_record=tr)
     assert "skeptic" in out.lower() or "evidence bar" in out.lower()
+
+
+def test_brief_renders_rejection_reason_breakdown():
+    # WS-C: the WHY behind rejections, sorted most-common first.
+    tr = {"proposed": 0, "ratified": 1, "rejected": 4}
+    rr = {"noisy_detector": 3, "known_benign": 1}
+    out = build_brief(_state(), [], NOW, delta_track_record=tr,
+                      rejection_reasons=rr)
+    assert "rejected by reason:" in out
+    # most-common first
+    assert out.index("noisy_detector ×3") < out.index("known_benign ×1")
+
+
+def test_brief_rejection_breakdown_omitted_when_no_reasons():
+    tr = {"proposed": 0, "ratified": 1, "rejected": 2}
+    out = build_brief(_state(), [], NOW, delta_track_record=tr,
+                      rejection_reasons={})
+    assert "rejected by reason" not in out
+    out2 = build_brief(_state(), [], NOW, delta_track_record=tr,
+                       rejection_reasons=None)
+    assert "rejected by reason" not in out2

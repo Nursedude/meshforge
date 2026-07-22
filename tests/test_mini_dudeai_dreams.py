@@ -517,3 +517,62 @@ def test_track_record_missing_file_is_all_zero(tmp_path):
     from mini_dudeai.dreams import proposal_track_record
     tr = proposal_track_record(str(tmp_path / "nope.jsonl"))
     assert tr == {"proposed": 0, "ratified": 0, "rejected": 0}
+
+
+# --- rejection-reason taxonomy (WS-C: make low ratification diagnosable) -------
+
+def test_resolve_delta_records_reason(tmp_path):
+    dp = _deltas_file(tmp_path, {"key": "k", "status": "proposed"})
+    assert resolve_delta(str(dp), "k", "rejected", reason="noisy_detector",
+                         now_ts=NOW) is True
+    rows = [json.loads(l) for l in dp.read_text().splitlines() if l.strip()]
+    assert rows[-1]["status"] == "rejected"
+    assert rows[-1]["resolved_reason"] == "noisy_detector"
+
+
+def test_resolve_delta_reason_omitted_leaves_no_key(tmp_path):
+    # Backward-compat: no reason given → no resolved_reason field (absence is absence).
+    dp = _deltas_file(tmp_path, {"key": "k", "status": "proposed"})
+    resolve_delta(str(dp), "k", "rejected", now_ts=NOW)
+    rows = [json.loads(l) for l in dp.read_text().splitlines() if l.strip()]
+    assert "resolved_reason" not in rows[-1]
+
+
+def test_rejection_histogram_counts_by_reason(tmp_path):
+    from mini_dudeai.dreams import rejection_reason_histogram
+    dp = _deltas_file(
+        tmp_path,
+        {"key": "a", "status": "rejected", "resolved_reason": "noisy_detector"},
+        {"key": "b", "status": "rejected", "resolved_reason": "noisy_detector"},
+        {"key": "c", "status": "rejected", "resolved_reason": "known_benign"},
+        {"key": "d", "status": "rejected"},          # no reason → 'unspecified'
+        {"key": "e", "status": "ratified"},          # ignored
+        {"key": "f", "status": "proposed"},          # ignored
+    )
+    assert rejection_reason_histogram(str(dp)) == {
+        "noisy_detector": 2, "known_benign": 1, "unspecified": 1}
+
+
+def test_rejection_histogram_uses_latest_status_per_key(tmp_path):
+    # A key first rejected then (a later row) ratified must NOT count as rejected.
+    from mini_dudeai.dreams import rejection_reason_histogram
+    dp = _deltas_file(
+        tmp_path,
+        {"key": "a", "status": "rejected", "resolved_reason": "noisy_detector"},
+        {"key": "a", "status": "ratified"},          # supersedes → not a rejection
+    )
+    assert rejection_reason_histogram(str(dp)) == {}
+
+
+def test_rejection_histogram_missing_file_is_empty(tmp_path):
+    from mini_dudeai.dreams import rejection_reason_histogram
+    assert rejection_reason_histogram(str(tmp_path / "nope.jsonl")) == {}
+
+
+def test_cli_resolve_reject_with_reason(tmp_path, capsys):
+    dp = _deltas_file(tmp_path, {"key": "k.noise", "status": "proposed"})
+    rc = dreams_main(["--path", str(dp), "--resolve", "k.noise",
+                      "--status", "rejected", "--reason", "known_benign"])
+    assert rc == 0
+    rows = [json.loads(l) for l in dp.read_text().splitlines() if l.strip()]
+    assert rows[-1]["resolved_reason"] == "known_benign"

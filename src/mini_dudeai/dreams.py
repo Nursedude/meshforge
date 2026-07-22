@@ -446,12 +446,33 @@ def write_dreams(state_path: str, history_path: str, deltas_path: str,
     }
 
 
+# Recommended (OPEN — any short string is accepted, mirroring match.extras) reason
+# categories for a REJECTED proposal. The point is to make low ratification
+# DIAGNOSABLE: the 2026-07-18 sweep found 0/164 ratified but could not say WHY —
+# noisy detector? already handled? by-design? Folding rejections by reason turns
+# "the loop is ignored" into "detector X is 90% noise, retune it." Free vocabulary
+# so a session is never blocked on an unlisted case; these are the common buckets.
+REJECTION_REASONS = (
+    "noisy_detector",   # the detector over-fires; retune it (cooldown/threshold)
+    "known_benign",     # real signal but expected — wants a known-normal suppressor
+    "already_fixed",    # the underlying gap was already closed elsewhere
+    "not_actionable",   # true but nothing to remember/do
+    "duplicate",        # same finding already captured
+)
+
+
 def resolve_delta(deltas_path: str, key: str, status: str,
-                  note: str = "", now_ts: float | None = None) -> bool:
+                  note: str = "", now_ts: float | None = None,
+                  reason: str = "") -> bool:
     """Ratify or reject a proposed delta. The cloud-session side of the trust
     model: mini proposes (status='proposed'); a session marks it 'ratified' or
     'rejected' here. Rewrites the most-recent matching proposed entry in place
     (atomic). Returns True if one was resolved.
+
+    ``reason`` is an OPTIONAL short category (see ``REJECTION_REASONS``) recorded
+    on the entry so ``rejection_reason_histogram`` can diagnose WHY proposals get
+    rejected — the difference between "the loop is ignored" and "detector X is
+    noise." Open vocabulary; most meaningful on a rejection.
 
     This is the ONLY mutation of the deltas file besides append — and it is
     invoked by the cloud session, never by the daemon. Canonical memory is still
@@ -471,6 +492,8 @@ def resolve_delta(deltas_path: str, key: str, status: str,
             d["resolved_iso"] = _iso(now_ts)
             if note:
                 d["resolved_note"] = note
+            if reason:
+                d["resolved_reason"] = reason
             break
     else:
         return False
@@ -533,6 +556,41 @@ def proposal_track_record(deltas_path: str) -> dict:
     return dict(rec)
 
 
+_REJECTION_HIST_CACHE: dict = {}
+
+
+def rejection_reason_histogram(deltas_path: str) -> dict:
+    """{reason: count} over the latest status of every key whose latest status is
+    'rejected'. Answers the question the 0/164 sweep could not: WHY are proposals
+    rejected? A rejection with no recorded reason counts under 'unspecified' —
+    absence is surfaced, never hidden. Missing/unreadable file = {} (the brief
+    omits the line — absence is absence). mtime-cached like proposal_track_record.
+
+    Separate from proposal_track_record (kept at its 3-key contract) so the coarse
+    counts and the diagnostic breakdown evolve independently."""
+    try:
+        mtime_ns = os.stat(deltas_path).st_mtime_ns
+    except OSError:
+        return {}
+    hit = _REJECTION_HIST_CACHE.get(deltas_path)
+    if hit and hit[0] == mtime_ns:
+        return dict(hit[1])
+    # latest full record per key (need the reason, not just the status)
+    latest: dict = {}
+    for d in _load_deltas(deltas_path):
+        k = d.get("key")
+        if k:
+            latest[k] = d
+    hist: dict = {}
+    for d in latest.values():
+        if d.get("status") != "rejected":
+            continue
+        reason = d.get("resolved_reason") or "unspecified"
+        hist[reason] = hist.get(reason, 0) + 1
+    _REJECTION_HIST_CACHE[deltas_path] = (mtime_ns, hist)
+    return dict(hist)
+
+
 def _read_history_tail(path: str, last: int) -> list[dict]:
     """Last `last` parsed JSONL objects. Skips malformed lines, never raises."""
     try:
@@ -592,6 +650,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--status", choices=("ratified", "rejected"),
                    help="resolution (required with --resolve).")
     p.add_argument("--note", default="", help="optional resolution note.")
+    p.add_argument("--reason", default="",
+                   help="optional short reason category for a rejection, e.g. "
+                        + "|".join(REJECTION_REASONS)
+                        + " (open vocabulary; makes low ratification diagnosable).")
     args = p.parse_args(argv)
 
     path = os.path.expanduser(args.path)
@@ -605,7 +667,8 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: --status is required with --resolve", file=sys.stderr)
         return 2
     try:
-        ok = resolve_delta(path, args.resolve, args.status, note=args.note)
+        ok = resolve_delta(path, args.resolve, args.status, note=args.note,
+                           reason=args.reason)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2

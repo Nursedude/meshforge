@@ -113,7 +113,8 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                 stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0,
                 escalation_window_s: float = ESCALATION_WINDOW_S,
                 cadence_triage: dict | None = None,
-                delta_track_record: dict | None = None) -> str:
+                delta_track_record: dict | None = None,
+                rejection_reasons: dict | None = None) -> str:
     """Render the warm-start brief markdown from mini's state + recent history.
 
     `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
@@ -204,6 +205,14 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         else:
             lines.append("- Ratification ratio over all reviewed proposals; "
                          "rejection notes in the deltas file say why.")
+        # WHY proposals get rejected — turns "the loop is ignored" into a
+        # retune target (e.g. one noisy detector dominating). Rendered only
+        # when rejections carry recorded reasons; absence stays absence.
+        rr = rejection_reasons or {}
+        if rr:
+            top = sorted(rr.items(), key=lambda kv: (-kv[1], kv[0]))
+            breakdown = ", ".join(f"{reason} ×{n}" for reason, n in top)
+            lines.append(f"- rejected by reason: {breakdown}")
 
     # W1 — the cadence ran DEGRADED while the frontier was away. Freshness is
     # re-derived here from the witness ts (a stale witness must not keep
@@ -308,10 +317,13 @@ def write_brief(state_path: str, history_path: str, out_path: str,
             os.path.dirname(state_path) or ".", DELTAS_BASENAME)
     pending = 0
     track_record = None
+    reasons = None
     if os.path.exists(deltas_path):
-        from .dreams import count_pending_deltas, proposal_track_record
+        from .dreams import (count_pending_deltas, proposal_track_record,
+                             rejection_reason_histogram)
         pending = count_pending_deltas(deltas_path)
         track_record = proposal_track_record(deltas_path)
+        reasons = rejection_reason_histogram(deltas_path)
     # Local-tier cadence witness lives beside the deltas file; unreadable or
     # absent → None (the section simply doesn't render — absence is absence).
     from .cadence_fallback import CADENCE_TRIAGE_BASENAME
@@ -319,7 +331,8 @@ def write_brief(state_path: str, history_path: str, out_path: str,
         os.path.dirname(deltas_path) or ".", CADENCE_TRIAGE_BASENAME))
     text = build_brief(state or {}, history, now_ts, pending_deltas=pending,
                        cadence_triage=triage if isinstance(triage, dict) else None,
-                       delta_track_record=track_record)
+                       delta_track_record=track_record,
+                       rejection_reasons=reasons)
     if not _brief_unchanged(out_path, text):
         atomic_write_text(out_path, text)
     return text
