@@ -188,6 +188,19 @@ run_local_prescore() {
     echo "mini-cadence: pre-score disabled (MINI_CADENCE_PRESCORE=0) — frontier runs cold."
     return 0
   }
+  # WS-E: the model router decides whether the pre-score is worth running, from
+  # MEASURED tier-L triage competence (the eval ledger). If tier-L FAILS the
+  # triage eval, a noisy local triage is worse than none — skip it. --record
+  # logs the routing decision (self-scoring). Best-effort: ONLY an explicit
+  # "not trusted" (rc 2) skips; UNKNOWN (rc 3) or any error proceeds
+  # (uncertainty != untrusted), so a box without the router behaves as before.
+  local grc=0
+  PYTHONPATH="$REPO/src" python3 -m mini_dudeai.model_router \
+    --task-kind cadence_triage --l-trusted-gate --record >/dev/null 2>&1 || grc=$?
+  if [ "$grc" -eq 2 ]; then
+    echo "mini-cadence: router — tier-L NOT trusted for triage (eval); skipping pre-score (frontier runs cold)."
+    return 0
+  fi
   echo "mini-cadence: local-tier PRE-SCORE of the backlog (frontier will consume it)."
   if PYTHONPATH="$REPO/src" nice -n 10 \
        timeout "${MINI_CADENCE_LOCAL_TIMEOUT_S:-600}" \

@@ -300,6 +300,45 @@ def route(task_kind: str, env: str, *,
         running_tier=running_tier, ts=now)
 
 
+# ── warm-brief consumer: standing routing orientation ──────────────────────
+
+def routing_context_block(now_ts: Optional[float] = None, *,
+                          env: Optional[str] = None,
+                          eval_records: Optional[list] = None,
+                          role: Optional[str] = None) -> str:
+    """Render the SessionStart routing-orientation block, or "" when there is
+    nothing to say. Surfaces the capability-gradient env + the MEASURED tier-L
+    competence (so a session knows what it can safely delegate to local) — the
+    data-backed replacement for model_advisor.md's hand-narration. Renders ONLY
+    where tier-L is actually evaluated (an eval ledger exists — the manager box);
+    a mini-less / non-manager box has no competence to report, so "".
+    """
+    if env is None:
+        env = detect_env(role=role if role is not None else _detect_role())
+    if eval_records is None:
+        home = resolve_home()
+        from .local_brain_eval import EVAL_RESULTS_BASENAME
+        eval_records = load_eval_records(
+            os.path.join(home, EVAL_RESULTS_BASENAME))
+    if not eval_records:
+        return ""   # tier-L not evaluated here — nothing measured to say
+    ceiling = ENV_CEILING.get(env, "local")
+    parts = []
+    for kind in ("triage", "compile", "oracle"):
+        pr, n = eval_kind_competence(eval_records, kind)
+        if pr is None:
+            parts.append(f"{kind} —")
+        else:
+            parts.append(f"{kind} {pr}{'✓' if pr >= DEFAULT_EVAL_GATE else '✗'}")
+    return "\n".join([
+        f"## 🧭 routing context — env **{env}** (reliable ceiling: {ceiling})",
+        f"- tier-L competence (eval): {' · '.join(parts)} — delegate to local "
+        f"only where ✓ (model_router grounds this, not vibes)",
+        "- route a task: `python3 -m mini_dudeai.model_router --task-kind X` "
+        "(advisory; emits a tier, never a model id)",
+    ])
+
+
 # ── self-scoring ledger (record only; verdicts are re-derived, never written) ─
 
 def routing_ledger_path(home: Optional[str] = None) -> str:
@@ -365,6 +404,12 @@ def main(argv: Optional[list] = None) -> int:
                     help="the model id running now (surfaces its calibration ratio).")
     ap.add_argument("--record", action="store_true",
                     help="append the recommendation to the routing ledger.")
+    ap.add_argument("--l-trusted-gate", action="store_true",
+                    help="shell gate for a local-tier step: exit 0 if tier-L is "
+                         "TRUSTED for this task_kind (eval passes), 2 if NOT "
+                         "trusted, 3 if UNKNOWN / not a local kind. Only an "
+                         "explicit 2 should make a caller skip local work "
+                         "(uncertainty != untrusted).")
     ap.add_argument("--json", action="store_true", help="machine-readable output.")
     args = ap.parse_args(argv)
 
@@ -378,6 +423,9 @@ def main(argv: Optional[list] = None) -> int:
         if err:
             print(f"model-router: routing ledger write FAILED: {err}",
                   file=__import__("sys").stderr)
+    if args.l_trusted_gate:
+        lt = rec.evidence.get("l_trusted")
+        return 0 if lt is True else (2 if lt is False else 3)
     if args.json:
         print(json.dumps(rec.to_row(), default=str))
     else:

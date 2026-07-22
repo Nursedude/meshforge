@@ -178,6 +178,18 @@ def _calibration_block(now_ts: float) -> str:
         return ""
 
 
+def _routing_block(now_ts: float) -> str:
+    """The WS-E routing-orientation block — env + measured tier-L competence, so
+    a session starts knowing what it can delegate to local. Fully fail-safe (""
+    on any error), and GUARDED so a mini without model_router (a partial twin)
+    still warm-starts. Renders "" off the manager box (no eval ledger)."""
+    try:
+        from . import model_router as mroute
+        return mroute.routing_context_block(now_ts)
+    except Exception:  # noqa: BLE001 — never let routing break warm start
+        return ""
+
+
 def main(argv: list[str] | None = None) -> int:
     import argparse
     import time
@@ -200,8 +212,11 @@ def main(argv: list[str] | None = None) -> int:
 
     # The calibration ledger is surfaced even on a mini-less box (it tracks MY
     # claims, not mini's fleet posture) — so combine independently of `text`.
+    # The routing block (WS-E) rides alongside — it self-silences off the manager
+    # box (no eval ledger to report tier-L competence from).
     calib = _calibration_block(now)
-    text = "\n\n".join(s for s in (text, calib) if s.strip())
+    routing = _routing_block(now)
+    text = "\n\n".join(s for s in (text, calib, routing) if s.strip())
 
     if args.hook:
         # Silent when there's nothing to say — don't inject empty context.

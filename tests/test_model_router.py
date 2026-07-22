@@ -200,3 +200,40 @@ def test_cli_human_output(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "dev @ qth -> opus (right-sized)" in out
+
+
+# ── warm-brief consumer: routing_context_block ──────────────────────────────
+
+def test_routing_context_block_renders_with_eval_records():
+    recs = [_eval_rec({"triage": _pk(2, 2), "compile": _pk(1, 3),
+                       "oracle": _pk(18, 18)})]
+    block = mr.routing_context_block(env="qth", eval_records=recs)
+    assert "routing context" in block and "env **qth**" in block
+    assert "triage 1.0✓" in block          # passes the gate
+    assert "compile 0.333✗" in block        # below gate → ✗
+    assert "model_router --task-kind" in block
+
+
+def test_routing_context_block_empty_without_eval_records():
+    # A box that doesn't evaluate tier-L has no measured competence to report.
+    assert mr.routing_context_block(env="fleet", eval_records=[]) == ""
+
+
+# ── cadence-launcher consumer: --l-trusted-gate exit codes ──────────────────
+
+def _rec_with_l_trusted(value):
+    return mr.Recommendation(
+        task_kind="cadence_triage", env="qth", base_tier="local",
+        ceiling="frontier", recommended_tier="local", disposition="right-sized",
+        why="test", evidence={"l_trusted": value}, ts=NOW)
+
+
+def test_l_trusted_gate_exit_codes(monkeypatch):
+    monkeypatch.setattr(mr, "_load_default_evidence", lambda: ([], {}))
+    monkeypatch.setattr(mr, "_detect_role", lambda: None)
+    for value, expected_rc in ((True, 0), (False, 2), (None, 3)):
+        monkeypatch.setattr(mr, "route",
+                            lambda *a, _v=value, **k: _rec_with_l_trusted(_v))
+        rc = mr.main(["--task-kind", "cadence_triage", "--env", "qth",
+                      "--l-trusted-gate"])
+        assert rc == expected_rc, f"l_trusted={value} -> rc {rc}, want {expected_rc}"
