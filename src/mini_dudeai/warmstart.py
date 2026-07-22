@@ -185,6 +185,13 @@ def _routing_block(now_ts: float) -> str:
     still warm-starts. Renders "" off the manager box (no eval ledger)."""
     try:
         from . import model_router as mroute
+        # Re-derive open routing recommendations against the eval ledger first
+        # (persist any definitive held/broke verdicts), then render — symmetric
+        # with _calibration_block. Persist is best-effort inside; render reads.
+        try:
+            mroute.rederive_routing_and_persist(now_ts=now_ts)
+        except Exception:  # noqa: BLE001 — persist must never break the render
+            pass
         return mroute.routing_context_block(now_ts)
     except Exception:  # noqa: BLE001 — never let routing break warm start
         return ""

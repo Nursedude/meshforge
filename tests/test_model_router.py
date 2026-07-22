@@ -237,3 +237,188 @@ def test_l_trusted_gate_exit_codes(monkeypatch):
         rc = mr.main(["--task-kind", "cadence_triage", "--env", "qth",
                       "--l-trusted-gate"])
         assert rc == expected_rc, f"l_trusted={value} -> rc {rc}, want {expected_rc}"
+
+
+# ── WS-E-2b: routing verdict re-derivation ──────────────────────────────────
+
+def _eval_at(ts, per_kind, tier="local"):
+    return {"ts": ts, "brain_tier": tier, "pass_rate": 1.0, "per_kind": per_kind}
+
+
+def _routed_local_row(l_trusted=True, eval_kind="triage", ts=NOW,
+                      recommended="local"):
+    """A recorded routing row as record_routing writes it (with a stable id)."""
+    rec = mr.Recommendation(
+        task_kind="cadence_triage", env="fleet", base_tier="local",
+        ceiling="local", recommended_tier=recommended, disposition="right-sized",
+        why="test", evidence={"eval_kind": eval_kind, "l_trusted": l_trusted},
+        ts=ts)
+    return {"kind": mr.ROUTING_KIND,
+            "id": mr.make_routing_id(ts, rec.task_kind, rec.env, recommended),
+            **rec.to_row(), "status": "open"}
+
+
+def test_make_routing_id_is_deterministic():
+    a = mr.make_routing_id(NOW, "cadence_triage", "fleet", "local")
+    b = mr.make_routing_id(NOW, "cadence_triage", "fleet", "local")
+    c = mr.make_routing_id(NOW, "cadence_triage", "qth", "local")
+    assert a == b and a != c and len(a) == 12
+
+
+def test_record_routing_row_carries_stable_id(tmp_path):
+    rec = mr.route("cadence_triage", "fleet",
+                   eval_records=[_eval_rec({"triage": _pk(2, 2)})], now_ts=NOW)
+    path = str(tmp_path / "routing.jsonl")
+    mr.record_routing(rec, path=path)
+    rows = mr.load_routing_events(path)
+    assert rows[-1]["id"] == mr.make_routing_id(
+        NOW, "cadence_triage", "fleet", "local")
+
+
+def test_competence_after_requires_strictly_later_local_evidence():
+    recs = [_eval_at(NOW - 10, {"triage": _pk(2, 2)}),      # too old
+            _eval_at(NOW + 10, {"triage": _pk(1, 2)})]      # later, 0.5
+    assert mr.competence_after(recs, "triage", NOW) == (0.5, 2)
+    # nothing newer than a far-future anchor → UNKNOWN, never forged
+    assert mr.competence_after(recs, "triage", NOW + 100) == (None, 0)
+
+
+def test_competence_after_ignores_non_local_tier():
+    recs = [_eval_at(NOW + 10, {"triage": _pk(1, 1)}, tier="api_small")]
+    assert mr.competence_after(recs, "triage", NOW) == (None, 0)
+
+
+def test_rederive_routing_holds_when_later_eval_still_passes():
+    events = [_routed_local_row(l_trusted=True, ts=NOW)]
+    later = [_eval_at(NOW + 100, {"triage": _pk(2, 2)})]     # 1.0 ≥ gate
+    new = mr.rederive_routing(events, later, NOW + 200)
+    assert len(new) == 1 and new[0]["outcome"] == "held"
+    assert new[0]["routing_id"] == events[0]["id"]
+
+
+def test_rederive_routing_breaks_when_later_eval_fails():
+    events = [_routed_local_row(l_trusted=True, ts=NOW)]
+    later = [_eval_at(NOW + 100, {"triage": _pk(1, 4)})]     # 0.25 < gate
+    new = mr.rederive_routing(events, later, NOW + 200)
+    assert len(new) == 1 and new[0]["outcome"] == "broke"
+
+
+def test_rederive_routing_skips_non_asserting_and_non_local():
+    # l_trusted not True (no positive competence claim) → no verdict
+    a = mr.rederive_routing([_routed_local_row(l_trusted=False)],
+                            [_eval_at(NOW + 100, {"triage": _pk(1, 4)})], NOW + 200)
+    b = mr.rederive_routing([_routed_local_row(l_trusted=None)],
+                            [_eval_at(NOW + 100, {"triage": _pk(1, 4)})], NOW + 200)
+    # a higher-tier routing is never re-derived
+    c = mr.rederive_routing([_routed_local_row(recommended="opus")],
+                            [_eval_at(NOW + 100, {"triage": _pk(1, 4)})], NOW + 200)
+    assert a == [] and b == [] and c == []
+
+
+def test_rederive_routing_leaves_open_without_later_evidence():
+    events = [_routed_local_row(ts=NOW)]
+    # only same-or-older eval — circular, not independent
+    assert mr.rederive_routing(events, [_eval_at(NOW, {"triage": _pk(2, 2)})],
+                               NOW + 200) == []
+
+
+def test_fold_routing_buckets_by_latest_verdict():
+    row = _routed_local_row(ts=NOW)
+    events = [row,
+              {"kind": mr.ROUTING_VERDICT_KIND, "routing_id": row["id"],
+               "ts": NOW + 1, "outcome": "broke"},
+              {"kind": mr.ROUTING_VERDICT_KIND, "routing_id": row["id"],
+               "ts": NOW + 2, "outcome": "held"}]   # latest wins
+    state = mr.fold_routing(events)
+    assert state["n_total"] == 1 and state["n_held"] == 1 and state["n_broke"] == 0
+    assert state["ratio"] == 1.0
+
+
+def test_rederive_routing_and_persist_round_trips(tmp_path):
+    path = str(tmp_path / "routing.jsonl")
+    # seed one asserting local routing
+    from mini_dudeai.history import append_jsonl
+    append_jsonl(path, [_routed_local_row(ts=NOW)], 1_000_000)
+    later = [_eval_at(NOW + 100, {"triage": _pk(2, 2)})]
+    state = mr.rederive_routing_and_persist(path=path, eval_records=later,
+                                            now_ts=NOW + 200)
+    assert state["n_held"] == 1
+    # verdict was persisted — a second pass mints nothing new
+    state2 = mr.rederive_routing_and_persist(path=path, eval_records=later,
+                                             now_ts=NOW + 300)
+    assert state2["n_held"] == 1 and state2["n_open"] == 0
+
+
+def test_format_routing_track_record():
+    assert mr.format_routing_track_record({"n_total": 0}) == ""
+    row = _routed_local_row(ts=NOW)
+    state = mr.fold_routing(
+        [row, {"kind": mr.ROUTING_VERDICT_KIND, "routing_id": row["id"],
+               "ts": NOW + 1, "outcome": "broke"}])
+    out = mr.format_routing_track_record(state)
+    assert "routing self-score" in out and "1 broke" in out
+    assert "did not hold" in out
+
+
+# ── WS-E-2b: haiku-watcher promotion ────────────────────────────────────────
+
+def _overall(ts, pass_rate, tier):
+    return {"ts": ts, "brain_tier": tier, "pass_rate": pass_rate, "per_kind": {}}
+
+
+def test_haiku_promotion_no_candidate_data_is_honest():
+    rec = mr.haiku_promotion_recommendation([_overall(NOW, 1.0, "local")])
+    assert rec["status"] == "no_candidate_data" and rec["promote"] is None
+    assert mr.format_haiku_promotion(rec) == ""   # silent, no noise
+
+
+def test_haiku_promotion_earned_when_clearly_better():
+    recs = [_overall(NOW, 0.80, "local"),
+            _overall(NOW + 1, 0.95, "api_small")]   # Δ0.15 ≥ 0.10
+    rec = mr.haiku_promotion_recommendation(recs)
+    assert rec["status"] == "earned" and rec["promote"] is True
+    assert "⬆️" in mr.format_haiku_promotion(rec)
+
+
+def test_haiku_promotion_rejected_when_local_sufficient():
+    recs = [_overall(NOW, 0.95, "local"),
+            _overall(NOW + 1, 0.97, "api_small")]   # Δ0.02 ≤ 0.05
+    rec = mr.haiku_promotion_recommendation(recs)
+    assert rec["status"] == "rejected" and rec["promote"] is False
+
+
+def test_haiku_promotion_rejected_below_gate():
+    recs = [_overall(NOW, 0.60, "local"),
+            _overall(NOW + 1, 0.70, "api_small")]   # candidate < gate
+    rec = mr.haiku_promotion_recommendation(recs)
+    assert rec["status"] == "rejected" and rec["promote"] is False
+
+
+def test_haiku_promotion_operator_call_between_margins():
+    recs = [_overall(NOW, 0.88, "local"),
+            _overall(NOW + 1, 0.95, "api_small")]   # Δ0.07 between .05 and .10
+    rec = mr.haiku_promotion_recommendation(recs)
+    assert rec["status"] == "operator_call" and rec["promote"] is None
+
+
+# ── WS-E-2b: CLI ────────────────────────────────────────────────────────────
+
+def test_cli_rederive(tmp_path, monkeypatch, capsys):
+    path = str(tmp_path / "routing.jsonl")
+    from mini_dudeai.history import append_jsonl
+    append_jsonl(path, [_routed_local_row(ts=NOW)], 1_000_000)
+    monkeypatch.setenv("MODEL_ROUTING_LEDGER_PATH", path)
+    monkeypatch.setattr(mr, "_load_default_evidence",
+                        lambda: ([_eval_at(NOW + 100, {"triage": _pk(2, 2)})], {}))
+    monkeypatch.setattr(mr, "_detect_role", lambda: None)
+    rc = mr.main(["--rederive"])
+    assert rc == 0 and "1 held" in capsys.readouterr().out
+
+
+def test_cli_haiku_check(monkeypatch, capsys):
+    monkeypatch.setattr(mr, "_load_default_evidence",
+                        lambda: ([_overall(NOW, 0.80, "local"),
+                                  _overall(NOW + 1, 0.95, "api_small")], {}))
+    monkeypatch.setattr(mr, "_detect_role", lambda: None)
+    rc = mr.main(["--haiku-check"])
+    assert rc == 0 and "earned" in capsys.readouterr().out
