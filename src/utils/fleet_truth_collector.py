@@ -173,6 +173,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     # None = undecided. A box that ANSWERED over HTTP obviously has the
     # surface, so this only ever matters for the spool path below.
     http_surface_expected: Optional[bool] = None
+    spool_services: Optional[Dict[str, Any]] = None
 
     if slo is None and status is None:
         # Direct fan-out failed — try the ssh spool (fresh-only).
@@ -181,18 +182,28 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             status = spool.get("status") if isinstance(spool.get("status"), dict) else None
             slo = spool.get("slo") if isinstance(spool.get("slo"), dict) else None
             raw_wd = spool.get("raw_watchdog")
+            raw_mini = spool.get("raw_mini")
+            radio_probe = spool.get("radio_probe")
+            if isinstance(spool.get("services"), dict):
+                spool_services = spool["services"]
             # Decided by the spool writer (it holds the role catalog). True /
             # False / None-if-undecidable; None must NEVER become False —
             # "not expected" is what stops a dark box tainting the verdict.
             hse = spool.get("http_surface_expected")
             if isinstance(hse, bool):
                 http_surface_expected = hse
-            if status is None and isinstance(raw_wd, dict):
-                # Map-less box (moc3): synthesize the one block we DO have,
-                # through the same transform + staleness threshold the status
-                # handler uses (shared SSOT — a stale raw file reads dark).
-                from utils._map_status_endpoints import watchdog_block_from_payload
-                status = {"watchdog": watchdog_block_from_payload(raw_wd)}
+            if status is None and (isinstance(raw_wd, dict) or isinstance(raw_mini, dict)):
+                # Map-less box (moc3): synthesize the blocks we DO have from the
+                # raw non-HTTP reads, each through the SAME transform + staleness
+                # threshold the status handler uses (shared SSOT — a stale raw
+                # file reads dark, never green-with-old-numbers).
+                from utils._map_status_endpoints import (
+                    mini_block_from_payload, watchdog_block_from_payload)
+                status = {}
+                if isinstance(raw_wd, dict):
+                    status["watchdog"] = watchdog_block_from_payload(raw_wd)
+                if isinstance(raw_mini, dict):
+                    status["mini_dudeai"] = mini_block_from_payload(raw_mini)
                 # Carry the box's OWN role declaration through in the same
                 # shape an HTTP box reports it (/api/status.app.role), so the
                 # builder needs no map-less special case. Only ever set from
@@ -200,6 +211,14 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
                 deploy = spool.get("deployment")
                 if isinstance(deploy, dict) and isinstance(deploy.get("role"), str):
                     status["app"] = {"name": "meshforge", "role": deploy["role"]}
+            if slo is None and isinstance(radio_probe, dict):
+                # Radio from the SAME non-perturbing probe the map uses (LISTEN
+                # state / usb — never a #17-contending :4403 connect).
+                from utils._map_status_endpoints import radio_connection_from_probe
+                connected, mode = radio_connection_from_probe(
+                    bool(radio_probe.get("tcp_listening")),
+                    bool(radio_probe.get("usb_present")))
+                slo = {"radio": {"connected": connected, "mode": mode}}
             if slo is not None or status is not None:
                 method = "ssh_spool"
                 # Honest observation age: when the spool answered, age runs
@@ -219,6 +238,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "error": error,
         "answered_at": answered_at,
         "http_surface_expected": http_surface_expected,
+        "spool_services": spool_services,
     }
 
 

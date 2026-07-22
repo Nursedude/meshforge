@@ -60,13 +60,39 @@ _REMOTE_CMD = (
     # correctly-provisioned box is indistinguishable from a broken one and
     # darkens the whole fleet verdict forever (2026-07-20).
     "echo; echo __TRUTH_DEPLOY__; "
-    "cat ${XDG_CONFIG_HOME:-$HOME/.config}/meshforge/deployment.json 2>/dev/null || true"
+    "cat ${XDG_CONFIG_HOME:-$HOME/.config}/meshforge/deployment.json 2>/dev/null || true; "
+    # ── Map-less enrichment (2026-07-22) ──────────────────────────────────
+    # A gateway-only box has no /api/status or /fleet/slo (the curls above
+    # return nothing), so mini/radio/services were accepted-blind on the
+    # monitor. These three NON-HTTP raw reads — the same class of read as
+    # raw_watchdog above — let a correctly-provisioned map-less gateway still
+    # report those subsystems. All perturb NOTHING: mini is a file, radio is a
+    # /proc LISTEN read (never a :4403 connect — #17/#75), services is
+    # systemctl state.
+    "echo; echo __TRUTH_RAWMINI__; cat $HOME/mini_dudeai_state.json 2>/dev/null || true; "
+    "echo; echo __TRUTH_RADIO__; "
+    # :4403 = 0x1133, LISTEN state 0A. /proc read only, never a connect.
+    "_t=$(awk '$4==\"0A\" && $2 ~ /:1133$/{f=1} END{print (f?\"true\":\"false\")}' "
+    "/proc/net/tcp /proc/net/tcp6 2>/dev/null); "
+    "ls /dev/ttyUSB* /dev/ttyACM* >/dev/null 2>&1 && _u=true || _u=false; "
+    "printf '{\"tcp_listening\":%s,\"usb_present\":%s}' \"${_t:-false}\" \"$_u\"; "
+    "echo; echo __TRUTH_SERVICES__; "
+    "{ printf '{'; _f=1; "
+    "for u in meshtasticd rnsd $(systemctl list-unit-files 'meshforge-*.service' "
+    "--no-legend 2>/dev/null | awk '{print $1}'); do "
+    "_a=$(systemctl is-active \"$u\" 2>/dev/null); _e=$(systemctl is-enabled \"$u\" 2>/dev/null); "
+    "[ $_f -eq 1 ] || printf ','; _f=0; "
+    "printf '\"%s\":{\"active\":\"%s\",\"enabled\":\"%s\"}' \"$u\" \"${_a:-unknown}\" \"${_e:-unknown}\"; "
+    "done; printf '}'; }"
 )
 _SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
-             "__TRUTH_DEPLOY__")
+             "__TRUTH_DEPLOY__", "__TRUTH_RAWMINI__", "__TRUTH_RADIO__",
+             "__TRUTH_SERVICES__")
 _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
                  "__TRUTH_RAWWD__": "raw_watchdog",
-                 "__TRUTH_DEPLOY__": "deployment"}
+                 "__TRUTH_DEPLOY__": "deployment",
+                 "__TRUTH_RAWMINI__": "raw_mini", "__TRUTH_RADIO__": "radio_probe",
+                 "__TRUTH_SERVICES__": "services"}
 
 
 #: Service whose absence removes a box's whole HTTP truth surface

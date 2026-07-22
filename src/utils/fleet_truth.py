@@ -495,6 +495,30 @@ def _subsystem_from_slo(slo: Optional[Dict[str, Any]], key: str, source: str,
                 reason=None if val == ok_value else f"{key}={val}", source=source)
 
 
+def _services_cell_from_spool(services: Dict[str, Any]) -> Dict[str, Any]:
+    """Services cell for a map-less box from the spool's ``systemctl`` map
+    (``{unit: {active, enabled}}``). The source label is HONEST —
+    ``ssh_spool.systemctl``, NOT ``/fleet/slo.services`` — because this is the
+    narrower "the box's declared-enabled units are active" check, not the map's
+    full SLO ``overall_status=ready`` (which asserts more).
+
+    An enabled-but-inactive unit is a real fault on ANY box (FAILED, named). A
+    box where no enabled unit was observed is DARK (never green — absence of
+    evidence is not health, honest_failure_modes #2)."""
+    src = "ssh_spool.systemctl"
+    if not isinstance(services, dict) or not services:
+        return cell(DARK, reason="no services observed", source=src)
+    enabled = {u: s for u, s in services.items()
+               if isinstance(s, dict) and s.get("enabled") == "enabled"}
+    if not enabled:
+        return cell(DARK, reason="no enabled services observed", source=src)
+    down = sorted(u for u, s in enabled.items() if s.get("active") != "active")
+    if down:
+        return cell(FAILED, reason=f"enabled but inactive: {', '.join(down)}",
+                    source=src)
+    return cell(HEALTHY, source=src)
+
+
 def build_box_truth(
     snap: Dict[str, Any],
     *,
@@ -527,14 +551,30 @@ def build_box_truth(
     mini_block = (status or {}).get("mini_dudeai") if status else None
     claw_block = (status or {}).get("claw") if status else None
 
+    # A map-less gateway's mini/radio/services arrive via the ssh-spool's raw
+    # non-HTTP reads (2026-07-22), not the HTTP surface. Where the spool DID
+    # observe a cell, it is genuinely observed — so it must not later be marked
+    # accepted_blind (a stale spool-observed mini is a real "wedged" signal that
+    # must taint, not a suppressed no-surface blind spot).
+    spool_services = snap.get("spool_services")
+    spool_observed = set()
+    if isinstance(mini_block, dict):
+        spool_observed.add("mini")
+    if isinstance(slo, dict) and isinstance(slo.get("radio"), dict):
+        spool_observed.add("radio")
+    if isinstance(spool_services, dict):
+        spool_observed.add("services")
+
     subsystems = {
         "watchdog": classify_block(watchdog_block, source="/api/status.watchdog"),
         "mini": classify_block(mini_block, source="/api/status.mini_dudeai",
                                absent_reason="mini-dudeai not installed on this box"),
         "claw": classify_block(claw_block, source="/api/status.claw",
                                absent_reason="no claw edge node on this box"),
-        "services": _subsystem_from_slo(slo, "overall_status", "/fleet/slo.services",
-                                        ok_value="ready"),
+        "services": (_services_cell_from_spool(spool_services)
+                     if isinstance(spool_services, dict)
+                     else _subsystem_from_slo(slo, "overall_status",
+                                              "/fleet/slo.services", ok_value="ready")),
         "cascade": _cascade_cell(slo),
         "ci": _ci_cell(slo),
     }
@@ -553,6 +593,9 @@ def build_box_truth(
     # becoming a silence-manufacturing switch.
     if snap.get("http_surface_expected") is False:
         for _name in _HTTP_SURFACE_SUBSYSTEMS:
+            if _name in spool_observed:
+                continue  # genuinely observed via the spool — not a blind spot,
+                          # so a dark (e.g. stale) cell here must still taint.
             _c = subsystems.get(_name)
             if isinstance(_c, dict) and _c.get("state") == DARK:
                 _c["accepted_blind"] = True

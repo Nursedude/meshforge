@@ -41,6 +41,7 @@ _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
 
 
 WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
+MINI_STALE_S = 300.0      # 5 min — 10x mini-dudeai's 30s tick (SSOT for both consumers)
 
 
 def watchdog_block_from_payload(
@@ -90,6 +91,84 @@ def watchdog_block_from_payload(
             f"daemon may have crashed"
         )
     return block
+
+
+def mini_block_from_payload(
+    payload: Any,
+    *,
+    now: Optional[float] = None,
+    stale_after_s: float = MINI_STALE_S,
+) -> Dict[str, Any]:
+    """Shape a raw ``mini_dudeai_state.json`` payload into the
+    ``/api/status.mini_dudeai`` block, re-deriving staleness at read time.
+
+    Module-level so BOTH consumers — the status handler's
+    ``_read_mini_state_block`` and the fleet-truth ssh-spool fallback (which
+    reads a map-less gateway's raw mini state over ssh) — share ONE transform
+    and ONE staleness threshold (honest_failure_modes #5: two consumers of one
+    artifact share one constant). A stale payload reads ``ok=False`` with a
+    ``stale:`` reason, which the fleet-truth classifier maps to DARK — never
+    green-with-old-numbers.
+    """
+    if not isinstance(payload, dict):
+        return {"installed": True, "ok": False,
+                "reason": "malformed_json: not an object"}
+
+    ts = payload.get("last_tick_ts")
+    age_s: Optional[float] = None
+    if isinstance(ts, (int, float)):
+        age_s = max(0.0, (now if now is not None else time.time()) - float(ts))
+    stale = bool(age_s is not None and age_s > stale_after_s)
+
+    rules = payload.get("rules") or {}
+    active = [
+        {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
+         "detail": rs.get("last_detail", "")}
+        for rs in rules.values()
+        if isinstance(rs, dict) and rs.get("currently_active")
+    ]
+    top = sorted(
+        ({"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
+          "fire_count_24h": rs.get("fire_count_24h", 0)}
+         for rs in rules.values()
+         if isinstance(rs, dict) and rs.get("fire_count_24h")),
+        key=lambda r: r["fire_count_24h"], reverse=True,
+    )[:5]
+
+    block = {
+        "installed": True,
+        "ok": not stale,
+        "ts": ts,
+        "last_tick_iso": payload.get("last_tick_iso"),
+        "age_s": age_s,
+        "host": payload.get("host"),
+        "rule_count": payload.get("rule_count"),
+        "error_count": payload.get("error_count"),
+        "active_rules": active,
+        "top_rules_24h": top,
+    }
+    if stale:
+        block["reason"] = (
+            f"stale: last tick {age_s:.0f}s ago "
+            f"(threshold {stale_after_s:.0f}s) — mini-dudeai "
+            f"daemon may have crashed"
+        )
+    return block
+
+
+def radio_connection_from_probe(tcp_listening: bool,
+                                usb_present: bool) -> "tuple[bool, str]":
+    """The (connected, mode) decision for the radio cell, from a NON-perturbing
+    probe: meshtasticd's :4403 LISTEN state (read from /proc, never a connect —
+    a connect seizes the single-consumer PhoneAPI and wedges mesh-TX, #17/#75)
+    or a USB radio device. Module-level so the map's own ``_read_radio_block``
+    and the ssh-spool fallback (which reads a map-less gateway's listen/usb
+    state over ssh) reach the identical verdict (honest_failure_modes #5)."""
+    if tcp_listening:
+        return True, "tcp"
+    if usb_present:
+        return True, "serial"
+    return False, "none"
 
 
 def _serialize_peer_status(s: Any) -> Dict[str, Any]:
@@ -382,16 +461,9 @@ class StatusEndpointsMixin:
         usb_devices = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
         usb_available = len(usb_devices) > 0
 
-        # Determine connection mode
-        if tcp_available:
-            mode = "tcp"
-            connected = True
-        elif usb_available:
-            mode = "serial"
-            connected = True
-        else:
-            mode = "none"
-            connected = False
+        # Determine connection mode (shared SSOT decision — the ssh-spool
+        # fallback reaches the identical verdict from the same probe inputs).
+        connected, mode = radio_connection_from_probe(tcp_available, usb_available)
 
         return {
             "connected": connected,
@@ -437,7 +509,7 @@ class StatusEndpointsMixin:
 
         return watchdog_block_from_payload(payload)
 
-    _MINI_STALE_S = 300.0  # 5 min — 10x mini-dudeai's 30s tick
+    _MINI_STALE_S = MINI_STALE_S  # class alias; module constant is the SSOT
 
     def _read_mini_state_block(self) -> Dict[str, Any]:
         """Stitch ~/mini_dudeai_state.json into /api/status.
@@ -463,49 +535,7 @@ class StatusEndpointsMixin:
             payload = json.loads(raw)
         except (json.JSONDecodeError, ValueError) as exc:
             return {"installed": True, "ok": False, "reason": f"malformed_json: {exc}"}
-        if not isinstance(payload, dict):
-            return {"installed": True, "ok": False, "reason": "malformed_json: not an object"}
-
-        ts = payload.get("last_tick_ts")
-        age_s: Optional[float] = None
-        if isinstance(ts, (int, float)):
-            age_s = max(0.0, time.time() - float(ts))
-        stale = bool(age_s is not None and age_s > self._MINI_STALE_S)
-
-        rules = payload.get("rules") or {}
-        active = [
-            {"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
-             "detail": rs.get("last_detail", "")}
-            for rs in rules.values()
-            if isinstance(rs, dict) and rs.get("currently_active")
-        ]
-        top = sorted(
-            ({"rule_id": rs.get("rule_id"), "subject": rs.get("subject"),
-              "fire_count_24h": rs.get("fire_count_24h", 0)}
-             for rs in rules.values()
-             if isinstance(rs, dict) and rs.get("fire_count_24h")),
-            key=lambda r: r["fire_count_24h"], reverse=True,
-        )[:5]
-
-        block = {
-            "installed": True,
-            "ok": not stale,
-            "ts": ts,
-            "last_tick_iso": payload.get("last_tick_iso"),
-            "age_s": age_s,
-            "host": payload.get("host"),
-            "rule_count": payload.get("rule_count"),
-            "error_count": payload.get("error_count"),
-            "active_rules": active,
-            "top_rules_24h": top,
-        }
-        if stale:
-            block["reason"] = (
-                f"stale: last tick {age_s:.0f}s ago "
-                f"(threshold {self._MINI_STALE_S:.0f}s) — mini-dudeai "
-                f"daemon may have crashed"
-            )
-        return block
+        return mini_block_from_payload(payload, stale_after_s=self._MINI_STALE_S)
 
     # 3x the */5-min claw_metrics capture cadence: captured every 5 min, called
     # stale (capture cron stopped) after 15.
