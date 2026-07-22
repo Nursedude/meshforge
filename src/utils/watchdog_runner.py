@@ -54,6 +54,7 @@ from utils.watchdog_probes import (
     probe_aredn_organ_undeclared,
     probe_aredn_source_dark,
     probe_calibration_drift,
+    probe_dream_ratification_stalled,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
@@ -790,6 +791,14 @@ def run_all_probes(
     # assistant: a VERIFIED claim that did not hold on re-derivation. Self-guards
     # None off the dev/manager box (no ledger).
     sig = probe_calibration_drift()
+    if sig is not None:
+        signals.append(sig)
+
+    # Second-brain value loop (2026-07-22, WS-C): mini's dream propose->ratify
+    # loop runs but is not closing (proposals unresolved while the mini_cadence
+    # ratifier is alive). Self-guards inert off the manager box (no cadence
+    # verdict = no ratifier) and defers the cadence-DOWN case to #78.
+    sig = probe_dream_ratification_stalled()
     if sig is not None:
         signals.append(sig)
 

@@ -141,6 +141,7 @@ from utils.watchdog_probes_gateway import (
 from utils.watchdog_probes_mini import (
     MEMORY_INDEX_LIMIT_BYTES,
     probe_calibration_drift,
+    probe_dream_ratification_stalled,
     probe_history_write_failure,
     probe_memory_index_oversize,
     probe_rules_seed_drift,
@@ -212,4 +213,5 @@ __all__ = [
     "probe_rules_seed_drift",
     "probe_memory_index_oversize",
     "probe_calibration_drift",
+    "probe_dream_ratification_stalled",
 ]

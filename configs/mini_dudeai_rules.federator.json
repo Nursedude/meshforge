@@ -989,6 +989,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "2026-07-19 row-8 accept, LEADING indicator \u2014 a recipient became reachable from MORE THAN ONE gateway. This is the PRECONDITION for a cross-gateway duplicate, NOT a duplicate and NOT a fault. Row 8 was accepted-permanent (keep the detector, never build coordination) on COST ASYMMETRY: an unsuppressed dup means the message arrived twice (redundancy), while a yield protocol that misfires means it arrived zero times (silence) \u2014 emergency-comms infrastructure must fail toward redundancy. That accept did NOT claim dups are rare: three human recipients were already dual-homed the day it was made. So this tracks the exposure the decision knowingly accepts, and answers 'is time changing this?' with a number that moves BEFORE any duplicate happens. propose_escalation, never ntfy \u2014 a routing change is something to look at, not an outage; check whether the new dual-homing was intended. Fires once per newly-observed recipient (never on the count, which churns with the rollup window). \u26a0\ufe0f Confirmable population only \u2014 a mesh recipient never confirms, so mesh exposure stays invisible until the gateway-side attempted/routing emission lands (the residual)."
+    },
+    {
+      "id": "dream_ratification_stalled_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "dream_ratification_stalled",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-22 second-brain arc WS-C -- mini's dream propose->ratify VALUE loop runs but is not closing: proposals sit unresolved past a long age WHILE the mini_cadence session is demonstrably alive (its cron verdict fresh + OK). Fix: `python3 -m mini_dudeai.dreams --list-proposed`, then ratify or reject each with a --reason (if noise, retune the detector; the 2026-07-18 sweep found 0/164 ratified and could not say why). Side-effect-free escalation; NO ntfy page (unsoaked -- the calibration_drift 34-day precedent). NON-redundant with cron_verdict_stale #78, which owns the cadence-DOWN case; this fires only when the ratifier is UP but the backlog is not clearing. INERT off the manager box (no mini_cadence verdict = no ratifier -- a backlog on a gateway box is expected)."
     }
   ]
 }

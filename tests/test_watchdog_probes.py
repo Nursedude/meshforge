@@ -52,6 +52,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_rules_seed_drift,
     probe_memory_index_oversize,
     probe_calibration_drift,
+    probe_dream_ratification_stalled,
     MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
@@ -168,6 +169,7 @@ def test_signal_classes_closed_enum_is_documented():
         "user_unit_inactive",           # 2026-07-19 — an enrolled always-on USER .service not running (default.target.wants symlink present, no invocation:* marker in /run/user/<uid>/systemd/units — bus-free root reads both sides) or the user manager itself down while daemons are enrolled (linger off, the #79 class); closes user_unit_inactivity_blind (probe_service_inactive is user-blind; nomadnet_crashloop covers only a LIVE loop — the parked-failed/stopped/manager-down modes had no steady-state detector); timers deliberately out of scope (no invocation marker; schedules/SLO layer owns their staleness); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as rns_stray_env_drift). No own issue#.
         "user_timer_unit_failing",       # 2026-07-19 — an enabled USER *timer*'s job fails on EVERY firing (repeated "Failed with result" in a short window, newest fresh, no success since); the last uncovered corner of the user-unit blindness class, since user_unit_inactive explicitly excludes timers (no invocation marker; a oneshot is inactive between firings by design) and nomadnet_crashloop covers only a LIVE loop on one unit. Origin: kiai's meshforge-tracer.timer fired every 10 min from 2026-07-12 while its oneshot exited 2 ("no peers in lab_peers") every time — a week silent with every existing leg reading healthy. Documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as user_unit_inactive). No own issue#.
         "rns_stray_env_drift",          # 2026-07-19 — rns/lxmf copies across a box's root-readable envs DISAGREE (intra-box coherence; probe_rns_version_drift owns pin compliance): the missed-venv roll hazard, pipx globs wildcarded across venv names because a library rides inside every app venv depending on it (moc3's nomadnet pipx venv sat silently stock 1.1.4, invisible to every prior drift probe); closes the rns/lxmf leg of the dep_version_drift_strays_blind structural-dark row; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as dep_install_fragmented). No own issue#.
+        "dream_ratification_stalled",   # 2026-07-22 second-brain arc WS-C — mini's dream propose->ratify VALUE loop runs but is not closing (proposals unresolved past a long age while the mini_cadence ratifier is alive; the 2026-07-18 0/164 sweep had no signal for this); NON-redundant with cron_verdict_stale #78 (that owns cadence-DOWN); scopes to the manager box via the cadence-liveness gate (INERT with no ratifier); degraded, escalate-only in seed until soaked (calibration_drift precedent); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -7754,3 +7756,137 @@ def test_worst_propagation_round_never_raises_on_junk():
     for bad in (None, "x", 7, [None], [{"ok": None}], [{"ok": False}]):
         _worst_propagation_round(bad)      # must not raise
     assert _worst_propagation_round([{"ok": True, "seq": 1}]) is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# probe_dream_ratification_stalled (2026-07-22, second-brain arc WS-C):
+# the dream propose->ratify VALUE loop runs but is not closing. HIGH-
+# precision by design — gated on a live mini_cadence verdict so it (a)
+# scopes to the manager box and (b) never double-fires with #78.
+# ─────────────────────────────────────────────────────────────────────
+
+def _cadence_line(status, age_s, now, name="mini_cadence"):
+    """One ~/cron_verdicts.log line for `name` aged `age_s` before `now`."""
+    from datetime import datetime
+    iso = datetime.fromtimestamp(now - age_s).isoformat()
+    return f"{iso} {name} {status} ran"
+
+
+def _stall_deltas(n, age_s, now, status="proposed"):
+    """n memory-deltas of the given status, each first-proposed `age_s` ago."""
+    return [{"key": f"k{i}", "status": status, "ts": now - age_s}
+            for i in range(n)]
+
+
+_STALL_NOW = 1_780_000_000.0
+
+
+def _reset_disp():
+    from utils.watchdog_probe_core import reset_dispositions
+    reset_dispositions()
+
+
+def test_dream_stall_fires_when_backlog_old_and_cadence_alive():
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(6, 20 * 86400, _STALL_NOW),
+        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
+        now_ts=_STALL_NOW)
+    assert sig is not None
+    assert sig.cls == "dream_ratification_stalled"
+    assert sig.subject == "dream-loop" and sig.severity == "degraded"
+    assert sig.extra["unresolved"] == 6
+    # It must talk about the LOOP not closing, and point at the review command.
+    assert "not closing" in sig.detail and "--list-proposed" in sig.detail
+
+
+def test_dream_stall_inert_when_cadence_failing_defers_to_78():
+    """cron_verdict_stale (#78) owns the cadence-DOWN case — do not double-fire."""
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),   # a big old backlog
+        verdicts_text=_cadence_line("FAIL", 3600, _STALL_NOW),
+        now_ts=_STALL_NOW)
+    assert sig is None
+    disp = collect_dispositions()["dream_ratification_stalled"]
+    assert disp["disp"] == "inert" and "#78" in disp["reason"]
+
+
+def test_dream_stall_inert_when_stale_cadence_verdict():
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
+        verdicts_text=_cadence_line("OK", 5 * 86400, _STALL_NOW),  # 5d old > 2d cap
+        now_ts=_STALL_NOW)
+    assert sig is None
+
+
+def test_dream_stall_inert_on_gateway_box_no_cadence_verdict():
+    """No mini_cadence verdict = no ratifier on this box (a gateway). A backlog
+    there is EXPECTED, not a stall — inert, never clean/fire."""
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
+        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW, name="some_other_cron"),
+        now_ts=_STALL_NOW)
+    assert sig is None
+    disp = collect_dispositions()["dream_ratification_stalled"]
+    assert disp["disp"] == "inert" and "no ratifier" in disp["reason"]
+
+
+def test_dream_stall_clean_when_backlog_below_min_keys():
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(3, 30 * 86400, _STALL_NOW),   # old but only 3 < 5
+        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
+        now_ts=_STALL_NOW)
+    assert sig is None
+    assert collect_dispositions()["dream_ratification_stalled"]["disp"] == "clean"
+
+
+def test_dream_stall_clean_when_backlog_young():
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(9, 2 * 86400, _STALL_NOW),    # many but only 2d old
+        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
+        now_ts=_STALL_NOW)
+    assert sig is None
+
+
+def test_dream_stall_ignores_resolved_deltas():
+    """Ratified/rejected proposals are CLOSED — only 'proposed' counts."""
+    _reset_disp()
+    deltas = (_stall_deltas(9, 30 * 86400, _STALL_NOW, status="rejected")
+              + _stall_deltas(2, 30 * 86400, _STALL_NOW))   # only 2 still proposed
+    sig = probe_dream_ratification_stalled(
+        deltas=deltas,
+        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
+        now_ts=_STALL_NOW)
+    assert sig is None   # 2 unresolved < min_keys 5
+
+
+def test_dream_stall_latest_status_wins_per_key():
+    """A key proposed then later rejected must NOT count as an open backlog."""
+    _reset_disp()
+    deltas = []
+    for i in range(9):
+        deltas.append({"key": f"k{i}", "status": "proposed",
+                       "ts": _STALL_NOW - 30 * 86400})
+        deltas.append({"key": f"k{i}", "status": "rejected",
+                       "ts": _STALL_NOW - 1 * 86400})   # later row closes it
+    sig = probe_dream_ratification_stalled(
+        deltas=deltas,
+        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
+        now_ts=_STALL_NOW)
+    assert sig is None   # every key resolved → zero open
+
+
+def test_dream_stall_cadence_verdict_name_is_ssot_pinned():
+    """The local literal must equal the mini package's SSOT so the probe reads
+    the same verdict name the cadence launcher writes (honest_failure_modes #5)."""
+    from utils.watchdog_probes_mini import _CADENCE_VERDICT_NAME
+    from mini_dudeai.claw_telemetry import CADENCE_VERDICT_NAME
+    assert _CADENCE_VERDICT_NAME == CADENCE_VERDICT_NAME
