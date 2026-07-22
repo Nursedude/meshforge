@@ -174,6 +174,39 @@ Verified this turn: lint `exit 0`; `parity_check.py` `exit 0` (in sync);
 `test_watchdog_probes/fleet_truth/mini_dudeai/regression_guards` 1174 passed;
 MA `fleet_truth` 60 passed.
 
+## STATUS: SLICE 3 now on moc AND moc3 (2026-07-21) — two more faults fixed
+
+Deploying on moc3 (a memory-constrained, load-spiky gateway) surfaced two more
+honest-failure faults, both fixed before the canary could cry wolf (`2f053b64`):
+
+- **hfm #8, concurrent-fire collision.** Two fires shared one FIXED-name
+  receiver identity file — `enable --now` racing a manual fire made the second
+  fire overwrite it, so the first's pull loaded the wrong identity and got
+  nothing (a false CONCERN). Fix: per-fire unique identity path (PID+seq,
+  sanitised, cleaned up) + a `flock` on the fire script so two fires never run
+  at once, which also stops two simultaneous PoW stamps from spiking load.
+- **hfm #1, a slow stamp read as a delivery failure.** The propagation stamp
+  is CPU-bound proof-of-work with high variance (measured 15s..>330s on moc3,
+  little correlation with load). A send that never completes means the message
+  never reached the node, so it says NOTHING about store-and-forward.
+  `pass_envelope` is now TRI-STATE: only a PULL failure is `false`/CONCERN; an
+  all-send-stall run is `null` (probe holds, SILENCE leg still catches a dead
+  exerciser). Verified on moc3 by repetition — 4 fires gave one honest
+  "OK indeterminate: node not exercised" and three real "OK store-and-forward"
+  (15-151s), zero false CONCERNs.
+
+**moc3 deploy specifics (per-box tuning via drop-ins, NOT the repo template):**
+`PROP_SEND_TIMEOUT=300` (its stamp is slow) and cadence offset to `:52`
+(vs moc's :37) so the two boxes don't stamp/hit the node together. Its :52
+timer fired unattended and passed (median 151s). Both propagation probes read
+clean on both boxes; honest_status 6/6.
+
+**The session's recurring lesson, now earned FOUR times on this one canary: a
+single green run proves nothing.** Every fault here (process sharing, os._exit
+flush, parent-RNS, ratchet identity, concurrent collision, slow-stamp verdict)
+passed at least once before failing — only repetition under varied conditions
+found them.
+
 ## STATUS: SLICE 3 SHIPPED + LIVE 2026-07-21 — the arc is COMPLETE
 
 The store-and-forward drill is automated, deployed, and **self-firing**. On
