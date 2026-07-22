@@ -915,9 +915,17 @@ def _read_fresh_propagation_nodes(home: str, now: float):
             continue                 # forged/skewed future stamp — not evidence
         if age > _PROPAGATION_FRESH_S:
             continue
+        # Key order matters: the production writer (UnifiedNode.to_dict via
+        # node_tracker's web cache) emits "id" and "name" — the other keys are
+        # tolerated legacy/twin shapes. "name" was MISSING here until the
+        # 2026-07-21 review (W3): the enrichment read display_name/long_name
+        # only, keys the writer never emits, so the page's nearest-node name
+        # was always empty and the fixtures pinned a shape production never
+        # produces (see the writer-derived-shape test).
         out.append((max(age, 0.0),
-                    str(n.get("node_id") or n.get("id") or "?"),
-                    str(n.get("display_name") or n.get("long_name") or "")))
+                    str(n.get("id") or n.get("node_id") or "?"),
+                    str(n.get("name") or n.get("display_name")
+                        or n.get("long_name") or "")))
     out.sort(key=lambda r: r[0])
     return out, "ok"
 
@@ -1017,7 +1025,7 @@ def probe_lxmf_propagation_unused(
                          reason="unused capability seen; held by debounce")
         return None
 
-    age_h, node_id, name = cands[0]
+    age_s, node_id, name = cands[0]  # seconds (review note: was misnamed age_h)
     return Signal(
         cls="lxmf_propagation_unused",
         subject="propagation-unconfigured",   # stable: node sets rotate
@@ -1026,7 +1034,7 @@ def probe_lxmf_propagation_unused(
             f"{len(cands)} LXMF propagation node(s) heard within "
             f"{int(_PROPAGATION_FRESH_S / 3600)}h (nearest {node_id}"
             + (f" '{name}'" if name else "")
-            + f", {age_h / 60:.0f} min ago) but gateway.json "
+            + f", {age_s / 60:.0f} min ago) but gateway.json "
             "rns.propagation_node is empty — this gateway stores and forwards "
             "nothing. LXMF to an OFFLINE peer fails outright today; with a "
             "propagation node it is held until the peer returns. NOTE this is "
@@ -1038,7 +1046,7 @@ def probe_lxmf_propagation_unused(
         extra={
             "candidates": len(cands),
             "nearest": node_id,
-            "nearest_age_min": round(age_h / 60.0, 1),
+            "nearest_age_min": round(age_s / 60.0, 1),
             "freshness_window_h": _PROPAGATION_FRESH_S / 3600.0,
             "debounce_streak": streak,
         },

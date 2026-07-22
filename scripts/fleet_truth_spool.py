@@ -29,6 +29,7 @@ Crontab (manager box):
 """
 
 import json
+import re
 import subprocess
 import sys
 import time
@@ -126,8 +127,18 @@ def targets_path() -> Path:
     return get_real_user_home() / ".config" / "meshforge" / "truth_spool_targets"
 
 
+_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+
 def read_targets(path: Path) -> list:
-    """One ssh alias per line; comments/blanks ignored. Absent file = []."""
+    """One ssh alias per line; comments/blanks ignored. Absent file = [].
+
+    Aliases are validated: they ride into ssh argv (a leading ``-`` would
+    parse as an ssh option — an option-injection hole) and shape the spool
+    filename (``/``/``..`` would traverse). An operator-owned file is a soft
+    trust boundary, not an excuse to skip input validation (security rules).
+    Rejected lines are skipped LOUDLY on stderr, never silently dropped.
+    """
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
@@ -135,8 +146,13 @@ def read_targets(path: Path) -> list:
     out = []
     for line in text.splitlines():
         line = line.split("#", 1)[0].strip()
-        if line:
-            out.append(line)
+        if not line:
+            continue
+        if not _ALIAS_RE.match(line):
+            print(f"truth_spool: SKIP invalid alias {line!r} "
+                  "(must match [A-Za-z0-9][A-Za-z0-9._-]*)", file=sys.stderr)
+            continue
+        out.append(line)
     return out
 
 

@@ -54,6 +54,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A non-numeric --timeout/--interval/--grace makes every `-ge`/`-lt` test
+# below evaluate FALSE with a warning — the ceiling never triggers and the
+# loop this script exists to bound becomes unbounded again (2026-07-21
+# review). Refuse loudly at parse time instead.
+for v in "TIMEOUT=$TIMEOUT" "INTERVAL=$INTERVAL" "GRACE=$GRACE"; do
+  case "${v#*=}" in
+    ''|*[!0-9]*) echo "wait_for_ci: ${v%%=*} must be a non-negative integer (got '${v#*=}')" >&2
+                 exit 2 ;;
+  esac
+done
+
 if [ -z "$SHA" ]; then
   SHA=$(git -C "$REPO" rev-parse HEAD 2>/dev/null) || {
     echo "UNKNOWN: not a git repo and no SHA given"; exit 2; }

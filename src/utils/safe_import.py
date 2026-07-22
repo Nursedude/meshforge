@@ -92,6 +92,14 @@ def safe_import(module: str, *names: str, package: str = None) -> Tuple[Any, ...
             except ImportError:
                 missing.append(name)
                 val = None
+            except Exception as e:  # noqa: BLE001 — contract: never raises
+                # Unlike getattr, importing a submodule EXECUTES its code; a
+                # broken C-extension/driver init must degrade to the designed
+                # fallback, not crash the "safe" helper (2026-07-21 review).
+                logger.debug("safe_import: %s.%s raised on import: %s",
+                             module, name, e)
+                missing.append(name)
+                val = None
         attrs.append(val)
 
     if missing:

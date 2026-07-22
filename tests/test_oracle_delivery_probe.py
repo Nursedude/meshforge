@@ -84,6 +84,35 @@ def test_classify_buckets():
     assert _classify_oracle_record({"delivered": None}) is None
 
 
+def test_reason_vocabulary_lockstep_nothing_real_reads_benign():
+    """2026-07-21 review (C1): RnsSendResult's named reasons must never be
+    laundered into the benign bucket — circuit_open/not_connected/
+    no_lxmf_source are infrastructure failures (they must DEGRADE the
+    delivery rate), broadcast_unsupported is a structural decline. Only
+    no_path stays benign (recipient genuinely unreachable, not our fault).
+    Pinned against the producer's own closed vocabulary so a reason added
+    on one side breaks this test until the classifier learns it
+    (honest_failure_modes #5/#7)."""
+    from gateway.bridge_send_mixin import RNS_SEND_REASONS
+    expected = {
+        "": None,                # success carries no reason; not a bucket call
+        "no_path": "benign",
+        "circuit_open": "send_error",
+        "not_connected": "send_error",
+        "no_lxmf_source": "send_error",
+        "broadcast_unsupported": "decline",
+        "send_error": "send_error",
+    }
+    # both directions: every producer reason has a decided bucket, and the
+    # test's map names no reason the producer retired
+    assert set(expected) == set(RNS_SEND_REASONS)
+    for reason, bucket in expected.items():
+        if not reason:
+            continue
+        rec = {"delivered": False, "transport": "rns", "reason": reason}
+        assert _classify_oracle_record(rec) == bucket, reason
+
+
 # ── INERT self-guards ────────────────────────────────────────────────
 
 def test_inert_when_log_absent(tmp_path):
@@ -324,17 +353,20 @@ class TestRnsAmbiguousBenignSplit:
         assert sig.extra["rate"] == pytest.approx(0.4, abs=0.01)
 
     def test_named_benign_reason_is_no_longer_ambiguous(self, tmp_path):
-        """Row 2's cure: send_to_rns now returns an RnsSendResult, so a benign
-        RNS non-delivery arrives NAMED (no_path / circuit_open). It stays out of
-        the failure set, but it is explained — so the ambiguity measure must
-        shrink, not hold steady, as the blind spot closes."""
+        """Row 2's cure: send_to_rns now returns an RnsSendResult, so an RNS
+        non-delivery arrives NAMED. no_path stays benign-and-explained (out of
+        the failure set, out of the ambiguity count). circuit_open does NOT —
+        2026-07-21 review (C1) corrected this test's original premise: a
+        tripped write breaker is an infrastructure failure and must degrade
+        the delivery rate, never sit in the benign bucket."""
         sig = self._fire(tmp_path,
                          [_rec(False, reason="no_path", transport="rns")
                           for _ in range(3)]
                          + [_rec(False, reason="circuit_open", transport="rns")
                             for _ in range(2)])
-        assert sig.extra["benign_nondeliveries_excluded"] == 5  # still excluded
+        assert sig.extra["benign_nondeliveries_excluded"] == 3  # no_path only
         assert sig.extra["benign_rns_ambiguous"] == 0           # but not blind
+        assert sig.extra["send_errors"] == 8   # 6 baseline + 2 circuit_open
 
     def test_reasonless_rns_benign_still_counts_as_ambiguous(self, tmp_path):
         """The measure must keep working for any leg still returning a bare

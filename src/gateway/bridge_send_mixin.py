@@ -33,14 +33,21 @@ class RnsSendResult:
     """
 
     ok: bool
-    #: "" (success) | no_path | circuit_open | not_connected | no_lxmf_source
-    #: | broadcast_unsupported | send_error
+    #: One of RNS_SEND_REASONS below.
     reason: str = ""
     #: exception text for ``send_error``; "" otherwise
     detail: str = ""
 
     def __bool__(self) -> bool:
         return self.ok
+
+
+#: Closed reason vocabulary for :class:`RnsSendResult`. The oracle-delivery
+#: probe's classifier consumes these (two consumers, one constant —
+#: honest_failure_modes #5): grow BOTH together, pinned by
+#: tests/test_oracle_delivery_probe.py::test_reason_vocabulary_lockstep_*.
+RNS_SEND_REASONS = ("", "no_path", "circuit_open", "not_connected",
+                    "no_lxmf_source", "broadcast_unsupported", "send_error")
 
 
 class BridgeSendMixin:

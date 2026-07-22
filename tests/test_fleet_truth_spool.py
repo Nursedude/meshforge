@@ -75,6 +75,15 @@ class TestReadTargets:
         mod = _load_spool_script()
         assert mod.read_targets(tmp_path / "nope") == []
 
+    def test_hostile_aliases_rejected_loudly(self, tmp_path, capsys):
+        """2026-07-21 review: aliases ride into ssh argv (leading '-' parses
+        as an ssh option) and shape the spool filename ('/' traverses)."""
+        mod = _load_spool_script()
+        p = tmp_path / "targets"
+        p.write_text("-oProxyCommand=evil\n../escape\nkiai\na/b\n")
+        assert mod.read_targets(p) == ["kiai"]
+        assert "SKIP invalid alias" in capsys.readouterr().err
+
 
 def _write_spool(tmp_path, alias, *, age_s=10.0, **sections):
     doc = {"schema": c.SPOOL_SCHEMA, "alias": alias,
@@ -96,6 +105,14 @@ class TestReadSpool:
 
     def test_stale_spool_is_none_never_last_known_healthy(self, tmp_path, monkeypatch):
         d = _write_spool(tmp_path, "kiai", age_s=c.SPOOL_STALE_S + 5,
+                         slo={"overall_status": "ready"})
+        monkeypatch.setattr(c, "truth_spool_dir", lambda: d)
+        assert c._read_spool("kiai") is None
+
+    def test_future_stamped_spool_is_stale_not_fresh(self, tmp_path, monkeypatch):
+        """honest_failure_modes #6 (RTC-less fleet): a writer stamp AHEAD of
+        the reader's clock is a clock fault, never evidence of freshness."""
+        d = _write_spool(tmp_path, "kiai", age_s=-3600.0,
                          slo={"overall_status": "ready"})
         monkeypatch.setattr(c, "truth_spool_dir", lambda: d)
         assert c._read_spool("kiai") is None

@@ -393,9 +393,14 @@ def merge_coverage(
     # Per-class disposition reported by the producer (Phase 0 enrichment).
     # ``reported_reason`` carries the producer's own wording (e.g. WHY a
     # class is inert on this box) through to the rendered cell.
+    # Gated on the SAME observability test as signals[] (2026-07-21
+    # re-review): a frozen watchdog's stale block carries its last
+    # coverage{} too, and honoring it rendered current green for exactly
+    # the classes that were firing when it froze — the stale signal was
+    # suppressed above, then fell through to its stale "clean" disposition.
     reported: Dict[str, str] = {}
     reported_reason: Dict[str, str] = {}
-    if isinstance(watchdog_block, dict):
+    if watchdog_observable and isinstance(watchdog_block, dict):
         cov = watchdog_block.get("coverage")
         if isinstance(cov, dict):
             for cls, disp in cov.items():
@@ -601,7 +606,14 @@ def _ci_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(slo, dict) or not isinstance(slo.get("ci_status"), dict):
         return cell(DARK, reason="ci_status unobservable", source="/fleet/slo.ci_status")
     repos = [r for r in (slo["ci_status"].get("repos") or []) if isinstance(r, dict)]
-    failing = [r for r in repos if r.get("state") in ("failure", "error", "cancelled")]
+    # Every COMPLETED-with-failure conclusion gh can emit, not just the common
+    # three: timed_out/startup_failure/action_required are observed terminal
+    # states too — leaving them in the "not judgeable yet" bucket parked a red
+    # CI as permanent non-tainting DARK with a reason implying it would
+    # resolve (2026-07-21 re-review).
+    failing = [r for r in repos if r.get("state") in (
+        "failure", "error", "cancelled", "timed_out", "startup_failure",
+        "action_required")]
     if failing:
         names = ", ".join(f"{r.get('name')}:{r.get('state')}" for r in failing[:3])
         return cell(FAILED, reason=f"ci failing: {names}", source="/fleet/slo.ci_status")

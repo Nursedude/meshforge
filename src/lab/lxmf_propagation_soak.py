@@ -41,6 +41,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, field, asdict
@@ -64,8 +65,19 @@ DEFAULT_PULL_TIMEOUT_S = 180.0
 # operator traffic.
 MARKER = "MF-PROPSOAK"
 
+# An RNS destination hash is 128 bits = exactly 32 hex chars.
+_HASH_RE = re.compile(r"[0-9a-f]{32}")
+
 _STAGE_SEND = "send"
 _STAGE_PULL = "pull"
+# Pull INFRASTRUCTURE failure: the receiver could not complete a sync with
+# the node (no path, link failed, child crashed) — the message may well be
+# sitting in the store. Says nothing about store-and-forward, so it is
+# indeterminate like a send stall (2026-07-21 review F1: before this stage
+# existed, a transient pull-link failure — e.g. rnsd restarting between the
+# send and pull children — read as a DEFINITIVE store-and-forward failure
+# and paged against a healthy node).
+_STAGE_PULL_LINK = "pull_link"
 
 
 @dataclass
@@ -106,9 +118,14 @@ class SoakReport:
 
     @property
     def ok_ratio(self) -> float:
-        if self.total_samples == 0:
+        # Same denominator as the verdict (testable rounds), or the envelope
+        # could publish ratio-vs-threshold pairs that contradict its own
+        # pass_envelope (review: ratio 0.5 / threshold 1.0 / pass=True when
+        # one stall accompanied one success).
+        testable = self.total_samples - self.total_indeterminate
+        if testable <= 0:
             return 0.0
-        return self.total_ok / self.total_samples
+        return self.total_ok / testable
 
     def to_dict(self) -> dict:
         d = asdict(self)
@@ -136,15 +153,25 @@ class SoakReport:
 def _is_indeterminate(r: RoundResult) -> bool:
     """A round that could not exercise the node.
 
-    Only a PULL-stage failure proves store-and-forward is broken: by then the
-    send succeeded, so the node accepted the message into its store and simply
-    failed to return it. A SEND-stage failure means the message never reached
-    the node at all — most often the sender was too slow generating the
-    propagation stamp (CPU-bound proof-of-work, high variance on a loaded box).
-    That is a sender-local condition and says nothing about the node, so it is
-    indeterminate, never a failure.
+    Only a COMPLETED-pull failure proves store-and-forward is broken: the
+    node accepted the message (send succeeded), served a sync to the
+    receiver, and the message was not in it. Everything else says nothing
+    about the node:
+
+    - SEND-stage failure — the message never reached the node; most often
+      the sender was too slow generating the propagation stamp (CPU-bound
+      proof-of-work, high variance on a loaded box). Sender-local.
+    - PULL_LINK-stage failure — the receiver could not complete a sync
+      (no path, link failed, child crashed/timed out). Transport-local; the
+      message may be sitting in the store (2026-07-21 review F1).
+
+    ⚠️ This exclusion creates an ABSORBING state by itself — a node that
+    refuses every upload, or a box that can never finish a stamp, reads
+    indeterminate forever with every dashboard green. The probe's
+    sustained-indeterminate leg exists precisely to page on that (review F2);
+    do not remove one without the other.
     """
-    return (not r.ok) and r.stage == _STAGE_SEND
+    return (not r.ok) and r.stage in (_STAGE_SEND, _STAGE_PULL_LINK)
 
 
 def build_report(
@@ -201,13 +228,17 @@ def build_report(
 
 
 def worst_round(round_results) -> Optional[str]:
-    """Compact ``round N failed at <stage>: <reason>`` for the first failure.
+    """Compact ``round N failed at <stage>: <reason>`` for the worst failure.
 
+    Prefers a DEFINITIVE failure over an indeterminate stall (review F7: on a
+    mixed run — round 1 send-stall, round 2 pull-fail — the first-match rule
+    reported the one round that is by design NOT a failure as THE failure).
     None when nothing failed or the input is misshaped — a summary helper must
     never raise inside a probe.
     """
     if not isinstance(round_results, list):
         return None
+    fallback = None
     for r in round_results:
         if isinstance(r, dict):
             ok, seq, stage, reason = (r.get("ok"), r.get("seq"),
@@ -217,8 +248,12 @@ def worst_round(round_results) -> Optional[str]:
         else:
             continue
         if ok is False:
-            return f"round {seq} failed at {stage or '?'}: {reason or 'unknown'}"
-    return None
+            line = f"round {seq} failed at {stage or '?'}: {reason or 'unknown'}"
+            if stage not in (_STAGE_SEND, _STAGE_PULL_LINK):
+                return line                # definitive failure wins
+            if fallback is None:
+                fallback = line
+    return fallback
 
 
 def _now_iso() -> str:
@@ -363,16 +398,26 @@ def _run_role(role: str, body: str, node_hash: str, timeout_s: float,
     """
     import subprocess
 
+    # The child's own phase deadline rides along (review F4: the operator
+    # knobs used to stop at the parent — the child kept the module default,
+    # so raising PROP_SEND_TIMEOUT on a slow-stamp box silently did nothing).
     cmd = [sys.executable, "-m", "lab.lxmf_propagation_soak",
            "--role", role, "--body", body, "--propagation-node", node_hash,
-           "--identity-path", identity_path]
+           "--identity-path", identity_path,
+           "--phase-timeout", f"{max(timeout_s - 30.0, 30.0):.0f}"]
+    # An orchestration-level failure (child hung/killed/unstartable) proves
+    # nothing about the node — "indeterminate" lets run_round classify pull
+    # failures honestly (review F1); the send stage is already indeterminate
+    # by stage.
     try:
         proc = subprocess.run(cmd, cwd=_src_root(), capture_output=True,
                               text=True, timeout=timeout_s)
     except subprocess.TimeoutExpired:
-        return {"ok": False, "reason": f"{role} phase exceeded {timeout_s:.0f}s"}
+        return {"ok": False, "indeterminate": True,
+                "reason": f"{role} phase exceeded {timeout_s:.0f}s"}
     except OSError as exc:
-        return {"ok": False, "reason": f"{role} phase could not start: {exc}"}
+        return {"ok": False, "indeterminate": True,
+                "reason": f"{role} phase could not start: {exc}"}
 
     out = (proc.stdout or "").strip().splitlines()
     for line in reversed(out):                 # last JSON line is the result
@@ -384,16 +429,22 @@ def _run_role(role: str, body: str, node_hash: str, timeout_s: float,
                 continue
     err = (proc.stderr or "").strip().splitlines()
     tail = err[-1] if err else f"rc={proc.returncode}, no result line"
-    return {"ok": False, "reason": f"{role} phase produced no result ({tail})"}
+    return {"ok": False, "indeterminate": True,
+            "reason": f"{role} phase produced no result ({tail})"}
 
 
-def _phase_send(body: str, node_hash: str, identity_path: str) -> dict:
+def _phase_send(body: str, node_hash: str, identity_path: str,
+                timeout_s: float = DEFAULT_SEND_TIMEOUT_S) -> dict:
     """Child role: send ONE message with desired_method=PROPAGATED."""
     import LXMF
     import RNS
     from lab._lab_common import load_or_create_identity
 
-    t0 = time.time()
+    # monotonic: these boxes are RTC-less and the timer is Persistent=true, so
+    # a catch-up fire right after boot lands exactly when fake-hwclock/NTP
+    # steps the wall clock — a time.time() deadline could expire instantly or
+    # publish a negative latency (honest_failure_modes #6; review F5).
+    t0 = time.monotonic()
     ident_a, _ = load_or_create_identity("prop_soak_a")
     ident_b = _new_round_identity(identity_path)   # virgin, unique per fire
 
@@ -414,10 +465,11 @@ def _phase_send(body: str, node_hash: str, identity_path: str) -> dict:
                              desired_method=LXMF.LXMessage.PROPAGATED)
         router.handle_outbound(msg)
 
-        deadline = time.time() + DEFAULT_SEND_TIMEOUT_S
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
             if msg.state in (LXMF.LXMessage.SENT, LXMF.LXMessage.DELIVERED):
-                return {"ok": True, "latency_s": round(time.time() - t0, 2)}
+                return {"ok": True,
+                        "latency_s": round(time.monotonic() - t0, 2)}
             if msg.state in (LXMF.LXMessage.FAILED, LXMF.LXMessage.REJECTED,
                              LXMF.LXMessage.CANCELLED):
                 return {"ok": False,
@@ -432,16 +484,35 @@ def _phase_send(body: str, node_hash: str, identity_path: str) -> dict:
             pass
 
 
-def _phase_pull(body: str, node_hash: str, identity_path: str) -> dict:
-    """Child role: bring the receiver up and pull from the propagation node."""
+def _pr_state_name(router, state) -> str:
+    """Human name for an LXMRouter PR_* transfer state (best-effort)."""
+    try:
+        for attr in dir(type(router)):
+            if attr.startswith("PR_") and getattr(type(router), attr) == state:
+                return attr
+    except Exception:                      # noqa: BLE001 - label only
+        pass
+    return str(state)
+
+
+def _phase_pull(body: str, node_hash: str, identity_path: str,
+                timeout_s: float = DEFAULT_PULL_TIMEOUT_S) -> dict:
+    """Child role: bring the receiver up and pull from the propagation node.
+
+    Tri-state (review F1): only a COMPLETED sync that did not contain our
+    message is a store-and-forward failure. A sync that never completed
+    (no path, link failed) is transport trouble — ``indeterminate: True`` so
+    the parent stamps _STAGE_PULL_LINK, never a false CONCERN against a
+    node that may be holding the message just fine.
+    """
     import LXMF
 
-    t0 = time.time()
+    t0 = time.monotonic()                  # F5: RTC-less boxes, see _phase_send
     ident_b = _load_round_identity(identity_path)
     if ident_b is None:
         # The send phase owns creating it; its absence means the phases ran out
         # of order, never that store-and-forward failed. Say which.
-        return {"ok": False,
+        return {"ok": False, "indeterminate": True,
                 "reason": "no round identity on disk - send phase did not run"}
 
     store = _router_storage("b")
@@ -453,17 +524,34 @@ def _phase_pull(body: str, node_hash: str, identity_path: str) -> dict:
         # NOT set_inbound_propagation_node(): it raises NotImplementedError
         # in lxmf 1.0.1+mf.1 — one setter serves both directions.
         router.set_outbound_propagation_node(bytes.fromhex(node_hash))
-        router.request_messages_from_propagation_node(ident_b, max_messages=0)
+        try:
+            router.request_messages_from_propagation_node(
+                ident_b, max_messages=0)
+        except Exception as exc:           # noqa: BLE001 - setup, not verdict
+            return {"ok": False, "indeterminate": True,
+                    "reason": f"pull sync could not start: {exc}"}
 
-        deadline = time.time() + DEFAULT_PULL_TIMEOUT_S
-        while time.time() < deadline:
+        pr_complete = getattr(type(router), "PR_COMPLETE", 0x07)
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
             if any(_matches(m, body) for m in received):
-                return {"ok": True, "latency_s": round(time.time() - t0, 2)}
+                return {"ok": True,
+                        "latency_s": round(time.monotonic() - t0, 2)}
             time.sleep(2)
-        return {"ok": False,
-                "reason": (f"stored but not retrieved within "
-                           f"{DEFAULT_PULL_TIMEOUT_S:.0f}s "
-                           f"({len(received)} other message(s) returned)")}
+
+        pr_state = getattr(router, "propagation_transfer_state", None)
+        if pr_state == pr_complete:
+            # The node served a full sync and our message was not in it —
+            # the one outcome that IS a store-and-forward failure.
+            return {"ok": False,
+                    "reason": (f"sync completed but message not returned "
+                               f"within {timeout_s:.0f}s "
+                               f"({len(received)} other message(s) returned)")}
+        return {"ok": False, "indeterminate": True,
+                "reason": (f"pull sync never completed within "
+                           f"{timeout_s:.0f}s (transfer state "
+                           f"{_pr_state_name(router, pr_state)}) — transport "
+                           f"trouble, not a store-and-forward verdict")}
     finally:
         try:
             router.exit_handler()
@@ -486,7 +574,7 @@ def run_round(seq: int, node_hash: str, *, send_timeout_s: float,
               pull_timeout_s: float, body: Optional[str] = None) -> RoundResult:
     """One send -> store -> pull cycle, each phase in its own process."""
     body = body or f"{MARKER} seq={seq} t={int(time.time())}"
-    t0 = time.time()
+    t0 = time.monotonic()                  # F5: wall clock is forgeable here
 
     # A token unique to THIS fire so overlapping fires never share an identity
     # file (honest_failure_modes #8). PID is unique among live processes; seq
@@ -503,14 +591,18 @@ def run_round(seq: int, node_hash: str, *, send_timeout_s: float,
         pulled = _run_role("pull", body, node_hash, pull_timeout_s + 30.0,
                            identity_path)
         if not pulled.get("ok"):
-            return RoundResult(seq=seq, ok=False, stage=_STAGE_PULL,
+            # F1: a pull the transport never completed is _STAGE_PULL_LINK
+            # (indeterminate) — only a completed-sync miss is _STAGE_PULL.
+            stage = (_STAGE_PULL_LINK if pulled.get("indeterminate")
+                     else _STAGE_PULL)
+            return RoundResult(seq=seq, ok=False, stage=stage,
                                store_latency_s=store_latency,
                                reason=str(pulled.get("reason", "unknown")))
 
         return RoundResult(seq=seq, ok=True,
                            store_latency_s=store_latency,
                            retrieve_latency_s=pulled.get("latency_s"),
-                           total_latency_s=round(time.time() - t0, 2))
+                           total_latency_s=round(time.monotonic() - t0, 2))
     finally:
         # Throwaway identity — never leave it lying in state.
         try:
@@ -547,8 +639,9 @@ def render_text(report: SoakReport) -> str:
         if r.ok:
             lines.append(f"  round {r.seq}: OK store={r.store_latency_s}s "
                          f"retrieve={r.retrieve_latency_s}s")
-        elif r.stage == _STAGE_SEND:
-            lines.append(f"  round {r.seq}: INDETERMINATE at send — {r.reason}")
+        elif _is_indeterminate(r):
+            lines.append(f"  round {r.seq}: INDETERMINATE at {r.stage} — "
+                         f"{r.reason}")
         else:
             lines.append(f"  round {r.seq}: FAIL at {r.stage} — {r.reason}")
     if report.pass_envelope is True:
@@ -572,12 +665,20 @@ def main(argv=None) -> int:
                     default=DEFAULT_OK_RATIO_THRESHOLD)
     ap.add_argument("--output", choices=("json", "text"), default="text")
     ap.add_argument("--loglevel", default="WARNING")
+    ap.add_argument("--check-configured", action="store_true",
+                    help="exit 0 if a propagation node is configured, 3 if "
+                         "not, 4 if configured but malformed — no RNS, no "
+                         "state writes (the fire script's INERT gate)")
     # Internal: the parent re-invokes itself once per role so the sender and
     # receiver never share a process (see _run_role for why that is required).
     ap.add_argument("--role", choices=("send", "pull"), default=None,
                     help=argparse.SUPPRESS)
     ap.add_argument("--body", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--identity-path", default=None, help=argparse.SUPPRESS)
+    # Internal: the child's own phase deadline (review F4 — without this the
+    # operator's --send-timeout/--pull-timeout stopped at the parent).
+    ap.add_argument("--phase-timeout", type=float, default=None,
+                    help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=getattr(logging, args.loglevel.upper(), logging.WARNING))
@@ -585,11 +686,21 @@ def main(argv=None) -> int:
     node = _resolve_propagation_node(args.propagation_node)
     if not node:
         # No configured node is NOT a drill failure — it means this box has
-        # nothing to exercise. Emit nothing and exit 0 so the fire script
-        # publishes no envelope and the probe stays INERT rather than
-        # reporting a store-and-forward failure that never had a chance.
+        # nothing to exercise. Emit nothing and exit 0 (3 for the explicit
+        # check) so the fire script publishes no envelope and the probe stays
+        # INERT rather than reporting a store-and-forward failure that never
+        # had a chance.
         print("no propagation_node configured — nothing to exercise",
               file=sys.stderr)
+        return 3 if args.check_configured else 0
+    if not _HASH_RE.fullmatch(node):
+        # Configured but garbage (typo'd hash): a REAL operator error, never
+        # silence — before this check it crashed both children on
+        # bytes.fromhex and read as a perpetual indeterminate (review).
+        print(f"propagation_node malformed (want 32 hex chars): {node!r}",
+              file=sys.stderr)
+        return 4
+    if args.check_configured:
         return 0
 
     if args.role:
@@ -600,9 +711,13 @@ def main(argv=None) -> int:
             print("RNS unavailable/degraded — not a store-and-forward verdict",
                   file=sys.stderr)
             return 3
-        fn = _phase_send if args.role == "send" else _phase_pull
         ipath = args.identity_path or default_identity_path("adhoc")
-        result = fn(args.body or MARKER, node, ipath)
+        if args.role == "send":
+            result = _phase_send(args.body or MARKER, node, ipath,
+                                 args.phase_timeout or DEFAULT_SEND_TIMEOUT_S)
+        else:
+            result = _phase_pull(args.body or MARKER, node, ipath,
+                                 args.phase_timeout or DEFAULT_PULL_TIMEOUT_S)
         # flush=True is LOAD-BEARING. stdout is a pipe here (block-buffered),
         # and RNS/LXMF teardown can reach os._exit(), which skips the
         # interpreter's flush — the result line is then silently lost and the

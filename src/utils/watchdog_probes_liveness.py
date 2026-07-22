@@ -806,6 +806,8 @@ def probe_claw_device_dark(
             extra={"devices": names, "claws_seen": seen},
         )
     except Exception:
+        note_disposition("claw_device_dark", "indeterminate",
+                         reason="probe raised unexpectedly; unobservable this tick")
         return None
 
 
@@ -898,6 +900,8 @@ def probe_claw_battery_low(
                    "floor_v": floor_v, "measured": measured},
         )
     except Exception:
+        note_disposition("claw_battery_low", "indeterminate",
+                         reason="probe raised unexpectedly; unobservable this tick")
         return None
 
 
@@ -1029,4 +1033,6 @@ def probe_claw_rf_silent(
                    "threshold_provisional": True},
         )
     except Exception:
+        note_disposition("claw_rf_silent", "indeterminate",
+                         reason="probe raised unexpectedly; unobservable this tick")
         return None

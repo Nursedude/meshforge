@@ -619,6 +619,27 @@ class UnifiedNodeTracker:
         if new.role:
             existing.role = new.role
 
+        # PKI/TOFU: route an observed key through the EXISTING node's state
+        # machine. from_meshtastic() calls update_pki_status on the throwaway
+        # new object, and this merge used to drop it — so the 'PKI KEY
+        # CHANGED — potential MITM' transition could only ever fire inside
+        # one object's lifetime, i.e. never for an already-known node
+        # (2026-07-21 review C1). update_pki_status owns the transitions:
+        # first-key TOFU, same-key no-op, changed-key CHANGED.
+        if new.pki_status.public_key:
+            existing.update_pki_status(new.pki_status.public_key,
+                                       is_admin=new.pki_status.is_admin_trusted)
+
+        # MeshCore identity: refresh on every advertisement — a node promoted
+        # client→repeater used to keep the stale role for the life of the
+        # cache entry (review W1).
+        if new.meshcore_pubkey:
+            existing.meshcore_pubkey = new.meshcore_pubkey
+        if new.meshcore_role:
+            existing.meshcore_role = new.meshcore_role
+        if new.meshcore_hops is not None:
+            existing.meshcore_hops = new.meshcore_hops
+
         # Update status
         existing.is_gateway = existing.is_gateway or new.is_gateway
         # Only mark as online if the incoming data is fresh (within threshold)
@@ -703,7 +724,41 @@ class UnifiedNodeTracker:
                     hardware_model=node_data.get('hardware_model'),
                     role=node_data.get('role'),
                     is_online=False,  # Assume offline until we hear from them
+                    # 2026-07-21 review (C2): the loader restored 17 fields
+                    # and silently dropped the rest of to_dict()'s output —
+                    # the same writer-with-no-reader class as service_type,
+                    # enumerated this time. The round-trip test now compares
+                    # the FULL serialized shape so the next added field
+                    # cannot regress silently.
+                    hops=node_data.get('hops'),
+                    is_gateway=bool(node_data.get('is_gateway', False)),
+                    is_local=bool(node_data.get('is_local', False)),
+                    firmware_version=node_data.get('firmware_version'),
+                    name_is_self_reported=bool(
+                        node_data.get('name_is_self_reported', False)),
+                    service_aspect=node_data.get('service_aspect'),
+                    service_capabilities=list(
+                        node_data.get('service_capabilities') or []),
+                    meshcore_pubkey=node_data.get('meshcore_pubkey'),
+                    meshcore_role=node_data.get('meshcore_role'),
+                    meshcore_hops=node_data.get('meshcore_hops'),
                 )
+                # Restore first_seen ("known since" must survive a restart);
+                # __post_init__ stamps now() when absent.
+                if node_data.get('first_seen'):
+                    try:
+                        node.first_seen = datetime.fromisoformat(node_data['first_seen'])
+                    except (ValueError, TypeError):
+                        pass
+                # Restore telemetry + the PKI/TOFU key baseline. pki_status
+                # was the security-relevant twin of the service_type drop:
+                # without it every restart erased every node's key baseline,
+                # so a key that changed across a restart was silently
+                # re-TOFU'd instead of firing the MITM warning (review C1).
+                if isinstance(node_data.get('telemetry'), dict):
+                    node.telemetry = Telemetry.from_dict(node_data['telemetry'])
+                if isinstance(node_data.get('pki_status'), dict):
+                    node.pki_status = PKIStatus.from_dict(node_data['pki_status'])
                 # Restore last_seen from cache
                 if node_data.get('last_seen'):
                     try:
@@ -713,11 +768,9 @@ class UnifiedNodeTracker:
                 # Restore position from cache
                 pos_data = node_data.get('position')
                 if pos_data and isinstance(pos_data, dict):
-                    node.position = Position(
-                        latitude=pos_data.get('latitude', 0.0),
-                        longitude=pos_data.get('longitude', 0.0),
-                        altitude=pos_data.get('altitude', 0.0),
-                    )
+                    # from_dict keeps the position TIMESTAMP too — without it
+                    # position age was unknowable after a restart (review C2).
+                    node.position = Position.from_dict(pos_data)
                 # Restore signal history from cache
                 snr_history = node_data.get('snr_history', [])
                 for sample in snr_history:

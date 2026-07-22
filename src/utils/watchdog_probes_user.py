@@ -1,7 +1,13 @@
 """Watchdog probes — TIMER-triggered user-unit failure shapes.
 
-Closes the last uncovered corner of the user-unit blindness class. The two
-existing detectors between them cover everything EXCEPT this one:
+Narrows the user-unit blindness class: covers timers whose cadence fits
+inside the lookback window. ⚠️ KNOWN RESIDUAL (2026-07-21 review, W4): with
+``min_failures=2`` inside a 3h lookback plus a 1h recency gate, a timer with
+cadence ≳90 min (daily/weekly jobs) can fail EVERY firing and never trip
+this probe — the 10-min kiai class is covered, slow-cadence timers are not.
+A cadence-aware window (derive lookback from OnCalendar, the #78 pattern) is
+the durable cure; until then, wire slow user timers to ``cron_verdict`` so
+Issue #78 owns them. The existing detectors cover everything else:
 
 - ``probe_service_inactive`` — structurally blind to user units entirely
   (root/system-context ``systemctl`` cannot see them).

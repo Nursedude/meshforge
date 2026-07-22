@@ -82,7 +82,11 @@ def _read_spool(alias: str, *, now: Optional[float] = None) -> Optional[Dict[str
         if not isinstance(fetched_at, (int, float)):
             return None
         wall_now = now if now is not None else time.time()
-        if (wall_now - fetched_at) > SPOOL_STALE_S:
+        age = wall_now - fetched_at
+        # Clamp the backward branch too (honest_failure_modes #6, RTC-less
+        # fleet): a writer stamp AHEAD of this reader's clock is not evidence
+        # of freshness — it is a clock fault, and must read stale, never fresh.
+        if age < 0 or age > SPOOL_STALE_S:
             return None  # stale spool = unobservable, never last-known-healthy
         return doc
     except (OSError, ValueError):
@@ -237,7 +241,10 @@ def collect_snapshots(*, port: int = DEFAULT_PORT) -> "tuple[List[Dict[str, Any]
             except Exception as e:  # a fan-out worker must never sink the whole build
                 alias = futs[fut]
                 logger.warning("fleet_truth fetch worker for %s raised: %s", alias, e)
-                snapshots.append({"alias": alias, "resolution_method": "error",
+                # Same MF014/MF015 masking as the happy path — the worker-error
+                # snapshot is served too (2026-07-21 review).
+                display = _mask_ip_alias(alias) if _IPV4_RE.match(alias) else alias
+                snapshots.append({"alias": display, "resolution_method": "error",
                                   "status": None, "slo": None,
                                   "error": f"fetch worker error: {e}", "answered_at": None})
     return snapshots, declared

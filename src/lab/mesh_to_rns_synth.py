@@ -237,7 +237,10 @@ def _dry_run_publisher(topic: str, payload: str) -> None:
 def _make_mqtt_publisher(host: str, port: int):
     """Build a live paho-MQTT publisher (connects + loop_start)."""
     from utils.safe_import import safe_import
-    mqtt, has_mqtt = safe_import("paho.mqtt.client", "client")
+    # Module-only: "client" is neither an attribute nor a submodule of
+    # paho.mqtt.client, so the attr form reported "not installed" on boxes
+    # where paho IS installed (2026-07-21 re-review of the 54a65060 flip).
+    mqtt, has_mqtt = safe_import("paho.mqtt.client")
     if not has_mqtt:
         raise RuntimeError(
             "paho-mqtt not installed — use --dry-run or `pip install paho-mqtt`")

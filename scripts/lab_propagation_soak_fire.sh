@@ -32,6 +32,32 @@ PULL_TIMEOUT="${PROP_PULL_TIMEOUT:-180}"
 THRESHOLD="${PROP_THRESHOLD:-1.0}"
 STATE_DIR="${STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/propagation_soak}"
 
+# Resolve repo root from the script's own location so this works wherever the
+# clone lives (/opt/meshforge, ~/meshforge, ...). Same pattern as the synth fire.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$REPO_ROOT/src" || {
+    # A broken checkout must be LOUD (the old `|| exit 0` left only a header
+    # line and 2.5h of silence — 2026-07-21 review).
+    echo "propagation-soak fire: cannot cd $REPO_ROOT/src — broken checkout?" >&2
+    exit 1
+}
+
+# INERT gate BEFORE any state write (2026-07-21 review F3): the probe's INERT
+# contract is "state dir absent = box doesn't run the drill", and the old
+# unconditional mkdir broke it — an unconfigured box with the timer installed
+# created the dir, then published an hourly FAIL verdict and sat permanently
+# indeterminate. Unconfigured now leaves NO trace: exit 0, no dir, no verdict
+# (the probe also gates on intent, so a leftover dir from a de-adopted era
+# stays quiet too). rc 4 = configured-but-malformed hash — a REAL operator
+# error that falls through so the run below surfaces it as a FAIL verdict.
+if [ -z "${PROP_NODE:-}" ]; then
+    python3 -m lab.lxmf_propagation_soak --check-configured >/dev/null 2>&1
+    cc_rc=$?
+    if [ "$cc_rc" -eq 3 ]; then
+        exit 0
+    fi
+fi
+
 mkdir -p "$STATE_DIR"
 
 # Single-writer: never run two fires at once (honest_failure_modes #8). Two
@@ -65,11 +91,6 @@ log="$STATE_DIR/fire.log"
     echo "  rounds=$ROUNDS send_timeout=${SEND_TIMEOUT}s pull_timeout=${PULL_TIMEOUT}s threshold=$THRESHOLD"
     echo "  output=$out"
 } >>"$log"
-
-# Resolve repo root from the script's own location so this works wherever the
-# clone lives (/opt/meshforge, ~/meshforge, ...). Same pattern as the synth fire.
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cd "$REPO_ROOT/src" || exit 0
 
 node_args=()
 [ -n "${PROP_NODE:-}" ] && node_args=(--propagation-node "$PROP_NODE")
@@ -130,10 +151,18 @@ try:
     elif passed is False:
         rounds = d.get("round_results") or []
         why = ""
+        # Prefer the DEFINITIVE failure over an indeterminate stall (F7) —
+        # on a mixed run the first-match rule blamed the round that is by
+        # design NOT a failure. Keep in lockstep with worst_round() in
+        # lab/lxmf_propagation_soak.py.
         for r in rounds:
             if isinstance(r, dict) and r.get("ok") is False:
-                why = f" — round {r.get('seq')} failed at {r.get('stage')}: {r.get('reason')}"
-                break
+                line = f" — round {r.get('seq')} failed at {r.get('stage')}: {r.get('reason')}"
+                if r.get("stage") not in ("send", "pull_link"):
+                    why = line
+                    break
+                if not why:
+                    why = line
         print(f"CONCERN store-and-forward {frac} round(s){why}")
     elif "pass_envelope" in d:
         # Explicit null: indeterminate. Say what happened without claiming
@@ -141,10 +170,11 @@ try:
         ind = d.get("total_indeterminate")
         why = ""
         for r in (d.get("round_results") or []):
-            if isinstance(r, dict) and r.get("stage") == "send" and r.get("ok") is False:
+            if (isinstance(r, dict) and r.get("ok") is False
+                    and r.get("stage") in ("send", "pull_link")):
                 why = f" — {r.get('reason')}"
                 break
-        print(f"OK indeterminate: node not exercised ({ind} send-stall){why}")
+        print(f"OK indeterminate: node not exercised ({ind} indeterminate round(s)){why}")
     else:
         print("FAIL envelope missing pass_envelope field")
 except Exception as e:
@@ -164,6 +194,10 @@ fi
 # Retention prune (best-effort), plus orphaned temps a SIGKILL could leave.
 find "$STATE_DIR" -maxdepth 1 -name 'prop-*.json' -mtime +14 -delete 2>/dev/null || true
 find "$STATE_DIR" -maxdepth 1 -name '.prop-*.json.partial' -mmin +120 -delete 2>/dev/null || true
+# Receiver identities leak when a fire is SIGTERM/SIGKILLed mid-round (a
+# finally block does not run on SIGTERM) — the run cleans its own, so any
+# survivor older than 2h is an orphan (2026-07-21 review F6).
+find "$STATE_DIR" -maxdepth 1 -name 'round_b_identity_*' -mmin +120 -delete 2>/dev/null || true
 
 # Always exit 0: the verdict LINE carries the result, not the unit state
 # (same observability-not-red philosophy as the synth soak).

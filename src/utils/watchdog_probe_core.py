@@ -10,10 +10,19 @@ design constraints (pure / bounded / read-only / honest-about-indeterminacy).
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 from dataclasses import dataclass, field
 from typing import Optional, Tuple
+
+# Same "watchdog" namespace the runner logs under, so a swallowed state-write
+# failure lands where the operator already greps (honest_failure_modes #9).
+logger = logging.getLogger("watchdog")
+
+# Warn once per path per process — a broken state dir would otherwise spam
+# every probe every tick.
+_streak_write_warned: set = set()
 
 # ─────────────────────────────────────────────────────────────────────
 # Closed enum of failure classes — one per persistent_issues.md entry.
@@ -328,5 +337,15 @@ def _save_parity_streak(state_path: str, streak: int) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
-        pass
+    except OSError as e:
+        # 2026-07-21 review (W4): this swallow had NO witness — an unwritable
+        # state dir (the #60 sandbox-drift class) froze every debounced
+        # probe's streak below its threshold, silencing them all FOREVER
+        # with nothing anywhere saying so. Still never raises (a probe must
+        # not crash on bookkeeping), but the blindness is now visible.
+        if state_path not in _streak_write_warned:
+            _streak_write_warned.add(state_path)
+            logger.warning(
+                "watchdog streak state unwritable (%s): %s — debounced "
+                "probes using this path CANNOT reach their fire threshold "
+                "until this is fixed", state_path, e)

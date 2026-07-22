@@ -110,6 +110,27 @@ class TestSafeImportEdgeCases:
                 if m.startswith('sipkg_txyz'):
                     del sys.modules[m]
 
+    def test_submodule_that_raises_on_import_degrades_not_crashes(self, tmp_path):
+        """2026-07-21 review: unlike getattr, the submodule fallback EXECUTES
+        module code — a broken C-extension/driver init raising a
+        non-ImportError must degrade to (None, False), never escape the
+        'safe' helper."""
+        import sys
+        pkg = tmp_path / "sipkg_boom"
+        pkg.mkdir()
+        (pkg / "__init__.py").write_text("")
+        (pkg / "dev.py").write_text("raise RuntimeError('driver init failed')\n")
+        sys.path.insert(0, str(tmp_path))
+        try:
+            dev, ok = safe_import('sipkg_boom', 'dev')
+            assert ok is False
+            assert dev is None
+        finally:
+            sys.path.remove(str(tmp_path))
+            for m in list(sys.modules):
+                if m.startswith('sipkg_boom'):
+                    del sys.modules[m]
+
     def test_pubsub_pattern_cold_contract(self):
         """The documented `pub, ok = safe_import('pubsub', 'pub')` pattern:
         with pubsub installed, ok=True must come with a usable module (the

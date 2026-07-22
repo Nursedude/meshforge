@@ -51,6 +51,10 @@ class ServiceInfo:
     service_type: RNSServiceType
     aspect: str
     display_name: str = ""
+    #: False when display_name came from a HEURISTIC decode (byte-scan /
+    #: errors='ignore' blob) rather than a structured parse — such a name may
+    #: fill an empty slot but must never CORRECT a cached one (review W2).
+    display_name_is_parsed: bool = True
     description: str = ""
     capabilities: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -153,7 +157,8 @@ class LXMFParser(ServiceParser):
             LXMFParser._parse_propagation_announce(app_data, info)
             return info
 
-        name_bytes, telemetry_bytes = LXMFParser._extract_name_and_telemetry(app_data)
+        name_bytes, telemetry_bytes, name_parsed = \
+            LXMFParser._extract_name_and_telemetry(app_data)
 
         if name_bytes and 0 < len(name_bytes) < 128:
             try:
@@ -162,6 +167,7 @@ class LXMFParser(ServiceParser):
                     clean_name = ''.join(c for c in decoded if c.isprintable())
                     if clean_name:
                         info.display_name = clean_name[:64]
+                        info.display_name_is_parsed = name_parsed
             except UnicodeDecodeError:
                 pass
 
@@ -242,7 +248,14 @@ class LXMFParser(ServiceParser):
 
     @staticmethod
     def _extract_name_and_telemetry(app_data: bytes):
-        """Return ``(name_bytes, telemetry_bytes_or_None)``.
+        """Return ``(name_bytes, telemetry_bytes_or_None, parsed)``.
+
+        ``parsed`` is True only when the name came from a STRUCTURED shape
+        (strategies 1-2). The heuristic legs (strategy 3 / whole-blob) can
+        render arbitrary bytes as a printable "name" — exactly the mechanism
+        that produced the ``j_v((`` mojibake — and since self-reported names
+        now OVERWRITE cached ones (48f5497d), a heuristic guess must never
+        carry that authority (2026-07-21 review W2).
 
         Strategy ladder (first match wins):
 
@@ -284,7 +297,7 @@ class LXMFParser(ServiceParser):
                                 telemetry = None
                             break
                     if name:
-                        return name, telemetry
+                        return name, telemetry, True
             except Exception:
                 # Not msgpack-decodable, malformed, or doesn't match
                 # the LXMRouter list shape — fall through to legacy.
@@ -300,13 +313,13 @@ class LXMFParser(ServiceParser):
                 decoded = None
             if decoded and all(c.isprintable() or c.isspace() for c in decoded):
                 tail = app_data[1 + prefix_len:]
-                return candidate, tail if tail else None
+                return candidate, (tail if tail else None), True
 
         # Strategy 3: msgpack-marker heuristic (last resort)
         msgpack_start = LXMFParser._find_msgpack_start(app_data)
         if msgpack_start > 0:
-            return app_data[:msgpack_start], app_data[msgpack_start:]
-        return app_data, None
+            return app_data[:msgpack_start], app_data[msgpack_start:], False
+        return app_data, None, False
 
     @staticmethod
     def _find_msgpack_start(app_data: bytes) -> int:
@@ -399,6 +412,7 @@ class NomadParser(ServiceParser):
                 # First line is usually the node/page name
                 lines = decoded.split('\n')
                 info.display_name = lines[0][:64] if lines else ""
+                info.display_name_is_parsed = False
                 if len(lines) > 1:
                     info.description = '\n'.join(lines[1:])[:256]
         except Exception as e:
@@ -428,6 +442,7 @@ class GenericParser(ServiceParser):
             clean = ''.join(c for c in decoded if c.isprintable())
             if clean and len(clean) >= 2:
                 info.display_name = clean[:64]
+                info.display_name_is_parsed = False
         except Exception:
             pass
 

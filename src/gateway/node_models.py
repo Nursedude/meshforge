@@ -60,6 +60,17 @@ else:
 _msgpack, _HAS_MSGPACK = safe_import('msgpack')
 
 
+def _dt_from_iso(val) -> Optional["datetime"]:
+    """ISO string → datetime, or None on absent/garbled input (a torn cache
+    line must degrade to 'unknown', never crash the whole cache load)."""
+    if not val or not isinstance(val, str):
+        return None
+    try:
+        return datetime.fromisoformat(val)
+    except ValueError:
+        return None
+
+
 @dataclass
 class Position:
     """Geographic position"""
@@ -81,6 +92,15 @@ class Position:
             "altitude": self.altitude,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Position":
+        return cls(
+            latitude=d.get("latitude", 0.0) or 0.0,
+            longitude=d.get("longitude", 0.0) or 0.0,
+            altitude=d.get("altitude", 0.0) or 0.0,
+            timestamp=_dt_from_iso(d.get("timestamp")),
+        )
 
 
 class PKIKeyState(Enum):
@@ -133,6 +153,37 @@ class PKIStatus:
         }
 
     @classmethod
+    def from_dict(cls, d: dict) -> "PKIStatus":
+        """Rebuild the TOFU baseline from a cache entry.
+
+        2026-07-21 review (C1): to_dict() wrote pki_status but no loader ever
+        restored it — every restart erased every node's key baseline, so the
+        'PKI KEY CHANGED — potential MITM' branch could never fire across a
+        restart (the key was silently re-TOFU'd as first-seen). Honest guard:
+        no recoverable key material → UNKNOWN (no baseline), never a
+        TRUSTED-with-None-key state that would false-MITM the next observation.
+        """
+        key_hex = d.get("public_key_hex")
+        key = None
+        if isinstance(key_hex, str):
+            try:
+                key = bytes.fromhex(key_hex)
+            except ValueError:
+                key = None
+        if key is None:
+            return cls()
+        try:
+            state = PKIKeyState(d.get("state"))
+        except ValueError:
+            state = PKIKeyState.UNKNOWN
+        if state == PKIKeyState.UNKNOWN:
+            return cls()
+        return cls(state=state, public_key=key, public_key_hex=key_hex,
+                   first_seen=_dt_from_iso(d.get("first_seen")),
+                   last_changed=_dt_from_iso(d.get("last_changed")),
+                   is_admin_trusted=bool(d.get("is_admin_trusted", False)))
+
+    @classmethod
     def from_public_key(cls, public_key: bytes, is_admin: bool = False) -> "PKIStatus":
         """Create PKIStatus from a public key (TOFU)."""
         return cls(
@@ -172,6 +223,21 @@ class AirQualityMetrics:
             "timestamp": self.timestamp.isoformat() if self.timestamp else None
         }.items() if v is not None}
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "AirQualityMetrics":
+        return cls(
+            pm10_standard=d.get("pm10_standard"),
+            pm25_standard=d.get("pm25_standard"),
+            pm100_standard=d.get("pm100_standard"),
+            pm10_environmental=d.get("pm10_environmental"),
+            pm25_environmental=d.get("pm25_environmental"),
+            pm100_environmental=d.get("pm100_environmental"),
+            co2=d.get("co2"),
+            iaq=d.get("iaq"),
+            gas_resistance=d.get("gas_resistance"),
+            timestamp=_dt_from_iso(d.get("timestamp")),
+        )
+
     def has_data(self) -> bool:
         """Check if any air quality data is present"""
         return any([self.pm25_standard, self.co2, self.iaq, self.gas_resistance])
@@ -193,6 +259,15 @@ class HealthMetrics:
             "timestamp": self.timestamp.isoformat() if self.timestamp else None
         }.items() if v is not None}
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "HealthMetrics":
+        return cls(
+            heart_rate=d.get("heart_rate"),
+            spo2=d.get("spo2"),
+            body_temperature=d.get("body_temperature"),
+            timestamp=_dt_from_iso(d.get("timestamp")),
+        )
+
 
 @dataclass
 class DetectionSensor:
@@ -213,6 +288,17 @@ class DetectionSensor:
             "last_triggered": self.last_triggered.isoformat() if self.last_triggered else None,
             "trigger_count": self.trigger_count
         }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "DetectionSensor":
+        return cls(
+            name=d.get("name", "") or "",
+            triggered=bool(d.get("triggered", False)),
+            gpio_pin=d.get("gpio_pin"),
+            triggered_high=bool(d.get("triggered_high", True)),
+            last_triggered=_dt_from_iso(d.get("last_triggered")),
+            trigger_count=int(d.get("trigger_count", 0) or 0),
+        )
 
 
 @dataclass
@@ -290,6 +376,30 @@ class Telemetry:
             result["detection_sensors"] = [s.to_dict() for s in self.detection_sensors]
 
         return result
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Telemetry":
+        t = cls(
+            battery_level=d.get("battery_level"),
+            voltage=d.get("voltage"),
+            channel_utilization=d.get("channel_utilization"),
+            air_util_tx=d.get("air_util_tx"),
+            uptime=d.get("uptime"),
+            temperature=d.get("temperature"),
+            humidity=d.get("humidity"),
+            pressure=d.get("pressure"),
+            gas_resistance=d.get("gas_resistance"),
+            timestamp=_dt_from_iso(d.get("timestamp")),
+        )
+        if isinstance(d.get("air_quality"), dict):
+            t.air_quality = AirQualityMetrics.from_dict(d["air_quality"])
+        if isinstance(d.get("health"), dict):
+            t.health = HealthMetrics.from_dict(d["health"])
+        if isinstance(d.get("detection_sensors"), list):
+            t.detection_sensors = [DetectionSensor.from_dict(s)
+                                   for s in d["detection_sensors"]
+                                   if isinstance(s, dict)]
+        return t
 
     def has_environment_sensors(self) -> bool:
         """Check if node has environment sensors"""
@@ -373,9 +483,10 @@ class UnifiedNode:
     # True when ``name`` is what the node reported about ITSELF in an announce,
     # as opposed to a hash-derived placeholder. Merge uses this to let a node
     # correct a stale/garbled cached name while still refusing to let a
-    # placeholder overwrite a good one. Deliberately NOT persisted: it
-    # describes the announce a node object was built from, and every announce
-    # builds a fresh object, so a cached value would be meaningless.
+    # placeholder overwrite a good one. Persisted since 2026-07-21: on a
+    # CACHED node it records whether the name we hold came from the node
+    # itself — without it a restart downgraded every good name back to
+    # placeholder-grade provenance.
     name_is_self_reported: bool = False
 
     # RNS service info (enhanced tracking)
@@ -669,13 +780,22 @@ class UnifiedNode:
             "is_local": self.is_local,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
             "last_seen_ago": self.get_age_string(),
+            "first_seen": self.first_seen.isoformat() if self.first_seen else None,
             "hardware_model": self.hardware_model,
             "firmware_version": self.firmware_version,
             "role": self.role,
+            # Name provenance (2026-07-21: without it, a restart stripped the
+            # self-reported flag and a node's own rename could stop winning)
+            "name_is_self_reported": self.name_is_self_reported,
             # RNS service info
             "service_type": self.service_type,
             "service_aspect": self.service_aspect,
             "service_capabilities": self.service_capabilities if self.service_capabilities else None,
+            # MeshCore identity (2026-07-21 review C2: written nowhere before,
+            # so get_node_by_meshcore_pubkey() was blind to every cached node)
+            "meshcore_pubkey": self.meshcore_pubkey,
+            "meshcore_role": self.meshcore_role,
+            "meshcore_hops": self.meshcore_hops,
             # PKI status (Meshtastic 2.5+)
             "pki_status": self.pki_status.to_dict() if self.pki_status.state != PKIKeyState.UNKNOWN else None,
             # Favorites (BaseUI 2.7+)
@@ -718,6 +838,12 @@ class UnifiedNode:
             is_local=is_local,
             hardware_model=user.get('hwModel'),
             role=user.get('role'),
+            # longName comes from the node's own NodeInfo — self-reported, so
+            # a rename can correct a stale cached name (2026-07-21 review W1:
+            # the 48f5497d fix only covered the RNS leg; a renamed Meshtastic
+            # node was mis-named in the cache forever). The meshtastic_id
+            # fallback is a placeholder and must never displace a good name.
+            name_is_self_reported=bool(user.get('longName')),
         )
 
         # Position
@@ -843,6 +969,10 @@ class UnifiedNode:
             network="meshcore",
             name=display_name,
             short_name=display_name[:4],
+            # adv_name is the node's own advertisement — self-reported (W1,
+            # same rule as the RNS/Meshtastic legs); the MC-<hash> fallback is
+            # a placeholder and stays non-authoritative.
+            name_is_self_reported=bool(adv_name),
             meshcore_pubkey=pubkey_hex,
             meshcore_role=str(role) if role else 'client',
             meshcore_hops=int(hops) if hops else None,
@@ -919,8 +1049,12 @@ class UnifiedNode:
             if service_info.display_name:
                 node.name = service_info.display_name
                 # The node named itself — this outranks any cached placeholder
-                # or a name recorded by an older, buggier parser.
-                node.name_is_self_reported = True
+                # or a name recorded by an older, buggier parser. BUT only a
+                # STRUCTURED parse earns that authority: a heuristic byte-scan
+                # "name" (the mojibake mechanism) may fill an empty slot,
+                # never correct a good one (2026-07-21 review W2).
+                node.name_is_self_reported = bool(
+                    getattr(service_info, "display_name_is_parsed", True))
             if service_info.latitude is not None and service_info.longitude is not None:
                 lat, lon = service_info.latitude, service_info.longitude
                 if -90 <= lat <= 90 and -180 <= lon <= 180:
@@ -945,6 +1079,10 @@ class UnifiedNode:
             if parsed:
                 if parsed.get("display_name"):
                     node.name = parsed["display_name"]
+                    # Same provenance rule as the registry path (W1): a name
+                    # actually parsed from the node's own announce is
+                    # self-reported even when the registry is unavailable.
+                    node.name_is_self_reported = True
                 if parsed.get("latitude") is not None and parsed.get("longitude") is not None:
                     lat = parsed["latitude"]
                     lon = parsed["longitude"]

@@ -137,6 +137,25 @@ class TestCoverage:
         assert cov["classes"]["role_drift"]["disp"] != "active"
         assert cov["dark"] == 2
 
+    def test_stale_block_coverage_not_presented_as_current(self):
+        """2026-07-21 re-review of the 07-19 fix: the staleness gate was
+        applied to signals[] but NOT to coverage{} — a frozen watchdog's last
+        coverage map still rendered as current green for exactly the classes
+        that were firing when it froze (the stale signal was suppressed, then
+        fell through to its stale 'clean' disposition). A stale block's
+        reported dispositions are as unobservable as its signals."""
+        wd = {"installed": True, "ok": False,
+              "reason": "stale (age 7200s)",
+              "signals": [{"class": "cpu_hot", "severity": "degraded",
+                           "subject": "s", "detail": "d"}],
+              "coverage": {"cpu_hot": "clean", "disk_full": "clean"}}
+        cov = ft.merge_coverage(wd, ["cpu_hot", "disk_full"])
+        assert cov["green"] == 0
+        assert cov["red"] == 0
+        assert cov["dark"] == 2
+        assert cov["classes"]["cpu_hot"]["disp"] == "unknown"
+        assert cov["classes"]["disk_full"]["disp"] == "unknown"
+
     # ── server-vs-fleet code skew (the #79 deploy-restart gap, truth-API skin)
     def test_class_reported_by_box_is_never_dropped(self):
         """2026-07-20 live incident: meshforge-map imports SIGNAL_CLASSES at
@@ -280,6 +299,15 @@ class TestCiCell:
         c = ft._ci_cell(self._slo([{"name": "mf", "state": "failure"},
                                    {"name": "ma", "state": "success"}]))
         assert c["state"] == ft.FAILED
+
+    def test_completed_failure_conclusions_all_read_failed(self):
+        """2026-07-21 re-review: gh also concludes timed_out / startup_failure
+        / action_required — observed terminal failures. The old set parked
+        them in 'not judgeable yet' DARK forever (non-tainting)."""
+        for state in ("timed_out", "startup_failure", "action_required"):
+            c = ft._ci_cell(self._slo([{"name": "mf", "state": state}]))
+            assert c["state"] == ft.FAILED, state
+            assert state in c["reason"]
 
     def test_failure_beats_in_progress(self):
         c = ft._ci_cell(self._slo([{"name": "mf", "state": "failure"},

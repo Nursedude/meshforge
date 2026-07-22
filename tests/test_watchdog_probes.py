@@ -7459,6 +7459,43 @@ def test_lxmf_propagation_dark_reader_handles_the_real_cache_shape(tmp_path):
     assert freshest == 1740.0
 
 
+def test_lxmf_propagation_unused_reader_consumes_the_writers_own_shape(tmp_path):
+    """2026-07-21 review (W3): the unused-probe reader keyed on node_id /
+    display_name / long_name — keys the production writer (UnifiedNode.
+    to_dict via the node tracker's web cache) NEVER emits ("id"/"name"),
+    so the nearest-node name enrichment was a dead read and the fixtures
+    pinned a shape production never produces. This one is DERIVED from the
+    writer, so a key rename on either side fails here."""
+    import datetime as dt
+    import sys
+    sys.path.insert(0, "src")
+    from gateway.node_models import UnifiedNode
+    from utils.watchdog_probes_gateway import _read_fresh_propagation_nodes
+
+    home = tmp_path / "h"
+    cache = home / ".cache" / "meshforge"
+    cache.mkdir(parents=True)
+    now = 1_784_000_000.0
+
+    node = UnifiedNode(id="rns_3968a2eeac25e2e7", network="rns",
+                       name="WH6GXZ MeshForge PN",
+                       service_type="LXMF_PROPAGATION")
+    node.last_seen = dt.datetime.fromtimestamp(now - 600)
+    (cache / "rns_nodes.json").write_text(json.dumps({
+        "version": 1,
+        "saved_at": dt.datetime.fromtimestamp(now - 30).isoformat(),
+        "nodes": [node.to_dict()],
+    }))
+
+    cands, state = _read_fresh_propagation_nodes(str(home), now)
+    assert state == "ok"
+    assert cands, "writer-shaped entry must be readable"
+    age_s, node_id, name = cands[0]
+    assert node_id == "rns_3968a2eeac25e2e7"
+    assert name == "WH6GXZ MeshForge PN"       # the previously-dead read
+    assert age_s == 600.0
+
+
 # ---------------------------------------------------------------------------
 # 2026-07-21 — propagation_soak_degraded (the LXMF store-and-forward drill).
 # The OUTCOME leg for the propagation organ: node_dark proves the configured
@@ -7491,12 +7528,76 @@ def _write_prop_envelope(sdir, *, passed, age_s=60.0, now=None, rounds=None):
     return path
 
 
+def _prop_probe(**kw):
+    """Hermetic call: stub the intent gate (2026-07-21 F3) so these tests
+    never read the real box's gateway.json."""
+    kw.setdefault("configured_fn",
+                  lambda: ("3968a2eeac25e2e7a7961f25842d3d85", "ok"))
+    return probe_propagation_soak_degraded(**kw)
+
+
 def test_propagation_soak_inert_when_box_does_not_run_the_drill(tmp_path):
     """The common case: no state dir means this box has nothing to say."""
-    sig = probe_propagation_soak_degraded(
+    sig = _prop_probe(
         state_dir=str(tmp_path / "absent"), now=1000.0,
         debounce_path=str(tmp_path / "d.json"))
     assert sig is None
+
+
+def test_propagation_soak_inert_when_no_node_adopted(tmp_path):
+    """F3: intent gate — an unconfigured box is INERT even when a state dir
+    (old fire-script mkdir; a de-adopted era's envelopes) still exists."""
+    sdir = str(tmp_path / "propagation_soak")
+    _write_prop_envelope(sdir, passed=True, age_s=99999.0, now=100000.0)
+    sig = probe_propagation_soak_degraded(
+        state_dir=sdir, now=100000.0,
+        debounce_path=str(tmp_path / "d.json"),
+        configured_fn=lambda: ("", "ok"))
+    assert sig is None                       # no silence page for a dead organ
+
+
+def test_propagation_soak_unreadable_intent_is_held_not_inert(tmp_path):
+    """Unreadable gateway.json = intent unknown — indeterminate, never a
+    clean INERT (that would collapse two states, the row-5 defect)."""
+    sdir = str(tmp_path / "propagation_soak")
+    _write_prop_envelope(sdir, passed=False, age_s=60.0, now=100000.0)
+    sp = str(tmp_path / "d.json")
+    for _ in range(3):
+        assert probe_propagation_soak_degraded(
+            state_dir=sdir, now=100000.0, debounce_path=sp,
+            configured_fn=lambda: (None, "unreadable")) is None
+
+
+def test_propagation_soak_sustained_indeterminate_escalates(tmp_path):
+    """F2: the absorbing state. A node refusing every upload (or a box that
+    can never finish a stamp) publishes explicit-null envelopes forever —
+    SILENCE never trips (files keep coming), ENVELOPE never fires (never
+    False). After ``indeterminate_after`` consecutive indeterminate
+    ENVELOPES (counted per fire, not per tick), the probe must page."""
+    import os as _os
+    sdir = str(tmp_path / "propagation_soak")
+    sp = str(tmp_path / "d.json")
+    ip = str(tmp_path / "indet.json")
+    now = 100000.0
+
+    sig = None
+    for i in range(3):                       # 3 consecutive indeterminate fires
+        p = _write_prop_envelope(sdir, passed=None, age_s=60.0, now=now)
+        newp = _os.path.join(sdir, f"prop-2026072{i}T000000Z.json")
+        _os.rename(p, newp)                  # each fire = a NEW envelope file
+        _os.utime(newp, (now - 60, now - 60))
+        for _ in range(2):                   # multiple ticks per envelope
+            sig = _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                              indet_state_path=ip, indeterminate_after=3)
+    assert sig is not None, "3rd consecutive indeterminate envelope must page"
+    assert "INDETERMINATE for 3 consecutive fires" in sig.detail
+
+    # a PASS resets the streak
+    _write_prop_envelope(sdir, passed=True, age_s=30.0, now=now)
+    assert _prop_probe(state_dir=sdir, now=now,
+                       debounce_path=str(tmp_path / "d2.json"),
+                       indet_state_path=ip, indeterminate_after=3) is None
+    assert not _os.path.exists(ip)
 
 
 def test_propagation_soak_holds_when_no_envelope_yet(tmp_path):
@@ -7504,9 +7605,9 @@ def test_propagation_soak_holds_when_no_envelope_yet(tmp_path):
     sdir = tmp_path / "propagation_soak"
     sdir.mkdir()
     sp = str(tmp_path / "d.json")
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=str(sdir), now=1000.0, debounce_path=sp) is None
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=str(sdir), now=1030.0, debounce_path=sp) is None
 
 
@@ -7514,7 +7615,7 @@ def test_propagation_soak_clean_on_a_fresh_pass(tmp_path):
     sdir = str(tmp_path / "propagation_soak")
     now = 100000.0
     _write_prop_envelope(sdir, passed=True, age_s=60.0, now=now)
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=str(tmp_path / "d.json")) is None
 
 
@@ -7525,9 +7626,9 @@ def test_propagation_soak_fires_on_a_failed_envelope_after_debounce(tmp_path):
     sp = str(tmp_path / "d.json")
     _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
 
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is None      # streak 1
-    sig = probe_propagation_soak_degraded(
+    sig = _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp)
     assert sig is not None
     assert sig.cls == "propagation_soak_degraded"
@@ -7543,9 +7644,9 @@ def test_propagation_soak_fires_on_silence(tmp_path):
     sp = str(tmp_path / "d.json")
     _write_prop_envelope(sdir, passed=True, age_s=40000.0, now=now)  # ~11h old
 
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is None
-    sig = probe_propagation_soak_degraded(
+    sig = _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp)
     assert sig is not None
     assert "DARK" in sig.detail
@@ -7563,8 +7664,8 @@ def test_propagation_soak_a_stale_PASS_still_fires_silence(tmp_path):
     sp = str(tmp_path / "d.json")
     _write_prop_envelope(sdir, passed=True, age_s=99999.0, now=now)
 
-    probe_propagation_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
-    sig = probe_propagation_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    _prop_probe(state_dir=sdir, now=now, debounce_path=sp)
+    sig = _prop_probe(state_dir=sdir, now=now, debounce_path=sp)
     assert sig is not None, "a stale PASS must fire the SILENCE leg, not read clean"
 
 
@@ -7581,7 +7682,7 @@ def test_propagation_soak_missing_pass_envelope_is_indeterminate(tmp_path):
     os.utime(path, (now - 60, now - 60))
 
     for _ in range(4):
-        assert probe_propagation_soak_degraded(
+        assert _prop_probe(
             state_dir=sdir, now=now, debounce_path=sp) is None
 
 
@@ -7597,9 +7698,9 @@ def test_propagation_soak_torn_write_is_ridden_out_by_debounce(tmp_path):
         fh.write("{partial")
     os.utime(path, (now - 60, now - 60))
 
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is None       # ridden out
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is not None   # persistent
 
 
@@ -7610,15 +7711,15 @@ def test_propagation_soak_recovery_resets_the_streak(tmp_path):
     sp = str(tmp_path / "d.json")
 
     _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is None       # streak 1
 
     _write_prop_envelope(sdir, passed=True, age_s=60.0, now=now)
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is None       # reset
 
     _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
-    assert probe_propagation_soak_degraded(
+    assert _prop_probe(
         state_dir=sdir, now=now, debounce_path=sp) is None       # streak 1 again
 
 
@@ -7644,7 +7745,7 @@ def test_propagation_soak_null_envelope_holds_not_fires(tmp_path):
 
     # never fires, no matter how many consecutive ticks
     for _ in range(4):
-        assert probe_propagation_soak_degraded(
+        assert _prop_probe(
             state_dir=sdir, now=now, debounce_path=sp) is None
 
 

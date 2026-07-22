@@ -13,14 +13,39 @@ sys.path.insert(0, 'src')
 
 import pytest  # noqa: E402
 
+import lab.lxmf_propagation_soak as soak_mod  # noqa: E402
 from lab.lxmf_propagation_soak import (  # noqa: E402
     DEFAULT_OK_RATIO_THRESHOLD,
     MARKER,
     RoundResult,
     _resolve_propagation_node,
     build_report,
+    main,
     worst_round,
 )
+
+
+class TestCheckConfigured:
+    """The fire script's INERT gate (2026-07-21 review F3) — no RNS, no
+    state writes, three honest exit codes."""
+
+    def test_unconfigured_exits_3(self, monkeypatch):
+        monkeypatch.setattr(soak_mod, "_resolve_propagation_node",
+                            lambda e: None)
+        assert main(["--check-configured"]) == 3
+
+    def test_configured_exits_0(self, monkeypatch):
+        monkeypatch.setattr(soak_mod, "_resolve_propagation_node",
+                            lambda e: "3968a2eeac25e2e7a7961f25842d3d85")
+        assert main(["--check-configured"]) == 0
+
+    def test_malformed_hash_exits_4(self, monkeypatch):
+        """A typo'd hash is a REAL operator error — loud, never a silent
+        perpetual indeterminate (it used to crash both children on
+        bytes.fromhex)."""
+        monkeypatch.setattr(soak_mod, "_resolve_propagation_node",
+                            lambda e: "not-a-hash")
+        assert main(["--check-configured"]) == 4
 
 
 def _ok(seq=1, total=12.0):
@@ -163,6 +188,55 @@ class TestWorstRound:
 
     def test_accepts_dataclass_instances_too(self):
         assert "round 3" in worst_round([_fail(3)])
+
+    def test_prefers_definitive_failure_over_indeterminate_stall(self):
+        """2026-07-21 review (F7): on a mixed failed envelope the first-match
+        rule reported the send-stall — the one round that is by design NOT a
+        failure — as THE failure."""
+        rounds = [_fail(1, stage="send", reason="send timeout in state ..."),
+                  _fail(2, stage="pull", reason="sync completed, not returned")]
+        summary = worst_round([r.__dict__ for r in rounds])
+        assert "round 2" in summary and "pull" in summary
+
+    def test_all_indeterminate_still_summarised(self):
+        rounds = [_fail(1, stage="send", reason="stall"),
+                  _fail(2, stage="pull_link", reason="no path")]
+        assert "round 1" in worst_round([r.__dict__ for r in rounds])
+
+
+class TestPullLinkTriState:
+    """2026-07-21 review (F1): a pull the transport never completed is
+    indeterminate — only a COMPLETED sync that lacked our message is a
+    store-and-forward failure."""
+
+    def test_pull_link_failure_is_none_not_false(self):
+        rep = build_report([_fail(1, stage="pull_link", reason="no path")],
+                           propagation_node="x", started_at_iso="s",
+                           finished_at_iso="f")
+        assert rep.pass_envelope is None
+        assert rep.total_indeterminate == 1
+
+    def test_pull_link_beside_an_ok_round_still_passes(self):
+        rep = build_report([_ok(1), _fail(2, stage="pull_link", reason="lf")],
+                           propagation_node="x", started_at_iso="s",
+                           finished_at_iso="f")
+        assert rep.pass_envelope is True
+
+    def test_completed_pull_failure_is_still_false(self):
+        rep = build_report([_fail(1, stage="pull", reason="not returned")],
+                           propagation_node="x", started_at_iso="s",
+                           finished_at_iso="f")
+        assert rep.pass_envelope is False
+
+    def test_ok_ratio_uses_the_verdicts_denominator(self):
+        """The envelope must not publish a ratio/threshold pair that
+        contradicts its own pass_envelope (review): indeterminate rounds are
+        out of BOTH denominators."""
+        rep = build_report([_ok(1), _fail(2, stage="send", reason="stall")],
+                           propagation_node="x", started_at_iso="s",
+                           finished_at_iso="f")
+        assert rep.pass_envelope is True
+        assert rep.ok_ratio == 1.0
 
 
 class TestIdentityPathIsUniquePerFire:

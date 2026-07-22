@@ -676,6 +676,44 @@ class TestSelfReportedNameReplacesStaleName:
 
         assert tracker._nodes["mesh_1"].name == "Real Name"
 
+    def test_meshtastic_rename_corrects_stale_cached_name(self, tmp_path):
+        """2026-07-21 review (W1): the 48f5497d fix only covered the RNS leg —
+        from_meshtastic never set the provenance flag, so a Meshtastic node
+        that renamed itself was mis-named in the cache forever. longName IS
+        self-reported (it comes from the node's own NodeInfo)."""
+        tracker = self._tracker(tmp_path)
+        old = UnifiedNode.from_meshtastic(
+            {"num": 1, "user": {"longName": "Old Name"}})
+        tracker.add_node(old)
+        renamed = UnifiedNode.from_meshtastic(
+            {"num": 1, "user": {"longName": "New Name"}})
+        tracker.add_node(renamed)
+
+        assert tracker._nodes[renamed.id].name == "New Name"
+
+    def test_meshtastic_id_fallback_is_not_self_reported(self):
+        """The !hex fallback is a placeholder — it must never displace a name."""
+        node = UnifiedNode.from_meshtastic({"num": 1, "user": {}})
+        assert node.name_is_self_reported is False
+
+    def test_meshcore_role_promotion_refreshes_on_merge(self, tmp_path):
+        """W1: a MeshCore node promoted client→repeater kept the stale role
+        for the life of the cache entry — meshcore_* now refresh on merge."""
+        tracker = self._tracker(tmp_path)
+        client = UnifiedNode.from_meshcore(
+            {"adv_name": "MC One", "pubkey_prefix": "abcdef123456",
+             "role": "client", "hops": 3})
+        tracker.add_node(client)
+        promoted = UnifiedNode.from_meshcore(
+            {"adv_name": "MC One Prime", "pubkey_prefix": "abcdef123456",
+             "role": "repeater", "hops": 1})
+        tracker.add_node(promoted)
+
+        merged = tracker._nodes[promoted.id]
+        assert merged.meshcore_role == "repeater"
+        assert merged.meshcore_hops == 1
+        assert merged.name == "MC One Prime"   # adv_name is self-reported
+
     def test_placeholder_still_fills_an_empty_name(self, tmp_path):
         """Something beats nothing — the original 'empty or !' rule stands."""
         tracker = self._tracker(tmp_path)
@@ -695,6 +733,25 @@ class TestSelfReportedNameReplacesStaleName:
 
         assert node.name == "WH6GXZ MeshForge PN"
         assert node.name_is_self_reported is True
+
+    def test_heuristic_decoded_name_carries_no_correction_authority(self):
+        """2026-07-21 review (W2): the delivery ladder's last-resort byte-scan
+        and the Generic/Nomad errors='ignore' decodes can render arbitrary
+        bytes as a printable 'name' — the mojibake mechanism. Since
+        self-reported names now OVERWRITE cached ones, a heuristic guess must
+        not be marked self-reported (it may still fill an empty slot)."""
+        from src.gateway.node_models import ServiceInfo, RNSServiceType
+
+        info = ServiceInfo(service_type=RNSServiceType.UNKNOWN,
+                           aspect="unknown",
+                           display_name="j^x((",
+                           display_name_is_parsed=False)
+        node = UnifiedNode.from_rns(
+            bytes.fromhex("3968a2eeac25e2e7a7961f25842d3d85"),
+            service_info=info)
+
+        assert node.name == "j^x(("               # something beats nothing
+        assert node.name_is_self_reported is False  # but it cannot correct
 
     def test_from_rns_hash_fallback_is_not_self_reported(self):
         """No parseable name -> placeholder -> must not claim self-reported."""
@@ -803,6 +860,125 @@ class TestNodeTrackerCache:
             reloaded = UnifiedNodeTracker()
 
         assert reloaded._nodes["rns_abc"].service_type == "LXMF_PROPAGATION"
+
+    @staticmethod
+    def _fully_populated_node():
+        from src.gateway.node_models import (
+            AirQualityMetrics, DetectionSensor, HealthMetrics, PKIStatus,
+            Position, Telemetry)
+        from datetime import datetime
+        node = UnifiedNode(
+            id="mesh_!deadbeef", network="meshtastic", name="Full Node",
+            short_name="FULL", meshtastic_id="!deadbeef",
+            rns_hash=bytes.fromhex("aa" * 16),
+            hops=3, is_gateway=True, is_local=True,
+            hardware_model="RAK4631", firmware_version="2.7.9",
+            role="ROUTER", name_is_self_reported=True,
+            service_type="LXMF_PROPAGATION", service_aspect="lxmf.propagation",
+            service_capabilities=["propagation"],
+            meshcore_pubkey="abcdef123456", meshcore_role="repeater",
+            meshcore_hops=2, is_favorite=True,
+        )
+        ts = datetime(2026, 7, 20, 10, 0, 0)
+        node.position = Position(latitude=19.5, longitude=-155.5,
+                                 altitude=1200.0, timestamp=ts)
+        node.telemetry = Telemetry(
+            battery_level=88, voltage=4.1, channel_utilization=7.5,
+            air_util_tx=1.2, uptime=3600, temperature=24.5, humidity=60.0,
+            pressure=1013.2, gas_resistance=120000.0,
+            air_quality=AirQualityMetrics(pm25_standard=8, co2=420, iaq=51),
+            health=HealthMetrics(heart_rate=64, spo2=98),
+            detection_sensors=[DetectionSensor(name="Door", triggered=True,
+                                               gpio_pin=17, trigger_count=4,
+                                               last_triggered=ts)],
+            timestamp=ts)
+        node.pki_status = PKIStatus.from_public_key(b"\x01" * 32)
+        node.first_seen = ts
+        node.last_seen = ts
+        node.snr, node.rssi = 7.25, -95
+        node.favorite_updated = ts
+        return node
+
+    # Keys legitimately different across a save→load cycle:
+    _ROUNDTRIP_VOLATILE = {
+        "is_online",       # loader forces offline until re-heard (by design)
+        "last_seen_ago",   # rendered age string, wall-clock dependent
+        "state", "state_display", "state_icon",  # derived from is_online
+        "snr_trend", "rssi_trend",  # need ≥2 history samples; N/A here
+    }
+
+    def test_save_then_load_round_trip_is_field_complete(self, tmp_path):
+        """2026-07-21 review (C2): the loader restored 17 fields and silently
+        dropped the rest — telemetry, hops, is_gateway, is_local,
+        firmware_version, service_aspect/capabilities, pki_status, position
+        timestamp — the same writer-with-no-reader class as service_type,
+        which the old single-field test could never catch. This compares the
+        FULL serialized shape, so the NEXT field added to to_dict() fails
+        here unless the loader learns it too."""
+        cache_file = tmp_path / "node_cache.json"
+        node = self._fully_populated_node()
+        original = node.to_dict(include_signal_history=True)
+
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            with patch.object(UnifiedNodeTracker, '_load_cache'):
+                tracker = UnifiedNodeTracker()
+                tracker._nodes[node.id] = node
+                tracker._save_cache()
+
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            reloaded = UnifiedNodeTracker()
+
+        restored = reloaded._nodes[node.id].to_dict(include_signal_history=True)
+        for key in self._ROUNDTRIP_VOLATILE:
+            original.pop(key, None)
+            restored.pop(key, None)
+        assert restored == original
+
+    def test_pki_baseline_survives_restart_and_still_detects_mitm(self, tmp_path):
+        """2026-07-21 review (C1): pki_status was written but never restored,
+        so every restart erased the TOFU key baseline and a key change across
+        a restart was silently re-TOFU'd as first-seen — the MITM branch
+        could never fire. The baseline must survive, and a DIFFERENT key
+        observed after reload must read CHANGED."""
+        from src.gateway.node_models import PKIKeyState, PKIStatus
+        cache_file = tmp_path / "node_cache.json"
+        key_a, key_b = b"\x01" * 32, b"\x02" * 32
+
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            with patch.object(UnifiedNodeTracker, '_load_cache'):
+                tracker = UnifiedNodeTracker()
+                node = UnifiedNode(id="mesh_!abc", network="meshtastic", name="n")
+                node.pki_status = PKIStatus.from_public_key(key_a)
+                tracker._nodes[node.id] = node
+                tracker._save_cache()
+
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            reloaded = UnifiedNodeTracker()
+
+        restored = reloaded._nodes["mesh_!abc"]
+        assert restored.pki_status.state == PKIKeyState.TRUSTED
+        assert restored.pki_status.public_key == key_a
+        assert restored.update_pki_status(key_b) is True   # change detected
+        assert restored.pki_status.state == PKIKeyState.CHANGED
+
+    def test_merge_routes_observed_key_through_existing_tofu_state(self, tmp_path):
+        """C1 second half: from_meshtastic() TOFUs the key on the THROWAWAY
+        new object and _merge_node dropped it — so a key change for an
+        already-known node never hit the existing node's state machine."""
+        from src.gateway.node_models import PKIKeyState, PKIStatus
+        cache_file = tmp_path / "node_cache.json"
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file):
+            with patch.object(UnifiedNodeTracker, '_load_cache'):
+                tracker = UnifiedNodeTracker()
+                known = UnifiedNode(id="mesh_!abc", network="meshtastic", name="n")
+                known.pki_status = PKIStatus.from_public_key(b"\x01" * 32)
+                tracker.add_node(known)
+
+                announce = UnifiedNode(id="mesh_!abc", network="meshtastic", name="n")
+                announce.pki_status = PKIStatus.from_public_key(b"\x02" * 32)
+                tracker.add_node(announce)
+
+                assert tracker._nodes["mesh_!abc"].pki_status.state == PKIKeyState.CHANGED
 
     def test_load_cache_handles_missing_file(self, tmp_path):
         """Test loading when cache file doesn't exist."""

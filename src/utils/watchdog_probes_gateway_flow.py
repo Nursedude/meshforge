@@ -35,6 +35,12 @@ logger = logging.getLogger("watchdog")
 DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH = "/var/lib/meshforge/synth_soak_debounce.json"
 DEFAULT_PROPAGATION_SOAK_DEBOUNCE_PATH = (
     "/var/lib/meshforge/propagation_soak_debounce.json")
+# Consecutive-INDETERMINATE envelope counter (keyed by envelope filename, so
+# each fire counts once, not once per watchdog tick) — review F2's absorbing
+# state: without this, a node refusing every upload, or a box that can never
+# finish a stamp, read "indeterminate" forever with every dashboard green.
+DEFAULT_PROPAGATION_SOAK_INDET_PATH = (
+    "/var/lib/meshforge/propagation_soak_indeterminate.json")
 
 # The propagation soak fires hourly (meshforge-propagation-soak.timer
 # OnCalendar=*:37:00). Same ~2.5-cadence staleness bar as the synth soak: two
@@ -1011,8 +1017,16 @@ def _classify_oracle_record(rec: dict) -> Optional[str]:
     a non-delivery WITH a known reason, so check the specific cases first:
       - ``delivered is True``                       → 'delivered'  (success)
       - ``reason`` startswith 'send_error'          → 'send_error' (real failure)
-      - ``reason`` in {cooldown, not_allowlisted}   → 'decline'    (excluded)
-      - ``delivered is False`` (any other/absent reason) → 'benign' (excluded, counted)
+      - ``reason`` a named RNS infrastructure fault → 'send_error' (real failure)
+      - ``reason`` a structural/policy decline      → 'decline'    (excluded)
+      - ``delivered is False`` (no_path / absent reason) → 'benign' (excluded, counted)
+
+    The named-reason sets are pinned against the producer's closed vocabulary
+    (``gateway.bridge_send_mixin.RNS_SEND_REASONS``) by the lockstep test —
+    2026-07-21 review (C1): before that pin, circuit_open/not_connected/
+    no_lxmf_source fell through to 'benign', so a gateway whose RNS leg failed
+    every reply read as a HEALTHY delivery rate with a shrinking ambiguity
+    count (honest_failure_modes #1 wearing the row-2 fix's own clothes).
     """
     if not isinstance(rec, dict):
         return None
@@ -1022,7 +1036,9 @@ def _classify_oracle_record(rec: dict) -> Optional[str]:
         return "delivered"
     if isinstance(reason, str) and reason.startswith("send_error"):
         return "send_error"
-    if reason in ("cooldown", "not_allowlisted"):
+    if reason in ("circuit_open", "not_connected", "no_lxmf_source"):
+        return "send_error"  # named infrastructure faults, never benign
+    if reason in ("cooldown", "not_allowlisted", "broadcast_unsupported"):
         return "decline"
     if delivered is False:
         return "benign"
@@ -1215,13 +1231,62 @@ def _worst_propagation_round(round_results) -> Optional[str]:
     """
     if not isinstance(round_results, list):
         return None
+    fallback = None
     for r in round_results:
         if not isinstance(r, dict):
             continue
         if r.get("ok") is False:
-            return (f"round {r.get('seq')} failed at "
+            line = (f"round {r.get('seq')} failed at "
                     f"{r.get('stage') or '?'}: {r.get('reason') or 'unknown'}")
-    return None
+            # Prefer the DEFINITIVE failure over an indeterminate stall (F7);
+            # lockstep with worst_round() in lab/lxmf_propagation_soak.py.
+            if r.get("stage") not in ("send", "pull_link"):
+                return line
+            if fallback is None:
+                fallback = line
+    return fallback
+
+
+def _bump_prop_indet_streak(state_path: str, newest_name: str) -> int:
+    """Advance the consecutive-indeterminate ENVELOPE streak.
+
+    Keyed by envelope filename: a new indeterminate envelope increments once;
+    re-reading the same envelope on later ticks returns the stored count
+    unchanged. Best-effort I/O — an unwritable path returns the increment for
+    THIS tick (so the leg degrades to slower detection, never to silence) and
+    leaves a log witness.
+    """
+    last, streak = None, 0
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            st = json.load(fh)
+        last = st.get("last_file")
+        streak = max(int(st.get("streak", 0)), 0)
+    except (OSError, ValueError, TypeError):
+        pass
+    if newest_name == last:
+        return streak
+    streak += 1
+    try:
+        parent = os.path.dirname(state_path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = state_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"last_file": newest_name, "streak": streak},
+                      fh, separators=(",", ":"))
+        os.replace(tmp, state_path)
+    except OSError as e:
+        logger.warning("propagation indeterminate-streak state unwritable "
+                       "(%s): %s", state_path, e)
+    return streak
+
+
+def _reset_prop_indet_streak(state_path: str) -> None:
+    try:
+        os.remove(state_path)
+    except OSError:
+        pass
 
 
 def probe_propagation_soak_degraded(
@@ -1231,6 +1296,10 @@ def probe_propagation_soak_degraded(
     stale_after_s: float = _PROPAGATION_SOAK_STALE_AFTER_S,
     debounce_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    home: Optional[str] = None,
+    configured_fn=None,
+    indeterminate_after: int = 6,
+    indet_state_path: Optional[str] = None,
 ) -> Optional[Signal]:
     """The configured propagation node stopped STORING AND FORWARDING.
 
@@ -1272,6 +1341,33 @@ def probe_propagation_soak_degraded(
     """
     import time as _time
     now = _time.time() if now is None else now
+
+    # Intent gate FIRST (review F3): the drill only means something on a box
+    # that has ADOPTED a propagation node. Gating on the state dir alone was
+    # false in both directions — the fire script's old unconditional mkdir
+    # created the dir on unconfigured boxes (permanent indeterminate), and a
+    # box de-adopted later kept a dir of aging envelopes (false silence page).
+    if configured_fn is None:
+        def configured_fn():
+            from utils.paths import get_real_user_home
+            from utils.watchdog_probes_gateway import (
+                _read_configured_propagation_node)
+            h = home or str(get_real_user_home())
+            return _read_configured_propagation_node(h)
+    try:
+        cfg_val, cfg_state = configured_fn()
+    except Exception:                      # noqa: BLE001 - never crash a probe
+        cfg_val, cfg_state = None, "unreadable"
+    if cfg_state == "absent" or (cfg_state == "ok"
+                                 and not str(cfg_val or "").strip()):
+        note_disposition(
+            "propagation_soak_degraded", "inert",
+            reason="no propagation node adopted - nothing to exercise")
+        return None
+    if cfg_state != "ok":
+        note_disposition("propagation_soak_degraded", "indeterminate",
+                         reason="gateway.json unreadable - intent unknown")
+        return None
 
     sdir = state_dir or _resolve_propagation_soak_dir()
     if not sdir:
@@ -1322,7 +1418,36 @@ def probe_propagation_soak_degraded(
             )
         elif doc.get("pass_envelope") is True:
             definitively_healthy = True
+            _reset_prop_indet_streak(
+                indet_state_path or DEFAULT_PROPAGATION_SOAK_INDET_PATH)
+        elif "pass_envelope" in doc and doc.get("pass_envelope") is None:
+            # An explicit-null envelope is an honest "couldn't test" — but a
+            # RUN of them is an absorbing state (review F2): a node refusing
+            # every upload, a box that can never finish a stamp, or a dead
+            # pull path all read indeterminate forever while every dashboard
+            # stays green, and the SILENCE leg never trips because envelopes
+            # keep publishing. Escalate once the drill has produced
+            # ``indeterminate_after`` consecutive unproven fires.
+            env_streak = _bump_prop_indet_streak(
+                indet_state_path or DEFAULT_PROPAGATION_SOAK_INDET_PATH,
+                os.path.basename(newest_path))
+            extra["indeterminate_envelopes"] = env_streak
+            if env_streak >= indeterminate_after:
+                worst = _worst_propagation_round(doc.get("round_results"))
+                candidate_detail = (
+                    f"LXMF store-and-forward drill INDETERMINATE for "
+                    f"{env_streak} consecutive fires (~{env_streak}h) - the "
+                    f"drill is running but has not PROVEN store-and-forward "
+                    f"in any of them"
+                    + (f". Latest: {worst}" if worst else "")
+                    + ". Chronic send-stalls (slow stamp / overloaded box), "
+                    "a node refusing uploads, or a dead pull path all look "
+                    "like this. Check the fire.log round reasons, the box's "
+                    "load, and lxmd on the node's host."
+                )
         elif doc.get("pass_envelope") is False:
+            _reset_prop_indet_streak(
+                indet_state_path or DEFAULT_PROPAGATION_SOAK_INDET_PATH)
             total_ok = doc.get("total_ok")
             total = doc.get("total_samples")
             node = doc.get("propagation_node")
@@ -1342,7 +1467,8 @@ def probe_propagation_soak_degraded(
                 "(`lxmd --status`: messagestore + 'served to clients'), then "
                 "RNS paths to the node."
             )
-        # else: pass_envelope absent/None -> indeterminate (held below).
+        # else: pass_envelope KEY ABSENT (shape bug) -> indeterminate (held
+        # below); the fire-script verdict FAIL owns paging that regression.
 
     if candidate_detail is not None:
         streak = _load_synth_streak(sp) + 1
