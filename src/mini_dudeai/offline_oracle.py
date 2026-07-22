@@ -368,7 +368,9 @@ def ask(question: str, backend, roots=None, top_k: int = 6) -> dict:
                 "note": f"answer cited nothing it was shown "
                         f"(invented: {invented!r}) — discarded; retrieval "
                         f"results above are still good"}
-    return {**base, "brain_tier": "local",
+    # Tier from the backend's declaration (default = historic Ollama
+    # behavior); see haiku_watcher_eval charter invariant 4.
+    return {**base, "brain_tier": getattr(backend, "brain_tier", "local"),
             "model": getattr(backend, "model", "?"),
             "answer": answer.strip(),
             "sources": sources,

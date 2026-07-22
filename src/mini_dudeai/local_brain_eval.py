@@ -63,6 +63,7 @@ from .chat_compiler import (
     DEFAULT_MODEL,
     DEFAULT_OLLAMA_URL,
     LOCAL_BRAIN_TIMEOUT_S,
+    ClaudeCLIBackend,
     CompilerError,
     OllamaBackend,
     compile_rule,
@@ -232,8 +233,9 @@ def grade_triage(case: dict, backend) -> Tuple[bool, List[str], dict]:
         except OSError:
             pass
     reasons: List[str] = []
-    if witness.get("brain_tier") != "local":
-        reasons.append(f"no local triage produced: "
+    expected_tier = getattr(backend, "brain_tier", "local")
+    if witness.get("brain_tier") != expected_tier:
+        reasons.append(f"no {expected_tier} triage produced: "
                        f"{witness.get('error', 'unknown')[:160]}")
         return False, reasons, witness
     total = witness.get("proposed_total") or 0
@@ -286,6 +288,7 @@ def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
     result = offline_oracle.ask(inp.get("question") or "", backend,
                                 top_k=inp.get("top_k", 6))
     reasons: List[str] = []
+    expected_tier = getattr(backend, "brain_tier", "local")
     retrieved_paths = " ".join(r["path"] for r in result.get("retrieved") or [])
     for frag in expect.get("retrieve_must_include") or []:
         if frag not in retrieved_paths:
@@ -294,13 +297,13 @@ def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
         # Honest-refusal case (the substitute-and-narrate-success wart, W5.1):
         # the ONLY passing behavior for an ungroundable question is declining
         # to answer — a confident grounded-looking answer IS the failure.
-        if result.get("brain_tier") == "local":
+        if result.get("brain_tier") == expected_tier:
             reasons.append(
                 f"fabricated a grounded answer where honest output is a "
                 f"refusal: {str(result.get('answer', ''))[:160]}")
         return not reasons, reasons, result
     if expect.get("require_answer", True):
-        if result.get("brain_tier") != "local":
+        if result.get("brain_tier") != expected_tier:
             reasons.append(f"no grounded answer: "
                            f"{str(result.get('note', '?'))[:160]}")
         else:
@@ -319,11 +322,84 @@ _GRADERS = {"triage": grade_triage, "compile": grade_compile,
             "oracle": grade_oracle}
 
 
-def run_cases(cases: List[dict], backend) -> Tuple[List[dict], dict]:
+def _rotate_cases(cases: List[dict], last_id: Optional[str]) -> List[dict]:
+    """Rotate the (deterministically ordered) case list to start AFTER the
+    last completed case, wrapping — so budget-chunked runs walk the whole
+    set across successive firings instead of re-grading the same head. An
+    unknown/absent last_id starts from the top (case-set edits self-heal)."""
+    if not last_id:
+        return cases
+    ids = [c["id"] for c in cases]
+    if last_id not in ids:
+        return cases
+    idx = ids.index(last_id)
+    return cases[idx + 1:] + cases[:idx + 1]
+
+
+def _read_cursor(path: str) -> Optional[str]:
+    """Return the last completed case id, or None. A missing cursor is a
+    fresh start; a CORRUPT one is said out loud (stderr) and treated as
+    fresh — silently resuming from garbage would skew which cases run
+    (honest_failure_modes #1: the degraded value must not look healthy)."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+        last = data.get("last_id")
+        return last if isinstance(last, str) and last else None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        print(f"local_brain_eval: WARN cursor {path} unreadable "
+              f"({e}) — starting from the top", file=sys.stderr)
+        return None
+
+
+def _write_cursor(path: str, case_id: str) -> None:
+    """Atomic (tmp+rename) so a cut mid-write can't leave a torn cursor;
+    written after EVERY completed case so even a killed run resumes at the
+    right spot. Failure is loud, never fatal — the eval matters more than
+    its bookmark."""
+    try:
+        d = os.path.dirname(os.path.abspath(path)) or "."
+        fd, tmp = tempfile.mkstemp(dir=d, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"last_id": case_id, "ts": time.time()}, f)
+            os.replace(tmp, path)
+        finally:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+    except OSError as e:
+        print(f"local_brain_eval: WARN cursor write failed: {e}",
+              file=sys.stderr)
+
+
+def run_cases(cases: List[dict], backend, progress=None,
+              budget_s: Optional[float] = None) -> Tuple[List[dict], dict]:
     """SEQUENTIAL by construction — one local model resident at a time (the
-    box's freeze class is why this harness exists at all)."""
+    box's freeze class is why this harness exists at all).
+
+    ``progress(done, planned, result)`` fires after EVERY graded case — the
+    per-case witness that makes a killed run leave evidence instead of a
+    blank log (the 2026-07-21 rerun burned 100 min and reported NOTHING).
+
+    ``budget_s`` stops STARTING new cases once the wall-clock budget is
+    spent (at least one case always runs, so every firing makes progress).
+    Cases not reached are recorded as ``not_run_ids`` — deferred honestly,
+    never counted as passed or failed."""
     results: List[dict] = []
-    for case in cases:
+    not_run_ids: List[str] = []
+    budget_exhausted = False
+    planned = len(cases)
+    t_run0 = time.monotonic()
+    for i, case in enumerate(cases):
+        if (budget_s is not None and results
+                and (time.monotonic() - t_run0) >= budget_s):
+            budget_exhausted = True
+            not_run_ids = [c["id"] for c in cases[i:]]
+            break
         t0 = time.monotonic()
         # best-of-N for a probabilistic tier: a case may set expect.attempts>1
         # (default 1). The local model is non-deterministic, so a single-shot
@@ -356,6 +432,8 @@ def run_cases(cases: List[dict], backend) -> Tuple[List[dict], dict]:
             "attempts_used": used,
             "provenance": case.get("provenance"),
         })
+        if progress is not None:
+            progress(len(results), planned, results[-1])
     passed = sum(1 for r in results if r["ok"])
     per_kind: Dict[str, dict] = {}
     for r in results:
@@ -368,10 +446,18 @@ def run_cases(cases: List[dict], backend) -> Tuple[List[dict], dict]:
         "ts": now, "iso": iso,
         "model": getattr(backend, "model", "?"),
         "url": getattr(backend, "url", "?"),
+        "backend": type(backend).__name__,
+        "brain_tier": getattr(backend, "brain_tier", "local"),
         "total": len(results), "passed": passed,
         "pass_rate": round(passed / len(results), 3) if results else 0.0,
         "per_kind": per_kind,
         "failed_ids": [r["id"] for r in results if not r["ok"]],
+        # Budget-chunking honesty: pass_rate/total judge only COMPLETED
+        # cases; deferred ones are named, not averaged away (calibrated-
+        # claims rule 5 — surface the blind spot).
+        "planned_total": planned,
+        "not_run_ids": not_run_ids,
+        "budget_exhausted": budget_exhausted,
     }
     return results, summary
 
@@ -387,12 +473,34 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--model", default=os.environ.get(
         "MINI_DUDEAI_OLLAMA_MODEL", DEFAULT_MODEL))
     ap.add_argument("--timeout-s", type=float, default=LOCAL_BRAIN_TIMEOUT_S)
+    ap.add_argument("--backend", choices=("ollama", "claude-cli"),
+                    default="ollama",
+                    help="candidate brain: 'ollama' (production tier-L, the "
+                         "default and the only backend the weekly gate "
+                         "judges) or 'claude-cli' (Anthropic small model "
+                         "via the local claude CLI — the QTH middle-rung "
+                         "CANDIDATE; haiku_watcher_eval charter)")
+    ap.add_argument("--cli-model", default=os.environ.get(
+        "MINI_DUDEAI_CLI_MODEL", "claude-haiku-4-5"),
+        help="model id for --backend claude-cli")
     ap.add_argument("--history", default=os.path.join(
         resolve_home(), EVAL_RESULTS_BASENAME),
         help="results ledger (JSONL, appended); empty string disables")
     ap.add_argument("--gate", type=float, default=None,
                     help="exit 1 unless pass_rate >= this fraction — the "
                          "'tier L can X' claim gate")
+    ap.add_argument("--budget-s", type=float, default=None,
+                    help="stop starting new cases after this many seconds "
+                         "(completed cases still grade + gate; the rest are "
+                         "deferred as not_run_ids). Pair with --cursor so "
+                         "successive runs walk the whole set. 33 cases at "
+                         "~340s/case outgrew the weekly cron's timeout 6000 "
+                         "(2026-07-21: exit 124, zero output)")
+    ap.add_argument("--cursor", default=None,
+                    help="JSON bookmark file; each run resumes AFTER the "
+                         "last case the previous run completed (wrapping), "
+                         "updated per-case so even a killed run resumes "
+                         "correctly")
     ap.add_argument("--json", action="store_true")
     args = ap.parse_args(argv)
 
@@ -403,9 +511,31 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"local_brain_eval: {e}", file=sys.stderr)
         return 2
 
-    backend = OllamaBackend(url=args.url, model=args.model,
-                            timeout_s=args.timeout_s)
-    results, summary = run_cases(cases, backend)
+    if args.cursor:
+        cases = _rotate_cases(cases, _read_cursor(args.cursor))
+
+    if args.backend == "claude-cli":
+        backend = ClaudeCLIBackend(model=args.cli_model,
+                                   timeout_s=args.timeout_s)
+    else:
+        backend = OllamaBackend(url=args.url, model=args.model,
+                                timeout_s=args.timeout_s)
+
+    def _progress(done: int, planned: int, r: dict) -> None:
+        # stderr, flushed: the per-case witness lands in the cron log AS
+        # each case grades — a timeout can no longer wipe a whole run's
+        # evidence (--json keeps stdout machine-clean either way).
+        mark = "PASS" if r["ok"] else "FAIL"
+        tail = "" if r["ok"] else f"  — {'; '.join(r['reasons'])[:160]}"
+        print(f"[{done}/{planned}] {mark}  {r['id']}  "
+              f"({r['kind']}, {r['latency_s']}s, "
+              f"try {r['attempts_used']}/{r['attempts']}){tail}",
+              file=sys.stderr, flush=True)
+        if args.cursor:
+            _write_cursor(args.cursor, r["id"])
+
+    results, summary = run_cases(cases, backend, progress=_progress,
+                                 budget_s=args.budget_s)
 
     if args.history:
         # 2 MB rotation, same convention as the calibration ledger.
@@ -429,6 +559,12 @@ def main(argv: Optional[List[str]] = None) -> int:
                   + ("" if r["ok"] else f"  — {'; '.join(r['reasons'])[:200]}"))
         print(f"local_brain_eval: {summary['passed']}/{summary['total']} "
               f"passed (rate {summary['pass_rate']}) — model {summary['model']}")
+    if summary["budget_exhausted"]:
+        print(f"local_brain_eval: budget exhausted — "
+              f"{len(summary['not_run_ids'])} of "
+              f"{summary['planned_total']} case(s) deferred to the next run"
+              + (f" (cursor {args.cursor})" if args.cursor else ""),
+              file=sys.stderr, flush=True)
 
     if args.gate is not None and summary["pass_rate"] < args.gate:
         print(f"local_brain_eval: GATE FAILED "

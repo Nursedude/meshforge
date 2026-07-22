@@ -410,3 +410,249 @@ class TestExpectRefusal:
             lbe._REPO_ROOT, "evals", "local_brain", "seed.jsonl")])
         ids = {c["id"] for c in cases}
         assert "oracle-refusal-unknown-issue" in ids
+
+
+# ── ClaudeCLIBackend + backend-aware tiers (haiku_watcher_eval charter) ──
+
+class TestClaudeCLIBackend:
+    """The QTH middle-rung candidate transport. Contract: same seam as
+    OllamaBackend — text out, CompilerError on ANY failure, never a fake
+    reply. All transport mocked; no CLI is spawned in CI."""
+
+    def _be(self, **kw):
+        from mini_dudeai.chat_compiler import ClaudeCLIBackend
+        return ClaudeCLIBackend(**kw)
+
+    def _proc(self, rc=0, out="", err=""):
+        class P:
+            returncode = rc
+            stdout = out
+            stderr = err
+        return P()
+
+    def test_tier_declarations(self):
+        from mini_dudeai.chat_compiler import ClaudeCLIBackend, OllamaBackend
+        # hfm #5: graders + stampers key on these two constants
+        assert OllamaBackend.brain_tier == "local"
+        assert ClaudeCLIBackend.brain_tier == "api_small"
+
+    def test_happy_path_strips_fences(self, monkeypatch):
+        import subprocess as sp
+        be = self._be()
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["cmd"] = cmd
+            return self._proc(out="```json\n{\"ok\": true}\n```\n")
+        monkeypatch.setattr(sp, "run", fake_run)
+        assert be.complete("sys", "user") == '{"ok": true}'
+        assert "--model" in seen["cmd"]
+        assert "claude-haiku-4-5" in seen["cmd"]
+
+    def test_schema_fmt_rides_in_the_prompt(self, monkeypatch):
+        import subprocess as sp
+        be = self._be()
+        seen = {}
+
+        def fake_run(cmd, **kw):
+            seen["prompt"] = cmd[cmd.index("-p") + 1]
+            return self._proc(out="{}")
+        monkeypatch.setattr(sp, "run", fake_run)
+        be.complete("sys", "user", fmt={"type": "object"})
+        assert "JSON Schema" in seen["prompt"]
+        assert '"object"' in seen["prompt"]
+
+    def test_nonzero_rc_is_loud(self, monkeypatch):
+        import subprocess as sp
+        from mini_dudeai.chat_compiler import CompilerError
+        be = self._be()
+        monkeypatch.setattr(sp, "run",
+                            lambda *a, **k: self._proc(rc=1, err="no access"))
+        with pytest.raises(CompilerError, match="rc=1"):
+            be.complete("s", "u")
+
+    def test_missing_cli_is_loud(self, monkeypatch):
+        import subprocess as sp
+        from mini_dudeai.chat_compiler import CompilerError
+
+        def raise_fnf(*a, **k):
+            raise FileNotFoundError("claude")
+        monkeypatch.setattr(sp, "run", raise_fnf)
+        with pytest.raises(CompilerError, match="not on PATH"):
+            self._be().complete("s", "u")
+
+    def test_timeout_is_loud(self, monkeypatch):
+        import subprocess as sp
+        from mini_dudeai.chat_compiler import CompilerError
+
+        def raise_to(*a, **k):
+            raise sp.TimeoutExpired(cmd="claude", timeout=1)
+        monkeypatch.setattr(sp, "run", raise_to)
+        with pytest.raises(CompilerError, match="exceeded"):
+            self._be(timeout_s=1).complete("s", "u")
+
+    def test_empty_reply_is_loud(self, monkeypatch):
+        import subprocess as sp
+        from mini_dudeai.chat_compiler import CompilerError
+        monkeypatch.setattr(sp, "run", lambda *a, **k: self._proc(out="  \n"))
+        with pytest.raises(CompilerError, match="no content"):
+            self._be().complete("s", "u")
+
+
+class ApiSmallFakeBackend(FakeBackend):
+    """A fake declaring the api_small tier — pins that tier flows from the
+    BACKEND through the stampers into the graders."""
+    brain_tier = "api_small"
+    model = "claude-haiku-4-5"
+    url = "cli:claude"
+
+
+class TestBackendAwareTiers:
+    def test_triage_witness_carries_the_backends_tier(self):
+        ok, reasons, witness = lbe.grade_triage(
+            _triage_case(), ApiSmallFakeBackend([_triage_reply(["a", "b"])]))
+        assert ok, reasons
+        assert witness["brain_tier"] == "api_small"
+
+    def test_default_backend_still_stamps_local(self):
+        # the production Ollama path must be byte-identical in behavior
+        ok, reasons, witness = lbe.grade_triage(
+            _triage_case(), FakeBackend([_triage_reply(["a", "b"])]))
+        assert ok, reasons
+        assert witness["brain_tier"] == "local"
+
+    def test_summary_carries_backend_identity(self):
+        # ADDITIVE ledger keys: trend readers must be able to split the two
+        # calibration histories; blending them would poison tier-L's record
+        results, summary = lbe.run_cases(
+            [_triage_case()], ApiSmallFakeBackend([_triage_reply(["a", "b"])]))
+        assert summary["backend"] == "ApiSmallFakeBackend"
+        assert summary["brain_tier"] == "api_small"
+        assert summary["model"] == "claude-haiku-4-5"
+
+
+# ── budget chunking + per-case progress (2026-07-21 timeout fix) ─────────
+# The weekly cron burned its full `timeout 6000` and reported NOTHING:
+# 33 cases × ~340s ≈ 3.1h, and all output/ledger writes happened only at
+# the end — a timeout wiped the whole run (honest_failure_modes #9, no
+# partial witness). Cure: --budget-s stops STARTING cases in time, the
+# progress hook emits per-case evidence as it lands, and --cursor walks
+# the full set across successive cron firings.
+
+class TestBudgetChunking:
+    def _three_cases(self):
+        return [_triage_case(f"t{i}", keys=("a",)) for i in range(3)]
+
+    def _backend(self, n=3):
+        return FakeBackend([_triage_reply(["a"])] * n)
+
+    def test_budget_zero_still_runs_one_case(self):
+        # every firing must make progress or the cursor never advances
+        results, summary = lbe.run_cases(
+            self._three_cases(), self._backend(), budget_s=0)
+        assert len(results) == 1
+        assert summary["budget_exhausted"] is True
+        assert summary["not_run_ids"] == ["t1", "t2"]
+        assert summary["planned_total"] == 3
+
+    def test_no_budget_runs_all_and_flags_stay_honest(self):
+        results, summary = lbe.run_cases(
+            self._three_cases(), self._backend())
+        assert len(results) == 3
+        assert summary["budget_exhausted"] is False
+        assert summary["not_run_ids"] == []
+        assert summary["planned_total"] == 3
+
+    def test_deferred_cases_never_touch_pass_rate(self):
+        # deferred ≠ failed: 1 completed pass over 2 deferred = rate 1.0
+        _results, summary = lbe.run_cases(
+            self._three_cases(), self._backend(), budget_s=0)
+        assert summary["total"] == 1
+        assert summary["pass_rate"] == 1.0
+        assert summary["failed_ids"] == []
+
+
+class TestProgressCallback:
+    def test_fires_per_case_in_order_with_result(self):
+        seen = []
+        cases = [_triage_case("t1", keys=("a",)),
+                 _triage_case("t2", keys=("a",))]
+        lbe.run_cases(cases, FakeBackend([_triage_reply(["a"])] * 2),
+                      progress=lambda done, planned, r:
+                      seen.append((done, planned, r["id"], r["ok"])))
+        assert seen == [(1, 2, "t1", True), (2, 2, "t2", True)]
+
+
+class TestCursorRotation:
+    def _cases(self):
+        return [_triage_case(f"t{i}") for i in range(3)]
+
+    def test_rotates_to_start_after_last_completed(self):
+        rotated = lbe._rotate_cases(self._cases(), "t0")
+        assert [c["id"] for c in rotated] == ["t1", "t2", "t0"]
+
+    def test_unknown_last_id_starts_from_top(self):
+        # case-set edits self-heal instead of crashing the weekly run
+        rotated = lbe._rotate_cases(self._cases(), "gone")
+        assert [c["id"] for c in rotated] == ["t0", "t1", "t2"]
+
+    def test_none_is_identity(self):
+        assert lbe._rotate_cases(self._cases(), None) == self._cases()
+
+    def test_missing_cursor_file_is_fresh_start(self, tmp_path):
+        assert lbe._read_cursor(str(tmp_path / "absent.json")) is None
+
+    def test_corrupt_cursor_warns_and_starts_fresh(self, tmp_path, capsys):
+        p = tmp_path / "cursor.json"
+        p.write_text("{torn")
+        assert lbe._read_cursor(str(p)) is None
+        assert "cursor" in capsys.readouterr().err
+
+    def test_write_read_roundtrip(self, tmp_path):
+        p = str(tmp_path / "cursor.json")
+        lbe._write_cursor(p, "t7")
+        assert lbe._read_cursor(p) == "t7"
+
+
+class TestMainChunkedRuns:
+    """Two budget-limited main() firings walk the set — the shape the
+    weekly cron now runs (--budget-s + --cursor)."""
+
+    def _cases_file(self, tmp_path):
+        cases = [{"id": f"t{i}", "kind": "triage",
+                  "input": {"deltas": [{"key": "a", "summary": "s"}]},
+                  "expect": {"coverage_min": 1.0}} for i in range(3)]
+        p = tmp_path / "c.jsonl"
+        p.write_text("\n".join(json.dumps(c) for c in cases) + "\n")
+        return str(p)
+
+    def test_successive_runs_advance_through_the_set(
+            self, tmp_path, monkeypatch, capsys):
+        cases = self._cases_file(tmp_path)
+        cursor = str(tmp_path / "cursor.json")
+        monkeypatch.setattr(
+            lbe, "OllamaBackend",
+            lambda **kw: FakeBackend([_triage_reply(["a"])] * 3))
+        rc = lbe.main(["--cases", cases, "--cursor", cursor,
+                       "--budget-s", "0", "--history", ""])
+        assert rc == 0
+        err = capsys.readouterr().err
+        assert "[1/3] PASS  t0" in err          # per-case witness lands live
+        assert "deferred to the next run" in err
+        assert lbe._read_cursor(cursor) == "t0"
+        rc = lbe.main(["--cases", cases, "--cursor", cursor,
+                       "--budget-s", "0", "--history", ""])
+        assert rc == 0
+        assert "[1/3] PASS  t1" in capsys.readouterr().err
+        assert lbe._read_cursor(cursor) == "t1"  # walked, not re-graded
+
+    def test_gate_judges_only_completed_cases(
+            self, tmp_path, monkeypatch):
+        # a passing chunk must clear the gate even with cases deferred
+        cases = self._cases_file(tmp_path)
+        monkeypatch.setattr(
+            lbe, "OllamaBackend",
+            lambda **kw: FakeBackend([_triage_reply(["a"])] * 3))
+        rc = lbe.main(["--cases", cases, "--budget-s", "0",
+                       "--gate", "0.85", "--history", ""])
+        assert rc == 0

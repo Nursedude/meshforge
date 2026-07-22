@@ -90,6 +90,12 @@ class CompilerError(Exception):
 class OllamaBackend:
     """Minimal Ollama /api/chat client (stdlib urllib, JSON-format mode)."""
 
+    #: Tier provenance every consumer stamps into its artifacts. Backends
+    #: DECLARE their tier so an artifact can never masquerade as another
+    #: tier's work in a calibration history (haiku_watcher_eval charter
+    #: invariant 4; hfm #7 — the graders consume this, keep them in step).
+    brain_tier = "local"
+
     def __init__(self, url: str = DEFAULT_OLLAMA_URL,
                  model: str = DEFAULT_MODEL,
                  timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
@@ -132,6 +138,88 @@ class OllamaBackend:
         if not content:
             raise CompilerError(
                 f"Ollama returned no message content: {str(reply)[:200]}")
+        return content
+
+
+class ClaudeCLIBackend:
+    """Anthropic small-model backend over the local ``claude`` CLI (-p mode).
+
+    The QTH middle-rung CANDIDATE (haiku_watcher_eval charter): transport is
+    the operator's Claude Code CLI — Max-plan-covered and the precedented
+    model seam on this fleet (mini_cadence_launch.sh) — NOT the raw API;
+    this box deliberately carries no ANTHROPIC_API_KEY. Same contract as
+    :class:`OllamaBackend.complete`: one completion → assistant text,
+    ``CompilerError`` on ANY failure (the caller never sees a fake reply).
+
+    ``brain_tier`` is ``api_small`` so nothing produced through this backend
+    can pollute the tier-L calibration history, and it is ONLINE-only — the
+    offline floor everywhere remains rules + Ollama (charter invariant 2).
+
+    The CLI has no Ollama-style constrained-JSON mode, so when JSON is
+    requested the instruction is prompt-level and the reply is de-fenced
+    before return; consumer-side validation (which every caller already
+    does) remains the real guard.
+    """
+
+    brain_tier = "api_small"
+
+    def __init__(self, model: str = "claude-haiku-4-5",
+                 timeout_s: float = 120.0, cli: str = "claude") -> None:
+        self.model = model
+        self.timeout_s = float(timeout_s)
+        self._cli = cli
+        self.url = f"cli:{cli}"          # identity slot the eval ledger reads
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        """Markdown code fences are transport noise, not model output shape."""
+        t = text.strip()
+        if t.startswith("```"):
+            t = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", t)
+            t = re.sub(r"\s*```\s*$", "", t)
+        return t.strip()
+
+    def complete(self, system: str, user: str,
+                 fmt: "str | dict" = "json") -> str:
+        import subprocess
+
+        parts = [system.strip(), ""]
+        if isinstance(fmt, dict):
+            parts += ["Your reply MUST be a single JSON object valid against "
+                      "this JSON Schema — no markdown fences, no prose "
+                      "before or after it:",
+                      json.dumps(fmt, sort_keys=True), ""]
+        elif fmt == "json":
+            parts += ["Your reply MUST be a single JSON value — no markdown "
+                      "fences, no prose before or after it.", ""]
+        parts.append(user)
+        prompt = "\n".join(parts)
+
+        cmd = [self._cli, "--model", self.model, "-p", prompt,
+               "--output-format", "text"]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  timeout=self.timeout_s)
+        except FileNotFoundError as e:
+            raise CompilerError(
+                f"claude CLI ({self._cli}) not on PATH — this backend only "
+                f"exists where Claude Code is installed") from e
+        except subprocess.TimeoutExpired as e:
+            raise CompilerError(
+                f"claude CLI exceeded {self.timeout_s:.0f}s "
+                f"(model {self.model})") from e
+        except OSError as e:
+            raise CompilerError(
+                f"claude CLI could not start: {type(e).__name__}: {e}") from e
+        if proc.returncode != 0:
+            tail = (proc.stderr or proc.stdout or "").strip()[-300:]
+            raise CompilerError(
+                f"claude CLI rc={proc.returncode} (model {self.model}): "
+                f"{tail or 'no output'}")
+        content = self._strip_fences(proc.stdout or "")
+        if not content:
+            raise CompilerError(
+                f"claude CLI returned no content (model {self.model})")
         return content
 
 

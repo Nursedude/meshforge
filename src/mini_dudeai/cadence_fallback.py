@@ -219,7 +219,10 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
                 "summary": f"{total} proposed delta(s) pending; local LLM "
                            f"triage unavailable",
                 "error": str(e)[:300]}
-    return {**base, "brain_tier": "local",
+    # Tier comes from the BACKEND's declaration (default keeps the historic
+    # Ollama behavior byte-identical): an api_small triage must never stamp
+    # itself tier-L (haiku_watcher_eval charter invariant 4).
+    return {**base, "brain_tier": getattr(backend, "brain_tier", "local"),
             "model": getattr(backend, "model", "?"),
             "triaged": len(triage["deltas"]),
             "dropped_entries": dropped,
