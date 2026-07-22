@@ -335,6 +335,72 @@ class TestCollectDegraded:
         # and the tick parses (json.loads in run() already proved it)
 
 
+class TestRtunWatchdog:
+    """rtun self-heal watchdog liveness surfaced in the tick (2026-07-21
+    tunnel-wedge arc). Honest-failure contract: absence/staleness never read
+    as fresh (age null + a carrying state), and watchdog liveness is kept
+    SEPARATE from the meshtasticd verdict (never flips ok)."""
+
+    ENV_OK = {"SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"}
+
+    def test_unconfigured_is_not_configured_null_age(self, sandbox):
+        """No RTUN_HEARTBEAT → this box runs no watchdog: benign, ok stays
+        true, no note, age null."""
+        _, tick, _, _ = run(sandbox, "collect", env_extra=self.ENV_OK)
+        assert tick["rtun_watchdog"] == {"state": "not_configured",
+                                         "heartbeat_age_s": None}
+        assert tick["ok"] is True
+        assert not any("rtun" in n for n in tick["notes"])
+
+    def test_fresh_heartbeat_is_ok_with_age(self, sandbox):
+        hb = sandbox.tmp / "rtun_hb"
+        hb.write_text("2026-07-22 07:15:00 TUN_OK\n")   # mtime = now
+        _, tick, _, _ = run(sandbox, "collect", env_extra=self.ENV_OK,
+                            conf_lines=[f'RTUN_HEARTBEAT={hb}\n'])
+        assert tick["rtun_watchdog"]["state"] == "ok"
+        assert isinstance(tick["rtun_watchdog"]["heartbeat_age_s"], int)
+        assert 0 <= tick["rtun_watchdog"]["heartbeat_age_s"] < 120
+        assert tick["ok"] is True
+
+    def test_stale_heartbeat_is_stale_noted_not_ok_false(self, sandbox):
+        """An old heartbeat is surfaced (state=stale + note) but does NOT
+        flip the meshtasticd verdict — watchdog liveness is its own concern."""
+        hb = sandbox.tmp / "rtun_hb"
+        hb.write_text("old\n")
+        old = int(hb.stat().st_mtime) - 9999
+        os.utime(hb, (old, old))
+        _, tick, _, _ = run(sandbox, "collect", env_extra=self.ENV_OK,
+                            conf_lines=[f'RTUN_HEARTBEAT={hb}\n',
+                                        "RTUN_STALE_S=1200\n"])
+        assert tick["rtun_watchdog"]["state"] == "stale"
+        assert tick["rtun_watchdog"]["heartbeat_age_s"] >= 9999
+        assert any("stale" in n and "rtun" in n for n in tick["notes"])
+        assert tick["ok"] is True
+
+    def test_absent_heartbeat_when_configured_is_noted(self, sandbox):
+        """Configured but the file is missing → the watchdog is expected and
+        not running: age null, state absent, a note — never a fresh-looking 0."""
+        missing = sandbox.tmp / "does_not_exist"
+        _, tick, _, _ = run(sandbox, "collect", env_extra=self.ENV_OK,
+                            conf_lines=[f'RTUN_HEARTBEAT={missing}\n'])
+        assert tick["rtun_watchdog"] == {"state": "absent",
+                                         "heartbeat_age_s": None}
+        assert any("absent" in n and "rtun" in n for n in tick["notes"])
+        assert tick["ok"] is True
+
+    def test_future_mtime_clamps_to_zero_never_negative(self, sandbox):
+        """Clock skew / future mtime must clamp to 0, not emit a negative age
+        (honest_failure_modes #6: forgeable wall-clock deltas)."""
+        hb = sandbox.tmp / "rtun_hb"
+        hb.write_text("future\n")
+        future = int(hb.stat().st_mtime) + 5000
+        os.utime(hb, (future, future))
+        _, tick, _, _ = run(sandbox, "collect", env_extra=self.ENV_OK,
+                            conf_lines=[f'RTUN_HEARTBEAT={hb}\n'])
+        assert tick["rtun_watchdog"]["heartbeat_age_s"] == 0
+        assert tick["rtun_watchdog"]["state"] == "ok"
+
+
 class TestCheck:
     ENV_OK = {"SCOUT_TEST_UCI_OUT": "/etc/meshtasticd/data"}
 

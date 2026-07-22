@@ -50,6 +50,8 @@ VSZ_WARN_KB="${VSZ_WARN_KB:-0}"          # 0 = disabled
 RADIO_PORT="${RADIO_PORT:-4403}"
 PROC="${SCOUT_PROC_ROOT:-/proc}"
 OPKG_STATUS="${SCOUT_OPKG_STATUS:-/usr/lib/opkg/status}"
+RTUN_HEARTBEAT="${RTUN_HEARTBEAT:-}"     # rtun self-heal watchdog heartbeat file; empty = no watchdog on this box
+RTUN_STALE_S="${RTUN_STALE_S:-1200}"     # heartbeat older than this = stale (default 20 min ~ 6x the */3 watchdog cron)
 
 # ---------------------------------------------------------------- helpers
 
@@ -258,6 +260,47 @@ collect_opkg_hold() {
     fi
 }
 
+RTUN_STATE="not_configured"; RTUN_AGE=""
+collect_rtun_watchdog() {
+    # Surface the rtun reverse-tunnel self-heal watchdog's liveness so the
+    # manager can SEE it, not just trust it (2026-07-21 tunnel-wedge arc). The
+    # heartbeat file is overwritten on every healthy watchdog run, so its mtime
+    # is the last time the tunnel was confirmed usable end-to-end. States:
+    #   not_configured  RTUN_HEARTBEAT unset — this box runs no watchdog (benign)
+    #   ok              fresh heartbeat
+    #   stale           older than RTUN_STALE_S — watchdog cron likely dead
+    #   absent          configured but file missing — watchdog expected, not there
+    #   unobservable    mtime unreadable
+    # Absence/staleness never read as fresh (honest_failure_modes): age is null
+    # and the state carries the blind spot, flagged by a NOTE. Watchdog liveness
+    # is kept SEPARATE from the meshtasticd verdict (does NOT flip ok) — a
+    # consumer that wants to alarm reads rtun_watchdog.state itself.
+    [ -n "$RTUN_HEARTBEAT" ] || { RTUN_STATE="not_configured"; return 0; }
+    if [ ! -f "$RTUN_HEARTBEAT" ]; then
+        RTUN_STATE="absent"
+        note "rtun watchdog heartbeat absent: $RTUN_HEARTBEAT (watchdog not running?)"
+        return 0
+    fi
+    # busybox has no `stat`; `date -r` reads mtime and works on the target.
+    _mt=$(date -r "$RTUN_HEARTBEAT" +%s 2>/dev/null)
+    case "$_mt" in
+        ''|*[!0-9]*)
+            RTUN_STATE="unobservable"
+            note "rtun watchdog heartbeat mtime unreadable: $RTUN_HEARTBEAT"
+            return 0 ;;
+    esac
+    _now=$(date +%s)
+    RTUN_AGE=$(( _now - _mt ))
+    # Clock skew / future mtime: clamp, never emit a negative age (honest_failure_modes #6).
+    [ "$RTUN_AGE" -lt 0 ] 2>/dev/null && RTUN_AGE=0
+    if [ "$RTUN_AGE" -gt "$RTUN_STALE_S" ] 2>/dev/null; then
+        RTUN_STATE="stale"
+        note "rtun watchdog heartbeat stale: ${RTUN_AGE}s (> ${RTUN_STALE_S}s)"
+    else
+        RTUN_STATE="ok"
+    fi
+}
+
 # ---------------------------------------------------------------- tick
 
 write_tick() {
@@ -286,6 +329,8 @@ write_tick() {
             "$(int_or_null "$HOST_MEM_AVAIL")" "$(int_or_null "$HOST_MEM_TOTAL")"
         printf '  "persistence": {"ok": %s, "data_dir": "%s", "fstype": "%s"},\n' \
             "$PERSIST_OK" "$(sanitize "$PERSIST_DIR")" "$(sanitize "$PERSIST_FSTYPE")"
+        printf '  "rtun_watchdog": {"state": "%s", "heartbeat_age_s": %s},\n' \
+            "$RTUN_STATE" "$(int_or_null "$RTUN_AGE")"
         printf '  "opkg_hold": %s\n' "$OPKG_HOLD"
         printf '}\n'
     } > "$_tmp" && mv "$_tmp" "$TICK"
@@ -298,6 +343,7 @@ do_collect() {
     collect_host
     collect_persistence
     collect_opkg_hold
+    collect_rtun_watchdog
     write_tick
 }
 

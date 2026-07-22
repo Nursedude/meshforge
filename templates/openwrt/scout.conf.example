@@ -32,3 +32,14 @@
 # never connects (a connect would kick the single active PhoneAPI
 # client, #17; and minimal busybox nc can't be trusted to probe).
 #RADIO_PORT=4403
+
+# rtun self-heal watchdog heartbeat file (2026-07-21 tunnel-wedge arc). Set
+# this ONLY on a box that runs the reverse-tunnel watchdog (rtun_watchdog.sh
+# writes it on every healthy run). The tick then reports rtun_watchdog.state
+# (ok/stale/absent) + heartbeat_age_s so the manager can SEE the watchdog is
+# alive, not just trust it. Unset (default) = this box has no watchdog and the
+# tick reports state "not_configured". Stale threshold defaults to 20 min
+# (~6x the */3 watchdog cron); a stale/absent heartbeat is surfaced as a NOTE,
+# never folded into the meshtasticd health verdict.
+#RTUN_HEARTBEAT="/root/.rtun_wd_last_ok"
+#RTUN_STALE_S=1200
