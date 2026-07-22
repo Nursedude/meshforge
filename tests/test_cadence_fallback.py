@@ -211,6 +211,24 @@ class TestBriefSection:
         w = self._witness(ts=NOW + 3600)
         assert "LOCAL tier" not in build_brief({}, [], NOW, cadence_triage=w)
 
+    def test_pre_score_renders_orientation_not_outage(self):
+        # Increment 3: a pre-score is the loop working, not a frontier outage —
+        # it must NOT be shown with "frontier rc" / "claude CLI missing".
+        w = self._witness()
+        w["mode"] = "pre-score"
+        w["frontier_rc"] = None            # frontier hasn't run yet
+        text = build_brief({}, [], NOW, cadence_triage=w)
+        assert "PRE-SCORED the backlog" in text
+        assert "feeding the frontier pass" in text
+        assert "SUGGESTIONS ONLY, nothing ratified" in text
+        assert "claude CLI missing" not in text and "frontier rc" not in text
+
+    def test_fallback_mode_still_renders_silver_line(self):
+        w = self._witness()
+        w["mode"] = "fallback"
+        text = build_brief({}, [], NOW, cadence_triage=w)
+        assert "cadence ran on LOCAL tier" in text and "frontier rc=1" in text
+
 
 class TestClearFlag:
     def test_clear_retires_witness_and_is_idempotent(self, tmp_path):
@@ -245,3 +263,44 @@ class TestDuplicateKeyDedup:
         assert [d["key"] for d in w["deltas"]] == ["a"]
         assert w["triaged"] == 1
         assert w["dropped_entries"] == 1
+
+
+class TestMode:
+    """Increment 3 (WS-C): the local triage records WHY it ran — pre-score
+    (frontier will consume it) vs fallback (frontier gone). Both only suggest."""
+
+    def test_mode_defaults_to_fallback(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a")])
+        w = cf.run(path, FakeBackend(reply=_good_reply(["a"])),
+                   frontier_rc=1, now=NOW)
+        assert w["mode"] == "fallback"
+
+    def test_pre_score_mode_stamped_and_never_ratifies(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a")])
+        w = cf.run(path, FakeBackend(reply=_good_reply(["a"])),
+                   frontier_rc=None, now=NOW, mode="pre-score")
+        assert w["mode"] == "pre-score"
+        assert w["brain_tier"] == "local" and w["never_ratifies"] is True
+
+    def test_invalid_mode_coerced_to_default(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a")])
+        w = cf.run(path, FakeBackend(reply=_good_reply(["a"])),
+                   frontier_rc=1, now=NOW, mode="bogus")
+        assert w["mode"] == "fallback"
+
+    def test_mode_carried_on_empty_backlog_note(self, tmp_path):
+        # Even the deterministic no-backlog note carries the mode (base dict).
+        path = _deltas_file(tmp_path, [_delta("done", status="ratified")])
+        w = cf.run(path, FakeBackend(reply=_good_reply([])),
+                   frontier_rc=None, now=NOW, mode="pre-score")
+        assert w["mode"] == "pre-score" and w["brain_tier"] == "rules"
+
+    def test_cli_mode_flag_stamps_witness(self, tmp_path, monkeypatch):
+        # The --mode flag reaches the witness through main().
+        path = _deltas_file(tmp_path, [_delta("done", status="ratified")])
+        out = tmp_path / "w.json"
+        monkeypatch.setattr(cf, "OllamaBackend",
+                            lambda **k: FakeBackend(reply=_good_reply([])))
+        rc = cf.main(["--deltas", path, "--out", str(out), "--mode", "pre-score"])
+        assert rc == 0
+        assert json.loads(out.read_text())["mode"] == "pre-score"

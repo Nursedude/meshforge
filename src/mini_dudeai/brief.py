@@ -214,21 +214,40 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             breakdown = ", ".join(f"{reason} ×{n}" for reason, n in top)
             lines.append(f"- rejected by reason: {breakdown}")
 
-    # W1 — the cadence ran DEGRADED while the frontier was away. Freshness is
-    # re-derived here from the witness ts (a stale witness must not keep
-    # claiming a recent local run), and the wording states the invariant:
-    # suggestions only, nothing was ratified.
+    # W1 — the local-tier triage witness. Two modes (both SUGGEST, never ratify):
+    # "pre-score" = ran to orient the frontier pass that is about to consume it;
+    # "fallback"  = ran DEGRADED because the frontier was away. Freshness is
+    # re-derived here from the witness ts (a stale witness must not keep claiming
+    # a recent local run). The mode drives the wording so a pre-score is never
+    # mis-shown as a frontier outage (honest_failure_modes #2).
     if isinstance(cadence_triage, dict):
         from .cadence_fallback import TRIAGE_FRESH_S
         t_ts = cadence_triage.get("ts")
         if isinstance(t_ts, (int, float)) and 0 <= now_ts - t_ts < TRIAGE_FRESH_S:
             tier = cadence_triage.get("brain_tier")
+            mode = cadence_triage.get("mode", "fallback")
             frc = cadence_triage.get("frontier_rc")
-            frc_txt = "claude CLI missing" if frc is None else f"frontier rc={frc}"
-            if tier == "local":
+            if mode == "pre-score":
+                ctx = "feeding the frontier pass"
+            else:
+                ctx = ("claude CLI missing" if frc is None
+                       else f"frontier rc={frc}")
+            if tier == "local" and mode == "pre-score":
+                lines.append(
+                    f"\n## 🔭 local tier PRE-SCORED the backlog "
+                    f"{_age(now_ts, t_ts)} ago ({ctx})")
+                lines.append(
+                    f"- {cadence_triage.get('triaged', 0)}/"
+                    f"{cadence_triage.get('proposed_total', '?')} delta(s) "
+                    f"pre-triaged by {cadence_triage.get('model', '?')} to "
+                    f"prioritise ratification — SUGGESTIONS ONLY, nothing "
+                    f"ratified; per-key dispositions in "
+                    f"`mini_dudeai_cadence_triage.json`. "
+                    f"{str(cadence_triage.get('summary', ''))[:160]}")
+            elif tier == "local":
                 lines.append(
                     f"\n## 🥈 cadence ran on LOCAL tier {_age(now_ts, t_ts)} ago "
-                    f"({frc_txt})")
+                    f"({ctx})")
                 lines.append(
                     f"- {cadence_triage.get('triaged', 0)}/"
                     f"{cadence_triage.get('proposed_total', '?')} delta(s) "
@@ -239,7 +258,7 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             elif tier == "rules":
                 lines.append(
                     f"\n## 🥉 cadence fell to RULES tier {_age(now_ts, t_ts)} ago "
-                    f"({frc_txt}; local LLM also unavailable)")
+                    f"({ctx}; local LLM also unavailable)")
                 lines.append(
                     f"- {cadence_triage.get('proposed_total', '?')} delta(s) "
                     f"pending, UNTRIAGED — "

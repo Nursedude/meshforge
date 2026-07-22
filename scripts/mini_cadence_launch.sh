@@ -163,11 +163,41 @@ run_local_fallback() {
   if PYTHONPATH="$REPO/src" nice -n 10 \
        timeout "${MINI_CADENCE_LOCAL_TIMEOUT_S:-600}" \
        python3 -m mini_dudeai.cadence_fallback \
-         --deltas "$DELTAS" --frontier-rc "$frc"; then
+         --deltas "$DELTAS" --mode fallback --frontier-rc "$frc"; then
     echo "mini-cadence: local triage witness written (suggestions only — nothing ratified)."
   else
     echo "mini-cadence: local fallback also failed (rc=$?) — deltas stay pending, verdict stays FAIL." >&2
   fi
+}
+
+# Local-tier PRE-SCORE (increment 3, WS-C). BEFORE the frontier session, a
+# bounded local-LLM pass triages the proposed backlog and writes the witness
+# (mode=pre-score) so the frontier session starts ORIENTED — it prioritises by
+# each delta's suggested_disposition (looks-ratifiable / looks-rejectable /
+# needs-live-check) instead of reading the queue cold, which shrinks the
+# 0/164-ratified tail. The local tier NEVER ratifies (charter) — these are
+# suggestions the frontier still verifies. Best-effort + bounded: a failed or
+# slow pre-score NEVER blocks or delays the frontier pass and NEVER changes the
+# cron verdict (still frontier-only evidence). It runs SEQUENTIALLY before the
+# frontier API session (never concurrent), so peak local memory is the same as
+# the existing fallback path. Set MINI_CADENCE_PRESCORE=0 to disable on a
+# memory-tight box (the local model is the heavier load — the documented
+# local-inference memory-freeze class).
+run_local_prescore() {
+  [ "${MINI_CADENCE_PRESCORE:-1}" = "1" ] || {
+    echo "mini-cadence: pre-score disabled (MINI_CADENCE_PRESCORE=0) — frontier runs cold."
+    return 0
+  }
+  echo "mini-cadence: local-tier PRE-SCORE of the backlog (frontier will consume it)."
+  if PYTHONPATH="$REPO/src" nice -n 10 \
+       timeout "${MINI_CADENCE_LOCAL_TIMEOUT_S:-600}" \
+       python3 -m mini_dudeai.cadence_fallback \
+         --deltas "$DELTAS" --mode pre-score >/dev/null 2>&1; then
+    echo "mini-cadence: pre-score witness written (suggestions only — nothing ratified)."
+  else
+    echo "mini-cadence: pre-score unavailable (rc=$?); frontier runs cold. Non-fatal." >&2
+  fi
+  return 0
 }
 
 if ! command -v claude >/dev/null 2>&1; then
@@ -178,6 +208,10 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 75
 fi
 
+# Pre-score the backlog on the local tier so the frontier session starts
+# oriented (best-effort; never blocks the session — see run_local_prescore).
+run_local_prescore || true
+
 echo "mini-cadence: proposed deltas present — launching cadence session (model ${MODEL}, timeout ${TIMEOUT_S}s)."
 # -p runs headless with the runbook as the prompt; the session reads the rest of
 # the runbook file itself for the full procedure. --model pins the ratification
@@ -187,6 +221,9 @@ rc=0
 timeout "$TIMEOUT_S" claude --model "$MODEL" -p "Run the mini-dudeai cadence pass per $RUNBOOK. \
 Resolve every proposed memory-delta: verify each against live truth, then ratify \
 (authoring a verified canonical memory via mini_dudeai.memory_apply) or reject. \
+A local pre-triage may exist at ~/mini_dudeai_cadence_triage.json — use its per-key \
+suggested_disposition to PRIORITISE your pass, but it ran NO checks, so verify before \
+you ratify (a suggestion is not verification). Record a --reason on each reject. \
 Never write verified=True without a check you ran. One bounded pass, then stop." || rc=$?
 echo "mini-cadence: cadence session finished (exit $rc)."
 

@@ -34,6 +34,13 @@ everyone kept calling "good." Do not regress that. Concretely:
    - `~/mini_dudeai_dreams.md` — narrative + evidence table
    - `~/mini_dudeai_memory_deltas.jsonl` — the `status: "proposed"` rows are your queue
    - `~/situation_digest.md` and `~/mini_dudeai_history.jsonl` — surrounding context
+   - `~/mini_dudeai_cadence_triage.json` — **the local tier's pre-triage** (if present,
+     `mode: "pre-score"`). Each entry carries a `suggested_disposition`
+     (`looks-ratifiable` / `looks-rejectable` / `needs-live-check`) and a one-line
+     `assessment`. **Use it to PRIORITISE** — confirm the `looks-ratifiable` ones fast,
+     scrutinise `looks-rejectable`, spend your live checks on `needs-live-check`. It is
+      orientation, **not verification**: the local tier ran NO checks and NEVER ratifies,
+     so you still verify every delta against live truth before acting on it.
 
 2. **For each proposed delta**, investigate live truth with your tools before deciding:
    - `curl -s http://127.0.0.1:5000/api/status | jq …` (federation, watchdog signals)
@@ -76,10 +83,15 @@ everyone kept calling "good." Do not regress that. Concretely:
      PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.dreams \
        --resolve "<delta-key>" --status ratified --note "why you ratified"
      ```
-   - **Reject** → same CLI, `--status rejected`. No memory written:
+   - **Reject** → same CLI, `--status rejected`. No memory written. Add a
+     `--reason` category so low ratification stays diagnosable — one of
+     `noisy_detector` / `known_benign` / `already_fixed` / `not_actionable` /
+     `duplicate` (open vocabulary; the warm brief folds these into a "rejected by
+     reason" breakdown that tells us WHICH detector to retune):
      ```bash
      PYTHONPATH=/opt/meshforge/src python3 -m mini_dudeai.dreams \
-       --resolve "<delta-key>" --status rejected --note "why you rejected"
+       --resolve "<delta-key>" --status rejected --reason noisy_detector \
+       --note "why you rejected"
      ```
 
 ## Provenance gate (enforced — do not fight it)

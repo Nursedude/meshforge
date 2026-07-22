@@ -65,6 +65,14 @@ _SUMMARY_CLAMP = 500
 
 DISPOSITIONS = ("looks-ratifiable", "looks-rejectable", "needs-live-check")
 
+# WHY the local triage ran — kept honest and distinct (honest_failure_modes #2:
+# never conflate two states). "pre-score": the frontier session is about to run
+# and will CONSUME this triage to prioritise (the increment-3 pre-scoring path).
+# "fallback": the frontier was absent/failed and this is the degraded stand-in.
+# In BOTH modes the local tier only SUGGESTS — it never ratifies.
+MODES = ("pre-score", "fallback")
+DEFAULT_MODE = "fallback"   # back-compat: existing callers/eval keep prior behavior
+
 TRIAGE_SCHEMA: Dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -191,14 +199,23 @@ def _validate_triage(raw: str, fed_keys: set) -> Tuple[dict, int]:
 
 def run(deltas_path: str, backend, frontier_rc: Optional[int],
         max_deltas: int = MAX_DELTAS_DEFAULT,
-        now: Optional[float] = None) -> dict:
-    """Produce the witness dict (pure orchestration; no writes here)."""
+        now: Optional[float] = None, mode: str = DEFAULT_MODE) -> dict:
+    """Produce the witness dict (pure orchestration; no writes here).
+
+    ``mode`` records WHY the triage ran (``MODES``): ``pre-score`` when the
+    frontier session is about to consume it to prioritise, ``fallback`` when the
+    frontier was gone. It changes nothing about the never-ratifies contract —
+    both modes only SUGGEST — it just keeps the two states honest for the brief.
+    """
     now = time.time() if now is None else now
     iso = iso_or_none(now)
+    if mode not in MODES:
+        mode = DEFAULT_MODE
     proposed, total = load_proposed_deltas(deltas_path, cap=max_deltas)
     base = {
         "ts": now,
         "iso": iso,
+        "mode": mode,
         "frontier_rc": frontier_rc,
         "proposed_total": total,
         "never_ratifies": True,
@@ -248,6 +265,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="exit code of the failed frontier session "
                          "(empty = claude CLI missing)")
     ap.add_argument("--max-deltas", type=int, default=MAX_DELTAS_DEFAULT)
+    ap.add_argument("--mode", choices=MODES, default=DEFAULT_MODE,
+                    help="pre-score (frontier will consume this to prioritise) "
+                         "or fallback (frontier was gone). Suggestions only in "
+                         "both; the tier NEVER ratifies.")
     ap.add_argument("--url",
                     default=os.environ.get("MINI_DUDEAI_OLLAMA_URL",
                                            DEFAULT_OLLAMA_URL))
@@ -279,13 +300,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     backend = OllamaBackend(url=args.url, model=args.model,
                             timeout_s=args.timeout_s)
     witness = run(args.deltas, backend, frontier_rc,
-                  max_deltas=args.max_deltas)
+                  max_deltas=args.max_deltas, mode=args.mode)
     try:
         atomic_write_json(args.out, witness)
     except OSError as e:
         print(f"cadence_fallback: witness write FAILED: {e}", file=sys.stderr)
         return 1
-    print(f"cadence_fallback: brain_tier={witness['brain_tier']} "
+    print(f"cadence_fallback: mode={witness['mode']} "
+          f"brain_tier={witness['brain_tier']} "
           f"triaged={witness.get('triaged', 0)}/{witness['proposed_total']} "
           f"-> {args.out}")
     return 0
