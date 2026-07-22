@@ -297,11 +297,11 @@ def test_max_reply_bytes_pinned_to_canonical_payload_cap():
 
 def test_stale_thresholds_match_api_status_readers():
     text = (_REPO / "src" / "utils" / "_map_status_endpoints.py").read_text(encoding="utf-8")
-    # WATCHDOG_STALE_S became a module-level SSOT 2026-07-19 (shared with the
-    # fleet-truth ssh-spool transform); the class attr is an alias with no
-    # literal, so pin the module constant.
+    # WATCHDOG_STALE_S (2026-07-19) and MINI_STALE_S (2026-07-22) both became
+    # module-level SSOTs shared with the fleet-truth ssh-spool transforms; each
+    # class attr is now an alias with no literal, so pin the module constants.
     wd = re.search(r"^WATCHDOG_STALE_S\s*=\s*([\d.]+)", text, re.M)
-    mini = re.search(r"_MINI_STALE_S\s*=\s*([\d.]+)", text)
+    mini = re.search(r"^MINI_STALE_S\s*=\s*([\d.]+)", text, re.M)
     assert wd and mini
     assert WATCHDOG_STALE_S == float(wd.group(1))
     assert MINI_STALE_S == float(mini.group(1))
