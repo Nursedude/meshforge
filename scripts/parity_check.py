@@ -9,9 +9,11 @@ Two tiers of parity:
 
 * **Byte-identical tier** — files that MUST match exactly between the repos.
   A SHA-256 mismatch is drift. Today: the guarded RNS-init chokepoint, the
-  shared bridge contract, the version-check tool, and the fork-pin block of
-  requirements/rns.txt (compared as a normalized sub-block, since the
-  surrounding prose legitimately differs per app).
+  shared bridge contract, the fleet-truth builder, the mini-dudeai generic
+  engine core (WS-A, 2026-07-22 — the observation-only rule/cadence loop is
+  now twinned onto MeshAnchor; only each app's ADAPTER preset diverges), and
+  the fork-pin block of requirements/rns.txt (compared as a normalized
+  sub-block, since the surrounding prose legitimately differs per app).
 
 * **Shape tier** — files that carry the same INTENT but are allowed
   app-specific text. We assert the presence of key symbols, not byte
@@ -19,9 +21,11 @@ Two tiers of parity:
   rules MF009 + MF019, and the two RNS-wedge probes.
 
 * **Calibration claim-gate shared core** — the calibrated-claims rule+gate are
-  a by-intent MF<->MA pair (the 2026-06-15 spine arc): MeshAnchor legitimately
-  LACKS the ledger-feeding trio (no ``mini_dudeai`` there) and uses its own
-  marker path, so byte/shape parity is wrong. But the DETECTION VOCABULARY
+  a by-intent MF<->MA pair (the 2026-06-15 spine arc): MeshAnchor now carries
+  the byte-locked mini core (WS-A) INCLUDING calibration_ledger.py, but its
+  ``claim_gate.py`` still does NOT feed that ledger (the Stop-hook→ledger feed
+  stays MeshForge-only), and it uses its own marker path — so byte/shape parity
+  of the GATE is wrong here. But the DETECTION VOCABULARY
   (which phrases are strong completion claims / honest hedges / quoted evidence)
   must agree, or the two gates judge the same closing message differently —
   silent drift. So we AST-extract the three vocabulary constants from both
@@ -83,6 +87,28 @@ BYTE_IDENTICAL = (
     # (fleet_truth_collector.py: MF = fleet_hosts + fleet_naming; MA =
     # fleet.json peers) — the collector is deliberately NOT parity.
     "src/utils/fleet_truth.py",
+    # mini-dudeai GENERIC ENGINE CORE (second-brain arc WS-A, 2026-07-22). The
+    # observation-only rule/cadence loop is now twinned onto MeshAnchor. These
+    # modules carry ZERO app-specific imports (verified import-clean across the
+    # whole package), so they copy byte-clean and MUST stay identical — the
+    # engine's behavior is the shared contract; only the ADAPTER (each app's
+    # preset + role seed + health-surface source) is allowed to diverge.
+    # MeshForge is the lead repo: land a core change here, then port. The
+    # concrete sources/actions + daemon + presets are DELIBERATELY not here
+    # (they are the adapter layer; e.g. MA's meshanchor_fleet reads a SQLite
+    # blackout DB where MeshForge's meshforge_fleet reads watchdog.json).
+    "src/mini_dudeai/engine.py",
+    "src/mini_dudeai/state.py",
+    "src/mini_dudeai/history.py",
+    "src/mini_dudeai/candidate.py",
+    "src/mini_dudeai/config.py",
+    "src/mini_dudeai/brief.py",
+    "src/mini_dudeai/warmstart.py",
+    "src/mini_dudeai/dreams.py",
+    "src/mini_dudeai/calibration_ledger.py",
+    "src/mini_dudeai/model_router.py",
+    "src/mini_dudeai/sources/base.py",
+    "src/mini_dudeai/actions/base.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
