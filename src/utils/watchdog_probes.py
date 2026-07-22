@@ -143,6 +143,7 @@ from utils.watchdog_probes_mini import (
     probe_calibration_drift,
     probe_dream_ratification_stalled,
     probe_history_write_failure,
+    probe_local_brain_regressed,
     probe_memory_index_oversize,
     probe_rules_seed_drift,
     _ROLE_TO_MINI_SEED,
@@ -214,4 +215,5 @@ __all__ = [
     "probe_memory_index_oversize",
     "probe_calibration_drift",
     "probe_dream_ratification_stalled",
+    "probe_local_brain_regressed",
 ]

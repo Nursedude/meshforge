@@ -55,6 +55,7 @@ from utils.watchdog_probes import (
     probe_aredn_source_dark,
     probe_calibration_drift,
     probe_dream_ratification_stalled,
+    probe_local_brain_regressed,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
     probe_cron_verdict_stale,
@@ -799,6 +800,13 @@ def run_all_probes(
     # ratifier is alive). Self-guards inert off the manager box (no cadence
     # verdict = no ratifier) and defers the cadence-DOWN case to #78.
     sig = probe_dream_ratification_stalled()
+    if sig is not None:
+        signals.append(sig)
+
+    # Learning observability (2026-07-22, WS-D): a local-brain eval case that
+    # passed before now fails — the tier-L model lost a capability the aggregate
+    # --gate/#78 can miss. Self-guards inert off the manager box (no eval ledger).
+    sig = probe_local_brain_regressed()
     if sig is not None:
         signals.append(sig)
 

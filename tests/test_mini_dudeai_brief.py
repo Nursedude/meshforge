@@ -293,3 +293,49 @@ def test_brief_rejection_breakdown_omitted_when_no_reasons():
     out2 = build_brief(_state(), [], NOW, delta_track_record=tr,
                        rejection_reasons=None)
     assert "rejected by reason" not in out2
+
+
+# --- WS-D: local-brain eval line (make the learning record observable) --------
+
+def _eval_summary(**kw):
+    base = {"ts": NOW - 3600, "pass_rate": 0.95, "passed": 22, "total": 23,
+            "per_kind": {"oracle": {"passed": 18, "total": 18},
+                         "triage": {"passed": 2, "total": 2},
+                         "compile": {"passed": 2, "total": 3}},
+            "failed_ids": []}
+    base.update(kw)
+    return base
+
+
+def test_brief_renders_eval_line_with_per_kind():
+    out = build_brief(_state(), [], NOW, eval_summary=_eval_summary())
+    assert "local-brain eval — 0.95 (22/23)" in out
+    # the 28/2/3-style skew is visible in the per-kind breakdown
+    assert "oracle 18/18" in out and "triage 2/2" in out and "compile 2/3" in out
+
+
+def test_brief_eval_line_lists_failing_cases():
+    out = build_brief(_state(), [], NOW,
+                      eval_summary=_eval_summary(failed_ids=["triage-x", "compile-y"]))
+    assert "FAILING: triage-x, compile-y" in out
+
+
+def test_brief_eval_line_surfaces_budget_deferral():
+    out = build_brief(_state(), [], NOW, eval_summary=_eval_summary(
+        budget_exhausted=True, planned_total=33, not_run_ids=["a", "b", "c"]))
+    assert "3 of 33 case(s) deferred (budget)" in out
+    assert "over the completed subset" in out
+
+
+def test_brief_eval_line_omitted_when_absent():
+    assert "local-brain eval" not in build_brief(_state(), [], NOW,
+                                                 eval_summary=None)
+    # a malformed summary (no numeric pass_rate) renders nothing, never a crash
+    assert "local-brain eval" not in build_brief(
+        _state(), [], NOW, eval_summary={"pass_rate": "n/a"})
+
+
+def test_brief_eval_ledger_basename_is_ssot_pinned():
+    from mini_dudeai.brief import _EVAL_LEDGER_BASENAME
+    from mini_dudeai.local_brain_eval import EVAL_RESULTS_BASENAME
+    assert _EVAL_LEDGER_BASENAME == EVAL_RESULTS_BASENAME

@@ -1002,6 +1002,19 @@
       },
       "cooldown_s": 21600,
       "annotation": "2026-07-22 second-brain arc WS-C -- mini's dream propose->ratify VALUE loop runs but is not closing: proposals sit unresolved past a long age WHILE the mini_cadence session is demonstrably alive (its cron verdict fresh + OK). Fix: `python3 -m mini_dudeai.dreams --list-proposed`, then ratify or reject each with a --reason (if noise, retune the detector; the 2026-07-18 sweep found 0/164 ratified and could not say why). Side-effect-free escalation; NO ntfy page (unsoaked -- the calibration_drift 34-day precedent). NON-redundant with cron_verdict_stale #78, which owns the cadence-DOWN case; this fires only when the ratifier is UP but the backlog is not clearing. INERT off the manager box (no mini_cadence verdict = no ratifier -- a backlog on a gateway box is expected)."
+    },
+    {
+      "id": "local_brain_regressed_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "local_brain_regressed",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-22 second-brain arc WS-D -- a local-brain eval case that passed >=2x before now FAILS: the tier-L (Ollama) model lost a capability. Makes the LEARNING record observable. Fix: `python3 -m mini_dudeai.local_brain_eval` and inspect failed_ids; each seed case names the incident class it guards -- a regression means the fleet can no longer trust the local tier to triage that class. NON-redundant with cron_verdict_stale #78 + the weekly --gate, which see only the AGGREGATE pass_rate (a thin kind -- triage=2 cases, compile=3 -- can regress while the oracle-dominated aggregate stays green). Side-effect-free escalation; NO ntfy page. INERT off the manager box (no eval ledger = tier-L not evaluated there)."
     }
   ]
 }

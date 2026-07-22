@@ -53,6 +53,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_memory_index_oversize,
     probe_calibration_drift,
     probe_dream_ratification_stalled,
+    probe_local_brain_regressed,
     MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
     probe_delivery_write_canary,
@@ -170,6 +171,7 @@ def test_signal_classes_closed_enum_is_documented():
         "user_timer_unit_failing",       # 2026-07-19 — an enabled USER *timer*'s job fails on EVERY firing (repeated "Failed with result" in a short window, newest fresh, no success since); the last uncovered corner of the user-unit blindness class, since user_unit_inactive explicitly excludes timers (no invocation marker; a oneshot is inactive between firings by design) and nomadnet_crashloop covers only a LIVE loop on one unit. Origin: kiai's meshforge-tracer.timer fired every 10 min from 2026-07-12 while its oneshot exited 2 ("no peers in lab_peers") every time — a week silent with every existing leg reading healthy. Documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as user_unit_inactive). No own issue#.
         "rns_stray_env_drift",          # 2026-07-19 — rns/lxmf copies across a box's root-readable envs DISAGREE (intra-box coherence; probe_rns_version_drift owns pin compliance): the missed-venv roll hazard, pipx globs wildcarded across venv names because a library rides inside every app venv depending on it (moc3's nomadnet pipx venv sat silently stock 1.1.4, invisible to every prior drift probe); closes the rns/lxmf leg of the dep_version_drift_strays_blind structural-dark row; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as dep_install_fragmented). No own issue#.
         "dream_ratification_stalled",   # 2026-07-22 second-brain arc WS-C — mini's dream propose->ratify VALUE loop runs but is not closing (proposals unresolved past a long age while the mini_cadence ratifier is alive; the 2026-07-18 0/164 sweep had no signal for this); NON-redundant with cron_verdict_stale #78 (that owns cadence-DOWN); scopes to the manager box via the cadence-liveness gate (INERT with no ratifier); degraded, escalate-only in seed until soaked (calibration_drift precedent); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap). No own issue#.
+        "local_brain_regressed",        # 2026-07-22 second-brain arc WS-D — a local-brain eval case that passed >=2x before now fails (the tier-L model lost a capability); makes the LEARNING record observable; NON-redundant with #78 + the weekly --gate, which judge only the aggregate pass_rate (a thin kind can regress under an oracle-dominated aggregate); PER-CASE + cursor-robust; scopes to the manager box (INERT with no eval ledger); degraded, escalate-only in seed; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap). No own issue#.
     }
     assert set(SEVERITIES) == {"info", "degraded", "wedge"}
 
@@ -7890,3 +7892,90 @@ def test_dream_stall_cadence_verdict_name_is_ssot_pinned():
     from utils.watchdog_probes_mini import _CADENCE_VERDICT_NAME
     from mini_dudeai.claw_telemetry import CADENCE_VERDICT_NAME
     assert _CADENCE_VERDICT_NAME == CADENCE_VERDICT_NAME
+
+
+# ─────────────────────────────────────────────────────────────────────
+# probe_local_brain_regressed (2026-07-22, WS-D): make the LEARNING record
+# observable. A per-case regression (passed >=2x before, now fails) that the
+# aggregate --gate / #78 structurally cannot see. Cursor-robust (per-case).
+# ─────────────────────────────────────────────────────────────────────
+
+def _eval_rec(ts, results):
+    """One eval ledger record. results: list of (id, kind, ok)."""
+    return {"ts": ts, "results": [{"id": i, "kind": k, "ok": o}
+                                  for i, k, o in results]}
+
+
+def test_local_brain_regression_fires_on_previously_passing_case():
+    _reset_disp()
+    recs = [_eval_rec(1, [("t1", "triage", True)]),
+            _eval_rec(2, [("t1", "triage", True)]),
+            _eval_rec(3, [("t1", "triage", False)])]   # regressed after 2 passes
+    sig = probe_local_brain_regressed(records=recs)
+    assert sig is not None and sig.cls == "local_brain_regressed"
+    assert sig.subject == "local-brain" and sig.severity == "degraded"
+    assert sig.extra["regressed"] == 1 and sig.extra["case_ids"] == ["t1"]
+    assert "REGRESSED" in sig.detail
+
+
+def test_local_brain_currently_passing_is_clean():
+    # failed once, but passed again in the latest run → recovered, not regressed.
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    recs = [_eval_rec(1, [("t1", "triage", True)]),
+            _eval_rec(2, [("t1", "triage", True)]),
+            _eval_rec(3, [("t1", "triage", False)]),
+            _eval_rec(4, [("t1", "triage", True)])]
+    sig = probe_local_brain_regressed(records=recs)
+    assert sig is None
+    assert collect_dispositions()["local_brain_regressed"]["disp"] == "clean"
+
+
+def test_local_brain_insufficient_prior_passes_is_clean():
+    # passed once then fails: prior_passes=1 < 2 → first-eval/flaky, not a regression.
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    recs = [_eval_rec(1, [("t1", "triage", True)]),
+            _eval_rec(2, [("t1", "triage", False)])]
+    assert probe_local_brain_regressed(records=recs) is None
+    assert collect_dispositions()["local_brain_regressed"]["disp"] == "clean"
+
+
+def test_local_brain_new_case_first_appearance_fail_is_clean():
+    _reset_disp()
+    recs = [_eval_rec(1, [("t1", "triage", True)]),
+            _eval_rec(2, [("new", "compile", False)])]   # brand-new, 0 prior
+    assert probe_local_brain_regressed(records=recs) is None
+
+
+def test_local_brain_only_regressed_cases_reported():
+    _reset_disp()
+    recs = [_eval_rec(1, [("a", "oracle", True), ("b", "triage", True)]),
+            _eval_rec(2, [("a", "oracle", True), ("b", "triage", True)]),
+            _eval_rec(3, [("a", "oracle", True), ("b", "triage", False)])]
+    sig = probe_local_brain_regressed(records=recs)
+    assert sig is not None and sig.extra["case_ids"] == ["b"]   # a stays passing
+
+
+def test_local_brain_no_ledger_is_inert(tmp_path):
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    sig = probe_local_brain_regressed(ledger_path=str(tmp_path / "nope.jsonl"))
+    assert sig is None
+    disp = collect_dispositions()["local_brain_regressed"]
+    assert disp["disp"] == "inert" and "not evaluated" in disp["reason"]
+
+
+def test_local_brain_unreadable_ledger_is_indeterminate(tmp_path):
+    # A directory at the ledger path → open() raises → unreadable ≠ clean.
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    sig = probe_local_brain_regressed(ledger_path=str(tmp_path))
+    assert sig is None
+    assert collect_dispositions()["local_brain_regressed"]["disp"] == "indeterminate"
+
+
+def test_local_brain_ledger_name_is_ssot_pinned():
+    from utils.watchdog_probes_mini import _EVAL_LEDGER_NAME
+    from mini_dudeai.local_brain_eval import EVAL_RESULTS_BASENAME
+    assert _EVAL_LEDGER_NAME == EVAL_RESULTS_BASENAME

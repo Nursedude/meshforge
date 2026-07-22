@@ -114,7 +114,8 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                 escalation_window_s: float = ESCALATION_WINDOW_S,
                 cadence_triage: dict | None = None,
                 delta_track_record: dict | None = None,
-                rejection_reasons: dict | None = None) -> str:
+                rejection_reasons: dict | None = None,
+                eval_summary: dict | None = None) -> str:
     """Render the warm-start brief markdown from mini's state + recent history.
 
     `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
@@ -264,6 +265,38 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                     f"pending, UNTRIAGED — "
                     f"{str(cadence_triage.get('summary', ''))[:160]}")
 
+    # WS-D — the LEARNING record made observable. The local-brain eval ledger
+    # (tier-L competence) was read by nothing but its own runner; surface the
+    # latest run so every warm session sees the trend, the per-kind coverage
+    # (the 28/2/3 oracle-vs-triage-vs-compile skew is visible here), the failing
+    # cases, and — honestly — how much of the set the budget-chunked run covered.
+    if isinstance(eval_summary, dict) and isinstance(
+            eval_summary.get("pass_rate"), (int, float)):
+        e_ts = eval_summary.get("ts")
+        age = (f" · {_age(now_ts, e_ts)} ago"
+               if isinstance(e_ts, (int, float)) else "")
+        pr = eval_summary.get("pass_rate")
+        passed = eval_summary.get("passed", "?")
+        total = eval_summary.get("total", "?")
+        lines.append(
+            f"\n## 🧠 local-brain eval — {pr} ({passed}/{total}){age}")
+        per_kind = eval_summary.get("per_kind")
+        if isinstance(per_kind, dict) and per_kind:
+            parts = [f"{k} {v.get('passed', '?')}/{v.get('total', '?')}"
+                     for k, v in sorted(per_kind.items())
+                     if isinstance(v, dict)]
+            if parts:
+                lines.append("- per-kind: " + " · ".join(parts))
+        failed = eval_summary.get("failed_ids") or []
+        if failed:
+            lines.append("- FAILING: " + ", ".join(str(f) for f in failed[:6]))
+        not_run = eval_summary.get("not_run_ids") or []
+        if eval_summary.get("budget_exhausted") or not_run:
+            planned = eval_summary.get("planned_total", "?")
+            lines.append(
+                f"- ⚠️ {len(not_run)} of {planned} case(s) deferred (budget) — "
+                f"the rate is over the completed subset, not the full set")
+
     # Look here first — escalations fired within the window, deduped (see
     # recent_escalations; shared with the situation digest so they never
     # disagree). Stale entries replayed from the history tail would mislead a
@@ -302,6 +335,34 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                      "Nothing demands attention._")
 
     return "\n".join(lines) + "\n"
+
+
+# SSOT: mini_dudeai.local_brain_eval.EVAL_RESULTS_BASENAME. A local literal
+# (importing that module pulls the heavier chat_compiler graph) test-pinned
+# byte-identical — the same layering compromise as the watchdog probe's copy.
+_EVAL_LEDGER_BASENAME = "local_brain_evals.jsonl"
+
+
+def _latest_eval_summary(path: str) -> dict | None:
+    """The most-recent eval summary record (last parseable JSON line), or None.
+    Tolerant of a torn tail; a missing/unreadable ledger is simply None (the
+    section doesn't render — absence is absence)."""
+    last: dict | None = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    last = d
+    except OSError:
+        return None
+    return last
 
 
 def write_brief(state_path: str, history_path: str, out_path: str,
@@ -348,10 +409,15 @@ def write_brief(state_path: str, history_path: str, out_path: str,
     from .cadence_fallback import CADENCE_TRIAGE_BASENAME
     triage, _terr = read_json(os.path.join(
         os.path.dirname(deltas_path) or ".", CADENCE_TRIAGE_BASENAME))
+    # WS-D — the local-brain eval ledger sits beside the deltas file; the latest
+    # record (or None) surfaces the tier-L learning trend in the brief.
+    eval_summary = _latest_eval_summary(os.path.join(
+        os.path.dirname(deltas_path) or ".", _EVAL_LEDGER_BASENAME))
     text = build_brief(state or {}, history, now_ts, pending_deltas=pending,
                        cadence_triage=triage if isinstance(triage, dict) else None,
                        delta_track_record=track_record,
-                       rejection_reasons=reasons)
+                       rejection_reasons=reasons,
+                       eval_summary=eval_summary)
     if not _brief_unchanged(out_path, text):
         atomic_write_text(out_path, text)
     return text

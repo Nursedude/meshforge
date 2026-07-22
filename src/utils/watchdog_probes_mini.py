@@ -575,6 +575,18 @@ except (TypeError, ValueError):
 # alive; defer to cron_verdict_stale (#78) rather than double-firing.
 DREAM_STALL_CADENCE_ALIVE_MAX_AGE_S = 2 * 86400.0
 
+# local_brain_regressed (WS-D). SSOT: mini_dudeai.local_brain_eval.EVAL_RESULTS_
+# BASENAME (kept a local literal, test-pinned — same layering compromise as
+# _CADENCE_VERDICT_NAME). A case must have passed at least this many times in
+# PRIOR runs before a current failure counts as a regression (not first-eval
+# noise / best-of-N flakiness on a brand-new case). Env-overridable.
+_EVAL_LEDGER_NAME = "local_brain_evals.jsonl"
+try:
+    LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES = int(
+        os.environ.get("MESHFORGE_LOCAL_BRAIN_REGRESSION_MIN_PASSES", "2"))
+except (TypeError, ValueError):
+    LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES = 2
+
 # Recency window for calibration_drift (2026-06-19, self-audit-qa-arc §1): a broke
 # claim older than this no longer fires the alert — so the signal can CLEAR once
 # I've demonstrably stopped miscalibrating, instead of ONE old broke pinning it
@@ -869,3 +881,133 @@ def probe_dream_ratification_stalled(
         return None
 
 
+def _load_eval_records(path: str) -> Optional[list]:
+    """All eval summary records from the ledger, in file order (oldest→newest).
+    Tolerant of a torn tail / bad line. None on OSError (unreadable ≠ empty)."""
+    out: list = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    d = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(d, dict):
+                    out.append(d)
+    except OSError:
+        return None
+    return out
+
+
+def probe_local_brain_regressed(
+    *,
+    ledger_path: Optional[str] = None,
+    records: Optional[list] = None,
+    now_ts: Optional[float] = None,
+    min_prior_passes: int = LOCAL_BRAIN_REGRESSION_MIN_PRIOR_PASSES,
+) -> Optional[Signal]:
+    """Fire when a local-brain eval case REGRESSED — passed ``min_prior_passes``
+    times in earlier runs, now fails in its most-recent run.
+
+    Makes the LEARNING record observable (WS-D). The eval ledger
+    (``~/local_brain_evals.jsonl``) is the tier-L competence record and was read
+    by nothing but its own runner. NON-redundant with cron_verdict_stale (#78)
+    and the weekly ``--gate``: those judge only the AGGREGATE pass_rate, so a
+    single case — or a whole thin kind (triage=2, compile=3 cases) — can regress
+    while the oracle-dominated aggregate stays above gate and #78 stays silent.
+    PER-CASE and cursor-robust: it compares each case's OWN pass/fail history
+    across records, so budget-chunked partial runs (a different subset each week)
+    never manufacture a false drop.
+
+    Self-guards: no ledger (tier-L not evaluated here -> not the manager box) ->
+    inert; unreadable -> indeterminate; non-empty-but-unparseable -> indeterminate
+    (never a false clean); no regressed case -> clean. degraded only; the seed
+    routes it escalate-only (NO ntfy page). Never raises into the tick."""
+    cls = "local_brain_regressed"
+    try:
+        if records is None:
+            if ledger_path is None:
+                home = _resolve_mini_home()
+                if not home:
+                    note_disposition(cls, "indeterminate",
+                                     reason="operator home unresolvable")
+                    return None
+                ledger_path = os.path.join(home, _EVAL_LEDGER_NAME)
+            if not os.path.exists(ledger_path):
+                note_disposition(
+                    cls, "inert",
+                    reason="no eval ledger; local brain not evaluated on this box")
+                return None
+            records = _load_eval_records(ledger_path)
+            if records is None:
+                note_disposition(cls, "indeterminate",
+                                 reason="eval ledger unreadable")
+                return None
+            if not records:
+                try:
+                    size = os.path.getsize(ledger_path)
+                except OSError:
+                    note_disposition(cls, "indeterminate",
+                                     reason="ledger size unreadable")
+                    return None
+                if size > 0:
+                    note_disposition(
+                        cls, "indeterminate",
+                        reason="ledger non-empty but yielded zero records")
+                    return None
+                note_disposition(cls, "inert",
+                                 reason="empty eval ledger — no runs yet")
+                return None
+
+        # Per-case pass/fail history across records, ordered by run ts.
+        history: dict = {}
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            rts = rec.get("ts")
+            rts = rts if isinstance(rts, (int, float)) else 0.0
+            for r in (rec.get("results") or []):
+                if not isinstance(r, dict):
+                    continue
+                cid = r.get("id")
+                if not cid:
+                    continue
+                history.setdefault(cid, []).append(
+                    (rts, bool(r.get("ok")), r.get("kind")))
+
+        regressed: list = []
+        for cid, seq in history.items():
+            seq.sort(key=lambda x: x[0])
+            _last_ts, last_ok, kind = seq[-1]
+            if last_ok:
+                continue  # currently passing -> not regressed
+            prior_passes = sum(1 for (_t, ok, _k) in seq[:-1] if ok)
+            if prior_passes >= min_prior_passes:
+                regressed.append((cid, kind, prior_passes))
+
+        if not regressed:
+            note_disposition(cls, "clean")
+            return None
+
+        regressed.sort()
+        names = ", ".join(f"{cid}({kind})" for cid, kind, _ in regressed[:4])
+        return Signal(
+            cls="local_brain_regressed",
+            subject="local-brain",
+            severity="degraded",
+            detail=(
+                f"{len(regressed)} local-brain eval case(s) REGRESSED — passed "
+                f">={min_prior_passes}x before, now failing: {names}. The tier-L "
+                f"model lost a capability the aggregate --gate (and #78) can miss. "
+                f"Re-run `python3 -m mini_dudeai.local_brain_eval` and inspect "
+                f"failed_ids; each seed case names the incident class it guards."
+            ),
+            extra={"regressed": len(regressed),
+                   "case_ids": [c for c, _, _ in regressed[:8]]},
+        )
+    except Exception:
+        note_disposition(cls, "indeterminate", reason="probe error")
+        return None
