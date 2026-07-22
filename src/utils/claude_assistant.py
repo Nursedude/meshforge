@@ -71,7 +71,7 @@ logger = logging.getLogger(__name__)
 # answers, never silently-wrong). See .claude/rules/calibrated_claims.md
 # ("behavior shifts across model versions") and ~/.claude/plans/self-audit-qa-arc.md s0.
 DEFAULT_ASSISTANT_MODEL = os.environ.get(
-    "MESHFORGE_ASSISTANT_MODEL", "claude-sonnet-4-6"
+    "MESHFORGE_ASSISTANT_MODEL", "claude-sonnet-5"
 )
 
 
@@ -265,9 +265,12 @@ Always prioritize safety - never suggest actions that could damage hardware
             messages.append({"role": "user", "content": user_content})
 
             # Call Claude API
+            # max_tokens covers thinking + answer on claude-sonnet-5 (adaptive
+            # thinking runs by default when the thinking param is omitted), so
+            # the old 1024 cap could truncate a reasoned answer mid-thought.
             response = client.messages.create(
                 model=DEFAULT_ASSISTANT_MODEL,
-                max_tokens=1024,
+                max_tokens=4096,
                 system=self._get_system_prompt(),
                 messages=messages,
                 cache_control={"type": "ephemeral"},
