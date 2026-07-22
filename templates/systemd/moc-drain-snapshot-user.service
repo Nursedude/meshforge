@@ -20,10 +20,16 @@
 
 [Unit]
 Description=moc/moc1 node_history drain snapshot (one-shot)
+# NOTE: network-online.target does not exist in the systemd USER manager, so
+# an After= on it never delays anything. The timer's Persistent=true fires a
+# catch-up at manager start (boot+~15s) — before DNS is up — so the ssh legs
+# died on "Could not resolve hostname" every post-07:00 reboot (2026-07-21,
+# both boots). Bounded DNS wait below is the real gate; fails loud after 60s.
 After=network-online.target
 
 [Service]
 Type=oneshot
+ExecStartPre=/bin/sh -c 'for i in $(seq 30); do getent hosts moc.mf.internal >/dev/null 2>&1 && exit 0; sleep 2; done; echo "DNS for moc.mf.internal not up after 60s" >&2; exit 1'
 ExecStart=/opt/meshforge/scripts/moc_drain_snapshot.sh moc
 ExecStart=/opt/meshforge/scripts/moc_drain_snapshot.sh moc1
 StandardOutput=journal
