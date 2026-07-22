@@ -107,8 +107,27 @@ BYTE_IDENTICAL = (
     "src/mini_dudeai/dreams.py",
     "src/mini_dudeai/calibration_ledger.py",
     "src/mini_dudeai/model_router.py",
+    # The engine's generic I/O building blocks — concrete sources + actions.
+    # All import-clean and generic (a reader/writer per medium); an app that
+    # needs a bespoke source/action defines it in its PRESET (e.g. MA's
+    # BlackoutDbSource / MiniSelfSource live inline in meshanchor_fleet, NOT
+    # here). So these stay identical too — byte-locking them means MeshForge's
+    # test suite covers both twins and drift is caught, without duplicating the
+    # tests onto MeshAnchor (WS-A, 2026-07-22).
     "src/mini_dudeai/sources/base.py",
+    "src/mini_dudeai/sources/__init__.py",
+    "src/mini_dudeai/sources/boot_health.py",
+    "src/mini_dudeai/sources/json_file.py",
+    "src/mini_dudeai/sources/http_json.py",
+    "src/mini_dudeai/sources/file_mtime.py",
+    "src/mini_dudeai/sources/nats_sensor.py",
     "src/mini_dudeai/actions/base.py",
+    "src/mini_dudeai/actions/__init__.py",
+    "src/mini_dudeai/actions/ntfy.py",
+    "src/mini_dudeai/actions/propose_escalation.py",
+    "src/mini_dudeai/actions/noop.py",
+    "src/mini_dudeai/actions/file_annotate.py",
+    "src/mini_dudeai/actions/nats_action.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
