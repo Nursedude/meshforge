@@ -180,12 +180,25 @@ mirror_memory_to_host() {
             continue
         fi
 
-        if rsync -aq --delete --mkpath \
+        # Capture stderr — a bare "rsync_failed" is a swallow without a
+        # witness (hfm #9): the 07-23 kiai claude-skills FAIL was undiagnosable
+        # because the error went to /dev/null, and by the time a human re-ran
+        # it the transient had cleared. One retry absorbs exactly that class
+        # (ssh blip / vanished-file race); a REAL failure now names itself.
+        local m_err m_rc
+        m_err=$(rsync -aq --delete --mkpath \
                   -e 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new' \
-                  "$src" "$host:$dst" 2>/dev/null; then
+                  "$src" "$host:$dst" 2>&1) && m_rc=0 || m_rc=$?
+        if [[ $m_rc -ne 0 ]]; then
+            m_err=$(rsync -aq --delete --mkpath \
+                      -e 'ssh -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new' \
+                      "$src" "$host:$dst" 2>&1) && m_rc=0 || m_rc=$?
+        fi
+        if [[ $m_rc -eq 0 ]]; then
             echo "PASS $tag mirrored"
         else
-            echo "FAIL $tag rsync_failed"
+            m_err=${m_err//$'\n'/ | }
+            echo "FAIL $tag rsync_failed rc=$m_rc ${m_err:0:120}"
         fi
     done
 }
