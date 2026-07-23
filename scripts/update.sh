@@ -357,9 +357,11 @@ if $USER_SVC_UPDATED; then
         # standalone dude-claw sibling — try-restart is a no-op on boxes
         # that don't run it (only the claw-brain box does)
         run_user_systemctl try-restart meshforge-mini-dudeai-claw.service 2>/dev/null || true
-        # Second dude-claw brain (dudeclaw-02, templated @-instance). try-restart
-        # is a no-op on boxes that never enabled it (only the claw-brain box).
-        run_user_systemctl try-restart meshforge-mini-dudeai-claw@claw02.service 2>/dev/null || true
+        # Templated dude-claw brains — enumerate ACTIVE @-instances instead
+        # of hardcoding claw02 (a future @claw03 would silently re-open #79).
+        for _cin in $(run_user_systemctl list-units --plain --no-legend 'meshforge-mini-dudeai-claw@*.service' 2>/dev/null | cut -d' ' -f1); do
+            run_user_systemctl try-restart "$_cin" 2>/dev/null || true
+        done
         # Other long-lived USER daemons that run MeshForge code from this repo
         # and would otherwise sit on OLD code after the pull (the #79 deploy
         # gap, surfaced 2026-06-15 by the §3b-ii honesty guard): the lab echo

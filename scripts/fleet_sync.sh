@@ -387,7 +387,17 @@ sync_user_unit() {
         xdg="/run/user/$uid"
     fi
 
-    if ! XDG_RUNTIME_DIR="$xdg" systemctl --user list-unit-files "${unit}.service" >/dev/null 2>&1; then
+    # Existence check must be template-aware: for an instance unit
+    # (name@inst) no unit FILE named name@inst.service ever exists — only
+    # the template name@.service does — so list-unit-files on the instance
+    # name matches nothing and this guard read PASS no_unit forever while
+    # the instance ran on stale code (#79 re-opened, found by the 07-23
+    # audit; verified against live systemd: getty@tty1 -> 0 unit files).
+    local unit_file="$unit"
+    case "$unit" in
+        *@*) unit_file="${unit%%@*}@" ;;
+    esac
+    if ! XDG_RUNTIME_DIR="$xdg" systemctl --user list-unit-files "${unit_file}.service" 2>/dev/null | grep -q "${unit_file}.service"; then
         echo "PASS $short $new_head no_unit"
         return 0
     fi
@@ -445,10 +455,18 @@ sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_P
 # state). Only the claw-brain box (moc1) runs it; everywhere else this is a
 # clean no_unit/not_running PASS (try-restart honors absent/disabled).
 sync_user_unit meshforge-mini-dudeai-claw /opt/meshforge meshforge-mini-dudeai-claw "$MF_PRE_HEAD" || rc1e=$?
-# Second dude-claw brain (dudeclaw-02, templated @-instance; W5.1). Only the
-# claw-brain box runs it; no_unit / not_running PASS everywhere else. Same #79
-# deploy-restart gap as the primary claw.
-sync_user_unit meshforge-mini-dudeai-claw02 /opt/meshforge meshforge-mini-dudeai-claw@claw02 "$MF_PRE_HEAD" || rc1e2=$?
+# Templated dude-claw brains (meshforge-mini-dudeai-claw@<inst>; W5.1).
+# Enumerate ACTIVE instances instead of hardcoding claw02 — a future @claw03
+# enrollment would silently re-open #79 otherwise. try-restart only acts on
+# active units anyway, so the active-instance list IS the restart population.
+uid2=$(id -u 2>/dev/null || echo "")
+xdg2="${XDG_RUNTIME_DIR:-}"
+if [ -z "$xdg2" ] && [ -n "$uid2" ]; then
+    xdg2="/run/user/$uid2"
+fi
+for cin in $(XDG_RUNTIME_DIR="$xdg2" systemctl --user list-units --plain --no-legend "meshforge-mini-dudeai-claw@*.service" 2>/dev/null | cut -d" " -f1); do
+    sync_user_unit "${cin%.service}" /opt/meshforge "${cin%.service}" "$MF_PRE_HEAD" || rc1e2=$?
+done
 # Other long-lived USER daemons that run /opt/meshforge code (same #79 deploy
 # gap as mini): the lab echo responder (lab.lxmf_echo) and the nomadnet silence
 # watcher (scripts/nomadnet_silence_watch.py). Restart on the user bus so a code
@@ -790,7 +808,13 @@ sync_local_user_unit() {
     local self_tag
     self_tag="self ($(hostname -s))"
 
-    if ! systemctl --user list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
+    # Template-aware existence check (same #79 re-open as the remote leg:
+    # an instance name never matches a unit FILE, only its template does).
+    local unit_file="$unit"
+    case "$unit" in
+        *@*) unit_file="${unit%%@*}@" ;;
+    esac
+    if ! systemctl --user list-unit-files "${unit_file}.service" 2>/dev/null | grep -q "${unit_file}.service"; then
         return 0  # not installed locally — silent skip
     fi
     if ! systemctl --user is-active "${unit}.service" >/dev/null 2>&1; then
@@ -859,9 +883,12 @@ sync_local_unit meshforge-maps    /opt/meshforge-maps
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 # Standalone dude-claw sibling (no-op on boxes without the unit).
 sync_local_user_unit meshforge-mini-dudeai-claw /opt/meshforge
-# Second dude-claw brain (dudeclaw-02, templated @-instance; W5.1). no-op on
-# boxes without the unit.
-sync_local_user_unit meshforge-mini-dudeai-claw@claw02 /opt/meshforge
+# Templated dude-claw brains — enumerate ACTIVE instances (no hardcoded
+# claw02; a future @claw03 would silently re-open #79). no-op on boxes
+# without any instance.
+for cin in $(systemctl --user list-units --plain --no-legend "meshforge-mini-dudeai-claw@*.service" 2>/dev/null | cut -d" " -f1); do
+    sync_local_user_unit "${cin%.service}" /opt/meshforge
+done
 # Other long-lived USER daemons from this repo (same #79 gap): the echo
 # responder + nomadnet silence watcher. no-op on boxes without the unit.
 sync_local_user_unit meshforge-echo /opt/meshforge

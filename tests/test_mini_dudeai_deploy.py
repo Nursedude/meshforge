@@ -159,16 +159,35 @@ class TestFleetSyncRestartsMini:
             r"sync_local_user_unit\s+meshforge-mini-dudeai", text
         ), "fleet_sync.sh must self-sync the mini daemon on this box"
 
-    def test_claw02_instance_restarted_on_both_buses(self):
-        # W5.1: the templated dudeclaw-02 brain hits the SAME #79 deploy gap —
-        # a git pull must restart it on both the remote fleet and this box.
+    def test_claw_instances_enumerated_not_hardcoded(self):
+        # W5.1 + 07-23 audit: hardcoding @claw02 was doubly broken — the
+        # list-unit-files guard can never match an INSTANCE name (only the
+        # template file exists), so the restart leg read PASS no_unit forever
+        # (#79 re-opened, verified live vs systemd getty@tty1), and a future
+        # @claw03 would silently re-open it again. fleet_sync must enumerate
+        # ACTIVE instances of the template on both buses instead.
         text = FLEET_SYNC_SH.read_text()
+        assert "meshforge-mini-dudeai-claw@claw02" not in text, (
+            "hardcoded claw02 instance is the #79 re-open shape — enumerate "
+            "active meshforge-mini-dudeai-claw@*.service instances instead")
+        assert text.count(
+            'list-units --plain --no-legend "meshforge-mini-dudeai-claw@*.service"'
+        ) >= 2, "both the remote and self legs must enumerate claw@ instances"
         assert re.search(
-            r"sync_user_unit\s+\S+\s+\S+\s+meshforge-mini-dudeai-claw@claw02",
-            text), "fleet_sync.sh must remote-restart the claw@claw02 instance"
+            r'sync_user_unit\s+"\$\{cin%\.service\}"', text
+        ), "remote leg must feed each enumerated instance to sync_user_unit"
         assert re.search(
-            r"sync_local_user_unit\s+meshforge-mini-dudeai-claw@claw02", text
-        ), "fleet_sync.sh must self-restart the claw@claw02 instance"
+            r'sync_local_user_unit\s+"\$\{cin%\.service\}"', text
+        ), "self leg must feed each enumerated instance to sync_local_user_unit"
+
+    def test_user_unit_guard_is_template_aware(self):
+        # The existence guard for name@inst must check the TEMPLATE unit file
+        # (name@.service) — list-unit-files on the instance name matches
+        # nothing on any systemd (the false PASS no_unit the audit caught).
+        text = FLEET_SYNC_SH.read_text()
+        assert text.count('unit_file="${unit%%@*}@"') >= 2, (
+            "both sync_user_unit and sync_local_user_unit must derive the "
+            "template file name for @-instance units")
 
     def test_user_bus_restart_present(self):
         text = FLEET_SYNC_SH.read_text()

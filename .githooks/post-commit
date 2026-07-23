@@ -26,7 +26,11 @@ ENUM_FILE="src/utils/watchdog_probe_core.py"
 MAP_UNIT="meshforge-map.service"
 
 # Did this commit touch the enum SSOT? (files in the just-made commit)
-if ! git diff-tree --no-commit-id --name-only -r HEAD 2>/dev/null \
+# -m: a merge commit (e.g. `git commit` after a pull conflict) lists changes
+# vs each parent — without it diff-tree emits NOTHING for merges and an enum
+# change landing via merge would silently skip the restart. --root covers
+# the (theoretical) initial-commit case the same way.
+if ! git diff-tree --no-commit-id --name-only -r -m --root HEAD 2>/dev/null \
         | grep -qxF "$ENUM_FILE"; then
     exit 0
 fi
@@ -43,10 +47,15 @@ echo "post-commit: $ENUM_FILE changed — refreshing $MAP_UNIT signal-class enum
 # waits on rnstatus (up to 90s); without --no-block this hook would hang the
 # commit for that long. -n: never prompt for a password — if passwordless sudo
 # is unavailable, print the manual step instead of blocking.
-if sudo -n systemctl --no-block try-restart "$MAP_UNIT" 2>/dev/null; then
+# Keep the real stderr — attributing every failure to "no passwordless
+# sudo" while discarding the actual error (masked unit, systemd refusal)
+# sends the operator down the wrong path.
+_rst_err=$(sudo -n systemctl --no-block try-restart "$MAP_UNIT" 2>&1)
+if [ $? -eq 0 ]; then
     echo "post-commit: $MAP_UNIT restart enqueued (async); coverage will re-derive."
 else
-    echo "post-commit: could not auto-restart $MAP_UNIT (no passwordless sudo)."
+    echo "post-commit: could not auto-restart $MAP_UNIT:"
+    echo "    ${_rst_err:-(no error output — likely no passwordless sudo)}"
     echo "post-commit: restart it manually so /fleet coverage picks up the new enum:"
     echo "    sudo systemctl restart $MAP_UNIT"
 fi
