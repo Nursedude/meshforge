@@ -511,3 +511,31 @@ class TestClockStepDoesNotSplitBrain:
         )
         hb._check_peers()
         assert hb._peers['gw-primary'].alive is False
+
+    def test_negative_relative_mono_is_aged_not_skipped(self, secondary_config):
+        # Regression (CI 3.11 flake, 2026-07-23): on a fresh-boot host
+        # time.monotonic() can be < the age offset, so a real stamp computed as
+        # (monotonic() - offset) is NEGATIVE. The liveness guard must skip ONLY
+        # the unset 0.0 sentinel, not a negative stamp (which is a legitimately
+        # old peer). A `<= 0` guard skipped it → the peer never aged → no
+        # failover. `elapsed` (now_mono - (-50)) is huge, so it must age down.
+        hb = GatewayHeartbeat(config=secondary_config)
+        hb._last_mqtt_connect = 0  # no grace
+        hb._peers['gw-primary'] = PeerInfo(
+            gateway_id='gw-primary', role='primary', alive=True,
+            last_heartbeat=time.time(), last_heartbeat_mono=-50.0,
+        )
+        hb._check_peers()
+        assert hb._peers['gw-primary'].alive is False
+
+    def test_unset_mono_sentinel_is_skipped(self, secondary_config):
+        # The 0.0 default (alive peer with no monotonic stamp — an inconsistent
+        # state that shouldn't occur) must NOT forge a down from now_mono - 0.
+        hb = GatewayHeartbeat(config=secondary_config)
+        hb._last_mqtt_connect = 0
+        hb._peers['gw-primary'] = PeerInfo(
+            gateway_id='gw-primary', role='primary', alive=True,
+            last_heartbeat=time.time(), last_heartbeat_mono=0.0,
+        )
+        hb._check_peers()
+        assert hb._peers['gw-primary'].alive is True

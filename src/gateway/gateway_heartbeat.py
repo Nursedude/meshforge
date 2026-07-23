@@ -749,9 +749,13 @@ class GatewayHeartbeat:
                     continue
 
                 # An alive peer always has a monotonic stamp (set in the same
-                # block that sets alive=True). Guard the inconsistent case rather
-                # than let a 0.0 default forge a huge elapsed → false down.
-                if peer.last_heartbeat_mono <= 0:
+                # block that sets alive=True). Guard ONLY the unset default
+                # sentinel (exactly 0.0) rather than let it forge a huge elapsed
+                # → false down. NOT `<= 0`: time.monotonic() has an arbitrary
+                # origin, so a real stamp minus an offset (or a fresh-boot host
+                # where monotonic() is small) can be negative — that's a
+                # legitimately-old peer, and `elapsed` still ages it correctly.
+                if peer.last_heartbeat_mono == 0.0:
                     continue
 
                 elapsed = now_mono - peer.last_heartbeat_mono
