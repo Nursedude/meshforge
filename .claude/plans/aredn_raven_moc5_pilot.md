@@ -262,7 +262,7 @@ TCP connection).
 - Insurance that earned its keep: 15-min dead-man firewall-config restore
   (BusyBox: NO nohup — use `sh -c "..." &`), full `/etc/config` +
   `/etc/config.mesh` snapshot at `VolcanoAI:~/hap_backups/`, and the LAN-side
-  jump path `ssh -J moc5 -p 2222 root@10.143.126.65` for when WAN access dies.
+  jump path `ssh -J moc5 -p 2222 root@<aredn-node-ip>` for when WAN access dies.
 
 ### Fixes applied on the hAP
 - **`channel.uc:159` null-guard (root fix for the foreign/hash-0 packet crash)**:
@@ -272,7 +272,7 @@ TCP connection).
   null-deref at meshtastic.uc decodePacket. Stock backup
   `channel.uc.orig-stock`. **Upstream PR candidate** (kn6plv/Raven).
 - **`raven.conf.override`** (chmod 600, sysupgrade-persisted): role `client`,
-  `"meshtastic": { "address": "10.143.126.65" }` — **the address pin is
+  `"meshtastic": { "address": "<aredn-node-ip>" }` — **the address pin is
   load-bearing**: without it the multicast join follows the default route =
   the hAP's WAN, and the bridge silently never sees moc5. meshforge channel
   only (namekey transferred moc5→hAP by pipe, never through a transcript);
@@ -331,5 +331,5 @@ zero router risk — which is exactly what Phase 1 executes.
 
 ## Housekeeping noted (not blocking)
 - Stray `/etc/meshtasticd/path/to/venv./` pip-junk dir on moc5 — cruft to remove.
-- moc5 eth0 is **DHCP** (`10.143.126.75/28 dynamic`); a stable bridge wants a DHCP
+- moc5 eth0 is **DHCP** (`<box-eth0-ip>/28 dynamic`); a stable bridge wants a DHCP
   reservation or static — set before Phase 2 relies on a fixed address.

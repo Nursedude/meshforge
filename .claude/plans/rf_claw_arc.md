@@ -287,7 +287,7 @@ BLE needs a real beacon.)
 
 ### Cold-start facts a clean session needs
 - **Claw**: `dudeclaw-01`, on `0.4.0+dudeclaw.12`, node `!b29faaa0` (MAC
-  80:f1:b2:9f:aa:a0), at `10.120.250.199`, USB-powered off **moc1**. On the
+  80:f1:b2:9f:aa:a0), at `10.<aredn-site>.199`, USB-powered off **moc1**. On the
   **fleet `meshforge` channel** (hash 0xa2, persisted) + LoRa ears RX active
   + **BLE passive scan running** (soak gate — see build record above).
 - **Brain**: `meshforge-mini-dudeai-claw.service` (user unit) on **moc2**;

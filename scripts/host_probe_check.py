@@ -27,9 +27,9 @@ Config (operator-specific values live HERE, never in repo source — MF014):
         # the authoritative primary (the claw with a route to it); the rest are
         # failovers, tried only when the primary claw is DARK. A failover claw
         # that can't reach the target reports UNKNOWN, never a false host-down.
-        {"name": "bot-32", "host": "10.0.0.5", "app_port": 22, "closed_port": 9,
+        {"name": "box-a", "host": "<box-a-lan-ip>", "app_port": 22, "closed_port": 9,
          "witness": ["dudeclaw-01"]},
-        {"name": "moc5", "host": "10.143.126.75", "app_port": 22, "closed_port": 9,
+        {"name": "box-b", "host": "<box-b-lan-ip>", "app_port": 22, "closed_port": 9,
          "witness": ["dudeclaw-02"]}
       ]
     }

@@ -546,6 +546,8 @@ MF014_PATTERNS = [
 MF014_ALLOWED_FILES = {
     'scripts/lint.py',
     'tests/test_regression_guards.py',
+    # Lint's own tests need literal violating vectors to pin the rule.
+    'tests/test_lint_mf014_local_patterns.py',
     # The Prometheus scrape config legitimately points at real fleet
     # hosts — that's what a scrape config IS. Future templating
     # refactor (placeholders + install-time substitution) would let
@@ -577,6 +579,57 @@ MF014_SCAN_EXCLUDE_DIRS = {
 }
 
 
+# MF014 local operator patterns. The operator's own subnets/IPs are themselves
+# operator-specific, so they can never be listed in this (public) file — doing
+# so would BE the leak (found 2026-07-23: a real LAN IP landed in a docstring
+# and the tracked patterns above were structurally blind to it). Extra
+# deny-patterns load from an UNTRACKED per-box file instead:
+#
+#   ~/.config/meshforge/lint_operator_patterns.txt   (override with
+#   MESHFORGE_LINT_LOCAL_PATTERNS=<path>)
+#
+# Format: one entry per line — <regex><TAB or 2+ spaces><message>. Blank lines
+# and '#' comments skipped. Absence of the file is normal (CI never carries
+# it; the operator boxes' pre-commit/pre-push hooks are the leak gate). An
+# unreadable file or a bad regex is LOUD (stderr) — a silently dropped
+# pattern set would read as "no leaks" (honest_failure_modes #1).
+MF014_LOCAL_PATTERNS_ENV = 'MESHFORGE_LINT_LOCAL_PATTERNS'
+MF014_LOCAL_PATTERNS_DEFAULT = os.path.join(
+    '~', '.config', 'meshforge', 'lint_operator_patterns.txt')
+
+
+def load_local_operator_patterns(path: str = None) -> List[tuple]:
+    """Load operator-local MF014 patterns; [] when the file is absent."""
+    if path is None:
+        path = os.environ.get(MF014_LOCAL_PATTERNS_ENV) or MF014_LOCAL_PATTERNS_DEFAULT
+    path = os.path.expanduser(path)
+    if not os.path.exists(path):
+        return []
+    patterns: List[tuple] = []
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for lineno, raw in enumerate(f, 1):
+                line = raw.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = re.split(r'\t+| {2,}', line, maxsplit=1)
+                regex = parts[0].strip()
+                message = (parts[1].strip() if len(parts) > 1
+                           else 'operator-local pattern (no message)')
+                try:
+                    patterns.append((re.compile(regex), message))
+                except re.error as e:
+                    print(f"lint: WARNING: bad regex in {path}:{lineno}: {e}",
+                          file=sys.stderr)
+    except (IOError, OSError) as e:
+        print(f"lint: WARNING: local operator patterns unreadable ({path}): {e}",
+              file=sys.stderr)
+    return patterns
+
+
+_MF014_LOCAL_PATTERNS = load_local_operator_patterns()
+
+
 def _check_operator_values_in_file(filepath: str, rel_path: str) -> List[LintIssue]:
     issues: List[LintIssue] = []
     try:
@@ -588,6 +641,13 @@ def _check_operator_values_in_file(filepath: str, rel_path: str) -> List[LintIss
                             rel_path, lineno, Severity.ERROR, "MF014", message,
                         ))
                         break  # one violation per line is enough
+                else:
+                    for pattern, message in _MF014_LOCAL_PATTERNS:
+                        if pattern.search(line):
+                            issues.append(LintIssue(
+                                rel_path, lineno, Severity.ERROR, "MF014", message,
+                            ))
+                            break
     except (IOError, OSError):
         pass
     return issues

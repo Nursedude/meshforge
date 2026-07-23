@@ -746,7 +746,7 @@ def test_rns_shared_instance_responsive_returns_none_on_empty_name():
 # Exact rnstatus interface block from the 2026-05-30 incident: the sole
 # RNS uplink TCPInterface stuck Status: Down while rnsd itself was fine.
 _RNSTATUS_DOWN_BLOCK = (
-    " TCPInterface[Regional RNS/192.168.86.38:4242]\n"
+    " TCPInterface[Regional RNS/192.0.2.38:4242]\n"
     "    Status    : Down\n"
     "    Mode      : Full\n"
     "    Rate      : 10.00 Mbps\n"
@@ -756,7 +756,7 @@ _RNSTATUS_DOWN_BLOCK = (
 
 # Same interface, but Up — healthy steady state.
 _RNSTATUS_UP_BLOCK = (
-    " TCPInterface[Regional RNS/192.168.86.38:4242]\n"
+    " TCPInterface[Regional RNS/192.0.2.38:4242]\n"
     "    Status    : Up\n"
     "    Mode      : Full\n"
     "    Rate      : 10.00 Mbps\n"
@@ -769,7 +769,7 @@ _RNSTATUS_MIXED = (
     " TCPInterface[UpPeer RNS/10.0.0.5:4242]\n"
     "    Status    : Up\n"
     "    Mode      : Full\n"
-    " TCPInterface[Regional RNS/192.168.86.38:4242]\n"
+    " TCPInterface[Regional RNS/192.0.2.38:4242]\n"
     "    Status    : Down\n"
     "    Mode      : Full\n"
     " RNodeInterface[LoRa]\n"
@@ -807,7 +807,7 @@ class TestRnsInterfaceDownPeerReachable:
         assert sig.cls == "rns_interface_down_peer_reachable"
         # "wedge" is this codebase's highest severity (no "critical").
         assert sig.severity == "wedge"
-        assert sig.extra["host"] == "192.168.86.38"
+        assert sig.extra["host"] == "192.0.2.38"
         assert sig.extra["port"] == 4242
         assert sig.extra["peer_reachable"] is True
         # Detail names the cure: restart rnsd.
@@ -835,18 +835,18 @@ class TestRnsInterfaceDownPeerReachable:
                 rnstatus_text=_RNSTATUS_MIXED,
             )
         assert sig is not None
-        assert sig.extra["host"] == "192.168.86.38"
+        assert sig.extra["host"] == "192.0.2.38"
         assert sig.extra["port"] == 4242
 
     def test_parser_pins_exact_incident_block(self):
-        """The 192.168.86.38:4242 Regional RNS block must parse to
-        host 192.168.86.38, port 4242."""
+        """The 192.0.2.38:4242 Regional RNS block must parse to
+        host 192.0.2.38, port 4242."""
         with patch("utils.watchdog_probes_rns._tcp_reachable", return_value=True):
             sig = probe_rns_interface_down_peer_reachable(
                 rnstatus_text=_RNSTATUS_DOWN_BLOCK,
             )
         assert sig is not None
-        assert sig.extra["host"] == "192.168.86.38"
+        assert sig.extra["host"] == "192.0.2.38"
         assert sig.extra["port"] == 4242
 
     def test_non_tcp_interfaces_ignored(self):
@@ -917,7 +917,7 @@ class TestProbeRnsRpcResponsive:
         status = self._status(
             interfaces=[RNSInterface(
                 type_name="TCPInterface",
-                display_name="Regional RNS/192.168.86.38:4242",
+                display_name="Regional RNS/192.0.2.38:4242",
                 status=InterfaceStatus.UP,
             )],
         )

@@ -8,7 +8,9 @@
 
 set -u
 TARGET_HOST="moc1"
-TARGET_URL="http://192.168.86.249:5000"
+# Target resolves via fleet DNS (mf.internal) — no literal LAN IP in repo
+# source (MF014/MF015). Override with SOAK_TARGET_URL for a one-off box.
+TARGET_URL="${SOAK_TARGET_URL:-http://${TARGET_HOST}.mf.internal:5000}"
 TS=$(date +%Y%m%d-%H%M%S)
 OUT_DIR="${HOME}/.local/share/meshforge/soak"
 OUT="${OUT_DIR}/issue52_${TS}.log"

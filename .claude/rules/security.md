@@ -89,10 +89,10 @@ leak topology.
 
 ```markdown
 <!-- WRONG - leaks operator's LAN -->
-Could not load `http://192.168.86.249:5000/`.
+Could not load `http://192.168.1.249:5000/`.
 
 <!-- ALSO WRONG - link target still contains the IP, hover/click reveals it -->
-Could not load [http://<ip>:5000](http://192.168.86.249:5000).
+Could not load [http://<ip>:5000](http://192.168.1.249:5000).
 
 <!-- CORRECT - pure placeholder, no real IP anywhere in source -->
 Could not load `http://<ip>:5000/`.

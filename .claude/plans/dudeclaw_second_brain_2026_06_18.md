@@ -31,7 +31,7 @@
 Leg C (2026-06-17) put the pieces in place — this is not greenfield:
 
 - **The claw (`dudeclaw-01`)** — Heltec V4 ESP32-S3, WireClaw `+dudeclaw.14`, on the
-  AREDN-site `10.120.250.192/28` WiFi subnet (claw `.199`, watches the `.32` bot
+  AREDN-site `10.<aredn-site>.192/28` WiFi subnet (claw `.199`, watches the `.32` bot
   `.195`). ~30 kB free heap, V4 NATS-edge lean profile. 25 tools incl. the new
   `host_probe` (lwIP RST-vs-timeout + banner read = honest froze-vs-down), BLE/LoRa
   ears, GPIO/ADC/PWM HAL, `mesh_send`, `rgb_led`. **No on-device LLM by design**

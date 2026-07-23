@@ -288,32 +288,32 @@ class TestArednReasonIfZero:
         reason='slow_sysinfo', NOT 'unreachable' — slow ≠ down (2026-06-16 moc5
         flap: the hAP's sysinfo crossed the 3s read overnight and a reachable
         node was mislabeled unreachable, flapping the aredn_source_dark probe)."""
-        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        collector._settings.set("aredn_node_ips", ["192.0.2.65"])
         features = collector._collect_aredn()
         assert features == []
         d = collector.get_source_diagnostics()
         assert d["aredn"]["reason_if_zero"] == "slow_sysinfo"
 
-    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=("10.143.126.65", "ok"))
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=("192.0.2.65", "ok"))
     @patch("utils._map_collector_aredn.AREDNClient")
     def test_slow_sysinfo_when_detail_call_returns_none(self, mock_client_cls, _mock_ip, collector):
         """Gate passed (node answered plain sysinfo) but the heavier link_info
         call returned None (AREDNClient swallows a timeout to None on a slow
         node) → reason='slow_sysinfo', NOT 'no_positions'. no_positions would
         read as 'alive, no GPS' and mask a degrading detail call forever."""
-        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        collector._settings.set("aredn_node_ips", ["192.0.2.65"])
         mock_client_cls.return_value.get_node_info.return_value = None
         features = collector._collect_aredn()
         assert features == []
         d = collector.get_source_diagnostics()
         assert d["aredn"]["reason_if_zero"] == "slow_sysinfo"
 
-    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=("10.143.126.65", "ok"))
+    @patch.object(MapDataCollector, "_get_aredn_node_ip", return_value=("192.0.2.65", "ok"))
     @patch("utils._map_collector_aredn.AREDNClient")
     def test_no_positions_when_node_reached_but_no_gps(self, mock_client_cls, _mock_ip, collector):
         """Reached the node but it has no location set → 'no_positions'
         (genuinely alive, no GPS) — distinct from the slow detail-call case."""
-        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        collector._settings.set("aredn_node_ips", ["192.0.2.65"])
         node = MagicMock()
         node.has_location.return_value = False
         node.links = []
@@ -341,7 +341,7 @@ class TestArednReasonIfZero:
     def test_get_aredn_node_ip_slow_when_connect_ok_but_get_times_out(self, collector):
         """Connect accepted but the sysinfo GET times out → status 'slow'
         (reachable), never 'unreachable' (the moc5 mislabel root)."""
-        collector._settings.set("aredn_node_ips", ["10.143.126.65"])
+        collector._settings.set("aredn_node_ips", ["192.0.2.65"])
         with patch("socket.socket") as mock_sock, \
                 patch("urllib.request.urlopen", side_effect=socket.timeout("timed out")):
             mock_sock.return_value.connect_ex.return_value = 0  # port accepts

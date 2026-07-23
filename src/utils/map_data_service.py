@@ -868,7 +868,7 @@ Examples:
     # dashboard served by an MA daemon on the same LAN can reach
     # every MF box's /fleet/logs etc. Origins are *prefix* matched
     # (`_send_cors_header` uses `startswith`), so e.g.
-    # `http://192.168.86.` matches every host on that /24.
+    # `http://192.0.2.` matches every host on that /24.
     parser.add_argument("--cors-origins", type=str, default=None,
                         help="Comma-separated CORS allowlist (prefix match). "
                              "Default: localhost-only.")

@@ -119,7 +119,7 @@ if [[ "$miss" -gt 0 ]]; then
 
   Operator action: $miss scrape host(s) need /etc/hosts entries.
   Example:
-    echo "192.168.86.41 moc2" | sudo tee -a /etc/hosts
+    echo "<box-lan-ip> moc2" | sudo tee -a /etc/hosts
     sudo systemctl restart prometheus
 
   ssh-config aliases work for ssh + scp but NOT for prometheus —

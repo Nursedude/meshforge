@@ -129,10 +129,10 @@ def _origin_allowed(origin: str, allowed: Optional[List[str]]) -> bool:
     ``allowed`` holds the prefixes passed via ``--cors-origins``. Two shapes:
       * exact host  (``http://localhost``) — the request origin must equal it,
         optionally with a ``:port`` suffix and nothing else after.
-      * IP /24 prefix (``http://192.168.86.`` — trailing dot) — the origin must
+      * IP /24 prefix (``http://192.0.2.`` — trailing dot) — the origin must
         complete the final octet with 1-3 digits (+ optional ``:port``).
 
-    A bare ``origin.startswith(prefix)`` let ``http://192.168.86.evil.com`` and
+    A bare ``origin.startswith(prefix)`` let ``http://192.0.2.evil.com`` and
     ``http://localhost.attacker.example`` pass the check (subdomain-suffix CORS
     bypass — an attacker page reads the whole NOC API cross-origin). Anchoring
     the tail with ``$`` closes that while preserving the /24 intent.
@@ -153,7 +153,7 @@ def _origin_allowed(origin: str, allowed: Optional[List[str]]) -> bool:
 def _trusted_networks_from_origins(allowed: Optional[List[str]]):
     """Parse the CORS allow-list host parts into ``ip_network`` objects, used to
     gate state-changing / log-exposing endpoints by client IP on a ``0.0.0.0``
-    bind. A ``.``-terminated prefix (``http://192.168.86.``) → the /24; a bare IP
+    bind. A ``.``-terminated prefix (``http://192.0.2.``) → the /24; a bare IP
     host → /32. Non-IP hosts (``localhost``) are skipped."""
     nets = []
     for prefix in allowed or []:

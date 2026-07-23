@@ -67,7 +67,7 @@ def test_humanize_duration_thresholds():
 
 
 def test_first_host_strips_port():
-    assert FleetHealthHandler._first_host("192.168.86.38:4242") == "192.168.86.38"
+    assert FleetHealthHandler._first_host("192.0.2.38:4242") == "192.0.2.38"
 
 
 # ----------------------------------------------------------------- rnsd probe
@@ -139,9 +139,9 @@ def test_probe_rns_path_table_populated(monkeypatch):
 
 def test_probe_rns_hub_peers_inbound(monkeypatch):
     out = (
-        "ESTAB 0 0 192.168.86.38:4242 192.168.86.29:46146\n"
-        "ESTAB 0 0 192.168.86.38:4242 192.168.86.249:47048\n"
-        "ESTAB 0 0 192.168.86.38:22   192.168.86.29:55555\n"
+        "ESTAB 0 0 192.0.2.38:4242 192.0.2.29:46146\n"
+        "ESTAB 0 0 192.0.2.38:4242 192.0.2.249:47048\n"
+        "ESTAB 0 0 192.0.2.38:22   192.0.2.29:55555\n"
     )
     monkeypatch.setattr(FleetHealthHandler, "_run", staticmethod(lambda *a, **k: out))
     r = _handler()._probe_rns_hub_peers()
@@ -150,12 +150,12 @@ def test_probe_rns_hub_peers_inbound(monkeypatch):
 
 
 def test_probe_rns_hub_peers_outbound(monkeypatch):
-    out = "ESTAB 0 0 192.168.86.29:46146 192.168.86.38:4242\n"
+    out = "ESTAB 0 0 192.0.2.29:46146 192.0.2.38:4242\n"
     monkeypatch.setattr(FleetHealthHandler, "_run", staticmethod(lambda *a, **k: out))
     r = _handler()._probe_rns_hub_peers()
     assert r.status == "ok"
     assert "1 outbound" in r.headline
-    assert "192.168.86.38" in r.headline
+    assert "192.0.2.38" in r.headline
 
 
 def test_probe_rns_hub_peers_none(monkeypatch):

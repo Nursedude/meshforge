@@ -40,7 +40,7 @@ thesis lives in practice.
 
 **Header label** (top-left, monospace, cyan accent — matches the deck's
 "RUNNING NOW" / "FIELD VALIDATION" voice):
-`— OPERATIONS · LIVE NOC · 192.168.86.X / FLEET`
+`— OPERATIONS · LIVE NOC · 192.0.2.X / FLEET`
 
 **Title** (large white):
 "Fleet status, one URL."
@@ -112,14 +112,14 @@ ssh meshanchor-server
 
 **Visual cleanup before slide-prep** (MF015 audit):
 1. **URL bar** — must read `localhost:5000/fleet` or `127.0.0.1:5000/fleet`,
-   never a `192.168.86.x` LAN address. Capturing from `localhost` enforces this.
-2. **Peer host:port column** — scrub `192.168.86.38`, `.34`, `.41`,
+   never a `192.0.2.x` LAN address. Capturing from `localhost` enforces this.
+2. **Peer host:port column** — scrub `192.0.2.38`, `.34`, `.41`,
    `.20`, `.249` in the rendered panel. Two options:
    - **Recommended**: take the screenshot, then in any image editor,
      replace the IP column with `<box1>:5000`, `<box2>:5000`, etc.
      Preserves the layout, hides the LAN.
    - **Alternative**: rename the entries in
-     `~/.config/meshanchor/fleet.json` from `192.168.86.x` to
+     `~/.config/meshanchor/fleet.json` from `192.0.2.x` to
      hostnames (`moc:5000`, `moc1:5000`, etc.) BEFORE taking the
      screenshot. Works if the meshanchor-server can resolve those
      hostnames (verified earlier in session — names didn't resolve
@@ -143,7 +143,7 @@ ssh meshanchor-server
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│ — OPERATIONS · LIVE NOC · 192.168.86.X / FLEET                     │
+│ — OPERATIONS · LIVE NOC · 192.0.2.X / FLEET                     │
 │                                                                    │
 │ Fleet status, one URL.                                             │
 │ The operator's first SSH on any box. Truth state across six peers. │

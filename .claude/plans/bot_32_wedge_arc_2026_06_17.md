@@ -25,10 +25,10 @@ Three facts re-derived from our own logs/notes this session, not from the web:
    watches. `.32` is not a watchdog box; its liveness lived only in a logfile read
    "on return."
 2. **`.32` sits behind an AREDN node's WAN + a port-22 DNAT** (its only real iface is
-   `10.120.250.195`; `192.168.86.32` is the node's WAN). Our remote SSH probe from
+   `<bot32-aredn-ip>`; `192.168.<lan>.32` is the node's WAN). Our remote SSH probe from
    VolcanoAI **structurally cannot tell "the box froze" from "the WAN/DNAT path
    died."** Some of the 9 "wedges" may have been path events, not box freezes.
-3. **dude-claw (`10.120.250.199`) is on `.32`'s own subnet**, with independent power,
+3. **dude-claw (`10.<aredn-site>.199`) is on `.32`'s own subnet**, with independent power,
    independent comms (WiFi→NATS→moc2 brain + LoRa), and a mini-dudeai sensor loop —
    i.e. the textbook out-of-band witness, currently used for BLE/battery demos but
    **not** for watching the box dying next to it.
@@ -185,8 +185,8 @@ brain are healthy → Leg C is unblocked.
 
 **THE DESIGN CRUX (settle this FIRST):** the same-subnet *froze-vs-path-down*
 discrimination — the whole reason the claw beats the remote probe — requires the **claw
-itself** to probe `.32`'s real iface `10.120.250.195` (ARP/TCP) from inside the DudeNET
-subnet. moc2/VolcanoAI can only reach `.32` via `192.168.86.32` (the AREDN WAN+DNAT), which
+itself** to probe `.32`'s real iface `<bot32-aredn-ip>` (ARP/TCP) from inside the DudeNET
+subnet. moc2/VolcanoAI can only reach `.32` via `192.168.<lan>.32` (the AREDN WAN+DNAT), which
 carries the SAME ambiguity. So the discriminating version needs a **lean claw firmware
 probe tool** (e.g. `host_probe`: TCP-connect + ARP-presence to a target on the local
 subnet) → a flash over moc1's USB. That firmware step is the heavy, FORK-disciplined work
@@ -213,8 +213,8 @@ hardware + operator-go step — do NOT build actuation in slice-1.
   must be lean (the on-device tool-AGENT is disabled by design, but tools the claw *uses*
   are compiled in). Flash = app-only `esptool write-flash 0x10000` over moc1 USB (pipx
   esptool; apt's is dfsg-stripped); claw rejoins unaided; discover-verify the `+dudeclaw.N`.
-- ⚠️ Topology: claw `10.120.250.199`; `.32` real iface `10.120.250.195` (`.32`'s
-  `192.168.86.32` is the AREDN node WAN + :22 DNAT); claw portal reachable only from inside
+- ⚠️ Topology: claw `10.<aredn-site>.199`; `.32` real iface `<bot32-aredn-ip>` (`.32`'s
+  `192.168.<lan>.32` is the AREDN node WAN + :22 DNAT); claw portal reachable only from inside
   the subnet → use `.32` as the foothold; brain = moc2 (`meshforge-mini-dudeai-claw` user
   unit, env `~/.config/meshforge/mini_dudeai_claw.env`).
 - New signal class (`host_frozen` / reuse `fleet_box_unreachable`?) → closed enum +
@@ -240,8 +240,8 @@ reset, NOT power-cut — `.32` is a Pi Zero W, micro-USB; hard power-cut risks t
 corruption that's a top suspect) but ships nothing actuating.
 
 **VERIFIED preconditions (this session):**
-- L2 premise: from `.32` (`wh6gxzTRDEV`), claw `10.120.250.199` is `dev wlan0 ... REACHABLE`,
-  direct (no gateway hop) on the `10.120.250.192/28` WiFi segment. ARP/TCP discrimination is
+- L2 premise: from `.32` (`wh6gxzTRDEV`), claw `10.<aredn-site>.199` is `dev wlan0 ... REACHABLE`,
+  direct (no gateway hop) on the `10.<aredn-site>.192/28` WiFi segment. ARP/TCP discrimination is
   real and targets `.32`'s actual swap-thrash class (kernel/NIC alive, userspace wedged).
 - No existing net-probe tool in WireClaw's 25-tool sheet (`_ion.discover --many`): HAL is
   pin-level (gpio), not socket — so the active probe genuinely requires a firmware tool.
@@ -268,12 +268,12 @@ UNREACHABLE (path/wifi/SoC down).
 **GATED — remaining (operator):**
 1. FLASH over moc1 USB (touches live field box). Recipe in `dudeclaw_heltec_v4_bringup.md`
    §Remote-flash. Post-flash VERIFY: `_ion.discover` shows `+dudeclaw.13`, free-heap-after
-   ≈30 kB, smoke-test `host_probe` {host:10.120.250.195}.
+   ≈30 kB, smoke-test `host_probe` {host:<bot32-aredn-ip>}.
 2. Advance the `dudeclaw` ref per FORK.md (operator-gated force-update). Candidate firmware
    content is method-independent; cleanest = ff `dudeclaw`→`dc-hostprobe-candidate` (host_probe
    SSOT stays on `pr/host-probe`). Push pr/host-probe + new ref to moc1 bare backup.
 3. THEN brain pipeline on moc2 (post-flash, against proven tool): `nats_sensor` polls
-   host_probe(10.120.250.195) → condition → rule → NEW signal class (closed enum + BOTH seeds
+   host_probe(<bot32-aredn-ip>) → condition → rule → NEW signal class (closed enum + BOTH seeds
    + coverage/enum-doc gates, Leg D Piece-2 drill) → `/fleet` + warm brief (NATS primary, LoRa
    backup). Drill synthetic HOST_FROZEN, NO auto-reset, revert. Field-prove on a real `.32` event.
 
@@ -292,7 +292,7 @@ the dispatch and the discover list, amended into the one feature commit).
 - Flash: app-only `write-flash 0x10000` via moc1 pipx esptool 5.3.0, no erase (config
   preserved); FLASH_EXIT=0, hash verified; claw rejoined NATS in ~4s.
 - VERIFIED live: version `+dudeclaw.14`, free_heap 30872 (no regression vs .12 30132),
-  host_probe in discover (count=1), smoke `host_probe 10.120.250.195: ip_alive=1
+  host_probe in discover (count=1), smoke `host_probe <bot32-aredn-ip>: ip_alive=1
   app22=open banner=43B kstack=0 rtt_ms=9` (reads .32 HEALTHY — sshd banner present).
 - ⚠️ DESIGN NOTE for the brain rule: `.32` firewall-DROPS the closed port (:9) → no RST
   → `kstack=0` even when healthy. So the HOST_FROZEN verdict must key on
@@ -302,7 +302,7 @@ the dispatch and the discover list, amended into the one feature commit).
 **STILL LOCAL/UNPUSHED** — pr/host-probe + dudeclaw.14 live only in VolcanoAI's repo
 (claw runs .14, but the SOURCE is single-copy). Push to moc1 bare backup for durability.
 
-**NEXT = brain pipeline on moc2** (alert-only): `nats_sensor` polls host_probe(10.120.250.195)
+**NEXT = brain pipeline on moc2** (alert-only): `nats_sensor` polls host_probe(<bot32-aredn-ip>)
 on a cadence → source threshold maps the line to OK/HOST_FROZEN/UNREACHABLE → Condition →
 mini rule → NEW signal class (closed enum + BOTH role seeds + coverage/enum-doc gates,
 Leg D Piece-2 drill) → `/fleet` + warm brief (NATS primary, LoRa backup). Drill a synthetic
@@ -332,7 +332,7 @@ lint exit 0). The whole chain is live:
   not repo source — MF014). Fixed `97b9dfcd`: request() returns a dict, not str.
 - Tests: `TestHostFrozen` (10) + the 3 signal-class gates. 376 green, lint 0.
 
-**moc2 activation (the claw's brain box):** config written (target bot32=10.120.250.195,
+**moc2 activation (the claw's brain box):** config written (target bot32=<bot32-aredn-ip>,
 app_port 22, closed_port 9), cron `*/3` wired with cron_verdict.sh (first verdict
 seeded `host_probe_check OK`), watchdog restarted, seed promoted (`host_frozen_any`).
 Baseline: bot32=OK (claw reads .32 healthy, banner=43B).

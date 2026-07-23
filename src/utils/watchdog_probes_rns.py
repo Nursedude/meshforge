@@ -532,7 +532,7 @@ def probe_rns_rpc_responsive(
 # ─────────────────────────────────────────────────────────────────────
 
 # A routable TCPInterface display_name embeds the peer host:port, e.g.
-#   "Regional RNS/192.168.86.38:4242"
+#   "Regional RNS/192.0.2.38:4242"
 # RNodeInterface / AutoInterface / the Shared Instance line carry no
 # host:port and are correctly ignored — only a TCP peer can be probed
 # for reachability. The host group is an IPv4 dotted-quad; rnsd renders

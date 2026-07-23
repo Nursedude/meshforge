@@ -764,5 +764,5 @@ class FleetHealthHandler(BaseHandler):
 
     @staticmethod
     def _first_host(endpoint: str) -> str:
-        # "192.168.86.38:4242" -> "192.168.86.38"
+        # "192.0.2.38:4242" -> "192.0.2.38"
         return endpoint.rsplit(":", 1)[0]
