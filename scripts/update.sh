@@ -326,7 +326,8 @@ if [[ -d "$INSTALL_DIR/templates/systemd" ]]; then
         "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai.service" \
         "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.service" \
         "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-dream.timer" \
-        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-claw.service"; do
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-claw.service" \
+        "$INSTALL_DIR/templates/systemd/meshforge-mini-dudeai-claw@.service"; do
         if [[ -f "$mini_tmpl" ]]; then
             cp "$mini_tmpl" "$USER_SYSTEMD_DIR/$(basename "$mini_tmpl")" 2>/dev/null || true
         fi
@@ -356,6 +357,9 @@ if $USER_SVC_UPDATED; then
         # standalone dude-claw sibling — try-restart is a no-op on boxes
         # that don't run it (only the claw-brain box does)
         run_user_systemctl try-restart meshforge-mini-dudeai-claw.service 2>/dev/null || true
+        # Second dude-claw brain (dudeclaw-02, templated @-instance). try-restart
+        # is a no-op on boxes that never enabled it (only the claw-brain box).
+        run_user_systemctl try-restart meshforge-mini-dudeai-claw@claw02.service 2>/dev/null || true
         # Other long-lived USER daemons that run MeshForge code from this repo
         # and would otherwise sit on OLD code after the pull (the #79 deploy
         # gap, surfaced 2026-06-15 by the §3b-ii honesty guard): the lab echo

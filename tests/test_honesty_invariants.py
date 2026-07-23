@@ -736,6 +736,10 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-mini-dudeai-dream.service": ("installer", "update.sh"),
     "meshforge-mini-dudeai-dream.timer":   ("installer", "update.sh"),
     "meshforge-mini-dudeai-claw.service":  ("installer", "update.sh"),
+    # templated 2nd claw (dudeclaw-02): update.sh lands the @.service template
+    # on every box; the operator enables @claw02 per the claw runbook, and
+    # fleet_sync.sh + update.sh try-restart the instance on code change.
+    "meshforge-mini-dudeai-claw@.service": ("installer", "update.sh"),
     "meshtasticd-mudp-guard.service":      ("installer", "update.sh"),
     "meshtasticd-mudp-guard.timer":        ("installer", "update.sh"),
     # ── update.sh `*-user.service` glob (verified: filename ends -user.service) ──
