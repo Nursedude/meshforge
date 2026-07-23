@@ -265,6 +265,21 @@ CLAW_TICK_BASENAME = "claw_last_tick.json"
 SECONDARY_TICK_GLOB = "claw_last_tick.*.json"
 
 
+def _safe_instance_suffix(name: str) -> str:
+    """Sanitize a device/instance name into a path-safe filename suffix.
+
+    ONE formula, shared by every "additional claw on the same brain box"
+    naming helper below (secondary_tick_basename AND instance_basename) so
+    the tick writer, the mini-instance artifact writer, and the pusher's
+    R-tier reader can never drift on how a device name becomes a filename
+    (honest_failure_modes #5). Refuses an empty/whitespace name LOUD.
+    """
+    safe = re.sub(r"[^A-Za-z0-9_-]", "-", str(name).strip())
+    if not safe:
+        raise ValueError("empty device/instance name")
+    return safe
+
+
 def secondary_tick_basename(device: str) -> str:
     """Basename for an ADDITIONAL claw's tick on the same brain box
     (multi-claw, W5.1: dudeclaw-02 enrollment).
@@ -276,10 +291,31 @@ def secondary_tick_basename(device: str) -> str:
     the operator's eyes only — IDENTITY always comes from the tick's own
     ``device`` field, never the filename.
     """
-    safe = re.sub(r"[^A-Za-z0-9_-]", "-", str(device).strip())
-    if not safe:
-        raise ValueError("secondary_tick_basename: empty device name")
-    return f"claw_last_tick.{safe}.json"
+    return f"claw_last_tick.{_safe_instance_suffix(device)}.json"
+
+
+def instance_basename(basename: str, instance: str) -> str:
+    """Insert a ``.<instance>`` suffix before the extension of a mini-claw
+    ARTIFACT basename, so a SECOND standalone-preset instance (dudeclaw-02)
+    gets its own state/rules/history/brief/annotation files and never
+    collides with the primary claw's #80 single-instance flock.
+
+        instance_basename("mini_dudeai_claw_state.json", "dudeclaw-02")
+        -> "mini_dudeai_claw_state.dudeclaw-02.json"
+        instance_basename("mini_dudeai_claw_history.jsonl", "dudeclaw-02")
+        -> "mini_dudeai_claw_history.dudeclaw-02.jsonl"
+
+    Two consumers of this ONE formula: ``presets.standalone.build_engine``
+    (the writer) and ``claw_metrics_push._probe_tier`` (the R-tier reader) —
+    they MUST agree or the glyph reads a state file the daemon never writes.
+    An empty instance is refused loud (caller must decide primary-vs-secondary
+    BEFORE calling; the primary keeps the un-suffixed basename).
+    """
+    safe = _safe_instance_suffix(instance)
+    root, dot, ext = basename.rpartition(".")
+    if not dot:  # extension-less basename: just append
+        return f"{basename}.{safe}"
+    return f"{root}.{safe}.{ext}"
 
 
 # ─── brain-tier decision (display_tier glyph, firmware 0.4.0+dudeclaw.15) ────

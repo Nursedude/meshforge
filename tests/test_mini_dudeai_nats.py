@@ -524,7 +524,7 @@ class TestStandalonePreset:
         vals.update(over)
         for k in ("MINI_DUDEAI_NATS_SERVER", "MINI_DUDEAI_NTFY_TOPIC",
                   "MINI_DUDEAI_CLAW_DEVICE", "MINI_DUDEAI_NATS_TOKEN",
-                  "MINI_DUDEAI_CLAW_SENSORS",
+                  "MINI_DUDEAI_CLAW_SENSORS", "MINI_DUDEAI_CLAW_INSTANCE",
                   "MINI_DUDEAI_CLAW_TEMP_THRESHOLD"):
             monkeypatch.delenv(k, raising=False)
         for k, v in vals.items():
@@ -562,6 +562,42 @@ class TestStandalonePreset:
         assert "claw" in os.path.basename(eng.state_store.path)
         assert eng.state_store.path != os.path.join(
             str(tmp_path), "mini_dudeai_state.json")
+
+    def test_secondary_instance_suffixes_all_artifacts(
+            self, monkeypatch, tmp_path):
+        # W5.1: a SECOND claw (dudeclaw-02) via MINI_DUDEAI_CLAW_INSTANCE gets
+        # its own device-suffixed artifacts so its #80 flock never collides
+        # with the primary claw's.
+        self._env(monkeypatch, tmp_path,
+                  MINI_DUDEAI_CLAW_DEVICE="dudeclaw-02",
+                  MINI_DUDEAI_CLAW_INSTANCE="dudeclaw-02")
+        from mini_dudeai.presets.standalone import build_engine
+        eng = build_engine()
+        assert os.path.basename(eng.state_store.path) == \
+            "mini_dudeai_claw_state.dudeclaw-02.json"
+        assert (tmp_path / "mini_dudeai_claw_rules.dudeclaw-02.json").exists()
+
+    def test_primary_keeps_unsuffixed_basenames_backward_compat(
+            self, monkeypatch, tmp_path):
+        # no instance -> the primary claw's basenames are UNCHANGED, so
+        # dudeclaw-01's existing on-disk state/history keep working.
+        self._env(monkeypatch, tmp_path)
+        from mini_dudeai.presets.standalone import build_engine
+        eng = build_engine()
+        assert os.path.basename(eng.state_store.path) == \
+            "mini_dudeai_claw_state.json"
+
+    def test_two_instances_have_distinct_state_paths(
+            self, monkeypatch, tmp_path):
+        # primary and secondary must never share a state file (the flock key)
+        from mini_dudeai.presets.standalone import build_engine
+        self._env(monkeypatch, tmp_path)
+        primary = build_engine().state_store.path
+        self._env(monkeypatch, tmp_path,
+                  MINI_DUDEAI_CLAW_DEVICE="dudeclaw-02",
+                  MINI_DUDEAI_CLAW_INSTANCE="dudeclaw-02")
+        secondary = build_engine().state_store.path
+        assert primary != secondary
 
     def test_seeds_rules_on_first_boot_only(self, monkeypatch, tmp_path):
         self._env(monkeypatch, tmp_path)

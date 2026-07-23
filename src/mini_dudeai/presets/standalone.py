@@ -22,6 +22,11 @@ systemd unit via EnvironmentFile=~/.config/meshforge/mini_dudeai_claw.env:
                             ([{device,sensor,threshold,op,tool}...]); when
                             set it REPLACES the default chip-temp sensor and
                             CLAW_DEVICE becomes optional.
+  MINI_DUDEAI_CLAW_INSTANCE optional  instance id for a SECOND claw on the
+                            same brain box (e.g. dudeclaw-02). When set, every
+                            artifact basename is device-suffixed so this
+                            instance's flock never collides with the primary
+                            claw's. Unset -> primary (un-suffixed) basenames.
 
 First boot seeds ~/mini_dudeai_claw_rules.json from
 configs/mini_dudeai_rules.claw.json — only when the rules file does not exist
@@ -126,17 +131,37 @@ def build_engine(
     sensors_path: str | None = None,
     temp_threshold_c: float | None = None,
     sensor_timeout_s: float = 5.0,
+    instance: str | None = None,
 ) -> RuleEngine:
     """Wire the standalone dude-claw engine. All knobs overridable for tests;
-    operator-runtime defaults pull from env (see module docstring)."""
+    operator-runtime defaults pull from env (see module docstring).
+
+    ``instance`` (env ``MINI_DUDEAI_CLAW_INSTANCE``) enables a SECOND claw on
+    the same brain box (dudeclaw-02): when non-empty, every artifact basename
+    is device-suffixed via ``claw_telemetry.instance_basename`` so this
+    instance's #80 flock (keyed on the state file) never collides with the
+    primary claw's. Empty/unset -> the primary keeps its un-suffixed basenames
+    (backward-compatible: dudeclaw-01's existing state/history is untouched).
+    """
     from .._util import resolve_home
+    from ..claw_telemetry import instance_basename
     home = home or resolve_home()
-    rules_path = rules_path or os.path.join(home, CLAW_RULES_BASENAME)
-    state_path = state_path or os.path.join(home, CLAW_STATE_BASENAME)
-    history_path = history_path or os.path.join(home, "mini_dudeai_claw_history.jsonl")
-    brief_path = brief_path or os.path.join(home, "mini_dudeai_claw_brief.md")
+
+    instance = instance if instance is not None else os.environ.get(
+        "MINI_DUDEAI_CLAW_INSTANCE")
+    instance = (instance or "").strip()
+
+    def _b(basename: str) -> str:
+        # secondary instance -> device-suffixed basename; primary -> unchanged
+        return instance_basename(basename, instance) if instance else basename
+
+    rules_path = rules_path or os.path.join(home, _b(CLAW_RULES_BASENAME))
+    state_path = state_path or os.path.join(home, _b(CLAW_STATE_BASENAME))
+    history_path = history_path or os.path.join(
+        home, _b("mini_dudeai_claw_history.jsonl"))
+    brief_path = brief_path or os.path.join(home, _b("mini_dudeai_claw_brief.md"))
     annotate_path = annotate_path or os.path.join(
-        home, "mini_dudeai_claw_annotations.md")
+        home, _b("mini_dudeai_claw_annotations.md"))
 
     nats_server = nats_server or os.environ.get("MINI_DUDEAI_NATS_SERVER")
     if not nats_server:

@@ -250,7 +250,19 @@ def _capture(home, cfg):
     return 0
 
 
-def _read_samples(home):
+def _read_samples(home, device=None):
+    """Load the sample series, optionally filtered to ONE claw.
+
+    When ``device`` is given, only rows whose ``device`` field matches are
+    returned, and the count of dropped (other-device) rows is reported as the
+    second tuple element. This keeps a RETARGETED soak honest: if the config
+    is repointed dudeclaw-01 → dudeclaw-02 without rotating the append-only
+    ``battery_soak.jsonl``, the old claw's flat-USB samples must NOT blend into
+    the new claw's discharge curve (that would corrupt vbat_first/min/crossing
+    — the row-7 "one device's state read as another's" class). Rows written
+    before the ``device`` field existed do not match a named device and are
+    dropped from a device-scoped read, which is correct when isolating one pack.
+    """
     state_path = os.path.join(str(home), STATE_BASENAME)
     samples = []
     try:
@@ -264,8 +276,11 @@ def _read_samples(home):
                 except ValueError:
                     continue  # torn/partial line — skip, never crash the judge
     except FileNotFoundError:
-        return []
-    return samples
+        return ([], 0) if device is not None else []
+    if device is None:
+        return samples
+    kept = [s for s in samples if isinstance(s, dict) and s.get("device") == device]
+    return kept, len(samples) - len(kept)
 
 
 def _summary(home, cfg):
@@ -273,11 +288,16 @@ def _summary(home, cfg):
     usable_mah = batt.get("usable_capacity_mah")
     cutoff_v = float(batt.get("cutoff_v") or DEFAULT_CUTOFF_V)
     label = batt.get("label") or "battery"
-    samples = _read_samples(home)
+    device = str(cfg.get("claw_device") or DEFAULT_DEVICE)
+    # Scope to the configured claw so a retarget can't blend two packs' curves.
+    samples, dropped = _read_samples(home, device=device)
     # Stale window: 3× a nominal 10-min cadence, floor 1 h (mirrors the
     # synth-soak/#78 "silence is the failure" cadence-derived threshold).
     res = summarize_samples(samples, usable_mah, cutoff_v, stale_after_s=3600.0)
-    sys.stdout.write(f"battery_soak {res['status']}: {res['summary']} [{label}]\n")
+    other = f" (ignored {dropped} sample(s) from other devices)" if dropped else ""
+    sys.stdout.write(
+        f"battery_soak {res['status']}: {res['summary']} "
+        f"[{device} · {label}]{other}\n")
     return 0
 
 

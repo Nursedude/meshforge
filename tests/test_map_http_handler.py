@@ -322,6 +322,47 @@ class TestClawStatusBlock:
         assert block["installed"] is True and block["ok"] is False
         assert "malformed_json" in block["reason"]
 
+    def test_no_secondaries_key_when_single_claw(self, tmp_path, monkeypatch):
+        # A box with only the primary claw carries no `secondaries` key —
+        # backward-compatible with every single-claw reader.
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick()))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert "secondaries" not in block
+
+    def test_secondary_claw_appears_under_secondaries(self, tmp_path,
+                                                      monkeypatch):
+        # W5.1: dudeclaw-02's tick (claw_last_tick.dudeclaw-02.json) rides along
+        # under `secondaries` so it is visible in the NOC, not only the watchdog.
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick()))
+        (tmp_path / "claw_last_tick.dudeclaw-02.json").write_text(json.dumps(
+            self._tick(device="dudeclaw-02", ok=False, reachable=True, ble=None,
+                       battery={"volts": 3.9, "raw": "Battery: 3.9 V"},
+                       degraded_optional=["ble_stats"])))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        # top-level stays the PRIMARY (backward-compatible contract)
+        assert block["device"] == "dudeclaw-01"
+        assert len(block["secondaries"]) == 1
+        sec = block["secondaries"][0]
+        assert sec["device"] == "dudeclaw-02" and sec["ok"] is True
+        assert sec["battery"]["volts"] == 3.9
+        assert sec["degraded_optional"] == ["ble_stats"]
+
+    def test_secondary_stale_renders_stale_independently(self, tmp_path,
+                                                         monkeypatch):
+        # Each claw is judged on its OWN tick freshness — a stale secondary
+        # must render stale even when the primary is fresh.
+        import time as _t
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(self._tick()))
+        (tmp_path / "claw_last_tick.dudeclaw-02.json").write_text(json.dumps(
+            self._tick(device="dudeclaw-02", captured_at=_t.time() - 9999)))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is True  # primary fresh
+        sec = block["secondaries"][0]
+        assert sec["ok"] is False and "stale" in sec["reason"]
+
 
 class TestFederationClawSerialization:
     """The federated claw card needs each peer's claw block in

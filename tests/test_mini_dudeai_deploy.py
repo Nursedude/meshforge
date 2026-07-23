@@ -32,6 +32,8 @@ TEMPLATE_DIR = REPO_ROOT / "templates" / "systemd"
 MINI_SERVICE = "meshforge-mini-dudeai.service"
 MINI_DREAM_SERVICE = "meshforge-mini-dudeai-dream.service"
 MINI_DREAM_TIMER = "meshforge-mini-dudeai-dream.timer"
+# Templated unit for an ADDITIONAL dude-claw brain (W5.1: dudeclaw-02).
+CLAW_TEMPLATE_SERVICE = "meshforge-mini-dudeai-claw@.service"
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -48,6 +50,10 @@ class TestMiniTemplatesExist:
 
     def test_dream_timer_template_exists(self):
         assert (TEMPLATE_DIR / MINI_DREAM_TIMER).is_file()
+
+    def test_claw_instance_template_exists(self):
+        # W5.1: a SECOND claw (dudeclaw-02) runs from this templated unit.
+        assert (TEMPLATE_DIR / CLAW_TEMPLATE_SERVICE).is_file()
 
     def test_service_template_not_user_suffixed(self):
         # The whole reason the old loops missed them: these unit names do NOT
@@ -152,6 +158,17 @@ class TestFleetSyncRestartsMini:
         assert re.search(
             r"sync_local_user_unit\s+meshforge-mini-dudeai", text
         ), "fleet_sync.sh must self-sync the mini daemon on this box"
+
+    def test_claw02_instance_restarted_on_both_buses(self):
+        # W5.1: the templated dudeclaw-02 brain hits the SAME #79 deploy gap —
+        # a git pull must restart it on both the remote fleet and this box.
+        text = FLEET_SYNC_SH.read_text()
+        assert re.search(
+            r"sync_user_unit\s+\S+\s+\S+\s+meshforge-mini-dudeai-claw@claw02",
+            text), "fleet_sync.sh must remote-restart the claw@claw02 instance"
+        assert re.search(
+            r"sync_local_user_unit\s+meshforge-mini-dudeai-claw@claw02", text
+        ), "fleet_sync.sh must self-restart the claw@claw02 instance"
 
     def test_user_bus_restart_present(self):
         text = FLEET_SYNC_SH.read_text()

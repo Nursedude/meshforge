@@ -1,0 +1,41 @@
+[Unit]
+# Templated unit for a SECOND (or Nth) dude-claw brain on the same box —
+# e.g. `systemctl --user enable --now meshforge-mini-dudeai-claw@claw02`.
+# The primary claw (dudeclaw-01) keeps its own non-templated unit
+# (meshforge-mini-dudeai-claw.service); this template is ONLY for the
+# additional claws enrolled after it (W5.1: dudeclaw-02).
+Description=mini-dudeai claw (%i) — additional dude-claw brain over NATS
+After=network-online.target nats-server.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Each instance's standalone preset device-suffixes every artifact basename
+# (via MINI_DUDEAI_CLAW_INSTANCE in the env file below), so its #80
+# single-instance flock (keyed on the state file) never collides with the
+# primary claw's or with a sibling instance's.
+Environment=PYTHONPATH=/opt/meshforge/src
+# WorkingDirectory MUST NOT be the operator home: `python3 -m mini_dudeai`
+# searches the cwd FIRST, so a stray ~/mini_dudeai.py would SHADOW the
+# package. Pin cwd to the repo root (same guard as the primary unit).
+WorkingDirectory=/opt/meshforge
+# `%i` selects the per-claw env file: `@claw02` -> mini_dudeai_claw02.env,
+# the SAME file the claw02 metrics pusher already uses. Operator-specific
+# values (NATS server/token, ntfy topic, MINI_DUDEAI_CLAW_DEVICE, and
+# MINI_DUDEAI_CLAW_INSTANCE = the artifact suffix, e.g. dudeclaw-02) live
+# there, NOT in the repo (MF014). Leading `-` keeps first-boot from failing
+# before the file exists; the preset fails loud on each missing required value.
+EnvironmentFile=-%h/.config/meshforge/mini_dudeai_%i.env
+ExecStart=/usr/bin/python3 -m mini_dudeai --preset standalone --interval 30
+Restart=on-failure
+RestartSec=10
+ProtectSystem=strict
+ReadWritePaths=%h
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectKernelTunables=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -242,6 +242,43 @@ class TestSecondaryTickBasename:
             secondary_tick_basename("   ")
 
 
+class TestInstanceBasename:
+    """W5.1 multi-claw: the shape owner also owns the mini-instance artifact
+    naming, so the daemon writer and the pusher R-tier reader share ONE
+    formula (honest_failure_modes #5)."""
+
+    def test_inserts_suffix_before_extension(self):
+        from mini_dudeai.claw_telemetry import instance_basename
+        assert instance_basename("mini_dudeai_claw_state.json", "dudeclaw-02") \
+            == "mini_dudeai_claw_state.dudeclaw-02.json"
+
+    def test_multi_char_extension_preserved(self):
+        from mini_dudeai.claw_telemetry import instance_basename
+        assert instance_basename(
+            "mini_dudeai_claw_history.jsonl", "dudeclaw-02") \
+            == "mini_dudeai_claw_history.dudeclaw-02.jsonl"
+
+    def test_extensionless_basename_appends(self):
+        from mini_dudeai.claw_telemetry import instance_basename
+        assert instance_basename("claw_brief", "dudeclaw-02") \
+            == "claw_brief.dudeclaw-02"
+
+    def test_never_collides_with_primary(self):
+        from mini_dudeai.claw_telemetry import instance_basename
+        primary = "mini_dudeai_claw_state.json"
+        assert instance_basename(primary, "dudeclaw-02") != primary
+
+    def test_path_hostile_chars_sanitized(self):
+        from mini_dudeai.claw_telemetry import instance_basename
+        assert instance_basename("mini_dudeai_claw_state.json", "../evil/dev") \
+            == "mini_dudeai_claw_state.---evil-dev.json"
+
+    def test_empty_instance_raises(self):
+        from mini_dudeai.claw_telemetry import instance_basename
+        with pytest.raises(ValueError):
+            instance_basename("mini_dudeai_claw_state.json", "   ")
+
+
 class TestAccessoryAbsenceIsNotFailure:
     """2026-07-19 (structural-dark row 7): a claw with no BLE scanner is a
     correctly-built device, not a broken one.

@@ -65,6 +65,41 @@ def _series(points):
             for ts, v in points]
 
 
+class TestReadSamplesDeviceFilter:
+    """A retargeted soak (config repointed to another claw) must not blend the
+    previous claw's samples into the new pack's curve — row-7's cross-device
+    class, guarded at the read boundary."""
+
+    def _write(self, home, rows):
+        (home / battery_soak.STATE_BASENAME).write_text(
+            "\n".join(__import__("json").dumps(r) for r in rows) + "\n")
+
+    def test_unfiltered_read_returns_all(self, tmp_path):
+        self._write(tmp_path, [
+            {"ts": 1, "vbat": 4.0, "device": "dudeclaw-01"},
+            {"ts": 2, "vbat": 3.8, "device": "dudeclaw-02"}])
+        assert len(battery_soak._read_samples(tmp_path)) == 2
+
+    def test_device_filter_isolates_one_claw(self, tmp_path):
+        self._write(tmp_path, [
+            {"ts": 1, "vbat": 4.06, "device": "dudeclaw-01"},   # old USB claw
+            {"ts": 2, "vbat": 3.9, "device": "dudeclaw-02"},
+            {"ts": 3, "vbat": 3.7, "device": "dudeclaw-02"}])
+        kept, dropped = battery_soak._read_samples(tmp_path, device="dudeclaw-02")
+        assert [s["vbat"] for s in kept] == [3.9, 3.7]
+        assert dropped == 1  # the dudeclaw-01 row is ignored, and counted
+
+    def test_missing_file_returns_empty_tuple_when_scoped(self, tmp_path):
+        assert battery_soak._read_samples(tmp_path, device="dudeclaw-02") == ([], 0)
+
+    def test_legacy_device_less_rows_dropped_when_scoped(self, tmp_path):
+        self._write(tmp_path, [
+            {"ts": 1, "vbat": 4.0},  # pre-device-field row
+            {"ts": 2, "vbat": 3.8, "device": "dudeclaw-02"}])
+        kept, dropped = battery_soak._read_samples(tmp_path, device="dudeclaw-02")
+        assert len(kept) == 1 and dropped == 1
+
+
 class TestSummarizeSamples:
     USABLE = 4100  # mAh usable to cutoff
     CUTOFF = 3.4

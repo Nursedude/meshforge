@@ -303,6 +303,41 @@ class TestRTierReaderEnvFileOnly:
         tier, note = cmp_mod._probe_tier(env)
         assert tier is None  # env-file home has no state; cron env ignored
 
+    def test_secondary_instance_reads_suffixed_state(self, tmp_path,
+                                                     monkeypatch):
+        """W5.1: a second claw (MINI_DUDEAI_CLAW_INSTANCE=dudeclaw-02) runs its
+        mini under a device-suffixed state file; the pusher's R-tier glyph must
+        read THAT file, via the SAME instance_basename formula the daemon writes
+        with (honest_failure_modes #5)."""
+        from mini_dudeai.claw_telemetry import instance_basename
+        home = tmp_path / "h"
+        home.mkdir()
+        suffixed = instance_basename(cmp_mod.CLAW_STATE_BASENAME, "dudeclaw-02")
+        (home / suffixed).write_text("{}")  # fresh state for the secondary only
+        env = {"MINI_DUDEAI_HOME": str(home),
+               "MINI_DUDEAI_CLAW_INSTANCE": "dudeclaw-02",
+               "MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid/fleet/slo"}
+        monkeypatch.setattr(cmp_mod, "fetch_json",
+                            lambda url, timeout=0: (None, "refused"))
+        tier, note = cmp_mod._probe_tier(env)
+        assert tier == "R"  # the secondary's fresh state proved the rule tier
+
+    def test_secondary_instance_ignores_primary_state(self, tmp_path,
+                                                      monkeypatch):
+        """Symmetric guard: a fresh PRIMARY state file must NOT prove tier R
+        for a secondary instance whose own suffixed state is absent (else
+        claw-02's glyph would silently reflect claw-01's rule brain)."""
+        home = tmp_path / "h"
+        home.mkdir()
+        (home / cmp_mod.CLAW_STATE_BASENAME).write_text("{}")  # primary fresh
+        env = {"MINI_DUDEAI_HOME": str(home),
+               "MINI_DUDEAI_CLAW_INSTANCE": "dudeclaw-02",
+               "MINI_DUDEAI_TIER_SLO_URL": "http://brain.invalid/fleet/slo"}
+        monkeypatch.setattr(cmp_mod, "fetch_json",
+                            lambda url, timeout=0: (None, "refused"))
+        tier, note = cmp_mod._probe_tier(env)
+        assert tier is None  # primary's state doesn't count for the secondary
+
 
 class TestMultiClawTickRouting:
     """W5.1: a --env instance must never clobber the primary's tick file."""

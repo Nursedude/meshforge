@@ -37,6 +37,7 @@ from mini_dudeai.claw_telemetry import (  # noqa: E402
     CLAW_TICK_BASENAME,
     build_tick,
     compute_brain_tier,
+    instance_basename,
     secondary_tick_basename,
 )
 from mini_dudeai.nats_client import NatsConnection, NatsError  # noqa: E402
@@ -178,10 +179,18 @@ def _probe_tier(env: dict) -> "tuple[str | None, str]":
     claw_home = env.get("MINI_DUDEAI_HOME")
     state_dir = (os.path.expanduser(claw_home) if claw_home
                  else str(get_real_user_home()))
+    # A SECOND claw (dudeclaw-02) runs its mini instance under
+    # MINI_DUDEAI_CLAW_INSTANCE, which device-suffixes the state basename in
+    # presets.standalone.build_engine. Read the SAME formula (instance_basename)
+    # so this pusher's R-tier glyph reflects THIS device's rule brain, not the
+    # primary's (honest_failure_modes #5 — one naming formula, two consumers).
+    claw_instance = (env.get("MINI_DUDEAI_CLAW_INSTANCE") or "").strip()
+    state_basename = (instance_basename(CLAW_STATE_BASENAME, claw_instance)
+                      if claw_instance else CLAW_STATE_BASENAME)
     rules_age_s = None
     try:
         rules_age_s = time.time() - os.path.getmtime(
-            os.path.join(state_dir, CLAW_STATE_BASENAME))
+            os.path.join(state_dir, state_basename))
     except OSError:
         pass  # no state file -> rules tier unprovable (compute handles None)
 

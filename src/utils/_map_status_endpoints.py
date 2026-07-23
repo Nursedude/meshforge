@@ -542,12 +542,41 @@ class StatusEndpointsMixin:
     _CLAW_STALE_S = 900.0
 
     def _read_claw_state_block(self) -> Dict[str, Any]:
-        """Stitch ~/claw_last_tick.json into /api/status.
+        """Stitch ~/claw_last_tick.json into /api/status, plus any ADDITIONAL
+        claws on the same brain box under a ``secondaries`` list (W5.1).
 
-        claw_metrics_push.py captures the dude-claw's last NATS telemetry tick
-        (heap/uptime/wifi-rssi/ble counters) to this operator-home file every
-        5 min; we surface it so federation carries the claw's posture to the
-        /fleet rollup with no new plumbing. Operator-home path (MF001).
+        claw_metrics_push.py captures each dude-claw's last NATS telemetry tick
+        (heap/uptime/wifi-rssi/ble counters) to an operator-home file every
+        5 min — the PRIMARY claw to ``claw_last_tick.json`` and every additional
+        claw to ``claw_last_tick.<device>.json``; we surface them so federation
+        carries the claws' posture to the /fleet rollup with no new plumbing.
+        Operator-home path (MF001).
+
+        The top-level block stays the PRIMARY claw (backward-compatible: the
+        federation/fleet_truth readers of ``status.claw`` are untouched);
+        secondaries ride along as ``block["secondaries"]`` so a second claw
+        (dudeclaw-02) is visible in the NOC, not only in the watchdog glob.
+        """
+        from mini_dudeai.claw_telemetry import (CLAW_TICK_BASENAME,
+                                                SECONDARY_TICK_GLOB)
+        from utils.paths import get_real_user_home
+        home = get_real_user_home()
+        block = self._parse_claw_tick(home / CLAW_TICK_BASENAME)
+        # Each secondary tick parses with the SAME honesty contract; identity
+        # comes from the tick's own `device` field, never the filename. The
+        # glob's two-dot shape excludes the single-dot primary by construction.
+        secondaries = []
+        try:
+            for p in sorted(home.glob(SECONDARY_TICK_GLOB)):
+                secondaries.append(self._parse_claw_tick(p))
+        except OSError:
+            pass
+        if secondaries:
+            block["secondaries"] = secondaries
+        return block
+
+    def _parse_claw_tick(self, path) -> Dict[str, Any]:
+        """Parse ONE claw tick file into a status block (primary or secondary).
 
         Honesty (the design's "stale must render stale, never green-with-old-
         numbers"): two distinct degraded states both force ``ok`` False with a
@@ -557,9 +586,6 @@ class StatusEndpointsMixin:
         shape rather than a missing key.
         """
         try:
-            from mini_dudeai.claw_telemetry import CLAW_TICK_BASENAME
-            from utils.paths import get_real_user_home
-            path = get_real_user_home() / CLAW_TICK_BASENAME
             raw = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return {"installed": False, "reason": "no_state_file"}

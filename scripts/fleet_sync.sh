@@ -445,6 +445,10 @@ sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_P
 # state). Only the claw-brain box (moc1) runs it; everywhere else this is a
 # clean no_unit/not_running PASS (try-restart honors absent/disabled).
 sync_user_unit meshforge-mini-dudeai-claw /opt/meshforge meshforge-mini-dudeai-claw "$MF_PRE_HEAD" || rc1e=$?
+# Second dude-claw brain (dudeclaw-02, templated @-instance; W5.1). Only the
+# claw-brain box runs it; no_unit / not_running PASS everywhere else. Same #79
+# deploy-restart gap as the primary claw.
+sync_user_unit meshforge-mini-dudeai-claw02 /opt/meshforge meshforge-mini-dudeai-claw@claw02 "$MF_PRE_HEAD" || rc1e2=$?
 # Other long-lived USER daemons that run /opt/meshforge code (same #79 deploy
 # gap as mini): the lab echo responder (lab.lxmf_echo) and the nomadnet silence
 # watcher (scripts/nomadnet_silence_watch.py). Restart on the user bus so a code
@@ -855,6 +859,9 @@ sync_local_unit meshforge-maps    /opt/meshforge-maps
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 # Standalone dude-claw sibling (no-op on boxes without the unit).
 sync_local_user_unit meshforge-mini-dudeai-claw /opt/meshforge
+# Second dude-claw brain (dudeclaw-02, templated @-instance; W5.1). no-op on
+# boxes without the unit.
+sync_local_user_unit meshforge-mini-dudeai-claw@claw02 /opt/meshforge
 # Other long-lived USER daemons from this repo (same #79 gap): the echo
 # responder + nomadnet silence watcher. no-op on boxes without the unit.
 sync_local_user_unit meshforge-echo /opt/meshforge
