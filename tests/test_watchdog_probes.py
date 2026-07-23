@@ -7588,6 +7588,48 @@ def test_propagation_soak_unreadable_intent_is_held_not_inert(tmp_path):
             configured_fn=lambda: (None, "unreadable")) is None
 
 
+def test_propagation_soak_never_published_escalates(tmp_path):
+    """07-23 audit E-F1: a drill that has NEVER published an envelope (typo'd
+    hash rc-4, broken env from install day) was an absorbing held-indeterminate
+    with no escalation — fire script exit 0 always, its FAIL verdict unwired.
+    After ~3 cadences of empty state dir, the probe must page."""
+    sdir = str(tmp_path / "propagation_soak")
+    os.makedirs(sdir, exist_ok=True)          # dir exists, NO prop-* ever
+    sp = str(tmp_path / "d.json")
+    ip = str(tmp_path / "indet.json")
+    t0 = 100000.0
+    # first sighting anchors + holds
+    assert _prop_probe(state_dir=sdir, now=t0, debounce_path=sp,
+                       indet_state_path=ip) is None
+    # within the window: still held
+    assert _prop_probe(state_dir=sdir, now=t0 + 3600, debounce_path=sp,
+                       indet_state_path=ip) is None
+    # beyond 3h: fires the never_published leg
+    sig = _prop_probe(state_dir=sdir, now=t0 + 3 * 3600 + 60,
+                      debounce_path=sp, indet_state_path=ip)
+    assert sig is not None
+    assert sig.extra.get("leg") == "never_published"
+    assert "NEVER published" in sig.detail
+
+
+def test_propagation_soak_never_published_anchor_clears_on_envelope(tmp_path):
+    """Once a real envelope appears, the never-published anchor must clear
+    (healthy reset removes the state file)."""
+    sdir = str(tmp_path / "propagation_soak")
+    os.makedirs(sdir, exist_ok=True)
+    sp = str(tmp_path / "d.json")
+    ip = str(tmp_path / "indet.json")
+    t0 = 100000.0
+    assert _prop_probe(state_dir=sdir, now=t0, debounce_path=sp,
+                       indet_state_path=ip) is None      # anchors
+    _write_prop_envelope(sdir, passed=True, age_s=60.0, now=t0 + 3600)
+    assert _prop_probe(state_dir=sdir, now=t0 + 3600, debounce_path=sp,
+                       indet_state_path=ip) is None      # healthy, resets
+    import json as _json
+    assert not os.path.exists(ip) or "no_result_since" not in _json.load(
+        open(ip))
+
+
 def test_propagation_soak_sustained_indeterminate_escalates(tmp_path):
     """F2: the absorbing state. A node refusing every upload (or a box that
     can never finish a stamp) publishes explicit-null envelopes forever —

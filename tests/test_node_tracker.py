@@ -1396,3 +1396,60 @@ class TestSignalQualityTrending:
 
         assert d['value'] == 10.5
         assert '2026-01-15' in d['timestamp']
+
+
+class TestMergeSweepCompleteness20260723:
+    """07-23 audit E-F2: three field families set on the throwaway `new`
+    object were still dropped by _merge_node after the 07-21 C1/W1 sweep —
+    the same 'unrecoverable once recorded' shape as the name bug."""
+
+    def _tracker(self):
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            return UnifiedNodeTracker()
+
+    def test_favorite_set_after_first_cache_survives_merge(self):
+        tracker = self._tracker()
+        tracker.add_node(UnifiedNode(id="n", network="meshtastic"))
+        fav = UnifiedNode(id="n", network="meshtastic")
+        fav.is_favorite = True
+        tracker.add_node(fav)
+        got = tracker.get_node("n")
+        assert got.is_favorite is True
+        assert got.favorite_updated is not None
+
+    def test_merge_never_clears_favorite(self):
+        tracker = self._tracker()
+        fav = UnifiedNode(id="n", network="meshtastic")
+        fav.is_favorite = True
+        tracker.add_node(fav)
+        tracker.add_node(UnifiedNode(id="n", network="meshtastic"))
+        assert tracker.get_node("n").is_favorite is True
+
+    def test_is_local_from_nodes_db_sweep_survives_merge(self):
+        tracker = self._tracker()
+        tracker.add_node(UnifiedNode(id="n", network="meshtastic"))
+        local = UnifiedNode(id="n", network="meshtastic", is_local=True)
+        tracker.add_node(local)
+        assert tracker.get_node("n").is_local is True
+
+    def test_relay_provenance_survives_merge(self):
+        tracker = self._tracker()
+        tracker.add_node(UnifiedNode(id="n", network="meshtastic"))
+        relayed = UnifiedNode(id="n", network="meshtastic")
+        relayed.discovered_via_relay = True
+        relayed.relay_node = 0x42
+        relayed.next_hop = 0x17
+        tracker.add_node(relayed)
+        got = tracker.get_node("n")
+        assert got.discovered_via_relay is True
+        assert got.relay_node == 0x42 and got.next_hop == 0x17
+
+    def test_relay_provenance_survives_restart(self, tmp_path):
+        # writer + reader added together (hfm #4): the trio must round-trip.
+        node = UnifiedNode(id="n", network="meshtastic")
+        node.discovered_via_relay = True
+        node.relay_node = 0x42
+        node.next_hop = 0x17
+        d = node.to_dict()
+        assert d["discovered_via_relay"] is True
+        assert d["relay_node"] == 0x42 and d["next_hop"] == 0x17

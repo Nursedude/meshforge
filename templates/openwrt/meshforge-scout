@@ -291,8 +291,17 @@ collect_rtun_watchdog() {
     esac
     _now=$(date +%s)
     RTUN_AGE=$(( _now - _mt ))
-    # Clock skew / future mtime: clamp, never emit a negative age (honest_failure_modes #6).
-    [ "$RTUN_AGE" -lt 0 ] 2>/dev/null && RTUN_AGE=0
+    # Clock skew / future mtime: never emit a negative age (hfm #6) — but a
+    # backward step must not read as the FRESHEST possible value either
+    # (07-23 audit: an RTC-less router that stamped ahead then corrected
+    # read ok/age=0 while the heartbeat was genuinely stale). Clamp + flag:
+    # the freshness is unobservable until real time overtakes the stamp.
+    if [ "$RTUN_AGE" -lt 0 ] 2>/dev/null; then
+        RTUN_AGE=0
+        RTUN_STATE="unobservable"
+        note "rtun watchdog heartbeat mtime is in the future (clock step) — freshness unobservable"
+        return 0
+    fi
     if [ "$RTUN_AGE" -gt "$RTUN_STALE_S" ] 2>/dev/null; then
         RTUN_STATE="stale"
         note "rtun watchdog heartbeat stale: ${RTUN_AGE}s (> ${RTUN_STALE_S}s)"

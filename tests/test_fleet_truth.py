@@ -592,3 +592,29 @@ class TestFleetTruth:
         t = ft.build_fleet_truth([snap], now=NOW, signal_classes=[], noc_host="moc")
         assert t["fleet_state"] != ft.HEALTHY
         assert t["boxes"][0]["box_state"] == ft.DARK
+
+
+class TestSpoolServicesTransientTolerance:
+    """07-23 audit E-F7: the 2-min spool cron landing during a deploy restart
+    caught units `activating` and rendered FAILED for a cycle (no debounce
+    anywhere on this path). Mid-start = not-yet-determined = DARK with the
+    mid-restart reason; hard-down stays FAILED."""
+
+    def test_activating_is_dark_not_failed(self):
+        c = ft._services_cell_from_spool({
+            "meshforge-gateway.service": {"active": "activating",
+                                          "enabled": "enabled"}})
+        assert c["state"] == ft.DARK
+        assert "mid-restart" in c["reason"]
+
+    def test_hard_down_still_failed_even_with_a_transient_sibling(self):
+        c = ft._services_cell_from_spool({
+            "a.service": {"active": "failed", "enabled": "enabled"},
+            "b.service": {"active": "activating", "enabled": "enabled"}})
+        assert c["state"] == ft.FAILED
+        assert "a.service" in c["reason"]
+
+    def test_all_active_still_healthy(self):
+        c = ft._services_cell_from_spool({
+            "a.service": {"active": "active", "enabled": "enabled"}})
+        assert c["state"] == ft.HEALTHY

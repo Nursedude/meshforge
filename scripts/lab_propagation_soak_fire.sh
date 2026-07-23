@@ -30,7 +30,13 @@ ROUNDS="${PROP_ROUNDS:-1}"
 SEND_TIMEOUT="${PROP_SEND_TIMEOUT:-180}"
 PULL_TIMEOUT="${PROP_PULL_TIMEOUT:-180}"
 THRESHOLD="${PROP_THRESHOLD:-1.0}"
-STATE_DIR="${STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/propagation_soak}"
+# PINNED, deliberately not overridable (07-23 audit): the watchdog probe
+# reads ~operator/.local/state/meshforge/propagation_soak by construction
+# (sandboxed root cannot see this unit's env), so honoring STATE_DIR /
+# XDG_STATE_HOME here would publish envelopes where the probe never looks —
+# a silently disarmed canary that reads INERT ("box doesn't run the drill").
+# One path, both halves (honest_failure_modes #5).
+STATE_DIR="$HOME/.local/state/meshforge/propagation_soak"
 
 # Resolve repo root from the script's own location so this works wherever the
 # clone lives (/opt/meshforge, ~/meshforge, ...). Same pattern as the synth fire.

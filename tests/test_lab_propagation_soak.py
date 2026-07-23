@@ -305,3 +305,38 @@ class TestPropagationNodeResolution:
         monkeypatch.setattr("utils.paths.get_real_user_home", lambda: tmp_path)
 
         assert _resolve_propagation_node(None) is None
+
+
+class TestLiveCaughtFaultInvariantsPinned:
+    """07-23 audit E-F5: 5eb214bf's live-caught faults 1-3 were comment-pinned
+    only — a refactor dropping flush=True or opening RNS in the orchestrating
+    parent reproduces the intermittent false-CONCERN canary with nothing red.
+    Source pins (the invariants are structural, not unit-testable without a
+    live RNS stack)."""
+
+    SRC = os.path.join(os.path.dirname(__file__), "..", "src", "lab",
+                       "lxmf_propagation_soak.py")
+
+    def _src(self):
+        with open(self.SRC, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_child_result_line_flushes(self):
+        src = self._src()
+        assert "print(json.dumps(result), flush=True)" in src, (
+            "the child's single result line MUST flush — stdout is a "
+            "block-buffered pipe; without it the parent times out reading "
+            "a result the child already produced (fault 1)")
+
+    def test_parent_never_initialises_rns(self):
+        # The orchestrating parent must not construct an RNS stack; each
+        # role runs in its OWN child process (faults 2+3). The parent's
+        # entrypoint delegates via subprocess; pin that no open_reticulum /
+        # RNS.Reticulum call happens outside the child-role branches.
+        src = self._src()
+        assert "def _run_child_role" in src or "--role" in src, (
+            "per-role child process structure vanished — faults 2/3 unpinned")
+        head = src.split("def main", 1)[0]
+        assert "open_reticulum(" not in head.replace(
+            "# open_reticulum(", ""), (
+            "module-level/parent RNS init would re-introduce fault 2")

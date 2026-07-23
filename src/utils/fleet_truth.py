@@ -522,8 +522,25 @@ def _services_cell_from_spool(services: Dict[str, Any]) -> Dict[str, Any]:
     if not enabled:
         return cell(DARK, reason="no enabled services observed", source=src)
     down = sorted(u for u, s in enabled.items() if s.get("active") != "active")
-    if down:
-        return cell(FAILED, reason=f"enabled but inactive: {', '.join(down)}",
+    # A unit caught mid-start is TRANSIENT, not a proven fault: the 2-min
+    # spool cron can land during a deploy restart, and rendering `activating`
+    # as FAILED flashed "enabled but inactive: meshforge-gateway" for a cycle
+    # with no debounce anywhere on this path (07-23 audit). In the tri-state
+    # vocabulary a starting unit's health is not-yet-determined → DARK with
+    # the mid-restart reason (visible, honest, not an alarm); real
+    # inactive/failed stays FAILED.
+    transient = sorted(u for u in down
+                       if (enabled[u].get("active") or "")
+                       in ("activating", "reloading"))
+    hard_down = [u for u in down if u not in transient]
+    if hard_down:
+        return cell(FAILED,
+                    reason=f"enabled but inactive: {', '.join(hard_down)}",
+                    source=src)
+    if transient:
+        return cell(DARK,
+                    reason=f"starting: {', '.join(transient)} (caught "
+                           f"mid-restart; re-checks next spool)",
                     source=src)
     return cell(HEALTHY, source=src)
 

@@ -29,7 +29,7 @@ from typing import Any, Dict, List, Optional, Tuple
 # Canonical state files (read-only). Defaults overridable for tests/Phase-1.
 WATCHDOG_STATE_PATH = Path("/var/lib/meshforge/watchdog.json")
 WATCHDOG_STALE_S = 300.0  # mirror _map_status_endpoints._WATCHDOG_STALE_S
-MINI_STALE_S = 300.0      # mirror _map_status_endpoints._MINI_STALE_S
+MINI_STALE_S = 300.0      # mirror _map_status_endpoints.MINI_STALE_S (module SSOT)
 DEFAULT_STATUS_URL = "http://localhost:5000/api/status"
 
 

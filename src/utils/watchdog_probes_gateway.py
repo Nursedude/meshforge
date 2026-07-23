@@ -1318,6 +1318,10 @@ def probe_lxmf_propagation_node_dark(
     )
 
 
+from utils.watchdog_probes_propagation import (  # noqa: E402,F401 (back-compat re-export)
+    _worst_propagation_round,
+    probe_propagation_soak_degraded,
+)
 from utils.watchdog_probes_gateway_flow import (  # noqa: E402,F401 (back-compat re-export)
     DEFAULT_SYNTH_SOAK_DEBOUNCE_PATH,
     _SYNTH_SOAK_CADENCE_S,
@@ -1333,8 +1337,6 @@ from utils.watchdog_probes_gateway_flow import (  # noqa: E402,F401 (back-compat
     _PROPAGATION_SOAK_STALE_AFTER_S,
     _resolve_propagation_soak_dir,
     _resolve_operator_state_dir,
-    _worst_propagation_round,
-    probe_propagation_soak_degraded,
     GATEWAY_DELIVERY_BLOCK_GREP,
     _GATEWAY_DELIVERY_BLOCK_RE,
     GATEWAY_RNS_ERROR_GREP,

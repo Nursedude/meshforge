@@ -640,8 +640,31 @@ class UnifiedNodeTracker:
         if new.meshcore_hops is not None:
             existing.meshcore_hops = new.meshcore_hops
 
+        # Favorite flag (BaseUI): set on the throwaway `new` object by
+        # from_meshtastic, previously dropped here — a node favorited on the
+        # radio AFTER first cache stayed un-favorite forever (07-23 audit,
+        # same "unrecoverable once recorded" shape as the name bug). One-way
+        # refresh: an un-favorite in a later sweep is absence-of-flag, not a
+        # deliberate removal, so only set — never clear — from a merge.
+        if new.is_favorite and not existing.is_favorite:
+            existing.is_favorite = True
+            existing.favorite_updated = new.favorite_updated or datetime.now()
+
+        # Relay-discovery provenance: refresh when the announce carries it
+        # (same dropped-on-merge class).
+        if new.discovered_via_relay:
+            existing.discovered_via_relay = True
+        if new.relay_node is not None:
+            existing.relay_node = new.relay_node
+        if new.next_hop is not None:
+            existing.next_hop = new.next_hop
+
         # Update status
         existing.is_gateway = existing.is_gateway or new.is_gateway
+        # is_local: the nodes-db sweep passes is_local=True for our own node;
+        # if it was first learned from packets the flag arrived only on the
+        # throwaway object (07-23 audit). One-way like is_gateway.
+        existing.is_local = existing.is_local or new.is_local
         # Only mark as online if the incoming data is fresh (within threshold)
         if new.last_seen:
             age = (datetime.now() - new.last_seen).total_seconds()
@@ -814,6 +837,12 @@ class UnifiedNodeTracker:
                         node.favorite_updated = datetime.fromisoformat(node_data['favorite_updated'])
                     except (ValueError, TypeError):
                         pass
+                # Relay-discovery provenance (07-23 audit: writer added the
+                # same day — reader/writer move together, hfm #4)
+                node.discovered_via_relay = bool(
+                    node_data.get('discovered_via_relay', False))
+                node.relay_node = node_data.get('relay_node')
+                node.next_hop = node_data.get('next_hop')
                 self._nodes[node.id] = node
 
             logger.info(f"Loaded {len(self._nodes)} nodes from cache")

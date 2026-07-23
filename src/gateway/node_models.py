@@ -801,6 +801,12 @@ class UnifiedNode:
             # Favorites (BaseUI 2.7+)
             "is_favorite": self.is_favorite,
             "favorite_updated": self.favorite_updated.isoformat() if self.favorite_updated else None,
+            # Relay-discovery provenance (07-23 audit: never written before,
+            # so it silently vanished on every restart and the field-complete
+            # round-trip test was structurally blind to it)
+            "discovered_via_relay": self.discovered_via_relay,
+            "relay_node": self.relay_node,
+            "next_hop": self.next_hop,
             # Granular state
             "state": self.state.name if self.state else None,
             "state_display": self.state_name,

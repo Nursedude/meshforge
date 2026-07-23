@@ -36,7 +36,10 @@
 #
 # Per-fire knobs (set in the timer's [Service] Environment= or here):
 #   PROP_ROUNDS, PROP_SEND_TIMEOUT, PROP_PULL_TIMEOUT, PROP_THRESHOLD,
-#   PROP_NODE, STATE_DIR
+#   PROP_NODE
+# (STATE_DIR is deliberately NOT a knob: the watchdog probe reads the
+#  canonical ~/.local/state/meshforge/propagation_soak path by construction,
+#  so an override would silently disarm the canary — 07-23 audit.)
 
 [Unit]
 Description=MeshForge LXMF store-and-forward soak (propagation drill)
