@@ -129,6 +129,13 @@ HAIKU_TIER = "api_small"
 LOCAL_BRAIN_TIER = "local"
 HAIKU_EARN_MARGIN = 0.10     # api_small ≥ local + this → earned (gate step 4)
 HAIKU_REJECT_MARGIN = 0.05   # api_small ≤ local + this → local tier sufficient
+# Comparability guards for the promotion decision (07-23 audit F2): a raw
+# pass_rate scalar from a budget-truncated chunk (the weekly cron runs
+# --budget-s + --cursor, so a summary may cover only the completed slice) or
+# from runs weeks apart is not comparable evidence. Below these floors the
+# gate answers "not_comparable", never earned/rejected.
+HAIKU_MIN_CASES = 10          # each side must have graded at least this many
+HAIKU_MAX_RUN_SKEW_S = 30 * 86400   # runs further apart than this don't compare
 
 
 @dataclass
@@ -182,12 +189,22 @@ def load_routing_events(path: str) -> list:
     return _load_jsonl_dicts(path)
 
 
-def eval_kind_competence(records: list, kind: str) -> tuple:
-    """(pass_rate, n) for `kind` from the most-recent record that measured it, or
-    (None, 0) when no record covered it — competence UNKNOWN, never a forged 1.0
-    (honest_failure_modes #2: absence ≠ healthy)."""
+def eval_kind_competence(records: list, kind: str,
+                         *, tier: str = LOCAL_BRAIN_TIER) -> tuple:
+    """(pass_rate, n) for `kind` from the most-recent `tier` record that measured
+    it, or (None, 0) when no record covered it — competence UNKNOWN, never a
+    forged 1.0 (honest_failure_modes #2: absence ≠ healthy).
+
+    Tier-filtered (07-23 audit): the eval ledger is ONE shared file, and the
+    haiku head-to-head appends api_small summaries to it. Without the filter the
+    newest api_small row would ground "tier-L competence" in Haiku's scores —
+    the assertion-side reader disagreeing with the verdict-side reader
+    (`competence_after`) about what the same artifact means (hfm #5). Absent
+    brain_tier → local (all pre-07-22 rows are local runs)."""
     for rec in reversed(records or []):
         if not isinstance(rec, dict):
+            continue
+        if (rec.get("brain_tier") or LOCAL_BRAIN_TIER) != tier:
             continue
         pk = (rec.get("per_kind") or {}).get(kind)
         if isinstance(pk, dict):
@@ -196,6 +213,27 @@ def eval_kind_competence(records: list, kind: str) -> tuple:
             if total:
                 return (round(passed / total, 3), total)
     return (None, 0)
+
+
+def _eval_kind_competence_with_ts(records: list, kind: str,
+                                  *, tier: str = LOCAL_BRAIN_TIER) -> tuple:
+    """(pass_rate, n, record_ts) — same walk as eval_kind_competence, also
+    naming WHICH record grounded the number, so a routing can pin its founding
+    evidence and re-derivation can never verdict against it (clock-step guard)."""
+    for rec in reversed(records or []):
+        if not isinstance(rec, dict):
+            continue
+        if (rec.get("brain_tier") or LOCAL_BRAIN_TIER) != tier:
+            continue
+        pk = (rec.get("per_kind") or {}).get(kind)
+        if isinstance(pk, dict):
+            total = pk.get("total") or 0
+            passed = pk.get("passed") or 0
+            if total:
+                ts = rec.get("ts")
+                return (round(passed / total, 3), total,
+                        ts if isinstance(ts, (int, float)) else None)
+    return (None, 0, None)
 
 
 def calib_reliability_by_model(fold_state: dict) -> dict:
@@ -245,11 +283,18 @@ def route(task_kind: str, env: str, *,
     evidence — unknown competence is surfaced, not averaged into a healthy value.
     """
     now = time.time() if now_ts is None else now_ts
+    env_degraded = None
     if env not in ENV_CEILING:
+        # A typo'd/unknown env silently becoming "fleet" is a config read
+        # error wearing a valid value — absorb for safety, but leave the
+        # degradation VISIBLE in evidence (hfm #1; 07-23 audit F12).
+        env_degraded = f"unknown env {env!r} → defaulted to fleet"
         env = "fleet"  # safest ceiling on an unknown env
     base = TASK_TIER.get(task_kind, "opus")   # unknown kind → conservative opus
     ceiling = ENV_CEILING[env]
     evidence: dict = {"base_tier": base, "ceiling": ceiling, "env": env}
+    if env_degraded:
+        evidence["env_detection"] = env_degraded
 
     # 1. Clamp the ideal to what the env can RELY on.
     capability_gap = tier_rank(base) > tier_rank(ceiling)
@@ -266,10 +311,19 @@ def route(task_kind: str, env: str, *,
     eval_kind = TASK_EVAL_KIND.get(task_kind)
     l_trusted = None
     if recommended == "local" and eval_kind is not None:
-        pr, n = eval_kind_competence(eval_records or [], eval_kind)
+        pr, n, eval_ts = _eval_kind_competence_with_ts(
+            eval_records or [], eval_kind)
         evidence["eval_kind"] = eval_kind
         evidence["eval_pass_rate"] = pr
         evidence["eval_n"] = n
+        # Pin the assertion's full grounding so re-derivation judges against
+        # what the routing actually asserted: the gate it used (a later gate
+        # bump must not mint `broke` from constant evidence — 07-23 audit F3)
+        # and the founding record's ts (so a backward clock step can never
+        # let the SAME record satisfy "strictly later" — F6).
+        evidence["eval_gate"] = eval_gate
+        if eval_ts is not None:
+            evidence["eval_ts"] = eval_ts
         if pr is None:
             l_trusted = None
             why_parts.append(
@@ -281,8 +335,14 @@ def route(task_kind: str, env: str, *,
                 f"tier-L FAILS the {eval_kind} eval ({pr} < {eval_gate}) — NOT "
                 f"trustworthy here; escalate to a higher-env session when possible")
             # On qth we can actually go higher; on fleet/field L is the ceiling.
+            # Escalation is CLAMPED to the env ceiling (a future env whose
+            # ceiling sits between local and opus must never be escalated past
+            # what it can rely on — 07-23 audit F9), and the target tier's own
+            # fitness is ASSUMED, not measured (there is no opus eval) — say so.
             if tier_rank(ceiling) > tier_rank("local"):
-                recommended = "opus"
+                recommended = ("opus" if tier_rank("opus") <= tier_rank(ceiling)
+                               else ceiling)
+                evidence["escalation_competence"] = "assumed-not-measured"
         else:
             l_trusted = True
             why_parts.append(
@@ -312,7 +372,13 @@ def route(task_kind: str, env: str, *,
                 f"DOWNSHIFT: recommended {recommended} < running {running_tier} — "
                 f"could batch onto a smaller model / fast mode")
         else:
-            disposition = "right-sized"
+            # Equal rank is only "right-sized" when the tier is actually FIT:
+            # running local with a failing local eval is a capability gap even
+            # though the ranks match (07-23 audit F8 — a machine consumer
+            # keying on disposition must not read "fine here").
+            disposition = ("capability_gap"
+                           if (capability_gap or l_trusted is False)
+                           else "right-sized")
     else:
         # No running context: a gap is either the env ceiling being too low OR
         # tier-L proving unfit for a kind it was the natural pick for.
@@ -410,7 +476,11 @@ def record_routing(rec: Recommendation, path: Optional[str] = None) -> Optional[
     eval ledger later, never hand-written (the calibration-ledger convention)."""
     path = path or routing_ledger_path()
     rid = make_routing_id(rec.ts, rec.task_kind, rec.env, rec.recommended_tier)
-    row = {"kind": ROUTING_KIND, "id": rid, **rec.to_row(), "status": "open"}
+    # No persisted "status" field: fold_routing derives open/held/broke from
+    # verdicts and nothing ever updated the row, so a written "open" went
+    # permanently stale the moment a verdict landed — a valid-looking value
+    # that no longer meant what it said (07-23 audit F10).
+    row = {"kind": ROUTING_KIND, "id": rid, **rec.to_row()}
     return append_jsonl(path, [row], _ROUTING_LEDGER_MAX_BYTES)
 
 
@@ -465,6 +535,11 @@ def fold_routing(events: list) -> dict:
                 prev = latest_verdict.get(rid)
                 if prev is None or ts >= prev[0]:
                     latest_verdict[rid] = (ts, outcome)
+    # Rotation drops the OLDEST lines, so a routing row can age out while its
+    # newer verdict survives. Silently ignoring those orphans lets the
+    # self-score heal by amnesia (old `broke` rows vanish, ratio improves with
+    # no new evidence) — count them so truncation stays visible (07-23 F5).
+    n_orphan = sum(1 for rid in latest_verdict if rid not in routings)
     held, broke, open_ = [], [], []
     for rid, rec in routings.items():
         v = latest_verdict.get(rid)
@@ -478,6 +553,7 @@ def fold_routing(events: list) -> dict:
     return {
         "n_total": len(routings), "n_held": len(held), "n_broke": len(broke),
         "n_open": len(open_), "ratio": (len(held) / n_def) if n_def else None,
+        "n_orphan_verdicts": n_orphan,
         "held": held, "broke": broke, "open": open_,
     }
 
@@ -503,19 +579,34 @@ def rederive_routing(routing_events: list, eval_records: list, now_ts: float,
         eval_kind = ev.get("eval_kind")
         if not eval_kind:
             continue
-        pr, n = competence_after(eval_records, eval_kind, rec.get("ts") or 0)
+        # Judge against the gate the routing ASSERTED with, not today's
+        # default — a later gate bump must not mint `broke` from unchanged
+        # competence (07-23 F3). Legacy rows without the field keep the
+        # caller's gate (their best available approximation).
+        gate = ev.get("eval_gate")
+        if not isinstance(gate, (int, float)):
+            gate = eval_gate
+        # Independence floor: strictly after BOTH the routing's ts and its
+        # founding eval record's ts — a backward clock step could otherwise
+        # let the SAME record that grounded the routing also verdict it
+        # (circular self-confirmation; 07-23 F6, hfm #6).
+        after_ts = rec.get("ts") or 0
+        founding_ts = ev.get("eval_ts")
+        if isinstance(founding_ts, (int, float)):
+            after_ts = max(after_ts, founding_ts)
+        pr, n = competence_after(eval_records, eval_kind, after_ts)
         if pr is None:
             continue  # no independent later evidence — leave open
-        if pr >= eval_gate:
+        if pr >= gate:
             new.append({"kind": ROUTING_VERDICT_KIND, "routing_id": rec.get("id"),
                         "ts": now_ts, "outcome": "held",
                         "detail": f"tier-L still passes {eval_kind} "
-                                  f"({pr}≥{eval_gate}, n={n}) on later eval"})
+                                  f"({pr}≥{gate}, n={n}) on later eval"})
         else:
             new.append({"kind": ROUTING_VERDICT_KIND, "routing_id": rec.get("id"),
                         "ts": now_ts, "outcome": "broke",
                         "detail": f"tier-L now FAILS {eval_kind} "
-                                  f"({pr}<{eval_gate}) — routed local to an unfit tier"})
+                                  f"({pr}<{gate}) — routed local to an unfit tier"})
     return new
 
 
@@ -566,6 +657,11 @@ def format_routing_track_record(state: dict) -> str:
         ek = (rec.get("evidence") or {}).get("eval_kind", "?")
         lines.append(f"  - ⚠️ routed {tk}→local but tier-L later FAILED {ek} — "
                      f"the recommendation did not hold")
+    orphans = state.get("n_orphan_verdicts", 0)
+    if orphans:
+        lines.append(
+            f"  - 🕳 {orphans} verdict(s) reference rotated-out routings — the "
+            f"score above excludes history lost to rotation (not a clean slate)")
     return "\n".join(lines)
 
 
@@ -621,6 +717,37 @@ def haiku_promotion_recommendation(
         return {"status": "operator_call", "promote": None, "evidence": ev,
                 "why": f"api_small passes the gate ({cpr}≥{gate}) but there is no "
                        f"local baseline to compare — operator call"}
+    # Comparability floor (07-23 F2): the two scalars must describe comparable
+    # runs before a delta between them can mean anything. Each side needs
+    # enough graded cases (a budget-truncated 5-case chunk's 1.0 must not veto
+    # a fresh 30-case 0.93), neither may be a budget-exhausted partial when
+    # its totals are thin, and the runs must be near-contemporaneous.
+    c_total = cand.get("total") or 0
+    b_total = base.get("total") or 0
+    ev["api_small_n"] = c_total
+    ev["local_n"] = b_total
+    problems = []
+    if c_total < HAIKU_MIN_CASES:
+        problems.append(f"api_small run graded only {c_total} case(s)")
+    if b_total < HAIKU_MIN_CASES:
+        problems.append(f"local run graded only {b_total} case(s)")
+    if cand.get("budget_exhausted"):
+        problems.append("api_small run was budget-truncated")
+    if base.get("budget_exhausted"):
+        problems.append("local baseline run was budget-truncated")
+    c_ts, b_ts = cand.get("ts"), base.get("ts")
+    if isinstance(c_ts, (int, float)) and isinstance(b_ts, (int, float)):
+        skew = abs(c_ts - b_ts)
+        ev["run_skew_s"] = round(skew)
+        if skew > HAIKU_MAX_RUN_SKEW_S:
+            problems.append(
+                f"runs are {skew / 86400:.0f} days apart (> "
+                f"{HAIKU_MAX_RUN_SKEW_S // 86400}d) — not contemporaneous")
+    if problems:
+        return {"status": "not_comparable", "promote": None, "evidence": ev,
+                "why": "promotion needs comparable full runs: "
+                       + "; ".join(problems)
+                       + " — re-run the head-to-head before deciding"}
     delta = round(cpr - bpr, 3)
     ev["delta"] = delta
     if delta >= earn_margin:
@@ -641,8 +768,8 @@ def format_haiku_promotion(rec: dict) -> str:
     there is no candidate data (don't inject noise before the head-to-head runs)."""
     if not rec or rec.get("status") == "no_candidate_data":
         return ""
-    icon = {"earned": "⬆️", "rejected": "⛔", "operator_call": "⚖️"}.get(
-        rec.get("status"), "•")
+    icon = {"earned": "⬆️", "rejected": "⛔", "operator_call": "⚖️",
+            "not_comparable": "🚧"}.get(rec.get("status"), "•")
     return f"- {icon} haiku-watcher promotion: {rec.get('status')} — {rec.get('why', '')}"
 
 

@@ -172,7 +172,9 @@ def test_record_routing_round_trip(tmp_path):
     assert mr.record_routing(rec, path=path) is None
     rows = [json.loads(l) for l in open(path).read().splitlines() if l.strip()]
     assert rows[-1]["kind"] == "routing"
-    assert rows[-1]["status"] == "open"       # verdict re-derived later, not now
+    # No persisted "status": fold derives open/held/broke from verdicts; a
+    # written "open" went permanently stale once a verdict landed (07-23 F10).
+    assert "status" not in rows[-1]
     assert rows[-1]["recommended_tier"] == "local"
 
 
@@ -362,8 +364,12 @@ def test_format_routing_track_record():
 
 # ── WS-E-2b: haiku-watcher promotion ────────────────────────────────────────
 
-def _overall(ts, pass_rate, tier):
-    return {"ts": ts, "brain_tier": tier, "pass_rate": pass_rate, "per_kind": {}}
+def _overall(ts, pass_rate, tier, *, total=30, budget_exhausted=False):
+    # total defaults comfortably above HAIKU_MIN_CASES so the comparability
+    # floor (07-23 F2) doesn't trip in tests exercising the margin logic.
+    return {"ts": ts, "brain_tier": tier, "pass_rate": pass_rate,
+            "total": total, "budget_exhausted": budget_exhausted,
+            "per_kind": {}}
 
 
 def test_haiku_promotion_no_candidate_data_is_honest():
@@ -422,3 +428,180 @@ def test_cli_haiku_check(monkeypatch, capsys):
     monkeypatch.setattr(mr, "_detect_role", lambda: None)
     rc = mr.main(["--haiku-check"])
     assert rc == 0 and "earned" in capsys.readouterr().out
+
+
+# ── 07-23 audit fixes ───────────────────────────────────────────────────────
+
+class TestEvalReaderTierFilter:
+    """F1: the eval ledger is ONE shared file; the haiku head-to-head appends
+    api_small rows. The assertion-side reader must never ground "tier-L
+    competence" in Haiku's scores."""
+
+    def test_newest_api_small_row_does_not_ground_l_trusted(self):
+        recs = [
+            {"ts": NOW - 7200, "brain_tier": "local",
+             "per_kind": {"triage": _pk(1, 4)}},      # local FAILS (0.25)
+            {"ts": NOW - 60, "brain_tier": "api_small",
+             "per_kind": {"triage": _pk(4, 4)}},      # haiku passes (newest)
+        ]
+        rec = mr.route("cadence_triage", "fleet", eval_records=recs, now_ts=NOW)
+        assert rec.evidence["l_trusted"] is False, (
+            "api_small's newest row must not read as tier-L competence")
+        assert rec.evidence["eval_pass_rate"] == 0.25
+
+    def test_absent_brain_tier_still_counts_as_local(self):
+        recs = [{"ts": NOW - 60, "per_kind": {"triage": _pk(4, 4)}}]  # legacy
+        pr, n = mr.eval_kind_competence(recs, "triage")
+        assert pr == 1.0 and n == 4
+
+
+class TestRederiveUsesAssertedGrounding:
+    """F3 + F6: verdicts judge against the gate and founding record the
+    routing ASSERTED with — gate drift and clock steps can't mint outcomes."""
+
+    def _routed(self, tmp_path, recs, **kw):
+        path = str(tmp_path / "routing.jsonl")
+        rec = mr.route("cadence_triage", "fleet", eval_records=recs,
+                       now_ts=NOW, **kw)
+        assert mr.record_routing(rec, path=path) is None
+        return path, rec
+
+    def test_evidence_pins_gate_and_founding_ts(self, tmp_path):
+        recs = [{"ts": NOW - 3600, "brain_tier": "local",
+                 "per_kind": {"triage": _pk(4, 4)}}]
+        _, rec = self._routed(tmp_path, recs)
+        assert rec.evidence["eval_gate"] == mr.DEFAULT_EVAL_GATE
+        assert rec.evidence["eval_ts"] == NOW - 3600
+
+    def test_gate_bump_does_not_mint_broke(self, tmp_path):
+        recs = [{"ts": NOW - 3600, "brain_tier": "local",
+                 "per_kind": {"triage": _pk(87, 100)}}]   # 0.87 ≥ 0.85
+        path, _ = self._routed(tmp_path, recs)
+        later = recs + [{"ts": NOW + 3600, "brain_tier": "local",
+                         "per_kind": {"triage": _pk(87, 100)}}]  # unchanged
+        events = mr.load_routing_events(path)
+        # today's default gate raised to 0.90: constant competence must HOLD
+        new = mr.rederive_routing(events, later, NOW + 7200, eval_gate=0.90)
+        assert len(new) == 1 and new[0]["outcome"] == "held", (
+            "a gate bump with unchanged competence must not fabricate broke")
+
+    def test_founding_record_cannot_verdict_after_clock_step(self, tmp_path):
+        # eval summary stamped in the FUTURE (clock stepped forward, then
+        # corrected): route() at true time NOW records eval_ts > routing ts.
+        recs = [{"ts": NOW + 600, "brain_tier": "local",
+                 "per_kind": {"triage": _pk(4, 4)}}]
+        path, rec = self._routed(tmp_path, recs)
+        assert rec.evidence["eval_ts"] == NOW + 600
+        events = mr.load_routing_events(path)
+        # the SAME record is "strictly later" than the routing ts — it must
+        # still be excluded (it is the founding evidence: circular otherwise)
+        new = mr.rederive_routing(events, recs, NOW + 7200)
+        assert new == []
+
+
+class TestEscalationClamp:
+    """F9: eval-fail escalation is clamped to the env ceiling."""
+
+    def test_escalation_never_exceeds_ceiling(self, monkeypatch):
+        monkeypatch.setitem(mr.ENV_CEILING, "midtier", "fast")
+        recs = [{"ts": NOW - 60, "brain_tier": "local",
+                 "per_kind": {"triage": _pk(0, 4)}}]      # local FAILS
+        rec = mr.route("cadence_triage", "midtier", eval_records=recs,
+                       now_ts=NOW)
+        assert rec.recommended_tier == "fast", (
+            "escalation must clamp to the env's reliable ceiling")
+
+    def test_escalation_competence_marked_assumed(self):
+        recs = [{"ts": NOW - 60, "brain_tier": "local",
+                 "per_kind": {"triage": _pk(0, 4)}}]
+        rec = mr.route("cadence_triage", "qth", eval_records=recs, now_ts=NOW)
+        assert rec.recommended_tier == "opus"
+        assert rec.evidence["escalation_competence"] == "assumed-not-measured"
+
+
+class TestDispositionEqualRankUnfit:
+    """F8: running local with a failing local eval is a capability gap even
+    though the ranks match."""
+
+    def test_running_local_failing_eval_is_capability_gap(self):
+        recs = [{"ts": NOW - 60, "brain_tier": "local",
+                 "per_kind": {"triage": _pk(0, 4)}}]
+        rec = mr.route("cadence_triage", "fleet", eval_records=recs,
+                       running_tier="local", now_ts=NOW)
+        assert rec.disposition == "capability_gap"
+
+
+class TestEnvDetectionDegradedMarker:
+    """F12: an unknown env silently becoming fleet must leave a witness."""
+
+    def test_unknown_env_marks_evidence(self):
+        rec = mr.route("cadence_triage", "feild", now_ts=NOW)  # typo
+        assert rec.env == "fleet"
+        assert "unknown env" in rec.evidence.get("env_detection", "")
+
+    def test_known_env_has_no_marker(self):
+        rec = mr.route("cadence_triage", "fleet", now_ts=NOW)
+        assert "env_detection" not in rec.evidence
+
+
+class TestFoldOrphanVerdicts:
+    """F5: rotation drops oldest routing rows; their surviving verdicts must
+    stay visible, not silently improve the score."""
+
+    def test_orphan_verdict_counted_and_rendered(self):
+        events = [
+            {"kind": mr.ROUTING_KIND, "id": "live1", "ts": NOW,
+             "task_kind": "cadence_triage", "recommended_tier": "local",
+             "evidence": {"l_trusted": True, "eval_kind": "triage"}},
+            {"kind": mr.ROUTING_VERDICT_KIND, "routing_id": "rotated-away",
+             "ts": NOW, "outcome": "broke"},
+        ]
+        state = mr.fold_routing(events)
+        assert state["n_orphan_verdicts"] == 1
+        assert "rotated-out" in mr.format_routing_track_record(state)
+
+
+class TestHaikuComparabilityGuards:
+    """F2: raw pass_rate scalars from incomparable runs must not decide
+    promotion."""
+
+    def test_thin_candidate_run_is_not_comparable(self):
+        recs = [_overall(NOW, 0.80, "local"),
+                _overall(NOW + 1, 1.0, "api_small", total=5)]
+        rec = mr.haiku_promotion_recommendation(recs)
+        assert rec["status"] == "not_comparable" and rec["promote"] is None
+
+    def test_budget_truncated_baseline_is_not_comparable(self):
+        recs = [_overall(NOW, 1.0, "local", budget_exhausted=True),
+                _overall(NOW + 1, 0.93, "api_small")]
+        rec = mr.haiku_promotion_recommendation(recs)
+        assert rec["status"] == "not_comparable"
+        assert "budget-truncated" in rec["why"]
+
+    def test_stale_baseline_is_not_comparable(self):
+        recs = [_overall(NOW - 40 * 86400, 0.80, "local"),
+                _overall(NOW, 0.95, "api_small")]
+        rec = mr.haiku_promotion_recommendation(recs)
+        assert rec["status"] == "not_comparable"
+        assert "not contemporaneous" in rec["why"]
+
+    def test_not_comparable_renders_loud_not_silent(self):
+        recs = [_overall(NOW, 0.80, "local"),
+                _overall(NOW + 1, 1.0, "api_small", total=5)]
+        line = mr.format_haiku_promotion(
+            mr.haiku_promotion_recommendation(recs))
+        assert "not_comparable" in line and "🚧" in line
+
+
+class TestHistoryAppendLocking:
+    """F4: the routing ledger has several independent writer processes; the
+    rotate→append sequence is serialized under a sidecar flock."""
+
+    def test_append_creates_lock_sidecar_and_writes(self, tmp_path):
+        from mini_dudeai.history import append_jsonl
+        path = str(tmp_path / "ledger.jsonl")
+        assert append_jsonl(path, [{"a": 1}], 1000) is None
+        assert append_jsonl(path, [{"a": 2}], 1000) is None
+        assert os.path.exists(path + ".lock")
+        rows = [json.loads(l) for l in open(path).read().splitlines()]
+        assert [r["a"] for r in rows] == [1, 2]

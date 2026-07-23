@@ -194,9 +194,14 @@ run_local_prescore() {
   # logs the routing decision (self-scoring). Best-effort: ONLY an explicit
   # "not trusted" (rc 2) skips; UNKNOWN (rc 3) or any error proceeds
   # (uncertainty != untrusted), so a box without the router behaves as before.
+  # timeout: everything mini-adjacent carries one (the script's own doctrine)
+  # — the gate is pure file I/O today, but a wedged home mount must not pin
+  # the cron. stderr is KEPT (07-23 audit): the router's "routing ledger
+  # write FAILED" line is the only witness a permanently unwritable ledger
+  # gets; >/dev/null on it meant recording could fail forever, silently.
   local grc=0
-  PYTHONPATH="$REPO/src" python3 -m mini_dudeai.model_router \
-    --task-kind cadence_triage --l-trusted-gate --record >/dev/null 2>&1 || grc=$?
+  PYTHONPATH="$REPO/src" timeout 60 python3 -m mini_dudeai.model_router \
+    --task-kind cadence_triage --l-trusted-gate --record >/dev/null || grc=$?
   if [ "$grc" -eq 2 ]; then
     echo "mini-cadence: router — tier-L NOT trusted for triage (eval); skipping pre-score (frontier runs cold)."
     return 0

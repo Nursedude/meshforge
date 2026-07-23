@@ -106,19 +106,42 @@ def append_jsonl(path: str, entries: list[dict], max_bytes: int) -> str | None:
 
     Returns None on success, error string on failure. Never raises — a
     disk/perms problem must never crash an observation loop.
+
+    Concurrency (07-23 audit; the cron_verdict.sh truncation-race class,
+    honest_failure_modes #8): some of these files have SEVERAL independent
+    writer processes (the routing ledger: hourly cron + every SessionStart +
+    manual CLI), and rotation rewrites the file via tmp+os.replace — a row
+    appended between the read and the replace was silently lost. The whole
+    rotate→repair→append sequence is serialized under a sidecar flock; a
+    lock failure degrades to the old unlocked behavior (append must never
+    die on a lock problem — the append itself still reports its own errors).
     """
     if not entries:
         return None
-    _rotate_if_needed(path, max_bytes)
-    if os.path.exists(path):
-        _repair_torn_tail(path)
+    lock_fd = None
     try:
-        with open(path, "a") as f:
-            for e in entries:
-                f.write(json.dumps(e, default=str) + "\n")
-        return None
-    except OSError as e:
-        return f"{type(e).__name__}: {e}"
+        try:
+            import fcntl
+            lock_fd = os.open(path + ".lock", os.O_CREAT | os.O_RDWR, 0o644)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        except OSError:
+            lock_fd = None  # degraded: unlocked append (better than no append)
+        _rotate_if_needed(path, max_bytes)
+        if os.path.exists(path):
+            _repair_torn_tail(path)
+        try:
+            with open(path, "a") as f:
+                for e in entries:
+                    f.write(json.dumps(e, default=str) + "\n")
+            return None
+        except OSError as e:
+            return f"{type(e).__name__}: {e}"
+    finally:
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)  # closing releases the flock
+            except OSError:
+                pass
 
 
 class HistoryWriter:
