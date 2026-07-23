@@ -587,7 +587,8 @@ def probe_host_frozen(
             _save_parity_streak(sp, 0)      # garbage → don't false-fire
             return None
 
-        bad: List[Tuple[str, str, str]] = []   # (name, verdict, raw)
+        # (name, verdict, raw, witness_device, failover)
+        bad: List[Tuple[str, str, str, str, bool]] = []
         for t in targets:
             if not isinstance(t, dict):
                 continue
@@ -596,7 +597,9 @@ def probe_host_frozen(
                 continue
             name = str(t.get("name") or t.get("host") or "?")
             raw = str(t.get("raw") or "")
-            bad.append((name, verdict, raw))
+            wdev = str(t.get("witness_device") or "")
+            failover = bool(t.get("failover"))
+            bad.append((name, verdict, raw, wdev, failover))
 
         if not bad:
             note_disposition("host_frozen", "clean")
@@ -612,9 +615,15 @@ def probe_host_frozen(
             )
             return None
 
-        wedge = any(v in _HOST_FROZEN_WEDGE_VERDICTS for _, v, _ in bad)
-        descs = [f"{n}: {v}" + (f" [{r}]" if r else "") for n, v, r in sorted(bad)]
-        names = sorted({n for n, _, _ in bad})
+        wedge = any(v in _HOST_FROZEN_WEDGE_VERDICTS for _, v, _, _, _ in bad)
+
+        def _desc(n, v, r, wdev, fo):
+            tag = ""
+            if wdev:
+                tag = f" via {wdev}" + (" (failover)" if fo else "")
+            return f"{n}: {v}{tag}" + (f" [{r}]" if r else "")
+        descs = [_desc(*b) for b in sorted(bad)]
+        names = sorted({n for n, _, _, _, _ in bad})
         return Signal(
             cls="host_frozen",
             subject=names[0] if len(names) == 1 else "claw-witness",
@@ -624,9 +633,12 @@ def probe_host_frozen(
                     + " — HOST_FROZEN = kernel alive but userspace wedged "
                     "(the self-petted HW watchdog can't catch this); UNREACHABLE "
                     "= host/path down; UNKNOWN = claw witness itself unreachable "
-                    "(lost visibility). Alert-only; check the box."),
+                    "(lost visibility, incl. a failover claw with no route). "
+                    "Alert-only; check the box."),
             issue_ref=None,
-            extra={"targets": [{"name": n, "verdict": v} for n, v, _ in sorted(bad)],
+            extra={"targets": [{"name": n, "verdict": v, "witness_device": wdev,
+                                "failover": fo}
+                               for n, v, _, wdev, fo in sorted(bad)],
                    "streak": streak},
         )
     except Exception:

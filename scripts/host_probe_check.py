@@ -20,10 +20,17 @@ Config (operator-specific values live HERE, never in repo source — MF014):
     ~/.config/meshforge/host_probe_targets.json
     {
       "nats": "localhost:4222",
-      "claw_device": "dudeclaw-01",
+      "claw_device": "dudeclaw-01",           # default witness (back-compat)
       "timeout_s": 8,
       "targets": [
-        {"name": "bot-32", "host": "10.0.0.5", "app_port": 22, "closed_port": 9}
+        # each target may name its OWN ordered witness claw(s): the first is
+        # the authoritative primary (the claw with a route to it); the rest are
+        # failovers, tried only when the primary claw is DARK. A failover claw
+        # that can't reach the target reports UNKNOWN, never a false host-down.
+        {"name": "bot-32", "host": "10.0.0.5", "app_port": 22, "closed_port": 9,
+         "witness": ["dudeclaw-01"]},
+        {"name": "moc5", "host": "10.143.126.75", "app_port": 22, "closed_port": 9,
+         "witness": ["dudeclaw-02"]}
       ]
     }
 
@@ -178,6 +185,75 @@ def _probe_target(req, server: str, device: str, target: dict,
     return last                          # every attempt agreed it's not OK
 
 
+def _resolve_witnesses(target: dict, default_device: str) -> list:
+    """Ordered witness claws for a target: ``target['witness']`` (primary first,
+    failovers after) else ``[default_device]``.
+
+    The FIRST claw is AUTHORITATIVE — it is the witness known to have a route to
+    this target, so its ``UNREACHABLE`` is a real host-down. A non-primary
+    (failover) claw's ``UNREACHABLE`` is NOT trusted as a down verdict: the
+    fleet's claws sit on disjoint subnets (claw-01 on the AREDN site, claw-02 on
+    DudeNET2), so a failover claw that cannot reach a target may simply lack a
+    route, not have found it dead.
+    """
+    w = target.get("witness")
+    if isinstance(w, list):
+        devs = [str(d) for d in w if str(d).strip()]
+        if devs:
+            return devs
+    return [str(default_device)]
+
+
+def _probe_target_with_failover(req, server: str, witnesses: list, target: dict,
+                                timeout_s: float, attempts: int = 3) -> dict:
+    """Probe a target through its ordered witness claws with honest failover.
+
+    The PRIMARY witness (``witnesses[0]``) is authoritative: whatever it reports
+    stands, because it is the claw known to have a route to the target. Failover
+    claws are consulted ONLY when the primary claw itself is DARK (its NATS
+    request errored — the *instrument* is unreachable, not the target). A
+    failover claw that SEES the target's IP stack (``ip_alive=1`` → OK /
+    HOST_FROZEN) restores the witness. But a failover claw reporting UNREACHABLE
+    is AMBIGUOUS — target-down vs no-route from that vantage — and is downgraded
+    to UNKNOWN, never a false 'host down' (honest_failure_modes #1). Records
+    provenance: ``witness_device``, ``failover``, ``attempted``.
+    """
+    primary = witnesses[0]
+    res = _probe_target(req, server, primary, target, timeout_s, attempts)
+    res["witness_device"] = primary
+    res["failover"] = False
+    res["attempted"] = [primary]
+    if res["error"] is None:
+        return res                       # primary answered → authoritative
+
+    # primary claw is DARK → consult failover claws
+    attempted = [primary]
+    fallback = None
+    for dev in witnesses[1:]:
+        fres = _probe_target(req, server, dev, target, timeout_s, attempts)
+        attempted.append(dev)
+        fres["witness_device"] = dev
+        fres["failover"] = True
+        fres["attempted"] = list(attempted)
+        if fres["error"] is None and fres["verdict"] in ("OK", "HOST_FROZEN"):
+            return fres                  # failover saw the stack → definitive
+        if fres["error"] is None:        # answered, but UNREACHABLE/UNKNOWN
+            fres["note"] = (
+                f"failover witness {dev} could not confirm the target "
+                f"(unreachable from its vantage — possible routing gap, not a "
+                f"confirmed host-down); reporting UNKNOWN")
+            fres["verdict"] = "UNKNOWN"
+            fallback = fres
+        else:                            # this failover claw is also dark
+            fres["note"] = f"failover witness {dev} unreachable (claw dark)"
+            fallback = fallback or fres
+    if fallback is not None:
+        fallback["attempted"] = list(attempted)
+        return fallback
+    res["attempted"] = list(attempted)   # primary dark, no failover configured
+    return res
+
+
 def main() -> int:
     home = get_real_user_home()
     config_path = os.path.join(str(home), CONFIG_REL)
@@ -206,7 +282,13 @@ def main() -> int:
     def req(srv, subj, payload, *, timeout_s):
         return _request(srv, subj, payload, token=token, timeout_s=timeout_s)
 
-    results = [_probe_target(req, server, device, t, timeout_s)
+    # Each target names its own ordered witness claw(s) (per-target ``witness``,
+    # else the top-level ``claw_device``). The two fleet claws sit on disjoint
+    # subnets, so each target's PRIMARY witness is the claw with a route to it;
+    # a failover claw is used only when the primary claw itself is dark, and
+    # cannot manufacture a 'host down' from a subnet it can't reach.
+    results = [_probe_target_with_failover(
+                   req, server, _resolve_witnesses(t, device), t, timeout_s)
                for t in targets if isinstance(t, dict)]
     collector_ok = all(r["error"] is None for r in results) if results else True
 
@@ -226,7 +308,10 @@ def main() -> int:
 
     # One-line summary for the cron log; exit 0 = collection ran (a HOST_FROZEN
     # target is still a successful collection — the watchdog renders the alert).
-    summary = ", ".join(f"{r['name']}={r['verdict']}" for r in results) or "no targets"
+    summary = ", ".join(
+        f"{r['name']}={r['verdict']}@{r.get('witness_device', '?')}"
+        + ("(failover)" if r.get("failover") else "")
+        for r in results) or "no targets"
     sys.stdout.write(f"host_probe_check: {summary}\n")
     return 0
 
