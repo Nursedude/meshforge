@@ -62,19 +62,25 @@ SELF="$(basename "$0")"
 # rnsd (Issue #68). Default (no flag): local self-restart-on-code-change.
 # ---------------------------------------------------------------------------
 NO_RESTART=0
+MEMORY_ONLY=0
 for arg in "$@"; do
     case "$arg" in
         --no-restart) NO_RESTART=1 ;;
+        --memory-only) MEMORY_ONLY=1 ;;
         -h|--help)
-            echo "Usage: $SELF [--no-restart]"
-            echo "  --no-restart  Sync memory + deploy/restart the remote fleet as"
-            echo "                usual, but do NOT self-restart this box's local"
-            echo "                daemons (gateway/map/maps)."
+            echo "Usage: $SELF [--no-restart] [--memory-only]"
+            echo "  --no-restart   Sync memory + deploy/restart the remote fleet as"
+            echo "                 usual, but do NOT self-restart this box's local"
+            echo "                 daemons (gateway/map/maps)."
+            echo "  --memory-only  Commit + mirror the Claude memory corpus to every"
+            echo "                 fleet box, then EXIT — NO code pull, NO service"
+            echo "                 restarts anywhere. Safe to cron: no gateway churn"
+            echo "                 (the reason the full sync can't be scheduled)."
             exit 0
             ;;
         *)
             echo "$SELF: unknown argument: $arg" >&2
-            echo "Usage: $SELF [--no-restart]" >&2
+            echo "Usage: $SELF [--no-restart] [--memory-only]" >&2
             exit 2
             ;;
     esac
@@ -622,11 +628,17 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     memory_summaries="$(mirror_memory_to_host "$host")"
 
     # SSH with short connect timeout; BatchMode=yes prevents password prompts
-    # (operators must use key auth for fleet sync).
-    result="$(ssh -o BatchMode=yes -o ConnectTimeout=10 \
-                  -o StrictHostKeyChecking=accept-new \
-                  "$host" "bash -s" <<< "$REMOTE_SCRIPT" 2>&1)"
-    rc=$?
+    # (operators must use key auth for fleet sync). Skipped in --memory-only
+    # mode: that mode is the memory mirror above and nothing else — no code
+    # pull, no service restart on any remote.
+    if [ "$MEMORY_ONLY" = "1" ]; then
+        result=""; rc=0
+    else
+        result="$(ssh -o BatchMode=yes -o ConnectTimeout=10 \
+                      -o StrictHostKeyChecking=accept-new \
+                      "$host" "bash -s" <<< "$REMOTE_SCRIPT" 2>&1)"
+        rc=$?
+    fi
 
     # Pull all summary lines (PASS/FAIL/SKIP/WARN), one per check, then
     # prepend the memory-mirror summaries from this box. WARN is the
@@ -665,6 +677,19 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
         pass_count=$((pass_count + 1))
     fi
 done < "$FLEET_FILE"
+
+# --memory-only stops here: memory was committed+pushed (pre-sync, above) and
+# mirrored to every fleet box (host loop, above). Everything below is the
+# code-deploy half — local self-sync + gateway/map/maps restarts — which is
+# exactly the gateway-churn this mode exists to avoid, so it is safe to cron.
+if [ "$MEMORY_ONLY" = "1" ]; then
+    echo
+    printf 'Hosts:   %d ok, %d failed, %d unreachable\n' \
+        "$pass_count" "$fail_count" "$skip_count"
+    printf 'Actions: %d ok, %d failed, %d warn, %d skipped (memory-only)\n' \
+        "$action_pass" "$action_fail" "$action_warn" "$action_skip"
+    exit "$((action_fail + skip_count))"
+fi
 
 # Local-box self-sync — fleet_hosts excludes this box (the operator
 # runs fleet_sync FROM here), so the remote loop never reaches it.
