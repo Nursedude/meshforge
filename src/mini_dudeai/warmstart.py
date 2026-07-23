@@ -23,7 +23,8 @@ from __future__ import annotations
 import json
 import os
 
-from ._util import read_json
+from ._util import (APP_FLEET_PRESET, APP_MINI_UNIT, APP_REPO_DEFAULT,
+                    APP_REPO_ENV, APP_VERDICT_SUBDIR, read_json)
 
 #: Past this age (s) since the last tick, the brief is treated as historical.
 #: Mirrors brief.DEFAULT_STALE_S (30s tick → >5m means the daemon likely died).
@@ -86,7 +87,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             "## mini-dudeai warm start — no brief yet\n"
             f"mini has ticked (last tick {age} ago) but no "
             "`mini_dudeai_brief.md` exists. Generate one with "
-            "`python3 -m mini_dudeai --preset meshforge_fleet --brief`.\n"
+            f"`python3 -m mini_dudeai --preset {APP_FLEET_PRESET} --brief`.\n"
         )
 
     if last_tick is None:
@@ -100,7 +101,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             f"{int(stale_s)}s). The watcher itself may be down; the brief below "
             "is FROZEN at its last write and may misreport current health. "
             "Verify live before trusting it: "
-            "`systemctl --user status meshforge-mini-dudeai`.\n"
+            f"`systemctl --user status {APP_MINI_UNIT}`.\n"
         )
     else:
         banner = (
@@ -134,11 +135,13 @@ def _default_paths() -> tuple[str, str]:
 
 
 def _current_head() -> str | None:
-    """Best-effort current HEAD of the MeshForge repo (for calibration
-    re-derivation). None on any failure — re-derivation then mints no new
+    """Best-effort current HEAD of THIS app's repo (for calibration
+    re-derivation) — repo env/default come from the _util adapter, so the
+    byte-locked twin never reads the OTHER app's HEAD on a dual-stack box
+    (07-23 audit). None on any failure — re-derivation then mints no new
     verdict and simply surfaces the existing ledger state."""
     import subprocess
-    repo = os.environ.get("MESHFORGE_REPO", "/opt/meshforge")
+    repo = os.environ.get(APP_REPO_ENV, APP_REPO_DEFAULT)
     try:
         out = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
                              capture_output=True, text=True, timeout=5)
@@ -157,7 +160,7 @@ def _read_verdict_marker() -> dict | None:
         path = env
     else:
         home = os.environ.get("HOME") or os.path.expanduser("~")
-        path = os.path.join(home, ".cache", "meshforge", "honest_verdict.json")
+        path = os.path.join(home, APP_VERDICT_SUBDIR, "honest_verdict.json")
     data, _ = read_json(path)
     return data if isinstance(data, dict) else None
 

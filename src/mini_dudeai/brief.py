@@ -18,7 +18,7 @@ import json
 import os
 import re
 
-from ._util import atomic_write_text, read_json
+from ._util import APP_MINI_UNIT, atomic_write_text, read_json
 
 DEFAULT_STALE_S = 300.0  # 30s tick → >5m means the daemon likely stopped
 ESCALATION_WINDOW_S = 86400.0  # only surface escalations fired in the last 24h
@@ -152,7 +152,7 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append("⚠️ **mini-dudeai has no state yet** (never ticked here, or state file missing).")
     elif stale:
         lines.append(f"🔴 **STALE** — last tick {age} ago (> {int(stale_s)}s). The watcher itself "
-                     f"may be down: `systemctl --user status meshforge-mini-dudeai`.")
+                     f"may be down: `systemctl --user status {APP_MINI_UNIT}`.")
     else:
         err_names = "; ".join(state.get("source_errors") or [])
         lines.append(f"🟢 alive — {state.get('rule_count', len(rules))} rules, "

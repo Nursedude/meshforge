@@ -14,6 +14,22 @@ import zlib
 # and slurping it unbounded on a 512MB-class box is worse than erroring.
 DEFAULT_FETCH_MAX_BYTES = 8_000_000
 
+# ── app adapter (the twin-divergence point) ─────────────────────────────────
+# The mini engine core is byte-locked across the MeshForge/MeshAnchor twins
+# (parity_check tiers 1-2), so any APP-specific value a locked module needs
+# lives HERE — this file is the deliberately-UNLOCKED namespacing/adapter
+# seam, and the MA copy carries MA's values. Before 07-23, locked files
+# (brief.py, warmstart.py) carried literal meshforge unit/repo/preset names:
+# on the dual-stack box MA's warm-start attributed MeshForge's HEAD and
+# honest-verdict to MeshAnchor-side claims, and MA's rendered remediation
+# named units that don't exist there. Locked modules import these; never
+# hardcode an app name in a byte-locked file again.
+APP_MINI_UNIT = "meshforge-mini-dudeai"      # the mini daemon's --user unit
+APP_FLEET_PRESET = "meshforge_fleet"         # the fleet preset name
+APP_REPO_ENV = "MESHFORGE_REPO"              # env override for the repo root
+APP_REPO_DEFAULT = "/opt/meshforge"          # repo root (calibration HEAD)
+APP_VERDICT_SUBDIR = os.path.join(".cache", "meshforge")  # honest_verdict dir
+
 
 def resolve_home():
     """The ONE home-dir resolution for mini artifacts: $MINI_DUDEAI_HOME → ~.

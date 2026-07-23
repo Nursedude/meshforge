@@ -210,7 +210,11 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
     now = time.time() if now is None else now
     iso = iso_or_none(now)
     if mode not in MODES:
-        mode = DEFAULT_MODE
+        # Reject what the author cannot have meant (hfm #3; 07-23 audit): a
+        # typo'd library-caller mode silently becoming "fallback" would render
+        # in the brief as a frontier outage that never happened. CLI callers
+        # are argparse-validated and can't reach this.
+        raise ValueError(f"unknown triage mode {mode!r} (want one of {MODES})")
     proposed, total = load_proposed_deltas(deltas_path, cap=max_deltas)
     base = {
         "ts": now,

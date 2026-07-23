@@ -7831,13 +7831,71 @@ def test_dream_stall_inert_when_cadence_failing_defers_to_78():
     assert disp["disp"] == "inert" and "#78" in disp["reason"]
 
 
-def test_dream_stall_inert_when_stale_cadence_verdict():
+def test_dream_stall_inert_when_stale_cadence_verdict_within_horizon():
+    # 3d old: past the 2d liveness cap but inside 2x — #78 owns it (it still
+    # judges a WIRED cron there), so this probe defers.
     _reset_disp()
     sig = probe_dream_ratification_stalled(
         deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
-        verdicts_text=_cadence_line("OK", 5 * 86400, _STALL_NOW),  # 5d old > 2d cap
+        verdicts_text=_cadence_line("OK", 3 * 86400, _STALL_NOW),
         now_ts=_STALL_NOW)
     assert sig is None
+
+
+def test_dream_stall_fires_on_ancient_verdict_unwired_leg():
+    # 07-23 audit (mutual-deferral gap): #78 only judges crons currently WIRED
+    # in the crontab — a deleted/never-installed cadence cron is an orphan it
+    # ignores. Beyond 2x the liveness window this probe must fire itself, or
+    # the propose->ratify loop stalls with ZERO watchers.
+    _reset_disp()
+    sig = probe_dream_ratification_stalled(
+        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
+        verdicts_text=_cadence_line("OK", 5 * 86400, _STALL_NOW),  # > 2x 2d
+        now_ts=_STALL_NOW)
+    assert sig is not None
+    assert sig.extra.get("leg") == "unwired_cadence"
+    assert "crontab" in sig.detail
+
+
+def test_dream_stall_missing_age_s_is_indeterminate_not_fresh():
+    # A verdict record without numeric age_s must not read as "landed just
+    # now" (the healthiest possible value) — 07-23 audit.
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    from utils import watchdog_probes_mini as wpm
+    orig = wpm._latest_cadence_verdict
+    try:
+        wpm._latest_cadence_verdict = lambda text, now: (
+            {"name": "mini_cadence", "status": "OK"}, None)  # no age_s
+        sig = probe_dream_ratification_stalled(
+            deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
+            verdicts_text="anything",
+            now_ts=_STALL_NOW)
+    finally:
+        wpm._latest_cadence_verdict = orig
+    assert sig is None
+    disp = collect_dispositions().get("dream_ratification_stalled")
+    assert disp and disp.get("disp") == "indeterminate"
+
+
+def test_dream_stall_parser_error_is_indeterminate_not_benign_absence():
+    # A fleet_snapshot parser failure is NOT "no verdict on this box" — the
+    # probe must hold indeterminate, never retire under a benign label.
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    from utils import watchdog_probes_mini as wpm
+    orig = wpm._latest_cadence_verdict
+    try:
+        wpm._latest_cadence_verdict = lambda text, now: (None, "ImportError: x")
+        sig = probe_dream_ratification_stalled(
+            deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
+            verdicts_text="anything",
+            now_ts=_STALL_NOW)
+    finally:
+        wpm._latest_cadence_verdict = orig
+    assert sig is None
+    disp = collect_dispositions().get("dream_ratification_stalled")
+    assert disp and disp.get("disp") == "indeterminate"
 
 
 def test_dream_stall_inert_on_gateway_box_no_cadence_verdict():

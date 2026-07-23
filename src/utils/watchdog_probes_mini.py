@@ -734,18 +734,23 @@ def _read_cron_verdicts_text(home: Optional[str]) -> Optional[str]:
         return None
 
 
-def _latest_cadence_verdict(verdicts_text: str, now: float) -> Optional[dict]:
-    """Latest ``mini_cadence`` verdict ({status, age_s, ...}) or None. Reuses the
-    fleet_snapshot parser (last-per-name) so the log format lives in ONE place —
-    the same parser cron_verdict_stale (#78) judges by."""
+def _latest_cadence_verdict(verdicts_text: str, now: float) -> tuple:
+    """(latest ``mini_cadence`` verdict dict or None, error string or None).
+    Reuses the fleet_snapshot parser (last-per-name) so the log format lives in
+    ONE place — the same parser cron_verdict_stale (#78) judges by.
+
+    Two-slot return (07-23 audit): a parser import/parse ERROR is not the same
+    fact as "no verdict in the log" — collapsing both to None let a
+    fleet_snapshot refactor silently retire the probe under a benign
+    not-the-manager label instead of indeterminate."""
     try:
         from utils.fleet_snapshot import _parse_cron_verdicts
         for v in _parse_cron_verdicts(verdicts_text, now):
             if v.get("name") == _CADENCE_VERDICT_NAME:
-                return v
-    except Exception:
-        return None
-    return None
+                return v, None
+    except Exception as e:  # noqa: BLE001 — surfaced, not swallowed
+        return None, f"{type(e).__name__}: {e}"
+    return None, None
 
 
 def probe_dream_ratification_stalled(
@@ -804,6 +809,19 @@ def probe_dream_ratification_stalled(
                     cls, "inert",
                     reason="no deltas file; box does not run the dream loop")
                 return None
+            # _load_deltas maps OSError to [] (a daemon-safe posture) — but for
+            # THIS probe a present-but-unreadable file reading as "0 backlog =
+            # clean" is exactly the #60 sandbox-drift blind spot (07-23 audit):
+            # prove readability first, and hold indeterminate when we can't.
+            try:
+                with open(deltas_path, "rb") as _fh:
+                    _fh.read(1)
+            except OSError as e:
+                note_disposition(
+                    cls, "indeterminate",
+                    reason=f"deltas file unreadable ({type(e).__name__}) — "
+                           f"backlog unobservable, never a false clean")
+                return None
             deltas = _dreams._load_deltas(deltas_path)
 
         # --- cadence-liveness gate: scopes to the manager box AND avoids
@@ -815,15 +833,56 @@ def probe_dream_ratification_stalled(
                 cls, "indeterminate",
                 reason="cron_verdicts.log unreadable — cadence liveness unobservable")
             return None
-        cadence = _latest_cadence_verdict(verdicts_text, now)
+        cadence, parse_err = _latest_cadence_verdict(verdicts_text, now)
+        if parse_err is not None:
+            note_disposition(
+                cls, "indeterminate",
+                reason=f"cadence verdict parse failed ({parse_err}) — "
+                       f"liveness unobservable, not benign absence")
+            return None
         if cadence is None:
             note_disposition(
                 cls, "inert",
                 reason="no mini_cadence verdict — no ratifier on this box (not the manager)")
             return None
         status = str(cadence.get("status", "")).upper()
-        age = float(cadence.get("age_s", 0.0) or 0.0)
+        age_raw = cadence.get("age_s")
+        if not isinstance(age_raw, (int, float)):
+            # A verdict record without a numeric age is NOT "landed just now"
+            # — that would be the healthiest possible reading of a parser
+            # shape drift (07-23 audit).
+            note_disposition(
+                cls, "indeterminate",
+                reason="cadence verdict lacks a numeric age_s — freshness "
+                       "unobservable")
+            return None
+        age = float(age_raw)
         if status.startswith(("FAIL", "CONCERN")) or age > cadence_alive_max_age_s:
+            # Mutual-deferral guard (07-23 audit): #78 judges only crons
+            # currently WIRED in the crontab — a deleted/never-installed
+            # cadence cron is an orphan it explicitly ignores, so "defer to
+            # #78" on an ancient verdict would leave the value loop stalled
+            # with ZERO watchers. Within the horizon, #78 owns it; beyond
+            # 2× the liveness window, fire ourselves and say both readings.
+            if age > 2 * cadence_alive_max_age_s:
+                days = int(age // 86400)
+                return Signal(
+                    cls="dream_ratification_stalled",
+                    subject="dream-loop",
+                    severity="degraded",
+                    detail=(
+                        f"mini_cadence verdict is ancient ({days}d old) — "
+                        f"beyond cron_verdict_stale's wired-cron horizon. If "
+                        f"the cadence cron was removed or never wired here, "
+                        f"the propose->ratify loop is stalled with no other "
+                        f"watcher (the 07-23 mutual-deferral gap); if it is "
+                        f"wired and failing, #78 is already paging. Check: "
+                        f"crontab -l | grep mini_cadence"),
+                    issue_ref=None,
+                    extra={"cadence_age_s": int(age),
+                           "cadence_status": status,
+                           "leg": "unwired_cadence"},
+                )
             note_disposition(
                 cls, "inert",
                 reason="cadence down/stale — cron_verdict_stale (#78) owns this")
@@ -851,6 +910,13 @@ def probe_dream_ratification_stalled(
         ages = [now - first_proposed[k] for k in unresolved
                 if k in first_proposed]
         oldest = max(ages) if ages else 0.0
+        # Unresolved proposals whose rows carry no numeric ts (writer shape
+        # drift) cannot prove the backlog is YOUNG — excluding them let
+        # `oldest` sit at 0.0 and read clean regardless of backlog size
+        # (07-23 audit). They have been there since an unprovable time:
+        # count them as old enough to matter, not as fresh.
+        if any(k not in first_proposed for k in unresolved):
+            oldest = max(oldest, min_age_s)
         n = len(unresolved)
         if n < min_keys or oldest < min_age_s:
             note_disposition(cls, "clean")

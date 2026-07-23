@@ -226,6 +226,20 @@ if ! command -v claude >/dev/null 2>&1; then
   exit 75
 fi
 
+# A STALE pre-triage witness (a prior run's, possibly mode:fallback over a
+# different delta set) must not be consumed as current by the frontier prompt
+# below — the brief gates the same artifact on TRIAGE_FRESH_S (24h), so the
+# frontier consumer gets the same freshness bar: drop an old witness before
+# the (re)generation attempt (07-23 audit).
+TRIAGE_WITNESS="${MINI_DUDEAI_HOME:-$HOME}/mini_dudeai_cadence_triage.json"
+if [ -f "$TRIAGE_WITNESS" ]; then
+  _tw_age=$(( $(date +%s) - $(stat -c %Y "$TRIAGE_WITNESS" 2>/dev/null || echo 0) ))
+  if [ "$_tw_age" -gt 86400 ]; then
+    echo "mini-cadence: dropping stale pre-triage witness (${_tw_age}s old > 86400s)."
+    rm -f "$TRIAGE_WITNESS"
+  fi
+fi
+
 # Pre-score the backlog on the local tier so the frontier session starts
 # oriented (best-effort; never blocks the session — see run_local_prescore).
 run_local_prescore || true
@@ -239,9 +253,11 @@ rc=0
 timeout "$TIMEOUT_S" claude --model "$MODEL" -p "Run the mini-dudeai cadence pass per $RUNBOOK. \
 Resolve every proposed memory-delta: verify each against live truth, then ratify \
 (authoring a verified canonical memory via mini_dudeai.memory_apply) or reject. \
-A local pre-triage may exist at ~/mini_dudeai_cadence_triage.json — use its per-key \
-suggested_disposition to PRIORITISE your pass, but it ran NO checks, so verify before \
-you ratify (a suggestion is not verification). Record a --reason on each reject. \
+A local pre-triage may exist at ~/mini_dudeai_cadence_triage.json — check its ts is \
+from THIS run (a stale or mode:fallback witness describes an older backlog; ignore it), \
+then use its per-key suggested_disposition to PRIORITISE your pass. It ran NO checks, \
+so verify before you ratify (a suggestion is not verification). Record a --reason on \
+each reject. \
 Never write verified=True without a check you ran. One bounded pass, then stop." || rc=$?
 echo "mini-cadence: cadence session finished (exit $rc)."
 

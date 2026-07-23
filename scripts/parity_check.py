@@ -128,6 +128,11 @@ BYTE_IDENTICAL = (
     "src/mini_dudeai/actions/noop.py",
     "src/mini_dudeai/actions/file_annotate.py",
     "src/mini_dudeai/actions/nats_action.py",
+    # cadence_fallback exports constants byte-locked brief.py consumes
+    # (CADENCE_TRIAGE_BASENAME, TRIAGE_FRESH_S) — an MA-side edit would change
+    # locked-module behavior invisibly (07-23 audit, lock-boundary finding).
+    # It is app-generic (no app names), so lock it rather than shape-pin it.
+    "src/mini_dudeai/cadence_fallback.py",
 )
 
 # The fork-pin block is compared as a normalized sub-block: the lines that
@@ -176,6 +181,20 @@ SHAPE_SYMBOLS = {
         "def _build_app_block(",
         "def _read_deployment_role(",
         'status["app"] = _build_app_block()',
+    ),
+    # _util is the mini engine's DELIBERATE twin-divergence point: byte-locked
+    # modules import their app-specific values (unit/preset/repo/verdict-dir)
+    # from here, and each app's copy carries its own values (07-23 audit —
+    # locked files used to hardcode meshforge names, forcing a latent bug into
+    # the MA twin). Shape-pin the adapter contract + the namespacing SSOT so
+    # an app can't drop a symbol the locked modules depend on.
+    "src/mini_dudeai/_util.py": (
+        "def resolve_home(",
+        "APP_MINI_UNIT",
+        "APP_FLEET_PRESET",
+        "APP_REPO_ENV",
+        "APP_REPO_DEFAULT",
+        "APP_VERDICT_SUBDIR",
     ),
 }
 

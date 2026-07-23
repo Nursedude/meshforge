@@ -282,11 +282,14 @@ class TestMode:
         assert w["mode"] == "pre-score"
         assert w["brain_tier"] == "local" and w["never_ratifies"] is True
 
-    def test_invalid_mode_coerced_to_default(self, tmp_path):
+    def test_invalid_mode_refused_loud(self, tmp_path):
+        # 07-23 audit (hfm #3): a typo'd library-caller mode silently becoming
+        # "fallback" rendered in the brief as a frontier outage that never
+        # happened — reject what the author cannot have meant.
         path = _deltas_file(tmp_path, [_delta("a")])
-        w = cf.run(path, FakeBackend(reply=_good_reply(["a"])),
+        with pytest.raises(ValueError, match="unknown triage mode"):
+            cf.run(path, FakeBackend(reply=_good_reply(["a"])),
                    frontier_rc=1, now=NOW, mode="bogus")
-        assert w["mode"] == "fallback"
 
     def test_mode_carried_on_empty_backlog_note(self, tmp_path):
         # Even the deterministic no-backlog note carries the mode (base dict).
