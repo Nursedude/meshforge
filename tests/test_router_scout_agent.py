@@ -388,17 +388,19 @@ class TestRtunWatchdog:
         assert any("absent" in n and "rtun" in n for n in tick["notes"])
         assert tick["ok"] is True
 
-    def test_future_mtime_clamps_to_zero_never_negative(self, sandbox):
-        """Clock skew / future mtime must clamp to 0, not emit a negative age
-        (honest_failure_modes #6: forgeable wall-clock deltas)."""
+    def test_future_mtime_is_unobservable_not_freshest(self, sandbox):
+        """Clock skew / future mtime must clamp to 0 (never a negative age,
+        hfm #6) — but it must NOT read as `ok` either (07-23 audit): an
+        RTC-less router that stamped ahead then corrected would report a
+        genuinely stale heartbeat as the freshest possible value. Freshness
+        is unobservable until real time overtakes the stamp."""
         hb = sandbox.tmp / "rtun_hb"
         hb.write_text("future\n")
         future = int(hb.stat().st_mtime) + 5000
         os.utime(hb, (future, future))
         _, tick, _, _ = run(sandbox, "collect", env_extra=self.ENV_OK,
                             conf_lines=[f'RTUN_HEARTBEAT={hb}\n'])
-        assert tick["rtun_watchdog"]["heartbeat_age_s"] == 0
-        assert tick["rtun_watchdog"]["state"] == "ok"
+        assert tick["rtun_watchdog"]["state"] == "unobservable"
 
 
 class TestCheck:
