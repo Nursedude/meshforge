@@ -166,3 +166,96 @@ class TestWitnessFailover:
                       {"c1": ConnectionError("x"), "c2": ConnectionError("y")})
         assert r["verdict"] == "UNKNOWN" and r["failover"] is True
         assert r["error"] is not None and set(r["attempted"]) == {"c1", "c2"}
+
+
+class TestResolveWitnessesShapes:
+    """07-23 audit: a bare-string witness silently resolved to the DEFAULT
+    claw — the wrong-subnet vantage becoming the authoritative primary and
+    manufacturing a sustained false host-down. Strings are honored; garbage
+    shapes refuse loud (honest_failure_modes #3)."""
+
+    def test_bare_string_is_one_element_list(self, hpc):
+        assert hpc._resolve_witnesses(
+            {"witness": "dudeclaw-02"}, "dudeclaw-01") == ["dudeclaw-02"]
+
+    def test_garbage_shape_raises(self, hpc):
+        with pytest.raises(ValueError, match="malformed 'witness'"):
+            hpc._resolve_witnesses({"witness": {"dev": "x"}}, "d")
+
+    def test_blank_string_raises(self, hpc):
+        with pytest.raises(ValueError):
+            hpc._resolve_witnesses({"witness": "   "}, "d")
+
+
+class TestBlindPrimaryFailover:
+    """07-23 audit: a primary claw that ANSWERS with an unparseable result
+    (error None, all fields None) blocked failover forever — the instrument
+    was blind but treated as authoritative."""
+
+    def _run(self, hpc, witnesses, replies):
+        return hpc._probe_target_with_failover(
+            _fake_req(replies), "s", witnesses, _TARGET, 1, attempts=1)
+
+    def test_blind_primary_consults_failover(self, hpc):
+        garbage = {"ok": True, "result": "totally-new-firmware-format"}
+        r = self._run(hpc, ["c1", "c2"], {"c1": garbage, "c2": _reply(1)})
+        assert r["verdict"] == "OK"
+        assert r["witness_device"] == "c2" and r["failover"] is True
+
+    def test_blind_primary_no_failover_stays_unknown(self, hpc):
+        garbage = {"ok": True, "result": "???"}
+        r = self._run(hpc, ["c1"], {"c1": garbage})
+        assert r["verdict"] == "UNKNOWN"
+        assert "unparseable" in r.get("note", "")
+
+    def test_blind_failover_note_is_not_routing_gap(self, hpc):
+        # a garbage-answering FAILOVER must not claim an observation
+        # ("unreachable from its vantage") that never happened
+        garbage = {"ok": True, "result": "???"}
+        r = self._run(hpc, ["c1", "c2"],
+                      {"c1": ConnectionError("dark"), "c2": garbage})
+        assert r["verdict"] == "UNKNOWN"
+        assert "unparseable" in r.get("note", "")
+        assert "routing gap" not in r.get("note", "")
+
+
+class TestDarkClawRetryCap:
+    """07-23 audit: a transport-dead claw burned attempts x timeout per
+    target; two consecutive transport failures now stop the re-probe."""
+
+    def test_dark_claw_stops_after_two_attempts(self, hpc):
+        calls = []
+
+        def req(srv, subj, payload, *, timeout_s):
+            calls.append(subj)
+            raise ConnectionError("dark")
+        r = hpc._probe_target(req, "s", "c1", _TARGET, 1, attempts=5)
+        assert len(calls) == 2
+        assert r["verdict"] == "UNKNOWN" and r["attempts"] == 2
+
+    def test_answering_not_ok_keeps_full_reprobe_budget(self, hpc):
+        # the false-wedge guard must keep re-probing an ANSWERING claw
+        calls = []
+
+        def req(srv, subj, payload, *, timeout_s):
+            calls.append(subj)
+            return _reply(1, banner=0, kstack=1)  # HOST_FROZEN each time
+        r = hpc._probe_target(req, "s", "c1", _TARGET, 1, attempts=3)
+        assert len(calls) == 3
+        assert r["verdict"] == "HOST_FROZEN" and r["attempts"] == 3
+
+
+class TestReaderWriterCoupling:
+    """honest_failure_modes #5: the collector (writer) and the watchdog probe
+    (reader) share the state-file basename by coincidence, not by one
+    constant — pin them together so drift fails a test, not the fleet."""
+
+    def test_state_basename_matches_probe_reader(self, hpc):
+        probe_src = os.path.join(
+            os.path.dirname(__file__), '..', 'src', 'utils',
+            'watchdog_probes_liveness.py')
+        with open(probe_src, encoding='utf-8') as fh:
+            src = fh.read()
+        assert f'"{hpc.STATE_BASENAME}"' in src, (
+            "watchdog_probes_liveness must read the SAME state basename "
+            "host_probe_check writes")

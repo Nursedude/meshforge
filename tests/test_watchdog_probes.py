@@ -4535,6 +4535,22 @@ class TestHostFrozen:
         """No verdict file (not the claw's brain box) → INERT."""
         assert self._fire(tmp_path, None) is None
 
+    def test_witness_provenance_lands_in_extra(self, tmp_path):
+        # 07-23 audit: the collector writes witness_device/failover and the
+        # NOC's rollup fan-out reads them from Signal.extra — this is the
+        # middle hop that joins writer to reader, previously unpinned. A
+        # regression dropping the copy would render "via ?" fleet-wide with
+        # every suite green.
+        doc = self._doc("HOST_FROZEN", ip_alive=1, app_state="open", banner=0)
+        doc["targets"][0]["witness_device"] = "dudeclaw-02"
+        doc["targets"][0]["failover"] = True
+        sig = self._fire(tmp_path, doc)
+        assert sig is not None
+        t = sig.extra["targets"][0]
+        assert t["witness_device"] == "dudeclaw-02"
+        assert t["failover"] is True
+        assert "via dudeclaw-02 (failover)" in sig.detail
+
     def test_frozen_fires_wedge(self, tmp_path):
         doc = self._doc("HOST_FROZEN", ip_alive=1, app_state="open", banner=0,
                         raw="host_probe 10.0.0.5: ip_alive=1 app22=open banner=0B kstack=0 rtt_ms=9")

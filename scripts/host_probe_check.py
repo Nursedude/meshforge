@@ -176,11 +176,25 @@ def _probe_target(req, server: str, device: str, target: dict,
     disambiguated from a real freeze by the kstack hung-task signal in
     _verdict, so a chronically loaded box no longer false-pages HOST_FROZEN.)"""
     last = None
+    dark_streak = 0
     for i in range(max(1, attempts)):
         last = _probe_once(req, server, device, target, timeout_s)
         if last["verdict"] == "OK":
             last["attempts"] = i + 1
             return last                  # alive — stop, never a transient wedge
+        # A transport-DARK claw can never produce an OK, so burning every
+        # remaining attempt's full timeout on it only stacks worst-case
+        # runtime (attempts × timeout per dark claw per target — the 07-23
+        # audit's budget finding). Two consecutive transport failures =
+        # the claw is dark this run; stop. Answering-but-not-OK verdicts
+        # keep the full re-probe budget (that is the false-wedge guard).
+        if last["error"] is not None:
+            dark_streak += 1
+            if dark_streak >= 2:
+                last["attempts"] = i + 1
+                return last
+        else:
+            dark_streak = 0
     last["attempts"] = max(1, attempts)
     return last                          # every attempt agreed it's not OK
 
@@ -197,10 +211,25 @@ def _resolve_witnesses(target: dict, default_device: str) -> list:
     route, not have found it dead.
     """
     w = target.get("witness")
+    if isinstance(w, str) and w.strip():
+        # A bare string is the natural one-element spelling. Silently
+        # absorbing it into the DEFAULT claw would make a wrong-subnet
+        # witness authoritative and manufacture a sustained false host-down
+        # (07-23 audit) — honor the author's obvious intent instead.
+        w = [w]
     if isinstance(w, list):
         devs = [str(d) for d in w if str(d).strip()]
         if devs:
             return devs
+        # explicitly-empty list = "use the default" (pinned back-compat)
+        return [str(default_device)]
+    if w is not None:
+        # Present but unusable (dict, number, blank string): the author
+        # cannot have meant "use the default claw" — refuse loud rather than
+        # probe from a vantage they never chose (honest_failure_modes #3).
+        raise ValueError(
+            f"malformed 'witness' for target {target.get('name')!r}: {w!r} "
+            f"(want a claw name or a list of claw names)")
     return [str(default_device)]
 
 
@@ -223,10 +252,20 @@ def _probe_target_with_failover(req, server: str, witnesses: list, target: dict,
     res["witness_device"] = primary
     res["failover"] = False
     res["attempted"] = [primary]
+    if res["error"] is None and res.get("ip_alive") is not None:
+        return res                       # primary answered with a parseable
+                                         # observation → authoritative
     if res["error"] is None:
-        return res                       # primary answered → authoritative
+        # Primary ANSWERED but its result parsed to nothing (all fields None
+        # — firmware/format drift): the instrument is BLIND, not the target.
+        # Before 07-23 this blocked failover entirely (error None read as
+        # "authoritative") and every target it witnessed sat in permanent
+        # UNKNOWN while a healthy failover claw idled.
+        res["note"] = (
+            f"primary witness {primary} answered but its result was "
+            f"unparseable — instrument blind; consulting failovers")
 
-    # primary claw is DARK → consult failover claws
+    # primary claw is DARK or BLIND → consult failover claws
     attempted = [primary]
     fallback = None
     for dev in witnesses[1:]:
@@ -238,10 +277,17 @@ def _probe_target_with_failover(req, server: str, witnesses: list, target: dict,
         if fres["error"] is None and fres["verdict"] in ("OK", "HOST_FROZEN"):
             return fres                  # failover saw the stack → definitive
         if fres["error"] is None:        # answered, but UNREACHABLE/UNKNOWN
-            fres["note"] = (
-                f"failover witness {dev} could not confirm the target "
-                f"(unreachable from its vantage — possible routing gap, not a "
-                f"confirmed host-down); reporting UNKNOWN")
+            if fres.get("ip_alive") is None:
+                # Answered garbage — no observation happened; don't describe
+                # a routing gap that was never observed (07-23 audit).
+                fres["note"] = (
+                    f"failover witness {dev} answered but its result was "
+                    f"unparseable — instrument blind; reporting UNKNOWN")
+            else:
+                fres["note"] = (
+                    f"failover witness {dev} could not confirm the target "
+                    f"(unreachable from its vantage — possible routing gap, "
+                    f"not a confirmed host-down); reporting UNKNOWN")
             fres["verdict"] = "UNKNOWN"
             fallback = fres
         else:                            # this failover claw is also dark
@@ -287,9 +333,27 @@ def main() -> int:
     # subnets, so each target's PRIMARY witness is the claw with a route to it;
     # a failover claw is used only when the primary claw itself is dark, and
     # cannot manufacture a 'host down' from a subnet it can't reach.
-    results = [_probe_target_with_failover(
-                   req, server, _resolve_witnesses(t, device), t, timeout_s)
-               for t in targets if isinstance(t, dict)]
+    results = []
+    for t in targets:
+        if not isinstance(t, dict):
+            continue
+        try:
+            wl = _resolve_witnesses(t, device)
+        except ValueError as e:
+            # Malformed witness config: an honest UNKNOWN with the config
+            # error as the witness — never probed from a default vantage the
+            # author didn't choose (honest_failure_modes #3).
+            sys.stderr.write(f"host_probe_check: {e}\n")
+            results.append({
+                "name": str(t.get("name") or t.get("host") or "?"),
+                "host": str(t.get("host") or ""), "verdict": "UNKNOWN",
+                "ip_alive": None, "app_state": None, "banner": None,
+                "kstack": None, "rtt_ms": None, "raw": "",
+                "error": f"config: {e}", "witness_device": None,
+                "failover": False, "attempted": []})
+            continue
+        results.append(_probe_target_with_failover(
+            req, server, wl, t, timeout_s))
     collector_ok = all(r["error"] is None for r in results) if results else True
 
     state = {"ts": time.time(), "collector_ok": collector_ok,
