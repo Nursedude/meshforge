@@ -140,7 +140,8 @@ class PeerInfo:
     uptime: float = 0.0
     health_score: float = 0.0
     failover_state: str = ""
-    last_heartbeat: float = 0.0
+    last_heartbeat: float = 0.0          # wall-clock (time.time) — for display only
+    last_heartbeat_mono: float = 0.0     # monotonic anchor — drives liveness/failover
     missed_count: int = 0
     alive: bool = False
 
@@ -424,7 +425,7 @@ class GatewayHeartbeat:
         """Handle MQTT connection established."""
         if rc == 0:
             self._mqtt_connected = True
-            self._last_mqtt_connect = time.time()
+            self._last_mqtt_connect = time.monotonic()
             logger.info("Gateway heartbeat MQTT connected to %s:%d",
                        self._config.mqtt_broker, self._config.mqtt_port)
 
@@ -490,7 +491,8 @@ class GatewayHeartbeat:
             peer.uptime = data.get('uptime', 0)
             peer.health_score = data.get('health_score', 0)
             peer.failover_state = data.get('failover_state', '')
-            peer.last_heartbeat = time.time()
+            peer.last_heartbeat = time.time()          # display
+            peer.last_heartbeat_mono = time.monotonic()  # liveness decision
             peer.missed_count = 0
             peer.alive = True
 
@@ -720,11 +722,23 @@ class GatewayHeartbeat:
             self._stop_event.wait(timeout=self._config.heartbeat_interval)
 
     def _check_peers(self) -> None:
-        """Check all tracked peers for missed heartbeats."""
-        now = time.time()
+        """Check all tracked peers for missed heartbeats.
 
-        # Grace period after MQTT reconnect — skip checks while catching up
-        if now - self._last_mqtt_connect < self._config.heartbeat_interval * 2:
+        Liveness aging is measured on time.monotonic(), never wall-clock: on the
+        RTC-less Pi fleet an NTP forward step would otherwise inflate `elapsed`
+        past the timeout and forge a peer-down → a SECONDARY promotes to ACTIVE
+        while the PRIMARY is still alive = the split-brain this module's role
+        model exists to prevent. A backward step forged the inverse (a dead peer
+        reads alive forever → missed failover). Monotonic never steps, so both
+        vanish. Wall-clock `last_heartbeat` is kept for the TUI display only.
+        """
+        now_mono = time.monotonic()
+
+        # Grace period after MQTT reconnect — skip checks while catching up.
+        # `_last_mqtt_connect` == 0.0 means "never connected" (no grace yet).
+        if self._last_mqtt_connect and (
+            now_mono - self._last_mqtt_connect < self._config.heartbeat_interval * 2
+        ):
             return
 
         timeout = self._config.heartbeat_interval * self._config.missed_heartbeats_threshold
@@ -734,7 +748,13 @@ class GatewayHeartbeat:
                 if not peer.alive:
                     continue
 
-                elapsed = now - peer.last_heartbeat
+                # An alive peer always has a monotonic stamp (set in the same
+                # block that sets alive=True). Guard the inconsistent case rather
+                # than let a 0.0 default forge a huge elapsed → false down.
+                if peer.last_heartbeat_mono <= 0:
+                    continue
+
+                elapsed = now_mono - peer.last_heartbeat_mono
                 if elapsed > self._config.heartbeat_interval:
                     peer.missed_count = int(elapsed / self._config.heartbeat_interval)
 

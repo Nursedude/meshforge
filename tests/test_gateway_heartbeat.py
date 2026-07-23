@@ -239,6 +239,7 @@ class TestPeerChecker:
             role='primary',
             alive=True,
             last_heartbeat=time.time() - 100,  # 100s ago
+            last_heartbeat_mono=time.monotonic() - 100,  # liveness anchor
         )
 
         hb._check_peers()
@@ -255,6 +256,7 @@ class TestPeerChecker:
             role='primary',
             alive=True,
             last_heartbeat=time.time(),  # Just now
+            last_heartbeat_mono=time.monotonic(),
         )
 
         hb._check_peers()
@@ -366,7 +368,7 @@ class TestReconnectGracePeriod:
         hb = GatewayHeartbeat(config=secondary_config)
 
         # Simulate MQTT reconnect just happened
-        hb._last_mqtt_connect = time.time()
+        hb._last_mqtt_connect = time.monotonic()
 
         # Peer with old heartbeat (would normally be declared down)
         hb._peers['gw-primary'] = PeerInfo(
@@ -374,6 +376,7 @@ class TestReconnectGracePeriod:
             role='primary',
             alive=True,
             last_heartbeat=time.time() - 100,
+            last_heartbeat_mono=time.monotonic() - 100,
         )
 
         hb._check_peers()
@@ -386,13 +389,14 @@ class TestReconnectGracePeriod:
         hb = GatewayHeartbeat(config=secondary_config)
 
         # MQTT connected long ago
-        hb._last_mqtt_connect = time.time() - 100
+        hb._last_mqtt_connect = time.monotonic() - 100
 
         hb._peers['gw-primary'] = PeerInfo(
             gateway_id='gw-primary',
             role='primary',
             alive=True,
             last_heartbeat=time.time() - 100,
+            last_heartbeat_mono=time.monotonic() - 100,
         )
 
         hb._check_peers()
@@ -414,6 +418,7 @@ class TestDuplicatePeerDownGuard:
             role='primary',
             alive=True,
             last_heartbeat=time.time() - 100,
+            last_heartbeat_mono=time.monotonic() - 100,
         )
 
         # Simulate a peer-down already pending
@@ -456,3 +461,53 @@ class TestFailoverStateInPayload:
         call_args = hb._mqtt_client.publish.call_args
         payload = json.loads(call_args[0][1])
         assert 'failover_state' not in payload
+
+
+class TestClockStepDoesNotSplitBrain:
+    """Regression pins for the 2026-07-23 gateway review, Pri-1.
+
+    Peer-liveness aging is measured on time.monotonic(), so a wall-clock/NTP
+    step (routine on the RTC-less Pi fleet) cannot forge a peer-down and
+    promote a SECONDARY to ACTIVE while the PRIMARY is still up (split-brain),
+    nor forge liveness on a genuinely dead peer (missed failover).
+    """
+
+    def test_wall_clock_forward_step_does_not_forge_peer_down(self, secondary_config):
+        hb = GatewayHeartbeat(config=secondary_config)
+        hb._last_mqtt_connect = time.monotonic() - 1000  # grace long expired
+        # NTP forward step: wall-clock stamp looks ancient, but the peer was
+        # actually heard 1s ago on the monotonic clock.
+        hb._peers['gw-primary'] = PeerInfo(
+            gateway_id='gw-primary', role='primary', alive=True,
+            last_heartbeat=time.time() - 100000,
+            last_heartbeat_mono=time.monotonic() - 1,
+        )
+        hb._check_peers()
+        assert hb._peers['gw-primary'].alive is True
+
+    def test_wall_clock_forward_step_does_not_promote_to_active(self, secondary_config):
+        # The split-brain outcome specifically.
+        hb = GatewayHeartbeat(config=secondary_config)
+        assert hb.state == GatewayState.STANDBY
+        hb._last_mqtt_connect = time.monotonic() - 1000
+        hb._peers['gw-primary'] = PeerInfo(
+            gateway_id='gw-primary', role='primary', alive=True,
+            last_heartbeat=time.time() - 100000,        # NTP forward step
+            last_heartbeat_mono=time.monotonic() - 1,   # actually just heard
+        )
+        hb._check_peers()
+        assert hb._peers['gw-primary'].alive is True
+        assert hb.state == GatewayState.STANDBY  # no split-brain promotion
+
+    def test_monotonic_age_still_declares_real_down(self, secondary_config):
+        # A genuinely-stale peer (old monotonic) is still declared down even if
+        # its wall-clock stamp looks fresh (NTP backward step) — failover works.
+        hb = GatewayHeartbeat(config=secondary_config)
+        hb._last_mqtt_connect = time.monotonic() - 1000
+        hb._peers['gw-primary'] = PeerInfo(
+            gateway_id='gw-primary', role='primary', alive=True,
+            last_heartbeat=time.time(),                  # looks fresh (backward step)
+            last_heartbeat_mono=time.monotonic() - 100,  # really stale
+        )
+        hb._check_peers()
+        assert hb._peers['gw-primary'].alive is False
