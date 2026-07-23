@@ -971,7 +971,7 @@ See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
 |------|---------|-------|-------|
 | 4403 | meshtasticd TCP API | meshtasticd | Single client limit |
 | 1883 | mosquitto MQTT | mosquitto | Multi-consumer (optional) |
-| 5000 | MeshForge Map Server | **MeshForge** | Live NOC map + REST API (20 endpoints) |
+| 5000 | MeshForge Map Server | **MeshForge** | Live NOC map + REST API (enumerated in [API Reference](#api-reference)) |
 | 5001 | MeshForge WebSocket | **MeshForge** | Real-time message broadcast |
 | 8081 | MeshForge Config API | **MeshForge** | RESTful config management |
 | 9090 | Prometheus metrics | **MeshForge** | Prometheus + Grafana JSON API |
@@ -979,7 +979,8 @@ See `dashboards/README.md` and `docs/METRICS.md` for full setup instructions.
 
 ### API Reference
 
-MeshForge serves **42+ REST endpoints** across 4 HTTP servers. All APIs are
+MeshForge serves REST APIs across three local HTTP servers — the map server,
+Prometheus metrics, and the config API (each enumerated below). All APIs are
 local-only (LAN/localhost) with CORS enabled for browser access.
 
 #### Map Server (port 5000)
@@ -1005,7 +1006,7 @@ local-only (LAN/localhost) with CORS enabled for browser access.
 
 | Method | Endpoint | Returns |
 |--------|----------|---------|
-| GET | `/metrics` | Prometheus exposition format (50+ metric families) |
+| GET | `/metrics` | Prometheus exposition format (~45 metric families) |
 | GET | `/api/v1/query` | PromQL query (Grafana compatible) |
 | GET | `/api/v1/query_range` | Time-series range query |
 | GET | `/api/json/nodes` | Node metrics as JSON |
