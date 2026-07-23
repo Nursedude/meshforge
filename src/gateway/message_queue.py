@@ -1004,7 +1004,14 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             "pending": pending,
             "in_progress": in_progress,
             "delivered": status_counts.get("delivered", 0),
-            "failed": status_counts.get("failed", 0),
+            # NOTE: no "failed" override here. A failing message goes straight to
+            # DEAD_LETTER (mark_failed never persists MessageStatus.FAILED), so a
+            # point-in-time COUNT(status='failed') is structurally always 0 —
+            # overriding the cumulative self._stats["failed"] with it made the
+            # exported prometheus/influx "failed" metric read zero forever while
+            # messages were actively dead-lettering (honest_failure_modes #1:
+            # degraded state -> valid-looking value -> false "no failures" claim).
+            # Let **self._stats provide the real cumulative failure counter.
             "dead_letter": status_counts.get("dead_letter", 0),
             "queue_depth": queue_depth,
             "max_queue_size": self._max_queue_size,

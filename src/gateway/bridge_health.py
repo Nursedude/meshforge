@@ -172,18 +172,18 @@ class BridgeHealthMonitor:
         self._window_size = window_size
 
         # Connection state (supports 3 protocols)
-        self._connected: Dict[str, bool] = {
-            "meshtastic": False,
-            "rns": False,
-            "meshcore": False,
-        }
+        # Single source of truth for the connection-tracking trio below. These
+        # used to be independent literals; one of them (_uptime_seconds) silently
+        # omitted "meshcore", so a meshcore disconnect raised KeyError mid-lock at
+        # record_connection_event and left the bridge's own view stuck
+        # "connected" (honest_failure_modes #5: independent hardcodes of the same
+        # key set WILL drift). record_connection_event only ever indexes these
+        # three, so they are the set that must agree; derive them from one tuple.
+        self._services: tuple = ("meshtastic", "rns", "meshcore")
+        self._connected: Dict[str, bool] = {s: False for s in self._services}
         self._last_connected: Dict[str, float] = {}
         self._last_disconnected: Dict[str, float] = {}
-        self._connection_count: Dict[str, int] = {
-            "meshtastic": 0,
-            "rns": 0,
-            "meshcore": 0,
-        }
+        self._connection_count: Dict[str, int] = {s: 0 for s in self._services}
 
         # Track which subsystems are enabled (disabled don't affect health)
         self._enabled: Dict[str, bool] = {
@@ -219,12 +219,12 @@ class BridgeHealthMonitor:
 
         # Timing
         self._start_time: float = time.time()
-        self._uptime_seconds: Dict[str, float] = {
-            "meshtastic": 0.0,
-            "rns": 0.0,
-        }
+        self._uptime_seconds: Dict[str, float] = {s: 0.0 for s in self._services}
 
-        # Subsystem states (Phase 2: Circuit Breakers)
+        # Subsystem states (Phase 2: Circuit Breakers). Kept meshtastic/rns-only:
+        # set_subsystem_state/get_subsystem_state already guard unknown members,
+        # and get_all_subsystem_states is a public surface — adding meshcore here
+        # would silently change every consumer's output.
         self._subsystem_states: Dict[str, SubsystemState] = {
             "meshtastic": SubsystemState.DISCONNECTED,
             "rns": SubsystemState.DISCONNECTED,
@@ -243,6 +243,16 @@ class BridgeHealthMonitor:
         """
         now = time.time()
         with self._lock:
+            # Register an unknown service across every per-service dict rather
+            # than KeyError mid-lock on the first event for it (a half-updated
+            # state that leaves the bridge's view wrong). Loud, and self-heals.
+            if service not in self._connected:
+                logger.warning("bridge_health: registering previously-unknown "
+                               "service %r on first connection event", service)
+                self._connected.setdefault(service, False)
+                self._connection_count.setdefault(service, 0)
+                self._uptime_seconds.setdefault(service, 0.0)
+
             self._connection_events.append(ConnectionEvent(
                 timestamp=now, service=service, event=event, detail=detail
             ))

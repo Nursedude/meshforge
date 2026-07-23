@@ -571,6 +571,11 @@ class UnifiedNodeTracker:
             or existing.name.startswith("!")
         ):
             existing.name = new.name
+            # Carry the provenance with the value. Without this the flag stayed
+            # stale (False) after a self-reported name won, so _save_cache/to_dict
+            # served a name whose "is this what the node calls itself?" flag lied
+            # (honest_failure_modes #3, the mirror of the 07-21 name-healing fix).
+            existing.name_is_self_reported = getattr(new, "name_is_self_reported", False)
         if new.short_name:
             existing.short_name = new.short_name
 

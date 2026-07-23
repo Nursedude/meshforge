@@ -16,6 +16,17 @@ from utils.safe_import import safe_import
 
 logger = logging.getLogger(__name__)
 
+# Freshness cutoff for deriving is_online from a Meshtastic node's `lastHeard`
+# stamp. MUST equal NodeTracker.OFFLINE_THRESHOLD — they are two consumers of
+# one threshold (honest_failure_modes #5). node_tracker imports this module, so
+# it cannot be imported here to share the constant directly; the equality is
+# test-pinned instead (tests/test_node_tracker.py).
+MESHTASTIC_ONLINE_THRESHOLD_S = 900
+# A `lastHeard` in the future beyond this tolerance is a forged/skewed clock
+# (RTC-less Pis, NTP steps, a hostile sender). Treat it as "unknown, heard now"
+# rather than letting (now - lastHeard) go negative → "online forever".
+_LASTHEARD_FUTURE_SKEW_S = 120
+
 # Import node state machine (optional - graceful fallback)
 (_NodeState, _NodeStateMachine, _NodeStateConfig,
  _StateTransition, _get_default_state_config,
@@ -874,8 +885,27 @@ class UnifiedNode:
         node.snr = mesh_node.get('snr')
         node.rssi = mesh_node.get('rssi') or mesh_node.get('rxRssi')
         node.hops = mesh_node.get('hopsAway')
-        node.last_seen = datetime.now()
-        node.is_online = True
+        # Honour the radio's own `lastHeard` epoch. `_update_nodes` iterates the
+        # WHOLE interface node DB (every node ever heard, each stamped with its
+        # real lastHeard); hard-coding last_seen=now()/is_online=True here marked
+        # every historically-known node as heard-this-instant, and _merge_node's
+        # staleness guard (which keys off new.last_seen) then never preserved the
+        # old status — a fleet-wide false "online / 0s ago" claim across
+        # get_online_nodes/get_stats/to_geojson (honest_failure_modes #1).
+        # A live inbound packet carries no lastHeard → we ARE hearing it now.
+        last_heard = mesh_node.get('lastHeard') or 0
+        if last_heard:
+            age = datetime.now().timestamp() - last_heard
+            if age < -_LASTHEARD_FUTURE_SKEW_S:
+                # Future stamp — forged/skewed clock; don't trust it.
+                node.last_seen = datetime.now()
+                node.is_online = True
+            else:
+                node.last_seen = datetime.fromtimestamp(last_heard)
+                node.is_online = age < MESHTASTIC_ONLINE_THRESHOLD_S
+        else:
+            node.last_seen = datetime.now()
+            node.is_online = True
 
         # Relay tracking (Meshtastic 2.6+)
         relay_node = mesh_node.get('relayNode')
