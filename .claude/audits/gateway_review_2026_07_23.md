@@ -42,6 +42,46 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | 12 | `meshtastic_broadcast_bridge.py:408` | low | PLAUSIBLE | No bytes→str normalization on the inbound broadcast path; latent until a `CanonicalMessage` with bytes `content` (advertised second shape) flows through → TypeError swallowed as generic callback error, message silently fails to fan out. One-line decode fix. |
 | — | `node_models.py:~1012` (`meshcore:` factory) | ? | UNVERIFIED | Sibling of finding C (also hard-sets `now()/True`); MeshCore's heard-time field not confirmed. Check next pass. |
 
+## Pri-2 (finding 2) — warm-start handoff for the next session
+
+Deferred to a fresh session on purpose (2026-07-23): it is a **delivery-semantics
+design decision**, not a wiring change, and getting it wrong marks a live-but-quiet
+subscriber DEAD — the exact honest-failure-mode this review fights. Start with a
+design pass, not code. What the review established:
+
+- **Defect**: `meshtastic_broadcast_bridge.py:~909` calls `mark_delivered()`
+  (resets `consecutive_failures=0`, `state=HEALTHY`, stamps `last_delivery=now`)
+  immediately after `self._router.handle_outbound(lxm)` **returns** — but
+  `handle_outbound` only *queues* the LXM; it does not confirm the subscriber
+  received it. So `SubscriberStore.desired_state`'s STALE(24h)/DEAD(7d) tiers are
+  unreachable via the send path, and `get_status()` reports a dead subscriber as
+  HEALTHY with a fresh `last_delivery` forever.
+- **Real delivery signal EXISTS but is decoupled**: `on_delivered`/`on_failed`
+  LXMF callbacks are registered per-message (~lines 884–901) **only when
+  `ack_msg_id` is set (ack_required)**, and they only drive ACK synthesis
+  (`emit(...)`) — neither touches `mark_delivered`/`mark_failed`. `mark_failed`
+  fires only on `invalid_hash`/`identity_recall_null`/a synchronous
+  `handle_outbound` exception.
+
+**The design question to answer FIRST (do not skip to code):** a *broadcast*
+fan-out is not inherently ACK'd, so "delivered" may have no confirmation to wait
+for. Options to weigh: (a) only advance HEALTHY/last_delivery on an actual
+`on_delivered` callback, and treat "sent, no callback" as a distinct
+*unconfirmed* state (not HEALTHY, not DEAD) — mirrors the #74 `unconfirmable_sent`
+honesty; (b) drive the STALE/DEAD tiers off an independent liveness signal
+(directed probe / announce-heard) rather than the send path at all; (c) hybrid.
+Whatever is chosen, the invariant: **absence of a delivery callback must never
+read as HEALTHY, and must never by itself read as DEAD** (hold-and-surface, per
+honest_failure_modes #2). Cross-check against how the gateway's #74
+`compute_confirmation_view` already handles the confirmable-vs-unconfirmable split
+— reuse that framing, don't reinvent it.
+
+**Files to deep-read fresh** (a subagent read these during the review; this
+session did not hold them): `meshtastic_broadcast_bridge.py` (send path + callback
+registration + SubscriberStore), `delivery_counters.py` `compute_confirmation_view`
+(the #74 precedent to mirror). Also confirm the MA twin (`meshanchor` is
+MeshCore-primary — broadcast delivery matters more there).
+
 ## Twin note (MeshAnchor)
 
 `bridge_health.py`, `node_models.py`, `node_tracker.py`, `message_queue.py` are
