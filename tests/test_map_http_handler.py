@@ -1953,3 +1953,71 @@ class TestClientTrustGate:
         h.client_address = ('192.0.2.41', 5000)
         h._serve_json = lambda payload, status=200: None
         assert h._reject_if_untrusted() is False
+
+
+class TestClawTickTimestampHonesty:
+    """07-23 audit: a tick without a numeric captured_at could NEVER go stale
+    (age_s stayed None -> stale False forever), so `ok` rode one arbitrarily
+    old capture's `reachable` for good; and a malformed tick lost its identity
+    entirely (no device, filename not surfaced) — with 2+ secondaries the NOC
+    could not tell WHICH claw's tick broke."""
+
+    def _handler_with_home(self, monkeypatch, home):
+        import utils.paths as paths_mod
+        monkeypatch.setattr(paths_mod, "get_real_user_home", lambda: home)
+        return MapRequestHandler.__new__(MapRequestHandler)
+
+    def test_missing_captured_at_is_not_ok(self, tmp_path, monkeypatch):
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(
+            {"host": "moc2", "device": "dudeclaw-01", "ok": True,
+             "reachable": True}))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is False
+        assert "no_capture_timestamp" in block["reason"]
+
+    def test_non_numeric_captured_at_is_not_ok(self, tmp_path, monkeypatch):
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(
+            {"captured_at": "yesterday", "device": "dudeclaw-01",
+             "reachable": True}))
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is False
+        assert "no_capture_timestamp" in block["reason"]
+
+    def test_malformed_tick_surfaces_filename(self, tmp_path, monkeypatch):
+        (tmp_path / "claw_last_tick.json").write_text("{not json")
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is False
+        assert block["file"] == "claw_last_tick.json"
+
+    def test_malformed_secondary_tick_names_its_file(self, tmp_path, monkeypatch):
+        import time as _t
+        (tmp_path / "claw_last_tick.json").write_text(json.dumps(
+            {"captured_at": _t.time(), "device": "dudeclaw-01",
+             "reachable": True}))
+        (tmp_path / "claw_last_tick.dudeclaw-02.json").write_text("{broken")
+        h = self._handler_with_home(monkeypatch, tmp_path)
+        block = h._read_claw_state_block()
+        assert block["ok"] is True
+        assert block["secondaries"][0]["file"] == \
+            "claw_last_tick.dudeclaw-02.json"
+
+
+class TestMiniBlockTimestampHonesty:
+    """Same class as the claw tick: a mini state payload lacking a numeric
+    last_tick_ts must read not-ok (freshness unobservable), not fresh-forever.
+    This block feeds BOTH /api/status and the fleet-truth ssh-spool path."""
+
+    def test_missing_last_tick_ts_is_not_ok(self):
+        from utils._map_status_endpoints import mini_block_from_payload
+        block = mini_block_from_payload({"rules": {}, "rule_count": 3})
+        assert block["ok"] is False
+        assert "no_tick_timestamp" in block["reason"]
+
+    def test_non_numeric_last_tick_ts_is_not_ok(self):
+        from utils._map_status_endpoints import mini_block_from_payload
+        block = mini_block_from_payload({"last_tick_ts": "recent", "rules": {}})
+        assert block["ok"] is False
+        assert "no_tick_timestamp" in block["reason"]

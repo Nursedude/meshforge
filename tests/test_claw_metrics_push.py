@@ -397,7 +397,10 @@ class TestQaFixes20260705:
         # HERE, not silently clobber the primary tick in production.
         env = tmp_path / "claw02.env"
         env.write_text("MINI_DUDEAI_NATS_SERVER=nats://x\n"
-                       "MINI_DUDEAI_CLAW_DEVICE=dudeclaw-02\n")
+                       "MINI_DUDEAI_CLAW_DEVICE=dudeclaw-02\n"
+                       # required since the 07-23 identity gate: a secondary
+                       # env must name its instance suffix
+                       "MINI_DUDEAI_CLAW_INSTANCE=dudeclaw-02\n")
         monkeypatch.setattr(cmp_mod, "build_rows", lambda: ["row0"])
         monkeypatch.setattr(cmp_mod, "_probe_tier", lambda _e: (None, ""))
         written = []
@@ -415,3 +418,48 @@ class TestQaFixes20260705:
         assert written == ["claw_last_tick.dudeclaw-02.json"]
         assert (tmp_path / "claw_last_tick.dudeclaw-02.json").exists()
         assert not (tmp_path / "claw_last_tick.json").exists()
+
+
+class TestSecondaryEnvRequiresInstance:
+    """07-23 audit: one identity discriminator, not two. A secondary env
+    without MINI_DUDEAI_CLAW_INSTANCE would write the secondary's tick file
+    with a brain glyph proven from the PRIMARY's state — refuse loud."""
+
+    def _base_env(self, tmp_path, extra=""):
+        env = tmp_path / "mini_dudeai_claw02.env"
+        env.write_text("MINI_DUDEAI_NATS_SERVER=localhost:4222\n"
+                       "MINI_DUDEAI_CLAW_DEVICE=dudeclaw-02\n" + extra)
+        return env
+
+    def test_secondary_env_without_instance_exits_loud(self, tmp_path):
+        env = self._base_env(tmp_path)
+        with pytest.raises(SystemExit) as ei:
+            cmp_mod.main(["--env", str(env)])
+        assert "MINI_DUDEAI_CLAW_INSTANCE" in str(ei.value)
+
+    def test_secondary_env_with_instance_passes_the_gate(self, tmp_path, monkeypatch):
+        env = self._base_env(tmp_path, "MINI_DUDEAI_CLAW_INSTANCE=dudeclaw-02\n")
+        # Gate passes -> execution proceeds to the NATS phase; stub it to
+        # prove we got past the identity check without a real claw.
+        sentinel = RuntimeError("reached-nats")
+
+        def _boom(*a, **k):
+            raise sentinel
+        monkeypatch.setattr(cmp_mod, "build_rows", _boom)
+        with pytest.raises(RuntimeError) as ei:
+            cmp_mod.main(["--env", str(env)])
+        assert ei.value is sentinel
+
+    def test_default_env_needs_no_instance(self, tmp_path, monkeypatch):
+        # The primary path (no --env) must NOT hit the new gate.
+        env = tmp_path / "mini_dudeai_claw.env"
+        env.write_text("MINI_DUDEAI_NATS_SERVER=localhost:4222\n"
+                       "MINI_DUDEAI_CLAW_DEVICE=dudeclaw-01\n")
+        monkeypatch.setattr(cmp_mod, "DEFAULT_ENV_PATH", str(env))
+        sentinel = RuntimeError("reached-nats")
+
+        def _boom(*a, **k):
+            raise sentinel
+        monkeypatch.setattr(cmp_mod, "build_rows", _boom)
+        with pytest.raises(RuntimeError):
+            cmp_mod.main([])

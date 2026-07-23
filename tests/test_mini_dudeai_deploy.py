@@ -326,6 +326,19 @@ class TestClawDeployEnrollment:
         # claw env file, NOT the fleet daemon's (separate operator values)
         assert "mini_dudeai_claw.env" in text
 
+    def test_claw_instance_template_defaults_instance_from_specifier(self):
+        # 07-23 audit: the whole de-collision hung on one optional env-file
+        # var. The template must default MINI_DUDEAI_CLAW_INSTANCE from %i so
+        # the #80 flock can NEVER collide with the primary's even when the env
+        # file is absent or predates the var (the MA dual-stack crash-loop
+        # class). EnvironmentFile= must stay AFTER it (systemd: file overrides
+        # Environment=), so the operator's conventional suffix still wins.
+        text = (TEMPLATE_DIR / CLAW_TEMPLATE_SERVICE).read_text()
+        env_line = "\nEnvironment=MINI_DUDEAI_CLAW_INSTANCE=%i"
+        assert env_line in text
+        assert text.index(env_line) < text.index("\nEnvironmentFile="), (
+            "the env file must be able to override the %i default")
+
     def test_claw_template_keeps_cwd_shadowing_guard(self):
         # same guard as the fleet unit: a stray ~/mini_dudeai.py must not
         # shadow the package

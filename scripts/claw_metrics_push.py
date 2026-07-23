@@ -285,6 +285,21 @@ def main(argv: "list[str] | None" = None) -> int:
     device = env.get("MINI_DUDEAI_CLAW_DEVICE")
     if not server or not device:
         raise SystemExit("claw_metrics: claw env missing NATS server / device")
+    # One identity discriminator, not two (07-23 audit): the tick basename is
+    # decided by env-file PATH (secondary = non-default env) while the R-tier
+    # state basename is decided by MINI_DUDEAI_CLAW_INSTANCE. A secondary env
+    # WITHOUT the INSTANCE line would write claw02's tick file with a brain
+    # glyph proven from the PRIMARY's state — claw02 renders healthy while its
+    # own rule brain crash-loops. Refuse loud at the seam instead.
+    _is_secondary = (args.env is not None and
+                     os.path.realpath(args.env) != os.path.realpath(DEFAULT_ENV_PATH))
+    if _is_secondary and not (env.get("MINI_DUDEAI_CLAW_INSTANCE") or "").strip():
+        raise SystemExit(
+            f"claw_metrics: secondary env {args.env} lacks "
+            "MINI_DUDEAI_CLAW_INSTANCE — add it (e.g. the device suffix, "
+            "dudeclaw-02) so the tick and the R-tier state describe the SAME "
+            "claw; without it this pusher would report the primary's brain "
+            "as this device's")
     rows = build_rows()
     tier, tier_note = _probe_tier(env)
     host = socket.gethostname()

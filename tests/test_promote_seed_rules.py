@@ -284,3 +284,70 @@ def test_seed_claw_targets_claw_live_file(tmp_path):
     assert "b" in p["report"]["added"]
     # the fleet live file _setup wrote is not the merge target
     assert _live_ids(home) == {"a"}
+
+
+# ── claw @-instance promotion (07-23 audit: the third consumer) ─────
+
+def _setup_claw(tmp_path, live_rules, seed_rules, instance_rules=None):
+    root = tmp_path / "root"
+    (root / "configs").mkdir(parents=True)
+    (root / "configs" / "mini_dudeai_rules.claw.json").write_text(
+        json.dumps({"rules": seed_rules}))
+    home = tmp_path / "home"
+    home.mkdir()
+    (home / "mini_dudeai_claw_rules.json").write_text(
+        json.dumps({"rules": live_rules}))
+    if instance_rules is not None:
+        (home / "mini_dudeai_claw_rules.dudeclaw-02.json").write_text(
+            json.dumps({"rules": instance_rules}))
+    return str(root), str(home)
+
+
+def test_claw_instance_live_paths_matches_only_instance_files(tmp_path):
+    root, home = _setup_claw(tmp_path, [], [], instance_rules=[])
+    # decoys the glob must NOT match
+    for decoy in ("mini_dudeai_claw_rules.json.candidate",
+                  "mini_dudeai_claw_rules.json.promote.bak",
+                  "mini_dudeai_claw_rules.dudeclaw-02.json.candidate"):
+        (Path(home) / decoy).write_text("{}")
+    got = psr.claw_instance_live_paths(home)
+    assert got == [os.path.join(home, "mini_dudeai_claw_rules.dudeclaw-02.json")]
+
+
+def test_claw_seed_apply_promotes_instance_files_too(tmp_path):
+    root, home = _setup_claw(
+        tmp_path, [_rule("a")], [_rule("a"), _rule("b")],
+        instance_rules=[_rule("a")])
+    rc = psr.main(["--seed", "claw", "--apply",
+                   "--meshforge-root", root, "--mini-home", home])
+    assert rc == 0
+    primary = json.load(open(os.path.join(home, "mini_dudeai_claw_rules.json")))
+    inst = json.load(open(os.path.join(
+        home, "mini_dudeai_claw_rules.dudeclaw-02.json")))
+    assert {r["id"] for r in primary["rules"]} == {"a", "b"}
+    assert {r["id"] for r in inst["rules"]} == {"a", "b"}, (
+        "an @-instance rules file frozen at its first-boot seed copy is the "
+        "exact 07-23 audit finding — the claw seed must reach it")
+
+
+def test_claw_seed_json_output_reports_instances(tmp_path, capsys):
+    root, home = _setup_claw(
+        tmp_path, [_rule("a")], [_rule("a"), _rule("b")],
+        instance_rules=[_rule("a")])
+    rc = psr.main(["--seed", "claw", "--json",
+                   "--meshforge-root", root, "--mini-home", home])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] is True
+    assert len(out["instances"]) == 1
+    assert out["instances"][0]["changed"] is True
+    assert out["instances"][0]["applied"] is False  # dry-run
+
+
+def test_claw_seed_without_instance_files_unchanged_shape(tmp_path, capsys):
+    root, home = _setup_claw(tmp_path, [_rule("a")], [_rule("a")])
+    rc = psr.main(["--seed", "claw", "--json",
+                   "--meshforge-root", root, "--mini-home", home])
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["instances"] == []

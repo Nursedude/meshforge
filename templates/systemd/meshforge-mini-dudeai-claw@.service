@@ -15,6 +15,13 @@ Type=simple
 # single-instance flock (keyed on the state file) never collides with the
 # primary claw's or with a sibling instance's.
 Environment=PYTHONPATH=/opt/meshforge/src
+# Default the artifact-suffix to the instance name so the #80 flock can
+# NEVER collide with the primary's even when the env file is absent or
+# predates this var (the MA dual-stack crash-loop class, 07-23 audit).
+# EnvironmentFile below OVERRIDES this when the operator sets the
+# conventional device suffix (e.g. dudeclaw-02) — systemd.exec: settings
+# from EnvironmentFile= override Environment=.
+Environment=MINI_DUDEAI_CLAW_INSTANCE=%i
 # WorkingDirectory MUST NOT be the operator home: `python3 -m mini_dudeai`
 # searches the cwd FIRST, so a stray ~/mini_dudeai.py would SHADOW the
 # package. Pin cwd to the repo root (same guard as the primary unit).

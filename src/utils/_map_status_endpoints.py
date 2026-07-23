@@ -118,6 +118,12 @@ def mini_block_from_payload(
     age_s: Optional[float] = None
     if isinstance(ts, (int, float)):
         age_s = max(0.0, (now if now is not None else time.time()) - float(ts))
+    # Missing/non-numeric last_tick_ts is NOT "fresh forever": a valid-JSON
+    # state file without the freshness field (schema drift, foreign writer)
+    # must read not-ok, not green (honest_failure_modes #2; 07-23 audit —
+    # this block now feeds a second consumer via the ssh-spool path, so the
+    # false-green would render fleet-wide).
+    no_ts = age_s is None
     stale = bool(age_s is not None and age_s > stale_after_s)
 
     rules = payload.get("rules") or {}
@@ -137,7 +143,7 @@ def mini_block_from_payload(
 
     block = {
         "installed": True,
-        "ok": not stale,
+        "ok": not stale and not no_ts,
         "ts": ts,
         "last_tick_iso": payload.get("last_tick_iso"),
         "age_s": age_s,
@@ -147,7 +153,12 @@ def mini_block_from_payload(
         "active_rules": active,
         "top_rules_24h": top,
     }
-    if stale:
+    if no_ts:
+        block["reason"] = (
+            "no_tick_timestamp: state lacks a numeric last_tick_ts — "
+            "freshness unobservable, treating as not-ok (schema drift?)"
+        )
+    elif stale:
         block["reason"] = (
             f"stale: last tick {age_s:.0f}s ago "
             f"(threshold {stale_after_s:.0f}s) — mini-dudeai "
@@ -595,14 +606,26 @@ class StatusEndpointsMixin:
         try:
             payload = json.loads(raw)
         except (json.JSONDecodeError, ValueError) as exc:
-            return {"installed": True, "ok": False, "reason": f"malformed_json: {exc}"}
+            # Identity fallback: the tick's own `device` field is unreadable
+            # here, so surface WHICH file broke — with 2+ secondaries the
+            # NOC otherwise can't tell whose tick is malformed (07-23 audit).
+            return {"installed": True, "ok": False,
+                    "file": getattr(path, "name", str(path)),
+                    "reason": f"malformed_json: {exc}"}
         if not isinstance(payload, dict):
-            return {"installed": True, "ok": False, "reason": "malformed_json: not an object"}
+            return {"installed": True, "ok": False,
+                    "file": getattr(path, "name", str(path)),
+                    "reason": "malformed_json: not an object"}
 
         ts = payload.get("captured_at")
         age_s: Optional[float] = None
         if isinstance(ts, (int, float)):
             age_s = max(0.0, time.time() - float(ts))
+        # Missing/non-numeric captured_at is NOT "never stale" — it means the
+        # freshness of this tick is unobservable, and an unobservable capture
+        # must not ride `reachable` green forever (honest_failure_modes #2;
+        # 07-23 audit: a device-less-timestamp tick could never go stale).
+        no_ts = age_s is None
         stale = bool(age_s is not None and age_s > self._CLAW_STALE_S)
         # Prefer the EXPLICIT reachability fact (captures since 2026-07-19),
         # falling back to `ok` for older ticks. Before that split, `ok` folded
@@ -613,7 +636,7 @@ class StatusEndpointsMixin:
 
         block = {
             "installed": True,
-            "ok": tick_ok and not stale,
+            "ok": tick_ok and not stale and not no_ts,
             "captured_at": ts,
             "captured_iso": payload.get("captured_iso"),
             "age_s": age_s,
@@ -631,7 +654,12 @@ class StatusEndpointsMixin:
             "lora": payload.get("lora"),
             "degraded_optional": payload.get("degraded_optional") or [],
         }
-        if stale:
+        if no_ts:
+            block["reason"] = (
+                "no_capture_timestamp: tick lacks a numeric captured_at — "
+                "freshness unobservable, treating as not-ok (schema drift?)"
+            )
+        elif stale:
             block["reason"] = (
                 f"stale: last capture {age_s:.0f}s ago "
                 f"(threshold {self._CLAW_STALE_S:.0f}s) — claw_metrics cron "

@@ -106,6 +106,25 @@ def resolve_target(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None,
     return role, seed_name, seed_path, live_path
 
 
+def claw_instance_live_paths(home):
+    """Per-instance claw rules files (``mini_dudeai_claw_rules.<inst>.json``)
+    present in ``home`` — the suffixed siblings a templated @-instance's
+    engine reads (claw_telemetry.instance_basename formula, W5.1).
+
+    Before 07-23 these had NO promotion path at all: ``--seed claw`` resolved
+    the unsuffixed primary only, so an instance's rule brain stayed frozen at
+    its first-boot seed copy forever, with no drift witness (the 07-23 audit's
+    third-consumer finding). The glob mirrors the ONE formula: suffix inserted
+    before the extension, so the primary file, ``.candidate``, ``.bak`` and
+    ``.promote.bak`` artifacts can never match."""
+    import glob as _glob
+    from mini_dudeai.presets.standalone import CLAW_RULES_BASENAME
+    root, dot, ext = CLAW_RULES_BASENAME.rpartition(".")
+    if not dot:
+        return []
+    return sorted(_glob.glob(os.path.join(home, f"{root}.*.{ext}")))
+
+
 def _read_doc(path, what):
     try:
         with open(path, encoding="utf-8") as fh:
@@ -133,13 +152,18 @@ def _doc_rules(doc, what):
     return rules
 
 
-def plan(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None, seed_name=None):
+def plan(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None, seed_name=None,
+         live_path_override=None):
     """Resolve + merge IN MEMORY (no write). Returns a plan dict; raises
-    PromoteError on any unresolved/unreadable/malformed input."""
+    PromoteError on any unresolved/unreadable/malformed input.
+    ``live_path_override`` retargets the merge at a per-instance claw rules
+    file (same seed, same merge) without touching the resolution logic."""
     from mini_dudeai.candidate import merge_seed_rules, SEED_MERGE_CHANGE_BUCKETS
 
     role, seed_name, seed_path, live_path = resolve_target(
         meshforge_root, mini_home, role, seed_name)
+    if live_path_override is not None:
+        live_path = live_path_override
     # Snapshot the live file's mtime BEFORE reading it: apply() refuses if it
     # moved (a concurrent daemon promotion) so a stale merge never silently
     # clobbers the daemon's write. Stat-before-read is fail-closed — a write
@@ -289,6 +313,18 @@ def main(argv=None):
         p = plan(args.meshforge_root, args.mini_home, args.role, args.seed)
         applied = bool(args.apply and p["changed"])
         bak = apply(p) if applied else None
+        # A claw seed also feeds every per-instance rules file present —
+        # templated @-instances (W5.1) read the suffixed siblings, which had
+        # no promotion path before 07-23 (frozen-at-first-boot-seed bug).
+        instances = []
+        if p["seed_name"] == "claw":
+            home = os.path.dirname(p["live_path"]) or "."
+            for extra in claw_instance_live_paths(home):
+                ip = plan(args.meshforge_root, args.mini_home, args.role,
+                          args.seed, live_path_override=extra)
+                i_applied = bool(args.apply and ip["changed"])
+                i_bak = apply(ip) if i_applied else None
+                instances.append((ip, i_applied, i_bak))
     except PromoteError as exc:
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}))
@@ -304,20 +340,29 @@ def main(argv=None):
             "before": p["before"], "after": p["after"],
             "report": {k: v for k, v in p["report"].items() if v},
             "backup": bak,
+            "instances": [{
+                "live_path": ip["live_path"], "changed": ip["changed"],
+                "applied": i_applied, "before": ip["before"],
+                "after": ip["after"], "backup": i_bak,
+            } for ip, i_applied, i_bak in instances],
         }))
         return 0
 
     print(f"role={role_disp}  seed={p['seed_name']}")
-    print(f"live={p['live_path']}")
-    if not p["changed"]:
-        print(f"already in sync ({p['after']} rules) — nothing to promote.")
-        return 0
-    verb = "PROMOTED" if applied else "WOULD promote"
-    print(f"{verb} ({p['before']} -> {p['after']} rules):")
-    print(_fmt_report(p["report"]))
-    if applied:
-        print(f"backup: {bak}")
-    else:
+    targets = [(p, applied, bak)] + instances
+    any_change = False
+    for tp, t_applied, t_bak in targets:
+        print(f"live={tp['live_path']}")
+        if not tp["changed"]:
+            print(f"  already in sync ({tp['after']} rules) — nothing to promote.")
+            continue
+        any_change = True
+        verb = "PROMOTED" if t_applied else "WOULD promote"
+        print(f"  {verb} ({tp['before']} -> {tp['after']} rules):")
+        print(_fmt_report(tp["report"]))
+        if t_applied:
+            print(f"  backup: {t_bak}")
+    if any_change and not args.apply:
         print("\nRe-run with --apply to write (backs up to <live>.promote.bak first).")
     return 0
 
