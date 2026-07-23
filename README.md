@@ -13,7 +13,7 @@
   <a href="https://github.com/Nursedude/meshforge"><img src="https://img.shields.io/badge/version-0.6.2--beta-blue.svg" alt="Version"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-green.svg" alt="License"></a>
   <a href="https://python.org"><img src="https://img.shields.io/badge/python-3.9+-yellow.svg" alt="Python"></a>
-  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-6318%20passing-brightgreen.svg" alt="Tests"></a>
+  <a href="https://github.com/Nursedude/meshforge/actions"><img src="https://img.shields.io/badge/tests-passing-brightgreen.svg" alt="Tests"></a>
 </p>
 
 <p align="center">
@@ -281,7 +281,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — 76 handlers via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->102<!--/STAT--> handler modules via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
@@ -437,7 +437,8 @@ MeshForge retains MeshCore as an optional gateway handler.
 
 ### Testing Reality Check
 
-MeshForge has **6,318 automated tests** across 193 files. However, automated tests
+MeshForge has **~9,300 automated tests** (run `python3 -m pytest tests/ --co -q`
+for the live count) across <!--STAT:testfiles-->284<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:
@@ -803,7 +804,7 @@ src/
 │   ├── backend.py         # whiptail/dialog abstraction
 │   ├── startup_checks.py  # Environment checks + conflict resolution
 │   ├── status_bar.py      # Service status bar
-│   └── handlers/          # 76 registered command handlers
+│   └── handlers/          # <!--STAT:handlers-->102<!--/STAT--> command-handler modules
 ├── commands/              # Command modules
 │   ├── propagation.py     # Space weather & HF propagation (NOAA primary)
 │   ├── rns.py             # RNS/Reticulum commands
@@ -1043,28 +1044,29 @@ connection (port 4403):
 
 ### Test Coverage
 
-**6,318 tests** across 193 test files (selected high-volume files below):
+**~9,300 tests** across <!--STAT:testfiles-->284<!--/STAT--> test files. Selected high-volume files
+(per-file counts are a 2026-07 snapshot — run `python3 -m pytest tests/<file> --co -q` for the live number):
 
 | Test File | Tests | Covers |
 |-----------|-------|--------|
-| `test_rns_bridge.py` | 317 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
-| `test_rns_transport.py` | 97 | Packet fragmentation, reassembly, transport stats, connection management |
-| `test_rns_status_parser.py` | 56 | RNS status output parsing, edge cases |
-| `test_meshtastic_protobuf.py` | 74 | Protobuf HTTP client, device config, channel management |
-| `test_meshtastic_handler.py` | 78 | Meshtastic connection, message handling, node tracking |
-| `test_message_queue.py` | 111 | Persistent SQLite queue, retry policy, dead letter, overflow shedding |
-| `test_node_tracker.py` | 73 | Unified node tracking, RNS + Meshtastic state management |
-| `test_status_bar.py` | 76 | TUI status bar rendering, health state display |
-| `test_mqtt_robustness.py` | 68 | MQTT reconnection, message loss recovery, broker failover |
-| `test_commands.py` | 64 | CLI command handlers, output parsing |
-| `test_bridge_health.py` | 57 | Gateway health monitoring, circuit breaker patterns |
-| `test_reconnect.py` | 45 | Exponential backoff, jitter, slow start recovery, thread safety |
-| `test_rf.py` | 107 | RF calculations: haversine, FSPL, Fresnel, link budget, signal classification |
-| `test_deployment_profiles.py` | 31 | Deployment profile system (5 profiles: radio_maps, monitor, meshcore, gateway, full) |
-| `test_startup_health.py` | 20 | Startup health checks, service verification |
-| `test_compliance.py` | 13 | HAM compliance validation, encryption modes |
+| `test_rns_bridge.py` | ~407 | Core bridge: routing, circuit breaker, message processing, callbacks, lifecycle |
+| `test_message_queue.py` | ~114 | Persistent SQLite queue, retry policy, dead letter, overflow shedding |
+| `test_rf.py` | ~107 | RF calculations: haversine, FSPL, Fresnel, link budget, signal classification |
+| `test_rns_transport.py` | ~97 | Packet fragmentation, reassembly, transport stats, connection management |
+| `test_node_tracker.py` | ~97 | Unified node tracking, RNS + Meshtastic state management |
+| `test_meshtastic_handler.py` | ~88 | Meshtastic connection, message handling, node tracking |
+| `test_mqtt_robustness.py` | ~83 | MQTT reconnection, message loss recovery, broker failover |
+| `test_status_bar.py` | ~76 | TUI status bar rendering, health state display |
+| `test_meshtastic_protobuf.py` | ~74 | Protobuf HTTP client, device config, channel management |
+| `test_commands.py` | ~64 | CLI command handlers, output parsing |
+| `test_bridge_health.py` | ~57 | Gateway health monitoring, circuit breaker patterns |
+| `test_rns_status_parser.py` | ~56 | RNS status output parsing, edge cases |
+| `test_reconnect.py` | ~45 | Exponential backoff, jitter, slow start recovery, thread safety |
+| `test_deployment_profiles.py` | ~35 | Deployment profile system (5 profiles: radio_maps, monitor, meshcore, gateway, full) |
+| `test_startup_health.py` | ~20 | Startup health checks, service verification |
+| `test_compliance.py` | ~13 | HAM compliance validation, encryption modes |
 
-*Note: Test suite was trimmed from 4,017 to 1,411 in v0.5.4 to focus on gateway-essential coverage. Since then it has grown to 6,318 across 193 files as new features and the Issues #58–#80 reliability arc shipped with regression-pinning tests. All tests use mocked external services — field validation with real hardware is a separate QA track.*
+*Note: the suite was trimmed from ~4,000 to ~1,400 in v0.5.4 to focus on gateway-essential coverage, then grew back to ~9,300 as new features and the Issues #58–#80 reliability arc shipped with regression-pinning tests. The exact file count above is kept honest by `scripts/readme_stats.py` (enforced in CI via `tests/test_readme_stats.py`); the total is deliberately approximate because it depends on which optional deps are installed. All tests use mocked external services — field validation with real hardware is a separate QA track.*
 
 ```bash
 python3 -m pytest tests/ -v            # Run all tests
@@ -1116,7 +1118,7 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
 - Canonical logging via `setup_logging()` — all 9 `basicConfig()` calls consolidated
-- Handler registry pattern: all 76 TUI handlers use registry dispatch (mixin inheritance fully replaced)
+- Handler registry pattern: all <!--STAT:handlers-->102<!--/STAT--> TUI handler modules use registry dispatch (mixin inheritance fully replaced)
 - Connection failure logs upgraded to WARNING level for visibility (cleanup errors stay DEBUG)
 
 ---

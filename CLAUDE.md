@@ -52,7 +52,7 @@ MeshForge is a **Network Operations Center (NOC)** bridging Meshtastic and Retic
 
 | Branch | Version | Status |
 |--------|---------|--------|
-| `main` | `0.6.1-beta` | Stable — TUI, meshtasticd, RNS, RF tools, gateway, fleet organs. Field-tested. (Check `src/__version__.py` — this table goes stale.) |
+| `main` | `0.6.2-beta` | Stable — TUI, meshtasticd, RNS, RF tools, gateway, fleet organs. Field-tested. (Check `src/__version__.py` — this table goes stale.) |
 
 - **Sister project**: [MeshAnchor](https://github.com/Nursedude/meshanchor) — MeshCore-primary NOC, extracted from main on 2026-04-01.
 - `main` includes XTOC/ATAK/CoT, MQTT bridge, security hardening. Gateway bridge, coverage maps, NOC map have unit tests but need field validation.
