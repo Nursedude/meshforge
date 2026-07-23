@@ -140,6 +140,8 @@
         .box-tile .alias { font-size: 14px; font-weight: 700; color: #e0e0e0; }
         .box-tile .app { font-size: 10px; color: var(--muted); margin-top: 2px; }
         .box-tile .reason { font-size: 10px; color: var(--dark); margin-top: 4px; word-break: break-word; }
+        /* out-of-band claw witness verdict about THIS box (from another box) */
+        .box-tile .witnessed { font-size: 10px; color: var(--amber); margin-top: 4px; word-break: break-word; }
         .res-chip {
             display: inline-block; margin-top: 6px; padding: 1px 7px; border-radius: 9px;
             font-size: 9px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;
@@ -518,10 +520,20 @@
             const appLine = app.name
                 ? esc(app.name) + ' ' + esc(app.version || '') + (app.role ? ' · ' + esc(app.role) : '')
                 : (st === 'healthy' ? 'app identity not reported' : '');
+            // Out-of-band claw witness verdicts about THIS box, produced on
+            // another box (the claw-brain). Shown at the box it describes, e.g.
+            // moc5's HOST_FROZEN witnessed by dudeclaw-02 running on moc2.
+            const witnessed = (b.witnessed || []).map(w =>
+                '<div class="witnessed">👁 ' + esc(w.verdict || '?') +
+                ' via ' + esc(w.witness_device || '?') +
+                (w.failover ? ' (failover)' : '') +
+                ' — witness on ' + esc(w.source_box || '?') + '</div>'
+            ).join('');
             return '<div class="box-tile ' + st + '" title="' + esc(cellTitle('reachable', r)) + '">' +
                 '<div class="alias">' + esc(b.alias) + '</div>' +
                 (appLine ? '<div class="app">' + appLine + '</div>' : '') +
                 (st !== 'healthy' && r.reason ? '<div class="reason">' + esc(r.reason) + '</div>' : '') +
+                witnessed +
                 '<span class="res-chip' + (methodWarn(method) ? ' warn' : '') + '">' + esc(method) + '</span>' +
                 '</div>';
         }).join('') || '<div class="empty">no boxes in the truth document</div>';

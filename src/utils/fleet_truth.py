@@ -443,8 +443,17 @@ def merge_coverage(
     for cls in list(signal_classes) + unknown_to_server:
         if cls in active_by_class:
             sig = active_by_class[cls]
-            classes[cls] = {"disp": "active", "severity": sig.get("severity"),
-                            "subject": sig.get("subject"), "detail": sig.get("detail")}
+            _cell = {"disp": "active", "severity": sig.get("severity"),
+                     "subject": sig.get("subject"), "detail": sig.get("detail")}
+            # Preserve structured per-target verdicts so build_fleet_truth can
+            # fan the out-of-band host-probe witness (host_frozen) onto the row
+            # of the box it DESCRIBES — the collector runs on one box but
+            # reports on others. Only a {name, verdict, ...} list rides along;
+            # classes without one keep their textual detail unchanged.
+            _extra = sig.get("extra")
+            if isinstance(_extra, dict) and isinstance(_extra.get("targets"), list):
+                _cell["targets"] = _extra["targets"]
+            classes[cls] = _cell
             red += 1
             continue
         disp = reported.get(cls)
@@ -624,6 +633,11 @@ def build_box_truth(
                       "app": app},
         "subsystems": subsystems,
         "coverage": coverage,
+        # Out-of-band verdicts about THIS box produced by a claw witness running
+        # on ANOTHER box (the claw-brain). Filled by build_fleet_truth's fan-out
+        # once every box row exists; display-only (never taints box_state — an
+        # external witness has its own blind spots / cross-subnet routing gaps).
+        "witnessed": [],
         "escalations": _extract_escalations(mini_block),
         "source_errors": _extract_source_errors(status),
     }
@@ -747,6 +761,33 @@ def build_fleet_truth(
     """
     boxes = [build_box_truth(s, now=now, signal_classes=signal_classes)
              for s in peer_snapshots]
+
+    # Fan the out-of-band host-probe witness (host_frozen) onto the row of the
+    # box it DESCRIBES. The claw collector runs on ONE box (the claw-brain) and
+    # reports on OTHERS, so its per-target verdicts otherwise ride only under
+    # the collector's coverage chip — a box witnessed frozen/unreachable shows
+    # nothing at its own row. A target whose name isn't a fleet box alias (e.g.
+    # a mesh bot) has no row to land on and stays in the collector's detail.
+    # Display-only: this never changes box_state — the witness can be blind or
+    # cross-subnet-routing-gapped (a failover UNREACHABLE is already UNKNOWN
+    # upstream), so it annotates, never overrides, a box's own verdict.
+    _by_alias = {b["alias"]: b for b in boxes}
+    for b in boxes:
+        _cell = ((b.get("coverage") or {}).get("classes") or {}).get("host_frozen")
+        if not isinstance(_cell, dict) or _cell.get("disp") != "active":
+            continue
+        for _t in _cell.get("targets") or []:
+            if not isinstance(_t, dict):
+                continue
+            _wb = _by_alias.get(str(_t.get("name")))
+            if _wb is None or _wb is b:
+                continue
+            _wb.setdefault("witnessed", []).append({
+                "verdict": _t.get("verdict"),
+                "witness_device": _t.get("witness_device"),
+                "failover": bool(_t.get("failover")),
+                "source_box": b.get("alias"),
+            })
 
     answered = sum(1 for b in boxes if b["reachable"]["state"] != DARK)
     declared = hosts_declared if hosts_declared is not None else len(boxes)

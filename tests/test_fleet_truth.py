@@ -337,6 +337,62 @@ class TestFleetTruth:
         assert t["counts"]["healthy"] == 2
         assert t["fanout"]["stale"] is False
 
+    def _witness_snap(self, collector, targets):
+        # a claw-brain box whose host_frozen signal carries per-target verdicts
+        snap = self._healthy_snap(collector)
+        snap["status"]["watchdog"] = {
+            "installed": True, "ok": True,
+            "signals": [{"class": "host_frozen", "severity": "wedge",
+                         "subject": "claw-witness", "detail": "witness detail",
+                         "extra": {"targets": targets}}]}
+        return snap
+
+    def test_host_frozen_witness_fans_out_to_witnessed_box(self):
+        # the claw witness runs on moc2 but reports on moc5 — moc5's verdict
+        # must land on moc5's OWN row, not only under moc2's coverage chip.
+        moc2 = self._witness_snap("moc2", [
+            {"name": "moc5", "verdict": "HOST_FROZEN",
+             "witness_device": "dudeclaw-02", "failover": False},
+            {"name": "bot32", "verdict": "UNREACHABLE",
+             "witness_device": "dudeclaw-01", "failover": False}])
+        t = ft.build_fleet_truth([moc2, self._healthy_snap("moc5")],
+                                 now=NOW, signal_classes=["host_frozen"],
+                                 noc_host="moc2")
+        by = {b["alias"]: b for b in t["boxes"]}
+        w = by["moc5"]["witnessed"]
+        assert len(w) == 1 and w[0]["verdict"] == "HOST_FROZEN"
+        assert w[0]["witness_device"] == "dudeclaw-02"
+        assert w[0]["source_box"] == "moc2"
+        # bot32 is not a fleet box → no phantom row; stays in moc2's detail
+        assert "bot32" not in by
+        # the collector is never witnessed by itself
+        assert by["moc2"]["witnessed"] == []
+
+    def test_failover_witness_provenance_carries_through(self):
+        moc2 = self._witness_snap("moc2", [
+            {"name": "moc5", "verdict": "UNKNOWN",
+             "witness_device": "dudeclaw-01", "failover": True}])
+        t = ft.build_fleet_truth([moc2, self._healthy_snap("moc5")],
+                                 now=NOW, signal_classes=["host_frozen"],
+                                 noc_host="moc2")
+        w = {b["alias"]: b for b in t["boxes"]}["moc5"]["witnessed"][0]
+        assert w["verdict"] == "UNKNOWN" and w["failover"] is True
+
+    def test_witness_is_display_only_not_a_verdict_taint(self):
+        # moc5 self-reports healthy; an out-of-band HOST_FROZEN (which may be the
+        # witness's own blind spot) SURFACES on its row but must NOT flip its
+        # verdict — annotate, never override (honest_failure_modes: don't let one
+        # observation channel's degraded state redefine another's).
+        moc2 = self._witness_snap("moc2", [
+            {"name": "moc5", "verdict": "HOST_FROZEN",
+             "witness_device": "dudeclaw-02", "failover": False}])
+        t = ft.build_fleet_truth([moc2, self._healthy_snap("moc5")],
+                                 now=NOW, signal_classes=["host_frozen"],
+                                 noc_host="moc2")
+        by = {b["alias"]: b for b in t["boxes"]}
+        assert by["moc5"]["box_state"] == ft.HEALTHY        # not tainted
+        assert by["moc5"]["witnessed"][0]["verdict"] == "HOST_FROZEN"  # but surfaced
+
     def test_server_class_skew_rolls_up_and_forces_non_green(self):
         """2026-07-20: a per-box unknown_to_server list is true-but-buried.
         If any box reports a class this server doesn't know, the server is
