@@ -3,9 +3,15 @@
 # (.claude/plans/ntfy_receipt_heartbeat_2026_06_17.md). The ONLY rung that
 # confirms the operator's DEVICE actually receives fleet pages.
 #
-# Sends a WEEKLY tap-to-ack page to the fleet topic carrying an ntfy "http"
-# action button; tapping it makes the PHONE POST to a dedicated ack-topic
-# (<fleet>-ack). This script (run hourly) polls that ack-topic, tracks how many
+# Sends a WEEKLY tap-to-ack page to the fleet topic carrying an ntfy "view"
+# action button; tapping it opens a URL that GET-publishes "ack" to a dedicated
+# ack-topic (<fleet>-ack). (Was an "http" action until 2026-07-23 — but http
+# actions are only fired by the Android app; the web app and older/iOS clients
+# silently ignore them, so the button did nothing. A "view" action just opens a
+# URL and is honoured by EVERY ntfy client, falling back to the OS browser.
+# ntfy publishes via GET at /<topic>/publish?message=ack, so opening that URL
+# records the ack — verified 2026-07-23.) This script (run hourly) polls that
+# ack-topic, tracks how many
 # consecutive weekly pings went un-acked, escalates via the Phase-1 EMAIL
 # backbone at >=2 unacked weeks (the channel to the device is unconfirmed), and
 # writes a verdict file the READ-ONLY watchdog probe (probe_ntfy_ack_stale)
@@ -112,13 +118,16 @@ if [ "$(( now_ts - last_ping_ts ))" -ge "$PING_INTERVAL_S" ]; then
     elif [ "$last_ping_ts" -gt 0 ]; then
         unacked="$(( unacked + 1 ))"
     fi
+    # "view" action (universal): opens a URL that GET-publishes "ack" to the
+    # ack-topic. Works on every ntfy client, unlike the old "http" action which
+    # the web app / older iOS silently ignored (the button that "did nothing").
     pub_args=( -s --max-time 12
         -H "Title: Fleet alert check - tap to confirm"
         -H "Priority: default"
         -H "Tags: white_check_mark,fleet"
-        -H "Actions: http, Got it, https://ntfy.sh/$ACK_TOPIC, method=POST, body=ack, clear=true" )
+        -H "Actions: view, Confirm receipt, https://ntfy.sh/$ACK_TOPIC/publish?message=ack, clear=true" )
     [ -n "$TOKEN" ] && pub_args+=( -H "Authorization: Bearer $TOKEN" )
-    pub_args+=( --data-raw "Weekly fleet-alert receipt check. If you can see this, tap 'Got it' to confirm your phone receives fleet pages. No tap for ~2 weeks -> the fleet emails you (the alert channel to your device may be dark)." "https://ntfy.sh/$TOPIC" )
+    pub_args+=( --data-raw "Weekly fleet-alert receipt check. If you can see this, tap 'Confirm receipt' to confirm your phone receives fleet pages (it opens a browser tab that records the ack — a small JSON reply is the confirmation). No tap for ~2 weeks -> the fleet emails you (the alert channel to your device may be dark)." "https://ntfy.sh/$TOPIC" )
     # Only advance last_ping_ts on a successful publish (a failed publish retries
     # next hour; the publish-path failure itself is Phase-2 loopback's job).
     if curl "${pub_args[@]}" >/dev/null 2>&1; then
