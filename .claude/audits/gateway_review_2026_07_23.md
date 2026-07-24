@@ -33,13 +33,14 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~3~~ | `node_tracker.py` (cache load) | med | **FIXED 2026-07-23** | Persisted-active-state contradicts forced `is_online=False` on reload — see fixed section below. |
 | ~~4~~ | `gateway_heartbeat.py` `_events` | med | **FIXED 2026-07-23** | Unlocked multi-thread `_events` append/re-slice/read — see fixed section below. |
 | ~~5~~ | `mqtt_bridge_handler.py:560` | med | **FIXED 2026-07-23** | Wildcard-subscription foreign-channel traffic forged the bridge-channel liveness heartbeat — see fixed section below. |
-| 6 | `reconnect.py:316,292` | med | PLAUSIBLE | `SlowStartRecovery` ramp measured with `time.time()` → NTP forward step ends slow-start early and blasts a just-recovered radio (the RATE_LIMIT burst class); backward step → negative multiplier / stuck recovering. |
+| ~~6~~ | `reconnect.py:316,292` | med | **FIXED 2026-07-23** | `SlowStartRecovery` ramp on wall-clock — monotonic anchor, both twins. See fixed section below. |
 | 7 | `message_queue.py:924` | med | PLAUSIBLE | A send that reaches the network followed by a failing `mark_delivered` (DB error) falls to the retry path with no dedup re-check → guaranteed duplicate on the wire, no witness distinguishing it from a real transient. |
 | 8 | `message_queue.py:1110` | med-low | PLAUSIBLE | `cleanup_stale` resets `in_progress→pending` without bumping `retry_count` → a send_fn that wedges past STALE_TIMEOUT every attempt retries forever, never dead-letters, no per-message witness. |
 | 9 | `message_queue.py:580,613` | low | PLAUSIBLE | `retry_after` scheduling/comparison via `datetime.now()` (wall clock) → NTP steps skew retry timing; queued-item "age" forgeable. Fix is a delay clamp, not a rework. |
 | 10 | `bridge_health.py:418,261` | low | PLAUSIBLE | `_uptime_seconds` accumulation + `get_uptime_percent` use wall-clock deltas → NTP steps make uptime% arbitrarily wrong. Display/summary only (bounded 0–100), not a control decision. |
 | 11 | `bounded_rpc.py:242,260` | low | CONFIRMED | Flag-ordering race leaks `_outstanding_wedges` +1 in the abort-suppressed path (`NO_EXIT`/`exit_on_wedge=False`) → phantom "wedged threads in flight" gauge. Only reachable when the abort backstop is engaged (not steady state). |
 | 12 | `meshtastic_broadcast_bridge.py:408` | low | PLAUSIBLE | No bytes→str normalization on the inbound broadcast path; latent until a `CanonicalMessage` with bytes `content` (advertised second shape) flows through → TypeError swallowed as generic callback error, message silently fails to fan out. One-line decode fix. |
+| 13 | `radio_failover.py:542` | med | CONFIRMED (discovered in Pri-6 pass) | The **entire** failover state machine runs on `now = time.time()`: recovery-duration elapsed (`_evaluate_secondary_active:657`), primary `downtime` (`:639`/`:420`), and `_failover_recovery_at` elapsed (`:1113`) are all wall-clock. Same #74 class as Pri-1/Pri-6 but a broader surface — an NTP forward step can forge premature primary-recovery/switch-back; backward step skews downtime. Deferred deliberately (own focused pass; multiple duration sites + a live state machine, not a one-liner). Note: radio_failover HTTP polling is partly dormant vs meshtasticd (#76 residual). |
 | — | `node_models.py:~1012` (`meshcore:` factory) | ? | UNVERIFIED | Sibling of finding C (also hard-sets `now()/True`); MeshCore's heard-time field not confirmed. Check next pass. |
 
 ## Pri-2 (finding 2) — RESOLVED 2026-07-23 (this session, both twins)
@@ -191,6 +192,36 @@ MF `test_mqtt_bridge_handler.py` 91 pass, lint exit 0.
 `_last_uplink_at`, no DM-to-gateway wildcard, and always subscribes
 channel-scoped (`.../json/{channel}/#`) — the heartbeat + wildcard + channel
 diagnostic loop are MeshForge-only. Verified at the source; nothing to port.
+
+## Pri-6 (finding 6) — RESOLVED 2026-07-23 (both twins)
+
+**Defect**: `SlowStartRecovery` (post-reconnect throughput ramp, NGINX
+slow-start pattern) anchored `_recovery_start` with `time.time()` and computed
+every elapsed via `time.time() - _recovery_start` (5 sites). A slow-start ramp
+is a **duration**, and wall-clock durations are forgeable on the fleet's
+RTC-less Pis (honest_failure_modes #6, the #74 class). An NTP **forward** step
+jumped elapsed past `slow_start_seconds` → `get_throughput_multiplier` returned
+`max_multiplier` early → full throughput blasted at a just-recovered radio (the
+RATE_LIMIT burst this class exists to prevent). A **backward** step drove
+elapsed negative → `progress<0` → sub-`min_multiplier`/negative multiplier and
+`is_recovering()` stuck True.
+
+**Fix**: `_recovery_start` is now a `time.monotonic()` anchor; all five elapsed
+computations use `time.monotonic()`. Monotonic never steps or reverses, so the
+ramp is immune by construction; elapsed is always ≥ 0 so the multiplier stays in
+`[min, max)`. In-memory only (never persisted/serialized), so no cross-restart
+concern. Un-ported sibling of Pri-1's `gateway_heartbeat` monotonic fix.
+
+Tests: `TestSlowStartMonotonicClockSteps` (3) — forward step doesn't complete
+early, backward step keeps the multiplier bounded, and completion is driven by
+real monotonic elapsed with the wall clock frozen. A pre-existing
+`test_zero_multiplier_safety_cap` that seeded `_recovery_start = time.time()`
+(now a clock mismatch against the monotonic reader) was corrected to
+`time.monotonic()`. MF `test_reconnect.py` 48 pass; MA the same 48 pass.
+
+**MA twin ported**: `reconnect.py` `SlowStartRecovery` is a mirror (byte-close,
+not byte-locked — line numbers differ) and carried the identical 5-site defect.
+Fixed identically in both repos, tests ported verbatim.
 
 ## Twin note (MeshAnchor)
 

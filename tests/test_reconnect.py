@@ -395,9 +395,10 @@ class TestSlowStartAdjustedDelay:
         ss = SlowStartRecovery(config=SlowStartConfig(
             min_multiplier=0.0, slow_start_seconds=10.0
         ))
-        # Manually set recovery start far in the future so elapsed ~0
-        # and multiplier is effectively 0 (min_multiplier=0.0 + 0*progress)
-        ss._recovery_start = time.time()
+        # Manually set recovery start so elapsed ~0 and multiplier is
+        # effectively 0 (min_multiplier=0.0 + 0*progress). Anchor on the same
+        # monotonic clock the ramp measures against (Pri-6), not wall-clock.
+        ss._recovery_start = time.monotonic()
         # At elapsed ~0, multiplier = min_multiplier + (1.0-0.0)*0 = 0.0
         # The get_adjusted_delay should hit the safety cap
         # But there's always a tiny elapsed time, so multiplier > 0
@@ -430,6 +431,69 @@ class TestSlowStartFactory:
         ss = SlowStartRecovery.for_rns()
         assert ss.config.slow_start_seconds == 15.0
         assert ss.config.min_multiplier == 0.2
+
+
+# ---------------------------------------------------------------------------
+# SlowStartRecovery — monotonic clock-step immunity (gateway review Pri-6)
+# ---------------------------------------------------------------------------
+
+class TestSlowStartMonotonicClockSteps:
+    """Pri-6 (gateway review 2026-07-23): the slow-start ramp is a DURATION and
+    must measure on time.monotonic(), so a wall-clock NTP step cannot end
+    recovery early (blasting a just-recovered radio — the RATE_LIMIT burst) or
+    drive the multiplier sub-min/negative and stuck-recovering
+    (honest_failure_modes #6, the #74 class). We drive monotonic and the wall
+    clock independently to prove the ramp follows monotonic only."""
+
+    @staticmethod
+    def _cfg():
+        return SlowStartConfig(slow_start_seconds=30.0,
+                               min_multiplier=0.1, max_multiplier=1.0)
+
+    @patch("gateway.reconnect.time")
+    def test_forward_wallclock_step_does_not_end_recovery_early(self, mt):
+        mono = {"t": 1000.0}
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 5_000.0  # wall clock, must be ignored
+        ss = SlowStartRecovery(config=self._cfg())
+        ss.start_recovery()                       # anchor at monotonic 1000
+        # A +1h NTP forward step lands on the WALL clock; monotonic advances 3s.
+        mt.time.side_effect = lambda: 5_000.0 + 3600.0
+        mono["t"] = 1003.0
+        assert ss.is_recovering() is True          # not falsely completed
+        m = ss.get_throughput_multiplier()
+        # 3/30 progress → 0.1 + 0.9*0.1 = 0.19, decidedly not full throughput.
+        assert 0.15 < m < 0.25
+        assert 0 < ss.get_recovery_progress() < 20
+
+    @patch("gateway.reconnect.time")
+    def test_backward_wallclock_step_keeps_multiplier_bounded(self, mt):
+        mono = {"t": 2000.0}
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 9_000.0
+        ss = SlowStartRecovery(config=self._cfg())
+        ss.start_recovery()
+        # Wall clock jumps BACKWARD an hour; monotonic still moves forward 6s.
+        mt.time.side_effect = lambda: 9_000.0 - 3600.0
+        mono["t"] = 2006.0
+        m = ss.get_throughput_multiplier()
+        # Bounded in [min, max]; never negative, never stuck below min.
+        assert ss.config.min_multiplier <= m <= ss.config.max_multiplier
+        assert ss.is_recovering() is True
+
+    @patch("gateway.reconnect.time")
+    def test_recovery_completes_on_real_monotonic_elapsed(self, mt):
+        mono = {"t": 500.0}
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 500.0       # wall clock frozen entirely
+        ss = SlowStartRecovery(config=self._cfg())
+        ss.start_recovery()
+        # Monotonic advances past the ramp with NO wall-clock movement at all —
+        # proves completion is driven by monotonic, not time.time().
+        mono["t"] = 531.0                          # 31s ≥ 30s
+        assert ss.get_throughput_multiplier() == 1.0
+        assert ss.is_recovering() is False
+        assert ss._recovery_start is None          # completion cleared the anchor
 
 
 # ---------------------------------------------------------------------------

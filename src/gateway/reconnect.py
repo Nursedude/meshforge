@@ -263,13 +263,22 @@ class SlowStartRecovery:
     """
 
     config: SlowStartConfig = field(default_factory=SlowStartConfig)
+    # Monotonic anchor (gateway review Pri-6, 2026-07-23): the slow-start ramp
+    # is a DURATION, and wall-clock durations are forgeable on this fleet's
+    # RTC-less Pis (honest_failure_modes #6, the #74 class). Measuring elapsed
+    # with time.time() let an NTP forward step jump elapsed past
+    # slow_start_seconds → recovery ends early → full throughput blasted at a
+    # just-recovered radio (the RATE_LIMIT burst); a backward step drove
+    # elapsed negative → sub-min / negative multiplier and stuck-recovering.
+    # time.monotonic() never steps or reverses, so the ramp is immune. In-memory
+    # only (never persisted/serialized), so no cross-restart concern.
     _recovery_start: Optional[float] = field(default=None, init=False)
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False)
 
     def start_recovery(self) -> None:
         """Mark start of recovery period."""
         with self._lock:
-            self._recovery_start = time.time()
+            self._recovery_start = time.monotonic()
             logger.info(
                 f"Slow start recovery initiated "
                 f"(duration: {self.config.slow_start_seconds}s)"
@@ -279,7 +288,7 @@ class SlowStartRecovery:
         """Manually end recovery period (return to full throughput)."""
         with self._lock:
             if self._recovery_start is not None:
-                elapsed = time.time() - self._recovery_start
+                elapsed = time.monotonic() - self._recovery_start
                 logger.info(f"Slow start recovery ended after {elapsed:.1f}s")
             self._recovery_start = None
 
@@ -289,7 +298,7 @@ class SlowStartRecovery:
             if self._recovery_start is None:
                 return False
 
-            elapsed = time.time() - self._recovery_start
+            elapsed = time.monotonic() - self._recovery_start
             return elapsed < self.config.slow_start_seconds
 
     def get_throughput_multiplier(self) -> float:
@@ -313,7 +322,7 @@ class SlowStartRecovery:
             if self._recovery_start is None:
                 return self.config.max_multiplier
 
-            elapsed = time.time() - self._recovery_start
+            elapsed = time.monotonic() - self._recovery_start
 
             # Recovery period complete
             if elapsed >= self.config.slow_start_seconds:
@@ -356,7 +365,7 @@ class SlowStartRecovery:
             if self._recovery_start is None:
                 return None
 
-            elapsed = time.time() - self._recovery_start
+            elapsed = time.monotonic() - self._recovery_start
             if elapsed >= self.config.slow_start_seconds:
                 return 100.0
 
