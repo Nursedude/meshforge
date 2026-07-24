@@ -29,7 +29,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | Pri | File:line | Sev | Status | Defect (one line) |
 |-----|-----------|-----|--------|-------------------|
 | ~~1~~ | ~~`gateway_heartbeat.py`~~ | high | **FIXED 2026-07-23** | Split-brain via wall-clock peer-liveness — moved to the fixed table above. |
-| 2 | `meshtastic_broadcast_bridge.py:909` | high | CONFIRMED | `mark_delivered()` called right after `handle_outbound()`, which only *queues* the LXM — a dead subscriber reads HEALTHY with fresh `last_delivery` forever; STALE/DEAD tiers unreachable via the send path. **Design change** (wire `on_delivered`/`on_failed` to the health machinery) with a real risk of false-DEAD on legitimately ack-less broadcast — needs design, not a quick patch. |
+| ~~2~~ | `meshtastic_broadcast_bridge.py` | high | **FIXED 2026-07-23** | Enqueue-read-as-delivery — moved to the fixed section below. |
 | 3 | `node_tracker.py:818` | med | CONFIRMED | On cache load `is_online=False` but the state machine is restored to persisted `ONLINE` → `node.state=="ONLINE"` contradicts `is_online==False`; the roundtrip test pops `state` as "derived from is_online", a justification that's false when a machine is present. |
 | 4 | `gateway_heartbeat.py:521,563,604,630` | med | CONFIRMED | `_events` list appended/re-sliced from multiple threads with no lock → a real promotion/demotion audit event can be lost; `get_status` then serves an events list that lies about what happened. |
 | 5 | `mqtt_bridge_handler.py:560` | med | CONFIRMED (opt-in) | Under `sessions_enabled` the JSON subscription is a `+` wildcard, but `_last_uplink_at` is stamped before the channel-scope filter → foreign-channel traffic refreshes the "bridge channel alive" heartbeat, masking a dark bridge channel. Fix: stamp only after channel match. |
@@ -42,7 +42,41 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | 12 | `meshtastic_broadcast_bridge.py:408` | low | PLAUSIBLE | No bytes→str normalization on the inbound broadcast path; latent until a `CanonicalMessage` with bytes `content` (advertised second shape) flows through → TypeError swallowed as generic callback error, message silently fails to fan out. One-line decode fix. |
 | — | `node_models.py:~1012` (`meshcore:` factory) | ? | UNVERIFIED | Sibling of finding C (also hard-sets `now()/True`); MeshCore's heard-time field not confirmed. Check next pass. |
 
-## Pri-2 (finding 2) — warm-start handoff for the next session
+## Pri-2 (finding 2) — RESOLVED 2026-07-23 (this session, both twins)
+
+**Fix landed** in `meshtastic_broadcast_bridge.py` (MF) + `lxmf_broadcast_bridge.py`
+(MA — see twin note; both shared the defect). Regression-pinned: MF
+`tests/test_meshtastic_broadcast_bridge.py` (58, +14 this pass), MA
+`tests/test_lxmf_broadcast_bridge.py` (90). Both suites + ack-first-wins green,
+both repos lint exit 0, db_audit clean.
+
+**Design chosen** — separate the two facts the code conflated, mirroring #74's
+`compute_confirmation_view` confirmable-population framing (handoff options a+c;
+option b deferred):
+- `handle_outbound` return → `mark_fanout_enqueued` (stamps `last_delivery` for
+  display **only**; no health/failure reset — an enqueue is not a delivery).
+- async LXMF `on_delivered` with `state==DELIVERED` → new `mark_confirmed`
+  (stamps new `last_confirmed_at`, resets failures, → HEALTHY — the ONLY path
+  to HEALTHY). `state==SENT` (propagation-node hand-off, **not** a recipient
+  proof) is held, not confirmed. The callback reads `lxm.state` to tell them
+  apart — LXMF fires the same callback for both (`LXMessage.__mark_delivered`
+  vs `__mark_propagated`).
+- async `on_failed` (LXMF gave up, `fail_message`) → `mark_failed`.
+- New `STATE_UNCONFIRMED`; `desired_state` gates STALE/DEAD on
+  `last_confirmed_at is not None`, so a never-confirmed subscriber can **never**
+  read HEALTHY (kills the false-HEALTHY) **and never auto-DEAD** (neutralizes
+  the false-DEAD risk by construction — hold-and-surface, hfm #2). New
+  subscribers are born UNCONFIRMED. `get_status` surfaces
+  `delivery_confirmation.unconfirmed_subscribers` as a visible blind spot and
+  reports LIVE-derived state so a stale stored value can't lie (hfm #5).
+
+**Why option (b) — independent announce-liveness — was deferred**: the default
+deployment uses direct/opportunistic delivery (`propagation_node=""`), where
+real per-recipient LXMF proofs already exist, so (b) is an unneeded enrichment.
+Queued as a follow-on only if a prop-node-heavy box makes the UNCONFIRMED
+bucket uninformative.
+
+### Original handoff context (for reference)
 
 Deferred to a fresh session on purpose (2026-07-23): it is a **delivery-semantics
 design decision**, not a wiring change, and getting it wrong marks a live-but-quiet
@@ -89,6 +123,18 @@ MF↔MA twins (some in the untracked-diverged tier per `reference_repo_twin_map`
 Finding **D especially** matters more on MeshAnchor (MeshCore is its *primary*
 radio). The four fixes here should be checked against MA and ported where the
 twin shares the defect — verify each at the source (MA may lack or differ).
+
+**Pri-2 twin outcome (2026-07-23)**: the broadcast bridge is a mirror pair —
+MF `meshtastic_broadcast_bridge.py` ↔ MA `lxmf_broadcast_bridge.py` (Meshtastic→
+LXMF vs MeshCore→LXMF fan-out). The handoff guessed MA might already be fixed,
+but MA had only **cosmetically** renamed `mark_delivered`→`mark_fanout_enqueued`
+and documented the honesty caveat while its body still reset failures + state to
+HEALTHY on enqueue — i.e. **both twins carried the substantive defect**, and MA's
+own comment named the real fix as an open TODO ("wire true receipts to a separate
+confirmed-delivery field"). The finding-2 fix resolves that TODO and was ported
+to MA identically (same `mark_confirmed`/`STATE_UNCONFIRMED`/confirmable-gating
+design). The two files are NOT byte-locked twins (separate mirror files, not in
+`parity_check`'s set), so the port matched intent, not bytes.
 
 ## Clean bill
 

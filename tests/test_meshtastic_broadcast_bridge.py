@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import MagicMock
@@ -37,10 +37,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from gateway.config import MeshtasticBroadcastConfig
 from gateway.meshtastic_broadcast_bridge import (
     MeshtasticBroadcastBridge,
+    STATE_DEAD,
+    STATE_DEGRADED,
     STATE_HEALTHY,
+    STATE_STALE,
+    STATE_UNCONFIRMED,
+    Subscriber,
     SubscriberStore,
     TIER_EXTERNAL,
     TIER_LOCAL,
+    _DEAD_SINCE_SUCCESS_SEC,
+    _STALE_SINCE_SUCCESS_SEC,
     create_from_gateway_config,
     format_broadcast_text,
     get_active_broadcast_bridge,
@@ -128,11 +135,23 @@ class TestSubscriberStore:
             s.lxmf_hash == "cafebabe" for s in SubscriberStore(path).list_all()
         )
 
-    def test_mark_delivered_updates_timestamp(self, tmp_path):
+    def test_mark_fanout_enqueued_updates_timestamp(self, tmp_path):
         store = SubscriberStore(tmp_path / "subs.db")
         store.add("deadbeef")
-        store.mark_delivered("deadbeef")
-        assert store.list_all()[0].last_delivery is not None
+        store.mark_fanout_enqueued("deadbeef")
+        sub = store.list_all()[0]
+        assert sub.last_delivery is not None
+        # An enqueue is NOT a confirmed delivery — it must not stamp the
+        # confirmable anchor (finding-2).
+        assert sub.last_confirmed_at is None
+
+    def test_mark_confirmed_stamps_confirmable_anchor(self, tmp_path):
+        store = SubscriberStore(tmp_path / "subs.db")
+        store.add("deadbeef")
+        store.mark_confirmed("deadbeef")
+        sub = store.list_all()[0]
+        assert sub.last_confirmed_at is not None
+        assert sub.state == STATE_HEALTHY
 
     def test_mark_failed_increments(self, tmp_path):
         store = SubscriberStore(tmp_path / "subs.db")
@@ -815,5 +834,217 @@ class TestIssue66Wiring:
             lxm_instance = lxmf.LXMessage.return_value
             lxm_instance.register_delivery_callback.assert_called_once()
             lxm_instance.register_failed_callback.assert_called_once()
+        finally:
+            b.stop()
+
+
+# ---------------------------------------------------------------------------
+# finding-2 (2026-07-23): honest delivery confirmation.
+#
+# The pre-fix bridge called mark_delivered() right after handle_outbound()
+# ENQUEUED the LXM — conflating "handed to the router" with "recipient got
+# it." That reset state to HEALTHY + stamped last_delivery on every send, so
+# the STALE/DEAD tiers were unreachable and a dead subscriber read HEALTHY
+# forever. The fix separates enqueue (best-effort) from a real LXMF recipient
+# proof (state DELIVERED), mirroring #74's confirmable-population framing.
+# ---------------------------------------------------------------------------
+
+
+def _make_sub(**kw) -> Subscriber:
+    base = dict(lxmf_hash="deadbeef00112233", added_at=datetime(2026, 1, 1))
+    base.update(kw)
+    return Subscriber(**base)
+
+
+class _FakeReceipt:
+    """Stand-in for the LXMessage handed to a delivery/failed callback."""
+    def __init__(self, state):
+        self.state = state
+
+
+def _grab_delivery_cb(fake_rns_lxmf):
+    _rns, lxmf, _router = fake_rns_lxmf
+    return lxmf.LXMessage.return_value.register_delivery_callback.call_args.args[0]
+
+
+def _grab_failed_cb(fake_rns_lxmf):
+    _rns, lxmf, _router = fake_rns_lxmf
+    return lxmf.LXMessage.return_value.register_failed_callback.call_args.args[0]
+
+
+class TestDeliveryConfirmationDesiredState:
+    """desired_state() confirmable-population rule."""
+
+    def test_never_confirmed_is_unconfirmed_not_healthy(self):
+        # The core lie the fix kills: no proof yet must NOT read HEALTHY.
+        sub = _make_sub(last_confirmed_at=None, consecutive_failures=0)
+        assert SubscriberStore.desired_state(sub, datetime(2026, 1, 2)) == STATE_UNCONFIRMED
+
+    def test_never_confirmed_but_failing_is_degraded_not_dead(self):
+        # Absence of a proof must never by itself read as DEAD — active
+        # failures surface as the honest DEGRADED, not the "went dark" DEAD.
+        sub = _make_sub(
+            last_confirmed_at=None, consecutive_failures=5,
+            last_failure_at=datetime(2026, 6, 1),
+        )
+        # Even 30 days later, a never-confirmed subscriber never goes DEAD.
+        assert SubscriberStore.desired_state(sub, datetime(2026, 7, 1)) == STATE_DEGRADED
+
+    def test_confirmed_no_failures_is_healthy(self):
+        sub = _make_sub(last_confirmed_at=datetime(2026, 6, 1), consecutive_failures=0)
+        assert SubscriberStore.desired_state(sub, datetime(2026, 6, 1)) == STATE_HEALTHY
+
+    def test_confirmed_then_failing_reaches_stale(self):
+        # Now reachable: last_confirmed_at is an honest anchor.
+        now = datetime(2026, 6, 2)
+        sub = _make_sub(
+            last_confirmed_at=now - timedelta(seconds=_STALE_SINCE_SUCCESS_SEC + 60),
+            consecutive_failures=4,
+        )
+        assert SubscriberStore.desired_state(sub, now) == STATE_STALE
+
+    def test_confirmed_then_failing_reaches_dead(self):
+        now = datetime(2026, 6, 10)
+        sub = _make_sub(
+            last_confirmed_at=now - timedelta(seconds=_DEAD_SINCE_SUCCESS_SEC + 60),
+            consecutive_failures=9,
+        )
+        assert SubscriberStore.desired_state(sub, now) == STATE_DEAD
+
+
+class TestEnqueueIsNotDelivery:
+    """mark_fanout_enqueued must not launder into a delivery confirmation."""
+
+    def test_enqueue_does_not_reset_failures_or_reach_healthy(self, tmp_path):
+        store = SubscriberStore(tmp_path / "subs.db")
+        store.add("deadbeef00112233")
+        for _ in range(3):
+            store.mark_failed("deadbeef00112233", "boom")
+        sub = store.list_all()[0]
+        assert sub.consecutive_failures == 3
+        assert sub.state == STATE_DEGRADED
+        # An enqueue after failures must NOT paper over them (the whole defect).
+        store.mark_fanout_enqueued("deadbeef00112233")
+        sub = store.list_all()[0]
+        assert sub.consecutive_failures == 3
+        assert sub.last_confirmed_at is None
+        # Live-derived state still reflects the failures.
+        assert SubscriberStore.desired_state(sub, datetime.utcnow()) == STATE_DEGRADED
+
+    def test_confirmation_after_failures_recovers(self, tmp_path):
+        store = SubscriberStore(tmp_path / "subs.db")
+        store.add("deadbeef00112233")
+        for _ in range(3):
+            store.mark_failed("deadbeef00112233", "boom")
+        # A REAL proof is the only thing that recovers.
+        store.mark_confirmed("deadbeef00112233")
+        sub = store.list_all()[0]
+        assert sub.consecutive_failures == 0
+        assert sub.state == STATE_HEALTHY
+        assert sub.last_confirmed_at is not None
+
+
+class TestDeliveryCallbackDrivesHealth:
+    """The registered on_delivered/on_failed callbacks drive subscriber health,
+    reading lxm.state to tell a recipient proof from a prop-node hand-off."""
+
+    def test_fanout_does_not_confirm_synchronously(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("aaaa000000000001")
+            b.on_meshtastic_message(_make_bridged(channel=0, text="ping"))
+            sub = b._subs.list_all()[0]
+            # Enqueued, but NO recipient proof yet → unconfirmed, not healthy.
+            assert sub.last_confirmed_at is None
+            assert SubscriberStore.desired_state(sub, datetime.utcnow()) == STATE_UNCONFIRMED
+        finally:
+            b.stop()
+
+    def test_delivered_state_confirms(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("aaaa000000000001")
+            b.on_meshtastic_message(_make_bridged(channel=0, text="ping"))
+            on_delivered = _grab_delivery_cb(fake_rns_lxmf)
+            on_delivered(_FakeReceipt(state=8))  # LXMessage.DELIVERED
+            sub = b._subs.list_all()[0]
+            assert sub.last_confirmed_at is not None
+            assert sub.state == STATE_HEALTHY
+        finally:
+            b.stop()
+
+    def test_propagated_state_does_not_confirm(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("aaaa000000000001")
+            b.on_meshtastic_message(_make_bridged(channel=0, text="ping"))
+            on_delivered = _grab_delivery_cb(fake_rns_lxmf)
+            on_delivered(_FakeReceipt(state=4))  # LXMessage.SENT (propagated)
+            sub = b._subs.list_all()[0]
+            # Reached the propagation node only — NOT a recipient proof.
+            assert sub.last_confirmed_at is None
+            assert SubscriberStore.desired_state(sub, datetime.utcnow()) == STATE_UNCONFIRMED
+        finally:
+            b.stop()
+
+    def test_failed_callback_marks_failed(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("aaaa000000000001")
+            b.on_meshtastic_message(_make_bridged(channel=0, text="ping"))
+            on_failed = _grab_failed_cb(fake_rns_lxmf)
+            on_failed(_FakeReceipt(state=255))  # LXMessage.FAILED
+            sub = b._subs.list_all()[0]
+            assert sub.consecutive_failures == 1
+        finally:
+            b.stop()
+
+
+class TestGetStatusDeliveryConfirmation:
+    """get_status surfaces the unconfirmed population as a visible blind spot
+    and reports LIVE state so a stale stored value can't lie (#74 / hfm #5)."""
+
+    def test_surfaces_unconfirmed_blind_spot(self, tmp_path, fake_rns_lxmf):
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            b._subs.add("aaaa000000000001")
+            b._subs.add("aaaa000000000002")
+            b._subs.mark_confirmed("aaaa000000000001")  # one real proof
+            status = b.get_status()
+            dc = status["delivery_confirmation"]
+            assert dc["confirmable_subscribers"] == 1
+            assert dc["unconfirmed_subscribers"] == 1
+            assert dc["by_state"].get(STATE_HEALTHY) == 1
+            assert dc["by_state"].get(STATE_UNCONFIRMED) == 1
+        finally:
+            b.stop()
+
+    def test_pre_fix_row_reads_unconfirmed_live(self, tmp_path, fake_rns_lxmf):
+        # Simulate a migrated pre-fix row: stored state 'healthy', last_delivery
+        # set (manufactured on enqueue), but no confirmable anchor. The status
+        # surface must report the honest UNCONFIRMED, not the stale 'healthy'.
+        b = _make_bridge(tmp_path, fake_rns_lxmf, channels=[0])
+        b.start()
+        try:
+            store = b._subs
+            store.add("aaaa000000000001")
+            store.mark_fanout_enqueued("aaaa000000000001")  # stamps last_delivery
+            from utils.db_helpers import connect_tuned
+            with store._lock, connect_tuned(store._db_path) as conn:
+                conn.execute(
+                    "UPDATE subscribers SET state = ? WHERE lxmf_hash = ?",
+                    (STATE_HEALTHY, "aaaa000000000001"),
+                )
+                conn.commit()
+            status = b.get_status()
+            sub_row = status["subscribers"][0]
+            assert sub_row["last_delivery"] is not None
+            assert sub_row["last_confirmed_at"] is None
+            assert sub_row["state"] == STATE_UNCONFIRMED
         finally:
             b.stop()
