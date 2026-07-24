@@ -737,13 +737,20 @@ def _armed_cutoff(armed, device: str) -> float:
 
 def _claw_battery_view(tick: dict, *, state_dir: str, now: float,
                        soak_armed: bool,
-                       cutoff_v: float = claw_battery.CUTOFF_V) -> dict:
+                       cutoff_v: float = claw_battery.CUTOFF_V,
+                       home: Optional[str] = None) -> dict:
     """Classify ONE claw's pack, recording this capture into its series first.
 
     The series is what turns a bare voltage into intelligence: the watchdog
     only ever sees the newest tick, so without a rolling record there is no
     trend to fit and — the case that matters most — no way to know what a
     pack was doing in the hours before its claw went dark.
+
+    A soak-armed claw ALSO has the soak's own record, which is longer and
+    denser (227 samples / 37.5 h on moc2 against this probe's 5 / 20 min), so
+    both are merged — same pack, one history, deduped by timestamp. Reading the
+    shorter of two records of one artifact is what made a claw that had plainly
+    shed 570 mV report "trend unknown" (2026-07-24).
     """
     device = str(tick.get("device"))
     path = claw_battery.series_path(state_dir, device)
@@ -756,6 +763,10 @@ def _claw_battery_view(tick: dict, *, state_dir: str, now: float,
         claw_battery.append_sample(path, ts if isinstance(ts, (int, float)) else now,
                                    volts)
     series = claw_battery.read_series(path)
+    if soak_armed:
+        # Same pack, one history. classify() sorts + dedups by timestamp, so an
+        # overlapping reading from both sources counts once.
+        series = series + claw_battery.read_soak_series(home, device)
     if isinstance(volts, (int, float)) and not isinstance(volts, bool) and not series:
         # Series unwritable (read-only /var/lib, full disk): fall back to the
         # single live reading so a level warning still works. The trend stays
@@ -864,6 +875,9 @@ def probe_claw_device_dark(
     try:
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_CLAW_DARK_DEBOUNCE_PATH
+        home_dir = home     # bound for BOTH paths: injected ticks reach the
+                            # soak-series read below too, and an unbound name
+                            # there would vanish into the probe's own except
         if ticks is None:
             home_dir = home or _operator_home()
             ticks, seen = _read_claw_ticks(home_dir, now)
@@ -905,9 +919,13 @@ def probe_claw_device_dark(
         end_of_discharge = []
         for t in dark:
             dev = str(t.get("device"))
+            hist = claw_battery.read_series(
+                claw_battery.series_path(state_dir, dev))
+            if dev in armed:
+                hist = hist + claw_battery.read_soak_series(home_dir, dev)
             view = claw_battery.classify(
-                claw_battery.read_series(claw_battery.series_path(state_dir, dev)),
-                soak_armed=dev in armed, cutoff_v=_armed_cutoff(armed, dev))
+                hist, soak_armed=dev in armed,
+                cutoff_v=_armed_cutoff(armed, dev))
             power_ctx[dev] = view
             if dev in armed and view["state"] in (claw_battery.CRITICAL,
                                                   claw_battery.KNEE):
@@ -1060,7 +1078,7 @@ def probe_claw_battery_low(
             measured += 1
             dev = str(t.get("device"))
             view = _claw_battery_view(
-                t, state_dir=state_dir, now=now,
+                t, state_dir=state_dir, now=now, home=home_dir,
                 soak_armed=dev in armed, cutoff_v=_armed_cutoff(armed, dev))
             if view["expected"]:
                 expected.append(view)

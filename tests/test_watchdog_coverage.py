@@ -761,6 +761,47 @@ class TestClawEdgeHardwareProbes:
                                      soak_devices={"dudeclaw-02"})
         assert sig is not None and "dudeclaw-03" in sig.detail
 
+    def test_soak_record_reaches_the_probes_trend(self, tmp_path):
+        """The 07-24 miss: the probe kept its own 20-minute series while the
+        soak's own 37.5 h record sat unread in the operator's home, so a pack
+        down 570 mV reported "trend unknown". Merged, the trend is there."""
+        from utils import claw_battery as cb
+        from utils.watchdog_probes import probe_claw_battery_low
+        soak = tmp_path / cb.SOAK_SERIES_BASENAME
+        soak.write_text("\n".join(
+            json.dumps({"ts": 1000.0 - h * 3600.0, "vbat": 3.46 + 0.0075 * h,
+                        "device": "dudeclaw-02"})
+            for h in range(12, 0, -1)) + "\n")
+
+        t = [self._tick(volts=3.46)]
+        for _ in range(3):
+            sig = probe_claw_battery_low(
+                ticks=t, now=1000.0, home=str(tmp_path), state_path=self.sp2,
+                soak_devices={"dudeclaw-02": 3.41})
+            assert sig is None                      # armed soak: still no page
+        reason = collect_dispositions()["claw_battery_low"]["reason"]
+        assert "mV/h" in reason, reason             # …but now WITH a trend
+        assert "too thin to fit" not in reason
+        assert "LINEAR projection" in reason        # and a labelled countdown
+
+    def test_soak_record_is_not_read_for_an_unarmed_claw(self, tmp_path):
+        """Only an ARMED device's soak record is its own. Merging someone
+        else's discharge curve into this pack would be the cross-device blend
+        the soak reader already refuses."""
+        from utils import claw_battery as cb
+        from utils.watchdog_probes import probe_claw_battery_low
+        (tmp_path / cb.SOAK_SERIES_BASENAME).write_text("\n".join(
+            json.dumps({"ts": 1000.0 - h * 3600.0, "vbat": 4.20 - 0.0,
+                        "device": "dudeclaw-02"})
+            for h in range(12, 0, -1)) + "\n")
+        t = [self._tick(volts=3.46)]
+        probe_claw_battery_low(ticks=t, now=1000.0, home=str(tmp_path),
+                               state_path=self.sp2)
+        sig = probe_claw_battery_low(ticks=t, now=1001.0, home=str(tmp_path),
+                                     state_path=self.sp2)
+        assert sig is not None                      # unarmed → still pages
+        assert "too thin" in sig.detail             # …off its OWN thin series
+
     def test_injected_ticks_never_consult_the_real_boxs_soak_config(self):
         """Hermeticity: on the claw-brain box a real battery_soak.json exists.
         A test (or any caller passing ticks) must not be steered by it."""

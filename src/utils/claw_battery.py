@@ -55,16 +55,48 @@ FLOOR_V = 3.5
 #: End-of-discharge. A soak measures runtime TO this; below it the node is
 #: about to drop off and its RF/witness coverage goes with it.
 CUTOFF_V = 3.4
-#: |ΔV| under this over a whole window is noise, not a trend (ADC jitter).
+#: |ΔV| under this across the OBSERVED window is noise, not a trend. The claw
+#: gauge quantises to 10 mV (`Battery: 3.46 V (adc 706 mV)`), so this is three
+#: ADC steps — the smallest movement that cannot be a rounding artifact.
 NOISE_V = 0.03
-#: Slope magnitude that counts as really moving, V/hr. Over a 6 h window this
-#: is exactly NOISE_V, so the two thresholds cannot drift apart in meaning.
-TREND_V_PER_HR = NOISE_V / 6.0
+
+# ── The trend gate is WINDOW-AWARE, not a fixed slope (2026-07-24) ────────
+# Measured on moc2/dudeclaw-02 (227 samples, 37.5 h, 4.03 V → 3.46 V): a pack
+# that has plainly lost 570 mV fits at −2.8 mV/h over its trailing 6 h, i.e.
+# 16 mV of movement — under the noise floor and unresolvable, while the SAME
+# pack fits −7.5 mV/h (89 mV) over 12 h, which is unmistakably real.
+#
+# A fixed slope threshold cannot serve both: set it low enough to catch the
+# slow-but-real 12 h decline and a 30-minute window can declare a trend from
+# 1.4 mV — one seventh of an ADC step, i.e. a slope manufactured out of
+# quantisation noise. So the gate is on the FITTED CHANGE ACROSS THE WINDOW
+# (|slope| × window_hr ≥ NOISE_V), which self-calibrates: 30 mV/h over half an
+# hour, 3 mV/h over ten hours. One threshold, honest at every timescale.
+
+
+def is_trend(slope_v_per_hr: Optional[float], window_hr: Optional[float]) -> bool:
+    """Does this fit represent real movement, or the noise floor?"""
+    if slope_v_per_hr is None or not window_hr or window_hr <= 0:
+        return False
+    return abs(slope_v_per_hr) * window_hr >= NOISE_V
+
 
 #: A trend claim needs enough evidence: this many readings spanning this long.
 #: Below either bar the slope is None (unknown), never zero.
 MIN_TREND_SAMPLES = 4
 MIN_TREND_WINDOW_S = 1800.0          # 30 min
+
+#: Fit only the TRAILING window. A discharge curve is not a line: fitting all
+#: 37.5 h of the moc2 soak gives −14.6 mV/h ("3.4 h to cutoff") because the
+#: average is dominated by the steep opening drop, while the trailing 12 h
+#: gives −7.5 mV/h (~6.7 h). "At the current rate" has to mean RECENT.
+FIT_WINDOW_S = 12 * 3600.0
+
+#: Under this much observed history, "not moving" is NOT evidence of a stable,
+#: charge-backed pack — it is a window too short to resolve movement. Calling
+#: it FLOAT would dress an unobserved direction as health (the pack above sat
+#: at exactly 3.46 V for 20 minutes while down 570 mV on the run).
+MIN_FLOAT_WINDOW_HR = 3.0
 
 #: A linear projection beyond this is not information, it is arithmetic on
 #: noise — report None instead of "1,900 h to cutoff".
@@ -147,7 +179,8 @@ def fit_slope_v_per_hr(samples: Sequence[Any]) -> Optional[float]:
 def classify(samples: Sequence[Any], *,
              floor_v: float = FLOOR_V,
              cutoff_v: float = CUTOFF_V,
-             soak_armed: bool = False) -> Dict[str, Any]:
+             soak_armed: bool = False,
+             fit_window_s: Optional[float] = FIT_WINDOW_S) -> Dict[str, Any]:
     """Classify one claw's pack from its reading series.
 
     ``soak_armed`` = this device is the one a battery_soak config deliberately
@@ -159,10 +192,12 @@ def classify(samples: Sequence[Any], *,
     Returns (all keys always present, unknown as None — never a stand-in):
         state             one of the module's state constants
         volts             newest reading, or None
-        slope_v_per_hr    fitted trend, or None when evidence is too thin
+        slope_v_per_hr    fitted trend over the trailing window, or None
         hours_to_cutoff   LINEAR PROJECTION off the slope, or None
-        window_hr         span of the series used
-        n                 usable readings
+        window_hr         span actually fitted (≤ fit_window_s)
+        n                 usable readings held
+        n_fit             readings inside the fitted window
+        trend             bool: the fit clears the noise floor
         expected          bool: soak-armed AND actually declining
         summary           one honest human sentence
     """
@@ -170,18 +205,28 @@ def classify(samples: Sequence[Any], *,
     out: Dict[str, Any] = {
         "state": UNKNOWN, "volts": None, "slope_v_per_hr": None,
         "hours_to_cutoff": None, "window_hr": None, "n": len(pts),
-        "expected": False, "summary": "",
+        "n_fit": 0, "trend": False, "expected": False, "summary": "",
     }
     if not pts:
         out["summary"] = ("no battery reading — unknown, which is neither "
                           "charged nor flat")
         return out
 
-    volts = pts[-1][1]
+    volts = pts[-1][1]          # the NEWEST reading, whatever the fit window
     out["volts"] = volts
-    out["window_hr"] = round((pts[-1][0] - pts[0][0]) / 3600.0, 3)
-    slope = fit_slope_v_per_hr(pts)
+
+    # Fit the trailing window only — see FIT_WINDOW_S.
+    fit_pts = pts
+    if fit_window_s:
+        cut = pts[-1][0] - float(fit_window_s)
+        fit_pts = [p for p in pts if p[0] >= cut] or pts[-1:]
+    window_hr = (fit_pts[-1][0] - fit_pts[0][0]) / 3600.0
+    out["window_hr"] = round(window_hr, 3)
+    out["n_fit"] = len(fit_pts)
+    slope = fit_slope_v_per_hr(fit_pts)
     out["slope_v_per_hr"] = round(slope, 5) if slope is not None else None
+    trend = is_trend(slope, window_hr)
+    out["trend"] = trend
 
     # Level decides the urgent states; trend decides the rest. A pack under the
     # floor is in the knee whichever way it is drifting — being on a charger
@@ -192,19 +237,21 @@ def classify(samples: Sequence[Any], *,
         state = KNEE
     elif slope is None:
         state = UNKNOWN          # healthy level, but direction unobserved
-    elif slope <= -TREND_V_PER_HR:
-        state = DISCHARGING
-    elif slope >= TREND_V_PER_HR:
-        state = CHARGING
+    elif trend:
+        state = DISCHARGING if slope < 0 else CHARGING
+    elif window_hr < MIN_FLOAT_WINDOW_HR:
+        # No resolvable movement, but not enough history to call it stable.
+        # FLOAT would assert a charge-backed pack we have not observed.
+        state = UNKNOWN
     else:
         state = FLOAT
     out["state"] = state
 
-    # Project ONLY off a slope strong enough to be called a trend at all. A
-    # -1 mV/h drift is inside the ADC's noise, and dividing by it produces a
-    # confident-looking "~692 h to cutoff" that is arithmetic on noise, not a
-    # forecast. A pack we call FLOAT must not also carry a countdown.
-    if slope is not None and slope <= -TREND_V_PER_HR and volts > cutoff_v:
+    # Project ONLY off a fit that cleared the noise floor. Dividing by a
+    # noise-level drift produces a confident-looking "~692 h to cutoff" that is
+    # arithmetic on noise, not a forecast. A pack we call FLOAT (or whose
+    # direction we cannot resolve) must never carry a countdown.
+    if trend and slope < 0 and volts > cutoff_v:
         hrs = (volts - cutoff_v) / (-slope)
         # Arithmetic on noise is not a forecast — say nothing rather than a
         # number the operator would plan around.
@@ -221,13 +268,21 @@ def classify(samples: Sequence[Any], *,
 def _summarize(c: Dict[str, Any], *, floor_v: float, cutoff_v: float) -> str:
     v = c["volts"]
     slope = c["slope_v_per_hr"]
+    win = c["window_hr"] or 0.0
     bits = [f"{v:.2f} V"]
     if slope is None:
-        bits.append(f"trend unknown ({c['n']} reading(s) over "
-                    f"{c['window_hr'] or 0:.1f} h — too thin to fit)")
+        bits.append(f"trend unknown ({c['n_fit']} reading(s) over "
+                    f"{win:.1f} h — too thin to fit)")
+    elif c["trend"]:
+        arrow = "falling" if slope < 0 else "rising"
+        bits.append(f"{arrow} {abs(slope) * 1000:.0f} mV/h over {win:.1f} h")
+    elif win < MIN_FLOAT_WINDOW_HR:
+        bits.append(f"direction unobserved — only {win:.1f} h of readings, and "
+                    f"any movement in it is under the {NOISE_V * 1000:.0f} mV "
+                    f"noise floor")
     else:
-        arrow = "falling" if slope < 0 else ("rising" if slope > 0 else "flat")
-        bits.append(f"{arrow} {abs(slope) * 1000:.0f} mV/h over {c['window_hr']:.1f} h")
+        bits.append(f"no resolvable movement over {win:.1f} h "
+                    f"(under the {NOISE_V * 1000:.0f} mV noise floor)")
     if c["hours_to_cutoff"] is not None:
         bits.append(f"~{c['hours_to_cutoff']:.0f} h to {cutoff_v:.2f} V "
                     f"(LINEAR projection, not measured)")
@@ -287,6 +342,37 @@ def read_series(path: str, *, now: Optional[float] = None,
         rows = [r for r in rows
                 if isinstance(r.get("ts"), (int, float))
                 and (now - float(r["ts"])) <= max_age_s]
+    return rows
+
+
+#: The battery soak's own append-only record, in the operator's home. For a
+#: soak-armed claw this is the LONGER, DENSER, authoritative series — 227
+#: samples over 37.5 h on moc2 where the probe's rolling one had 5 over 20 min.
+#: Building a second record of one pack and then reading the shorter one is the
+#: two-records-of-one-artifact trap (honest_failure_modes #5); merge instead.
+SOAK_SERIES_BASENAME = "battery_soak.jsonl"
+
+
+def read_soak_series(home: Optional[str], device: str) -> List[Dict[str, Any]]:
+    """The soak's readings for ONE device, normalised to the series shape.
+
+    Rows are ``{ts, vbat, device}``. Rows tagged for another device are not
+    ours; rows with NO device tag predate tagging and cannot be attributed, so
+    they are dropped too rather than blended into this pack's curve (the same
+    policy battery_soak's own device-scoped read uses). A blind sample
+    (``vbat: null``) is not a reading and never becomes 0 V.
+    """
+    if not home:
+        return []
+    rows: List[Dict[str, Any]] = []
+    for r in read_series(os.path.join(str(home), SOAK_SERIES_BASENAME)):
+        if r.get("device") != device:
+            continue
+        ts, v = r.get("ts"), r.get("vbat")
+        if isinstance(ts, bool) or isinstance(v, bool):
+            continue
+        if isinstance(ts, (int, float)) and isinstance(v, (int, float)):
+            rows.append({"ts": float(ts), "volts": float(v)})
     return rows
 
 

@@ -122,13 +122,13 @@ class TestProjectionHonesty:
         assert c["hours_to_cutoff"] is None
 
     def test_horizon_clamp_is_a_backstop_for_a_misconfigured_cutoff(self):
-        """With the trend gate in front of it, a real 1S LiPo can never reach
-        the 720 h horizon (worst case (4.2-3.4)/0.005 = 160 h), so this clamp
-        only fires on a nonsense cutoff — which is exactly when a confident
-        four-digit countdown would be most misleading. Contrived on purpose."""
-        c = cb.classify(_ramp(4.10, -0.005, 8), cutoff_v=0.5)
-        assert c["slope_v_per_hr"] <= -cb.TREND_V_PER_HR   # trend gate passed
-        assert c["hours_to_cutoff"] is None                # …still withheld
+        """The clamp only fires on a nonsense cutoff — which is exactly when a
+        confident four-digit countdown would be most misleading. Contrived on
+        purpose: a real 1S LiPo cannot reach the 720 h horizon."""
+        c = cb.classify(_ramp(4.10, -0.0013, 24), cutoff_v=0.5,
+                        fit_window_s=None)
+        assert c["trend"] is True             # the gate passed…
+        assert c["hours_to_cutoff"] is None   # …and the horizon still withheld
 
     def test_no_projection_when_the_trend_is_unknown(self):
         c = cb.classify(_series([(0, 3.6), (1, 3.8)]))
@@ -164,6 +164,131 @@ class TestIntentNeverInventsState:
         # thin trend evidence must not turn the experiment back into a page.
         c = cb.classify(_series([(0, 3.45)]), soak_armed=True)
         assert c["state"] == cb.KNEE and c["expected"] is True
+
+
+class TestTrendCalibration2026_07_24:
+    """Pins the four changes made after measuring moc2/dudeclaw-02: 227 samples
+    over 37.5 h, 4.03 V → 3.46 V (−570 mV), gauge quantised to 10 mV. That pack
+    fits −2.8 mV/h (16 mV, unresolvable) over its trailing 6 h and −7.5 mV/h
+    (89 mV, unmistakable) over 12 h — one fixed slope threshold cannot serve
+    both without either missing the decline or inventing one from noise."""
+
+    def test_slow_but_real_decline_over_a_long_window_is_a_trend(self):
+        # 3 mV/h for 12 h = 36 mV of movement. A fixed 5 mV/h gate called this
+        # `float` — the miss that started this.
+        c = cb.classify(_ramp(4.10, -0.003, 12), fit_window_s=None)
+        assert c["trend"] is True and c["state"] == cb.DISCHARGING
+
+    def test_big_slope_over_a_tiny_window_is_not_a_trend(self):
+        # 40 mV/h looks dramatic, but over 35 min it is 23 mV — inside the
+        # noise floor, and on a 10 mV gauge that is two steps. Not a claim.
+        c = cb.classify(_ramp(4.10, -0.040, 0.583, step_hr=0.083))
+        assert c["slope_v_per_hr"] is not None      # a fit exists…
+        assert c["trend"] is False                  # …but it claims nothing
+        assert c["hours_to_cutoff"] is None
+
+    def test_short_flat_window_is_unknown_not_float(self):
+        # 45 min of identical readings says nothing about direction. `float`
+        # asserts a charge-backed pack we have not observed — the same shape as
+        # the moc2 miss, at a healthy level.
+        c = cb.classify(_ramp(4.06, 0.0, 0.75))
+        assert c["state"] == cb.UNKNOWN
+        assert "direction unobserved" in c["summary"]
+        assert "noise floor" in c["summary"]
+
+    def test_level_still_wins_over_the_short_window_rule(self):
+        """Precedence guard: the short-window rule governs the DIRECTION-derived
+        states only. A pack in the knee is in the knee after 20 minutes or 20
+        hours — where the cell sits is observed, not inferred."""
+        for volts, expect in ((3.46, cb.KNEE), (3.35, cb.CRITICAL)):
+            c = cb.classify(_ramp(volts, 0.0, 0.33))
+            assert c["state"] == expect, (volts, c["state"])
+
+    def test_long_flat_window_is_genuinely_float(self):
+        # Past MIN_FLOAT_WINDOW_HR, flat is a real observation about the pack.
+        c = cb.classify(_ramp(4.06, 0.0, 8))
+        assert c["state"] == cb.FLOAT
+        assert "no resolvable movement" in c["summary"]
+
+    def test_fit_uses_the_trailing_window_not_the_whole_history(self):
+        """A discharge curve is not a line. Fitting all of moc2's 37.5 h gives
+        −14.6 mV/h ("3.4 h left") because the average is dominated by the steep
+        opening drop; the trailing 12 h gives −7.5 mV/h. "At the current rate"
+        must mean recent."""
+        steep = _ramp(4.10, -0.10, 12)                      # 12 h ago → 24 h ago
+        steep = [{"ts": r["ts"] - 12 * HR, "volts": r["volts"]} for r in steep]
+        recent = _ramp(2.90, -0.010, 12)                    # last 12 h, gentle
+        c = cb.classify(steep + recent)
+        assert c["window_hr"] <= 12.01, "fit must not reach past FIT_WINDOW_S"
+        assert -0.011 < c["slope_v_per_hr"] < -0.009, c["slope_v_per_hr"]
+        assert c["n"] > c["n_fit"], "older readings held, but not fitted"
+
+    def test_unbounded_fit_is_still_available(self):
+        c = cb.classify(_ramp(4.10, -0.02, 30), fit_window_s=None)
+        assert c["window_hr"] == pytest.approx(30.0, abs=0.01)
+
+    def test_newest_reading_is_the_level_even_outside_the_fit_window(self):
+        # The fit window bounds the TREND, never which voltage we report.
+        c = cb.classify(_ramp(4.10, -0.02, 30))
+        assert c["volts"] == pytest.approx(3.50, abs=0.001)
+
+
+class TestSoakSeriesMerge:
+    """The probe built a SECOND record of a pack that already had a longer,
+    denser one (227 samples / 37.5 h vs 5 / 20 min) and then read the shorter
+    — two records of one artifact (honest_failure_modes #5)."""
+
+    def _write_soak(self, home, rows):
+        with open(os.path.join(str(home), cb.SOAK_SERIES_BASENAME), "w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+
+    def test_soak_rows_are_read_and_normalised(self, tmp_path):
+        self._write_soak(tmp_path, [
+            {"ts": NOW - 2 * HR, "vbat": 3.60, "device": "dudeclaw-02"},
+            {"ts": NOW - 1 * HR, "vbat": 3.55, "device": "dudeclaw-02"}])
+        got = cb.read_soak_series(str(tmp_path), "dudeclaw-02")
+        assert [r["volts"] for r in got] == [3.60, 3.55]
+
+    def test_other_devices_and_untagged_rows_are_not_this_pack(self, tmp_path):
+        self._write_soak(tmp_path, [
+            {"ts": NOW - 3 * HR, "vbat": 4.06, "device": "dudeclaw-01"},
+            {"ts": NOW - 2 * HR, "vbat": 3.90},                    # pre-tagging
+            {"ts": NOW - 1 * HR, "vbat": 3.55, "device": "dudeclaw-02"}])
+        got = cb.read_soak_series(str(tmp_path), "dudeclaw-02")
+        assert [r["volts"] for r in got] == [3.55]
+
+    def test_blind_sample_is_not_a_zero_volt_reading(self, tmp_path):
+        self._write_soak(tmp_path, [
+            {"ts": NOW - 1 * HR, "vbat": None, "device": "dudeclaw-02"}])
+        assert cb.read_soak_series(str(tmp_path), "dudeclaw-02") == []
+
+    def test_missing_home_or_file_is_empty_not_an_error(self, tmp_path):
+        assert cb.read_soak_series(None, "d") == []
+        assert cb.read_soak_series(str(tmp_path), "d") == []
+
+    def test_merged_history_fits_what_neither_source_could_alone(self, tmp_path):
+        """The moc2 shape: a long soak record + a handful of fresh probe
+        readings. Apart, the probe series is too thin to fit; merged, the trend
+        is there."""
+        probe = [{"ts": NOW - m * 300.0, "volts": 3.46} for m in (3, 2, 1, 0)]
+        assert cb.classify(probe)["slope_v_per_hr"] is None       # 15 min
+        soak = [{"ts": NOW - h * HR, "vbat": 3.46 + 0.0075 * h,
+                 "device": "dudeclaw-02"} for h in range(12, 0, -1)]
+        self._write_soak(tmp_path, soak)
+        merged = probe + cb.read_soak_series(str(tmp_path), "dudeclaw-02")
+        c = cb.classify(merged)
+        assert c["trend"] is True and c["state"] == cb.KNEE
+        assert -0.008 < c["slope_v_per_hr"] < -0.007
+        assert c["hours_to_cutoff"] is not None
+
+    def test_overlapping_timestamps_count_once(self, tmp_path):
+        shared = NOW - 1 * HR
+        self._write_soak(tmp_path, [
+            {"ts": shared, "vbat": 3.50, "device": "dudeclaw-02"}])
+        merged = ([{"ts": shared, "volts": 3.50}]
+                  + cb.read_soak_series(str(tmp_path), "dudeclaw-02"))
+        assert cb.classify(merged)["n"] == 1
 
 
 class TestWorstState:
@@ -253,7 +378,10 @@ class TestThresholdsAreOneSSOT:
         assert battery_soak.DISCHARGE_NOISE_V is cb.NOISE_V
         assert wpl.CLAW_BATTERY_FLOOR_V is cb.FLOOR_V
 
-    def test_trend_threshold_is_derived_from_the_noise_floor(self):
-        # Over a 6 h window the slope threshold IS the noise floor, so the two
-        # cannot drift apart in meaning.
-        assert cb.TREND_V_PER_HR * 6 == pytest.approx(cb.NOISE_V)
+    def test_the_gate_is_the_noise_floor_at_every_timescale(self):
+        # ONE threshold, self-calibrating: 60 mV/h over half an hour and
+        # 3 mV/h over ten hours are the same claim — 30 mV of real movement.
+        assert cb.is_trend(-0.060, 0.5) is True
+        assert cb.is_trend(-0.059, 0.5) is False
+        assert cb.is_trend(-0.003, 10.0) is True
+        assert cb.is_trend(-0.0029, 10.0) is False
