@@ -138,6 +138,10 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             "shed": 0,
             "shed_rejected": 0,
             "permanent_failures": 0,
+            # Pri-7 witness: a send reached the wire but mark_delivered then
+            # raised (DB error), so the row could not be recorded delivered.
+            # Surfaced by get_stats (honest_failure_modes #9).
+            "delivered_unrecorded": 0,
         }
 
     @contextmanager
@@ -924,12 +928,38 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                     success = send_fn(dispatch_payload)
 
                     if success:
-                        self.mark_delivered(message.id)
-                        for callback in self._success_callbacks:
-                            try:
-                                callback(message)
-                            except Exception as e:
-                                logger.debug(f"Success callback error: {e}")
+                        # Point of no return: the payload is on the wire. A
+                        # bookkeeping failure from here — a mark_delivered DB
+                        # error (disk I/O / readonly, which DO happen on the
+                        # fleet's SD-card Pis) — must NOT fall through to the
+                        # outer except's mark_failed (Pri-7, gateway review
+                        # 2026-07-23). Re-queuing re-sends a message that
+                        # already went out: a GUARANTEED duplicate on the wire,
+                        # recorded with a DB-error reason indistinguishable from
+                        # a real send failure (no witness the send succeeded).
+                        # Isolate it: leave the row in_progress (get_pending
+                        # skips it, so no immediate re-send) and surface a
+                        # distinct witness instead of silently re-queuing what
+                        # already went out (honest_failure_modes #9). The
+                        # in_progress→cleanup_stale re-send guard is Pri-8's
+                        # separate concern.
+                        try:
+                            self.mark_delivered(message.id)
+                            for callback in self._success_callbacks:
+                                try:
+                                    callback(message)
+                                except Exception as e:
+                                    logger.debug(f"Success callback error: {e}")
+                        except Exception as e:
+                            with self._lock:
+                                self._stats["delivered_unrecorded"] += 1
+                            logger.error(
+                                "Message %s SENT but mark_delivered failed "
+                                "(%s) — left in_progress, NOT re-queued to "
+                                "avoid a duplicate on the wire; delivery "
+                                "bookkeeping degraded "
+                                "(stats.delivered_unrecorded).",
+                                message.id, e)
                     else:
                         self.mark_failed(message.id, "Send returned False")
 

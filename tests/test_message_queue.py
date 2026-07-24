@@ -556,6 +556,62 @@ class TestProcessOnce:
         assert processed == 0  # No sender for this destination
 
 
+class TestDeliveredBookkeepingFailurePri7:
+    """Pri-7 (gateway review 2026-07-23): once send_fn returns True the payload
+    is on the wire. A mark_delivered DB error (disk I/O / readonly — real on the
+    fleet's SD-card Pis) must NOT route the message to the retry path, which
+    would re-send it (a guaranteed duplicate on the wire) with a DB-error reason
+    indistinguishable from a real send failure. It is left in_progress with a
+    distinct witness instead."""
+
+    def _wire(self, queue):
+        sender = MagicMock(return_value=True)   # send reaches the wire
+        queue.register_sender("meshtastic", sender)
+        queue.enqueue({"text": "hello"}, "meshtastic")
+        # mark_delivered raises AFTER the successful send (bookkeeping failure).
+        queue.mark_delivered = MagicMock(
+            side_effect=RuntimeError("disk I/O error"))
+        return sender
+
+    def test_bookkeeping_error_does_not_resend(self, queue):
+        sender = self._wire(queue)
+        queue.process_once()
+        # Row is not 'pending' (left in_progress), so a second pass must not
+        # re-dispatch it — no duplicate on the wire.
+        queue.process_once()
+        assert sender.call_count == 1
+
+    def test_bookkeeping_error_surfaces_witness_not_failure(self, queue):
+        self._wire(queue)
+        queue.process_once()
+        stats = queue.get_stats()
+        assert stats["delivered_unrecorded"] == 1
+        # It is NOT a send failure and must not dead-letter or count as failed.
+        assert stats["failed"] == 0
+        assert stats["dead_letter"] == 0
+        assert stats["pending"] == 0        # not re-queued
+        assert stats["in_progress"] == 1    # held for cleanup_stale (Pri-8)
+
+    def test_success_callbacks_skipped_when_unrecorded(self, queue):
+        success_cb = MagicMock()
+        queue.register_success_callback(success_cb)
+        self._wire(queue)
+        queue.process_once()
+        # mark_delivered raised before the callback loop — no false success.
+        success_cb.assert_not_called()
+
+    def test_happy_path_unaffected(self, queue):
+        # Regression: a normal successful send still records delivered and
+        # leaves the witness at zero.
+        sender = MagicMock(return_value=True)
+        queue.register_sender("meshtastic", sender)
+        queue.enqueue({"text": "hi"}, "meshtastic")
+        queue.process_once()
+        stats = queue.get_stats()
+        assert stats["delivered"] == 1
+        assert stats["delivered_unrecorded"] == 0
+
+
 # ---------------------------------------------------------------------------
 # PersistentMessageQueue — background processing
 # ---------------------------------------------------------------------------

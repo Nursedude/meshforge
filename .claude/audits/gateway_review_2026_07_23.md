@@ -34,7 +34,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~4~~ | `gateway_heartbeat.py` `_events` | med | **FIXED 2026-07-23** | Unlocked multi-thread `_events` append/re-slice/read — see fixed section below. |
 | ~~5~~ | `mqtt_bridge_handler.py:560` | med | **FIXED 2026-07-23** | Wildcard-subscription foreign-channel traffic forged the bridge-channel liveness heartbeat — see fixed section below. |
 | ~~6~~ | `reconnect.py:316,292` | med | **FIXED 2026-07-23** | `SlowStartRecovery` ramp on wall-clock — monotonic anchor, both twins. See fixed section below. |
-| 7 | `message_queue.py:924` | med | PLAUSIBLE | A send that reaches the network followed by a failing `mark_delivered` (DB error) falls to the retry path with no dedup re-check → guaranteed duplicate on the wire, no witness distinguishing it from a real transient. |
+| ~~7~~ | `message_queue.py:924` | med | **FIXED 2026-07-23** (was PLAUSIBLE → CONFIRMED) | Post-send `mark_delivered` DB error re-queued an already-sent message — duplicate on the wire. See fixed section below. |
 | 8 | `message_queue.py:1110` | med-low | PLAUSIBLE | `cleanup_stale` resets `in_progress→pending` without bumping `retry_count` → a send_fn that wedges past STALE_TIMEOUT every attempt retries forever, never dead-letters, no per-message witness. |
 | 9 | `message_queue.py:580,613` | low | PLAUSIBLE | `retry_after` scheduling/comparison via `datetime.now()` (wall clock) → NTP steps skew retry timing; queued-item "age" forgeable. Fix is a delay clamp, not a rework. |
 | 10 | `bridge_health.py:418,261` | low | PLAUSIBLE | `_uptime_seconds` accumulation + `get_uptime_percent` use wall-clock deltas → NTP steps make uptime% arbitrarily wrong. Display/summary only (bounded 0–100), not a control decision. |
@@ -222,6 +222,36 @@ real monotonic elapsed with the wall clock frozen. A pre-existing
 **MA twin ported**: `reconnect.py` `SlowStartRecovery` is a mirror (byte-close,
 not byte-locked — line numbers differ) and carried the identical 5-site defect.
 Fixed identically in both repos, tests ported verbatim.
+
+## Pri-7 (finding 7) — RESOLVED 2026-07-23 (both twins; PLAUSIBLE → CONFIRMED)
+
+**Confirmed at source**: `_get_connection` re-raises after rollback
+(`raise  # Re-raise after rollback`), so a `mark_delivered` DB error propagates
+out of `process_once`'s `if success:` block into the outer `except`, which calls
+`mark_failed` → retry → the message is re-dispatched by the next `process_once`
+with **no dedup re-check** — a guaranteed duplicate on the wire, recorded with a
+DB-error `error_message` indistinguishable from a real send failure. The trigger
+(disk I/O / readonly-DB errors on SD-card Pis) is real and fleet-observed — the
+same failure the delivery_counters preflight logs surface.
+
+**Fix**: once `send_fn` returns True the payload is on the wire — a point of no
+return. The `mark_delivered` + success-callback bookkeeping is now wrapped in its
+own `try/except` so its errors can never reach the outer `except`/`mark_failed`.
+On a bookkeeping failure the row is **left in_progress** (`get_pending` selects
+only `pending`, so it is NOT re-dispatched immediately — no duplicate) and a
+distinct witness is surfaced: a new `stats.delivered_unrecorded` counter
+(honest_failure_modes #9) plus a loud ERROR naming it "SENT but mark_delivered
+failed". Success callbacks fire only when `mark_delivered` didn't raise (no false
+success). The `in_progress`→`cleanup_stale` re-send path is Pri-8's separate
+concern, tracked there.
+
+Tests: `TestDeliveredBookkeepingFailurePri7` (4) — no re-send on the second pass,
+witness increments while failed/dead_letter stay 0 and the row is in_progress,
+success callbacks skipped, happy path unaffected. MF `test_message_queue.py` 118
+pass; MA the same 111 pass. `message_queue.py` is an untracked-diverged twin —
+verified MA carried the byte-identical defect and fixed it identically (MA's
+`enqueue` rejects senderless destinations, Issue #67, but the test registers the
+sender first, so the pattern ports cleanly).
 
 ## Twin note (MeshAnchor)
 
