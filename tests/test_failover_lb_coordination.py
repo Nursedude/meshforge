@@ -287,7 +287,7 @@ class TestLBSlowStartAfterRecovery:
         # Simulate slow start that started 60s ago (longer than default 30s)
         fm.state = FailoverState.PRIMARY_ACTIVE
         lb._prev_failover_state = FailoverState.PRIMARY_ACTIVE  # Already tracked
-        lb._failover_recovery_at = time.time() - 60.0
+        lb._failover_recovery_at = time.monotonic() - 60.0  # Pri-13: monotonic anchor
 
         lb._recalculate_weights()
 
@@ -305,7 +305,7 @@ class TestLBSlowStartAfterRecovery:
         lb._secondary.reachable = True
 
         # In slow start
-        lb._failover_recovery_at = time.time() - 5.0
+        lb._failover_recovery_at = time.monotonic() - 5.0  # Pri-13: monotonic anchor
         lb._prev_failover_state = FailoverState.PRIMARY_ACTIVE
 
         # New failover to secondary
@@ -330,13 +330,46 @@ class TestLBSlowStartAfterRecovery:
         lb._prev_failover_state = FailoverState.PRIMARY_ACTIVE
 
         # Early in slow start (5s of 30s)
-        lb._failover_recovery_at = time.time() - 5.0
+        lb._failover_recovery_at = time.monotonic() - 5.0  # Pri-13: monotonic anchor
         lb._recalculate_weights()
         early_weight = lb.primary_weight
 
         # Later in slow start (25s of 30s)
-        lb._failover_recovery_at = time.time() - 25.0
+        lb._failover_recovery_at = time.monotonic() - 25.0  # Pri-13: monotonic anchor
         lb._recalculate_weights()
         late_weight = lb.primary_weight
 
         assert late_weight > early_weight
+
+
+class TestLBSlowStartMonotonicClockSteps:
+    """Pri-13 (gateway review 2026-07-23): the LB post-failover slow-start ramp
+    is a DURATION measured on time.monotonic(), so a wall-clock NTP step cannot
+    forge ramp completion and blast a just-recovered primary (mirror of the
+    Pri-6 SlowStartRecovery fix; honest_failure_modes #6)."""
+
+    @patch("gateway.radio_failover.time")
+    def test_wallclock_step_does_not_complete_ramp_early(self, mt, lb_config):
+        mono = {"t": 1000.0}
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 5_000.0        # wall clock — must be ignored
+        fm = MagicMock(spec=FailoverManager)
+        lb = RadioLoadBalancer(config=lb_config, failover_manager=fm)
+        lb._primary.reachable = True
+        lb._secondary.reachable = True
+        lb._primary.tx_utilization = 5.0
+        lb._secondary.tx_utilization = 5.0
+        fm.state = FailoverState.PRIMARY_ACTIVE
+        lb._prev_failover_state = FailoverState.PRIMARY_ACTIVE
+        lb._failover_recovery_at = 1000.0            # monotonic anchor, 0s elapsed
+        # +1h NTP forward step on the WALL clock; monotonic advances only 5s
+        # (< the 30s ramp) — ramp must still be in progress, not completed.
+        mt.time.side_effect = lambda: 5_000.0 + 3600.0
+        mono["t"] = 1005.0
+        lb._recalculate_weights()
+        assert lb._failover_recovery_at is not None   # NOT forged complete
+        assert lb.primary_weight < 100.0              # still ramping
+        # Real monotonic elapsed passes the ramp → completion.
+        mono["t"] = 1031.0                            # 31s >= 30s
+        lb._recalculate_weights()
+        assert lb._failover_recovery_at is None

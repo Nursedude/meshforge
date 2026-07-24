@@ -408,7 +408,7 @@ class FailoverManager:
 
     def _track_reachability(self) -> None:
         """Track when radios go down and come back for crash-based failover."""
-        now = time.time()
+        now = time.monotonic()  # duration anchor — see _evaluate_state (Pri-13)
 
         # Primary tracking
         if not self._primary.reachable and not self._primary_was_down:
@@ -445,7 +445,7 @@ class FailoverManager:
         if not self._config.watchdog_enabled or not _HAS_SERVICE_CHECK:
             return
 
-        now = time.time()
+        now = time.monotonic()  # duration anchor — see _evaluate_state (Pri-13)
 
         for label, radio, service, peer_radio in [
             ('primary', self._primary, self._config.primary_service, self._secondary),
@@ -476,8 +476,10 @@ class FailoverManager:
 
     def _attempt_restart(self, label: str, service_name: str, now: float) -> None:
         """Attempt to restart a crashed meshtasticd service."""
-        # Cooldown check
-        if now - self._last_restart_attempt[label] < self._config.restart_cooldown:
+        # Cooldown check (now is monotonic — Pri-13). Guard the 0.0 "never
+        # attempted" sentinel so a fresh boot doesn't gate the first restart.
+        if (self._last_restart_attempt[label] > 0
+                and now - self._last_restart_attempt[label] < self._config.restart_cooldown):
             return
 
         # Rate limit — max restarts per hour
@@ -539,10 +541,22 @@ class FailoverManager:
         if current == FailoverState.DISABLED:
             return
 
-        now = time.time()
+        # Monotonic clock (gateway review Pri-13, 2026-07-23): every timing
+        # decision below is a DURATION (cooldown, per-hour rate windows,
+        # overload/recovery/downtime elapsed) and wall-clock durations are
+        # forgeable on the fleet's RTC-less Pis (honest_failure_modes #6, the
+        # #74/Pri-1 class — here an NTP step could forge a failover or an
+        # early switch-back, i.e. split-brain). All anchors are stamped from
+        # and compared to this `now`, so a single monotonic source keeps the
+        # whole state machine internally consistent. Absolute display
+        # timestamps (radio.last_check, log strftime) stay wall-clock.
+        now = time.monotonic()
 
-        # Cooldown check — prevent flapping
-        if now - self._last_state_change < self._config.cooldown_after_failover:
+        # Cooldown check — prevent flapping. Guard the 0.0 "never transitioned"
+        # sentinel: under monotonic `now` (uptime) a bare `now - 0.0` would
+        # spuriously gate for the first cooldown seconds after boot.
+        if (self._last_state_change > 0
+                and now - self._last_state_change < self._config.cooldown_after_failover):
             return
 
         # Rate limit — max failovers per hour
@@ -689,7 +703,9 @@ class FailoverManager:
                 return
             self._state = new_state
 
-        self._last_state_change = time.time()
+        # Monotonic: read as a cooldown DURATION in _evaluate_state (Pri-13).
+        # The event's own displayed timestamp uses datetime.now() below.
+        self._last_state_change = time.monotonic()
 
         event = FailoverEvent(
             timestamp=datetime.now(),
@@ -1093,7 +1109,11 @@ class RadioLoadBalancer:
             if (self._prev_failover_state in (
                     FailoverState.RECOVERY_PENDING, FailoverState.SECONDARY_ACTIVE)
                     and fo_state == FailoverState.PRIMARY_ACTIVE):
-                self._failover_recovery_at = time.time()
+                # Monotonic anchor for the slow-start ramp DURATION (Pri-13):
+                # a wall-clock step here would forge ramp progress and blast a
+                # just-recovered primary (mirror of the Pri-6 SlowStartRecovery
+                # fix). Stamp/read pair; in-memory only.
+                self._failover_recovery_at = time.monotonic()
                 logger.info("LB slow start: failover recovery detected, ramping primary weight")
             self._prev_failover_state = fo_state
 
@@ -1110,7 +1130,7 @@ class RadioLoadBalancer:
             # Slow start after failover recovery
             if (fo_state == FailoverState.PRIMARY_ACTIVE
                     and self._failover_recovery_at is not None):
-                elapsed = time.time() - self._failover_recovery_at
+                elapsed = time.monotonic() - self._failover_recovery_at  # Pri-13
                 if elapsed < self._slow_start_duration:
                     min_w = self._config.min_primary_weight
                     ramp = min_w + (100.0 - min_w) * (elapsed / self._slow_start_duration)

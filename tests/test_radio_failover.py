@@ -87,7 +87,7 @@ class TestFailoverStateTransitions:
 
         # Wait for duration
         time.sleep(0.1)
-        manager._overload_start = time.time() - 3  # Simulate past threshold
+        manager._overload_start = time.monotonic() - 3  # past threshold (Pri-13: monotonic anchor)
 
         manager._evaluate_state()
         assert manager.state == FailoverState.FAILOVER_PENDING
@@ -131,8 +131,8 @@ class TestFailoverStateTransitions:
         manager._evaluate_state()
         assert manager.state == FailoverState.SECONDARY_ACTIVE
 
-        # Simulate time passing
-        manager._recovery_start = time.time() - 3
+        # Simulate time passing (Pri-13: recovery anchor is monotonic)
+        manager._recovery_start = time.monotonic() - 3
 
         manager._evaluate_state()
         assert manager.state == FailoverState.RECOVERY_PENDING
@@ -281,8 +281,8 @@ class TestFailoverRateLimiting:
         )
         mgr = FailoverManager(config)
 
-        # Fill up the rate limit window
-        mgr._failover_count_window = [time.time(), time.time()]
+        # Fill up the rate limit window (Pri-13: window holds monotonic ticks)
+        mgr._failover_count_window = [time.monotonic(), time.monotonic()]
 
         mgr._state = FailoverState.FAILOVER_PENDING
         mgr._secondary.reachable = True
@@ -299,7 +299,7 @@ class TestFailoverRateLimiting:
             cooldown_after_failover=60,
         )
         mgr = FailoverManager(config)
-        mgr._last_state_change = time.time()  # Just changed
+        mgr._last_state_change = time.monotonic()  # Just changed (Pri-13: monotonic)
 
         mgr._primary.reachable = False
         mgr._secondary.reachable = True
@@ -307,3 +307,79 @@ class TestFailoverRateLimiting:
         mgr._evaluate_state()
         # Should NOT transition due to cooldown
         assert mgr.state == FailoverState.PRIMARY_ACTIVE
+
+
+class TestFailoverMonotonicClockSteps:
+    """Pri-13 (gateway review 2026-07-23): every failover timing decision is a
+    DURATION and must measure on time.monotonic(), so a wall-clock NTP step
+    cannot forge a failover, an early switch-back (split-brain), or a
+    boot-time cooldown stall (honest_failure_modes #6, the #74/Pri-1 class).
+    Monotonic and the wall clock are driven independently here."""
+
+    @patch("gateway.radio_failover.time")
+    def test_recovery_switchback_ignores_wallclock_step(self, mt, manager):
+        mono = {"t": 1000.0}
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 5_000.0        # wall clock — must be ignored
+        manager._state = FailoverState.SECONDARY_ACTIVE
+        manager._primary.reachable = True
+        manager._primary.channel_utilization = 10.0  # below recovery_threshold
+        manager._evaluate_state()                    # starts recovery timer @1000
+        assert manager.state == FailoverState.SECONDARY_ACTIVE
+        assert manager._recovery_start == 1000.0
+        # +1h NTP forward step on the WALL clock; monotonic advances only 1s
+        # (< recovery_duration=2) — must NOT switch back early (split-brain).
+        mt.time.side_effect = lambda: 5_000.0 + 3600.0
+        mono["t"] = 1001.0
+        manager._evaluate_state()
+        assert manager.state == FailoverState.SECONDARY_ACTIVE
+        # Real monotonic elapsed passes recovery_duration → switch-back fires.
+        mono["t"] = 1003.0                           # 3s >= 2
+        manager._evaluate_state()
+        assert manager.state == FailoverState.RECOVERY_PENDING
+
+    @patch("gateway.radio_failover.time")
+    def test_overload_failover_not_forged_by_wallclock_step(self, mt, manager):
+        mono = {"t": 2000.0}
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 8_000.0
+        manager._primary.reachable = True
+        manager._primary.channel_utilization = 40.0  # over utilization_threshold
+        manager._secondary.reachable = True
+        manager._secondary.channel_utilization = 5.0
+        manager._evaluate_state()                    # starts overload timer @2000
+        assert manager.state == FailoverState.PRIMARY_ACTIVE
+        # Wall clock jumps +1h; monotonic advances only 1s (< utilization_duration=2).
+        mt.time.side_effect = lambda: 8_000.0 + 3600.0
+        mono["t"] = 2001.0
+        manager._evaluate_state()
+        assert manager.state == FailoverState.PRIMARY_ACTIVE   # not forged
+        # Real monotonic elapsed passes the duration → failover proceeds.
+        mono["t"] = 2003.0
+        manager._evaluate_state()
+        assert manager.state == FailoverState.FAILOVER_PENDING
+
+    @patch("gateway.radio_failover.time")
+    def test_cooldown_guard_no_spurious_gate_at_boot(self, mt):
+        # Under monotonic (= uptime) a bare `now - 0.0` would gate for the first
+        # cooldown seconds after boot; the >0 sentinel guard prevents that.
+        mono = {"t": 30.0}                           # 30s uptime, below cooldown
+        mt.monotonic.side_effect = lambda: mono["t"]
+        mt.time.side_effect = lambda: 5_000.0
+        config = FailoverConfig(
+            enabled=True, primary_port=4403, secondary_port=4404,
+            utilization_threshold=25.0, utilization_duration=0,
+            recovery_threshold=15.0, recovery_duration=2,
+            cooldown_after_failover=60, max_failovers_per_hour=100,
+        )
+        mgr = FailoverManager(config)
+        assert mgr._last_state_change == 0.0         # never transitioned
+        mgr._primary.reachable = True
+        mgr._primary.channel_utilization = 40.0
+        mgr._secondary.reachable = True
+        mgr._secondary.channel_utilization = 5.0
+        mgr._evaluate_state()                        # arm overload timer
+        mgr._evaluate_state()                        # elapsed 0 >= 0 → failover
+        # The 30s-uptime < 60s-cooldown must NOT have blocked evaluation.
+        assert mgr.state == FailoverState.FAILOVER_PENDING
+        mgr.stop()

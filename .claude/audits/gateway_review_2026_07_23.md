@@ -40,7 +40,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | 10 | `bridge_health.py:418,261` | low | PLAUSIBLE | `_uptime_seconds` accumulation + `get_uptime_percent` use wall-clock deltas → NTP steps make uptime% arbitrarily wrong. Display/summary only (bounded 0–100), not a control decision. |
 | 11 | `bounded_rpc.py:242,260` | low | CONFIRMED | Flag-ordering race leaks `_outstanding_wedges` +1 in the abort-suppressed path (`NO_EXIT`/`exit_on_wedge=False`) → phantom "wedged threads in flight" gauge. Only reachable when the abort backstop is engaged (not steady state). |
 | 12 | `meshtastic_broadcast_bridge.py:408` | low | PLAUSIBLE | No bytes→str normalization on the inbound broadcast path; latent until a `CanonicalMessage` with bytes `content` (advertised second shape) flows through → TypeError swallowed as generic callback error, message silently fails to fan out. One-line decode fix. |
-| 13 | `radio_failover.py:542` | med | CONFIRMED (discovered in Pri-6 pass) | The **entire** failover state machine runs on `now = time.time()`: recovery-duration elapsed (`_evaluate_secondary_active:657`), primary `downtime` (`:639`/`:420`), and `_failover_recovery_at` elapsed (`:1113`) are all wall-clock. Same #74 class as Pri-1/Pri-6 but a broader surface — an NTP forward step can forge premature primary-recovery/switch-back; backward step skews downtime. Deferred deliberately (own focused pass; multiple duration sites + a live state machine, not a one-liner). Note: radio_failover HTTP polling is partly dormant vs meshtasticd (#76 residual). |
+| ~~13~~ | `radio_failover.py:542` | med | **FIXED 2026-07-23** | Whole failover state machine on wall-clock — monotonic anchors, both twins. See fixed section below. |
 | — | `node_models.py:~1012` (`meshcore:` factory) | ? | UNVERIFIED | Sibling of finding C (also hard-sets `now()/True`); MeshCore's heard-time field not confirmed. Check next pass. |
 
 ## Pri-2 (finding 2) — RESOLVED 2026-07-23 (this session, both twins)
@@ -282,6 +282,41 @@ dead-letters after max_retries instead of looping, the terminal drop increments
 the witness, and a fresh in_progress is untouched. MF `test_message_queue.py`
 198 pass (incl. all pre-existing cleanup_stale tests); MA the same 176 pass.
 Byte-identical twin defect, fixed identically.
+
+## Pri-13 (finding 13) — RESOLVED 2026-07-23 (both twins)
+
+**Defect**: the dual-radio failover state machine ran every timing decision on
+`now = time.time()` — the split-brain risk class (like Pri-1). Wall-clock is
+forgeable on RTC-less Pis (honest_failure_modes #6): an NTP **forward** step
+could jump `now - _recovery_start` past `recovery_duration` and force an early
+**switch-back** to a primary that isn't actually stable (split-brain), or jump
+`now - _overload_start` past `utilization_duration` to **forge a failover**; the
+per-hour rate windows (`_failover_count_window`, `_restart_timestamps`), the
+cooldown gate (`_last_state_change`), the restart cooldown
+(`_last_restart_attempt`), and the LB slow-start ramp (`_failover_recovery_at`,
+`:1113`) were all equally forgeable.
+
+**Fix**: every duration anchor now measures on `time.monotonic()`. Because all
+anchors are stamped from and compared to the three `now` sources
+(`_track_reachability`, `_run_watchdog`, `_evaluate_state`) plus the
+`_transition` stamp and the class-2 `_failover_recovery_at` stamp/read pair,
+converting those six sites makes the whole machine internally consistent on
+monotonic. **Only genuine durations changed** — the absolute *display*
+timestamps stay wall-clock: `radio.last_check` (write-only for logic) and the
+class-2 `_last_state_change` stamp (never read as a duration), plus the
+`datetime.now()` log lines. Two boot-edge guards added: the `0.0`-init cooldown
+sentinels (`_last_state_change`, `_last_restart_attempt`) are now `> 0`-guarded
+so monotonic-`now` (= uptime) can't spuriously gate for the first cooldown
+seconds after boot — preserving the pre-fix "never-transitioned = no cooldown"
+behavior.
+
+Tests: `TestFailoverMonotonicClockSteps` (3: switch-back not forged early,
+failover not forged, boot-cooldown guard) + `TestLBSlowStartMonotonicClockSteps`
+(1: ramp not completed early). Existing tests that seeded anchors with
+`time.time() - N` were corrected to `time.monotonic() - N` (the same clock-
+mismatch class as Pri-6's `test_zero_multiplier_safety_cap`): MF
+`test_radio_failover.py` (24) + `test_failover_lb_coordination.py` (19); MA the
+same 26 + 19 = 45. Byte-identical twin, fixed identically.
 
 ## Twin note (MeshAnchor)
 
