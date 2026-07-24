@@ -615,6 +615,189 @@ class TestClawEdgeHardwareProbes:
         assert sig is None
         assert collect_dispositions()["claw_battery_low"]["disp"] == "clean"
 
+    # ---- level + TREND + intent (2026-07-24) ------------------------------
+    # Operator: "agreed on the claw batt discharge, it's not failed — a bit
+    # more intelligence with these metrics would help." A pack we deliberately
+    # run to cutoff and a pack that is failing produced the SAME page, and a
+    # claw that died at 4.05 V was told to check its battery.
+
+    def _seed_series(self, device, points):
+        """Write a rolling pack series where the probes look for it."""
+        from utils import claw_battery as cb
+        p = cb.series_path(os.path.dirname(self.sp), device)
+        for ts, v in points:
+            cb.append_sample(p, ts, v)
+        return p
+
+    def _falling(self, v_start, v_per_hr, hours, end_ts=1000.0, step_hr=0.25):
+        n = int(hours / step_hr)
+        return [(end_ts - (n - i) * step_hr * 3600.0,
+                 v_start + v_per_hr * (i * step_hr)) for i in range(n + 1)]
+
+    def test_armed_soak_discharge_does_not_page(self):
+        """THE ask: a deliberate discharge is not a failure. It is still
+        SAID — with its projection — just not paged."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        self._seed_series("dudeclaw-02", self._falling(3.9, -0.05, 6))
+        t = [self._tick(volts=3.45)]
+        for _ in range(3):
+            sig = probe_claw_battery_low(ticks=t, now=1000.0, state_path=self.sp2,
+                                         soak_devices={"dudeclaw-02"})
+            assert sig is None
+        disp = collect_dispositions()["claw_battery_low"]
+        assert disp["disp"] == "clean"
+        # visible, not silenced: the reason carries the state and projection
+        assert "dudeclaw-02" in disp["reason"] and "EXPECTED" in disp["reason"]
+
+    def test_same_pack_without_a_soak_config_still_pages(self):
+        """The suppression is intent-gated, not voltage-gated: identical
+        readings on a box that declared no soak must page exactly as before."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        self._seed_series("dudeclaw-02", self._falling(3.9, -0.05, 6))
+        t = [self._tick(volts=3.45)]
+        probe_claw_battery_low(ticks=t, now=1000.0, state_path=self.sp2)
+        sig = probe_claw_battery_low(ticks=t, now=1001.0, state_path=self.sp2)
+        assert sig is not None and sig.cls == "claw_battery_low"
+
+    def test_armed_soak_that_is_charging_is_not_excused(self):
+        """Intent explains a DECLINE. An armed device whose pack is low and
+        RISING is not the experiment running — it must not inherit the pass."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        self._seed_series("dudeclaw-02", self._falling(3.1, +0.05, 6))
+        t = [self._tick(volts=3.40)]
+        probe_claw_battery_low(ticks=t, now=1000.0, state_path=self.sp2,
+                               soak_devices={"dudeclaw-02"})
+        sig = probe_claw_battery_low(ticks=t, now=1001.0, state_path=self.sp2,
+                                     soak_devices={"dudeclaw-02"})
+        assert sig is not None, "a charging armed pack is not an expected decline"
+
+    def test_fast_drain_warns_while_still_above_the_floor(self):
+        """New reach: a claw at 3.9 V shedding 100 mV/h is ~5 h from dark and
+        used to read as perfectly healthy until it fell into the knee."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        self._seed_series("dudeclaw-02", self._falling(4.4, -0.10, 5))
+        t = [self._tick(volts=3.9)]
+        probe_claw_battery_low(ticks=t, now=1000.0, state_path=self.sp2)
+        sig = probe_claw_battery_low(ticks=t, now=1001.0, state_path=self.sp2)
+        assert sig is not None
+        assert "draining fast" in sig.detail
+        assert sig.extra["low"][0]["hours_to_cutoff"] is not None
+        assert "LINEAR projection" in sig.detail   # never sold as measured
+
+    def test_slow_healthy_drain_does_not_page(self):
+        """The early warning must not fire on a pack that is merely in use:
+        4.06 V at 5 mV/h is days away, not hours."""
+        from utils.watchdog_probes import probe_claw_battery_low
+        self._seed_series("dudeclaw-01", self._falling(4.09, -0.005, 6))
+        t = [self._tick(device="dudeclaw-01", volts=4.06)]
+        for _ in range(3):
+            assert probe_claw_battery_low(ticks=t, now=1000.0,
+                                          state_path=self.sp2) is None
+
+    def test_dark_claw_says_whether_the_battery_was_the_cause(self):
+        """The trip-saving distinction: died flat vs died healthy."""
+        from utils.watchdog_probes import probe_claw_device_dark
+        self._seed_series("dudeclaw-02", self._falling(4.2, -0.001, 6))
+        t = [self._tick(reachable=False, errors={"device_info": "no reply"})]
+        probe_claw_device_dark(ticks=t, now=1000.0, state_path=self.sp)
+        sig = probe_claw_device_dark(ticks=t, now=1001.0, state_path=self.sp)
+        assert sig is not None
+        assert "NOT a flat battery" in sig.detail
+        assert sig.extra["power"]["dudeclaw-02"]["state"] in ("float", "charging")
+
+    def test_dark_claw_with_a_flat_pack_names_the_battery(self):
+        from utils.watchdog_probes import probe_claw_device_dark
+        self._seed_series("dudeclaw-02", self._falling(3.9, -0.10, 6))
+        t = [self._tick(reachable=False)]
+        probe_claw_device_dark(ticks=t, now=1000.0, state_path=self.sp)
+        sig = probe_claw_device_dark(ticks=t, now=1001.0, state_path=self.sp)
+        assert sig is not None and "BATTERY ran out" in sig.detail
+
+    def test_dark_claw_with_no_readings_says_it_cannot_say(self):
+        """No series held → the cause is unknown, and unknown must be stated,
+        not guessed in either direction."""
+        from utils.watchdog_probes import probe_claw_device_dark
+        t = [self._tick(reachable=False)]
+        probe_claw_device_dark(ticks=t, now=1000.0, state_path=self.sp)
+        sig = probe_claw_device_dark(ticks=t, now=1001.0, state_path=self.sp)
+        assert sig is not None and "cannot say whether power was the cause" in sig.detail
+
+    def test_armed_soak_reaching_cutoff_is_the_experiment_ending(self):
+        """A soak-armed claw that goes quiet with a flat pack is the soak
+        FINISHING; battery_soak owns that verdict."""
+        from utils.watchdog_probes import probe_claw_device_dark
+        self._seed_series("dudeclaw-02", self._falling(3.9, -0.10, 6))
+        t = [self._tick(reachable=False)]
+        for _ in range(3):
+            sig = probe_claw_device_dark(ticks=t, now=1000.0, state_path=self.sp,
+                                         soak_devices={"dudeclaw-02"})
+            assert sig is None
+        disp = collect_dispositions()["claw_device_dark"]
+        assert disp["disp"] == "clean"
+        assert "expected end-of-discharge" in disp["reason"]
+
+    def test_armed_soak_that_dies_with_a_healthy_pack_still_pages(self):
+        """The gate that keeps this from becoming a silence switch: arming a
+        soak must not excuse a CRASH."""
+        from utils.watchdog_probes import probe_claw_device_dark
+        self._seed_series("dudeclaw-02", self._falling(4.2, -0.001, 6))
+        t = [self._tick(reachable=False)]
+        probe_claw_device_dark(ticks=t, now=1000.0, state_path=self.sp,
+                               soak_devices={"dudeclaw-02"})
+        sig = probe_claw_device_dark(ticks=t, now=1001.0, state_path=self.sp,
+                                     soak_devices={"dudeclaw-02"})
+        assert sig is not None, "a claw that dies at 4.19 V is not a finished soak"
+
+    def test_a_real_death_beside_a_finished_soak_still_pages(self):
+        """Suppression may never absorb a claw it wasn't asked about."""
+        from utils.watchdog_probes import probe_claw_device_dark
+        self._seed_series("dudeclaw-02", self._falling(3.9, -0.10, 6))
+        self._seed_series("dudeclaw-03", self._falling(4.2, -0.001, 6))
+        t = [self._tick(reachable=False),
+             self._tick(device="dudeclaw-03", reachable=False)]
+        probe_claw_device_dark(ticks=t, now=1000.0, state_path=self.sp,
+                               soak_devices={"dudeclaw-02"})
+        sig = probe_claw_device_dark(ticks=t, now=1001.0, state_path=self.sp,
+                                     soak_devices={"dudeclaw-02"})
+        assert sig is not None and "dudeclaw-03" in sig.detail
+
+    def test_injected_ticks_never_consult_the_real_boxs_soak_config(self):
+        """Hermeticity: on the claw-brain box a real battery_soak.json exists.
+        A test (or any caller passing ticks) must not be steered by it."""
+        import inspect
+
+        from utils import watchdog_probes_liveness as wpl
+        src = inspect.getsource(wpl.probe_claw_battery_low)
+        # the config read sits INSIDE the `ticks is None` branch
+        branch = src.split("if ticks is None:")[1].split("else:")[0]
+        assert "_soak_armed_devices" in branch
+
+    def test_unreadable_soak_config_arms_nothing(self, tmp_path):
+        """Fail toward paging: a malformed config must not make everything
+        'expected' (a silence-manufacturing switch)."""
+        from utils import claw_battery as cb
+        from utils.watchdog_probes_liveness import (CLAW_SOAK_CONFIG_REL,
+                                                    _soak_armed_devices)
+        cfg = tmp_path / CLAW_SOAK_CONFIG_REL
+        cfg.parent.mkdir(parents=True)
+        cfg.write_text("{not json")
+        assert _soak_armed_devices(str(tmp_path)) == {}
+        assert _soak_armed_devices(None) == {}
+        # a config that names no device arms nothing either: guessing WHICH
+        # pack someone meant to discharge is exactly the inference that must
+        # not silence a page (battery_soak's own dudeclaw-01 default is a
+        # measurement convenience, not a declaration of intent).
+        cfg.write_text('{"battery": {"cutoff_v": 3.41}}')
+        assert _soak_armed_devices(str(tmp_path)) == {}
+        # named device, no cutoff → the chemistry default
+        cfg.write_text('{"claw_device": "dudeclaw-02"}')
+        assert _soak_armed_devices(str(tmp_path)) == {"dudeclaw-02": cb.CUTOFF_V}
+        # the soak's OWN cutoff rides along, so the probe judges that pack
+        # against the same end-of-discharge the experiment measures to
+        cfg.write_text('{"claw_device": "dudeclaw-02",'
+                       ' "battery": {"cutoff_v": 3.41}}')
+        assert _soak_armed_devices(str(tmp_path)) == {"dudeclaw-02": 3.41}
+
     @pytest.fixture(autouse=True)
     def _paths(self, tmp_path):
         self.sp = str(tmp_path / "dark.json")

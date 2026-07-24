@@ -64,6 +64,7 @@ _SRC = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
+from utils import claw_battery  # noqa: E402
 from utils.paths import get_real_user_home  # noqa: E402
 
 CONFIG_REL = os.path.join(".config", "meshforge", "battery_soak.json")
@@ -71,10 +72,15 @@ STATE_BASENAME = "battery_soak.jsonl"
 DEFAULT_NATS = "localhost:4222"
 DEFAULT_DEVICE = "dudeclaw-01"
 DEFAULT_TIMEOUT_S = 8.0
-DEFAULT_CUTOFF_V = 3.4
+# Pack thresholds come from utils.claw_battery — the SSOT for this chemistry.
+# They used to be hardcoded here AND in watchdog_probes_liveness (3.4 / 3.5),
+# two independent constants describing the same 1S LiPo, which is the drift
+# class honest_failure_modes #5 exists to prevent. Names kept as aliases so
+# every existing caller and test is untouched.
+DEFAULT_CUTOFF_V = claw_battery.CUTOFF_V
 # A pack is "discharging" only once its terminal voltage has dropped this far
 # below the first sample — smaller swings are ADC noise / load ripple, not draw.
-DISCHARGE_NOISE_V = 0.03
+DISCHARGE_NOISE_V = claw_battery.NOISE_V
 
 _READING_RE = re.compile(r"Battery:\s*([0-9]+(?:\.[0-9]+)?)\s*V\s*\(adc\s*([0-9]+)\s*mV\)",
                          re.IGNORECASE)

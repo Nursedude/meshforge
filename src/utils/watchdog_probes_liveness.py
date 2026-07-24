@@ -15,6 +15,7 @@ import re
 import time
 from typing import Dict, List, Optional, Tuple
 
+from utils import claw_battery
 from utils.watchdog_probe_core import (
     Signal,
     _load_parity_streak,
@@ -676,8 +677,94 @@ CLAW_TICK_STALE_S = 1200.0
 #: LiPo working floor. Below this a single-cell pack is in its knee and the
 #: node has hours, not days — the warning must land while it can still be acted
 #: on. Physical constant of the chemistry, not an operator value (MF014).
-CLAW_BATTERY_FLOOR_V = 3.5
+#: IMPORTED, not redeclared: battery_soak judges the SAME pack against the same
+#: chemistry, and two independent hardcodes of one physical constant drift
+#: (honest_failure_modes #5). utils.claw_battery is the SSOT.
+CLAW_BATTERY_FLOOR_V = claw_battery.FLOOR_V
 _CLAW_TICK_GLOB = "claw_last_tick*.json"
+#: A pack projected to reach cutoff within this many hours is worth saying out
+#: loud even while it is still above the floor — the early warning the old
+#: level-only threshold structurally could not give (a claw at 3.9 V losing
+#: 100 mV/h is 5 h from dark, and read as perfectly healthy).
+CLAW_BATTERY_EARLY_WARN_HR = 6.0
+#: Where a battery soak declares its intent. A device named here is discharging
+#: BECAUSE WE ASKED IT TO; the decline is the experiment, not a fault.
+CLAW_SOAK_CONFIG_REL = os.path.join(".config", "meshforge", "battery_soak.json")
+
+
+def _soak_armed_devices(home: Optional[str]) -> dict:
+    """``{device: cutoff_v}`` for devices whose discharge is deliberate.
+
+    Intent is read ONLY from an explicit config NAMING a device. Unreadable /
+    absent / malformed / unnamed → empty, i.e. NOTHING is treated as expected:
+    a silence-manufacturing switch must fail toward paging, never away from it.
+    (battery_soak defaults an unnamed device to dudeclaw-01; this deliberately
+    does NOT — inferring which pack someone meant to discharge is exactly the
+    guess that must not silence a page.)
+
+    The soak's own ``cutoff_v`` rides along so the probe judges that pack
+    against the SAME end-of-discharge the experiment is measuring to — one
+    artifact, one constant (honest_failure_modes #5).
+    """
+    if not home:
+        return {}
+    try:
+        with open(os.path.join(home, CLAW_SOAK_CONFIG_REL)) as fh:
+            cfg = json.load(fh)
+        if not isinstance(cfg, dict):
+            return {}
+        dev = cfg.get("claw_device")
+        if not dev:
+            return {}
+        bat = cfg.get("battery")
+        cut = bat.get("cutoff_v") if isinstance(bat, dict) else None
+        if not isinstance(cut, (int, float)) or isinstance(cut, bool):
+            cut = claw_battery.CUTOFF_V
+        return {str(dev): float(cut)}
+    except (OSError, ValueError, AttributeError):
+        return {}
+
+
+def _armed_cutoff(armed, device: str) -> float:
+    """The cutoff to judge ``device`` against. Accepts either the mapping the
+    config yields or a plain set of names (injected by callers/tests)."""
+    if isinstance(armed, dict):
+        cut = armed.get(device)
+        if isinstance(cut, (int, float)) and not isinstance(cut, bool):
+            return float(cut)
+    return claw_battery.CUTOFF_V
+
+
+def _claw_battery_view(tick: dict, *, state_dir: str, now: float,
+                       soak_armed: bool,
+                       cutoff_v: float = claw_battery.CUTOFF_V) -> dict:
+    """Classify ONE claw's pack, recording this capture into its series first.
+
+    The series is what turns a bare voltage into intelligence: the watchdog
+    only ever sees the newest tick, so without a rolling record there is no
+    trend to fit and — the case that matters most — no way to know what a
+    pack was doing in the hours before its claw went dark.
+    """
+    device = str(tick.get("device"))
+    path = claw_battery.series_path(state_dir, device)
+    bat = tick.get("battery")
+    volts = bat.get("volts") if isinstance(bat, dict) else None
+    ts = tick.get("captured_at")
+    if isinstance(volts, (int, float)) and not isinstance(volts, bool):
+        # Dedup is by capture ts inside append_sample; a False return is a
+        # duplicate or an I/O failure, neither of which may invent a reading.
+        claw_battery.append_sample(path, ts if isinstance(ts, (int, float)) else now,
+                                   volts)
+    series = claw_battery.read_series(path)
+    if isinstance(volts, (int, float)) and not isinstance(volts, bool) and not series:
+        # Series unwritable (read-only /var/lib, full disk): fall back to the
+        # single live reading so a level warning still works. The trend stays
+        # None — degraded observability, not a fabricated flat pack.
+        series = [{"ts": ts if isinstance(ts, (int, float)) else now,
+                   "volts": volts}]
+    view = claw_battery.classify(series, soak_armed=soak_armed, cutoff_v=cutoff_v)
+    view["device"] = device
+    return view
 
 
 def _operator_home() -> Optional[str]:
@@ -746,6 +833,7 @@ def probe_claw_device_dark(
     now: Optional[float] = None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    soak_devices: Optional[set] = None,
 ) -> Optional[Signal]:
     """A claw edge node stopped answering while its capture kept running.
 
@@ -753,6 +841,20 @@ def probe_claw_device_dark(
     fresh ticks, and those fresh ticks say the DEVICE did not reply. That is a
     hardware/RF/power fact about a node, and it is said in those words —
     not as a failing cron.
+
+    SECOND distinction (2026-07-24): *why* it went quiet. The probe now reads
+    the pack's rolling series, which outlives the device, and says whether it
+    went dark with a flat battery or a healthy one — the difference between
+    "the pack ran out" and "the node crashed", which the operator otherwise has
+    to go and physically check. A claw that goes dark at 4.05 V is NOT a
+    battery problem and must not be sent down that path.
+
+    When the dark device is the ARMED battery soak and its pack had reached the
+    knee/cutoff, the silence is the experiment ENDING, not a fault: it resolves
+    to a clean disposition naming the last reading, and battery_soak's own
+    verdict owns the result. Strictly gated — intent must be declared in a
+    config naming that device, AND its last measured pack must actually have
+    been low. A soak-armed claw that dies with a healthy pack still pages.
 
     Self-guards None: no tick files (no claw on this box → INERT), every tick
     stale or unparseable (indeterminate — cron_verdict_stale owns the dead-cron
@@ -763,9 +865,13 @@ def probe_claw_device_dark(
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_CLAW_DARK_DEBOUNCE_PATH
         if ticks is None:
-            ticks, seen = _read_claw_ticks(home or _operator_home(), now)
+            home_dir = home or _operator_home()
+            ticks, seen = _read_claw_ticks(home_dir, now)
+            if soak_devices is None:
+                soak_devices = _soak_armed_devices(home_dir)
         else:
             seen = len(ticks)
+        armed = soak_devices or {}
 
         if not seen:
             note_disposition("claw_device_dark", "inert",
@@ -782,12 +888,41 @@ def probe_claw_device_dark(
 
         dark = [t for t in ticks if _tick_reachable(t) is False]
         undecidable = [t for t in ticks if _tick_reachable(t) is None]
+
         if not dark:
             reason = ("all claw devices answering"
                       if not undecidable
                       else "no claw reported dark; "
                            f"{len(undecidable)} tick(s) predate the reachable field")
             note_disposition("claw_device_dark", "clean", reason=reason)
+            _save_parity_streak(sp, 0)
+            return None
+
+        # WHY did it go quiet? The pack series outlives the device, so the last
+        # readings before the silence are still here to be read.
+        state_dir = os.path.dirname(sp) or "."
+        power_ctx = {}
+        end_of_discharge = []
+        for t in dark:
+            dev = str(t.get("device"))
+            view = claw_battery.classify(
+                claw_battery.read_series(claw_battery.series_path(state_dir, dev)),
+                soak_armed=dev in armed, cutoff_v=_armed_cutoff(armed, dev))
+            power_ctx[dev] = view
+            if dev in armed and view["state"] in (claw_battery.CRITICAL,
+                                                  claw_battery.KNEE):
+                end_of_discharge.append((dev, view))
+        # Only when EVERY dark claw is an expected end-of-discharge. One real
+        # death alongside a finished soak still pages — the suppression may
+        # never absorb a claw it wasn't asked about.
+        if end_of_discharge and len(end_of_discharge) == len(dark):
+            note_disposition(
+                "claw_device_dark", "clean",
+                reason=("expected end-of-discharge: "
+                        + "; ".join(f"{d} last read {v['summary']}"
+                                    for d, v in end_of_discharge)
+                        + " — this device is the ARMED battery soak and its pack "
+                          "reached the knee; battery_soak owns the verdict"))
             _save_parity_streak(sp, 0)
             return None
 
@@ -801,21 +936,43 @@ def probe_claw_device_dark(
         names = sorted(str(t.get("device")) for t in dark)
         detail_bits = []
         for t in sorted(dark, key=lambda d: str(d.get("device"))):
+            dev = str(t.get("device"))
             err = "; ".join(f"{k}={v}" for k, v in (t.get("errors") or {}).items())
-            detail_bits.append(f"{t.get('device')}"
-                               + (f" ({err[:110]})" if err else ""))
+            detail_bits.append(f"{dev}" + (f" ({err[:110]})" if err else ""))
+        # Point the operator at the RIGHT thing: a node that went quiet with a
+        # flat pack is a battery; one that went quiet at 4.05 V is not, and
+        # sending them down the battery path wastes the trip.
+        verdicts = []
+        for dev in names:
+            view = power_ctx.get(dev) or {}
+            st = view.get("state")
+            if st in (claw_battery.CRITICAL, claw_battery.KNEE):
+                verdicts.append(f"{dev}: pack was {view['summary']} — the "
+                                f"BATTERY ran out; charge/swap and it returns")
+            elif st in (claw_battery.FLOAT, claw_battery.CHARGING,
+                        claw_battery.DISCHARGING):
+                verdicts.append(f"{dev}: pack was {view['summary']} — NOT a flat "
+                                f"battery; look at wifi, the USB feed, or the "
+                                f"node itself")
+            else:
+                verdicts.append(f"{dev}: pack state unknown (no readings held) "
+                                f"— cannot say whether power was the cause")
         return Signal(
             cls="claw_device_dark",
             subject=names[0] if len(names) == 1 else f"{len(names)} claws",
             severity="degraded",
             detail=(
                 f"claw edge node not answering: {', '.join(detail_bits)}. The "
-                f"capture cron IS running (tick fresh) — the DEVICE is silent: "
-                f"check power/battery, wifi, or the node itself. This is the "
+                f"capture cron IS running (tick fresh) — the DEVICE is silent. "
+                f"Last known power state — {'; '.join(verdicts)}. This is the "
                 f"hardware fact behind what would otherwise surface only as a "
                 f"failing claw metrics cron."
             ),
-            extra={"devices": names, "claws_seen": seen},
+            extra={"devices": names, "claws_seen": seen,
+                   "power": {d: {"state": v.get("state"),
+                                 "volts": v.get("volts"),
+                                 "slope_v_per_hr": v.get("slope_v_per_hr")}
+                             for d, v in power_ctx.items()}},
         )
     except Exception:
         note_disposition("claw_device_dark", "indeterminate",
@@ -831,26 +988,54 @@ def probe_claw_battery_low(
     floor_v: float = CLAW_BATTERY_FLOOR_V,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    soak_devices: Optional[set] = None,
 ) -> Optional[Signal]:
-    """A battery-powered claw's pack fell below the working floor.
+    """A claw's pack is losing charge nobody asked it to lose.
 
     The warning that was missing on 2026-07-10: dudeclaw-02 spent ~38 h under
     3.5 V before it died, and nothing said so. Fires only on a CONCRETE
     voltage from a REACHABLE device.
 
+    LEVEL + TREND + INTENT (2026-07-24). The original probe compared one
+    instantaneous voltage to one threshold, which cannot tell apart a pack we
+    are deliberately running to cutoff from one that is failing — so the fleet's
+    armed battery soak paged as degraded for the whole experiment, training the
+    operator to ignore the one class that also carries a real death. Now:
+
+    - a soak-armed device that is DECLINING is ``expected``: reported in the
+      disposition with its projection, never paged. Intent is read only from a
+      config that names the device, and only suppresses an actual decline — a
+      soak-armed pack that is charging or flat is still described as such, and
+      any pack on a box with no soak config still pages exactly as before.
+    - a pack projected to hit cutoff within CLAW_BATTERY_EARLY_WARN_HR pages
+      even while it is still above the floor. This is new reach: a claw at
+      3.9 V shedding 100 mV/h is 5 h from dark and used to read as healthy
+      until it had already fallen into the knee.
+    - every page now carries slope + a LABELLED linear projection, so "charge
+      or swap the pack" comes with how long there is to do it.
+
+    ``soak_devices`` is injectable; when ticks are injected too (tests) the
+    on-disk config is NOT consulted, so a test can never be steered by the real
+    box's soak state. Production (ticks=None) reads the operator's config.
+
     Self-guards None: no tick files (INERT), stale/unparseable ticks, a device
     with no battery gauge or a capture that predates battery collection
     (unknown is NOT "charged" — it is simply not a low-battery claim), an
-    unreachable device (claw_device_dark owns that), or every pack above the
-    floor. 2-tick debounce. Never raises into the tick.
+    unreachable device (claw_device_dark owns that), or every pack healthy.
+    2-tick debounce. Never raises into the tick.
     """
     try:
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_CLAW_BATTERY_DEBOUNCE_PATH
+        home_dir = home
         if ticks is None:
-            ticks, seen = _read_claw_ticks(home or _operator_home(), now)
+            home_dir = home or _operator_home()
+            ticks, seen = _read_claw_ticks(home_dir, now)
+            if soak_devices is None:
+                soak_devices = _soak_armed_devices(home_dir)
         else:
             seen = len(ticks)
+        armed = soak_devices or {}
 
         if not seen:
             note_disposition("claw_battery_low", "inert",
@@ -863,7 +1048,8 @@ def probe_claw_battery_low(
             _save_parity_streak(sp, 0)
             return None
 
-        low, measured = [], 0
+        state_dir = os.path.dirname(sp) or "."
+        alarming, expected, measured = [], [], 0
         for t in ticks:
             if _tick_reachable(t) is False:
                 continue                     # dark → claw_device_dark's call
@@ -872,8 +1058,17 @@ def probe_claw_battery_low(
             if not isinstance(volts, (int, float)) or isinstance(volts, bool):
                 continue                     # no gauge / pre-battery capture
             measured += 1
-            if volts < floor_v:
-                low.append((str(t.get("device")), float(volts)))
+            dev = str(t.get("device"))
+            view = _claw_battery_view(
+                t, state_dir=state_dir, now=now,
+                soak_armed=dev in armed, cutoff_v=_armed_cutoff(armed, dev))
+            if view["expected"]:
+                expected.append(view)
+                continue
+            hrs = view["hours_to_cutoff"]
+            if (volts < floor_v
+                    or (hrs is not None and hrs <= CLAW_BATTERY_EARLY_WARN_HR)):
+                alarming.append(view)
 
         if not measured:
             note_disposition(
@@ -882,9 +1077,15 @@ def probe_claw_battery_low(
                        "capture predates battery collection) — unknown is not charged")
             _save_parity_streak(sp, 0)
             return None
-        if not low:
-            note_disposition("claw_battery_low", "clean",
-                             reason=f"{measured} claw pack(s) at/above {floor_v} V")
+        if not alarming:
+            # An expected decline is NOT silence: it is stated, with its
+            # projection, so a soak that is running away from its plan is still
+            # visible to anyone reading dispositions.
+            note = "; ".join(f"{v['device']} {v['summary']}" for v in expected)
+            note_disposition(
+                "claw_battery_low", "clean",
+                reason=(f"{measured} claw pack(s) healthy or expected"
+                        + (f" — {note}" if note else "")))
             _save_parity_streak(sp, 0)
             return None
 
@@ -895,20 +1096,38 @@ def probe_claw_battery_low(
                              reason=f"low candidate, debounce {streak}/{debounce_ticks}")
             return None
 
-        low.sort(key=lambda p: p[1])
-        worst_dev, worst_v = low[0]
-        listed = ", ".join(f"{d} {v:.2f}V" for d, v in low)
+        alarming.sort(key=lambda v: v["volts"])
+        worst = alarming[0]
+        listed = "; ".join(f"{v['device']}: {v['summary']}" for v in alarming)
+        if worst["volts"] < floor_v:
+            lead = (f"claw pack below {floor_v} V — {worst['device']} at "
+                    f"{worst['volts']:.2f} V is in the knee")
+        else:
+            lead = (f"claw pack draining fast — {worst['device']} is above the "
+                    f"{floor_v} V floor but projected to reach cutoff within "
+                    f"{CLAW_BATTERY_EARLY_WARN_HR:.0f} h")
+        expected_note = ("" if not expected else
+                         " (not counted: " +
+                         ", ".join(f"{v['device']} is the armed soak" for v in expected)
+                         + ")")
         return Signal(
             cls="claw_battery_low",
-            subject=worst_dev,
+            subject=worst["device"],
             severity="degraded",
             detail=(
-                f"claw pack below {floor_v} V: {listed}. A single-cell LiPo at "
-                f"{worst_v:.2f} V is in the knee — hours, not days, before the "
-                f"node drops off and its RF/witness coverage goes with it. "
-                f"Charge or swap the pack."
+                f"{lead}. {listed}. Hours, not days, before the node drops off "
+                f"and its RF/witness coverage goes with it — charge or swap the "
+                f"pack.{expected_note}"
             ),
-            extra={"low": [{"device": d, "volts": v} for d, v in low],
+            extra={"low": [{"device": v["device"], "volts": v["volts"],
+                            "state": v["state"],
+                            "slope_v_per_hr": v["slope_v_per_hr"],
+                            "hours_to_cutoff": v["hours_to_cutoff"]}
+                           for v in alarming],
+                   "expected": [{"device": v["device"], "volts": v["volts"],
+                                 "state": v["state"],
+                                 "hours_to_cutoff": v["hours_to_cutoff"]}
+                                for v in expected],
                    "floor_v": floor_v, "measured": measured},
         )
     except Exception:
