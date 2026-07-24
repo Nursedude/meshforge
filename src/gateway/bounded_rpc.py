@@ -257,10 +257,17 @@ def bounded_call(
             # Not aborting (env backstop / test mode): the wrapped fn
             # may never return — account for the wedged-but-alive
             # call so operators can see N suppressed aborts.
+            # Pri-11 (gateway review 2026-07-23): only count if the call has
+            # NOT already completed. Previously the finally keyed its decrement
+            # off fired["wedge"] (set earlier, at timeout) but the increment
+            # landed here later — if fn returned in that window the finally saw
+            # counted=False and skipped, then this increment leaked +1 forever.
+            # The lock-protected `completed` flag closes that window.
             global _outstanding_wedges
             with _counter_lock:
-                _outstanding_wedges += 1
-                fired["counted"] = True
+                if not fired.get("completed"):
+                    _outstanding_wedges += 1
+                    fired["counted"] = True
 
     watchdog = threading.Thread(
         target=_watchdog, daemon=True, name=f"bounded-{label}",
@@ -290,10 +297,12 @@ def bounded_call(
         raise
     finally:
         done.set()
-        # The call DID complete after the watchdog counted it as
-        # wedged-outstanding — return the unit (it un-wedged late).
-        if fired["wedge"]:
-            with _counter_lock:
-                if fired.get("counted"):
-                    globals()["_outstanding_wedges"] -= 1
-                    fired["counted"] = False
+        # The call completed. Mark it so a watchdog racing toward the count
+        # point (Pri-11) skips the increment, and return the unit if it was
+        # already counted (it un-wedged late). `completed` and the decrement
+        # are set under the same lock the watchdog counts under.
+        with _counter_lock:
+            fired["completed"] = True
+            if fired.get("counted"):
+                globals()["_outstanding_wedges"] -= 1
+                fired["counted"] = False

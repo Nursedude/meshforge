@@ -88,6 +88,14 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
     # is greppable and distinguishable from a transport failure (Pri-8).
     STALE_RESET_ERROR = "stale_in_progress_reset"
 
+    # retry_after is a wall-clock schedule; on the fleet's RTC-less Pis a large
+    # BACKWARD NTP step after scheduling would strand a message far in the
+    # future (Pri-9, gateway review 2026-07-23). No legitimate backoff schedules
+    # a retry more than this far out, so get_pending also releases anything
+    # beyond the ceiling — a clock-artifact release, not a reschedule rework
+    # (honest_failure_modes #6 absurd-delta clamp).
+    RETRY_AFTER_CEILING_S = 3600
+
     def __init__(self, db_path: Optional[str] = None,
                  max_queue_size: int = DEFAULT_MAX_QUEUE_SIZE,
                  retry_policy: Optional[RetryPolicy] = None):
@@ -461,7 +469,11 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
     def get_pending(self, destination: Optional[str] = None,
                     limit: int = 100) -> List[QueuedMessage]:
         """Get pending messages ready for delivery."""
-        now = datetime.now().isoformat()
+        now_dt = datetime.now()
+        now = now_dt.isoformat()
+        # Pri-9: also release messages scheduled absurdly far out — a backward
+        # clock step after scheduling, not a legitimate backoff.
+        ceiling = (now_dt + timedelta(seconds=self.RETRY_AFTER_CEILING_S)).isoformat()
 
         with self._get_connection() as conn:
             if destination:
@@ -469,18 +481,18 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                     SELECT * FROM messages
                     WHERE status = 'pending'
                     AND destination = ?
-                    AND (retry_after IS NULL OR retry_after <= ?)
+                    AND (retry_after IS NULL OR retry_after <= ? OR retry_after > ?)
                     ORDER BY priority DESC, created_at ASC
                     LIMIT ?
-                """, (destination, now, limit))
+                """, (destination, now, ceiling, limit))
             else:
                 cursor = conn.execute("""
                     SELECT * FROM messages
                     WHERE status = 'pending'
-                    AND (retry_after IS NULL OR retry_after <= ?)
+                    AND (retry_after IS NULL OR retry_after <= ? OR retry_after > ?)
                     ORDER BY priority DESC, created_at ASC
                     LIMIT ?
-                """, (now, limit))
+                """, (now, ceiling, limit))
 
             return [QueuedMessage.from_dict(dict(row)) for row in cursor.fetchall()]
 

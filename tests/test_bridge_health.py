@@ -588,3 +588,20 @@ class TestConfirmationRateSentinelIssue74:
         tracker.track_message("m1", b"\x00" * 8, "Msg")
         stats = tracker.get_stats()
         assert stats["confirmation_rate_pct"] == 0.0
+
+
+class TestUptimeClockStepClampPri10:
+    """Pri-10 (gateway review 2026-07-23): uptime accounting is wall-clock; a
+    backward NTP step must not subtract from accumulated uptime or push the
+    percent out of [0,100] (honest_failure_modes #6 clamp; display-only)."""
+
+    @patch("gateway.bridge_health.time")
+    def test_backward_step_does_not_reduce_uptime(self, mt):
+        clock = {"t": 1000.0}
+        mt.time.side_effect = lambda: clock["t"]
+        h = BridgeHealthMonitor()                    # _start_time @1000
+        h.record_connection_event("meshtastic", "connected")   # connected @1000
+        clock["t"] = 1000.0 - 3600.0                 # NTP jumps BACKWARD 1h
+        h.record_connection_event("meshtastic", "disconnected")
+        assert h._uptime_seconds["meshtastic"] >= 0.0          # not negative
+        assert 0.0 <= h.get_uptime_percent("meshtastic") <= 100.0

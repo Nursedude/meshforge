@@ -36,10 +36,10 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~6~~ | `reconnect.py:316,292` | med | **FIXED 2026-07-23** | `SlowStartRecovery` ramp on wall-clock — monotonic anchor, both twins. See fixed section below. |
 | ~~7~~ | `message_queue.py:924` | med | **FIXED 2026-07-23** (was PLAUSIBLE → CONFIRMED) | Post-send `mark_delivered` DB error re-queued an already-sent message — duplicate on the wire. See fixed section below. |
 | ~~8~~ | `message_queue.py:1110` | med-low | **FIXED 2026-07-23** | `cleanup_stale` reset `in_progress→pending` without bumping `retry_count` → endless retry, never dead-letters. See fixed section below. |
-| 9 | `message_queue.py:580,613` | low | PLAUSIBLE | `retry_after` scheduling/comparison via `datetime.now()` (wall clock) → NTP steps skew retry timing; queued-item "age" forgeable. Fix is a delay clamp, not a rework. |
-| 10 | `bridge_health.py:418,261` | low | PLAUSIBLE | `_uptime_seconds` accumulation + `get_uptime_percent` use wall-clock deltas → NTP steps make uptime% arbitrarily wrong. Display/summary only (bounded 0–100), not a control decision. |
-| 11 | `bounded_rpc.py:242,260` | low | CONFIRMED | Flag-ordering race leaks `_outstanding_wedges` +1 in the abort-suppressed path (`NO_EXIT`/`exit_on_wedge=False`) → phantom "wedged threads in flight" gauge. Only reachable when the abort backstop is engaged (not steady state). |
-| 12 | `meshtastic_broadcast_bridge.py:408` | low | PLAUSIBLE | No bytes→str normalization on the inbound broadcast path; latent until a `CanonicalMessage` with bytes `content` (advertised second shape) flows through → TypeError swallowed as generic callback error, message silently fails to fan out. One-line decode fix. |
+| ~~9~~ | `message_queue.py` | low | **FIXED 2026-07-23** | retry_after wall-clock strand — get_pending ceiling release. Both twins. |
+| ~~10~~ | `bridge_health.py` | low | **FIXED 2026-07-23** | uptime wall-clock deltas — clamped ≥0, percent bounded. Both twins. |
+| ~~11~~ | `bounded_rpc.py` | low | **FIXED 2026-07-23** (MF-only) | `_outstanding_wedges` count/finally race — `completed` flag. No MA twin (no bounded_rpc.py). |
+| ~~12~~ | `meshtastic_broadcast_bridge.py` (`_msg_content`) | low | **FIXED 2026-07-23** | bytes `content` → str normalization. MA twin `lxmf_broadcast_bridge.py` shared it, fixed too. |
 | ~~13~~ | `radio_failover.py:542` | med | **FIXED 2026-07-23** | Whole failover state machine on wall-clock — monotonic anchors, both twins. See fixed section below. |
 | — | `node_models.py:~1012` (`meshcore:` factory) | ? | UNVERIFIED | Sibling of finding C (also hard-sets `now()/True`); MeshCore's heard-time field not confirmed. Check next pass. |
 
@@ -317,6 +317,40 @@ failover not forged, boot-cooldown guard) + `TestLBSlowStartMonotonicClockSteps`
 mismatch class as Pri-6's `test_zero_multiplier_safety_cap`): MF
 `test_radio_failover.py` (24) + `test_failover_lb_coordination.py` (19); MA the
 same 26 + 19 = 45. Byte-identical twin, fixed identically.
+
+## Pri-9 / 10 / 11 / 12 (findings 9–12) — RESOLVED 2026-07-23 (low-severity tail)
+
+- **Pri-9** (`message_queue.py`, both twins): `retry_after` is a wall-clock
+  schedule; a large **backward** NTP step after scheduling would strand a queued
+  message far in the future. Fix: `get_pending` also releases rows whose
+  `retry_after` exceeds `now + RETRY_AFTER_CEILING_S` (3600s) — beyond any
+  legitimate backoff, so it can only be a clock artifact (hfm #6 absurd-delta
+  release, not a reschedule rework). Tests: `TestRetryAfterCeilingPri9` (2).
+- **Pri-10** (`bridge_health.py`, both twins): uptime accounting uses wall-clock
+  deltas; a backward step could subtract from accumulated uptime. Fix: clamp
+  each delta `max(0.0, now - connected_at)` and the percent
+  `max(0.0, min(100.0, …))`. Kept wall-clock (display-only, `_last_connected`
+  is also a shown absolute timestamp) — a clamp, not a monotonic rework.
+  Tests: `TestUptimeClockStepClampPri10` (1).
+- **Pri-11** (`bounded_rpc.py`, **MF-only** — MA has no such file): the
+  `_outstanding_wedges` gauge leaked +1 when the watchdog counted a wedge
+  (`exit_on_wedge=False`) in the window after the wrapped fn already returned —
+  the finally keyed its decrement off `fired["wedge"]` (set early) but the
+  increment landed later. Fix: a lock-protected `completed` flag — the watchdog
+  skips the increment if the call already completed, and the finally always
+  marks completed and decrements only if counted. Net 0, no leak. Tests:
+  `TestOutstandingWedgeGaugePri11` (1, real watchdog-fire + late return).
+- **Pri-12** (`meshtastic_broadcast_bridge.py` `_msg_content`, both twins):
+  `CanonicalMessage`'s bytes `content` shape flowed unnormalized into str ops →
+  `TypeError` swallowed → silent fan-out failure. Fix: `_msg_content` decodes
+  bytes→str (mirroring the already-correct inbound `_on_lxmf_delivery` path).
+  MA's `lxmf_broadcast_bridge.py` shared the defect inline (no helper) — added
+  the same `_msg_content` helper and routed the format + synth-ACK-guard sites
+  through it. Tests: `TestMsgContentBytesNormalizationPri12` (2 each twin).
+
+**This closes the entire ranked queue** — Pri-1 through 13 all resolved. The
+only remaining table entry is the UNVERIFIED `node_models.py` `meshcore:` factory
+sibling of finding C (needs MeshCore heard-time-field confirmation next pass).
 
 ## Twin note (MeshAnchor)
 

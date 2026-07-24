@@ -1458,3 +1458,27 @@ class TestFrontierReviewFixes20260709:
         assert queue.mark_delivered(msg_id) is True
         assert queue.mark_delivered(msg_id) is False
         assert queue._stats["delivered"] == 1
+
+
+class TestRetryAfterCeilingPri9:
+    """Pri-9 (gateway review 2026-07-23): retry_after is a wall-clock schedule;
+    a large backward NTP step after scheduling would strand a queued message
+    far in the future. get_pending releases anything beyond RETRY_AFTER_CEILING_S
+    (a clock-artifact release, not a legitimate backoff)."""
+
+    def test_far_future_retry_after_is_released(self, queue):
+        msg_id = queue.enqueue({"text": "stranded"}, "meshtastic")
+        far = (datetime.now()
+               + timedelta(seconds=queue.RETRY_AFTER_CEILING_S + 600)).isoformat()
+        with queue._get_connection() as conn:
+            conn.execute("UPDATE messages SET retry_after = ? WHERE id = ?",
+                         (far, msg_id))
+        assert len(queue.get_pending()) == 1        # released despite far future
+
+    def test_within_ceiling_is_still_held(self, queue):
+        msg_id = queue.enqueue({"text": "waiting"}, "meshtastic")
+        soon = (datetime.now() + timedelta(seconds=30)).isoformat()  # legit backoff
+        with queue._get_connection() as conn:
+            conn.execute("UPDATE messages SET retry_after = ? WHERE id = ?",
+                         (soon, msg_id))
+        assert len(queue.get_pending()) == 0        # correctly held for its backoff

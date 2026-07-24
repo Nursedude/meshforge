@@ -1048,3 +1048,28 @@ class TestGetStatusDeliveryConfirmation:
             assert sub_row["state"] == STATE_UNCONFIRMED
         finally:
             b.stop()
+
+
+class TestMsgContentBytesNormalizationPri12:
+    """Pri-12 (gateway review 2026-07-23): _msg_content must normalize a bytes
+    `content` (the advertised CanonicalMessage second shape) to str, or bytes
+    flow into str ops → TypeError swallowed → the message silently fails to fan
+    out."""
+
+    def test_bytes_content_decoded(self):
+        from gateway.meshtastic_broadcast_bridge import _msg_content
+
+        class M:
+            content = b"subscribe"
+        assert _msg_content(M()) == "subscribe"
+
+    def test_str_and_none_unchanged(self):
+        from gateway.meshtastic_broadcast_bridge import _msg_content
+
+        class S:
+            content = "already str"
+
+        class N:
+            content = None
+        assert _msg_content(S()) == "already str"
+        assert _msg_content(N()) == ""

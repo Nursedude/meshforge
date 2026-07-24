@@ -401,3 +401,36 @@ class TestNoExitEnvBackstopIssue74:
     def test_backstop_garbage_value_means_off(self, monkeypatch):
         monkeypatch.setenv("MESHFORGE_BOUNDED_RPC_NO_EXIT", "banana")
         assert bounded_rpc._no_exit_env() is False
+
+
+class TestOutstandingWedgeGaugePri11:
+    """Pri-11 (gateway review 2026-07-23): a call that the watchdog counts as
+    wedged-outstanding (exit_on_wedge=False) and that then returns late must
+    net the gauge back to 0 — no phantom leak. The `completed` flag closes the
+    count-vs-finally race."""
+
+    def test_late_return_after_counted_wedge_nets_to_zero(self):
+        bounded_rpc._reset_counters_for_tests()
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow():
+            started.set()
+            release.wait(timeout=3.0)     # blocks past the tiny timeout
+            return "late"
+
+        result = {}
+
+        def run():
+            result["r"] = bounded_call(
+                "test.pri11.leak", slow, timeout_s=0.1, exit_on_wedge=False)
+
+        th = threading.Thread(target=run, daemon=True)
+        th.start()
+        assert started.wait(2.0)
+        time.sleep(0.4)                   # let the watchdog fire + count
+        assert bounded_rpc.get_outstanding_wedges() == 1   # counted while outstanding
+        release.set()                     # fn returns late
+        th.join(3.0)
+        assert result.get("r") == "late"
+        assert bounded_rpc.get_outstanding_wedges() == 0   # decremented — no leak

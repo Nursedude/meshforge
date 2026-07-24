@@ -266,9 +266,15 @@ class BridgeHealthMonitor:
 
             elif event in ("disconnected", "error"):
                 if self._connected[service]:
-                    # Accumulate uptime
+                    # Accumulate uptime. Clamp the delta ≥ 0 (Pri-13-class,
+                    # gateway review 2026-07-23): these are wall-clock deltas
+                    # and a backward NTP step on the fleet's RTC-less Pis would
+                    # otherwise subtract from accumulated uptime (honest_failure_
+                    # modes #6). Display/summary only, so a clamp — not a
+                    # monotonic rework that would break the wall-clock
+                    # last_connected/last_disconnected timestamps — suffices.
                     connected_at = self._last_connected.get(service, now)
-                    self._uptime_seconds[service] += now - connected_at
+                    self._uptime_seconds[service] += max(0.0, now - connected_at)
                 self._connected[service] = False
                 self._last_disconnected[service] = now
 
@@ -431,12 +437,13 @@ class BridgeHealthMonitor:
 
         with self._lock:
             uptime = self._uptime_seconds.get(service, 0.0)
-            # Add current connected time if still connected
+            # Add current connected time if still connected (delta clamped ≥ 0
+            # against a backward clock step — Pri-10, gateway review 2026-07-23).
             if self._connected.get(service, False):
                 connected_at = self._last_connected.get(service, now)
-                uptime += now - connected_at
+                uptime += max(0.0, now - connected_at)
 
-        return min(100.0, (uptime / total_time) * 100)
+        return max(0.0, min(100.0, (uptime / total_time) * 100))
 
     def get_summary(self) -> Dict[str, Any]:
         """Get a comprehensive health summary.

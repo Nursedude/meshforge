@@ -487,7 +487,14 @@ def _msg_metadata(msg: Any) -> Dict[str, Any]:
 
 
 def _msg_content(msg: Any) -> str:
-    return getattr(msg, "content", "") or ""
+    # Pri-12 (gateway review 2026-07-23): CanonicalMessage advertises a bytes
+    # `content` shape too. Without this, a bytes payload flowed into str ops
+    # (startswith/format) → TypeError swallowed as a generic callback error →
+    # the message silently failed to fan out. Normalize like _on_lxmf_delivery.
+    raw = getattr(msg, "content", "") or ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", errors="replace")
+    return raw if isinstance(raw, str) else str(raw)
 
 
 def format_broadcast_text(msg: Any, prefix_format: str) -> str:
