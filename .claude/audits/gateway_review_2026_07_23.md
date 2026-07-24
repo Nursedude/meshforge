@@ -41,7 +41,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~11~~ | `bounded_rpc.py` | low | **FIXED 2026-07-23** (MF-only) | `_outstanding_wedges` count/finally race — `completed` flag. No MA twin (no bounded_rpc.py). |
 | ~~12~~ | `meshtastic_broadcast_bridge.py` (`_msg_content`) | low | **FIXED 2026-07-23** | bytes `content` → str normalization. MA twin `lxmf_broadcast_bridge.py` shared it, fixed too. |
 | ~~13~~ | `radio_failover.py:542` | med | **FIXED 2026-07-23** | Whole failover state machine on wall-clock — monotonic anchors, both twins. See fixed section below. |
-| — | `node_models.py:~1012` (`meshcore:` factory) | ? | UNVERIFIED | Sibling of finding C (also hard-sets `now()/True`); MeshCore's heard-time field not confirmed. Check next pass. |
+| ~~—~~ | `node_models.py` (`meshcore:` factory) | low | **FIXED 2026-07-23** (was UNVERIFIED → CONFIRMED-latent) | Finding-C sibling: honour a heard-time (contact-data `last_seen`), else now()/True. Both twins. See section below. |
 
 ## Pri-2 (finding 2) — RESOLVED 2026-07-23 (this session, both twins)
 
@@ -348,9 +348,8 @@ same 26 + 19 = 45. Byte-identical twin, fixed identically.
   the same `_msg_content` helper and routed the format + synth-ACK-guard sites
   through it. Tests: `TestMsgContentBytesNormalizationPri12` (2 each twin).
 
-**This closes the entire ranked queue** — Pri-1 through 13 all resolved. The
-only remaining table entry is the UNVERIFIED `node_models.py` `meshcore:` factory
-sibling of finding C (needs MeshCore heard-time-field confirmation next pass).
+**This closes the entire ranked queue** — Pri-1 through 13 all resolved, plus
+the finding-C `meshcore:` factory sibling (below). Nothing outstanding.
 
 ## Twin note (MeshAnchor)
 
@@ -371,6 +370,30 @@ confirmed-delivery field"). The finding-2 fix resolves that TODO and was ported
 to MA identically (same `mark_confirmed`/`STATE_UNCONFIRMED`/confirmable-gating
 design). The two files are NOT byte-locked twins (separate mirror files, not in
 `parity_check`'s set), so the port matched intent, not bytes.
+
+## `node_models.py` `meshcore:` factory (finding-C sibling) — RESOLVED 2026-07-23 (both twins)
+
+**Verified before fixing** (was UNVERIFIED): `UnifiedNode.from_meshcore` hard-set
+`last_seen=now()/is_online=True` (1042-1043), the same shape as finding C's
+`from_meshtastic`. Its docstring accepts BOTH a live advertisement (heard now →
+correct) AND stored contact data. Confirmed a heard-time field **exists** — the
+MeshCore contact shape carries `last_seen` (the handler's `get_contacts()` /
+sim `_generate_fake_contacts`) — and confirmed `UnifiedNode.from_meshcore` has
+**no production caller today** on either repo (only `CanonicalMessage.from_meshcore`
+does), so the defect is CONFIRMED-**latent**: it fires the moment a contact-sweep
+caller exists, mass-marking stale contacts "online / 0s ago" (honest_failure_modes
+#1). Matters more on MeshAnchor (MeshCore-primary; `get_contacts()` is a ready
+sweep source).
+
+**Fix**: new shared `UnifiedNode._resolve_heard(heard)` — `None` → (now, True)
+for a live event; a `datetime` or epoch heard-time is honoured, deriving
+`is_online` from age vs the single NOC online window (`MESHTASTIC_ONLINE_THRESHOLD_S`,
+test-pinned to `NodeTracker.OFFLINE_THRESHOLD`, hfm #5), with the same future-skew
+guard as `from_meshtastic`. `from_meshcore` reads `last_seen`/`last_heard` off the
+advertisement/contact and routes through it. Tests: `TestMeshcoreHeardTime` (5) —
+live advert online-now, stale contact offline, recent online, epoch honoured,
+future stamp not "online forever". MF `test_node_tracker.py` 104 pass; MA 87 pass.
+Byte-identical twin defect, fixed identically.
 
 ## Clean bill
 

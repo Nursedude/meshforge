@@ -247,6 +247,49 @@ class TestUnifiedNode:
         assert 'rns_' in node.id
 
 
+class TestMeshcoreHeardTime:
+    """Gateway review finding-C sibling (2026-07-23): from_meshcore accepts a
+    live advertisement (heard now) AND stored contact data (carries last_seen).
+    Hard-coding now()/is_online=True would mark every swept stale contact
+    'online / 0s ago' (honest_failure_modes #1). It must honour a heard-time."""
+
+    def test_live_advertisement_heard_now(self):
+        node = UnifiedNode.from_meshcore(
+            {"adv_name": "MC Live", "pubkey_prefix": "aa11bb22cc33"})
+        assert node.is_online is True
+        assert (datetime.now() - node.last_seen).total_seconds() < 5
+
+    def test_stale_contact_reads_offline(self):
+        stale = datetime.now() - timedelta(minutes=30)   # > 900s window
+        node = UnifiedNode.from_meshcore(
+            {"adv_name": "MC Stale", "pubkey_prefix": "aa11bb22cc33",
+             "last_seen": stale})
+        assert node.is_online is False
+        assert abs((node.last_seen - stale).total_seconds()) < 2
+
+    def test_recent_contact_reads_online(self):
+        recent = datetime.now() - timedelta(minutes=2)   # < 900s window
+        node = UnifiedNode.from_meshcore(
+            {"adv_name": "MC Recent", "pubkey_prefix": "aa11bb22cc33",
+             "last_seen": recent})
+        assert node.is_online is True
+
+    def test_epoch_heard_time_honoured(self):
+        epoch = datetime.now().timestamp() - 1800        # 30 min ago, epoch secs
+        node = UnifiedNode.from_meshcore(
+            {"adv_name": "MC Epoch", "pubkey_prefix": "aa11bb22cc33",
+             "last_heard": epoch})
+        assert node.is_online is False
+
+    def test_future_stamp_not_online_forever(self):
+        future = datetime.now() + timedelta(minutes=10)  # forged/skewed clock
+        node = UnifiedNode.from_meshcore(
+            {"adv_name": "MC Future", "pubkey_prefix": "aa11bb22cc33",
+             "last_seen": future})
+        assert node.is_online is True                    # "heard now", not negative-age
+        assert (datetime.now() - node.last_seen).total_seconds() < 5
+
+
 class TestUnifiedNodeTracker:
     """Tests for UnifiedNodeTracker class."""
 

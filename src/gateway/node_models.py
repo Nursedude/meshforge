@@ -10,7 +10,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Any, TYPE_CHECKING
+from typing import List, Optional, Any, Tuple, TYPE_CHECKING
 
 from utils.safe_import import safe_import
 
@@ -952,6 +952,33 @@ class UnifiedNode:
 
         return node
 
+    @staticmethod
+    def _resolve_heard(heard: Any) -> Tuple[Optional[datetime], bool]:
+        """Derive ``(last_seen, is_online)`` from a source-supplied heard-time.
+
+        Mirrors ``from_meshtastic``'s ``lastHeard`` handling (finding-C class):
+        ``None`` means a LIVE event we are hearing right now → (now, True); a
+        ``datetime`` or epoch-seconds heard-time is honoured, deriving
+        ``is_online`` from age vs the NOC online window so a *stale* stored
+        record is not mapped to "online / 0s ago" (honest_failure_modes #1). A
+        future/forged stamp is treated as "unknown, heard now" rather than
+        letting the age go negative → "online forever".
+        """
+        if heard is None:
+            return datetime.now(), True
+        if isinstance(heard, datetime):
+            ts = heard.timestamp()
+        elif isinstance(heard, (int, float)) and not isinstance(heard, bool) and heard > 0:
+            ts = float(heard)
+        else:
+            return datetime.now(), True   # unparseable → treat as heard now
+        age = datetime.now().timestamp() - ts
+        if age < -_LASTHEARD_FUTURE_SKEW_S:
+            return datetime.now(), True    # future/skewed clock — don't trust it
+        # Same single NOC "online" window every network derives against
+        # (test-pinned to NodeTracker.OFFLINE_THRESHOLD, hfm #5).
+        return datetime.fromtimestamp(ts), age < MESHTASTIC_ONLINE_THRESHOLD_S
+
     @classmethod
     def from_meshcore(cls, advertisement: Any, **kwargs) -> 'UnifiedNode':
         """
@@ -1039,8 +1066,19 @@ class UnifiedNode:
                 timestamp=datetime.now(),
             )
 
-        node.last_seen = datetime.now()
-        node.is_online = True
+        # Honour a heard-time when the source carries one. `from_meshcore`
+        # accepts BOTH a live advertisement (no heard-time → we ARE hearing it
+        # now) AND stored contact data (carries `last_seen` — e.g. the MeshCore
+        # contact list). Hard-coding now()/is_online=True marked every swept
+        # contact "online / 0s ago" the moment a contact-sweep caller existed —
+        # finding-C's defect class (honest_failure_modes #1). No production
+        # caller sweeps contacts today, so this closes it before one does.
+        if isinstance(advertisement, dict):
+            heard = advertisement.get('last_seen') or advertisement.get('last_heard')
+        else:
+            heard = (getattr(advertisement, 'last_seen', None)
+                     or getattr(advertisement, 'last_heard', None))
+        node.last_seen, node.is_online = cls._resolve_heard(heard)
 
         # Update state machine
         if node._state_machine is not None:
