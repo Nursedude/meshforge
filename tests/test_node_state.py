@@ -214,6 +214,56 @@ class TestNodeStateMachine:
         assert len(history) <= 5
 
 
+class TestMarkCacheRestored:
+    """Pri-3 (07-23 review): after restoring a machine from persisted cache,
+    an ACTIVE live-state must reset to STALE_CACHE (liveness unverified across
+    a restart) so it can't contradict the loader's forced is_online=False;
+    non-active states are preserved as the more-informative label."""
+
+    def test_active_state_resets_to_stale_cache(self):
+        sm = NodeStateMachine(initial_state=NodeState.ONLINE)
+        sm.record_response(snr=10.0)  # stamp a real last_response fact
+        assert sm.state == NodeState.ONLINE
+        result = sm.mark_cache_restored()
+        assert result == NodeState.STALE_CACHE
+        assert sm.state == NodeState.STALE_CACHE
+        assert sm.state.is_active() is False
+
+    def test_weak_signal_and_discovered_also_reset(self):
+        for active in (NodeState.WEAK_SIGNAL, NodeState.INTERMITTENT,
+                       NodeState.DISCOVERED):
+            sm = NodeStateMachine(initial_state=active)
+            sm.mark_cache_restored()
+            assert sm.state == NodeState.STALE_CACHE
+
+    def test_offline_is_preserved(self):
+        sm = NodeStateMachine(initial_state=NodeState.OFFLINE)
+        assert sm.mark_cache_restored() == NodeState.OFFLINE
+        assert sm.state == NodeState.OFFLINE
+
+    def test_suspected_offline_is_preserved(self):
+        sm = NodeStateMachine(initial_state=NodeState.SUSPECTED_OFFLINE)
+        sm.mark_cache_restored()
+        assert sm.state == NodeState.SUSPECTED_OFFLINE
+
+    def test_last_response_and_history_survive_reset(self):
+        sm = NodeStateMachine(initial_state=NodeState.STALE_CACHE)
+        sm.record_response(snr=8.0)  # STALE_CACHE -> ONLINE, stamps last_response
+        assert sm.state == NodeState.ONLINE
+        last = sm._last_response
+        sm.mark_cache_restored()
+        assert sm.state == NodeState.STALE_CACHE
+        assert sm._last_response == last            # fact preserved
+        assert len(sm.get_transitions()) >= 2       # ONLINE + restore transition
+
+    def test_idempotent_on_stale_cache(self):
+        sm = NodeStateMachine(initial_state=NodeState.STALE_CACHE)
+        before = len(sm.get_transitions())
+        sm.mark_cache_restored()
+        assert sm.state == NodeState.STALE_CACHE
+        assert len(sm.get_transitions()) == before  # no spurious transition
+
+
 class TestNodeStateConfig:
     """Tests for NodeStateConfig."""
 

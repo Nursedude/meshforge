@@ -30,7 +30,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 |-----|-----------|-----|--------|-------------------|
 | ~~1~~ | ~~`gateway_heartbeat.py`~~ | high | **FIXED 2026-07-23** | Split-brain via wall-clock peer-liveness — moved to the fixed table above. |
 | ~~2~~ | `meshtastic_broadcast_bridge.py` | high | **FIXED 2026-07-23** | Enqueue-read-as-delivery — moved to the fixed section below. |
-| 3 | `node_tracker.py:818` | med | CONFIRMED | On cache load `is_online=False` but the state machine is restored to persisted `ONLINE` → `node.state=="ONLINE"` contradicts `is_online==False`; the roundtrip test pops `state` as "derived from is_online", a justification that's false when a machine is present. |
+| ~~3~~ | `node_tracker.py` (cache load) | med | **FIXED 2026-07-23** | Persisted-active-state contradicts forced `is_online=False` on reload — see fixed section below. |
 | 4 | `gateway_heartbeat.py:521,563,604,630` | med | CONFIRMED | `_events` list appended/re-sliced from multiple threads with no lock → a real promotion/demotion audit event can be lost; `get_status` then serves an events list that lies about what happened. |
 | 5 | `mqtt_bridge_handler.py:560` | med | CONFIRMED (opt-in) | Under `sessions_enabled` the JSON subscription is a `+` wildcard, but `_last_uplink_at` is stamped before the channel-scope filter → foreign-channel traffic refreshes the "bridge channel alive" heartbeat, masking a dark bridge channel. Fix: stamp only after channel match. |
 | 6 | `reconnect.py:316,292` | med | PLAUSIBLE | `SlowStartRecovery` ramp measured with `time.time()` → NTP forward step ends slow-start early and blasts a just-recovered radio (the RATE_LIMIT burst class); backward step → negative multiplier / stuck recovering. |
@@ -115,6 +115,32 @@ session did not hold them): `meshtastic_broadcast_bridge.py` (send path + callba
 registration + SubscriberStore), `delivery_counters.py` `compute_confirmation_view`
 (the #74 precedent to mirror). Also confirm the MA twin (`meshanchor` is
 MeshCore-primary — broadcast delivery matters more there).
+
+## Pri-3 (finding 3) — RESOLVED 2026-07-23 (both twins)
+
+**Defect**: `_load_cache` forces `is_online=False` ("not heard since restart")
+but then restores the persisted `NodeStateMachine` verbatim via `from_dict` —
+including a live `ONLINE`/active state. `UnifiedNode.state` reads from the
+machine when present, so a not-yet-heard node reads `state==ONLINE` while
+`is_online==False` (honest_failure_modes #2: a persisted value outliving the
+observation that justified it). The field-complete round-trip test masked it by
+excluding `state` with the false justification "derived from is_online" — which
+is untrue when a machine is present.
+
+**Fix**: new `NodeStateMachine.mark_cache_restored()` — called right after
+`from_dict` in `_load_cache` — resets **only an active** live-state to
+`STALE_CACHE` (the state whose documented meaning is exactly "loaded from cache,
+not yet verified"; `is_active()` is False, matching the forced `is_online=False`).
+Non-active persisted states (OFFLINE/SUSPECTED_OFFLINE/UNREACHABLE) are already
+consistent and preserved as the more-informative label; transition history and
+`_last_response` survive; the first live `record_response` re-promotes
+STALE_CACHE→ONLINE. The round-trip test's false justification is corrected and a
+dedicated invariant test proves an ONLINE→save→reload node comes back
+STALE_CACHE with `state.is_active() == is_online` (no contradiction).
+
+Tests: MF `test_node_state.py` (+6 unit) + `test_node_tracker.py` (+2 integration)
+= 125 pass; MA the same = 108 pass. Both twins carried the byte-identical defect
+(node_tracker/node_state are Tier-3 twins) and are fixed identically.
 
 ## Twin note (MeshAnchor)
 

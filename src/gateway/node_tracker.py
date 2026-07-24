@@ -824,6 +824,13 @@ class UnifiedNodeTracker:
                     try:
                         from .node_state import NodeStateMachine
                         node._state_machine = NodeStateMachine.from_dict(node_data['state_machine'])
+                        # Pri-3 (07-23 review): is_online was just forced False
+                        # ("not heard since restart"), but the machine may have
+                        # persisted an ACTIVE state (e.g. ONLINE) that would make
+                        # node.state contradict is_online — a not-yet-heard node
+                        # reading as live. Reconcile the live claim to STALE_CACHE
+                        # (history preserved); the first real update re-promotes it.
+                        node._state_machine.mark_cache_restored()
                     except Exception as e:
                         logger.debug(f"Could not restore state machine: {e}")
                 # Restore the RNS service type. to_dict() has always written
