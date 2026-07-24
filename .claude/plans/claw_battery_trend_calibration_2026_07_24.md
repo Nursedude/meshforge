@@ -81,7 +81,11 @@ sample series, `expected` still true, still no page).
 - [x] 4 short window is not float — `MIN_FLOAT_WINDOW_HR = 3 h`
 - [x] dry-run on the real 228-sample record (quoted below); full suite 9468
       passed exit 0, lint 0, parity in sync
-- [ ] live re-check on moc2 AFTER deploy
+- [x] live re-check on moc2 AFTER deploy (fleet ad961289, watchdogs restarted):
+      `3.45 V, falling 7 mV/h over 11.9 h, ~6 h to 3.41 V (LINEAR projection,
+      not measured) — EXPECTED: this device is the armed battery soak`
+      — the merged 236-sample series, matching the dry-run to 0.1 h. The
+      spurious "17 mV/h / ~2 h" fitted from one ADC step is gone.
 
 **The watcher caught the old code red-handed (22:05Z)**: on its own 8-sample /
 35-min series — a single 10 mV ADC step, 3.46 → 3.45 — the deployed fixed gate
