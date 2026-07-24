@@ -612,6 +612,75 @@ class TestDeliveredBookkeepingFailurePri7:
         assert stats["delivered_unrecorded"] == 0
 
 
+class TestCleanupStaleBoundsRetriesPri8:
+    """Pri-8 (gateway review 2026-07-23): cleanup_stale must bump retry_count
+    and dead-letter at max_retries, so a dispatch that wedges in_progress past
+    STALE_TIMEOUT on every attempt cannot be reset to pending forever (retried
+    endlessly, never dead-lettered, no per-message witness)."""
+
+    @staticmethod
+    def _make_stale(queue, msg_id):
+        queue.mark_in_progress(msg_id)   # pending → in_progress
+        old = (datetime.now() - timedelta(seconds=600)).isoformat()
+        with queue._get_connection() as conn:
+            conn.execute("UPDATE messages SET updated_at = ? WHERE id = ?",
+                         (old, msg_id))
+
+    @staticmethod
+    def _row(queue, msg_id):
+        with queue._get_connection() as conn:
+            return conn.execute(
+                "SELECT retry_count, status, error_message "
+                "FROM messages WHERE id = ?", (msg_id,)).fetchone()
+
+    def test_reset_bumps_retry_count_and_stamps_reason(self, queue):
+        msg_id = queue.enqueue({"text": "wedged"}, "meshtastic")
+        self._make_stale(queue, msg_id)
+        assert queue.cleanup_stale() == 1
+        row = self._row(queue, msg_id)
+        assert row["status"] == "pending"
+        assert row["retry_count"] == 1                 # was 0 — now bumped
+        assert row["error_message"] == queue.STALE_RESET_ERROR
+        # Immediately re-eligible: no backoff retry_after set.
+        assert len(queue.get_pending()) == 1
+
+    def test_eventually_dead_letters_not_forever(self, queue):
+        # Default max_retries=3: two resets, then the third stale cycle is
+        # terminal — the endless-loop bug would keep it pending forever.
+        msg_id = queue.enqueue({"text": "always wedges"}, "meshtastic")
+        for expected_rc in (1, 2):
+            self._make_stale(queue, msg_id)
+            assert queue.cleanup_stale() == 1
+            row = self._row(queue, msg_id)
+            assert row["status"] == "pending"
+            assert row["retry_count"] == expected_rc
+        self._make_stale(queue, msg_id)
+        assert queue.cleanup_stale() == 1
+        row = self._row(queue, msg_id)
+        assert row["status"] == "dead_letter"
+        assert row["retry_count"] == 3
+        assert len(queue.get_pending()) == 0           # no longer retried
+
+    def test_dead_letter_records_witness(self, queue):
+        msg_id = queue.enqueue({"text": "x"}, "meshtastic")
+        for _ in range(2):
+            self._make_stale(queue, msg_id)
+            queue.cleanup_stale()
+        failed_before = queue.get_stats()["failed"]
+        self._make_stale(queue, msg_id)
+        queue.cleanup_stale()                          # terminal cycle
+        stats = queue.get_stats()
+        assert stats["failed"] == failed_before + 1    # witness increment
+        assert stats["dead_letter"] == 1
+
+    def test_fresh_in_progress_untouched(self, queue):
+        # Regression: a fresh (non-stale) in_progress is ignored, retry_count 0.
+        mid = queue.enqueue({"text": "fresh"}, "meshtastic")
+        queue.mark_in_progress(mid)
+        assert queue.cleanup_stale() == 0
+        assert self._row(queue, mid)["retry_count"] == 0
+
+
 # ---------------------------------------------------------------------------
 # PersistentMessageQueue — background processing
 # ---------------------------------------------------------------------------

@@ -84,6 +84,10 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
     # Stale in_progress timeout — canonical source: utils.timeouts
     STALE_TIMEOUT = _MESSAGE_STALE_TIMEOUT
 
+    # error_message tag stamped by cleanup_stale so a stale-recovered message
+    # is greppable and distinguishable from a transport failure (Pri-8).
+    STALE_RESET_ERROR = "stale_in_progress_reset"
+
     def __init__(self, db_path: Optional[str] = None,
                  max_queue_size: int = DEFAULT_MAX_QUEUE_SIZE,
                  retry_policy: Optional[RetryPolicy] = None):
@@ -1145,29 +1149,87 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
             logger.debug(f"Auto-cleanup error: {e}")
 
     def cleanup_stale(self) -> int:
-        """Reset stale in_progress messages back to pending.
+        """Recover stale in_progress messages, bounding the retry loop.
 
-        Messages stuck in 'in_progress' for longer than STALE_TIMEOUT
-        are likely from crashed processing attempts. Reset them to
-        pending so they can be retried.
+        Messages stuck in 'in_progress' past STALE_TIMEOUT (crashed or wedged
+        dispatch) are reset to pending so they can be retried — but each reset
+        now BUMPS retry_count, and a message that has exhausted max_retries is
+        moved to dead_letter with a witness instead of being reset again
+        (Pri-8, gateway review 2026-07-23).
+
+        The prior bare `UPDATE ... SET status='pending'` never touched
+        retry_count, so a dispatch that wedged past STALE_TIMEOUT on every
+        attempt was reset to pending forever — retried endlessly, never
+        dead-lettered, with no per-message witness (honest_failure_modes: an
+        unbounded loop mapped to a valid-looking 'pending', no terminal state).
+        Bumping retry_count gives every stale message a bounded life; the
+        terminal drop records DROPPED/RETRIES_EXHAUSTED so it is observable.
+
+        (Note: Pri-7 deliberately parks a delivered-but-unrecorded row in
+        in_progress. Such a row is now bounded here too — re-sent at most
+        max_retries times before dead-lettering, rather than looping — the best
+        achievable while the bookkeeping DB is degraded.)
+
+        retry_after is intentionally NOT set: a recovered stale message is
+        immediately re-eligible (a crashed attempt shouldn't also serve a
+        backoff), preserving the reset-to-pending contract.
 
         Returns:
-            Number of messages reset.
+            Number of stale messages processed (reset-for-retry + dead-lettered).
         """
         cutoff = (datetime.now() - timedelta(seconds=self.STALE_TIMEOUT)).isoformat()
+        now = datetime.now().isoformat()
 
         with self._get_connection() as conn:
-            cursor = conn.execute("""
-                UPDATE messages
-                SET status = 'pending', updated_at = ?
-                WHERE status = 'in_progress'
-                AND updated_at < ?
-            """, (datetime.now().isoformat(), cutoff))
+            # Snapshot the rows that this reset would push to/past max_retries,
+            # so they can be dead-lettered (terminal) with a per-message
+            # witness instead of looping. Captured BEFORE the UPDATEs.
+            exhausted = conn.execute("""
+                SELECT id, destination, retry_count FROM messages
+                WHERE status = 'in_progress' AND updated_at < ?
+                AND retry_count + 1 >= max_retries
+            """, (cutoff,)).fetchall()
 
-            count = cursor.rowcount
-            if count > 0:
-                logger.info(f"Reset {count} stale in_progress messages to pending")
-            return count
+            # Terminal: dead-letter the exhausted stale rows (retry_count bumped
+            # for an honest final count). Runs first so the reset UPDATE below
+            # (WHERE status='in_progress') no longer matches them.
+            conn.execute("""
+                UPDATE messages
+                SET status = 'dead_letter', retry_count = retry_count + 1,
+                    updated_at = ?, error_message = ?
+                WHERE status = 'in_progress' AND updated_at < ?
+                AND retry_count + 1 >= max_retries
+            """, (now, self.STALE_RESET_ERROR, cutoff))
+
+            # The rest get one more retry with retry_count bumped so they
+            # progress toward dead_letter instead of resetting forever.
+            reset_count = conn.execute("""
+                UPDATE messages
+                SET status = 'pending', retry_count = retry_count + 1,
+                    updated_at = ?, error_message = ?
+                WHERE status = 'in_progress' AND updated_at < ?
+            """, (now, self.STALE_RESET_ERROR, cutoff)).rowcount
+
+        # Witness for terminal drops (outside the txn — _dc has its own store).
+        for row in exhausted:
+            with self._lock:
+                self._stats["failed"] += 1
+            _dc.record(
+                _dc.DeliveryState.DROPPED,
+                msg_id=row["id"],
+                protocol=row["destination"],
+                drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
+                note=f"stale_in_progress retry_count={row['retry_count'] + 1}",
+            )
+
+        dead_count = len(exhausted)
+        total = reset_count + dead_count
+        if total > 0:
+            logger.info(
+                "cleanup_stale: reset %d stale in_progress to pending "
+                "(retry_count bumped), dead-lettered %d at max_retries",
+                reset_count, dead_count)
+        return total
 
     def get_dead_letters(self, limit: int = 100) -> List[QueuedMessage]:
         """Get messages in dead letter queue."""

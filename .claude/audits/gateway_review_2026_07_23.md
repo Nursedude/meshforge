@@ -35,7 +35,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~5~~ | `mqtt_bridge_handler.py:560` | med | **FIXED 2026-07-23** | Wildcard-subscription foreign-channel traffic forged the bridge-channel liveness heartbeat — see fixed section below. |
 | ~~6~~ | `reconnect.py:316,292` | med | **FIXED 2026-07-23** | `SlowStartRecovery` ramp on wall-clock — monotonic anchor, both twins. See fixed section below. |
 | ~~7~~ | `message_queue.py:924` | med | **FIXED 2026-07-23** (was PLAUSIBLE → CONFIRMED) | Post-send `mark_delivered` DB error re-queued an already-sent message — duplicate on the wire. See fixed section below. |
-| 8 | `message_queue.py:1110` | med-low | PLAUSIBLE | `cleanup_stale` resets `in_progress→pending` without bumping `retry_count` → a send_fn that wedges past STALE_TIMEOUT every attempt retries forever, never dead-letters, no per-message witness. |
+| ~~8~~ | `message_queue.py:1110` | med-low | **FIXED 2026-07-23** | `cleanup_stale` reset `in_progress→pending` without bumping `retry_count` → endless retry, never dead-letters. See fixed section below. |
 | 9 | `message_queue.py:580,613` | low | PLAUSIBLE | `retry_after` scheduling/comparison via `datetime.now()` (wall clock) → NTP steps skew retry timing; queued-item "age" forgeable. Fix is a delay clamp, not a rework. |
 | 10 | `bridge_health.py:418,261` | low | PLAUSIBLE | `_uptime_seconds` accumulation + `get_uptime_percent` use wall-clock deltas → NTP steps make uptime% arbitrarily wrong. Display/summary only (bounded 0–100), not a control decision. |
 | 11 | `bounded_rpc.py:242,260` | low | CONFIRMED | Flag-ordering race leaks `_outstanding_wedges` +1 in the abort-suppressed path (`NO_EXIT`/`exit_on_wedge=False`) → phantom "wedged threads in flight" gauge. Only reachable when the abort backstop is engaged (not steady state). |
@@ -252,6 +252,36 @@ pass; MA the same 111 pass. `message_queue.py` is an untracked-diverged twin —
 verified MA carried the byte-identical defect and fixed it identically (MA's
 `enqueue` rejects senderless destinations, Issue #67, but the test registers the
 sender first, so the pattern ports cleanly).
+
+## Pri-8 (finding 8) — RESOLVED 2026-07-23 (both twins)
+
+**Defect**: `cleanup_stale` reset stale `in_progress` rows to `pending` with a
+bare `UPDATE` that never touched `retry_count`. A dispatch that wedges past
+STALE_TIMEOUT on *every* attempt (a permanently stuck `send_fn`, a crash-loop,
+or — after Pri-7 — a delivered-but-unrecorded row parked in_progress) was reset
+to pending endlessly: retried forever, never reaching `max_retries`, never
+dead-lettered, with no per-message witness (honest_failure_modes: an unbounded
+loop mapped to a valid-looking `pending`, no terminal state).
+
+**Fix**: each stale reset now **bumps `retry_count`**, and a row that has
+reached `max_retries` is moved to `dead_letter` (terminal) with a witness —
+`_dc.record(DROPPED, RETRIES_EXHAUSTED)` + `stats.failed` + a
+`STALE_RESET_ERROR` `error_message` tag — instead of being reset again. Two
+scoped UPDATEs in one transaction (dead-letter the exhausted first, then reset
+the rest), so it stays a bulk op. `retry_after` is deliberately **not** set: a
+recovered stale message is immediately re-eligible (a crashed attempt shouldn't
+also serve a backoff), which preserves the existing reset-to-pending contract
+and every prior cleanup_stale test. Closes the Pri-7 residual too: a
+delivered-but-unrecorded row is now bounded (re-sent at most `max_retries` times
+then dead-lettered, not looping) — the best achievable while the bookkeeping DB
+is degraded.
+
+Tests: `TestCleanupStaleBoundsRetriesPri8` (4) — reset bumps retry_count + stamps
+the reason and stays immediately pending, a perpetually-wedging message
+dead-letters after max_retries instead of looping, the terminal drop increments
+the witness, and a fresh in_progress is untouched. MF `test_message_queue.py`
+198 pass (incl. all pre-existing cleanup_stale tests); MA the same 176 pass.
+Byte-identical twin defect, fixed identically.
 
 ## Twin note (MeshAnchor)
 
