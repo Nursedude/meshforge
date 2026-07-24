@@ -314,6 +314,74 @@ class TestStatusReport:
         assert status['peers']['gw-primary']['health_score'] == 90
 
 
+class TestEventHistoryThreadSafety:
+    """Pri-4 (2026-07-23 review): _events is written from the MQTT callback
+    thread, the per-detection daemon threads, and read by get_status — all
+    with no lock. The `self._events = self._events[-max:]` rebind is a
+    read-modify-write, so a concurrent append to the old list was dropped and
+    get_status served a log that lied about what happened."""
+
+    def test_append_event_bounds_and_orders(self, primary_config):
+        from gateway.gateway_heartbeat import HeartbeatEvent
+        hb = GatewayHeartbeat(config=primary_config)
+        hb._max_events = 5
+        for i in range(20):
+            hb._append_event(HeartbeatEvent(
+                timestamp=datetime.now(), event_type="t", detail=str(i)))
+        assert len(hb._events) == 5
+        # The retained window is the LAST five, in order (no dropped rebind).
+        assert [e.detail for e in hb._events] == ["15", "16", "17", "18", "19"]
+
+    def test_concurrent_appends_lose_nothing(self, primary_config):
+        """Many threads appending concurrently: with the lock the list settles
+        at exactly _max_events (an unguarded truncating rebind would race and
+        leave a different count), every retained entry is well-formed, and a
+        concurrent get_status never raises or reads a torn list."""
+        import threading
+        from gateway.gateway_heartbeat import HeartbeatEvent
+
+        hb = GatewayHeartbeat(config=primary_config)
+        hb._max_events = 50
+        n_threads, per_thread = 12, 200
+        # +1 reader, +1 main — every participant syncs at the barrier once.
+        barrier = threading.Barrier(n_threads + 2)
+        errors = []
+
+        def writer(tid):
+            barrier.wait()
+            for i in range(per_thread):
+                hb._append_event(HeartbeatEvent(
+                    timestamp=datetime.now(), event_type="t",
+                    detail=f"{tid}-{i}"))
+
+        def reader():
+            barrier.wait()
+            for _ in range(per_thread):
+                try:
+                    ev = hb.get_status()['events']
+                    assert len(ev) <= 10
+                    for e in ev:
+                        assert isinstance(e['detail'], str)
+                except Exception as exc:  # noqa: BLE001 — surface any race
+                    errors.append(exc)
+
+        threads = [threading.Thread(target=writer, args=(t,))
+                   for t in range(n_threads)] + [threading.Thread(target=reader)]
+        for t in threads:
+            t.start()
+        barrier.wait()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert not errors, f"reader saw a torn/racing read: {errors[:3]}"
+        # 2400 appends, cap 50 → settles at exactly the cap, no lost rebinds.
+        assert len(hb._events) == 50
+        assert all(isinstance(e, HeartbeatEvent) for e in hb._events)
+        # No duplicates/garbage: every retained detail is unique + well-formed.
+        details = [e.detail for e in hb._events]
+        assert len(set(details)) == 50
+
+
 class TestMQTTMessageHandling:
     """Tests for MQTT message routing."""
 

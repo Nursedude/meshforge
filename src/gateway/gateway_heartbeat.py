@@ -193,8 +193,15 @@ class GatewayHeartbeat:
         self._peers: Dict[str, PeerInfo] = {}
         self._peers_lock = threading.Lock()
 
-        # Event history
+        # Event history. Touched by ≥3 threads (the MQTT callback thread, the
+        # per-detection daemon threads _monitor_loop spawns, and the TUI's
+        # get_status reader), so every append/truncate/read goes through
+        # _events_lock. Pri-4 (2026-07-23 review): the unguarded
+        # `self._events = self._events[-max:]` rebind is a read-modify-write —
+        # a concurrent append to the old list was silently dropped, so
+        # get_status served an events list that lied about what happened.
         self._events: List[HeartbeatEvent] = []
+        self._events_lock = threading.Lock()
         self._max_events = 50
 
         # MQTT
@@ -309,6 +316,11 @@ class GatewayHeartbeat:
                 for pid, p in self._peers.items()
             }
 
+        # Snapshot the last-10 under the lock so a concurrent _append_event
+        # rebind can't hand us a mid-mutation or stale list (Pri-4).
+        with self._events_lock:
+            recent_events = self._events[-10:]
+
         return {
             'enabled': self._config.enabled,
             'gateway_id': self._config.gateway_id,
@@ -322,7 +334,7 @@ class GatewayHeartbeat:
                     'type': e.event_type,
                     'detail': e.detail,
                 }
-                for e in self._events[-10:]  # Last 10 events
+                for e in recent_events
             ],
         }
 
@@ -513,6 +525,19 @@ class GatewayHeartbeat:
 
     # ── Peer lifecycle ─────────────────────────────────────────────────
 
+    def _append_event(self, event: "HeartbeatEvent") -> None:
+        """Append an audit event, bounded to _max_events, under _events_lock.
+
+        The single writer path for _events. Holding the lock across the
+        append AND the truncating rebind is what keeps a concurrent writer's
+        event from being dropped (Pri-4). Cheap and non-nesting: it acquires
+        only _events_lock and calls nothing that re-enters.
+        """
+        with self._events_lock:
+            self._events.append(event)
+            if len(self._events) > self._max_events:
+                self._events = self._events[-self._max_events:]
+
     def _handle_peer_down(self, peer_id: str) -> None:
         """Handle a peer gateway going down."""
         event = HeartbeatEvent(
@@ -520,9 +545,7 @@ class GatewayHeartbeat:
             event_type="peer_down",
             detail=f"Peer {peer_id} is down",
         )
-        self._events.append(event)
-        if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events:]
+        self._append_event(event)
 
         logger.warning("GATEWAY HEARTBEAT: peer %s is DOWN", peer_id)
 
@@ -562,9 +585,7 @@ class GatewayHeartbeat:
             event_type="peer_recovered",
             detail=f"Peer {peer_id} recovered",
         )
-        self._events.append(event)
-        if len(self._events) > self._max_events:
-            self._events = self._events[-self._max_events:]
+        self._append_event(event)
 
         logger.info("GATEWAY HEARTBEAT: peer %s RECOVERED", peer_id)
 
@@ -603,7 +624,7 @@ class GatewayHeartbeat:
             event_type="promoted",
             detail="Secondary promoted to active — primary is down",
         )
-        self._events.append(event)
+        self._append_event(event)
 
         logger.warning(
             "GATEWAY HEARTBEAT: %s PROMOTED to active",
@@ -629,7 +650,7 @@ class GatewayHeartbeat:
             event_type="demoted",
             detail="Secondary demoted to standby — primary recovered",
         )
-        self._events.append(event)
+        self._append_event(event)
 
         logger.info(
             "GATEWAY HEARTBEAT: %s DEMOTED to standby",

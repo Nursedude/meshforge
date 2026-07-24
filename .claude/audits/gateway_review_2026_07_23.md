@@ -31,7 +31,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~1~~ | ~~`gateway_heartbeat.py`~~ | high | **FIXED 2026-07-23** | Split-brain via wall-clock peer-liveness — moved to the fixed table above. |
 | ~~2~~ | `meshtastic_broadcast_bridge.py` | high | **FIXED 2026-07-23** | Enqueue-read-as-delivery — moved to the fixed section below. |
 | ~~3~~ | `node_tracker.py` (cache load) | med | **FIXED 2026-07-23** | Persisted-active-state contradicts forced `is_online=False` on reload — see fixed section below. |
-| 4 | `gateway_heartbeat.py:521,563,604,630` | med | CONFIRMED | `_events` list appended/re-sliced from multiple threads with no lock → a real promotion/demotion audit event can be lost; `get_status` then serves an events list that lies about what happened. |
+| ~~4~~ | `gateway_heartbeat.py` `_events` | med | **FIXED 2026-07-23** | Unlocked multi-thread `_events` append/re-slice/read — see fixed section below. |
 | 5 | `mqtt_bridge_handler.py:560` | med | CONFIRMED (opt-in) | Under `sessions_enabled` the JSON subscription is a `+` wildcard, but `_last_uplink_at` is stamped before the channel-scope filter → foreign-channel traffic refreshes the "bridge channel alive" heartbeat, masking a dark bridge channel. Fix: stamp only after channel match. |
 | 6 | `reconnect.py:316,292` | med | PLAUSIBLE | `SlowStartRecovery` ramp measured with `time.time()` → NTP forward step ends slow-start early and blasts a just-recovered radio (the RATE_LIMIT burst class); backward step → negative multiplier / stuck recovering. |
 | 7 | `message_queue.py:924` | med | PLAUSIBLE | A send that reaches the network followed by a failing `mark_delivered` (DB error) falls to the retry path with no dedup re-check → guaranteed duplicate on the wire, no witness distinguishing it from a real transient. |
@@ -141,6 +141,28 @@ STALE_CACHE with `state.is_active() == is_online` (no contradiction).
 Tests: MF `test_node_state.py` (+6 unit) + `test_node_tracker.py` (+2 integration)
 = 125 pass; MA the same = 108 pass. Both twins carried the byte-identical defect
 (node_tracker/node_state are Tier-3 twins) and are fixed identically.
+
+## Pri-4 (finding 4) — RESOLVED 2026-07-23 (both twins)
+
+**Defect**: `_events` (the promotion/demotion/peer-up/down audit log) is written
+from ≥3 threads — the MQTT callback thread (`_handle_peer_status`→`_handle_peer_down`,
+`_handle_peer_recovered`), the per-detection daemon threads `_monitor_loop`
+spawns (`_handle_peer_down_safe`), and `_record_promotion`/`_record_demotion` —
+and read by the TUI's `get_status`, all with **no lock**. The
+`self._events = self._events[-max:]` truncation is a read-modify-write: a
+concurrent append to the old list is dropped when another thread rebinds to a
+slice of the pre-append list, so `get_status` can serve an audit log that lost a
+real failover event (honest_failure_modes #9 — a swallowed event with no witness).
+
+**Fix**: a single writer path `_append_event()` holds a new leaf lock
+`_events_lock` across the append AND the truncating rebind; all four call sites
+route through it; `get_status` snapshots the last-10 under the same lock.
+`_events_lock` is a **leaf** — never held while acquiring another lock (the two
+callers already holding `_state_lock` nest `_state_lock → _events_lock`
+consistently), so no deadlock. Tests: `TestEventHistoryThreadSafety` — a
+bounds/ordering unit test + a 12-writer × 200-append concurrency test with a
+concurrent `get_status` reader asserting the list settles at exactly the cap
+with no lost/torn entries. MF + MA heartbeat suites 42 pass each.
 
 ## Twin note (MeshAnchor)
 
