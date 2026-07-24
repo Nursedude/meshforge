@@ -198,6 +198,7 @@ def test_handler_records_uplink_timestamp_on_json_message():
     position broadcasts all prove channel deployment."""
     from gateway.mqtt_bridge_handler import MQTTBridgeHandler
     h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+    h.config = SimpleNamespace()  # no rns → DM-to-gateway leg dormant (Pri-5)
     h._last_uplink_at = None
     h._stale_warning_emitted = False
     h._recent_ids = {}
@@ -225,6 +226,7 @@ def test_handler_timestamp_persists_across_message_types():
     import time
     from gateway.mqtt_bridge_handler import MQTTBridgeHandler
     h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+    h.config = SimpleNamespace()  # no rns → DM-to-gateway leg dormant (Pri-5)
     h._last_uplink_at = None
     h._stale_warning_emitted = False
     h._recent_ids = {}
