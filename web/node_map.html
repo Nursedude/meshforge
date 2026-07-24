@@ -5524,14 +5524,25 @@
         const list = document.getElementById('claw-list');
         if (!section || !summary || !list) return;
         const claws = [];
-        if (data.claw && data.claw.installed) {
-            claws.push({ label: (data.claw.host || 'self') + ' (self)', c: data.claw });
-        }
+        // EVERY claw on a box, not just the primary (07-24 audit). A brain box
+        // hosting two claws puts the primary at the top level and the rest in
+        // `secondaries`; reading only the top level made a dead dudeclaw-02
+        // invisible here and on every federator's map — a degraded device
+        // rendered as an absent one (honest_failure_modes #2).
+        const pushBox = (label, block) => {
+            if (!block) return;
+            if (block.installed) claws.push({ label, c: block });
+            const secs = Array.isArray(block.secondaries) ? block.secondaries : [];
+            secs.forEach(s => {
+                if (s && s.installed) {
+                    claws.push({ label: label + ' · ' + (s.device || 'claw-2'), c: s });
+                }
+            });
+        };
+        pushBox((data.claw && data.claw.host || 'self') + ' (self)', data.claw);
         const peers = (data.federation && data.federation.peer_status) || [];
         for (const p of peers) {
-            if (p.claw && p.claw.installed) {
-                claws.push({ label: p.peer_name || p.hostname, c: p.claw });
-            }
+            pushBox(p.peer_name || p.hostname, p.claw);
         }
         if (!claws.length) { section.style.display = 'none'; return; }
         section.style.display = '';

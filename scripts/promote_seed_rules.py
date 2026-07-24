@@ -313,29 +313,52 @@ def main(argv=None):
         p = plan(args.meshforge_root, args.mini_home, args.role, args.seed)
         applied = bool(args.apply and p["changed"])
         bak = apply(p) if applied else None
-        # A claw seed also feeds every per-instance rules file present —
-        # templated @-instances (W5.1) read the suffixed siblings, which had
-        # no promotion path before 07-23 (frozen-at-first-boot-seed bug).
-        instances = []
-        if p["seed_name"] == "claw":
-            home = os.path.dirname(p["live_path"]) or "."
-            for extra in claw_instance_live_paths(home):
-                ip = plan(args.meshforge_root, args.mini_home, args.role,
-                          args.seed, live_path_override=extra)
-                i_applied = bool(args.apply and ip["changed"])
-                i_bak = apply(ip) if i_applied else None
-                instances.append((ip, i_applied, i_bak))
     except PromoteError as exc:
+        # The primary failed before anything was written — a total, honest no-op.
         if args.json:
             print(json.dumps({"ok": False, "error": str(exc)}))
         else:
             print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
+    # A claw seed also feeds every per-instance rules file present —
+    # templated @-instances (W5.1) read the suffixed siblings, which had
+    # no promotion path before 07-23 (frozen-at-first-boot-seed bug).
+    #
+    # Each instance gets its OWN try (07-24 audit). Sharing the primary's
+    # except meant one malformed mini_dudeai_claw_rules.<inst>.json printed
+    # `{"ok": false}` / rc 2 AFTER the primary had already been rewritten and
+    # backed up — the operator (and any cron_verdict consumer) read "nothing
+    # happened" over state that HAD changed: the half-state-reported-as-total-
+    # failure class this repo already fixed once in _restamp_owner_mode.
+    instances = []
+    instance_errors = []
+    if p["seed_name"] == "claw":
+        home = os.path.dirname(p["live_path"]) or "."
+        for extra in claw_instance_live_paths(home):
+            try:
+                ip = plan(args.meshforge_root, args.mini_home, args.role,
+                          args.seed, live_path_override=extra)
+                i_applied = bool(args.apply and ip["changed"])
+                i_bak = apply(ip) if i_applied else None
+            except PromoteError as exc:
+                instance_errors.append({"live_path": extra, "error": str(exc)})
+                continue
+            instances.append((ip, i_applied, i_bak))
+
     role_disp = p["role"] or f"(by --seed:{p['seed_name']})"
+    # ok reflects the WHOLE run; the applied/backup fields below always report
+    # what really landed, so a partial failure is never read as a no-op.
+    ok = not instance_errors
+    rc = 0 if ok else 2
     if args.json:
         print(json.dumps({
-            "ok": True, "role": p["role"], "seed": p["seed_name"],
+            "ok": ok,
+            "error": (f"{len(instance_errors)} instance target(s) failed; the "
+                      f"primary result below still applies")
+                     if instance_errors else None,
+            "instance_errors": instance_errors,
+            "role": p["role"], "seed": p["seed_name"],
             "changed": p["changed"], "applied": applied,
             "before": p["before"], "after": p["after"],
             "report": {k: v for k, v in p["report"].items() if v},
@@ -346,7 +369,7 @@ def main(argv=None):
                 "after": ip["after"], "backup": i_bak,
             } for ip, i_applied, i_bak in instances],
         }))
-        return 0
+        return rc
 
     print(f"role={role_disp}  seed={p['seed_name']}")
     targets = [(p, applied, bak)] + instances
@@ -364,7 +387,12 @@ def main(argv=None):
             print(f"  backup: {t_bak}")
     if any_change and not args.apply:
         print("\nRe-run with --apply to write (backs up to <live>.promote.bak first).")
-    return 0
+    for ie in instance_errors:
+        print(f"ERROR: {ie['live_path']}: {ie['error']}", file=sys.stderr)
+    if instance_errors:
+        print(f"ERROR: {len(instance_errors)} instance target(s) failed — the "
+              f"results printed above DID happen.", file=sys.stderr)
+    return rc
 
 
 if __name__ == "__main__":

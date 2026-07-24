@@ -199,6 +199,36 @@ class TestFederatedClaw:
                                                    "reason": "no_state_file"})):
             assert _fetch_peer_claw("moc1", timeout=1.0) is None
 
+    def test_fetch_peer_claw_keeps_block_when_only_a_secondary_is_installed(self):
+        """07-24 audit: keying off the TOP-LEVEL installed flag dropped the whole
+        block when the primary tick was missing, hiding a live dudeclaw-02 from
+        every federator's card while the box really did host a claw."""
+        block_in = {"installed": False, "reason": "no_state_file",
+                    "secondaries": [{"installed": True, "ok": True,
+                                     "device": "dudeclaw-02"}]}
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_mock_status_resp(block_in)):
+            block = _fetch_peer_claw("moc2", timeout=1.0)
+        assert block is not None
+        assert block["secondaries"][0]["device"] == "dudeclaw-02"
+
+    def test_fetch_peer_claw_secondaries_ride_along(self):
+        block_in = {**_INSTALLED_CLAW,
+                    "secondaries": [{"installed": True, "ok": False,
+                                     "device": "dudeclaw-02",
+                                     "reason": "claw_unreachable: no answer"}]}
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_mock_status_resp(block_in)):
+            block = _fetch_peer_claw("moc2", timeout=1.0)
+        assert [s["device"] for s in block["secondaries"]] == ["dudeclaw-02"]
+
+    def test_fetch_peer_claw_all_absent_still_returns_none(self):
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=_mock_status_resp(
+                       {"installed": False, "reason": "no_state_file",
+                        "secondaries": [{"installed": False}]})):
+            assert _fetch_peer_claw("moc1", timeout=1.0) is None
+
     def test_fetch_peer_claw_http_error_returns_none(self):
         with patch("utils.map_federation.urllib.request.urlopen",
                    return_value=_mock_status_resp(_INSTALLED_CLAW, status=500)):

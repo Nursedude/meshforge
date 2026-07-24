@@ -344,6 +344,48 @@ def test_claw_seed_json_output_reports_instances(tmp_path, capsys):
     assert out["instances"][0]["applied"] is False  # dry-run
 
 
+def test_broken_instance_file_does_not_report_the_primary_as_a_no_op(tmp_path, capsys):
+    """07-24 audit: the per-instance loop shared the primary's except, so ONE
+    malformed instance file printed {"ok": false} / rc 2 AFTER the primary had
+    already been rewritten — the operator read "nothing happened" over state
+    that HAD changed (the half-state class)."""
+    root, home = _setup_claw(
+        tmp_path, [_rule("a")], [_rule("a"), _rule("b")],
+        instance_rules=[_rule("a")])
+    # a hand-edit / torn write on the @-instance rules file
+    (Path(home) / "mini_dudeai_claw_rules.dudeclaw-02.json").write_text("{oops")
+
+    rc = psr.main(["--seed", "claw", "--apply", "--json",
+                   "--meshforge-root", root, "--mini-home", home])
+    out = json.loads(capsys.readouterr().out)
+
+    # the failure is LOUD…
+    assert rc == 2 and out["ok"] is False
+    assert len(out["instance_errors"]) == 1
+    assert "dudeclaw-02" in out["instance_errors"][0]["live_path"]
+    # …and what really landed is still reported, not erased
+    assert out["applied"] is True and out["after"] == 2
+    primary = json.load(open(os.path.join(home, "mini_dudeai_claw_rules.json")))
+    assert {r["id"] for r in primary["rules"]} == {"a", "b"}
+
+
+def test_broken_instance_does_not_stop_the_other_instances(tmp_path):
+    root, home = _setup_claw(
+        tmp_path, [_rule("a")], [_rule("a"), _rule("b")],
+        instance_rules=[_rule("a")])
+    (Path(home) / "mini_dudeai_claw_rules.dudeclaw-02.json").write_text("{oops")
+    (Path(home) / "mini_dudeai_claw_rules.dudeclaw-03.json").write_text(
+        json.dumps({"rules": [_rule("a")]}))
+
+    rc = psr.main(["--seed", "claw", "--apply",
+                   "--meshforge-root", root, "--mini-home", home])
+    assert rc == 2  # the broken one still fails the run
+    healthy = json.load(open(os.path.join(
+        home, "mini_dudeai_claw_rules.dudeclaw-03.json")))
+    assert {r["id"] for r in healthy["rules"]} == {"a", "b"}, (
+        "one unreadable instance must not strand every other claw's rules")
+
+
 def test_claw_seed_without_instance_files_unchanged_shape(tmp_path, capsys):
     root, home = _setup_claw(tmp_path, [_rule("a")], [_rule("a")])
     rc = psr.main(["--seed", "claw", "--json",

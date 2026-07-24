@@ -273,6 +273,109 @@ def test_collect_remote_no_sentinel_means_no_claw():
     assert p["status"] == "fresh" and p["claw"] is None
 
 
+# === multi-claw: EVERY dude-claw on a brain box (07-24 audit) ====
+# The pane read only claw_last_tick.json, so a box hosting dudeclaw-02 showed
+# one card and a DEAD second claw was invisible — a degraded device rendered as
+# an absent one (honest_failure_modes #2).
+
+_CLAW_DOC_2 = {
+    "captured_at": NOW - 10, "ok": True, "device": "dudeclaw-02",
+    "device_info": {"uptime_s": 3600, "heap_free_bytes": 20000},
+}
+
+
+def test_collect_remote_carries_every_claw_after_its_sentinel():
+    payload = (json.dumps({"last_tick_ts": NOW - 5, "rule_count": 9, "host": "moc2"})
+               + f"\n{_CLAW_SENTINEL}\n" + json.dumps(_CLAW_DOC)
+               + f"\n{_CLAW_SENTINEL}\n"
+               + json.dumps({**_CLAW_DOC_2, "ok": False, "device_info": None})
+               + f"\n{_CLAW_SENTINEL}\n")
+    p = collect_remote("moc2", NOW, runner=_runner(0, payload))
+    assert [c["device"] for c in p["claws"]] == ["dudeclaw-01", "dudeclaw-02"]
+    assert p["claws"][1]["status"] == "unreachable"   # the dead one is VISIBLE
+    assert p["claw"]["device"] == "dudeclaw-01"       # primary stays back-compat
+
+
+def test_torn_second_tick_does_not_hide_the_other_claws():
+    payload = (json.dumps({"last_tick_ts": NOW - 5, "rule_count": 9, "host": "moc2"})
+               + f"\n{_CLAW_SENTINEL}\n" + json.dumps(_CLAW_DOC)
+               + f"\n{_CLAW_SENTINEL}\n" + '{"captured_at": 17800000'  # torn
+               + f"\n{_CLAW_SENTINEL}\n")
+    p = collect_remote("moc2", NOW, runner=_runner(0, payload))
+    assert [c["device"] for c in p["claws"]] == ["dudeclaw-01"]
+
+
+def test_no_mini_box_still_reports_its_claw():
+    # build_rollup has always rendered a claw card on the no-mini branch; the
+    # collector never filled one in (a reader with no writer).
+    payload = f"\n{_CLAW_SENTINEL}\n" + json.dumps(_CLAW_DOC)
+    p = collect_remote("moc2", NOW, runner=_runner(0, payload))
+    assert p["status"] == "no_mini"
+    assert p["claws"] and p["claws"][0]["device"] == "dudeclaw-01"
+    assert "dudeclaw-01" in build_rollup([p], NOW)
+
+
+def test_collect_local_reads_secondary_tick_siblings(tmp_path):
+    sp = tmp_path / "mini_dudeai_state.json"
+    sp.write_text(json.dumps({"last_tick_ts": NOW, "rule_count": 3, "host": "moc2"}))
+    (tmp_path / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
+    (tmp_path / "claw_last_tick.dudeclaw-02.json").write_text(
+        json.dumps({**_CLAW_DOC_2, "captured_at": NOW - 9999}))
+    p = collect_local(NOW, state_path=str(sp))
+    assert [c["device"] for c in p["claws"]] == ["dudeclaw-01", "dudeclaw-02"]
+    assert p["claws"][1]["status"] == "stale"
+
+
+def test_build_rollup_renders_a_card_per_claw():
+    p = parse_state_posture("moc2", {"last_tick_ts": NOW - 5, "rule_count": 9},
+                            NOW, claws=[_CLAW_DOC, {**_CLAW_DOC_2, "ok": False,
+                                                    "device_info": None}])
+    out = build_rollup([p], NOW)
+    assert "dudeclaw-01" in out and "dudeclaw-02" in out
+    assert "UNREACHABLE" in out
+
+
+def _run_breadth_cmd(cwd):
+    """Execute the REAL remote one-liner in a real shell (the consumer of
+    record for that string) and feed its stdout back through the parser."""
+    import subprocess
+
+    from mini_dudeai.rollup import _remote_breadth_cmd, _split_claw_payload
+    p = subprocess.run(["sh", "-c", _remote_breadth_cmd()], cwd=str(cwd),
+                       capture_output=True, text=True, timeout=30)
+    return p.returncode, _split_claw_payload(p.stdout)
+
+
+def test_remote_breadth_cmd_really_cats_every_claw_tick(tmp_path):
+    # A renderer that can show two claws over a command that only cats one is
+    # half-wired — so run the command, don't assert on its text.
+    (tmp_path / "mini_dudeai_state.json").write_text(
+        json.dumps({"last_tick_ts": NOW, "rule_count": 4}))
+    (tmp_path / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
+    (tmp_path / "claw_last_tick.dudeclaw-02.json").write_text(json.dumps(_CLAW_DOC_2))
+    rc, (state_text, claws) = _run_breadth_cmd(tmp_path)
+    assert rc == 0
+    assert json.loads(state_text)["rule_count"] == 4
+    assert [c["device"] for c in claws] == ["dudeclaw-01", "dudeclaw-02"]
+
+
+def test_remote_breadth_cmd_on_a_claw_less_box_is_clean(tmp_path):
+    # The common case: unmatched glob must stay literal + skipped, rc 0, and
+    # the payload must parse to state + NO claws (never a literal filename).
+    (tmp_path / "mini_dudeai_state.json").write_text(
+        json.dumps({"last_tick_ts": NOW, "rule_count": 4}))
+    rc, (state_text, claws) = _run_breadth_cmd(tmp_path)
+    assert rc == 0 and claws == []
+    assert json.loads(state_text)["rule_count"] == 4
+
+
+def test_remote_breadth_cmd_on_a_mini_less_box_still_finds_the_claw(tmp_path):
+    (tmp_path / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
+    rc, (state_text, claws) = _run_breadth_cmd(tmp_path)
+    assert rc == 0 and state_text == ""
+    assert [c["device"] for c in claws] == ["dudeclaw-01"]
+
+
 def test_claw_sentinel_is_shell_safe():
     assert not (set(_CLAW_SENTINEL) & set("<>|&;$`()\"' \t*?[]{}#~!"))
 

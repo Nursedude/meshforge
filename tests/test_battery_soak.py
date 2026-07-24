@@ -85,19 +85,55 @@ class TestReadSamplesDeviceFilter:
             {"ts": 1, "vbat": 4.06, "device": "dudeclaw-01"},   # old USB claw
             {"ts": 2, "vbat": 3.9, "device": "dudeclaw-02"},
             {"ts": 3, "vbat": 3.7, "device": "dudeclaw-02"}])
-        kept, dropped = battery_soak._read_samples(tmp_path, device="dudeclaw-02")
+        kept, other, legacy = battery_soak._read_samples(tmp_path, device="dudeclaw-02")
         assert [s["vbat"] for s in kept] == [3.9, 3.7]
-        assert dropped == 1  # the dudeclaw-01 row is ignored, and counted
+        assert other == 1 and legacy == 0  # dudeclaw-01 row ignored, and counted
 
     def test_missing_file_returns_empty_tuple_when_scoped(self, tmp_path):
-        assert battery_soak._read_samples(tmp_path, device="dudeclaw-02") == ([], 0)
+        assert battery_soak._read_samples(tmp_path, device="dudeclaw-02") == ([], 0, 0)
 
     def test_legacy_device_less_rows_dropped_when_scoped(self, tmp_path):
         self._write(tmp_path, [
             {"ts": 1, "vbat": 4.0},  # pre-device-field row
             {"ts": 2, "vbat": 3.8, "device": "dudeclaw-02"}])
-        kept, dropped = battery_soak._read_samples(tmp_path, device="dudeclaw-02")
-        assert len(kept) == 1 and dropped == 1
+        kept, other, legacy = battery_soak._read_samples(tmp_path, device="dudeclaw-02")
+        # 07-24 audit: an UNTAGGED row is not a foreign row. Counting it as
+        # "from other devices" sent the operator hunting for a second claw
+        # that never existed; the real story is a pre-tagging file.
+        assert len(kept) == 1 and legacy == 1 and other == 0
+
+
+class TestSummaryDropWording:
+    """The judge line is what the operator actually reads. Mislabelling
+    untagged legacy rows as "from other devices" is a false lead pointing at a
+    claw that never existed (07-24 audit)."""
+
+    def _armed(self, home, rows):
+        import json as _json
+        import os as _os
+        cfg_dir = home / ".config" / "meshforge"
+        cfg_dir.mkdir(parents=True)
+        (cfg_dir / "battery_soak.json").write_text(_json.dumps(
+            {"claw_device": "dudeclaw-02",
+             "battery": {"usable_capacity_mah": 4100, "cutoff_v": 3.4,
+                         "label": "pack"}}))
+        (home / battery_soak.STATE_BASENAME).write_text(
+            "\n".join(_json.dumps(r) for r in rows) + "\n")
+        assert _os.path.exists(str(cfg_dir / "battery_soak.json"))
+
+    def test_legacy_rows_are_not_called_other_devices(self, tmp_path, capsys):
+        self._armed(tmp_path, [{"ts": 1, "vbat": 4.0}, {"ts": 2, "vbat": 3.9}])
+        assert battery_soak._summary(tmp_path, {"claw_device": "dudeclaw-02"}) == 0
+        out = capsys.readouterr().out
+        assert "other devices" not in out
+        assert "untagged" in out and "before device tagging" in out
+
+    def test_real_cross_device_rows_still_say_other_devices(self, tmp_path, capsys):
+        self._armed(tmp_path, [{"ts": 1, "vbat": 4.0, "device": "dudeclaw-01"},
+                               {"ts": 2, "vbat": 3.9, "device": "dudeclaw-01"}])
+        assert battery_soak._summary(tmp_path, {"claw_device": "dudeclaw-02"}) == 0
+        out = capsys.readouterr().out
+        assert "from other devices" in out and "untagged" not in out
 
 
 class TestSummarizeSamples:

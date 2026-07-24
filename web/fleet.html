@@ -290,8 +290,10 @@
             <div class="card">
                 <h2>Dude-claws <span class="sub">every ESP32-S3 edge node, per claw — not one summary light</span></h2>
                 <div class="body" id="claws"></div>
-                <div class="footnote">Each claw is judged on its OWN capture tick. A FAILED claw taints its box;
-                    a stale one renders grey (visible, not hidden under a healthy sibling).</div>
+                <div class="footnote">Each claw is judged on its OWN capture tick — never hidden under a healthy
+                    sibling. A stale or unanswered claw renders grey (unobservable) and does NOT taint its box:
+                    a claw is optional edge hardware, so a dead one is PAGED by the watchdog
+                    (<code>claw_device_dark</code>), not by this verdict. A green box does not mean every claw answered.</div>
             </div>
         </div>
 
@@ -636,28 +638,49 @@
         boxes.forEach(b => {
             const cell = (b.subsystems || {}).claw;
             if (!cell) return;
-            // Prefer the full roster; fall back to the single cell for a lone
-            // claw (no `claws` list) so single-claw boxes still show detail.
+            // Never INVENT a claw (07-24 audit). `claw_present` is the truth
+            // layer's POSITIVE evidence that a tick file exists on that box;
+            // an unreachable box, a map-less (accepted_blind) box, and a box
+            // whose /api/status carries no claw key all produce a dark,
+            // non-absent cell that used to render here as "alias — dark ·
+            // 1 claw", listing every claw-less box as a claw host.
+            const present = cell.claw_present;   // undefined on a pre-07-24 doc
+            if (present === false) return;       // positively no claw here
             let claws = Array.isArray(cell.claws) ? cell.claws : null;
             if (!claws) {
-                if (cell.absent) return;  // no claw on this box — skip
-                claws = [{ device: 'claw', state: cell.state,
+                if (present === undefined) {
+                    // Legacy doc (map service pulled but not yet restarted):
+                    // no evidence flag, so fall back to the signals old docs DO
+                    // carry — benign absence, an accepted blind spot, and an
+                    // unreachable box are all "we have no claw to show".
+                    if (cell.absent || cell.accepted_blind) return;
+                    if ((b.reachable || {}).state !== 'healthy') return;
+                }
+                claws = [{ device: cell.device || 'claw', state: cell.state,
                            reason: cell.reason, absent: cell.absent }];
             }
             const st = stClass(cell.state);
             const chips = claws.map(cw => {
                 const cst = stClass(cw.state);
+                // observed-bad and unobservable must NOT look alike: failed
+                // takes the red `active` chip, dark stays the neutral chip.
                 return '<span class="cls-chip ' +
-                    (cst === 'healthy' ? 'clean' : cst === 'failed' ? '' : '') +
+                    (cst === 'healthy' ? 'clean' : cst === 'failed' ? 'active' : '') +
                     '" title="' + esc(clawLine(cw)) + '">' +
                     esc(cw.device || '?') + ' <b class="' + cst + '">' +
                     esc(cw.state || 'dark') + '</b></span>';
             }).join('');
+            // Count what is actually there; name the absent ones separately
+            // rather than folding them into the healthy-looking total.
+            const n = (typeof cell.claw_count === 'number')
+                ? cell.claw_count : claws.length;
+            const nAbsent = (typeof cell.claw_absent_count === 'number')
+                ? cell.claw_absent_count : 0;
             rows.push('<details class="cov-row"><summary>' +
                 '<span class="cov-alias">' + esc(b.alias) + '</span>' +
                 '<span class="cov-nums"><b class="' + st + '">' + esc(cell.state) +
-                    '</b> · ' + (cell.claw_count || claws.length) + ' claw' +
-                    ((cell.claw_count || claws.length) === 1 ? '' : 's') + '</span>' +
+                    '</b> · ' + n + ' claw' + (n === 1 ? '' : 's') +
+                    (nAbsent ? ' (+' + nAbsent + ' not present)' : '') + '</span>' +
                 '</summary><div class="cov-classes">' + chips + '</div></details>');
         });
         document.getElementById('claws').innerHTML =

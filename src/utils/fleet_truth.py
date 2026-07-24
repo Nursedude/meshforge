@@ -209,8 +209,19 @@ def _claw_cell(claw_block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     degraded second claw was invisible in the fleet verdict — a degraded state
     mapped to a valid-looking value, the honest_failure_modes class this repo
     exists to close. Here the cell is ``worst_of`` the primary + every
-    secondary: a FAILED second claw taints, a stale one renders DARK (visible,
-    informational) instead of vanishing under a healthy primary.
+    secondary: a stale/unanswered claw renders DARK (visible, informational)
+    instead of vanishing under a healthy primary.
+
+    ⚠️ SCOPE, stated honestly (2026-07-24 adversarial audit): against the REAL
+    producer this cell is DISPLAY-ONLY. Every not-ok reason ``_parse_claw_tick``
+    can emit — ``no_state_file``, ``read_error``, ``malformed_json``, ``stale:``,
+    ``claw_unreachable:``, ``no_capture_timestamp: … unobservable`` — matches
+    ``_UNOBSERVABLE_MARKERS``, so a claw block classifies DARK, and DARK claw
+    never taints (claw is not in ``_CORE_OBSERVABILITY``). The FAILED path here
+    is wiring that only a future producer emitting an observed-fault reason
+    outside that vocabulary would exercise. A dead claw is PAGED by
+    ``probe_claw_device_dark`` (watchdog), not by this verdict — do not read a
+    healthy fleet verdict as "every claw answered".
 
     Per-claw detail rides on the cell as ``claws`` (device, state, reason, ok,
     battery, age_s) + ``claw_count`` so the fleet monitor can show BOTH claws,
@@ -218,6 +229,12 @@ def _claw_cell(claw_block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     (honest_failure_modes #4): the display list is built from the same blocks
     the state is derived from. A claw-less box (no secondaries) keeps the exact
     single-block classification — its benign absent-dark cell is unchanged.
+
+    ``claw_present`` (bool, both paths) is the display contract: True only on
+    POSITIVE evidence that at least one tick file exists on that box. A box we
+    could not reach, or whose /api/status carries no claw key at all, yields a
+    dark cell with ``claw_present: False`` so the NOC's claw panel cannot
+    invent a claw out of an unobservable box (honest_failure_modes #2).
     """
     source = "/api/status.claw"
     absent_reason = "no claw edge node on this box"
@@ -226,10 +243,18 @@ def _claw_cell(claw_block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         secs = claw_block.get("secondaries")
         if isinstance(secs, list):
             secondaries = [s for s in secs if isinstance(s, dict)]
+    def _installed(block: Optional[Dict[str, Any]]) -> bool:
+        # POSITIVE evidence only: the producer sets installed True exactly when
+        # it read a tick file. A missing key / None block / empty dict is "we
+        # have no idea", which must never render as a claw.
+        return isinstance(block, dict) and block.get("installed") is True
+
     if not secondaries:
-        # Single claw (or none): unchanged behaviour, backward-compatible.
-        return classify_block(claw_block, source=source,
-                              absent_reason=absent_reason)
+        # Single claw (or none): unchanged classification, backward-compatible.
+        c = classify_block(claw_block, source=source,
+                           absent_reason=absent_reason)
+        c["claw_present"] = _installed(claw_block)
+        return c
 
     def _one(block: Optional[Dict[str, Any]], device_hint: str) -> Dict[str, Any]:
         c = classify_block(block, source=source, absent_reason=absent_reason)
@@ -251,18 +276,37 @@ def _claw_cell(claw_block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     # A benign-absent claw (installed:False) must not drag a real claw's health,
     # but it stays visible in the list. Roll up over the real (non-absent) claws.
     ranked = [p for p in per_claw if not p["absent"]]
+    absent_claws = [p for p in per_claw if p["absent"]]
     state = worst_of([p["state"] for p in ranked]) if ranked else DARK
     worst = max(ranked or per_claw,
                 key=lambda p: _STATE_RANK.get(p["state"], _STATE_RANK[DARK]))
-    n = len(per_claw)
-    if state == HEALTHY:
-        reason = f"{n} claws healthy"
+    # COUNT only the claws we have evidence for. An absent entry is a claw that
+    # is NOT there (its tick file is missing/unreadable) — counting it turned
+    # "primary tick missing + one healthy secondary" into `2 claws healthy`,
+    # rendering a MISSING OBSERVATION as a healthy device: the exact
+    # honest_failure_modes #2 class this cell exists to close (07-24 audit).
+    # Absent claws stay in the roster (visible, inert) and are reported in
+    # their own field so the count can never absorb them.
+    n = len(ranked)
+    plural = "" if n == 1 else "s"
+    extra = f" (+{len(absent_claws)} not present)" if absent_claws else ""
+    if not ranked:
+        reason = (f"no claw present — {len(absent_claws)} tick file(s) "
+                  f"absent/unreadable")
+    elif state == HEALTHY:
+        reason = f"{n} claw{plural} healthy{extra}"
     else:
         detail = f" ({worst['reason']})" if worst.get("reason") else ""
-        reason = f"{n} claws; worst: {worst['device']} {worst['state']}{detail}"
-    c = cell(state, reason=reason, source=source, age_s=worst.get("age_s"))
+        reason = (f"{n} claw{plural}; worst: {worst['device']} "
+                  f"{worst['state']}{detail}{extra}")
+    # All-absent is a BENIGN role-absence (no claw on this box), not a blind
+    # spot — same disposition the single-claw path already gives it.
+    c = cell(state, reason=reason, source=source, age_s=worst.get("age_s"),
+             absent=not ranked)
     c["claws"] = per_claw
     c["claw_count"] = n
+    c["claw_absent_count"] = len(absent_claws)
+    c["claw_present"] = bool(ranked)
     return c
 
 

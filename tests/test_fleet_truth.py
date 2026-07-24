@@ -292,10 +292,22 @@ class TestClawCell:
         c = ft._claw_cell(self._primary())
         assert c["state"] == ft.HEALTHY
         assert "claws" not in c and "claw_count" not in c
+        assert c["claw_present"] is True
 
     def test_claw_less_box_stays_absent_dark(self):
         c = ft._claw_cell({"installed": False})
         assert c["state"] == ft.DARK and c["absent"] is True
+        assert c["claw_present"] is False
+
+    def test_unobservable_box_never_reads_as_a_claw_host(self):
+        # 07-24 audit: an unreachable box (no /api/status at all) yields a dark,
+        # NON-absent claw cell — the NOC's claw panel used to render that as
+        # "1 claw", inventing an edge node on every claw-less box. The cell must
+        # carry POSITIVE evidence, and there is none here.
+        for block in (None, {}, {"installed": None}):
+            c = ft._claw_cell(block)
+            assert c["state"] == ft.DARK
+            assert c["claw_present"] is False, block
 
     def test_hard_fault_secondary_makes_cell_failed_and_taints(self):
         # A secondary reporting an OBSERVED fault (ok:False, non-unobservable
@@ -368,7 +380,27 @@ class TestClawCell:
                                   "device": "dudeclaw-02", "age_s": 5}]}
         c = ft._claw_cell(block)
         assert c["state"] == ft.HEALTHY
-        assert c["claw_count"] == 2
+        # 07-24 audit: the count is the claws we HAVE, not the roster length —
+        # "2 claws healthy" for one claw + a missing primary tick displayed a
+        # missing observation as a healthy device.
+        assert c["claw_count"] == 1
+        assert c["claw_absent_count"] == 1
+        assert "1 claw healthy" in c["reason"]
+        assert "not present" in c["reason"]      # the absent one is not hidden
+        assert len(c["claws"]) == 2              # still visible in the roster
+        assert c["absent"] is False              # a real claw IS present
+
+    def test_all_claws_absent_is_benign_absence_not_a_blind_spot(self):
+        # Both tick files vanished between the glob and the read → nothing is
+        # present. That is role-absence (absent=True), the same disposition the
+        # single-claw path gives it — not an indeterminate blind spot.
+        block = {"installed": False, "reason": "no_state_file",
+                 "secondaries": [{"installed": False, "reason": "read_error: gone"}]}
+        c = ft._claw_cell(block)
+        assert c["state"] == ft.DARK
+        assert c["absent"] is True
+        assert c["claw_count"] == 0 and c["claw_absent_count"] == 2
+        assert c["claw_present"] is False
 
 
 class TestCiCell:

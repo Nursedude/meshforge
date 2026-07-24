@@ -434,7 +434,16 @@ def _fetch_peer_claw(peer: str, timeout: float = _CLAW_FETCH_TIMEOUT,
             OSError, ValueError) as e:
         logger.debug("claw probe of %s failed (benign): %s", peer, e)
         return None
-    if isinstance(block, dict) and block.get("installed"):
+    if not isinstance(block, dict):
+        return None
+    # "Installed" means the BOX has at least one claw — the primary OR any
+    # secondary (07-24 audit). Keying only off the top-level flag dropped the
+    # whole block when the primary tick was missing, hiding a live dudeclaw-02
+    # from every federator's card while the box really did host a claw.
+    secs = block.get("secondaries")
+    has_secondary = isinstance(secs, list) and any(
+        isinstance(s, dict) and s.get("installed") for s in secs)
+    if block.get("installed") or has_secondary:
         return block
     return None
 

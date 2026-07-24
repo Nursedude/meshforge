@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import glob
 import json
 import os
 import subprocess
@@ -30,7 +31,7 @@ import sys
 import time
 
 from ._util import read_json, resolve_home
-from .claw_telemetry import CLAW_TICK_BASENAME
+from .claw_telemetry import CLAW_TICK_BASENAME, SECONDARY_TICK_GLOB
 
 from .brief import (
     DEFAULT_STALE_S,
@@ -56,6 +57,9 @@ _DEEP_FIRES_CAP = 20
 #: tick-shape owner (imported at top) — a basename rename must move every
 #: reader at once.
 _CLAW_BASENAME = CLAW_TICK_BASENAME
+#: every ADDITIONAL claw on the same brain box (dudeclaw-02, …). Same
+#: writer-owned constant; the two-dot shape excludes the single-dot primary.
+_CLAW_GLOB = SECONDARY_TICK_GLOB
 _CLAW_SENTINEL = "__MINI_DUDEAI_CLAW_SENTINEL__"
 #: 3x the */5-min claw_metrics capture cadence (matches _read_claw_state_block).
 CLAW_STALE_S = 900.0
@@ -135,13 +139,18 @@ def parse_claw_posture(claw: dict | None, now_ts: float,
 def parse_state_posture(host: str, state: dict | None, now_ts: float,
                         stale_s: float = DEFAULT_STALE_S,
                         self_box: bool = False,
-                        claw: dict | None = None) -> dict:
+                        claw: dict | None = None,
+                        claws: list | None = None) -> dict:
     """Pure: distil a box's state dict into a compact posture record.
 
     status ∈ {fresh, stale, no_state}. ``no_state`` = ssh worked but the box has
     no/empty mini state (never ticked here). Active rules carried for the pane.
     ``claw`` (optional) is the box's parsed claw_last_tick.json; its compact
-    summary rides along so a claw card can render under the box.
+    summary rides along so a claw card can render under the box. ``claws``
+    (optional) is the FULL tick list for a box hosting more than one dude-claw
+    — every claw gets its own card (07-24 audit: reading only the primary made
+    a dead dudeclaw-02 invisible in this pane). ``claw`` stays as the primary
+    for back-compat with callers that pass/read a single tick.
     """
     state = state if isinstance(state, dict) else {}
     last_tick = state.get("last_tick_ts")
@@ -158,6 +167,8 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
         status = "stale"
     else:
         status = "fresh"
+    docs = [d for d in (claws if claws is not None else [claw]) if isinstance(d, dict)]
+    cards = [c for c in (parse_claw_posture(d, now_ts) for d in docs) if c]
     return {
         "host": host,
         "self_box": self_box,
@@ -172,8 +183,25 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
         "pending_deltas": state.get("pending_deltas"),
         "active": active,
         "state_host": state.get("host"),
-        "claw": parse_claw_posture(claw, now_ts),
+        "claw": cards[0] if cards else None,
+        "claws": cards,
     }
+
+
+def _remote_breadth_cmd() -> str:
+    """The remote shell one-liner for the breadth round trip. Pure + module
+    level so a test can run it through a real shell instead of asserting on a
+    string (a command only ssh ever executes is a command nothing verifies).
+
+    ``for f in <primary> <glob>`` with a ``-f`` guard: an unmatched glob stays
+    literal and is skipped, so a claw-less box emits state + one sentinel
+    exactly as before. Trailing ``true`` keeps the compound rc off the last
+    ``[ -f ]`` test, which would otherwise report 1 on a claw-less box."""
+    return (f"cat {_STATE_BASENAME} 2>/dev/null; "
+            f"echo '{_CLAW_SENTINEL}'; "
+            f"for f in {_CLAW_BASENAME} {_CLAW_GLOB}; do "
+            f"[ -f \"$f\" ] && {{ cat \"$f\" 2>/dev/null; echo; "
+            f"echo '{_CLAW_SENTINEL}'; }}; done; true")
 
 
 def _default_ssh_runner(host: str, timeout_s: float) -> tuple[int, str, str]:
@@ -185,12 +213,16 @@ def _default_ssh_runner(host: str, timeout_s: float) -> tuple[int, str, str]:
     is NOT a reliable mini/no-mini signal — collect_remote keys no-mini off
     EMPTY state content instead (255 still uniquely flags ssh transport
     failure, which a cat never produces). The claw cat is the second half: most
-    boxes have no claw file, so it is simply empty and renders no card."""
-    remote = (f"cat {_STATE_BASENAME} 2>/dev/null; "
-              f"echo '{_CLAW_SENTINEL}'; "
-              f"cat {_CLAW_BASENAME} 2>/dev/null")
+    boxes have no claw file, so it is simply empty and renders no card.
+
+    EVERY claw tick is cat'd, each terminated by the same sentinel (07-24
+    audit): a brain box hosting dudeclaw-02 writes a suffixed sibling that the
+    old single `cat` never read, so a dead second claw was invisible in this
+    pane. The glob is the writer's own SECONDARY_TICK_GLOB — one constant, one
+    shape. An unmatched glob stays literal and is skipped by the -f test."""
     cmd = ["ssh", "-o", "BatchMode=yes",
-           "-o", f"ConnectTimeout={int(timeout_s)}", host, remote]
+           "-o", f"ConnectTimeout={int(timeout_s)}", host,
+           _remote_breadth_cmd()]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s + 5)
         return p.returncode, p.stdout, p.stderr
@@ -200,20 +232,28 @@ def _default_ssh_runner(host: str, timeout_s: float) -> tuple[int, str, str]:
         return 255, "", f"ssh exec failed: {e}"
 
 
-def _split_claw_payload(stdout: str) -> tuple[str, dict | None]:
-    """Split the breadth ssh payload (state + SENTINEL + claw) into
-    (state_text, claw_dict). No sentinel (a legacy/injected single-doc runner)
-    → the whole thing is state, claw None — backward compatible."""
-    state_part, _, claw_part = (stdout or "").partition(_CLAW_SENTINEL)
-    claw: dict | None = None
-    cp = claw_part.strip()
-    if cp:
+def _split_claw_payload(stdout: str) -> tuple[str, list[dict]]:
+    """Split the breadth ssh payload (state + SENTINEL + claw [+ SENTINEL +
+    claw…]) into (state_text, claw_dicts). No sentinel (a legacy/injected
+    single-doc runner) → the whole thing is state and NO claws — backward
+    compatible, as is the single-claw payload the old remote emitted.
+
+    A torn/unparseable tick is DROPPED from the list rather than aborting the
+    split: one bad file must not hide the box's other claws. It leaves a gap in
+    the pane, never a healthy-looking substitute (honest_failure_modes)."""
+    parts = (stdout or "").split(_CLAW_SENTINEL)
+    claws: list[dict] = []
+    for chunk in parts[1:]:
+        cp = chunk.strip()
+        if not cp:
+            continue
         try:
             loaded = json.loads(cp)
-            claw = loaded if isinstance(loaded, dict) else None
         except ValueError:
-            claw = None
-    return state_part.strip(), claw
+            continue
+        if isinstance(loaded, dict):
+            claws.append(loaded)
+    return parts[0].strip(), claws
 
 
 def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIMEOUT_S,
@@ -233,16 +273,24 @@ def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIME
     if rc == 255:
         return {"host": host, "self_box": False, "status": "unreachable",
                 "error": (err or "").strip()[:160] or "ssh failed"}
-    state_text, claw = _split_claw_payload(out)
+    state_text, claws = _split_claw_payload(out)
+    # A no-mini box MAY still host a claw — build_rollup has always rendered a
+    # claw card on this branch, but the collector never filled one in (a reader
+    # with no writer, honest_failure_modes #4). Carry the ticks through.
+    claw_cards = [c for c in (parse_claw_posture(d, now_ts) for d in claws) if c]
     if not state_text:
         return {"host": host, "self_box": False, "status": "no_mini",
-                "error": (err or "").strip()[:160] or "no mini_dudeai_state.json"}
+                "error": (err or "").strip()[:160] or "no mini_dudeai_state.json",
+                "claw": claw_cards[0] if claw_cards else None,
+                "claws": claw_cards}
     try:
         state = json.loads(state_text)
     except ValueError:
         return {"host": host, "self_box": False, "status": "no_mini",
-                "error": "state unparseable"}
-    return parse_state_posture(host, state, now_ts, stale_s, claw=claw)
+                "error": "state unparseable",
+                "claw": claw_cards[0] if claw_cards else None,
+                "claws": claw_cards}
+    return parse_state_posture(host, state, now_ts, stale_s, claws=claws)
 
 
 def collect_local(now_ts: float, state_path: str | None = None,
@@ -254,10 +302,21 @@ def collect_local(now_ts: float, state_path: str | None = None,
     home = resolve_home()
     if state_path is None:
         state_path = os.path.join(home, _STATE_BASENAME)
+    claw_dir = os.path.dirname(state_path) or home
     if claw_path is None:
-        claw_path = os.path.join(os.path.dirname(state_path) or home, _CLAW_BASENAME)
-    claw_doc, _ = read_json(claw_path)
-    claw = claw_doc if isinstance(claw_doc, dict) else None
+        claw_path = os.path.join(claw_dir, _CLAW_BASENAME)
+    claw_docs = []
+    primary_doc, _ = read_json(claw_path)
+    if isinstance(primary_doc, dict):
+        claw_docs.append(primary_doc)
+    # Every ADDITIONAL claw on this box (dudeclaw-02, …) writes a suffixed
+    # sibling; the primary-only read hid a dead second claw here (07-24 audit).
+    for extra in sorted(glob.glob(os.path.join(claw_dir, _CLAW_GLOB))):
+        if os.path.abspath(extra) == os.path.abspath(claw_path):
+            continue
+        doc, _ = read_json(extra)
+        if isinstance(doc, dict):
+            claw_docs.append(doc)
     state, err = read_json(state_path)
     if err == "not found":
         return None  # genuinely no mini here
@@ -266,12 +325,12 @@ def collect_local(now_ts: float, state_path: str | None = None,
         # class the fleet pane exists to expose) used to render identically
         # to "box runs no mini" — silently. Surface it as a broken posture.
         posture = parse_state_posture("self", {}, now_ts, stale_s,
-                                      self_box=True, claw=claw)
+                                      self_box=True, claws=claw_docs)
         posture["error"] = f"state unreadable: {err}"
         return posture
     label = (state.get("host") if isinstance(state, dict) else None) or "self"
     return parse_state_posture(label, state, now_ts, stale_s,
-                               self_box=True, claw=claw)
+                               self_box=True, claws=claw_docs)
 
 
 _BANNER = {
@@ -319,9 +378,18 @@ def _claw_line(c: dict) -> str:
     return f"    · 🦞 {dev}: {banner} {c['status']} · {body} · captured {c['age']} ago"
 
 
-def _append_claw(lines: list[str], claw: dict | None) -> None:
-    if claw:
-        lines.append(_claw_line(claw))
+def _append_claw(lines: list[str], posture: dict | None) -> None:
+    """Render a card for EVERY claw on the box (07-24 audit). Falls back to the
+    single ``claw`` key so a posture built by an older caller still renders."""
+    if not isinstance(posture, dict):
+        return
+    cards = posture.get("claws")
+    if not isinstance(cards, list) or not cards:
+        single = posture.get("claw")
+        cards = [single] if single else []
+    for c in cards:
+        if c:
+            lines.append(_claw_line(c))
 
 
 def build_rollup(postures: list[dict], now_ts: float) -> str:
@@ -353,11 +421,11 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         if p["status"] == "no_mini":
             lines.append(f"{banner} **{p['host']}**{tag} — {p['status']}"
                          + (f": {p['error']}" if p.get("error") else ""))
-            _append_claw(lines, p.get("claw"))  # a no-mini box may still run a claw
+            _append_claw(lines, p)  # a no-mini box may still run a claw
             continue
         if p["status"] == "no_state":
             lines.append(f"{banner} **{p['host']}**{tag} — never ticked (no state)")
-            _append_claw(lines, p.get("claw"))
+            _append_claw(lines, p)
             continue
         head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
                 f"last tick {p['age']} ago · {p['rule_count']} rules · "
@@ -370,7 +438,7 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         if p["status"] == "stale":
             head += " · ⚠️ daemon may be down"
         lines.append(head)
-        _append_claw(lines, p.get("claw"))
+        _append_claw(lines, p)
         for a in p.get("active", [])[:4]:
             lines.append(f"    · active: {a['rule_id']} · {a['subject']} · {a['detail']}")
     return "\n".join(lines) + "\n"

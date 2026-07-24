@@ -259,9 +259,13 @@ def _read_samples(home, device=None):
     is repointed dudeclaw-01 → dudeclaw-02 without rotating the append-only
     ``battery_soak.jsonl``, the old claw's flat-USB samples must NOT blend into
     the new claw's discharge curve (that would corrupt vbat_first/min/crossing
-    — the row-7 "one device's state read as another's" class). Rows written
-    before the ``device`` field existed do not match a named device and are
-    dropped from a device-scoped read, which is correct when isolating one pack.
+    — the row-7 "one device's state read as another's" class).
+
+    Returns ``(kept, dropped_other, dropped_legacy)``. Rows written BEFORE the
+    ``device`` field existed carry no identity at all, so they are dropped too
+    — but counted separately (07-24 audit): reporting them as "samples from
+    other devices" sent the operator hunting for a second claw that was never
+    there, when the real story is "this file predates device tagging".
     """
     state_path = os.path.join(str(home), STATE_BASENAME)
     samples = []
@@ -276,11 +280,21 @@ def _read_samples(home, device=None):
                 except ValueError:
                     continue  # torn/partial line — skip, never crash the judge
     except FileNotFoundError:
-        return ([], 0) if device is not None else []
+        return ([], 0, 0) if device is not None else []
     if device is None:
         return samples
-    kept = [s for s in samples if isinstance(s, dict) and s.get("device") == device]
-    return kept, len(samples) - len(kept)
+    kept, other, legacy = [], 0, 0
+    for s in samples:
+        if not isinstance(s, dict):
+            continue
+        d = s.get("device")
+        if d == device:
+            kept.append(s)
+        elif d is None:
+            legacy += 1     # pre-device-field row: unlabelled, not foreign
+        else:
+            other += 1
+    return kept, other, legacy
 
 
 def _summary(home, cfg):
@@ -290,11 +304,20 @@ def _summary(home, cfg):
     label = batt.get("label") or "battery"
     device = str(cfg.get("claw_device") or DEFAULT_DEVICE)
     # Scope to the configured claw so a retarget can't blend two packs' curves.
-    samples, dropped = _read_samples(home, device=device)
+    samples, dropped_other, dropped_legacy = _read_samples(home, device=device)
     # Stale window: 3× a nominal 10-min cadence, floor 1 h (mirrors the
     # synth-soak/#78 "silence is the failure" cadence-derived threshold).
     res = summarize_samples(samples, usable_mah, cutoff_v, stale_after_s=3600.0)
-    other = f" (ignored {dropped} sample(s) from other devices)" if dropped else ""
+    # Name the two drop reasons apart — "from other devices" over a file that
+    # simply predates device tagging is a false lead, not a diagnosis.
+    notes = []
+    if dropped_other:
+        notes.append(f"ignored {dropped_other} sample(s) from other devices")
+    if dropped_legacy:
+        notes.append(f"ignored {dropped_legacy} untagged sample(s) written "
+                     f"before device tagging — rotate {STATE_BASENAME} to "
+                     f"start a clean series")
+    other = f" ({'; '.join(notes)})" if notes else ""
     sys.stdout.write(
         f"battery_soak {res['status']}: {res['summary']} "
         f"[{device} · {label}]{other}\n")
