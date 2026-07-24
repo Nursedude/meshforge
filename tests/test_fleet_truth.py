@@ -274,6 +274,103 @@ class TestBoxTruth:
         assert b["escalations"][0]["rule_id"] == "r1"
 
 
+class TestClawCell:
+    """The claw subsystem cell must account for EVERY dude-claw on the box, not
+    just the primary. Before this, a dead/degraded second claw was invisible to
+    the fleet verdict — a degraded state mapped to a valid-looking value
+    (honest_failure_modes). ``_claw_cell`` rolls up ``worst_of`` primary +
+    secondaries and carries a per-claw roster for the monitor's claw panel."""
+
+    def _primary(self, **over):
+        base = {"installed": True, "ok": True, "device": "dudeclaw-01",
+                "age_s": 5, "battery": {"volts": 4.1}}
+        base.update(over)
+        return base
+
+    def test_single_claw_unchanged_backward_compatible(self):
+        # No secondaries → exact classify_block behaviour, no roster attached.
+        c = ft._claw_cell(self._primary())
+        assert c["state"] == ft.HEALTHY
+        assert "claws" not in c and "claw_count" not in c
+
+    def test_claw_less_box_stays_absent_dark(self):
+        c = ft._claw_cell({"installed": False})
+        assert c["state"] == ft.DARK and c["absent"] is True
+
+    def test_hard_fault_secondary_makes_cell_failed_and_taints(self):
+        # A secondary reporting an OBSERVED fault (ok:False, non-unobservable
+        # reason) → the aggregate cell is FAILED and taints the box roll-up.
+        # This pins the worst_of wiring: a hard-faulted second claw can never
+        # hide under a healthy primary.
+        block = self._primary()
+        block["secondaries"] = [{"installed": True, "ok": False,
+                                 "device": "dudeclaw-02",
+                                 "reason": "hard_fault: watchdog reset loop"}]
+        c = ft._claw_cell(block)
+        assert c["state"] == ft.FAILED           # healthy primary + faulted secondary
+        assert c["claw_count"] == 2
+        devices = {cw["device"]: cw["state"] for cw in c["claws"]}
+        assert devices == {"dudeclaw-01": ft.HEALTHY, "dudeclaw-02": ft.FAILED}
+        assert "dudeclaw-02" in c["reason"]
+
+    def test_hard_fault_secondary_taints_box_state(self):
+        snap = {"alias": "moc2", "resolution_method": "dns", "error": None,
+                "answered_at": NOW,
+                "status": {"watchdog": {"installed": True, "ok": True},
+                           "claw": {"installed": True, "ok": True,
+                                    "device": "dudeclaw-01",
+                                    "secondaries": [{"installed": True, "ok": False,
+                                                     "device": "dudeclaw-02",
+                                                     "reason": "hard_fault: reset loop"}]}},
+                "slo": {"overall_status": "ready"}}
+        b = ft.build_box_truth(snap, now=NOW, signal_classes=[])
+        assert b["subsystems"]["claw"]["state"] == ft.FAILED
+        assert b["box_state"] == ft.FAILED
+
+    def test_unreachable_secondary_is_dark_visible_not_hidden(self):
+        # The REALISTIC producer case: a dead/stale second claw is DARK
+        # (a blind spot, not a hard fault — 'unreachable'/'stale' are
+        # unobservable markers), informational and does NOT taint the verdict
+        # (claw is optional, not core-observability). But the roster still
+        # lists it — it must not vanish under the healthy primary.
+        block = self._primary()
+        block["secondaries"] = [{"installed": True, "ok": False,
+                                 "device": "dudeclaw-02", "age_s": 9999,
+                                 "reason": "stale: last capture 9999s ago"}]
+        c = ft._claw_cell(block)
+        assert c["state"] == ft.DARK
+        assert c["claw_count"] == 2
+        sec = [cw for cw in c["claws"] if cw["device"] == "dudeclaw-02"][0]
+        assert sec["state"] == ft.DARK
+
+    def test_dark_secondary_does_not_taint_box_state(self):
+        # Consistency guard: a stale/unreachable secondary keeps the box tile
+        # healthy (claw death is informational by design), while still visible.
+        snap = {"alias": "moc2", "resolution_method": "dns", "error": None,
+                "answered_at": NOW,
+                "status": {"watchdog": {"installed": True, "ok": True},
+                           "mini_dudeai": {"installed": True, "ok": True},
+                           "claw": {"installed": True, "ok": True,
+                                    "device": "dudeclaw-01",
+                                    "secondaries": [{"installed": True, "ok": False,
+                                                     "device": "dudeclaw-02",
+                                                     "reason": "stale: 9999s ago"}]}},
+                "slo": {"overall_status": "ready", "cascade": {"pre_fail": 0, "wedged": 0}}}
+        b = ft.build_box_truth(snap, now=NOW, signal_classes=[])
+        assert b["subsystems"]["claw"]["state"] == ft.DARK
+        assert b["box_state"] == ft.HEALTHY
+
+    def test_absent_primary_does_not_drag_real_secondary(self):
+        # Primary tick missing but a real secondary present → the secondary's
+        # health drives the cell; the absent primary stays visible but inert.
+        block = {"installed": False, "reason": "no_state_file",
+                 "secondaries": [{"installed": True, "ok": True,
+                                  "device": "dudeclaw-02", "age_s": 5}]}
+        c = ft._claw_cell(block)
+        assert c["state"] == ft.HEALTHY
+        assert c["claw_count"] == 2
+
+
 class TestCiCell:
     """2026-07-19 adversarial review: FAILED only on an OBSERVED failure;
     in-progress/unknown/None states are DARK (cannot judge), never healthy

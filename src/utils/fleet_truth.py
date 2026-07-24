@@ -199,6 +199,73 @@ def classify_block(
                 age_s=age_s, source=source)
 
 
+def _claw_cell(claw_block: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Classify the claw subsystem across EVERY dude-claw on the box, not just
+    the primary.
+
+    ``_read_claw_state_block`` puts the primary claw at the top level and any
+    ADDITIONAL claws (dudeclaw-02, …) under ``secondaries`` (W5.1). The old
+    single-block path classified ONLY the top-level primary, so a dead or
+    degraded second claw was invisible in the fleet verdict — a degraded state
+    mapped to a valid-looking value, the honest_failure_modes class this repo
+    exists to close. Here the cell is ``worst_of`` the primary + every
+    secondary: a FAILED second claw taints, a stale one renders DARK (visible,
+    informational) instead of vanishing under a healthy primary.
+
+    Per-claw detail rides on the cell as ``claws`` (device, state, reason, ok,
+    battery, age_s) + ``claw_count`` so the fleet monitor can show BOTH claws,
+    not a single summarised light. Reader/writer move together
+    (honest_failure_modes #4): the display list is built from the same blocks
+    the state is derived from. A claw-less box (no secondaries) keeps the exact
+    single-block classification — its benign absent-dark cell is unchanged.
+    """
+    source = "/api/status.claw"
+    absent_reason = "no claw edge node on this box"
+    secondaries: List[Dict[str, Any]] = []
+    if isinstance(claw_block, dict):
+        secs = claw_block.get("secondaries")
+        if isinstance(secs, list):
+            secondaries = [s for s in secs if isinstance(s, dict)]
+    if not secondaries:
+        # Single claw (or none): unchanged behaviour, backward-compatible.
+        return classify_block(claw_block, source=source,
+                              absent_reason=absent_reason)
+
+    def _one(block: Optional[Dict[str, Any]], device_hint: str) -> Dict[str, Any]:
+        c = classify_block(block, source=source, absent_reason=absent_reason)
+        blk = block if isinstance(block, dict) else {}
+        return {
+            "device": blk.get("device") or device_hint,
+            "state": c["state"],
+            "reason": c.get("reason"),
+            "ok": blk.get("ok"),
+            "battery": blk.get("battery"),
+            "age_s": c.get("age_s"),
+            "absent": bool(c.get("absent")),
+        }
+
+    per_claw = [_one(claw_block, "primary")]
+    for i, s in enumerate(secondaries):
+        per_claw.append(_one(s, f"secondary-{i + 1}"))
+
+    # A benign-absent claw (installed:False) must not drag a real claw's health,
+    # but it stays visible in the list. Roll up over the real (non-absent) claws.
+    ranked = [p for p in per_claw if not p["absent"]]
+    state = worst_of([p["state"] for p in ranked]) if ranked else DARK
+    worst = max(ranked or per_claw,
+                key=lambda p: _STATE_RANK.get(p["state"], _STATE_RANK[DARK]))
+    n = len(per_claw)
+    if state == HEALTHY:
+        reason = f"{n} claws healthy"
+    else:
+        detail = f" ({worst['reason']})" if worst.get("reason") else ""
+        reason = f"{n} claws; worst: {worst['device']} {worst['state']}{detail}"
+    c = cell(state, reason=reason, source=source, age_s=worst.get("age_s"))
+    c["claws"] = per_claw
+    c["claw_count"] = n
+    return c
+
+
 # ── The domain's KNOWN structural blind spots (always dark, first-class) ──
 # Harvested from the annotations in watchdog_probe_core.py + harness_map.md.
 # These are the corners the domain KNOWS it is not watching — rendered as
@@ -595,8 +662,7 @@ def build_box_truth(
         "watchdog": classify_block(watchdog_block, source="/api/status.watchdog"),
         "mini": classify_block(mini_block, source="/api/status.mini_dudeai",
                                absent_reason="mini-dudeai not installed on this box"),
-        "claw": classify_block(claw_block, source="/api/status.claw",
-                               absent_reason="no claw edge node on this box"),
+        "claw": _claw_cell(claw_block),
         "services": (_services_cell_from_spool(spool_services)
                      if isinstance(spool_services, dict)
                      else _subsystem_from_slo(slo, "overall_status",
