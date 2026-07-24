@@ -702,6 +702,99 @@ class TestDmToGatewayChannelWildcard:
         h._message_queue.put.assert_called_once()
 
 
+class TestBridgeUplinkHeartbeatChannelScope:
+    """Pri-5 (gateway review 2026-07-23): `_last_uplink_at` is the
+    "bridge channel alive" heartbeat `_channel_diagnostic_loop` watches to
+    catch a dark bridge channel. When the DM-to-gateway leg is armed the json
+    subscription is a `+` wildcard, so foreign-channel traffic also reaches
+    `_handle_json_message` — it must NOT forge the heartbeat and mask a dark
+    bridge channel (honest_failure_modes #2)."""
+
+    OWN = "!ebfa1b11"
+
+    def _armed_handler(self):
+        h = _make_bridge_handler(own_id=self.OWN)
+        h.config.rns.sessions_enabled = True
+        h.config.mqtt_bridge.channel = "meshforge"
+        return h
+
+    # --- decision helper (_counts_as_bridge_uplink) ---
+
+    def test_dormant_counts_any_channel(self):
+        # Leg dormant → scoped subscription → every arrival is on-channel.
+        h = _make_bridge_handler(own_id=self.OWN)  # flag MagicMock → dormant
+        h.config.mqtt_bridge.channel = "meshforge"
+        assert h._counts_as_bridge_uplink("msh/2/json/PrimaryChan/!ebfa1b11")
+        assert h._counts_as_bridge_uplink("msh/US/2/json/meshforge/!ebfa1b11")
+
+    def test_armed_counts_configured_channel(self):
+        h = self._armed_handler()
+        assert h._counts_as_bridge_uplink("msh/US/2/json/meshforge/!ebfa1b11")
+
+    def test_armed_excludes_foreign_channel(self):
+        h = self._armed_handler()
+        assert not h._counts_as_bridge_uplink("msh/2/json/PrimaryChan/!ebfa1b11")
+
+    def test_armed_holds_unparseable_topic(self):
+        # Ambiguity must not manufacture a false "dark" (hfm #2).
+        h = self._armed_handler()
+        assert h._counts_as_bridge_uplink("msh/2/e/meshforge/!ebfa1b11")
+
+    def test_armed_holds_when_no_configured_channel(self):
+        h = self._armed_handler()
+        h.config.mqtt_bridge.channel = ""
+        assert h._counts_as_bridge_uplink("msh/2/json/PrimaryChan/!ebfa1b11")
+
+    # --- integration through _handle_json_message ---
+
+    def _armed_uplink_handler(self):
+        h = self._armed_handler()
+        h._last_uplink_at = None
+        h._update_node_from_mqtt = MagicMock()
+        h._update_nodeinfo = MagicMock()
+        h._update_telemetry = MagicMock()
+        h._update_position = MagicMock()
+        h._bridge_text_message = MagicMock()
+        return h
+
+    @staticmethod
+    def _json(topic_chan, region_less=False, mtype="nodeinfo"):
+        topic = (f"msh/2/json/{topic_chan}/!aabb0042" if region_less
+                 else f"msh/US/2/json/{topic_chan}/!aabb0042")
+        payload = json.dumps(
+            {"type": mtype, "from": 0xAABB0042, "sender": "!aabb0042",
+             "id": 111, "payload": {}}).encode()
+        return topic, payload
+
+    def test_nodeinfo_on_bridge_channel_stamps_heartbeat(self):
+        # Non-text traffic on the bridge channel still counts (Hardening A
+        # intent preserved), even under the wildcard.
+        h = self._armed_uplink_handler()
+        topic, payload = self._json("meshforge")
+        h._handle_json_message(topic, payload)
+        assert h._last_uplink_at is not None
+
+    def test_foreign_channel_does_not_stamp_heartbeat(self):
+        # THE regression guard: primary-channel chatter under the wildcard
+        # must not refresh the bridge-channel liveness heartbeat.
+        h = self._armed_uplink_handler()
+        topic, payload = self._json("PrimaryChan", region_less=True)
+        h._handle_json_message(topic, payload)
+        assert h._last_uplink_at is None
+
+    def test_dormant_foreign_topic_still_stamps(self):
+        # Scoped-subscription mode is unchanged — every delivered arrival is
+        # on the bridge channel, so it stamps regardless of the topic string.
+        h = _make_bridge_handler(own_id=self.OWN)  # dormant
+        h.config.mqtt_bridge.channel = "meshforge"
+        h._last_uplink_at = None
+        h._update_node_from_mqtt = MagicMock()
+        h._update_nodeinfo = MagicMock()
+        topic, payload = self._json("PrimaryChan", region_less=True)
+        h._handle_json_message(topic, payload)
+        assert h._last_uplink_at is not None
+
+
 class TestDualPathDedupRegistration:
     """Broadcast TX through the MQTT bridge handler's toradio path registers
     in the process-wide RecentRfTxRegistry (dual-path dedup).
@@ -1207,6 +1300,7 @@ class TestEmptyIdContentDedupIssue34:
 
     def _make_dedup_handler(self) -> MQTTBridgeHandler:
         h = MQTTBridgeHandler.__new__(MQTTBridgeHandler)
+        h.config = MagicMock()  # bare mock → DM-to-gateway leg dormant
         h._recent_ids = {}
         h._dedup_window = 60
         h._mqtt_lock = threading.Lock()

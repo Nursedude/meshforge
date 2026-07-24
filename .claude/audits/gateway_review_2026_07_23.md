@@ -32,7 +32,7 @@ focused pass, a design decision, or lower severity. Next gateway pass starts her
 | ~~2~~ | `meshtastic_broadcast_bridge.py` | high | **FIXED 2026-07-23** | Enqueue-read-as-delivery — moved to the fixed section below. |
 | ~~3~~ | `node_tracker.py` (cache load) | med | **FIXED 2026-07-23** | Persisted-active-state contradicts forced `is_online=False` on reload — see fixed section below. |
 | ~~4~~ | `gateway_heartbeat.py` `_events` | med | **FIXED 2026-07-23** | Unlocked multi-thread `_events` append/re-slice/read — see fixed section below. |
-| 5 | `mqtt_bridge_handler.py:560` | med | CONFIRMED (opt-in) | Under `sessions_enabled` the JSON subscription is a `+` wildcard, but `_last_uplink_at` is stamped before the channel-scope filter → foreign-channel traffic refreshes the "bridge channel alive" heartbeat, masking a dark bridge channel. Fix: stamp only after channel match. |
+| ~~5~~ | `mqtt_bridge_handler.py:560` | med | **FIXED 2026-07-23** | Wildcard-subscription foreign-channel traffic forged the bridge-channel liveness heartbeat — see fixed section below. |
 | 6 | `reconnect.py:316,292` | med | PLAUSIBLE | `SlowStartRecovery` ramp measured with `time.time()` → NTP forward step ends slow-start early and blasts a just-recovered radio (the RATE_LIMIT burst class); backward step → negative multiplier / stuck recovering. |
 | 7 | `message_queue.py:924` | med | PLAUSIBLE | A send that reaches the network followed by a failing `mark_delivered` (DB error) falls to the retry path with no dedup re-check → guaranteed duplicate on the wire, no witness distinguishing it from a real transient. |
 | 8 | `message_queue.py:1110` | med-low | PLAUSIBLE | `cleanup_stale` resets `in_progress→pending` without bumping `retry_count` → a send_fn that wedges past STALE_TIMEOUT every attempt retries forever, never dead-letters, no per-message witness. |
@@ -163,6 +163,34 @@ consistently), so no deadlock. Tests: `TestEventHistoryThreadSafety` — a
 bounds/ordering unit test + a 12-writer × 200-append concurrency test with a
 concurrent `get_status` reader asserting the list settles at exactly the cap
 with no lost/torn entries. MF + MA heartbeat suites 42 pass each.
+
+## Pri-5 (finding 5) — RESOLVED 2026-07-23 (MeshForge-only)
+
+**Defect**: `_last_uplink_at` (the "bridge channel alive" heartbeat that
+`_channel_diagnostic_loop` watches to catch a dark bridge channel) was stamped
+in `_handle_json_message` on *any* well-formed JSON arrival, before the
+channel-scope filter. When the DM-to-gateway leg is armed (`sessions_enabled`),
+the json subscription widens to a `+` wildcard, so foreign-channel traffic (the
+primary, which carries DMs) also reaches `_handle_json_message` and refreshed
+the heartbeat — masking exactly the dark bridge channel this signal exists to
+surface (honest_failure_modes #2: absence of bridge-channel traffic read as
+presence).
+
+**Fix**: new `_counts_as_bridge_uplink(topic)` gates the stamp. Leg dormant
+(scoped subscription) → passes unchanged, every arrival is already on-channel.
+Leg armed (wildcard) → a *confidently foreign* channel is excluded, while an
+unparseable topic or unconfigured channel is held as counting so ambiguity never
+manufactures a false "dark". The Hardening-A intent (non-text nodeinfo/telemetry/
+position broadcasts still count as deployment evidence) is preserved — only the
+channel scope changed. Tests: `TestBridgeUplinkHeartbeatChannelScope` (8) — 5
+decision-helper cases + 3 through `_handle_json_message` including the regression
+guard (foreign-channel arrival under the wildcard leaves `_last_uplink_at` None).
+MF `test_mqtt_bridge_handler.py` 91 pass, lint exit 0.
+
+**No MA twin port**: MeshAnchor's `mqtt_bridge_handler.py` has no
+`_last_uplink_at`, no DM-to-gateway wildcard, and always subscribes
+channel-scoped (`.../json/{channel}/#`) — the heartbeat + wildcard + channel
+diagnostic loop are MeshForge-only. Verified at the source; nothing to port.
 
 ## Twin note (MeshAnchor)
 

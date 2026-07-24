@@ -468,6 +468,37 @@ class MQTTBridgeHandler(BaseMessageHandler):
             return None
         return parts[idx + 1] if len(parts) > idx + 1 else None
 
+    def _counts_as_bridge_uplink(self, topic: str) -> bool:
+        """Whether an MQTT-json arrival is bridge-channel liveness evidence.
+
+        ``_last_uplink_at`` is the "bridge channel alive" heartbeat that
+        :meth:`_channel_diagnostic_loop` watches to catch a dark bridge
+        channel (fleet clients transmitting on a different channel name — the
+        moc3 stall, 2026-04-27).
+
+        Pri-5 (gateway review 2026-07-23): when the DM-to-gateway leg is armed
+        the json subscription widens to a ``+`` wildcard, so foreign-channel
+        traffic (e.g. the primary, which carries DMs) also reaches
+        :meth:`_handle_json_message`. Counting it would refresh the heartbeat
+        off a channel the bridge doesn't watch, masking exactly the dark
+        bridge channel this signal exists to surface (honest_failure_modes #2:
+        absence of bridge-channel traffic must not read as presence).
+
+        Legacy scoped-subscription mode (leg dormant) is unaffected — every
+        arrival is already on the bridge channel, so this passes. While the
+        wildcard is active, only a *confidently foreign* channel is excluded;
+        an unparseable topic or an unconfigured channel is held as counting,
+        so ambiguity never manufactures a false "dark" (hfm #2).
+        """
+        if self._dm_to_gateway_node_num() is None:
+            return True  # scoped subscription — arrival is already on-channel
+        cfg_chan = getattr(
+            getattr(self.config, 'mqtt_bridge', None), 'channel', None)
+        topic_chan = self._topic_channel_name(topic)
+        if cfg_chan and topic_chan is not None and topic_chan != cfg_chan:
+            return False
+        return True
+
     def _on_connect(self, client, userdata, flags, rc):
         """MQTT connect callback - subscribe to meshtasticd topics."""
         if rc == 0:
@@ -557,11 +588,15 @@ class MQTTBridgeHandler(BaseMessageHandler):
             logger.debug(f"Failed to parse MQTT JSON: {e}")
             return
 
-        # Hardening A: any well-formed JSON arrival proves a fleet client
-        # is publishing on the bridge channel. Recorded BEFORE the
-        # type-specific dispatch so even nodeinfo/telemetry/position
-        # broadcasts (not just text) count as deployment evidence.
-        self._last_uplink_at = time.time()
+        # Hardening A: a well-formed JSON arrival on the CONFIGURED bridge
+        # channel proves a fleet client is publishing there. Recorded BEFORE
+        # the type-specific dispatch so even nodeinfo/telemetry/position
+        # broadcasts (not just text) count as deployment evidence. Pri-5
+        # (gateway review 2026-07-23): scoped to the bridge channel so the
+        # DM-to-gateway wildcard's foreign-channel traffic can't forge this
+        # heartbeat and mask a dark bridge channel (_counts_as_bridge_uplink).
+        if self._counts_as_bridge_uplink(topic):
+            self._last_uplink_at = time.time()
 
         msg_type = data.get('type', '')
         sender = data.get('sender', '')
