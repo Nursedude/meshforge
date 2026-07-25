@@ -664,6 +664,9 @@ def _ci_status_block() -> Dict[str, Any]:
 # operator asked for truthful reporting; silence-as-health is the bug.
 CRONTAB_PROBE_TIMEOUT_S = 5
 VERDICT_LOG_FILE = "cron_verdicts.log"
+# Fallback staleness threshold, used ONLY when a verdict's cron schedule is
+# unknown (orphan verdict, or an unparseable schedule). A cron whose schedule
+# we CAN read is judged against its own cadence — see _verdict_stale_after_s.
 VERDICT_STALE_AFTER_S = 26 * 3600  # > daily cadence; older = stale
 LOOP_CRONS_FILE = ".claude_loop_crons.json"
 
@@ -738,13 +741,68 @@ def _read_crontab() -> Dict[str, Any]:
     return {"available": True, "jobs": jobs, "count": len(jobs)}
 
 
-def _parse_cron_verdicts(text: str, now_unix: float) -> List[Dict[str, Any]]:
+def _verdict_stale_after_s(schedule: Optional[str]) -> float:
+    """Staleness threshold (seconds) for ONE cron, derived from its schedule.
+
+    A cron is silent only past a multiple of its OWN cadence: a weekly cron is
+    not stale 26h after it ran — it is not due for another six days. The flat
+    ``VERDICT_STALE_AFTER_S`` that used to apply to every verdict here made
+    every weekly/monthly cron render STALE for ~85% of its cycle (observed
+    2026-07-24: ``local_brain_eval`` at 5.4d and ``weekly_updates_digest`` at
+    4.2d, both freshly OK and exactly on cadence) while Issue #78's pager —
+    which IS schedule-aware — correctly read them clean. Two consumers of one
+    artifact carrying two different constants is precisely the drift
+    honest_failure_modes #5 warns about, and it drifted in the direction that
+    manufactures false staleness.
+
+    The cadence math is OWNED by ``watchdog_probes_liveness`` (#78's probe) and
+    imported here so the panel and the pager can never disagree — the mirror of
+    ``_verdict_names_in_command``, which this module owns and that probe
+    imports. Both imports are lazy/in-function, so there is no import cycle.
+
+    NO schedule at all (an orphan verdict — not wired in the crontab) or an
+    unimportable probe module -> the historical flat 26h, which is what the
+    orphan filter has always used. A schedule that is PRESENT but unparseable
+    is a different case: it follows the probe (whose own fallback is then
+    multiplied by the cadence factor), because parity with the pager is what
+    this function exists for and the looser answer cannot manufacture a false
+    STALE. ``@reboot`` -> ``inf`` (runs only at boot, never stale-checkable),
+    matching the probe.
+    """
+    if not schedule or not schedule.strip():
+        return float(VERDICT_STALE_AFTER_S)
+    try:
+        from utils.watchdog_probes_liveness import (
+            CRON_VERDICT_CADENCE_MULT,
+            CRON_VERDICT_STALE_FLOOR_S,
+            _cron_max_interval,
+        )
+    except Exception:
+        return float(VERDICT_STALE_AFTER_S)
+    max_age = _cron_max_interval(schedule)
+    if max_age == float("inf"):
+        return float("inf")
+    return max(float(CRON_VERDICT_STALE_FLOOR_S),
+               float(CRON_VERDICT_CADENCE_MULT) * float(max_age))
+
+
+def _parse_cron_verdicts(
+    text: str,
+    now_unix: float,
+    schedules: Optional[Dict[str, str]] = None,
+) -> List[Dict[str, Any]]:
     """Parse ``~/cron_verdicts.log`` -> last verdict per job name.
 
     Line format: ``<ISO8601> <name> <STATUS> <message...>``. Last line per
     name wins. Garbage/short lines skipped. Computes ``age_s`` from the ts.
     A FAIL/CONCERN verdict is truthful red DATA (available stays True),
     distinct from "can't read the log".
+
+    ``schedules`` maps cron name -> its crontab schedule (from
+    ``_verdict_schedules``); each verdict's ``stale`` is then judged against
+    that cron's own cadence rather than one flat threshold. Omit it and every
+    verdict falls back to ``VERDICT_STALE_AFTER_S``, the pre-2026-07-24
+    behaviour — callers that genuinely have no crontab keep working.
     """
     from datetime import datetime
     latest: "Dict[str, Dict[str, Any]]" = {}
@@ -765,9 +823,15 @@ def _parse_cron_verdicts(text: str, now_unix: float) -> List[Dict[str, Any]]:
             "status": status,
             "ts_iso": ts_iso,
             "age_s": round(age, 1),
-            "stale": age > VERDICT_STALE_AFTER_S,
             "message": message.strip(),
         }
+    # Second pass: per-cron staleness. Separate from the parse loop so the
+    # threshold (and its lazy import) is resolved once per NAME, not per line.
+    for name, v in latest.items():
+        threshold = _verdict_stale_after_s((schedules or {}).get(name))
+        v["stale_after_s"] = (None if threshold == float("inf")
+                              else round(threshold, 1))
+        v["stale"] = v["age_s"] > threshold
     return sorted(latest.values(), key=lambda v: v["name"])
 
 
@@ -814,11 +878,51 @@ def _wired_verdict_names(crontab_block: Dict[str, Any]) -> Optional[set]:
     return names
 
 
-def _read_cron_verdicts(wired_names: Optional[set] = None) -> Dict[str, Any]:
+def _verdict_schedules(crontab_block: Dict[str, Any]) -> Dict[str, str]:
+    """Wired cron name -> the schedule of the crontab line that wires it.
+
+    Feeds the per-cron staleness threshold (``_verdict_stale_after_s``) so a
+    weekly cron is judged weekly. Uses the same ``_verdict_names_in_command``
+    extractor as ``_wired_verdict_names`` — one regex, one extractor
+    (honest_failure_modes #5).
+
+    Crontab unavailable -> ``{}``: every verdict then falls back to the flat
+    26h, which is exactly what this module did before. Unknown ≠ tight
+    threshold; we never tighten on absent evidence.
+
+    A name wired on SEVERAL lines keeps the LOOSEST cadence — judging a
+    twice-wired cron by its tighter line would manufacture a stale badge the
+    #78 pager never raises, re-introducing the drift this function exists to
+    close.
+    """
+    if not crontab_block.get("available"):
+        return {}
+    out: Dict[str, str] = {}
+    for job in crontab_block.get("jobs", []):
+        schedule = (job.get("schedule") or "").strip()
+        if not schedule:
+            continue
+        for name in _verdict_names_in_command(job.get("command", "")):
+            prev = out.get(name)
+            if prev is None or (_verdict_stale_after_s(schedule)
+                                > _verdict_stale_after_s(prev)):
+                out[name] = schedule
+    return out
+
+
+def _read_cron_verdicts(
+    wired_names: Optional[set] = None,
+    schedules: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Read ``~/cron_verdicts.log`` (the silent-cron detection log).
 
     Missing file / unreadable -> ``available:False`` + reason; present ->
     parsed (a failing job is truthful red data, still ``available:True``).
+
+    ``schedules`` (from ``_verdict_schedules``) makes each job's ``stale``
+    reflect its OWN cadence; omitted -> the flat 26h fallback. Note the orphan
+    filter below keys off ``stale``: an orphan is by definition NOT in the
+    crontab, so it has no schedule and keeps the 26h threshold it always had.
     """
     home = _operator_home()
     if home is None:
@@ -831,7 +935,7 @@ def _read_cron_verdicts(wired_names: Optional[set] = None) -> Dict[str, Any]:
     except (PermissionError, OSError) as e:
         return {"available": False,
                 "reason": f"read_error: {e.__class__.__name__}"}
-    jobs = _parse_cron_verdicts(text, time.time())
+    jobs = _parse_cron_verdicts(text, time.time(), schedules=schedules)
     orphan_filtered = 0
     orphan_dropped: List[Dict[str, str]] = []
     if wired_names is not None:
@@ -968,9 +1072,14 @@ def _schedules_block() -> Dict[str, Any]:
     try:
         # Pass the live crontab's wired cron names so verdicts for parked/
         # removed (orphan) crons are dropped from the fleet view rather than
-        # lingering as false CONCERN/FAIL (#78 orphan-ignore, for the display).
+        # lingering as false CONCERN/FAIL (#78 orphan-ignore, for the display),
+        # AND each wired cron's schedule so staleness is judged against its own
+        # cadence instead of one flat 26h (the false-STALE-on-weekly-crons fix,
+        # 2026-07-24 — see _verdict_stale_after_s).
+        _crontab_block = block.get("crontab", {})
         block["verdicts"] = _read_cron_verdicts(
-            wired_names=_wired_verdict_names(block.get("crontab", {}))
+            wired_names=_wired_verdict_names(_crontab_block),
+            schedules=_verdict_schedules(_crontab_block),
         )
     except Exception as e:
         block["verdicts"] = {"available": False,

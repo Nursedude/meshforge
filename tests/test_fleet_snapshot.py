@@ -1478,3 +1478,162 @@ class TestProbeRadioPhoneApiDeferIssue17:
             assert out["connected"] is True
             assert out["name"] == "meshtasticd"
             mock_sock.assert_called_once()       # the probe DID run (unchanged path)
+
+
+def _now() -> float:
+    import time
+    return time.time()
+
+
+def _iso(unix_ts: float) -> str:
+    """Unix ts -> the ISO8601 form ``cron_verdict.sh`` writes (UTC, ``Z``)."""
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(unix_ts, timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+
+
+class TestPerCronVerdictStaleness:
+    """The /fleet Cron Verdicts panel must judge each cron by its OWN cadence.
+
+    Regression pin for 2026-07-24: ``VERDICT_STALE_AFTER_S`` (a flat 26h) was
+    applied to EVERY verdict, so a weekly cron rendered amber ``OK STALE`` for
+    ~85% of its cycle — observed live as ``local_brain_eval`` 5.4d and
+    ``weekly_updates_digest`` 4.2d, both freshly OK and exactly on schedule —
+    while Issue #78's ``probe_cron_verdict_stale`` (schedule-aware) read them
+    clean. Two consumers of one artifact, two constants: honest_failure_modes
+    #5. These tests hold the panel and the pager on the SAME math.
+    """
+
+    WEEK_SCHEDULE = "25 3 * * 0"        # local_brain_eval, Sunday 03:25
+    DAY_SCHEDULE = "13 5 * * *"         # a daily cron
+
+    # ── threshold derivation ──────────────────────────────────────────
+    def test_weekly_cron_threshold_is_three_weeks(self):
+        t = fleet_snapshot._verdict_stale_after_s(self.WEEK_SCHEDULE)
+        assert t == pytest.approx(3 * 7 * 86400.0)
+
+    def test_daily_cron_threshold_is_three_days(self):
+        t = fleet_snapshot._verdict_stale_after_s(self.DAY_SCHEDULE)
+        assert t == pytest.approx(3 * 86400.0)
+
+    def test_frequent_cron_clamped_by_anti_flap_floor(self):
+        # */2 * * * * -> 2min cadence; the floor keeps it off a hair trigger.
+        t = fleet_snapshot._verdict_stale_after_s("*/2 * * * *")
+        assert t == pytest.approx(2 * 3600.0)
+
+    def test_reboot_cron_never_stale_checkable(self):
+        assert fleet_snapshot._verdict_stale_after_s("@reboot") == float("inf")
+
+    def test_unknown_schedule_keeps_the_flat_fallback(self):
+        # An ORPHAN verdict has no crontab line -> the 26h the orphan filter
+        # has always used. Absent evidence must never TIGHTEN the threshold.
+        for missing in (None, "", "   "):
+            assert fleet_snapshot._verdict_stale_after_s(missing) == float(
+                fleet_snapshot.VERDICT_STALE_AFTER_S)
+
+    def test_present_but_unparseable_schedule_follows_the_pager(self):
+        # Distinct from "no schedule": a garbage schedule string defers to the
+        # probe's own fallback so the two stay in lockstep. Looser than 26h,
+        # never tighter — an unreadable cadence must not invent a STALE badge.
+        from utils.watchdog_probes_liveness import (
+            CRON_VERDICT_CADENCE_MULT,
+            CRON_VERDICT_STALE_FLOOR_S,
+            _cron_max_interval,
+        )
+        junk = "not a cron line"
+        pager = max(CRON_VERDICT_STALE_FLOOR_S,
+                    CRON_VERDICT_CADENCE_MULT * _cron_max_interval(junk))
+        assert fleet_snapshot._verdict_stale_after_s(junk) == pytest.approx(pager)
+        assert fleet_snapshot._verdict_stale_after_s(junk) > float(
+            fleet_snapshot.VERDICT_STALE_AFTER_S)
+
+    # ── the reported bug, end to end ──────────────────────────────────
+    def test_weekly_cron_on_cadence_is_not_stale(self):
+        now = 2_000_000_000.0
+        age_s = 5.4 * 86400                      # the observed local_brain_eval age
+        ts = _iso(now - age_s)
+        jobs = fleet_snapshot._parse_cron_verdicts(
+            f"{ts} local_brain_eval OK \n", now,
+            schedules={"local_brain_eval": self.WEEK_SCHEDULE},
+        )
+        assert jobs[0]["stale"] is False
+        assert jobs[0]["stale_after_s"] == pytest.approx(3 * 7 * 86400.0)
+
+    def test_same_verdict_was_stale_under_the_flat_threshold(self):
+        # Pins that the fix is what changed the answer, not the fixture.
+        now = 2_000_000_000.0
+        ts = _iso(now - 5.4 * 86400)
+        jobs = fleet_snapshot._parse_cron_verdicts(
+            f"{ts} local_brain_eval OK \n", now)      # no schedules -> fallback
+        assert jobs[0]["stale"] is True
+
+    def test_daily_cron_gone_silent_four_days_is_still_stale(self):
+        # The fix must not blind the panel: a DAILY cron silent 4 days is a
+        # real dead cron and has to keep its badge.
+        now = 2_000_000_000.0
+        ts = _iso(now - 4 * 86400)
+        jobs = fleet_snapshot._parse_cron_verdicts(
+            f"{ts} memory_health OK \n", now,
+            schedules={"memory_health": self.DAY_SCHEDULE},
+        )
+        assert jobs[0]["stale"] is True
+
+    # ── schedule extraction ───────────────────────────────────────────
+    def test_verdict_schedules_maps_wired_names_to_schedules(self):
+        crontab = {"available": True, "jobs": [
+            {"schedule": self.WEEK_SCHEDULE,
+             "command": "eval.sh; /opt/meshforge/scripts/cron_verdict.sh "
+                        "local_brain_eval $?"},
+            {"schedule": "*/5 * * * *",
+             "command": "off.sh; /opt/meshforge/scripts/cron_verdict.sh "
+                        "fleet_offline_check $?"},
+            {"schedule": "* * * * *", "command": "/h/power.sh"},   # unwired
+        ]}
+        assert fleet_snapshot._verdict_schedules(crontab) == {
+            "local_brain_eval": self.WEEK_SCHEDULE,
+            "fleet_offline_check": "*/5 * * * *",
+        }
+
+    def test_verdict_schedules_empty_when_crontab_unavailable(self):
+        # Unreadable crontab -> no schedules -> the flat fallback everywhere.
+        # It must NOT invent a tight cadence out of missing evidence.
+        assert fleet_snapshot._verdict_schedules(
+            {"available": False, "reason": "boom"}) == {}
+
+    def test_duplicate_wiring_keeps_the_loosest_cadence(self):
+        crontab = {"available": True, "jobs": [
+            {"schedule": "*/5 * * * *",
+             "command": "a.sh; /opt/meshforge/scripts/cron_verdict.sh dup $?"},
+            {"schedule": self.WEEK_SCHEDULE,
+             "command": "b.sh; /opt/meshforge/scripts/cron_verdict.sh dup $?"},
+        ]}
+        assert fleet_snapshot._verdict_schedules(crontab) == {
+            "dup": self.WEEK_SCHEDULE}
+
+    # ── the anti-drift pin (honest_failure_modes #5) ──────────────────
+    def test_panel_threshold_equals_the_issue78_pager_threshold(self):
+        """ONE constant set, two consumers. If this breaks, the /fleet badge
+        and the probe that actually pages disagree again — the exact defect."""
+        from utils.watchdog_probes_liveness import (
+            CRON_VERDICT_CADENCE_MULT,
+            CRON_VERDICT_STALE_FLOOR_S,
+            _cron_max_interval,
+        )
+        for sched in ("25 3 * * 0", "0 8 * * 1", "13 5 * * *", "40 * * * *",
+                      "*/5 * * * *", "0 */2 * * *", "@daily", "@weekly",
+                      "17 4 1 * *"):
+            pager = max(CRON_VERDICT_STALE_FLOOR_S,
+                        CRON_VERDICT_CADENCE_MULT * _cron_max_interval(sched))
+            assert fleet_snapshot._verdict_stale_after_s(sched) == pytest.approx(
+                pager), f"panel/pager threshold drift on {sched!r}"
+
+    def test_orphan_drop_behaviour_is_preserved(self, monkeypatch, tmp_path):
+        # An unwired verdict is dropped only when ALSO stale. Orphans carry no
+        # schedule, so they keep the 26h rule the filter was built around.
+        now_iso = _iso(_now() - 40 * 3600)          # 40h > 26h fallback
+        (tmp_path / "cron_verdicts.log").write_text(
+            f"{now_iso} parked_cron OK \n")
+        monkeypatch.setattr(fleet_snapshot, "_operator_home", lambda: tmp_path)
+        r = fleet_snapshot._read_cron_verdicts(wired_names=set(), schedules={})
+        assert [j["name"] for j in r["jobs"]] == []
+        assert r["orphan_filtered"] == 1
