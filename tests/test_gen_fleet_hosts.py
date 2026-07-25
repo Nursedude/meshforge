@@ -191,17 +191,107 @@ class TestCheckModeExitCodes:
         assert gfh.main() == gfh.EXIT_DRIFT
 
 
-class TestResolveUsesIpv4Only:
+class TestResolutionNeverReadsEtcHosts:
+    """THE regression this file exists for.
 
-    def test_resolve_a_does_not_ask_for_aaaa(self, monkeypatch):
-        """Asking AF_UNSPEC here would pay the exact 75ms WAN round trip
-        this whole script exists to remove."""
+    Live drill 2026-07-25: --check used getaddrinfo, which consults nss
+    `files` (/etc/hosts) BEFORE dns — and systemd-resolved answers from
+    /etc/hosts too. So the check compared the generated block against
+    ITSELF. A deliberately corrupted entry reported "in sync" AND survived
+    --apply, because the corrupted file WAS the script's notion of truth.
+    A self-confirming detector is worse than none: it reports health it
+    cannot observe.
+    """
+
+    def test_resolve_a_does_not_use_getaddrinfo(self, monkeypatch):
+        """getaddrinfo would read /etc/hosts — the file we are auditing."""
+        def boom(*a, **kw):
+            raise AssertionError(
+                "resolve_a() called getaddrinfo — that reads /etc/hosts and "
+                "makes the drift check compare the block against itself")
+
+        monkeypatch.setattr(socket, "getaddrinfo", boom)
+        monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.53"])
+        monkeypatch.setattr(gfh, "_dns_query_a",
+                            lambda s, f, t: (True, "192.0.2.99"))
+        assert gfh.resolve_a("moc.mf.internal") == "192.0.2.99"
+
+    def test_queries_the_upstream_server_directly(self, monkeypatch):
         seen = {}
 
-        def fake_getaddrinfo(host, port, family=0, *a, **kw):
-            seen["family"] = family
-            return [(socket.AF_INET, None, None, "", ("1.2.3.4", 0))]
+        def fake_query(server, fqdn, timeout):
+            seen["server"] = server
+            seen["fqdn"] = fqdn
+            return True, "192.0.2.7"
 
-        monkeypatch.setattr(socket, "getaddrinfo", fake_getaddrinfo)
-        assert gfh.resolve_a("moc.mf.internal") == "1.2.3.4"
-        assert seen["family"] == socket.AF_INET
+        monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.53"])
+        monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
+        assert gfh.resolve_a("moc.mf.internal") == "192.0.2.7"
+        assert seen == {"server": "192.0.2.53", "fqdn": "moc.mf.internal"}
+
+    def test_unanswered_server_falls_through_to_next(self, monkeypatch):
+        calls = []
+
+        def fake_query(server, fqdn, timeout):
+            calls.append(server)
+            if server == "192.0.2.1":
+                return False, None          # no response at all
+            return True, "192.0.2.8"
+
+        monkeypatch.setattr(gfh, "upstream_servers",
+                            lambda: ["192.0.2.1", "192.0.2.2"])
+        monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
+        assert gfh.resolve_a("moc.mf.internal") == "192.0.2.8"
+        assert calls == ["192.0.2.1", "192.0.2.2"]
+
+    def test_no_reachable_server_is_none_not_a_guess(self, monkeypatch):
+        monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.1"])
+        monkeypatch.setattr(gfh, "_dns_query_a", lambda s, f, t: (False, None))
+        assert gfh.resolve_a("moc.mf.internal") is None
+
+    def test_answered_with_no_a_record_is_none(self, monkeypatch):
+        """NODATA is a real answer meaning 'no A here' — distinct from
+        'server never replied', but both yield no address."""
+        monkeypatch.setattr(gfh, "upstream_servers", lambda: ["192.0.2.1"])
+        monkeypatch.setattr(gfh, "_dns_query_a", lambda s, f, t: (True, None))
+        assert gfh.resolve_a("moc.mf.internal") is None
+
+    def test_upstream_servers_read_from_the_resolved_dropin(self, monkeypatch,
+                                                            tmp_path):
+        """MF014: no operator addresses in the repo — discover them."""
+        dropin = tmp_path / "resolved.conf.d"
+        dropin.mkdir()
+        (dropin / "mf-fleet-naming.conf").write_text(
+            "[Resolve]\nDNS=192.0.2.53 192.0.2.54\nDomains=~mf.internal\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", dropin)
+        assert gfh.upstream_servers() == ["192.0.2.53", "192.0.2.54"]
+
+    def test_upstream_servers_dedupes(self, monkeypatch, tmp_path):
+        dropin = tmp_path / "resolved.conf.d"
+        dropin.mkdir()
+        (dropin / "a.conf").write_text("[Resolve]\nDNS=192.0.2.53\n")
+        (dropin / "b.conf").write_text("[Resolve]\nDNS=192.0.2.53\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", dropin)
+        assert gfh.upstream_servers() == ["192.0.2.53"]
+
+    def test_truncated_reply_is_no_answer_not_a_crash(self, monkeypatch):
+        """A short or garbage datagram must degrade, never raise."""
+        class FakeSock:
+            def settimeout(self, _t): pass
+            def sendto(self, _d, _a): pass
+            def recvfrom(self, _n): return (b"\x00\x01\x02", ("192.0.2.1", 53))
+            def close(self): pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSock())
+        assert gfh._dns_query_a("192.0.2.1", "moc.mf.internal", 1.0) == (False, None)
+
+    def test_timeout_is_unanswered_not_nxdomain(self, monkeypatch):
+        class FakeSock:
+            def settimeout(self, _t): pass
+            def sendto(self, _d, _a): pass
+            def recvfrom(self, _n): raise socket.timeout("timed out")
+            def close(self): pass
+
+        monkeypatch.setattr(socket, "socket", lambda *a, **kw: FakeSock())
+        answered, ip = gfh._dns_query_a("192.0.2.1", "moc.mf.internal", 1.0)
+        assert answered is False and ip is None
