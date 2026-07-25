@@ -714,3 +714,298 @@ def probe_host_memory_pressure(
             "non_rss_kb": {k: mem[k] for k in _MEMINFO_EXTRA_KEYS if k in mem},
         },
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# memory_cap_engaged — did a MemoryMax cap actually BITE? (2026-07-24)
+#
+# The blind spot this closes was created by its own session: on 2026-07-24 eight
+# fleet boxes gained hard `MemoryMax` caps on user-1000.slice (plus ollama's
+# pre-existing 8G), and NOTHING observed them firing. A cap that OOM-kills the
+# operator's ssh session or a user unit is invisible — the process is simply gone.
+# That is the honest_failure_modes #9 shape exactly: a real, consequential event
+# with no witness, discovered later and outside the app.
+#
+# It also replaces a WORSE plan. The original follow-up was "read memory.peak in a
+# week and re-tighten the caps" — willpower, not harness, and pointed the wrong
+# way: a too-GENEROUS cap still bounds a runaway (which climbs to many GB), while a
+# too-TIGHT one kills legitimate work, which is the failure that already happened
+# this session. So the trigger to revisit a number should be evidence the ceiling
+# is actually being hit, not a calendar entry. `memory.peak` is also reset by a
+# reboot, which this fleet does unexpectedly.
+_CAP_STATE_PATH = "/var/lib/meshforge/memory_cap_engaged_state.json"
+
+# Consecutive ticks the ceiling leg must persist. A single `max` increment is a
+# transient touch of the limit and reclaim handled it; living AT the ceiling is
+# what warrants a look. Kills deliberately bypass this — see below.
+_CAP_CEILING_DEBOUNCE_TICKS = 2
+
+# Cap-carrying cgroups reported per tick. A bound, not a filter: exceeding it is
+# itself surfaced rather than silently truncated (no_silent_caps).
+_CAP_MAX_SUBJECTS = 12
+
+_cap_state_write_warned: set = set()
+
+
+def _read_memory_events(path: str) -> Optional[Dict[str, int]]:
+    """Parse a cgroup ``memory.events`` file into {key: count}.
+
+    None when unreadable/garbage — the caller maps that to ``indeterminate``,
+    never to "no kills". An unreadable counter is unobservable, and on this
+    fleet unobservable is never healthy (honest_failure_modes #2).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    out: Dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        try:
+            out[parts[0]] = int(parts[1])
+        except (ValueError, TypeError):
+            continue
+    return out or None
+
+
+def _capped_cgroups(*, cgroup_root: str = "/sys/fs/cgroup") -> Optional[List[Dict[str, Any]]]:
+    """Every cgroup carrying a FINITE ``memory.max``, with its events counters.
+
+    Returns None only when the tree cannot be walked at all (indeterminate).
+    An empty list is a positive observation: nothing on this box is capped, so
+    there is nothing for this probe to judge (INERT — e.g. moc3, where the
+    controller is disabled entirely, or any box predating the 07-24 rollout).
+    """
+    # os.walk() does NOT raise on a missing/unreadable root — it silently yields
+    # nothing, which would render "could not look" as the positive observation
+    # "nothing here is capped". That is the exact defect this probe exists to
+    # catch, so the root is checked explicitly and mid-walk errors are captured.
+    if not os.path.isdir(cgroup_root):
+        return None
+    walk_errors: List[OSError] = []
+    rows: List[Dict[str, Any]] = []
+    try:
+        for dirpath, _dirnames, filenames in os.walk(
+                cgroup_root, onerror=walk_errors.append):
+            if "memory.max" not in filenames:
+                continue
+            raw = _read_small(os.path.join(dirpath, "memory.max"))
+            if not raw or raw == "max":
+                continue          # uncapped is the overwhelmingly common case
+            try:
+                cap = int(raw)
+            except (ValueError, TypeError):
+                continue
+            rel = dirpath[len(cgroup_root):].lstrip("/") or "/"
+            rows.append({
+                "cgroup": rel,
+                "cap_kb": cap // 1024,
+                "events": _read_memory_events(os.path.join(dirpath, "memory.events")),
+                "current_kb": (lambda v: int(v) // 1024 if v and v.isdigit() else None)(
+                    _read_small(os.path.join(dirpath, "memory.current"))),
+            })
+    except OSError as exc:
+        walk_errors.append(exc)
+    if walk_errors and not rows:
+        # Saw nothing AND hit errors: that is unobservable, not "uncapped".
+        return None
+    return rows
+
+
+def _load_cap_state(path: str, boot_id: str) -> Dict[str, Any]:
+    """Read ``{boot_id, cgroups:{name:{oom,max,streak}}}``; reset across a reboot.
+
+    The counters in ``memory.events`` are cumulative SINCE THE CGROUP WAS CREATED
+    and therefore restart at zero every boot. Carrying baselines across a reboot
+    would make the post-boot counters look like a decrease and hide real kills,
+    so the whole baseline is keyed to ``boot_id`` (honest_failure_modes #6 —
+    wall clock is forgeable on RTC-less Pis, boot_id is not).
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict):
+            raise ValueError("not an object")
+    except (OSError, ValueError, TypeError):
+        return {"boot_id": boot_id, "cgroups": {}, "fresh": True}
+    if doc.get("boot_id") != boot_id:
+        # New boot: baselines are meaningless, but a nonzero counter seen on the
+        # FIRST look still means something died THIS boot — reported, not lost.
+        return {"boot_id": boot_id, "cgroups": {}, "fresh": True}
+    cg = doc.get("cgroups")
+    return {"boot_id": boot_id,
+            "cgroups": cg if isinstance(cg, dict) else {},
+            "fresh": False}
+
+
+def _save_cap_state(path: str, state: Dict[str, Any]) -> None:
+    """Persist baselines atomically. Never raises; a failure leaves a witness."""
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"boot_id": state.get("boot_id", ""),
+                       "cgroups": state.get("cgroups", {})},
+                      fh, separators=(",", ":"))
+        os.replace(tmp, path)
+    except OSError as exc:
+        if path not in _cap_state_write_warned:
+            _cap_state_write_warned.add(path)
+            logger.warning(
+                "memory_cap_engaged state unwritable (%s): %s — kill DELTAS "
+                "cannot be computed and the ceiling streak cannot reach its "
+                "threshold until this is fixed", path, exc)
+
+
+def probe_memory_cap_engaged(
+    *,
+    cgroup_root: str = "/sys/fs/cgroup",
+    state_path: str = _CAP_STATE_PATH,
+    boot_id_path: str = "/proc/sys/kernel/random/boot_id",
+    ceiling_debounce_ticks: int = _CAP_CEILING_DEBOUNCE_TICKS,
+    max_subjects: int = _CAP_MAX_SUBJECTS,
+) -> List[Signal]:
+    """A ``MemoryMax`` cap actually engaged — something was killed, or the slice
+    is living at its ceiling.
+
+    Two legs, per capped cgroup (subject = the cgroup path, so identity is stable
+    across ticks and each cap is tracked independently):
+
+      - **KILL** (``wedge``, fires IMMEDIATELY): ``oom_kill`` or
+        ``oom_group_kill`` rose since the last tick. A kill is a discrete,
+        irreversible event — debouncing it would only delay the page while the
+        process stays dead. Either a runaway was correctly bounded (worth
+        knowing) or legitimate work was killed (urgent: the cap is too tight).
+        The detail cannot tell those apart, so it says so and names both reads.
+      - **CEILING** (``degraded``, debounced ``ceiling_debounce_ticks``): the
+        ``max`` counter keeps rising without kills, i.e. the cgroup repeatedly
+        hits its hard limit and reclaim is absorbing it. This is the honest,
+        evidence-based trigger to revisit the number — it replaces the
+        "re-read memory.peak in a week" calendar plan that this probe retires.
+
+    Self-guards, each a distinct honest answer rather than a shared silence:
+    the tree unwalkable → ``indeterminate``; no capped cgroup anywhere →
+    ``inert``; a capped cgroup whose ``memory.events`` is unreadable →
+    ``indeterminate`` (never "no kills"); a counter that DECREASED (cgroup
+    destroyed and recreated — the user slice does this on last-logout without
+    linger) → baseline re-established silently, never a negative delta and never
+    read as recovery.
+    """
+    rows = _capped_cgroups(cgroup_root=cgroup_root)
+    if rows is None:
+        note_disposition("memory_cap_engaged", "indeterminate",
+                         reason=f"cgroup tree unwalkable at {cgroup_root}")
+        return []
+    if not rows:
+        note_disposition("memory_cap_engaged", "inert",
+                         reason="no cgroup on this box carries a finite MemoryMax")
+        return []
+
+    boot = _boot_id(boot_id_path)
+    state = _load_cap_state(state_path, boot)
+    prev = state["cgroups"]
+    fresh_boot = state.get("fresh", False)
+    new_state: Dict[str, Any] = {}
+    signals: List[Signal] = []
+    unreadable: List[str] = []
+
+    for row in sorted(rows, key=lambda r: r["cgroup"])[:max_subjects]:
+        name = row["cgroup"]
+        ev = row["events"]
+        if ev is None:
+            unreadable.append(name)
+            # Preserve any prior baseline: losing it would turn the next
+            # readable tick into a false "first observation".
+            if name in prev:
+                new_state[name] = prev[name]
+            continue
+        kills = int(ev.get("oom_kill", 0)) + int(ev.get("oom_group_kill", 0))
+        hits = int(ev.get("max", 0))
+        old = prev.get(name) or {}
+        old_kills = int(old.get("oom", 0) or 0)
+        old_hits = int(old.get("max", 0) or 0)
+        streak = int(old.get("streak", 0) or 0)
+
+        # A decrease means the cgroup was recreated (or we are post-reboot):
+        # re-baseline, never a negative delta.
+        recreated = kills < old_kills or hits < old_hits
+        d_kills = 0 if recreated else kills - old_kills
+        d_hits = 0 if recreated else hits - old_hits
+        if fresh_boot:
+            # First look of this boot: the cumulative count IS the news.
+            d_kills = kills
+
+        streak = streak + 1 if d_hits > 0 else 0
+        new_state[name] = {"oom": kills, "max": hits, "streak": streak}
+
+        cap_mb = row["cap_kb"] // 1024 if row["cap_kb"] else 0
+        cur_mb = (row["current_kb"] // 1024) if row["current_kb"] else 0
+        where = f"{name} (cap {cap_mb} MB, current {cur_mb} MB)"
+
+        if d_kills > 0:
+            signals.append(Signal(
+                cls="memory_cap_engaged", subject=name, severity="wedge",
+                detail=(
+                    f"MemoryMax cap KILLED {d_kills} process(es) in {where}"
+                    f"{' — cumulative since boot' if fresh_boot else ''}"
+                    f"; oom_kill={ev.get('oom_kill', 0)} "
+                    f"oom_group_kill={ev.get('oom_group_kill', 0)} "
+                    f"max_hits={hits}. TWO READINGS, this probe cannot tell them "
+                    f"apart: (a) a runaway was correctly bounded — the cap did "
+                    f"its job, find what allocated; or (b) LEGITIMATE work was "
+                    f"killed — the cap is too tight and should be raised. Check "
+                    f"which: journalctl -k | grep -i 'killed process' names the "
+                    f"victim. A killed interactive/agent session or user unit is "
+                    f"case (b). Cap lives in "
+                    f"/etc/systemd/system/<slice>.d/10-memory-cap.conf; verify "
+                    f"any change at the KERNEL (cat memory.max), never at "
+                    f"systemctl show."),
+                extra={"cgroup": name, "cap_kb": row["cap_kb"],
+                       "new_kills": d_kills, "events": ev,
+                       "first_look_this_boot": fresh_boot},
+            ))
+        elif streak >= ceiling_debounce_ticks:
+            signals.append(Signal(
+                cls="memory_cap_engaged", subject=name, severity="degraded",
+                detail=(
+                    f"{where} is living AT its MemoryMax ceiling: max_hits rose "
+                    f"{d_hits} this tick, {streak} ticks running, and reclaim is "
+                    f"still absorbing it (no kills). This is the evidence-based "
+                    f"trigger to revisit the number — read memory.peak now that "
+                    f"it means something: cat /sys/fs/cgroup/{name}/memory.peak. "
+                    f"Raise the cap if the workload is legitimate; find the "
+                    f"allocator if not. Not urgent — nothing has died."),
+                extra={"cgroup": name, "cap_kb": row["cap_kb"],
+                       "max_hits": hits, "delta_hits": d_hits,
+                       "streak": streak, "events": ev},
+            ))
+
+    _save_cap_state(state_path, {"boot_id": boot, "cgroups": new_state})
+
+    # Exactly one disposition every tick, always. Recording nothing on the
+    # healthy path would leave this class ABSENT from the coverage view, which
+    # conflates "ran, observed, clean" with "never ran" — the conflation the
+    # disposition recorder exists to remove. Caught by running the probe against
+    # the real tree, not by a fixture (the tests were happy).
+    if unreadable:
+        note_disposition("memory_cap_engaged", "indeterminate",
+                         reason=f"memory.events unreadable for {unreadable[:3]}")
+    elif len(rows) > max_subjects:
+        # INDETERMINATE, not clean: the judged ones are fine but the remainder
+        # were never looked at, and "clean" would claim a verdict on caps this
+        # tick did not observe (no_silent_caps — surface the bound, do not let
+        # it read as coverage).
+        note_disposition("memory_cap_engaged", "indeterminate",
+                         reason=f"{len(rows)} capped cgroups exceed the "
+                                f"{max_subjects}-subject bound; the remainder "
+                                f"were NOT judged this tick")
+    else:
+        note_disposition("memory_cap_engaged", "clean",
+                         reason=f"{len(rows)} capped cgroup(s) judged; "
+                                f"{len(signals)} engaged")
+    return signals

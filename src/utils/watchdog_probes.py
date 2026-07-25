@@ -91,6 +91,7 @@ from utils.watchdog_probes_service import (
 )
 from utils.watchdog_probes_host import (
     probe_host_memory_pressure,
+    probe_memory_cap_engaged,
 )
 from utils.watchdog_probes_user import (
     probe_user_timer_unit_failing,
@@ -172,6 +173,7 @@ __all__ = [
     "probe_http_local",
     "probe_fd_exhaustion",
     "probe_host_memory_pressure",
+    "probe_memory_cap_engaged",
     "probe_meshtasticd_vsz_leak",
     "probe_phoneapi_tcp_leak",
     "probe_meshtasticd_phoneapi_wedge",

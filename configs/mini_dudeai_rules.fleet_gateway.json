@@ -375,6 +375,25 @@
       "annotation": "2026-07-24 hard-reset arc (8th) \u2014 the box is running out of RAM. Pages (not escalate-only) because the end state is a HARDWARE reset, not a degraded service: on this fleet a sustained memory stall starves PID 1 past RuntimeWatchdogUSec=1min and the watchdog resets the box, so there is no oom-kill to soften it and no second chance to notice. The 07-24 reset gave ~34s between the first sub-20% sample and the cut, hence the short 15m cooldown. The detail names the top RSS consumers \u2014 read it FIRST, it is the only record of who was allocating (/tmp is tmpfs and is wiped by the reset). Also check tmpfs: df -h /tmp /dev/shm \u2014 that is RAM the OOM killer cannot reclaim and it leaves no RSS trail."
     },
     {
+      "id": "memory_cap_engaged_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "memory_cap_engaged",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] MemoryMax cap engaged",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-07-24 hard-reset arc \u2014 a MemoryMax cap actually BIT. Pages because the two possible causes both need a human NOW and the counter cannot tell them apart: either a runaway was correctly bounded (find what allocated) or LEGITIMATE work was OOM-killed because the cap is too tight \u2014 the failure this same session caused at 18:22, when a MemoryHigh+systemd-oomd pairing killed 49 processes (the operator's desktop included) with 7.7 GB still free. Read the detail: it names the cgroup, the cap, and both readings. `journalctl -k | grep -i 'killed process'` names the victim; a killed agent/ssh session or user unit means RAISE the cap. The degraded CEILING leg (max_hits climbing, no kills) is the evidence-based trigger to revisit a cap number \u2014 it replaces the 'read memory.peak in a week' calendar plan, which was willpower rather than harness and pointed the wrong way (a generous cap still bounds a runaway; a tight one kills real work). Cooldown 30m: a biting cap is not a transient, and re-paging every 15m adds nothing."
+    },
+    {
       "id": "channel_feed_dark_any",
       "match": {
         "kind": "signal_class",

@@ -189,8 +189,14 @@ class TestRunnerGateInertNotes:
             if name.startswith("probe_"):
                 fn = getattr(wr, name)
                 if callable(fn):
+                    # Probes returning a LIST (0..N signals) must be stubbed with
+                    # [] — the runner `extend`s them and is deliberately NOT
+                    # defensive, so a None here would TypeError. Adding a new
+                    # list-returning probe MUST be declared in this tuple; that
+                    # is the closed-consumer half of the closed enum.
                     ret = [] if name in ("probe_lxmf_process_wedge",
-                                         "probe_tracer_peer_unreachable") else None
+                                         "probe_tracer_peer_unreachable",
+                                         "probe_memory_cap_engaged") else None
                     monkeypatch.setattr(wr, name, lambda *a, _r=ret, **k: _r)
         monkeypatch.setattr(wr, "run_rnstatus", lambda **k: None)
         signals = wr.run_all_probes(

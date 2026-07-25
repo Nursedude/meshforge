@@ -78,6 +78,7 @@ from utils.watchdog_probes import (
     probe_history_write_failure,
     probe_inherited_app_drift,
     probe_host_memory_pressure,
+    probe_memory_cap_engaged,
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
     probe_meshtasticd_phoneapi_wedge,
@@ -781,6 +782,15 @@ def run_all_probes(
     sig = probe_host_memory_pressure()
     if sig is not None:
         signals.append(sig)
+
+    # Did a MemoryMax cap actually BITE? (2026-07-24, same arc.) The companion to
+    # the probe above: that one warns the box is running out of RAM, this one
+    # reports the cap ENGAGING — a kill inside a capped cgroup, or a slice living
+    # at its ceiling. Wired because the 07-24 rollout put hard caps on eight boxes
+    # with nothing observing them: an OOM-killed ssh session or user unit leaves no
+    # trace but a missing process. Returns 0..N signals (one per capped cgroup, so
+    # each cap keeps a stable identity); INERT on a box with no finite cap.
+    signals.extend(probe_memory_cap_engaged())
 
     # Tracer peer unreachable — reads tracer-<unix>.json files.
     # Returns 0..N signals depending on peer count.
