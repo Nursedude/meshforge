@@ -26,6 +26,12 @@ opposite things. ollama forces one runtime to serve both.
 | `qwen3:4b-instruct-2507-q4_K_M` | **2/5** ungrounded → **3/3** grounded | **3/3** | 96–281 s/case | 6,643 MB peak |
 | `qwen2.5:1.5b-instruct` | **5/5** ungrounded | **1/3** | 10–71 s/case | 4,978 MB |
 
+> ⛔ **THE TRIAGE COLUMN IS MISLEADING AND STAYS ONLY AS THE RECORD.** Every
+> triage case behind it graded the REFUSE direction, so 1.5B's 5/5 measured
+> caution, not judgement. Step 0 ran the balanced suite on 2026-07-25 and the
+> ranking **inverted**: 4B **4/6**, 1.5B **0/6**. Do not cite the 5/5 again
+> except as an example of what a one-directional scoreboard does.
+
 **Grounding, same model + same cases (the shipped fix, `702123a8`):** ungrounded 4B
 rated 3 of 5 deliberately-wrong proposals `looks-ratifiable`; grounded it got those
 same three **3/3 on the first try** (it had been burning all 3 retries). The facts
@@ -53,7 +59,90 @@ actually requires.
 
 ## Ordered plan
 
-### STEP 0 (PREREQUISITE — do not skip, do not reorder)
+### STEP 0 — ✅ DONE 2026-07-25 (`7607ceed`, CI 4/4 green)
+
+**Deliverable shipped**: `evals/local_brain/ratifiable_direction_2026_07_25.jsonl`
+— 6 cases, 4 single-delta and 2 mixed. Three corpus-level guards in
+`tests/test_local_brain_eval.py::TestTriageCorpusMeasuresBothDirections` pin the
+PROPERTY (the suite must assert the ratifiable direction; a refuse-everything
+stub must not pass everything; some case must demand both directions at once),
+all verified RED with the file moved aside.
+
+**The asymmetry was worse than this plan said.** Re-derived on the live corpus:
+not five cases in one file — **all 15 triage cases, and all 8 of their
+disposition assertions**, permitted only `needs-live-check`/`looks-rejectable`.
+A stub answering `needs-live-check` to everything scored **15/15**. Corpus now:
+21 triage cases, 17 assertions, 6 permitting ratification; the stub is down to
+15/21.
+
+**Fairness was gated, not assumed.** `looks-ratifiable` is only correct when the
+shipped prompt's own rule is met, so every ratifiable-pinned delta had to surface
+its corroborating phrase INSIDE the 700-char clamp the model actually reads,
+under both repo-only roots (every fleet box) and default roots (manager box).
+Two candidates were **dropped** for failing exactly that — `durations_forgeable_rtc_less`
+and `rnprobe_is_not_a_delivery_test` ranked the right file but the corroborating
+sentence fell outside the window. Ranking the file is a representation; the
+clamped text is the thing. The gate was then re-run against the AUTHORED file,
+because the `SYNTHETIC drill:` prefix is part of the retrieval query.
+
+**Also closed**: `dispositions` values were never validated against the
+vocabulary, so a typo'd disposition would make a case permanently unpassable
+while reading as a model failure (hfm #3). Latent until these became the first
+cases to type `looks-ratifiable` at all.
+
+#### 📊 THE MEASUREMENT — both models, same 6 cases, 2026-07-25
+
+| case | 4B | 1.5B |
+|---|---|---|
+| `triage-ratifiable-documented-lint-rule` | ✅ try 1/3 | ❌ 3/3 |
+| `triage-ratifiable-corroborated-incident` | ✅ try 1/3 | ❌ 3/3 |
+| `triage-ratifiable-decision-tell` | ❌ 3/3 | ❌ 3/3 |
+| `triage-ratifiable-calibration-discipline` | ✅ try 1/3 | ❌ 3/3 |
+| `triage-mixed-ratifiable-and-wrong` | ❌ 3/3 | ❌ 3/3 |
+| `triage-mixed-three-way-dispositions` | ✅ **try 1/3** | ❌ 3/3 (coverage 2/3) |
+| **total** | **4/6 (0.667)** | **0/6 (0.0)** |
+
+- **4B discriminates.** The hardest case — all three dispositions in one
+  backlog, two deltas retrieving the SAME chunk read in opposite directions —
+  passed on the **first attempt**. Four of its passes were first-try, so no
+  best-of-N masking.
+- **1.5B is the refuse-everything ratifier**, measured. Every case,
+  `needs-live-check`, all three attempts. It also **dropped a delta entirely**
+  on the 3-delta backlog (coverage 2/3) — an incompleteness failure independent
+  of disposition, and the one thing the OLD suite did test.
+- **The ranking is robust to the contested calls below**: granting both would
+  make it 4B **6/6** vs 1.5B **2/6**. Same conclusion either way.
+- 4B ~32 min for 6 cases (the two failures burned all 3 attempts); 1.5B ~7 min.
+  Sequential by construction, `ollama stop` between models — never two resident
+  (~11.6 GB against ollama's 8 G cap on a box that reset from memory pressure).
+
+#### ⚖️ OPEN DECISION — where the ratifiable line sits (operator's call)
+
+4B's two failures are the same shape: it answered `needs-live-check` to exactly
+the deltas asserting a **causal mechanism** ("`[Errno 24]` *means* an fd leak";
+"the loader dropped it, *so* every restart erased it"), while ratifying the four
+that assert a static fact or policy. Both mechanisms are corroborated verbatim
+in the corpus.
+
+So: does corroboration make a mechanism-claim ratifiable (this file's current
+expectation), or does asserting mechanism always warrant a live check? Both are
+defensible readings of the shipped prompt. ⚠️ Resolving it in the cases' favour
+also happens to clear the gate risk below — **which is precisely why the gate
+must not be the reason.** Decide on merits; do not loosen a case to raise a
+number, or this whole file was pointless.
+
+#### ⚠️ GATE RISK — Sunday 03:25 `--gate 0.85`
+
+The new cases join the weekly cron automatically via the `*.jsonl` glob. Under
+4B they score 0.667, so depending on where `--cursor` lands an honest FAIL is
+likely. The 0.85 threshold was calibrated on a suite where refusing was FREE;
+the measurement changed, so the bar's meaning changed with it. Recalibrating
+deliberately is legitimate — quietly lowering it to go green is not, and it is
+the same category error as the model-unaware regression probe below.
+
+---
+
+<details><summary>Original Step 0 statement, kept for the record</summary>
 
 **Fix the eval suite's asymmetry.** All five triage cases in
 `evals/local_brain/reset8_caps_2026_07_24.jsonl` test the REFUSE direction. A
@@ -69,6 +158,8 @@ Deliverable: ratifiable-direction triage cases (proposals that SHOULD earn
 a transient correctly dismissed). Then re-run 4B and 1.5B. **Until this exists, no
 triage change — rules or model — can be validated.** Optimising against a
 one-directional scoreboard is how you ship a refuse-everything ratifier.
+
+</details>
 
 ### STEP 1 — make tier-R primary for triage
 
@@ -86,12 +177,28 @@ signals (all cheap, all inspectable):
 - retrieval returns nothing → `needs-live-check` (absence is not corroboration —
   already the shipped prompt's rule, make it the code's rule)
 
+📊 **FIRST EVIDENCE, 2026-07-25 — the balanced run supports this step.** 4B's
+two failures were exactly the deltas asserting behaviour/causation, and it
+ratified exactly the four asserting a static fact or policy. That is the second
+candidate signal below, executed by a 2.5 GB model at 96–782 s/case. If a
+deterministic rule reproduces that split, the model is not earning its cost on
+this path. ⚠️ Two failures is a hypothesis, not a law — the test is whether
+tier-R matches 4B **on the balanced suite**, not on these two.
+
 ⚠️ **The honest risk:** a heuristic tuned to today's cases is brittle on shapes
 nobody anticipated. That is exactly what a model generalises over. So Step 1's exit
 criterion is the BALANCED suite, not the five cases that motivated it — and if
 tier-R only passes by memorising them, that is a fail, not a win.
 
 ### STEP 2 — decide about a model, with data
+
+🚫 **`qwen2.5:1.5b-instruct` IS DISQUALIFIED as a triage tier (2026-07-25).**
+0/6 on the balanced suite, every case, all three attempts, plus a dropped delta.
+It is not "weaker but cheaper" — as a ratifier it is structurally useless, and
+its apparent 5/5 advantage was an artifact of a one-directional scoreboard. This
+also removes "just run the smaller model" as the cheap way out of the moc3
+hardware floor: the small model does not do this job at all. The floor argument
+stands on its own — a rules+retrieval tier runs on all nine boxes.
 
 - **tier-R passes the balanced suite** → done. No ollama, no llama.cpp, no model.
   Continuity runs fleet-wide including moc3.
@@ -157,7 +264,9 @@ own. Smaller than a model fork, not free.
 
 ## What "done" looks like
 
-1. Balanced eval suite exists; both directions measured for every candidate tier.
+1. ✅ **DONE 2026-07-25** — balanced eval suite exists (`7607ceed`); both
+   directions measured for both candidate models (4B 4/6, 1.5B 0/6). Remaining
+   under this item: measure **tier-R** on the same six.
 2. Triage runs deterministically by default, grounded in retrieval, on **all nine
    boxes** — moc3 included.
 3. ollama is either gone or demoted to an optional enrichment nothing depends on.
@@ -178,7 +287,15 @@ RAM**. Same milliseconds, different meaning. See
   `brief.py` + `cadence_fallback.py` are BOTH parity-tracked; I did not expect that
   and the full suite caught the drift).
 - Eval cases: `evals/local_brain/reset8_caps_2026_07_24.jsonl` (8 cases; the 3
-  triage ones that flipped 0/3 → 3/3 are the red tests for grounding).
+  triage ones that flipped 0/3 → 3/3 are the red tests for grounding) and
+  `evals/local_brain/ratifiable_direction_2026_07_25.jsonl` (the Step 0
+  balanced-direction set).
+- Ledger evidence for the run above: `~/local_brain_evals.jsonl`, the two
+  records stamped 2026-07-25 with `total: 6` (one per model). This was the
+  first backend/model comparison run AFTER the regression-probe fix — and it
+  immediately produced a **third** case sitting at `prior_passes=1` with a
+  cross-model PASS(4B)→FAIL(1.5B) flip. Under the old un-scoped code, one more
+  4B run tips those to 2 and pages falsely. The flaw was not hypothetical.
 - Memory: `project_volcanoai_reset_8_memory_pressure_2026_07_24`,
   `feedback_my_footprint_is_the_constraint`.
 - Rule this serves: `honest_failure_modes` #10 — a resolved incident owes an eval
