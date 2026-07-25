@@ -113,6 +113,15 @@ Integration seam **already exists**: `local_brain_eval --backend {ollama,claude-
 Adding `llamacpp` is a bounded change, and the eval ledger is how you prove the lean
 runtime is not worse — same cases, same grading, three backends on evidence.
 
+✅ **FLAW FIXED 2026-07-25 (`1332ae49`, local — not yet pushed).** `probe_local_brain_regressed`
+now scopes per-case history to the model of the most-recent run. 5 tests (4 verified RED
+against the pre-fix probe); live-smoked clean on the real ledger. The near-miss below was
+**re-derived from the ledger** during the fix and holds exactly as written. Backend is
+deliberately NOT part of the key — same model on a leaner runtime is still held to what it
+could do, which is the Step-3 llama.cpp signal. A model swap resets the baseline (quiet
+until 2 passes accumulate: under-fires, never false-pages). **Steps 2 and 3 are now
+measurable.** Original finding, kept for the record:
+
 ⚠️ **FLAW IN THIS PLAN, found the night it was written — fix before Step 2/3.**
 `probe_local_brain_regressed` compares each case's pass/fail history and **does NOT
 key on model**: it fires when the latest run failed and `>= min_prior_passes` (2)
