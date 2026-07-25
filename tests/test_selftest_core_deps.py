@@ -21,6 +21,7 @@ list drifted unnoticed.)
 """
 
 import importlib.util
+import os
 import sys
 from pathlib import Path
 
@@ -139,15 +140,26 @@ class TestRuntimeInterpreter:
         assert selftest.check_import_in(bogus, "sys", "sys") is None
 
     def test_cross_interpreter_check_actually_queries_that_python(self, selftest):
-        """Positive control: a stdlib module answers True through the
-        subprocess path, proving the path works end to end."""
-        venv = REPO_ROOT / "venv" / "bin" / "python"
-        if not venv.exists():
-            pytest.skip("no venv on this box")
-        assert not selftest.same_interpreter(str(venv), sys.executable)
-        assert selftest.check_import_in(str(venv), "json", "json") is True
+        """Positive/negative control through the subprocess path.
+
+        The FOREIGN interpreter is chosen at runtime rather than assumed: this
+        suite is run both by /usr/bin/python3 (CI, bare pytest) and by the venv
+        python (honest_status.sh line 59 prefers `$REPO/venv/bin/python`). An
+        earlier version of this test hardcoded the venv as "the other one" and
+        failed under honest_status for that reason alone — the gate caught it,
+        CI could not, because CI has no venv at that path.
+        """
+        candidates = [str(REPO_ROOT / "venv" / "bin" / "python"),
+                      "/usr/bin/python3", sys.base_prefix + "/bin/python3"]
+        other = next(
+            (c for c in candidates
+             if os.path.exists(c) and not selftest.same_interpreter(c, sys.executable)),
+            None)
+        if other is None:
+            pytest.skip("no second interpreter available on this box")
+        assert selftest.check_import_in(other, "json", "json") is True
         assert selftest.check_import_in(
-            str(venv), "definitely_not_a_real_module_xyz", "ghost") is False
+            other, "definitely_not_a_real_module_xyz", "ghost") is False
 
 
 class TestParser:
