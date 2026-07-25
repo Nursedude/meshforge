@@ -361,6 +361,94 @@ class TestExpectShapeValidation:
             lbe.load_cases([str(p)])
 
 
+class TestDispositionVocabularyIsClosed:
+    """2026-07-25 STEP 0: dispositions values were never checked against the
+    vocabulary. A typo'd disposition makes a case PERMANENTLY unpassable while
+    reading as a model failure — an authoring error graded as a capability
+    loss (honest_failure_modes #3). Latent until the ratifiable-direction
+    cases became the first to type 'looks-ratifiable' at all."""
+
+    def _case(self, allowed):
+        return {"id": "d1", "kind": "triage",
+                "input": {"deltas": [{"key": "a", "summary": "s"}]},
+                "expect": {"dispositions": {"a": allowed}}}
+
+    def test_typo_disposition_rejected_at_load(self):
+        with pytest.raises(lbe.EvalConfigError, match="unknown disposition"):
+            lbe._validate_expect(self._case(["looks-ratifyable"]), "x:1")
+
+    def test_empty_allowed_list_rejected(self):
+        # No answer could ever satisfy it — the author cannot have meant this.
+        with pytest.raises(lbe.EvalConfigError, match="empty"):
+            lbe._validate_expect(self._case([]), "x:1")
+
+    def test_every_valid_disposition_accepted(self):
+        from mini_dudeai.cadence_fallback import DISPOSITIONS
+        for d in DISPOSITIONS:
+            lbe._validate_expect(self._case([d]), "x:1")
+
+    def test_vocabulary_is_the_production_one_not_a_copy(self):
+        # honest_failure_modes #5: two consumers of one artifact share ONE
+        # constant. The validator must reject exactly what the triage path
+        # cannot emit — so it imports rather than re-listing.
+        from mini_dudeai.cadence_fallback import DISPOSITIONS
+        assert lbe.cadence_fallback.DISPOSITIONS is DISPOSITIONS
+
+
+class TestTriageCorpusMeasuresBothDirections:
+    """2026-07-25 STEP 0 of the ditch-ollama plan. Re-derived that day: all 15
+    triage cases, and all 8 of their disposition assertions, permitted only
+    needs-live-check/looks-rejectable — so a stub answering needs-live-check to
+    everything scored 15/15 and the suite could not distinguish genuine
+    discrimination from indiscriminate caution. Optimising a ratifier against a
+    one-directional scoreboard ships a refuse-everything ratifier, which blocks
+    every legitimate memory from entering the second brain. These guard the
+    property, not the specific cases."""
+
+    def _triage_cases(self):
+        import glob
+        import os
+        paths = sorted(glob.glob(os.path.join(
+            lbe._REPO_ROOT, "evals", "local_brain", "*.jsonl")))
+        return [c for c in lbe.load_cases(paths) if c["kind"] == "triage"]
+
+    def test_corpus_asserts_the_ratifiable_direction(self):
+        cases = self._triage_cases()
+        assert cases, "no triage cases found"
+        ratifiable = [c["id"] for c in cases
+                      for allowed in (c["expect"].get("dispositions") or {}).values()
+                      if "looks-ratifiable" in allowed]
+        assert ratifiable, (
+            "no triage case can be passed by RATIFYING — the suite grades only "
+            "refusal, so a refuse-everything tier scores 100%")
+
+    def test_refuse_everything_stub_cannot_pass_every_case(self):
+        # The stub: answer needs-live-check for every delta, full coverage.
+        cases = self._triage_cases()
+        beaten = [c["id"] for c in cases
+                  if not all("needs-live-check" in allowed
+                             for allowed in
+                             (c["expect"].get("dispositions") or {}).values())]
+        assert beaten, (
+            "a stub answering needs-live-check to everything passes the whole "
+            "triage corpus")
+
+    def test_a_case_demands_both_directions_at_once(self):
+        # The anti-stub shape: one backlog that no single-direction strategy
+        # can pass — it must ratify one delta AND refuse another.
+        cases = self._triage_cases()
+        mixed = []
+        for c in cases:
+            disps = (c["expect"].get("dispositions") or {}).values()
+            has_ratify = any(allowed == ["looks-ratifiable"] for allowed in disps)
+            has_refuse = any("looks-ratifiable" not in allowed for allowed in disps)
+            if has_ratify and has_refuse:
+                mixed.append(c["id"])
+        assert mixed, (
+            "no single case demands both directions; a tier could still pass "
+            "each case with one fixed answer")
+
+
 class TestExpectRefusal:
     """W5.1 refusal-honesty knob (QA session 2026-07-05): an ungroundable
     question must degrade, never confabulate."""

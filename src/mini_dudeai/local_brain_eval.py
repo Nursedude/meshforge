@@ -124,6 +124,21 @@ def _validate_expect(case: dict, where: str) -> None:
         if not isinstance(allowed, list):
             raise EvalConfigError(
                 f"{where}: dispositions[{key!r}] must be a list")
+        # The vocabulary is closed and comes from the production triage path
+        # (SSOT import, not a copied literal). A typo'd disposition would make
+        # the case PERMANENTLY unpassable while looking like a model failure --
+        # an authoring error graded as a capability loss (honest_failure_modes
+        # #3). Latent until 2026-07-25, when the ratifiable-direction cases
+        # became the first to type "looks-ratifiable" at all.
+        if not allowed:
+            raise EvalConfigError(
+                f"{where}: dispositions[{key!r}] is empty — no answer could "
+                f"ever satisfy it")
+        bad = [d for d in allowed if d not in cadence_fallback.DISPOSITIONS]
+        if bad:
+            raise EvalConfigError(
+                f"{where}: dispositions[{key!r}] has unknown disposition(s) "
+                f"{bad} — allowed: {list(cadence_fallback.DISPOSITIONS)}")
     for knob in ("retrieve_must_include", "cite_must_include",
                  "answer_contains_any"):
         if knob in expect and not isinstance(expect[knob], list):
