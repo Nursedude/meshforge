@@ -176,7 +176,21 @@ def _read_psi_memory_avg60(path: str = "/proc/pressure/memory") -> Optional[floa
 def _top_rss_consumers(
     *, proc_root: str = "/proc", limit: int = _TOP_CONSUMERS,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Biggest RSS holders as ``[{comm, pid, rss_kb, cmdline, cgroup}, ...]``.
+    """The top ``limit`` rows of ``_scan_processes`` — the current-RSS view."""
+    rows = _scan_processes(proc_root=proc_root)
+    return None if rows is None else rows[:limit]
+
+
+def _scan_processes(
+    *, proc_root: str = "/proc",
+) -> Optional[List[Dict[str, Any]]]:
+    """EVERY process as ``[{comm, pid, rss_kb, vmhwm_kb, cmdline, cgroup}, ...]``,
+    sorted by current RSS descending.
+
+    Returns the full set, not a top-N, because the peak (VmHWM) view has to see
+    processes the RSS ranking buries — a burst allocator sitting at 40 MB now
+    but with a 5 GB high-water mark would never appear in a current-RSS top-5,
+    which is precisely why it went unfound on 07-24. One scan feeds both views.
 
     Reads /proc/<pid>/statm directly — no subprocess, so this works inside the
     watchdog's hardened sandbox and costs one small read per pid. Returns None
@@ -219,12 +233,84 @@ def _top_rss_consumers(
             "comm": _read_small(f"{proc_root}/{name}/comm") or "?",
             "pid": pid,
             "rss_kb": resident_pages * page_kb,
+            "vmhwm_kb": _read_vmhwm(f"{proc_root}/{name}/status"),
             "cmdline": _read_cmdline(f"{proc_root}/{name}/cmdline"),
             "cgroup": _read_cgroup(f"{proc_root}/{name}/cgroup"),
         })
 
     rows.sort(key=lambda r: r["rss_kb"], reverse=True)
-    return rows[:limit]
+    return rows
+
+
+def _read_vmhwm(status_path: str) -> Optional[int]:
+    """Peak RSS in kB from /proc/<pid>/status ``VmHWM``, else None.
+
+    The high-WATER mark: the kernel remembers it after the process shrinks. That
+    is the only per-process signal that survives a spike, and it is what makes a
+    BURST allocator findable — one that grabs GBs and releases them between two
+    samples is invisible to current-RSS at every sampling instant, yet its VmHWM
+    still indicts it. None for kernel threads (no mm) and on any read failure;
+    None means UNKNOWN, never zero.
+    """
+    try:
+        with open(status_path, "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("VmHWM:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        try:
+                            return int(parts[1])
+                        except (ValueError, TypeError):
+                            return None
+                    return None
+                if line.startswith("VmSwap:"):
+                    break          # VmHWM precedes VmSwap; absent => no mm
+    except OSError:
+        return None
+    return None
+
+
+def _peak_only_consumers(
+    all_rows: List[Dict[str, Any]], shown_pids: set, *,
+    limit: int = _TOP_CONSUMERS, min_excess_ratio: float = 2.0,
+    min_peak_kb: int = 262_144,
+) -> List[Dict[str, Any]]:
+    """Processes whose PEAK dwarfs their current RSS and that the RSS roster
+    therefore never shows — the burst allocators.
+
+    Only additive rows: a pid already in the RSS top-N is skipped (it is
+    reported there, with its peak alongside). Thresholds exist so this stays
+    signal: peak must exceed ``min_peak_kb`` (256 MB — a small process that
+    doubled is noise on a 16 GB board) and be at least ``min_excess_ratio``x its
+    current RSS (2x — proof it actually released, not merely grew a little).
+    """
+    out: List[Dict[str, Any]] = []
+    for r in all_rows:
+        peak = r.get("vmhwm_kb")
+        if not peak or peak < min_peak_kb:
+            continue
+        if r["pid"] in shown_pids:
+            continue
+        rss = max(1, r.get("rss_kb") or 1)
+        if peak / rss < min_excess_ratio:
+            continue
+        out.append(r)
+    out.sort(key=lambda r: r["vmhwm_kb"], reverse=True)
+    return out[:limit]
+
+
+def _format_peaks(rows: List[Dict[str, Any]]) -> str:
+    """Render the burst-allocator view. Empty is a real, useful answer here."""
+    if not rows:
+        return "no released peaks (no process is far below its own high-water mark)"
+    parts = []
+    for r in rows:
+        who = r.get("cmdline") or r.get("comm") or "?"
+        unit = (r.get("cgroup") or "").rsplit("/", 1)[-1]
+        parts.append(f"{who}[{r['pid']}] peaked {r['vmhwm_kb'] // 1024}MB "
+                     f"now {r['rss_kb'] // 1024}MB"
+                     + (f" <{unit}>" if unit else ""))
+    return "RELEASED peaks (spiked between samples): " + "; ".join(parts)
 
 
 def _read_small(path: str, limit: int = 4096) -> Optional[str]:
@@ -456,11 +542,18 @@ def probe_host_memory_pressure(
         allocations — an ollama model load costs ~6 GB here and settles near 47%
         available, so it clears the slope but never the floor.
 
-    The worst leg wins. The detail names the top RSS consumers (with cmdline and
-    owning cgroup, because ``comm`` alone cannot tell a service from an
-    interactive session) AND the top cgroups by ``memory.current``, which is the
-    only view that catches an aggregate — a session reaching GBs as dozens of
-    small processes is invisible per-process. It also carries the non-RSS legs
+    The worst leg wins. The detail carries four attribution views, because each
+    one is blind to a case the others catch:
+
+      - top RSS, with cmdline + owning cgroup (``comm`` alone cannot tell a
+        service from an interactive session) — who holds memory NOW;
+      - RELEASED peaks, from ``VmHWM`` — who spiked and let go BETWEEN samples,
+        which no current-RSS ranking can ever show;
+      - top cgroups by ``memory.current`` — the only view that catches an
+        aggregate, since a session reaching GBs as dozens of small processes is
+        invisible per-process;
+
+    and the non-RSS legs
     (Shmem/Slab/Dirty/swap), because tmpfs and kernel slab are charged to no
     process at all: /tmp and /dev/shm are 8 GB each here, so a runaway writing
     to the scratchpad can exhaust RAM while every process looks small.
@@ -574,7 +667,11 @@ def probe_host_memory_pressure(
         state["streak"] = state["streak"] + 1
         _save_hist_state(sp, state)
 
-    consumers = _top_rss_consumers(proc_root=proc_root)
+    scanned = _scan_processes(proc_root=proc_root)
+    consumers = None if scanned is None else scanned[:_TOP_CONSUMERS]
+    peaks = ([] if scanned is None
+             else _peak_only_consumers(
+                 scanned, {r["pid"] for r in (consumers or [])}))
     cgroups = _top_cgroups(cgroup_root=cgroup_root)
     psi_note = (
         f"stall pressure some/avg60={psi60:.1f}%" if psi60 is not None
@@ -588,8 +685,8 @@ def probe_host_memory_pressure(
     detail = (
         f"Host memory pressure: {'; '.join(reasons)}. "
         f"{avail_kb // 1024}MB of {total_kb // 1024}MB available; {psi_note}. "
-        f"{_format_consumers(consumers)}. {_format_cgroups(cgroups)}. "
-        f"non-RSS: {hidden}. "
+        f"{_format_consumers(consumers)}. {_format_peaks(peaks)}. "
+        f"{_format_cgroups(cgroups)}. non-RSS: {hidden}. "
         f"On this fleet a sustained memory stall does NOT end in an oom-kill — "
         f"it starves PID 1 past RuntimeWatchdogUSec and the HARDWARE watchdog "
         f"hard-resets the box (manager-box hard-reset arc, 2026-07-24). "
@@ -612,6 +709,7 @@ def probe_host_memory_pressure(
             "rate_span_s": (None if rate is None else round(rate[1], 1)),
             "rate_fired": rate_fired,
             "top_rss": consumers,
+            "released_peaks": peaks,
             "top_cgroups": cgroups,
             "non_rss_kb": {k: mem[k] for k in _MEMINFO_EXTRA_KEYS if k in mem},
         },

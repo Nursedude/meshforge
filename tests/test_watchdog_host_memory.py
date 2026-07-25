@@ -15,6 +15,7 @@ the thresholds stay anchored to a real event rather than to taste.
 """
 
 import json
+import os
 
 import pytest
 
@@ -25,6 +26,8 @@ from utils.watchdog_probe_core import (
 from utils.watchdog_probes import probe_host_memory_pressure
 from utils.watchdog_probes_host import (
     _format_consumers,
+    _read_vmhwm,
+    _scan_processes,
     _rate_drop,
     _read_meminfo,
     _read_psi_memory_avg60,
@@ -350,7 +353,8 @@ class TestConsumerRoster:
         assert len(sig.extra["top_rss"]) >= 1
         assert "top RSS" in sig.detail
         first = sig.extra["top_rss"][0]
-        assert set(first) == {"comm", "pid", "rss_kb", "cmdline", "cgroup"}
+        assert set(first) == {"comm", "pid", "rss_kb", "vmhwm_kb",
+                             "cmdline", "cgroup"}
 
     def test_roster_carries_cmdline_and_cgroup_not_just_comm(self, tmp_path):
         """`comm` alone cannot attribute: this box runs two processes whose comm
@@ -404,6 +408,104 @@ class TestConsumerRoster:
         assert sig.severity == "wedge"
         assert sig.extra["top_rss"] is None
         assert "UNREADABLE" in sig.detail
+
+
+# ─────────────────────────────────────────────────────────────────────
+# VmHWM — the burst allocator that current-RSS can never see
+# ─────────────────────────────────────────────────────────────────────
+
+def _fake_proc(tmp_path, procs):
+    """Build a synthetic /proc. ``procs`` = [(pid, rss_kb, vmhwm_kb, cmd)].
+
+    Synthetic on purpose: a real spike-then-release cannot be manufactured on
+    the live box, and that is exactly the case 07-24 needed and lacked.
+    """
+    root = tmp_path / "proc"
+    root.mkdir(exist_ok=True)
+    for pid, rss_kb, vmhwm_kb, cmd in procs:
+        d = root / str(pid)
+        d.mkdir(exist_ok=True)
+        # statm field[1] is resident PAGES; tests assume a 4 KiB page.
+        (d / "statm").write_text(f"99999 {rss_kb // 4} 0 0 0 0 0\n")
+        (d / "comm").write_text(cmd.split()[0] + "\n")
+        (d / "cmdline").write_text(cmd.replace(" ", "\x00") + "\x00")
+        (d / "cgroup").write_text(f"0::/user.slice/session-{pid}.scope\n")
+        status = "Name:\tx\nVmRSS:\t%d kB\n" % rss_kb
+        if vmhwm_kb is not None:
+            status += "VmHWM:\t%d kB\n" % vmhwm_kb
+        status += "VmSwap:\t0 kB\n"
+        (d / "status").write_text(status)
+    return str(root)
+
+
+class TestReleasedPeaks:
+    def test_burst_allocator_is_surfaced_though_rss_is_tiny(self, tmp_path):
+        """THE gap this closes. A process at 40 MB now with a 5 GB high-water
+        mark cannot appear in any current-RSS top-5 — yet it is the one that
+        took the memory. On 07-24 that shape would have gone unfound."""
+        proc = _fake_proc(tmp_path, [
+            (101, 800_000, 800_000, "steady-service"),
+            (102, 700_000, 700_000, "another-service"),
+            (103, 600_000, 600_000, "third"),
+            (104, 500_000, 500_000, "fourth"),
+            (105, 400_000, 400_000, "fifth"),
+            (999,  40_000, 5_000_000, "python burst_allocator.py"),
+        ])
+        sig = probe_host_memory_pressure(
+            meminfo_path=_meminfo(tmp_path, total_kb=1000, avail_kb=50),
+            psi_path=_psi(tmp_path, avg60=0.0), proc_root=proc,
+            debounce_path=str(tmp_path / "s.json"),
+            boot_id_path=_bootid(tmp_path))
+        assert sig is not None
+        rss_pids = {r["pid"] for r in sig.extra["top_rss"]}
+        assert 999 not in rss_pids, "fixture wrong: burster should NOT be top-RSS"
+        peak_pids = {r["pid"] for r in sig.extra["released_peaks"]}
+        assert 999 in peak_pids, "burst allocator not surfaced by VmHWM"
+        assert "RELEASED peaks" in sig.detail
+        assert "burst_allocator" in sig.detail
+
+    def test_no_duplication_between_the_two_views(self, tmp_path):
+        proc = _fake_proc(tmp_path, [
+            (201, 900_000, 4_000_000, "big-and-spiky"),
+            (202, 100_000, 120_000, "small"),
+        ])
+        sig = probe_host_memory_pressure(
+            meminfo_path=_meminfo(tmp_path, total_kb=1000, avail_kb=50),
+            psi_path=_psi(tmp_path, avg60=0.0), proc_root=proc,
+            debounce_path=str(tmp_path / "s.json"),
+            boot_id_path=_bootid(tmp_path))
+        assert 201 in {r["pid"] for r in sig.extra["top_rss"]}
+        assert 201 not in {r["pid"] for r in sig.extra["released_peaks"]}, (
+            "a pid already in the RSS view must not be repeated")
+
+    def test_small_or_modest_peaks_are_not_noise(self, tmp_path):
+        """A 60 MB process that doubled is noise on a 16 GB board, and a process
+        merely 1.2x its current RSS never released anything."""
+        proc = _fake_proc(tmp_path, [
+            (301, 30_000, 60_000, "tiny-doubled"),
+            (302, 500_000, 600_000, "grew-a-bit"),
+        ])
+        sig = probe_host_memory_pressure(
+            meminfo_path=_meminfo(tmp_path, total_kb=1000, avail_kb=50),
+            psi_path=_psi(tmp_path, avg60=0.0), proc_root=proc,
+            debounce_path=str(tmp_path / "s.json"),
+            boot_id_path=_bootid(tmp_path))
+        assert sig.extra["released_peaks"] == []
+        assert "no released peaks" in sig.detail
+
+    def test_missing_vmhwm_is_none_not_zero(self, tmp_path):
+        """Kernel threads have no mm and no VmHWM. None means unknown."""
+        proc = _fake_proc(tmp_path, [(401, 100_000, None, "kthread")])
+        rows = _scan_processes(proc_root=proc)
+        assert rows and rows[0]["vmhwm_kb"] is None
+
+    def test_vmhwm_parsed_from_real_proc(self):
+        """Positive control against the live kernel, not just the fixture."""
+        val = _read_vmhwm(f"/proc/{os.getpid()}/status")
+        assert isinstance(val, int) and val > 0
+
+    def test_unreadable_status_is_none(self, tmp_path):
+        assert _read_vmhwm(str(tmp_path / "nope")) is None
 
 
 # ─────────────────────────────────────────────────────────────────────
