@@ -113,6 +113,23 @@ Integration seam **already exists**: `local_brain_eval --backend {ollama,claude-
 Adding `llamacpp` is a bounded change, and the eval ledger is how you prove the lean
 runtime is not worse — same cases, same grading, three backends on evidence.
 
+⚠️ **FLAW IN THIS PLAN, found the night it was written — fix before Step 2/3.**
+`probe_local_brain_regressed` compares each case's pass/fail history and **does NOT
+key on model**: it fires when the latest run failed and `>= min_prior_passes` (2)
+earlier runs passed. So the multi-backend comparison this plan depends on will
+manufacture false regressions — a case passing twice under 4B then failing under
+1.5B is scored as "the local tier lost a capability it demonstrably had", when it
+is just a different model.
+
+Tonight escaped it only by luck of arithmetic: the two cases that went PASS(4B) →
+FAIL(1.5B) had exactly **1** prior pass against a threshold of 2, verified from the
+ledger. One more comparison run and it would have paged.
+
+Fix first (cheap): make the regression comparison model-aware — key the history by
+`(case_id, model)` or ignore records whose model differs from the latest. Otherwise
+Step 2 and Step 3 cannot be measured without poisoning the very signal that is
+supposed to protect tier-L competence.
+
 Config targets: reuse the GGUF ollama already downloaded, `-c 2048` (not 4096),
 `--cache-type-k/v q8_0`, mmap. Expect **~1.2–1.6 GB total** for 1.5B — fits inside
 moc2's 2,560 MB and moc1's 2,816 MB user caps. Not moc3.
