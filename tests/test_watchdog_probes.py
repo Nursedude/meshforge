@@ -8093,6 +8093,81 @@ def test_local_brain_unreadable_ledger_is_indeterminate(tmp_path):
     assert collect_dispositions()["local_brain_regressed"]["disp"] == "indeterminate"
 
 
+# ── model-awareness (2026-07-25) ──────────────────────────────────────
+# The ditch-ollama plan's Step 2/3 method is backend-vs-backend comparison on
+# identical cases. Un-scoped history turns "a different model answered" into
+# "the tier lost a capability it demonstrably had". 2026-07-24 escaped a false
+# page by arithmetic alone (the flipped cases had 1 prior pass vs a threshold
+# of 2), so these pin the behaviour rather than trusting the margin.
+
+def _eval_rec_m(ts, model, results):
+    """One eval ledger record tagged with the model that produced it."""
+    rec = _eval_rec(ts, results)
+    rec["model"] = model
+    return rec
+
+
+def test_local_brain_other_models_passes_do_not_manufacture_a_regression():
+    # The exact 2026-07-24 shape: 4B passes twice, then a 1.5B A/B run fails
+    # the same case. That is a different model, NOT a lost capability.
+    from utils.watchdog_probe_core import collect_dispositions
+    _reset_disp()
+    recs = [_eval_rec_m(1, "qwen3:4b", [("t1", "triage", True)]),
+            _eval_rec_m(2, "qwen3:4b", [("t1", "triage", True)]),
+            _eval_rec_m(3, "qwen2.5:1.5b", [("t1", "triage", False)])]
+    assert probe_local_brain_regressed(records=recs) is None
+    assert collect_dispositions()["local_brain_regressed"]["disp"] == "clean"
+
+
+def test_local_brain_regression_within_one_model_still_fires():
+    # Scoping must not defang the probe: same model, 2 passes, now failing.
+    _reset_disp()
+    recs = [_eval_rec_m(1, "qwen3:4b", [("t1", "triage", True)]),
+            _eval_rec_m(2, "qwen2.5:1.5b", [("t1", "triage", True)]),
+            _eval_rec_m(3, "qwen3:4b", [("t1", "triage", True)]),
+            _eval_rec_m(4, "qwen3:4b", [("t1", "triage", False)])]
+    sig = probe_local_brain_regressed(records=recs)
+    assert sig is not None and sig.extra["case_ids"] == ["t1"]
+    assert sig.extra["model"] == "qwen3:4b"
+    assert "qwen3:4b" in sig.detail
+
+
+def test_local_brain_stale_failure_under_a_retired_model_stays_quiet():
+    # The bug a naive (case_id, model) key would introduce: an old failure
+    # under a model we no longer run must not page forever. Current model is
+    # whatever the most-recent run used.
+    _reset_disp()
+    recs = [_eval_rec_m(1, "old", [("t1", "triage", True)]),
+            _eval_rec_m(2, "old", [("t1", "triage", True)]),
+            _eval_rec_m(3, "old", [("t1", "triage", False)]),
+            _eval_rec_m(4, "new", [("t1", "triage", True)])]
+    assert probe_local_brain_regressed(records=recs) is None
+
+
+def test_local_brain_model_swap_resets_the_baseline_quietly():
+    # A fresh model with < min_prior_passes history under-fires; it must never
+    # inherit the previous model's passes to page on its first stumble.
+    _reset_disp()
+    recs = [_eval_rec_m(1, "old", [("t1", "triage", True)]),
+            _eval_rec_m(2, "old", [("t1", "triage", True)]),
+            _eval_rec_m(3, "old", [("t1", "triage", True)]),
+            _eval_rec_m(4, "new", [("t1", "triage", True)]),
+            _eval_rec_m(5, "new", [("t1", "triage", False)])]
+    assert probe_local_brain_regressed(records=recs) is None
+
+
+def test_local_brain_untagged_records_keep_legacy_behaviour():
+    # Legacy ledgers with no model field normalise to "" and compare exactly
+    # as they did before scoping existed.
+    _reset_disp()
+    recs = [_eval_rec(1, [("t1", "triage", True)]),
+            _eval_rec(2, [("t1", "triage", True)]),
+            _eval_rec(3, [("t1", "triage", False)])]
+    sig = probe_local_brain_regressed(records=recs)
+    assert sig is not None and sig.extra["model"] == ""
+    assert "unspecified" in sig.detail
+
+
 def test_local_brain_ledger_name_is_ssot_pinned():
     from utils.watchdog_probes_mini import _EVAL_LEDGER_NAME
     from mini_dudeai.local_brain_eval import EVAL_RESULTS_BASENAME

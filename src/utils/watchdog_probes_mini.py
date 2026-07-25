@@ -988,6 +988,19 @@ def probe_local_brain_regressed(
     across records, so budget-chunked partial runs (a different subset each week)
     never manufacture a false drop.
 
+    MODEL-AWARE (2026-07-25): history is scoped to the model of the MOST RECENT
+    run, because "the tier lost a capability it demonstrably had" is only a
+    meaningful claim within one model's capability baseline. Without this, an
+    A/B run of a second model manufactures false regressions out of the first
+    model's passes -- and the ditch-ollama plan's whole Step 2/3 method is
+    backend-vs-backend comparison on identical cases. (2026-07-24 escaped a
+    false page by arithmetic alone: the two cases that went PASS(4B) ->
+    FAIL(1.5B) had exactly 1 prior pass against a threshold of 2.) Swapping the
+    deployed model therefore resets the baseline -- the probe goes quiet on the
+    new model until ``min_prior_passes`` accumulate, which UNDER-fires rather
+    than pages falsely. Runtime/backend is deliberately NOT part of the key: the
+    same model under a leaner runtime SHOULD still be held to what it could do.
+
     Self-guards: no ledger (tier-L not evaluated here -> not the manager box) ->
     inert; unreadable -> indeterminate; non-empty-but-unparseable -> indeterminate
     (never a false clean); no regressed case -> clean. degraded only; the seed
@@ -1028,10 +1041,32 @@ def probe_local_brain_regressed(
                                  reason="empty eval ledger — no runs yet")
                 return None
 
+        # Which model is CURRENT? The one the most-recent run used. A record
+        # with no model field normalises to "" (legacy single-model ledgers),
+        # so those compare exactly as they did before this scoping existed.
+        def _model_of(rec):
+            m = rec.get("model") if isinstance(rec, dict) else None
+            return m if isinstance(m, str) else ""
+
+        current_model = ""
+        best_ts = None
+        for rec in records:
+            if not isinstance(rec, dict):
+                continue
+            rts = rec.get("ts")
+            rts = rts if isinstance(rts, (int, float)) else 0.0
+            # >= so that on a ts tie the LATER record in the file wins.
+            if best_ts is None or rts >= best_ts:
+                best_ts = rts
+                current_model = _model_of(rec)
+
         # Per-case pass/fail history across records, ordered by run ts.
+        # Scoped to current_model: another model's passes are NOT this model's.
         history: dict = {}
         for rec in records:
             if not isinstance(rec, dict):
+                continue
+            if _model_of(rec) != current_model:
                 continue
             rts = rec.get("ts")
             rts = rts if isinstance(rts, (int, float)) else 0.0
@@ -1055,23 +1090,27 @@ def probe_local_brain_regressed(
                 regressed.append((cid, kind, prior_passes))
 
         if not regressed:
-            note_disposition(cls, "clean")
+            note_disposition(cls, "clean",
+                             reason=f"model={current_model or 'unspecified'}")
             return None
 
         regressed.sort()
         names = ", ".join(f"{cid}({kind})" for cid, kind, _ in regressed[:4])
+        model_txt = current_model or "unspecified"
         return Signal(
             cls="local_brain_regressed",
             subject="local-brain",
             severity="degraded",
             detail=(
-                f"{len(regressed)} local-brain eval case(s) REGRESSED — passed "
-                f">={min_prior_passes}x before, now failing: {names}. The tier-L "
-                f"model lost a capability the aggregate --gate (and #78) can miss. "
-                f"Re-run `python3 -m mini_dudeai.local_brain_eval` and inspect "
+                f"{len(regressed)} local-brain eval case(s) REGRESSED under model "
+                f"'{model_txt}' — passed >={min_prior_passes}x before ON THIS "
+                f"MODEL, now failing: {names}. The tier-L model lost a capability "
+                f"the aggregate --gate (and #78) can miss. Re-run "
+                f"`python3 -m mini_dudeai.local_brain_eval` and inspect "
                 f"failed_ids; each seed case names the incident class it guards."
             ),
             extra={"regressed": len(regressed),
+                   "model": current_model,
                    "case_ids": [c for c, _, _ in regressed[:8]]},
         )
     except Exception:
