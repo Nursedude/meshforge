@@ -57,6 +57,46 @@ it is the difference between a continuity layer and a single point of failure, a
 it is what *"best in class MOC that runs mini dudeai, standalone, fleet reliably"*
 actually requires.
 
+## 🎯 THE SIMPLEST ANSWER — measured 2026-07-25, and it may obviate Steps 2–3
+
+Before building any local ratifier, I measured what the ratifier is FOR.
+From `~/mini_dudeai_memory_deltas.jsonl` (dedupe by `key` first) and git:
+
+| | |
+|---|---|
+| new proposals | **1.41 / day** (80 unique keys / 57 days) |
+| ratifications | **0.33 / day** — one every three days (19 ratified) |
+| **awaiting a frontier visit** | **0 — the backlog is empty** |
+| frontier session visits | **6.4 days / week** (82 distinct commit-days in 90) |
+
+**The whole ollama arc has been building a local ratifier to drain a queue that
+is empty, while the ratifier we already have shows up almost every day.** ollama,
+the 4B/1.5B comparison, llama.cpp, the classifier — four pieces of machinery for
+a throughput problem that does not exist.
+
+So the honest architecture is the one Step 2's SPLIT table describes, with the
+semantic half assigned to **the visiting session**, not to a local model:
+
+- **REFUSE** — tier R, all nine boxes, moc3 included. A wrong memory is refused
+  everywhere, always. Cheap, lexical, measured to work.
+- **RATIFY** — the frontier session, on its next visit. It already does this.
+
+This does not solve rung 2. It makes rung 2 **unnecessary**, which is strictly
+better than solving it. And the degradation story is honest: with no frontier
+session, proposals queue SAFELY (nothing wrong enters memory anywhere) and drain
+on the next visit. Queueing is the correct behaviour, not a failure.
+
+⚠️ **Re-derive these four numbers before acting on them.** If the proposal rate
+rises by an order of magnitude, or visits become rare (field kit, rationing, an
+operator away), the arithmetic changes and a local ratifier earns its place
+again. The conclusion is a function of the rates, not a principle.
+
+> The general form, worth keeping: **the AI is a VISITOR, the fleet is a
+> RESIDENT.** The resident observes and refuses and must fit the smallest box.
+> The visitor ratifies and designs and rations itself. Nearly every bloat in this
+> system came from asking the resident to do the visitor's job —
+> [[feedback_my_footprint_is_the_constraint]].
+
 ## Ordered plan
 
 ### STEP 0 — ✅ DONE 2026-07-25 (`7607ceed`, CI 4/4 green)
