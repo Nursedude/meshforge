@@ -77,6 +77,7 @@ from utils.watchdog_probes import (
     probe_fd_exhaustion,
     probe_history_write_failure,
     probe_inherited_app_drift,
+    probe_host_memory_pressure,
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
     probe_meshtasticd_phoneapi_wedge,
@@ -766,6 +767,18 @@ def run_all_probes(
     # (rpi-v8 vs rpi-2712 never compared); indeterminate shapes stay silent;
     # 2-tick debounce rides out a tick landing mid-upgrade.
     sig = probe_kernel_reboot_pending()
+    if sig is not None:
+        signals.append(sig)
+
+    # Host memory pressure (2026-07-24 manager-box hard-reset arc) — the box is
+    # running out of RAM. UNCONDITIONAL: every box has memory, and the failure
+    # it catches is fatal to the whole box rather than to one service, so it is
+    # deliberately not gated on any unit being active. Read-only /proc, no
+    # subprocess (works inside the hardened sandbox). Fires BEFORE the hardware
+    # watchdog resets the box, and its detail names the top RSS consumers —
+    # the "who took the memory" witness the 07-24 post-mortem could not find,
+    # because /tmp is tmpfs (wiped by the reset) and sysstat is disabled.
+    sig = probe_host_memory_pressure()
     if sig is not None:
         signals.append(sig)
 

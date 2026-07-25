@@ -419,6 +419,25 @@
       "annotation": "Issue #73 \u2014 open fds approaching the soft RLIMIT_NOFILE (proactive companion to http_local; fires BEFORE :5000 wedges with [Errno 24]). Restart the service to clear, then find the fd leak (sudo ls /proc/PID/fd | wc -l)."
     },
     {
+      "id": "host_memory_pressure_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "host_memory_pressure",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "ntfy",
+        "title": "[RED] host running out of memory",
+        "message": "{subject}: {detail}",
+        "priority": "high",
+        "tags": [
+          "warning"
+        ]
+      },
+      "cooldown_s": 900,
+      "annotation": "2026-07-24 hard-reset arc (8th) \u2014 the box is running out of RAM. Pages (not escalate-only) because the end state is a HARDWARE reset, not a degraded service: on this fleet a sustained memory stall starves PID 1 past RuntimeWatchdogUSec=1min and the watchdog resets the box, so there is no oom-kill to soften it and no second chance to notice. The 07-24 reset gave ~34s between the first sub-20% sample and the cut, hence the short 15m cooldown. The detail names the top RSS consumers \u2014 read it FIRST, it is the only record of who was allocating (/tmp is tmpfs and is wiped by the reset). Also check tmpfs: df -h /tmp /dev/shm \u2014 that is RAM the OOM killer cannot reclaim and it leaves no RSS trail."
+    },
+    {
       "id": "channel_feed_dark_any",
       "match": {
         "kind": "signal_class",
