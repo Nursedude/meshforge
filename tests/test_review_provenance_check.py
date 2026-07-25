@@ -122,6 +122,104 @@ class TestCommitClaimsReview(unittest.TestCase):
         self.assertTrue(rpc.commit_claims_review("fix: 3 findings from pass"))
 
 
+class TestClaimDetectionFalsePositives(unittest.TestCase):
+    """Three false positives measured on 2026-07-25 — each cost a real push.
+
+    The gate's own docstring says it biases to precision because a false block
+    costs a real push. These are the cases where it didn't. The gate reads
+    tokens, not meaning; these tests pin the two places that matters most.
+    """
+
+    def test_iso_date_before_the_keyword_is_not_a_count(self):
+        """"2026-07-25 findings" — the DATE's day number matched the
+        numeric-count pattern. An ordinary dated summary line tripped it."""
+        self.assertFalse(rpc.commit_claims_review(
+            "docs: MF012 demotion pass + the two 2026-07-25 findings"))
+
+    def test_iso_date_across_a_newline_is_not_a_count(self):
+        r"""\s spans newlines, so a wrapped date+keyword matched too."""
+        self.assertFalse(rpc.commit_claims_review(
+            "docs: notes\n\nthe DATE in \"2026-07-25\nfindings\" tripped it"))
+
+    def test_denying_a_review_is_not_claiming_one(self):
+        """The honest disclaimer was itself unpublishable: a sentence DENYING
+        a pass happened matched as strongly as one asserting it."""
+        self.assertFalse(rpc.commit_claims_review(
+            "docs: reworded — no review pass was run here, so a provenance "
+            "row would have been a false witness"))
+
+    def test_other_negations_are_honoured(self):
+        for msg in (
+            "docs: this was not a code-review, just a typo fix",
+            "docs: shipped without a self-review",
+            "chore: never ran an adversarial pass on this",
+        ):
+            with self.subTest(msg=msg):
+                self.assertFalse(rpc.commit_claims_review(msg))
+
+
+class TestClaimDetectionStillCatchesRealClaims(unittest.TestCase):
+    """The precision fixes must not open a hole — a real claim still blocks."""
+
+    def test_real_counts_still_claim(self):
+        for msg in ("fix: 3 findings from the pass",
+                    "fix: 11 findings, all confirmed",
+                    "fix: 6-finder sweep",
+                    "fix: 6-angle adversarial pass"):
+            with self.subTest(msg=msg):
+                self.assertTrue(rpc.commit_claims_review(msg))
+
+    def test_wrapped_real_count_still_claims(self):
+        """Precision must not cost a genuine wrapped claim — a commit body
+        wrapped at 72 chars can split the number from the keyword."""
+        self.assertTrue(rpc.commit_claims_review(
+            "fix: the arc\n\nthe pass produced 8\nfindings, all confirmed"))
+
+    def test_negation_does_not_leak_past_a_sentence_boundary(self):
+        """A negator in a PRIOR clause must not suppress a later real claim."""
+        self.assertTrue(rpc.commit_claims_review(
+            "fix: this was not a quick patch; a full code-review found bugs"))
+        self.assertTrue(rpc.commit_claims_review(
+            "fix: no shortcuts taken. self-review of the whole arc"))
+
+    def test_dated_row_with_a_real_count_still_claims(self):
+        """A date elsewhere must not immunise a genuine count."""
+        self.assertTrue(rpc.commit_claims_review(
+            "docs: 2026-07-25 audit — 8 findings, all confirmed"))
+
+
+class TestHyphenatedLabelVsAttributedFinding(unittest.TestCase):
+    """Both from REAL history — the only two commits in 800 whose verdict the
+    2026-07-25 precision fix changed. They look alike and must not be treated
+    alike, so the discriminator is pinned here.
+
+    The numeric guard stops a hyphenated LABEL ("pri-1", "thread-3") posing as
+    a count. That is right for both — but one of them attributes its finding to
+    a REVIEW and so must still demand a witness row.
+    """
+
+    def test_finding_attributed_to_a_review_still_claims(self):
+        """6afe194c — genuinely review-derived; it has a provenance row."""
+        self.assertTrue(rpc.commit_claims_review(
+            "fix: gateway_heartbeat peer-liveness on monotonic clock (Pri-1)\n\n"
+            "The Pri-1 finding from the 2026-07-23 gateway review. _check_peers "
+            "aged peer liveness on wall-clock time.time()."))
+
+    def test_label_only_finding_with_no_review_does_not_claim(self):
+        """7867f9f5 — 'Thread-3 finding' is a scope-doc thread, not a review.
+        Caught before only because '3' read as a count."""
+        self.assertFalse(rpc.commit_claims_review(
+            "docs(provisioner): config-delta assertion-upgrade DONE\n\n"
+            "Records the Thread-3 finding: the map defaults are code-baked / "
+            "deployment-specific (not operator-settable)."))
+
+    def test_attribution_does_not_reach_across_a_sentence(self):
+        """Same-clause only — an unrelated later mention must not attribute."""
+        self.assertFalse(rpc.commit_claims_review(
+            "docs: records the thread-3 finding. separately, the review "
+            "cadence doc moved"))
+
+
 class TestProvenanceMentionsSha(unittest.TestCase):
     def test_short_sha_prefix_matches_full(self):
         full = "7282dad4835d4fd09598d303492cf7c397d0561e"

@@ -75,16 +75,46 @@ FRONTIER_MODEL_PREFIXES = ("claude-fable-",)
 #: witness row. Deliberately the high-signal phrasings this repo's convention
 #: uses; bare "reviewed" is excluded (too common in incidental use — a false
 #: block costs a real push, so bias to precision, honest about the limit).
+#:
+#: The numeric patterns carry a `(?<![-\d/.])` guard so an ISO DATE cannot pose
+#: as a count: in "2026-07-25 findings" the day number is preceded by a hyphen,
+#: and every shorter start position is preceded by a digit. Without it an
+#: ordinary dated summary line blocked a push (measured 3× on 2026-07-25).
+#: `\s+` is deliberately kept (it spans newlines) so a genuine claim wrapped
+#: across a line break still counts — the date, not the newline, was the bug.
 REVIEW_CLAIM_PATTERNS = (
     r"self[-\s]?review",
     r"adversarial",
     r"\bcode[-\s]?review\b",
     r"/code-review",
     r"\breview pass\b",
-    r"\b\d+\s+finding",       # "3 findings", "11 findings"
-    r"\b\d+[-\s]?finder\b",   # "6-finder", "10 finder"
-    r"\b\d+[-\s]?angle\b",    # "6-angle adversarial"
+    r"(?<![-\d/.])\b\d{1,3}\s+finding",       # "3 findings", "11 findings"
+    r"(?<![-\d/.])\b\d{1,3}[-\s]?finder\b",   # "6-finder", "10 finder"
+    r"(?<![-\d/.])\b\d{1,3}[-\s]?angle\b",    # "6-angle adversarial"
+    # A finding attributed to a review — "the Pri-1 finding from the
+    # 2026-07-23 gateway review". The numeric guard above deliberately stops
+    # reading a hyphenated LABEL ("pri-1", "thread-3") as a count, and this
+    # keeps the genuinely review-attributed ones (6afe194c) claiming without
+    # resurrecting the label-only false positives (7867f9f5, which references
+    # a scope-doc thread and no review at all). Same-clause only.
+    r"\bfinding[s]?\b[^.\n]{0,40}\breview\b",
 )
+
+#: Words that flip a claim into a DENIAL. Without these the gate had no
+#: negation awareness: "no review pass was run here" matched as strongly as an
+#: assertion, so the honest disclaimer was itself unpublishable.
+NEGATION_TERMS = (
+    r"\b(?:no|not|never|without|nor|non|neither|"
+    r"isn't|wasn't|weren't|didn't|doesn't|won't|can't|cannot)\b"
+)
+
+#: How far back to look for a negator. Short on purpose — a negator in an
+#: earlier clause must not immunise a later real claim.
+NEGATION_WINDOW_CHARS = 30
+
+#: A negator before one of these does NOT reach across it. Keeps
+#: "not a quick patch; a full code-review found bugs" a real claim.
+NEGATION_STOP_CHARS = (".", ";", ":", "\n", "—", "|")
 
 #: Phrases in a COMPLETED-row Mechanism column that ASSERT the rationed frontier
 #: pass ran. A non-frontier session may not stamp these — it queues instead.
@@ -131,12 +161,37 @@ def newest_ledger_model_id(events):
     return best_model
 
 
+def _is_negated(low, start):
+    """True if the claim beginning at ``start`` is DENIED by a nearby negator.
+
+    Looks back a short window, then discards anything at or before the last
+    clause boundary in it — so "not a quick patch; a full code-review found
+    bugs" stays a real claim while "no review pass was run here" does not.
+    """
+    window = low[max(0, start - NEGATION_WINDOW_CHARS):start]
+    for sep in NEGATION_STOP_CHARS:
+        idx = window.rfind(sep)
+        if idx != -1:
+            window = window[idx + 1:]
+    return re.search(NEGATION_TERMS, window) is not None
+
+
 def commit_claims_review(message):
-    """True if a commit message asserts a review happened."""
+    """True if a commit message ASSERTS a review happened.
+
+    A denial is not an assertion: every match is checked against a nearby
+    negator, so a message that says a pass did NOT happen does not demand a
+    provenance row (which would be a false witness). Precision matters here —
+    a false block costs a real push.
+    """
     if not message:
         return False
     low = message.lower()
-    return any(re.search(p, low) for p in REVIEW_CLAIM_PATTERNS)
+    for pat in REVIEW_CLAIM_PATTERNS:
+        for m in re.finditer(pat, low):
+            if not _is_negated(low, m.start()):
+                return True
+    return False
 
 
 def provenance_mentions_sha(prov_text, full_sha):
