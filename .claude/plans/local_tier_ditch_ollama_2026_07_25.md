@@ -181,11 +181,44 @@ one-directional scoreboard is how you ship a refuse-everything ratifier.
 
 ### STEP 1 — make tier-R primary for triage
 
+> 🛑 **PREMISE CORRECTED 2026-07-25 (measured) — "largely deterministic" is
+> TRUE for refusing and FALSE for ratifying.** Rungs 1 and 3–4 below are cheap
+> and lexical. **Rung 2 is not implementable with cheap features**, and that was
+> measured, not guessed:
+>
+> | signal | my 6 synthetic cases | 80 real dream-record labels |
+> |---|---|---|
+> | longest shared n-gram ≥ 5 | precision **1.00** | precision **0.33** (base rate 0.25) |
+> | claim↔excerpt word coverage | ranges overlap | ranges overlap (0.49–0.77 vs 0.31–0.79) |
+>
+> The n-gram "corroboration tell" was an **artifact of my own authoring** — I
+> selected the Step 0 cases by requiring a corroborating phrase in the excerpt,
+> so a phrase-matching rule passed them by construction. On labels produced by a
+> different process over months it is barely above chance. Deciding that a record
+> *corroborates* a claim rather than merely *concerns the same topic* is a
+> semantic judgement; BM25 ranks topic, not agreement. Every deliberately-wrong
+> proposal in the corpus is wrong ABOUT A TOPIC THE CORPUS COVERS, so topical
+> similarity actively misleads here.
+>
+> ⚠️ **The consequence, and it is the plan's turning point: a tier-R-ONLY brain
+> can refuse but cannot ratify — which is exactly 1.5B's failure mode reached by
+> a different road.** Pure tier-R is not a lean second brain; it is a
+> refuse-everything ratifier with no model to blame. See the SPLIT architecture
+> in Step 2.
+>
+> Limit on this result, stated not buried: the dream record's `ratified`/
+> `rejected` is not identical to a triage disposition (a true, corroborated
+> proposal is still rejected as `duplicate` or `already_fixed`). So it is a
+> PROXY — strong evidence against the specific tell, weaker evidence that no
+> corroboration feature exists at all. Method:
+> `scratchpad/dream_separability.py` pattern — dedupe by key first (66 of 146
+> records are re-proposals; mini's brief was right to count 80).
+
 The decision "does this assert system behaviour, and does retrieval contradict it?"
-is largely deterministic. `cadence_fallback` **already** degrades honestly to
-`brain_tier: rules` with a "backlog pending, untriaged" note when the LLM fails —
-promote that path from fallback to DEFAULT, and run any model as an optional
-second opinion.
+is largely deterministic **on the refuse side**. `cadence_fallback` **already**
+degrades honestly to `brain_tier: rules` with a "backlog pending, untriaged" note
+when the LLM fails — promote that path from fallback to DEFAULT for REFUSAL, and
+keep a semantic tier for ratification.
 
 Measure both against the balanced suite from Step 0.
 
@@ -228,6 +261,13 @@ ordering. **Do not imitate 4B's behaviour as a specification** — that was the
 original flat list's mistake, encoded from watching a model instead of deciding
 a policy.
 
+> ❌ **THE 6/6 PREDICTION IS WITHDRAWN (same day, before anyone built on it).**
+> It assumed rung 2 was free. It is not — see the corrected premise at the top of
+> this step. A tier-R written to this precedence would score well on the six cases
+> **because I authored them against a phrase gate**, and that number would mean
+> nothing. The precedence above is still right as POLICY; what is missing is a
+> way to COMPUTE rung 2. Do not build a ratifier to hit 6/6.
+
 ⚠️ **The honest risk:** a heuristic tuned to today's cases is brittle on shapes
 nobody anticipated. That is exactly what a model generalises over. So Step 1's exit
 criterion is the BALANCED suite, not the five cases that motivated it — and if
@@ -243,16 +283,48 @@ also removes "just run the smaller model" as the cheap way out of the moc3
 hardware floor: the small model does not do this job at all. The floor argument
 stands on its own — a rules+retrieval tier runs on all nine boxes.
 
-- **tier-R passes the balanced suite** → done. No ollama, no llama.cpp, no model.
-  Continuity runs fleet-wide including moc3. (As of 2026-07-25 the bar to clear
-  is **4/6** — and tier-R written to Step 1's precedence is predicted to beat it.
-  If that prediction holds, this branch is taken and Step 3 never runs.)
-- **tier-R fails specific cases** → those cases tell you what KIND of model. Most
+#### 🧭 THE SHAPE TO AIM AT — a SPLIT, not a replacement (revised 2026-07-25)
+
+The measurement in Step 1 says refusal and ratification are different problems
+with different hardware floors. So stop looking for one tier that does both:
+
+| direction | tier | runs on | why |
+|---|---|---|---|
+| **REFUSE** (contradiction, behaviour-without-corroboration, absence) | **R** — rules + BM25 | **all nine boxes, moc3 included** | cheap, lexical, inspectable, measured to work |
+| **RATIFY** (does this record corroborate this claim?) | semantic — classifier or model | wherever one fits | measured NOT to work lexically; BM25 ranks topic, not agreement |
+
+This keeps the property that actually matters fleet-wide — **a wrong memory is
+refused everywhere, including on the 905 MB box** — while conceding that
+*admitting* a memory needs more than BM25. It is a weaker claim than "no model
+at all", and it is the one the evidence supports.
+
+⚠️ Note what this does NOT rescue: a box that can only refuse contributes no new
+memory. If ratification is centralised on the manager, then the manager's eight
+hard resets are again a single point of failure for MEMORY GROWTH (not for
+memory integrity). Decide that consciously; do not let it happen by default.
+
+- ~~**tier-R passes the balanced suite** → done. No ollama, no llama.cpp, no
+  model.~~ **UNLIKELY as of 2026-07-25** — this branch needed rung 2 to be
+  computable and it is not. Kept struck-through rather than deleted: if someone
+  later finds a cheap corroboration feature that holds on the dream record
+  (precision ≫ 0.25 base rate), this branch reopens and Step 3 never runs.
+- **tier-R fails specific cases** → **THIS IS THE LIVE BRANCH.** Those cases tell
+  you what KIND of model. Most
   likely a small **discriminative classifier**, not a chat model: the task is
   classification and the labels already exist — the dream-proposal record has
-  **80 reviewed / 19 ratified with rejection reasons**, plus the calibration ledger's
+  **80 unique-key proposals / 20 ratified** (146 records before dedupe; dedupe by
+  key FIRST), plus the calibration ledger's
   47 claims with held/broke outcomes. TF-IDF + logistic regression or a ~100 MB
   encoder; tens of MB, CPU, retrainable on the fleet.
+
+  ⚠️ **The training set is THIN — say so before fitting anything.** 80 unique
+  keys, 20 positives, class-imbalanced 1:3. A classifier will look good on 80
+  rows and that number will not be trustworthy. Before fitting: hold out by TIME
+  (train on older proposals, test on newer) rather than at random, so the score
+  cannot be inflated by near-duplicate keys from the same incident. And note the
+  label means "should this enter memory", which folds in `duplicate` and
+  `already_fixed` — related to corroboration, not identical to it. Growing the
+  label set may be the prerequisite, not the model.
 
 ### STEP 3 — llama.cpp, only if a generative tier survives Step 2
 
@@ -303,6 +375,7 @@ own. Smaller than a model fork, not free.
 | option | why not |
 |---|---|
 | **Train/fine-tune our own LLM** | You already own two hard forks (RNS, LXMF) and know the arithmetic — governance triggers, upstream tracking, interop proofs per roll. A bespoke model is a third fork with worse tooling, **no wire-compat analogue to keep it honest**, and no independent way to prove it has not regressed except an eval ledger you would have to build anyway. Revisit only if Step 2 shows a gap that constraint and a classifier cannot close. |
+| **A lexical "does retrieval corroborate this?" rule** | **MEASURED DEAD 2026-07-25.** Longest-shared-n-gram ≥5 scored precision 1.00 on the 6 cases I authored and **0.33 on 80 real dream-record labels** (base rate 0.25); claim↔excerpt word coverage does not separate the populations at all. BM25 ranks TOPIC, and every deliberately-wrong proposal is wrong about a topic the corpus covers — so topical similarity actively misleads. Reopen only with a feature that beats base rate on labels nobody in the session authored. |
 | **Build a retrieval index** | **Already built.** `offline_oracle` has lexical BM25 over `persistent_issues*` + the memory dir, and `--retrieve-only` is documented as *"deterministic (tier R) and needs no LLM at all."* Step 1 is WIRING, not building. (I proposed building it before checking — do not repeat that.) |
 | **Add a probe to watch the observer's cost** | The recursion the operator warned about. `probe_host_memory_pressure` already names top RSS consumers and top cgroups, so a bloating watchdog surfaces there for free. |
 | **Lower the rtun bounce threshold** (adjacent) | 115 `TUN_DEAD` in 3 days with only 4 bounces: 111 self-healed inside one 3-min cycle. A threshold of 1 means ~38 restarts/day. The flap interval is the defect, not the threshold. |
@@ -312,8 +385,11 @@ own. Smaller than a model fork, not free.
 1. ✅ **DONE 2026-07-25** — balanced eval suite exists (`7607ceed`); both
    directions measured for both candidate models (4B 4/6, 1.5B 0/6). Remaining
    under this item: measure **tier-R** on the same six.
-2. Triage runs deterministically by default, grounded in retrieval, on **all nine
-   boxes** — moc3 included.
+2. **REFUSAL** runs deterministically by default, grounded in retrieval, on **all
+   nine boxes** — moc3 included. **RATIFICATION** runs wherever a semantic tier
+   fits, and the plan says out loud where that is. (Revised 2026-07-25: the
+   original wording said "triage" for both directions, which the measurement
+   showed is not achievable — see Step 1's corrected premise.)
 3. ollama is either gone or demoted to an optional enrichment nothing depends on.
 4. `local_brain_eval` ledger carries a backend-vs-backend comparison on identical
    cases, so the choice is evidence rather than preference.
@@ -343,5 +419,12 @@ RAM**. Same milliseconds, different meaning. See
   4B run tips those to 2 and pages falsely. The flaw was not hypothetical.
 - Memory: `project_volcanoai_reset_8_memory_pressure_2026_07_24`,
   `feedback_my_footprint_is_the_constraint`.
+- **Label set for Step 2**: `~/mini_dudeai_memory_deltas.jsonl` — 146 records,
+  **80 unique keys after dedupe, 20 ratified / 60 rejected**. Real verdicts from
+  a different process over months, which is why it — and not the synthetic eval
+  corpus — is the honest test bed for any ratification signal. ⚠️ Dedupe by
+  `key` FIRST; 66 records are re-proposals and counting raw records inflates
+  both the total and the ratified count (I did exactly that on 2026-07-25 and
+  mini's brief had it right).
 - Rule this serves: `honest_failure_modes` #10 — a resolved incident owes an eval
   case to tier-L, or its competence on the class stays permanently BELIEVED.
