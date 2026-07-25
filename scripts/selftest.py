@@ -50,8 +50,89 @@ def check_python_version():
         return False
 
 
+def runtime_python(repo_root=None):
+    """``(interpreter_path, provenance)`` — the python MeshForge SERVICES use.
+
+    This selftest used to check whichever interpreter happened to invoke it,
+    which on a venv-deployed box is the WRONG consumer. Observed 2026-07-24 on
+    a collector box: run as ``python3 scripts/selftest.py`` it reported ``rich``
+    and ``meshtastic`` "not installed" and exited 1, while the box was entirely
+    healthy — ``/opt/meshforge/venv`` had all five core deps, and that venv is
+    what meshforge-map's ExecStart actually execs. A red check on a good box is
+    the failure mode this whole file exists to prevent (calibrated_claims #7:
+    verify the consumer-of-record, not the wiring).
+
+    The venv decision has ONE owner — ``pip_install.resolve_target_python`` ->
+    ``version_checker.get_meshforge_venv_dir`` — which also honours the
+    ``.no-venv`` sentinel that a hand-rolled ``[ -x venv/bin/python ]`` test
+    would silently ignore. We import it rather than restate it
+    (honest_failure_modes #5).
+
+    If that import fails the install is broken in exactly the way this script
+    exists to report, so we fall back to the invoking interpreter and SAY the
+    resolution was unverified — never silently pretend it is authoritative.
+    """
+    root = Path(repo_root) if repo_root else Path(__file__).parent.parent
+    src = root / "src"
+    if str(src) not in sys.path:
+        sys.path.insert(0, str(src))
+    try:
+        from utils.pip_install import resolve_target_python
+        target = resolve_target_python()
+    except Exception:
+        return sys.executable, "invoking interpreter (venv resolution UNAVAILABLE)"
+
+    if target == "python3":                       # SSOT says: no venv in use
+        return sys.executable, "invoking interpreter (no venv configured)"
+    if not os.access(target, os.X_OK):
+        return sys.executable, f"invoking interpreter ({target} not executable)"
+    return target, "MeshForge venv (the interpreter services exec)"
+
+
+def same_interpreter(a, b):
+    """Do ``a`` and ``b`` import from the same site-packages?
+
+    Compares INVOCATION paths, deliberately NOT ``os.path.realpath``. A venv's
+    ``bin/python`` is a symlink to the base interpreter, so realpath collapses
+    ``/opt/meshforge/venv/bin/python`` and ``/usr/bin/python3`` to the same
+    ``/usr/bin/python3.13`` — while their ``sys.prefix`` (and therefore their
+    site-packages) differ completely. Resolving symlinks here would make the
+    caller take the in-process fast path and report on the WRONG interpreter
+    while claiming the right one: a confidently-wrong answer, which is worse
+    than the reporting gap this function was added to close.
+    """
+    return os.path.abspath(a) == os.path.abspath(b)
+
+
+def check_import_in(python_path, module_name, package_name=None):
+    """Is ``module_name`` importable by ``python_path``?
+
+    Uses find_spec rather than a real import: no side effects, and a module
+    that imports slowly (or errors at import time) does not distort the answer
+    to the question actually asked, which is "is it installed".
+    """
+    label = package_name or module_name
+    if same_interpreter(python_path, sys.executable):
+        return check_import(module_name, package_name)
+    import subprocess
+    probe = ("import importlib.util as u, sys; "
+             f"sys.exit(0 if u.find_spec({module_name!r}) else 1)")
+    try:
+        rc = subprocess.run([python_path, "-c", probe],
+                            capture_output=True, timeout=20).returncode
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        # Unobservable != absent. Say so; do not score it as installed.
+        warn(f"{label} — could not query {python_path} ({type(exc).__name__})")
+        return None
+    if rc == 0:
+        ok(label)
+        return True
+    fail(f"{label} not installed")
+    return False
+
+
 def check_import(module_name, package_name=None):
-    """Check if a module can be imported."""
+    """Check if a module can be imported (in THIS interpreter)."""
     try:
         __import__(module_name)
         ok(f"{package_name or module_name}")
@@ -173,8 +254,15 @@ def main():
     else:
         results['failed'] += 1
 
-    # 2. Core dependencies — derived from requirements/core.txt (single owner)
+    # 2. Core dependencies — derived from requirements/core.txt (single owner),
+    # checked in the interpreter the SERVICES run on (not necessarily ours).
+    py, provenance = runtime_python()
     print(f"\n{CYAN}Core Dependencies{NC}")
+    info(f"checking {py}  [{provenance}]")
+    if not same_interpreter(py, sys.executable):
+        info(f"invoked with {sys.executable} — deps are reported for the "
+             f"RUNTIME interpreter above, which is what the services use")
+
     core_deps = core_dependencies()
     if core_deps is None:
         warn("requirements/core.txt unreadable — checking a reduced fallback "
@@ -182,10 +270,13 @@ def main():
         results['warnings'] += 1
         core_deps = _CORE_FALLBACK
     for module, package in core_deps:
-        if check_import(module, package):
+        got = check_import_in(py, module, package)
+        if got is True:
             results['passed'] += 1
-        else:
+        elif got is False:
             results['failed'] += 1
+        else:
+            results['warnings'] += 1      # unobservable — never a silent pass
 
     # 3. Optional dependencies — graceful-degradation deps (safe_import sites)
     # and profile extras. NOT in core.txt by design; a miss is a warning, never
@@ -198,10 +289,10 @@ def main():
         ('psutil', 'psutil'),
     ]
     for module, package in optional_deps:
-        if check_import(module, package):
+        if check_import_in(py, module, package) is True:
             results['passed'] += 1
         else:
-            results['warnings'] += 1
+            results['warnings'] += 1      # absent OR unobservable: both warn
 
     # 4. MeshForge modules
     print(f"\n{CYAN}MeshForge Modules{NC}")

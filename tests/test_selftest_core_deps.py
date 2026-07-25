@@ -95,6 +95,61 @@ class TestDerivedFromRequirements:
                 f"core dep {package!r} (module {module!r}) not importable")
 
 
+class TestRuntimeInterpreter:
+    """Which interpreter gets checked — the services', not the invoker's.
+
+    Observed 2026-07-24 on a collector box: `python3 scripts/selftest.py`
+    reported rich + meshtastic "not installed" and exited 1, while the box was
+    healthy — /opt/meshforge/venv had all five, and that venv is what
+    meshforge-map's ExecStart execs.
+    """
+
+    def test_symlinked_venv_is_not_confused_with_its_base(self, selftest):
+        """THE regression pin, and it is not hypothetical — the first cut of
+        this fix used os.path.realpath, which collapses a venv's bin/python
+        onto /usr/bin/python3.13 and made the checker silently report on the
+        invoking interpreter while printing the venv's path."""
+        assert selftest.same_interpreter(
+            "/opt/meshforge/venv/bin/python", "/usr/bin/python3") is False
+
+    def test_same_path_is_same_interpreter(self, selftest):
+        assert selftest.same_interpreter(sys.executable, sys.executable) is True
+
+    def test_relative_and_absolute_forms_agree(self, selftest):
+        assert selftest.same_interpreter("/usr/bin/../bin/python3",
+                                         "/usr/bin/python3") is True
+
+    def test_runtime_python_reports_provenance(self, selftest):
+        py, prov = selftest.runtime_python()
+        assert isinstance(py, str) and py
+        assert isinstance(prov, str) and prov, "must always say WHICH and WHY"
+
+    def test_runtime_python_prefers_the_venv_when_present(self, selftest):
+        py, prov = selftest.runtime_python()
+        venv = REPO_ROOT / "venv" / "bin" / "python"
+        no_venv = REPO_ROOT / ".no-venv"
+        if venv.exists() and not no_venv.exists():
+            assert py == str(venv), "venv exists but was not selected"
+            assert "venv" in prov.lower()
+
+    def test_unqueryable_interpreter_is_none_not_false(self, selftest, tmp_path):
+        """Unobservable != absent. A bogus interpreter must not be scored as a
+        missing dependency (which would fail a healthy box)."""
+        bogus = str(tmp_path / "no_such_python")
+        assert selftest.check_import_in(bogus, "sys", "sys") is None
+
+    def test_cross_interpreter_check_actually_queries_that_python(self, selftest):
+        """Positive control: a stdlib module answers True through the
+        subprocess path, proving the path works end to end."""
+        venv = REPO_ROOT / "venv" / "bin" / "python"
+        if not venv.exists():
+            pytest.skip("no venv on this box")
+        assert not selftest.same_interpreter(str(venv), sys.executable)
+        assert selftest.check_import_in(str(venv), "json", "json") is True
+        assert selftest.check_import_in(
+            str(venv), "definitely_not_a_real_module_xyz", "ghost") is False
+
+
 class TestParser:
     def _write(self, tmp_path, body):
         r = tmp_path / "requirements"
