@@ -14,6 +14,8 @@ The incident's own numbers are used as a regression fixture where possible so
 the thresholds stay anchored to a real event rather than to taste.
 """
 
+import json
+
 import pytest
 
 from utils.watchdog_probe_core import (
@@ -23,8 +25,10 @@ from utils.watchdog_probe_core import (
 from utils.watchdog_probes import probe_host_memory_pressure
 from utils.watchdog_probes_host import (
     _format_consumers,
+    _rate_drop,
     _read_meminfo,
     _read_psi_memory_avg60,
+    _top_cgroups,
     _top_rss_consumers,
 )
 
@@ -53,6 +57,13 @@ def _psi(tmp_path, *, avg60, name="pressure_memory"):
         f"some avg10=1.00 avg60={avg60} avg300=0.50 total=123456\n"
         f"full avg10=0.50 avg60=0.20 avg300=0.10 total=65432\n"
     )
+    return str(p)
+
+
+def _bootid(tmp_path, name="bootid"):
+    p = tmp_path / name
+    if not p.exists():
+        p.write_text("11111111-2222-3333-4444-555555555555\n")
     return str(p)
 
 
@@ -162,6 +173,120 @@ class TestStallLeg:
 
 
 # ─────────────────────────────────────────────────────────────────────
+# RATE leg — the one that actually buys warning time
+# ─────────────────────────────────────────────────────────────────────
+
+class TestRateLeg:
+    """Replays the real 07-24 samples through the probe tick by tick.
+
+    MemTotal 16,603,376 kB. MemAvailable: 10,330,160 (23:40) -> 10,289,440
+    (23:40) -> 9,849,072 (23:43) -> 5,237,792 (23:44) -> 2,556,176 (23:45),
+    then the box died at 23:45:35. The level legs cannot fire until 23:45:01
+    and, debounced, land ~4 s before the reset. The rate leg has to do better.
+    """
+
+    TOTAL = 16_603_376
+    SAMPLES = [                      # (monotonic_s, MemAvailable_kb)
+        (0.0,   10_330_160),         # 23:40
+        (60.0,   9_849_072),         # 23:43-ish
+        (120.0,  5_237_792),         # 23:44  <- the collapse becomes visible
+        (180.0,  2_556_176),         # 23:45
+    ]
+
+    def _tick(self, tmp_path, mono, avail, **kw):
+        return probe_host_memory_pressure(
+            meminfo_path=_meminfo(tmp_path, total_kb=self.TOTAL, avail_kb=avail,
+                                  name=f"meminfo{int(mono)}"),
+            psi_path=_psi(tmp_path, avg60=0.0),
+            debounce_path=str(tmp_path / "rate.json"),
+            boot_id_path=_bootid(tmp_path),
+            now_mono=mono,
+            **kw)
+
+    def test_fires_before_the_level_legs_would(self, tmp_path):
+        """THE point of this leg: warning at the 23:44 sample, not the 23:45 one.
+
+        At 23:44 availability is 31.5% — comfortably ABOVE the 20% level gate,
+        so the level legs are still silent. The slope is what is screaming.
+        """
+        assert self._tick(tmp_path, *self.SAMPLES[0]) is None
+        assert self._tick(tmp_path, *self.SAMPLES[1]) is None
+        sig = self._tick(tmp_path, *self.SAMPLES[2])
+        assert sig is not None, "rate leg did not fire on the 23:44 sample"
+        assert sig.extra["rate_fired"] is True
+        assert sig.severity == "degraded"
+        assert "availability fell" in sig.detail
+        # Level legs genuinely were not the trigger here.
+        assert sig.extra["avail_ratio"] > 0.20
+
+    def test_rate_leg_is_not_debounced_away(self, tmp_path):
+        """It spans >= rate_min_span_s by construction, so a second tick of
+        delay would re-spend exactly the warning time it exists to buy."""
+        self._tick(tmp_path, *self.SAMPLES[0])
+        self._tick(tmp_path, *self.SAMPLES[1])
+        sig = self._tick(tmp_path, *self.SAMPLES[2])
+        assert sig is not None      # fired on FIRST qualifying tick
+
+    def test_a_big_but_fine_allocation_stays_quiet(self, tmp_path):
+        """Measured ollama model load on this box: ~6 GB in ~43 s, settling near
+        47% available. That clears the slope and must NEVER clear the floor —
+        otherwise the probe pages on every model load and gets ignored."""
+        assert self._tick(tmp_path, 0.0, 13_600_000) is None
+        assert self._tick(tmp_path, 60.0, 7_600_000) is None   # 45.8% avail
+
+    def test_single_sample_is_never_a_slope(self, tmp_path):
+        """One reading cannot constitute a trend — the claw-battery lesson."""
+        sig = self._tick(tmp_path, 0.0, 1_000_000)   # 6% avail: level fires...
+        assert sig is not None
+        assert sig.extra["rate_drop_ratio"] is None  # ...but NOT via rate
+
+    def test_recovery_reports_zero_drop_not_a_negative_slope(self, tmp_path):
+        self._tick(tmp_path, 0.0, 5_000_000)
+        sig = self._tick(tmp_path, 60.0, 12_000_000)
+        assert sig is None                            # recovered -> silent
+
+    def test_history_is_discarded_across_a_reboot(self, tmp_path):
+        """monotonic RESTARTS at boot; carrying samples over would make the
+        newest look older than the oldest and manufacture an absurd slope. This
+        fleet reboots unexpectedly, which is why the probe exists at all."""
+        self._tick(tmp_path, 500.0, 10_000_000)
+        state = json.loads((tmp_path / "rate.json").read_text())
+        assert state["hist"], "history not persisted"
+        # same file, DIFFERENT boot id -> history must be dropped
+        other = tmp_path / "bootid2"
+        other.write_text("ffffffff-ffff-ffff-ffff-ffffffffffff\n")
+        # Wedge-level availability (6% < 8%) so it fires on this very tick and
+        # the rate field is observable; a degraded-level value would debounce.
+        sig = probe_host_memory_pressure(
+            meminfo_path=_meminfo(tmp_path, total_kb=self.TOTAL,
+                                  avail_kb=1_000_000, name="mi_reboot"),
+            psi_path=_psi(tmp_path, avg60=0.0),
+            debounce_path=str(tmp_path / "rate.json"),
+            boot_id_path=str(other), now_mono=5.0)
+        assert sig is not None                     # wedge leg fires (6%)
+        assert sig.extra["rate_drop_ratio"] is None, (
+            "slope computed across a reboot boundary")
+
+    def test_negative_monotonic_span_is_ignored(self):
+        """Defensive: a backwards span is impossible, so it must not be used."""
+        hist = [[100.0, 9_000_000.0], [50.0, 2_000_000.0]]
+        assert _rate_drop(hist, 60.0, 16_000_000,
+                          window_s=180.0, min_span_s=45.0) is None
+
+    def test_rate_drop_needs_the_minimum_span(self):
+        hist = [[0.0, 9_000_000.0], [10.0, 2_000_000.0]]
+        assert _rate_drop(hist, 10.0, 16_000_000,
+                          window_s=180.0, min_span_s=45.0) is None
+
+    def test_rate_drop_ignores_samples_older_than_the_window(self):
+        hist = [[0.0, 16_000_000.0], [200.0, 15_000_000.0]]
+        got = _rate_drop(hist, 250.0, 16_000_000,
+                         window_s=180.0, min_span_s=45.0)
+        assert got is not None
+        assert got[0] < 0.10, "used a sample from outside the window"
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Honest failure modes — unobservable never reads as healthy
 # ─────────────────────────────────────────────────────────────────────
 
@@ -225,12 +350,42 @@ class TestConsumerRoster:
         assert len(sig.extra["top_rss"]) >= 1
         assert "top RSS" in sig.detail
         first = sig.extra["top_rss"][0]
-        assert set(first) == {"comm", "pid", "rss_kb"}
+        assert set(first) == {"comm", "pid", "rss_kb", "cmdline", "cgroup"}
+
+    def test_roster_carries_cmdline_and_cgroup_not_just_comm(self, tmp_path):
+        """`comm` alone cannot attribute: this box runs two processes whose comm
+        is plain `python`, one over 600 MB. cmdline+cgroup is what distinguishes
+        a SERVICE from an interactive/agent session — the exact question the
+        07-24 post-mortem could not answer."""
+        rows = _top_rss_consumers()
+        assert rows is not None and rows
+        assert any(r["cmdline"] for r in rows), "no cmdline captured at all"
+        assert any(r["cgroup"] for r in rows), "no cgroup captured at all"
 
     def test_roster_is_sorted_descending(self, tmp_path):
         rows = _top_rss_consumers()
         assert rows is not None
-        assert [r[2] for r in rows] == sorted((r[2] for r in rows), reverse=True)
+        sizes = [r["rss_kb"] for r in rows]
+        assert sizes == sorted(sizes, reverse=True)
+
+    def test_cgroup_attribution_present_and_sorted(self, tmp_path):
+        """The aggregate view: a session reaching GBs as dozens of small
+        processes is invisible per-process but obvious per-cgroup."""
+        rows = _top_cgroups()
+        if rows is None:
+            pytest.skip("no cgroup memory accounting on this box")
+        sizes = [r["current_kb"] for r in rows]
+        assert sizes == sorted(sizes, reverse=True)
+        assert all({"cgroup", "current_kb", "peak_kb"} == set(r) for r in rows)
+
+    def test_detail_carries_non_rss_legs(self, tmp_path):
+        """tmpfs/shm and kernel slab are charged to NO process, so a top-RSS
+        roster names nothing when the memory went there."""
+        _run(tmp_path, total_kb=1000, avail_kb=50)
+        sig = _run(tmp_path, total_kb=1000, avail_kb=50)
+        assert sig is not None
+        assert "non-RSS:" in sig.detail
+        assert isinstance(sig.extra["non_rss_kb"], dict)
 
     def test_unreadable_roster_says_so_rather_than_empty(self):
         """An empty list would read as 'nothing was using memory' — the exact
