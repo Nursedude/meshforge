@@ -131,6 +131,24 @@ also happens to clear the gate risk below — **which is precisely why the gate
 must not be the reason.** Decide on merits; do not loosen a case to raise a
 number, or this whole file was pointless.
 
+> ✅ **RESOLVED 2026-07-25 — operator: "corroboration makes it ratifiable."**
+> The cases stand as written; nothing was loosened. Consequences, both larger
+> than the dispute itself:
+> 1. **4B's gap is on the memories that matter most.** It refuses corroborated
+>    mechanism-claims — decision tells, root causes, "X means Y, restart Z" —
+>    which is the dominant shape an incident compiles down to. 4/6 understates
+>    it; the two it missed are the class the second brain exists to accumulate.
+> 2. **Step 1's signal list was wrong as written** and is now ORDERED (see
+>    below). Flat, it reproduces 4B's error.
+>
+> The gate call follows from this: **let Sunday's `--gate 0.85` fire, do not
+> touch the threshold.** The FAIL is TRUE against the standard just adopted, and
+> moving a bar the same day the standard tightened is scoreboard-tuning by
+> definition. Verified from the seed rule rather than assumed: a failing cron
+> verdict is `propose_escalation`, `cooldown_s 21600`, annotated *"NO ntfy page
+> (degraded, not an outage)"* — so it lands in mini's brief for the next
+> session, beside this file, which is the continuity layer doing its job.
+
 #### ⚠️ GATE RISK — Sunday 03:25 `--gate 0.85`
 
 The new cases join the weekly cron automatically via the `*.jsonl` glob. Under
@@ -169,21 +187,46 @@ is largely deterministic. `cadence_fallback` **already** degrades honestly to
 promote that path from fallback to DEFAULT, and run any model as an optional
 second opinion.
 
-Measure both against the balanced suite from Step 0. Candidate deterministic
-signals (all cheap, all inspectable):
-- retrieval returns a chunk whose text contradicts the proposal's claim → not ratifiable
-- the summary asserts behaviour/causation ("so", "therefore", "conclude",
-  "impossible", "correctly") → `needs-live-check`
-- retrieval returns nothing → `needs-live-check` (absence is not corroboration —
-  already the shipped prompt's rule, make it the code's rule)
+Measure both against the balanced suite from Step 0.
 
-📊 **FIRST EVIDENCE, 2026-07-25 — the balanced run supports this step.** 4B's
-two failures were exactly the deltas asserting behaviour/causation, and it
-ratified exactly the four asserting a static fact or policy. That is the second
-candidate signal below, executed by a 2.5 GB model at 96–782 s/case. If a
-deterministic rule reproduces that split, the model is not earning its cost on
-this path. ⚠️ Two failures is a hypothesis, not a law — the test is whether
-tier-R matches 4B **on the balanced suite**, not on these two.
+#### 🔢 THE SIGNALS ARE ORDERED — the precedence IS the design
+
+⚠️ **This list was flat until 2026-07-25 and was WRONG that way.** Operator
+ruling the same day: **corroboration makes a mechanism-claim ratifiable.** A
+corroborated claim that asserts causation satisfies BOTH "retrieval corroborates"
+and "asserts behaviour", so an unordered rule set resolves it arbitrarily — and
+resolving it toward caution reproduces exactly the error 4B made on two of six
+cases. Evaluate in this order and stop at the first match:
+
+1. **retrieval CONTRADICTS the claim → not ratifiable.** The fleet's own records
+   outrank the proposal's reasoning (already the shipped prompt's wording).
+2. **retrieval CORROBORATES the claim → `looks-ratifiable`, even if it asserts a
+   mechanism.** ← the operator's ruling; this rung must come BEFORE rung 3 or the
+   tier refuses precisely the memories the second brain exists to accumulate.
+3. **asserts behaviour/causation** ("so", "therefore", "conclude", "impossible",
+   "correctly") **and rung 2 did not fire** → `needs-live-check`.
+4. **retrieval returns nothing → `needs-live-check`.** Absence is not
+   corroboration — the shipped prompt's rule, made the code's rule.
+
+Rungs 3 and 4 are the ones that must never be reordered above 2. Note the shape:
+this is honest_failure_modes #2 in policy form — "no corroborating record found"
+and "records contradict this" must not collapse into one answer.
+
+📊 **FIRST EVIDENCE, 2026-07-25 — and it is evidence FOR tier-R, not for the
+model.** 4B failed exactly the two deltas asserting a corroborated mechanism and
+ratified exactly the four asserting a static fact or policy. Under the ruling
+above that split is a **precedence error**: 4B applied rung 3 where rung 2 should
+have fired. A rule with an explicit order does not make that mistake, so tier-R
+written to this precedence should score **6/6 where 4B scored 4/6** — beating a
+2.5 GB model that costs 96–782 s/case, on any box including moc3, with no ollama
+and no model resident.
+
+⚠️ That prediction is UNTESTED — it is the cheapest experiment left in this plan
+and the honest next step, not a result. Two failures is a hypothesis, not a law:
+the exit criterion is the BALANCED suite, not the two cases that motivated the
+ordering. **Do not imitate 4B's behaviour as a specification** — that was the
+original flat list's mistake, encoded from watching a model instead of deciding
+a policy.
 
 ⚠️ **The honest risk:** a heuristic tuned to today's cases is brittle on shapes
 nobody anticipated. That is exactly what a model generalises over. So Step 1's exit
@@ -201,7 +244,9 @@ hardware floor: the small model does not do this job at all. The floor argument
 stands on its own — a rules+retrieval tier runs on all nine boxes.
 
 - **tier-R passes the balanced suite** → done. No ollama, no llama.cpp, no model.
-  Continuity runs fleet-wide including moc3.
+  Continuity runs fleet-wide including moc3. (As of 2026-07-25 the bar to clear
+  is **4/6** — and tier-R written to Step 1's precedence is predicted to beat it.
+  If that prediction holds, this branch is taken and Step 3 never runs.)
 - **tier-R fails specific cases** → those cases tell you what KIND of model. Most
   likely a small **discriminative classifier**, not a chat model: the task is
   classification and the labels already exist — the dream-proposal record has
