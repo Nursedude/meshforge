@@ -281,15 +281,11 @@ soft RLIMIT_NOFILE). Decision tell: `[Errno 24]`/climbing fds = fd leak (restart
 map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Full body +
 operator recipe in `persistent_issues_archive.md`.
 
-Five watchdog probes 2026-06-01→06-04 (audit-organ→Signal→mini pattern; all
-`degraded`; **trap: derive context from the SERVICE, not the root watchdog
-env** — the sandbox blocks sudo, never sudo when euid==0): `probe_foundation_drift`
-(/etc/reticulum perms), `probe_parity_drift` (MF↔MA), `probe_rns_version_drift`
-(`+mf.N` pin), `probe_role_drift` (live units vs declared role; fix
-`provision_role.py --apply`), `probe_channel_feed_dark` (no fleet-channel text
-≥6h while the json pipeline is alive — match by channel NAME never slot index;
-tell for missed PSK re-key / deaf radio / dead uplink; self-guards None where
-no json uplink). Full bodies demoted to `persistent_issues_archive.md` 2026-07-14.
+Five watchdog probes 2026-06-01→06-04, all `degraded` (**trap: derive context
+from the SERVICE, not the root watchdog env** — never sudo when euid==0):
+`probe_foundation_drift`, `probe_parity_drift`, `probe_rns_version_drift`,
+`probe_role_drift` (fix `provision_role.py --apply`), `probe_channel_feed_dark`
+(match by channel NAME never slot index). Bodies in archive (07-14).
 
 
 ---
@@ -488,72 +484,93 @@ flat (≈8 stack pairs) = patched. Detail:
 
 `to_dict()` wrote `service_type`; `_load_cache()` restored 14 other fields and
 dropped it — **honest_failure_modes #4, a writer with no reader**. Every gateway
-restart erased the RNS service type of every cached node until it re-announced
-(≤360 min for a propagation node). `probe_lxmf_propagation_node_dark` matches on
-that field, so right after adoption it fired UNHEARD — *"configured node has
-NEVER been heard"*, the wrong-hash fault it exists to catch — while that box had
-heard the node 7× in 25h and delivered through it 10 min earlier. **Adoption
-mandates a restart, so the false page was structural.** Measured: 2 of 9,115
-entries had `service_type`, oldest stamped AFTER the restart. Fixed MF
-`e383547c` / MA `87cae734` (identical twin) + save→load round-trip tests.
+restart erased every cached node's RNS service type, so
+`probe_lxmf_propagation_node_dark` fired UNHEARD (*"configured node has NEVER
+been heard"*) against a node that box had heard 7× in 25h. Adoption mandates a
+restart, so the false page was structural. Fixed MF `e383547c` / MA `87cae734`.
 
 **Decision tell**: UNHEARD + node otherwise alive = this cache gap, NOT a
-typo'd hash. ⚠️ **Two defects, both needed**: the loader drop AND
-`_merge_node()` never refreshing `service_*` — so an announce from an
-ALREADY-KNOWN node did NOT restore it (verified live: fresh `last_seen`,
-`service_type` still None). It was unrecoverable once lost, NOT self-healing;
-"wait for the next announce" was a wrong prediction, corrected same day. Same field silently made `lxmf_propagation_unused` undercount
-("heard within 6h" was really "since this process started").
+typo'd hash. ⚠️ **Three defects, all needed**: the loader drop; `_merge_node()`
+never refreshing `service_*` (unrecoverable once lost, NOT self-healing); and
+`_merge_node` treating a once-recorded name as PERMANENT, hiding the parser
+fix (cure: `name_is_self_reported`, MF `48f5497d` / MA `0657c993`).
 ⚠️ **`rnprobe lxmf.propagation` is NOT a delivery test** — 100% loss against a
-healthy node; a box that had just round-tripped through it reported the same.
-Prove delivery at the LXMF layer (`.claude/plans/propagation_drill.py`).
-
-**THIRD fix, same session (`48f5497d` / MA `0657c993`)**: even with the parser
-corrected, the cache kept serving the OLD mojibake name — `_merge_node` only
-replaced a name when the existing one was empty or started with `!`, so a name
-recorded once was PERMANENT and any parser fix stayed invisible in cache/UI.
-Cure: `name_is_self_reported` (set in `from_rns` only when a display name was
-actually parsed) lets a node correct what we believe about it, while a
-hash-derived placeholder still never overwrites a good name. Verified live on
-both gateways: `j^x(` → `WH6GXZ MeshForge PN`. ⚠️ Residual: a propagation node
-advertising NO name keeps its legacy garbage string — only self-reporting
-nodes heal.
-
-Full body in `persistent_issues_archive.md`.
+healthy node; prove delivery at the LXMF layer
+(`.claude/plans/propagation_drill.py`). Full body in archive (trimmed 07-25).
 
 ---
 
 ## manager_deadman transient — NAT beat-delivery gap, NOT a dead manager (2026-07-16)
 
-`manager_deadman` (peer, moc1) paged `MANAGER DARK` at 00:40 then self-cleared
-(`MANAGER RECOVERED`) at 00:50 — a FALSE alarm: the manager (VolcanoAI) was up
-the whole time (heartbeat cron OK its side; a manual beat lands in <0.2s). Root
-cause: a transient ~2-beat gap on the manager→peer ssh push path. The manager
-reaches the peer through a NAT hop (manager on the LAN → gateway NAT → peer on a
-DHCP'd internal subnet), so a brief forwarding/DHCP hiccup let the manager's
-`ssh peer "date > ~/.manager_heartbeat"` report exit 0 while the write did NOT
-land on the peer the deadman watches. The peer file aged past `STALE_S` (25 min
-= 2+ missed 10-min beats) → page. The staleness was REAL, not a clock artifact:
-the peer's per-minute `power_capture` verdicts were monotonic across the window
-(clock smooth), so beats logged OK manager-side genuinely didn't arrive. The
-deadman behaved CORRECTLY — it pages on beat-loss regardless of cause (a
-manager↔peer partition is page-worthy; the manager's own ssh paging could be
-impaired too).
+FALSE `MANAGER DARK` page that self-cleared in 10 min: the manager was up the
+whole time. A transient gap on the manager→peer ssh push path (manager → NAT
+hop → peer on a DHCP'd subnet) let `ssh peer "date > ~/.manager_heartbeat"`
+exit 0 while the write never landed, so the peer file aged past `STALE_S`
+(25 min). Staleness was REAL, not a clock artifact. The deadman behaved
+CORRECTLY — beat-loss is page-worthy whatever the cause.
 
-**Decision tell**: `manager_deadman FAIL` + manager box UP + a manual beat lands
-live = transient delivery gap, self-heals next cycle (+10 min recovery page).
-Distinguish from a REAL manager-down: box unreachable, `ssh <peer>` fails,
-`manager_heartbeat` verdict FAIL manager-side. **Quick check** — peer:
-`echo $(( $(date +%s) - $(stat -c %Y ~/.manager_heartbeat) ))` (age s; >1500 =
-stale); manager: `manager_heartbeat` verdict OK + `ssh <peer> date` returns.
+**Decision tell**: `manager_deadman FAIL` + manager box UP + a manual beat
+lands live = transient delivery gap, self-heals next cycle. A REAL
+manager-down has the box unreachable and `manager_heartbeat` FAIL
+manager-side. **Quick check** — peer:
+`echo $(( $(date +%s) - $(stat -c %Y ~/.manager_heartbeat) ))` (>1500 = stale).
+Durable cure is DHCP reservations / steadier transport, NOT a threshold bump.
+Companion defect (the 2 MISSING verdicts) was the `cron_verdict.sh` truncation
+race, FIXED 2026-07-16 (MF `2d34877d`, MA `a1f32f93`). Full body in
+`persistent_issues_archive.md` (trimmed 2026-07-25).
 
-**Companion (the confusing part)**: the two MISSING peer deadman verdicts
-(absent at 18:50 + 00:30 while the cron demonstrably ran) were a SEPARATE
-defect — the `cron_verdict.sh` truncation read-modify-write race
-(honest_failure_modes #8), FIXED 2026-07-16 (MF `2d34877d`, MA `a1f32f93`;
-`tests/test_cron_verdict_retention.py::TestCronVerdictConcurrentWriters`):
-append+truncate now serialized under an flock, every concurrent verdict
-survives. No deadman code change — it worked as designed. If this recurs often,
-the durable cure is DHCP reservations on the peer subnet / a steadier transport,
-NOT a deadman threshold bump (that would slow detection of a REAL manager
-death).
+---
+
+## mf.internal AAAA forwards to the WAN — the 900ms fleet-name tax (2026-07-25)
+
+m1 answers only exact `(name, type)` static matches locally and **forwards
+everything else to its WAN upstream**. Fleet names carry A records only, so
+every AAAA for `<name>.mf.internal` goes to the internet and returns
+NODATA — **with no SOA, so systemd-resolved cannot negatively cache it** and
+pays that round trip forever. Every real tool (ssh, curl, urllib, getent)
+uses `getaddrinfo` AF_UNSPEC and asks both families:
+
+    m1  moc.mf.internal A     1.1ms      (local static entry)
+    m1  moc.mf.internal AAAA 75.5ms      (forwarded; WAN baseline 75.8ms)
+    12-host sweep  AF_UNSPEC 902ms  vs  AF_INET 1.7ms
+
+So resolution was **coupled to internet reachability** — a WAN hiccup makes
+healthy boxes look dead. Router-side is tidier but m1 admin access isn't
+available from the fleet boxes. Cure: `scripts/gen_fleet_hosts.py --apply`
+writes a delimited `/etc/hosts` block (nss `files` precedes `dns`), live on
+7 boxes; 902ms → 4ms, and names resolve with DNS or the uplink down. Hourly
+`fleet_hosts_drift` cron per box. ⚠️ **moc3 excluded** (RNS soak).
+
+**Decision tell**: fleet-wide ~75-90ms per name lookup with A at ~1ms = this,
+not a sick resolver. **Quick check**: compare
+`getaddrinfo(name, AF_INET)` vs `AF_UNSPEC` timing — a ~75ms gap is the AAAA
+leg. ⚠️ `/etc/hosts` SHADOWS DNS, so the block is seeded from **live DNS**,
+never from the registry's `ip_fallback` snapshot (that would bake in a stale
+copy and shadow the truth — the moc5 reshuffle class).
+
+---
+
+## A detector that reads what it audits is self-confirming (2026-07-25)
+
+The `gen_fleet_hosts.py --check` drift detector used `socket.getaddrinfo()`
+to fetch "what DNS says". But nss consults `files` (`/etc/hosts`) **before**
+`dns`, and systemd-resolved also answers from `/etc/hosts` — so the check
+compared the generated block **against itself**. A deliberately corrupted
+entry reported `in sync` (rc=0), and `--apply` then said "already current"
+and **refused to heal it**, because the corrupted file WAS the notion of
+truth. It could never detect, nor repair, the one thing it exists to catch.
+
+13 unit tests passed throughout: they mocked `resolve_a`, so the mock stood
+in for the exact layer that was broken. **Only a live drill — corrupt a real
+entry, run the real check — exposed it.**
+
+Cure: query the upstream server DIRECTLY over UDP (servers discovered from
+the resolved drop-in, never hardcoded — MF014), bypassing NSS. A silent
+server is UNKNOWN and falls through, never NXDOMAIN. The test that had
+**pinned the broken behaviour** now asserts the opposite: calling
+`getaddrinfo` at all is a failure.
+
+**The general rule** (calibrated_claims #7, in checker form): *a checker must
+not consume the artifact it validates.* Ask what input would make the
+detector and the thing it watches disagree — then feed it that input.
+

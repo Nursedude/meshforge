@@ -3198,3 +3198,42 @@ error match must be line-anchored (live-caught). MF `fb80819e`, MA `04581964`
 ---
 
 _(demoted from persistent_issues.md 2026-07-21 for MF012 headroom)_
+
+## manager_deadman transient — NAT beat-delivery gap, NOT a dead manager (2026-07-16)
+
+`manager_deadman` (peer, moc1) paged `MANAGER DARK` at 00:40 then self-cleared
+(`MANAGER RECOVERED`) at 00:50 — a FALSE alarm: the manager (VolcanoAI) was up
+the whole time (heartbeat cron OK its side; a manual beat lands in <0.2s). Root
+cause: a transient ~2-beat gap on the manager→peer ssh push path. The manager
+reaches the peer through a NAT hop (manager on the LAN → gateway NAT → peer on a
+DHCP'd internal subnet), so a brief forwarding/DHCP hiccup let the manager's
+`ssh peer "date > ~/.manager_heartbeat"` report exit 0 while the write did NOT
+land on the peer the deadman watches. The peer file aged past `STALE_S` (25 min
+= 2+ missed 10-min beats) → page. The staleness was REAL, not a clock artifact:
+the peer's per-minute `power_capture` verdicts were monotonic across the window
+(clock smooth), so beats logged OK manager-side genuinely didn't arrive. The
+deadman behaved CORRECTLY — it pages on beat-loss regardless of cause (a
+manager↔peer partition is page-worthy; the manager's own ssh paging could be
+impaired too).
+
+**Decision tell**: `manager_deadman FAIL` + manager box UP + a manual beat lands
+live = transient delivery gap, self-heals next cycle (+10 min recovery page).
+Distinguish from a REAL manager-down: box unreachable, `ssh <peer>` fails,
+`manager_heartbeat` verdict FAIL manager-side. **Quick check** — peer:
+`echo $(( $(date +%s) - $(stat -c %Y ~/.manager_heartbeat) ))` (age s; >1500 =
+stale); manager: `manager_heartbeat` verdict OK + `ssh <peer> date` returns.
+
+**Companion (the confusing part)**: the two MISSING peer deadman verdicts
+(absent at 18:50 + 00:30 while the cron demonstrably ran) were a SEPARATE
+defect — the `cron_verdict.sh` truncation read-modify-write race
+(honest_failure_modes #8), FIXED 2026-07-16 (MF `2d34877d`, MA `a1f32f93`;
+`tests/test_cron_verdict_retention.py::TestCronVerdictConcurrentWriters`):
+append+truncate now serialized under an flock, every concurrent verdict
+survives. No deadman code change — it worked as designed. If this recurs often,
+the durable cure is DHCP reservations on the peer subnet / a steadier transport,
+NOT a deadman threshold bump (that would slow detection of a REAL manager
+death).
+
+---
+
+_(demoted from persistent_issues.md 2026-07-25 for MF012 headroom)_
