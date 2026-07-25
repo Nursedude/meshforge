@@ -103,13 +103,35 @@ have verified anything.
 Your only job: for each proposed delta below, write a one-line assessment \
 (what it appears to record, and what a verifier should check) and suggest a \
 disposition for the HUMAN or frontier session to act on later:
-  looks-ratifiable   internally consistent, evidence named, low-risk
-  looks-rejectable   duplicate/transient/superseded on its face
+  looks-ratifiable   internally consistent, evidence named, low-risk, AND
+                     either corroborated by the DOMAIN CONTEXT below or
+                     verifiable without a command
+  looks-rejectable   duplicate/transient/superseded on its face, OR the
+                     domain context contradicts it
   needs-live-check   anything whose truth needs a command or live source
+
+INTERNAL CONSISTENCY IS NOT ENOUGH. A confident, well-written, self-consistent
+claim about how a system BEHAVES is exactly the shape of the dangerous ones —
+a frontier session's plausible wrong conclusion reads identically to a right
+one. If a delta asserts system behaviour and the domain context neither
+corroborates nor is present, prefer needs-live-check over looks-ratifiable.
+Unverified is not ratifiable.
+
+Where DOMAIN CONTEXT is supplied it comes from this fleet's OWN records and
+outranks the delta's own reasoning: if an excerpt contradicts the proposal,
+say so in the assessment and do not suggest ratifying it.
 
 Include EVERY listed delta exactly once — a triage that skips deltas is
 incomplete. Use each delta's `key` verbatim. Output JSON only, matching the
 schema."""
+
+# Retrieval grounding budget. Deliberately small: the prompt is context, context
+# is KV cache, and KV cache is RAM on a fleet whose smallest box has 905 MB
+# (feedback_my_footprint_is_the_constraint). Three excerpts clamped to ~700 chars
+# each is enough to corroborate or contradict a claim without turning a triage
+# into a document dump.
+_CTX_TOP_K = 3
+_CTX_EXCERPT_CLAMP = 700
 
 
 def load_proposed_deltas(path: str, cap: int = MAX_DELTAS_DEFAULT,
@@ -140,12 +162,95 @@ def load_proposed_deltas(path: str, cap: int = MAX_DELTAS_DEFAULT,
     return proposed, total
 
 
-def build_user_prompt(proposed: List[dict]) -> str:
+def retrieve_context(proposed: List[dict], *, top_k: int = _CTX_TOP_K,
+                     clamp: int = _CTX_EXCERPT_CLAMP,
+                     roots=None) -> Tuple[Dict[str, List[dict]], Optional[str]]:
+    """Per-delta domain grounding from the fleet's OWN records.
+
+    Returns ``({delta_key: [{path, heading, text}, ...]}, note)``. ``note`` is
+    None on success and a human-readable reason when grounding is UNAVAILABLE —
+    it is threaded into the prompt so the model is told it is judging blind
+    rather than being handed a silently ungrounded prompt (honest_failure_modes
+    #2: unobservable must not read as "nothing relevant exists").
+
+    Deterministic and LLM-free: this is tier R (BM25 over markdown), the same
+    assembly behind ``offline_oracle --retrieve-only``. The corpus is loaded ONCE
+    and re-ranked per delta.
+
+    WHY THIS EXISTS (2026-07-24): the oracle path was fully grounded while this
+    triage path — the one that decides what may enter long-term memory — had no
+    retrieval at all. That is inverted: the gate protecting memory integrity was
+    the ungrounded one. Measured consequence: tier-L rated three of five
+    deliberately-wrong proposals ``looks-ratifiable`` because the facts that
+    refute them (an ``After=`` in a user unit is inert; moc3's cap window is
+    1.25x; a cap kill is ambiguous) live in memory files it was never shown.
+    """
+    try:
+        from . import offline_oracle
+    except Exception as exc:                     # pragma: no cover - import guard
+        return {}, f"retrieval module unavailable: {str(exc)[:120]}"
+    try:
+        chunks, _notes, index = offline_oracle.load_corpus_indexed(roots)
+    except Exception as exc:
+        return {}, f"corpus unreadable: {str(exc)[:120]}"
+    if not chunks:
+        return {}, "corpus empty (no memory/persistent_issues markdown found)"
+    out: Dict[str, List[dict]] = {}
+    for d in proposed:
+        key = d.get("key")
+        if not key:
+            continue
+        query = f"{key} {d.get('summary') or ''}"
+        try:
+            hits = offline_oracle.rank(chunks, query, top_k=top_k, index=index)
+        except Exception:
+            continue                             # one bad query never kills the rest
+        out[key] = [{"path": h.get("path", "?"),
+                     "heading": h.get("heading", ""),
+                     "text": str(h.get("text") or "")[:clamp]}
+                    for h in hits]
+    return out, None
+
+
+def build_user_prompt(proposed: List[dict],
+                      context: Optional[Dict[str, List[dict]]] = None,
+                      context_note: Optional[str] = None) -> str:
+    """Render the triage prompt, with domain grounding when available.
+
+    ``context=None`` keeps the historic ungrounded rendering byte-identical for
+    callers that pass nothing. An empty-but-present context, or a
+    ``context_note``, is stated EXPLICITLY so a blind judgement is visibly blind.
+    """
     lines = ["Proposed memory-deltas awaiting the frontier session:"]
     for i, d in enumerate(proposed, 1):
         summary = str(d.get("summary") or "")[:200]
         lines.append(f'{i}. key="{d.get("key")}" kind={d.get("kind")} '
                      f"summary: {summary}")
+    if context is None and not context_note:
+        return "\n".join(lines)
+
+    lines.append("")
+    if context_note:
+        lines.append(f"DOMAIN CONTEXT UNAVAILABLE ({context_note}). You are "
+                     f"judging without the fleet's records: prefer "
+                     f"needs-live-check for anything asserting system "
+                     f"behaviour.")
+        return "\n".join(lines)
+
+    lines.append("DOMAIN CONTEXT — excerpts retrieved from this fleet's own "
+                 "records. These outrank the proposals above.")
+    for d in proposed:
+        key = d.get("key")
+        hits = (context or {}).get(key) or []
+        if not hits:
+            lines.append(f'\nkey="{key}": no matching record found. Absence of '
+                         f"a record is NOT corroboration — prefer "
+                         f"needs-live-check.")
+            continue
+        lines.append(f'\nkey="{key}":')
+        for j, h in enumerate(hits, 1):
+            lines.append(f"  [{j}] {h['path']} — {h['heading']}")
+            lines.append(f"      {h['text']}")
     return "\n".join(lines)
 
 
@@ -228,8 +333,30 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
     if not proposed:
         return {**base, "brain_tier": "rules", "triaged": 0, "deltas": [],
                 "summary": "no proposed deltas at fallback time"}
+    # Ground the judgement in the fleet's own records before asking the model.
+    # The witness records WHETHER grounding happened, so a blind triage is
+    # visible downstream instead of looking identical to a grounded one.
+    # Grounding is an ENHANCEMENT: an unexpected failure in it must degrade the
+    # triage to blind-with-a-witness, never crash the ratifier. retrieve_context
+    # already catches its own known failure modes; this is the backstop for the
+    # unknown ones (a probe must not die of bookkeeping — hfm #9, and the note is
+    # the witness that says the judgement was made blind).
     try:
-        raw = backend.complete(_SYSTEM_PROMPT, build_user_prompt(proposed),
+        ctx, ctx_note = retrieve_context(proposed)
+    except Exception as exc:                     # noqa: BLE001 - deliberate backstop
+        ctx, ctx_note = {}, f"grounding failed: {str(exc)[:120]}"
+        logger_warned = getattr(run, "_grounding_warned", False)
+        if not logger_warned:
+            setattr(run, "_grounding_warned", True)
+            print(f"cadence_fallback: retrieval grounding unavailable "
+                  f"({str(exc)[:160]}) — triage will judge blind",
+                  file=sys.stderr)
+    grounded_keys = sum(1 for v in ctx.values() if v)
+    base["context_grounded_keys"] = grounded_keys
+    base["context_note"] = ctx_note
+    try:
+        raw = backend.complete(_SYSTEM_PROMPT,
+                               build_user_prompt(proposed, ctx, ctx_note),
                                fmt=TRIAGE_SCHEMA)
         triage, dropped = _validate_triage(raw, {d.get("key") for d in proposed})
     except (CompilerError, ValueError) as e:

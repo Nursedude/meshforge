@@ -233,6 +233,16 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             else:
                 ctx = ("claude CLI missing" if frc is None
                        else f"frontier rc={frc}")
+            # 2026-07-24: the triage is grounded in retrieved fleet records. A
+            # BLIND triage (grounding unavailable) must not reach the next
+            # session looking identical to a grounded one — the witness exists
+            # only if something reads it (hfm #4, reader/writer wire together).
+            _cnote = cadence_triage.get("context_note")
+            _ckeys = cadence_triage.get("context_grounded_keys")
+            if _cnote:
+                ctx += f"; ⚠️ JUDGED BLIND — no domain context ({_cnote})"
+            elif isinstance(_ckeys, int):
+                ctx += f"; grounded on {_ckeys} key(s)"
             if tier == "local" and mode == "pre-score":
                 lines.append(
                     f"\n## 🔭 local tier PRE-SCORED the backlog "

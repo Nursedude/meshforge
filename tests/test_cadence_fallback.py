@@ -307,3 +307,155 @@ class TestMode:
         rc = cf.main(["--deltas", path, "--out", str(out), "--mode", "pre-score"])
         assert rc == 0
         assert json.loads(out.read_text())["mode"] == "pre-score"
+
+
+class TestRetrievalGrounding:
+    """The ratifier must judge against the fleet's OWN records (2026-07-24).
+
+    WHY THIS EXISTS: the oracle path was fully grounded while THIS path — the one
+    deciding what may enter long-term memory — had no retrieval at all, which is
+    inverted (the gate protecting memory integrity was the ungrounded one).
+    Measured before the fix: tier-L rated 3 of 5 deliberately-wrong proposals
+    ``looks-ratifiable`` because the records refuting them were never shown; with
+    grounding the same model+cases went 0/3 -> 3/3 first try. These tests are the
+    FAST gate for that, so a future edit cannot silently blind the ratifier and
+    leave only the weekly eval cron to notice.
+    """
+
+    def _corpus(self, tmp_path, name="mem.md", body=None):
+        d = tmp_path / "corpus"
+        d.mkdir(exist_ok=True)
+        (d / name).write_text(body or (
+            "# After= in a user unit\n\n"
+            "An After= in a --user unit CANNOT order against a SYSTEM unit; the\n"
+            "directive is silently a no-op and the boot race still happens.\n"),
+            encoding="utf-8")
+        return [("memory", str(d / "*.md"))]
+
+    def test_retrieval_finds_the_refuting_record(self, tmp_path):
+        roots = self._corpus(tmp_path)
+        props = [_delta("nomadnet_after", summary="the unit declares "
+                        "After=rnsd.service so the boot race is impossible")]
+        ctx, note = cf.retrieve_context(props, roots=roots)
+        assert note is None
+        hits = ctx["nomadnet_after"]
+        assert hits, "no grounding retrieved for a delta the corpus refutes"
+        assert "no-op" in " ".join(h["text"] for h in hits)
+
+    def test_unavailable_corpus_yields_a_NOTE_not_silent_emptiness(self, tmp_path):
+        """hfm #2: unobservable must not render as 'nothing relevant exists'."""
+        ctx, note = cf.retrieve_context(
+            [_delta("k")], roots=[("memory", str(tmp_path / "nope" / "*.md"))])
+        assert ctx == {} and note, "empty corpus must be reported, not swallowed"
+        assert "corpus" in note
+
+    def test_prompt_carries_the_excerpts(self, tmp_path):
+        roots = self._corpus(tmp_path)
+        props = [_delta("nomadnet_after", summary="After=rnsd.service so the "
+                                                 "race cannot happen")]
+        ctx, note = cf.retrieve_context(props, roots=roots)
+        prompt = cf.build_user_prompt(props, ctx, note)
+        assert "DOMAIN CONTEXT" in prompt and "no-op" in prompt
+        assert "outrank" in prompt
+
+    def test_missing_hits_say_absence_is_not_corroboration(self, tmp_path):
+        props = [_delta("unrelated_key", summary="something with no record")]
+        prompt = cf.build_user_prompt(props, {"unrelated_key": []}, None)
+        assert "NOT corroboration" in prompt
+        assert "needs-live-check" in prompt
+
+    def test_unavailable_context_is_stated_in_the_prompt(self):
+        prompt = cf.build_user_prompt([_delta("k")], {}, "corpus unreadable")
+        assert "DOMAIN CONTEXT UNAVAILABLE" in prompt
+        assert "judging without" in prompt
+
+    def test_no_context_arg_keeps_the_historic_prompt_byte_identical(self):
+        props = [_delta("a"), _delta("b")]
+        assert cf.build_user_prompt(props) == cf.build_user_prompt(props, None, None)
+        assert "DOMAIN CONTEXT" not in cf.build_user_prompt(props)
+
+    def test_system_prompt_forbids_ratifying_on_internal_consistency_alone(self):
+        assert "INTERNAL CONSISTENCY IS NOT ENOUGH" in cf._SYSTEM_PROMPT
+        assert "Unverified is not ratifiable" in cf._SYSTEM_PROMPT
+
+    def test_run_grounds_the_prompt_and_witnesses_it(self, tmp_path):
+        """The production path must actually reach the backend grounded, and the
+        witness must SAY whether it did — a blind triage cannot look identical to
+        a grounded one downstream."""
+        roots = self._corpus(tmp_path)
+        path = _deltas_file(tmp_path, [
+            _delta("nomadnet_after", summary="After=rnsd.service so the race "
+                                             "cannot happen")])
+        be = FakeBackend(reply=_good_reply(["nomadnet_after"]))
+        monkey = cf.retrieve_context
+        try:
+            cf.retrieve_context = lambda props, **kw: monkey(props, roots=roots)
+            w = cf.run(path, be, frontier_rc=1, now=NOW)
+        finally:
+            cf.retrieve_context = monkey
+        assert w["context_grounded_keys"] == 1
+        assert w["context_note"] is None
+        sent_user = be.calls[0][1]
+        assert "DOMAIN CONTEXT" in sent_user and "no-op" in sent_user
+
+    def test_witness_records_blind_triage_when_grounding_fails(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("k")])
+        be = FakeBackend(reply=_good_reply(["k"]))
+        monkey = cf.retrieve_context
+        try:
+            cf.retrieve_context = lambda props, **kw: ({}, "corpus unreadable")
+            w = cf.run(path, be, frontier_rc=1, now=NOW)
+        finally:
+            cf.retrieve_context = monkey
+        assert w["context_grounded_keys"] == 0
+        assert w["context_note"] == "corpus unreadable"
+        assert "DOMAIN CONTEXT UNAVAILABLE" in be.calls[0][1]
+
+    def test_grounding_never_raises_into_the_triage(self, tmp_path):
+        """An UNEXPECTED grounding failure must degrade the triage to
+        blind-with-a-witness, never crash the ratifier — grounding is an
+        enhancement, and a probe must not die of its own bookkeeping (hfm #9).
+
+        This test caught a real defect: the first implementation called
+        retrieve_context OUTSIDE any guard, so a bug in retrieval would have
+        taken down the whole ratification path. The test name said 'never
+        raises' while the assertion demanded a raise — the name was right.
+        """
+        path = _deltas_file(tmp_path, [_delta("k")])
+        be = FakeBackend(reply=_good_reply(["k"]))
+        monkey = cf.retrieve_context
+        try:
+            def boom(props, **kw):
+                raise RuntimeError("index exploded")
+            cf.retrieve_context = boom
+            w = cf.run(path, be, frontier_rc=1, now=NOW)
+        finally:
+            cf.retrieve_context = monkey
+        # Triage still completed...
+        assert w["triaged"] == 1
+        assert w["brain_tier"] == "local"
+        # ...and the failure left a witness rather than looking grounded.
+        assert w["context_grounded_keys"] == 0
+        assert "grounding failed" in (w["context_note"] or "")
+        assert "index exploded" in w["context_note"]
+        assert "DOMAIN CONTEXT UNAVAILABLE" in be.calls[0][1]
+
+    def test_brief_surfaces_a_BLIND_triage(self):
+        """The witness must have a READER: a blind triage cannot reach the next
+        session looking identical to a grounded one. The first version of this
+        change wrote context_note/context_grounded_keys that NOTHING read —
+        a writer with no reader (hfm #4), found by reviewing my own diff."""
+        w = {"ts": NOW - 60, "brain_tier": "local", "frontier_rc": 1,
+             "proposed_total": 1, "triaged": 1, "model": "fake:3b",
+             "summary": "s", "never_ratifies": True,
+             "context_grounded_keys": 0, "context_note": "corpus unreadable"}
+        text = build_brief({}, [], NOW, cadence_triage=w)
+        assert "JUDGED BLIND" in text and "corpus unreadable" in text
+
+    def test_brief_shows_grounded_key_count_when_grounded(self):
+        w = {"ts": NOW - 60, "brain_tier": "local", "frontier_rc": 1,
+             "proposed_total": 2, "triaged": 2, "model": "fake:3b",
+             "summary": "s", "never_ratifies": True,
+             "context_grounded_keys": 2, "context_note": None}
+        text = build_brief({}, [], NOW, cadence_triage=w)
+        assert "grounded on 2 key(s)" in text and "JUDGED BLIND" not in text
