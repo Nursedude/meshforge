@@ -332,6 +332,41 @@ pipx venvs together, rnsd-first), then ff `meshforge` branches + bump SSOT
 (`requirements/rns.txt` MF-FORK-PIN, `rns_version_check`), `parity_check`
 green after.
 
+### 🅿️ PIGGYBACK on moc3's roll reboot — a STAGED cmdline change is waiting (2026-07-24)
+
+moc3's `/boot/firmware/cmdline.txt` was edited on 2026-07-24 and **deliberately
+not rebooted**, so it is inert today and takes effect on the roll's reboot.
+Backup: `/boot/firmware/cmdline.txt.bak-20260724`. Appended tokens:
+
+```
+ psi=1 cgroup_enable=memory cgroup_memory=1
+```
+
+Why: the Pi firmware PREPENDS `cgroup_disable=memory` (it is NOT in cmdline.txt,
+so there is nothing to delete — append the override, the later token wins), and
+`/proc/pressure/memory` was ABSENT, leaving `probe_host_memory_pressure` blind on
+its PSI/stall leg. moc3 is the worst case for that: closest to exhaustion on the
+fleet (24.8% MemAvailable of 905 MB, vs the probe's 20% degraded threshold) AND
+`RuntimeWatchdogUSec=1min` armed, so a memory stall hard-resets it. The other 8
+boxes got this on 2026-07-24; moc3 was skipped ONLY to protect its soak uptime
+(7.5 days continuous on `1.3.8+mf.0` at that point — that accumulated runtime is
+the canary's deliverable).
+
+**AFTER the roll reboots moc3, verify (these are the point of the change):**
+
+```bash
+grep -o memory /sys/fs/cgroup/cgroup.controllers   # must appear
+test -r /proc/pressure/memory && echo PSI-OK       # must be PSI-OK
+```
+
+⚠️ **moc3 gets NO `MemoryMax` cap, deliberately** — unlike the other 8 boxes. Its
+user slice rests at 276 MB against a ceiling of only 905−561 = 344 MB (a 1.25×
+window, vs 2–4× on every sibling), so no safe cap value exists; one would OOM-kill
+ordinary `ssh`+`pytest` work. Once accounting is live, let
+`/sys/fs/cgroup/user.slice/user-1000.slice/memory.peak` accumulate ≥1 week and only
+then decide, sized from data. Full rationale + the cap-viability test:
+memory `project_volcanoai_reset_8_memory_pressure_2026_07_24`.
+
 ---
 
 ## ⛔ PHASE-4 ROLL BLOCKER found 2026-07-19 — read before rolling any box
