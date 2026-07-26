@@ -148,6 +148,27 @@ The signal fires after every seed bump until each box runs
 path and this class stops firing *by construction* — a process fix that
 retires ~15% of volume without touching a detector.
 
+**R2 status — DONE 2026-07-26.** Folded into all three deploy legs
+(`fleet_sync.sh` `promote_seed` remote + `promote_local_seed` self,
+`update.sh`), promote-before-restart, unconditional-but-idempotent, no-role
+boxes degrade to a visible NOTE. Pinned by `TestFleetSyncPromotesSeed` (5,
+red-checked). The self leg was nearly missed — the same half-wired shape
+`fleet_sync.sh` already records from 2026-06-09, and the manager box is where
+seeds are authored.
+
+**R2b — the claw engine's seed drift is UNWATCHED. Gap, not yet closed.**
+Found while doing R2: `probe_rules_seed_drift` judges only the *fleet* mini
+engine. The standalone dude-claw instance is a **second rule engine** with its
+own seed (`configs/mini_dudeai_rules.claw.json`) and its own live file
+(`~/mini_dudeai_claw_rules.json`, plus per-`@instance` siblings), and **no
+probe watches it drift**. So claw seed drift is invisible rather than noisy —
+the opposite failure from the one this pass was chartered to fix, and worth
+more attention for that reason. Deliberately NOT bundled into R2: promoting a
+seed nothing watches is an unverifiable change, and adding the probe is an
+*addition*, which this pass is chartered against. Hand it to the taxonomy
+session (Pri-3) as a concrete instance of T5 (who owns what) — an organ with
+no watcher is exactly the structural-dark shape.
+
 **R3 — `parity_drift` is inherent. NO CHANGE.**
 MeshForge is the declared lead repo, so a window where MF has landed and MA
 has not is the workflow, not a defect. Durations are 5–24 min. Leave it.

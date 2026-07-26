@@ -374,3 +374,72 @@ class TestClawDeployEnrollment:
         text = tmpl.read_text()
         assert "User=nats" in text
         assert "NoNewPrivileges=true" in text
+
+
+# ─────────────────────────────────────────────────────────────────
+# (e) fleet_sync.sh: PROMOTES the role seed as part of the deploy, on BOTH
+#     legs, BEFORE the mini restart.
+#
+#     Origin: the 2026-07-26 signal-yield deletion pass. `rules_seed_drift`
+#     was ~15% of ALL fleet escalation volume (25 fires, every one a true
+#     positive clearing in 9 min to 4 h) purely because a seed bump shipped
+#     as CODE while each live rules file waited for a hand-run of
+#     promote_seed_rules.py --apply. The detector was right every time; the
+#     DEPLOY was missing a step — the #79 shape again (code shipped, state
+#     did not).
+# ─────────────────────────────────────────────────────────────────
+
+
+class TestFleetSyncPromotesSeed:
+    def test_remote_leg_promotes(self):
+        text = FLEET_SYNC_SH.read_text()
+        assert "promote_seed()" in text, (
+            "fleet_sync.sh must define promote_seed for the remote leg")
+        assert re.search(r"^promote_seed\s+\S+\s+/opt/meshforge", text, re.M), (
+            "fleet_sync.sh must CALL promote_seed on the remote leg")
+
+    def test_self_leg_promotes(self):
+        """The half-wired shape: the 2026-06-09 watchdog case shipped to all
+        remotes and silently not to this box. The manager is where seeds are
+        authored, so omitting it here would be the worst place to miss."""
+        text = FLEET_SYNC_SH.read_text()
+        assert "promote_local_seed()" in text, (
+            "fleet_sync.sh must define promote_local_seed for the self leg")
+        assert re.search(r"^promote_local_seed\s+/opt/meshforge", text, re.M), (
+            "fleet_sync.sh must CALL promote_local_seed on the self leg")
+
+    def test_uses_apply_not_dry_run(self):
+        """The tool is dry-run by default; a deploy that forgets --apply
+        reports success while changing nothing (a silent no-op deploy)."""
+        text = FLEET_SYNC_SH.read_text()
+        assert text.count("promote_seed_rules.py --apply") >= 2, (
+            "both legs must pass --apply; without it promote is a dry run")
+
+    def test_promotes_before_restart_on_both_legs(self):
+        """Ordering is the point: promote THEN restart, so the daemon comes
+        up on the merged rules instead of racing a later hand-promote."""
+        text = FLEET_SYNC_SH.read_text()
+        remote_promote = text.index("\npromote_seed meshforge-mini-seed")
+        remote_restart = text.index("\nsync_user_unit meshforge-mini-dudeai ")
+        assert remote_promote < remote_restart, (
+            "remote leg must promote the seed BEFORE restarting mini")
+        self_promote = text.index("\npromote_local_seed /opt/meshforge")
+        self_restart = text.index("\nsync_local_user_unit meshforge-mini-dudeai ")
+        assert self_promote < self_restart, (
+            "self leg must promote the seed BEFORE restarting mini")
+
+    def test_no_role_box_is_not_a_deploy_failure(self):
+        """meshanchor-server takes no MeshForge seed — its no-declared-role
+        exit 2 is CORRECT. It must degrade to a visible NOTE, never fail the
+        deploy and never be swallowed (honest_failure_modes #9)."""
+        text = FLEET_SYNC_SH.read_text()
+        for fn in ("promote_seed", "promote_local_seed"):
+            start = text.index(f"{fn}() {{")
+            body = text[start:text.index("\n}\n", start)]
+            assert "NOTE" in body, (
+                f"{fn}: a non-zero promote must leave a visible NOTE witness")
+            assert "FAIL" not in body, (
+                f"{fn}: a no-declared-role box must not fail the deploy")
+            assert "return 1" not in body, (
+                f"{fn}: must never return non-zero — exit 2 is by design on a "
+                "box that takes no MeshForge seed")

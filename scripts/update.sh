@@ -350,6 +350,19 @@ fi
 # restart — the deploy gap this fix closes.
 if $USER_SVC_UPDATED; then
     if run_user_systemctl daemon-reload 2>/dev/null; then
+        # Promote the role seed BEFORE the restart, so the daemon comes up on
+        # the merged rules. Third leg of the same fix as fleet_sync.sh's
+        # promote_seed / promote_local_seed — a seed bump used to ship as CODE
+        # while the live rules file waited for a hand-run, which made
+        # rules_seed_drift ~15% of all fleet escalation volume (signal-yield
+        # pass, 2026-07-26). Idempotent; dry-run by default, hence --apply.
+        # A box with no declared role exits 2 BY DESIGN and must not fail the
+        # update, but the reason is echoed rather than swallowed.
+        if [ -f "$INSTALL_DIR/scripts/promote_seed_rules.py" ]; then
+            if ! seed_out="$(cd "$INSTALL_DIR" && python3 scripts/promote_seed_rules.py --apply 2>&1)"; then
+                echo "  NOTE: mini seed not promoted — ${seed_out%%$'\n'*}"
+            fi
+        fi
         # mini-dudeai is the daemon to refresh on code change; the dream
         # .timer pulls a fresh oneshot at its next fire, so it needs no
         # restart here.

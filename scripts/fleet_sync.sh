@@ -433,6 +433,66 @@ sync_user_unit() {
     return 0
 }
 
+# promote_seed <short> <repo_path>
+# Fold the role-seed promotion into the deploy itself.
+#
+# Before this, a seed bump landed as CODE on every box while each live
+# rules file stayed behind until someone hand-ran promote_seed_rules.py
+# --apply per box. That gap made rules_seed_drift ~15% of ALL fleet
+# escalation volume (signal-yield pass, 2026-07-26, 25 fires over the
+# window, every one a true positive that cleared in 9 min to 4 h). The
+# detector was right every time; the DEPLOY was missing a step. Same
+# shape as the #79 deploy-restart gap: code shipped, state did not.
+#
+# Deliberately UNCONDITIONAL rather than gated on a seed-file diff. The
+# tool is idempotent (already in sync -> no write) and dry-run by default,
+# so --apply is required and a no-op costs one python start. Gating on
+# the diff would be an optimisation that reopens the gap for drift with
+# any other cause -- a restored backup, a hand-edited live file -- which
+# is exactly the class the probe exists to catch.
+#
+# Runs BEFORE the mini restart so the daemon comes up on the merged rules.
+#
+# A box with no declared role exits 2 BY DESIGN (meshanchor-server takes
+# no MeshForge seed -- its no-declared-role error is correct, not a bug).
+# That is never fatal to the deploy, and never silent either: it reports
+# as NOTE with the real reason attached, so a genuine failure cannot hide
+# behind the legitimate skip (honest_failure_modes #9).
+#
+# (Recipe rule: this body must stay single-quote-free -- an apostrophe
+# terminates the outer REMOTE_SCRIPT string, see the note ~line 451.)
+promote_seed() {
+    local short="$1" repo="$2"
+
+    if [ ! -d "$repo/.git" ]; then
+        echo "SKIP $short no_repo"
+        return 0
+    fi
+    if [ ! -f "$repo/scripts/promote_seed_rules.py" ]; then
+        echo "SKIP $short no_tool"
+        return 0
+    fi
+
+    local head out rc
+    head=$(cd "$repo" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo "?")
+    out=$(cd "$repo" 2>/dev/null && python3 scripts/promote_seed_rules.py --apply 2>&1)
+    rc=$?
+
+    if [ "$rc" -eq 0 ]; then
+        if printf "%s" "$out" | grep -q "already in sync"; then
+            echo "PASS $short $head seed_in_sync"
+        else
+            echo "PASS $short $head seed_promoted"
+        fi
+        return 0
+    fi
+
+    local emsg
+    emsg=$(printf "%s" "$out" | tr "\n" "|" | head -c 140)
+    echo "NOTE $short $head seed_not_promoted rc=$rc $emsg"
+    return 0
+}
+
 # Run all three syncs even if one fails so a broken meshforge-maps does not
 # mask a successful meshforge update. meshforge-map is the singular :5000
 # map daemon from this repo (separate from the :8808 sister meshforge-maps);
@@ -463,6 +523,9 @@ sync_repo meshforge-watchdog /opt/meshforge   meshforge-watchdog "$MF_PRE_HEAD" 
 # pull actually lands new mini code on the running daemon (the deploy gap).
 # (Recipe rule: this body must stay single-quote-free — an apostrophe here
 # terminates the outer REMOTE_SCRIPT string, see the note ~line 451.)
+# Promote the role seed BEFORE the mini restart, so the daemon comes up on
+# the merged rules instead of racing a later hand-promote (see promote_seed).
+promote_seed meshforge-mini-seed /opt/meshforge || rc1s=$?
 sync_user_unit meshforge-mini-dudeai /opt/meshforge meshforge-mini-dudeai "$MF_PRE_HEAD" || rc1d=$?
 # Standalone dude-claw instance (second mini-dudeai daemon, claw-suffixed
 # state). Only the claw-brain box (moc1) runs it; everywhere else this is a
@@ -816,6 +879,37 @@ sync_local_unit() {
 # unit on this box too, so the sudo system-bus restart above can't reach it.
 # fleet_sync runs AS the operator here (not over SSH), so `systemctl --user`
 # works natively. Same proc-mtime vs newest-code-commit staleness check.
+# Self-side twin of promote_seed (remote leg, see ~line 435). Keep the two in
+# parity: the 2026-06-09 watchdog case is the standing lesson — the self leg
+# omitted a restart the remote leg had, so a code change reached all 5 remotes
+# and silently NOT this box until a hand-restart. A seed promotion that runs
+# everywhere except the manager box is that same half-wired shape
+# (honest_failure_modes #4), and the manager is where seeds are authored.
+promote_local_seed() {
+    local repo="$1"
+    local self_tag
+    self_tag="self ($(hostname -s))"
+
+    [ -d "$repo/.git" ] || return 0
+    [ -f "$repo/scripts/promote_seed_rules.py" ] || return 0
+
+    local out rc
+    out=$(cd "$repo" 2>/dev/null && python3 scripts/promote_seed_rules.py --apply 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if printf '%s' "$out" | grep -q "already in sync"; then
+            return 0          # quiet: the common, healthy case
+        fi
+        printf '[%-30s] OK   %s\n' "$self_tag" "mini seed promoted"
+        return 0
+    fi
+    # Never fatal (a box with no declared role exits 2 by design), never
+    # silent either — a real failure must not hide behind the legit skip.
+    printf '[%-30s] NOTE %s rc=%s %s\n' "$self_tag" "mini seed not promoted" \
+        "$rc" "$(printf '%s' "$out" | tr '\n' '|' | head -c 120)"
+    return 0
+}
+
 sync_local_user_unit() {
     local unit="$1" repo="$2"
     local self_tag
@@ -892,6 +986,9 @@ sync_local_unit meshforge-map     /opt/meshforge
 # federator. Keep self in parity with the remote watchdog restart.
 sync_local_unit meshforge-watchdog /opt/meshforge
 sync_local_unit meshforge-maps    /opt/meshforge-maps
+# Promote the role seed BEFORE the restart, so the daemon comes up on the
+# merged rules (self-side parity with the remote leg).
+promote_local_seed /opt/meshforge
 # mini-dudeai is a USER unit — restart it on the user bus when its code changed.
 sync_local_user_unit meshforge-mini-dudeai /opt/meshforge
 # Standalone dude-claw sibling (no-op on boxes without the unit).
