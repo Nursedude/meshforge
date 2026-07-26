@@ -355,3 +355,92 @@ input), `.claude/plans/signal_yield_deletion_pass_2026_07_26.md` (the Pri-1 pass
 whose per-signal reasoning is this design's evidence),
 `.claude/rules/honest_failure_modes.md` (#5 is §3's whole argument),
 `.claude/rules/calibrated_claims.md` (#7 is the FALSIFIER field).
+
+---
+
+# RATIFICATION — frontier tier, 2026-07-26 (Fable 5)
+
+Questions (a), (b), (d) from the Pri-3 queue row. (c) was withdrawn by the
+author 2026-07-25, settled by code — not re-litigated here, per the row.
+Grounding used beyond this document: the T1 rule **as built** in `d11a141a`
+(the design predates it; the implementation answers several of its own open
+questions), the shipped `detector_blind_any` seed entry, and
+`_BLIND_DISPOSITIONS` read at source.
+
+## (a) The axis — RATIFIED, with two annotations
+
+**UNIT/CHANNEL/FALSIFIER holds.** Tested against the incident record beyond
+the three founding cases: honest_failure_modes #4 (writer-with-no-reader — the
+`service_type` loader drop) lands in FALSIFIER via "what independent consumer
+exercises this path" (the answer "nothing" is the finding); closed-enum #7
+lands in CHANNEL's fail-dark third state (`build_coverage` emitting every enum
+member IS the cure); #5 shared-constant drift is deliberately NOT in the axis
+— it is a maintenance-drift class, not a lying mode, and §3 handles it as the
+consolidation finding. Nothing in the six tensions escapes the collapse.
+
+Annotation 1: **the axis is a lying-mode taxonomy for detectors, not a
+complete defect taxonomy.** `honest_failure_modes.md` remains the write-time
+checklist; the two compose (the axis says where an organ will lie, the
+checklist says what to write so it doesn't). Neither supersedes the other.
+
+Annotation 2: **field assignment is not a partition.** T2 is diagnosed CHANNEL
+("the doc's claims have no observation channel") but its cure — a prose claim
+carries the command that would falsify it — is FALSIFIER-shaped. That is
+composition, not error; record it so nobody rejects a classification because a
+second field also applies.
+
+Binding caveat: the three fields recorded in docstrings are DECLARATIONS —
+prose, i.e. themselves T4-exposed. Where the field is mechanically checkable
+(UNIT: a test that the debounce counter increments in the phenomenon's unit;
+FALSIFIER: an ancestry assertion) it must be a test, not only a docstring.
+The design says "where cheap"; this ratification makes it the default.
+
+## (b) T1 as one mini rule — RATIFIED; not a meta-organ; exclusions correct as shipped
+
+**Not a meta-organ.** The banned shape was a coverage historian — new state,
+new file, machinery watching machinery. The shipped rule is one consumer of an
+existing per-tick score inside an existing engine: zero new files, daemons,
+probes, enum members. Verified as built: `annotate_digest` only (no ntfy),
+`grace_s=86400`, `_BLIND_DISPOSITIONS = {indeterminate, unknown}`.
+
+**One honest imperfection, by the design's own UNIT axis**: the phenomenon
+(continuous detector blindness) lives in coverage reads/wall time; mini's
+observed-tick streak resets on every mini restart, so a blindness window
+spanning a deploy under-counts. That is the accepted price of zero new
+machinery. It makes grace sizing load-bearing: at the design text's "order of
+days" the rule would have been structurally near-mute against this fleet's
+deploy cadence; the implementation chose 24 h, which bounds the miss window to
+one restart cycle. **The as-built 24 h is the ratified value; the design
+text's "order of days" is superseded.**
+
+**`inert` is the only DISPOSITION exclusion needed — conditional on the
+action staying annotate-only.** Legitimately-chronic indeterminates exist
+(`delivery_confirmation_stall` on a box with nothing confirmable to judge),
+and under annotate-only they cost digest lines, honestly — the detector
+genuinely cannot see. Two binding conditions, both already stated in the
+shipped rule's own annotation, elevated here to ratified contract: (1) any
+future promotion to ntfy requires a per-class review, not a threshold change;
+(2) the durable fix for a chronically-blind-BY-DESIGN class is reclassifying
+the probe to emit `inert` (a probe-side semantics fix), never a whitelist
+inside the rule. Scoring `unknown` alongside `indeterminate` is correct —
+fail-dark can never read as health.
+
+## (d) T5 left open — RATIFIED as constraint adherence, not avoidance
+
+T5's answer requires ADDING a new watcher category (available-but-unadopted
+capability), which the row's hard constraint (consolidation only) and the
+footprint rule both forbid. Recording the finding — 1 of ~50 signal classes
+watches for unadopted capability; everything else waits to be told — was the
+correct deliverable at this altitude. Two conditions on any future re-queue:
+frame it first as an **operator scope decision** ("is unadopted-capability
+watching wanted at all?") before any design work; and note that T5 falling
+outside the axis is evidence the axis has honest boundaries (it classifies
+how organs lie, and T5 is a question about what to watch, not about lying).
+
+## Ledger of this ratification
+
+Ratified: §1 axis (2 annotations, 1 binding caveat), §2/T1 rule as built
+(24 h supersedes "order of days"; 2 conditions elevated to contract), §4/T5
+disposition. Not touched: §3 (settled by code 2026-07-25), §5 (measurement,
+not judgment — spot-checked `_BLIND_DISPOSITIONS` and the seed entry only).
+No design change required; no code change required.
