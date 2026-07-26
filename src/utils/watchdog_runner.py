@@ -111,6 +111,12 @@ from utils.watchdog_probes import (
     probe_tracer_peer_unreachable,
     signal_to_dict,
 )
+# Signal lifecycle + the unobserved HOLD (split 2026-07-26, MF025). Re-exported
+# here so existing importers of SignalTracker keep working unchanged.
+from utils.watchdog_tracker import (  # noqa: F401  (re-export)
+    SignalTracker,
+    observed_only,
+)
 from utils.watchdog_actions import (
     Phase2Config,
     RestartHistory,
@@ -181,58 +187,6 @@ _DEFAULT_SERVICES_EXPECTED_ACTIVE: Tuple[str, ...] = (
 _DEFAULT_SERVICES_WEDGE_CHECK: Tuple[str, ...] = (
     "meshforge-map.service",
 )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# State tracker — first-seen + cleared edge transitions
-# ─────────────────────────────────────────────────────────────────────
-
-
-class SignalTracker:
-    """Tracks signal lifecycle so the runner can log edge transitions.
-
-    Maps ``(class, subject)`` → first_seen unix ts. Each tick the runner
-    passes the current signal set; we diff against the previous tick
-    and surface the deltas for logging without re-logging steady state.
-    """
-
-    def __init__(self) -> None:
-        self._active: Dict[Tuple[str, str], float] = {}
-
-    def update(
-        self, current: List[Signal], *, now: float,
-    ) -> Tuple[List[Tuple[Signal, float]], List[Tuple[str, str]]]:
-        """Diff against previous tick.
-
-        Returns:
-            (newly_active, newly_cleared) where:
-              - newly_active: list of (signal, first_seen_ts) for signals
-                that appeared this tick (or persisted but are reported
-                for first time — first_seen carries the original ts).
-              - newly_cleared: list of (class, subject) keys that were
-                active before but absent now.
-        """
-        current_keys = {s.key() for s in current}
-        previous_keys = set(self._active.keys())
-
-        newly_cleared = list(previous_keys - current_keys)
-
-        first_seen_ts_for: List[Tuple[Signal, float] ] = []
-        for sig in current:
-            key = sig.key()
-            first_seen = self._active.get(key)
-            if first_seen is None:
-                # New transition
-                self._active[key] = now
-                first_seen_ts_for.append((sig, now))
-            else:
-                # Still active — preserve original first_seen
-                first_seen_ts_for.append((sig, first_seen))
-
-        for key in newly_cleared:
-            self._active.pop(key, None)
-
-        return first_seen_ts_for, newly_cleared
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1193,7 +1147,18 @@ def run_loop(
         else:
             coverage = build_coverage(signals)
 
-        active_with_first_seen, newly_cleared = tracker.update(signals, now=now)
+        active_with_first_seen, newly_cleared, newly_held = tracker.update(
+            signals, now=now, coverage=coverage,
+        )
+
+        # A hold must never be silent — otherwise "this signal did not clear"
+        # is invisible and we have traded a false CLEARED for a mystery.
+        for cls, subject in newly_held:
+            logger.warning(
+                "watchdog: signal HELD class=%s subject=%s — class not observed "
+                "this tick (disposition unobserved); not clearing",
+                cls, subject,
+            )
 
         # Log only edge transitions.
         for sig, fs_ts in active_with_first_seen:
@@ -1227,7 +1192,8 @@ def run_loop(
         # and-suspenders.
         if phase2_config.enabled:
             decisions = decide_restarts(
-                signals_with_first_seen=active_with_first_seen,
+                # Report a held signal, never act on it — see observed_only().
+                signals_with_first_seen=observed_only(active_with_first_seen),
                 config=phase2_config,
                 history=restart_history,
                 now=now,
@@ -1328,11 +1294,17 @@ def main(argv=None) -> int:
             services_wedge_check=services_wedge,
             http_port=http_port,
         )
-        active_with_first_seen, _ = tracker.update(signals, now=now)
+        coverage = build_coverage(signals)
+        # Fresh tracker in --once mode, so nothing can clear or be held; the
+        # coverage argument is still passed explicitly rather than defaulted
+        # (see SignalTracker.update — the contract has no silent default).
+        active_with_first_seen, _cleared, _held = tracker.update(
+            signals, now=now, coverage=coverage,
+        )
         write_state(
             args.output, host=host, now=now, probe_count=1,
             active_signals=active_with_first_seen,
-            coverage=build_coverage(signals),
+            coverage=coverage,
         )
         for sig, _ in active_with_first_seen:
             print(

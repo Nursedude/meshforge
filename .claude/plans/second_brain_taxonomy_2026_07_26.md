@@ -123,6 +123,24 @@ is `indeterminate`/`unknown`, with `grace_s` on the order of days, action
 `file_annotate` (observation-only, MF021-safe). No new file, no new daemon, no
 new probe, no new enum member.
 
+### Pri-2 update (same day) — answered YES, and it changes T1's shape
+
+`SignalTracker.update` diffed on signal presence alone and never saw the
+disposition map, so **any probe going blind emitted a false CLEARED**. Fixed:
+only a positive observation may clear; an unobserved class HOLDS and is
+re-emitted carrying `extra.unobserved_hold`.
+
+That does **not** make T1 redundant — the two cover disjoint populations:
+
+| | a blind probe that WAS signalling | a blind probe that was NOT signalling |
+|---|---|---|
+| **Pri-2 hold** | covered — signal persists, no false recovery | nothing to hold |
+| **T1 rule** | (already visible) | **only this** — e.g. `kernel_reboot_pending`, blind and silent, has never fired |
+
+So T1's rule keeps its whole reason to exist, and its scope sharpens: it is the
+guard for **blind-and-quiet**, which is precisely the case where silence is
+indistinguishable from health at every consumer.
+
 ⚠️ Two honest limits to carry into implementation: `inert` must NOT be scored
 (a legitimately-absent organ is not a blind one), and the rule reads a *local*
 coverage block — fleet-wide blindness is `fleet_truth.merge_coverage`'s existing

@@ -3228,13 +3228,13 @@ def test_tracker_first_seen_persists_across_ticks():
     tracker = SignalTracker()
     sig = Signal(cls="main_thread_wedge", subject="x",
                  severity="wedge", detail="d")
-    # Tick 1
-    active, cleared = tracker.update([sig], now=100.0)
+    _cov = {"main_thread_wedge": {"disp": "active"}}
+    active, cleared, _held = tracker.update([sig], now=100.0, coverage=_cov)
     assert len(active) == 1
     assert active[0][1] == 100.0
     assert cleared == []
     # Tick 2 — same signal, first_seen must still be 100.0
-    active, cleared = tracker.update([sig], now=130.0)
+    active, cleared, _held = tracker.update([sig], now=130.0, coverage=_cov)
     assert active[0][1] == 100.0
     assert cleared == []
 
@@ -3243,8 +3243,10 @@ def test_tracker_reports_cleared_on_disappear():
     tracker = SignalTracker()
     sig = Signal(cls="main_thread_wedge", subject="x",
                  severity="wedge", detail="d")
-    tracker.update([sig], now=100.0)
-    active, cleared = tracker.update([], now=130.0)
+    # "clean" = the probe RAN and saw nothing — the only thing that may clear.
+    tracker.update([sig], now=100.0, coverage={"main_thread_wedge": {"disp": "active"}})
+    active, cleared, _held = tracker.update(
+        [], now=130.0, coverage={"main_thread_wedge": {"disp": "clean"}})
     assert active == []
     assert cleared == [("main_thread_wedge", "x")]
 
@@ -3255,7 +3257,8 @@ def test_tracker_distinct_subjects_dont_collide():
                 severity="degraded", detail="x")
     s2 = Signal(cls="service_inactive", subject="rnsd.service",
                 severity="degraded", detail="y")
-    active, _ = tracker.update([s1, s2], now=100.0)
+    active, _c, _h = tracker.update(
+        [s1, s2], now=100.0, coverage={"service_inactive": {"disp": "active"}})
     assert {(a[0].subject, a[1]) for a in active} == {
         ("meshforge-map.service", 100.0),
         ("rnsd.service", 100.0),
