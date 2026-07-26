@@ -274,6 +274,52 @@ class TestResolutionNeverReadsEtcHosts:
         monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", dropin)
         assert gfh.upstream_servers() == ["192.0.2.53"]
 
+    def test_upstream_servers_fall_back_to_classic_resolv_conf(self, monkeypatch,
+                                                                tmp_path):
+        """A box WITHOUT systemd-resolved must still find the zone server.
+
+        kiai + moc3 (2026-07-26) run a classic /etc/resolv.conf. Before this,
+        upstream_servers() returned [] there, every name fell through to
+        ip_fallback, and the run refused — so the tool could never be
+        deployed on those boxes at all.
+        """
+        dropin = tmp_path / "resolved.conf.d"          # absent on purpose
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("search lan\nnameserver 192.0.2.53\n"
+                          "nameserver 192.0.2.54\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", dropin)
+        monkeypatch.setattr(gfh, "RESOLV_CONF", resolv)
+        monkeypatch.setattr(gfh.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError()))
+        assert gfh.upstream_servers() == ["192.0.2.53", "192.0.2.54"]
+
+    def test_loopback_stub_is_never_an_upstream(self, monkeypatch, tmp_path):
+        """127.0.0.53 answers from /etc/hosts — using it would be self-confirming.
+
+        This is the 2026-07-25 drill bug in a new skin: the resolv.conf
+        fallback must not smuggle the local stub back in as 'what DNS says'.
+        """
+        dropin = tmp_path / "resolved.conf.d"
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 127.0.0.53\nnameserver 192.0.2.53\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", dropin)
+        monkeypatch.setattr(gfh, "RESOLV_CONF", resolv)
+        monkeypatch.setattr(gfh.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError()))
+        assert gfh.upstream_servers() == ["192.0.2.53"]
+
+    def test_stub_only_resolv_conf_is_blindness_not_a_server(self, monkeypatch,
+                                                              tmp_path):
+        """Stub-only => no upstream at all => UNKNOWN, never a false 'in sync'."""
+        dropin = tmp_path / "resolved.conf.d"
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 127.0.0.53\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", dropin)
+        monkeypatch.setattr(gfh, "RESOLV_CONF", resolv)
+        monkeypatch.setattr(gfh.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError()))
+        assert gfh.upstream_servers() == []
+
     def test_truncated_reply_is_no_answer_not_a_crash(self, monkeypatch):
         """A short or garbage datagram must degrade, never raise."""
         class FakeSock:

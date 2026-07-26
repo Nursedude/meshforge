@@ -16,8 +16,9 @@
 RNS and LXMF are now **hard forks owned by MeshForge** (`Nursedude/reticulum`,
 `Nursedude/lxmf`), pinned in `requirements/rns.txt` by tag **and** SHA with a
 `# MF-FORK-PIN` SSOT line; `scripts/rns_version_check.py` gates the fleet on the
-`+mf.N` marker. Fleet baseline: **rns `1.2.5+mf.5` / lxmf `0.9.4+mf.0`** (rolled
-2026-06-09, all 7 rnsd hosts). This is the meta-resolution for the entire
+`+mf.N` marker. Fleet baseline: **rns `1.3.8+mf.0` / lxmf `1.0.1+mf.1`** (rolled
+2026-07-19, all 7 MeshForge boxes; the prior `1.2.5+mf.5`/`0.9.4+mf.0` baseline
+rolled 2026-06-09). This is the meta-resolution for the entire
 **rnsd-RPC fragility class** (#58/#61/#63/#68/#69/#72): fragility we used to work
 *around* in `utils/rns_init.py` is now fixed *at the source*. Shipped: `+mf.1` #68
 connect-hang, `+mf.2` #72 RPC-hang (see "FIXED AT SOURCE" notes below), `+mf.3`
@@ -45,25 +46,20 @@ but space restarts and verify host-binding before the next box anyway.
   proof**), canary one box, then fleet-roll. Full procedure in each fork's
   `FORK.md`; governance triggers (CVE-no-upstream / wire break / activity ceases)
   in [[project_upstream_dependency_governance_2026_05_29]].
-- **1.3.8 / 1.0.1 merge arc — PHASES 1-3 DONE, CANARY LIVE ON moc3, NOT
-  FLEET-ROLLED (2026-07-17)**. Full record:
-  `.claude/research/rns_138_merge_eval_2026_07_16.md`.
-  Merges on **integration branches** `meshforge-138` (RNS `1.3.8+mf.0`) +
-  `meshforge-101` (LXMF `1.0.1+mf.0`), pushed; **deployed `meshforge` + fleet
-  still run `1.2.5+mf.5`/`0.9.4+mf.0`** and the SSOT pins (`requirements/rns.txt`
-  MF-FORK-PIN, `rns_version_check`) are UNCHANGED — do NOT bump until the roll or
-  every un-upgraded box fails. Wire-compat cleared + **interop PROVEN 07-17**
-  (cross-version LXMF round-trips: direct, public-transport-node, real-net
-  tracer). **Findings: (1) #72 NOT subsumed** — `_rpc_recv`
-  re-ported onto the msgpack framing (21 sites). **(2) mf.4 re-ported, not
-  carried** — RLock flaked LOG_EXTREME (A/B-proven; plain Lock, fallback
-  re-log outside it). LXMF byte-identical, MF↔MA lockstep safe.
-  ⚠️ **moc3 IS THE CANARY: all 3 envs flipped (user site + root + nomadnet pipx
-  venv — silently stock 1.1.4, invisible to the drift probe; check every box's
-  at roll). Its `rns_version_drift` page is DELIBERATE — do NOT converge moc3
-  back to the pin during the soak.** mf.5 exit-75 live-fired + self-healed the
-  #69 drill race. **REMAINING: multi-day soak → per-box roll (rnsd + ALL
-  clients + pipx venvs together) → ff + bump SSOT.**
+- **1.3.8 / 1.0.1 merge arc — COMPLETE + FLEET-ROLLED 2026-07-19** (`50213071`
+  roll, `72acf61e` SSOT bump). Full record:
+  `.claude/research/rns_138_merge_eval_2026_07_16.md`. moc3 canary 07-17 →
+  soak → per-box roll → SSOT bumped; all 7 boxes verified at the pin, both
+  deliberate soak markers (moc3 `rns_version_drift`, moc4 `service_inactive
+  rnsd`) cleared. Interop PROVEN 07-17 (cross-version LXMF round-trips:
+  direct, public-transport-node, real-net tracer).
+  **Findings worth carrying: (1) #72 NOT subsumed** — `_rpc_recv` re-ported
+  onto the msgpack framing (21 sites). **(2) mf.4 re-ported, not carried** —
+  RLock flaked LOG_EXTREME (A/B-proven; plain Lock, fallback re-log outside
+  it). LXMF byte-identical, MF↔MA lockstep safe. **(3) A box has more RNS
+  envs than the drift probe can see** — user site + root dist-packages +
+  pipx venvs (nomadnet's was silently stock 1.1.4; kiai added a fifth class,
+  root user-site). Roll EVERY env per box, together with rnsd.
 - **MeshForge-side guards STAY** (`rns_init.py` probe, MF009/MF019 lint, watchdog
   `os._exit` backstop) as defense-in-depth — remove a backstop only after its
   in-library fix has held over a long soak.
