@@ -177,3 +177,85 @@ Today that number is **3**.
 manager, touches no gateway code, so NOT blocked by the RNS roll): surface
 `dual_homed_recipients` in the dup rollup and give it a probe. Keep the
 outcome detector as-is; add the leading indicator beside it.
+
+---
+
+# VERDICT — ACCEPT RATIFIED AT FRONTIER TIER (2026-07-26, Fable 5)
+
+Row 8 (`cross_gateway_dups_unsuppressed`) is **ACCEPT, ratified**: keep the
+detectors, do NOT build cross-gateway delivery coordination. The operator's
+2026-07-19 accept stands, on the ground the addendum above moved it to — the
+failure-cost asymmetry — and explicitly NOT on the observed rate.
+
+## Inputs re-derived live at ratification (2026-07-26)
+
+`/fleet/dups` fetched this session: `status ok`, `uncovered []` (full 2/2
+gateway coverage), moc 127 / moc3 126 confirmed pairs, ALL dup counters 0
+(`fleet_human_duplicate_pairs`, `fleet_infra_duplicate_pairs`,
+`rns_unconfirmed_pairs`), `dual_homed_recipients: 3` (the same three
+human-class hashes as 07-19), `unconfirmable_sent: 15936` (14,117 on 07-19,
++12.9% in 6 days), `untracked_events: 588`.
+
+## The adversarial pass (what was attacked, and what survived)
+
+1. **"0 observed is worthless — the unobservable mesh population grew
+   +12.9%/6d."** Correct, and it defeats only the RATE argument, which the
+   07-19 addendum already withdrew as load-bearing. The standing reason is
+   time-invariant; the growing blind population changes nothing it rests on.
+2. **The strongest BUILD counter — static recipient ownership** ("assign each
+   recipient a primary gateway by hash; secondary suppresses unless primary's
+   heartbeat is stale; no race window"). **Refuted by this fleet's own
+   incident record.** The dominant observed failure mode here is PARTIAL
+   failure — a unit active but wedged (#68/#72 rnsd accepting connections
+   while RPC hangs, #63 services active with dead write paths). A heartbeat
+   is a representation of delivery capability, not delivery
+   (calibrated_claims #7 in protocol form). Under exactly the fleet's
+   most-common failure, the secondary suppresses while the primary delivers
+   nothing: **silence, with everything looking healthy**. Static ownership
+   does not remove the loss mode; it relocates it into the failure class this
+   fleet hits most, and hides it.
+3. **Receiver-side dedup middle ground.** Refuted structurally: recipients
+   are external clients (NomadNet inboxes, mesh nodes) we ship no code to,
+   and the two gateways' copies are distinct LXMF messages with distinct
+   source hashes — there is no field for the receiver to join on.
+4. **"Accept means the class goes unwatched."** Refuted by live wiring,
+   verified this session: `probe_gateway_dup_degraded` gates on HUMAN pairs
+   with honest fallbacks (indeterminate on unreachable/stale/garbage, falls
+   back to the TOTAL on a pre-split JOIN so it never silently stops paging);
+   mini rule `gateway_dup_degraded_any` pages on it;
+   `probe_gateway_dual_homed_exposure` edge-fires on each NEW dual-homed
+   recipient — the leading indicator, observable on the mesh leg because
+   dual-homing is routing state, not a confirmation.
+
+## The verdict, stated with both populations (never averaged)
+
+- **Confirmable population (RNS/LXMF):** 0 human dups ever, ~27 days of full
+  2/2 coverage. One fire ever (2026-06-29), infra-class, pre-classifier,
+  structurally unsuppressable and deliberately unpaged.
+- **Mesh population:** structurally unobservable — **unknown, not zero**, and
+  growing (`unconfirmable_sent` 15,936). This accept is NOT a claim that no
+  mesh dups exist; it is a claim that suppression would cost more than the
+  defect where we can see, and cannot be validated where we can't.
+- **Why accept:** an unsuppressed dup fails toward REDUNDANCY (message arrives
+  twice — visible, recoverable by the human). A coordination misfire fails
+  toward SILENCE (message arrives zero times — invisible, on emergency-comms
+  infrastructure). The asymmetry is as true at 100 dups/day as at 0, so it
+  does not decay as the soak ages.
+
+## Revisit triggers (each names its first lever — none of them is "design a protocol")
+
+1. **First human-class `gateway_dup_degraded` fire.** The probe pages; decide
+   again with a real instance in hand (`/fleet/dups` `fleet_duplicates[]`
+   where `recipient_kind==human`).
+2. **Material dual-homing growth** (`gateway_dual_homed_exposure` fires
+   accumulating). First lever is TOPOLOGY, not coordination: single-home the
+   recipient in routing config, or scope suppression to the RNS leg only,
+   where confirms exist and a yield can be validated.
+3. **ACK consumption lands (#74 T2 step 4).** The mesh leg becomes
+   dup-observable; that upgrades the EVIDENCE (the blind population shrinks),
+   not the decision direction — the asymmetry argument is unchanged. Re-read,
+   don't re-open by default.
+
+Deliverable is complete as of this section: detector (outcome, human-gated) +
+leading indicator (precondition, mesh-observable) + this dated decision record
++ eval case `oracle-cross-gateway-dup-accept-cost-asymmetry`.
