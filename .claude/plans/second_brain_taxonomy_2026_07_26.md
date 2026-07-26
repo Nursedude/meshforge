@@ -437,6 +437,68 @@ watching wanted at all?") before any design work; and note that T5 falling
 outside the axis is evidence the axis has honest boundaries (it classifies
 how organs lie, and T5 is a question about what to watch, not about lying).
 
+## T5 — RESOLVED 2026-07-26 (operator scope decision + a stale premise)
+
+The re-queue happened as (d) required: framed to the operator as a scope
+decision first. **Operator chose "widen the existing channel"** — grow the
+night watcher's SIGHT, PROPOSE-only, no new organ (doctrine
+`mini-is-the-night-watcher-eyes-not-leader` had already removed the
+authority-shaped option: mini observes, decisions stay with the tiers that
+can afford them).
+
+**Then the premise turned out to be stale, and that changes the answer.**
+Re-derived at source, not from the prep artifact:
+
+```
+watchdog_probe_core.py:60  aredn_organ_undeclared   # 2026-07-20
+watchdog_probe_core.py:61  lxmf_propagation_unused  # 2026-07-20, "the second shape-C signal"
+```
+
+There are **two**, not one. The "1 of ~50" figure is the 07-20 sweep's
+*pre-fix* count: the sweep found one, and then shipped the second — plus the
+shape-A companion `lxmf_propagation_node_dark`, because adopting a capability
+would otherwise trade a WATCHED gap for an UNWATCHED dependency. The category
+also already has a name in the source (**shape-C**), a written discipline, and
+live wiring into the propose channel: `aredn_organ_undeclared_any` and
+`lxmf_propagation_unused_any` are in BOTH seeds (`federator`,
+`fleet_gateway`) with action `propose_escalation`, which
+`detect_escalation_rollup` rolls into the nightly dream.
+
+⚠️ **The stale count survived a frontier ratification pass** — including this
+document's own (d), which states T5 "requires ADDING a new watcher category."
+The category existed at the time of writing. Nobody re-read `SIGNAL_CLASSES`;
+the prep artifact's number was carried forward. That is **T4 again — a
+representation read as a verification** — committed a second time, in the
+section ratifying the taxonomy that names T4.
+
+**VERDICT: the channel is already widened; the gap is systematization, and it
+is not a detector.** Both members were found by the one-off 2026-07-20
+optional-organ sweep. Nothing enumerates optional capabilities, so shape-C
+coverage grows only when someone happens to run that sweep again. The honest
+widening is therefore to make **the sweep recurring** (a worklist row, run at
+whatever tier is free) and to keep shape-C's discipline written down — zero
+new organs, zero new probes, zero new files. T5 CLOSES.
+
+**Do NOT build a native dream detector for this** — the shape that looks like
+"widening the propose organ" is the one option that is actively unsafe.
+`build_dreams` is pure `(state, history, now) -> deltas`; its detectors read
+only fired-rule state and have **no `note_disposition` equivalent**. A dream
+detector that cannot read a capability's config returns `[]`, which is
+byte-identical to "nothing unadopted" — degraded state mapped to a
+valid-looking value, `honest_failure_modes` #1/#2, and the exact defect Pri-2
+had just finished fixing one layer down. The watchdog probe layer already
+carries the tri-state discipline; noticing belongs where blindness can be
+reported.
+
+**Shape-C discipline** (read off the two members, not invented): fire only on
+POSITIVE proof the capability is present — a forgotten declaration is
+unfalsifiable by absence; go INERT the moment any statement exists, so one
+fault keeps one owner; HOLD (never claim availability) when the evidence is
+stale; prefer durable operator-owned state over the journal (fleet boxes run
+`Storage=volatile`, so journal absence proves nothing); report, never
+prescribe, when adoption is a trust decision; and ship the shape-A companion
+WITH adoption.
+
 ## Ledger of this ratification
 
 Ratified: §1 axis (2 annotations, 1 binding caveat), §2/T1 rule as built

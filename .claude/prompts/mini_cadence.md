@@ -121,6 +121,32 @@ against LIVE truth, which a date can't, and surface readiness *earlier* than the
 - Do NOT execute the deferred task here — surfacing/marking-ready is the whole job;
   execution is a separate working session.
 
+## Optional-organ sweep (PERIODIC — not every run)
+
+The night watcher's one structural blind spot: of ~50 signal classes, only the
+**shape-C** pair (`aredn_organ_undeclared`, `lxmf_propagation_unused`) watches for a
+capability that is *available and unadopted*. Everything else waits to be told. Both
+were found by a single one-off sweep on 2026-07-20 — nothing makes it recur, which is
+the whole gap T5 closed on 2026-07-26 (verdict in
+`.claude/plans/second_brain_taxonomy_2026_07_26.md`).
+
+Run this only when a new optional capability has shipped since the last sweep, or if
+no sweep is recorded in ~3 months — **not** on every cadence pass (it costs real time
+and the footprint rule applies to review work too):
+
+- List capabilities whose adoption is a *config statement* (an empty/absent key that
+  gates a real feature). Ask of each: is there POSITIVE evidence the capability is
+  present on some box, while no box adopts it?
+- If yes and nothing watches it, that is a shape-C candidate — **queue it, do not build
+  it here** (scope discipline below). Its discipline is written in the T5 verdict:
+  positive evidence only, INERT the moment any statement exists, HOLD on stale evidence,
+  durable state over the journal, report-never-prescribe, and ship the shape-A companion
+  WITH adoption so a watched gap isn't traded for an unwatched dependency.
+- ⚠️ Do NOT add this noticing to mini's dream detectors. They are pure
+  `(state, history) -> deltas` with no `note_disposition`, so a detector that cannot read
+  a config returns `[]` — byte-identical to "nothing unadopted". Noticing belongs in the
+  probe layer, where blindness is reportable.
+
 ## Scope discipline
 
 - One bounded pass: resolve the proposed deltas, run the deferred-work gate check, then stop.

@@ -165,6 +165,16 @@ The 2026-07-20 optional-organ sweep found that **of ~50 signal classes only ONE
 watched for an available-but-unadopted capability** — everything else waits to
 be told. That asymmetry is probably a category, not an accident.
 
+> ⚠️ **STALE AS WRITTEN — corrected 2026-07-26. Do not carry the "only ONE"
+> figure forward.** It is the sweep's *pre-fix* count: the sweep found one and
+> then shipped the second (`lxmf_propagation_unused`), so there were already
+> **two** shape-C classes when this artifact was written —
+> `watchdog_probe_core.py:60-61`, plus the shape-A companion
+> `lxmf_propagation_node_dark`. The number was carried from this file into the
+> taxonomy AND through its frontier ratification without anyone re-reading
+> `SIGNAL_CLASSES` (T4 — a representation read as a verification). T5 is
+> RESOLVED; the verdict is in `second_brain_taxonomy_2026_07_26.md`.
+
 **T6 — Unversioned organs on the boxes they guard.**
 `rtun_watchdog.sh` existed only as an untracked file on owrt1 — the box whose
 sole access path it manages — until this session. What else is like that?
