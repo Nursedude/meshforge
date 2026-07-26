@@ -313,11 +313,94 @@ class TestAccessoryAbsenceIsNotFailure:
         # disambiguate from a permanent hardware absence.
         assert t["ok"] is True
 
-    def test_unreachable_device_is_never_ok_regardless_of_accessories(self):
+    def test_required_half_missing_is_never_ok_even_when_accessories_answer(self):
+        """Renamed + flipped 2026-07-26: this test used to assert
+        ``reachable is False`` here, which PINNED the defect below — its own
+        fixture has ble_stats answering, and a device that answers is not
+        unreachable. ``ok`` is the flag that must stay False (required half
+        missed); ``reachable`` is about the DEVICE."""
         t = build_tick(now=1.0, host="moc2", device="d",
                        device_info_reply={"ok": False, "error": "no reply"},
                        ble_stats_reply=_ok(BS))
-        assert t["reachable"] is False and t["ok"] is False
+        assert t["ok"] is False
+        assert t["reachable"] is True, "the device answered ble_stats"
+
+
+LORA = ("mesh_heard_age_s: 3, heard 225114 pkts, crc_err 1996, runts 1, "
+        "from !58835c1f, rssi -100 dBm, snr 4.5")
+
+
+class TestReachableMeansTheDeviceAnswered:
+    """``reachable`` must mean "the DEVICE answered", not "my one request
+    succeeded" (2026-07-26).
+
+    Live defect, moc2: ``reachable`` was derived from ``device_info`` ALONE
+    with no retry, so a single timed-out request produced ``reachable: false``
+    — which ``probe_claw_device_dark`` renders as *"the DEVICE is silent ...
+    look at wifi, the USB feed, or the node itself"*. The tick that triggered
+    it carried, in the SAME capture: ble adv_age_s 0, battery 4.18 V, and lora
+    reporting a packet heard 3 s earlier, against a claw with ~22 days of
+    monotone uptime. Three of four requests answered and it still paged the
+    operator at hardware.
+
+    A timed-out request is an observation-channel failure, not evidence about
+    the device (honest_failure_modes #1/#2 — degraded state must not map to a
+    valid-looking definitive value). Any sibling reply is POSITIVE proof the
+    device answered, and it is already sitting in the same record.
+    """
+
+    def test_ble_reply_proves_the_device_answered(self):
+        t = build_tick(now=1.0, host="moc2", device="dudeclaw-01",
+                       device_info_reply={"ok": False,
+                                          "error": "timed out after 8.0s"},
+                       ble_stats_reply=_ok(BS))
+        assert t["reachable"] is True
+        assert t["ok"] is False, "the required half still missed"
+        assert "device_info" in t["errors"], "the miss keeps its witness (#9)"
+
+    def test_lora_alone_proves_it_the_live_moc2_tick(self):
+        """The exact shape of the 2026-07-26 09:00:02 tick: only the
+        over-the-air witness and the gauge came back."""
+        t = build_tick(now=1.0, host="moc2", device="dudeclaw-01",
+                       device_info_reply={"ok": False,
+                                          "error": "timed out after 8.0s"},
+                       ble_stats_reply={"ok": False, "error": "timed out"},
+                       battery_reply=_ok("Battery: 4.18 V (adc 853 mV)"),
+                       lora_reply=_ok(LORA))
+        assert t["reachable"] is True
+        assert t["lora"]["heard_age_s"] == 3
+
+    def test_total_silence_is_still_dark(self):
+        """The fix must not blind the probe: when NOTHING answers, that is a
+        real dark device and it must still read False."""
+        t = build_tick(now=1.0, host="moc2", device="d",
+                       device_info_reply=None, ble_stats_reply=None,
+                       battery_reply=None, lora_reply=None)
+        assert t["reachable"] is False
+        assert t["ok"] is False
+
+    def test_every_half_timing_out_is_dark(self):
+        t = build_tick(now=1.0, host="moc2", device="d",
+                       device_info_reply={"ok": False, "error": "timed out"},
+                       ble_stats_reply={"ok": False, "error": "timed out"},
+                       battery_reply={"ok": False, "error": "timed out"},
+                       lora_reply={"ok": False, "error": "timed out"})
+        assert t["reachable"] is False
+
+    def test_answered_names_which_halves_replied(self):
+        """A bare boolean is what got us here — record WHICH halves answered so
+        the next reader can see the evidence without re-deriving it."""
+        t = build_tick(now=1.0, host="moc2", device="d",
+                       device_info_reply={"ok": False, "error": "timed out"},
+                       ble_stats_reply=_ok(BS),
+                       lora_reply=_ok(LORA))
+        assert t["answered"] == ["ble", "lora"]
+
+    def test_healthy_tick_still_reachable_and_ok(self):
+        t = build_tick(now=1.0, host="moc2", device="d",
+                       device_info_reply=_ok(DI), ble_stats_reply=_ok(BS))
+        assert t["reachable"] is True and t["ok"] is True
+        assert t["answered"] == ["device_info", "ble"]
 
 
 class TestBatteryCapture:

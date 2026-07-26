@@ -200,8 +200,24 @@ def build_tick(now: float, host: str, device: str,
                lora_reply: Any = None) -> Dict[str, Any]:
     """Assemble the ``claw_last_tick.json`` record from the NATS replies.
 
-    ``reachable`` is the load-bearing fact: did the device answer ``device_info``?
+    ``reachable`` is the load-bearing fact: did the DEVICE answer — ANY half?
     Consumers that need "is this node alive" must read THAT, not ``ok``.
+
+    It was derived from ``device_info`` alone until 2026-07-26, and that made a
+    single timed-out request speak for the whole node: ``probe_claw_device_dark``
+    paged *"the DEVICE is silent ... look at wifi, the USB feed, or the node
+    itself"* about a claw with ~22 days of monotone uptime, from a tick that
+    ALSO carried ble adv_age_s 0, battery 4.18 V, and lora reporting a packet
+    heard 3 s earlier. A timed-out request is an observation-channel failure,
+    not evidence about the device (honest_failure_modes #1/#2) — and the
+    refuting evidence was already in the same record. ``answered`` names the
+    halves that replied, so the proof travels with the claim.
+
+    The residual is deliberately left visible rather than traded away: a
+    chronically failing ``device_info`` still shows as ``ok: false`` + an
+    ``errors`` witness here, and the ``claw_ble_soak`` cron still fails on it,
+    so "the device answers but this half doesn't" keeps a watcher instead of
+    becoming a blind spot.
 
     ``ok`` means "the capture reached the device and its REQUIRED half read
     cleanly". It is deliberately NOT an AND over all halves any more: the
@@ -234,18 +250,32 @@ def build_tick(now: float, host: str, device: str,
             if lora_reply is not None else None)
     required_errors = [k for k in errors if k in _REQUIRED_HALVES]
     degraded_optional = sorted(k for k in errors if k not in _REQUIRED_HALVES)
-    reachable = device_info is not None and not required_errors
+    # Which halves the DEVICE actually answered. ``_extract`` returns non-None
+    # ONLY for a reply that came back with ok:true and parsed, so every entry
+    # here is positive proof the node was alive this tick — evidence that was
+    # already sitting in this record while ``reachable`` ignored it.
+    answered = [name for name, val in (("device_info", device_info),
+                                       ("ble", ble),
+                                       ("battery", battery),
+                                       ("lora", lora))
+                if val is not None]
+    reachable = bool(answered)
     return {
         "captured_at": now,
         "captured_iso": iso_or_none(now),
         "host": host,
         "device": device,
         "reachable": reachable,
-        "ok": reachable,
+        # NOT an alias of ``reachable`` any more (2026-07-26): they answer
+        # different questions. ``reachable`` = did the DEVICE answer at all;
+        # ``ok`` = did the REQUIRED half read cleanly. Aliasing them is what
+        # let one timed-out request speak for the whole node.
+        "ok": device_info is not None and not required_errors,
         "device_info": device_info,
         "ble": ble,
         "battery": battery,
         "lora": lora,
+        "answered": answered,
         "errors": errors,
         "degraded_optional": degraded_optional,
     }
