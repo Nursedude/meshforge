@@ -3237,3 +3237,36 @@ death).
 ---
 
 _(demoted from persistent_issues.md 2026-07-25 for MF012 headroom)_
+
+---
+
+## RNS fork `1.2.5+mf.1` → `+mf.5` patch history (demoted from persistent_issues 2026-07-26)
+
+Superseded as the fleet baseline by the `1.3.8+mf.0` / `1.0.1+mf.1` roll
+(2026-07-19). Kept because the *cures* were re-ported forward, not carried —
+if a wedge class reappears on a future merge, this is what each patch did.
+
+- **`+mf.1`** — #68 connect-hang: `LocalClientInterface.connect` settimeout.
+- **`+mf.2`** — #72 RPC-hang: `_rpc_recv()` poll(8s) before recv. **NOT
+  subsumed by 1.3.8** — re-ported onto the msgpack framing (21 sites).
+- **`+mf.3`** — bounds `detach_interfaces()`. PARTIAL: a second shutdown-path
+  wedge remained.
+- **`+mf.4`** (2026-06-01) — root-cause cure for that second path:
+  `logging_lock` Lock→RLock + signal handlers defer detach off signal
+  context; canary-verified ~1s clean stop on moc1. The
+  `rnsd.service.d/10-stop-timeout.conf` 15s cap + the mf.3 bound stayed as
+  defense-in-depth. ⚠️ **On 1.3.8 the RLock flaked LOG_EXTREME** (A/B-proven)
+  — re-ported as a plain Lock with the fallback re-log outside it.
+- **`+mf.5`** (2026-06-09) — #69 stranded-client class: a wanted-host client
+  (rnsd that lost the `@rns` bind race) exits **75** after ~24s when its host
+  dies with NO listener remaining (`/proc/net/unix`; unknown ≠ absence) →
+  systemd restarts it into the host role. OPT-IN via
+  `RNS_EXIT_ON_HOST_LOSS=1`, rnsd unit drop-in `20-exit-on-host-loss.conf`
+  ONLY; embedded clients keep stock reconnect-forever. Canary moc3:
+  deliberate inversion self-healed in 29s. Live-fired again at the 1.3.8
+  roll and self-healed the #69 drill race in ~30s.
+
+⚠️ **Still live as an operating rule**: do NOT rapid-cycle rnsd restarts
+fleet-wide. A 15s-hang+SIGKILL plus slow rebind opens the `@rns` race window;
+mf.5 makes a stranding self-healing (~30s outage), but space the restarts and
+verify host-binding before moving to the next box.

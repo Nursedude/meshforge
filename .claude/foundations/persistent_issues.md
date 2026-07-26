@@ -20,22 +20,13 @@ RNS and LXMF are now **hard forks owned by MeshForge** (`Nursedude/reticulum`,
 2026-07-19, all 7 MeshForge boxes; the prior `1.2.5+mf.5`/`0.9.4+mf.0` baseline
 rolled 2026-06-09). This is the meta-resolution for the entire
 **rnsd-RPC fragility class** (#58/#61/#63/#68/#69/#72): fragility we used to work
-*around* in `utils/rns_init.py` is now fixed *at the source*. Shipped: `+mf.1` #68
-connect-hang, `+mf.2` #72 RPC-hang (see "FIXED AT SOURCE" notes below), `+mf.3`
-bounds `detach_interfaces()` (PARTIAL — a second shutdown-path wedge remained).
-**`+mf.4` (2026-06-01) root-cause cure for that second path**: `logging_lock`
-Lock→RLock + signal handlers defer detach off signal context; canary-verified ~1s
-clean stop on moc1. **The `rnsd.service.d/10-stop-timeout.conf` 15s cap + the mf.3
-bound STAY as defense-in-depth until mf.4 is fleet-soak-proven.**
-**`+mf.5` (2026-06-09) cures the #69 stranded-client class**: a wanted-host client
-(rnsd that lost the `@rns` bind race) exits **75** after ~24s when its host dies
-with NO listener remaining (`/proc/net/unix`; unknown ≠ absence) → systemd restarts
-it into the host role. OPT-IN via `RNS_EXIT_ON_HOST_LOSS=1` — rnsd unit drop-in
-`20-exit-on-host-loss.conf` ONLY, fleet-deployed; embedded clients keep stock
-reconnect-forever. Canary moc3: deliberate inversion self-healed in 29s. ⚠️ Still
-do NOT rapid-cycle rnsd restarts fleet-wide — a 15s-hang+SIGKILL plus slow rebind
-opens the `@rns` race window; mf.5 makes a stranding self-healing (~30s outage),
-but space restarts and verify host-binding before the next box anyway.
+*around* in `utils/rns_init.py` is now fixed *at the source*. The `+mf.1`→`+mf.5`
+patch history (what each cure did, and which ones had to be RE-PORTED onto 1.3.8
+rather than carried) is demoted to `persistent_issues_archive.md`.
+⚠️ **Still a live operating rule**: do NOT rapid-cycle rnsd restarts fleet-wide —
+a 15s-hang+SIGKILL plus slow rebind opens the `@rns` race window; mf.5 makes a
+stranding self-healing (~30s outage), but space restarts and verify host-binding
+before the next box anyway.
 
 - **Wire-compat invariant (non-negotiable)**: never change crypto primitives
   (Ed25519/X25519/AES-256-CBC/Fernet) or the packet/announce/path-table wire
@@ -543,6 +534,21 @@ not a sick resolver. **Quick check**: compare
 leg. ⚠️ `/etc/hosts` SHADOWS DNS, so the block is seeded from **live DNS**,
 never from the registry's `ip_fallback` snapshot (that would bake in a stale
 copy and shadow the truth — the moc5 reshuffle class).
+
+**Router-side DNS canNOT supersede this — measured 2026-07-26, don't re-open.**
+The cost is not in the zone, it's in m1's DNS *proxy*: it strips the authority
+section from every relayed answer. Controls — 1.1.1.1 and 8.8.8.8 both answer
+`nosuchbox.mf.internal` NXDOMAIN with **SOA ttl=86400**; m1 relays the same
+query `ns=0, no SOA`, and so does `example.com AAAA`, so it is universal, not
+mf.internal-specific. RFC 2308 needs that SOA to derive a negative TTL, so
+**no negative answer through m1 is ever cacheable** — what should cost one
+lookup per day costs one per call, forever. No static-DNS/zone config changes
+this; admin access on m1 does not help. (`type=NXDOMAIN` static entries would
+answer AAAA locally at ~1.2ms, but NXDOMAIN caches per-NAME not per-type, so a
+resolver that honored it would suppress the A too — it is "safe" only because
+the SOA-stripping disables the caching that would break it. Building on a bug.)
+And a perfect router-side fix still leaves fleet names coupled to m1 being up;
+the hosts block resolves with m1 AND the uplink down, which is the point.
 
 ---
 
