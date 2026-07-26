@@ -176,16 +176,48 @@ constant scale. And it is not hypothetical: #6 counted unobservables as deaths,
 #2 counted in the wrong unit, and both were fixed *this arc, separately*, each
 without noticing the other four.
 
-**Row 3 is the reference implementation.** mini's grace is the only one of the
-six that (a) counts observed ticks rather than wall time, (b) resets a broken
-streak, and (c) refuses to count daemon downtime as observation. R1 spent a
-commit re-deriving a weaker version of what mini already had correct.
+### ⚠️ CORRECTION 2026-07-25 — the original conclusion here was WRONG
 
-> **The consolidation is therefore: converge rows 1, 2, 4, 5, 6 on row 3's
-> semantics — not by importing mini into a shell script, but by making
-> "observed-tick grace, streak-reset, downtime-aware" the named, documented
-> contract that every debouncing organ states it implements.** Organ count
-> unchanged. Six behaviours become one behaviour with six call sites.
+The first version of this section said *"Row 3 is the reference implementation
+… R1 spent a commit re-deriving a weaker version of what mini already had
+correct,"* and proposed converging rows 1, 2, 4, 5, 6 onto mini's semantics.
+**That is wrong, and it was the claim this document had flagged as most
+deserving an outside eye. It was settled by reading the two implementations,
+not by judgment** — so it never needed the rationed tier at all.
+
+Compare them:
+
+| | R1 (`watchdog_probes_liveness.py:273`) | mini (`engine.py` grace) |
+|---|---|---|
+| counts | **cron RUNS**, from the verdict log | **observed mini TICKS**, in memory |
+| state lives | on disk (durable across restarts) | in the process (reset on restart, deliberately) |
+| streak break | a passing run breaks it (`prev` check) | `_reset_pending_streaks()` + break-resets |
+
+R1 counts in **cron runs — the unit its phenomenon actually lives in.** That
+was R1's entire insight, and it is this document's own UNIT axis applied
+correctly. Converging R1 onto mini's tick-based grace would **reintroduce the
+exact wrong-unit defect R1 fixed.** On durability R1 is arguably *stronger*:
+its evidence is a log on disk, so it cannot lose a streak to a restart, which
+is precisely the case mini has to defend against in memory.
+
+**What survives:** the inventory of six independent implementations, and that
+they can drift (honest_failure_modes #5 at organ scale) — both factual.
+
+**What replaces the conclusion:**
+
+> **The consolidation is NOT "converge on one implementation" — it is that each
+> debouncer must DECLARE the unit its phenomenon lives in, and be checked
+> against it.** Sharing code across cron runs, mini ticks, watchdog ticks and
+> RF cycles would force a single wrong unit on four different phenomena. What
+> should be shared is the DISCIPLINE — name the unit, tri-state the channel,
+> reset the streak — not the code. **R1 is the exemplar of doing this right,
+> not the counter-example.**
+
+That is a better answer than the one it replaces, and it is the same conclusion
+the UNIT axis predicts — which is mild evidence *for* the axis. The original
+error was mine: I ranked six mechanisms on mini's axis instead of asking what
+each one's phenomenon was measured in, one paragraph after arguing that is the
+question that matters.
 
 This is the answer to *"find the genius in simplicity."* The alerting burden was
 never too many detectors — the deletion pass already proved that by finding zero
