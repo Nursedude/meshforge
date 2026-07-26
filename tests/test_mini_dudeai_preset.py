@@ -80,7 +80,10 @@ def test_gateway_mode_disables_federation_and_digest(tmp_path, monkeypatch):
         enable_digest=False,
     )
     names = [getattr(s, "name", "?") for s in engine.sources]
-    assert names == ["watchdog", "boot_health"]
+    # watchdog_coverage is the SAME file's coverage block, projected for
+    # detector blindness (T1, 2026-07-26) — it rides the watchdog gate, so a
+    # box with no watchdog gets neither.
+    assert names == ["watchdog", "watchdog_coverage", "boot_health"]
 
 
 def test_source_gating_via_env(tmp_path, monkeypatch):
@@ -88,7 +91,8 @@ def test_source_gating_via_env(tmp_path, monkeypatch):
     monkeypatch.setenv("MINI_DUDEAI_ENABLE_FEDERATION", "0")
     monkeypatch.setenv("MINI_DUDEAI_ENABLE_DIGEST", "0")
     engine = build_engine(home=str(tmp_path), watchdog_path=str(tmp_path / "w.json"))
-    assert [getattr(s, "name", "?") for s in engine.sources] == ["watchdog", "boot_health"]
+    assert [getattr(s, "name", "?") for s in engine.sources] == [
+        "watchdog", "watchdog_coverage", "boot_health"]
 
 
 def test_watchdog_wired_by_default(tmp_path, monkeypatch):

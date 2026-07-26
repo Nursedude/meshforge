@@ -58,6 +58,56 @@ def _watchdog_extractor(data):
     return out
 
 
+#: Coverage dispositions that mean the class was NOT observed this tick.
+#: `clean` and `inert` are positive observations; `active` means it fired.
+#: Scoring `inert` would be wrong — a legitimately-absent organ is not a blind
+#: one, and conflating them is how a coverage score would start lying.
+_BLIND_DISPOSITIONS = frozenset({"indeterminate", "unknown"})
+
+
+def _coverage_blind_extractor(data):
+    """Project watchdog.json `coverage` → one Condition per BLIND detector.
+
+    The companion to `_watchdog_extractor`, over the same file: that one asks
+    *what is wrong*, this one asks *what could we not see*. They are disjoint
+    questions and the second had no consumer at all — the watchdog has been
+    emitting a complete per-class disposition map every tick and nothing has
+    ever read it for blindness.
+
+    Why this matters (2026-07-26, taxonomy T1): a probe that cannot observe
+    returns nothing, and nothing is exactly what a healthy probe returns. Its
+    silence is therefore indistinguishable from health at every consumer. The
+    Pri-2 hold covers a blind probe that WAS signalling; this covers the
+    disjoint case — blind and QUIET — e.g. `kernel_reboot_pending`, which has
+    never fired and currently cannot read the modules dir.
+
+    A missing/!dict `coverage` block yields NOTHING rather than a fabricated
+    all-blind sweep: a legacy or torn writer is itself unobservable, and
+    inventing 57 blind conditions from it would be the same defect one layer up
+    (honest_failure_modes #1 — a degraded input must not become a confident
+    claim). The block's own absence is already the watchdog's own problem to
+    report.
+    """
+    coverage = (data or {}).get("coverage")
+    if not isinstance(coverage, dict):
+        return []
+    out = []
+    for cls, entry in sorted(coverage.items()):
+        if not isinstance(entry, dict):
+            continue
+        disp = entry.get("disp")
+        if disp not in _BLIND_DISPOSITIONS:
+            continue
+        reason = entry.get("reason") or "no reason reported"
+        out.append({
+            "subject": cls,
+            "detail": f"detector cannot observe ({disp}): {reason}",
+            "class": cls,
+            "disp": disp,
+        })
+    return out
+
+
 class FederationPeerSource(Source):
     """One Condition per UN-healthy peer pulled from /api/status.federation.peer_status.
 
@@ -196,6 +246,16 @@ def build_engine(
             kind="signal_class",
             extractor=_watchdog_extractor,
             name="watchdog",
+        ))
+        # Second projection of the SAME file — no new source class, no new
+        # daemon, no new probe, no new signal class. The coverage block has
+        # been written every tick since fleet-truth Phase 0 and never read for
+        # blindness; this is the reader, not new machinery.
+        sources.append(JsonFileSource(
+            path=watchdog_path,
+            kind="detector_blind",
+            extractor=_coverage_blind_extractor,
+            name="watchdog_coverage",
         ))
     # Federation reads the box's OWN :5000 — wired on every MAP-RUNNING box for
     # a per-vantage view (row 6, 2026-07-19), "0" only where no local map exists.
