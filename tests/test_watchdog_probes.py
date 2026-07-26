@@ -4259,12 +4259,64 @@ class TestCronVerdictStale:
         assert sig is None
 
     def test_wired_fail_fires_degraded(self, tmp_path):
+        """CONFIRMED failure on a fast cron still fires — the core guarantee.
+
+        2026-07-26 (signal-yield R1): confirmation is counted in CRON RUNS,
+        so a fast cron must fail TWICE. This is the leg that must never be
+        lost — suppressing noise is worthless if it also suppresses faults.
+        """
+        verdicts = (self._v("myjob", "FAIL(1)", 360)
+                    + self._v("myjob", "FAIL(1)", 60))
         sig = self._fire(tmp_path, crontab_text=self.WIRED,
-                         verdicts_text=self._v("myjob", "FAIL(1)", 60))
+                         verdicts_text=verdicts)
         assert sig is not None
         assert sig.cls == "cron_verdict_stale"
         assert sig.severity == "degraded"
         assert any("myjob" in f for f in sig.extra["failed"])
+
+    def test_single_fail_on_fast_cron_is_withheld_but_NOT_clean(self, tmp_path):
+        """One FAIL on a */5 cron is a transient — withhold the signal.
+
+        This is the 30%-of-all-escalation-volume case: `fleet_hosts_drift`
+        (hourly) failed once and self-healed on the next run, yet held the
+        signal for the whole hour. BUT the tick must not read CLEAN — a
+        failure WAS observed; mapping "seen once, awaiting the next run" onto
+        healthy is the exact defect class the spine exists to prevent.
+        """
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions)
+        reset_dispositions()
+        sig = self._fire(tmp_path, crontab_text=self.WIRED,
+                         verdicts_text=self._v("myjob", "FAIL(1)", 60))
+        assert sig is None, "a single fast-cron failure must not fire"
+        disp = collect_dispositions().get("cron_verdict_stale", {})
+        assert disp.get("disp") == "indeterminate", (
+            "an unconfirmed failure is NOT clean — it must read indeterminate")
+        assert "myjob" in disp.get("reason", "")
+
+    def test_slow_cron_fails_on_sight(self, tmp_path):
+        """A WEEKLY cron fires on the FIRST failure — no confirmation wait.
+
+        The asymmetry that makes the gate safe: waiting one cycle is cheap on
+        a */5 cron and absurd on `local_brain_eval` (25 3 * * 0), which is
+        persistently failing on the live fleet. Cadence above the threshold
+        must never be gated.
+        """
+        weekly = ("25 3 * * 0 /opt/eval.py >/dev/null 2>&1; "
+                  "/opt/meshforge/scripts/cron_verdict.sh evaljob $?\n")
+        sig = self._fire(tmp_path, crontab_text=weekly,
+                         verdicts_text=self._v("evaljob", "FAIL(1)", 60))
+        assert sig is not None, "a weekly cron must fire on its first failure"
+        assert any("evaljob" in f for f in sig.extra["failed"])
+
+    def test_reboot_cron_fails_on_sight(self, tmp_path):
+        """@reboot has no next run to wait for — never gate it."""
+        reboot = ("@reboot /opt/boot.py >/dev/null 2>&1; "
+                  "/opt/meshforge/scripts/cron_verdict.sh bootjob $?\n")
+        sig = self._fire(tmp_path, crontab_text=reboot,
+                         verdicts_text=self._v("bootjob", "FAIL(1)", 60))
+        assert sig is not None, "@reboot cron must fire on its first failure"
+        assert any("bootjob" in f for f in sig.extra["failed"])
 
     def test_wired_stale_fires(self, tmp_path):
         # */5 threshold is 2h; a 10000s-old OK verdict is silent.

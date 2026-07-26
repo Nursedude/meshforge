@@ -126,7 +126,36 @@ guards whose incidents were fixed **at source** (`rns_rpc_unresponsive`,
 
 ## 5. Recommendations
 
-**R1 — Fix the debounce unit, not the detector. NEEDS SIGN-OFF.**
+**R1 status — DONE 2026-07-26 (operator-directed), cadence-aware variant.**
+Shipped the design flagged as "probably right" rather than the naive gate.
+`CRON_VERDICT_CONFIRM_MAX_CADENCE_S = 3600` — a FAIL/CONCERN on a cron whose
+cadence is **at or below hourly** must be seen on TWO consecutive runs;
+anything slower (and `@reboot`, which resolves to inf) fires on sight. So the
+worst-case added delay is **one hour, not one day** — the unbounded tail that
+made this need sign-off is gone by construction.
+
+Confirmation is read from the verdict log itself (`_prior_verdict_statuses`),
+so there is **no new state file** — the history was already on disk. That
+needed a local one-step parser: the shared `_parse_cron_verdicts` collapses to
+latest-per-name by contract, so the prior run is invisible through it, and
+widening that contract would have touched every other consumer.
+
+⚠️ **An unconfirmed failure is NOT clean.** It notes `indeterminate` (the
+worst disposition rank, so worst-wins keeps it visible) with the cron named in
+the reason, and it does **not** clear the streak — the tick produced no verdict
+either way, so prior state holds. Suppressing the *signal* must never suppress
+the *observation* (honest_failure_modes #1/#2).
+
+Grounded in the live fleet's only two real failures, which happen to sit on
+opposite sides of the threshold: `fleet_hosts_drift` (hourly) failed once and
+self-healed next run — now suppressed; `local_brain_eval` (`25 3 * * 0`,
+WEEKLY, persistently failing) — fires on sight. Tests: the pre-existing
+core-guarantee test now asserts a CONFIRMED failure still fires, plus three
+new legs (withheld-but-not-clean, slow-cron-on-sight, @reboot-on-sight).
+Red-checked: with the probe stashed the withheld test fails while the two
+unchanged legs stay green.
+
+**R1 (original writeup) — Fix the debounce unit, not the detector.**
 Gate `cron_verdict_stale`'s FAIL/CONCERN leg on **two consecutive verdicts for
 the same cron name**, rather than two watchdog ticks. Same shape as the rtun
 watchdog fix landed today. Expected effect: removes most of 30% of escalation

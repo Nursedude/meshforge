@@ -34,10 +34,51 @@ from utils.watchdog_probe_core import (
 DEFAULT_CRON_VERDICT_DEBOUNCE_PATH = "/var/lib/meshforge/cron_verdict_debounce.json"
 CRON_VERDICT_STALE_FLOOR_S = 2 * 3600.0      # don't flag faster than this (anti-flap)
 CRON_VERDICT_CADENCE_MULT = 3.0              # stale if age > MULT × expected interval
+# A FAIL on a FAST cron must be seen TWICE before it counts (2026-07-26,
+# signal-yield pass R1). Confirmation is measured in CRON RUNS, not watchdog
+# ticks: the old `debounce_ticks=2` bounded ~60 s while the thing it had to
+# ride out is one cron CYCLE, so a single transient failure held the signal
+# for the whole gap until the next run — 50 fires, 30% of ALL fleet
+# escalation volume, from a debounce in the wrong unit.
+#
+# Gated by cadence because the cost of waiting is one full cycle, and that
+# is only acceptable when the cycle is short. Grounded in the live fleet's
+# two real failures: `fleet_hosts_drift` (47 * * * *, hourly) failed once and
+# self-healed on the next run — pure noise, now suppressed; `local_brain_eval`
+# (25 3 * * 0, WEEKLY) is persistently failing — it fires on sight, because
+# waiting a week to report a broken weekly job is absurd. @reboot resolves to
+# inf and therefore also fires immediately (there is no next run to wait for).
+CRON_VERDICT_CONFIRM_MAX_CADENCE_S = 3600.0
 _CRON_VERDICT_FALLBACK_MAX_S = 26 * 3600.0   # unparseable schedule → panel's 26h
 # Wired-cron extraction is owned by fleet_snapshot._verdict_names_in_command
 # (one regex, one extractor — honest_failure_modes #5; imported in the probe
 # below so this probe and the fleet-snapshot orphan filter can never drift).
+
+
+def _prior_verdict_statuses(text: str) -> Dict[str, str]:
+    """name -> the SECOND-newest verdict status for that cron.
+
+    ``_parse_cron_verdicts`` collapses to the newest entry per name by
+    contract, so the previous run is invisible through it. Confirmation for
+    the fast-cron gate is counted in cron RUNS, which needs exactly one step
+    of history — parsed here rather than by widening the shared helper, whose
+    latest-per-name contract other consumers depend on.
+
+    The log is append-only chronological, so the entry a name displaces IS
+    its previous run. Garbage/short lines are skipped exactly as the shared
+    parser skips them, so the two stay in step.
+    """
+    newest: Dict[str, str] = {}
+    prior: Dict[str, str] = {}
+    for line in text.splitlines():
+        parts = line.split(None, 3)
+        if len(parts) < 3:
+            continue
+        name, status = parts[1], parts[2]
+        if name in newest:
+            prior[name] = newest[name]
+        newest[name] = status
+    return prior
 
 
 def _cron_max_interval(schedule: str) -> float:
@@ -193,6 +234,7 @@ def probe_cron_verdict_stale(
                 home = None
             verdicts_text = _read_operator_verdicts_log(home)
         latest: Dict[str, dict] = {}
+        previous: Dict[str, str] = _prior_verdict_statuses(verdicts_text or "")
         if verdicts_text:
             try:
                 from utils.fleet_snapshot import _parse_cron_verdicts
@@ -218,10 +260,25 @@ def probe_cron_verdict_stale(
         failed: List[str] = []
         stale: List[str] = []
         reboot_unjudged: List[str] = []
+        unconfirmed: List[str] = []
         for name, schedule in sorted(wired.items()):
             v = latest.get(name)
             if v is not None and v.get("status", "").upper().startswith(
                     ("FAIL", "CONCERN")):
+                # FAIL/CONCERN leg ONLY — the silence leg below is untouched.
+                # It already gates on MULT x cadence, and post-2026-07-10 a
+                # silent(never) page is REAL (#78's log-truncation defect was
+                # fixed in d0254dae), so it must keep firing on sight.
+                cadence = _cron_max_interval(schedule)
+                if cadence <= CRON_VERDICT_CONFIRM_MAX_CADENCE_S:
+                    prev = previous.get(name)
+                    if prev is None or not prev.upper().startswith(
+                            ("FAIL", "CONCERN")):
+                        # First failure on a fast cron. The next run lands
+                        # within the cadence and will either confirm it or
+                        # clear it, so waiting costs at most one cycle.
+                        unconfirmed.append(f"{name}({v.get('status')})")
+                        continue
                 failed.append(f"{name}({v.get('status')})")
                 continue
             max_age = _cron_max_interval(schedule)
@@ -244,9 +301,23 @@ def probe_cron_verdict_stale(
                     "cron_verdict_stale", "indeterminate",
                     reason="@reboot cron(s) with no verdict observed",
                 )
+            elif unconfirmed:
+                # A failure WAS observed; it is simply not confirmed yet. This
+                # is emphatically NOT clean — mapping "seen once, awaiting the
+                # next run" onto healthy is the exact defect class this whole
+                # spine exists to prevent (honest_failure_modes #1/#2). The
+                # signal is withheld; the observation is not.
+                note_disposition(
+                    "cron_verdict_stale", "indeterminate",
+                    reason=("unconfirmed first failure on fast cron(s), "
+                            "awaiting next run: " + ", ".join(unconfirmed)),
+                )
             else:
                 note_disposition("cron_verdict_stale", "clean")
-            _save_parity_streak(sp, 0)
+            # Do NOT clear the streak on an unconfirmed failure — the tick
+            # produced no verdict either way, so prior state must hold.
+            if not unconfirmed:
+                _save_parity_streak(sp, 0)
             return None
 
         # 5. Debounce — first sighting silent, fire on the 2nd consecutive tick.
