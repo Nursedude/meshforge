@@ -1,0 +1,14 @@
+# rtun_watchdog.sh config — deploy to /etc/meshforge/rtun_watchdog.conf
+#
+# Operator values only; never commit a filled-in copy (MF014).
+#
+# RTUN_REMOTE: user@host of the endpoint the reverse tunnel dials home to.
+# This must be the SAME target the rtun init script uses — if the two drift,
+# the watchdog probes one path while rtun maintains another and its verdict
+# is meaningless.
+#
+# Prefer a fleet name over a literal IP where the router can resolve one: a
+# hardcoded address on an unreserved-DHCP segment blinds the watchdog the
+# moment the endpoint moves. Where the router has no fleet-name resolution,
+# an IP is the honest choice — pair it with a DHCP reservation.
+RTUN_REMOTE="user@endpoint.example"
