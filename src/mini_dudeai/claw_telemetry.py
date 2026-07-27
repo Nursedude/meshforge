@@ -28,11 +28,32 @@ from typing import Any, Dict, Optional
 from ._util import iso_or_none
 
 # device_info: "Free heap: 17764 bytes, Total heap: 210492 bytes,
-#   Uptime: 109368 seconds, WiFi: connected (rssi -37 dBm), IP: <ip>,
+#   Min free heap: 9012 bytes, Max alloc block: 6144 bytes,
+#   Reset reason: PANIC, Uptime: 109368 seconds,
+#   WiFi: connected (rssi -37 dBm), IP: <ip>,
 #   Chip: ESP32-S3 rev 2, 2 cores, 240 MHz"
-_RE_HEAP_FREE = re.compile(r"Free heap:\s*(\d+)", re.IGNORECASE)
-_RE_HEAP_TOTAL = re.compile(r"Total heap:\s*(\d+)", re.IGNORECASE)
-_RE_UPTIME = re.compile(r"Uptime:\s*(\d+)", re.IGNORECASE)
+#
+# NOTE: these are field-anchored on purpose. "Free heap:" is a SUBSTRING of
+# "Min free heap:", and these patterns are IGNORECASE — an unanchored
+# `Free heap:` would happily match inside the Min field the moment field
+# order changed, silently reporting the low-water mark as the live value.
+# Anchoring each to a field boundary (start-of-string or comma) makes the
+# reader independent of field order instead of accidentally correct.
+_FIELD = r"(?:^|,)\s*"
+_RE_HEAP_FREE = re.compile(_FIELD + r"Free heap:\s*(\d+)", re.IGNORECASE)
+_RE_HEAP_TOTAL = re.compile(_FIELD + r"Total heap:\s*(\d+)", re.IGNORECASE)
+# Low-water mark since boot: distinguishes "comfortably at 25 kB" from
+# "grazing zero between samples" — a poll can never catch the latter.
+_RE_HEAP_MIN = re.compile(_FIELD + r"Min free heap:\s*(\d+)", re.IGNORECASE)
+# Largest obtainable block: a healthy free total with a small max-alloc is
+# fragmentation, which fails allocations that "should" fit.
+_RE_HEAP_MAXALLOC = re.compile(_FIELD + r"Max alloc block:\s*(\d+)",
+                               re.IGNORECASE)
+# Why it last came back. Absent on firmware predating the field -> None,
+# which must read as "unknown", never as "clean boot".
+_RE_RESET_REASON = re.compile(_FIELD + r"Reset reason:\s*([^,]+)",
+                              re.IGNORECASE)
+_RE_UPTIME = re.compile(_FIELD + r"Uptime:\s*(\d+)", re.IGNORECASE)
 _RE_WIFI = re.compile(r"WiFi:\s*(connected|disconnected)", re.IGNORECASE)
 _RE_RSSI = re.compile(r"rssi\s*(-?\d+)\s*dBm", re.IGNORECASE)
 _RE_IP = re.compile(r"IP:\s*([0-9.]+)")
@@ -137,6 +158,11 @@ def parse_device_info(result: Any) -> Optional[Dict[str, Any]]:
     return {
         "heap_free_bytes": _int(_RE_HEAP_FREE, result),
         "heap_total_bytes": _int(_RE_HEAP_TOTAL, result),
+        # None on firmware that predates these fields — an unknown low-water
+        # mark or reset reason is NOT a healthy one (honest_failure_modes #2).
+        "heap_min_free_bytes": _int(_RE_HEAP_MIN, result),
+        "heap_max_alloc_bytes": _int(_RE_HEAP_MAXALLOC, result),
+        "reset_reason": _str(_RE_RESET_REASON, result),
         "uptime_s": _int(_RE_UPTIME, result),
         "wifi_connected": wifi_connected,
         "wifi_rssi_dbm": rssi,

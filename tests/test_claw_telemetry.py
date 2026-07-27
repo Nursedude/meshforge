@@ -37,6 +37,12 @@ DI = ("Free heap: 17764 bytes, Total heap: 210492 bytes, Uptime: 109368 "
       "ESP32-S3 rev 2, 2 cores, 240 MHz")
 BS = ("ble_adv_age_s: 0 (advs 767422, uniq 32+, last rssi -59 dBm, "
       "restarts 0/0, window 48/320ms)")
+# device_info from firmware carrying the heap-pressure + reset-reason fields.
+DI_PRESSURE = ("Free heap: 17764 bytes, Total heap: 210492 bytes, "
+               "Min free heap: 9012 bytes, Max alloc block: 6144 bytes, "
+               "Reset reason: PANIC, Uptime: 109368 seconds, "
+               "WiFi: connected (rssi -37 dBm), IP: 10.0.0.5, Chip: "
+               "ESP32-S3 rev 2, 2 cores, 240 MHz")
 
 
 class TestParseDeviceInfo:
@@ -66,6 +72,35 @@ class TestParseDeviceInfo:
         assert parse_device_info("") is None
         assert parse_device_info(None) is None
         assert parse_device_info("   ") is None
+
+    def test_heap_pressure_fields_parse(self):
+        d = parse_device_info(DI_PRESSURE)
+        assert d["heap_free_bytes"] == 17764
+        assert d["heap_min_free_bytes"] == 9012
+        assert d["heap_max_alloc_bytes"] == 6144
+        assert d["reset_reason"] == "PANIC"
+
+    def test_min_free_never_shadows_live_free_heap(self):
+        """'Free heap:' is a SUBSTRING of 'Min free heap:' and the patterns
+        are IGNORECASE. Unanchored, a reordered firmware string would make
+        the low-water mark masquerade as the live value — the device would
+        look like it was sitting at its worst-ever heap forever, or (worse,
+        reversed) the live value would hide a near-exhaustion mark."""
+        reordered = ("Min free heap: 9012 bytes, Free heap: 17764 bytes, "
+                     "Total heap: 210492 bytes")
+        d = parse_device_info(reordered)
+        assert d["heap_free_bytes"] == 17764     # NOT 9012
+        assert d["heap_min_free_bytes"] == 9012
+
+    def test_old_firmware_lacks_pressure_fields_is_unknown_not_healthy(self):
+        """Firmware predating these fields must read as unknown. A missing
+        reset reason is not a clean boot, and a missing low-water mark is not
+        a comfortable one (honest_failure_modes #2)."""
+        d = parse_device_info(DI)
+        assert d["heap_min_free_bytes"] is None
+        assert d["heap_max_alloc_bytes"] is None
+        assert d["reset_reason"] is None
+        assert d["heap_free_bytes"] == 17764     # old fields still parse
 
 
 class TestParseBleStats:
