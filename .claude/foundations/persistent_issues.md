@@ -114,6 +114,8 @@ Full history in `persistent_issues_archive.md`.
 | #50 Directory tier retention defeated by UPSERT `last_seen=now` (2026-04-30) | Fix: upstream `last_heard` + `MAX(nodes.last_seen, excluded.last_seen)` ON CONFLICT. Body in archive | `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py` (9 tests) |
 | #51 meshcore parser emitted ISO-8601 not Unix epoch (2026-04-30) | Inline ISO→epoch normalization in `_parse_meshcore_public_node`. Body in archive | 5 new in `TestMeshCorePublicCollector` |
 | #57 Gateway data-path watchdog (2026-05-17) | `bounded_call` wraps 11 RNS RPC sites; wedged peer trips breaker + `os._exit(2)` → systemd restart. Body in archive | `test_wedge_events.py` (17) + `test_bounded_rpc.py` (19) + `test_circuit_breaker.py` (+6) |
+| kernel_reboot_pending probe (2026-06-09) | Newer same-flavor kernel under `/lib/modules` than running `os.uname()`, OR `/var/run/reboot-required`. Flavor-aware (rpi-v8 ≠ rpi-2712), read-only, 2-tick debounce, both seeds. Body in archive; row demoted 2026-07-27 (MF012). | 12 tests |
+| aredn_source_dark probe (2026-06-12) | Intent = map-user `map_settings.json` `aredn_node_ips` vs observation = local `/api/status` `source_diagnostics.aredn`; fires 2-tick on `unreachable`/`not_configured` by a running service with IPs (fix: restart meshforge-map). Body in archive; row demoted 2026-07-27 (MF012). | 10 tests |
 | #12, #22, #23 | RNS configdir= (#12, lint MF009), don't overwrite meshtasticd `config.yaml` (#22, inverse companion of #58), post-install verification via `scripts/verify_post_install.sh` (#23). Bodies in archive. | — |
 | #58 (2026-05-18) | Upstream HAT template `Webserver: Port: 443` smuggled into `config.d/`, silently moved meshtasticd off `:9443`. `_sanitize_hat_overlay` strips forbidden top-level blocks; 7 tests pin the moc3-actual broken template. Body in archive. | `tests/test_hat_overlay_sanitizer.py` |
 | #59 (2026-05-18) | Federation per-peer exponential backoff (`backoff_threshold=3`, cap `10×poll_interval`); `/api/status` exposes backoff fields; tier-2 cap in #65. Body in archive. | `TestBackoff*` in `tests/test_map_federation.py` |
@@ -363,17 +365,6 @@ day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
 
 ---
 
-## kernel_reboot_pending probe — the 6.12.75-straggler guard (2026-06-09)
-
-`probe_kernel_reboot_pending` (`kernel_reboot_pending`, degraded, no issue#):
-newer same-flavor kernel under `/lib/modules` than the running `os.uname()`, OR
-`/var/run/reboot-required`. Flavor-aware (rpi-v8 ≠ rpi-2712); read-only; 2-tick
-debounce; both seeds; 12 tests. **Full body trimmed to
-`persistent_issues_archive.md` 2026-06-15 (MF012 headroom).**
-
-
----
-
 ## synth_soak_degraded probe — RESOLVED, body in archive (trimmed 2026-07-21)
 
 `probe_synth_soak_degraded` (degraded, no issue#): the hourly LXMF synth soak
@@ -386,15 +377,6 @@ body + self-guards in `persistent_issues_archive.md`.
 
 
 ---
-
-## aredn_source_dark probe — the dormant-AREDN-organ guard (2026-06-12, Phase 0)
-
-`probe_aredn_source_dark` (`aredn_source_dark`, degraded, no issue#): intent =
-map-user `map_settings.json` `aredn_node_ips`; observation = local `/api/status`
-`source_diagnostics.aredn`. Fires (2-tick) on `unreachable`/`not_configured`-by-
-a-running-service-with-IPs (fix: restart meshforge-map). Self-guards INERT/held;
-runner-gated on meshforge-map active. Both seeds; 10 tests. **Full body trimmed
-to `persistent_issues_archive.md` 2026-06-15 (MF012 headroom).**
 
 
 ---
@@ -451,16 +433,35 @@ pthread **thread stack** per interrupt cycle (~9/min): the CH341 poll thread
 runs the RadioLib ISR on ITSELF, so `pinedio_deattach_interrupt`'s self-join
 guard SKIPS the join and the stack strands (`pine64/libch341-spi-userspace`;
 strace/gdb-pinned 07-10). Live: ~561 GB VSZ / 71k anon maps @ day 5 (Pi5+USB);
-SPI-radio boxes clean. Neither 2.7.24 nor 2.7.26 fixes **#10468**. Cures:
-(1) upstream PR pine64/libch341-spi-userspace#10 (one-line
-`pthread_detach(pthread_self())`) — patched 2.7.24 builds deployed on all 3
-USB boxes via `/usr/local/sbin/meshtasticd-patched` + `50-canary-pinedio-fix.conf`
-drop-in, validated flat; (2) **weekly restart** band-aid
-`meshtasticd-restart.timer` STAYS until soak proven (backstop-outlives-fix);
-(3) `probe_meshtasticd_vsz_leak` fires only past the 768 GB weekly-restart
-envelope (leaking-but-managed stays silent). Quick check:
-`wc -l /proc/$(pgrep -x meshtasticd)/maps` — climbing over 30 min = leaking;
-flat (≈8 stack pairs) = patched. Detail:
+SPI-radio boxes clean. **NO published build fixes #10468** — not 2.7.24,
+2.7.26, or 2.8.
+
+⚠️ **Our merged fix does NOT reach meshtastic builds (07-27).** pine64 merged
+PR#10 (`pthread_detach(pthread_self())`) as `b0694ec8` on 07-19 — but
+`meshtastic/firmware` switched `variants/native/portduino.ini` to its OWN fork
+`meshtastic/libch341-spi-userspace@03bf505d` on **07-17, two days earlier**, so
+it never carried over. That fork kept the self-join guard with NO detach
+anywhere → still strands. Ported as **meshtastic/libch341-spi-userspace#2**
+(open; operator has `push:false` there — only a maintainer can merge).
+**Read the fork's source, never the version string** — "2.8 is newer" is not
+"2.8 is fixed".
+
+Cures: (1) patched builds on all 4 USB boxes (VolcanoAI/moc1/moc5/kiai) via
+`/usr/local/sbin/meshtasticd-patched` + `50-canary-pinedio-fix.conf` drop-in;
+rebuilt at 2.7.26 on 07-27, now pinning pine64 main `b0694ec8` (our fork no
+longer needed). Recipe: `~/mtd-build/firmware` @ the release tag, swap the
+portduino.ini ch341 pin, `pio run -e native` (~7 min Pi5 / ~26 min Pi4).
+⚠️ **Two builds** — trixie links `libgpiod.so.3`, noble lacks it. ⚠️ **STASH
+`.pio/libdeps/native/Pine libch341-spi Userspace library` first** — a stale
+cache silently overrides the pin (07-27 it held the unsoaked PR#11 refactor);
+verify by diffing the fetched source, then confirm `pthread_detach` inside
+`pinedio_deattach_interrupt` via `objdump -d` BEFORE deploying.
+(2) **weekly restart** band-aid `meshtasticd-restart.timer` STAYS until soak
+proven (backstop-outlives-fix); (3) `probe_meshtasticd_vsz_leak` fires only
+past the 768 GB weekly-restart envelope (leaking-but-managed stays silent).
+Quick check: `wc -l /proc/<pid>/maps` — climbing over 30 min = leaking, flat
+(≈8 stack pairs) = patched. ⚠️ `pgrep -x meshtasticd` MISSES the patched boxes
+(comm is `meshtasticd-patched`); use `pgrep -f`. Detail:
 [[project_updates_design_arc_2026_07_10]].
 
 
