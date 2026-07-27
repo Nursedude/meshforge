@@ -2208,15 +2208,29 @@ def test_plan_role_actions_real_importlib_load():
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _krb_setup(tmp_path, installed=()):
+def _krb_setup(tmp_path, installed=(), boot=None):
     """Create a fake /lib/modules with the given release dirs; return common
-    kwargs (modules dir, absent reboot-required path, isolated streak file)."""
+    kwargs (modules dir, absent reboot-required path, isolated streak file).
+
+    ``boot_dir`` is ALWAYS pinned to an isolated path. The probe gained a
+    /boot fallback on 2026-07-27 (the modules dir is masked by the unit's
+    ProtectKernelModules=yes), and its default is the real ``/boot`` — so
+    leaving it unset silently made these tests read the HOST's installed
+    kernels and pass or fail by which machine ran them. A hermetic test must
+    never inherit host state through a default. Pass ``boot=[releases]`` to
+    exercise the fallback deliberately.
+    """
     mods = tmp_path / "modules"
     mods.mkdir()
     for name in installed:
         (mods / name).mkdir()
+    boot_dir = tmp_path / "boot"
+    boot_dir.mkdir()
+    for name in (boot or ()):
+        (boot_dir / f"vmlinuz-{name}").write_text("")
     return {
         "modules_dir": str(mods),
+        "boot_dir": str(boot_dir),
         "reboot_required_path": str(tmp_path / "reboot-required"),
         "state_path": str(tmp_path / "krb.json"),
     }
@@ -2252,6 +2266,9 @@ def test_kernel_reboot_fires_on_newer_same_flavor_after_debounce(tmp_path):
     assert sig.extra == {
         "running": running,
         "newest_installed": "6.18.33+rpt-rpi-2712",
+        # Which source answered: "modules" normally, "boot" when the modules
+        # dir is masked by ProtectKernelModules=yes, None when both are blind.
+        "kernel_source": "modules",
         "reboot_required_file": False,
         "debounce_streak": 2,
     }

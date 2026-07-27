@@ -692,6 +692,7 @@ def _parse_kernel_release(release) -> Optional[Tuple[Tuple[int, ...], str]]:
 def probe_kernel_reboot_pending(
     *,
     modules_dir: str = "/lib/modules",
+    boot_dir: str = "/boot",
     reboot_required_path: str = "/var/run/reboot-required",
     running_release: Optional[str] = None,
     state_path: Optional[str] = None,
@@ -708,8 +709,27 @@ def probe_kernel_reboot_pending(
     install rpi-v8 AND rpi-2712 simultaneously, so the comparison runs ONLY
     against same-flavor entries (see ``_parse_kernel_release``).
 
-    Read-only, sandbox-safe (no sudo — the watchdog's NoNewPrivileges sandbox
-    forbids it; ``/lib/modules`` and the flag file are world-readable anyway).
+    Read-only, no sudo (the watchdog's NoNewPrivileges sandbox forbids it).
+
+    ⚠️ **World-readable is not the same as visible.** This docstring used to
+    claim ``/lib/modules`` was readable "anyway"; that assumption was FALSE
+    under the unit's own hardening. ``ProtectKernelModules=yes`` MASKS both
+    ``/lib/modules`` and ``/usr/lib/modules`` — proven in the service sandbox
+    2026-07-27 (``systemd-run --property=ProtectKernelModules=yes ls
+    /lib/modules`` → 0 entries vs 36 unsandboxed), and neither ``ReadOnlyPaths``
+    nor ``BindReadOnlyPaths`` restores them. Leg B therefore reported
+    ``indeterminate`` on EVERY tick, and because indeterminate means "not
+    observed", ``watchdog_tracker`` held the last-known verdict forever
+    (``extra.unobserved_hold``): moc5 kept reporting ``degraded`` after the
+    condition was cured, with a debounce streak of 347. A hold whose observer
+    can never see again is an unfalsifiable assertion.
+
+    Cure: fall back to ``/boot/vmlinuz-<release>``, which SURVIVES that sandbox
+    and carries release strings identical to the modules dirs on both families
+    (verified 2026-07-27 — Debian/rpt ``6.18.34+rpt-rpi-2712``, Ubuntu/raspi
+    ``6.8.0-1060-raspi``; newest same-flavor entry agreed with ``/lib/modules``
+    on both). Hardening is preserved — do NOT "fix" this by setting
+    ``ProtectKernelModules=no`` on a root service.
 
     Honest failure modes: ``/lib/modules`` unreadable/empty, the running
     release unparseable, or no same-flavor sibling entries → that leg is
@@ -735,12 +755,33 @@ def probe_kernel_reboot_pending(
 
     newest_installed: Optional[str] = None
     newer_found = False
+    # Bound BEFORE the branch: an unparseable running release skips leg B
+    # entirely, but the Signal below is still reachable via leg A (the
+    # reboot-required flag), and it reads kernel_source.
+    kernel_source: Optional[str] = None
     if running_parsed is not None:
         run_nums, run_flavor = running_parsed
         try:
             entries = [e.name for e in os.scandir(modules_dir) if e.is_dir()]
         except OSError:
-            entries = []  # unreadable → leg indeterminate, never an alarm
+            entries = []  # unreadable → try the boot fallback below
+        if entries:
+            kernel_source = "modules"
+        else:
+            # The modules dir is MASKED by ProtectKernelModules=yes, not merely
+            # absent (see docstring). /boot survives that sandbox and carries
+            # the same release strings, so this keeps leg B observable instead
+            # of leaving it permanently indeterminate — which the tracker turns
+            # into a held signal that can never clear.
+            try:
+                entries = [
+                    n[len("vmlinuz-"):] for n in os.listdir(boot_dir)
+                    if n.startswith("vmlinuz-") and n != "vmlinuz-"
+                ]
+            except OSError:
+                entries = []  # both sources blind → leg indeterminate, no alarm
+            if entries:
+                kernel_source = "boot"
         best: Optional[Tuple[Tuple[int, ...], str]] = None
         for name in entries:
             parsed = _parse_kernel_release(name)
@@ -767,7 +808,8 @@ def probe_kernel_reboot_pending(
         elif newest_installed is None:
             note_disposition(
                 "kernel_reboot_pending", "indeterminate",
-                reason="no same-flavor kernel entries readable under modules dir",
+                reason=("no same-flavor kernel entries readable under modules "
+                        "dir or boot dir"),
             )
         else:
             note_disposition("kernel_reboot_pending", "clean")
@@ -785,9 +827,10 @@ def probe_kernel_reboot_pending(
 
     reasons = []
     if newer_found and newest_installed:
+        _where = boot_dir if kernel_source == "boot" else modules_dir
         reasons.append(
             f"running {running_release} but {newest_installed} is installed "
-            f"under {modules_dir}"
+            f"under {_where}"
         )
     if reboot_required:
         reasons.append(f"{reboot_required_path} flag present")
@@ -806,6 +849,7 @@ def probe_kernel_reboot_pending(
         extra={
             "running": running_release,
             "newest_installed": newest_installed,
+            "kernel_source": kernel_source,  # "modules" | "boot" | None(blind)
             "reboot_required_file": reboot_required,
             "debounce_streak": streak,
         },

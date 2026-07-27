@@ -178,7 +178,7 @@ if [ -n "${HONEST_WD_STALE_S:-}" ]; then WD_STALE_S="$HONEST_WD_STALE_S"
 elif [ -n "${HONEST_WD_PATH:-}" ]; then WD_STALE_S=0
 else WD_STALE_S=300; fi
 
-wedge_t=0; deg_t=0; clean=0; unreach=0; sigdesc=""
+wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; sigdesc=""
 btotal=$(echo $BOXES | wc -w)
 for b in $BOXES; do
   # Fetch the box's OWN clock alongside its watchdog.json in ONE round-trip, so
@@ -192,12 +192,30 @@ for b in $BOXES; do
 try: d=json.load(sys.stdin)
 except Exception: print("PARSE"); sys.exit()
 s=d.get("signals",[])
-wg=sum(1 for x in s if x.get("severity")=="wedge")
-dg=len(s)-wg
+# A signal carrying extra.unobserved_hold is LAST-KNOWN, not observed this
+# tick (watchdog_tracker re-emits it so silence cannot read as recovery).
+# Reporting it as "degraded" alongside live observations is the exact
+# conflation this gate exists to prevent -- unobservable is UNKNOWN, not
+# proven-bad. moc5 2026-07-27 held kernel_reboot_pending for 347 ticks
+# after the condition was cured, because its probe was masked by the
+# units OWN ProtectKernelModules=yes and could never see again.
+# NOTE: no apostrophes below -- this whole block lives inside python3 -c
+# single quotes, and one contraction ends the shell string (caught by
+# bash -n 2026-07-27).
+def _held(x):
+    e=x.get("extra") or {}
+    return bool(isinstance(e,dict) and e.get("unobserved_hold"))
+live=[x for x in s if not _held(x)]
+held=[x for x in s if _held(x)]
+wg=sum(1 for x in live if x.get("severity")=="wedge")
+dg=len(live)-wg
+hd=len(held)
 ts=d.get("ts")
 tsf=("%.3f"%ts) if isinstance(ts,(int,float)) else "NOTS"
-cl=",".join("%s(%s)"%(x.get("class","?"),x.get("severity","?")) for x in s)
-print("%d %d %s %s"%(wg,dg,tsf,cl))' 2>/dev/null)
+def _fmt(xs,suf=""):
+    return ",".join("%s(%s%s)"%(x.get("class","?"),x.get("severity","?"),suf) for x in xs)
+cl=",".join(z for z in (_fmt(live), _fmt(held,",held-blind")) if z)
+print("%d %d %d %s %s"%(wg,dg,hd,tsf,cl))' 2>/dev/null)
   # Unreadable/garbage watchdog.json is UNKNOWN, never "clean" — a file I
   # can't parse must not read as healthy (the exact false-green this tool
   # exists to prevent; caught by the classifier drill 2026-06-15).
@@ -205,7 +223,8 @@ print("%d %d %s %s"%(wg,dg,tsf,cl))' 2>/dev/null)
     unreach=$((unreach+1)); sigdesc="$sigdesc $b:unparseable"; continue
   fi
   wg=$(printf '%s' "$p" | awk "{print \$1}"); dg=$(printf '%s' "$p" | awk "{print \$2}")
-  ts=$(printf '%s' "$p" | awk "{print \$3}"); cl=$(printf '%s' "$p" | cut -d" " -f4-)
+  hd=$(printf '%s' "$p" | awk "{print \$3}")
+  ts=$(printf '%s' "$p" | awk "{print \$4}"); cl=$(printf '%s' "$p" | cut -d" " -f5-)
   # Freshness gate: a valid-but-stale snapshot (wedged loop) is NOT clean.
   # Same UNKNOWN tier as unparseable — old signals are not current truth.
   if [ "$WD_STALE_S" -gt 0 ] && [ "$ts" != "NOTS" ] && [ -n "$rnow" ]; then
@@ -214,12 +233,18 @@ print("%d %d %s %s"%(wg,dg,tsf,cl))' 2>/dev/null)
       unreach=$((unreach+1)); sigdesc="$sigdesc $b:stale(${age}s)"; continue
     fi
   fi
-  if [ "${wg:-0}" = 0 ] && [ "${dg:-0}" = 0 ]; then clean=$((clean+1))
+  held_t=$((held_t+${hd:-0}))
+  if [ "${wg:-0}" = 0 ] && [ "${dg:-0}" = 0 ] && [ "${hd:-0}" = 0 ]; then clean=$((clean+1))
   else sigdesc="$sigdesc $b:[$cl]"; wedge_t=$((wedge_t+wg)); deg_t=$((deg_t+dg)); fi
 done
+# Order is deliberate: proven-bad outranks unobservable outranks held-blind.
+# A held signal NEVER reaches the WARN/FAIL tiers on its own — it is
+# last-known evidence from a blind observer, which is UNKNOWN by this
+# project's tiering, and UNKNOWN is never a pass either.
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
 elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$btotal clean, $unreach unreachable/stale:$sigdesc"
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
+elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see), 0 observed:$sigdesc"
 else ok "watchdog signals" "$clean/$btotal clean, 0 signals"; fi
 
 echo
