@@ -1,106 +1,103 @@
-# dudeclaw-01 flash day — retire BLE, land the anomaly + heap fixes
+# dudeclaw-01 flash day — BLE retired, anomaly + heap fixes landed ✅
 
-> **Status: PREPARED, NOT FLASHED (2026-07-26).** Firmware builds clean;
-> claw-01 is behind an AREDN node with no inbound path and no OTA, so this
-> needs a bench visit. Everything below is the ordered checklist for that
-> visit. Operator decision to drop BLE: 2026-07-26.
+> **Status: DONE 2026-07-26.** Flashed `0.4.0+dudeclaw.18` over moc1's USB,
+> `Hash of data verified`. Free heap 28.4 kB → **118.3 kB**; NATS timeouts
+> 25-33% → **0/48**. BLE soak cron retired, anomaly sensor re-enabled.
 
-## Why
+## ⚠️ Read this first — how claw-01 is reached
 
-dudeclaw-01 ran BLE + LoRa ears + WiFi + NATS in ~210 kB and sat at **~28 kB
-free (14%)**, dipping to 17.3 kB, with **25–33% of NATS polls timing out**
-and repeated reboots. dudeclaw-02, same board family but no BLE, held
-**76.8 kB free and 15.6 days uptime**.
+**dudeclaw-01 is USB-attached to moc1 at `/dev/ttyACM0`** (MAC
+`80:f1:b2:9f:aa:a0`, ESP32-S3 rev 2). It is also USB-POWERED from moc1 —
+which is why `battery_read` shows a flat ~4.18 V forever and can never
+breach the 3.5 V spec.
 
-The BLE scan code was NOT at fault — NimBLE with `setMaxResults(0)`, bounded
-duplicate cache, no accumulation, and heap measured **flat** (+6 kB/hour
-slope over 28 samples, so not a leak). The cost was the stack's steady
-~60 kB footprint, which this board could not afford.
+Its **WiFi** joins an AREDN node's `10.120.250.0/28` AP and NATs outbound to
+moc2's NATS bus. **These are two independent channels.** No fleet box can
+reach `10.120.250.199` inbound (all six route to their default gateway, no
+ping) and the firmware has **no OTA** — but none of that matters, because
+flashing goes over the USB cable and needs no IP at all.
 
-Riding along: the anomaly warm-up fix (`WARMUP` was 60 vs `ALPHA` 1/1440 — a
-24x gap that made every score a floor-pinned artifact) and three new
-`device_info` fields (min free heap, max alloc block, `esp_reset_reason()`)
-that make the reboot cause observable for the first time.
+> **The trap, recorded because I fell in it (2026-07-26):** I tested IP
+> reachability to the claw, got "no path from any box", and concluded a bench
+> visit was required — while this very doc's header already said the original
+> flash was done REMOTELY. "Remote" meant *ssh to moc1, run esptool over its
+> USB*, not OTA. I measured the wrong channel and let a true fact (no inbound
+> IP) answer a question it had nothing to do with. The operator caught it.
+> **Before concluding a device is unreachable, ask which channel the operation
+> actually uses.**
 
-## Payload
+## Identifying the board before writing to it
 
-Firmware `0.4.0+dudeclaw.18`, commits `540969f` (anomaly + witness) and the
-BLE retirement on top. Env `esp32-s3-heltec-v4`.
+moc1's `ttyACM0` is an ESP32-S3 — and so is a Heltec Meshtastic node, so the
+board is genuinely ambiguous and a wrong flash is destructive. `meshtasticd`
+is active on moc1 but does NOT hold the port (`fuser` empty).
 
-Build deltas vs `.17`: RAM 172,848 → **165,772** (−7.1 kB static),
-Flash 1,606,832 → **1,400,180** (−202 kB).
+Non-destructive proof used: note claw-01's uptime over NATS, run
+`esptool read-mac` (reads only, but hard-resets the board), then re-read
+uptime. It went **20105 s → 34 s** while elapsed was 51 s. Same board.
 
-**Expected free heap after flash: ~95–100 kB (≈45%).** Derivation, and it is
-an ESTIMATE not a measurement: current 28.4 kB + 7.1 kB static freed + the
-~62 kB runtime BLE allocation inferred from the claw-01/claw-02 delta
-(claw-02 has 14 kB *less* total heap yet 48 kB *more* free). **Verify against
-the real number on flash day — this prediction is the whole point of the
-change, so it must be checked, not assumed.**
+## What shipped
 
-## Order of operations
+Firmware `0.4.0+dudeclaw.18` — commits `540969f` (anomaly warm-up + heap
+witness) and `eac93a3` (BLE retirement). Host-side readers: MF `1b707c6c`,
+MA twin `d348ac39`.
 
-1. **Flash** (app only — LittleFS config partition is untouched, so WiFi/NATS
-   settings survive; only a full-chip erase would force a portal reconfig):
-   ```
-   cd ~/src/wireclaw-dudeclaw
-   pio run -e esp32-s3-heltec-v4 -t upload --upload-port <port>
-   ```
+1. **Anomaly warm-up** — `WARMUP` was 60 samples (~1 h) while `ALPHA` was
+   1/1440 (~1 day). Scoring began 24x before `var` converged, so `sqrtf(var)`
+   sat at the per-feature FLOOR and z degenerated to `|x - mean| / FLOOR` —
+   for temp_c a bare "is the chip 2 C off baseline" trip wire, and `fabsf()`,
+   so cooling paged like overheating. Now one SSOT `TAU` with `WARMUP`
+   derived from it and an `#error` guard against re-drift.
+2. **Heap/reset witness** — `device_info` gained `Min free heap`,
+   `Max alloc block`, `Reset reason`.
+3. **BLE retired** from the `esp32-s3-heltec-v4` NATS-edge profile.
 
-2. **Confirm the build actually took** — do not infer it from "it booted":
-   ```
-   # version must read 0.4.0+dudeclaw.18
-   # device_info must now carry the three new fields
-   nats req dudeclaw-01.tool_exec '{"tool":"device_info"}'
-   ```
-   Expect `Min free heap:`, `Max alloc block:`, `Reset reason:` present, and
-   `ble_stats` to return `{"ok": false, "error": "no BLE scanner on this
-   device"}` — that refusal is CORRECT (it is the honest stub, not a fault).
+## Measured result
 
-3. **Retire the BLE soak cron — REQUIRED, do not skip.**
-   `claw_ble_soak.sh` ends with `... && echo "$bs" | grep -q '"ok": true'`,
-   so a no-BLE build makes it exit nonzero **every 30 minutes, forever**,
-   which pages via `cron_verdict_stale_any`. It is already failing 23/30
-   retained runs from the timeouts; after the flash it is 100% false.
-   Its Phase-3 gate PASSED 2026-06-14 and its judge was retired 06-20 — it
-   is vestigial.
-   ```
-   crontab -l > ~/crontab.bak.$(date +%Y%m%d)-claw-ble-soak-retire
-   crontab -l | grep -v claw_ble_soak | crontab -
-   crontab -l | grep -c claw_ble_soak   # must print 0
-   ```
-   Leave `~/claw_ble_soak.log` and the 06-14 verdict in place as the record.
+| | before | after |
+|---|---|---|
+| free heap | 28,448 (14%) | **118,332 (50%)** |
+| total heap | 210,140 | 237,008 |
+| min free heap | unobservable | 97,812 |
+| max alloc block | unobservable | 77,812 |
+| NATS timeout rate | 25-33% | **0/48** |
+| anomaly | false-paged at n<1440 | `-1 (learning n/1440)` |
 
-4. **Re-enable the anomaly sensor.** It was disabled 2026-07-26 because it
-   could not produce a trustworthy reading pre-fix; the warm-up fix is what
-   makes it meaningful again.
-   ```
-   cd ~/.config/meshforge
-   cp claw_sensors.battery.json.with-anomaly.bak claw_sensors.battery.json
-   systemctl --user restart meshforge-mini-dudeai-claw
-   ```
-   Expect `anomaly_stats` to report `-1 (learning n/1440)` for the first
-   ~24 h. **That is the fix working, not a fault** — the old build started
-   scoring after 1 h against an unconverged baseline. Do not "fix" the -1.
+**My pre-flash prediction was 95-100 kB and it MISSED — the real number is
+118,332.** I sized it from the linker's 7.1 kB static RAM delta, but total
+heap actually rose 26.9 kB: NimBLE reserves DRAM beyond what "RAM used"
+reports. Wrong arithmetic, better outcome. Recorded because the runbook said
+to measure rather than assume, and that is the only reason it was caught.
 
-5. **Verify the margin held** — a day later, not immediately:
-   - `Min free heap` well clear of zero (the number a poll can never catch)
-   - `Max alloc block` healthy (a large free total with a small max-alloc is
-     fragmentation)
-   - `Reset reason` on the next reboot: `PANIC` vs `TASK-WDT` vs `BROWNOUT`
-     finally distinguishes crash / hang / power. **This is the field that
-     settles whether heap pressure was ever actually the reboot cause — that
-     remains UNPROVEN, inferred only from the claw-02 comparison.**
+## Still open
 
-## What is NOT proven
+- **Reset reason reads `unknown`** after an esptool RTS reset — expected.
+  Its real value arrives on the next ORGANIC reboot, and that is what
+  finally settles whether heap pressure ever actually caused the reboots.
+  Until then that link remains **inferred, not proven** — it rested on a
+  single comparison device (claw-02).
+- **The 0/48 timeout result is ~2 minutes of evidence**, against a pre-flash
+  rate measured over far longer. Strong early signal, not a soak.
+- **Anomaly stays `-1` for ~24 h** by design. With `op: gt, threshold: 4.0`,
+  -1 can never breach, so no pages during warm-up. Do not "fix" the -1.
 
-- That heap pressure *caused* the reboots. It correlates against exactly one
-  other device. Step 5 is the test.
-- That ~95–100 kB free is what we get. It is arithmetic on an inferred BLE
-  footprint, not a measurement.
+## Done at flash time
 
-## What we lose
+- [x] Flash app-only at `0x10000` (LittleFS config preserved — no portal
+      reconfig needed; claw rejoined WiFi + NATS unaided)
+- [x] Verify version + the three new fields present, `ble_stats` refusing
+- [x] Retire `claw_ble_soak` cron — it gates its exit on `ble_stats ok:true`,
+      so a no-BLE build fails it every 30 min forever via
+      `cron_verdict_stale_any`. Backup: `~/crontab.bak.20260726-claw-ble-soak-retire`
+- [x] Re-enable the anomaly sensor from `claw_sensors.battery.json.with-anomaly.bak`
 
-BLE ears on claw-01 — passive advertisement listening (was ~30k advs, 32+
-unique devices). claw-02 has never had it. Restore instructions are in the
-`platformio.ini` comment block where the flags were removed; do NOT restore
-BLE together with stock LLM buffers, or the heap margin is spent twice.
+## Reflash recipe
+
+```bash
+pio run -e esp32-s3-heltec-v4                      # on VolcanoAI
+scp .pio/build/esp32-s3-heltec-v4/firmware.bin moc1:/tmp/fw.bin
+ssh moc1 'sudo ~/.local/bin/esptool --chip esp32s3 --port /dev/ttyACM0 \
+          write-flash 0x10000 /tmp/fw.bin'
+```
+Verify the md5 after copy, and confirm the version string from `device_info`
+rather than inferring success from "it booted".
