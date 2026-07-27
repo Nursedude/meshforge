@@ -23,6 +23,11 @@ logger = logging.getLogger("watchdog")
 # Warn once per path per process — a broken state dir would otherwise spam
 # every probe every tick.
 _streak_write_warned: set = set()
+# Last streak this process wrote, per state path. Lets _load_parity_streak
+# HOLD a debounce across an unwritable-disk window instead of resetting to 0
+# every tick, which silenced every debounced probe forever (found 07-21,
+# witness-only fix; suppression closed 07-26).
+_streak_mem_fallback: dict = {}
 
 # ─────────────────────────────────────────────────────────────────────
 # Closed enum of failure classes — one per persistent_issues.md entry.
@@ -317,22 +322,42 @@ def signal_to_dict(sig: Signal, *, first_seen_ts: Optional[float] = None) -> dic
 
 
 def _load_parity_streak(state_path: str) -> int:
-    """Read the consecutive-drift streak counter. Best-effort: any error → 0.
+    """Read the consecutive-drift streak counter.
 
-    A missing/unreadable/garbage state means 'no confirmed streak yet', which
-    suppresses a first-seen drift — exactly the conservative direction the
-    debounce wants (favour silence on uncertainty, not a false page).
+    A MISSING file means 'no confirmed streak yet' → 0, which suppresses a
+    first-seen drift: the conservative direction the debounce wants.
+
+    But an UNWRITABLE path is a different question wearing the same answer.
+    The 2026-07-21 (W4) review found that a broken state dir (the #60
+    sandbox-drift class) froze every debounced probe's streak below its
+    threshold and silenced them all forever — and fixed only the WITNESS half
+    (the warning in ``_save_parity_streak``). The suppression itself survived:
+    load→0 every tick means streak is always 1, and any probe with threshold ≥2
+    could never fire. Re-found by drill 2026-07-26.
+
+    So: fall back to the last value this process wrote. The file exists to
+    survive a RESTART; it was never the per-tick mechanism, and the runner is
+    long-lived. Uncertainty still favours silence — but 'I could not read the
+    disk' is no longer allowed to masquerade as 'the drift just started'
+    (honest_failure_modes #1/#2).
     """
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             streak = int(json.load(fh).get("streak", 0))
         return streak if streak >= 0 else 0
     except (OSError, ValueError, TypeError):
-        return 0
+        return max(0, int(_streak_mem_fallback.get(state_path, 0)))
 
 
 def _save_parity_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises)."""
+    """Persist the streak counter (atomic-rename, never raises).
+
+    Records the value in-process FIRST, so ``_load_parity_streak`` can hold it
+    when the disk write fails — otherwise the warning below correctly reports
+    that debounced probes cannot reach their threshold, and nothing makes them
+    able to.
+    """
+    _streak_mem_fallback[state_path] = max(0, int(streak))
     try:
         parent = os.path.dirname(state_path)
         if parent:

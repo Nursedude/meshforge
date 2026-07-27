@@ -125,6 +125,16 @@ _MEMINFO_EXTRA_KEYS = (
 )
 
 
+# In-process last-known debounce/history state, keyed by state-file path, plus
+# a consecutive-write-error count per path. Both exist because the disk copy is
+# the RESTART-survival mechanism, not the per-tick one: when the file cannot be
+# written, holding the last state in memory keeps the debounced legs alive,
+# and the counter makes the degradation visible to the operator instead of
+# silently shortening the probe to its tombstone leg (audit finding, 07-26).
+_MEM_FALLBACK: Dict[str, Dict[str, Any]] = {}
+_WRITE_ERRORS: Dict[str, int] = {}
+
+
 def _read_meminfo(path: str = "/proc/meminfo") -> Optional[Dict[str, int]]:
     """Parse /proc/meminfo into {key: kB}. None when unreadable.
 
@@ -432,6 +442,20 @@ def _load_hist_state(path: str, boot_id: str) -> Dict[str, Any]:
         if not isinstance(doc, dict):
             raise ValueError("not an object")
     except (OSError, ValueError, TypeError):
+        # Disk is unreadable. HOLD the last state this process wrote rather
+        # than degrading to streak=0 (honest_failure_modes #2): a zeroed
+        # streak is indistinguishable from "the box has never been under
+        # pressure", so a persistently unwritable path used to make the
+        # debounced DEGRADED leg unable to ever reach debounce_ticks, and left
+        # `hist` empty so the RATE leg had no samples. Drill-measured
+        # 2026-07-26: 0/10 degraded ticks fired vs 9/10 on a writable path —
+        # the probe silently collapsed to its wedge "tombstone" leg.
+        # Falling back in-process is enough because the runner is long-lived;
+        # the file exists to survive a RESTART, not to carry a single tick.
+        held = _MEM_FALLBACK.get(path)
+        if held and held.get("boot_id") == boot_id:
+            return {"streak": held["streak"], "boot_id": boot_id,
+                    "hist": list(held["hist"])}
         return {"streak": 0, "boot_id": boot_id, "hist": []}
 
     hist = doc.get("hist")
@@ -450,7 +474,19 @@ def _load_hist_state(path: str, boot_id: str) -> Dict[str, Any]:
 
 
 def _save_hist_state(path: str, state: Dict[str, Any]) -> None:
-    """Persist streak+history atomically. Never raises (best-effort witness)."""
+    """Persist streak+history atomically. Never raises (best-effort witness).
+
+    ALWAYS updates the in-process fallback first, so a failing disk cannot
+    suppress the debounce (see ``_load_hist_state``). A write failure is
+    counted and logged at ERROR on the first occurrence — not debug, which the
+    runner's default INFO level hid completely, making this the swallow with
+    no witness that honest_failure_modes #9 exists to forbid.
+    """
+    _MEM_FALLBACK[path] = {
+        "streak": int(state.get("streak", 0)),
+        "boot_id": state.get("boot_id", ""),
+        "hist": list(state.get("hist", [])[-_HIST_MAX:]),
+    }
     try:
         parent = os.path.dirname(path)
         if parent:
@@ -463,7 +499,23 @@ def _save_hist_state(path: str, state: Dict[str, Any]) -> None:
                       fh, separators=(",", ":"))
         os.replace(tmp, path)
     except OSError as exc:
-        logger.debug("host_memory_pressure state write failed: %s", exc)
+        prior = _WRITE_ERRORS.get(path, 0)
+        _WRITE_ERRORS[path] = prior + 1
+        if prior == 0:
+            logger.error(
+                "host_memory_pressure state write FAILED (%s): %s — debounce "
+                "and rate history are now held in-process only and will NOT "
+                "survive a restart; check the unit's writable paths (#60)",
+                path, exc,
+            )
+        else:
+            logger.debug("host_memory_pressure state write still failing "
+                         "(%d consecutive): %s", prior + 1, exc)
+        return
+    if _WRITE_ERRORS.get(path):
+        logger.info("host_memory_pressure state write RECOVERED after %d "
+                    "consecutive failures (%s)", _WRITE_ERRORS[path], path)
+        _WRITE_ERRORS[path] = 0
 
 
 def _boot_id(path: str = "/proc/sys/kernel/random/boot_id") -> str:
@@ -708,6 +760,10 @@ def probe_host_memory_pressure(
             "rate_drop_ratio": (None if rate is None else round(rate[0], 4)),
             "rate_span_s": (None if rate is None else round(rate[1], 1)),
             "rate_fired": rate_fired,
+            # Non-zero => the debounce/rate history is surviving in-process
+            # only and will be lost on restart. Surfaced rather than logged so
+            # a probe/operator can SEE a degraded detector (#9, #63).
+            "state_write_errors": _WRITE_ERRORS.get(sp, 0),
             "top_rss": consumers,
             "released_peaks": peaks,
             "top_cgroups": cgroups,

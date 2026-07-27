@@ -531,3 +531,88 @@ class TestParsers:
         p = tmp_path / "psi"
         p.write_text("some avg10=x avg60=notanumber avg300=1\n")
         assert _read_psi_memory_avg60(str(p)) is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# State-write failure must not silently disable the probe
+#
+# Found 2026-07-26 by live drill during the post-07-23 audit. _save_hist_state
+# swallowed OSError with logger.debug (the runner defaults to INFO, so it was
+# invisible) and _load_hist_state mapped ANY read failure to streak=0. On a
+# persistently unwritable path the streak could therefore never reach
+# debounce_ticks, and hist stayed empty so the RATE leg had no samples --
+# silently reducing a three-leg probe to its wedge "tombstone" leg, which the
+# module's own docstring says arrives ~4s before the box dies instead of ~94s.
+#
+# Drill-measured BEFORE the fix: 0/10 degraded ticks fired on an unwritable
+# path vs 9/10 on a writable one. This is Issue #60's class (sandbox path
+# drift -> writes fail silently while the service stays active).
+# ─────────────────────────────────────────────────────────────────────
+
+class TestStateWriteFailureDoesNotSuppress:
+    @staticmethod
+    def _unwritable(tmp_path):
+        """A path that can never be created: its parent is a FILE."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x")
+        return str(blocker / "streak.json")
+
+    def test_degraded_leg_still_fires_when_state_is_unwritable(self, tmp_path):
+        """The debounce must survive on in-process state when disk fails.
+
+        Without this, a broken state path is indistinguishable from a box that
+        is never under pressure -- the exact 'degraded state wearing a healthy
+        value' shape (honest_failure_modes #1/#2).
+        """
+        path = self._unwritable(tmp_path)
+        fired = []
+        for tick in range(6):
+            sig = probe_host_memory_pressure(
+                meminfo_path=_meminfo(tmp_path, total_kb=16_000_000,
+                                      avail_kb=2_400_000),   # 15% -> degraded
+                psi_path=_psi(tmp_path, avg60=0.0),
+                debounce_path=path,
+                boot_id_path=_bootid(tmp_path),
+                now_mono=1000.0 + tick * 30.0,
+            )
+            if sig:
+                fired.append(sig)
+        assert fired, (
+            "degraded leg never fired with an unwritable state file — a broken "
+            "write path silently disabled the probe"
+        )
+
+    def test_write_failure_is_surfaced_not_swallowed(self, tmp_path):
+        """Every swallow leaves a witness (honest_failure_modes #9)."""
+        path = self._unwritable(tmp_path)
+        sig = None
+        for tick in range(6):
+            got = probe_host_memory_pressure(
+                meminfo_path=_meminfo(tmp_path, total_kb=16_000_000,
+                                      avail_kb=800_000),     # 5% -> wedge
+                psi_path=_psi(tmp_path, avg60=0.0),
+                debounce_path=path,
+                boot_id_path=_bootid(tmp_path),
+                now_mono=2000.0 + tick * 30.0,
+            )
+            sig = got or sig
+        assert sig is not None
+        assert sig.extra.get("state_write_errors"), (
+            "a persistently failing state write left no probe-visible witness"
+        )
+
+    def test_writable_path_reports_no_write_errors(self, tmp_path):
+        """The witness must not cry wolf on a healthy box."""
+        sig = None
+        for tick in range(6):
+            got = probe_host_memory_pressure(
+                meminfo_path=_meminfo(tmp_path, total_kb=16_000_000,
+                                      avail_kb=800_000),
+                psi_path=_psi(tmp_path, avg60=0.0),
+                debounce_path=str(tmp_path / "ok" / "streak.json"),
+                boot_id_path=_bootid(tmp_path),
+                now_mono=3000.0 + tick * 30.0,
+            )
+            sig = got or sig
+        assert sig is not None
+        assert not sig.extra.get("state_write_errors")

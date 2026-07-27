@@ -8227,3 +8227,47 @@ def test_local_brain_ledger_name_is_ssot_pinned():
     from utils.watchdog_probes_mini import _EVAL_LEDGER_NAME
     from mini_dudeai.local_brain_eval import EVAL_RESULTS_BASENAME
     assert _EVAL_LEDGER_NAME == EVAL_RESULTS_BASENAME
+
+
+class TestParityStreakSurvivesUnwritableState:
+    """A broken state path must not silence every debounced probe forever.
+
+    The 2026-07-21 (W4) review found exactly this and fixed only HALF of it:
+    _save_parity_streak gained a one-time warning (the witness), but
+    _load_parity_streak still mapped any read failure to 0, so the streak
+    still could not accumulate and every debounced probe stayed dark. The
+    warning made the blindness visible; it did not make the probe work.
+    Found again 2026-07-26 during the post-07-23 audit.
+    """
+
+    @staticmethod
+    def _unwritable(tmp_path):
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x")
+        return str(blocker / "streak.json")
+
+    def test_streak_accumulates_when_state_cannot_be_written(self, tmp_path):
+        from utils.watchdog_probe_core import (
+            _load_parity_streak, _save_parity_streak,
+        )
+        path = self._unwritable(tmp_path)
+        # the idiom every debounced probe uses: load, +1, save, compare
+        seen = []
+        for _ in range(4):
+            streak = _load_parity_streak(path) + 1
+            _save_parity_streak(path, streak)
+            seen.append(streak)
+        assert seen == [1, 2, 3, 4], (
+            f"streak froze at {seen} — a debounced probe with threshold >= 2 "
+            f"could never fire on an unwritable state path"
+        )
+
+    def test_writable_state_still_round_trips(self, tmp_path):
+        from utils.watchdog_probe_core import (
+            _load_parity_streak, _save_parity_streak,
+        )
+        path = str(tmp_path / "ok" / "streak.json")
+        _save_parity_streak(path, 3)
+        assert _load_parity_streak(path) == 3
+        _save_parity_streak(path, 0)
+        assert _load_parity_streak(path) == 0
