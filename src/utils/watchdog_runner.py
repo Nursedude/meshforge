@@ -815,7 +815,20 @@ def build_coverage(signals: List[Signal]) -> Dict[str, Dict[str, str]]:
     coverage: Dict[str, Dict[str, str]] = {}
     for cls in SIGNAL_CLASSES:
         if cls in active:
-            coverage[cls] = {"disp": "active"}
+            entry: Dict[str, str] = {"disp": "active"}
+            # active-but-partial (B3, 2026-07-26): a multi-subject probe can
+            # emit subject B while noting indeterminate because subject A's
+            # channel failed. Stamping bare "active" made the class read
+            # fully-observed and the tracker CLEARED the vanished subject.
+            # `partial` tells `_class_was_observed` this observation does not
+            # permit clearing; the emitted signals themselves still count.
+            noted_entry = noted.get(cls)
+            if (isinstance(noted_entry, dict)
+                    and noted_entry.get("disp") == "indeterminate"):
+                entry["partial"] = True
+                if noted_entry.get("reason"):
+                    entry["reason"] = noted_entry["reason"]
+            coverage[cls] = entry
         elif cls in noted:
             coverage[cls] = noted[cls]
         else:
@@ -890,6 +903,32 @@ def write_state(
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _load_prior_signals(output_path: Path) -> List[dict]:
+    """The previous process's ``signals`` list, for tracker rehydration (B2).
+
+    Absent, unreadable, or corrupt state starts empty — a fresh box must boot
+    and a torn file must never crash the daemon or fabricate signals.
+    """
+    try:
+        raw = output_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        logger.info("watchdog: prior state %s unreadable (%s) — starting empty",
+                    output_path, exc)
+        return []
+    try:
+        payload = json.loads(raw)
+    # TypeError: read_text yielded a non-str (test doubles, exotic Path
+    # types) — same posture as corrupt: never crash the daemon at startup.
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.info("watchdog: prior state %s corrupt (%s) — starting empty",
+                    output_path, exc)
+        return []
+    sigs = payload.get("signals") if isinstance(payload, dict) else None
+    return sigs if isinstance(sigs, list) else []
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1105,6 +1144,12 @@ def run_loop(
     """
     host = socket.gethostname().split(".")[0] or "unknown"
     tracker = SignalTracker()
+    # B2: adopt the prior process's signals so a routine restart cannot read
+    # as a fleet-wide recovery. A rehydrated signal is unobserved until a
+    # probe re-observes it: the first tick clears it (positive observation),
+    # holds it with extra.unobserved_hold (still blind), or re-fires it.
+    rehydrated = tracker.rehydrate(_load_prior_signals(output_path))
+    logger.info("watchdog: rehydrated %d signal(s) from prior state", rehydrated)
     probe_count = 0
     rns_instance = _read_rns_instance_name()
     if rns_instance:
@@ -1222,11 +1267,37 @@ def run_loop(
         stop_event.wait(tick_s)
 
 
+def _oneshot_default_output(base: Path = DEFAULT_OUTPUT_PATH) -> Path:
+    """Default ``--one-shot`` output — distinct from the daemon's live file.
+
+    B9: one-shot wrote ``DEFAULT_OUTPUT_PATH`` through the same fixed ``.tmp``
+    sibling ``write_state`` uses, so a debug invocation raced the daemon and
+    transiently published a hold-free doc over the daemon's state. A distinct
+    default path also gets a distinct tmp name.
+    """
+    return base.with_suffix(".oneshot.json")
+
+
+def _resolve_output_paths(explicit: Optional[Path], *, one_shot: bool) -> Path:
+    """Output path from the (optional) explicit ``--output`` and the mode.
+
+    An explicit ``--output`` is always honored unchanged (both modes); without
+    one, the daemon writes the live path and one-shot writes its own file.
+    """
+    if explicit is not None:
+        return explicit
+    return _oneshot_default_output() if one_shot else DEFAULT_OUTPUT_PATH
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="MeshForge per-box watchdog daemon")
     parser.add_argument(
-        "--output", type=Path, default=DEFAULT_OUTPUT_PATH,
-        help=f"Output JSON path (default {DEFAULT_OUTPUT_PATH})",
+        "--output", type=Path, default=None,
+        help=(
+            f"Output JSON path (daemon default {DEFAULT_OUTPUT_PATH}; "
+            f"--one-shot defaults to {_oneshot_default_output()} so a debug "
+            f"run never races the live daemon file)"
+        ),
     )
     parser.add_argument(
         "--tick", type=float, default=DEFAULT_TICK_S,
@@ -1282,8 +1353,15 @@ def main(argv=None) -> int:
     # CLI --http-port wins over config file when explicitly set.
     http_port = args.http_port if args.http_port is not None else config_port
     phase2_config = parse_phase2_config(config)
+    output_path = _resolve_output_paths(args.output, one_shot=args.one_shot)
 
     if args.one_shot:
+        if args.output is None:
+            logger.info(
+                "watchdog: one-shot writing %s — distinct from the daemon's "
+                "live %s (pass --output to override)",
+                output_path, DEFAULT_OUTPUT_PATH,
+            )
         host = socket.gethostname().split(".")[0] or "unknown"
         tracker = SignalTracker()
         now = time.time()
@@ -1302,7 +1380,7 @@ def main(argv=None) -> int:
             signals, now=now, coverage=coverage,
         )
         write_state(
-            args.output, host=host, now=now, probe_count=1,
+            output_path, host=host, now=now, probe_count=1,
             active_signals=active_with_first_seen,
             coverage=coverage,
         )
@@ -1317,7 +1395,7 @@ def main(argv=None) -> int:
 
     try:
         run_loop(
-            output_path=args.output,
+            output_path=output_path,
             tick_s=args.tick,
             stop_event=stop_event,
             services_expected_active=services_expected,

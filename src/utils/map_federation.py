@@ -428,7 +428,15 @@ def _fetch_peer_claw(peer: str, timeout: float = _CLAW_FETCH_TIMEOUT,
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             if resp.status != 200:
                 return None
-            raw = resp.read(_CLAW_STATUS_MAX_BYTES)
+            # cap+1 so an over-cap body is DETECTED (B8): reading exactly the
+            # cap truncated it, json failed, and the claw silently vanished
+            # behind the generic debug line below.
+            raw = resp.read(_CLAW_STATUS_MAX_BYTES + 1)
+        if len(raw) > _CLAW_STATUS_MAX_BYTES:
+            logger.warning(
+                "peer claw status exceeds cap — skipped (peer=%s, "
+                "cap=%d bytes)", peer, _CLAW_STATUS_MAX_BYTES)
+            return None
         block = (json.loads(raw.decode("utf-8")) or {}).get("claw")
     except (urllib.error.URLError, urllib.error.HTTPError, socket.timeout,
             OSError, ValueError) as e:

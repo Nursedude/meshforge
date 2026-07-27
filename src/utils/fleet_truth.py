@@ -564,6 +564,12 @@ def merge_coverage(
             _extra = sig.get("extra")
             if isinstance(_extra, dict) and isinstance(_extra.get("targets"), list):
                 _cell["targets"] = _extra["targets"]
+            # B4: a HELD signal (tracker kept it because its observation
+            # channel went dark) is last-observed data, not a live reading —
+            # carry the marker so the UI can dim it instead of rendering
+            # stale detail as fresh.
+            if isinstance(_extra, dict) and _extra.get("unobserved_hold"):
+                _cell["unobserved_hold"] = True
             classes[cls] = _cell
             red += 1
             continue
@@ -637,9 +643,13 @@ def _services_cell_from_spool(services: Dict[str, Any]) -> Dict[str, Any]:
     # spool cron can land during a deploy restart, and rendering `activating`
     # as FAILED flashed "enabled but inactive: meshforge-gateway" for a cycle
     # with no debounce anywhere on this path (07-23 audit). In the tri-state
-    # vocabulary a starting unit's health is not-yet-determined → DARK with
-    # the mid-restart reason (visible, honest, not an alarm); real
-    # inactive/failed stays FAILED.
+    # vocabulary a starting unit's health is not-yet-determined → DARK
+    # (visible, honest, not an alarm); real inactive/failed stays FAILED.
+    # LIMITATION (B5): `activating` is ambiguous at a point-in-time read — a
+    # crashlooping unit spends most of its life in `activating` (auto-restart
+    # backoff, the #82 shape), indistinguishable here from a deploy restart.
+    # The spool has no history to debounce on, so this cell only refuses to
+    # call the unit healthy; probe-side detectors own crashloop paging.
     transient = sorted(u for u in down
                        if (enabled[u].get("active") or "")
                        in ("activating", "reloading"))
@@ -650,8 +660,10 @@ def _services_cell_from_spool(services: Dict[str, Any]) -> Dict[str, Any]:
                     source=src)
     if transient:
         return cell(DARK,
-                    reason=f"starting: {', '.join(transient)} (caught "
-                           f"mid-restart; re-checks next spool)",
+                    reason=f"activating: {', '.join(transient)} (transient "
+                           f"start OR crash-loop backoff — if this persists "
+                           f"across re-checks it is a crashloop; probe-side "
+                           f"detectors page that)",
                     source=src)
     return cell(HEALTHY, source=src)
 

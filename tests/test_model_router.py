@@ -123,6 +123,30 @@ def test_right_sized_when_equal():
     assert rec.recommended_tier == "opus" and rec.disposition == "right-sized"
 
 
+def test_satisfied_escalation_is_not_capability_gap():
+    """07-26 review D4: l_trusted=False escalates the recommendation to opus on
+    qth; a session ALREADY RUNNING opus has that escalation satisfied — the
+    disposition must read right-sized, not capability_gap (a machine consumer
+    keying on disposition would otherwise escalate a session that already is)."""
+    recs = [_eval_rec({"triage": _pk(0, 2)})]   # tier-L fails triage
+    rec = mr.route("cadence_triage", "qth", eval_records=recs,
+                   running_tier="opus", now_ts=NOW)
+    assert rec.recommended_tier == "opus"
+    assert rec.evidence["l_trusted"] is False
+    assert rec.disposition == "right-sized"
+
+
+def test_gap_stays_real_when_env_ceiling_blocks_escalation():
+    """The counter-case D4 must not regress: on fleet the ceiling IS local, the
+    escalation cannot happen, and the untrusted tier-L gap is REAL."""
+    recs = [_eval_rec({"triage": _pk(0, 2)})]
+    rec = mr.route("cadence_triage", "fleet", eval_records=recs,
+                   running_tier="local", now_ts=NOW)
+    assert rec.recommended_tier == "local"
+    assert rec.evidence["l_trusted"] is False
+    assert rec.disposition == "capability_gap"
+
+
 # ── evidence readers ────────────────────────────────────────────────────────
 
 def test_eval_kind_competence_uses_latest_record_with_kind():

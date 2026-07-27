@@ -75,11 +75,16 @@ class TestFromMeshtasticHonoursLastHeard:
         node = self._node(lastHeard=datetime.now().timestamp() - 10)
         assert node.is_online is True
 
-    def test_missing_lastheard_treated_as_heard_now(self):
-        # A live inbound packet carries no lastHeard — we are hearing it now.
+    def test_missing_lastheard_is_not_heard_now(self):
+        # 2026-07-26 review C4 overturned the earlier "heard now" reading:
+        # the interface node DB carries entries with absent/0 lastHeard that
+        # were never heard this boot — no heard-time means cannot attribute,
+        # not "online / 0s ago". (A live RX still goes online via the
+        # tracker merge's update_seen.) Pinned in
+        # tests/test_gateway_claw_fixes_2026_07_26.py as well.
         node = self._node()
-        assert node.is_online is True
-        assert (datetime.now() - node.last_seen) < timedelta(seconds=5)
+        assert node.is_online is False
+        assert node.last_seen is None
 
     def test_future_lastheard_does_not_forge_online_forever(self):
         node = self._node(lastHeard=datetime.now().timestamp() + 99999)

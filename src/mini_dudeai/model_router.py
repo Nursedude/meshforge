@@ -358,6 +358,14 @@ def route(task_kind: str, env: str, *,
             evidence["running_model_held_ratio"] = rel["ratio"]
             evidence["running_model_n"] = rel["held"] + rel["broke"]
 
+    # An untrusted tier-L is a REAL gap only when the env ceiling PREVENTED
+    # the escalation — the recommendation stayed clamped to the untrusted
+    # tier. After a satisfied escalation (step 2 moved `recommended` off
+    # local), a session running the escalated tier must not read
+    # "capability_gap" (07-26 review D4 — a machine consumer keying on
+    # disposition would escalate a session that already is the escalation).
+    l_gap_unresolved = l_trusted is False and recommended == "local"
+
     # 4. Disposition vs the running tier (the model_advisor tell).
     if running_tier:
         evidence["running_tier"] = running_tier
@@ -377,13 +385,13 @@ def route(task_kind: str, env: str, *,
             # though the ranks match (07-23 audit F8 — a machine consumer
             # keying on disposition must not read "fine here").
             disposition = ("capability_gap"
-                           if (capability_gap or l_trusted is False)
+                           if (capability_gap or l_gap_unresolved)
                            else "right-sized")
     else:
         # No running context: a gap is either the env ceiling being too low OR
-        # tier-L proving unfit for a kind it was the natural pick for.
+        # tier-L proving unfit with no headroom to escalate within the env.
         disposition = ("capability_gap"
-                       if (capability_gap or l_trusted is False)
+                       if (capability_gap or l_gap_unresolved)
                        else "right-sized")
 
     return Recommendation(

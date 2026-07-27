@@ -10,9 +10,11 @@ here; watchdog_probes_drift also re-exports these for back-compat.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
+from datetime import datetime as _datetime
 from typing import Dict, List, Optional, Tuple
 
 from utils import claw_battery
@@ -22,6 +24,8 @@ from utils.watchdog_probe_core import (
     _save_parity_streak,
     note_disposition,
 )
+
+logger = logging.getLogger(__name__)
 
 
 # Cron-verdict coverage (Issue #78) — a cron WIRED to cron_verdict.sh that
@@ -66,13 +70,19 @@ def _prior_verdict_statuses(text: str) -> Dict[str, str]:
 
     The log is append-only chronological, so the entry a name displaces IS
     its previous run. Garbage/short lines are skipped exactly as the shared
-    parser skips them, so the two stay in step.
+    parser skips them — including its ISO-timestamp check on the first token
+    (a garbage line must not seed a prior FAIL and falsely confirm a first
+    failure; 2026-07-26 review A6).
     """
     newest: Dict[str, str] = {}
     prior: Dict[str, str] = {}
     for line in text.splitlines():
         parts = line.split(None, 3)
         if len(parts) < 3:
+            continue
+        try:
+            _datetime.fromisoformat(parts[0].replace("Z", "+00:00"))
+        except (ValueError, TypeError):
             continue
         name, status = parts[1], parts[2]
         if name in newest:
@@ -277,6 +287,16 @@ def probe_cron_verdict_stale(
                         # First failure on a fast cron. The next run lands
                         # within the cadence and will either confirm it or
                         # clear it, so waiting costs at most one cycle.
+                        # UNLESS that next run never came: the unconfirmed
+                        # FAIL itself aging past the stale threshold means
+                        # the cron died after failing — the silence leg owns
+                        # it, not "unconfirmed" forever (2026-07-26, A2).
+                        threshold = max(CRON_VERDICT_STALE_FLOOR_S,
+                                        CRON_VERDICT_CADENCE_MULT * cadence)
+                        if float(v.get("age_s", 0.0)) > threshold:
+                            stale.append(
+                                f"{name}({int(float(v['age_s']) // 3600)}h)")
+                            continue
                         unconfirmed.append(f"{name}({v.get('status')})")
                         continue
                 failed.append(f"{name}({v.get('status')})")
@@ -761,6 +781,10 @@ CLAW_BATTERY_EARLY_WARN_HR = 6.0
 #: Where a battery soak declares its intent. A device named here is discharging
 #: BECAUSE WE ASKED IT TO; the decline is the experiment, not a fault.
 CLAW_SOAK_CONFIG_REL = os.path.join(".config", "meshforge", "battery_soak.json")
+#: Series-append io_error witness — logged ONCE per series path per process
+#: (honest_failure_modes #9): a silently frozen series serves a stale trend
+#: as current. The live tick voltage is still valid, so the probe continues.
+_SERIES_APPEND_IO_ERROR_WARNED: set = set()
 
 
 def _soak_armed_devices(home: Optional[str]) -> dict:
@@ -828,22 +852,50 @@ def _claw_battery_view(tick: dict, *, state_dir: str, now: float,
     bat = tick.get("battery")
     volts = bat.get("volts") if isinstance(bat, dict) else None
     ts = tick.get("captured_at")
-    if isinstance(volts, (int, float)) and not isinstance(volts, bool):
-        # Dedup is by capture ts inside append_sample; a False return is a
-        # duplicate or an I/O failure, neither of which may invent a reading.
-        claw_battery.append_sample(path, ts if isinstance(ts, (int, float)) else now,
-                                   volts)
+    have_live = isinstance(volts, (int, float)) and not isinstance(volts, bool)
+    live_ts = ts if (isinstance(ts, (int, float))
+                     and not isinstance(ts, bool)) else now
+    if have_live:
+        rc = claw_battery.append_sample(path, live_ts, volts)
+        if rc == "io_error" and path not in _SERIES_APPEND_IO_ERROR_WARNED:
+            # Once per path per process: a frozen series serves a stale trend
+            # as current (honest_failure_modes #9). The live tick voltage is
+            # still valid, so the probe continues on it.
+            _SERIES_APPEND_IO_ERROR_WARNED.add(path)
+            logger.error(
+                "claw battery series append failing at %s — trend will "
+                "freeze; continuing on the live tick voltage", path)
     series = claw_battery.read_series(path)
     if soak_armed:
         # Same pack, one history. classify() sorts + dedups by timestamp, so an
         # overlapping reading from both sources counts once.
         series = series + claw_battery.read_soak_series(home, device)
-    if isinstance(volts, (int, float)) and not isinstance(volts, bool) and not series:
+    if have_live and series:
+        # Frozen series (append failing): the stored curve stopped following
+        # the pack. Judging trend/intent off it would let a stale declining
+        # fit keep suppressing a REAL drain via soak "expected" — classify
+        # the live reading alone, say the trend is unobservable, and never
+        # let the frozen curve grant the suppression (2026-07-26 review C3).
+        newest = max((float(r["ts"]) for r in series
+                      if isinstance(r.get("ts"), (int, float))
+                      and not isinstance(r.get("ts"), bool)), default=None)
+        if newest is not None and (live_ts - newest) > CLAW_TICK_STALE_S:
+            view = claw_battery.classify(
+                [{"ts": live_ts, "volts": float(volts)}],
+                soak_armed=soak_armed, cutoff_v=cutoff_v)
+            view["expected"] = False
+            view["series_stale"] = True
+            view["summary"] += (
+                " — series stale (newest stored reading "
+                f"{(live_ts - newest) / 3600.0:.1f} h behind the live tick) — "
+                "trend unobservable (append failing?)")
+            view["device"] = device
+            return view
+    if have_live and not series:
         # Series unwritable (read-only /var/lib, full disk): fall back to the
         # single live reading so a level warning still works. The trend stays
         # None — degraded observability, not a fabricated flat pack.
-        series = [{"ts": ts if isinstance(ts, (int, float)) else now,
-                   "volts": volts}]
+        series = [{"ts": live_ts, "volts": volts}]
     view = claw_battery.classify(series, soak_armed=soak_armed, cutoff_v=cutoff_v)
     view["device"] = device
     return view

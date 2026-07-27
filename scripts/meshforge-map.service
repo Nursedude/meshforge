@@ -25,10 +25,19 @@ RuntimeDirectory=meshforge
 # map_http_handler.py). The box's own IPv4 /24s are derived at start
 # time from `hostname -I` — covers every host on each local subnet
 # without baking an operator-specific prefix into repo source (MF014).
+#
+# DOUBLE ESCAPE on the /24 derivation (drill-proven 2026-07-26): systemd
+# expands ${...} and % specifiers BEFORE bash sees the line — a bare
+# ${ip%.*} is an "Invalid environment variable name evaluates to an empty
+# string: ip%.*" and the derived prefix collapses to "http://.". So the
+# unit carries $${ip%%.*}: systemd unescapes $$ -> $ and %% -> % (a bare %
+# would be read as a systemd specifier, systemd.unit(5) "Specifiers"),
+# handing bash exactly ${ip%.*} — strip-ONE-trailing-octet, the intent
+# (%%.* in BASH would strip all octets; the doubling belongs to systemd).
 ExecStart=/bin/bash -c '\
     CORS="http://localhost,http://127.0.0.1"; \
     for ip in $(hostname -I 2>/dev/null); do \
-        case "$ip" in *.*.*.*) CORS="$CORS,http://${ip%.*}.";; esac; \
+        case "$ip" in *.*.*.*) CORS="$CORS,http://$${ip%%.*}.";; esac; \
     done; \
     if [ -x /opt/meshforge/venv/bin/python ]; then \
         exec /opt/meshforge/venv/bin/python -m utils.map_data_service --daemon --host 0.0.0.0 --port 5000 --cors-origins "$CORS"; \

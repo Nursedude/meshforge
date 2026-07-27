@@ -475,7 +475,9 @@ promote_seed() {
 
     local head out rc
     head=$(cd "$repo" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo "?")
-    out=$(cd "$repo" 2>/dev/null && python3 scripts/promote_seed_rules.py --apply 2>&1)
+    # timeout 60: a wedged resolver/import must not hang the whole deploy
+    # (same doctrine as mini_cadence_launch.sh).
+    out=$(cd "$repo" 2>/dev/null && timeout 60 python3 scripts/promote_seed_rules.py --apply 2>&1)
     rc=$?
 
     if [ "$rc" -eq 0 ]; then
@@ -894,7 +896,8 @@ promote_local_seed() {
     [ -f "$repo/scripts/promote_seed_rules.py" ] || return 0
 
     local out rc
-    out=$(cd "$repo" 2>/dev/null && python3 scripts/promote_seed_rules.py --apply 2>&1)
+    # timeout 60: same wedge-bound as the remote promote_seed leg.
+    out=$(cd "$repo" 2>/dev/null && timeout 60 python3 scripts/promote_seed_rules.py --apply 2>&1)
     rc=$?
     if [ "$rc" -eq 0 ]; then
         if printf '%s' "$out" | grep -q "already in sync"; then

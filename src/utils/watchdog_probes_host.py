@@ -435,31 +435,40 @@ def _load_hist_state(path: str, boot_id: str) -> Dict[str, Any]:
     and manufacture an absurd slope — and this fleet reboots unexpectedly, which
     is the whole reason this probe exists. Wall clock is not an option:
     RTC-less Pis and NTP steps make it forgeable (honest_failure_modes #6).
+
+    Within one process the in-memory copy is always at-least-as-new as the
+    file (``_save_hist_state`` writes it unconditionally, before touching
+    disk), so it is preferred WHENEVER present — not only when the read
+    fails. A broken state dir usually leaves the OLD file readable while
+    every write fails (ro-remount, ENOSPC, perms flip): consulting memory
+    only on a failed read let that stale disk value win every tick, zeroing
+    the streak (indistinguishable from "the box has never been under
+    pressure") and starving the RATE leg of samples. Drill-measured
+    2026-07-26: 0/10 degraded ticks fired vs 9/10 on a writable path — the
+    probe silently collapsed to its wedge "tombstone" leg. The disk copy is
+    read only at process start; it exists to survive a RESTART, not to carry
+    a single tick.
     """
+    held = _MEM_FALLBACK.get(path)
+    if held is not None:
+        if held.get("boot_id") == boot_id:
+            return {"streak": held["streak"], "boot_id": boot_id,
+                    "hist": list(held["hist"])}
+        return {"streak": 0, "boot_id": boot_id, "hist": []}
     try:
         with open(path, "r", encoding="utf-8") as fh:
             doc = json.load(fh)
         if not isinstance(doc, dict):
             raise ValueError("not an object")
     except (OSError, ValueError, TypeError):
-        # Disk is unreadable. HOLD the last state this process wrote rather
-        # than degrading to streak=0 (honest_failure_modes #2): a zeroed
-        # streak is indistinguishable from "the box has never been under
-        # pressure", so a persistently unwritable path used to make the
-        # debounced DEGRADED leg unable to ever reach debounce_ticks, and left
-        # `hist` empty so the RATE leg had no samples. Drill-measured
-        # 2026-07-26: 0/10 degraded ticks fired vs 9/10 on a writable path —
-        # the probe silently collapsed to its wedge "tombstone" leg.
-        # Falling back in-process is enough because the runner is long-lived;
-        # the file exists to survive a RESTART, not to carry a single tick.
-        held = _MEM_FALLBACK.get(path)
-        if held and held.get("boot_id") == boot_id:
-            return {"streak": held["streak"], "boot_id": boot_id,
-                    "hist": list(held["hist"])}
         return {"streak": 0, "boot_id": boot_id, "hist": []}
 
     hist = doc.get("hist")
-    if doc.get("boot_id") != boot_id or not isinstance(hist, list):
+    if doc.get("boot_id") != boot_id:
+        # A streak banked under another boot is as meaningless as its history
+        # — the fallback path above resets both, and the two paths must agree.
+        return {"streak": 0, "boot_id": boot_id, "hist": []}
+    if not isinstance(hist, list):
         hist = []
     clean: List[List[float]] = []
     for item in hist[-_HIST_MAX:]:
@@ -555,7 +564,25 @@ def _rate_drop(
     return dropped_kb / float(total_kb), span
 
 
-def probe_host_memory_pressure(
+def probe_host_memory_pressure(**kwargs: Any) -> Optional[Signal]:
+    """Blanket-guarded entry point — full contract on the impl below.
+
+    The runner dispatches every probe inside ONE tick sweep, so an unexpected
+    raise here costs the tick every OTHER probe's signals too. The specific
+    handlers inside stay authoritative for their cases; this is the outermost
+    layer only: a crash is an ``indeterminate`` observation with a log
+    witness, never a silent green and never a dead tick.
+    """
+    try:
+        return _probe_host_memory_pressure_impl(**kwargs)
+    except Exception as exc:
+        note_disposition("host_memory_pressure", "indeterminate",
+                         reason=f"probe crashed: {exc!r}")
+        logger.warning("probe_host_memory_pressure crashed: %r", exc)
+        return None
+
+
+def _probe_host_memory_pressure_impl(
     *,
     meminfo_path: str = "/proc/meminfo",
     psi_path: str = "/proc/pressure/memory",
@@ -800,7 +827,15 @@ _CAP_CEILING_DEBOUNCE_TICKS = 2
 # itself surfaced rather than silently truncated (no_silent_caps).
 _CAP_MAX_SUBJECTS = 12
 
-_cap_state_write_warned: set = set()
+# In-process last-written cap baselines + consecutive-write-error count, per
+# state path — the same pair `_MEM_FALLBACK`/`_WRITE_ERRORS` carries for the
+# pressure probe, and for the same reason: the disk copy is the RESTART-
+# survival mechanism, not the per-tick one. Without it an unwritable path made
+# every tick read `fresh`, so ONE historical kill re-paged forever and the
+# ceiling streak restarted from 0 — permanently silenced (audit finding,
+# 07-26).
+_CAP_MEM_FALLBACK: Dict[str, Dict[str, Any]] = {}
+_CAP_WRITE_ERRORS: Dict[str, int] = {}
 
 
 def _read_memory_events(path: str) -> Optional[Dict[str, int]]:
@@ -879,7 +914,24 @@ def _load_cap_state(path: str, boot_id: str) -> Dict[str, Any]:
     would make the post-boot counters look like a decrease and hide real kills,
     so the whole baseline is keyed to ``boot_id`` (honest_failure_modes #6 —
     wall clock is forgeable on RTC-less Pis, boot_id is not).
+
+    Prefers the in-process copy WHENEVER present (``_save_cap_state`` writes
+    it unconditionally, before touching disk, so within one process it is
+    always at-least-as-new than the file); disk is read only at process
+    start. See ``_load_hist_state`` for why memory-only-on-failed-read left
+    the readable-stale route open — here the stakes were worse: with no
+    fallback at all, an unwritable path made every tick ``fresh``, so one
+    historical kill re-fired forever and the ceiling streak never reached
+    its threshold.
     """
+    held = _CAP_MEM_FALLBACK.get(path)
+    if held is not None:
+        if held.get("boot_id") == boot_id:
+            return {"boot_id": boot_id,
+                    "cgroups": {n: dict(v)
+                                for n, v in held.get("cgroups", {}).items()},
+                    "fresh": False}
+        return {"boot_id": boot_id, "cgroups": {}, "fresh": True}
     try:
         with open(path, "r", encoding="utf-8") as fh:
             doc = json.load(fh)
@@ -898,7 +950,19 @@ def _load_cap_state(path: str, boot_id: str) -> Dict[str, Any]:
 
 
 def _save_cap_state(path: str, state: Dict[str, Any]) -> None:
-    """Persist baselines atomically. Never raises; a failure leaves a witness."""
+    """Persist baselines atomically. Never raises; a failure leaves a witness.
+
+    ALWAYS updates the in-process fallback first, so a failing disk cannot
+    reset the baselines every tick (see ``_load_cap_state``). Inner cgroup
+    dicts are copied defensively — the probe builds new ones each tick, but
+    the fallback must never share references a caller might mutate.
+    """
+    _CAP_MEM_FALLBACK[path] = {
+        "boot_id": state.get("boot_id", ""),
+        "cgroups": {n: dict(v)
+                    for n, v in (state.get("cgroups") or {}).items()
+                    if isinstance(v, dict)},
+    }
     try:
         parent = os.path.dirname(path)
         if parent:
@@ -910,15 +974,42 @@ def _save_cap_state(path: str, state: Dict[str, Any]) -> None:
                       fh, separators=(",", ":"))
         os.replace(tmp, path)
     except OSError as exc:
-        if path not in _cap_state_write_warned:
-            _cap_state_write_warned.add(path)
-            logger.warning(
-                "memory_cap_engaged state unwritable (%s): %s — kill DELTAS "
-                "cannot be computed and the ceiling streak cannot reach its "
-                "threshold until this is fixed", path, exc)
+        prior = _CAP_WRITE_ERRORS.get(path, 0)
+        _CAP_WRITE_ERRORS[path] = prior + 1
+        if prior == 0:
+            logger.error(
+                "memory_cap_engaged state unwritable (%s): %s — kill deltas "
+                "and the ceiling streak are held in-process only and will NOT "
+                "survive a restart; check the unit's writable paths (#60)",
+                path, exc,
+            )
+        else:
+            logger.debug("memory_cap_engaged state write still failing "
+                         "(%d consecutive): %s", prior + 1, exc)
+        return
+    if _CAP_WRITE_ERRORS.get(path):
+        logger.info("memory_cap_engaged state write RECOVERED after %d "
+                    "consecutive failures (%s)", _CAP_WRITE_ERRORS[path], path)
+        _CAP_WRITE_ERRORS[path] = 0
 
 
-def probe_memory_cap_engaged(
+def probe_memory_cap_engaged(**kwargs: Any) -> List[Signal]:
+    """Blanket-guarded entry point — full contract on the impl below.
+
+    Same rationale as ``probe_host_memory_pressure``: one raising probe must
+    not take down the whole runner tick's dispatch. A crash is an
+    ``indeterminate`` observation with a log witness, never a silent green.
+    """
+    try:
+        return _probe_memory_cap_engaged_impl(**kwargs)
+    except Exception as exc:
+        note_disposition("memory_cap_engaged", "indeterminate",
+                         reason=f"probe crashed: {exc!r}")
+        logger.warning("probe_memory_cap_engaged crashed: %r", exc)
+        return []
+
+
+def _probe_memory_cap_engaged_impl(
     *,
     cgroup_root: str = "/sys/fs/cgroup",
     state_path: str = _CAP_STATE_PATH,

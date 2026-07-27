@@ -303,8 +303,8 @@ class TestWorstState:
 class TestSeriesIO:
     def test_append_and_read_round_trip(self, tmp_path):
         p = cb.series_path(str(tmp_path), "dudeclaw-02")
-        assert cb.append_sample(p, NOW, 4.01) is True
-        assert cb.append_sample(p, NOW + 300, 3.99) is True
+        assert cb.append_sample(p, NOW, 4.01) == "written"
+        assert cb.append_sample(p, NOW + 300, 3.99) == "written"
         rows = cb.read_series(p)
         assert [r["volts"] for r in rows] == [4.01, 3.99]
 
@@ -313,15 +313,15 @@ class TestSeriesIO:
         # writes every 5: blind appends would stack duplicates and let a
         # STALLED capture masquerade as a dense flat trend.
         p = cb.series_path(str(tmp_path), "dudeclaw-02")
-        assert cb.append_sample(p, NOW, 4.01) is True
+        assert cb.append_sample(p, NOW, 4.01) == "written"
         for _ in range(5):
-            assert cb.append_sample(p, NOW, 4.01) is False
+            assert cb.append_sample(p, NOW, 4.01) == "duplicate"
         assert len(cb.read_series(p)) == 1
 
     def test_unreadable_voltage_is_never_recorded(self, tmp_path):
         p = cb.series_path(str(tmp_path), "d")
-        assert cb.append_sample(p, NOW, None) is False
-        assert cb.append_sample(p, NOW, True) is False        # bool != 1.0 V
+        assert cb.append_sample(p, NOW, None) == "unusable"
+        assert cb.append_sample(p, NOW, True) == "unusable"   # bool != 1.0 V
         assert cb.read_series(p) == []
 
     def test_cap_keeps_the_newest(self, tmp_path):
@@ -349,7 +349,7 @@ class TestSeriesIO:
         p = str(d / "s.jsonl")
         os.chmod(d, 0o500)
         try:
-            assert cb.append_sample(p, NOW, 4.0) is False
+            assert cb.append_sample(p, NOW, 4.0) == "io_error"
         finally:
             os.chmod(d, 0o700)
 

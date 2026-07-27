@@ -104,16 +104,30 @@ def same_interpreter(a, b):
     return os.path.abspath(a) == os.path.abspath(b)
 
 
-def check_import_in(python_path, module_name, package_name=None):
+def _unmapped_warn(label, module_name):
+    """The failure text for a GUESSED module name (package absent from
+    ``_PKG_TO_MODULE``): a failed probe cannot distinguish 'not installed'
+    from 'import name differs from the package name', so it must never FAIL
+    a healthy box — WARN and name the cure instead."""
+    warn(f"unmapped package {label} — add to _PKG_TO_MODULE "
+         f"(module name {module_name!r} was guessed; cannot tell "
+         f"'missing' from 'misnamed')")
+
+
+def check_import_in(python_path, module_name, package_name=None, guessed=False):
     """Is ``module_name`` importable by ``python_path``?
 
     Uses find_spec rather than a real import: no side effects, and a module
     that imports slowly (or errors at import time) does not distort the answer
     to the question actually asked, which is "is it installed".
+
+    ``guessed=True`` marks a module name derived from the package name rather
+    than mapped in ``_PKG_TO_MODULE``: the name is still TRIED, but its
+    failure downgrades to the unmapped warning (None), never a FAIL.
     """
     label = package_name or module_name
     if same_interpreter(python_path, sys.executable):
-        return check_import(module_name, package_name)
+        return check_import(module_name, package_name, guessed=guessed)
     import subprocess
     probe = ("import importlib.util as u, sys; "
              f"sys.exit(0 if u.find_spec({module_name!r}) else 1)")
@@ -127,17 +141,23 @@ def check_import_in(python_path, module_name, package_name=None):
     if rc == 0:
         ok(label)
         return True
+    if guessed:
+        _unmapped_warn(label, module_name)
+        return None
     fail(f"{label} not installed")
     return False
 
 
-def check_import(module_name, package_name=None):
+def check_import(module_name, package_name=None, guessed=False):
     """Check if a module can be imported (in THIS interpreter)."""
     try:
         __import__(module_name)
         ok(f"{package_name or module_name}")
         return True
     except ImportError:
+        if guessed:
+            _unmapped_warn(package_name or module_name, module_name)
+            return None
         fail(f"{package_name or module_name} not installed")
         return False
 
@@ -270,7 +290,11 @@ def main():
         results['warnings'] += 1
         core_deps = _CORE_FALLBACK
     for module, package in core_deps:
-        got = check_import_in(py, module, package)
+        # A package absent from _PKG_TO_MODULE has a GUESSED module name; its
+        # probe failure must warn ("add to _PKG_TO_MODULE"), never invent a
+        # FAIL on a healthy box from a name nothing verified (07-26 review D10).
+        got = check_import_in(py, module, package,
+                              guessed=package not in _PKG_TO_MODULE)
         if got is True:
             results['passed'] += 1
         elif got is False:

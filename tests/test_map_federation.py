@@ -234,6 +234,28 @@ class TestFederatedClaw:
                    return_value=_mock_status_resp(_INSTALLED_CLAW, status=500)):
             assert _fetch_peer_claw("moc2", timeout=1.0) is None
 
+    def test_fetch_peer_claw_over_cap_body_skipped_with_distinct_warning(
+            self, caplog):
+        """B8 (2026-07-26): reading exactly the cap TRUNCATED an over-cap
+        body — json failed and the claw silently vanished behind the generic
+        debug line. Over-cap must be its own loud, named skip."""
+        import logging
+        from utils.map_federation import _CLAW_STATUS_MAX_BYTES
+        cm = MagicMock()
+        cm.__enter__ = MagicMock(return_value=cm)
+        cm.__exit__ = MagicMock(return_value=False)
+        cm.status = 200
+        # read(n) honors n like a real socket file: an over-cap body yields
+        # exactly cap+1 bytes when asked for cap+1.
+        cm.read = MagicMock(side_effect=lambda n=-1: b"x" * n)
+        with patch("utils.map_federation.urllib.request.urlopen",
+                   return_value=cm), \
+             caplog.at_level(logging.WARNING, logger="utils.map_federation"):
+            assert _fetch_peer_claw("moc2", timeout=1.0) is None
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("exceeds cap" in m and "skipped" in m for m in msgs)
+        cm.read.assert_called_once_with(_CLAW_STATUS_MAX_BYTES + 1)
+
     def test_fetch_peer_claw_exception_returns_none(self):
         def boom(*a, **kw):
             raise OSError("refused")

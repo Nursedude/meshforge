@@ -34,6 +34,10 @@ from utils.paths import get_real_user_home
 from utils.timeouts import MESSAGE_STALE as _MESSAGE_STALE_TIMEOUT
 from gateway import delivery_counters as _dc
 
+# UPDATE ... RETURNING needs SQLite >= 3.35; cleanup_stale falls back to
+# per-row guarded UPDATEs below it (2026-07-26 review C5).
+_SQLITE_SUPPORTS_RETURNING = sqlite3.sqlite_version_info >= (3, 35, 0)
+
 # Split modules (1,500-line rule) — this module stays the import hub:
 # every name external code imports remains importable from
 # gateway.message_queue. Re-exported model/policy classes live in
@@ -1193,25 +1197,29 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         now = datetime.now().isoformat()
 
         with self._get_connection() as conn:
-            # Snapshot the rows that this reset would push to/past max_retries,
-            # so they can be dead-lettered (terminal) with a per-message
-            # witness instead of looping. Captured BEFORE the UPDATEs.
-            exhausted = conn.execute("""
-                SELECT id, destination, retry_count FROM messages
-                WHERE status = 'in_progress' AND updated_at < ?
-                AND retry_count + 1 >= max_retries
-            """, (cutoff,)).fetchall()
-
-            # Terminal: dead-letter the exhausted stale rows (retry_count bumped
-            # for an honest final count). Runs first so the reset UPDATE below
-            # (WHERE status='in_progress') no longer matches them.
-            conn.execute("""
-                UPDATE messages
-                SET status = 'dead_letter', retry_count = retry_count + 1,
-                    updated_at = ?, error_message = ?
-                WHERE status = 'in_progress' AND updated_at < ?
-                AND retry_count + 1 >= max_retries
-            """, (now, self.STALE_RESET_ERROR, cutoff))
+            # The DROPPED witness set derives from what the UPDATE actually
+            # changed — a row a concurrent mark_delivered flipped between
+            # observation and update must not be witnessed as dropped
+            # (2026-07-26 review C5). RETURNING where the runtime SQLite has
+            # it; per-row guarded UPDATEs otherwise. Terminal dead-lettering
+            # runs first so the reset UPDATE below no longer matches.
+            # exhausted rows carry the POST-bump retry_count.
+            if _SQLITE_SUPPORTS_RETURNING:
+                exhausted = [
+                    {"id": r["id"], "destination": r["destination"],
+                     "retry_count": r["retry_count"]}
+                    for r in conn.execute("""
+                        UPDATE messages
+                        SET status = 'dead_letter',
+                            retry_count = retry_count + 1,
+                            updated_at = ?, error_message = ?
+                        WHERE status = 'in_progress' AND updated_at < ?
+                        AND retry_count + 1 >= max_retries
+                        RETURNING id, destination, retry_count
+                    """, (now, self.STALE_RESET_ERROR, cutoff)).fetchall()
+                ]
+            else:
+                exhausted = self._dead_letter_stale_per_row(conn, cutoff, now)
 
             # The rest get one more retry with retry_count bumped so they
             # progress toward dead_letter instead of resetting forever.
@@ -1231,7 +1239,7 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                 msg_id=row["id"],
                 protocol=row["destination"],
                 drop_reason=_dc.DropReason.RETRIES_EXHAUSTED,
-                note=f"stale_in_progress retry_count={row['retry_count'] + 1}",
+                note=f"stale_in_progress retry_count={row['retry_count']}",
             )
 
         dead_count = len(exhausted)
@@ -1242,6 +1250,37 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
                 "(retry_count bumped), dead-lettered %d at max_retries",
                 reset_count, dead_count)
         return total
+
+    def _stale_exhausted_candidates(self, conn, cutoff: str) -> list:
+        """Rows a stale-reset would push to/past max_retries. Observation
+        only — the per-row UPDATE in _dead_letter_stale_per_row re-checks
+        status so a concurrent transition is never witnessed as dropped."""
+        return conn.execute("""
+            SELECT id, destination, retry_count FROM messages
+            WHERE status = 'in_progress' AND updated_at < ?
+            AND retry_count + 1 >= max_retries
+        """, (cutoff,)).fetchall()
+
+    def _dead_letter_stale_per_row(self, conn, cutoff: str,
+                                   now: str) -> List[Dict[str, Any]]:
+        """Pre-3.35 fallback for cleanup_stale's terminal leg: per-row guarded
+        UPDATEs whose rowcount decides the witness set, so only rows this
+        call actually transitioned are reported (returns POST-bump
+        retry_count, matching the RETURNING leg)."""
+        out: List[Dict[str, Any]] = []
+        for row in self._stale_exhausted_candidates(conn, cutoff):
+            changed = conn.execute("""
+                UPDATE messages
+                SET status = 'dead_letter', retry_count = retry_count + 1,
+                    updated_at = ?, error_message = ?
+                WHERE id = ? AND status = 'in_progress' AND updated_at < ?
+                AND retry_count + 1 >= max_retries
+            """, (now, self.STALE_RESET_ERROR, row["id"], cutoff)).rowcount
+            if changed:
+                out.append({"id": row["id"],
+                            "destination": row["destination"],
+                            "retry_count": row["retry_count"] + 1})
+        return out
 
     def get_dead_letters(self, limit: int = 100) -> List[QueuedMessage]:
         """Get messages in dead letter queue."""

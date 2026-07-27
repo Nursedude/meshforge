@@ -181,6 +181,10 @@
         }
         .cls-chip.active { background: var(--failed-bg); color: var(--failed); }
         .cls-chip.clean  { background: var(--healthy-bg); color: var(--healthy); }
+        /* B4: held = the tracker kept the signal because its observation
+           channel went dark — last-observed data, dimmed like other stale
+           surfaces so it never reads as a fresh observation. */
+        .cls-chip.held   { opacity: .55; outline: 1px dashed var(--amber); }
 
         /* ── Lists (blind spots, escalations, source errors, DNS) ── */
         .item { padding: 8px 0; border-bottom: 1px solid #1c2635; font-size: 12px; }
@@ -609,8 +613,13 @@
             }).map(cls => {
                 const info = classes[cls];
                 const disp = info.disp || 'unknown';
-                const chipClass = disp === 'active' ? 'active' : disp === 'clean' ? 'clean' : '';
+                // B4: a held cell is last-observed data (observation channel
+                // dark) — dim it and say so, never render it as fresh.
+                const held = !!info.unobserved_hold;
+                const chipClass = (disp === 'active' ? 'active' : disp === 'clean' ? 'clean' : '')
+                                  + (held ? ' held' : '');
                 const title = [cls + ': ' + disp,
+                               held ? 'held — observation channel dark; detail is last-observed, not current' : '',
                                info.reason, info.subject, info.detail].filter(Boolean).join('\n');
                 return '<span class="cls-chip ' + chipClass + '" title="' + esc(title) + '">' +
                        esc(cls) + '</span>';

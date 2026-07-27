@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 # stamp. MUST equal NodeTracker.OFFLINE_THRESHOLD — they are two consumers of
 # one threshold (honest_failure_modes #5). node_tracker imports this module, so
 # it cannot be imported here to share the constant directly; the equality is
-# test-pinned instead (tests/test_node_tracker.py).
+# test-pinned instead (tests/test_gateway_honest_failure_fixes_2026_07_23.py:93).
 MESHTASTIC_ONLINE_THRESHOLD_S = 900
 # A `lastHeard` in the future beyond this tolerance is a forged/skewed clock
 # (RTC-less Pis, NTP steps, a hostile sender). Treat it as "unknown, heard now"
@@ -892,7 +892,6 @@ class UnifiedNode:
         # staleness guard (which keys off new.last_seen) then never preserved the
         # old status — a fleet-wide false "online / 0s ago" claim across
         # get_online_nodes/get_stats/to_geojson (honest_failure_modes #1).
-        # A live inbound packet carries no lastHeard → we ARE hearing it now.
         last_heard = mesh_node.get('lastHeard') or 0
         if last_heard:
             age = datetime.now().timestamp() - last_heard
@@ -904,8 +903,15 @@ class UnifiedNode:
                 node.last_seen = datetime.fromtimestamp(last_heard)
                 node.is_online = age < MESHTASTIC_ONLINE_THRESHOLD_S
         else:
-            node.last_seen = datetime.now()
-            node.is_online = True
+            # Absent/0 lastHeard is NOT evidence of a live packet: the
+            # interface node DB carries entries the radio has never heard
+            # this boot, and mapping them to "heard now / online" is the
+            # exact false claim this block exists to prevent (2026-07-26
+            # review C4). No heard-time → cannot attribute → not online.
+            # A genuinely live RX still surfaces through the tracker merge
+            # (update_seen on merge) and message handling.
+            node.last_seen = None
+            node.is_online = False
 
         # Relay tracking (Meshtastic 2.6+)
         relay_node = mesh_node.get('relayNode')
@@ -958,11 +964,15 @@ class UnifiedNode:
 
         Mirrors ``from_meshtastic``'s ``lastHeard`` handling (finding-C class):
         ``None`` means a LIVE event we are hearing right now → (now, True); a
-        ``datetime`` or epoch-seconds heard-time is honoured, deriving
-        ``is_online`` from age vs the NOC online window so a *stale* stored
-        record is not mapped to "online / 0s ago" (honest_failure_modes #1). A
-        future/forged stamp is treated as "unknown, heard now" rather than
-        letting the age go negative → "online forever".
+        ``datetime``, epoch-seconds, or ISO-8601 string heard-time (the known
+        MeshCore shape, Issue #51) is honoured, deriving ``is_online`` from
+        age vs the NOC online window so a *stale* stored record is not mapped
+        to "online / 0s ago" (honest_failure_modes #1). A future/forged stamp
+        is treated as "unknown, heard now" rather than letting the age go
+        negative → "online forever". A genuinely UNPARSEABLE heard-time is
+        the can't-attribute leg → (None, False): the source claimed a
+        heard-time we cannot read, which must not become "heard now"
+        (2026-07-26 review C4).
         """
         if heard is None:
             return datetime.now(), True
@@ -970,8 +980,13 @@ class UnifiedNode:
             ts = heard.timestamp()
         elif isinstance(heard, (int, float)) and not isinstance(heard, bool) and heard > 0:
             ts = float(heard)
+        elif isinstance(heard, str):
+            dt = _dt_from_iso(heard.strip().replace("Z", "+00:00"))
+            if dt is None:
+                return None, False    # garbage string — cannot attribute
+            ts = dt.timestamp()
         else:
-            return datetime.now(), True   # unparseable → treat as heard now
+            return None, False        # unparseable → cannot attribute
         age = datetime.now().timestamp() - ts
         if age < -_LASTHEARD_FUTURE_SKEW_S:
             return datetime.now(), True    # future/skewed clock — don't trust it

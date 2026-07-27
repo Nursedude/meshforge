@@ -54,6 +54,12 @@ def _class_was_observed(
     entry = coverage.get(cls)
     if not isinstance(entry, dict):
         return False  # absent or malformed entry is unobserved, not healthy
+    if entry.get("partial") is True:
+        # active-but-partial (B3, 2026-07-26): the probe emitted SOME subjects
+        # while noting indeterminate — another subject's channel failed. The
+        # emitted signals are accepted as-is (they arrive via `current`, not
+        # here); a VANISHED subject of this class was not observed and holds.
+        return False
     return entry.get("disp") in _CLEAR_PERMITTING_DISPOSITIONS
 
 
@@ -81,6 +87,60 @@ class SignalTracker:
         #: the rest of this file's transition-only logging: a permanently-blind
         #: probe must not emit a WARNING every tick forever.
         self._held: set = set()
+
+    def rehydrate(self, entries) -> int:
+        """Adopt the previous process's persisted signals as active (B2).
+
+        Tracker state was process-memory only, so a routine daemon restart
+        (deploy sweeps restart the watchdog — #79) silently dropped every HELD
+        signal: the exact false recovery the hold exists to prevent. The prior
+        ``watchdog.json``'s ``signals`` list is the durable state; each valid
+        entry is adopted with its PERSISTED ``first_seen``, so the first tick
+        after a restart treats it exactly like a signal that was active last
+        tick — a positive observation clears it, a blind channel holds it
+        (re-emitted with ``extra.unobserved_hold``), and a re-fire keeps its
+        original age.
+
+        Entries with a missing/mistyped class, subject, or first_seen are
+        skipped — a torn state row must not fabricate a signal. Returns the
+        number of entries adopted.
+        """
+        adopted = 0
+        for e in entries or []:
+            if not isinstance(e, dict):
+                continue
+            cls = e.get("class")
+            subject = e.get("subject")
+            first_seen = e.get("first_seen")
+            if not isinstance(cls, str) or not cls:
+                continue
+            if not isinstance(subject, str) or not subject:
+                continue
+            if (not isinstance(first_seen, (int, float))
+                    or isinstance(first_seen, bool)):
+                continue
+            severity = e.get("severity")
+            detail = e.get("detail")
+            issue_ref = e.get("issue_ref")
+            extra = e.get("extra")
+            sig = Signal(
+                cls=cls,
+                subject=subject,
+                # Unknown persisted severity floors at degraded — rehydration
+                # must not fabricate a wedge out of a torn row.
+                severity=(severity if isinstance(severity, str) and severity
+                          else "degraded"),
+                detail=detail if isinstance(detail, str) else "",
+                issue_ref=(issue_ref if isinstance(issue_ref, int)
+                           and not isinstance(issue_ref, bool) else None),
+                extra=dict(extra) if isinstance(extra, dict) else {},
+            )
+            key = sig.key()
+            if key in self._active:
+                continue  # first adoption wins; duplicates in a torn file
+            self._active[key] = (float(first_seen), sig)
+            adopted += 1
+        return adopted
 
     def update(
         self, current: List[Signal], *, now: float,

@@ -352,22 +352,28 @@ class SubscriberStore:
         Active failures are still observable on an unconfirmed subscriber, so
         those surface as DEGRADED — an honest "having trouble" that stops short
         of the "was alive, went dark" claim STALE/DEAD make.
+
+        Two-evidence rule (2026-07-26 review C2): STALE/DEAD claim "was alive,
+        went dark", so they require BOTH the age gate AND sustained failures
+        (consecutive_failures >= _DEGRADED_FAIL_THRESHOLD). Age alone after a
+        quiet stretch is not evidence of death — one transient failure after 8
+        quiet days used to flip HEALTHY→DEAD while the same history with zero
+        failures read HEALTHY. Sub-threshold failures are a transient wobble:
+        backoff still applies, no state claim is made.
         """
         confirmable = sub.last_confirmed_at is not None
         if not confirmable:
             if sub.consecutive_failures >= _DEGRADED_FAIL_THRESHOLD:
                 return STATE_DEGRADED
             return STATE_UNCONFIRMED
-        if sub.consecutive_failures == 0:
+        if sub.consecutive_failures < _DEGRADED_FAIL_THRESHOLD:
             return STATE_HEALTHY
         since_success = (now - sub.last_confirmed_at).total_seconds()
         if since_success >= _DEAD_SINCE_SUCCESS_SEC:
             return STATE_DEAD
         if since_success >= _STALE_SINCE_SUCCESS_SEC:
             return STATE_STALE
-        if sub.consecutive_failures >= _DEGRADED_FAIL_THRESHOLD:
-            return STATE_DEGRADED
-        return STATE_HEALTHY
+        return STATE_DEGRADED
 
     @staticmethod
     def backoff_seconds(sub: "Subscriber") -> float:
@@ -981,15 +987,30 @@ class MeshtasticBroadcastBridge:
                 state = getattr(lxm_receipt, "state", None)
                 if state == _delivered:
                     self._subs.mark_confirmed(_hash)
-                # else: propagated only — held as UNCONFIRMED, not HEALTHY.
-                if _ack and _emit is not None:
-                    try:
-                        _emit(_ack, "delivered")
-                    except Exception as e:
-                        logger.debug(
-                            "ack emit (delivered) failed for %s: %s",
-                            _ack[:16], e,
-                        )
+                    if _ack and _emit is not None:
+                        try:
+                            _emit(_ack, "delivered")
+                        except Exception as e:
+                            logger.debug(
+                                "ack emit (delivered) failed for %s: %s",
+                                _ack[:16], e,
+                            )
+                elif _ack:
+                    # Propagated only (state SENT) — held as UNCONFIRMED, not
+                    # HEALTHY, and the mesh sender must NOT be told
+                    # "[delivered]" (2026-07-26 review C1). The ack vocabulary
+                    # (_maybe_emit_ack_for_msgid / _format_ack_text) has no
+                    # honest hand-off kind, and the loop filter
+                    # _SYNTH_ACK_CONTENT_PREFIXES only covers delivered/
+                    # timeout/failed, so a novel kind would re-enter the
+                    # fan-out. Emit nothing: the pending ack resolves through
+                    # the timeout sweep — the #16 "Sent (not guaranteed)"
+                    # posture in ACK form.
+                    logger.debug(
+                        "propagation hand-off (state=%s) for ack %s — no "
+                        "synthetic ACK emitted; recipient proof pending",
+                        state, _ack[:16],
+                    )
 
             def on_failed(lxm_receipt, _hash=sub_hash, _ack=ack_capture):
                 self._subs.mark_failed(_hash, "lxmf_delivery_failed")

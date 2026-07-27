@@ -359,7 +359,9 @@ if $USER_SVC_UPDATED; then
         # A box with no declared role exits 2 BY DESIGN and must not fail the
         # update, but the reason is echoed rather than swallowed.
         if [ -f "$INSTALL_DIR/scripts/promote_seed_rules.py" ]; then
-            if ! seed_out="$(cd "$INSTALL_DIR" && python3 scripts/promote_seed_rules.py --apply 2>&1)"; then
+            # timeout 60: a wedged resolver/import must not hang the update
+            # (same doctrine as fleet_sync.sh / mini_cadence_launch.sh).
+            if ! seed_out="$(cd "$INSTALL_DIR" && timeout 60 python3 scripts/promote_seed_rules.py --apply 2>&1)"; then
                 echo "  NOTE: mini seed not promoted — ${seed_out%%$'\n'*}"
             fi
         fi

@@ -42,6 +42,11 @@ _get_connection_manager, _ConnectionMode, _HAS_MESHTASTIC_CONN = safe_import(
 
 WATCHDOG_STALE_S = 300.0  # 5 min — 10x the watchdog's 30s tick
 MINI_STALE_S = 300.0      # 5 min — 10x mini-dudeai's 30s tick (SSOT for both consumers)
+# B7: `age_s = max(0.0, now - ts)` clamps a FUTURE-stamped tick to age 0, so it
+# reads fresh/ok for the whole skew window (RTC-less fleet: fake-hwclock steps
+# forward, NTP corrects back). A ts more than this far ahead of now is its own
+# unobservable leg, never freshness. Generous enough for ordinary NTP jitter.
+FUTURE_TS_SLACK_S = 120.0
 
 
 def watchdog_block_from_payload(
@@ -115,9 +120,14 @@ def mini_block_from_payload(
                 "reason": "malformed_json: not an object"}
 
     ts = payload.get("last_tick_ts")
+    now_v = now if now is not None else time.time()
     age_s: Optional[float] = None
+    future = False
     if isinstance(ts, (int, float)):
-        age_s = max(0.0, (now if now is not None else time.time()) - float(ts))
+        # Beyond-slack future ts = clock skew (B7): the max(0.0, ...) clamp
+        # below would otherwise read it fresh/ok for the whole skew window.
+        future = float(ts) > now_v + FUTURE_TS_SLACK_S
+        age_s = max(0.0, now_v - float(ts))
     # Missing/non-numeric last_tick_ts is NOT "fresh forever": a valid-JSON
     # state file without the freshness field (schema drift, foreign writer)
     # must read not-ok, not green (honest_failure_modes #2; 07-23 audit —
@@ -143,7 +153,7 @@ def mini_block_from_payload(
 
     block = {
         "installed": True,
-        "ok": not stale and not no_ts,
+        "ok": not stale and not no_ts and not future,
         "ts": ts,
         "last_tick_iso": payload.get("last_tick_iso"),
         "age_s": age_s,
@@ -157,6 +167,12 @@ def mini_block_from_payload(
         block["reason"] = (
             "no_tick_timestamp: state lacks a numeric last_tick_ts — "
             "freshness unobservable, treating as not-ok (schema drift?)"
+        )
+    elif future:
+        block["reason"] = (
+            f"tick timestamp in the future ({float(ts) - now_v:.0f}s ahead, "
+            f"slack {FUTURE_TS_SLACK_S:.0f}s) — clock skew; freshness "
+            f"unobservable until the clock settles"
         )
     elif stale:
         block["reason"] = (
@@ -618,9 +634,14 @@ class StatusEndpointsMixin:
                     "reason": "malformed_json: not an object"}
 
         ts = payload.get("captured_at")
+        now_v = time.time()
         age_s: Optional[float] = None
+        future = False
         if isinstance(ts, (int, float)):
-            age_s = max(0.0, time.time() - float(ts))
+            # Beyond-slack future ts = clock skew (B7): the max(0.0, ...)
+            # clamp would otherwise read it fresh through the skew window.
+            future = float(ts) > now_v + FUTURE_TS_SLACK_S
+            age_s = max(0.0, now_v - float(ts))
         # Missing/non-numeric captured_at is NOT "never stale" — it means the
         # freshness of this tick is unobservable, and an unobservable capture
         # must not ride `reachable` green forever (honest_failure_modes #2;
@@ -636,7 +657,7 @@ class StatusEndpointsMixin:
 
         block = {
             "installed": True,
-            "ok": tick_ok and not stale and not no_ts,
+            "ok": tick_ok and not stale and not no_ts and not future,
             "captured_at": ts,
             "captured_iso": payload.get("captured_iso"),
             "age_s": age_s,
@@ -658,6 +679,12 @@ class StatusEndpointsMixin:
             block["reason"] = (
                 "no_capture_timestamp: tick lacks a numeric captured_at — "
                 "freshness unobservable, treating as not-ok (schema drift?)"
+            )
+        elif future:
+            block["reason"] = (
+                f"tick timestamp in the future ({float(ts) - now_v:.0f}s "
+                f"ahead, slack {FUTURE_TS_SLACK_S:.0f}s) — clock skew; "
+                f"freshness unobservable until the clock settles"
             )
         elif stale:
             block["reason"] = (

@@ -588,21 +588,46 @@ MF014_SCAN_EXCLUDE_DIRS = {
 #   ~/.config/meshforge/lint_operator_patterns.txt   (override with
 #   MESHFORGE_LINT_LOCAL_PATTERNS=<path>)
 #
-# Format: one entry per line — <regex><TAB or 2+ spaces><message>. Blank lines
-# and '#' comments skipped. Absence of the file is normal (CI never carries
-# it; the operator boxes' pre-commit/pre-push hooks are the leak gate). An
-# unreadable file or a bad regex is LOUD (stderr) — a silently dropped
-# pattern set would read as "no leaks" (honest_failure_modes #1).
+# Format: one entry per line — <regex><TAB or 2+ spaces><message>. A regex
+# that itself contains a run of 2+ spaces MUST use a tab separator (a tab, when
+# present, always wins; the 2-spaces split is only the tabless fallback).
+# Blank lines and '#' comments skipped. Absence of the file is normal (CI
+# never carries it; the operator boxes' pre-commit/pre-push hooks are the leak
+# gate). An unreadable file or a bad regex is LOUD (stderr) — a silently
+# dropped pattern set would read as "no leaks" (honest_failure_modes #1).
 MF014_LOCAL_PATTERNS_ENV = 'MESHFORGE_LINT_LOCAL_PATTERNS'
 MF014_LOCAL_PATTERNS_DEFAULT = os.path.join(
     '~', '.config', 'meshforge', 'lint_operator_patterns.txt')
+
+
+def _real_user_home() -> str:
+    """The invoking user's home, sudo-aware — MF001 in miniature.
+
+    Under sudo, expanduser('~') is /root, so the operator's deny-patterns
+    file silently vanished and the leak gate was OFF with no witness.
+    (utils.paths.get_real_user_home is the codebase SSOT, but lint.py stays
+    import-free of src/ — this replicates its SUDO_USER resolution inline.)
+    """
+    sudo_user = os.environ.get('SUDO_USER', '')
+    if (sudo_user and sudo_user != 'root'
+            and '/' not in sudo_user and '..' not in sudo_user
+            and os.geteuid() == 0):
+        try:
+            import pwd
+            return pwd.getpwnam(sudo_user).pw_dir
+        except (KeyError, ImportError, OSError):
+            pass
+    return os.path.expanduser('~')
 
 
 def load_local_operator_patterns(path: str = None) -> List[tuple]:
     """Load operator-local MF014 patterns; [] when the file is absent."""
     if path is None:
         path = os.environ.get(MF014_LOCAL_PATTERNS_ENV) or MF014_LOCAL_PATTERNS_DEFAULT
-    path = os.path.expanduser(path)
+    if path == '~' or path.startswith(('~/', '~' + os.sep)):
+        path = os.path.join(_real_user_home(), path[2:] if len(path) > 1 else '')
+    else:
+        path = os.path.expanduser(path)
     if not os.path.exists(path):
         return []
     patterns: List[tuple] = []
@@ -612,7 +637,12 @@ def load_local_operator_patterns(path: str = None) -> List[tuple]:
                 line = raw.strip()
                 if not line or line.startswith('#'):
                     continue
-                parts = re.split(r'\t+| {2,}', line, maxsplit=1)
+                # Tab wins when present so a regex containing 2+ literal
+                # spaces survives; the 2-spaces split is the tabless fallback.
+                if '\t' in line:
+                    parts = re.split(r'\t+', line, maxsplit=1)
+                else:
+                    parts = re.split(r' {2,}', line, maxsplit=1)
                 regex = parts[0].strip()
                 message = (parts[1].strip() if len(parts) > 1
                            else 'operator-local pattern (no message)')

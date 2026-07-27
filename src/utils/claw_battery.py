@@ -30,9 +30,11 @@ Honesty rules it inherits from the domain:
 - ``hours_to_cutoff`` is a LINEAR PROJECTION off the fitted slope. Every caller
   that renders it must say so; it is not a measured runtime (that is
   battery_soak's MEASURED verdict, derived from a real cutoff crossing).
-- Wall clock is forgeable on this RTC-less fleet (honest_failure_modes #6), so
-  samples are sorted, duplicate/backward timestamps are dropped, and an absurd
-  projection is clamped to None rather than rendered.
+- Wall clock is forgeable on this RTC-less fleet (honest_failure_modes #6):
+  ``read_series`` DROPS rows whose timestamp steps backward relative to the
+  running max (a backward step re-sorted into fake order can fabricate
+  CHARGING from a discharging pack), duplicate timestamps are deduped, and an
+  absurd projection is clamped to None rather than rendered.
 
 It is also the SSOT for the pack thresholds. Before this, ``watchdog_probes_
 liveness.CLAW_BATTERY_FLOOR_V`` (3.5) and ``battery_soak.DEFAULT_CUTOFF_V``
@@ -123,6 +125,11 @@ _STATE_RANK = {CRITICAL: 0, KNEE: 1, DISCHARGING: 2, UNKNOWN: 3,
 def _clean(samples: Sequence[Any]) -> List[Tuple[float, float]]:
     """(ts, volts) pairs from loose input: dicts, tuples, junk. Sorted, with
     non-numeric/bool voltages and duplicate timestamps dropped.
+
+    The sort exists to INTERLEAVE multiple per-source-monotonic series (the
+    rolling probe series merged with battery_soak's record of the same pack) —
+    per-file backward wall-clock steps are dropped at read time by
+    ``read_series``, never re-sorted into fake chronology here.
 
     bool is checked explicitly because ``isinstance(True, int)`` is True in
     Python and a stray True would become 1.0 V — a fabricated flat pack.
@@ -322,8 +329,14 @@ def read_series(path: str, *, now: Optional[float] = None,
                 max_age_s: Optional[float] = None) -> List[Dict[str, Any]]:
     """Read a series file. A torn/partial line is skipped, never fatal — one
     bad append must not blind the trend. Missing file → [] (no readings is a
-    real, honest answer here; the classifier renders it as unknown)."""
+    real, honest answer here; the classifier renders it as unknown).
+
+    A row whose timestamp steps BACKWARD relative to the running max is
+    dropped, keeping the first occurrence (a backward wall-clock step on this
+    RTC-less fleet, honest_failure_modes #6): re-sorting such rows into fake
+    temporal order can fabricate CHARGING from a discharging pack."""
     rows: List[Dict[str, Any]] = []
+    max_ts: Optional[float] = None
     try:
         with open(path, "r", encoding="utf-8") as fh:
             for line in fh:
@@ -334,8 +347,14 @@ def read_series(path: str, *, now: Optional[float] = None,
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if isinstance(row, dict):
-                    rows.append(row)
+                if not isinstance(row, dict):
+                    continue
+                ts = row.get("ts")
+                if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+                    if max_ts is not None and float(ts) < max_ts:
+                        continue        # backward step — dropped, not re-sorted
+                    max_ts = float(ts)
+                rows.append(row)
     except OSError:
         return []
     if max_age_s is not None and now is not None:
@@ -377,25 +396,30 @@ def read_soak_series(home: Optional[str], device: str) -> List[Dict[str, Any]]:
 
 
 def append_sample(path: str, ts: float, volts: Optional[float], *,
-                  cap: int = DEFAULT_HISTORY_CAP) -> bool:
-    """Append one reading if it is NEW, capping the file. Returns True when a
-    row was written; False on a duplicate/unusable reading or an I/O failure.
+                  cap: int = DEFAULT_HISTORY_CAP) -> str:
+    """Append one reading if it is NEW, capping the file.
 
-    Deduplicated by capture timestamp: the probe re-reads the SAME tick file
-    every watchdog tick (once a minute) while the capture cron only writes
-    every 5 minutes, so appending blindly would stack ~5 identical readings per
-    capture and let a stalled capture masquerade as a dense flat trend.
+    Returns a witness string, never a bool (2026-07-26 review C3 — a single
+    False conflated "nothing new" with "the series is silently dying"):
 
-    Never raises — a probe must not die on a full disk. The caller records the
-    False as a witness (honest_failure_modes #9).
+        "written"    a row was appended
+        "duplicate"  same capture timestamp already recorded (benign — the
+                     probe re-reads the same tick file every minute while the
+                     capture cron writes every 5)
+        "unusable"   ts/volts not a usable numeric reading (never recorded)
+        "io_error"   the write FAILED — the series is frozen; the caller must
+                     log/witness this (honest_failure_modes #9), because a
+                     frozen series serves a stale trend as current
+
+    Never raises — a probe must not die on a full disk.
     """
     if not isinstance(ts, (int, float)) or isinstance(ts, bool):
-        return False
+        return "unusable"
     if not isinstance(volts, (int, float)) or isinstance(volts, bool):
-        return False
+        return "unusable"
     existing = read_series(path)
     if existing and any(r.get("ts") == ts for r in existing[-8:]):
-        return False
+        return "duplicate"
     rows = existing + [{"ts": float(ts), "volts": float(volts)}]
     if len(rows) > cap:
         rows = rows[-cap:]
@@ -408,6 +432,6 @@ def append_sample(path: str, ts: float, volts: Optional[float], *,
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp, path)
-        return True
+        return "written"
     except OSError:
-        return False
+        return "io_error"

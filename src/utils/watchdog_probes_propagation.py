@@ -254,6 +254,7 @@ def probe_propagation_soak_degraded(
 
     candidate_detail: Optional[str] = None
     definitively_healthy = False
+    held_reason: Optional[str] = None
 
     if age > stale_after_s:
         candidate_detail = (
@@ -292,6 +293,11 @@ def probe_propagation_soak_degraded(
                 indet_state_path or DEFAULT_PROPAGATION_SOAK_INDET_PATH,
                 os.path.basename(newest_path))
             extra["indeterminate_envelopes"] = env_streak
+            # Under the escalation streak this tick stays indeterminate, but
+            # with ITS OWN reason: an explicitly-null envelope is an unproven
+            # round, not a missing key (the shape-bug case below).
+            held_reason = (f"pass_envelope null — unproven round, streak "
+                           f"{env_streak}/{indeterminate_after}")
             if env_streak >= indeterminate_after:
                 worst = _worst_propagation_round(doc.get("round_results"))
                 candidate_detail = (
@@ -349,6 +355,7 @@ def probe_propagation_soak_degraded(
         _save_synth_streak(sp, 0)
         note_disposition("propagation_soak_degraded", "clean")
     else:
-        note_disposition("propagation_soak_degraded", "indeterminate",
-                         reason="pass_envelope absent on parseable envelope")
+        note_disposition(
+            "propagation_soak_degraded", "indeterminate",
+            reason=held_reason or "pass_envelope absent on parseable envelope")
     return None

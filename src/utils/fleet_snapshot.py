@@ -62,6 +62,7 @@ no boundaries fine.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import socket
@@ -70,6 +71,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_SERVICES = ("meshtasticd", "mosquitto")
 OPTIONAL_SERVICES = (
@@ -769,21 +772,45 @@ def _verdict_stale_after_s(schedule: Optional[str]) -> float:
     STALE. ``@reboot`` -> ``inf`` (runs only at boot, never stale-checkable),
     matching the probe.
     """
+    return _verdict_stale_after_s_src(schedule)[0]
+
+
+# One-shot flag for the cadence-import failure warning (B6): losing the
+# schedule-aware math silently regresses every weekly/monthly cron to false
+# STALE — the exact 2026-07-24 defect — so the first failure must be loud,
+# without spamming a warning per verdict per poll thereafter.
+_cadence_import_warned = False
+
+
+def _verdict_stale_after_s_src(schedule: Optional[str]) -> Tuple[float, str]:
+    """``(threshold_s, source)`` — source names HOW the threshold was derived:
+    ``cadence`` (the probe's schedule-aware math), ``orphan_flat`` (no
+    schedule — the historical flat 26h the orphan filter always used), or
+    ``fallback`` (schedule present but the liveness import broke, so the
+    cadence math was lost and the flat threshold silently applies)."""
+    global _cadence_import_warned
     if not schedule or not schedule.strip():
-        return float(VERDICT_STALE_AFTER_S)
+        return float(VERDICT_STALE_AFTER_S), "orphan_flat"
     try:
         from utils.watchdog_probes_liveness import (
             CRON_VERDICT_CADENCE_MULT,
             CRON_VERDICT_STALE_FLOOR_S,
             _cron_max_interval,
         )
-    except Exception:
-        return float(VERDICT_STALE_AFTER_S)
+    except Exception as exc:
+        if not _cadence_import_warned:
+            _cadence_import_warned = True
+            logger.warning(
+                "cron-verdict cadence math unavailable (%s: %s) — falling "
+                "back to the flat %ss staleness threshold; weekly/monthly "
+                "crons will read STALE for most of their cycle",
+                type(exc).__name__, exc, VERDICT_STALE_AFTER_S)
+        return float(VERDICT_STALE_AFTER_S), "fallback"
     max_age = _cron_max_interval(schedule)
     if max_age == float("inf"):
-        return float("inf")
+        return float("inf"), "cadence"
     return max(float(CRON_VERDICT_STALE_FLOOR_S),
-               float(CRON_VERDICT_CADENCE_MULT) * float(max_age))
+               float(CRON_VERDICT_CADENCE_MULT) * float(max_age)), "cadence"
 
 
 def _parse_cron_verdicts(
@@ -828,10 +855,15 @@ def _parse_cron_verdicts(
     # Second pass: per-cron staleness. Separate from the parse loop so the
     # threshold (and its lazy import) is resolved once per NAME, not per line.
     for name, v in latest.items():
-        threshold = _verdict_stale_after_s((schedules or {}).get(name))
+        threshold, src = _verdict_stale_after_s_src((schedules or {}).get(name))
         v["stale_after_s"] = (None if threshold == float("inf")
                               else round(threshold, 1))
         v["stale"] = v["age_s"] > threshold
+        if src == "fallback":
+            # B6: the schedule-aware math was LOST (import failure), not
+            # absent-by-design — label the verdict so a STALE badge on a
+            # weekly cron can be read as the fallback artifact it is.
+            v["cadence_source"] = "fallback"
     return sorted(latest.values(), key=lambda v: v["name"])
 
 

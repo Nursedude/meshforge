@@ -20,9 +20,10 @@ from typing import Optional, Tuple
 # failure lands where the operator already greps (honest_failure_modes #9).
 logger = logging.getLogger("watchdog")
 
-# Warn once per path per process — a broken state dir would otherwise spam
-# every probe every tick.
-_streak_write_warned: set = set()
+# Consecutive write failures per state path (#63 witness pattern): ERROR on
+# the first failure, debug while it persists, INFO with the count on recovery
+# — a broken state dir must neither spam every tick nor go silent forever.
+_streak_write_errors: dict = {}
 # Last streak this process wrote, per state path. Lets _load_parity_streak
 # HOLD a debounce across an unwritable-disk window instead of resetting to 0
 # every tick, which silenced every debounced probe forever (found 07-21,
@@ -335,27 +336,35 @@ def _load_parity_streak(state_path: str) -> int:
     load→0 every tick means streak is always 1, and any probe with threshold ≥2
     could never fire. Re-found by drill 2026-07-26.
 
-    So: fall back to the last value this process wrote. The file exists to
-    survive a RESTART; it was never the per-tick mechanism, and the runner is
-    long-lived. Uncertainty still favours silence — but 'I could not read the
-    disk' is no longer allowed to masquerade as 'the drift just started'
-    (honest_failure_modes #1/#2).
+    So: prefer the value this process wrote. Within one process the in-memory
+    copy is always at-least-as-new as the file (it is written unconditionally
+    at the top of ``_save_parity_streak``), and the file exists to survive a
+    RESTART; it was never the per-tick mechanism, and the runner is
+    long-lived. Consulting memory only on a FAILED read left the readable-
+    stale route open: a broken state dir usually keeps the OLD file readable
+    while every write fails (ro-remount, ENOSPC, perms flip), so the stale
+    disk value won every tick and the debounce stayed silenced anyway
+    (drill-proven 2026-07-26). Disk is read only when this process has no
+    entry yet — i.e. at process start. Uncertainty still favours silence —
+    but 'I could not read the disk' is no longer allowed to masquerade as
+    'the drift just started' (honest_failure_modes #1/#2).
     """
+    if state_path in _streak_mem_fallback:
+        return max(0, int(_streak_mem_fallback[state_path]))
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             streak = int(json.load(fh).get("streak", 0))
         return streak if streak >= 0 else 0
     except (OSError, ValueError, TypeError):
-        return max(0, int(_streak_mem_fallback.get(state_path, 0)))
+        return 0
 
 
 def _save_parity_streak(state_path: str, streak: int) -> None:
     """Persist the streak counter (atomic-rename, never raises).
 
     Records the value in-process FIRST, so ``_load_parity_streak`` can hold it
-    when the disk write fails — otherwise the warning below correctly reports
-    that debounced probes cannot reach their threshold, and nothing makes them
-    able to.
+    when the disk write fails — the streak then survives per-tick in-process;
+    only restart survival is lost while the path stays broken.
     """
     _streak_mem_fallback[state_path] = max(0, int(streak))
     try:
@@ -368,13 +377,23 @@ def _save_parity_streak(state_path: str, streak: int) -> None:
         os.replace(tmp, state_path)
     except OSError as e:
         # 2026-07-21 review (W4): this swallow had NO witness — an unwritable
-        # state dir (the #60 sandbox-drift class) froze every debounced
-        # probe's streak below its threshold, silencing them all FOREVER
-        # with nothing anywhere saying so. Still never raises (a probe must
-        # not crash on bookkeeping), but the blindness is now visible.
-        if state_path not in _streak_write_warned:
-            _streak_write_warned.add(state_path)
-            logger.warning(
-                "watchdog streak state unwritable (%s): %s — debounced "
-                "probes using this path CANNOT reach their fire threshold "
-                "until this is fixed", state_path, e)
+        # state dir (the #60 sandbox-drift class) went undetected. Still never
+        # raises (a probe must not crash on bookkeeping), but the blindness is
+        # visible: #63 pattern — ERROR on first failure, counted while
+        # failing, INFO with the count on recovery.
+        prior = _streak_write_errors.get(state_path, 0)
+        _streak_write_errors[state_path] = prior + 1
+        if prior == 0:
+            logger.error(
+                "watchdog streak state write FAILED (%s): %s — debounce "
+                "streaks are held in-process only and will NOT survive a "
+                "restart until this is fixed (#60)", state_path, e)
+        else:
+            logger.debug("watchdog streak state write still failing "
+                         "(%d consecutive, %s): %s", prior + 1, state_path, e)
+        return
+    if _streak_write_errors.get(state_path):
+        logger.info("watchdog streak state write RECOVERED after %d "
+                    "consecutive failures (%s)",
+                    _streak_write_errors[state_path], state_path)
+        _streak_write_errors[state_path] = 0

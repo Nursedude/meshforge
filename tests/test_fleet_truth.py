@@ -117,6 +117,28 @@ class TestCoverage:
         cov = ft.merge_coverage({"installed": False}, ["a", "b", "c"])
         assert cov["dark"] == 3 and cov["green"] == 0
 
+    def test_held_signal_carries_unobserved_hold_marker(self):
+        """B4 (2026-07-26): a HELD signal (tracker kept it because its
+        observation channel went dark) is last-observed data — the cell must
+        carry the marker so /fleet can dim it rather than render stale
+        detail (voltage, restarts, ...) as a fresh observation."""
+        wd = {"installed": True, "ok": False,
+              "signals": [{"class": "claw_battery_low", "severity": "degraded",
+                           "subject": "dudeclaw-01", "detail": "3.4V",
+                           "extra": {"unobserved_hold": True}}]}
+        cov = ft.merge_coverage(wd, ["claw_battery_low", "role_drift"])
+        cell = cov["classes"]["claw_battery_low"]
+        assert cell["disp"] == "active"
+        assert cell["unobserved_hold"] is True
+
+    def test_live_signal_has_no_hold_marker(self):
+        wd = {"installed": True, "ok": False,
+              "signals": [{"class": "claw_battery_low", "severity": "degraded",
+                           "subject": "dudeclaw-01", "detail": "3.4V",
+                           "extra": {}}]}
+        cov = ft.merge_coverage(wd, ["claw_battery_low"])
+        assert "unobserved_hold" not in cov["classes"]["claw_battery_low"]
+
     def test_every_signal_class_appears(self):
         """seed-coverage pin: the whole enum is represented, none dropped."""
         wd = {"installed": True, "ok": True, "signals": []}
@@ -734,7 +756,18 @@ class TestSpoolServicesTransientTolerance:
             "meshforge-gateway.service": {"active": "activating",
                                           "enabled": "enabled"}})
         assert c["state"] == ft.DARK
-        assert "mid-restart" in c["reason"]
+
+    def test_activating_reason_names_both_readings(self):
+        """B5 (2026-07-26): a crashlooping unit spends most of its life in
+        `activating` (auto-restart backoff, the #82 shape) — the reason must
+        not label the state as benign-only. Wording, not a debounce: the
+        spool is point-in-time; probe-side detectors own crashloop paging."""
+        c = ft._services_cell_from_spool({
+            "meshforge-gateway.service": {"active": "activating",
+                                          "enabled": "enabled"}})
+        assert "crash-loop" in c["reason"]
+        assert "transient" in c["reason"]
+        assert "meshforge-gateway.service" in c["reason"]
 
     def test_hard_down_still_failed_even_with_a_transient_sibling(self):
         c = ft._services_cell_from_spool({

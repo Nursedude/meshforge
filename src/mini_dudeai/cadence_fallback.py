@@ -203,8 +203,12 @@ def retrieve_context(proposed: List[dict], *, top_k: int = _CTX_TOP_K,
         query = f"{key} {d.get('summary') or ''}"
         try:
             hits = offline_oracle.rank(chunks, query, top_k=top_k, index=index)
-        except Exception:
-            continue                             # one bad query never kills the rest
+        except Exception as exc:
+            # One bad query never kills the rest — but a FAILED retrieval must
+            # not render as observed absence ("no matching record found"); mark
+            # it so the prompt states failure distinctly (hfm #2; 07-26 D12).
+            out[key] = [{"retrieval_failed": type(exc).__name__}]
+            continue
         out[key] = [{"path": h.get("path", "?"),
                      "heading": h.get("heading", ""),
                      "text": str(h.get("text") or "")[:clamp]}
@@ -242,6 +246,13 @@ def build_user_prompt(proposed: List[dict],
     for d in proposed:
         key = d.get("key")
         hits = (context or {}).get(key) or []
+        if hits and isinstance(hits[0], dict) and hits[0].get("retrieval_failed"):
+            # Failed retrieval is its OWN state — never presented as absence.
+            lines.append(f'\nkey="{key}": retrieval FAILED for {key}: '
+                         f"{hits[0]['retrieval_failed']} — grounding is "
+                         f"UNAVAILABLE for this delta (not absent); prefer "
+                         f"needs-live-check.")
+            continue
         if not hits:
             lines.append(f'\nkey="{key}": no matching record found. Absence of '
                          f"a record is NOT corroboration — prefer "

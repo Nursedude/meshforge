@@ -45,10 +45,19 @@ KEY="/root/.ssh/id_dropbear"
 LOG="/root/rtun_watchdog.log"
 STATE="/root/.rtun_wd_fail"
 HEARTBEAT="/root/.rtun_wd_last_ok"   # single-line, overwritten each healthy run — a witness that the watchdog is alive (honest_failure_modes #9)
+# KNOWN LIMITATION: the heartbeat is only written on TUN_OK, so a consumer of
+# its age cannot tell "watchdog dead" from "tunnel unhealthy" (alive-vs-healthy
+# conflation). Consumer lives elsewhere — do not change these semantics here.
 FAIL_LIMIT=2
 PROBE_TRIES=3                        # independent attempts before believing DEAD
 PROBE_GAP=5                          # seconds between attempts
 TS="$(date '+%Y-%m-%d %H:%M:%S')"
+
+# Bound the log before any append: over ~64KB keep the last 200 lines, so an
+# unattended box can never grow it without limit (D14a).
+if [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt 65536 ]; then
+  tail -n 200 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+fi
 
 # Refuse LOUDLY rather than silently disarming. An unconfigured watchdog that
 # exits 0 looks identical to a healthy one, and the thing it guards is the only
@@ -89,26 +98,36 @@ fi
 #    Inner stderr is kept (hfm #9) so a real failure names itself.
 INNER='e=$(ssh -o BatchMode=yes -o ConnectTimeout=4 -o StrictHostKeyChecking=no -p 2222 root@127.0.0.1 true 2>&1) && echo TUN_OK || echo "TUN_DEAD: $e"'
 
+# Per-attempt bookkeeping (D5): DEAD_OBSERVED counts attempts that actually
+# reported failure; UNOBSERVED counts attempts that taught us nothing; and
+# LAST_OBSERVED is the last REAL reply — a DEAD cycle is counted only from an
+# observed failure, never from a timeout of the probe's own outer hop, and the
+# log states both counts instead of claiming "after 3 tries" over one datum.
 LOOP=""
+LAST_OBSERVED=""
+DEAD_OBSERVED=0
 UNOBSERVED=0
 try=1
 while [ "$try" -le "$PROBE_TRIES" ]; do
   bounded 22 ssh -y -y -i "$KEY" "$REMOTE" "$INNER"
   rc=$?
   LOOP="$WD_OUT"
-  case "$LOOP" in
-    TUN_OK) break ;;
-  esac
-  # Outer hop timed out or produced nothing: we learned NOTHING about the
-  # tunnel. Record it, but never let it count as evidence of death.
   if [ "$rc" = "124" ] || [ -z "$LOOP" ]; then
+    # Outer hop timed out or produced nothing: we learned NOTHING about the
+    # tunnel. Record it, but never let it count as evidence of death.
     UNOBSERVED=$((UNOBSERVED+1))
+  else
+    LAST_OBSERVED="$LOOP"
+    case "$LOOP" in
+      TUN_OK) break ;;
+      *) DEAD_OBSERVED=$((DEAD_OBSERVED+1)) ;;
+    esac
   fi
   [ "$try" -lt "$PROBE_TRIES" ] && sleep "$PROBE_GAP"
   try=$((try+1))
 done
 
-if [ "$LOOP" = "TUN_OK" ]; then
+if [ "$LAST_OBSERVED" = "TUN_OK" ]; then
   echo "$TS TUN_OK" > "$HEARTBEAT"    # witness: watchdog ran and the tunnel is healthy
   if [ -f "$STATE" ]; then
     echo "$TS TUN_OK — recovered after $(cat "$STATE") consecutive fail(s)" >> "$LOG"
@@ -117,17 +136,20 @@ if [ "$LOOP" = "TUN_OK" ]; then
   exit 0
 fi
 
-# 2b) Every attempt was unobservable -> blind, not dead. HOLD state, do not count,
+# 2b) No attempt was observed -> blind, not dead. HOLD state, do not count,
 #     do not bounce. Absence of evidence is not evidence of absence (hfm #2).
-if [ "$UNOBSERVED" -ge "$PROBE_TRIES" ]; then
+if [ "$DEAD_OBSERVED" -eq 0 ]; then
   echo "$TS UNOBSERVED: outer ssh to the home endpoint gave no answer in $PROBE_TRIES tries — tunnel state UNKNOWN, holding (no count, no bounce)" >> "$LOG"
   exit 0
 fi
 
-# 3) Reverse tunnel dead while the home endpoint reachable -> count consecutive, bounce at limit.
+# 3) The LAST OBSERVED reply said the tunnel is dead while the home endpoint is
+#    reachable -> count a consecutive-DEAD cycle, bounce at limit. The log
+#    reports observed vs unobserved honestly — never "after 3 tries" when only
+#    one attempt actually replied.
 n=$(( $(cat "$STATE" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$STATE"
-echo "$TS TUN_DEAD (consecutive #$n after $PROBE_TRIES tries; loop='${LOOP:-<empty/timeout>}')" >> "$LOG"
+echo "$TS TUN_DEAD (consecutive #$n; dead=$DEAD_OBSERVED observed, $UNOBSERVED unobserved of $PROBE_TRIES; loop='$LAST_OBSERVED')" >> "$LOG"
 if [ "$n" -ge "$FAIL_LIMIT" ]; then
   echo "$TS BOUNCE -> /etc/init.d/rtun restart (self-heal, no reboot)" >> "$LOG"
   /etc/init.d/rtun restart

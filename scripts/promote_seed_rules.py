@@ -44,6 +44,12 @@ if _SRC not in sys.path:
 
 DEFAULT_ROOT = "/opt/meshforge"
 
+# Instance suffixes that are ARTIFACTS, not instances: hand-made backups and
+# editor/tool droppings match the `<root>.*.json` glob but must never be
+# merge targets (a promote into `mini_dudeai_claw_rules.old.json` would
+# silently resurrect a retired rule set as a live instance brain).
+BACKUP_SUFFIXES = {"old", "bak", "backup", "tmp", "orig", "save"}
+
 
 class PromoteError(Exception):
     """A resolution/read failure — surfaced loud, never guessed past."""
@@ -115,14 +121,23 @@ def claw_instance_live_paths(home):
     the unsuffixed primary only, so an instance's rule brain stayed frozen at
     its first-boot seed copy forever, with no drift witness (the 07-23 audit's
     third-consumer finding). The glob mirrors the ONE formula: suffix inserted
-    before the extension, so the primary file, ``.candidate``, ``.bak`` and
-    ``.promote.bak`` artifacts can never match."""
+    before the extension; suffixes in ``BACKUP_SUFFIXES`` and suffixes
+    containing a dot (chained artifacts like ``.old.2``) are skipped, so a
+    hand-made backup copy can never be promoted into as a live instance
+    brain."""
     import glob as _glob
     from mini_dudeai.presets.standalone import CLAW_RULES_BASENAME
     root, dot, ext = CLAW_RULES_BASENAME.rpartition(".")
     if not dot:
         return []
-    return sorted(_glob.glob(os.path.join(home, f"{root}.*.{ext}")))
+    out = []
+    for p in sorted(_glob.glob(os.path.join(home, f"{root}.*.{ext}"))):
+        base = os.path.basename(p)
+        suffix = base[len(root) + 1:len(base) - len(ext) - 1]
+        if not suffix or "." in suffix or suffix.lower() in BACKUP_SUFFIXES:
+            continue
+        out.append(p)
+    return out
 
 
 def _read_doc(path, what):
@@ -335,13 +350,22 @@ def main(argv=None):
     instance_errors = []
     if p["seed_name"] == "claw":
         home = os.path.dirname(p["live_path"]) or "."
-        for extra in claw_instance_live_paths(home):
+        extras = claw_instance_live_paths(home)
+        if extras:
+            # Visibility witness: say WHICH files were accepted as instance
+            # targets before touching any of them (stderr keeps --json clean).
+            print("instance targets: " + ", ".join(extras), file=sys.stderr)
+        for extra in extras:
+            # OSError too: a raw write-path failure on instance N must report
+            # as THAT instance's error, not crash out after the primary was
+            # already rewritten (the half-state-reported-as-total-failure
+            # class this loop's comment above names).
             try:
                 ip = plan(args.meshforge_root, args.mini_home, args.role,
                           args.seed, live_path_override=extra)
                 i_applied = bool(args.apply and ip["changed"])
                 i_bak = apply(ip) if i_applied else None
-            except PromoteError as exc:
+            except (PromoteError, OSError) as exc:
                 instance_errors.append({"live_path": extra, "error": str(exc)})
                 continue
             instances.append((ip, i_applied, i_bak))

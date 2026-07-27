@@ -21,9 +21,17 @@ Design: `.claude/plans/upshift_witness_design.md`. Three legs:
       You may always QUEUE; you may not CLAIM the rationed frontier pass on a
       smaller model. Unknown/absent ledger model → warn, never block.
 
-  Leg 3 (advisory nudge): src lines changed since the last provenance boundary,
-      on a non-frontier session, exceeding a threshold → one advisory block.
-      Never affects the exit code.
+  Leg 3 (advisory nudge): src lines changed since the last CLOSING provenance
+      boundary, on a non-frontier session, exceeding a threshold → one advisory
+      block. Never affects the exit code. The boundary is the newest commit
+      whose diff ADDS a completed-table row (first cell a date) — a commit that
+      merely QUEUES a worklist row does not advance it. Found 2026-07-26 (F3,
+      `.claude/plans/audit_gap_2026_07_26.md`): keying the boundary on "last
+      commit touching the file" meant recording 12k lines of unreviewed debt
+      reset the nudge to zero — writing down that work is unreviewed persuaded
+      the guard it was reviewed. Accepted limits (advisory, both over- not
+      under-fire relative to a coverage claim): a SCOPED closing row still
+      advances the boundary, and an edit to an old completed row does too.
 
 Stdlib only. Fail-CLOSED on the two hard legs where an obligation exists (an
 absent/empty provenance file must NOT read as "no obligations" —
@@ -343,11 +351,46 @@ def _read_provenance_at(repo, ref):
     return _git(repo, ["show", f"{ref}:{PROVENANCE_REL}"])
 
 
-def _last_provenance_commit(repo):
-    out = _git(repo, ["log", "-1", "--format=%H", "--", PROVENANCE_REL])
-    if not out:
+#: An added completed-table row in a provenance diff — the date-cell
+#: discriminator `parse_completed_rows` uses, seen through `git log -p` (the
+#: leading '+'). This is what makes a commit a CLOSING commit for leg 3.
+_CLOSING_ROW_RE = re.compile(r"^\+\s*\|\s*\d{4}-\d{2}-\d{2}\s*\|", re.M)
+
+#: How many provenance-touching commits leg 3 walks looking for a closing row.
+#: Closing rows land every few days; 60 covers months of history.
+_CLOSING_WALK_LIMIT = 60
+
+
+def closing_boundary_from_log(log_text):
+    """Newest sha in a ``git log --format=%x1e%H -p`` walk whose provenance
+    diff ADDS a completed-table row; falls back to the OLDEST walked sha when
+    none does (the advisory then over-fires rather than going quiet — the F3
+    failure was the boundary advancing on a commit that merely queued debt).
+    None when the log is empty/unreadable."""
+    if not log_text:
         return None
-    return out.strip() or None
+    oldest = None
+    for chunk in log_text.split("\x1e"):
+        chunk = chunk.strip("\n ")
+        if not chunk:
+            continue
+        sha, _, diff = chunk.partition("\n")
+        sha = sha.strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            continue
+        oldest = sha
+        if _CLOSING_ROW_RE.search(diff):
+            return sha
+    return oldest
+
+
+def _last_closing_provenance_commit(repo):
+    out = _git(repo, ["log", "-n", str(_CLOSING_WALK_LIMIT),
+                      "--format=%x1e%H", "-p", "--", PROVENANCE_REL],
+               timeout=30)
+    if out is None:
+        return None
+    return closing_boundary_from_log(out)
 
 
 def _src_lines_changed(repo, since_sha):
@@ -487,16 +530,16 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path):
     # --- Leg 3 (advisory) --------------------------------------------------
     leg3_msg = None
     if session_is_frontier is False:  # only nudge a KNOWN non-frontier session
-        boundary = _last_provenance_commit(repo)
+        boundary = _last_closing_provenance_commit(repo)
         if boundary:
             changed = _src_lines_changed(repo, boundary)
             if changed is not None and changed > UNREVIEWED_SRC_LINES_NUDGE:
                 leg3_msg = (
                     f"UPSHIFT-WITNESS (leg 3, advisory): {changed} src lines "
-                    f"changed since the last reviewed boundary ({boundary[:9]}) "
-                    f"> {UNREVIEWED_SRC_LINES_NUDGE}. Consider queueing an "
-                    "upshift row (review_provenance worklist) for the next "
-                    "frontier pass. This never blocks.")
+                    f"changed since the last CLOSING review boundary "
+                    f"({boundary[:9]}) > {UNREVIEWED_SRC_LINES_NUDGE}. "
+                    "Consider queueing an upshift row (review_provenance "
+                    "worklist) for the next frontier pass. This never blocks.")
 
     # --- Verdict + witnesses ----------------------------------------------
     blocked = bool(leg1_violations or leg2_violations)

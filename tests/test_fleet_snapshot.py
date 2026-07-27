@@ -1610,6 +1610,60 @@ class TestPerCronVerdictStaleness:
         assert fleet_snapshot._verdict_schedules(crontab) == {
             "dup": self.WEEK_SCHEDULE}
 
+    # ── B6 (2026-07-26): a broken cadence import must be LOUD + labeled ──
+    def _broken_liveness_import(self):
+        # A None entry in sys.modules makes `from x import y` raise
+        # ImportError — the exact silent-fallback branch under test.
+        import sys as _sys
+        return patch.dict(_sys.modules,
+                          {"utils.watchdog_probes_liveness": None})
+
+    def test_cadence_import_failure_falls_back_flat_and_warns_once(self, caplog):
+        import logging
+        fleet_snapshot._cadence_import_warned = False
+        try:
+            with self._broken_liveness_import(), \
+                 caplog.at_level(logging.WARNING,
+                                 logger="utils.fleet_snapshot"):
+                t1 = fleet_snapshot._verdict_stale_after_s(self.WEEK_SCHEDULE)
+                t2 = fleet_snapshot._verdict_stale_after_s(self.DAY_SCHEDULE)
+            assert t1 == float(fleet_snapshot.VERDICT_STALE_AFTER_S)
+            assert t2 == float(fleet_snapshot.VERDICT_STALE_AFTER_S)
+            warnings = [r for r in caplog.records
+                        if "cadence math unavailable" in r.getMessage()]
+            assert len(warnings) == 1  # one-shot: first failure only
+        finally:
+            fleet_snapshot._cadence_import_warned = False
+
+    def test_cadence_import_failure_labels_the_verdict_block(self):
+        fleet_snapshot._cadence_import_warned = True  # silence, test the field
+        try:
+            now = 2_000_000_000.0
+            ts = _iso(now - 3600)
+            with self._broken_liveness_import():
+                jobs = fleet_snapshot._parse_cron_verdicts(
+                    f"{ts} local_brain_eval OK \n", now,
+                    schedules={"local_brain_eval": self.WEEK_SCHEDULE})
+            assert jobs[0]["cadence_source"] == "fallback"
+        finally:
+            fleet_snapshot._cadence_import_warned = False
+
+    def test_healthy_cadence_path_has_no_fallback_label(self):
+        now = 2_000_000_000.0
+        ts = _iso(now - 3600)
+        jobs = fleet_snapshot._parse_cron_verdicts(
+            f"{ts} local_brain_eval OK \n", now,
+            schedules={"local_brain_eval": self.WEEK_SCHEDULE})
+        assert "cadence_source" not in jobs[0]
+
+    def test_orphan_flat_is_not_labeled_fallback(self):
+        # No schedule = the documented orphan path, not a lost import.
+        now = 2_000_000_000.0
+        ts = _iso(now - 3600)
+        jobs = fleet_snapshot._parse_cron_verdicts(
+            f"{ts} orphan_cron OK \n", now, schedules={})
+        assert "cadence_source" not in jobs[0]
+
     # ── the anti-drift pin (honest_failure_modes #5) ──────────────────
     def test_panel_threshold_equals_the_issue78_pager_threshold(self):
         """ONE constant set, two consumers. If this breaks, the /fleet badge

@@ -449,6 +449,86 @@ class TestLeg3Integration(unittest.TestCase):
             self.assertNotIn("leg 3", "\n".join(out))
 
 
+class TestClosingBoundaryPure(unittest.TestCase):
+    """F3 (2026-07-26): the leg-3 boundary must come from a commit that ADDS a
+    completed-table row (a closing commit), never from one that merely queues
+    a worklist row — queuing debt used to silence the nudge about that debt."""
+
+    SHA_A = "a" * 40
+    SHA_B = "b" * 40
+    SHA_C = "c" * 40
+
+    @staticmethod
+    def _chunk(sha, added_lines):
+        diff = "\n".join(f"+{l}" for l in added_lines)
+        return f"\x1e{sha}\ndiff --git a/x b/x\n@@ -1 +1 @@\n{diff}\n"
+
+    def test_queuing_commit_does_not_advance_boundary(self):
+        log = (self._chunk(self.SHA_A, ["| 1 | queued scope | why |"]) +
+               self._chunk(self.SHA_B, ["| 2026-07-23 | scope | mech | fix | res |"]))
+        self.assertEqual(rpc.closing_boundary_from_log(log), self.SHA_B)
+
+    def test_closing_commit_is_the_boundary(self):
+        log = self._chunk(self.SHA_A, ["| 2026-07-26 | scope | mech | fix | res |"])
+        self.assertEqual(rpc.closing_boundary_from_log(log), self.SHA_A)
+
+    def test_no_closing_row_falls_back_to_oldest_walked(self):
+        # Direction matters: with no closing row in the window the advisory
+        # must OVER-fire (oldest boundary), never go quiet on the newest.
+        log = (self._chunk(self.SHA_A, ["| — | queued | why |"]) +
+               self._chunk(self.SHA_B, ["| Pri | Scope | Why |"]) +
+               self._chunk(self.SHA_C, ["prose only, no table row"]))
+        self.assertEqual(rpc.closing_boundary_from_log(log), self.SHA_C)
+
+    def test_removed_completed_row_is_not_a_close(self):
+        log = (f"\x1e{self.SHA_A}\ndiff --git a/x b/x\n@@ -1 +1 @@\n"
+               "-| 2026-07-23 | scope | mech | fix | res |\n" +
+               self._chunk(self.SHA_B, ["| 2026-07-20 | s | m | f | r |"]))
+        self.assertEqual(rpc.closing_boundary_from_log(log), self.SHA_B)
+
+    def test_empty_or_garbage_log(self):
+        self.assertIsNone(rpc.closing_boundary_from_log(""))
+        self.assertIsNone(rpc.closing_boundary_from_log(None))
+        self.assertIsNone(rpc.closing_boundary_from_log("\x1enot-a-sha\n+| x |"))
+
+
+class TestLeg3QueuingDoesNotSilence(unittest.TestCase):
+    """Integration form of F3 — red against the pre-fix boundary (last commit
+    touching the file), green with the closing-row boundary."""
+
+    COMPLETED_ROW = "| 2026-07-23 | full window | mech | abc1234 | none |\n"
+
+    def test_queue_commit_after_big_diff_still_nudges(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, rpc.PROVENANCE_REL,
+                   PROV_HEADER + self.COMPLETED_ROW + WORKLIST)
+            _commit(repo, "docs: review pass row (closing boundary)")
+            n = rpc.UNREVIEWED_SRC_LINES_NUDGE + 100
+            _write(repo, "src/big.py",
+                   "\n".join(f"a{i} = {i}" for i in range(n)) + "\n")
+            _commit(repo, "feat: large src change (no review claim)")
+            # The F3 shape: a later commit QUEUES a worklist row. This used to
+            # move the boundary here and zero the nudge.
+            _write(repo, rpc.PROVENANCE_REL,
+                   PROV_HEADER + self.COMPLETED_ROW + WORKLIST +
+                   "| 1 | the big unreviewed window | frontier-shaped |\n")
+            _commit(repo, "docs: queue unreviewed window for frontier")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w") as fh:
+                fh.write('{"kind":"claim","ts":100,'
+                         '"model_id":"claude-opus-4-8[1m]"}\n')
+            base = subprocess.run(
+                ["git", "rev-list", "--max-parents=0", "HEAD"], cwd=repo,
+                capture_output=True, text=True, timeout=30).stdout.strip()
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base,
+                                   ledger_path=ledger,
+                                   witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0, "leg3 never blocks")
+            self.assertIn("leg 3", "\n".join(out),
+                          "queuing debt must not silence the nudge about it")
+
+
 class TestWitnessAndFailOpen(unittest.TestCase):
     def test_witness_written_on_block(self):
         with tempfile.TemporaryDirectory() as repo:
