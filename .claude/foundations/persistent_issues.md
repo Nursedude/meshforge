@@ -490,22 +490,15 @@ healthy node; prove delivery at the LXMF layer
 
 ## manager_deadman transient — NAT beat-delivery gap, NOT a dead manager (2026-07-16)
 
-FALSE `MANAGER DARK` page that self-cleared in 10 min: the manager was up the
-whole time. A transient gap on the manager→peer ssh push path (manager → NAT
-hop → peer on a DHCP'd subnet) let `ssh peer "date > ~/.manager_heartbeat"`
-exit 0 while the write never landed, so the peer file aged past `STALE_S`
-(25 min). Staleness was REAL, not a clock artifact. The deadman behaved
-CORRECTLY — beat-loss is page-worthy whatever the cause.
-
-**Decision tell**: `manager_deadman FAIL` + manager box UP + a manual beat
-lands live = transient delivery gap, self-heals next cycle. A REAL
-manager-down has the box unreachable and `manager_heartbeat` FAIL
-manager-side. **Quick check** — peer:
+FALSE `MANAGER DARK` that self-cleared in 10 min: a transient gap on the
+manager→peer ssh push let the beat write exit 0 without landing, so the peer
+file aged past `STALE_S` (25 min). Staleness was REAL; the deadman behaved
+CORRECTLY. **Decision tell**: FAIL + manager box UP + a manual beat lands live
+= transient delivery gap, self-heals. **Quick check** on the peer:
 `echo $(( $(date +%s) - $(stat -c %Y ~/.manager_heartbeat) ))` (>1500 = stale).
-Durable cure is DHCP reservations / steadier transport, NOT a threshold bump.
-Companion defect (the 2 MISSING verdicts) was the `cron_verdict.sh` truncation
-race, FIXED 2026-07-16 (MF `2d34877d`, MA `a1f32f93`). Full body in
-`persistent_issues_archive.md` (trimmed 2026-07-25).
+Cure is DHCP reservations / steadier transport, NOT a threshold bump. Companion
+`cron_verdict.sh` truncation race FIXED (MF `2d34877d`, MA `a1f32f93`). Full
+body in `persistent_issues_archive.md` (trimmed 2026-07-27).
 
 ---
 
@@ -537,19 +530,27 @@ never from the registry's `ip_fallback` snapshot (that would bake in a stale
 copy and shadow the truth — the moc5 reshuffle class).
 
 **Router-side DNS canNOT supersede this — measured 2026-07-26, don't re-open.**
-The cost is not in the zone, it's in m1's DNS *proxy*: it strips the authority
-section from every relayed answer. Controls — 1.1.1.1 and 8.8.8.8 both answer
-`nosuchbox.mf.internal` NXDOMAIN with **SOA ttl=86400**; m1 relays the same
-query `ns=0, no SOA`, and so does `example.com AAAA`, so it is universal, not
-mf.internal-specific. RFC 2308 needs that SOA to derive a negative TTL, so
-**no negative answer through m1 is ever cacheable** — what should cost one
-lookup per day costs one per call, forever. No static-DNS/zone config changes
-this; admin access on m1 does not help. (`type=NXDOMAIN` static entries would
-answer AAAA locally at ~1.2ms, but NXDOMAIN caches per-NAME not per-type, so a
-resolver that honored it would suppress the A too — it is "safe" only because
-the SOA-stripping disables the caching that would break it. Building on a bug.)
-And a perfect router-side fix still leaves fleet names coupled to m1 being up;
-the hosts block resolves with m1 AND the uplink down, which is the point.
+m1's DNS proxy strips the authority section from every relayed answer, so no
+negative answer through it is ever cacheable (RFC 2308 needs the SOA). Universal,
+not mf.internal-specific; admin access on m1 does not help. And a router-side fix
+would still couple fleet names to m1 being up. Full measurement in the archive.
+
+**⚠️ cloud-init owns /etc/hosts too — it wipes the block on EVERY boot
+(2026-07-27).** Boot-partition NoCloud user-data sets `manage_etc_hosts: true`
+and `update_etc_hosts` runs at frequency **always**. moc5 rebooted 07-27 10:18
+and lost all 12 names (hourly `fleet_hosts_drift` caught it in 15 min); proven
+from cloud-init's log — read 1214 bytes, wrote 545, byte-identical to
+`/etc/hosts.bak-meshforge`. **Latent on all 8 cloud-init boxes** since the arc
+landed; moc5 was just the first to reboot. Honest-failure-modes #8 — the arc
+shipped a writer without excluding the other owner.
+
+Cure: `manage_etc_hosts: localhost` in **`/boot/firmware/user-data`** (keeps the
+127.0.1.1 entry managed, stops the template render). ⚠️ **A
+`/etc/cloud/cloud.cfg.d/` drop-in does NOT work** — user-data merges *over*
+cloud.cfg.d; measured, block still wiped 1214→545. Applied 7/8 07-27, VolcanoAI
+pending. **Test without rebooting**: `sudo cloud-init single --name
+update_etc_hosts --frequency always` — runs the real consumer-of-record rather
+than trusting the config (calibrated_claims #7).
 
 ---
 

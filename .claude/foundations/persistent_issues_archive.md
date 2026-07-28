@@ -3270,3 +3270,22 @@ if a wedge class reappears on a future merge, this is what each patch did.
 fleet-wide. A 15s-hang+SIGKILL plus slow rebind opens the `@rns` race window;
 mf.5 makes a stranding self-healing (~30s outage), but space the restarts and
 verify host-binding before moving to the next box.
+
+---
+
+## Router-side DNS canNOT supersede the /etc/hosts block (demoted from persistent_issues 2026-07-27)
+
+Measured 2026-07-26 — don't re-open. The cost is not in the zone, it's in m1's
+DNS *proxy*: it strips the authority section from every relayed answer.
+Controls — 1.1.1.1 and 8.8.8.8 both answer `nosuchbox.mf.internal` NXDOMAIN with
+**SOA ttl=86400**; m1 relays the same query `ns=0, no SOA`, and so does
+`example.com AAAA`, so it is universal, not mf.internal-specific. RFC 2308 needs
+that SOA to derive a negative TTL, so **no negative answer through m1 is ever
+cacheable** — what should cost one lookup per day costs one per call, forever.
+No static-DNS/zone config changes this; admin access on m1 does not help.
+(`type=NXDOMAIN` static entries would answer AAAA locally at ~1.2ms, but NXDOMAIN
+caches per-NAME not per-type, so a resolver that honored it would suppress the A
+too — it is "safe" only because the SOA-stripping disables the caching that would
+break it. Building on a bug.) And a perfect router-side fix still leaves fleet
+names coupled to m1 being up; the hosts block resolves with m1 AND the uplink
+down, which is the point.
