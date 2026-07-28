@@ -166,5 +166,51 @@ check "SELF-ONLY conf_rate leg is UNKNOWN — assertion unverified fleet-wide" \
 # suite leg alone forces non-green and such a check could never fail — the very
 # artifact test_honest_status_shell.py was created to stop shipping.)
 
+# ── 8. the box list is DEDUPED ───────────────────────────────────────────
+#
+# Self is appended unconditionally, so a fleet_hosts that already lists this
+# box counted it TWICE — inflating btotal and checking the same box twice in
+# the conf_rate leg ("<self>:0.000 <self>:0.000", drilled 2026-07-28).
+# The manager's file omits self by convention, but a convention in a comment
+# header is not a guarantee, and it is a property of the MANAGER's file only.
+# Dedup is general: a host listed twice in the SSOT is also one box.
+SELF_NAME="$(hostname 2>/dev/null || echo localhost)"
+printf 'box-good\n%s\n' "$SELF_NAME" > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" FAKE_CURL_JSON='{"confirmation_rate": 0.5}' run)"
+check "self listed in fleet_hosts is not counted twice (2 boxes, not 3)" \
+  "$(echo "$out" | grep -q 'fleet legs cover 2 box(es)' && echo ok)"
+check "and the conf_rate leg checks it once, not twice" \
+  "$(test "$(echo "$out" | grep 'conf_rate' | grep -o "$SELF_NAME:" | wc -l)" = 1 && echo ok)"
+
+printf 'box-good\nbox-good\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" run)"
+check "a host listed twice in the SSOT is one box (2, not 3)" \
+  "$(echo "$out" | grep -q 'fleet legs cover 2 box(es)' && echo ok)"
+
+# ── 9. per-repo host list wins, exactly as fleet_pull.sh resolves it ─────
+#
+# fleet_pull.sh:54-58 resolves fleet_hosts.<repo-basename> BEFORE the generic
+# file, and the mechanism is live (fleet_hosts.meshanchor and
+# fleet_hosts.meshforge-maps both exist). This script skipped that tier, so the
+# "same SSOT as fleet_pull" claim held only by accident: create the per-repo
+# file and fleet_pull deploys to list A while the gate verifies list B — and
+# prints a provenance line naming the generic file as authoritative. That is
+# the two-consumers-two-constants drift this box list exists to end, one tier up.
+REPO_BASE="$(basename "$FAKE_REPO")"
+mkdir -p "$FAKE_HOME/.config/meshforge"
+printf 'box-norepo\n' > "$FAKE_HOME/.config/meshforge/fleet_hosts"
+printf 'box-good\n'   > "$FAKE_HOME/.config/meshforge/fleet_hosts.$REPO_BASE"
+out="$(run)"
+check "per-repo fleet_hosts.<repo> wins over the generic file" \
+  "$(echo "$out" | grep -q "source: .*fleet_hosts\.$REPO_BASE" && echo ok)"
+check "and the generic file is NOT the one used" \
+  "$(echo "$out" | grep -E 'source:' | grep -qE "fleet_hosts +\+" && echo '' || echo ok)"
+
+rm -f "$FAKE_HOME/.config/meshforge/fleet_hosts.$REPO_BASE"
+out="$(run)"
+check "generic fleet_hosts still used when no per-repo file exists" \
+  "$(echo "$out" | grep -q "source: $FAKE_HOME/.config/meshforge/fleet_hosts +" && echo ok)"
+rm -f "$FAKE_HOME/.config/meshforge/fleet_hosts"
+
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

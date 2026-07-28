@@ -49,8 +49,22 @@ REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 # every fleet leg. Provenance is PRINTED below — a narrowed list must never be
 # able to masquerade as the whole fleet again.
 SELF="$(hostname 2>/dev/null || echo localhost)"
+# Resolution order is fleet_pull.sh:54-58, VERBATIM — including the per-repo
+# `fleet_hosts.<repo-basename>` tier that this script used to skip. Skipping it
+# made the "same SSOT as fleet_pull" claim true only by accident: the mechanism
+# is live (fleet_hosts.meshanchor and fleet_hosts.meshforge-maps both exist on
+# the manager), and the day someone scopes a deploy with fleet_hosts.meshforge,
+# fleet_pull would deploy to list A while this gate verified list B and printed
+# a provenance line naming the generic file as authoritative. That is exactly
+# the two-consumers-two-constants drift the box list exists to end, one tier up
+# (honest_failure_modes #5; 2026-07-28 review).
+#
+# These two chains must stay identical. If you add a tier here, add it there.
 _hs_hosts_file() {
+  _hs_rb="$(basename "$REPO")"
   for f in "${MESHFORGE_FLEET_HOSTS:-}" \
+           "${HOME:-/root}/.config/meshforge/fleet_hosts.$_hs_rb" \
+           "/etc/meshforge/fleet_hosts.$_hs_rb" \
            "${HOME:-/root}/.config/meshforge/fleet_hosts" \
            /etc/meshforge/fleet_hosts; do
     [ -n "$f" ] && [ -f "$f" ] && { printf '%s' "$f"; return 0; }
@@ -77,6 +91,16 @@ else
   BOXES="$SELF"; BOXES_SRC="SELF ONLY — no fleet_hosts found, fleet legs cover 1 box"
   FLEET_SSOT=0
 fi
+
+# Dedup, order-preserving. Self is appended unconditionally above, so a
+# fleet_hosts that already lists this box counted it TWICE — inflating btotal
+# and checking the same box twice in the conf_rate leg (drilled 2026-07-28:
+# "<self>:0.000 <self>:0.000", "3/3" for two boxes). The manager's file
+# omits self by convention, but that is a comment header, not a guarantee, and
+# it describes the MANAGER's file only. Applied to every source, so a host
+# listed twice in the SSOT is also one box: a count the gate prints as coverage
+# must never be inflatable by a duplicate line.
+BOXES="$(printf '%s\n' $BOXES | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ *$//')"
 
 # Peers = every box that is NOT this one. The SHA-drift leg must use this, not
 # BOXES: it compares a box's `rev-parse HEAD` against $HEADFULL, which this
