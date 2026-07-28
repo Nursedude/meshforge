@@ -127,6 +127,7 @@ Full history in `persistent_issues_archive.md`.
 | #70 (2026-05-22) | `meshforge-map` `http_local_unresponsive` wedges every few hours: `/api/nodes/directory`'s 35 MB `json.dumps`+`gzip.compress` hold the GIL ~6-10 s, federation polls pile up, `/healthz` stalls past the watchdog's 2 s probe. Fix: short-TTL `DirectoryResponseCache` (5 s) with single-flight rebuild; hits skip dumps+gzip. Stats at `/api/status.directory.cache`. Body in archive. | `tests/test_directory_response_cache.py` (13) + `TestDirectoryHandlerCacheIssue70` (5) + `TestStatusExposesDirectoryCache` (2) |
 | #71 (2026-05-22, GitHub #1168) | Same GIL-bound serialization wedge class, last two instances. `DirectoryResponseCache` → `ResponseByteCache`; `_geojson_response_cache` (TTL 2 s, keyed by `(bbox, region, preset)`) wraps `/api/nodes/geojson` (47 MB, ~35 s cold); `_topology_response_cache` (TTL 5 s) wraps `/api/network/topology` (24 MB). **Decision tell: any future `http_local_unresponsive` is a NEW class.** `7d0b8e5` + `000201f`. Body in archive. | `tests/test_response_byte_cache.py` (32) + `TestGeojsonHandlerCacheIssue71` (5) + `TestTopologyHandlerCacheIssue71` (5) + status-cache (4) |
 | #68 (2026-05-20) | rnsd hard-wedge → map main thread silent-stuck in `unix_stream_connect`; bg threads kept logging, `:5000` never bound. Cure: bounded AF_UNIX probe in `open_reticulum()` chokepoint (MF019) + FIXED AT SOURCE in fork `rns 1.2.5+mf.1` (`LocalClientInterface.connect` settimeout). Detection/recovery recipes + body in archive. | `TestRNSReticulumChokepoint` + fork test `meshforge_local_connect.py` (4) |
+| manager_deadman transient (2026-07-16) | FALSE `MANAGER DARK`, self-cleared in 10 min: a transient manager→peer ssh gap let the beat write exit 0 without landing. Staleness was REAL; the deadman was CORRECT. **Tell**: FAIL + manager box UP + a manual beat lands live = delivery gap, self-heals. Cure = DHCP reservations, not a threshold bump. Body in archive (demoted 07-27). | `cron_verdict.sh` truncation race fixed (MF `2d34877d`, MA `a1f32f93`) |
 | #74 (2026-06-06, stall-probe fix 06-09) | Gateway health core: write-only circuit breaker, NTP-backstep recovery freeze (→`time.monotonic()`), dead write-canary branch, 2 probes (`queue_backlog`, `delivery_confirmation_stall`); 06-09 stall probe stopped comparing disjoint protocol populations. Body in archive. DISPLAY residual FIXED 2026-06-15: `confirmation_rate` was cross-population (`confirmed/sent`, read 1.64=">164%" while mesh had zero proof) → now `confirmed/(confirmed+failures)` over the confirmable pop (bounded, live 0.99) + `unconfirmable_sent` surfaces the mesh blind spot (`compute_confirmation_view`; snapshot+pulse fallback; failure-set pinned to watchdog). Real mesh-completeness still = ACK consumption (T2 step 4). | `TestComputeConfirmationView` + `TestConfirmationRate` (rewritten) + `TestDeliveryFailureReasonsParity` + circuit/probe tests |
 
 ---
@@ -470,12 +471,11 @@ Quick check: `wc -l /proc/<pid>/maps` — climbing over 30 min = leaking, flat
 
 ## node cache dropped `service_type` on load — the false "NEVER heard" page (2026-07-21)
 
-`to_dict()` wrote `service_type`; `_load_cache()` restored 14 other fields and
-dropped it — **honest_failure_modes #4, a writer with no reader**. Every gateway
-restart erased every cached node's RNS service type, so
-`probe_lxmf_propagation_node_dark` fired UNHEARD (*"configured node has NEVER
-been heard"*) against a node that box had heard 7× in 25h. Adoption mandates a
-restart, so the false page was structural. Fixed MF `e383547c` / MA `87cae734`.
+`to_dict()` wrote `service_type`; `_load_cache()` dropped it — **honest_failure_
+modes #4, a writer with no reader**. Every gateway restart erased every cached
+node's RNS service type, so `probe_lxmf_propagation_node_dark` fired UNHEARD
+against a node heard 7× in 25h. Restart-mandated adoption made the false page
+structural. Fixed MF `e383547c` / MA `87cae734`.
 
 **Decision tell**: UNHEARD + node otherwise alive = this cache gap, NOT a
 typo'd hash. ⚠️ **Three defects, all needed**: the loader drop; `_merge_node()`
@@ -483,22 +483,8 @@ never refreshing `service_*` (unrecoverable once lost, NOT self-healing); and
 `_merge_node` treating a once-recorded name as PERMANENT, hiding the parser
 fix (cure: `name_is_self_reported`, MF `48f5497d` / MA `0657c993`).
 ⚠️ **`rnprobe lxmf.propagation` is NOT a delivery test** — 100% loss against a
-healthy node; prove delivery at the LXMF layer
-(`.claude/plans/propagation_drill.py`). Full body in archive (trimmed 07-25).
-
----
-
-## manager_deadman transient — NAT beat-delivery gap, NOT a dead manager (2026-07-16)
-
-FALSE `MANAGER DARK` that self-cleared in 10 min: a transient gap on the
-manager→peer ssh push let the beat write exit 0 without landing, so the peer
-file aged past `STALE_S` (25 min). Staleness was REAL; the deadman behaved
-CORRECTLY. **Decision tell**: FAIL + manager box UP + a manual beat lands live
-= transient delivery gap, self-heals. **Quick check** on the peer:
-`echo $(( $(date +%s) - $(stat -c %Y ~/.manager_heartbeat) ))` (>1500 = stale).
-Cure is DHCP reservations / steadier transport, NOT a threshold bump. Companion
-`cron_verdict.sh` truncation race FIXED (MF `2d34877d`, MA `a1f32f93`). Full
-body in `persistent_issues_archive.md` (trimmed 2026-07-27).
+healthy node; prove delivery at the LXMF layer (`.claude/plans/
+propagation_drill.py`). Full body in archive.
 
 ---
 
@@ -516,11 +502,14 @@ uses `getaddrinfo` AF_UNSPEC and asks both families:
     12-host sweep  AF_UNSPEC 902ms  vs  AF_INET 1.7ms
 
 So resolution was **coupled to internet reachability** — a WAN hiccup makes
-healthy boxes look dead. Router-side is tidier but m1 admin access isn't
-available from the fleet boxes. Cure: `scripts/gen_fleet_hosts.py --apply`
-writes a delimited `/etc/hosts` block (nss `files` precedes `dns`), live on
-7 boxes; 902ms → 4ms, and names resolve with DNS or the uplink down. Hourly
-`fleet_hosts_drift` cron per box. ⚠️ **moc3 excluded** (RNS soak).
+healthy boxes look dead. Cure: `scripts/gen_fleet_hosts.py --apply` writes a
+delimited `/etc/hosts` block (nss `files` precedes `dns`), all 9 boxes; 902ms
+→ 4ms, and names resolve with DNS or the uplink down. Hourly per-box
+`fleet_hosts_drift` cron, **self-healing since 07-27**
+(`scripts/fleet_hosts_selfheal.sh`): drift → `--apply` → re-check the file.
+A heal reports **CONCERN** naming what moved and self-clears next run — never
+OK, or an hourly-churning box would look identical to a stable one.
+UNOBSERVABLE never heals: blindness is not drift, and this file shadows DNS.
 
 **Decision tell**: fleet-wide ~75-90ms per name lookup with A at ~1ms = this,
 not a sick resolver. **Quick check**: compare
@@ -538,11 +527,11 @@ would still couple fleet names to m1 being up. Full measurement in the archive.
 **⚠️ cloud-init owns /etc/hosts too — it wipes the block on EVERY boot
 (2026-07-27).** Boot-partition NoCloud user-data sets `manage_etc_hosts: true`
 and `update_etc_hosts` runs at frequency **always**. moc5 rebooted 07-27 10:18
-and lost all 12 names (hourly `fleet_hosts_drift` caught it in 15 min); proven
-from cloud-init's log — read 1214 bytes, wrote 545, byte-identical to
-`/etc/hosts.bak-meshforge`. **Latent on all 8 cloud-init boxes** since the arc
-landed; moc5 was just the first to reboot. Honest-failure-modes #8 — the arc
-shipped a writer without excluding the other owner.
+and lost all 12 names (`fleet_hosts_drift` caught it in 15 min); proven from
+cloud-init's log — read 1214 bytes, wrote 545, byte-identical to
+`/etc/hosts.bak-meshforge`. **Latent on all 8 cloud-init boxes**; moc5 was just
+the first to reboot. Honest-failure-modes #8 — a writer shipped without
+excluding the artifact's other owner.
 
 Cure: `manage_etc_hosts: localhost` in **`/boot/firmware/user-data`** (keeps the
 127.0.1.1 entry managed, stops the template render). ⚠️ **A
