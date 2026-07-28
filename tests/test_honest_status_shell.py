@@ -23,6 +23,7 @@ _HARNESSES = [
     "test_honest_status_preserve.sh",   # suite-failure log preservation
     "test_honest_status_boxes.sh",      # fleet box-list derivation
     "test_honest_status_suite_leg.sh",  # suite verdict vs. an untrustworthy rc
+    "test_pytest_tmp_prune.sh",         # temp-tree pruner (tmpfs = RAM)
 ]
 
 
