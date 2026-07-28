@@ -58,7 +58,14 @@ case "$box" in
 esac
 exit 0
 EOF
-for c in gh curl; do printf '#!/usr/bin/env bash\nexit 1\n' > "$SB/$c"; done
+printf '#!/usr/bin/env bash\nexit 1\n' > "$SB/gh"
+# curl: silent by default (no map served), scriptable via FAKE_CURL_JSON so the
+# live-conf_rate leg can be driven to a real verdict instead of "nothing to check".
+cat > "$SB/curl" <<'EOF'
+#!/usr/bin/env bash
+[ -n "${FAKE_CURL_JSON:-}" ] && { printf '%s' "$FAKE_CURL_JSON"; exit 0; }
+exit 1
+EOF
 chmod +x "$SB"/*
 
 FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME/.config/meshforge"
@@ -66,12 +73,17 @@ FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME/.config/meshforge"
 run() {  # env: HONEST_BOXES / MESHFORGE_FLEET_HOSTS as needed
   PATH="$SB:$PATH" HOME="$FAKE_HOME" XDG_STATE_HOME="" \
     MESHFORGE_REPO="$FAKE_REPO" FAKE_HEAD="$FAKE_HEAD" \
+    FAKE_CURL_JSON="${FAKE_CURL_JSON:-}" HONEST_WD_PATH="${HONEST_WD_PATH:-}" \
     bash "$SCRIPT" --quick "$@" 2>&1
 }
 
-# The script compares each box's answer to ITS OWN HEAD; with a repo-less fake
-# repo that is "?", so scripted boxes echo the same literal to count as matched.
-FAKE_HEAD="?"; export FAKE_HEAD
+# The fake repo is a REAL git repo with one commit, so `git rev-parse HEAD`
+# answers a real sha both for the gate's own HEAD and for the SELF leg. That
+# matters: with a repo-less fake repo self fell out through the "no-repo" path,
+# which HID the fact that self is compared against itself (2026-07-28).
+git -C "$FAKE_REPO" init -q 2>/dev/null
+git -C "$FAKE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
+FAKE_HEAD="$(git -C "$FAKE_REPO" rev-parse HEAD 2>/dev/null)"; export FAKE_HEAD
 
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }
 
@@ -114,6 +126,45 @@ check "and it is still named in the detail" \
 out="$(HONEST_BOXES="box-good box-mute" run)"
 check "watchdog ACTIVE but no state is UNKNOWN-loud, never excused" \
   "$(echo "$out" | grep -q 'ACTIVE-but-no-state' && echo ok)"
+
+# ── 6. self is NOT evidence in the SHA-drift leg ─────────────────────────
+#
+# The drift leg asks each box for `git -C $REPO rev-parse HEAD` and compares it
+# to $HEADFULL — which the gate derived from that same local repo. For SELF
+# that comparison is a tautology: it cannot fail, ever. Counting it inflates
+# BOTH sides of the ratio, so the number that is supposed to express external
+# convergence is padded with one guaranteed match (2026-07-28 review).
+#
+# Self stays in the OTHER fleet legs (watchdog, conf_rate) — those read real
+# local state and were genuinely unrepresented before. Only this leg is vacuous.
+printf 'box-good\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" run)"
+check "self still covered by the fleet legs (2 boxes)" \
+  "$(echo "$out" | grep -q 'fleet legs cover 2 box(es)' && echo ok)"
+check "drift leg counts PEERS only — self cannot drift from itself (1/1, not 2/2)" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1/1' && echo ok)"
+
+# ── 7. SELF-ONLY: fleet legs must be UNKNOWN, never PASS ─────────────────
+#
+# With no fleet_hosts anywhere the script checks only itself. Reporting that as
+# "fleet SHA drift PASS 1/1" is a green verdict built from zero external
+# evidence — the exact "narrowed list masquerading as the whole fleet" this
+# file exists to prevent, and reachable on every box that is not the manager
+# (none of them carries a fleet_hosts). Unobservable is never a pass.
+WD_FIX="$TMP/wd.json"; printf '{"ts": %s, "signals": []}\n' "$(date +%s)" > "$WD_FIX"
+out="$(MESHFORGE_FLEET_HOSTS="$TMP/nope" HONEST_WD_PATH="$WD_FIX" \
+       FAKE_CURL_JSON='{"confirmation_rate": 0.5}' run)"
+check "SELF-ONLY drift leg is UNKNOWN, not a self-confirmed PASS" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'UNKNOWN' && echo ok)"
+check "SELF-ONLY drift leg says WHY (no peer to compare against)" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -qi 'no peer' && echo ok)"
+check "SELF-ONLY watchdog leg is UNKNOWN — one box is not a fleet" \
+  "$(echo "$out" | grep -E 'watchdog signals' | grep -q 'UNKNOWN' && echo ok)"
+check "SELF-ONLY conf_rate leg is UNKNOWN — assertion unverified fleet-wide" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'UNKNOWN' && echo ok)"
+# (No "gate cannot exit 0" assertion here: run() always passes --quick, so the
+# suite leg alone forces non-green and such a check could never fail — the very
+# artifact test_honest_status_shell.py was created to stop shipping.)
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

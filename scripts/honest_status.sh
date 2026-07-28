@@ -58,17 +58,38 @@ _hs_hosts_file() {
   return 1
 }
 if [ -n "${HONEST_BOXES:-}" ]; then
-  BOXES="$HONEST_BOXES"; BOXES_SRC="HONEST_BOXES override"
+  BOXES="$HONEST_BOXES"; BOXES_SRC="HONEST_BOXES override"; FLEET_SSOT=1
 elif _hf="$(_hs_hosts_file)"; then
   BOXES="$(sed 's/#.*//' "$_hf" | tr '\n' ' ' | tr -s ' ')"
   BOXES="$(printf '%s %s' "$BOXES" "$SELF" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
-  BOXES_SRC="$_hf + self"
+  BOXES_SRC="$_hf + self"; FLEET_SSOT=1
 else
   # No SSOT reachable. Check what we CAN (self) and say so — inventing a fleet
   # list here is how the 5-box lie happened. Narrow is fine; narrow that reads
   # as complete is not.
+  #
+  # FLEET_SSOT=0 is what makes that last sentence ENFORCED rather than merely
+  # printed: the fleet legs below refuse to emit PASS in this state. Printing
+  # the provenance told the truth in a line the exit code ignored — and every
+  # box that is not the manager lands here, because fleet_hosts is authored on
+  # the manager and mirrored nowhere (verified 2026-07-28: moc/moc1/moc3 have
+  # no such file). The gate was self-certifying on 8 of 9 boxes.
   BOXES="$SELF"; BOXES_SRC="SELF ONLY — no fleet_hosts found, fleet legs cover 1 box"
+  FLEET_SSOT=0
 fi
+
+# Peers = every box that is NOT this one. The SHA-drift leg must use this, not
+# BOXES: it compares a box's `rev-parse HEAD` against $HEADFULL, which this
+# script derived from THIS box's repo, so for self the comparison is a
+# tautology that cannot fail. Counting it padded both sides of the ratio with a
+# guaranteed match ("9/9" where 8 boxes were real evidence), and on the
+# SELF-ONLY path it WAS the whole leg — "fleet SHA drift PASS 1/1", a green
+# verdict from zero external evidence (2026-07-28 review).
+#
+# Self stays in BOXES for the watchdog and conf_rate legs: those read real
+# local state that no other box reports, and the manager was genuinely
+# unrepresented there before. Vacuous is not the same as redundant.
+PEERS="$(printf '%s\n' $BOXES | grep -vxF "$SELF" | tr '\n' ' ' | sed 's/ *$//')"
 
 # Run a command on a box: locally when it IS this box (there is no ssh to
 # self), over ssh otherwise. Callers pass ONE command string, as before.
@@ -152,7 +173,7 @@ fi
 
 # 2. Fleet SHA drift — each box's HEAD vs this repo's HEAD (external).
 matched=0; reached=0; total=0; norepo=0; desc=""
-for b in $BOXES; do
+for b in $PEERS; do
   total=$((total+1))
   # Compare FULL 40-char SHAs — abbreviation length varies per box (a 7-char
   # local abbrev vs an 8-char remote one is the SAME commit, not drift).
@@ -173,7 +194,11 @@ for b in $BOXES; do
 done
 drifted=$((reached - matched))
 expect=$((total - norepo))
-if [ "$drifted" -gt 0 ]; then bad "fleet SHA drift" "$matched/$expect @ $HEAD;$desc"
+if [ -z "$PEERS" ]; then
+  # Nothing external to compare against. Self is excluded by construction, so
+  # there is no evidence here at all — not "converged", UNKNOWN.
+  unk "fleet SHA drift" "no peer box to compare against — self cannot drift from itself ($BOXES_SRC)"
+elif [ "$drifted" -gt 0 ]; then bad "fleet SHA drift" "$matched/$expect @ $HEAD;$desc"
 elif [ "$reached" -lt "$expect" ]; then unk "fleet SHA drift" "$matched/$reached reachable of $expect @ $HEAD;$desc"
 elif [ "$reached" = 0 ]; then unk "fleet SHA drift" "no box carried $REPO;$desc"
 else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
@@ -260,6 +285,10 @@ else: print("%.3f"%r if isinstance(r,(int,float)) else "shape?")' 2>/dev/null)
 done
 if [ -n "$viol" ]; then bad "live conf_rate<=1.0" "$viol"
 elif [ "$checked" = 0 ]; then unk "live conf_rate<=1.0" "no box served /api/gateway/delivery"
+elif [ "$FLEET_SSOT" = 0 ]; then
+  # A violation found here is still real (the bad branch above stands), but
+  # "no violation" over one box is not the fleet-wide assertion this leg names.
+  unk "live conf_rate<=1.0" "$checked checked, THIS box only — no fleet_hosts SSOT, fleet unverified;$det"
 else ok "live conf_rate<=1.0" "$checked checked;$det"; fi
 
 # 6. Watchdog — classify by severity. A WEDGE is real breakage (FAIL); a
@@ -363,6 +392,11 @@ elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$wdtotal clean, $
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
 elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see), 0 observed:$sigdesc"
 elif [ "$wdtotal" = 0 ]; then unk "watchdog signals" "no box ran a watchdog:$sigdesc"
+elif [ "$FLEET_SSOT" = 0 ]; then
+  # Clean on the one box we could enumerate. A real signal here still outranks
+  # this (the branches above run first) — but silence across a fleet we cannot
+  # even list is unobservable, and unobservable is never a pass.
+  unk "watchdog signals" "$clean/$wdtotal clean on THIS box only — no fleet_hosts SSOT, fleet not observed${sigdesc:+;$sigdesc}"
 else ok "watchdog signals" "$clean/$wdtotal clean, 0 signals${sigdesc:+;$sigdesc}"; fi
 
 echo
