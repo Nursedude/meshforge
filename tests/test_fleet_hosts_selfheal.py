@@ -23,6 +23,8 @@ real. The in-sync and heal paths were additionally live-drilled against a
 genuinely corrupted /etc/hosts on 2026-07-27.
 """
 
+from __future__ import annotations  # CI tests 3.9: `int | None` is a TypeError there
+
 import os
 import shutil
 import subprocess
