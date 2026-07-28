@@ -36,9 +36,19 @@ chmod +x "$SB"/*
 FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME"
 logf="$FAKE_HOME/.local/state/$STATE_SUBDIR/hs_failures/last_failure.log"
 
+# A FAKE repo, not the real one (2026-07-28). honest_status resolves its
+# interpreter to "$REPO/venv/bin/python" when that exists (49c0b703, the
+# consumer-of-record port) — an ABSOLUTE path, which routes straight around
+# this harness's PATH stub. From that commit until now the fake pytest was
+# never invoked, so 4 of the 5 assertions below could not pass and this file
+# was a dead test. It went unnoticed because nothing ran it: it is a .sh and
+# pytest only collects test_*.py (now wired up by test_honest_status_shell.py).
+FAKE_REPO="$TMP/repo"; mkdir -p "$FAKE_REPO/tests" "$FAKE_REPO/scripts"
+printf 'import sys\nsys.exit(0)\n' > "$FAKE_REPO/scripts/lint.py"
+
 run() {  # $1 = FAKE_PYTEST_FAIL
   PATH="$SB:$PATH" HOME="$FAKE_HOME" XDG_STATE_HOME="" HONEST_BOXES="hs-test-dummy" \
-    FAKE_PYTEST_FAIL="$1" bash "$SCRIPT" 2>&1
+    MESHFORGE_REPO="$FAKE_REPO" FAKE_PYTEST_FAIL="$1" bash "$SCRIPT" 2>&1
 }
 
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }

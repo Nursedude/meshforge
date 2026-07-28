@@ -33,7 +33,50 @@
 set -u
 
 REPO="${MESHFORGE_REPO:-/opt/meshforge}"
-BOXES="${HONEST_BOXES:-moc moc1 moc2 moc3 moc5}"
+
+# Fleet box list — DERIVED from the same `fleet_hosts` SSOT that fleet_pull.sh
+# and fleet_dup_collector read, never a second hardcode.
+#
+# It WAS a second hardcode ("moc moc1 moc2 moc3 moc5") and it drifted exactly
+# as honest_failure_modes #5 predicts (two consumers of one artifact, two
+# independent constants): fleet_hosts grew to 8 boxes while this list stayed at
+# 5, so the gate printed "fleet SHA drift PASS 5/5" — which READS as whole-fleet
+# coverage — while moc4, kiai and meshanchor-server were never checked at all,
+# and the manager box checked no box but its own repo (2026-07-28).
+#
+# Self is appended: the manager runs a watchdog and a map too, and fleet_hosts
+# deliberately omits it (there is no ssh to self), so it was unrepresented in
+# every fleet leg. Provenance is PRINTED below — a narrowed list must never be
+# able to masquerade as the whole fleet again.
+SELF="$(hostname 2>/dev/null || echo localhost)"
+_hs_hosts_file() {
+  for f in "${MESHFORGE_FLEET_HOSTS:-}" \
+           "${HOME:-/root}/.config/meshforge/fleet_hosts" \
+           /etc/meshforge/fleet_hosts; do
+    [ -n "$f" ] && [ -f "$f" ] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+if [ -n "${HONEST_BOXES:-}" ]; then
+  BOXES="$HONEST_BOXES"; BOXES_SRC="HONEST_BOXES override"
+elif _hf="$(_hs_hosts_file)"; then
+  BOXES="$(sed 's/#.*//' "$_hf" | tr '\n' ' ' | tr -s ' ')"
+  BOXES="$(printf '%s %s' "$BOXES" "$SELF" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+  BOXES_SRC="$_hf + self"
+else
+  # No SSOT reachable. Check what we CAN (self) and say so — inventing a fleet
+  # list here is how the 5-box lie happened. Narrow is fine; narrow that reads
+  # as complete is not.
+  BOXES="$SELF"; BOXES_SRC="SELF ONLY — no fleet_hosts found, fleet legs cover 1 box"
+fi
+
+# Run a command on a box: locally when it IS this box (there is no ssh to
+# self), over ssh otherwise. Callers pass ONE command string, as before.
+run_on() {
+  _rb="$1"; shift
+  if [ "$_rb" = "$SELF" ]; then bash -c "$*" 2>/dev/null
+  else $SSH "$_rb" "$*" 2>/dev/null; fi
+}
 # Watchdog state path — overridable (HONEST_WD_PATH) ONLY so the gate's own
 # severity logic can be exercised end-to-end against fixtures; production is
 # the default. Never point this at production fixtures.
@@ -48,6 +91,16 @@ for arg in "$@"; do
 done
 
 SSH="ssh -o ConnectTimeout=8 -o BatchMode=yes"
+
+# Per-run scratch dir. These were FIXED names (/tmp/.hs_pytest, .hs_lint,
+# .hs_ci.json) — honest_failure_modes #8, "fixed tmp names are a collision,
+# not a convention". Two honest_status runs overlapping (a cron run and a
+# manual one, or the suite leg running a test that itself drives this script)
+# interleaved their writes into one file, and the torn result made the suite
+# leg report FAIL on an exit-0 run: a false NOT-GREEN from the gate whose
+# whole job is to not lie about green. Observed 2026-07-28.
+HS_TMP="$(mktemp -d -t honest_status.XXXXXX)"
+trap 'rm -rf "$HS_TMP"' EXIT INT TERM
 
 # Consumer-of-record interpreter (calibrated_claims rule 7; ported from the
 # MA twin 2026-07-19, where bare python3 had no pytest at all and the suite
@@ -66,17 +119,18 @@ warnf() { printf '  %-22s \033[33mWARN\033[0m    %s\n' "$1" "$2"; warns=$((warns
 HEAD=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "?")
 HEADFULL=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "?")
 echo "honest_status — $REPO @ $HEAD  ($(date -u +%Y-%m-%dT%H:%M:%SZ))"
+echo "  fleet legs cover $(echo $BOXES | wc -w) box(es) — source: $BOXES_SRC"
 echo
 
 # 1. CI conclusion for the EXACT current HEAD (external, harness-immune).
 if command -v gh >/dev/null 2>&1; then
   if gh run list --branch main --limit 30 \
-       --json headSha,conclusion,status,databaseId >/tmp/.hs_ci.json 2>/dev/null; then
-    read -r ST CC RID < <(HEADFULL="$HEADFULL" python3 - <<'PY' 2>/dev/null
+       --json headSha,conclusion,status,databaseId >$HS_TMP/ci.json 2>/dev/null; then
+    read -r ST CC RID < <(HEADFULL="$HEADFULL" HS_CI_JSON="$HS_TMP/ci.json" python3 - <<'PY' 2>/dev/null
 import json, os, sys
 sha = os.environ["HEADFULL"]
 try:
-    runs = json.load(open("/tmp/.hs_ci.json"))
+    runs = json.load(open(os.environ["HS_CI_JSON"]))
 except Exception:
     sys.exit()
 for r in runs:
@@ -97,26 +151,38 @@ else
 fi
 
 # 2. Fleet SHA drift — each box's HEAD vs this repo's HEAD (external).
-matched=0; reached=0; total=0; desc=""
+matched=0; reached=0; total=0; norepo=0; desc=""
 for b in $BOXES; do
   total=$((total+1))
   # Compare FULL 40-char SHAs — abbreviation length varies per box (a 7-char
   # local abbrev vs an 8-char remote one is the SAME commit, not drift).
-  s=$($SSH "$b" "git -C $REPO rev-parse HEAD" 2>/dev/null)
-  if [ -z "$s" ]; then desc="$desc $b:unreach"; continue; fi
+  #
+  # The liveness token separates two states an empty answer used to conflate
+  # (2026-07-28, widening the list to the whole fleet): a box that is DOWN
+  # (UNKNOWN — cannot confirm it converged) and a box that is UP but has no
+  # repo at $REPO (a MeshAnchor-only box, say). The latter cannot drift, so
+  # counting it against the denominator would make the gate permanently
+  # UNKNOWN; it is reported and excluded, never silently dropped.
+  raw=$(run_on "$b" "echo HSUP; git -C $REPO rev-parse HEAD 2>/dev/null")
+  up=$(printf '%s\n' "$raw" | sed -n '1p')
+  s=$(printf '%s\n' "$raw" | sed -n '2p')
+  if [ "$up" != "HSUP" ]; then desc="$desc $b:unreach"; continue; fi
+  if [ -z "$s" ]; then norepo=$((norepo+1)); desc="$desc $b:no-repo"; continue; fi
   reached=$((reached+1))
   if [ "$s" = "$HEADFULL" ]; then matched=$((matched+1)); else desc="$desc $b:${s:0:7}"; fi
 done
 drifted=$((reached - matched))
-if [ "$drifted" -gt 0 ]; then bad "fleet SHA drift" "$matched/$total @ $HEAD;$desc"
-elif [ "$reached" -lt "$total" ]; then unk "fleet SHA drift" "$matched/$reached reachable @ $HEAD;$desc"
-else ok "fleet SHA drift" "$matched/$total @ $HEAD"; fi
+expect=$((total - norepo))
+if [ "$drifted" -gt 0 ]; then bad "fleet SHA drift" "$matched/$expect @ $HEAD;$desc"
+elif [ "$reached" -lt "$expect" ]; then unk "fleet SHA drift" "$matched/$reached reachable of $expect @ $HEAD;$desc"
+elif [ "$reached" = 0 ]; then unk "fleet SHA drift" "no box carried $REPO;$desc"
+else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 
 # 3. Full local suite — real exit code + count (file-routed, never a streamed tail).
 if [ "$RUN_TESTS" = 1 ]; then
-  "$PY" -m pytest "$REPO/tests/" -q -p no:cacheprovider >/tmp/.hs_pytest 2>&1; rc=$?
-  summ=$(grep -E "[0-9]+ (passed|failed|error)" /tmp/.hs_pytest | tail -1)
-  nfail=$(grep -cE "^FAILED|^ERROR" /tmp/.hs_pytest)
+  "$PY" -m pytest "$REPO/tests/" -q -p no:cacheprovider >$HS_TMP/pytest.log 2>&1; rc=$?
+  summ=$(grep -E "[0-9]+ (passed|failed|error)" $HS_TMP/pytest.log | tail -1)
+  nfail=$(grep -cE "^FAILED|^ERROR" $HS_TMP/pytest.log)
   if [ "$rc" = 0 ] && [ "$nfail" = 0 ]; then ok "full suite" "$summ (exit 0)"
   else
     # Surface the failing test id(s) (already in the captured file, just not
@@ -125,9 +191,9 @@ if [ "$RUN_TESTS" = 1 ]; then
     # can't clobber it. Every honest_status run samples the suite under
     # concurrent load (CI + ssh probes), so a rare timing flake's traceback
     # finally gets captured instead of discarded.
-    names=$(grep -E "^FAILED|^ERROR" /tmp/.hs_pytest | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' | head -3 | paste -sd' ' -)
+    names=$(grep -E "^FAILED|^ERROR" $HS_TMP/pytest.log | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' | head -3 | paste -sd' ' -)
     fdir="${XDG_STATE_HOME:-$HOME/.local/state}/meshforge/hs_failures"; saved=""
-    mkdir -p "$fdir" 2>/dev/null && cp /tmp/.hs_pytest "$fdir/last_failure.log" 2>/dev/null \
+    mkdir -p "$fdir" 2>/dev/null && cp $HS_TMP/pytest.log "$fdir/last_failure.log" 2>/dev/null \
       && saved=" — saved $fdir/last_failure.log"
     bad "full suite" "exit $rc, $nfail FAILED/ERROR${names:+ ($names)}$saved — $summ"
   fi
@@ -136,15 +202,15 @@ else
 fi
 
 # 4. Lint — real exit code.
-"$PY" "$REPO/scripts/lint.py" --all >/tmp/.hs_lint 2>&1; rc=$?
+"$PY" "$REPO/scripts/lint.py" --all >$HS_TMP/lint.log 2>&1; rc=$?
 if [ "$rc" = 0 ]; then ok "lint" "exit 0"
-else bad "lint" "exit $rc — $(grep -E '\[E\]' /tmp/.hs_lint | tail -1)"; fi
+else bad "lint" "exit $rc — $(grep -E '\[E\]' $HS_TMP/lint.log | tail -1)"; fi
 
 # 5. Live honesty assert — no displayed confirmation_rate may exceed 1.0
 #    (the exact #74 false-green: a rate that read 1.64 = ">164% confirmed").
 viol=""; checked=0; det=""
 for b in $BOXES; do
-  j=$($SSH "$b" "curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null" 2>/dev/null)
+  j=$(run_on "$b" "curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null")
   [ -z "$j" ] && continue   # no map served here — not a failure, just nothing to check
   checked=$((checked+1))
   v=$(printf '%s' "$j" | python3 -c 'import sys,json
@@ -178,16 +244,31 @@ if [ -n "${HONEST_WD_STALE_S:-}" ]; then WD_STALE_S="$HONEST_WD_STALE_S"
 elif [ -n "${HONEST_WD_PATH:-}" ]; then WD_STALE_S=0
 else WD_STALE_S=300; fi
 
-wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; sigdesc=""
+wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; nowd=0; sigdesc=""
 btotal=$(echo $BOXES | wc -w)
 for b in $BOXES; do
   # Fetch the box's OWN clock alongside its watchdog.json in ONE round-trip, so
   # the freshness age is computed same-clock — never this box's clock vs that
-  # box's ts (cross-machine wall-clock is forgeable: honest_failure #6).
-  raw=$($SSH "$b" "date +%s 2>/dev/null; echo '---WDSEP---'; cat $WD_PATH 2>/dev/null" 2>/dev/null)
+  # box's ts (cross-machine wall-clock is forgeable: honest_failure #6). The
+  # unit state rides the SAME round-trip (2026-07-28) to split what an empty
+  # answer used to conflate — see below.
+  raw=$(run_on "$b" "date +%s 2>/dev/null; systemctl is-active meshforge-watchdog.service 2>/dev/null || echo absent; echo '---WDSEP---'; cat $WD_PATH 2>/dev/null")
   rnow=$(printf '%s\n' "$raw" | sed -n '1p')
+  wunit=$(printf '%s\n' "$raw" | sed -n '2p')
   w=$(printf '%s\n' "$raw" | awk 'f{print} /^---WDSEP---$/{f=1}')
-  if [ -z "$w" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
+  # THREE states, not one (widening the list to the whole fleet exposed the
+  # conflation): the box is DOWN; the box is up and runs NO watchdog (a
+  # MeshAnchor-only box — a legitimately-absent organ, excluded from the
+  # denominator, never counted as blindness); or the watchdog is ACTIVE yet
+  # wrote no state, which is a real fault and must stay UNKNOWN-loud rather
+  # than being excused as "not installed" (honest_failure_modes #2).
+  if [ -z "$rnow" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
+  if [ -z "$w" ] && [ "$wunit" != "active" ]; then
+    nowd=$((nowd+1)); sigdesc="$sigdesc $b:no-watchdog($wunit)"; continue
+  fi
+  if [ -z "$w" ]; then
+    unreach=$((unreach+1)); sigdesc="$sigdesc $b:ACTIVE-but-no-state"; continue
+  fi
   p=$(printf '%s' "$w" | python3 -c 'import sys,json
 try: d=json.load(sys.stdin)
 except Exception: print("PARSE"); sys.exit()
@@ -241,11 +322,13 @@ done
 # A held signal NEVER reaches the WARN/FAIL tiers on its own — it is
 # last-known evidence from a blind observer, which is UNKNOWN by this
 # project's tiering, and UNKNOWN is never a pass either.
+wdtotal=$((btotal - nowd))   # boxes that actually run a watchdog
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
-elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$btotal clean, $unreach unreachable/stale:$sigdesc"
+elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$wdtotal clean, $unreach unreachable/stale:$sigdesc"
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
 elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see), 0 observed:$sigdesc"
-else ok "watchdog signals" "$clean/$btotal clean, 0 signals"; fi
+elif [ "$wdtotal" = 0 ]; then unk "watchdog signals" "no box ran a watchdog:$sigdesc"
+else ok "watchdog signals" "$clean/$wdtotal clean, 0 signals${sigdesc:+;$sigdesc}"; fi
 
 echo
 total_checks=$((pass+fail+unknown+warns))
