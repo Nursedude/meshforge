@@ -28,6 +28,7 @@ from utils.watchdog_probe_core import (
     _save_parity_streak,
     _short_unix_ts,
     note_disposition,
+    operator_cron_wired,
 )
 
 # Same logger name the runner uses (watchdog_runner.py) so a swallowed
@@ -459,6 +460,33 @@ def _save_gateway_dup_streak(state_path: str, streak: int) -> None:
         pass
 
 
+_DUPS_COLLECTOR_TOKEN = "fleet_dup_collector"
+
+
+def _dups_collector_wired_here() -> Optional[bool]:
+    """Does THIS box run the ``/fleet/dups`` collector cron?
+
+    ``True`` / ``False`` / ``None`` when the crontab cannot be read.
+
+    This exists so the probe stops inferring its own ROLE from the ABSENCE of
+    the artifact it audits (2026-07-28 review). ``/fleet/dups`` answers
+    ``unavailable`` on exactly one condition — ``FileNotFoundError`` on the
+    rollup state file — and off the manager that means "no collector here",
+    while ON the manager it means the collector is not publishing. Reading the
+    second as the first silenced a real coverage loss on the only box where
+    these probes can do their job at all, with a reason that asserted "not the
+    manager box" as fact. *A checker must not consume the artifact it
+    validates* (persistent_issues.md).
+
+    The independent evidence is the operator's crontab: the manager is the box
+    that runs the collector. ``None`` (unobservable) is NEVER folded into
+    ``False`` — "I could not look" is not "it is not here"
+    (honest_failure_modes #2). The read itself lives in the shared base, which
+    already owns the spool paths.
+    """
+    return operator_cron_wired(_DUPS_COLLECTOR_TOKEN)
+
+
 def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
                              suffix: str = "") -> None:
     """Classify a non-``ok`` ``/fleet/dups`` status honestly (2026-07-28).
@@ -469,11 +497,19 @@ def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
     boxes emitted permanent `detector_blind_any` noise that a REAL coverage
     loss on the manager would have been indistinguishable from.
 
-    ``unavailable`` — no rollup file at all: this box does not run the
-    collector cron. Structural and permanent; a non-manager box can never
-    observe a cross-gateway dup, so this is ``inert``. Per the
-    ``detector_blind_any`` rule's own annotation, "a legitimately-absent
-    organ is not a blind one" — ``inert`` is never scored as blindness.
+    ``unavailable`` — no rollup file at all. Which of two OPPOSITE things that
+    means depends on whether this box runs the collector, so the role is read
+    from independent evidence (``_dups_collector_wired_here``) rather than
+    inferred from the missing file itself:
+
+      - collector NOT wired here → a non-manager box, which can never observe
+        a cross-gateway dup: ``inert``. Per the ``detector_blind_any`` rule's
+        own annotation, "a legitimately-absent organ is not a blind one".
+      - collector IS wired here → this is the manager and it is not
+        publishing: a real coverage loss on the one box that can see dups at
+        all. ``indeterminate``, so it stays visible.
+      - crontab unreadable → the two are indistinguishable: ``indeterminate``.
+        Unobservable is never excused as benign (honest_failure_modes #2).
 
     ``indeterminate`` — the rollup EXISTS but the JOIN reached <2 contributing
     gateways. That is real, actionable coverage loss on the manager and must
@@ -487,9 +523,26 @@ def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
     if status == "unavailable":
         why = payload.get("reason")
         detail = f" ({why})" if isinstance(why, str) and why else ""
+        wired = _dups_collector_wired_here()
+        if wired is True:
+            note_disposition(
+                cls, "indeterminate",
+                reason=f"the dup collector cron IS wired on this box but no "
+                       f"rollup is published — the manager is not publishing, "
+                       f"so cross-gateway dups are unobservable fleet-wide"
+                       f"{detail}{suffix}")
+            return
+        if wired is None:
+            note_disposition(
+                cls, "indeterminate",
+                reason=f"no dup rollup here and the crontab is unreadable — "
+                       f"cannot tell an absent organ from a manager that "
+                       f"stopped publishing{detail}{suffix}")
+            return
         note_disposition(
             cls, "inert",
-            reason=f"not the manager box — no dup rollup published here"
+            reason=f"no dup rollup published on this box and the collector "
+                   f"cron is not wired here — expected off the manager"
                    f"{detail}")
         return
     reason = payload.get("indeterminate_reason")

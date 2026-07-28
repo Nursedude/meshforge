@@ -31,7 +31,31 @@
 set -u
 
 KEEP="${PYTEST_TMP_KEEP:-3}"
-LOCK_MAX_AGE_S="${PYTEST_TMP_LOCK_AGE_S:-10800}"   # pytest's own LOCK_TIMEOUT (3h)
+
+# The lock window is pytest's LOCK_TIMEOUT, DERIVED at runtime — not a second
+# copy of it (honest_failure_modes #5: two consumers of one constant WILL
+# drift). It already HAD: this was hardcoded 10800 with the comment "pytest's
+# own LOCK_TIMEOUT (3h)", but pytest's LOCK_TIMEOUT is 60*60*24*3 — THREE DAYS,
+# 259200s. Off by 24x, so the safety property stated in this header ("never
+# touches a run dir whose .lock is younger than pytest's own LOCK_TIMEOUT")
+# was violated for every lock aged between 3 hours and 3 days: the pruner
+# would delete the temp tree of a run pytest still considers live. Found by
+# review 2026-07-28, by asking the constant's owner instead of re-typing it.
+#
+# LOCK_FALLBACK_S is test-pinned to the live value, so if upstream changes it
+# the suite says so rather than the pruner silently going unsafe again.
+LOCK_FALLBACK_S=259200                             # pytest LOCK_TIMEOUT (3 days)
+_pytest_lock_timeout() {
+  python3 - <<'PY' 2>/dev/null
+try:
+    from _pytest.pathlib import LOCK_TIMEOUT
+    print(int(LOCK_TIMEOUT))
+except Exception:
+    pass
+PY
+}
+LOCK_MAX_AGE_S="${PYTEST_TMP_LOCK_AGE_S:-$(_pytest_lock_timeout)}"
+LOCK_MAX_AGE_S="${LOCK_MAX_AGE_S:-$LOCK_FALLBACK_S}"
 CONCERN_MB="${PYTEST_TMP_CONCERN_MB:-1024}"        # freed >= this => say so out loud
 BASE="${PYTEST_TMP_BASE:-${TMPDIR:-/tmp}/pytest-of-$(id -un)}"
 VERDICT="${CRON_VERDICT_BIN:-$(dirname "$0")/cron_verdict.sh}"
@@ -77,7 +101,7 @@ after_kb=$(du -sk "$BASE" 2>/dev/null | cut -f1); after_kb=${after_kb:-0}
 freed_mb=$(( (before_kb - after_kb) / 1024 ))
 remain=$(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null | wc -l)
 detail="pruned $pruned of $total dir(s), freed ${freed_mb} MB, $remain remain"
-[ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock <3h — live run)"
+[ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s — live run)"
 
 if [ "$failed" -gt 0 ]; then
   say FAIL "$detail, $failed could NOT be removed"

@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 
 from utils import claw_battery
 from utils.watchdog_probe_core import (
+    CRON_SPOOL_PATHS as _CRON_SPOOL_PATHS,
     Signal,
     _load_parity_streak,
     _save_parity_streak,
@@ -142,7 +143,7 @@ def _read_operator_crontab_spool(name: Optional[str]) -> Optional[str]:
     Debian path first, then RHEL-style. None on missing/unreadable."""
     if not name or name == "root":
         return None
-    for path in (f"/var/spool/cron/crontabs/{name}", f"/var/spool/cron/{name}"):
+    for path in (p.format(name) for p in _CRON_SPOOL_PATHS):
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 return fh.read()

@@ -397,3 +397,70 @@ def _save_parity_streak(state_path: str, streak: int) -> None:
                     "consecutive failures (%s)",
                     _streak_write_errors[state_path], state_path)
         _streak_write_errors[state_path] = 0
+
+
+# ── operator crontab: shared evidence for "does this box run X?" ──────────
+#
+# The spool locations, Debian first then RHEL-style. ONE constant in the shared
+# base because ≥2 probe modules read the same spool (liveness for #78's wired
+# set, gateway for the dup collector), and two independent copies of a path
+# WILL drift (honest_failure_modes #5).
+CRON_SPOOL_PATHS = ("/var/spool/cron/crontabs/{}", "/var/spool/cron/{}")
+
+
+def operator_cron_wired(token: str) -> Optional[bool]:
+    """Is a cron whose command contains ``token`` wired on THIS box?
+
+    ``True`` / ``False`` / ``None`` when the crontab cannot be read.
+
+    Exists so a probe can answer "what is my ROLE here" from independent
+    evidence instead of inferring it from the absence of the artifact it
+    audits — *a checker must not consume the artifact it validates*
+    (persistent_issues.md; 2026-07-28 review of the /fleet/dups probes).
+
+    The three states are kept distinct on purpose:
+      - crontab present, token found      → True
+      - crontab present, token absent     → False  (observed, not here)
+      - NO crontab on this box            → False  (positive evidence: a box
+        with no crons certainly runs no cron — NOT blindness, or every
+        crontab-less box lands in permanent detector_blind noise)
+      - spool exists but is unreadable    → None   (genuine blindness;
+        unobservable is never folded into "not here", honest_failure_modes #2)
+
+    Reads the spool in-process as root — the watchdog's NoNewPrivileges
+    sandbox forbids a privilege change, so shelling out to `crontab -l` is not
+    available to it.
+    """
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        from utils.fleet_snapshot import _parse_crontab
+    except Exception:
+        return None
+    try:
+        operator = _find_operator_user()
+    except Exception:
+        return None
+    name = operator[1] if operator else None
+    if not name or name == "root":
+        return None
+
+    text = None
+    for path in (p.format(name) for p in CRON_SPOOL_PATHS):
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+            break
+        except (FileNotFoundError, IsADirectoryError):
+            continue          # not at this path; try the next
+        except OSError:
+            return None       # exists but unreadable → unobservable
+    if text is None:
+        return False          # no crontab anywhere → certainly not wired here
+    try:
+        jobs = _parse_crontab(text)
+    except Exception:
+        return None
+    for job in jobs:
+        if token in (job.get("command") or ""):
+            return True
+    return False

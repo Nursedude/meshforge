@@ -7005,20 +7005,31 @@ class TestDupsRollupUnavailableIsInertNotBlind:
         "fleet_duplicate_pairs": 0,
     }
 
+    # The collector-wiring answer is pinned to False — "this box is NOT the
+    # manager", which is the case this class was always describing. It became
+    # an INPUT on 2026-07-28 (see TestDupsUnavailableRoleIsEvidenceNotInference):
+    # before that these cases read the ambient crontab of whatever machine ran
+    # the suite, so they passed on a dev box, and would not have on the manager
+    # or in CI. A test whose verdict depends on un-pinned machine state is not
+    # pinning anything.
     def _dual_homed(self, payload, tmp_path):
         from utils.watchdog_probes_gateway import (
             probe_gateway_dual_homed_exposure,
         )
         collect = _fresh_dispositions()
-        sig = probe_gateway_dual_homed_exposure(
-            state_path=str(tmp_path / "dh.json"), payload=payload)
+        with patch("utils.watchdog_probes_gateway."
+                   "_dups_collector_wired_here", return_value=False):
+            sig = probe_gateway_dual_homed_exposure(
+                state_path=str(tmp_path / "dh.json"), payload=payload)
         assert sig is None
         return collect()["gateway_dual_homed_exposure"]
 
     def _dup(self, payload, tmp_path, name="d.json"):
         collect = _fresh_dispositions()
         with patch("utils.watchdog_probes_gateway.urlopen",
-                   return_value=_http_json_mock(payload)):
+                   return_value=_http_json_mock(payload)), \
+             patch("utils.watchdog_probes_gateway."
+                   "_dups_collector_wired_here", return_value=False):
             sig = probe_gateway_dup_degraded(
                 debounce_path=str(tmp_path / name))
         assert sig is None
@@ -7091,6 +7102,148 @@ class TestDupsRollupUnavailableIsInertNotBlind:
             self, tmp_path):
         got = self._dual_homed({"status": "wat"}, tmp_path)
         assert got["disp"] == "indeterminate"
+
+
+class TestDupsUnavailableRoleIsEvidenceNotInference:
+    """2026-07-28 review — ``unavailable`` -> ``inert`` inferred this box's
+    ROLE from the ABSENCE of the very artifact the probe audits.
+
+    ``/fleet/dups`` answers ``{"status":"unavailable"}`` on exactly one
+    condition: ``FileNotFoundError`` on the rollup state file. Off the manager
+    that means "no collector here" — a legitimately-absent organ, correctly
+    inert. ON the manager it means the collector is not publishing, which is a
+    REAL coverage loss on the only box where these probes can ever do their
+    job — and it was being reported as inert, with a reason that flatly
+    asserted "not the manager box".
+
+    That is the self-confirming-detector shape persistent_issues.md already
+    names: *a checker must not consume the artifact it validates*. The role is
+    now read from INDEPENDENT evidence — whether the collector cron is wired
+    in the operator's crontab on this box — and an unreadable crontab is
+    UNOBSERVABLE (indeterminate), never silently benign (honest_failure_modes
+    #2).
+    """
+
+    UNAVAILABLE = {
+        "status": "unavailable",
+        "reason": ("no rollup yet — fleet_dup_collector has not run on this "
+                   "box (wire its cron on the manager)"),
+    }
+
+    def _dup(self, wired, tmp_path):
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self.UNAVAILABLE)), \
+             patch("utils.watchdog_probes_gateway._dups_collector_wired_here",
+                   return_value=wired):
+            sig = probe_gateway_dup_degraded(
+                debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        return collect()["gateway_dup_degraded"]
+
+    def _dual_homed(self, wired, tmp_path):
+        from utils.watchdog_probes_gateway import (
+            probe_gateway_dual_homed_exposure,
+        )
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway._dups_collector_wired_here",
+                   return_value=wired):
+            sig = probe_gateway_dual_homed_exposure(
+                state_path=str(tmp_path / "dh.json"), payload=self.UNAVAILABLE)
+        assert sig is None
+        return collect()["gateway_dual_homed_exposure"]
+
+    # ── the box that RUNS the collector ─────────────────────────────────
+    def test_wired_here_but_no_rollup_is_indeterminate_not_inert(self,
+                                                                 tmp_path):
+        """THE fix: on the manager, a missing rollup is a fault, not an
+        absent organ. inert would silence it permanently."""
+        got = self._dup(True, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+    def test_wired_here_reason_does_not_deny_being_the_manager(self, tmp_path):
+        """The old reason asserted 'not the manager box' as fact — on the
+        manager that is simply false, and it is what made the silence
+        convincing."""
+        got = self._dup(True, tmp_path)
+        assert "not the manager" not in got["reason"]
+        assert "collector" in got["reason"]
+
+    # ── a box that does NOT run it — unchanged, still quiet ─────────────
+    def test_not_wired_stays_inert(self, tmp_path):
+        got = self._dup(False, tmp_path)
+        assert got["disp"] == "inert"
+        assert "manager" in got["reason"]
+
+    # ── unobservable is neither ─────────────────────────────────────────
+    def test_unreadable_crontab_is_indeterminate_never_inert(self, tmp_path):
+        """Cannot tell an absent organ from a publish failure → say so.
+        Unobservable is never excused as benign (honest_failure_modes #2)."""
+        got = self._dup(None, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+    # ── the second probe shares the classifier, so it shares the fix ────
+    def test_dual_homed_wired_here_is_indeterminate(self, tmp_path):
+        got = self._dual_homed(True, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+    def test_dual_homed_not_wired_stays_inert(self, tmp_path):
+        got = self._dual_homed(False, tmp_path)
+        assert got["disp"] == "inert"
+
+    # ── the evidence reader itself ──────────────────────────────────────
+    #
+    # Driven through the REAL spool read (a temp file standing in for
+    # /var/spool/cron/crontabs/<op>), not a stubbed reader — the three states
+    # this function must distinguish are distinguished BY that read, so
+    # mocking it away would test nothing.
+    def _wired(self, tmp_path, cron_text=None, unreadable=False):
+        import builtins
+        from utils.watchdog_probes_gateway import _dups_collector_wired_here
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        if cron_text is not None:
+            (spool / "op").write_text(cron_text, encoding="utf-8")
+        real_open = builtins.open
+
+        def fake_open(path, *a, **k):
+            if unreadable and str(path).startswith(str(spool)):
+                raise PermissionError("spool unreadable")
+            return real_open(path, *a, **k)
+
+        with patch("utils.fleet_test_runner._find_operator_user",
+                   return_value=(1000, "op")), \
+             patch("utils.watchdog_probe_core.CRON_SPOOL_PATHS",
+                   (str(spool / "{}"),)), \
+             patch("builtins.open", fake_open):
+            return _dups_collector_wired_here()
+
+    def test_wiring_reader_detects_the_collector_cron(self, tmp_path):
+        cron = ("*/5 * * * * PYTHONPATH=/opt/meshforge/src python3 -m "
+                "utils.fleet_dup_collector >/dev/null 2>&1; "
+                "/opt/meshforge/scripts/cron_verdict.sh fleet_dup_rollup $?\n")
+        assert self._wired(tmp_path, cron) is True
+
+    def test_wiring_reader_false_when_other_crons_but_not_this_one(self,
+                                                                   tmp_path):
+        """False must mean 'observed, and it is not here'."""
+        cron = ("7 * * * * /home/op/mini_honest_fire.sh >/dev/null 2>&1; "
+                "/opt/meshforge/scripts/cron_verdict.sh mini_honest_fire $?\n")
+        assert self._wired(tmp_path, cron) is False
+
+    def test_wiring_reader_false_when_box_has_no_crontab_at_all(self,
+                                                               tmp_path):
+        """An ABSENT spool is positive evidence that no cron is wired here —
+        not blindness. Reading it as unobservable would put every
+        crontab-less box back into the permanent detector_blind noise that
+        3afda33a removed."""
+        assert self._wired(tmp_path, cron_text=None) is False
+
+    def test_wiring_reader_none_when_spool_exists_but_is_unreadable(self,
+                                                                    tmp_path):
+        """Unreadable spool → None, never False (= 'not the manager'), which
+        is the whole defect in miniature."""
+        assert self._wired(tmp_path, "x\n", unreadable=True) is None
 
 
 class TestFlowProbesOperatorUnresolvable:
