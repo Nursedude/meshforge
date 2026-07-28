@@ -547,8 +547,8 @@ shipped a writer without excluding the other owner.
 Cure: `manage_etc_hosts: localhost` in **`/boot/firmware/user-data`** (keeps the
 127.0.1.1 entry managed, stops the template render). ⚠️ **A
 `/etc/cloud/cloud.cfg.d/` drop-in does NOT work** — user-data merges *over*
-cloud.cfg.d; measured, block still wiped 1214→545. Applied 7/8 07-27, VolcanoAI
-pending. **Test without rebooting**: `sudo cloud-init single --name
+cloud.cfg.d; measured, block still wiped 1214→545. Applied + verified on all 8
+cloud-init boxes 07-27. **Test without rebooting**: `sudo cloud-init single --name
 update_etc_hosts --frequency always` — runs the real consumer-of-record rather
 than trusting the config (calibrated_claims #7).
 
