@@ -459,6 +459,45 @@ def _save_gateway_dup_streak(state_path: str, streak: int) -> None:
         pass
 
 
+def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
+                             suffix: str = "") -> None:
+    """Classify a non-``ok`` ``/fleet/dups`` status honestly (2026-07-28).
+
+    TWO different states share the not-``ok`` bucket, and collapsing them was
+    the defect: every non-manager box reported "rollup indeterminate (<2
+    gateways reachable)" — a reason that is simply FALSE there — so 6 of 9
+    boxes emitted permanent `detector_blind_any` noise that a REAL coverage
+    loss on the manager would have been indistinguishable from.
+
+    ``unavailable`` — no rollup file at all: this box does not run the
+    collector cron. Structural and permanent; a non-manager box can never
+    observe a cross-gateway dup, so this is ``inert``. Per the
+    ``detector_blind_any`` rule's own annotation, "a legitimately-absent
+    organ is not a blind one" — ``inert`` is never scored as blindness.
+
+    ``indeterminate`` — the rollup EXISTS but the JOIN reached <2 contributing
+    gateways. That is real, actionable coverage loss on the manager and must
+    stay visible. The JOIN publishes its own ``indeterminate_reason`` naming
+    the boxes that went uncovered; prefer it over a hardcoded guess.
+
+    Any OTHER non-ok value is an unknown state → ``indeterminate`` (an
+    unrecognised status must not decay into a benign-looking inert).
+    """
+    status = payload.get("status")
+    if status == "unavailable":
+        why = payload.get("reason")
+        detail = f" ({why})" if isinstance(why, str) and why else ""
+        note_disposition(
+            cls, "inert",
+            reason=f"not the manager box — no dup rollup published here"
+                   f"{detail}")
+        return
+    reason = payload.get("indeterminate_reason")
+    if not (isinstance(reason, str) and reason.strip()):
+        reason = "rollup indeterminate (<2 gateways reachable)"
+    note_disposition(cls, "indeterminate", reason=reason + suffix)
+
+
 def probe_gateway_dup_degraded(
     *,
     host: str = "127.0.0.1",
@@ -493,9 +532,15 @@ def probe_gateway_dup_degraded(
     JOIN's indeterminate gate):
       - endpoint unreachable / non-dict / shape error → None (other probes own
         transport; the streak is HELD, not reset — unobservable ≠ healthy)
-      - ``status != "ok"`` (indeterminate: <2 contributing gateways reachable)
-        → None, HOLD streak — you CANNOT observe a cross-gateway dup when you
-        can't see ≥2 gateways, so this must NEVER read as a healthy "0 dups"
+      - ``status == "unavailable"`` (no rollup file — every box runs a map, so
+        a NON-manager answers 200 with this, it is not a transport error) →
+        None, HOLD, disposition ``inert``: structurally unobservable here, and
+        a legitimately-absent organ is not a blind one
+      - ``status`` otherwise != ``"ok"`` (indeterminate: <2 contributing
+        gateways reachable) → None, HOLD streak, disposition ``indeterminate``
+        carrying the JOIN's OWN ``indeterminate_reason`` — you CANNOT observe a
+        cross-gateway dup when you can't see ≥2 gateways, so this must NEVER
+        read as a healthy "0 dups"
       - ``freshness.stale`` (collector cron dead → frozen verdict) → None, HOLD
       - ``fleet_human_duplicate_pairs`` missing (a pre-STEP-6 rollup) → fall
         back to the TOTAL ``fleet_duplicate_pairs`` so an un-upgraded manager
@@ -535,8 +580,7 @@ def probe_gateway_dup_degraded(
     # Cannot observe a cross-gateway dup → HOLD streak, stay INERT. A wired
     # probe treating indeterminate as green would be the exact #2 trap.
     if payload.get("status") != "ok":
-        note_disposition("gateway_dup_degraded", "indeterminate",
-                         reason="rollup indeterminate (<2 gateways reachable)")
+        _note_dups_rollup_not_ok("gateway_dup_degraded", payload)
         return None
     fresh = payload.get("freshness")
     if isinstance(fresh, dict) and fresh.get("stale") is True:
@@ -713,8 +757,10 @@ def probe_gateway_dual_homed_exposure(
     the fleet has deliberately accepted rather than coordinated away.
 
     Self-guards None: rollup unreachable/not-a-dict (indeterminate — HOLD,
-    this box may not be the manager), ``status != ok`` (<2 gateways: you
-    cannot observe dual-homing with one vantage), stale rollup, the field
+    this box may not be the manager), ``status == unavailable`` (no rollup
+    here at all — a non-manager box, so ``inert``, not blind), ``status``
+    otherwise != ok (<2 gateways: you cannot observe dual-homing with one
+    vantage — indeterminate, carrying the JOIN's own reason), stale rollup, the field
     ABSENT (an un-upgraded JOIN is indeterminate, never a forged zero —
     honest_failure_modes #2/#4), and no NEW recipient since last tick.
 
@@ -740,9 +786,9 @@ def probe_gateway_dual_homed_exposure(
                          reason="dups payload not a dict")
         return None
     if payload.get("status") != "ok":
-        note_disposition("gateway_dual_homed_exposure", "indeterminate",
-                         reason="rollup indeterminate (<2 gateways reachable) "
-                                "— dual-homing needs two vantages to observe")
+        _note_dups_rollup_not_ok(
+            "gateway_dual_homed_exposure", payload,
+            suffix=" — dual-homing needs two vantages to observe")
         return None
     fresh = payload.get("freshness")
     if isinstance(fresh, dict) and fresh.get("stale") is True:

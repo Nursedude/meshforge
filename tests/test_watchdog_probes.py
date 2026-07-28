@@ -6973,6 +6973,126 @@ class TestGatewayDupTransportIndeterminate:
         assert "manager" in got["reason"]
 
 
+class TestDupsRollupUnavailableIsInertNotBlind:
+    """2026-07-28 — ``unavailable`` and ``indeterminate`` are DIFFERENT states
+    and must not share a label.
+
+    Both probes used to gate on ``status != "ok"`` and emit one hardcoded
+    reason, "rollup indeterminate (<2 gateways reachable)". But every box runs
+    a map, so a NON-manager box answers 200 with ``{"status":"unavailable"}``
+    — meaning that reason was FALSE on 6 of the fleet's 9 boxes, which emitted
+    permanent ``detector_blind_any`` noise. The cost is not the noise: it is
+    that a REAL <2-gateway coverage loss on the manager rendered
+    IDENTICALLY to it, so the collapse destroyed the signal these probes
+    exist to carry.
+
+    ``unavailable`` is structural and permanent here → ``inert`` (the
+    ``detector_blind_any`` annotation: "a legitimately-absent organ is not a
+    blind one"). ``indeterminate`` stays ``indeterminate`` and now carries the
+    JOIN's OWN reason, which names the boxes that went uncovered.
+    """
+
+    UNAVAILABLE = {
+        "status": "unavailable",
+        "reason": ("no rollup yet — fleet_dup_collector has not run on this "
+                   "box (wire its cron on the manager)"),
+    }
+    INDETERMINATE = {
+        "status": "indeterminate",
+        "indeterminate_reason": ("only 1 gateway view(s) with confirmed "
+                                 "deliveries reachable (need >=2 ...); "
+                                 "uncovered: moc3(unreachable)"),
+        "fleet_duplicate_pairs": 0,
+    }
+
+    def _dual_homed(self, payload, tmp_path):
+        from utils.watchdog_probes_gateway import (
+            probe_gateway_dual_homed_exposure,
+        )
+        collect = _fresh_dispositions()
+        sig = probe_gateway_dual_homed_exposure(
+            state_path=str(tmp_path / "dh.json"), payload=payload)
+        assert sig is None
+        return collect()["gateway_dual_homed_exposure"]
+
+    def _dup(self, payload, tmp_path, name="d.json"):
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(payload)):
+            sig = probe_gateway_dup_degraded(
+                debounce_path=str(tmp_path / name))
+        assert sig is None
+        return collect()["gateway_dup_degraded"]
+
+    # ── gateway_dup_degraded ────────────────────────────────────────────
+    def test_dup_unavailable_is_inert(self, tmp_path):
+        got = self._dup(self.UNAVAILABLE, tmp_path)
+        assert got["disp"] == "inert"
+        assert "manager" in got["reason"]
+
+    def test_dup_unavailable_reason_never_claims_two_gateways(self, tmp_path):
+        """THE regression pin: the old reason lied about WHY it was blind."""
+        got = self._dup(self.UNAVAILABLE, tmp_path)
+        assert "<2 gateways" not in got["reason"]
+
+    def test_dup_unavailable_holds_streak(self, tmp_path):
+        """inert != clean — an unobservable tick must not reset the debounce."""
+        sp = str(tmp_path / "dup.json")
+        ok = {"status": "ok", "fleet_duplicate_pairs": 1,
+              "fleet_duplicate_deliveries": 1, "covered_hosts": ["moc", "moc3"],
+              "freshness": {"age_s": 5.0, "stale": False,
+                            "threshold_s": 1800.0},
+              "fleet_duplicates": []}
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(ok)):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None  # 1
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(self.UNAVAILABLE)):
+            assert probe_gateway_dup_degraded(debounce_path=sp) is None
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(ok)):
+            # streak HELD at 1, so this tick reaches 2 and fires
+            assert probe_gateway_dup_degraded(debounce_path=sp) is not None
+
+    def test_dup_indeterminate_carries_the_join_reason(self, tmp_path):
+        got = self._dup(self.INDETERMINATE, tmp_path)
+        assert got["disp"] == "indeterminate"
+        assert "uncovered: moc3(unreachable)" in got["reason"]
+
+    def test_dup_indeterminate_without_join_reason_falls_back(self, tmp_path):
+        got = self._dup({"status": "indeterminate"}, tmp_path)
+        assert got["disp"] == "indeterminate"
+        assert "<2 gateways reachable" in got["reason"]
+
+    def test_dup_unknown_status_is_indeterminate_not_inert(self, tmp_path):
+        """An unrecognised status must not decay into a benign-looking inert."""
+        got = self._dup({"status": "wat"}, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+    # ── gateway_dual_homed_exposure ─────────────────────────────────────
+    def test_dual_homed_unavailable_is_inert(self, tmp_path):
+        got = self._dual_homed(self.UNAVAILABLE, tmp_path)
+        assert got["disp"] == "inert"
+        assert "manager" in got["reason"]
+
+    def test_dual_homed_unavailable_reason_never_claims_two_gateways(
+            self, tmp_path):
+        got = self._dual_homed(self.UNAVAILABLE, tmp_path)
+        assert "<2 gateways" not in got["reason"]
+
+    def test_dual_homed_indeterminate_carries_join_reason_and_suffix(
+            self, tmp_path):
+        got = self._dual_homed(self.INDETERMINATE, tmp_path)
+        assert got["disp"] == "indeterminate"
+        assert "uncovered: moc3(unreachable)" in got["reason"]
+        assert "two vantages" in got["reason"]
+
+    def test_dual_homed_unknown_status_is_indeterminate_not_inert(
+            self, tmp_path):
+        got = self._dual_homed({"status": "wat"}, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+
 class TestFlowProbesOperatorUnresolvable:
     """G2 — sdir=None means the OPERATOR was unresolvable (early-boot / no
     user bus), not a positively-observed absent state dir. On a
