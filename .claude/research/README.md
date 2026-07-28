@@ -61,7 +61,8 @@
 | Document | Description |
 |----------|-------------|
 | `session_rns_address_in_use.md` | RNS address-in-use troubleshooting session |
+| `pytest_exit_status_flap_2026_07_28.md` | pytest exits 0 while reporting a failure (~50% of full-suite runs, byte-identical output). Its own `sessionfinish` hook says `TESTS_FAILED: 1` — the status is lost in CPython shutdown, where ~25 leaked non-daemon `ThreadPoolExecutor` workers are joined. Heisenbug: instrumentation suppresses it. 6 hypotheses refuted by measurement; cure is consumer-side (no gate may trust an exit code alone) |
 
 ---
 
-*23 research documents. Updated 2026-06-03.*
+*24 research documents. Updated 2026-07-28.*
