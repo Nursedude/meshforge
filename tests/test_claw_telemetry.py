@@ -470,3 +470,99 @@ class TestBatteryCapture:
                        battery_reply=None)
         assert t["battery"] is None and t["ok"] is True
         assert "battery" not in t["errors"]
+
+
+class TestLoraWatchList:
+    """Per-id last-heard — the field that closes the RF-ears blind spot (2026-07-29).
+
+    `mesh_heard_age_s` answers "is the channel silent?". It CANNOT answer "is our
+    own transmitter reaching the air?" — measured that day: neighbours chattering
+    at 6-8 pkt/min held heard_age_s at 5 s on both claws, so a dead PA on our own
+    gateway would leave every silence check clean. The watch list reports each
+    tracked node id separately.
+
+    THREE states must stay distinguishable. Merging any two rebuilds the blind
+    spot, so each is pinned here.
+    """
+
+    def test_absent_field_is_none_not_empty(self):
+        """Old firmware / no ids configured: we know NOTHING about our own
+        transmitter. That must not read as an empty set of problems."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, "
+                             "runts 0, last from=!16cd7438 to=!ffffffff "
+                             "ch=0x08 rssi=-104 snr=4.2)")
+        assert d is not None
+        assert d["watched"] is None, "absent watch list must be None, not {}"
+
+    def test_never_heard_is_never_not_zero(self):
+        """THE signal. A watched id not heard since radio start reports never —
+        age_s 0 would read as 'heard just now', which is the exact
+        degraded-value-overlaps-healthy trap."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, "
+                             "runts 0, last from=!16cd7438 to=!ffffffff ch=0x08 "
+                             "rssi=-104 snr=4.2) watch=!32962f10:never")
+        w = d["watched"]
+        assert w is not None
+        assert w["!32962f10"]["never"] is True
+        assert w["!32962f10"]["age_s"] is None, "never-heard must NOT be age 0"
+
+    def test_heard_id_carries_age_pkts_rssi(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, "
+                             "runts 0, last from=!16cd7438 to=!ffffffff ch=0x08 "
+                             "rssi=-104 snr=4.2) watch=!32962f10:12/45@-97")
+        w = d["watched"]["!32962f10"]
+        assert w["age_s"] == 12 and w["pkts"] == 45
+        assert w["rssi_dbm"] == -97 and w["never"] is False
+
+    def test_mixed_heard_and_never(self):
+        """The realistic case: one fleet radio heard, another silent. The silent
+        one is the finding and must survive alongside the healthy one."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, "
+                             "runts 0, last from=!16cd7438 to=!ffffffff ch=0x08 "
+                             "rssi=-104 snr=4.2) "
+                             "watch=!32962f10:12/45@-97,!ddfb8065:never")
+        w = d["watched"]
+        assert w["!32962f10"]["age_s"] == 12
+        assert w["!ddfb8065"]["never"] is True
+
+    def test_channel_busy_while_our_radio_is_never_heard(self):
+        """The 2026-07-29 blind spot, expressed as data: the channel is alive
+        (heard_age_s 5, 1300 pkts) while OUR node has never been heard. Before
+        this field the two were indistinguishable."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, "
+                             "runts 0, last from=!16cd7438 to=!ffffffff ch=0x08 "
+                             "rssi=-104 snr=4.2) watch=!32962f10:never")
+        assert d["heard_age_s"] == 5, "channel demonstrably busy"
+        assert d["watched"]["!32962f10"]["never"] is True, "our radio unheard"
+
+    def test_unparseable_entry_is_omitted_not_guessed(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1 pkts, crc_err 0, "
+                             "runts 0, last from=!a to=!b ch=0x08 rssi=-1 snr=1) "
+                             "watch=!32962f10:garbage,!ddfb8065:7/2@-50")
+        w = d["watched"]
+        assert "!32962f10" not in w, "guessed a value for an unparseable entry"
+        assert w["!ddfb8065"]["age_s"] == 7
+
+    def test_dropped_ids_are_surfaced(self):
+        """Ids past the firmware cap are reported, not silently ignored."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 1 pkts, crc_err 0, "
+                             "runts 0, last from=!a to=!b ch=0x08 rssi=-1 snr=1) "
+                             "watch=!32962f10:never watch_dropped=2")
+        assert d["watch_dropped"] == 2
+
+    def test_never_heard_branch_on_a_deaf_radio(self):
+        """The heard-nothing-at-all stats branch must still carry the watch list,
+        or a totally deaf claw would look like 'not configured'."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 900 (heard 0 pkts since radio "
+                             "start, crc_err 0, runts 0, 906.875 MHz) "
+                             "watch=!32962f10:never")
+        assert d["heard_age_s"] == 900
+        assert d["watched"]["!32962f10"]["never"] is True

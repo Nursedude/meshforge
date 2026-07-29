@@ -110,6 +110,61 @@ _RE_LORA_RUNTS = re.compile(r"runts\s*(\d+)", re.IGNORECASE)
 _RE_LORA_FROM = re.compile(r"last from=(![0-9a-f]+)", re.IGNORECASE)
 _RE_LORA_RSSI = re.compile(r"rssi=(-?\d+)", re.IGNORECASE)
 _RE_LORA_SNR = re.compile(r"snr=(-?[\d.]+)", re.IGNORECASE)
+# watch=!32962f10:12/45@-104,!ddfb8065:never  (firmware >= the 2026-07-29 build)
+_RE_LORA_WATCH = re.compile(r"watch=([^\s]+)", re.IGNORECASE)
+_RE_LORA_WATCH_DROPPED = re.compile(r"watch_dropped=(\d+)", re.IGNORECASE)
+
+
+def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
+    """Per-id last-heard from the WATCH LIST, or None when absent.
+
+    THE DISTINCTION, and the reason this is not a plain dict of ints: there are
+    THREE states, and merging any two of them recreates the blind spot this
+    field exists to close.
+
+      * field ABSENT      -> None. Old firmware, or no ids configured. We do not
+                             know anything about our own transmitter.
+      * id present, never -> age_s None + ``never: True``. The id IS watched and
+                             has NOT been heard since radio start. This is the
+                             signal (a dead PA / mute gateway), and it must never
+                             render as 0, which reads as "heard just now".
+      * id present, aged  -> age_s int. Heard that many seconds ago.
+
+    mesh_heard_age_s cannot make this distinction: with neighbours chattering at
+    6-8 pkt/min it sits at ~5 s while our own radio is silent, so every
+    silence check reads clean through a total TX failure (2026-07-29 finding).
+    """
+    m = _RE_LORA_WATCH.search(result)
+    if not m:
+        return None
+    out: Dict[str, Any] = {}
+    for tok in m.group(1).split(","):
+        tok = tok.strip()
+        if not tok or ":" not in tok:
+            continue
+        node, _, rest = tok.partition(":")
+        node = node.strip()
+        if not node:
+            continue
+        if rest.strip().lower().startswith("never"):
+            out[node] = {"age_s": None, "pkts": 0, "rssi_dbm": None, "never": True}
+            continue
+        age_part, _, tail = rest.partition("/")
+        pkts_part, _, rssi_part = tail.partition("@")
+        try:
+            age = int(age_part)
+        except ValueError:
+            continue                     # unparseable -> omit, never guess 0
+        try:
+            pkts = int(pkts_part)
+        except ValueError:
+            pkts = None
+        try:
+            rssi = int(float(rssi_part))
+        except ValueError:
+            rssi = None
+        out[node] = {"age_s": age, "pkts": pkts, "rssi_dbm": rssi, "never": False}
+    return out or None
 
 
 def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
@@ -138,6 +193,11 @@ def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
         "last_from": _str(_RE_LORA_FROM, result),
         "last_rssi_dbm": _int(_RE_LORA_RSSI, result),
         "last_snr": float(snr_m.group(1)) if snr_m else None,
+        # None (not {}) when the firmware predates the watch list or no ids are
+        # configured — "we cannot see our own transmitter" must not read as
+        # "our transmitter is fine".
+        "watched": _parse_watch(result),
+        "watch_dropped": _int(_RE_LORA_WATCH_DROPPED, result),
     }
 
 
