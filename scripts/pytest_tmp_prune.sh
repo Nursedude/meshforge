@@ -75,13 +75,47 @@ fi
 now=$(date +%s)
 before_kb=$(du -sk "$BASE" 2>/dev/null | cut -f1); before_kb=${before_kb:-0}
 
+# Is a pytest actually RUNNING as this user? (2026-07-29)
+#
+# The safety property was never "the lock file is fresh" — it is "a pytest is
+# using this directory right now". Lock age was a proxy, and on this fleet it
+# is a BAD one: pytest removes its lock in an atexit handler, and this
+# interpreter's shutdown is demonstrably unreliable here (the same race that
+# makes its exit status untrustworthy — tests/test_honest_status_suite_leg.sh).
+# So locks are routinely STRANDED. Measured on the manager the day the true
+# 3-day LOCK_TIMEOUT landed: 15 run dirs / 1.9 GB of tmpfs, 12 fresh locks, ZERO
+# pytest processes — the pruner freed nothing while tmpfs filled. Correcting the
+# constant made the tool safe and useless at the same time.
+#
+# Returns 0 = a pytest is running OR liveness is UNDETERMINABLE, 1 = definitively
+# none. Undeterminable resolves to "assume running" so it SKIPS: "I could not
+# tell" is not "nothing is running" (honest_failure_modes #2). Evaluated ONCE
+# per run, not per directory — cheaper, and it cannot flip mid-loop.
+#
+# ⚠️ The pattern must not match THIS script: its own path ends in
+# "pytest_tmp_prune.sh", and a naive `pgrep -f pytest` matches that substring,
+# so the pruner would see itself, conclude a pytest is running, and skip
+# forever. Anchoring on a path/word boundary FOLLOWED BY whitespace-or-end is
+# what excludes it (pinned by a test that runs the real pgrep).
+_pytest_running() {
+  command -v pgrep >/dev/null 2>&1 || return 0        # cannot tell -> assume yes
+  pgrep -u "$(id -u)" -f '(^|/)pytest([[:space:]]|$)|-m[[:space:]]+pytest([[:space:]]|$)' \
+    >/dev/null 2>&1
+  case $? in
+    0) return 0 ;;   # match: a pytest is running
+    1) return 1 ;;   # pgrep's "no match" — definitively none
+    *) return 0 ;;   # pgrep errored: undeterminable -> assume yes
+  esac
+}
+if _pytest_running; then PYTEST_LIVE=1; else PYTEST_LIVE=0; fi
+
 # Newest-first BY RUN NUMBER, not mtime: the number is the sequence pytest
 # itself assigns, and mtime moves when anything inside is touched.
 mapfile -t dirs < <(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null \
                     | sed 's/.*pytest-//' | sort -rn | sed "s|^|$BASE/pytest-|")
 total=${#dirs[@]}
 
-pruned=0; skipped_locked=0; failed=0
+pruned=0; skipped_locked=0; stranded=0; failed=0
 i=0
 for d in "${dirs[@]}"; do
   i=$((i + 1))
@@ -90,8 +124,14 @@ for d in "${dirs[@]}"; do
   if [ -e "$lock" ]; then
     lock_age=$(( now - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
     if [ "$lock_age" -lt "$LOCK_MAX_AGE_S" ]; then
-      skipped_locked=$((skipped_locked + 1))   # a live run may own this
-      continue
+      if [ "$PYTEST_LIVE" = 1 ]; then
+        skipped_locked=$((skipped_locked + 1))   # a live run may own this
+        continue
+      fi
+      # Fresh lock, but NO pytest is running: nothing can own it. Stranded by a
+      # shutdown that never finished — reclaimable, and counted separately so
+      # the reclaim is visible rather than silently folded into "pruned".
+      stranded=$((stranded + 1))
     fi
   fi
   if rm -rf "$d" 2>/dev/null; then pruned=$((pruned + 1)); else failed=$((failed + 1)); fi
@@ -101,7 +141,8 @@ after_kb=$(du -sk "$BASE" 2>/dev/null | cut -f1); after_kb=${after_kb:-0}
 freed_mb=$(( (before_kb - after_kb) / 1024 ))
 remain=$(ls -d "$BASE"/pytest-[0-9]* 2>/dev/null | wc -l)
 detail="pruned $pruned of $total dir(s), freed ${freed_mb} MB, $remain remain"
-[ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s — live run)"
+[ "$skipped_locked" -gt 0 ] && detail="$detail, $skipped_locked skipped (lock < ${LOCK_MAX_AGE_S}s, pytest IS running)"
+[ "$stranded" -gt 0 ] && detail="$detail, $stranded stranded (fresh lock, no live pytest — shutdown left it behind)"
 
 if [ "$failed" -gt 0 ]; then
   say FAIL "$detail, $failed could NOT be removed"

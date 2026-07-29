@@ -28,6 +28,17 @@ run() {
 
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }
 
+STUB="$TMP/stubbin"; mkdir -p "$STUB"
+run_pgrep() {  # $1 = exit code the stub pgrep should return ("" = real pgrep)
+  if [ -n "$1" ]; then printf '#!/usr/bin/env bash\nexit %s\n' "$1" > "$STUB/pgrep"
+                       chmod +x "$STUB/pgrep"; _p="$STUB:$PATH"
+  else rm -f "$STUB/pgrep"; _p="$PATH"; fi
+  PATH="$_p" PYTEST_TMP_BASE="$BASE" CRON_VERDICT_LOG="$VERDICTS" \
+    CRON_VERDICT_BIN="$HERE/../scripts/cron_verdict.sh" HOME="$TMP" \
+    bash "$SCRIPT" 2>&1
+}
+
+
 # pytest's OWN lock window, asked of pytest — every age below is expressed
 # relative to this, so no test re-hardcodes it either.
 WANT_LOCK="$(python3 - <<'PY' 2>/dev/null
@@ -49,7 +60,8 @@ check "reports what it pruned" "$(echo "$out" | grep -q 'pruned 4 of 7' && echo 
 BASE="$TMP/b"; mkdir -p "$BASE"
 for n in 1 2 3 4 5 6; do mkrun $n; done
 mkrun 1 60          # re-stamp #1 with a 60-second-old lock
-out="$(run)"
+out="$(run_pgrep 0)"   # stub: a pytest IS running — the condition these two
+                       # assertions NAME but never used to establish
 check "a dir with a FRESH lock survives (live pytest)" \
   "$([ -d "$BASE/pytest-1" ] && echo ok)"
 check "and the skip is stated, not silent" \
@@ -92,17 +104,90 @@ check "fallback lock window is test-pinned to pytest's LOCK_TIMEOUT (${WANT_LOCK
 BASE="$TMP/e"; mkdir -p "$BASE"
 for n in 1 2 3 4 5 6; do mkrun $n; done
 mkrun 1 30          # fresh lock -> skipped, so the window gets reported
-out="$(run)"
+out="$(run_pgrep 0)"   # skip requires a LIVE pytest now, not just a fresh lock
 check "the window it actually used is DERIVED from pytest at runtime" \
   "$(echo "$out" | grep -qE "lock < *${WANT_LOCK}s" && echo ok)"
 
 export PYTEST_TMP_LOCK_AGE_S=60
-out="$(run)"
+out="$(run_pgrep 0)"
 unset PYTEST_TMP_LOCK_AGE_S
 check "the skip message states the REAL window, not a hardcoded 3h" \
   "$(echo "$out" | grep -qE 'lock < *60s' && echo ok)"
 check "and the stale '<3h' literal is gone" \
   "$(echo "$out" | grep -q '<3h' && echo '' || echo ok)"
+
+# ── the LIVENESS gate: a lock only protects a LIVE run ───────────────────
+#
+# WHY (measured 2026-07-29, right after correcting LOCK_TIMEOUT to its true 3
+# days): the manager held 15 run dirs / 1.9 GB of tmpfs and the pruner freed
+# ZERO — 12 locks were younger than the window and NO pytest was running. Every
+# one was STRANDED, left by an interpreter whose atexit never completed, the
+# same shutdown unreliability that produces the exit-status flap. On this fleet
+# stranded locks are the NORM, so a lock-age-only guard refuses to prune for
+# three days while tmpfs fills. The correct constant made the tool ineffective.
+#
+# The real safety property was never "the lock is fresh" — it is "a pytest is
+# using this directory RIGHT NOW". Gate on that. Unobservable liveness must
+# resolve to SKIP, never to prune (honest_failure_modes #2): "I could not tell"
+# is not "nothing is running".
+# 1. fresh lock + NO pytest alive => the lock is stranded => PRUNE.
+#    Driven by a STUB pgrep reporting "no match" (rc 1). It must be a stub:
+#    when this harness runs under the pytest wrapper there IS a live pytest —
+#    the suite itself — so a real-pgrep version of this case would assert the
+#    opposite of the truth depending on how it was invoked. (It did, exactly
+#    once, before this comment existed.)
+BASE="$TMP/live1"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkrun 1 60           # 60s-old lock — far inside the 3-day window
+out="$(run_pgrep 1)"
+check "fresh lock + no live pytest => pruned (lock was stranded)" \
+  "$([ -d "$BASE/pytest-1" ] && echo '' || echo ok)"
+check "stranded locks are reported, not silently reclaimed" \
+  "$(echo "$out" | grep -q 'stranded' && echo ok)"
+
+# 1b. THE SELF-MATCH TRAP, tested on the PATTERN itself rather than through the
+#     pruner's behaviour — so it holds no matter what is running on the box.
+#     This script's own path ends in "pytest_tmp_prune.sh"; a naive
+#     `pgrep -f pytest` matches that substring, so the pruner would see ITSELF,
+#     conclude a pytest is running, and skip forever. The pattern is read OUT
+#     of the script so the two cannot drift.
+PAT="$(grep -o "pgrep -u .* -f '[^']*'" "$SCRIPT" | sed "s/.*-f '//; s/'$//")"
+check "liveness pattern was extracted from the script" "$([ -n "$PAT" ] && echo ok)"
+check "pattern does NOT match the pruner's OWN cmdline (the self-match trap)" \
+  "$(printf '%s' "/bin/bash $SCRIPT" | grep -Eq "$PAT" && echo '' || echo ok)"
+check "pattern does NOT match a sibling like pytest_tmp_prune.sh alone" \
+  "$(printf '%s' "pytest_tmp_prune.sh" | grep -Eq "$PAT" && echo '' || echo ok)"
+check "pattern DOES match a real pytest invocation" \
+  "$(printf '%s' "/usr/bin/pytest tests/ -q" | grep -Eq "$PAT" && echo ok)"
+check "pattern DOES match 'python3 -m pytest'" \
+  "$(printf '%s' "/usr/bin/python3 -m pytest tests/ -q" | grep -Eq "$PAT" && echo ok)"
+
+# 2. fresh lock + a pytest IS alive => skip. The safety property, preserved.
+BASE="$TMP/live2"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkrun 1 60
+out="$(run_pgrep 0)"          # stub pgrep: match found => pytest running
+check "fresh lock + live pytest => SKIPPED (never delete a live run)" \
+  "$([ -d "$BASE/pytest-1" ] && echo ok)"
+check "and the skip is stated" \
+  "$(echo "$out" | grep -q 'skipped' && echo ok)"
+
+# 3. liveness UNDETERMINABLE (pgrep errors) => skip, never prune.
+BASE="$TMP/live3"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkrun 1 60
+out="$(run_pgrep 2)"          # pgrep rc>1 = error, not "no match"
+check "liveness unobservable => SKIPPED (unobservable is not 'nothing runs')" \
+  "$([ -d "$BASE/pytest-1" ] && echo ok)"
+
+# 4. an OLD lock is pruned even while a pytest runs — it cannot be that run's,
+#    and this is the pre-existing behaviour the liveness gate must not weaken.
+BASE="$TMP/live4"; mkdir -p "$BASE"
+for n in 1 2 3 4 5; do mkrun $n; done
+mkrun 1 $((WANT_LOCK + 3600))
+run_pgrep 0 >/dev/null
+check "stale lock still pruned even with a live pytest" \
+  "$([ -d "$BASE/pytest-1" ] && echo '' || echo ok)"
 
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \
