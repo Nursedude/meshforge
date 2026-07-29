@@ -28,6 +28,7 @@ Checks:
 - MF024: version SSOT (src/__version__.py) vs pyproject/README badge+heading drift (the 4-way-drift guard; delegates to scripts/version_consistency_check.py)
 - MF025: file-size ratchet — src/ python files over 1,500 lines (frozen 2026-07-13 baseline for the 5 known offenders, which may only shrink; split the file, never raise the cap)
 - MF026: config/state torn-write guard — os.O_TRUNC banned + non-atomic config `open("w")` ratcheted vs a frozen baseline (route through utils.paths.atomic_write_text; ported from the client repo's MED3 config-atomicity rule)
+- MF027: probe fail-dark guard — in probe_* functions, an except-handler returning None without note_disposition (THE #80 class: degraded state reads as 'all is well' forever; build:fix doctrine 2026-07-29)
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -1446,6 +1447,66 @@ def check_bounded_collect_chokepoint(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
+def check_probe_fail_dark(files: List[str],
+                          repo_root: Optional[str] = None) -> List[LintIssue]:
+    """MF027: a probe's error path must leave a witness, never go dark.
+
+    THE defect class (#80: 18/18 findings one class; build:fix doctrine
+    2026-07-29): a degraded internal state mapped to a valid-looking value.
+    In a ``probe_*`` function, an ``except`` handler that ``return None``
+    (or bare ``return``) WITHOUT calling ``note_disposition`` in the same
+    handler is byte-identical to "all is well" at every consumer — the
+    observation channel failed and nothing can ever see that it failed
+    (honest_failure_modes #2/#9). ``return Signal(...)`` from a handler is
+    the opposite of dark (the probe firing) and is deliberately allowed;
+    helpers that are not ``probe_*`` entry points own their own contracts.
+
+    Scope: src/utils/watchdog_probe*.py. AST-based; a file that fails to
+    parse is skipped here (the syntax error fails the commit elsewhere).
+    Compiled from prose (the checklist) into a gate per the doctrine's own
+    rule 1: gated classes stop recurring, prose rules do not.
+    """
+    issues: List[LintIssue] = []
+    for path in files:
+        base = os.path.basename(path)
+        if not (base.startswith('watchdog_probe') and base.endswith('.py')):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                tree = ast.parse(fh.read())
+        except (OSError, SyntaxError):
+            continue
+        for fn in ast.walk(tree):
+            if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and fn.name.startswith('probe_')):
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                dark = [
+                    n for n in ast.walk(node) if isinstance(n, ast.Return)
+                    and (n.value is None
+                         or (isinstance(n.value, ast.Constant)
+                             and n.value.value is None))
+                ]
+                if not dark:
+                    continue
+                called = {
+                    getattr(c.func, 'id', getattr(c.func, 'attr', ''))
+                    for c in ast.walk(node) if isinstance(c, ast.Call)
+                }
+                if 'note_disposition' not in called:
+                    issues.append(LintIssue(
+                        path, node.lineno, Severity.ERROR, 'MF027',
+                        f"{fn.name}: except-handler returns None with no "
+                        f"note_disposition — a failed observation channel "
+                        f"reads as 'all is well' at every consumer, forever "
+                        f"(fail-dark; honest_failure_modes #2/#9). Note a "
+                        f"disposition ('indeterminate'/'inert' with the "
+                        f"reason) before returning."))
+    return issues
+
+
 def main():
     parser = argparse.ArgumentParser(description='MeshForge Linter')
     parser.add_argument('files', nargs='*', help='Files to lint')
@@ -1530,6 +1591,12 @@ def main():
     # it in both whole-tree and --staged modes — an unbounded interface create
     # sneaking into a serving path must always fail.
     issues.extend(check_bounded_collect_chokepoint())
+
+    # MF027: probe fail-dark guard (except-handler returns None with no
+    # note_disposition witness). Cheap AST pass over only the watchdog_probe*
+    # files in the selection; runs in both modes — a dark error path must
+    # fail in the commit that writes it, not in the review that finds it.
+    issues.extend(check_probe_fail_dark(files))
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}

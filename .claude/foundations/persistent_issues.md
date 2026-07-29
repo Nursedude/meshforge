@@ -191,6 +191,7 @@ def test_rns(self): ...
 | MF014 | Operator-specific values (hostnames, personal email, `/home/<user>/`) — break repo portability |
 | MF019 | `RNS.Reticulum()` constructed outside the chokepoint (use `open_reticulum()` from `utils.rns_init`; #68/#69) |
 | MF021 | `subprocess`/`systemctl`/`os.system`/`Popen`/`shell=True` in mini-dudeai engine + built-in sources/actions (observation-only invariant; #79) |
+| MF027 | `probe_*` except-handler returning None with no `note_disposition` witness — fail-dark, THE #80 class (build:fix doctrine 2026-07-29); pre-commit also prints the honest_failure_modes checklist when a commit adds `except` lines to monitor code |
 
 ### Layer 2: Regression Guard Tests (`tests/test_regression_guards.py`)
 - `TestTCPConnectionContract` — No new direct TCPInterface
@@ -469,22 +470,14 @@ Quick check: `wc -l /proc/<pid>/maps` — climbing over 30 min = leaking, flat
 ---
 
 
-## node cache dropped `service_type` on load — the false "NEVER heard" page (2026-07-21)
+## node cache dropped `service_type` on load (2026-07-21) — row summary; full body in archive
 
-`to_dict()` wrote `service_type`; `_load_cache()` dropped it — **honest_failure_
-modes #4, a writer with no reader**. Every gateway restart erased every cached
-node's RNS service type, so `probe_lxmf_propagation_node_dark` fired UNHEARD
-against a node heard 7× in 25h. Restart-mandated adoption made the false page
-structural. Fixed MF `e383547c` / MA `87cae734`.
-
-**Decision tell**: UNHEARD + node otherwise alive = this cache gap, NOT a
-typo'd hash. ⚠️ **Three defects, all needed**: the loader drop; `_merge_node()`
-never refreshing `service_*` (unrecoverable once lost, NOT self-healing); and
-`_merge_node` treating a once-recorded name as PERMANENT, hiding the parser
-fix (cure: `name_is_self_reported`, MF `48f5497d` / MA `0657c993`).
-⚠️ **`rnprobe lxmf.propagation` is NOT a delivery test** — 100% loss against a
-healthy node; prove delivery at the LXMF layer (`.claude/plans/
-propagation_drill.py`). Full body in archive.
+Writer-with-no-reader (#4): `to_dict()` wrote `service_type`, `_load_cache()`
+dropped it → false UNHEARD page vs a node heard 7x/25h. Three defects, all
+needed (loader drop; `_merge_node` never refreshing `service_*`; once-recorded
+name PERMANENT). **Tell**: UNHEARD + node otherwise alive = this cache gap.
+⚠️ `rnprobe lxmf.propagation` is NOT a delivery test. MF `e383547c`/`48f5497d`,
+MA `87cae734`/`0657c993`. Full body: `persistent_issues_archive.md`.
 
 ---
 

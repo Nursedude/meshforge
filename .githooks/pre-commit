@@ -98,4 +98,23 @@ if [ -f .claude/settings.json ]; then
     fi
 fi
 
+# Error-path checklist advisory (2026-07-29, build:fix doctrine): THE defect
+# class (#80 — degraded state mapped to a valid-looking value) is born in the
+# except-handlers of monitor code, and it was re-committed by a session that
+# had the prose rule loaded in context. Surface the write-time checklist at
+# the exact moment the class can be born — only then, so it never becomes
+# wallpaper. ADVISORY (never blocks): MF027 blocks the mechanical probe_*
+# subset; the checklist walk covers what a lint cannot see.
+_added_excepts=$(git diff --cached -U0 -- 'src/utils/watchdog_probe*.py' \
+                     'src/mini_dudeai/*.py' 'src/utils/watchdog_tracker.py' \
+                     2>/dev/null | grep -cE '^\+[^+].*\bexcept\b' || true)
+if [ "${_added_excepts:-0}" -gt 0 ]; then
+    echo ""
+    echo "ADVISORY: this commit adds ${_added_excepts} except-handler line(s) in monitor code."
+    echo "  Walk .claude/rules/honest_failure_modes.md over the diff (30s per item):"
+    echo "  does the degraded value overlap the healthy domain? absence of evidence"
+    echo "  is not recovery; every swallow leaves a probe-visible witness."
+    echo "  (MF027 catches only dark probe_* except-returns — this walk is the rest.)"
+fi
+
 echo "Pre-commit checks passed."
