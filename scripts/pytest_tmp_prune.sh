@@ -21,8 +21,10 @@
 # .claude/research/pytest_exit_status_flap_2026_07_28.md). This prune does not
 # depend on knowing the answer.
 #
-# SAFETY: never touches a run dir whose .lock is younger than pytest's own
-# LOCK_TIMEOUT — that dir may belong to a pytest running right now.
+# SAFETY: never touches a run dir that a LIVE pytest may own. A fresh .lock
+# alone is NOT the guard — pytest's atexit often fails to remove it here, so
+# fresh locks are routinely stranded. A fresh lock skips only while a pytest is
+# ACTUALLY RUNNING, and unobservable liveness skips too (see the gate below).
 #
 # Usage (crontab idiom — the script emits its own verdict; the `||` guard
 # catches the case where the script itself dies before it can speak):
