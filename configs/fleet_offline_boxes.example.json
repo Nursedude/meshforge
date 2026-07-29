@@ -1,0 +1,31 @@
+{
+  "_comment": "Membership + ssh user for scripts/fleet_offline_check.sh. Copy to ~/.config/meshforge/fleet_offline_boxes.json and fill in OPERATOR values — never commit those (MF014). An absent or unusable file makes the checker REFUSE to run (exit 78) rather than sweep an empty list, because 'nothing is down' about a fleet it never checked is indistinguishable from a healthy fleet.",
+
+  "_use_names_not_ips": "host SHOULD be a name resolvable through the managed /etc/hosts fleet block (gen_fleet_hosts.py + hourly self-heal), NOT a raw IP. On 2026-07-29 a hardcoded NAT-front IP here was one lease change from paging 'confirms DOWN' about a healthy box — and a sibling entry did exactly that for 3.5 h. A name follows the address; a copy of the address freezes.",
+
+  "_only_boxes_this_host_can_actually_reach": "Do NOT list a box the manager has no route to. This monitor judges by ssh failure, and an ssh failure over a channel with no route is BLINDNESS, not a confirmed outage. Boxes on an isolated subnet belong to the out-of-band claw witness (host_probe_targets), whose UNREACHABLE means real-down because it is on-subnet and whose lost-visibility case reports UNKNOWN.",
+
+  "ssh_user": "fleetuser",
+
+  "boxes": [
+    {
+      "name": "example-gateway",
+      "host": "example-gateway",
+      "services": ["meshtasticd", "meshforge-gateway"],
+      "tier": "critical",
+      "_tier": "critical = high priority, escalates to urgent, 1h re-page. quiet = default priority, no escalation, 2h re-page — for non-critical hobby boxes. Set per box HERE; it used to be a box name hardcoded in the script, which meant the tier could not follow a rename and no other box could ever be quiet."
+    },
+    {
+      "name": "example-map",
+      "host": "example-map",
+      "services": ["meshtasticd", "meshforge-maps"],
+      "tier": "critical"
+    },
+    {
+      "name": "example-hobby",
+      "host": "example-hobby",
+      "services": ["some-service"],
+      "tier": "quiet"
+    }
+  ]
+}
