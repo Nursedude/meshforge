@@ -118,54 +118,28 @@ def main() -> int:
     ids = _normalise(a.ids)
     print("watch ids to set: %s" % ",".join("!" + i for i in ids))
 
-    doc = _read_config(a.server, a.device, a.timeout)
-    before = doc.get("lora_watch_ids", "")
-    print("config read OK (%d keys; contents NOT printed — it holds the WiFi key)"
-          % len(doc))
-    print("  lora_watch_ids: %r -> %r" % (before, ",".join(ids)))
-    if before == ",".join(ids):
-        print("already set — nothing to do")
-        return 0
     if a.dry_run:
-        print("dry-run: no write performed")
+        print("dry-run: would send config_set lora_watch_ids=%s" % ",".join(ids))
         return 0
 
-    doc["lora_watch_ids"] = ",".join(ids)
-    body = json.dumps(doc, separators=(",", ":"))
-
-    # ⚠️ THE FIRMWARE REFUSES THIS, BY DESIGN, AND IT IS RIGHT TO.
-    # tool_file_write() hard-rejects path == /config.json so no remote tool can
-    # clobber the document holding the WiFi credential that keeps the claw on the
-    # bus. Discovered 2026-07-29 by attempting it: the write silently no-ops and
-    # only the verify-by-re-read catches it. Do NOT relax that guard to make this
-    # script work — weakening a credential protection to save a walk is the wrong
-    # trade. The sanctioned paths are:
-    #   (a) the claw's own config portal, on the claw's WiFi (writes LittleFS
-    #       directly, not through the tool layer), or
-    #   (b) a NARROW firmware tool that can set ONLY lora_watch_ids — honours the
-    #       guard's intent (protect secrets) while allowing a non-secret field to
-    #       be set remotely. Not built yet.
-    probe = _tool(a.server, a.device, {"tool": "file_write", "path": CONFIG_PATH,
-                                       "content": body}, a.timeout)
-    if "cannot overwrite config.json" in str(probe):
-        print("REFUSED BY FIRMWARE (correctly): config.json is tool-write "
-              "protected so no remote caller can drop the WiFi credential.")
-        print("  Set it instead via the claw's config portal on its own WiFi —")
-        print("  the field 'LoRa watch ids' is in the form as of this firmware.")
-        print("  Value to paste: %s" % ",".join(ids))
-        return 3
-
-    # VERIFY by re-reading, not by trusting the write reply.
-    again = _read_config(a.server, a.device, a.timeout)
-    got = again.get("lora_watch_ids", "")
-    if got != ",".join(ids):
-        print("FAILED: re-read shows %r, expected %r — restore from %s"
-              % (got, ",".join(ids), BACKUP_PATH))
+    # Uses the NARROW config_set tool (firmware >= the 2026-07-29 build): it sets
+    # ONE allowlisted non-secret key on-device, verifies by re-reading, and never
+    # echoes the document. The old approach — file_read + file_write of
+    # /config.json — is refused by the firmware BY DESIGN (no remote caller may
+    # clobber the file holding the WiFi credential), and rightly so.
+    resp = _tool(a.server, a.device,
+                 {"tool": "config_set", "key": "lora_watch_ids",
+                  "value": ",".join(ids)}, a.timeout)
+    text = str(resp)
+    print("device says: %s" % text[:200])
+    if "verified=yes" not in text:
+        print("FAILED: device did not confirm the write")
         return 1
-    if "wifi_ssid" not in again or not again.get("wifi_ssid"):
-        print("FAILED: re-read lost wifi_ssid — restore from %s NOW" % BACKUP_PATH)
+    if "wifi_ssid_intact=yes" not in text:
+        print("FAILED: device reports wifi_ssid NOT intact — reprovision via the "
+              "portal before rebooting it")
         return 1
-    print("VERIFIED by re-read: lora_watch_ids=%r, wifi_ssid intact" % got)
+    print("VERIFIED on-device: lora_watch_ids set, wifi_ssid intact")
     print("reboot the claw (or wait for its next restart) to arm the watch list")
     return 0
 
