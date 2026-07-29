@@ -212,5 +212,34 @@ check "generic fleet_hosts still used when no per-repo file exists" \
   "$(echo "$out" | grep -q "source: $FAKE_HOME/.config/meshforge/fleet_hosts +" && echo ok)"
 rm -f "$FAKE_HOME/.config/meshforge/fleet_hosts"
 
+# ── 10. an EMPTY fleet_hosts is not a fleet ──────────────────────────────
+#
+# A file that exists but lists no hosts was treated as a FOUND SSOT, so BOXES
+# collapsed to self while the fleet legs stayed eligible for PASS — the same
+# "one box reported as whole-fleet coverage" defect as the SELF-ONLY path,
+# entered through a different door. fleet_pull.sh:66 already refuses this case
+# out loud ("refusing the silent no-op"); the gate that VERIFIES the deploy
+# must not be laxer than the tool that PERFORMS it.
+#
+# The comments-only variant is the subtle one: stripping `#` comments leaves
+# blank lines, so the file is non-empty on disk and yields nothing.
+WD_FIX="$TMP/wd.json"; printf '{"ts": %s, "signals": []}\n' "$(date +%s)" > "$WD_FIX"
+for variant in empty comments-only; do
+  case "$variant" in
+    empty)         : > "$TMP/hostlist_none" ;;
+    comments-only) printf '# all boxes retired\n\n#moc1\n' > "$TMP/hostlist_none" ;;
+  esac
+  out="$(MESHFORGE_FLEET_HOSTS="$TMP/hostlist_none" HONEST_WD_PATH="$WD_FIX" \
+         FAKE_CURL_JSON='{"confirmation_rate": 0.5}' run)"
+  check "[$variant] provenance says the list has NO HOSTS, not that a fleet was found" \
+    "$(echo "$out" | grep -q 'no hosts listed' && echo ok)"
+  check "[$variant] drift leg is UNKNOWN, not a self-confirmed PASS" \
+    "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'UNKNOWN' && echo ok)"
+  check "[$variant] watchdog leg is UNKNOWN — one box is not a fleet" \
+    "$(echo "$out" | grep -E 'watchdog signals' | grep -q 'UNKNOWN' && echo ok)"
+  check "[$variant] conf_rate leg is UNKNOWN — assertion unverified fleet-wide" \
+    "$(echo "$out" | grep -E 'conf_rate' | grep -q 'UNKNOWN' && echo ok)"
+done
+
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

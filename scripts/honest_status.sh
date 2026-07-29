@@ -74,9 +74,21 @@ _hs_hosts_file() {
 if [ -n "${HONEST_BOXES:-}" ]; then
   BOXES="$HONEST_BOXES"; BOXES_SRC="HONEST_BOXES override"; FLEET_SSOT=1
 elif _hf="$(_hs_hosts_file)"; then
-  BOXES="$(sed 's/#.*//' "$_hf" | tr '\n' ' ' | tr -s ' ')"
-  BOXES="$(printf '%s %s' "$BOXES" "$SELF" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
-  BOXES_SRC="$_hf + self"; FLEET_SSOT=1
+  _hs_listed="$(sed 's/#.*//' "$_hf" | tr '\n' ' ' | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+  BOXES="$(printf '%s %s' "$_hs_listed" "$SELF" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+  if [ -z "$_hs_listed" ]; then
+    # The file EXISTS but lists nobody (empty, or every line commented out).
+    # Treating that as a found SSOT left BOXES = self while the fleet legs
+    # stayed eligible for PASS — the same "one box reported as whole-fleet
+    # coverage" defect as the SELF-ONLY path, entered through a different
+    # door. fleet_pull.sh:66 already refuses this case out loud ("refusing
+    # the silent no-op"); the gate that VERIFIES a deploy must not be laxer
+    # than the tool that PERFORMS it (2026-07-28 review residual).
+    BOXES_SRC="$_hf has no hosts listed — fleet legs cover 1 box (self)"
+    FLEET_SSOT=0
+  else
+    BOXES_SRC="$_hf + self"; FLEET_SSOT=1
+  fi
 else
   # No SSOT reachable. Check what we CAN (self) and say so — inventing a fleet
   # list here is how the 5-box lie happened. Narrow is fine; narrow that reads
