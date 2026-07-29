@@ -88,7 +88,7 @@ out="$(run)"
 check "fewer dirs than KEEP prunes nothing, reports OK" \
   "$(echo "$out" | grep -q 'OK.*pruned 0 of 2' && echo ok)"
 
-# ── the lock window is pytest's, not a second copy of it ────────────────
+# ── the lock window is PINNED to pytest's, drift caught HERE ─────────────
 #
 # The safety property above is only as good as the number it compares against.
 # That number WAS an independent hardcode of pytest's own LOCK_TIMEOUT
@@ -97,16 +97,22 @@ check "fewer dirs than KEEP prunes nothing, reports OK" \
 # outright the moment the window is overridden. If upstream raises LOCK_TIMEOUT
 # the pruner starts deleting live runs' temp dirs, which is exactly the flaky
 # suite the script's own header says is worse than the memory it reclaims.
-HAVE_FB="$(grep -oE 'LOCK_FALLBACK_S=[0-9]+' "$SCRIPT" | head -1 | cut -d= -f2)"
-check "fallback lock window is test-pinned to pytest's LOCK_TIMEOUT (${WANT_LOCK:-?})" \
+#
+# This pin — asking pytest ITSELF for the constant — is the ONE drift guard
+# (2026-07-28 review): a second, runtime python3+_pytest derivation on every
+# cron run guarded the same constant a third time, asked bare python3 rather
+# than the venv consumer-of-record, and cost an interpreter spawn per run on
+# every box for an answer that changes ~never.
+HAVE_FB="$(grep -oE 'LOCK_PINNED_S=[0-9]+' "$SCRIPT" | head -1 | cut -d= -f2)"
+check "pinned lock window matches pytest's own LOCK_TIMEOUT (${WANT_LOCK:-?})" \
   "$([ -n "$WANT_LOCK" ] && [ "$HAVE_FB" = "$WANT_LOCK" ] && echo ok)"
 
 BASE="$TMP/e"; mkdir -p "$BASE"
 for n in 1 2 3 4 5 6; do mkrun $n; done
 mkrun 1 30          # fresh lock -> skipped, so the window gets reported
 out="$(run_pgrep 0)"   # skip requires a LIVE pytest now, not just a fresh lock
-check "the window it actually used is DERIVED from pytest at runtime" \
-  "$(echo "$out" | grep -qE "lock < *${WANT_LOCK}s" && echo ok)"
+check "the window it actually used is the pinned one" \
+  "$(echo "$out" | grep -qE "lock < *${HAVE_FB}s" && echo ok)"
 
 export PYTEST_TMP_LOCK_AGE_S=60
 out="$(run_pgrep 0)"
@@ -188,6 +194,40 @@ mkrun 1 $((WANT_LOCK + 3600))
 run_pgrep 0 >/dev/null
 check "stale lock still pruned even with a live pytest" \
   "$([ -d "$BASE/pytest-1" ] && echo '' || echo ok)"
+
+# ── a SPOKEN fail exits 0 — the crontab || guard is for dying UNSPOKEN ───
+#
+# The documented idiom appends `|| cron_verdict.sh ... FAIL wrapper_crashed`.
+# Exiting 1 after WRITING the informative FAIL verdict made that guard fire
+# too, appending a second, FALSE verdict — and the newest line is what #78
+# and the operator read first, so real triage ("N could NOT be removed") was
+# masked by "the wrapper crashed" when it ran fine (2026-07-28 review).
+# root can delete anything, so the undeletable-dir fixture only works unprivileged.
+if [ "$(id -u)" != 0 ]; then
+  BASE="$TMP/spoken"; mkdir -p "$BASE"
+  for n in 1 2 3 4 5; do mkrun $n; done
+  chmod 555 "$BASE/pytest-1/some_test0"   # blocks unlinking the file inside
+  out="$(run_pgrep 1)"; rc=$?
+  chmod 755 "$BASE/pytest-1/some_test0"   # let the EXIT-trap cleanup succeed
+  check "undeletable dir => the informative FAIL verdict is spoken" \
+    "$(echo "$out" | grep -q 'could NOT be removed' && echo ok)"
+  check "spoken FAIL exits 0, so the || guard cannot overwrite it" \
+    "$([ "$rc" = 0 ] && echo ok)"
+  check "newest verdict line stays the informative FAIL, never wrapper_crashed" \
+    "$(grep 'pytest_tmp_prune' "$VERDICTS" | tail -1 | grep -q 'could NOT be removed' && echo ok)"
+
+  # …but when the verdict CANNOT be recorded, exit 1 so the guard speaks:
+  # wrapper_crashed is then the closest available truth, not a lie over a
+  # better verdict.
+  BASE="$TMP/unspoken"; mkdir -p "$BASE"
+  for n in 1 2 3 4 5; do mkrun $n; done
+  chmod 555 "$BASE/pytest-1/some_test0"
+  PYTEST_TMP_BASE="$BASE" CRON_VERDICT_BIN="$TMP/no-such-verdict-bin" \
+    HOME="$TMP" bash "$SCRIPT" >/dev/null 2>&1; rc=$?
+  chmod 755 "$BASE/pytest-1/some_test0"
+  check "FAIL with no verdict sink exits 1 (the || guard becomes the witness)" \
+    "$([ "$rc" = 1 ] && echo ok)"
+fi
 
 # ── it leaves a cron verdict so #78 can see it ───────────────────────────
 check "writes a cron_verdict line under its own name" \

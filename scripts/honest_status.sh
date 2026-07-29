@@ -49,32 +49,24 @@ REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 # every fleet leg. Provenance is PRINTED below — a narrowed list must never be
 # able to masquerade as the whole fleet again.
 SELF="$(hostname 2>/dev/null || echo localhost)"
-# Resolution order is fleet_pull.sh:54-58, VERBATIM — including the per-repo
-# `fleet_hosts.<repo-basename>` tier that this script used to skip. Skipping it
-# made the "same SSOT as fleet_pull" claim true only by accident: the mechanism
-# is live (fleet_hosts.meshanchor and fleet_hosts.meshforge-maps both exist on
-# the manager), and the day someone scopes a deploy with fleet_hosts.meshforge,
-# fleet_pull would deploy to list A while this gate verified list B and printed
-# a provenance line naming the generic file as authoritative. That is exactly
-# the two-consumers-two-constants drift the box list exists to end, one tier up
-# (honest_failure_modes #5; 2026-07-28 review).
-#
-# These two chains must stay identical. If you add a tier here, add it there.
-_hs_hosts_file() {
-  _hs_rb="$(basename "$REPO")"
-  for f in "${MESHFORGE_FLEET_HOSTS:-}" \
-           "${HOME:-/root}/.config/meshforge/fleet_hosts.$_hs_rb" \
-           "/etc/meshforge/fleet_hosts.$_hs_rb" \
-           "${HOME:-/root}/.config/meshforge/fleet_hosts" \
-           /etc/meshforge/fleet_hosts; do
-    [ -n "$f" ] && [ -f "$f" ] && { printf '%s' "$f"; return 0; }
-  done
-  return 1
-}
+# Resolution comes from the ONE sourceable resolver that fleet_pull.sh also
+# uses — including the per-repo `fleet_hosts.<repo-basename>` tier. This WAS a
+# hand-copy of fleet_pull.sh's chain held identical by a comment, and the two
+# copies already disagreed (HOME defaulting, comment parsing) — the exact
+# two-consumers-two-constants drift the box list exists to end, one tier up
+# (honest_failure_modes #5; 2026-07-28 review). A missing lib falls through to
+# the SELF-ONLY branch below, which is loud and never eligible for fleet PASS.
+_HS_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/fleet_hosts.sh"
+_hs_resolved=0
+if [ -f "$_HS_LIB" ]; then
+  . "$_HS_LIB"
+  fleet_hosts_resolve "$REPO" && _hs_resolved=1
+fi
 if [ -n "${HONEST_BOXES:-}" ]; then
   BOXES="$HONEST_BOXES"; BOXES_SRC="HONEST_BOXES override"; FLEET_SSOT=1
-elif _hf="$(_hs_hosts_file)"; then
-  _hs_listed="$(sed 's/#.*//' "$_hf" | tr '\n' ' ' | tr -s ' ' | sed 's/^ *//; s/ *$//')"
+elif [ "$_hs_resolved" = 1 ]; then
+  _hf="$FLEET_HOSTS_FILE"
+  _hs_listed="$(printf '%s\n' "$FLEET_HOSTS_LIST" | tr '\n' ' ' | tr -s ' ' | sed 's/^ *//; s/ *$//')"
   BOXES="$(printf '%s %s' "$_hs_listed" "$SELF" | tr -s ' ' | sed 's/^ *//; s/ *$//')"
   if [ -z "$_hs_listed" ]; then
     # The file EXISTS but lists nobody (empty, or every line commented out).
@@ -220,11 +212,21 @@ for b in $PEERS; do
   # repo at $REPO (a MeshAnchor-only box, say). The latter cannot drift, so
   # counting it against the denominator would make the gate permanently
   # UNKNOWN; it is reported and excluded, never silently dropped.
-  raw=$(run_on "$b" "echo HSUP; git -C $REPO rev-parse HEAD 2>/dev/null")
+  #
+  # "No repo" is proven by the .git path, NOT by empty git output (2026-07-28
+  # review): a box that carries the repo but whose git errors (dubious
+  # ownership over ssh, git not installed, corrupt .git) also prints nothing,
+  # and counting it norepo silently dropped it from the denominator — a PASS
+  # that never verified that box, the same conflation class one door over.
+  # A repo-present git failure stays in the denominator as unverified.
+  raw=$(run_on "$b" "echo HSUP; if [ -e $REPO/.git ]; then git -C $REPO rev-parse HEAD 2>/dev/null || echo HSGITERR; else echo HSNOREPO; fi")
   up=$(printf '%s\n' "$raw" | sed -n '1p')
   s=$(printf '%s\n' "$raw" | sed -n '2p')
   if [ "$up" != "HSUP" ]; then desc="$desc $b:unreach"; continue; fi
-  if [ -z "$s" ]; then norepo=$((norepo+1)); desc="$desc $b:no-repo"; continue; fi
+  case "$s" in
+    HSNOREPO) norepo=$((norepo+1)); desc="$desc $b:no-repo"; continue ;;
+    HSGITERR|"") desc="$desc $b:git-error(repo present)"; continue ;;
+  esac
   reached=$((reached+1))
   if [ "$s" = "$HEADFULL" ]; then matched=$((matched+1)); else desc="$desc $b:${s:0:7}"; fi
 done
@@ -273,17 +275,33 @@ if [ "$RUN_TESTS" = 1 ]; then
   "$PY" -m pytest "$REPO/tests/" -q -p no:cacheprovider >$HS_TMP/pytest.log 2>&1; rc=$?
   summ=$(grep -E "[0-9]+ (passed|failed|error)|no tests ran" $HS_TMP/pytest.log | tail -1)
   nfail=$(grep -cE "^FAILED|^ERROR" $HS_TMP/pytest.log)
-  ninternal=$(grep -c "INTERNALERROR" $HS_TMP/pytest.log)
+  # Anchored like its siblings (2026-07-28 review): pytest emits
+  # "INTERNALERROR>" at line start; an UNanchored count also fired on any log
+  # line that merely CONTAINED the string (the suite's own shell harnesses
+  # print it as fixture output), flipping a green run to bad on display noise.
+  ninternal=$(grep -cE "^INTERNALERROR" $HS_TMP/pytest.log)
+  # ${ninternal:+...} could never suppress the note — grep -c prints "0",
+  # which is non-empty — so every FAIL verdict read ", 0 INTERNALERROR".
+  # Guard numerically, like nfail.
+  intern=""; [ "$ninternal" != 0 ] && intern=", $ninternal INTERNALERROR"
   # Does the summary affirmatively say "passes, and nothing failed"?
   nsumbad=$(printf '%s' "$summ" | grep -cE "[0-9]+ (failed|errors?)")
   nsumok=$(printf '%s' "$summ" | grep -cE "[0-9]+ passed")
   names=$(grep -E "^FAILED|^ERROR" $HS_TMP/pytest.log | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' | head -3 | paste -sd' ' -)
-  if [ -z "$summ" ]; then
-    # pytest died before summarising (crash, OOM, killed). Unobservable is
-    # never a pass, and it is not proven-bad either.
+  if [ -z "$summ" ] && [ "$rc" != 0 ]; then
+    # No summary AND a nonzero code: the suite crashed (OOM-kill, signal),
+    # and the code is real evidence of badness — the measured flap only LOSES
+    # failures toward 0, it never invents a nonzero. Checked BEFORE the
+    # empty-summary branch: ordering it after silently downgraded a proven-bad
+    # run from FAIL to UNKNOWN (2026-07-28 review) — "trust the worse signal"
+    # applies here too.
+    bad "full suite" "exit $rc with no pytest summary — suite crashed before reporting$(_hs_preserve)"
+  elif [ -z "$summ" ]; then
+    # exit 0 but pytest never summarised. Unobservable is never a pass, and
+    # with a clean exit code it is not proven-bad either.
     unk "full suite" "no pytest summary line — suite did not report (exit $rc)$(_hs_preserve)"
   elif [ "$nfail" != 0 ] || [ "$ninternal" != 0 ] || [ "$nsumbad" != 0 ]; then
-    bad "full suite" "exit $rc, $nfail FAILED/ERROR${ninternal:+, $ninternal INTERNALERROR}${names:+ ($names)}$(_hs_preserve) — $summ"
+    bad "full suite" "exit $rc, $nfail FAILED/ERROR${intern}${names:+ ($names)}$(_hs_preserve) — $summ"
   elif [ "$rc" != 0 ]; then
     # Clean-looking output but a non-zero code: trust the WORSE signal.
     bad "full suite" "exit $rc with no FAILED/ERROR lines — exit code and output disagree$(_hs_preserve) — $summ"
@@ -344,25 +362,35 @@ if [ -n "${HONEST_WD_STALE_S:-}" ]; then WD_STALE_S="$HONEST_WD_STALE_S"
 elif [ -n "${HONEST_WD_PATH:-}" ]; then WD_STALE_S=0
 else WD_STALE_S=300; fi
 
-wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; nowd=0; sigdesc=""
+wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; nowd=0; wdfault=0; sigdesc=""
 btotal=$(echo $BOXES | wc -w)
 for b in $BOXES; do
   # Fetch the box's OWN clock alongside its watchdog.json in ONE round-trip, so
   # the freshness age is computed same-clock — never this box's clock vs that
   # box's ts (cross-machine wall-clock is forgeable: honest_failure #6). The
-  # unit state rides the SAME round-trip (2026-07-28) to split what an empty
-  # answer used to conflate — see below.
-  raw=$(run_on "$b" "date +%s 2>/dev/null; systemctl is-active meshforge-watchdog.service 2>/dev/null || echo absent; echo '---WDSEP---'; cat $WD_PATH 2>/dev/null")
+  # unit ACTIVE state and LOAD state ride the SAME round-trip (2026-07-28) to
+  # split what an empty answer used to conflate — see below. Each field is
+  # forced to exactly one line so the positional parse cannot shear.
+  raw=$(run_on "$b" "date +%s 2>/dev/null; { systemctl is-active meshforge-watchdog.service 2>/dev/null || echo absent; } | head -1; { systemctl show meshforge-watchdog.service -p LoadState --value 2>/dev/null || echo unknown; } | head -1; echo '---WDSEP---'; cat $WD_PATH 2>/dev/null")
   rnow=$(printf '%s\n' "$raw" | sed -n '1p')
   wunit=$(printf '%s\n' "$raw" | sed -n '2p')
+  wload=$(printf '%s\n' "$raw" | sed -n '3p')
   w=$(printf '%s\n' "$raw" | awk 'f{print} /^---WDSEP---$/{f=1}')
-  # THREE states, not one (widening the list to the whole fleet exposed the
-  # conflation): the box is DOWN; the box is up and runs NO watchdog (a
-  # MeshAnchor-only box — a legitimately-absent organ, excluded from the
-  # denominator, never counted as blindness); or the watchdog is ACTIVE yet
-  # wrote no state, which is a real fault and must stay UNKNOWN-loud rather
-  # than being excused as "not installed" (honest_failure_modes #2).
+  # FOUR states, not one (widening the list to the whole fleet exposed the
+  # conflation; the fourth split off 2026-07-28 review): the box is DOWN; the
+  # box is up with NO watchdog unit installed (LoadState=not-found — a
+  # MeshAnchor-only box, a legitimately-absent organ, excluded from the
+  # denominator, never counted as blindness); the unit is INSTALLED but not
+  # running (failed/crashlooping/stopped — a FAULT: the #82 class,
+  # NRestarts=7842 undetected 10 days, read GREEN here because anything
+  # non-"active" was excused as absent); or the watchdog is ACTIVE yet wrote
+  # no state, which stays UNKNOWN-loud (honest_failure_modes #2). Only
+  # LoadState distinguishes absent from broken — is-active prints "inactive"
+  # for both a missing unit and a dead one.
   if [ -z "$rnow" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
+  if [ "$wload" = "loaded" ] && [ "$wunit" != "active" ]; then
+    wdfault=$((wdfault+1)); sigdesc="$sigdesc $b:WATCHDOG-UNIT-$wunit"; continue
+  fi
   if [ -z "$w" ] && [ "$wunit" != "active" ]; then
     nowd=$((nowd+1)); sigdesc="$sigdesc $b:no-watchdog($wunit)"; continue
   fi
@@ -422,8 +450,9 @@ done
 # A held signal NEVER reaches the WARN/FAIL tiers on its own — it is
 # last-known evidence from a blind observer, which is UNKNOWN by this
 # project's tiering, and UNKNOWN is never a pass either.
-wdtotal=$((btotal - nowd))   # boxes that actually run a watchdog
+wdtotal=$((btotal - nowd))   # boxes that actually carry a watchdog unit
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
+elif [ "$wdfault" -gt 0 ]; then bad "watchdog (unit down)" "$wdfault box(es) with the watchdog unit installed but not running — a dead watchdog is a fault, not an absent organ:$sigdesc"
 elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$wdtotal clean, $unreach unreachable/stale:$sigdesc"
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
 elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see), 0 observed:$sigdesc"

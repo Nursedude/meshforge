@@ -7071,14 +7071,22 @@ class TestDupsRollupUnavailableIsInertNotBlind:
         assert "uncovered: moc3(unreachable)" in got["reason"]
 
     def test_dup_indeterminate_without_join_reason_falls_back(self, tmp_path):
+        """No reason from the JOIN → say the reason is UNKNOWN, never assert
+        '<2 gateways reachable' as fact — nothing established it (the
+        confidently-false-reason class, surviving in the fallback branch
+        until 2026-07-28)."""
         got = self._dup({"status": "indeterminate"}, tmp_path)
         assert got["disp"] == "indeterminate"
-        assert "<2 gateways reachable" in got["reason"]
+        assert "<2 gateways" not in got["reason"]
+        assert "no reason" in got["reason"]
 
     def test_dup_unknown_status_is_indeterminate_not_inert(self, tmp_path):
-        """An unrecognised status must not decay into a benign-looking inert."""
+        """An unrecognised status must not decay into a benign-looking inert,
+        and the reason must NAME the status instead of guessing a cause."""
         got = self._dup({"status": "wat"}, tmp_path)
         assert got["disp"] == "indeterminate"
+        assert "'wat'" in got["reason"]
+        assert "<2 gateways" not in got["reason"]
 
     # ── gateway_dual_homed_exposure ─────────────────────────────────────
     def test_dual_homed_unavailable_is_inert(self, tmp_path):
@@ -7193,10 +7201,17 @@ class TestDupsUnavailableRoleIsEvidenceNotInference:
 
     # ── the evidence reader itself ──────────────────────────────────────
     #
-    # Driven through the REAL spool read (a temp file standing in for
-    # /var/spool/cron/crontabs/<op>), not a stubbed reader — the three states
-    # this function must distinguish are distinguished BY that read, so
-    # mocking it away would test nothing.
+    # Driven through the REAL spool read (a temp dir standing in for
+    # /var/spool/cron/crontabs), not a stubbed reader — the states this
+    # function must distinguish are distinguished BY that read, so mocking it
+    # away would test nothing. The reader scans the WHOLE spool dir: the old
+    # per-operator read resolved "the operator" from a live session bus
+    # (min-UID /run/user/*/bus) — a linger artifact that answered None on any
+    # box rebooting before linger started, and picked the WRONG user when a
+    # second bus-owning user had a lower UID (2026-07-28 review). No
+    # _find_operator_user patch here is the point: no session is consulted.
+    # CRON_SPOOL_DIRS is patched per-test to a unique tmp dir, which also
+    # keys the reader's cache so results never bleed between tests.
     def _wired(self, tmp_path, cron_text=None, unreadable=False):
         import builtins
         from utils.watchdog_probes_gateway import _dups_collector_wired_here
@@ -7211,10 +7226,8 @@ class TestDupsUnavailableRoleIsEvidenceNotInference:
                 raise PermissionError("spool unreadable")
             return real_open(path, *a, **k)
 
-        with patch("utils.fleet_test_runner._find_operator_user",
-                   return_value=(1000, "op")), \
-             patch("utils.watchdog_probe_core.CRON_SPOOL_PATHS",
-                   (str(spool / "{}"),)), \
+        with patch("utils.watchdog_probe_core.CRON_SPOOL_DIRS",
+                   (str(spool),)), \
              patch("builtins.open", fake_open):
             return _dups_collector_wired_here()
 
@@ -7244,6 +7257,42 @@ class TestDupsUnavailableRoleIsEvidenceNotInference:
         """Unreadable spool → None, never False (= 'not the manager'), which
         is the whole defect in miniature."""
         assert self._wired(tmp_path, "x\n", unreadable=True) is None
+
+    def test_wiring_reader_scans_every_crontab_not_one_chosen_user(
+            self, tmp_path):
+        """The token in a SECOND user's crontab still counts. The old reader
+        picked one 'operator' by smallest bus-owning UID and read only that
+        user's file — a manager whose collector cron lived under any other
+        user read as a confident 'not wired here' (2026-07-28 review)."""
+        from utils.watchdog_probes_gateway import _dups_collector_wired_here
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        (spool / "alice").write_text(
+            "7 * * * * /home/alice/other_job.sh\n", encoding="utf-8")
+        (spool / "bob").write_text(
+            "40 * * * * python3 -m utils.fleet_dup_collector\n",
+            encoding="utf-8")
+        with patch("utils.watchdog_probe_core.CRON_SPOOL_DIRS",
+                   (str(spool),)):
+            assert _dups_collector_wired_here() is True
+
+    def test_wiring_reader_caches_per_process(self, tmp_path):
+        """The answer changes ~never; the watchdog asks twice per tick. The
+        second call within the TTL must not re-read the spool (6 of 9 boxes
+        paid a per-tick scan for a constant answer; 2026-07-28 review)."""
+        from utils import watchdog_probe_core as core
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        (spool / "op").write_text(
+            "40 * * * * python3 -m utils.fleet_dup_collector\n",
+            encoding="utf-8")
+        with patch("utils.watchdog_probe_core.CRON_SPOOL_DIRS",
+                   (str(spool),)):
+            assert core.operator_cron_wired("fleet_dup_collector") is True
+            with patch("utils.watchdog_probe_core."
+                       "_operator_cron_wired_uncached") as uncached:
+                assert core.operator_cron_wired("fleet_dup_collector") is True
+                uncached.assert_not_called()
 
 
 class TestFlowProbesOperatorUnresolvable:

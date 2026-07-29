@@ -68,6 +68,16 @@ out="$(run 0 '')"
 check "no summary line => UNKNOWN, not PASS" \
   "$(echo "$out" | grep -q 'UNKNOWN' && echo ok)"
 
+# ── crash WITH a nonzero code is proven-bad, not merely unverified ───────
+# (2026-07-28 review: the empty-summary branch ran first and downgraded an
+# OOM-killed suite from FAIL to UNKNOWN. A nonzero exit is real evidence —
+# the measured flap only LOSES failures toward 0, it never invents nonzero.)
+out="$(run 137 '')"
+check "no summary + nonzero exit => FAIL (trust the worse signal)" \
+  "$(echo "$out" | grep -q 'FAIL' && echo ok)"
+check "and the crash exit code is quoted" \
+  "$(echo "$out" | grep -q 'exit 137' && echo ok)"
+
 # ── summary says failed but no FAILED lines (torn/-q output) ─────────────
 out="$(run 0 '1 failed, 3 passed in 0.50s\n')"
 check "summary reporting failures => FAIL even with rc=0" \
@@ -87,6 +97,27 @@ check "'no tests ran' => UNKNOWN, nothing was verified" \
 out="$(run 0 '9840 passed, 1 skipped in 232.49s\n')"
 check "healthy suite still reads PASS" \
   "$(echo "$out" | grep -q 'PASS' && echo ok)"
+
+# ── INTERNALERROR display honesty (2026-07-28 review) ────────────────────
+# grep -c prints "0" (non-empty), so ${ninternal:+...} ALWAYS expanded and
+# every ordinary FAIL verdict read ", 0 INTERNALERROR" — noise in the exact
+# line operators quote into calibrated claims.
+out="$(run 0 'FAILED tests/t.py::test_x - boom\n1 failed, 10 passed in 1.00s\n')"
+check "a plain FAIL verdict does not read ', 0 INTERNALERROR'" \
+  "$(echo "$out" | grep -q '0 INTERNALERROR' && echo '' || echo ok)"
+
+# The count is anchored like its ^FAILED/^ERROR siblings: the suite's own
+# shell harnesses print 'INTERNALERROR> boom' as FIXTURE OUTPUT mid-line, and
+# an unanchored count flipped a green run to FAIL on display noise.
+out="$(run 0 'fixture harness output: INTERNALERROR> boom (expected)\n10 passed in 1.00s\n')"
+check "mid-line INTERNALERROR in fixture output does not fail a green run" \
+  "$(echo "$out" | grep -q 'PASS' && echo ok)"
+
+out="$(run 0 'INTERNALERROR> RuntimeError: real one\n10 passed in 1.00s\n')"
+check "line-anchored INTERNALERROR still fails the run" \
+  "$(echo "$out" | grep -q 'FAIL' && echo ok)"
+check "and IS counted in the verdict line" \
+  "$(echo "$out" | grep -q '1 INTERNALERROR' && echo ok)"
 
 # ── non-green runs preserve the log for forensics ────────────────────────
 logf="$FAKE_HOME/.local/state/meshforge/hs_failures/last_failure.log"

@@ -478,11 +478,12 @@ def _dups_collector_wired_here() -> Optional[bool]:
     manager box" as fact. *A checker must not consume the artifact it
     validates* (persistent_issues.md).
 
-    The independent evidence is the operator's crontab: the manager is the box
-    that runs the collector. ``None`` (unobservable) is NEVER folded into
+    The independent evidence is the box's crontab spool: the manager is the
+    box that runs the collector. ``None`` (unobservable) is NEVER folded into
     ``False`` — "I could not look" is not "it is not here"
     (honest_failure_modes #2). The read itself lives in the shared base, which
-    already owns the spool paths.
+    already owns the spool paths (see ``operator_cron_wired`` for the
+    wrapper-script caveat: keep the token visible on the crontab line).
     """
     return operator_cron_wired(_DUPS_COLLECTOR_TOKEN)
 
@@ -547,7 +548,17 @@ def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
         return
     reason = payload.get("indeterminate_reason")
     if not (isinstance(reason, str) and reason.strip()):
-        reason = "rollup indeterminate (<2 gateways reachable)"
+        # No reason from the JOIN → say only what is KNOWN. The old fallback
+        # asserted "<2 gateways reachable" as fact for ANY unrecognized
+        # status — the same confidently-false-reason defect this classifier
+        # removed for "unavailable", surviving in its own fallback branch
+        # (2026-07-28 review). Never guess a cause.
+        if status == "indeterminate":
+            reason = ("rollup indeterminate and the JOIN gave no reason — "
+                      "coverage state unknown")
+        else:
+            reason = (f"unrecognized rollup status {status!r} — "
+                      f"not asserting a cause")
     note_disposition(cls, "indeterminate", reason=reason + suffix)
 
 

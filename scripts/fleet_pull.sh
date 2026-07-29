@@ -49,21 +49,23 @@ fi
 BRANCH=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "?")
 
 # --- resolve the host list (per-repo list wins over the generic one) ----------
+# The resolution chain lives in ONE sourceable lib shared with honest_status.sh
+# — the deployer and the gate that verifies its deploys must read the SAME
+# list, and hand-copies of this chain had already diverged (2026-07-28 review).
 REPO_BASE="$(basename "$REPO_DIR")"
-HOSTS_FILE=""
-for f in "${MESHFORGE_FLEET_HOSTS:-}" \
-         "$HOME/.config/meshforge/fleet_hosts.$REPO_BASE" \
-         "/etc/meshforge/fleet_hosts.$REPO_BASE" \
-         "$HOME/.config/meshforge/fleet_hosts" \
-         /etc/meshforge/fleet_hosts; do
-    [ -n "$f" ] && [ -f "$f" ] && { HOSTS_FILE="$f"; break; }
-done
-if [ -z "$HOSTS_FILE" ]; then
+FP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
+if [ ! -f "$FP_LIB" ]; then
+    echo "fleet_pull: missing $FP_LIB — cannot resolve the host list." >&2
+    exit 2
+fi
+. "$FP_LIB"
+if ! fleet_hosts_resolve "$REPO_DIR"; then
     echo "fleet_pull: no fleet_hosts list found (set \$MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts[.$REPO_BASE])." >&2
     exit 2
 fi
+HOSTS_FILE="$FLEET_HOSTS_FILE"
 
-mapfile -t HOSTS < <(grep -vE '^\s*(#|$)' "$HOSTS_FILE")
+mapfile -t HOSTS < <(printf '%s\n' "$FLEET_HOSTS_LIST" | grep -v '^$')
 if [ "${#HOSTS[@]}" -eq 0 ]; then
     # An empty list must fail LOUD — falling through to "all 0 host(s)
     # converged" (exit 0) would read as a successful deploy that pulled nobody.

@@ -13,8 +13,14 @@ import json
 import logging
 import os
 import subprocess
+import time
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
+
+# First-party, imported DIRECTLY (never a swallowed try/except — a rename
+# would silently turn every role-evidence answer into permanent "crontab
+# unreadable" with no witness; 2026-07-28 review, honest_failure_modes #9).
+from utils.fleet_snapshot import _parse_crontab
 
 # Same "watchdog" namespace the runner logs under, so a swallowed state-write
 # failure lands where the operator already greps (honest_failure_modes #9).
@@ -399,68 +405,100 @@ def _save_parity_streak(state_path: str, streak: int) -> None:
         _streak_write_errors[state_path] = 0
 
 
-# ── operator crontab: shared evidence for "does this box run X?" ──────────
+# ── crontab spool: shared evidence for "does this box run X?" ─────────────
 #
 # The spool locations, Debian first then RHEL-style. ONE constant in the shared
 # base because ≥2 probe modules read the same spool (liveness for #78's wired
 # set, gateway for the dup collector), and two independent copies of a path
-# WILL drift (honest_failure_modes #5).
-CRON_SPOOL_PATHS = ("/var/spool/cron/crontabs/{}", "/var/spool/cron/{}")
+# WILL drift (honest_failure_modes #5). CRON_SPOOL_PATHS is the per-user
+# template view of the SAME constant (liveness formats it with a username).
+CRON_SPOOL_DIRS = ("/var/spool/cron/crontabs", "/var/spool/cron")
+CRON_SPOOL_PATHS = tuple(d + "/{}" for d in CRON_SPOOL_DIRS)
+
+# "Is this cron wired here" changes when the operator edits a crontab —
+# roughly never — while the watchdog asks twice per 30s tick forever. Cached
+# per (token, spool-dirs) on a monotonic clock (wall-clock is forgeable on
+# this fleet, honest_failure_modes #6). 6 of 9 boxes paid a full spool scan
+# per tick for a constant answer (2026-07-28 review).
+_CRON_WIRED_TTL_S = 300.0
+_cron_wired_cache: Dict[tuple, Tuple[float, Optional[bool]]] = {}
 
 
 def operator_cron_wired(token: str) -> Optional[bool]:
     """Is a cron whose command contains ``token`` wired on THIS box?
 
-    ``True`` / ``False`` / ``None`` when the crontab cannot be read.
+    ``True`` / ``False`` / ``None`` when the spool cannot be (fully) read.
 
     Exists so a probe can answer "what is my ROLE here" from independent
     evidence instead of inferring it from the absence of the artifact it
     audits — *a checker must not consume the artifact it validates*
     (persistent_issues.md; 2026-07-28 review of the /fleet/dups probes).
 
-    The three states are kept distinct on purpose:
-      - crontab present, token found      → True
-      - crontab present, token absent     → False  (observed, not here)
-      - NO crontab on this box            → False  (positive evidence: a box
-        with no crons certainly runs no cron — NOT blindness, or every
-        crontab-less box lands in permanent detector_blind noise)
-      - spool exists but is unreadable    → None   (genuine blindness;
+    Scans EVERY crontab in the spool directories, deliberately NOT "the
+    operator's": the first version resolved an operator via the smallest UID
+    owning a live ``/run/user/<uid>/bus`` — a session/linger artifact with
+    nothing to do with crontab existence. A box rebooting before linger
+    started answered None forever (false "crontab unreadable" noise), and a
+    second bus-owning user with a lower UID answered a confident False — the
+    silenced-coverage-loss defect this evidence exists to end, one hop
+    removed (2026-07-28 review). A file in the spool needs no session to be
+    real evidence.
+
+    The states are kept distinct on purpose:
+      - token found in ANY crontab        → True
+      - every crontab read, token absent  → False  (observed, not here; a box
+        with no crontabs at all certainly runs no cron — NOT blindness, or
+        every crontab-less box lands in permanent detector_blind noise)
+      - any part of the spool unreadable
+        and the token not found elsewhere → None   (genuine blindness;
         unobservable is never folded into "not here", honest_failure_modes #2)
+
+    ⚠️ Matching is against the crontab COMMAND text. If you wrap a wired cron
+    in a script, keep the token visible on the crontab line — cron passes the
+    whole command to sh, where a trailing ``# <token>`` is a comment:
+    ``40 * * * * /opt/x/dup_rollup.sh  # fleet_dup_collector``. Otherwise the
+    evidence honestly reads "not wired here".
 
     Reads the spool in-process as root — the watchdog's NoNewPrivileges
     sandbox forbids a privilege change, so shelling out to `crontab -l` is not
     available to it.
     """
-    try:
-        from utils.fleet_test_runner import _find_operator_user
-        from utils.fleet_snapshot import _parse_crontab
-    except Exception:
-        return None
-    try:
-        operator = _find_operator_user()
-    except Exception:
-        return None
-    name = operator[1] if operator else None
-    if not name or name == "root":
-        return None
+    key = (token, CRON_SPOOL_DIRS)
+    now = time.monotonic()
+    hit = _cron_wired_cache.get(key)
+    if hit is not None and now - hit[0] < _CRON_WIRED_TTL_S:
+        return hit[1]
+    result = _operator_cron_wired_uncached(token)
+    _cron_wired_cache[key] = (now, result)
+    return result
 
-    text = None
-    for path in (p.format(name) for p in CRON_SPOOL_PATHS):
+
+def _operator_cron_wired_uncached(token: str) -> Optional[bool]:
+    blind = False
+    for d in CRON_SPOOL_DIRS:
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as fh:
-                text = fh.read()
-            break
-        except (FileNotFoundError, IsADirectoryError):
-            continue          # not at this path; try the next
+            names = sorted(os.listdir(d))
+        except (FileNotFoundError, NotADirectoryError):
+            continue          # spool dir absent here — nothing to read
         except OSError:
-            return None       # exists but unreadable → unobservable
-    if text is None:
-        return False          # no crontab anywhere → certainly not wired here
-    try:
-        jobs = _parse_crontab(text)
-    except Exception:
-        return None
-    for job in jobs:
-        if token in (job.get("command") or ""):
-            return True
-    return False
+            blind = True      # dir exists but cannot be listed
+            continue
+        for name in names:
+            path = os.path.join(d, name)
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                    text = fh.read()
+            except (IsADirectoryError, FileNotFoundError):
+                continue      # e.g. Debian's crontabs/ subdir under /var/spool/cron
+            except OSError:
+                blind = True
+                continue
+            try:
+                jobs = _parse_crontab(text)
+            except Exception:
+                blind = True
+                continue
+            for job in jobs:
+                if token in (job.get("command") or ""):
+                    return True
+    return None if blind else False

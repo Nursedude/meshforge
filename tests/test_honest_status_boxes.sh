@@ -33,27 +33,41 @@ EOF
 
 # Stub ssh: the box name selects a canned personality. The command string is
 # the last arg; we only need to know which leg is asking.
+# The WDSEP answer shape is: <epoch> <ActiveState> <LoadState> ---WDSEP--- [json].
+# LoadState is what splits "no unit installed" (not-found → excluded organ)
+# from "unit installed but dead" (loaded + not active → FAULT); see the
+# box-wdfail personality and section 11.
 cat > "$SB/ssh" <<'EOF'
 #!/usr/bin/env bash
 box=""; for a in "$@"; do case "$a" in -*|*=*) ;; *) box="$a"; break;; esac; done
 cmd="${!#}"
 case "$box" in
   box-down) exit 255 ;;                       # unreachable
-  box-norepo)                                  # up, but no repo and no watchdog
+  box-norepo)                                  # up; no repo, no watchdog UNIT
     case "$cmd" in
-      *rev-parse*) echo "HSUP" ;;
-      *WDSEP*) echo "1700000000"; echo "inactive"; echo "---WDSEP---" ;;
+      *rev-parse*) echo "HSUP"; echo "HSNOREPO" ;;
+      *WDSEP*) echo "1700000000"; echo "inactive"; echo "not-found"; echo "---WDSEP---" ;;
+    esac ;;
+  box-giterr)                                  # repo PRESENT, git itself errors
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "HSGITERR" ;;
+      *WDSEP*) echo "1700000000"; echo "inactive"; echo "not-found"; echo "---WDSEP---" ;;
     esac ;;
   box-good)
     case "$cmd" in
       *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
-      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "---WDSEP---"
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
                echo "{\"ts\": $(date +%s), \"signals\": []}" ;;
     esac ;;
   box-mute)                                    # watchdog ACTIVE but no state
     case "$cmd" in
       *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
-      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "---WDSEP---" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---" ;;
+    esac ;;
+  box-wdfail)                                  # unit INSTALLED but not running
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "failed"; echo "loaded"; echo "---WDSEP---" ;;
     esac ;;
 esac
 exit 0
@@ -240,6 +254,48 @@ for variant in empty comments-only; do
   check "[$variant] conf_rate leg is UNKNOWN — assertion unverified fleet-wide" \
     "$(echo "$out" | grep -E 'conf_rate' | grep -q 'UNKNOWN' && echo ok)"
 done
+
+# ── 11. a DEAD watchdog unit is a FAULT, never an absent organ ───────────
+#
+# The tri-state read "anything not 'active' = no watchdog here" and shrank
+# the denominator, so a failed/crashlooping meshforge-watchdog (the #82
+# class — NRestarts=7842, undetected 10 days) read GREEN in the check of
+# record. LoadState is what separates the two: not-found = legitimately
+# absent, loaded+not-active = broken (2026-07-28 review).
+out="$(HONEST_BOXES="box-good box-wdfail" run)"
+check "installed-but-dead watchdog unit FAILS the leg" \
+  "$(echo "$out" | grep -E 'watchdog' | grep -q 'FAIL' && echo ok)"
+check "and names the box + unit state" \
+  "$(echo "$out" | grep -q 'box-wdfail:WATCHDOG-UNIT-failed' && echo ok)"
+out="$(HONEST_BOXES="box-good box-norepo" run)"
+check "unit not-found still reads as absent organ (no false FAIL)" \
+  "$(echo "$out" | grep -E 'watchdog signals' | grep -q '1/1 clean' && echo ok)"
+
+# ── 12. a git FAILURE on a repo-carrying box is not 'no repo' ────────────
+#
+# Empty git output used to be counted norepo and dropped from the
+# denominator — a box with a corrupt .git / dubious-ownership refusal /
+# missing git silently fell out of "fleet SHA drift PASS N/N". Repo presence
+# is proven by the .git path; a repo-present git failure stays in the
+# denominator as unverified (2026-07-28 review).
+out="$(HONEST_BOXES="box-good box-giterr" run)"
+check "git-error box keeps the drift leg UNKNOWN, never PASS" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q 'UNKNOWN' && echo ok)"
+check "and is named as git-error with the repo present, not as no-repo" \
+  "$(echo "$out" | grep -q 'box-giterr:git-error(repo present)' && echo ok)"
+
+# ── 13. host lines may carry trailing comments — both consumers agree ────
+#
+# 'moc1  # retired' must parse as host moc1 everywhere. The gate's old copy
+# stripped comments while fleet_pull kept the whole line as a garbage
+# hostname — the two consumers of one SSOT disagreeing about what it SAYS.
+# Both now source scripts/lib/fleet_hosts.sh; this drives the gate's side.
+printf 'box-good  # the only real peer\n# a full-line comment\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" run)"
+check "trailing comment stripped: 2 boxes (host + self), not a garbage token" \
+  "$(echo "$out" | grep -q 'fleet legs cover 2 box(es)' && echo ok)"
+check "and the commented host itself resolved (drift 1/1)" \
+  "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1/1' && echo ok)"
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

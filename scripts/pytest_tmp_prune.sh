@@ -27,43 +27,38 @@
 # ACTUALLY RUNNING, and unobservable liveness skips too (see the gate below).
 #
 # Usage (crontab idiom — the script emits its own verdict; the `||` guard
-# catches the case where the script itself dies before it can speak):
+# catches ONLY the case where the script dies before it can speak. The script
+# exits 0 whenever it recorded a verdict — including a spoken FAIL — because a
+# nonzero exit here would make the guard overwrite the informative verdict
+# with a false "wrapper_crashed" as the newest line; 2026-07-28 review):
 #   40 */6 * * * /opt/meshforge/scripts/pytest_tmp_prune.sh >/dev/null 2>&1 \
 #     || /opt/meshforge/scripts/cron_verdict.sh pytest_tmp_prune FAIL wrapper_crashed
 set -u
 
 KEEP="${PYTEST_TMP_KEEP:-3}"
 
-# The lock window is pytest's LOCK_TIMEOUT, DERIVED at runtime — not a second
-# copy of it (honest_failure_modes #5: two consumers of one constant WILL
-# drift). It already HAD: this was hardcoded 10800 with the comment "pytest's
-# own LOCK_TIMEOUT (3h)", but pytest's LOCK_TIMEOUT is 60*60*24*3 — THREE DAYS,
-# 259200s. Off by 24x, so the safety property stated in this header ("never
-# touches a run dir whose .lock is younger than pytest's own LOCK_TIMEOUT")
-# was violated for every lock aged between 3 hours and 3 days: the pruner
-# would delete the temp tree of a run pytest still considers live. Found by
-# review 2026-07-28, by asking the constant's owner instead of re-typing it.
-#
-# LOCK_FALLBACK_S is test-pinned to the live value, so if upstream changes it
-# the suite says so rather than the pruner silently going unsafe again.
-LOCK_FALLBACK_S=259200                             # pytest LOCK_TIMEOUT (3 days)
-_pytest_lock_timeout() {
-  python3 - <<'PY' 2>/dev/null
-try:
-    from _pytest.pathlib import LOCK_TIMEOUT
-    print(int(LOCK_TIMEOUT))
-except Exception:
-    pass
-PY
-}
-LOCK_MAX_AGE_S="${PYTEST_TMP_LOCK_AGE_S:-$(_pytest_lock_timeout)}"
-LOCK_MAX_AGE_S="${LOCK_MAX_AGE_S:-$LOCK_FALLBACK_S}"
+# The lock window is pytest's LOCK_TIMEOUT (60*60*24*3 = 3 days). The FIRST
+# version hardcoded 10800 ("3h") — off by 24x from the real constant, so the
+# pruner deleted trees of runs pytest still considered live. The SECOND
+# version over-corrected: it spawned python3 + imported _pytest on every cron
+# run on every box to re-derive a value that changes ~never — and asked bare
+# python3, not the venv consumer-of-record, so the derivation itself could
+# diverge on a box with a different system pytest (2026-07-28 review). ONE
+# pinned constant, guarded by the drift pin in tests/test_pytest_tmp_prune.sh
+# which asks pytest itself: if upstream changes LOCK_TIMEOUT the suite fails
+# loudly instead of the pruner silently going unsafe again.
+LOCK_PINNED_S=259200                               # pytest LOCK_TIMEOUT (3 days)
+LOCK_MAX_AGE_S="${PYTEST_TMP_LOCK_AGE_S:-$LOCK_PINNED_S}"
 CONCERN_MB="${PYTEST_TMP_CONCERN_MB:-1024}"        # freed >= this => say so out loud
 BASE="${PYTEST_TMP_BASE:-${TMPDIR:-/tmp}/pytest-of-$(id -un)}"
 VERDICT="${CRON_VERDICT_BIN:-$(dirname "$0")/cron_verdict.sh}"
 
+SPOKE=0    # 1 once a cron_verdict line was actually recorded — the exit-code
+           # contract above keys on this, not on the verdict's status
 say() {  # $1 = status, $2 = message
-  if [ -x "$VERDICT" ]; then "$VERDICT" pytest_tmp_prune "$1" "$2" >/dev/null 2>&1; fi
+  if [ -x "$VERDICT" ]; then
+    "$VERDICT" pytest_tmp_prune "$1" "$2" >/dev/null 2>&1 && SPOKE=1
+  fi
   echo "pytest_tmp_prune: $1 — $2"
 }
 
@@ -148,7 +143,12 @@ detail="pruned $pruned of $total dir(s), freed ${freed_mb} MB, $remain remain"
 
 if [ "$failed" -gt 0 ]; then
   say FAIL "$detail, $failed could NOT be removed"
-  exit 1
+  # The verdict line above IS the failure report. Exit 0 so the crontab's
+  # `|| ... wrapper_crashed` guard — reserved for dying before speaking —
+  # does not append a second, FALSE verdict over it (the newest line is what
+  # #78 and the operator read first). Exit 1 ONLY if the verdict could not be
+  # recorded: then the guard's wrapper_crashed is the closest available truth.
+  if [ "$SPOKE" = 1 ]; then exit 0; else exit 1; fi
 fi
 if [ "$freed_mb" -ge "$CONCERN_MB" ]; then
   # Routine pruning is OK and stays quiet. Freeing a GB+ means accumulation
