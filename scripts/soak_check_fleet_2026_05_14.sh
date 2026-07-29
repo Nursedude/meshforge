@@ -57,15 +57,12 @@ set -u
 BASELINE_FILE="${HOME}/soak-check-meshforge-baseline-2026-05-13.txt"
 RESULT_FILE="${HOME}/soak-check-meshforge-2026-05-14-result.txt"
 
-# Match fleet_runtime_health.sh's host-list lookup chain.
-FLEET_HOSTS_FILE="${MESHFORGE_FLEET_HOSTS:-}"
-if [ -z "$FLEET_HOSTS_FILE" ]; then
-    if [ -r "${HOME}/.config/meshforge/fleet_hosts" ]; then
-        FLEET_HOSTS_FILE="${HOME}/.config/meshforge/fleet_hosts"
-    elif [ -r "/etc/meshforge/fleet_hosts" ]; then
-        FLEET_HOSTS_FILE="/etc/meshforge/fleet_hosts"
-    fi
-fi
+# Host list via THE shared resolver (scripts/lib/fleet_hosts.sh) — this was
+# one of ~13 independent copies of the chain (converged 2026-07-29). The lib
+# sets FLEET_HOSTS_FILE/FLEET_HOSTS_LIST; on no-list they stay empty and
+# read_hosts() emits nothing, preserving this script's original posture.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
+fleet_hosts_resolve "/opt/meshforge" || true
 LOCAL_MAP_PORT=5000
 
 MODE="${1:-}"
@@ -75,7 +72,7 @@ case "$MODE" in
 esac
 
 read_hosts() {
-    grep -vE '^[[:space:]]*(#|$)' "$FLEET_HOSTS_FILE"
+    printf '%s\n' "${FLEET_HOSTS_LIST:-}" | grep -v '^$'
 }
 
 # Emit per-(host, unit) NRestarts + ActiveEnterTimestamp in a stable

@@ -32,22 +32,15 @@ fi
 # A MISSING/unreadable hosts file must NOT silently degrade to a one-box digest
 # that reads OK (honest_failure_modes point 1: dropped boxes look healthy). The
 # wrong-user-$HOME cron case (#78 class) lands here — surface it loudly.
-HOSTS_FILE="${MESHFORGE_FLEET_HOSTS:-}"
-if [[ -z "$HOSTS_FILE" ]]; then
-    if [[ -r "$HOME/.config/meshforge/fleet_hosts" ]]; then
-        HOSTS_FILE="$HOME/.config/meshforge/fleet_hosts"
-    elif [[ -r "/etc/meshforge/fleet_hosts" ]]; then
-        HOSTS_FILE="/etc/meshforge/fleet_hosts"
-    fi
-fi
-
+# Host list via THE shared resolver (scripts/lib/fleet_hosts.sh) — this was
+# one of ~13 independent copies of the chain (converged 2026-07-29).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
 hosts=()
 hosts_missing=0
-if [[ -n "$HOSTS_FILE" && -r "$HOSTS_FILE" ]]; then
+if fleet_hosts_resolve "/opt/meshforge"; then
     while IFS= read -r line; do
-        line="${line%%#*}"; line="$(echo "$line" | tr -d '[:space:]')"
         [[ -n "$line" ]] && hosts+=("$line")
-    done < "$HOSTS_FILE"
+    done <<< "$FLEET_HOSTS_LIST"
 else
     hosts_missing=1
 fi

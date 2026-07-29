@@ -46,24 +46,37 @@ def _real_home() -> Path:
     return Path.home()
 
 
-DEFAULT_FLEET_HOSTS = _real_home() / ".config" / "meshforge" / "fleet_hosts"
+_SRC_DIR = Path(__file__).resolve().parent.parent / "src"
+if str(_SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(_SRC_DIR))
+
+
+def _default_fleet_hosts() -> Path:
+    """The resolver's answer (env override, per-repo tier, /etc fallback) —
+    this was a hardcoded user-home path, one of ~13 independent copies of
+    the resolution chain (converged onto utils.fleet_hosts 2026-07-29). The
+    hardcoded path stays only as the display/help default when NO list
+    resolves anywhere."""
+    from utils.fleet_hosts import resolve_fleet_hosts_file
+    p = resolve_fleet_hosts_file()
+    return p if p else _real_home() / ".config" / "meshforge" / "fleet_hosts"
+
+
+DEFAULT_FLEET_HOSTS = _default_fleet_hosts()
 
 
 def _boxes_from_fleet_hosts(path: Path, include_self: bool = True) -> list[str]:
     """Read peer ssh aliases from fleet_hosts (the file fleet_sync.sh reads).
 
-    Format: one host per line, '#' comments allowed. By convention the
+    Parsing delegates to the shared ``utils.fleet_hosts`` parser ('#'
+    comments anywhere on a line, whitespace-split). By convention the
     file excludes self (so fleet_sync doesn't push to its own host); for
     a watcher we usually do want to monitor self too, so we prepend the
     box's own hostname unless include_self=False.
     """
-    aliases: list[str] = []
+    from utils.fleet_hosts import parse_fleet_hosts_text
     try:
-        for raw in path.read_text().splitlines():
-            line = raw.strip()
-            if not line or line.startswith("#"):
-                continue
-            aliases.append(line)
+        aliases = parse_fleet_hosts_text(path.read_text())
     except (FileNotFoundError, OSError):
         return []
     if include_self:

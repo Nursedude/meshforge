@@ -66,33 +66,15 @@ CLAW_STALE_S = 900.0
 
 
 def resolve_fleet_hosts(env: dict | None = None) -> list[str]:
-    """Fleet remote-host list, same resolution order as fleet_sync.sh:
-    $MESHFORGE_FLEET_HOSTS → ~/.config/meshforge/fleet_hosts → /etc/meshforge/fleet_hosts.
-    One host per line; '#' comments and blanks ignored. [] if no list exists."""
-    env = os.environ if env is None else env
-    if env.get("MESHFORGE_FLEET_HOSTS"):
-        # Explicit override is AUTHORITATIVE: absent/unreadable must yield
-        # [] rather than silently falling through to the box's real config
-        # (degraded state reading as a valid value).
-        candidates = [env["MESHFORGE_FLEET_HOSTS"]]
-    else:
-        home = env.get("HOME") or os.path.expanduser("~")
-        candidates = [
-            os.path.join(home, ".config", "meshforge", "fleet_hosts"),
-            "/etc/meshforge/fleet_hosts",
-        ]
-    for path in candidates:
-        try:
-            with open(path) as f:
-                hosts = []
-                for line in f:
-                    line = line.split("#", 1)[0].strip()
-                    if line:
-                        hosts.append(line)
-                return hosts
-        except OSError:
-            continue
-    return []
+    """Fleet remote-host list — delegates to ``utils.fleet_hosts``, THE
+    resolver (this WAS one of ~13 independent copies of the chain; converged
+    2026-07-29). Kept as a thin wrapper so daemon/fleet_truth_collector
+    callers and the env-injecting tests keep their seam. Its authoritative-
+    override rule (a SET but unresolvable $MESHFORGE_FLEET_HOSTS yields []
+    rather than falling through to the box's real config) originated here
+    and is now the shared behavior. [] if no list exists."""
+    from utils.fleet_hosts import resolve_fleet_hosts as _resolve
+    return _resolve(env=env)
 
 
 def parse_claw_posture(claw: dict | None, now_ts: float,

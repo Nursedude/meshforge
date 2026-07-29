@@ -45,28 +45,22 @@ Reader = Callable[[str], Tuple[int, str]]
 
 
 def fleet_hosts_file() -> Optional[Path]:
-    """Locate the fleet host list (same precedence as lab_traffic_rollup.sh)."""
-    override = os.environ.get("FLEET_HOSTS")
-    candidates = []
-    if override:
-        candidates.append(Path(override))
-    home = get_real_user_home()
-    candidates.append(home / ".config" / "meshforge" / "fleet_hosts")
-    candidates.append(Path("/etc/meshforge/fleet_hosts"))
-    for c in candidates:
-        if c.is_file():
-            return c
-    return None
+    """Locate the fleet host list — delegates to ``utils.fleet_hosts``, THE
+    resolver (was one of ~13 independent chain copies; converged 2026-07-29).
+    Kept as the API fleet_naming_audit + the TUI membership wizard import.
+    Note the shared rule this copy lacked: a SET but unresolvable
+    $FLEET_HOSTS/$MESHFORGE_FLEET_HOSTS override now yields None rather than
+    falling through to the box's real config."""
+    from utils.fleet_hosts import resolve_fleet_hosts_file
+    return resolve_fleet_hosts_file()
 
 
 def parse_fleet_hosts(text: str) -> List[str]:
-    """One host alias per line; ``#`` comments and blanks ignored."""
-    hosts: List[str] = []
-    for raw in text.splitlines():
-        line = raw.split("#", 1)[0].strip()
-        if line:
-            hosts.append(line)
-    return hosts
+    """Hosts from a fleet_hosts document; ``#`` comments and blanks ignored.
+    Delegates to the shared parser (whitespace-split after comment-strip,
+    identical to the shell lib's pipeline)."""
+    from utils.fleet_hosts import parse_fleet_hosts_text
+    return parse_fleet_hosts_text(text)
 
 
 def rollup_state_path() -> Path:

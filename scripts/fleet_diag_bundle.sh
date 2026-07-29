@@ -42,15 +42,9 @@ HOSTS=""
 QUIET=0
 SELF_HOST="$(hostname -s)"
 
-resolve_hosts_file() {
-    if [[ -n "${MESHFORGE_FLEET_HOSTS:-}" && -r "$MESHFORGE_FLEET_HOSTS" ]]; then
-        echo "$MESHFORGE_FLEET_HOSTS"
-    elif [[ -r "$HOME/.config/meshforge/fleet_hosts" ]]; then
-        echo "$HOME/.config/meshforge/fleet_hosts"
-    elif [[ -r /etc/meshforge/fleet_hosts ]]; then
-        echo /etc/meshforge/fleet_hosts
-    fi
-}
+# Host list via THE shared resolver (scripts/lib/fleet_hosts.sh) — this was
+# one of ~13 independent copies of the chain (converged 2026-07-29).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -68,12 +62,13 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "$HOSTS" ]]; then
-    HOSTS_FILE="$(resolve_hosts_file)"
-    if [[ -z "$HOSTS_FILE" ]]; then
+    # Resolve in THIS shell (not a $(...) subshell) so the lib's result
+    # variables survive to be read here.
+    if ! fleet_hosts_resolve "/opt/meshforge"; then
         echo "$SELF: no host list found — set MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts" >&2
         exit 2
     fi
-    HOSTS="$(grep -vE '^\s*(#|$)' "$HOSTS_FILE" | xargs)"
+    HOSTS="$(printf '%s\n' "$FLEET_HOSTS_LIST" | xargs)"
     # Include self if not already present.
     if [[ -n "$SELF_HOST" ]] && ! echo " $HOSTS " | grep -q " $SELF_HOST "; then
         HOSTS="$SELF_HOST $HOSTS"

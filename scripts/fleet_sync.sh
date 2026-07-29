@@ -86,17 +86,13 @@ for arg in "$@"; do
     esac
 done
 
-# Locate host list
-FLEET_FILE="${MESHFORGE_FLEET_HOSTS:-}"
-if [[ -z "$FLEET_FILE" ]]; then
-    if [[ -r "$HOME/.config/meshforge/fleet_hosts" ]]; then
-        FLEET_FILE="$HOME/.config/meshforge/fleet_hosts"
-    elif [[ -r "/etc/meshforge/fleet_hosts" ]]; then
-        FLEET_FILE="/etc/meshforge/fleet_hosts"
-    fi
-fi
+# Locate host list via THE shared resolver (scripts/lib/fleet_hosts.sh) —
+# this was one of ~13 independent copies of the chain (converged 2026-07-29).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
+FLEET_FILE=""
+fleet_hosts_resolve "/opt/meshforge" && FLEET_FILE="$FLEET_HOSTS_FILE"
 
-if [[ -z "$FLEET_FILE" || ! -r "$FLEET_FILE" ]]; then
+if [[ -z "$FLEET_FILE" ]]; then
     cat >&2 <<EOF
 $SELF: no fleet host list found.
 
@@ -776,7 +772,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
     else
         pass_count=$((pass_count + 1))
     fi
-done < "$FLEET_FILE"
+done <<< "$FLEET_HOSTS_LIST"
 
 # --memory-only stops here: memory was committed+pushed (pre-sync, above) and
 # mirrored to every fleet box (host loop, above). Everything below is the

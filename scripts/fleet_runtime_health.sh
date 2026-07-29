@@ -44,16 +44,13 @@ set -u
 
 SELF="$(basename "$0")"
 
-FLEET_FILE="${MESHFORGE_FLEET_HOSTS:-}"
-if [ -z "$FLEET_FILE" ]; then
-    if [ -r "$HOME/.config/meshforge/fleet_hosts" ]; then
-        FLEET_FILE="$HOME/.config/meshforge/fleet_hosts"
-    elif [ -r "/etc/meshforge/fleet_hosts" ]; then
-        FLEET_FILE="/etc/meshforge/fleet_hosts"
-    fi
-fi
+# Host list via THE shared resolver (scripts/lib/fleet_hosts.sh) — this was
+# one of ~13 independent copies of the chain (converged 2026-07-29).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
+FLEET_FILE=""
+fleet_hosts_resolve "/opt/meshforge" && FLEET_FILE="$FLEET_HOSTS_FILE"
 
-if [ -z "$FLEET_FILE" ] || [ ! -r "$FLEET_FILE" ]; then
+if [ -z "$FLEET_FILE" ]; then
     echo "$SELF: no fleet host list found at \$MESHFORGE_FLEET_HOSTS, ~/.config/meshforge/fleet_hosts, or /etc/meshforge/fleet_hosts" >&2
     exit 2
 fi
@@ -225,7 +222,7 @@ while IFS= read -r raw_line || [ -n "$raw_line" ]; do
     status_lines+=("  services: ${remote_svc_states}")
     [ "$host_red" = "1" ] && status_lines+=("  RED: ${why[*]}")
     status_lines+=("")
-done < "$FLEET_FILE"
+done <<< "$FLEET_HOSTS_LIST"
 
 status_lines+=("# Summary: ${ok_count} ok, ${red_count} red, ${unreach_count} unreachable")
 

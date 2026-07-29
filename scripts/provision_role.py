@@ -59,7 +59,9 @@ from utils.service_check import (  # noqa: E402
 
 DEFAULT_ROLES_FILE = _SCRIPT_DIR.parent / "docs" / "fleet_roles.yaml"
 DEPLOYMENT_JSON = get_real_user_home() / ".config" / "meshforge" / "deployment.json"
-FLEET_HOSTS = get_real_user_home() / ".config" / "meshforge" / "fleet_hosts"
+# fleet_hosts location resolves via utils.fleet_hosts (THE resolver — env
+# override, per-repo tier, /etc fallback) at the --fleet-check call site; a
+# hardcoded user-home path here was one of ~13 chain copies (2026-07-29).
 # Remote role-gathering shells out to ssh; the command is operator-configurable
 # via $MESHFORGE_SSH (no key/host hardcoded here — MF014). The operator's ssh
 # config/agent normally provides auth, so the default bare "ssh" works.
@@ -430,15 +432,15 @@ def write_role(role: str) -> None:
 # --------------------------------------------------------------------------
 
 def parse_fleet_hosts(path: Path) -> List[str]:
-    """Return the host list from a fleet_hosts file (one per line, '#' comments)."""
-    if not path.exists():
+    """Host list from a fleet_hosts file — parsing delegates to
+    ``utils.fleet_hosts`` (THE resolver; this was one of ~13 independent
+    chain copies, converged 2026-07-29). [] on a missing/unreadable file."""
+    from utils.fleet_hosts import parse_fleet_hosts_text
+    try:
+        return parse_fleet_hosts_text(path.read_text(encoding="utf-8",
+                                                     errors="replace"))
+    except OSError:
         return []
-    hosts = []
-    for line in path.read_text().splitlines():
-        line = line.split("#", 1)[0].strip()
-        if line:
-            hosts.append(line)
-    return hosts
 
 
 def validate_fleet(catalog: dict, role_map: Dict[str, Optional[str]]) -> List[str]:
@@ -551,7 +553,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     if args.fleet_check:
-        hosts = parse_fleet_hosts(FLEET_HOSTS)
+        from utils.fleet_hosts import resolve_fleet_hosts_file
+        _hosts_file = resolve_fleet_hosts_file()
+        hosts = parse_fleet_hosts(_hosts_file) if _hosts_file else []
         role_map = gather_fleet_roles(hosts, read_role())
         print("# fleet role assignment")
         for host, role in role_map.items():

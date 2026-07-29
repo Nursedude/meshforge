@@ -53,17 +53,16 @@ case "$SORT_BY" in
     *) echo "error: SORT_BY must be pair|fail|rtt|samples (got: $SORT_BY)" >&2; exit 2 ;;
 esac
 
-if [[ -z "$FLEET_HOSTS" ]]; then
-    if [[ -r "$HOME/.config/meshforge/fleet_hosts" ]]; then
-        FLEET_HOSTS="$HOME/.config/meshforge/fleet_hosts"
-    elif [[ -r "/etc/meshforge/fleet_hosts" ]]; then
-        FLEET_HOSTS="/etc/meshforge/fleet_hosts"
-    else
-        echo "error: no fleet_hosts file found." >&2
-        echo "  Set \$FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts" >&2
-        exit 2
-    fi
+# Host list via THE shared resolver (scripts/lib/fleet_hosts.sh) — this was
+# one of ~13 independent copies of the chain (converged 2026-07-29). The lib
+# honors this script's documented $FLEET_HOSTS override as the legacy alias.
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_hosts.sh"
+if ! fleet_hosts_resolve "/opt/meshforge"; then
+    echo "error: no fleet_hosts file found." >&2
+    echo "  Set \$FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts" >&2
+    exit 2
 fi
+FLEET_HOSTS="$FLEET_HOSTS_FILE"
 
 if ! [[ "$LOOKBACK_HOURS" =~ ^[0-9]+$ ]]; then
     echo "error: LOOKBACK_HOURS must be a positive integer" >&2
@@ -148,7 +147,7 @@ while IFS= read -r raw; do
     [[ -z "$host" ]] && continue
     [[ "$host" == "$local_host" ]] && continue
     emit_host_data "$host" "$(fetch_host_json "$host")"
-done < "$FLEET_HOSTS"
+done <<< "$FLEET_HOSTS_LIST"
 
 if [[ "$hosts_seen" -eq 0 ]]; then
     echo "error: no hosts in $FLEET_HOSTS" >&2

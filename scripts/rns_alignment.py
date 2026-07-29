@@ -53,17 +53,20 @@ def _audit_local() -> int:
 
 
 def _audit_fleet() -> int:
-    hosts_file = Path.home() / '.config' / 'meshforge' / 'fleet_hosts'
-    if not hosts_file.is_file():
-        print(f"ERROR: {hosts_file} not found", file=sys.stderr)
+    # Resolution + parsing via utils.fleet_hosts, THE resolver (was one of
+    # ~13 independent chain copies, and this one also used raw Path.home(),
+    # which under sudo reads /root's config — the MF001 class; 2026-07-29).
+    from utils.fleet_hosts import resolve_fleet_hosts_file, parse_fleet_hosts_text
+    hosts_file = resolve_fleet_hosts_file()
+    if hosts_file is None:
+        print("ERROR: no fleet_hosts list found (checked $MESHFORGE_FLEET_HOSTS, "
+              "~/.config/meshforge/, /etc/meshforge/)", file=sys.stderr)
         return 2
-    hosts = []
-    for raw in hosts_file.read_text().splitlines():
-        line = raw.strip()
-        if not line or line.startswith('#'):
-            continue
-        # Match fleet_sync.sh format — first whitespace-separated token is host
-        hosts.append(line.split()[0])
+    try:
+        hosts = parse_fleet_hosts_text(hosts_file.read_text())
+    except OSError as e:
+        print(f"ERROR: {hosts_file}: {e}", file=sys.stderr)
+        return 2
 
     repo_root = HERE.parent
     probe_path = repo_root / 'scripts' / 'rns_alignment.py'
