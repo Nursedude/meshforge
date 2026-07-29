@@ -220,3 +220,108 @@ class TestClawUplinkNodeWiring:
         from utils import watchdog_runner
         src = inspect.getsource(watchdog_runner)
         assert "probe_claw_uplink_node_moved()" in src
+
+
+class TestUplinkAdmittedByPinhole:
+    """The SECOND leg, added same day after the first shipped flawed.
+
+    The 2026-07-29 outage was NOT "the node moved" in the abstract — it was
+    "the node's current address is no longer the one moc2's firewall admits".
+    moc2 default-denies NATS 4222 and allows a hardcoded allowlist, because
+    WireClaw cannot send NATS credentials:
+
+        ip saddr { <brain-lan-ip>, <old-uplink-ip> } tcp dport 4222 accept
+        tcp dport 4222 drop
+
+    The uplink's DHCP lease moved .24 -> .250 and the pinhole kept .24, so
+    every SYN from a perfectly healthy claw was dropped for 6.5 h.
+
+    The first version of this probe compared the observed address against an
+    ``expected_ip`` hand-written into claw_uplink_nodes.json — a THIRD
+    independent copy of the same constant, i.e. it reproduced the very drift
+    class it exists to catch (honest_failure_modes #5). This leg reads the
+    PINHOLE as the authority, so the firewall and the detector cannot
+    disagree: the question is not "is it where I declared" but "is it where
+    the firewall will actually let it in".
+    """
+
+    @pytest.fixture(autouse=True)
+    def _paths(self, tmp_path):
+        self.sp = str(tmp_path / "uplink.json")
+        self.cfg = tmp_path / "claw_uplink_nodes.json"
+        self.arp = tmp_path / "arp"
+        self.nft = tmp_path / "nftables.conf"
+
+    def _cfg(self, expected_ip="192.0.2.250"):
+        node = {"name": "VOLCANO-HI-HAP", "mac": MAC, "serves": ["dudeclaw-01"]}
+        if expected_ip:
+            node["expected_ip"] = expected_ip
+        self.cfg.write_text(json.dumps([node]))
+        return str(self.cfg)
+
+    def _nft(self, allow, port=4222):
+        """Real moc2 shape, verified against the live file."""
+        body = "flush ruleset\ntable inet filter {\n\tchain input {\n"
+        body += '\t\tiifname "lo" tcp dport %d accept\n' % port
+        if allow:
+            body += "\t\tip saddr { %s } tcp dport %d accept\n" % (
+                ", ".join(allow), port)
+        body += "\t\ttcp dport %d drop\n\t}\n}\n" % port
+        self.nft.write_text(body)
+        return str(self.nft)
+
+    def _run(self, arp_rows, allow, expected_ip="192.0.2.250", now=1.0):
+        from utils.watchdog_probes import probe_claw_uplink_node_moved
+        self.arp.write_text(_arp(arp_rows))
+        return probe_claw_uplink_node_moved(
+            config_path=self._cfg(expected_ip),
+            arp_path=str(self.arp),
+            pinhole_path=self._nft(allow),
+            state_path=self.sp,
+            now=now,
+        )
+
+    def test_admitted_address_is_clean(self):
+        for _ in range(3):
+            assert self._run([("192.0.2.250", "0x2", MAC)],
+                             ["192.0.2.32", "192.0.2.250"]) is None
+        assert collect_dispositions()["claw_uplink_node_moved"]["disp"] == "clean"
+
+    def test_todays_incident_fires_even_when_declaration_agrees(self):
+        """THE case. The node is exactly where claw_uplink_nodes.json says
+        (.250) — so the declaration leg is happy — but the firewall still
+        admits only the OLD .24. A declaration-only probe reports clean while
+        the witness is cut off. This must fire."""
+        rows = [("192.0.2.250", "0x2", MAC)]
+        allow = ["192.0.2.32", "192.0.2.24"]          # pinhole kept the old IP
+        assert self._run(rows, allow, expected_ip="192.0.2.250", now=1.0) is None
+        sig = self._run(rows, allow, expected_ip="192.0.2.250", now=2.0)
+        assert sig is not None, "declaration agreed, so only the pinhole leg can catch this"
+        assert sig.cls == "claw_uplink_node_moved"
+        assert "192.0.2.250" in sig.detail
+        assert "4222" in sig.detail
+        assert sig.extra["pinhole_allows"] == ["192.0.2.24", "192.0.2.32"]
+        assert sig.extra["admitted"] is False
+
+    def test_unreadable_pinhole_falls_back_not_fires(self):
+        """No pinhole on this box (most boxes) must not manufacture a fire —
+        the declaration leg judges alone and the extra says the pinhole was
+        unobservable, rather than folding blindness into agreement."""
+        from utils.watchdog_probes import probe_claw_uplink_node_moved
+        self.arp.write_text(_arp([("192.0.2.250", "0x2", MAC)]))
+        for _ in range(3):
+            sig = probe_claw_uplink_node_moved(
+                config_path=self._cfg("192.0.2.250"),
+                arp_path=str(self.arp),
+                pinhole_path=str(self.nft.parent / "absent.conf"),
+                state_path=self.sp, now=1.0)
+            assert sig is None
+        assert collect_dispositions()["claw_uplink_node_moved"]["disp"] == "clean"
+
+    def test_pinhole_with_no_allowlist_line_is_not_an_empty_allowlist(self):
+        """A ruleset that never mentions the port is NOT 'admits nobody' —
+        it means this box does not gate that port, so the leg abstains."""
+        for _ in range(3):
+            assert self._run([("192.0.2.250", "0x2", MAC)], [],
+                             expected_ip="192.0.2.250") is None
+        assert collect_dispositions()["claw_uplink_node_moved"]["disp"] == "clean"

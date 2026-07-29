@@ -7,6 +7,7 @@
     "subnet": "192.0.2.192/28",
     "serves": ["dudeclaw-01", "example-host"],
     "_why": "A claw can be entirely healthy — booted, associated, holding its DHCP lease, dialling the correct broker — and still be unreachable because this node moved out from under it. The fleet's only other word for that state is claw_device_dark, which points the operator at hardware that is working. Declaring the uplink makes the drift sayable BEFORE it strands the witness.",
+    "_expected_ip_is_the_WEAK_leg": "expected_ip is OPTIONAL and secondary. The PRIMARY check reads the NATS pinhole (default /etc/nftables.conf, port 4222) and asks whether the node's CURRENT address is one the firewall will actually admit — because that allowlist is what the packets meet. On 2026-07-29 the uplink's lease moved .24 -> .250 while the pinhole kept .24: the claw's SYNs were dropped for 6.5 h with the device perfectly healthy. Declaring expected_ip here is a THIRD copy of that same constant, so it can drift too (honest_failure_modes #5) — which is exactly why it is not the authority. The durable cure is a DHCP RESERVATION for this node, so lease and pinhole cannot diverge.",
     "_how_to_find_mac": "The node's WLAN BSSID and its LAN MAC usually differ by a small offset; declare the LAN MAC — the one that appears in /proc/net/arp. Confirm with: grep -i <oui> /proc/net/arp on a box that has talked to it. ONLY entries with Flags 0x2 (ATF_COM) are real sightings; a 0x0 row is a resolution that FAILED and is often the ghost of your own probe."
   }
 ]

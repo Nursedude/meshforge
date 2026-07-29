@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -30,6 +31,40 @@ DEFAULT_CLAW_UPLINK_DEBOUNCE_PATH = "/var/lib/meshforge/claw_uplink_debounce.jso
 DEFAULT_CLAW_UPLINK_CONFIG = "claw_uplink_nodes.json"
 _ARP_PATH = "/proc/net/arp"
 _ATF_COM = 0x2   # arp entry is COMPLETE — a resolved neighbour, not a failed try
+
+# The NATS pinhole is the AUTHORITY on which uplink address is admitted.
+# moc2 default-denies 4222 and allows a hardcoded allowlist, because WireClaw
+# cannot send NATS credentials. That allowlist and the uplink's DHCP lease are
+# two independent copies of ONE constant, and on 2026-07-29 they drifted:
+# lease moved .24 -> .250, pinhole kept .24, and every SYN from a healthy claw
+# was dropped for 6.5 h. Reading the pinhole here is what stops this probe
+# from being a THIRD copy of that constant (honest_failure_modes #5).
+DEFAULT_PINHOLE_PATH = "/etc/nftables.conf"
+DEFAULT_PINHOLE_PORT = 4222
+_PINHOLE_RE = re.compile(
+    r"ip\s+saddr\s*\{([^}]*)\}\s*tcp\s+dport\s+(\d+)\s+accept")
+
+
+def _read_pinhole_allowlist(path: str, port: int) -> Optional[List[str]]:
+    """Sorted allowlisted source IPs for ``port``. None = no opinion.
+
+    None means "this box does not gate that port" — either the file is absent
+    (most boxes) or its ruleset never mentions the port. That is NOT an empty
+    allowlist: "admits nobody" and "does not gate" are opposite facts, and
+    collapsing them would page every box that simply has no pinhole.
+    """
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return None
+    found = None
+    for m in _PINHOLE_RE.finditer(text):
+        if int(m.group(2)) != port:
+            continue
+        ips = [p.strip() for p in m.group(1).split(",") if p.strip()]
+        found = sorted(set((found or []) + ips))
+    return found
 
 
 def _read_arp_locations(arp_path: str) -> Optional[Dict[str, List[str]]]:
@@ -66,6 +101,8 @@ def probe_claw_uplink_node_moved(
     *,
     config_path: Optional[str] = None,
     arp_path: str = _ARP_PATH,
+    pinhole_path: str = DEFAULT_PINHOLE_PATH,
+    pinhole_port: int = DEFAULT_PINHOLE_PORT,
     state_path: Optional[str] = None,
     now: Optional[float] = None,
     debounce_ticks: int = 2,
@@ -141,6 +178,11 @@ def probe_claw_uplink_node_moved(
                        f"(blind is not healthy)")
             return None
 
+        # The AUTHORITY leg: is the uplink's CURRENT address one the firewall
+        # will actually admit? None = this box does not gate the port, so the
+        # leg abstains rather than inventing a verdict.
+        allow = _read_pinhole_allowlist(pinhole_path, pinhole_port)
+
         moved = []
         unobserved = []
         home_ok = 0
@@ -149,15 +191,21 @@ def probe_claw_uplink_node_moved(
                 continue
             mac = str(node.get("mac") or "").lower().strip()
             want = str(node.get("expected_ip") or "").strip()
-            if not mac or not want:
+            if not mac:
                 continue                        # incomplete row: skip, never fatal
             seen = locations.get(mac) or []
             if not seen:
                 unobserved.append(node)
-            elif want in seen:
-                home_ok += 1                    # reachable where declared = home
+                continue
+            if allow is not None and not any(ip in allow for ip in seen):
+                # THE 2026-07-29 case: the node is reachable, possibly exactly
+                # where declared, but the pinhole admits a DIFFERENT address —
+                # so the claw's SYNs are dropped and it looks like dead hardware.
+                moved.append((node, sorted(seen), allow, False))
+            elif want and want not in seen:
+                moved.append((node, sorted(seen), allow, True))
             else:
-                moved.append((node, sorted(seen)))
+                home_ok += 1
 
         if not moved:
             if home_ok:
@@ -187,27 +235,47 @@ def probe_claw_uplink_node_moved(
                        f"debouncing a single odd neighbour read")
             return None
 
-        node, seen = moved[0]
+        node, seen, allow_at_fire, admitted = moved[0]
         name = str(node.get("name") or node.get("mac"))
-        want = str(node.get("expected_ip"))
+        want = str(node.get("expected_ip") or "")
         serves = [str(s) for s in (node.get("serves") or [])]
         serves_txt = (", ".join(serves) if serves else "its claw(s)")
+        common = (
+            f" It serves {serves_txt}. A claw behind a mis-addressed uplink can "
+            f"boot, associate, hold a DHCP lease and dial the correct broker "
+            f"while every SYN is dropped, and the only other signal for that "
+            f"state (claw_device_dark) blames the DEVICE."
+        )
+        if not admitted:
+            detail = (
+                f"claw uplink node {name} answers at {', '.join(seen)}, which the "
+                f"port-{pinhole_port} pinhole does NOT admit "
+                f"(allows: {', '.join(allow_at_fire or []) or 'nobody'})."
+                + common +
+                f" Fix: add {seen[0]} to the pinhole in {pinhole_path} (reload "
+                f"nftables), then pin that address with a DHCP reservation so the "
+                f"firewall's hardcoded copy cannot drift from the lease again."
+            )
+        else:
+            detail = (
+                f"claw uplink node {name} answers at {', '.join(seen)}, not its "
+                f"declared {want} — the pinhole still admits it, so traffic flows, "
+                f"but the declaration is now stale."
+                + common +
+                f" Fix: reconcile claw_uplink_nodes.json, or restore the reservation."
+            )
         return Signal(
             cls="claw_uplink_node_moved",
             subject=name,
             severity="degraded",
-            detail=(
-                f"claw uplink node {name} is answering at {', '.join(seen)}, "
-                f"not its declared {want} — it serves {serves_txt}. A claw behind "
-                f"a relocated uplink can boot, associate, hold a DHCP lease and "
-                f"dial the correct broker while having no path out, and the only "
-                f"other signal for that state (claw_device_dark) blames the DEVICE. "
-                f"Reconcile the declaration or restore the address reservation."
-            ),
+            detail=detail,
             extra={
                 "mac": str(node.get("mac")),
                 "declared_ip": want,
                 "observed_ips": seen,
+                "pinhole_allows": allow_at_fire,
+                "pinhole_port": pinhole_port,
+                "admitted": admitted,
                 "serves": serves,
                 "also_home": home_ok,
                 "unobserved": len(unobserved),
