@@ -147,14 +147,22 @@ def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
         if not node:
             continue
         if rest.strip().lower().startswith("never"):
-            out[node] = {"age_s": None, "pkts": 0, "rssi_dbm": None, "never": True}
+            out[node] = {"age_s": None, "pkts": 0, "rssi_dbm": None,
+                         "never": True, "parse_error": False}
             continue
         age_part, _, tail = rest.partition("/")
         pkts_part, _, rssi_part = tail.partition("@")
         try:
             age = int(age_part)
         except ValueError:
-            continue                     # unparseable -> omit, never guess 0
+            # A GARBLED reading is not an ABSENT id. Omitting it would drop the
+            # key, and a consumer doing watched.get(id) would then see None —
+            # indistinguishable from "this id is not watched at all". So it is
+            # kept with parse_error set: unknown is stated, not implied by
+            # absence (honest_failure_modes #9 — every swallow leaves a witness).
+            out[node] = {"age_s": None, "pkts": None, "rssi_dbm": None,
+                         "never": False, "parse_error": True}
+            continue
         try:
             pkts = int(pkts_part)
         except ValueError:
@@ -163,7 +171,8 @@ def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
             rssi = int(float(rssi_part))
         except ValueError:
             rssi = None
-        out[node] = {"age_s": age, "pkts": pkts, "rssi_dbm": rssi, "never": False}
+        out[node] = {"age_s": age, "pkts": pkts, "rssi_dbm": rssi,
+                     "never": False, "parse_error": False}
     return out or None
 
 

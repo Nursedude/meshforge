@@ -546,8 +546,13 @@ class TestLoraWatchList:
                              "runts 0, last from=!a to=!b ch=0x08 rssi=-1 snr=1) "
                              "watch=!32962f10:garbage,!ddfb8065:7/2@-50")
         w = d["watched"]
-        assert "!32962f10" not in w, "guessed a value for an unparseable entry"
+        # Kept, but marked unknown — NOT dropped. A dropped key is
+        # indistinguishable from "not watched", which is the blind spot again.
+        assert w["!32962f10"]["parse_error"] is True
+        assert w["!32962f10"]["age_s"] is None, "guessed a value for a garbled entry"
+        assert w["!32962f10"]["never"] is False, "garbled must not read as never"
         assert w["!ddfb8065"]["age_s"] == 7
+        assert w["!ddfb8065"]["parse_error"] is False
 
     def test_dropped_ids_are_surfaced(self):
         """Ids past the firmware cap are reported, not silently ignored."""
