@@ -64,5 +64,15 @@ after="$(cat "$logf" 2>/dev/null)"
 check "green run leaves the failure log intact" "$([ -f "$logf" ] && [ "$before" = "$after" ] && echo ok)"
 check "green run reports the suite as passing" "$(echo "$out_ok" | grep -Eq 'full suite.*(exit 0|passed)' && echo ok)"
 
+# ── the harness must prove it STUBBED — the failure mode is silence ──────
+# This file already uses a FAKE_REPO precisely because honest_status prefers
+# $REPO/venv/bin/python, an ABSOLUTE path that routes around the PATH stub
+# (49c0b703: 4 of 5 assertions could not pass, and nobody noticed for weeks
+# because nothing ran this file). The MA twin still had that defect on
+# 2026-07-29 — found running THREE real nested pytest suites instead of the
+# fixture. A harness whose stub can be bypassed must SAY so, not go quiet.
+check "the fake pytest was actually invoked (stub not bypassed)" \
+  "$(echo "$out_ok" | grep -q '43 passed in 3.00s' && echo ok)"
+
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi
