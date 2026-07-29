@@ -289,6 +289,32 @@ def _extract(reply: Any, parser, err_key: str,
 _REQUIRED_HALVES = ("device_info",)
 
 
+def _watch_verdicts(lora: Any, device_info: Any):
+    """Apply the listening-window gate to the watch list, if both halves exist.
+
+    Kept deliberately dumb: no config lookup here. The conservative default
+    window is the right behaviour for a capture that must never page on a
+    reboot, and a caller with per-node intervals can re-run classify_watch with
+    them. Never raises into the tick — a gate that crashes the capture would
+    cost more than the verdict is worth.
+    """
+    try:
+        from mini_dudeai.claw_rf_watch import classify_watch
+        watched = (lora or {}).get("watched") if isinstance(lora, dict) else None
+        if not watched:
+            return None
+        uptime = None
+        if isinstance(device_info, dict):
+            uptime = device_info.get("uptime_s")
+        return classify_watch(watched, uptime)
+    except Exception as e:
+        # A swallow with no witness is how a gate silently stops gating. The tick
+        # must not die for a verdict, but the failure has to be findable.
+        logger.warning("watch verdict gate failed (%s: %s) — tick carries no "
+                       "verdicts this cycle", e.__class__.__name__, e)
+        return None
+
+
 def build_tick(now: float, host: str, device: str,
                device_info_reply: Any, ble_stats_reply: Any,
                battery_reply: Any = None,
@@ -370,6 +396,12 @@ def build_tick(now: float, host: str, device: str,
         "ble": ble,
         "battery": battery,
         "lora": lora,
+        # The uptime GATE, applied here so the tick carries a JUDGED verdict and
+        # no consumer has to re-derive it (and get the gate wrong). `never` alone
+        # is not a finding: seconds after this field first shipped, 3 of 4 watched
+        # fleet radios read `never` purely because the claw had been up 10 s.
+        # None when there is no watch list or no uptime to size the window with.
+        "watch_verdicts": _watch_verdicts(lora, device_info),
         "answered": answered,
         "errors": errors,
         "degraded_optional": degraded_optional,
