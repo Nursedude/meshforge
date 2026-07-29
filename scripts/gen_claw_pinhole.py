@@ -72,8 +72,43 @@ END = "# END meshforge claw pinhole"
 
 DEFAULT_NFT_PATH = "/etc/nftables.conf"
 DEFAULT_ARP_PATH = "/proc/net/arp"
+DEFAULT_STATE_PATH = "/var/lib/meshforge/claw_pinhole_state.json"
 DEFAULT_PORT = 4222
 _ATF_COM = 0x2
+
+
+def read_state(path: str) -> dict:
+    """{mac_lower: [previously_rendered_ip, ...]}. Unreadable -> {}.
+
+    This history is the ONLY thing that makes a stale entry attributable, and
+    therefore the only thing that permits removal. An unreadable or absent
+    history is NOT permission to delete — it degrades to keep-and-report, which
+    is the behaviour of a box that has no history yet.
+    """
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    r = doc.get("rendered") if isinstance(doc, dict) else None
+    if not isinstance(r, dict):
+        return {}
+    return {str(k).lower(): [str(v) for v in (vs or [])]
+            for k, vs in r.items() if isinstance(vs, list)}
+
+
+def write_state(path: str, rendered: dict) -> None:
+    """Best-effort; a failure must never abort a completed repair."""
+    try:
+        d = os.path.dirname(path) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".claw_pinhole_state.")
+        with os.fdopen(fd, "w") as f:
+            json.dump({"rendered": rendered}, f, indent=2)
+        os.replace(tmp, path)
+    except OSError as e:
+        print("warn: could not persist state (%s) — next run will keep-and-report "
+              "instead of pruning" % e.__class__.__name__)
 
 _SADDR_RE = re.compile(r"ip\s+saddr\s*\{([^}]*)\}\s*tcp\s+dport\s+(\d+)\s+accept")
 
@@ -164,25 +199,34 @@ def render(allow, port: int) -> str:
     ]) + "\n"
 
 
-def plan(nft_path: str, arp_path: str, port: int, config_path: str):
-    """(allow, notes, error). error != None => UNOBSERVABLE, never write."""
+def plan(nft_path: str, arp_path: str, port: int, config_path: str,
+         state_path: Optional[str] = None):
+    """(allow, notes, error, rendered). error != None => UNOBSERVABLE, never write."""
     notes = []
     nodes, err = read_declared(config_path)
     if err:
-        return None, notes, err
+        return None, notes, err, {}
     locs, err = arp_locations(arp_path)
     if err:
-        return None, notes, err
+        return None, notes, err, {}
     try:
         with open(nft_path) as f:
             text = f.read()
     except OSError as e:
-        return None, notes, "%s unreadable (%s)" % (nft_path, e.__class__.__name__)
+        return None, notes, "%s unreadable (%s)" % (nft_path, e.__class__.__name__), {}
 
+    prior = read_state(state_path) if state_path else {}
     existing = current_allow(text, port)
     allow = set()
     attributed = set()
+    rendered: dict = {}
+    live_anywhere = set()          # every address ANY declared uplink occupies now
+    declared_extra = set()
+    for n in nodes:
+        live_anywhere.update(locs.get(str(n["mac"]).lower().strip()) or [])
+        declared_extra.update(str(x) for x in (n.get("extra_allow") or []))
 
+    prunable = set()
     for n in nodes:
         mac = str(n["mac"]).lower().strip()
         name = str(n.get("name") or mac)
@@ -190,31 +234,48 @@ def plan(nft_path: str, arp_path: str, port: int, config_path: str):
         if seen:
             allow.update(seen)
             attributed.update(seen)
+            rendered[mac] = sorted(seen)
             for ip in seen:
                 if ip not in existing:
                     notes.append("uplink %s now at %s (was not admitted)" % (name, ip))
+            # ATTRIBUTED PRUNE — all four conditions, or it stays. History says we
+            # rendered this address for THIS mac; the mac has since moved; nobody
+            # else lives there now; and it is not an explicit extra_allow.
+            for old in prior.get(mac, []):
+                if (old not in seen
+                        and old not in live_anywhere
+                        and old not in declared_extra
+                        and old in existing):
+                    prunable.add(old)
+                    notes.append("pruning %s — history attributes it to uplink %s, "
+                                 "which has since moved to %s and nobody else "
+                                 "occupies it" % (old, name, ", ".join(seen)))
         else:
             # INVARIANT 3: hold, never drop on blindness.
             held = [ip for ip in existing]
             allow.update(held)
+            rendered[mac] = sorted(prior.get(mac, []))   # carry history unchanged
             notes.append("uplink %s not in neighbour table — HOLDING existing "
                          "allowlist (blindness is not departure)" % name)
         for ip in (n.get("extra_allow") or []):
             allow.add(str(ip)); attributed.add(str(ip))
 
-    # INVARIANT 4: keep what we cannot attribute, and say so.
-    unattributed = [ip for ip in existing if ip not in attributed]
+    # INVARIANT 4: keep what we cannot attribute, and say so. A pruned address is
+    # attributable BY HISTORY, so it is excluded from this set rather than kept.
+    unattributed = [ip for ip in existing
+                    if ip not in attributed and ip not in prunable]
     if unattributed:
         allow.update(unattributed)
         notes.append("keeping %d unattributable entry(ies) %s — prune by hand if "
                      "stale (a repair must not silently delete firewall rules)"
                      % (len(unattributed), ",".join(sorted(unattributed))))
+    allow -= prunable
 
     # INVARIANT 2: never render nobody.
     if not allow:
         return None, notes, ("render would admit NOBODY — refusing (that is the "
-                             "outage this prevents)")
-    return sorted(allow), notes, None
+                             "outage this prevents)"), {}
+    return sorted(allow), notes, None, rendered
 
 
 def apply_region(nft_path: str, allow, port: int, dry: bool = False):
@@ -282,10 +343,15 @@ def main() -> int:
     ap.add_argument("--arp-file", default=DEFAULT_ARP_PATH)
     ap.add_argument("--config", default=None)
     ap.add_argument("--port", type=int, default=DEFAULT_PORT)
+    ap.add_argument("--state-file", default=DEFAULT_STATE_PATH,
+                    help="history of addresses WE rendered per uplink MAC. It is "
+                         "the only thing that makes a stale entry attributable, "
+                         "and therefore the only thing that permits removal.")
     a = ap.parse_args()
     cfg = a.config or _config_path()
 
-    allow, notes, err = plan(a.nft_file, a.arp_file, a.port, cfg)
+    allow, notes, err, rendered = plan(a.nft_file, a.arp_file, a.port, cfg,
+                                      state_path=a.state_file)
     for n in notes:
         print("note: %s" % n)
     if err:
@@ -313,6 +379,10 @@ def main() -> int:
 
     ok, msg = apply_region(a.nft_file, allow, a.port)
     print(("applied: " if ok else "FAILED: ") + msg)
+    if ok:
+        # Record what we rendered ONLY after the write is verified — history
+        # that outran reality would authorise pruning an address still in use.
+        write_state(a.state_file, rendered)
     return 0 if ok else 1
 
 

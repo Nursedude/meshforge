@@ -183,3 +183,90 @@ class TestRenderShape:
                 nodes=[{"name": "UPLINK", "mac": MAC, "extra_allow": [PEER]}])
         r = h.run("--print")
         assert PEER in r.stdout and UPLINK_NOW in r.stdout
+
+
+class TestAttributedPruning:
+    """Closing the residue: a lease move used to leave the OLD address in the
+    allowlist forever, because the healer keeps what it cannot attribute
+    (invariant 4). On an unreserved segment each leftover is a standing permit
+    to the NATS bus that some future unrelated device could inherit.
+
+    State makes the old address ATTRIBUTABLE, so it can be removed without
+    ever guessing. Deletion in a firewall writer is the riskiest thing in this
+    script, so it requires ALL FOUR conditions; every test below is one of the
+    ways a looser rule would remove something it should not have.
+    """
+
+    def _state(self, h, mapping):
+        p = h.tmp / "pinhole_state.json"
+        p.write_text(json.dumps({"rendered": mapping}))
+        return str(p)
+
+    def _run(self, h, mode, state=None):
+        cmd = [sys.executable, SCRIPT, mode, "--nft-file", str(h.nft),
+               "--arp-file", str(h.arp), "--config", str(h.cfg)]
+        if state:
+            cmd += ["--state-file", state]
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+
+    def test_old_address_is_pruned_when_state_attributes_it(self, h):
+        """The whole point: state says we rendered .24 for this MAC, the MAC is
+        now at .250, and .24 belongs to nobody else -> remove it."""
+        h.write(allow=[PEER, UPLINK_OLD, UPLINK_NOW],
+                arp_rows=[(UPLINK_NOW, "0x2", MAC)])
+        st = self._state(h, {MAC: [UPLINK_OLD]})
+        r = self._run(h, "--print", st)
+        # Assert on the RENDERED region, not the whole stream: the prune note
+        # deliberately names the address it removed, so a naive substring check
+        # over stdout would fail on the explanation rather than the outcome.
+        region = r.stdout.split(BEGIN, 1)[-1]
+        assert UPLINK_NOW in region
+        assert UPLINK_OLD not in region, "attributable stale entry was not pruned"
+        assert PEER in region, "an unrelated peer must never be pruned"
+        assert "pruning %s" % UPLINK_OLD in r.stdout, "a prune must leave a witness"
+
+    def test_without_state_it_keeps_and_reports_as_before(self, h):
+        """Back-compat: no state file = no attribution = keep + report. A fresh
+        box must not start deleting rules it has no history for."""
+        h.write(allow=[PEER, UPLINK_OLD, UPLINK_NOW],
+                arp_rows=[(UPLINK_NOW, "0x2", MAC)])
+        r = self._run(h, "--check")
+        assert UPLINK_OLD in r.stdout
+        assert "unattributable" in r.stdout
+
+    def test_never_prunes_a_currently_observed_address(self, h):
+        """Even if state names it, an address the MAC is observed at RIGHT NOW
+        is live — pruning it would sever the claw this protects."""
+        h.write(allow=[PEER, UPLINK_NOW], arp_rows=[(UPLINK_NOW, "0x2", MAC)])
+        st = self._state(h, {MAC: [UPLINK_NOW]})
+        r = self._run(h, "--print", st)
+        assert UPLINK_NOW in r.stdout, "pruned a LIVE address"
+
+    def test_never_prunes_an_address_observed_for_another_declared_mac(self, h):
+        """Two uplinks; the address state attributes to A is where B actually
+        is. Removing it would cut off B's claw."""
+        other = "02:00:5e:00:99:99"
+        h.write(allow=[UPLINK_OLD, UPLINK_NOW],
+                arp_rows=[(UPLINK_NOW, "0x2", MAC), (UPLINK_OLD, "0x2", other)],
+                nodes=[{"name": "A", "mac": MAC},
+                       {"name": "B", "mac": other}])
+        st = self._state(h, {MAC: [UPLINK_OLD]})
+        r = self._run(h, "--print", st)
+        assert UPLINK_OLD in r.stdout, "pruned an address another uplink occupies"
+
+    def test_never_prunes_extra_allow(self, h):
+        h.write(allow=[PEER, UPLINK_NOW], arp_rows=[(UPLINK_NOW, "0x2", MAC)],
+                nodes=[{"name": "UPLINK", "mac": MAC, "extra_allow": [PEER]}])
+        st = self._state(h, {MAC: [PEER]})
+        r = self._run(h, "--print", st)
+        assert PEER in r.stdout, "pruned an explicitly declared extra_allow"
+
+    def test_corrupt_state_degrades_to_keep_and_report(self, h):
+        """Unreadable history is not permission to delete."""
+        h.write(allow=[PEER, UPLINK_OLD, UPLINK_NOW],
+                arp_rows=[(UPLINK_NOW, "0x2", MAC)])
+        p = h.tmp / "bad_state.json"
+        p.write_text("{not json")
+        r = self._run(h, "--check", str(p))
+        assert UPLINK_OLD in r.stdout
+        assert "unattributable" in r.stdout
