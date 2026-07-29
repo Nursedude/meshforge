@@ -968,6 +968,19 @@
       "annotation": "2026-07-19 structural-dark row 9 \u2014 the fleet's ONLY over-the-air witness. Every other mesh-RF check is a box talking about itself: the gateway can read healthy (RNS round-trip canary green, service active, queue draining) while nothing actually leaves the antenna \u2014 deaf radio, wrong region/preset, dead PA, unplugged coax. The claws answer lora_stats from a SEPARATE radio on SEPARATE silicon, which is physical-layer evidence no box can fabricate about itself. Fires only when EVERY reachable claw reporting a reading is silent (one deaf claw is that claw's problem; all of them is the channel). \u26a0\ufe0f propose_escalation, NOT ntfy, DELIBERATELY: the 1800s quiet window is PROVISIONAL \u2014 the operator staged it pending a heard-rate soak across overnight lulls, and that soak data did not exist until the lora_stats capture shipped the same day. A genuine quiet night can reach this threshold. Promote to a pager only from measured quiet-hours data, the way calibration_drift soaked 34 days before promotion; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
     },
     {
+      "id": "claw_uplink_node_moved_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_uplink_node_moved",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-29 live incident -- a declared claw UPLINK node (the AREDN/AP box bridging a claw's own subnet to the fleet segment) is answering at an address other than the one declared. Fix: reconcile ~/.config/meshforge/claw_uplink_nodes.json with where the node actually is, or restore its address reservation on the router. WHY THIS EXISTS: a claw can be entirely healthy -- booted, associated, holding its DHCP lease, dialling the correct broker -- and still be unreachable because its uplink moved out from under it, and the only signal the fleet had for that state was claw_device_dark, which points the operator at hardware that is working. dudeclaw-01 went ~5 h dark on 2026-07-29 and the investigation spent a power cycle, an antenna reseat, two chip resets and three dead hypotheses on a device that was never at fault; its config, read off its own LittleFS, had the right broker the whole time. LEADING indicator: fires on the CONDITION (uplink not where declared), not the OUTCOME (a claw went quiet) -- a relocated uplink may still route, and is worth naming BEFORE it strands the fleet's only out-of-band witness. Side-effect-free escalation; NO ntfy page (unsoaked -- the calibration_drift 34-day precedent). NON-redundant with claw_device_dark, which owns the device-silent case and cannot tell a dead node from a stranded one."
+    },
+    {
       "id": "gateway_dual_homed_exposure_any",
       "match": {
         "kind": "signal_class",

@@ -64,6 +64,7 @@ from utils.watchdog_probes import (
     probe_claw_device_dark,
     probe_claw_battery_low,
     probe_claw_rf_silent,
+    probe_claw_uplink_node_moved,
     probe_router_scout_degraded,
     probe_ntfy_loopback,
     probe_ntfy_ack_stale,
@@ -678,6 +679,15 @@ def run_all_probes(
     # "we think we transmitted" can be told from "the air is quiet". Escalate
     # only; the quiet-window threshold is provisional pending a heard-rate soak.
     sig = probe_claw_rf_silent()
+    if sig is not None:
+        signals.append(sig)
+
+    # claw UPLINK (2026-07-29) — the witness's own path home. A claw can be
+    # healthy in every way it can self-report and still be unreachable because
+    # the node bridging its subnet moved; claw_device_dark renders exactly that
+    # as "the device is silent" and sends the operator at working hardware.
+    # Leading indicator, observation-only (/proc/net/arp), INERT undeclared.
+    sig = probe_claw_uplink_node_moved()
     if sig is not None:
         signals.append(sig)
 
