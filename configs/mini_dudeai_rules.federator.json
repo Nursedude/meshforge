@@ -1016,6 +1016,19 @@
       "annotation": "2026-07-19 structural-dark row 9 \u2014 the fleet's ONLY over-the-air witness. Every other mesh-RF check is a box talking about itself: the gateway can read healthy (RNS round-trip canary green, service active, queue draining) while nothing actually leaves the antenna \u2014 deaf radio, wrong region/preset, dead PA, unplugged coax. The claws answer lora_stats from a SEPARATE radio on SEPARATE silicon, which is physical-layer evidence no box can fabricate about itself. Fires only when EVERY reachable claw reporting a reading is silent (one deaf claw is that claw's problem; all of them is the channel). \u26a0\ufe0f propose_escalation, NOT ntfy, DELIBERATELY: the 1800s quiet window is PROVISIONAL \u2014 the operator staged it pending a heard-rate soak across overnight lulls, and that soak data did not exist until the lora_stats capture shipped the same day. A genuine quiet night can reach this threshold. Promote to a pager only from measured quiet-hours data, the way calibration_drift soaked 34 days before promotion; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
     },
     {
+      "id": "claw_watched_node_silent_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "claw_watched_node_silent",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-29 -- one of OUR OWN watched transmitters (by node id) has not reached ANY claw for its full listening window. This is the MUTE-TRANSMITTER case claw_rf_silent is structurally blind to, and the difference matters: that probe reads heard_age_s, the age of the last packet from ANYONE, so with neighbours transmitting at 6-8 pkt/min the channel reads healthy (~5 s) while our own PA is dead, the region/preset is wrong, or the coax is unplugged. A busy channel is not proof that WE are on the air. Per-node verdicts from a separate radio on separate silicon are the per-source egress evidence the row-9 residual named as still missing. FIX: check that node's own TX leg (region/preset, PA, antenna, coax) -- NOT the channel, and not the claw. Fires only on the GATED 'silent' verdict: the claw listened longer than that node's expected transmit interval (default 3x3 h) and heard nothing. It does NOT fire on raw 'never' -- seconds after the watch field shipped, 3 of 4 watched radios read 'never' purely because the claw had been up 10 s, and paging on that would fire on every claw reboot, flash and power cycle. Hearing on ANY claw settles it (positive physical evidence outranks silence); 'unobservable' keeps its own column and is never folded into either answer. propose_escalation, NOT ntfy, DELIBERATELY: no real 'silent' verdict has EVER been observed on this fleet, so the window's false-positive rate is UNMEASURED. Promote to a pager only from measured data -- the claw_rf_silent staging and the calibration_drift 34-day precedent; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
+    },
+    {
       "id": "claw_uplink_node_moved_any",
       "match": {
         "kind": "signal_class",

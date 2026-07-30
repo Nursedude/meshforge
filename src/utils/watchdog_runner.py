@@ -64,6 +64,7 @@ from utils.watchdog_probes import (
     probe_claw_device_dark,
     probe_claw_battery_low,
     probe_claw_rf_silent,
+    probe_claw_watched_node_silent,
     probe_claw_uplink_node_moved,
     probe_router_scout_degraded,
     probe_ntfy_loopback,
@@ -679,6 +680,15 @@ def run_all_probes(
     # "we think we transmitted" can be told from "the air is quiet". Escalate
     # only; the quiet-window threshold is provisional pending a heard-rate soak.
     sig = probe_claw_rf_silent()
+    if sig is not None:
+        signals.append(sig)
+
+    # watched-node silence (2026-07-29) — the MUTE-TRANSMITTER case the probe
+    # above is structurally blind to. claw_rf_silent reads heard_age_s (the last
+    # packet from ANYONE), so a busy channel reads healthy while OUR OWN radio is
+    # off the air; this reads the per-node watch verdicts, gated on the claw's
+    # listening window so `never` after a reboot is never mistaken for silence.
+    sig = probe_claw_watched_node_silent()
     if sig is not None:
         signals.append(sig)
 

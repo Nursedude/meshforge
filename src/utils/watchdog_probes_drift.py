@@ -1310,6 +1310,11 @@ from utils.watchdog_probes_liveness import (  # noqa: E402,F401 (back-compat re-
     probe_claw_battery_low,
     probe_claw_rf_silent,
 )
+from utils.watchdog_probes_claw_watch import (  # noqa: E402,F401 (re-export)
+    DEFAULT_CLAW_WATCH_DEBOUNCE_PATH,
+    _fold_watch_verdicts,
+    probe_claw_watched_node_silent,
+)
 from utils.watchdog_probes_claw_uplink import (  # noqa: E402,F401 (re-export)
     DEFAULT_CLAW_UPLINK_DEBOUNCE_PATH,
     DEFAULT_CLAW_UPLINK_CONFIG,
