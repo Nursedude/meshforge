@@ -125,12 +125,15 @@ def classify_watch(
     claw's own. Both unknown = gate INERT (never invent a mismatch from missing
     config — absence of a declaration is not evidence of a conflict).
 
-    OBSERVATION OUTRANKS DECLARATION. If a node declared cross-segment is
-    actually HEARD, the radio settles it and the verdict stays ``heard`` — but
-    the entry is stamped ``segment_conflict`` so the wrong declaration surfaces
-    instead of being silently tolerated. Declared values drift from reality on
-    this fleet; a mismatch between what we declared and what the antenna heard
-    is a finding about the CONFIG, and it gets a witness rather than a shrug.
+    OBSERVATION OUTRANKS SILENCE. If a node declared cross-segment is actually
+    HEARD, the verdict stays ``heard`` and the entry is stamped
+    ``segment_conflict`` — a contradiction between the declaration and the
+    antenna, surfaced rather than shrugged at. The stamp deliberately does NOT
+    say which side is wrong: a watch entry matches a packet's ORIGINATOR id, and
+    that id survives mesh rebroadcast and the cross-preset bridge, so "heard"
+    can mean relayed rather than direct. Naming the contradiction is the honest
+    output; resolving it needs an RSSI comparison against a peer on the node's
+    own segment.
     """
     if not isinstance(watched, dict) or not watched:
         return None
@@ -153,9 +156,24 @@ def classify_watch(
 
         age = rec.get("age_s")
         if age is not None:
-            # Hearing is positive physical evidence and outranks every
-            # declaration. A cross-segment node we can HEAR means the DECLARATION
-            # is wrong, not the radio — stamp it so the drift is findable.
+            # Hearing outranks silence, so the verdict stays HEARD. But a
+            # cross-segment node we can hear is a CONTRADICTION with two
+            # explanations, and asserting either one would be the overclaim this
+            # module exists to avoid (measured 2026-07-30: the first live
+            # conflict was the SECOND cause, and the wording here originally
+            # asserted the first).
+            #
+            #   (a) the declaration is stale/wrong — the node moved preset; or
+            #   (b) the reception is INDIRECT. The watch list matches a packet's
+            #       ORIGINATOR id, and that id survives mesh rebroadcast and the
+            #       cross-preset bridge. So a node on another segment shows up
+            #       here the moment any same-segment neighbour relays its
+            #       traffic, without its transmitter ever reaching this claw.
+            #
+            # Discriminator: RSSI against a same-segment peer, and packet count.
+            # Live case — moc2 declared SHORT_TURBO, heard at -102 dBm in a burst
+            # of 7 while a box on its OWN segment hears it at -17 dBm: relayed,
+            # not direct, and the declaration was correct.
             rec_out = {"verdict": HEARD, "age_s": age,
                        "silent_for_at_least_s": None,
                        "required_window_s": need,
@@ -164,8 +182,11 @@ def classify_watch(
                 rec_out["segment_conflict"] = True
                 rec_out["reason"] += (
                     " — but it is DECLARED on segment %r while this claw listens "
-                    "on %r. The antenna outranks the config: the declaration is "
-                    "wrong and should be corrected." % (node_seg, claw_segment))
+                    "on %r. Either the declaration is stale, or this was RELAYED "
+                    "(the originator id survives rebroadcast and the cross-preset "
+                    "bridge) — compare RSSI against a peer on its own segment "
+                    "before concluding the link is direct."
+                    % (node_seg, claw_segment))
             out[node] = rec_out
             continue
 

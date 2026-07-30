@@ -243,14 +243,25 @@ class TestTheSegmentGate:
         assert classify_watch({MOC: _never()}, CLAW_UPTIME_0730,
                               segments={MOC: ST}, claw_segment=None)[MOC]["verdict"] == SILENT
 
-    def test_hearing_outranks_the_declaration_but_leaves_a_witness(self):
-        """If we HEAR a node we declared cross-segment, the config is wrong.
-        The antenna wins, and the drift must surface rather than be tolerated."""
+    def test_hearing_outranks_silence_but_leaves_a_witness(self):
+        """Hearing a node we declared cross-segment is a CONTRADICTION, and the
+        stamp must not assert which side is wrong.
+
+        The live 2026-07-30 conflict was NOT a stale declaration: moc2's config
+        was byte-identical SHORT_TURBO, and the claw heard 7 packets at -102 dBm
+        carrying moc2's originator id — relayed across the bridge, while a box on
+        moc2's own segment heard it at -17 dBm. An earlier version of this branch
+        said "the declaration is wrong and should be corrected" and would have
+        sent the next reader to retune a correctly-configured radio."""
         v = classify_watch({MOC2: _heard(age=12)}, CLAW_UPTIME_0730,
                            segments={MOC2: ST}, claw_segment=LF)
         assert v[MOC2]["verdict"] == HEARD
         assert v[MOC2]["segment_conflict"] is True
-        assert "declaration is wrong" in v[MOC2]["reason"]
+        reason = v[MOC2]["reason"]
+        assert "RELAYED" in reason, "the relay explanation must be offered"
+        assert "declaration is stale" in reason, "the config explanation too"
+        assert "declaration is wrong" not in reason, (
+            "the stamp must not assert a cause it cannot know")
 
     def test_summary_keeps_conflicts_in_their_own_column(self):
         s = summarise(classify_watch(
