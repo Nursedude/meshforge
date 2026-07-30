@@ -289,7 +289,8 @@ def _extract(reply: Any, parser, err_key: str,
 _REQUIRED_HALVES = ("device_info",)
 
 
-def _watch_verdicts(lora: Any, device_info: Any):
+def _watch_verdicts(lora: Any, device_info: Any,
+                    segments: Any = None, claw_segment: Any = None):
     """Apply the listening-window gate to the watch list, if both halves exist.
 
     Kept deliberately dumb: no config lookup here. The conservative default
@@ -297,6 +298,12 @@ def _watch_verdicts(lora: Any, device_info: Any):
     reboot, and a caller with per-node intervals can re-run classify_watch with
     them. Never raises into the tick — a gate that crashes the capture would
     cost more than the verdict is worth.
+
+    ``segments``/``claw_segment`` are threaded through from the caller (which
+    owns config reading) rather than looked up here, keeping that contract. They
+    are PASSED rather than defaulted because a gate that ships unwired is a
+    reader with no writer (honest_failure_modes #4) — the 2026-07-30 finding it
+    exists to prevent would have stayed live with the code merged.
     """
     try:
         from mini_dudeai.claw_rf_watch import classify_watch
@@ -306,7 +313,10 @@ def _watch_verdicts(lora: Any, device_info: Any):
         uptime = None
         if isinstance(device_info, dict):
             uptime = device_info.get("uptime_s")
-        return classify_watch(watched, uptime)
+        return classify_watch(
+            watched, uptime,
+            segments=segments if isinstance(segments, dict) else None,
+            claw_segment=claw_segment if isinstance(claw_segment, str) else None)
     except Exception as e:
         # A swallow with no witness is how a gate silently stops gating. The tick
         # must not die for a verdict, but the failure has to be findable.
@@ -330,7 +340,8 @@ def _watch_verdicts(lora: Any, device_info: Any):
 def build_tick(now: float, host: str, device: str,
                device_info_reply: Any, ble_stats_reply: Any,
                battery_reply: Any = None,
-               lora_reply: Any = None) -> Dict[str, Any]:
+               lora_reply: Any = None,
+               segments: Any = None, claw_segment: Any = None) -> Dict[str, Any]:
     """Assemble the ``claw_last_tick.json`` record from the NATS replies.
 
     ``reachable`` is the load-bearing fact: did the DEVICE answer — ANY half?
@@ -413,7 +424,8 @@ def build_tick(now: float, host: str, device: str,
         # is not a finding: seconds after this field first shipped, 3 of 4 watched
         # fleet radios read `never` purely because the claw had been up 10 s.
         # None when there is no watch list or no uptime to size the window with.
-        "watch_verdicts": _watch_verdicts(lora, device_info),
+        "watch_verdicts": _watch_verdicts(lora, device_info,
+                                          segments, claw_segment),
         "answered": answered,
         "errors": errors,
         "degraded_optional": degraded_optional,

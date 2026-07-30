@@ -68,6 +68,8 @@ def classify_watch(
     expected_intervals: Optional[Dict[str, float]] = None,
     default_interval_s: Optional[float] = None,
     multiple: Optional[float] = None,
+    segments: Optional[Dict[str, str]] = None,
+    claw_segment: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """Per-node verdicts for a claw's watch list, gated on the listening window.
 
@@ -88,17 +90,59 @@ def classify_watch(
                          honest LOWER bound: the firmware knows only "not since
                          radio start", so true silence may be longer.
     * ``unobservable`` — ``never`` but the window has not elapsed; or uptime is
-                         unknown; or the entry was garbled (``parse_error``).
+                         unknown; or the entry was garbled (``parse_error``);
+                         or the node is on a different RF SEGMENT (below).
                          Blindness, stated as blindness.
+
+    THE SEGMENT GATE (2026-07-30)
+    -----------------------------
+    The uptime gate above answers "have we listened long enough?". It cannot
+    answer "could this claw EVER hear this node?" — and on this fleet the answer
+    is sometimes no, by design.
+
+    MeshForge runs a deliberately TWO-PRESET fleet: LONG_FAST/ch20 plus a
+    SHORT_TURBO/ch8 segment (the ST<>meshforge<>LF topology in
+    ``docs/fleet_presets.yaml``; ST was chosen for throughput on the RNS leg).
+    Different preset means different bandwidth, spreading factor AND centre
+    frequency, so the two segments are mutually undemodulable on RF. The domain
+    already states the rule — *"cross-preset visibility requires MQTT/RNS
+    bridging, not RF"* — but the rule lived in prose, and this RF-only witness
+    was built without inheriting it (the closed-enum shape, honest_failure_modes
+    #7: a registry grew a consumer that does not know).
+
+    Measured 2026-07-30: two watched nodes read ``silent`` after 17.9 h of
+    listening with the reason "this radio is not reaching this claw". Both were
+    the two SHORT_TURBO boxes; both were transmitting fine, proven by a third
+    box on their own segment receiving them over the air. The verdict was
+    literally true and totally misleading — an UNOBSERVABLE condition wearing
+    SILENT's clothes, which is the exact defect this module exists to prevent.
+
+    So a declared cross-segment node is ``unobservable``, and no amount of
+    listening promotes it: the check runs BEFORE the uptime gate because more
+    listening cannot fix a frequency mismatch.
+
+    ``segments`` maps node id -> declared RF segment; ``claw_segment`` is this
+    claw's own. Both unknown = gate INERT (never invent a mismatch from missing
+    config — absence of a declaration is not evidence of a conflict).
+
+    OBSERVATION OUTRANKS DECLARATION. If a node declared cross-segment is
+    actually HEARD, the radio settles it and the verdict stays ``heard`` — but
+    the entry is stamped ``segment_conflict`` so the wrong declaration surfaces
+    instead of being silently tolerated. Declared values drift from reality on
+    this fleet; a mismatch between what we declared and what the antenna heard
+    is a finding about the CONFIG, and it gets a witness rather than a shrug.
     """
     if not isinstance(watched, dict) or not watched:
         return None
     ivs = expected_intervals or {}
+    segs = segments or {}
     out: Dict[str, Any] = {}
     for node, rec in watched.items():
         if not isinstance(rec, dict):
             continue
         need = required_window_s(ivs.get(node, default_interval_s), multiple)
+        node_seg = segs.get(node)
+        cross = bool(claw_segment and node_seg and node_seg != claw_segment)
 
         if rec.get("parse_error"):
             out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
@@ -109,13 +153,38 @@ def classify_watch(
 
         age = rec.get("age_s")
         if age is not None:
-            out[node] = {"verdict": HEARD, "age_s": age,
-                         "silent_for_at_least_s": None,
-                         "required_window_s": need,
-                         "reason": "heard %ss ago" % age}
+            # Hearing is positive physical evidence and outranks every
+            # declaration. A cross-segment node we can HEAR means the DECLARATION
+            # is wrong, not the radio — stamp it so the drift is findable.
+            rec_out = {"verdict": HEARD, "age_s": age,
+                       "silent_for_at_least_s": None,
+                       "required_window_s": need,
+                       "reason": "heard %ss ago" % age}
+            if cross:
+                rec_out["segment_conflict"] = True
+                rec_out["reason"] += (
+                    " — but it is DECLARED on segment %r while this claw listens "
+                    "on %r. The antenna outranks the config: the declaration is "
+                    "wrong and should be corrected." % (node_seg, claw_segment))
+            out[node] = rec_out
             continue
 
-        # never
+        # never. The segment gate runs FIRST: no amount of listening makes a
+        # node on another frequency/modulation audible, so the uptime window is
+        # not the right question for it.
+        if cross:
+            out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
+                         "silent_for_at_least_s": None,
+                         "required_window_s": need,
+                         "segment_conflict": True,
+                         "reason": "not heard, and it CANNOT be heard here: this "
+                                   "node is on RF segment %r while the claw "
+                                   "listens on %r. Cross-segment visibility "
+                                   "needs the MQTT/RNS bridge, not RF — silence "
+                                   "on this claw says nothing about that radio."
+                                   % (node_seg, claw_segment)}
+            continue
+
         if uptime_s is None:
             out[node] = {"verdict": UNOBSERVABLE, "age_s": None,
                          "silent_for_at_least_s": None,
@@ -153,9 +222,51 @@ def summarise(verdicts: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     heard = [n for n, v in verdicts.items() if v.get("verdict") == HEARD]
     silent = [n for n, v in verdicts.items() if v.get("verdict") == SILENT]
     blind = [n for n, v in verdicts.items() if v.get("verdict") == UNOBSERVABLE]
+    # Kept in its own column for the same reason `unobservable` is: a wrong
+    # segment declaration is a real finding about the CONFIG, and folding it
+    # into either healthy or silent is how it would never get fixed.
+    conflicts = [n for n, v in verdicts.items() if v.get("segment_conflict")]
     return {
         "heard": sorted(heard),
         "silent": sorted(silent),
         "unobservable": sorted(blind),
+        "segment_conflicts": sorted(conflicts),
         "actionable": bool(silent),
     }
+
+
+def validate_watch_segments(
+    watched_ids: Any,
+    segments: Optional[Dict[str, str]],
+    claw_segment: Optional[str],
+) -> list:
+    """Authoring-time check: watch entries this claw could never hear.
+
+    ``classify_watch`` degrades a cross-segment entry to ``unobservable`` at
+    RUNTIME, which keeps the field honest but leaves the useless entry in place
+    forever, quietly consuming a watch slot and reporting nothing. The real cure
+    is upstream: refuse it where a human wrote it (honest_failure_modes #3 —
+    validators must reject what the author cannot have meant). Nobody means "watch
+    for a transmitter on a frequency this receiver cannot tune".
+
+    Returns a list of human-readable problems, EMPTY when the list is coherent.
+    Never raises and never mutates: callers decide whether a problem blocks a
+    save or just prints. A node with no declared segment is NOT a problem — an
+    undeclared node is unknown, and unknown is not a conflict.
+    """
+    problems: list = []
+    if not claw_segment or not segments:
+        return problems
+    try:
+        ids = list(watched_ids or [])
+    except TypeError:
+        return ["watch list is not iterable — cannot validate"]
+    for node in ids:
+        seg = segments.get(node)
+        if seg and seg != claw_segment:
+            problems.append(
+                "%s is declared on RF segment %r but this claw listens on %r — "
+                "it can never be heard here. Watch it from a claw on its own "
+                "segment, or observe it through the MQTT/RNS bridge instead."
+                % (node, seg, claw_segment))
+    return problems

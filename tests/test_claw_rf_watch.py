@@ -133,6 +133,22 @@ class TestSummary:
             "a fleet we have not listened to long enough is not an incident"
 
 
+def _device_info(uptime_s):
+    """The REAL device_info reply: ONE comma-separated line, not newlines.
+
+    `"Chip: ...\\nUptime: 10 s"` was used here until 2026-07-30 and parses to
+    uptime_s=None — `chip` swallows the rest of the string and `Uptime:` never
+    matches its field anchor. The test below it then asserted `unobservable`
+    believing it had pinned the window gate, when it was really pinning
+    "uptime unknown": GREEN for the wrong reason, and it would have stayed green
+    if the gate were deleted. A test whose verdict does not depend on the thing
+    it names pins nothing (2026-07-28 lesson, found again here).
+    """
+    return ("Free heap: 114340 bytes, Reset reason: unknown, "
+            "Uptime: %d seconds, WiFi: connected (rssi -32 dBm), "
+            "Chip: ESP32-S3 rev 2, 2 cores, 240 MHz" % uptime_s)
+
+
 def _envelope(text):
     """The REAL NATS reply shape. build_tick's _extract requires the envelope and
     records 'malformed reply: str' for a bare string — a bare string is what I
@@ -147,7 +163,7 @@ class TestWiredIntoTheTick:
         from mini_dudeai.claw_telemetry import build_tick
         t = build_tick(
             now=1.0, host="h", device="dudeclaw-01",
-            device_info_reply=_envelope("Chip: ESP32-S3 rev 2\nUptime: 10 s"),
+            device_info_reply=_envelope(_device_info(10)),
             ble_stats_reply=_envelope("Error: no BLE scanner on this device"),
             battery_reply=_envelope("Battery: 4.17 V (adc 852 mV)"),
             lora_reply=_envelope(
@@ -169,3 +185,130 @@ class TestWiredIntoTheTick:
                            "mesh_heard_age_s: 5 (heard 20 pkts, crc_err 0, "
                            "runts 0, last from=!a to=!b ch=0x08 rssi=-1 snr=1)"))
         assert t.get("watch_verdicts") is None
+
+
+# ---------------------------------------------------------------------------
+# The segment gate (2026-07-30). Values below are the LIVE measurement, not
+# invented: dudeclaw-01 up 64320 s, watch list holding moc2 (!ddfb8065) and
+# moc3 (!ebfa1b11) — both on SHORT_TURBO/ch8 while the claw listens on
+# LONG_FAST/ch20 — both reported `silent`, and both were transmitting fine
+# (moc3 received 9 packets from moc2 over the air in the same 6 h window).
+# ---------------------------------------------------------------------------
+
+MOC2 = "!ddfb8065"
+LF = "meshtastic:LONG_FAST/ch20"
+ST = "meshtastic:SHORT_TURBO/ch8"
+
+CLAW_UPTIME_0730 = 64320.0
+
+
+class TestTheSegmentGate:
+    """A frequency mismatch is blindness, and no amount of listening cures it."""
+
+    def test_the_live_false_positive_is_no_longer_silent(self):
+        v = classify_watch({MOC2: _never(), MOC3: _never()},
+                           CLAW_UPTIME_0730,
+                           segments={MOC2: ST, MOC3: ST}, claw_segment=LF)
+        for node in (MOC2, MOC3):
+            assert v[node]["verdict"] == UNOBSERVABLE, (
+                "a cross-preset node reported SILENT is the 2026-07-30 defect")
+            assert v[node]["segment_conflict"] is True
+
+    def test_without_the_gate_the_same_input_still_reads_silent(self):
+        """Revert-the-fix check: the guard must fail when the cure is absent.
+
+        Same tick, no segment declarations — the old behaviour, so a future
+        refactor that drops the wiring cannot pass by accident."""
+        v = classify_watch({MOC2: _never()}, CLAW_UPTIME_0730)
+        assert v[MOC2]["verdict"] == SILENT
+
+    def test_more_listening_never_promotes_a_cross_segment_node(self):
+        for uptime in (1.0, CLAW_UPTIME_0730, 9_999_999.0):
+            v = classify_watch({MOC2: _never()}, uptime,
+                               segments={MOC2: ST}, claw_segment=LF)
+            assert v[MOC2]["verdict"] == UNOBSERVABLE
+
+    def test_same_segment_silence_is_still_actionable(self):
+        """The gate must not become a blanket excuse — a real mute transmitter
+        on OUR OWN segment still has to page."""
+        v = classify_watch({MOC: _never()}, CLAW_UPTIME_0730,
+                           segments={MOC: LF}, claw_segment=LF)
+        assert v[MOC]["verdict"] == SILENT
+        assert not v[MOC].get("segment_conflict")
+
+    def test_undeclared_segments_leave_the_gate_inert(self):
+        """Absence of a declaration is not evidence of a conflict."""
+        assert classify_watch({MOC: _never()}, CLAW_UPTIME_0730,
+                              segments={}, claw_segment=LF)[MOC]["verdict"] == SILENT
+        assert classify_watch({MOC: _never()}, CLAW_UPTIME_0730,
+                              segments={MOC: ST}, claw_segment=None)[MOC]["verdict"] == SILENT
+
+    def test_hearing_outranks_the_declaration_but_leaves_a_witness(self):
+        """If we HEAR a node we declared cross-segment, the config is wrong.
+        The antenna wins, and the drift must surface rather than be tolerated."""
+        v = classify_watch({MOC2: _heard(age=12)}, CLAW_UPTIME_0730,
+                           segments={MOC2: ST}, claw_segment=LF)
+        assert v[MOC2]["verdict"] == HEARD
+        assert v[MOC2]["segment_conflict"] is True
+        assert "declaration is wrong" in v[MOC2]["reason"]
+
+    def test_summary_keeps_conflicts_in_their_own_column(self):
+        s = summarise(classify_watch(
+            {MOC: _never(), MOC2: _never()}, CLAW_UPTIME_0730,
+            segments={MOC: LF, MOC2: ST}, claw_segment=LF))
+        assert s["silent"] == [MOC]
+        assert s["unobservable"] == [MOC2]
+        assert s["segment_conflicts"] == [MOC2]
+        assert s["actionable"] is True, "the real mute node must still be actionable"
+
+
+class TestAuthoringTimeValidator:
+    """Runtime degrades a bad entry; the validator is how it gets FIXED."""
+
+    def test_flags_a_node_this_claw_can_never_hear(self):
+        from mini_dudeai.claw_rf_watch import validate_watch_segments
+        problems = validate_watch_segments([MOC2], {MOC2: ST}, LF)
+        assert len(problems) == 1
+        assert MOC2 in problems[0] and "never be heard" in problems[0]
+
+    def test_coherent_list_is_silent(self):
+        from mini_dudeai.claw_rf_watch import validate_watch_segments
+        assert validate_watch_segments([MOC], {MOC: LF}, LF) == []
+
+    def test_undeclared_node_is_not_a_problem(self):
+        from mini_dudeai.claw_rf_watch import validate_watch_segments
+        assert validate_watch_segments([MOC, MOC2], {MOC: LF}, LF) == []
+
+    def test_no_claw_segment_means_nothing_to_validate_against(self):
+        from mini_dudeai.claw_rf_watch import validate_watch_segments
+        assert validate_watch_segments([MOC2], {MOC2: ST}, None) == []
+
+
+class TestSegmentsReachTheTick:
+    """The gate must be WIRED, not merely importable — a reader with no writer
+    would have left the 2026-07-30 finding live with the fix merged."""
+
+    def test_build_tick_applies_the_segment_gate(self):
+        from mini_dudeai.claw_telemetry import build_tick
+        t = build_tick(
+            now=1.0, host="h", device="dudeclaw-01",
+            device_info_reply=_envelope(_device_info(64320)),
+            ble_stats_reply=_envelope("x"), battery_reply=None,
+            lora_reply=_envelope(
+                "mesh_heard_age_s: 5 (heard 7910 pkts, crc_err 52, runts 0, "
+                "last from=!16cd7438 to=!ffffffff ch=0x08 rssi=-96 snr=0.0)"
+                " watch=!ddfb8065:never"),
+            segments={MOC2: ST}, claw_segment=LF)
+        assert t["watch_verdicts"][MOC2]["verdict"] == UNOBSERVABLE
+
+    def test_tick_without_segments_keeps_the_old_verdict(self):
+        from mini_dudeai.claw_telemetry import build_tick
+        t = build_tick(
+            now=1.0, host="h", device="dudeclaw-01",
+            device_info_reply=_envelope(_device_info(64320)),
+            ble_stats_reply=_envelope("x"), battery_reply=None,
+            lora_reply=_envelope(
+                "mesh_heard_age_s: 5 (heard 20 pkts, crc_err 0, runts 0, "
+                "last from=!a to=!b ch=0x08 rssi=-1 snr=1)"
+                " watch=!ddfb8065:never"))
+        assert t["watch_verdicts"][MOC2]["verdict"] == SILENT

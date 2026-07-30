@@ -108,6 +108,50 @@ def _load_claw_env(path: "str | None" = None) -> dict:
     return env
 
 
+def _load_segments(env: dict) -> "tuple[dict | None, str | None]":
+    """``(node_id -> RF segment, this claw's segment)`` from the claw env.
+
+    Feeds ``classify_watch``'s segment gate: MeshForge runs a deliberately
+    two-preset fleet (LONG_FAST/ch20 + SHORT_TURBO/ch8), and two presets are
+    mutually undemodulable on RF, so a claw can only ever witness nodes on its
+    OWN segment. Without this the watch list reports a healthy cross-preset
+    radio as ``silent`` — measured 2026-07-30, twice.
+
+    Instance values (which node is on which segment) live in the env + a
+    ~/.config JSON, never in code (MF014).
+
+    Undeclared is INERT: no env keys means no segment claims, and the gate
+    simply does not fire. But a DECLARED-yet-unreadable file is a hard exit,
+    exactly as ``_load_claw_env`` treats a missing env — silently falling back
+    to "no segments" would restore the bug this gate removes, and a gate that
+    disables itself without a witness is the defect wearing a different hat.
+    The cron wrapper turns the non-zero exit into a cron_verdict FAIL, so the
+    failure is visible instead of inferred.
+    """
+    claw_segment = env.get("MINI_DUDEAI_CLAW_SEGMENT") or None
+    path = env.get("MINI_DUDEAI_CLAW_SEGMENTS") or None
+    if not path:
+        return None, claw_segment
+    path = os.path.expanduser(path)
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as e:
+        raise SystemExit(
+            f"claw_metrics: MINI_DUDEAI_CLAW_SEGMENTS={path} declared but "
+            f"unreadable ({e}) — refusing to run with the segment gate silently "
+            "off, which would report cross-preset radios as silent")
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, dict):
+        raise SystemExit(
+            f"claw_metrics: {path} has no 'nodes' object mapping node id -> RF "
+            "segment — an empty ruleset here reads as 'no conflicts', which is "
+            "the exact failure this file exists to prevent")
+    if isinstance(doc, dict) and doc.get("claw_segment") and not claw_segment:
+        claw_segment = doc["claw_segment"]
+    return nodes, claw_segment
+
+
 def build_rows() -> list[str]:
     status, err = fetch_json(STATUS_URL, timeout=10)
     if err:
@@ -231,7 +275,8 @@ def _request_tool(nc: NatsConnection, device: str, tool: str):
 
 
 def _capture_tick(nc: NatsConnection, device: str, host: str,
-                  now: float) -> dict:
+                  now: float, segments: "dict | None" = None,
+                  claw_segment: "str | None" = None) -> dict:
     """Pull device_info + ble_stats + battery for the /api/status.claw block.
 
     Battery joined the capture 2026-07-19: a battery-powered claw drained to
@@ -253,7 +298,8 @@ def _capture_tick(nc: NatsConnection, device: str, host: str,
     # the channel. No box self-report can corroborate the RF leg; this can.
     lora = _request_tool(nc, device, "lora_stats")
     return build_tick(now, host, device, di, bs, battery_reply=bat,
-                      lora_reply=lora)
+                      lora_reply=lora, segments=segments,
+                      claw_segment=claw_segment)
 
 
 def _push_rows(nc: NatsConnection, rows: list[str], device: str):
@@ -309,11 +355,13 @@ def main(argv: "list[str] | None" = None) -> int:
     # Default to an unreachable tick so a total NATS failure persists an honest
     # "claw didn't answer" record (the reader shows claw_unreachable) rather
     # than letting the last good tick silently age into stale.
+    segments, claw_segment = _load_segments(env)
+
     tick = build_tick(now, host, device, None, None)
     paint_err: str | None = None
     try:
         with NatsConnection(server, token=token, timeout_s=8) as nc:
-            tick = _capture_tick(nc, device, host, now)
+            tick = _capture_tick(nc, device, host, now, segments, claw_segment)
             paint_err = _push_rows(nc, rows, device)
             if tier and not paint_err:
                 paint_err = _push_tier(nc, device, tier)
