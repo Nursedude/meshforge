@@ -365,14 +365,23 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "WATCHED NODE ID, whether it has heard that specific transmitter, and "
                "claw_watched_node_silent consumes it. That closes the mute-transmitter blind "
                "spot heard_age_s structurally could not see (a busy channel reads healthy at "
-               "~5 s while OUR PA is dead). RESIDUAL: it proves our TX reaches a claw's "
+               "~5 s while OUR PA is dead). NARROWED AGAIN 2026-07-30, after that closure "
+               "turned out to have a hole the size of a whole segment: the claws listen on "
+               "LONG_FAST/ch20 and this fleet is deliberately two-preset, so moc2+moc3 on "
+               "SHORT_TURBO/ch8 — the pair carrying the RNS leg — were undemodulable by every "
+               "claw and had NO RF witness at all, while the watch list pointed at them and "
+               "reported `silent`. segment_peer_silent covers them from a witness that already "
+               "existed and was never read: those two boxes hear EACH OTHER (-17 dBm), and a "
+               "box reporting on a DIFFERENT box is independent in the way self-report is not. "
+               "RESIDUAL: it proves our TX reaches a claw's "
                "receiver, which is egress evidence but not delivery — mesh ACK consumption "
                "(#74 T2 step 4) is still the only end-to-end proof; unwatched nodes stay "
                "unwatched (the list is explicit, by design); and both windows are "
                "PROVISIONAL — no real per-node `silent` verdict has been observed on this "
                "fleet yet — so both signals escalate and neither pages",
      "ref": "watchdog_probes_liveness.py :: probe_claw_rf_silent + "
-            "watchdog_probes_claw_watch.py :: probe_claw_watched_node_silent"},
+            "watchdog_probes_claw_watch.py :: probe_claw_watched_node_silent + "
+            "watchdog_probes_peer_rf.py :: probe_segment_peer_silent"},
     {"id": "lxmf_propagation_unadopted",
      "detail": "OPENED 2026-07-20 by the optional-organ sweep, and watched from the same "
                "day. Structural finding behind it: of ~50 signal classes, only ONE watched "

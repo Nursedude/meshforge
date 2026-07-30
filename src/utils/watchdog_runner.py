@@ -65,6 +65,7 @@ from utils.watchdog_probes import (
     probe_claw_battery_low,
     probe_claw_rf_silent,
     probe_claw_watched_node_silent,
+    probe_segment_peer_silent,
     probe_claw_uplink_node_moved,
     probe_router_scout_degraded,
     probe_ntfy_loopback,
@@ -690,6 +691,16 @@ def run_all_probes(
     # off the air; this reads the per-node watch verdicts, gated on the claw's
     # listening window so `never` after a reboot is never mistaken for silence.
     sig = probe_claw_watched_node_silent()
+    if sig is not None:
+        signals.append(sig)
+
+    # segment PEER silence (2026-07-30) — the same question as above, for the
+    # boxes the claws structurally cannot answer it for. The claws listen on
+    # LONG_FAST/ch20; moc2+moc3 run SHORT_TURBO/ch8, so no claw can demodulate
+    # them and the RNS-leg pair had no RF witness at all. They hear each other,
+    # which is independent evidence self-report can never be. INERT unless the
+    # box declares peers, so every other box pays only the config stat.
+    sig = probe_segment_peer_silent()
     if sig is not None:
         signals.append(sig)
 

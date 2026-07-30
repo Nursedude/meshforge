@@ -981,6 +981,19 @@
       "annotation": "2026-07-29 -- one of OUR OWN watched transmitters (by node id) has not reached ANY claw for its full listening window. This is the MUTE-TRANSMITTER case claw_rf_silent is structurally blind to, and the difference matters: that probe reads heard_age_s, the age of the last packet from ANYONE, so with neighbours transmitting at 6-8 pkt/min the channel reads healthy (~5 s) while our own PA is dead, the region/preset is wrong, or the coax is unplugged. A busy channel is not proof that WE are on the air. Per-node verdicts from a separate radio on separate silicon are the per-source egress evidence the row-9 residual named as still missing. FIX: check that node's own TX leg (region/preset, PA, antenna, coax) -- NOT the channel, and not the claw. Fires only on the GATED 'silent' verdict: the claw listened longer than that node's expected transmit interval (default 3x3 h) and heard nothing. It does NOT fire on raw 'never' -- seconds after the watch field shipped, 3 of 4 watched radios read 'never' purely because the claw had been up 10 s, and paging on that would fire on every claw reboot, flash and power cycle. Hearing on ANY claw settles it (positive physical evidence outranks silence); 'unobservable' keeps its own column and is never folded into either answer. propose_escalation, NOT ntfy, DELIBERATELY: no real 'silent' verdict has EVER been observed on this fleet, so the window's false-positive rate is UNMEASURED. Promote to a pager only from measured data -- the claw_rf_silent staging and the calibration_drift 34-day precedent; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
     },
     {
+      "id": "segment_peer_silent_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "segment_peer_silent",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-07-30 -- a declared same-SEGMENT peer gateway has not been heard by this box for its full listening window. The peer-witness twin of claw_watched_node_silent, covering the boxes that probe structurally cannot: the dude-claws listen on LONG_FAST/ch20, and this fleet is deliberately two-preset, so moc2+moc3 on SHORT_TURBO/ch8 (the throughput leg for ST<>meshforge<>RNS) are undemodulable by every claw and had NO RF witness at all. Those two boxes hear EACH OTHER (measured -17 dBm), and a box reporting what it heard from a DIFFERENT box is independent evidence in the way self-report is not. Verdicts come from the SAME classify_watch gate the claws use -- never a second copy of the threshold. FIX: check that peer's own TX leg (PA, antenna, coax, region/preset), not the channel -- our receiver is demonstrably working, since this same journal is how the reading was taken. If the peer is simply powered down, that is the finding. ESCALATE-ONLY, no ntfy page: window UNMEASURED, same precedent as its claw twin."
+    },
+    {
       "id": "claw_uplink_node_moved_any",
       "match": {
         "kind": "signal_class",

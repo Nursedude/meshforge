@@ -1315,6 +1315,11 @@ from utils.watchdog_probes_claw_watch import (  # noqa: E402,F401 (re-export)
     _fold_watch_verdicts,
     probe_claw_watched_node_silent,
 )
+from utils.watchdog_probes_peer_rf import (  # noqa: E402,F401 (re-export)
+    DEFAULT_PEER_RF_STATE_PATH,
+    load_peer_config,
+    probe_segment_peer_silent,
+)
 from utils.watchdog_probes_claw_uplink import (  # noqa: E402,F401 (re-export)
     DEFAULT_CLAW_UPLINK_DEBOUNCE_PATH,
     DEFAULT_CLAW_UPLINK_CONFIG,
