@@ -90,6 +90,7 @@ from utils.watchdog_probes_service import (
     probe_service_inactive,
 )
 from utils.watchdog_probes_host import (
+    default_host_memory_thresholds_path,
     probe_host_memory_pressure,
     probe_memory_cap_engaged,
 )
@@ -175,6 +176,7 @@ __all__ = [
     "probe_http_local",
     "probe_fd_exhaustion",
     "probe_host_memory_pressure",
+    "default_host_memory_thresholds_path",
     "probe_memory_cap_engaged",
     "probe_meshtasticd_vsz_leak",
     "probe_phoneapi_tcp_leak",

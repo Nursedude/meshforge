@@ -68,6 +68,125 @@ logger = logging.getLogger("watchdog")
 DEFAULT_DEGRADED_AVAIL_RATIO = 0.20
 DEFAULT_WEDGE_AVAIL_RATIO = 0.08
 
+# PER-BOX OVERRIDE for the two availability levels (2026-07-30).
+#
+# WHY, and why only the LEVEL legs: the ratio above is fleet-wide on purpose,
+# but a ratio still assumes every box's NORMAL sits well above it. moc3 (905 MB,
+# gateway + rnsd + watchdog + echo) lives at 19.8-20.3% available and has done so
+# for FIVE WEEKS of unbroken uptime with no reset. So on that box the 20% gate
+# fires on the box's own steady state: it flaps across the line every few
+# minutes, carries no information, and trains the operator to ignore the one line
+# that is supposed to mean "this box is about to be reset". Measured, not assumed
+# — 10 min of sampling plus `uptime -s` = 2026-06-24.
+#
+# This does NOT weaken moc3's real protection, and that is the whole reason it is
+# safe: this file's own RATE-leg comment shows the level legs fire ~4 s before the
+# 07-24 reset while the rate leg fires ~94 s before it. The level legs are the
+# tombstone. The rate leg is untouched here AND is permanently armed on moc3,
+# because its floor is 35% availability and moc3 sits below that always.
+#
+# FAILS TOWARD THE STRICT DEFAULT, deliberately: this is a switch whose only
+# power is to make a warning quieter, so an unreadable, malformed or
+# out-of-order file must fall back to the fleet constants and say so. A
+# silence-manufacturing switch must never fail silent (honest_failure_modes #1/#9,
+# and the same rule `_soak_armed_devices` follows for battery soaks).
+HOST_MEMORY_THRESHOLDS_REL = os.path.join(
+    ".config", "meshforge", "host_memory_thresholds.json")
+#: Logged-once witness per bad config path, so a typo is findable but does not
+#: reprint every 30 s tick.
+_AVAIL_OVERRIDE_WARNED: set = set()
+
+
+def default_host_memory_thresholds_path() -> Optional[str]:
+    """Where the per-box override lives, or None if the operator home is unknown.
+
+    The RUNNER resolves and passes this explicitly; the probe does NOT reach for
+    it on its own. That is deliberate: if the probe defaulted to reading the real
+    operator home, every existing test that omits the ratios would silently
+    depend on whether the box running the suite happens to carry an override —
+    green on one box, opposite on another (feedback_tests_must_pin_ambient_state,
+    the exact trap fixed in the claw-uplink tests hours earlier). Wiring it at
+    the call site also puts what the probe consumes where a reader is looking.
+
+    Deliberately NOT pathlib's home helper (MF001 — spelled out rather than
+    quoted, because the lint rule matches the literal call text anywhere in the
+    file, docstrings included) and NOT ``get_real_user_home()``: the watchdog
+    runs as root with sudo blocked, so both answer ``/root``.
+    ``watchdog_probes_liveness._operator_home`` is the resolver the claw probes
+    already use for this (no cycle — liveness does not import this module).
+    """
+    try:
+        from .watchdog_probes_liveness import _operator_home
+        home = _operator_home()
+    except Exception:
+        return None
+    return os.path.join(home, HOST_MEMORY_THRESHOLDS_REL) if home else None
+
+
+def _read_avail_overrides(
+    config_path: Optional[str],
+) -> Tuple[Optional[float], Optional[float]]:
+    """``(degraded, wedge)`` from the per-box override, or ``(None, None)``.
+
+    ABSENT is the normal case and is silent — most boxes have no file. Anything
+    PRESENT but unusable is a loud fallback to the fleet defaults, never a
+    silent one: this switch can only ever make the warning quieter, so a typo
+    must not be able to disarm the level legs.
+
+    Rejected (each → strict defaults + a one-shot witness):
+      * unreadable / not JSON / not an object
+      * a value that is not a real number, or is a bool (``True`` is not 1.0 here)
+      * ``not 0 < wedge < degraded < 1`` — an inverted or out-of-range pair would
+        make the wedge rung unreachable, i.e. quietly delete the escalation.
+    """
+    # None = the caller did not wire an override at all (the hermetic default,
+    # and what every test gets unless it opts in). Not "look somewhere sensible".
+    path = config_path
+    if not path or not os.path.exists(path):
+        return None, None
+
+    def _bad(why: str) -> Tuple[None, None]:
+        if path not in _AVAIL_OVERRIDE_WARNED:
+            _AVAIL_OVERRIDE_WARNED.add(path)
+            logger.warning(
+                "host memory threshold override %s IGNORED (%s) — using fleet "
+                "defaults degraded=%.2f wedge=%.2f. Fix or remove the file; a "
+                "malformed override must not quieten the level legs.",
+                path, why, DEFAULT_DEGRADED_AVAIL_RATIO,
+                DEFAULT_WEDGE_AVAIL_RATIO)
+        return None, None
+
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as e:
+        return _bad("%s" % e.__class__.__name__)
+    if not isinstance(doc, dict):
+        return _bad("not a JSON object")
+
+    def _num(key: str) -> Optional[float]:
+        v = doc.get(key)
+        if v is None:
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ValueError("%s is not a number" % key)
+        return float(v)
+
+    try:
+        deg = _num("degraded_avail_ratio")
+        wed = _num("wedge_avail_ratio")
+    except ValueError as e:
+        return _bad(str(e))
+    if deg is None and wed is None:
+        return _bad("no threshold keys present")
+
+    eff_deg = DEFAULT_DEGRADED_AVAIL_RATIO if deg is None else deg
+    eff_wed = DEFAULT_WEDGE_AVAIL_RATIO if wed is None else wed
+    if not (0.0 < eff_wed < eff_deg < 1.0):
+        return _bad("need 0 < wedge (%.3f) < degraded (%.3f) < 1"
+                    % (eff_wed, eff_deg))
+    return deg, wed
+
 # /proc/pressure/memory "some avg60" percentages. avg60 (not avg10) because a
 # single heavy build or a chromium screenshot spikes avg10 routinely; sustained
 # 60 s stall pressure is the tell that distinguishes work from a death spiral.
@@ -587,8 +706,15 @@ def _probe_host_memory_pressure_impl(
     meminfo_path: str = "/proc/meminfo",
     psi_path: str = "/proc/pressure/memory",
     proc_root: str = "/proc",
-    degraded_avail_ratio: float = DEFAULT_DEGRADED_AVAIL_RATIO,
-    wedge_avail_ratio: float = DEFAULT_WEDGE_AVAIL_RATIO,
+    # None = "not specified by the caller", which is what lets the per-box
+    # override apply. An explicit value always WINS over the config file, so
+    # every existing test that pins a ratio keeps pinning it and cannot be
+    # perturbed by a config file on whatever box runs the suite
+    # (feedback_tests_must_pin_ambient_state — the trap this very session fixed
+    # in the claw-uplink tests).
+    degraded_avail_ratio: Optional[float] = None,
+    wedge_avail_ratio: Optional[float] = None,
+    avail_config_path: Optional[str] = None,
     degraded_psi_avg60: float = DEFAULT_DEGRADED_PSI_AVG60,
     wedge_psi_avg60: float = DEFAULT_WEDGE_PSI_AVG60,
     debounce_path: Optional[str] = None,
@@ -669,6 +795,26 @@ def _probe_host_memory_pressure_impl(
 
     avail_ratio = avail_kb / total_kb
     psi60 = _read_psi_memory_avg60(psi_path)
+
+    # Resolve the two LEVEL thresholds: explicit argument > per-box override
+    # file > fleet default. Only the level legs are tunable — the rate leg (the
+    # one that actually buys warning time) is deliberately NOT overridable,
+    # because a box tuned quiet on level must keep its early leg at full
+    # sensitivity or the tuning becomes a blindfold.
+    _cfg_deg, _cfg_wed = _read_avail_overrides(avail_config_path)
+    avail_thresholds_source = "fleet-default"
+    if degraded_avail_ratio is None:
+        if _cfg_deg is not None:
+            degraded_avail_ratio = _cfg_deg
+            avail_thresholds_source = "per-box override"
+        else:
+            degraded_avail_ratio = DEFAULT_DEGRADED_AVAIL_RATIO
+    if wedge_avail_ratio is None:
+        if _cfg_wed is not None:
+            wedge_avail_ratio = _cfg_wed
+            avail_thresholds_source = "per-box override"
+        else:
+            wedge_avail_ratio = DEFAULT_WEDGE_AVAIL_RATIO
 
     # Worst-wins across the two legs; each leg contributes only if it can be
     # measured. psi None => that leg abstains (it does NOT vote "clean").
@@ -783,6 +929,15 @@ def _probe_host_memory_pressure_impl(
             "mem_total_kb": total_kb,
             "mem_available_kb": avail_kb,
             "avail_ratio": round(avail_ratio, 4),
+            # The gate that judged this reading, and WHERE it came from. A
+            # per-box override can only make the level legs quieter, so it must
+            # travel with the signal: an operator reading a page (or a later
+            # reviewer asking "why didn't this fire sooner?") has to be able to
+            # see that the box was tuned, without going to look for a config
+            # file they may not know exists.
+            "degraded_avail_ratio": degraded_avail_ratio,
+            "wedge_avail_ratio": wedge_avail_ratio,
+            "avail_thresholds_source": avail_thresholds_source,
             "psi_some_avg60": psi60,
             "rate_drop_ratio": (None if rate is None else round(rate[0], 4)),
             "rate_span_s": (None if rate is None else round(rate[1], 1)),

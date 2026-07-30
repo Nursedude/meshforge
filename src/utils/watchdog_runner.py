@@ -80,6 +80,7 @@ from utils.watchdog_probes import (
     probe_history_write_failure,
     probe_inherited_app_drift,
     probe_host_memory_pressure,
+    default_host_memory_thresholds_path,
     probe_memory_cap_engaged,
     probe_kernel_reboot_pending,
     probe_memory_index_oversize,
@@ -753,7 +754,14 @@ def run_all_probes(
     # watchdog resets the box, and its detail names the top RSS consumers —
     # the "who took the memory" witness the 07-24 post-mortem could not find,
     # because /tmp is tmpfs (wiped by the reset) and sysstat is disabled.
-    sig = probe_host_memory_pressure()
+    # The per-box level-threshold override is wired HERE, explicitly, rather than
+    # resolved inside the probe: a probe that reaches for the operator home on its
+    # own makes every test that omits the ratios depend on whether the box running
+    # the suite carries an override file (feedback_tests_must_pin_ambient_state).
+    # Absent file => fleet defaults. Malformed file => fleet defaults + a loud
+    # witness, never a quieter gate.
+    sig = probe_host_memory_pressure(
+        avail_config_path=default_host_memory_thresholds_path())
     if sig is not None:
         signals.append(sig)
 
