@@ -25,7 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional
 
-from ._util import iso_or_none
+from ._util import iso_or_none, log_warning
 
 # device_info: "Free heap: 17764 bytes, Total heap: 210492 bytes,
 #   Min free heap: 9012 bytes, Max alloc block: 6144 bytes,
@@ -310,8 +310,20 @@ def _watch_verdicts(lora: Any, device_info: Any):
     except Exception as e:
         # A swallow with no witness is how a gate silently stops gating. The tick
         # must not die for a verdict, but the failure has to be findable.
-        logger.warning("watch verdict gate failed (%s: %s) — tick carries no "
-                       "verdicts this cycle", e.__class__.__name__, e)
+        #
+        # ⚠️ This line called `logger.warning(...)` until 2026-07-29, and `logger`
+        # was never defined in this module — so the WITNESS raised NameError from
+        # inside the except clause, which nothing catches. It escaped
+        # _watch_verdicts, killed build_tick's dict assembly, and (since
+        # claw_metrics_push only guards NatsError) took the whole capture cron
+        # down. The handler written to keep the tick alive was the one thing that
+        # could kill it. Found by the 2026-07-29 review pass.
+        #
+        # log_warning is this package's own journald-prefixed helper — the
+        # pattern the rest of mini_dudeai already uses — so the witness cannot
+        # depend on a binding this module does not have.
+        log_warning("watch verdict gate failed (%s: %s) — tick carries no "
+                    "verdicts this cycle" % (e.__class__.__name__, e))
         return None
 
 

@@ -69,10 +69,26 @@ DEFAULT_CLAW_WATCH_DEBOUNCE_PATH = "/var/lib/meshforge/claw_watch_debounce.json"
 #: restated here. A probe carrying its own copy of these strings would keep
 #: matching after a rename and quietly judge nothing (the closed-enum shape,
 #: honest_failure_modes #7).
-try:                                      # pragma: no cover - import shape
+#:
+#: The guard STAYS (the 2026-07-29 review recommended deleting it; that would
+#: break this module on a box without the mini package, and the guarded-mini-
+#: import is the deliberate convention in watchdog_probes_mini.py — four
+#: instances, each commented "mini package absent in some contexts").
+#: What the review was RIGHT about is that the author's claim "a rename is
+#: test-pinned" was imprecise: a coordinated rename+revalue that also updates
+#: claw_rf_watch's own tests would leave THIS module silently on the fallback,
+#: comparing against values the owner no longer emits — every verdict then folds
+#: to `blind` and the gate goes permanently quiet. Fail-dark, in the file that
+#: ships MF027's sibling.
+#: So the fallback is now OBSERVABLE instead of silent: the flag below records
+#: that it was taken, and a test asserts it is False wherever mini is importable
+#: (which is every fleet box and CI). Blindness with a witness, not blindness.
+_VERDICT_CONSTANTS_FROM_FALLBACK = False
+try:
     from mini_dudeai.claw_rf_watch import HEARD, SILENT, UNOBSERVABLE
-except Exception:                         # pragma: no cover - mini not installed
+except ImportError:                       # mini package absent in some contexts
     HEARD, SILENT, UNOBSERVABLE = "heard", "silent", "unobservable"
+    _VERDICT_CONSTANTS_FROM_FALLBACK = True
 
 
 def _fold_watch_verdicts(ticks: List[dict]) -> Tuple[Dict[str, dict], int]:

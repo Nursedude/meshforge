@@ -229,10 +229,19 @@ def probe_claw_uplink_node_moved(
         streak = _load_parity_streak(sp) + 1
         _save_parity_streak(sp, streak)
         if streak < debounce_ticks:
+            # INDETERMINATE, not clean (2026-07-29 review). Drift WAS observed
+            # this tick — `moved` is non-empty to reach here — so `clean` both
+            # contradicted its own reason string and broke the contract in
+            # watchdog_probe_core, which names "debounce-pending candidate" as the
+            # canonical indeterminate case. It also mattered downstream: `clean` is
+            # in watchdog_tracker._CLEAR_PERMITTING_DISPOSITIONS, so a debouncing
+            # tick claimed the positive observation that permits clearing a held
+            # signal. The sibling probe_claw_watched_node_silent got this right.
             note_disposition(
-                "claw_uplink_node_moved", "clean",
-                reason=f"uplink drift seen (streak {streak}/{debounce_ticks}); "
-                       f"debouncing a single odd neighbour read")
+                "claw_uplink_node_moved", "indeterminate",
+                reason=f"uplink drift candidate (streak {streak}/{debounce_ticks}) "
+                       f"— confirming before speaking; not yet a positive "
+                       f"observation either way")
             return None
 
         node, seen, allow_at_fire, admitted = moved[0]
@@ -264,9 +273,40 @@ def probe_claw_uplink_node_moved(
                 + common +
                 f" Fix: reconcile claw_uplink_nodes.json, or restore the reservation."
             )
+        # EVERY mover travels, not just moved[0] (2026-07-29 review). The loop
+        # above collects all drifted uplinks, but the Signal was built from
+        # moved[0] alone — so on a router reboot that reshuffles every lease (the
+        # exact incident class this probe was born from, i.e. when it matters
+        # MOST) each additional mover was dropped: no subject, no tracker state,
+        # no panel row. Worse, when moved[0] recovered, moved[1] surfaced with a
+        # fresh first_seen and read as newly discovered though its outage had been
+        # running the whole time. Writer-with-no-reader (#4) inside the emit path.
+        # Shape mirrors the sibling probe_claw_watched_node_silent: fold into one
+        # signal, keep every subject in extra.
+        others = []
+        for n2, seen2, allow2, adm2 in moved[1:]:
+            others.append({
+                "name": str(n2.get("name") or n2.get("mac")),
+                "mac": str(n2.get("mac")),
+                "declared_ip": str(n2.get("expected_ip") or ""),
+                "observed_ips": seen2,
+                "admitted": adm2,
+                "pinhole_allows": allow2,
+            })
+        if others:
+            detail += (
+                " ALSO MOVED this tick: "
+                + "; ".join("%s at %s (%s)"
+                            % (o["name"], ", ".join(o["observed_ips"]),
+                               "admitted" if o["admitted"] else "NOT admitted")
+                            for o in others)
+                + ". A router reboot can move every lease at once — each of these "
+                  "needs the same reconciliation."
+            )
         return Signal(
             cls="claw_uplink_node_moved",
-            subject=name,
+            subject=(name if not others
+                     else f"{len(moved)} uplink nodes"),
             severity="degraded",
             detail=detail,
             extra={
@@ -279,6 +319,8 @@ def probe_claw_uplink_node_moved(
                 "serves": serves,
                 "also_home": home_ok,
                 "unobserved": len(unobserved),
+                "moved_count": len(moved),
+                "also_moved": others,
             },
         )
     except Exception:

@@ -169,20 +169,41 @@ for entry in "${BOXES[@]}"; do
     if [ "$fail" -ge "$ALERT_THRESHOLD" ] && [ "$g_alerted" != "1" ]; then
       # first alert for this outage
       echo "$TS  FLEET: ALERT [$name] $reason (failed ${fail}x consecutive)" >> "$LOG"
-      ntfy_push "Fleet box DOWN: $name" "$alert_prio" "$alert_tag" \
-        "$name: $reason (failed ${fail}x, ~$((ALERT_THRESHOLD*5))min)" \
-        || echo "$TS  FLEET: PUSH-FAILED on ALERT [$name] — see witness log" >> "$LOG"
-      set_state "$name" "$fail" 1 "$NOW" "$NOW" 1
+      # DELIVERY GATES THE STATE (2026-07-29 review). ntfy_push returns 0 only on
+      # CONFIRMED delivery (2xx + a message id, after 3 retries). Advancing to
+      # alerted=1 regardless meant a first page lost to a brief ntfy.sh dip was
+      # never retried: the next tick skips this branch (alerted=1) and the
+      # STILL-DOWN branch waits out the full re-alert interval, so a REAL outage
+      # produced zero pages for 1 h (2 h on the quiet tier). honest_failure_modes
+      # #1 — "push failed" mapped to the valid-looking value "operator notified"
+      # — inside the monitor whose 06-17 hardening promised a page can no longer
+      # vanish unnoticed.
+      if ntfy_push "Fleet box DOWN: $name" "$alert_prio" "$alert_tag" \
+           "$name: $reason (failed ${fail}x, ~$((ALERT_THRESHOLD*5))min)"; then
+        set_state "$name" "$fail" 1 "$NOW" "$NOW" 1
+      else
+        echo "$TS  FLEET: PUSH-FAILED on ALERT [$name] — see witness log; keeping alerted=0 so the next run retries the FIRST page" >> "$LOG"
+        # Keep alerted=0: the outage is still unannounced, so the next */5 tick
+        # must re-enter THIS branch rather than fall into the hourly re-page.
+        set_state "$name" "$fail" 0 0 0 0
+      fi
     elif [ "$g_alerted" = "1" ] && [ $(( NOW - g_lastalert )) -ge "$box_realert" ]; then
       # ongoing outage -> re-page (escalate), defeats fire-once + ntfy TTL age-off
       count=$((g_count + 1))
       downmin=$(( (NOW - g_down) / 60 ))
       prio="$alert_prio"; [ "$quiet_box" = 0 ] && [ "$count" -ge "$ESCALATE_AFTER" ] && prio="urgent"
       echo "$TS  FLEET: STILL-DOWN [$name] $reason (~${downmin}m, page #$count)" >> "$LOG"
-      ntfy_push "Fleet box STILL DOWN: $name (~${downmin}m)" "$prio" "$alert_tag" \
-        "$name still down ~${downmin}m: $reason (page #$count)" \
-        || echo "$TS  FLEET: PUSH-FAILED on STILL-DOWN [$name] — see witness log" >> "$LOG"
-      set_state "$name" "$fail" 1 "$g_down" "$NOW" "$count"
+      # Same gate, same reason: stamping last_alert=NOW on an undelivered re-page
+      # buys the outage another full silent interval, and advancing $count would
+      # inflate the page number past what was actually delivered (and could reach
+      # ESCALATE_AFTER without a single page landing).
+      if ntfy_push "Fleet box STILL DOWN: $name (~${downmin}m)" "$prio" "$alert_tag" \
+           "$name still down ~${downmin}m: $reason (page #$count)"; then
+        set_state "$name" "$fail" 1 "$g_down" "$NOW" "$count"
+      else
+        echo "$TS  FLEET: PUSH-FAILED on STILL-DOWN [$name] — see witness log; last_alert held so the next run retries" >> "$LOG"
+        set_state "$name" "$fail" 1 "$g_down" "$g_lastalert" "$g_count"
+      fi
     else
       # failing-but-below-threshold, OR down-and-already-paged-not-yet-re-alert-time
       set_state "$name" "$fail" "$g_alerted" "$g_down" "$g_lastalert" "$g_count"

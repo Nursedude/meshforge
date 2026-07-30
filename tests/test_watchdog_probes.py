@@ -116,6 +116,19 @@ def test_signal_classes_closed_enum_is_documented():
     """Every class in the enum must be one of the documented classes.
     Adding a class is a deliberate act — bumps this test AND requires
     a persistent_issues.md entry."""
+    # MULTIPLICITY FIRST (2026-07-29 review). The set-equality below is blind to
+    # duplicates, and `claw_uplink_node_moved` was listed TWICE for a day: the
+    # author demoted the older rationale to a comment but left its string literal
+    # in place. fleet_truth.merge_coverage iterates `list(signal_classes)`, so it
+    # incremented green/red/dark on both visits while the classes dict deduped —
+    # every /fleet cell read total=59 against 58 unique keys. A closed enum has to
+    # be closed in COUNT as well as membership.
+    dupes = sorted({c for c in SIGNAL_CLASSES if list(SIGNAL_CLASSES).count(c) > 1})
+    assert not dupes, (
+        f"SIGNAL_CLASSES lists {dupes} more than once — coverage counters double-"
+        f"count every duplicate (fleet_truth.merge_coverage). Keep one entry and "
+        f"fold any extra rationale into its comment.")
+    assert len(SIGNAL_CLASSES) == len(set(SIGNAL_CLASSES))
     assert set(SIGNAL_CLASSES) == {
         "rns_namespace_collision",
         "main_thread_wedge",

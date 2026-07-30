@@ -62,6 +62,13 @@ fleet_hosts_resolve() {
     done
   fi
   [ -n "$FLEET_HOSTS_FILE" ] || return 1
-  FLEET_HOSTS_LIST="$(sed 's/#.*//' "$FLEET_HOSTS_FILE" | tr -s ' \t' '\n' | grep -v '^$')"
+  # \r is in the tr set (2026-07-29 review): without it a CRLF-encoded
+  # fleet_hosts leaves "moc1\r" in the list, so every SHELL consumer would
+  # `ssh moc1\r` (DNS failure) while every PYTHON consumer read "moc1" cleanly —
+  # str.splitlines() + str.split() both treat \r as whitespace. Two
+  # implementations of one SSOT disagreeing on the same file is the exact drift
+  # this shared lib exists to end (honest_failure_modes #5), and it would have
+  # split the deploy tools from the gate that verifies them.
+  FLEET_HOSTS_LIST="$(sed 's/#.*//' "$FLEET_HOSTS_FILE" | tr -s ' \t\r' '\n' | grep -v '^$')"
   return 0
 }

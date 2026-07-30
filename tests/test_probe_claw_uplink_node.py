@@ -71,7 +71,7 @@ class TestClawUplinkNodeMoved:
         self.cfg.write_text(json.dumps(nodes))
         return str(self.cfg)
 
-    def _run(self, arp_text=None, cfg_path=None, now=1.0):
+    def _run(self, arp_text=None, cfg_path=None, now=1.0, pinhole_path=None):
         from utils.watchdog_probes import probe_claw_uplink_node_moved
         if arp_text is not None:
             self.arp.write_text(arp_text)
@@ -80,6 +80,18 @@ class TestClawUplinkNodeMoved:
             arp_path=str(self.arp),
             state_path=self.sp,
             now=now,
+            # PIN THE PINHOLE (2026-07-29 review). Unpinned, this defaulted to
+            # DEFAULT_PINHOLE_PATH = the REAL /etc/nftables.conf of whatever box
+            # runs the suite, so these tests' verdicts depended on ambient
+            # machine state — green in CI (no such file → the pinhole leg
+            # abstains) and RED on moc2, the one box whose 4222 allowlist is the
+            # reason the pinhole leg exists, because 192.0.2.250 is never in a
+            # real allowlist. feedback_tests_must_pin_ambient_state: ask what you
+            # would change about this BOX to make the test fail. Default is a
+            # nonexistent path so _read_pinhole_allowlist returns None ("does not
+            # gate that port"), which is the state these cases mean to assert.
+            pinhole_path=(pinhole_path if pinhole_path is not None
+                          else str(self.arp.parent / "no-such-nftables.conf")),
         )
 
     # ---- inert / indeterminate: never dressed as clean ---------------------

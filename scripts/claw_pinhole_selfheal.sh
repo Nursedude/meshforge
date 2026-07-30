@@ -61,9 +61,29 @@ RC_OK=0; RC_DRIFT=1; RC_UNKNOWN=2
 say() { "$VERDICT" "$NAME" "$1" "$2"; }
 
 # Serialize against a concurrent manual run so check and apply cannot interleave
-# on the same firewall file (honest_failure_modes #8).
-exec 9>"$LOCK" 2>/dev/null || true
-flock -w 30 9 2>/dev/null || true
+# on the same firewall file (honest_failure_modes #8: "exclude or merge, never
+# interleave... flock-refuse-loud or single-writer design").
+#
+# REFUSE LOUD (2026-07-29 review). This block used `2>/dev/null || true` on BOTH
+# lines, so all three failure modes — $LOCK unwritable (/tmp is tmpfs RAM on this
+# fleet), flock TIMING OUT because another run holds it, flock absent — fell
+# through and rewrote the firewall unserialized. The exclusion existed but was
+# optional, which is fail-permissive: the timeout case is precisely the concurrent
+# run the lock was built to exclude. Sibling `2a0865d5` fixed the neighbouring
+# variant ("a lock only protects a run that is actually running") 24 h earlier —
+# same class, one door over, which is this window's whole meta-pattern.
+#
+# A skipped cycle is cheap (hourly cron, and the holder is doing this same work);
+# an unserialized firewall rewrite is not. Speak a verdict so the skip leaves a
+# witness (#9), then exit 0 so the crontab's `||` wrapper cannot overwrite it.
+if ! exec 9>"$LOCK"; then
+    say FAIL "cannot open lock $LOCK — refusing to touch the firewall unserialized"
+    exit 0
+fi
+if ! flock -n 9; then
+    say CONCERN "another claw-pinhole run holds $LOCK — skipping this cycle rather than interleaving two firewall writers (next run in an hour)"
+    exit 0
+fi
 
 if [ ! -r "$GEN" ]; then
     say FAIL "generator missing or unreadable: $GEN"
