@@ -39,15 +39,23 @@ def cfg(tmp_path):
 
 
 def _run(cfg_path, tmp_path, *, seen=(), err=None, uptime=LONG_UPTIME,
-         now=NOW, ticks=2):
-    """Drive the probe with a fake journal + uptime; debounce satisfied by default."""
-    def scan(_peers):
+         now=NOW, ticks=2, windows=None):
+    """Drive the probe with a fake journal + uptime; debounce satisfied by default.
+
+    ``now`` advances past the silence window on later ticks so the observation
+    gate (which is real, see TestColdStart) does not mask what a test is aiming
+    at. ``windows`` collects the scan width each tick when a test cares.
+    """
+    def scan(_peers, window=None):
+        if windows is not None:
+            windows.append(window)
         return (None, err) if err else (set(seen), None)
     sig = None
-    for _ in range(ticks):
+    for i in range(ticks):
         sig = probe_segment_peer_silent(
             config_path=cfg_path, state_path=str(tmp_path / "state.json"),
-            now=now, _scan_fn=scan, _uptime_fn=lambda _n: uptime)
+            now=now + i * (WINDOW if i else 0), _scan_fn=scan,
+            _uptime_fn=lambda _n: uptime)
     return sig
 
 
@@ -198,12 +206,86 @@ class TestTheDefaultPathResolves:
 
         sig = m.probe_segment_peer_silent(
             state_path=str(tmp_path / "state.json"), now=NOW,
-            _scan_fn=lambda _p: (set(), None),
+            _scan_fn=lambda _p, _w=None: (set(), None),
             _uptime_fn=lambda _n: LONG_UPTIME)
         # Not the INERT path: the peer was found, judged, and (first tick)
         # debounced. Inert would mean the config was never seen at all.
         assert m.probe_segment_peer_silent(
             state_path=str(tmp_path / "state.json"), now=NOW,
-            _scan_fn=lambda _p: (set(), None),
+            _scan_fn=lambda _p, _w=None: (set(), None),
             _uptime_fn=lambda _n: LONG_UPTIME) is not None, (
             "a config in the operator home must be found via the default path")
+
+
+class TestColdStart:
+    """The first tick knows only what it scanned — not what the daemon heard.
+
+    Found LIVE on moc3, 2026-07-30, minutes after deploy: the probe produced a
+    silent CANDIDATE for a peer moc3 had received 9 times in the previous 6 h.
+    An empty persisted history plus a 30 min incremental window reads as "never
+    heard", and the meshtasticd uptime gate cannot catch it because that clock
+    measures the DAEMON's listening, not the PROBE's. It is the claw field's
+    "up for ten seconds" defect wearing a different clock.
+    """
+
+    def test_first_tick_seeds_from_the_full_window_not_the_incremental_one(self, cfg, tmp_path):
+        windows = []
+        _run(cfg, tmp_path, seen=[], ticks=1, windows=windows)
+        assert windows == [int(WINDOW)], (
+            "a cold 30 min scan says 'never heard' about a radio that beacons "
+            "every ~40 min — seed from the full silence window once")
+
+    def test_later_ticks_go_incremental(self, cfg, tmp_path):
+        from utils.watchdog_probes_peer_rf import JOURNAL_WINDOW_S
+        windows = []
+        _run(cfg, tmp_path, seen=[], ticks=2, windows=windows)
+        assert windows[0] == int(WINDOW)
+        assert windows[1] == JOURNAL_WINDOW_S, (
+            "re-reading the full window every tick is not a rounding error on a Pi")
+
+    def test_coverage_only_grows_across_ticks(self, tmp_path, cfg):
+        """Tick 2 must never claim LESS coverage than tick 1.
+
+        The seed width is remembered in state rather than recomputed from the
+        current tick's window. Computing it from the CURRENT (30 min) window
+        made tick 2 claim 30 min where tick 1 had claimed 9 h, bouncing a
+        qualified verdict back to `unobservable` — a detector that forgets what
+        it already observed."""
+        def scan(_peers, window=None):
+            return set(), None
+        sp = str(tmp_path / "s.json")
+        first = probe_segment_peer_silent(
+            config_path=cfg, state_path=sp, now=NOW, _scan_fn=scan,
+            _uptime_fn=lambda _n: LONG_UPTIME)
+        second = probe_segment_peer_silent(
+            config_path=cfg, state_path=sp, now=NOW + 30, _scan_fn=scan,
+            _uptime_fn=lambda _n: LONG_UPTIME)
+        assert first is None, "first tick is debounced"
+        assert second is not None, (
+            "the 9 h seed scan already covered the window; tick 2 must not "
+            "regress to unobservable")
+
+    def test_a_young_daemon_still_cannot_claim_silence(self, cfg, tmp_path):
+        """The seed scan can only see what the daemon actually received, so the
+        window stays bounded by meshtasticd's uptime."""
+        def scan(_peers, window=None):
+            return set(), None
+        sig = None
+        for i in range(3):
+            sig = probe_segment_peer_silent(
+                config_path=cfg, state_path=str(tmp_path / "s.json"),
+                now=NOW + i * WINDOW, _scan_fn=scan,
+                _uptime_fn=lambda _n: 600.0)
+        assert sig is None
+
+    def test_unknown_daemon_uptime_still_abstains(self, cfg, tmp_path):
+        """Our own observation age must never substitute for the daemon's: a box
+        with no running receiver would otherwise claim a qualified silence."""
+        def scan(_peers, window=None):
+            return set(), None
+        sig = None
+        for i in range(3):
+            sig = probe_segment_peer_silent(
+                config_path=cfg, state_path=str(tmp_path / "s.json"),
+                now=NOW + i * WINDOW, _scan_fn=scan, _uptime_fn=lambda _n: None)
+        assert sig is None

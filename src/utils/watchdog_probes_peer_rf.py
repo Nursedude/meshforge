@@ -280,24 +280,57 @@ def probe_segment_peer_silent(
             return None
 
         try:
-            from mini_dudeai.claw_rf_watch import SILENT, classify_watch, summarise
+            from mini_dudeai.claw_rf_watch import (
+                SILENT, classify_watch, required_window_s, summarise)
         except ImportError:
             note_disposition("segment_peer_silent", "indeterminate",
                              reason="claw_rf_watch gate unavailable — refusing to "
                                     "judge silence with a second copy of the rule")
             return None
 
+        state = _load_state(sp)
+        first_run = "observing_since" not in state
+
+        # FIRST RUN seeds from the full silence window, not the incremental one.
+        # The incremental scan only knows what it saw since it started, and a
+        # fleet gateway beacons roughly every 40 min — so a cold 30 min window
+        # says "never heard" about a perfectly healthy radio. Seed once, then go
+        # incremental. (Observed live on moc3 2026-07-30: first tick produced a
+        # silent CANDIDATE for a peer it had received 9 times in the prior 6 h.)
         scan = _scan_fn or scan_journal_for_peers
-        seen, scan_err = scan(list(peers))
+        window = int(required_window_s()) if first_run else JOURNAL_WINDOW_S
+        seen, scan_err = scan(list(peers), window)
         if scan_err:
             note_disposition("segment_peer_silent", "indeterminate",
                              reason="cannot observe: %s" % scan_err)
             _save_parity_streak(sp + ".streak", 0)
             return None
 
-        uptime = (_uptime_fn or meshtasticd_uptime_s)(now)
+        # THE LISTENING WINDOW is the SHORTER of two things, and getting this
+        # wrong is how the claw field first went wrong (3 of 4 radios read
+        # `never` at 10 s of uptime):
+        #   * how long meshtasticd has been receiving at all, and
+        #   * how long THIS PROBE has been observing. The journal is scanned in
+        #     bounded slices, so anything the daemon heard before our first scan
+        #     is invisible to us no matter how long it has been up.
+        # Taking only the daemon's uptime would claim a 9 h window on a probe
+        # that has been watching for 30 s.
+        if first_run:
+            state["observing_since"] = now
+            state["seed_window_s"] = window
+        # The seed WIDTH is remembered, not recomputed from this tick's window:
+        # we scanned `seed_window_s` backwards at `observing_since` and have been
+        # watching ever since, so coverage only grows. Adding the CURRENT
+        # (30 min) window instead made tick 2 claim LESS coverage than tick 1 and
+        # bounced a qualified verdict back to unobservable.
+        observed_for = ((now - float(state.get("observing_since", now)))
+                        + float(state.get("seed_window_s", window)))
+        daemon_up = (_uptime_fn or meshtasticd_uptime_s)(now)
+        # Unknown daemon uptime stays None -> classify_watch calls it
+        # unobservable. Substituting our own observation age here would let a
+        # box with no running receiver claim a qualified silence.
+        uptime = None if daemon_up is None else min(daemon_up, observed_for)
 
-        state = _load_state(sp)
         watched = build_watched(peers, seen, now, state)
         _save_state(sp, state)
 
