@@ -55,6 +55,7 @@ from utils.watchdog_probe_core import (
     _save_parity_streak,
     note_disposition,
 )
+from utils.watchdog_probes_liveness import _operator_home
 
 DEFAULT_PEER_RF_STATE_PATH = "/var/lib/meshforge/peer_rf_witness.json"
 
@@ -69,10 +70,26 @@ PEER_CONFIG_BASENAME = "rf_segment_peers.json"
 _NODE_RE = re.compile(r"^![0-9a-fA-F]{8}$")
 
 
-def _config_path(home: Optional[str]) -> Optional[str]:
-    if not home:
+def _config_path(home: Optional[str] = None) -> Optional[str]:
+    """Where this box declares its segment peers.
+
+    Falls back to the OPERATOR's home, not the caller's: the watchdog runs as
+    root, so the effective-user home resolves to /root (the MF001 trap), where
+    no operator config has ever been written. Returning None on an unresolvable
+    home is correct — it degrades to INERT, which is honest — but the DEFAULT
+    must resolve, or the probe is inert on every box that ever configures it.
+
+    That is not hypothetical: shipped 2026-07-30 without this fallback, and the
+    probe reported "no RF segment peers declared" on the two boxes whose configs
+    had just been placed and validated. Reader and writer both shipped and never
+    met (honest_failure_modes #4). Every unit test passed an explicit path, so
+    the only resolution production uses was the only one untested — caught by
+    running the real probe on the real box, not by the suite.
+    """
+    base = home or _operator_home()
+    if not base:
         return None
-    return os.path.join(home, ".config", "meshforge", PEER_CONFIG_BASENAME)
+    return os.path.join(base, ".config", "meshforge", PEER_CONFIG_BASENAME)
 
 
 def load_peer_config(path: Optional[str]) -> Tuple[Optional[Dict[str, str]], Optional[str], Optional[str]]:

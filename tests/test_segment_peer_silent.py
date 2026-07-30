@@ -155,3 +155,55 @@ class TestWiring:
         from utils.watchdog_probes import SIGNAL_CLASSES, probe_segment_peer_silent as p
         assert "segment_peer_silent" in SIGNAL_CLASSES
         assert callable(p)
+
+
+class TestTheDefaultPathResolves:
+    """The resolution production actually uses — and the one every other test
+    here bypassed by passing config_path explicitly.
+
+    Shipped 2026-07-30 without a home fallback: `_config_path(None)` returned
+    None, so the probe reported "no RF segment peers declared" on the two boxes
+    whose configs had just been placed and validated. Reader and writer both
+    shipped and never met. All 16 tests were green. Only running the real probe
+    on the real box found it — so this class exists to make the suite able to.
+    """
+
+    def test_config_path_resolves_without_an_explicit_home(self, monkeypatch):
+        import utils.watchdog_probes_peer_rf as m
+        monkeypatch.setattr(m, "_operator_home", lambda: "/home/someone")
+        assert m._config_path() == (
+            "/home/someone/.config/meshforge/rf_segment_peers.json"), (
+            "the default must resolve, or the probe is INERT on every box that "
+            "ever configures it")
+
+    def test_explicit_home_still_wins(self, monkeypatch):
+        import utils.watchdog_probes_peer_rf as m
+        monkeypatch.setattr(m, "_operator_home", lambda: "/home/someone")
+        assert m._config_path("/other").startswith("/other/")
+
+    def test_unresolvable_home_degrades_to_inert_not_a_crash(self, monkeypatch):
+        import utils.watchdog_probes_peer_rf as m
+        monkeypatch.setattr(m, "_operator_home", lambda: None)
+        assert m._config_path() is None
+
+    def test_probe_finds_a_config_placed_in_the_operator_home(self, tmp_path, monkeypatch):
+        """End to end through the DEFAULT path: a config where the operator
+        writes it must be found with no arguments at all."""
+        import utils.watchdog_probes_peer_rf as m
+        cfgdir = tmp_path / ".config" / "meshforge"
+        cfgdir.mkdir(parents=True)
+        (cfgdir / "rf_segment_peers.json").write_text(
+            json.dumps({"segment": ST, "peers": {MOC3: "moc3"}}))
+        monkeypatch.setattr(m, "_operator_home", lambda: str(tmp_path))
+
+        sig = m.probe_segment_peer_silent(
+            state_path=str(tmp_path / "state.json"), now=NOW,
+            _scan_fn=lambda _p: (set(), None),
+            _uptime_fn=lambda _n: LONG_UPTIME)
+        # Not the INERT path: the peer was found, judged, and (first tick)
+        # debounced. Inert would mean the config was never seen at all.
+        assert m.probe_segment_peer_silent(
+            state_path=str(tmp_path / "state.json"), now=NOW,
+            _scan_fn=lambda _p: (set(), None),
+            _uptime_fn=lambda _n: LONG_UPTIME) is not None, (
+            "a config in the operator home must be found via the default path")
