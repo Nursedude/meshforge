@@ -1,0 +1,19 @@
+{
+  "//": "TEMPLATE — copy to ~/.config/meshforge/rf_segment_peers.json on a box whose RF segment NO claw can hear, and replace every !xxxxxxxx with your own node ids. Real node ids are operator-specific and MUST NOT be committed (MF014).",
+
+  "//why": "The dude-claws are the fleet's only independent physical-layer witness, but a claw can only witness its OWN modem preset. A box on a preset no claw listens to has no RF witness at all — which is the mute-transmitter blind spot the claws exist to close, left open on exactly the boxes that are hardest to reach. If two such boxes can hear EACH OTHER, that reading is already available and is independent in the way self-report is not: a box reporting on a DIFFERENT box cannot fabricate the answer about itself.",
+
+  "//inert": "Absent file = probe INERT, which is correct for most boxes (they have a claw, or are not on an unwitnessed segment). A file that EXISTS but is unreadable or declares no peers is a LOUD error, never an empty peer set — an empty ruleset that reads as 'nothing to watch' would silence the probe on exactly the box someone configured it for.",
+
+  "//consumer": "src/utils/watchdog_probes_peer_rf.py :: probe_segment_peer_silent. Verdicts come from mini_dudeai.claw_rf_watch.classify_watch — the SAME gate the claws use, never a second copy of the threshold.",
+
+  "//source": "Reception is read from the local meshtasticd JOURNAL, deliberately. The persisted nodes.proto is a periodically-flushed SNAPSHOT and was measured 54.7 DAYS stale while its peer was being received continuously; a gateway-only box's node_cache.json was 95 days stale. A stale file that looks like live state is the worst possible input to a silence detector. Journal-only reading also never touches the radio, so it cannot steal a PhoneAPI packet (Issue #17).",
+
+  "segment": "meshtastic:SHORT_TURBO/ch8",
+
+  "peers": {
+    "!aaaaaaaa": "short-name-of-that-box"
+  },
+
+  "//keep_both": "When a claw eventually covers this segment, KEEP this probe rather than retiring it. A single claw gives no cross-check for the 'silent needs one qualified claw and no claw that heard it' rule, so the peer witness serves as the second vote — and it still reports while the claw itself is down."
+}

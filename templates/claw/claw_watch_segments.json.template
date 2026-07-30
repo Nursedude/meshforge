@@ -1,0 +1,21 @@
+{
+  "//": "TEMPLATE — copy to ~/.config/meshforge/claw_watch_segments.json on the box that hosts a claw's capture cron, and replace every !xxxxxxxx with your own node ids. Real node ids are operator-specific and MUST NOT be committed (MF014); this file carries placeholders only.",
+
+  "//why": "MeshForge fleets can run more than one Meshtastic modem preset at once (e.g. LONG_FAST for range plus SHORT_TURBO for the RNS throughput leg). Two presets differ in bandwidth, spreading factor AND centre frequency, so they are mutually undemodulable: a claw listening on one CANNOT hear a node on the other, ever. Without these declarations the watch list reports a perfectly healthy cross-preset radio as `silent` — measured on the fleet 2026-07-30, on two boxes at once.",
+
+  "//claw_segment": "The DEFAULT segment for claws hosted on this box. A claw on a different preset overrides it per-instance with MINI_DUDEAI_CLAW_SEGMENT in its own env file — that is how a SHORT_TURBO claw coexists with LONG_FAST ones without either calling the other's nodes silent.",
+
+  "claw_segment": "meshtastic:LONG_FAST/ch20",
+
+  "//nodes": "Every node id any claw on this box watches should appear here. An UNDECLARED node leaves the gate INERT for that node (absence of a declaration is not evidence of a conflict) — which is safe, but means a cross-preset entry would still be judged as if it were hearable. Declare them all.",
+
+  "nodes": {
+    "!aaaaaaaa": "meshtastic:LONG_FAST/ch20",
+    "!bbbbbbbb": "meshtastic:LONG_FAST/ch20",
+    "!cccccccc": "meshtastic:SHORT_TURBO/ch8"
+  },
+
+  "//provenance": "Read each node id from that box's LIVE device.proto (my_node_num), at that box's ACTUAL prefs path. Do NOT take nodes.proto[0] (it is the box's own node on some boxes and not others), and do NOT derive the prefs path from the daemon's user (a box running meshtasticd as root may still store prefs under /var/lib/meshtasticd). Both mistakes were made on this fleet 2026-07-30 and both produced confident wrong answers. Corroborate every declared id against something that observed it on the air — a decoded packet count, or a live transmit drill.",
+
+  "//verify": "PYTHONPATH=src python3 -c 'from mini_dudeai.claw_rf_watch import validate_watch_segments' ... — or simply confirm the claw's tick shows no unexpected segment_conflict entries after deploying."
+}
