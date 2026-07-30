@@ -85,9 +85,14 @@ greps miss `via_mqtt`, #75 trap). Service state = `check_service()` only.
 - Roster (2026-07-14): manager **VolcanoAI** + `moc, moc1, moc2, moc3, moc5,
   kiai, meshanchor-server` — live list in `~/.config/meshforge/fleet_hosts`;
   posture pane: `PYTHONPATH=src python3 -m mini_dudeai.rollup` (or `/warmstart`).
-- **Two-preset fleet, deliberately**: LONG_FAST/ch20 everywhere + moc3 on
-  SHORT_TURBO/ch8; moc runs the cross-preset bridge. Preset "drift" checks must
-  best-match over BOTH templates.
+- **Two-preset fleet, deliberately**: LONG_FAST/ch20 everywhere + **moc2 AND
+  moc3** on SHORT_TURBO/ch8 (moc2 verified 2026-07-30 from its parsed
+  `config.proto`; this line said moc3 only, and the stale roster helped cost an
+  hour); moc runs the cross-preset bridge. ST is the throughput leg for
+  `ST<>meshforge<>RNS`. Preset "drift" checks must best-match over BOTH
+  templates — and **any RF-only witness must take segment as INPUT**, or it
+  reports a healthy cross-preset radio as silent (the claw watch list did,
+  2026-07-30). Cross-segment visibility needs MQTT/RNS bridging, never RF.
 - **kiai** sits behind the OpenWrt router at the AREDN site — reach it via
   `ssh kiai` (rtun ProxyCommand); no LAN-routable HTTP until the dstnat lands.
 - **meshanchor-server** is the MeshAnchor-owned box: MA services + a read-only
