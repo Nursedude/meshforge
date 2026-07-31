@@ -53,12 +53,17 @@ fi
 # Signals. Each grep is ANCHORED: the suite's own shell harnesses print
 # "INTERNALERROR> boom" as fixture output mid-line, and an unanchored count
 # flipped green runs to FAIL on display noise (2026-07-28 review).
+# FAILED/ERROR additionally require ONE space then a non-space: pytest's
+# verdict lines are "FAILED <nodeid>"/"ERROR <nodeid>", but its live/captured
+# log lines pad the level name to 8 chars ("ERROR    logger:file.py:N msg",
+# column 0) — the first CI run through this classifier failed a 10000-passed
+# suite on 203 such lines (2026-07-31, run 30669844039).
 summ=$(grep -E "[0-9]+ (passed|failed|error)|no tests ran" "$LOG" | tail -1)
-nfail=$(grep -cE "^FAILED|^ERROR" "$LOG")
+nfail=$(grep -cE "^(FAILED|ERROR) [^ ]" "$LOG")
 ninternal=$(grep -cE "^INTERNALERROR" "$LOG")
 nsumbad=$(printf '%s' "$summ" | grep -cE "[0-9]+ (failed|errors?)")
 nsumok=$(printf '%s' "$summ" | grep -cE "[0-9]+ passed")
-names=$(grep -E "^FAILED|^ERROR" "$LOG" | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' \
+names=$(grep -E "^(FAILED|ERROR) [^ ]" "$LOG" | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' \
         | head -3 | paste -sd' ' -)
 intern=""; [ "$ninternal" != 0 ] && intern=", $ninternal INTERNALERROR"
 

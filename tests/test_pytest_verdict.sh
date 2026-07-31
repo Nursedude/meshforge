@@ -94,6 +94,17 @@ run 0 'INTERNALERROR> boom\n10 passed in 1.00s\n'
 check "line-anchored INTERNALERROR still fails the run" "$(has "$out" '^FAIL')"
 check "  ...and IS counted in the verdict line" "$(has "$out" 'INTERNALERROR')"
 
+# ── pytest LOG-LEVEL lines are not verdict lines: live/captured logging pads
+#    the level to 8 chars ("ERROR    logger:file.py:N msg"), while real verdict
+#    lines are "FAILED <nodeid>"/"ERROR <nodeid>" with ONE space. CI's first
+#    run through the classifier failed a 10000-passed suite on 203 padded
+#    lines (2026-07-31, run 30669844039). ──────────────────────────────────────
+run 0 'ERROR    gateway.client:client.py:469 Failed to send want_config_id\n10000 passed, 49 skipped in 231.48s\n'
+check "padded log-level ERROR lines do not fail a green run" "$(has "$out" '^PASS')"
+run 0 'ERROR tests/test_a.py - ImportError: boom\n1 error in 1.00s\n'
+check "a real single-space ERROR verdict line still fails the run" "$(has "$out" '^FAIL')"
+check "  ...and is named" "$(has "$out" 'tests/test_a.py')"
+
 # ── an unreadable log is UNKNOWN, never a pass ──────────────────────────────
 out="$("$VERDICT" --log "$TMP/definitely-absent" --rc 0)"; rc_out=$?
 check "unreadable log => UNKNOWN" "$(has "$out" '^UNKNOWN')"
