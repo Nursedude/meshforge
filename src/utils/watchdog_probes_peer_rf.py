@@ -175,15 +175,35 @@ def scan_journal_for_peers(peer_ids: List[str], window_s: int = JOURNAL_WINDOW_S
         return None, "journal read failed (%s)" % e
     if getattr(out, "returncode", 0) not in (0, None):
         return None, "journalctl exited %s" % out.returncode
-    text = out.stdout or ""
+    text = (out.stdout or "").lower()
     seen = set()
     for node in peer_ids:
-        if ("from=0x%s" % node[1:].lower()) in text.lower():
+        # meshtasticd logs the originator %x-UNPADDED — live journal shows
+        # `from=0x2ecc800` (7 hex) and diag24h_parser zfill(8)s what it reads
+        # — while node ids are 8-hex zero-padded, so a padded needle can NEVER
+        # match a peer whose id starts with a zero nibble: its last-heard
+        # never refreshes and the probe pages a permanent false silence
+        # (review 2026-07-31, finding 4). Strip the padding, and bound the
+        # match so a 7-hex needle cannot prefix-match a longer originator.
+        hexpart = node[1:].lower().lstrip("0") or "0"
+        if re.search(r"from=0x%s(?![0-9a-f])" % hexpart, text):
             seen.add(node)
     return seen, None
 
 
+#: In-process copy, memory-first — the ``_streak_mem_fallback`` pattern
+#: (2026-07-26 drill): a broken state dir usually keeps the OLD file readable
+#: while every write fails, so disk must not outrank what this process already
+#: observed. Without this, a failed write made EVERY tick a first_run that
+#: re-ran the full multi-hour journal seed scan every 30 s — the exact cost
+#: the module header says the 905 MB box cannot afford — with no witness
+#: (review 2026-07-31, finding 6).
+_state_mem_fallback: Dict[str, Dict[str, Any]] = {}
+
+
 def _load_state(path: str) -> Dict[str, Any]:
+    if path in _state_mem_fallback:
+        return _state_mem_fallback[path]
     try:
         with open(path) as f:
             doc = json.load(f)
@@ -192,18 +212,24 @@ def _load_state(path: str) -> Dict[str, Any]:
         return {}
 
 
-def _save_state(path: str, doc: Dict[str, Any]) -> None:
+def _save_state(path: str, doc: Dict[str, Any]) -> bool:
+    """Persist the fold; the in-process copy is kept UNCONDITIONALLY first.
+
+    Returns False on a disk failure so the caller can leave a witness in its
+    disposition (honest_failure_modes #9 — the old ``pass`` here claimed the
+    degradation was safe, but the real consequence was the repeated seed scan
+    above, silently). Memory keeps the probe correct within this runner
+    process; the file exists to survive a restart."""
+    _state_mem_fallback[path] = doc
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
             json.dump(doc, f)
         os.replace(tmp, path)
+        return True
     except OSError:
-        # A lost heartbeat degrades this probe toward `unobservable` (an unknown
-        # last-heard cannot qualify as silence), which is the safe direction. The
-        # witness for the write failure itself belongs to sandbox_check (#60).
-        pass
+        return False
 
 
 def build_watched(peers: Dict[str, str], seen: Optional[set], now: float,
@@ -225,15 +251,22 @@ def build_watched(peers: Dict[str, str], seen: Optional[set], now: float,
     for node in peers:
         ts = heard_at.get(node)
         age = None
+        backward = False
         if isinstance(ts, (int, float)):
             age = now - float(ts)
             # Clock went backward (NTP step on an RTC-less box): the stored
             # stamp is not comparable to `now`, so this is unobservable rather
-            # than a suspiciously fresh reading.
+            # than a suspiciously fresh reading. It must travel as
+            # ``parse_error`` — the shape classify_watch reads as BLINDNESS —
+            # not as ``never``: never + an elapsed window is a QUALIFIED
+            # SILENT, so the old mapping let an NTP backstep manufacture a
+            # false silence page (review 2026-07-31, finding 5).
             if age < 0:
                 age = None
+                backward = True
         watched[node] = {"age_s": age, "pkts": None, "rssi_dbm": None,
-                         "never": age is None, "parse_error": False}
+                         "never": age is None and not backward,
+                         "parse_error": backward}
     return watched
 
 
@@ -332,7 +365,13 @@ def probe_segment_peer_silent(
         uptime = None if daemon_up is None else min(daemon_up, observed_for)
 
         watched = build_watched(peers, seen, now, state)
-        _save_state(sp, state)
+        # A failed write is WITNESSED on every emission below, not swallowed:
+        # memory keeps this process honest, but a runner restart re-seeds the
+        # full window, and the operator should learn that from a disposition,
+        # not from the CPU graph (honest_failure_modes #9).
+        state_warn = ("" if _save_state(sp, state) else
+                      " [peer_rf state unwritable at %s — held in memory only;"
+                      " a runner restart re-seeds the full window]" % sp)
 
         verdicts = classify_watch(watched, uptime)
         summary = summarise(verdicts) or {}
@@ -345,8 +384,8 @@ def probe_segment_peer_silent(
                 note_disposition(
                     "segment_peer_silent", "indeterminate",
                     reason=("%d peer(s) still inside the listening window (%s) — "
-                            "no qualified verdict yet"
-                            % (len(blind), ", ".join(blind))))
+                            "no qualified verdict yet%s"
+                            % (len(blind), ", ".join(blind), state_warn)))
                 _save_parity_streak(sp + ".streak", 0)
                 return None
             reason = "%d/%d segment peer(s) heard on the air (%s)" % (
@@ -354,7 +393,8 @@ def probe_segment_peer_silent(
             if blind:
                 reason += ("; %d not yet observable long enough (%s) — NOT "
                            "counted as healthy" % (len(blind), ", ".join(blind)))
-            note_disposition("segment_peer_silent", "clean", reason=reason)
+            note_disposition("segment_peer_silent", "clean",
+                             reason=reason + state_warn)
             _save_parity_streak(sp + ".streak", 0)
             return None
 
@@ -363,8 +403,8 @@ def probe_segment_peer_silent(
         if streak < debounce_ticks:
             note_disposition(
                 "segment_peer_silent", "indeterminate",
-                reason="segment-peer-silent candidate (%s), debounce %d/%d"
-                       % (", ".join(silent), streak, debounce_ticks))
+                reason="segment-peer-silent candidate (%s), debounce %d/%d%s"
+                       % (", ".join(silent), streak, debounce_ticks, state_warn))
             return None
 
         listed = []
@@ -394,8 +434,9 @@ def probe_segment_peer_silent(
                 "own TX leg (PA, antenna, coax, region/preset), not the channel: "
                 "our receiver is demonstrably working, since this same journal is "
                 "how the reading was taken. If the peer is simply powered down, "
-                "that is the finding."
-                % (segment or "this segment", "; ".join(listed), blind_clause)),
+                "that is the finding.%s"
+                % (segment or "this segment", "; ".join(listed), blind_clause,
+                   state_warn)),
             issue_ref=None,
         )
     except Exception as e:  # never raise into the watchdog tick

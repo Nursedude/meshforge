@@ -337,7 +337,13 @@ class TestConsumersParseStructurally(unittest.TestCase):
             log.write_text(log_text.replace("{now}", now))
             r = subprocess.run(
                 ["bash", str(SCRIPTS / "harness_audit.sh")],
-                env=dict(os.environ, CRON_VERDICT_LOG=str(log)),
+                # MESHFORGE_REPO is pinned to THIS checkout: the script's
+                # default is /opt/meshforge, and on a box where that path does
+                # not exist (CI runners) `set -u` kills it before the verdict
+                # legs even print — the test's verdict must not depend on
+                # where the repo happens to be mounted.
+                env=dict(os.environ, CRON_VERDICT_LOG=str(log),
+                         MESHFORGE_REPO=str(SCRIPTS.parent)),
                 capture_output=True, text=True, timeout=120,
             )
             return r.stdout.splitlines()

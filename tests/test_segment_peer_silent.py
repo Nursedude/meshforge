@@ -17,9 +17,11 @@ import pytest
 
 from mini_dudeai.claw_rf_watch import DEFAULT_EXPECTED_TX_INTERVAL_S, DEFAULT_SILENCE_MULTIPLE
 from utils.watchdog_probes_peer_rf import (
+    JOURNAL_WINDOW_S,
     build_watched,
     load_peer_config,
     probe_segment_peer_silent,
+    scan_journal_for_peers,
 )
 
 MOC2 = "!ddfb8065"
@@ -97,9 +99,32 @@ class TestBlindnessNeverBecomesSilence:
         assert _run(cfg, tmp_path, uptime=60.0) is None
 
     def test_clock_went_backward_reads_unobservable(self):
+        """The backward-clock node must land in the BLINDNESS shape.
+
+        This test used to pin ``never is True`` — the broken mapping: never +
+        an elapsed window is a QUALIFIED SILENT in classify_watch, so an NTP
+        backstep on these RTC-less boxes manufactured a false silence page
+        (review 2026-07-31, finding 5). ``parse_error`` is the shape the gate
+        reads as unobservable."""
         state = {"last_heard_ts": {MOC3: NOW + 5000}}
         w = build_watched({MOC3: "moc3"}, set(), NOW, state)
-        assert w[MOC3]["age_s"] is None and w[MOC3]["never"] is True
+        assert w[MOC3]["age_s"] is None
+        assert w[MOC3]["parse_error"] is True
+        assert w[MOC3]["never"] is False
+
+    def test_clock_backward_does_not_fire_even_past_the_window(self, cfg, tmp_path):
+        """End-to-end: a future-stamped last-heard + a fully qualified
+        listening window must abstain, not page — the layer the old unit test
+        never exercised (it pinned build_watched's fields, not the verdict)."""
+        sp = tmp_path / "state.json"
+        sp.write_text(json.dumps({
+            "observing_since": NOW - WINDOW * 2,
+            "seed_window_s": WINDOW,
+            # Far enough forward that the stamp stays in the future on every
+            # tick _run takes, so the backward-clock branch holds throughout.
+            "last_heard_ts": {MOC3: NOW + WINDOW * 10},
+        }))
+        assert _run(cfg, tmp_path) is None
 
 
 class TestTheRealAnswers:
@@ -289,3 +314,90 @@ class TestColdStart:
                 config_path=cfg, state_path=str(tmp_path / "s.json"),
                 now=NOW + i * WINDOW, _scan_fn=scan, _uptime_fn=lambda _n: None)
         assert sig is None
+
+
+class TestJournalNeedle:
+    """The match against meshtasticd's ``from=0x…`` originator field.
+
+    The daemon logs the node number %x-UNPADDED (live journal shows
+    ``from=0x2ecc800``; diag24h_parser zfill(8)s what it reads), while node
+    ids are 8-hex zero-padded. The old padded needle could NEVER match a peer
+    whose id starts with a zero nibble — a permanent false silence page for a
+    radio being received continuously (review 2026-07-31, finding 4). These
+    run the real scanner against fake journal text; every prior test mocked
+    ``_scan_fn``, so real matching was unpinned.
+    """
+
+    def _scan(self, text, peers):
+        class R:
+            returncode = 0
+            stdout = text
+        return scan_journal_for_peers(peers, 60, _runner=lambda *a, **k: R())
+
+    def test_leading_zero_id_matches_the_unpadded_journal(self):
+        seen, err = self._scan(
+            "784349 [Router] Received text msg from=0x2ecc800, id=0x1\n",
+            ["!02ecc800"])
+        assert err is None
+        assert seen == {"!02ecc800"}
+
+    def test_full_8hex_id_still_matches(self):
+        seen, err = self._scan(
+            "784349 [Router] Received telemetry from=0xe213a228, id=0x2\n",
+            ["!e213a228"])
+        assert err is None
+        assert seen == {"!e213a228"}
+
+    def test_stripped_needle_cannot_prefix_match_a_longer_originator(self):
+        """``!0abc1234`` strips to ``abc1234`` — it must not read
+        ``from=0xabc12345`` (a different node) as a sighting."""
+        seen, err = self._scan(
+            "784349 [Router] Received position from=0xabc12345, id=0x3\n",
+            ["!0abc1234"])
+        assert err is None
+        assert seen == set()
+
+    def test_case_is_normalised_both_sides(self):
+        seen, err = self._scan(
+            "784349 [Router] Received text msg from=0xAbC1234, id=0x4\n",
+            ["!0ABC1234"])
+        assert err is None
+        assert seen == {"!0ABC1234"}
+
+
+class TestStateWriteWitness:
+    """An unwritable state path must be WITNESSED, and must not turn every
+    tick into a fresh multi-hour seed scan (review 2026-07-31, finding 6).
+
+    The failure is forced by parenting the state path under a regular FILE —
+    ``makedirs`` raises for any uid, so the test's verdict does not invert
+    when the suite runs as root (the chmod trap)."""
+
+    def _blocked_path(self, tmp_path):
+        blocker = tmp_path / "blocker"
+        blocker.write_text("a file where a directory must go\n")
+        return str(blocker / "state.json")
+
+    def test_witnessed_and_no_reseed(self, cfg, tmp_path):
+        sp = self._blocked_path(tmp_path)
+        windows = []
+
+        def scan(_peers, window=None):
+            windows.append(window)
+            return set(), None
+
+        sig = None
+        for i in range(2):
+            sig = probe_segment_peer_silent(
+                config_path=cfg, state_path=sp,
+                now=NOW + i * WINDOW, _scan_fn=scan,
+                _uptime_fn=lambda _n: LONG_UPTIME)
+        # Tick 2 must be INCREMENTAL: the in-process state copy makes memory,
+        # not disk, the record — the old swallow re-seeded the full window
+        # every 30 s on the box least able to afford it.
+        assert len(windows) == 2
+        assert windows[1] == JOURNAL_WINDOW_S, windows
+        # And the write failure is stated on what the probe emits, not
+        # swallowed: this run ends in a fired signal, whose detail carries it.
+        assert sig is not None
+        assert "state unwritable" in sig.detail
