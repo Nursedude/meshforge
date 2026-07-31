@@ -17,6 +17,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -68,6 +69,13 @@ def _run(repo, ledger):
         # The heredoc inserts <sandbox>/src on sys.path, which has no
         # mini_dudeai — point python at the real package explicitly.
         PYTHONPATH=str(REPO_ROOT / "src"),
+        # Pin the interpreter to the one RUNNING this suite. The script
+        # prepends system paths, so bare `python3` is whatever the machine
+        # puts first — on GitHub runners that is a pytest-less system python,
+        # and the sandbox suite "crashed before reporting" → false broke
+        # (run 30670815668). A test whose verdict depends on the box's PATH
+        # pins nothing.
+        MESHFORGE_PYTHON=sys.executable,
     )
     return subprocess.run(["bash", str(SCRIPT)], env=env, capture_output=True,
                           text=True, timeout=300)

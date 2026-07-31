@@ -30,8 +30,15 @@ HEAD=$(git rev-parse HEAD 2>/dev/null) || { echo "reverify: no git HEAD" >&2; ex
 
 # Re-run the code verification of record. File-routed real exit codes, never a
 # streamed tail (the exact masked-exit trap this whole arc exists to kill).
-python3 -m pytest "$REPO/tests/" -q -p no:cacheprovider >/tmp/.creverify_pytest 2>&1; pyrc=$?
-python3 "$REPO/scripts/lint.py" --all >/tmp/.creverify_lint 2>&1; lintrc=$?
+# The interpreter is explicit: this script PREPENDS system paths for cron
+# hygiene, so bare `python3` means "first system python3" — which is right on
+# fleet boxes but not necessarily where pytest lives elsewhere (CI runners
+# carry a setup-python env; run 30670815668 minted a false `broke` from
+# "No module named pytest" on exactly this line). One interpreter runs the
+# suite, the lint, and the ledger heredoc — never a mix.
+PY="${MESHFORGE_PYTHON:-python3}"
+"$PY" -m pytest "$REPO/tests/" -q -p no:cacheprovider >/tmp/.creverify_pytest 2>&1; pyrc=$?
+"$PY" "$REPO/scripts/lint.py" --all >/tmp/.creverify_lint 2>&1; lintrc=$?
 
 # The bare `pyrc` is NOT sufficient evidence on this fleet, and this job is the
 # reason it matters: it writes held/broke verdicts into the ledger, so a lost
@@ -81,7 +88,7 @@ fi
 # no duplicated fold logic (honest_failure_modes #5).
 HV_HEAD="$HEAD" HV_EXIT="$code_exit" HV_PY="$pyrc" HV_LINT="$lintrc" \
   HV_SUITE="$suite_verdict" \
-  python3 - <<'PY' || { echo "reverify: re-derivation step failed" >&2; exit 3; }
+  "$PY" - <<'PY' || { echo "reverify: re-derivation step failed" >&2; exit 3; }
 import os, sys, time
 sys.path.insert(0, os.path.join(
     os.environ.get("MESHFORGE_REPO", "/opt/meshforge"), "src"))
