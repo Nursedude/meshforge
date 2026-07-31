@@ -126,14 +126,20 @@ run_tests_clean_venv() {
     for dep in "${CI_DEPS_OPTIONAL[@]}"; do
         mf_pip_install "$vpy" --quiet "$dep" || echo "  (skipped: $dep)"
     done
+    # ${PIPESTATUS[0]} correctly captured PYTEST's status rather than tail's —
+    # this leg was never the tail-pipe bug. It still trusted that status, which
+    # is the signal that flaps. `python3` here is the ACTIVATED venv's
+    # interpreter, and mf_pytest_checked defaults to python3, so the classifier
+    # judges the clean-venv run and not the host one.
     local rc=0
-    CI=true MESHFORGE_CI=true python3 -m pytest tests/ "${CI_PYTEST_ARGS[@]}" -q 2>&1 | tail -50
-    rc=${PIPESTATUS[0]}
+    CI=true MESHFORGE_CI=true mf_pytest_checked tests/ "${CI_PYTEST_ARGS[@]}" -q
+    rc=$?
+    tail -50 "$MF_PYTEST_LOG"; rm -f "$MF_PYTEST_LOG"
     deactivate
     if [ "$rc" -eq 0 ]; then
         print_ok "Tests passed in clean venv"
     else
-        print_fail "Tests failed in clean venv"
+        print_fail "Tests in clean venv: $MF_PYTEST_VERDICT — $MF_PYTEST_WHY"
     fi
     return $rc
 }

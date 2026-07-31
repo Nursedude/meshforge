@@ -276,6 +276,18 @@ if [[ $LIST_MODE -eq 1 ]]; then
 fi
 
 PYTEST="${PYTEST:-python3 -m pytest}"
+# Runs are classified through the shared wrapper, which always invokes
+# `<interpreter> -m pytest`. Map a standard $PYTEST onto that; a custom value
+# in any other shape is not representable, so say so rather than silently
+# running something else.
+MF_PYTEST_PY="${PYTEST%% -m pytest}"
+if [ "$MF_PYTEST_PY" = "$PYTEST" ]; then
+    echo "WARN: PYTEST='$PYTEST' is not '<interpreter> -m pytest'; using python3" >&2
+    MF_PYTEST_PY="python3"
+fi
+MF_REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/pytest_checked.sh
+. "$MF_REPO_ROOT/scripts/lib/pytest_checked.sh"
 PYTEST_ARGS="${PYTEST_ARGS:--x --tb=line -q}"
 failed_chunks=()
 start_total=$SECONDS
@@ -291,10 +303,17 @@ for c in "${ORDERED[@]}"; do
     echo "── chunk $c (${#CHUNK_FILES[@]} files)"
     echo "══════════════════════════════════════════════════════════════"
     chunk_start=$SECONDS
+    # Classified, not bare-rc: each chunk is its own pytest process, so each is
+    # exposed to the flap where the interpreter exits 0 on a run that failed
+    # (2026-07-28). A chunked runner is MORE exposed, not less — one silently
+    # green chunk hides in a wall of chunk output.
     # shellcheck disable=SC2086  # PYTEST_ARGS is intentionally word-split
-    if ! $PYTEST $PYTEST_ARGS "${CHUNK_FILES[@]}"; then
+    mf_pytest_checked $PYTEST_ARGS "${CHUNK_FILES[@]}"
+    chunk_rc=$?
+    cat "$MF_PYTEST_LOG"; rm -f "$MF_PYTEST_LOG"
+    if [ "$chunk_rc" -ne 0 ]; then
         failed_chunks+=("$c")
-        echo "── chunk $c FAILED in $((SECONDS - chunk_start))s"
+        echo "── chunk $c $MF_PYTEST_VERDICT in $((SECONDS - chunk_start))s — $MF_PYTEST_WHY"
     else
         echo "── chunk $c OK in $((SECONDS - chunk_start))s"
     fi
