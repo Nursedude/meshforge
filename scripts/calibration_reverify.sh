@@ -48,6 +48,20 @@ suite_line=$("$REPO/scripts/pytest_verdict.sh" --log /tmp/.creverify_pytest --rc
 suite_rc=$?
 suite_verdict=${suite_line%%	*}
 
+# The classifier's contract is exit 0/1/2 (PASS/FAIL/UNKNOWN). Anything else
+# means the CLASSIFIER did not run — 127 missing, 126 exec bit lost, >128
+# killed — and says nothing about the code. Falling through to the else
+# branch below would map that to code_exit=1 and mint false `broke` verdicts
+# from a run that proved nothing (adversarial review 2026-07-31, finding 1;
+# mf_pytest_checked and honest_status already fail closed here). Infra
+# failure → exit 3: cron_verdict records FAIL, evidence capture preserves
+# this log, and no verdict is written — claims stay honestly open.
+case "$suite_rc" in
+  0|1|2) ;;
+  *) echo "reverify: pytest_verdict.sh did not run (rc=$suite_rc) — no verdict written" >&2
+     exit 3 ;;
+esac
+
 # Tri-state, and the UNKNOWN leg is not cosmetic: the old collapse
 # (`pyrc==0 && lintrc==0 ? 0 : 1`) mapped an OOM-killed or unreported suite to
 # code_exit=1, which flips previously-verified claims to **broke** — proving
