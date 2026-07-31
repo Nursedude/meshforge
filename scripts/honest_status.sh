@@ -273,43 +273,39 @@ _hs_preserve() {  # keep the log of any non-green run (NOT /tmp: RTC-less Pis
 }
 if [ "$RUN_TESTS" = 1 ]; then
   "$PY" -m pytest "$REPO/tests/" -q -p no:cacheprovider >$HS_TMP/pytest.log 2>&1; rc=$?
-  summ=$(grep -E "[0-9]+ (passed|failed|error)|no tests ran" $HS_TMP/pytest.log | tail -1)
-  nfail=$(grep -cE "^FAILED|^ERROR" $HS_TMP/pytest.log)
-  # Anchored like its siblings (2026-07-28 review): pytest emits
-  # "INTERNALERROR>" at line start; an UNanchored count also fired on any log
-  # line that merely CONTAINED the string (the suite's own shell harnesses
-  # print it as fixture output), flipping a green run to bad on display noise.
-  ninternal=$(grep -cE "^INTERNALERROR" $HS_TMP/pytest.log)
-  # ${ninternal:+...} could never suppress the note — grep -c prints "0",
-  # which is non-empty — so every FAIL verdict read ", 0 INTERNALERROR".
-  # Guard numerically, like nfail.
-  intern=""; [ "$ninternal" != 0 ] && intern=", $ninternal INTERNALERROR"
-  # Does the summary affirmatively say "passes, and nothing failed"?
-  nsumbad=$(printf '%s' "$summ" | grep -cE "[0-9]+ (failed|errors?)")
-  nsumok=$(printf '%s' "$summ" | grep -cE "[0-9]+ passed")
-  names=$(grep -E "^FAILED|^ERROR" $HS_TMP/pytest.log | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' | head -3 | paste -sd' ' -)
-  if [ -z "$summ" ] && [ "$rc" != 0 ]; then
-    # No summary AND a nonzero code: the suite crashed (OOM-kill, signal),
-    # and the code is real evidence of badness — the measured flap only LOSES
-    # failures toward 0, it never invents a nonzero. Checked BEFORE the
-    # empty-summary branch: ordering it after silently downgraded a proven-bad
-    # run from FAIL to UNKNOWN (2026-07-28 review) — "trust the worse signal"
-    # applies here too.
-    bad "full suite" "exit $rc with no pytest summary — suite crashed before reporting$(_hs_preserve)"
-  elif [ -z "$summ" ]; then
-    # exit 0 but pytest never summarised. Unobservable is never a pass, and
-    # with a clean exit code it is not proven-bad either.
-    unk "full suite" "no pytest summary line — suite did not report (exit $rc)$(_hs_preserve)"
-  elif [ "$nfail" != 0 ] || [ "$ninternal" != 0 ] || [ "$nsumbad" != 0 ]; then
-    bad "full suite" "exit $rc, $nfail FAILED/ERROR${intern}${names:+ ($names)}$(_hs_preserve) — $summ"
-  elif [ "$rc" != 0 ]; then
-    # Clean-looking output but a non-zero code: trust the WORSE signal.
-    bad "full suite" "exit $rc with no FAILED/ERROR lines — exit code and output disagree$(_hs_preserve) — $summ"
-  elif [ "$nsumok" = 0 ]; then
-    # e.g. "no tests ran" — a broken invocation, not a green suite.
-    unk "full suite" "summary reports no passing tests — nothing was verified$(_hs_preserve) — $summ"
+  # The classification above used to live inline here. It now lives in
+  # scripts/pytest_verdict.sh, because this gate was not its only consumer and
+  # the cure had reached only this one: calibration_reverify.sh ran the SAME
+  # full-suite invocation, trusted a bare `pyrc=$?`, and minted ledger verdicts
+  # from it (2026-07-31 audit — 21 of 34 `held` verdicts came through that
+  # path). Two consumers of one phenomenon share one classifier or they drift
+  # (honest_failure_modes #5); this is the "derive" arm of that rule rather
+  # than the weaker "test-pin" arm.
+  #
+  # Resolved as a SIBLING OF THIS SCRIPT, deliberately not "$REPO/scripts/...":
+  # $REPO is overridable and the suite drives this gate against a FAKE repo
+  # (tests/test_honest_status_suite_leg.sh), so a $REPO-relative path would
+  # resolve to a tree that has no classifier in it. The classifier is part of
+  # the harness, not of the tree under test.
+  # Overridable ONLY so the degrade path is testable — pointing it at a missing
+  # file is how the suite proves a vanished classifier reads UNKNOWN and not
+  # PASS. A guard whose failure branch no test can reach is the fail-dark shape
+  # this gate exists to refuse (MF027).
+  _hs_verdict=$("${HS_PYTEST_VERDICT:-$(dirname "$0")/pytest_verdict.sh}" \
+                  --log "$HS_TMP/pytest.log" --rc "$rc" 2>/dev/null)
+  _hs_class=$(printf '%s' "$_hs_verdict" | cut -f1)
+  _hs_why=$(printf '%s' "$_hs_verdict" | cut -f2-)
+  if [ -z "$_hs_class" ]; then
+    # The classifier itself did not run (missing, not executable, crashed).
+    # Every swallow leaves a witness (#9), and an unobservable suite is UNKNOWN
+    # — never a pass — no matter how clean pytest's own exit code looked.
+    unk "full suite" "scripts/pytest_verdict.sh did not run — suite unclassified (pytest exit $rc)$(_hs_preserve)"
   else
-    ok "full suite" "$summ (exit 0)"
+    case "$_hs_class" in
+      PASS) ok  "full suite" "$_hs_why" ;;
+      FAIL) bad "full suite" "$_hs_why$(_hs_preserve)" ;;
+      *)    unk "full suite" "$_hs_why$(_hs_preserve)" ;;
+    esac
   fi
 else
   unk "full suite" "skipped (--quick) — not verified"

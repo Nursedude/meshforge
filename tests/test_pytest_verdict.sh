@@ -7,17 +7,17 @@
 # output, ~50% of runs. It is a shutdown race, and it only loses failures
 # TOWARD zero, so a bare `rc=$?` fails in the false-GREEN direction.
 #
-# honest_status.sh has carried this classification inline since 2026-07-28 and
-# is pinned by tests/test_honest_status_suite_leg.sh. This file pins the
-# EXTRACTED classifier that the sibling consumers now share — the cases below
-# are deliberately the same corpus, case for case, so the two implementations
-# can be diffed by reading two test files rather than two shell scripts.
+# honest_status.sh carried this classification inline from 2026-07-28 until the
+# 2026-07-31 convergence; it now CALLS this script, as does
+# calibration_reverify.sh. There is one implementation, so there is nothing left
+# to drift — this file pins the classifier directly, and
+# tests/test_honest_status_suite_leg.sh pins the gate's use of it (including
+# that a missing classifier reads UNKNOWN, never PASS).
 #
-# ⚠️ DRIFT LIMIT, stated rather than papered over: this pins pytest_verdict.sh
-# against the corpus, NOT against honest_status.sh's live branch table. Nothing
-# here fails if someone edits honest_status.sh's inline copy alone. Converging
-# the two onto this script removes that gap and is deliberately left as its own
-# change — honest_status.sh is the gate of record and deserves its own review.
+# The corpora are deliberately kept parallel anyway: this one exercises the
+# classifier as a unit, that one drives the real gate end-to-end with a stub
+# pytest whose OUTPUT and EXIT CODE are set independently — the only way to
+# reproduce "says failed, exits 0" against the actual consumer.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 VERDICT="$HERE/../scripts/pytest_verdict.sh"

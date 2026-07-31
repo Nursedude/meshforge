@@ -119,6 +119,19 @@ check "line-anchored INTERNALERROR still fails the run" \
 check "and IS counted in the verdict line" \
   "$(echo "$out" | grep -q '1 INTERNALERROR' && echo ok)"
 
+# ── the classifier is now a SEPARATE script (2026-07-31 convergence), so the
+#    gate has a new way to go blind: that script missing or unrunnable. A
+#    vanished classifier must read UNKNOWN, never PASS — even on the healthiest
+#    possible pytest output with a clean exit code, which is exactly the input
+#    that would tempt a fallback into calling it green. ─────────────────────
+out="$(HS_PYTEST_VERDICT=/nonexistent/pytest_verdict.sh run 0 '9840 passed, 1 skipped in 232.49s\n')"
+check "a missing classifier reads UNKNOWN, not PASS" \
+  "$(echo "$out" | grep -q 'UNKNOWN' && echo ok)"
+check "  ...and never PASS on the suite leg" \
+  "$(echo "$out" | grep -E 'full suite .*PASS' | grep -qv UNKNOWN && echo '' || echo ok)"
+check "  ...and says the classifier did not run" \
+  "$(echo "$out" | grep -q 'pytest_verdict.sh did not run' && echo ok)"
+
 # ── non-green runs preserve the log for forensics ────────────────────────
 logf="$FAKE_HOME/.local/state/meshforge/hs_failures/last_failure.log"
 rm -f "$logf"
