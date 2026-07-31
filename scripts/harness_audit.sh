@@ -93,7 +93,12 @@ LEDGER="$HOME/calibration_ledger.jsonl"
 [ -s "$LEDGER" ] && P "calibration ledger" "$(wc -l < "$LEDGER") events" \
                  || U "calibration ledger" "absent/empty at $LEDGER"
 check_verdict_fresh() {  # $1=name $2=max_age_s
-    line="$(grep " $1 " "$VERDICTS" 2>/dev/null | tail -1)"
+    # Select by the structural NAME field, never a whole-line grep: verdict
+    # messages now embed raw job output (evidence capture), and a failing
+    # cron's excerpt can contain a sibling cron's name — harness_audit's own
+    # captured FAIL output literally names `calibration_reverify`, so a
+    # whole-line grep would select the wrong row (review 2026-07-31, finding 7).
+    line="$(awk -v n="$1" '$2 == n' "$VERDICTS" 2>/dev/null | tail -1)"
     [ -n "$line" ] || { U "$1 verdict" "never reported"; return; }
     ts="$(date -d "$(printf '%s' "$line" | awk '{print $1}')" +%s 2>/dev/null || echo 0)"
     age=$(( $(date +%s) - ts ))
@@ -104,10 +109,13 @@ check_verdict_fresh() {  # $1=name $2=max_age_s
 }
 check_verdict_fresh "calibration_reverify" 93600
 
-# 5. cron freshness watcher healthy and reporting 0 stale
-fresh_line="$(grep " cron_freshness " "$VERDICTS" 2>/dev/null | tail -1)"
+# 5. cron freshness watcher healthy and reporting 0 stale. Same structural
+# rule as check_verdict_fresh: select by field 2, judge by field 3 — a FAIL
+# line whose captured excerpt contains " OK " (e.g. "13 OK, 1 stale") must
+# not read as green (review 2026-07-31, finding 7).
+fresh_line="$(awk '$2 == "cron_freshness"' "$VERDICTS" 2>/dev/null | tail -1)"
 if [ -z "$fresh_line" ]; then U "cron_freshness" "never reported"
-elif printf '%s' "$fresh_line" | grep -q " OK "; then P "cron_freshness" "$(printf '%s' "$fresh_line" | cut -d' ' -f3-)"
+elif [ "$(printf '%s' "$fresh_line" | awk '{print $3}')" = "OK" ]; then P "cron_freshness" "$(printf '%s' "$fresh_line" | cut -d' ' -f3-)"
 else F "cron_freshness" "$(printf '%s' "$fresh_line" | cut -d' ' -f3-)"; fi
 
 # 6. memory hot index under the load limit (24576 B; warn at 75%)

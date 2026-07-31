@@ -51,7 +51,11 @@ case "$raw" in
 esac
 
 LOCK="${CRON_VERDICT_LOCK:-${LOG}.lock}"
-ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# CRON_VERDICT_TS is a TEST hook: capture filenames embed the timestamp at
+# 1-second granularity, so a test looping same-second invocations collapses
+# every capture onto one path and the prune loop it asserts on never runs
+# (ultra review 2026-07-31 — the prune test passed vacuously at len=1).
+ts="${CRON_VERDICT_TS:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 # ── evidence capture (2026-07-31) ────────────────────────────────────────────
 # WHY: a FAIL verdict named the cron but never its CAUSE. On 2026-07-30
@@ -101,10 +105,18 @@ _capture() {
     dst="$OUT_DIR/$name.$slug-$ts.out"
     if cp "$src" "$dst" 2>/dev/null; then
         evidence="out=$dst | $(_excerpt "$src")"
-        # Prune this NAME's older captures only — the literal dot after $name
-        # anchors the glob so a name that prefixes another (brain_backup vs
-        # brain_backup_extra) can never reap its neighbour's evidence.
+        # Prune this NAME's older captures only. The literal dot after $name
+        # anchors underscore-suffix neighbours (brain_backup vs
+        # brain_backup_extra) but NOT dot-suffix ones: for name `sync`, the
+        # glob `sync.`*-*.out also matches `sync.extra.fail-<ts>.out` — a
+        # frequently-failing `sync` would rotate away `sync.extra`'s preserved
+        # evidence (adversarial review 2026-07-31, finding 10). The slug this
+        # script writes is dot-free [a-z]+, so filter candidates to exactly
+        # <name>.<slug>-<ts>: a dotted neighbour's extra `.` segment cannot
+        # match `[a-z]+-`. $name's own dots are regex-escaped.
+        esc=$(printf '%s' "$name" | sed 's/\./\\./g')
         ls -1t "$OUT_DIR/$name."*-*.out 2>/dev/null \
+            | grep -E "/${esc}\.[a-z]+-[0-9]{4}-" \
             | tail -n +$((KEEP_CAPTURES + 1)) \
             | while IFS= read -r old; do rm -f "$old"; done
     else

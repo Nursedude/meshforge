@@ -188,7 +188,10 @@ def collect_canary(since_iso: str) -> Dict:
     ok = concern = fail = 0
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) < 3 or parts[0] < since_iso:
+        # The grep is only a prefilter — verdict excerpts can mention this
+        # cron's name inside ANOTHER cron's line (evidence capture), so pin
+        # the structural name field before counting (review 2026-07-31, f7).
+        if len(parts) < 3 or parts[1] != "gateway_rt_canary" or parts[0] < since_iso:
             continue
         status = parts[2]
         if status == "OK":
