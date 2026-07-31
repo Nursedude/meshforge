@@ -106,6 +106,14 @@ BYTE_IDENTICAL = (
     "src/mini_dudeai/warmstart.py",
     "src/mini_dudeai/dreams.py",
     "src/mini_dudeai/calibration_ledger.py",
+    # The ledger's TEST, tracked alongside its source (2026-07-31). The source
+    # was byte-locked; the test was not, so MeshForge accumulated 34 assertions
+    # over months while MeshAnchor's identical copy of the module had ZERO —
+    # a byte-locked file whose behaviour only one repo actually checked. Found
+    # by accident, not by a gate. Byte-locking the test too means a future
+    # assertion added in the lead repo must reach the twin or parity_check says
+    # so. (tests/fixtures/lxmface_vectors.json is the same precedent.)
+    "tests/test_calibration_ledger.py",
     "src/mini_dudeai/model_router.py",
     # The engine's generic I/O building blocks — concrete sources + actions.
     # All import-clean and generic (a reader/writer per medium); an app that
