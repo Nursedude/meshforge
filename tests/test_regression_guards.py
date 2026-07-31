@@ -1310,3 +1310,38 @@ class TestNoUnsatisfiableCIPoll:
         assert "TIMEOUT" in body, "no timeout ceiling — could loop forever"
         assert "--branch" in body, "must query by branch, not --commit"
         assert "exit 2" in body, "must have an UNKNOWN exit path (never a pass)"
+
+
+class TestCIPytestVerdictContract:
+    """CI's test step must route through the pytest classifier (2026-07-31).
+
+    The interpreter's raw exit code was measured to flap 0 on a failed
+    full-suite run (~50%, shutdown race — see scripts/pytest_verdict.sh
+    header). CI's conclusion for HEAD is quoted downstream as VERIFIED-tier
+    evidence by honest_status and the calibration ledger, so CI trusting the
+    bare rc reintroduces the false-green at the highest-authority gate.
+    """
+
+    CI_YML = os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml")
+
+    def _ci_text(self):
+        with open(self.CI_YML) as fh:
+            return fh.read()
+
+    def test_ci_pytest_step_is_classified(self):
+        text = self._ci_text()
+        assert "pytest_verdict.sh" in text, (
+            "ci.yml no longer calls scripts/pytest_verdict.sh — the test step "
+            "is back to trusting pytest's bare exit code, the signal measured "
+            "to flap 0 on failed runs (2026-07-28)"
+        )
+
+    def test_ci_captures_rc_instead_of_dying_on_it(self):
+        """Under GitHub's `bash -e`, the pipeline must not be the step's last
+        word: rc has to be captured (`|| rc=$?`) so the classifier — not the
+        raw code — decides the step outcome."""
+        text = self._ci_text()
+        assert re.search(r"tee /tmp/pytest\.log \|\| rc=\$\?", text), (
+            "ci.yml pytest pipeline no longer captures rc for the classifier; "
+            "under `bash -e` the bare rc would decide the step again"
+        )

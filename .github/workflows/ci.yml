@@ -119,10 +119,17 @@ jobs:
           # surfaced by the "Dump failure summary" step below if this step
           # exits non-zero — GitHub's lazy-loaded log viewer sometimes hides
           # raw output, so we echo an explicit marker section too.
+          rc=0
           python -m pytest tests/ -v --tb=short --timeout=30 --timeout-method=thread -rA \
             --ignore=tests/test_bridge_integration.py \
             -o log_cli_level=WARNING \
-            2>&1 | tee /tmp/pytest.log
+            2>&1 | tee /tmp/pytest.log || rc=$?
+          # The raw exit code alone is a proven liar on this suite (~50% of
+          # full runs exit 0 after pytest reported TESTS_FAILED — a shutdown
+          # race that only loses failures toward zero). This conclusion is
+          # quoted downstream as VERIFIED-tier evidence, so it goes through
+          # the classifier like every other consumer; UNKNOWN fails the step.
+          bash scripts/pytest_verdict.sh --log /tmp/pytest.log --rc "$rc"
         env:
           CI: true
           MESHFORGE_CI: true
