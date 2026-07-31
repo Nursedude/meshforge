@@ -9,6 +9,11 @@
 # Usage (crontab idiom — no script edits needed, captures the exit code):
 #   */30 * * * * /path/job.sh >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh job $?
 #
+# PREFERRED idiom — same thing, but a FAIL can name its cause (see "evidence
+# capture" below). scripts/cron_capture_wire.py rewrites the /dev/null form to
+# this one in place:
+#   */30 * * * * /path/job.sh >$HOME/.local/state/meshforge/cron_out/job.out 2>&1; /opt/meshforge/scripts/cron_verdict.sh job $?
+#
 # Or from inside a script, with a message:
 #   cron_verdict.sh my_job OK "3 peers checked, all green"
 #   cron_verdict.sh my_job CONCERN "2/3 peers slow"
@@ -47,6 +52,73 @@ esac
 
 LOCK="${CRON_VERDICT_LOCK:-${LOG}.lock}"
 ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+# ── evidence capture (2026-07-31) ────────────────────────────────────────────
+# WHY: a FAIL verdict named the cron but never its CAUSE. On 2026-07-30
+# harness_audit logged FAIL(1) and which of its 14 checks went red was already
+# unrecoverable by the next morning — the crontab idiom redirects job output to
+# /dev/null, so the ONE run with something to say threw it away, and the verdict
+# log stores only name+status (honest_failure_modes #9: every swallow gets a
+# witness). Crons wired for capture redirect into $OUT_DIR/<name>.out; a non-OK
+# verdict PRESERVES that file under a timestamped name (the live .out is
+# overwritten by the next run, so the evidence of a FAIL has a lifetime of one
+# cadence unless copied) and names the path in the verdict line.
+#
+# Tri-state, never collapsed into a single "nothing to report" (#1/#2):
+#   uncaptured      no .out file — this cron is not wired for capture, or logs
+#                   elsewhere. NOT the same as "the job produced no output".
+#   empty           wired, ran, said nothing.
+#   <path>          preserved; the verdict line says where the evidence lives.
+#   capture_failed  we tried and could not — loud, never silently omitted.
+#
+# OK runs capture nothing: keeping every healthy run's output would grow without
+# bound on an SD card to say what the OK already says.
+#
+# ⚠️ The wired crontab redirects INTO $OUT_DIR, so if that directory is ever
+# removed the shell cannot create the file and THE JOB DOES NOT RUN (measured:
+# `sh -c 'job >missing/x.out 2>&1'` exits 2 without executing job). That failure
+# is LOUD by construction — every wired cron starts logging FAIL(2) and
+# probe_cron_verdict_stale fires — which is why it is accepted rather than
+# guarded. DECISION TELL: every wired cron failing at once with FAIL(2) means
+# the capture dir vanished, not that the fleet broke. Re-create it with
+# `scripts/cron_capture_wire.py --apply` (it mkdirs before writing).
+OUT_DIR="${CRON_VERDICT_OUT_DIR:-$HOME/.local/state/meshforge/cron_out}"
+KEEP_CAPTURES="${CRON_VERDICT_KEEP_CAPTURES:-5}"
+
+# One flattened, clamped line. A CONVENIENCE for the log — the preserved file is
+# the record of truth, which is why the evidence string names its path too.
+_excerpt() {
+    line=$(grep -aiE 'fail|error|traceback|refused|timed out|timeout' "$1" 2>/dev/null | tail -1)
+    [ -n "$line" ] || line=$(grep -av '^[[:space:]]*$' "$1" 2>/dev/null | tail -1)
+    printf '%s' "$line" | tr '\n\r\t' '   ' | cut -c1-160
+}
+
+_capture() {
+    src="$OUT_DIR/$name.out"
+    [ -e "$src" ] || { evidence="out=uncaptured"; return 0; }
+    [ -s "$src" ] || { evidence="out=empty"; return 0; }
+    slug=$(printf '%s' "$status" | tr 'A-Z' 'a-z' | tr -cd 'a-z')
+    dst="$OUT_DIR/$name.$slug-$ts.out"
+    if cp "$src" "$dst" 2>/dev/null; then
+        evidence="out=$dst | $(_excerpt "$src")"
+        # Prune this NAME's older captures only — the literal dot after $name
+        # anchors the glob so a name that prefixes another (brain_backup vs
+        # brain_backup_extra) can never reap its neighbour's evidence.
+        ls -1t "$OUT_DIR/$name."*-*.out 2>/dev/null \
+            | tail -n +$((KEEP_CAPTURES + 1)) \
+            | while IFS= read -r old; do rm -f "$old"; done
+    else
+        evidence="out=capture_failed"
+    fi
+}
+
+evidence=""
+case "$status" in
+    OK) ;;
+    *)  mkdir -p "$OUT_DIR" 2>/dev/null || true
+        _capture || evidence="out=capture_failed" ;;
+esac
+[ -z "$evidence" ] || msg="${msg:+$msg }$evidence"
 
 _append() { printf '%s %s %s %s\n' "$ts" "$name" "$status" "$msg" >> "$LOG"; }
 
