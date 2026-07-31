@@ -13,6 +13,8 @@ RED + GREEN. The load-bearing properties:
 """
 from __future__ import annotations
 
+import json
+
 from mini_dudeai import calibration_ledger as cl
 
 
@@ -249,6 +251,80 @@ def test_rederive_and_persist_surfaces_a_broken_claim(tmp_path):
 
 
 # ── format_brief_block ───────────────────────────────────────────────────
+
+class TestAnnotations:
+    """Annotations qualify a verdict's EVIDENCE without changing the verdict.
+
+    Born 2026-07-31: 21 `held` verdicts were minted by calibration_reverify.sh
+    while it trusted pytest's bare exit code — a signal measured to flap to 0
+    on a failed full-suite run. Those verdicts are not shown to be wrong; their
+    evidence cannot distinguish green from red. The ledger had no way to say
+    that, so the ratio was quoted without its caveat.
+    """
+
+    def _events(self, tmp_path):
+        head = HEAD
+        cid = cl.make_claim_id(1.0, "c", head)
+        return cid, [
+            {"kind": "claim", "id": cid, "head_full": head},
+            {"kind": "verdict", "claim_id": cid, "ts": 5.0, "outcome": "held",
+             "detail": "x"},
+        ]
+
+    def test_annotation_does_not_move_a_claim_between_buckets(self, tmp_path):
+        cid, events = self._events(tmp_path)
+        before = cl.fold(events)
+        events.append({"kind": "annotation", "claim_id": cid, "ts": 6.0,
+                       "topic": "evidence_provenance", "note": "weak"})
+        after = cl.fold(events)
+        assert (after["n_held"], after["n_broke"], after["n_open"]) == \
+               (before["n_held"], before["n_broke"], before["n_open"])
+        assert after["ratio"] == before["ratio"]
+
+    def test_annotation_is_counted_so_the_ratio_carries_its_caveat(self, tmp_path):
+        cid, events = self._events(tmp_path)
+        assert cl.fold(events)["n_annotated"] == 0
+        events.append({"kind": "annotation", "claim_id": cid, "ts": 6.0,
+                       "topic": "evidence_provenance", "note": "weak"})
+        assert cl.fold(events)["n_annotated"] == 1
+
+    def test_brief_surfaces_the_annotation_beside_the_percentage(self, tmp_path):
+        """A writer with no reader is the defect this very session fixed —
+        the annotation must reach the line the operator actually reads."""
+        cid, events = self._events(tmp_path)
+        events.append({"kind": "annotation", "claim_id": cid, "ts": 6.0,
+                       "topic": "evidence_provenance", "note": "weak"})
+        block = cl.format_brief_block(cl.fold(events))
+        assert "evidence annotation" in block
+        assert "1 of those re-checked" in block
+
+    def test_brief_has_no_annotation_line_when_there_are_none(self, tmp_path):
+        _, events = self._events(tmp_path)
+        assert "evidence annotation" not in cl.format_brief_block(cl.fold(events))
+
+    def test_record_annotation_writes_an_annotation_not_a_verdict(self, tmp_path):
+        """Hand-written verdicts are forbidden (calibrated_claims rule 6); an
+        annotation can only reduce confidence, never manufacture it."""
+        p = tmp_path / "ledger.jsonl"
+        p.write_text("")
+        cl.record_annotation("cid1", "evidence_provenance", "note text",
+                             ts=7.0, path=str(p))
+        rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "annotation"
+        assert rows[0]["kind"] != "verdict"
+        assert rows[0]["claim_id"] == "cid1"
+        assert rows[0]["topic"] == "evidence_provenance"
+
+    def test_annotation_for_an_unknown_claim_is_inert(self, tmp_path):
+        """Annotating a claim id that isn't in the ledger must not invent a
+        bucket entry or crash the fold."""
+        _, events = self._events(tmp_path)
+        events.append({"kind": "annotation", "claim_id": "no-such-claim",
+                       "ts": 6.0, "topic": "evidence_provenance", "note": "x"})
+        state = cl.fold(events)
+        assert state["n_total"] == 1 and state["n_annotated"] == 0
+
 
 class TestFormatBriefBlock:
     def test_empty_state_is_silent(self):

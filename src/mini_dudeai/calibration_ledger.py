@@ -104,6 +104,36 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
     return rec
 
 
+def record_annotation(claim_id: str, topic: str, note: str, *,
+                      ts: float | None = None, path: str | None = None,
+                      extra: dict | None = None,
+                      max_bytes: int = DEFAULT_LEDGER_MAX_BYTES) -> dict:
+    """Append one ``annotation`` event — a note ABOUT a claim's verdict.
+
+    An annotation qualifies the EVIDENCE behind a verdict without changing the
+    verdict. ``fold`` never moves a claim between held/broke/open on account of
+    one; it only counts them, so the ratio is quoted with its caveat attached.
+
+    This is deliberately NOT a verdict. Verdicts are minted only by the
+    re-derivation machinery and are never hand-written (calibrated_claims rule
+    6) — a self-issued "held" is the patched-tally disease the ledger exists to
+    catch. Saying "this verdict's evidence was weaker than it looks" is the
+    opposite move: it can only reduce confidence, never manufacture it, which
+    is why it is safe to write by hand.
+    """
+    ts = time.time() if ts is None else ts
+    path = path or ledger_path()
+    rec = {"kind": "annotation", "claim_id": claim_id, "ts": ts,
+           "topic": topic, "note": note}
+    if extra:
+        rec.update(extra)
+    err = append_jsonl(path, [rec], max_bytes)
+    if err:
+        log_warning(f"calibration_ledger: could not record annotation for "
+                    f"{claim_id}: {err}")
+    return rec
+
+
 def record_verdict(claim_id: str, outcome: str, detail: str = "", *,
                    ts: float | None = None, path: str | None = None,
                    max_bytes: int = DEFAULT_LEDGER_MAX_BYTES) -> dict:
@@ -164,12 +194,22 @@ def fold(events: list[dict]) -> dict:
     claims: dict[str, dict] = {}
     # latest verdict per claim_id: (ts, outcome)
     latest_verdict: dict[str, tuple] = {}
+    # claim_id -> [annotation, ...]. Annotations are METADATA about the quality
+    # of a verdict's evidence; they never move a claim between buckets. Kept
+    # separate from verdicts on purpose: a verdict is the re-derivation
+    # machinery's output and is never hand-written (calibrated_claims rule 6),
+    # while an annotation is a note ABOUT one and may be.
+    annotations: dict[str, list] = {}
     for ev in events:
         kind = ev.get("kind")
         if kind == "claim":
             cid = ev.get("id")
             if isinstance(cid, str):
                 claims[cid] = ev  # a later claim record with same id wins
+        elif kind == "annotation":
+            cid = ev.get("claim_id")
+            if isinstance(cid, str):
+                annotations.setdefault(cid, []).append(ev)
         elif kind == "verdict":
             cid = ev.get("claim_id")
             outcome = ev.get("outcome")
@@ -192,6 +232,10 @@ def fold(events: list[dict]) -> dict:
 
     n_def = len(held) + len(broke)
     ratio = (len(held) / n_def) if n_def else None
+    # How many of the claims that got a definitive verdict carry an annotation
+    # qualifying that verdict's evidence. Surfaced beside the ratio so the
+    # headline number is never quoted without its caveat.
+    n_annotated = sum(1 for rec in held + broke if annotations.get(rec.get("id")))
     return {
         "n_total": len(claims),
         "n_held": len(held),
@@ -201,6 +245,8 @@ def fold(events: list[dict]) -> dict:
         "held": held,
         "broke": broke,
         "open": open_,
+        "annotations": annotations,
+        "n_annotated": n_annotated,
     }
 
 
@@ -295,6 +341,17 @@ def format_brief_block(state: dict, max_show: int = 3) -> str:
         lines.append(
             f"🔵 {n} VERIFIED claim(s) logged · none re-checked yet · "
             f"{open_} still unverified")
+    # The ratio's own caveat, printed with it rather than filed away. A held
+    # verdict whose evidence could not distinguish green from red still counts
+    # as held — re-deriving it is a separate act — but quoting the percentage
+    # without saying how much of it rests on qualified evidence would be the
+    # averaged-away blind spot calibrated_claims rule 5 forbids.
+    n_annot = state.get("n_annotated", 0)
+    if n_annot:
+        lines.append(
+            f"- ⚠️ {n_annot} of those re-checked carry an evidence annotation — "
+            "the verdict stands, but its evidence was qualified. See `kind: "
+            "annotation` rows in the ledger for what and why.")
     for rec in state.get("broke", [])[:max_show]:
         ct = (rec.get("claim_text") or "")[:80]
         head = str(rec.get("head_full") or "")[:7]
