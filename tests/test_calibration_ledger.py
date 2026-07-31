@@ -165,6 +165,42 @@ class TestRederiveOpen:
         events = [self._open_claim()]
         assert cl.rederive_open(events, HEAD, self._marker(exit_code=2), 9.0) == []
 
+    def test_verdict_names_the_instrument_that_produced_it(self):
+        """The detail used to hardcode 'honest_status ...' for EVERY marker.
+
+        calibration_reverify supplies its own marker from its own pytest+lint
+        run, so its verdicts were filed under honest_status's name — evidence
+        attributed to an instrument that did not produce it. The 2026-07-31
+        provenance audit could not answer 'which verdicts came from the
+        unguarded bare-rc path?' from the ledger at all and had to derive it
+        from wall-clock landing time.
+        """
+        events = [self._open_claim()]
+        new = cl.rederive_open(
+            events, HEAD,
+            self._marker(summary="calibration_reverify suite=PASS(rc=0)+lint(rc=0)"),
+            now_ts=9.0)
+        assert len(new) == 1
+        assert "calibration_reverify" in new[0]["detail"]
+        assert "honest_status" not in new[0]["detail"], (
+            "a reverify-minted verdict must not claim honest_status as its source")
+
+    def test_broke_verdict_also_names_its_source(self):
+        events = [self._open_claim()]
+        new = cl.rederive_open(
+            events, HEAD,
+            self._marker(exit_code=1, summary="calibration_reverify suite=FAIL(rc=1)+lint(rc=0)"),
+            now_ts=9.0)
+        assert len(new) == 1 and new[0]["outcome"] == "broke"
+        assert "calibration_reverify" in new[0]["detail"]
+
+    def test_marker_without_summary_still_reads_honest_status(self):
+        """The warm-start emitter supplies no summary — that path is genuinely
+        honest_status, and its verdicts must keep saying so."""
+        events = [self._open_claim()]
+        new = cl.rederive_open(events, HEAD, self._marker(), now_ts=9.0)
+        assert "honest_status green on" in new[0]["detail"]
+
     def test_quick_marker_mints_nothing(self):
         events = [self._open_claim()]
         assert cl.rederive_open(

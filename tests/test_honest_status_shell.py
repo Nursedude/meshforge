@@ -10,21 +10,29 @@ could not pass. Nobody noticed, because nothing ran it: pytest collects
 A test that cannot fail and a test that nobody runs are the same artifact.
 This wrapper makes the shell harnesses part of the suite, so the next time one
 of them stops working, CI says so.
+
+The harness list is DERIVED, not hand-maintained (2026-07-31). It used to be a
+hardcoded allowlist, which reintroduced the very defect one layer up: a new
+``test_*.sh`` was dead until someone remembered to add it here, and nothing
+failed if they didn't. Found by adding ``test_pytest_verdict.sh`` — the sweep
+also turned up ``test_weekly_updates_digest.sh``, an existing harness that had
+never been collected (it passes; it was dead, not broken). Globbing the
+directory means the naming convention alone is enough to be run.
 """
 from __future__ import annotations
 
+import glob
 import os
 import subprocess
 
 import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-_HARNESSES = [
-    "test_honest_status_preserve.sh",   # suite-failure log preservation
-    "test_honest_status_boxes.sh",      # fleet box-list derivation
-    "test_honest_status_suite_leg.sh",  # suite verdict vs. an untrustworthy rc
-    "test_pytest_tmp_prune.sh",         # temp-tree pruner (tmpfs = RAM)
-]
+# Every tests/test_*.sh is a harness by naming convention — no allowlist to
+# forget to update.
+_HARNESSES = sorted(
+    os.path.basename(p) for p in glob.glob(os.path.join(_HERE, "test_*.sh"))
+)
 
 
 @pytest.mark.parametrize("script", _HARNESSES)

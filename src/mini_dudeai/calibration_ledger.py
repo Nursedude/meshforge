@@ -226,11 +226,21 @@ def rederive_open(events: list[dict], head_full_now: str | None,
     m_exit = marker.get("exit_code")
     if not m_head or m_head != head_full_now:
         return []
+    # The verdict must name the instrument that actually produced it. This
+    # previously hardcoded "honest_status ..." for EVERY marker, including the
+    # one calibration_reverify supplies — so a verdict minted from that job's
+    # own pytest+lint run was recorded as honest_status evidence. The marker
+    # already carried a `summary` naming its source and nothing read it (a
+    # writer with no reader, #4); the 2026-07-31 provenance audit could not
+    # attribute verdicts from the ledger at all and had to derive them from
+    # landing time. Use the supplied summary when present.
+    src = marker.get("summary")
+    src = str(src).strip() if src else "honest_status"
     if m_exit == 0:
-        outcome, detail = "held", f"honest_status green on {str(m_head)[:7]}"
+        outcome, detail = "held", f"{src} green on {str(m_head)[:7]}"
     elif m_exit == 1:
         outcome, detail = "broke", (
-            f"honest_status FAILED (exit 1) on {str(m_head)[:7]} — a head "
+            f"{src} FAILED (exit 1) on {str(m_head)[:7]} — a head "
             "previously claimed verified")
     else:
         return []  # exit 2 / unknown — could not verify; leave open
