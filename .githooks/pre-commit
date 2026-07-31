@@ -9,6 +9,12 @@
 
 set -e
 
+# Shared pytest wrapper: pairs "run pytest" with "classify it honestly".
+# pytest's exit code is not trustworthy here (see scripts/pytest_verdict.sh);
+# the helper fails CLOSED, so a missing classifier blocks the commit rather
+# than waving it through.
+. "$(git rev-parse --show-toplevel)/scripts/lib/pytest_checked.sh"
+
 # Run MeshForge linter on staged files (errors only)
 echo "Running MeshForge linter..."
 if ! python3 scripts/lint.py --staged --severity error 2>/dev/null; then
@@ -20,12 +26,15 @@ fi
 
 # Run regression guards (fast — file scanning only, no service deps)
 echo "Running regression guards..."
-if ! python3 -m pytest tests/test_regression_guards.py -x -q 2>/dev/null; then
+if ! mf_pytest_checked tests/test_regression_guards.py -x -q; then
     echo ""
-    echo "Regression guard failed. A known anti-pattern was introduced."
+    cat "$MF_PYTEST_LOG"; rm -f "$MF_PYTEST_LOG"
+    echo ""
+    echo "Regression guard $MF_PYTEST_VERDICT — $MF_PYTEST_WHY"
     echo "Run: python3 -m pytest tests/test_regression_guards.py -v"
     exit 1
 fi
+rm -f "$MF_PYTEST_LOG"
 
 # Parity-mirror execution gate (2026-07-02): byte-identical parity files must
 # also EXECUTE here — a mirror commit that keeps canonical_message.py in sync
@@ -34,13 +43,17 @@ fi
 # time. parity_check proves BYTES, this proves the repo can RUN them. <1s.
 if git diff --cached --name-only | grep -qE '^src/gateway/(canonical_message|rns_bridge)\.py$'; then
     echo "Shared-contract surface changed — running canonical execution tests..."
-    if ! python3 -m pytest tests/test_canonical_message.py -x -q 2>/dev/null; then
+    if ! mf_pytest_checked tests/test_canonical_message.py -x -q; then
         echo ""
-        echo "canonical_message execution tests failed — the parity file cannot"
-        echo "run against this repo's collaborators (BridgedMessage et al.)."
+        cat "$MF_PYTEST_LOG"; rm -f "$MF_PYTEST_LOG"
+        echo ""
+        echo "canonical_message execution tests $MF_PYTEST_VERDICT — the parity file"
+        echo "cannot run against this repo's collaborators (BridgedMessage et al.)."
+        echo "$MF_PYTEST_WHY"
         echo "Run: python3 -m pytest tests/test_canonical_message.py -v"
         exit 1
     fi
+    rm -f "$MF_PYTEST_LOG"
 fi
 
 # Capability-index drift gate (2026-07-04, widened same day): the committed
@@ -79,6 +92,11 @@ done
 # Collection-only sweep: catches module-level import/syntax errors across the
 # full suite without running test bodies. Fast (~2-3s) and flags the class of
 # regression where a test module fails to import in CI but loads in dev.
+# NOT routed through mf_pytest_checked, deliberately: --collect-only emits
+# "N tests collected" and no "N passed", so the classifier correctly reports
+# UNKNOWN for it — which under `if !` would block every commit. This leg is
+# also not exposed to the flap it guards against: the flap is a thread-join
+# race at the end of a test RUN, and collection runs no test bodies.
 echo "Collecting test modules..."
 if ! python3 -m pytest --collect-only -q tests/ >/dev/null 2>&1; then
     echo ""

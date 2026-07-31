@@ -7,6 +7,9 @@
 
 set -e
 
+# Shared pytest wrapper (run + classify honestly); fails CLOSED.
+. "$(cd "$(dirname "$0")/.." && pwd)/scripts/lib/pytest_checked.sh"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -95,11 +98,12 @@ if python3 -m pytest --version 2>/dev/null; then
     if [ -f "tests/test_tui_smoke.py" ]; then
         echo ""
         echo "--- Running TUI Smoke Tests ---"
-        if python3 -m pytest tests/test_tui_smoke.py -v --tb=short -x 2>&1; then
-            pass "TUI smoke tests passed"
+        if mf_pytest_checked tests/test_tui_smoke.py -v --tb=short -x; then
+            cat "$MF_PYTEST_LOG"; pass "TUI smoke tests passed"
         else
-            fail "TUI smoke tests failed"
+            cat "$MF_PYTEST_LOG"; fail "TUI smoke tests $MF_PYTEST_VERDICT — $MF_PYTEST_WHY"
         fi
+        rm -f "$MF_PYTEST_LOG"
     else
         info "No TUI smoke tests found (tests/test_tui_smoke.py)"
     fi
@@ -107,21 +111,23 @@ if python3 -m pytest --version 2>/dev/null; then
     # 8. Run RF tests (critical for HAM operations)
     echo ""
     echo "--- Running RF Tests ---"
-    if python3 -m pytest tests/test_rf_utils.py -v --tb=short 2>&1; then
-        pass "RF tests passed"
+    if mf_pytest_checked tests/test_rf_utils.py -v --tb=short; then
+        cat "$MF_PYTEST_LOG"; pass "RF tests passed"
     else
-        fail "RF tests failed"
+        cat "$MF_PYTEST_LOG"; fail "RF tests $MF_PYTEST_VERDICT — $MF_PYTEST_WHY"
     fi
+    rm -f "$MF_PYTEST_LOG"
 
     # 9. Run service check tests
     echo ""
     echo "--- Running Service Check Tests ---"
     if [ -f "tests/test_service_check.py" ]; then
-        if python3 -m pytest tests/test_service_check.py -v --tb=short 2>&1; then
-            pass "Service check tests passed"
+        if mf_pytest_checked tests/test_service_check.py -v --tb=short; then
+            cat "$MF_PYTEST_LOG"; pass "Service check tests passed"
         else
-            warn "Service check tests had issues"
+            cat "$MF_PYTEST_LOG"; warn "Service check tests $MF_PYTEST_VERDICT — $MF_PYTEST_WHY"
         fi
+        rm -f "$MF_PYTEST_LOG"
     else
         info "No service check tests found"
     fi

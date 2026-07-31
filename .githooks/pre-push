@@ -19,6 +19,8 @@ if [ "$remote" != "origin" ] && [ "$remote" != "meshforge" ]; then
 fi
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
+# Shared pytest wrapper (run + classify honestly); fails CLOSED.
+. "$REPO_ROOT/scripts/lib/pytest_checked.sh"
 
 if [ ! -x "$REPO_ROOT/scripts/healthcheck.sh" ]; then
     echo "scripts/healthcheck.sh not found or not executable — skipping pre-push check" >&2
@@ -58,13 +60,18 @@ fi
 # core.hooksPath gap found 2026-06-15). This is the "can't push mis-wired work"
 # gate.
 echo "Pre-push: regression guards (wiring invariants)..."
-if ! python3 -m pytest "$REPO_ROOT/tests/test_regression_guards.py" -x -q >/dev/null 2>&1; then
+if ! mf_pytest_checked "$REPO_ROOT/tests/test_regression_guards.py" -x -q; then
     echo ""
-    echo "Regression guard FAILED — a wiring/anti-pattern regression. Run:"
-    echo "  python3 -m pytest tests/test_regression_guards.py -v"
+    cat "$MF_PYTEST_LOG"; rm -f "$MF_PYTEST_LOG"
+    echo ""
+    echo "Regression guard $MF_PYTEST_VERDICT — a wiring/anti-pattern regression,"
+    echo "or a run we could not classify. Either way this is not a pass."
+    echo "  $MF_PYTEST_WHY"
+    echo "Run: python3 -m pytest tests/test_regression_guards.py -v"
     echo "Override (sparingly): git push --no-verify"
     exit 1
 fi
+rm -f "$MF_PYTEST_LOG"
 
 # Upshift-witness — compiles model_advisor's "queue, don't fake the frontier
 # pass" behavior into a deterministic gate (scripts/review_provenance_check.py):

@@ -16,6 +16,10 @@ set -uo pipefail
 
 REPO="${MESHFORGE_REPO:-/opt/meshforge}"
 MA_REPO="/opt/meshanchor"
+# Shared pytest-invocation wrapper (run + classify honestly).
+MF_REPO_ROOT="$REPO"
+# shellcheck source=lib/pytest_checked.sh
+. "$REPO/scripts/lib/pytest_checked.sh"
 MEM_DIR="${HOME}/.claude/projects/-opt-meshforge/memory"
 NOTES="${HOME}/.claude/plans/gateway-session-notes-$(hostname | tr '[:upper:]' '[:lower:]').md"
 VERDICTS="${CRON_VERDICT_LOG:-$HOME/cron_verdicts.log}"
@@ -67,11 +71,22 @@ PY
 else
     U "mini fresh" "no state file (not a mini box?)"
 fi
-if seed_out="$(cd "$REPO" && python3 -m pytest tests/test_mini_dudeai_honest_failure_modes.py -k "SeedCovers" -q 2>&1 | tail -1)"; then
-    P "seed coverage" "$seed_out"
-else
-    F "seed coverage" "$seed_out"
-fi
+# Was a tail-piped conditional. `set -o pipefail` above meant it did propagate
+# pytest's status (it was not the vacuous gate it first looked like), but it
+# still trusted the exit code — the signal measured to flap 0 on a failed run
+# (2026-07-28). Classify instead, and keep the third state: this audit already
+# has a U() for "could not tell", and an unclassifiable run belongs there
+# rather than in P.
+_ha_cwd="$PWD"; cd "$REPO" 2>/dev/null || true
+mf_pytest_checked tests/test_mini_dudeai_honest_failure_modes.py -k "SeedCovers" -q
+_ha_rc=$?
+cd "$_ha_cwd" 2>/dev/null || true
+rm -f "$MF_PYTEST_LOG"
+case "$_ha_rc" in
+    0) P "seed coverage" "$MF_PYTEST_WHY" ;;
+    1) F "seed coverage" "$MF_PYTEST_WHY" ;;
+    *) U "seed coverage" "$MF_PYTEST_WHY" ;;
+esac
 
 # 4. calibration ledger + daily reverify freshness (<26h)
 LEDGER="$HOME/calibration_ledger.jsonl"

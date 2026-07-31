@@ -48,6 +48,11 @@ done
 
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
+# Shared pytest-invocation wrapper: pairs "run pytest" with "classify
+# it honestly" so no caller here can drift back to a bare rc or a
+# tail-piped conditional (see scripts/lib/pytest_checked.sh).
+# shellcheck source=lib/pytest_checked.sh
+. "$REPO_ROOT/scripts/lib/pytest_checked.sh"
 
 # Match CI's dep set in .github/workflows/ci.yml. Optional deps that CI
 # uses `|| echo` to soft-fail are listed separately so --clean-venv mode
@@ -77,13 +82,23 @@ run_lint() {
 
 run_tests_local() {
     print_step "Tests (current env)"
-    if python3 -m pytest tests/ "${CI_PYTEST_ARGS[@]}" -q 2>&1 | tail -50; then
+    # This was `if python3 -m pytest ... | tail -50; then`. That LOOKS like the
+    # banned tail-pipe (exit status of `tail`, always 0) and was first flagged
+    # as such — wrongly: `set -o pipefail` at the top of this file propagates
+    # pytest's non-zero through the pipe, so the gate did work. What it could
+    # not survive is the measured exit-code flap: on the full suite pytest
+    # exits 0 while having computed TESTS_FAILED:1 (~50% of runs, 2026-07-28),
+    # and pipefail faithfully propagates a zero that was already wrong. Route
+    # through the shared classifier, which cross-checks the summary line.
+    mf_pytest_checked tests/ "${CI_PYTEST_ARGS[@]}" -q
+    local rc=$?
+    tail -50 "$MF_PYTEST_LOG"; rm -f "$MF_PYTEST_LOG"
+    if [ "$rc" -eq 0 ]; then
         print_ok "Tests passed"
         return 0
-    else
-        print_fail "Tests failed"
-        return 1
     fi
+    print_fail "Tests $MF_PYTEST_VERDICT — $MF_PYTEST_WHY"
+    return 1
 }
 
 run_tests_clean_venv() {
