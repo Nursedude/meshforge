@@ -463,3 +463,130 @@ class TestSecondaryEnvRequiresInstance:
         monkeypatch.setattr(cmp_mod, "build_rows", _boom)
         with pytest.raises(RuntimeError):
             cmp_mod.main([])
+
+
+@pytest.fixture(autouse=True)
+def _pin_default_segments_path(monkeypatch, tmp_path):
+    """Every main()-driving test would otherwise read the REAL box's
+    ~/.config/meshforge/claw_watch_segments.json through the new default —
+    a test whose verdict depends on which box runs the suite pins nothing.
+    Tests that care set the path (or write the file) themselves."""
+    monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH",
+                        str(tmp_path / "no-such-claw_watch_segments.json"))
+
+
+class TestSegmentGateActivation20260731:
+    """Finding 3: the gate only activated via an env var nothing set, while
+    the shipped template said 'copy to ~/.config/meshforge/…' — a path no
+    code read. Reader and writer shipped and never met; an operator following
+    the template exactly got a silently inert gate and cross-preset radios
+    reading `silent` again."""
+
+    def _write(self, tmp_path, doc):
+        p = tmp_path / "claw_watch_segments.json"
+        p.write_text(doc if isinstance(doc, str) else json.dumps(doc))
+        return p
+
+    def test_default_path_is_read_without_the_env_var(self, tmp_path, monkeypatch):
+        p = self._write(tmp_path, {"claw_segment": "meshtastic:LONG_FAST/ch20",
+                                   "nodes": {"!aaaaaaaa": "meshtastic:LONG_FAST/ch20"}})
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(p))
+        nodes, cs, err = cmp_mod._load_segments({})
+        assert err is None
+        assert nodes == {"!aaaaaaaa": "meshtastic:LONG_FAST/ch20"}
+        assert cs == "meshtastic:LONG_FAST/ch20"
+
+    def test_absent_default_is_inert_not_an_error(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH",
+                            str(tmp_path / "absent.json"))
+        assert cmp_mod._load_segments({}) == (None, None, None)
+
+    def test_env_path_still_wins_over_the_default(self, tmp_path, monkeypatch):
+        """moc2's live shape: env var explicitly set. Behavior unchanged."""
+        default = self._write(tmp_path, {"claw_segment": "WRONG", "nodes": {"!bbbbbbbb": "WRONG"}})
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(default))
+        explicit = tmp_path / "explicit.json"
+        explicit.write_text(json.dumps({"claw_segment": "meshtastic:SHORT_TURBO/ch8",
+                                        "nodes": {"!cccccccc": "meshtastic:SHORT_TURBO/ch8"}}))
+        nodes, cs, err = cmp_mod._load_segments(
+            {"MINI_DUDEAI_CLAW_SEGMENTS": str(explicit)})
+        assert err is None
+        assert cs == "meshtastic:SHORT_TURBO/ch8"
+        assert nodes == {"!cccccccc": "meshtastic:SHORT_TURBO/ch8"}
+
+    def test_env_declared_but_absent_is_an_error(self, tmp_path):
+        nodes, _cs, err = cmp_mod._load_segments(
+            {"MINI_DUDEAI_CLAW_SEGMENTS": str(tmp_path / "gone.json")})
+        assert nodes is None
+        assert err and "declared but absent" in err
+
+    def test_malformed_json_is_an_error_not_an_inert_gate(self, tmp_path, monkeypatch):
+        p = self._write(tmp_path, "{not json")
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(p))
+        nodes, _cs, err = cmp_mod._load_segments({})
+        assert nodes is None
+        assert err and "unreadable" in err
+
+    def test_nodes_without_any_claw_segment_is_declared_but_unusable(self, tmp_path, monkeypatch):
+        """The aggravator: a valid-looking file the gate can never act on —
+        nothing can ever mismatch without knowing THIS claw's segment."""
+        p = self._write(tmp_path, {"nodes": {"!aaaaaaaa": "meshtastic:LONG_FAST/ch20"}})
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(p))
+        nodes, _cs, err = cmp_mod._load_segments({})
+        assert nodes is None
+        assert err and "unusable" in err
+
+    def test_env_claw_segment_rescues_a_file_without_the_key(self, tmp_path, monkeypatch):
+        p = self._write(tmp_path, {"nodes": {"!aaaaaaaa": "meshtastic:LONG_FAST/ch20"}})
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(p))
+        nodes, cs, err = cmp_mod._load_segments(
+            {"MINI_DUDEAI_CLAW_SEGMENT": "meshtastic:LONG_FAST/ch20"})
+        assert err is None and nodes and cs == "meshtastic:LONG_FAST/ch20"
+
+
+class TestSegmentErrorBlastRadius20260731:
+    """Finding 9: _load_segments used to SystemExit before any tick was built
+    or persisted — one JSON typo in the segments file stopped battery and
+    device-liveness capture entirely (the chain that caught the 2.41 V
+    drain). The blast radius is scoped now: watch leg withheld, everything
+    else captured, run still FAILs loud at the end."""
+
+    def test_broken_segments_still_capture_and_persist_then_fail_loud(
+            self, wired, monkeypatch, tmp_path):
+        seg = tmp_path / "claw_watch_segments.json"
+        seg.write_text("{one json typo")
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(seg))
+        fake = _install_conn(monkeypatch, _FakeNC({
+            "device_info": {"ok": True, "result": DI},
+            "ble_stats": {"ok": True, "result": BS},
+            "battery_read": {"ok": True, "result": "batt: 4.01 V (est 82%)"},
+            "display_print": {"ok": True},
+        }))
+        with pytest.raises(SystemExit) as ei:
+            cmp_mod.main([])
+        # Loud at the END, naming the cause and the scoping.
+        assert "watch leg withheld" in str(ei.value)
+        # The watch leg was genuinely withheld, not judged ungated (which
+        # would report cross-preset radios as silent — the 07-30 bug).
+        assert "lora_stats" not in [r.get("tool") for r in fake.requests]
+        # And the tick still landed, with the capture alive and a witness.
+        tick = json.loads(wired.read_text())
+        assert tick.get("segment_config_error")
+        assert "unreadable" in tick["segment_config_error"]
+        assert any(r.get("tool") == "battery_read" for r in fake.requests)
+
+    def test_healthy_segments_still_request_the_watch_leg(self, wired, monkeypatch, tmp_path):
+        seg = tmp_path / "claw_watch_segments.json"
+        seg.write_text(json.dumps({"claw_segment": "meshtastic:LONG_FAST/ch20",
+                                   "nodes": {"!aaaaaaaa": "meshtastic:LONG_FAST/ch20"}}))
+        monkeypatch.setattr(cmp_mod, "DEFAULT_SEGMENTS_PATH", str(seg))
+        fake = _install_conn(monkeypatch, _FakeNC({
+            "device_info": {"ok": True, "result": DI},
+            "ble_stats": {"ok": True, "result": BS},
+            "display_print": {"ok": True},
+        }))
+        rc = cmp_mod.main([])
+        assert rc == 0
+        assert "lora_stats" in [r.get("tool") for r in fake.requests]
+        tick = json.loads(wired.read_text())
+        assert "segment_config_error" not in tick

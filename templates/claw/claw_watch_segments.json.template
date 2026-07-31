@@ -1,5 +1,5 @@
 {
-  "//": "TEMPLATE — copy to ~/.config/meshforge/claw_watch_segments.json on the box that hosts a claw's capture cron, and replace every !xxxxxxxx with your own node ids. Real node ids are operator-specific and MUST NOT be committed (MF014); this file carries placeholders only.",
+  "//": "TEMPLATE — copy to ~/.config/meshforge/claw_watch_segments.json on the box that hosts a claw's capture cron, and replace every !xxxxxxxx with your own node ids. That path is read by DEFAULT since 2026-07-31 (before that the gate only activated via MINI_DUDEAI_CLAW_SEGMENTS in the claw env, which this instruction never mentioned — following it exactly produced a silently inert gate). The env var still wins when set, for non-default locations. Real node ids are operator-specific and MUST NOT be committed (MF014); this file carries placeholders only.",
 
   "//why": "MeshForge fleets can run more than one Meshtastic modem preset at once (e.g. LONG_FAST for range plus SHORT_TURBO for the RNS throughput leg). Two presets differ in bandwidth, spreading factor AND centre frequency, so they are mutually undemodulable: a claw listening on one CANNOT hear a node on the other, ever. Without these declarations the watch list reports a perfectly healthy cross-preset radio as `silent` — measured on the fleet 2026-07-30, on two boxes at once.",
 

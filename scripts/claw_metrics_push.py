@@ -108,8 +108,18 @@ def _load_claw_env(path: "str | None" = None) -> dict:
     return env
 
 
-def _load_segments(env: dict) -> "tuple[dict | None, str | None]":
-    """``(node_id -> RF segment, this claw's segment)`` from the claw env.
+#: The template's advertised location ("copy to ~/.config/meshforge/…"). Until
+#: 2026-07-31 NO code read this path — the gate only activated via an env var
+#: nothing set or documented, so an operator following the template exactly got
+#: a silently inert gate and cross-preset radios reading `silent` again
+#: (adversarial review, finding 3: reader and writer shipped and never met,
+#: the same #4 gap the sibling probe's _config_path closed the same day).
+DEFAULT_SEGMENTS_PATH = str(get_real_user_home() / ".config" / "meshforge"
+                            / "claw_watch_segments.json")
+
+
+def _load_segments(env: dict) -> "tuple[dict | None, str | None, str | None]":
+    """``(node_id -> RF segment, this claw's segment, error)`` from the claw env.
 
     Feeds ``classify_watch``'s segment gate: MeshForge runs a deliberately
     two-preset fleet (LONG_FAST/ch20 + SHORT_TURBO/ch8), and two presets are
@@ -118,38 +128,51 @@ def _load_segments(env: dict) -> "tuple[dict | None, str | None]":
     radio as ``silent`` — measured 2026-07-30, twice.
 
     Instance values (which node is on which segment) live in the env + a
-    ~/.config JSON, never in code (MF014).
+    ~/.config JSON, never in code (MF014). The JSON path comes from
+    ``MINI_DUDEAI_CLAW_SEGMENTS`` when set, else ``DEFAULT_SEGMENTS_PATH`` —
+    the path the shipped template instructs copying to.
 
-    Undeclared is INERT: no env keys means no segment claims, and the gate
-    simply does not fire. But a DECLARED-yet-unreadable file is a hard exit,
-    exactly as ``_load_claw_env`` treats a missing env — silently falling back
-    to "no segments" would restore the bug this gate removes, and a gate that
-    disables itself without a witness is the defect wearing a different hat.
-    The cron wrapper turns the non-zero exit into a cron_verdict FAIL, so the
-    failure is visible instead of inferred.
+    Undeclared is INERT: no env key and no file at the default path means no
+    segment claims, and the gate simply does not fire. But a DECLARED-yet-
+    unusable configuration is an ERROR — unreadable file, no ``nodes``
+    object, or nodes with no claw segment anywhere (env or key): the gate
+    compares each node's segment against THIS claw's, so declarations
+    without a claw segment can never produce a verdict, which is the gate
+    silently off wearing a valid-looking file. Errors are RETURNED, not
+    raised — the caller owns the blast radius, because exiting here took the
+    battery/liveness capture down with the gate (finding 9).
     """
     claw_segment = env.get("MINI_DUDEAI_CLAW_SEGMENT") or None
-    path = env.get("MINI_DUDEAI_CLAW_SEGMENTS") or None
-    if not path:
-        return None, claw_segment
-    path = os.path.expanduser(path)
+    declared = env.get("MINI_DUDEAI_CLAW_SEGMENTS") or None
+    path = os.path.expanduser(declared or DEFAULT_SEGMENTS_PATH)
+    if not os.path.exists(path):
+        if declared:
+            return None, claw_segment, (
+                f"MINI_DUDEAI_CLAW_SEGMENTS={path} declared but absent")
+        return None, claw_segment, None
     try:
         with open(path) as f:
             doc = json.load(f)
     except (OSError, ValueError) as e:
-        raise SystemExit(
-            f"claw_metrics: MINI_DUDEAI_CLAW_SEGMENTS={path} declared but "
-            f"unreadable ({e}) — refusing to run with the segment gate silently "
-            "off, which would report cross-preset radios as silent")
+        return None, claw_segment, (
+            f"segment declarations at {path} unreadable ({e}) — the segment "
+            "gate cannot run, and running the watch leg without it would "
+            "report cross-preset radios as silent")
     nodes = doc.get("nodes") if isinstance(doc, dict) else None
-    if not isinstance(nodes, dict):
-        raise SystemExit(
-            f"claw_metrics: {path} has no 'nodes' object mapping node id -> RF "
-            "segment — an empty ruleset here reads as 'no conflicts', which is "
-            "the exact failure this file exists to prevent")
-    if isinstance(doc, dict) and doc.get("claw_segment") and not claw_segment:
+    if not isinstance(nodes, dict) or not nodes:
+        return None, claw_segment, (
+            f"{path} has no 'nodes' object mapping node id -> RF segment — an "
+            "empty ruleset here reads as 'no conflicts', which is the exact "
+            "failure this file exists to prevent")
+    if doc.get("claw_segment") and not claw_segment:
         claw_segment = doc["claw_segment"]
-    return nodes, claw_segment
+    if not claw_segment:
+        return None, None, (
+            f"{path} declares nodes but no claw segment is set anywhere "
+            "(MINI_DUDEAI_CLAW_SEGMENT env or 'claw_segment' key) — the gate "
+            "compares node segments against THIS claw's and can never fire "
+            "without it: declared but unusable")
+    return nodes, claw_segment, None
 
 
 def build_rows() -> list[str]:
@@ -276,7 +299,8 @@ def _request_tool(nc: NatsConnection, device: str, tool: str):
 
 def _capture_tick(nc: NatsConnection, device: str, host: str,
                   now: float, segments: "dict | None" = None,
-                  claw_segment: "str | None" = None) -> dict:
+                  claw_segment: "str | None" = None,
+                  skip_lora: bool = False) -> dict:
     """Pull device_info + ble_stats + battery for the /api/status.claw block.
 
     Battery joined the capture 2026-07-19: a battery-powered claw drained to
@@ -296,7 +320,11 @@ def _capture_tick(nc: NatsConnection, device: str, host: str,
     # lora_stats joined 2026-07-19 (row 9): the claw's OVER-THE-AIR witness —
     # a separate radio on separate silicon reporting what it actually heard on
     # the channel. No box self-report can corroborate the RF leg; this can.
-    lora = _request_tool(nc, device, "lora_stats")
+    # skip_lora withholds it when the segment declarations are broken: judging
+    # the watch list WITHOUT the gate reports cross-preset radios as silent
+    # (the 07-30 bug), so the watch leg goes honestly ABSENT for the run while
+    # battery/liveness capture — a different paging chain — stays alive.
+    lora = None if skip_lora else _request_tool(nc, device, "lora_stats")
     return build_tick(now, host, device, di, bs, battery_reply=bat,
                       lora_reply=lora, segments=segments,
                       claw_segment=claw_segment)
@@ -355,13 +383,22 @@ def main(argv: "list[str] | None" = None) -> int:
     # Default to an unreachable tick so a total NATS failure persists an honest
     # "claw didn't answer" record (the reader shows claw_unreachable) rather
     # than letting the last good tick silently age into stale.
-    segments, claw_segment = _load_segments(env)
+    #
+    # A broken segment config must NOT abort here (finding 9: one JSON typo
+    # used to SystemExit before any tick was built, taking down the battery/
+    # device-liveness capture — the chain that caught the 2.41 V drain — to
+    # protect a gate on a different leg). Blast radius is scoped instead: the
+    # watch leg is withheld (skip_lora), the tick carries the error as a
+    # witness, and the run still exits non-zero at the END so cron_verdict
+    # records FAIL naming the cause.
+    segments, claw_segment, seg_err = _load_segments(env)
 
     tick = build_tick(now, host, device, None, None)
     paint_err: str | None = None
     try:
         with NatsConnection(server, token=token, timeout_s=8) as nc:
-            tick = _capture_tick(nc, device, host, now, segments, claw_segment)
+            tick = _capture_tick(nc, device, host, now, segments, claw_segment,
+                                 skip_lora=bool(seg_err))
             paint_err = _push_rows(nc, rows, device)
             if tier and not paint_err:
                 paint_err = _push_tier(nc, device, tier)
@@ -370,6 +407,8 @@ def main(argv: "list[str] | None" = None) -> int:
     # The tier is a claim about the BRAIN, not the claw — record it even on
     # an unreachable tick so /api/status.claw can surface it later.
     tick["brain_tier"] = tier
+    if seg_err:
+        tick["segment_config_error"] = seg_err
 
     # Persist the capture for /api/status display (best-effort; a write failure
     # must NOT mask a paint failure, which is the claw-liveness page).
@@ -380,7 +419,12 @@ def main(argv: "list[str] | None" = None) -> int:
         print(f"claw_metrics: WARN tick write failed: {e}", file=sys.stderr)
 
     if paint_err:
-        raise SystemExit(f"claw_metrics: {paint_err}")
+        raise SystemExit("claw_metrics: %s%s" % (
+            paint_err, f" (also: {seg_err})" if seg_err else ""))
+    if seg_err:
+        raise SystemExit(
+            f"claw_metrics: {seg_err} — watch leg withheld this run; "
+            "battery/liveness captured and painted normally")
     print(f"claw_metrics: pushed {rows!r} tier={tier or '-'} ({tier_note}) "
           f"to {device}; tick ok={tick['ok']}")
     return 0
