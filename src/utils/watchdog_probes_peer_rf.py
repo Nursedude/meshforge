@@ -122,6 +122,14 @@ def load_peer_config(path: Optional[str]) -> Tuple[Optional[Dict[str, str]], Opt
     for node, label in peers.items():
         if not _NODE_RE.match(str(node)):
             return None, None, "peer id %r is not a !xxxxxxxx node id" % (node,)
+        # !00000000 strips to needle '0' in the journal scan and matches
+        # meshtasticd's `from=0x0` local-inject marker (the lines
+        # diag24h_parser skips via int==0) — a declared all-zero peer would
+        # read as continuously heard, forever (re-review 2026-07-31).
+        if int(str(node)[1:], 16) == 0:
+            return None, None, ("peer id %r is the all-zero local-inject "
+                                "marker, not a radio — it would match every "
+                                "local send as a false 'heard'" % (node,))
         clean[str(node)] = str(label)
     return clean, doc.get("segment"), None
 

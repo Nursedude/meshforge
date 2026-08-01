@@ -83,9 +83,12 @@ PY
 # raw job output (evidence capture), so another cron's FAIL line could both
 # select here AND contain "mf5_soak_watch OK" — and this gate restarts
 # gateways (review 2026-07-31, finding 7). Name is field 2, status field 3.
+# The empty case is checked EXPLICITLY: awk over zero input lines exits 0,
+# so a no-verdict log would read empty-as-green and fall through to the
+# date check with a misleading "STALE" page (same-day re-review finding).
 LAST="$(awk '$2 == "mf5_soak_watch"' "$VERDICT_LOG" 2>/dev/null | tail -1)"
 LAST_DATE="${LAST:0:10}"
-if ! printf '%s' "$LAST" | awk '{exit ($3 == "OK" || $3 == "PASS") ? 0 : 1}'; then
+if [ -z "$LAST" ] || ! printf '%s' "$LAST" | awk '{exit ($3 == "OK" || $3 == "PASS") ? 0 : 1}'; then
   page high "warning,rotating_light" \
     "ABORT: soak verdict not green — gateway NOT restarted, avatar-seed field stays inert. Last: ${LAST:-<none>}. Once soak is green, run manually: for h in $GW_BOXES; do ssh \$h sudo systemctl restart meshforge-gateway; done"
   finish CONCERN "soak not green; restart skipped"

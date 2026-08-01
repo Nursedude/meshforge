@@ -86,6 +86,16 @@ class TestInertAndLoud:
         peers, seg, err = load_peer_config(str(p))
         assert peers is None and err and "node id" in err
 
+    def test_all_zero_peer_id_is_rejected(self, tmp_path):
+        """!00000000 strips to needle '0' and matches meshtasticd's
+        `from=0x0` local-inject lines — a declared all-zero peer would read
+        as continuously heard, forever (re-review 2026-07-31)."""
+        p = tmp_path / "rf_segment_peers.json"
+        p.write_text(json.dumps({"peers": {"!00000000": "ghost"}}))
+        peers, _seg, err = load_peer_config(str(p))
+        assert peers is None
+        assert err and "all-zero" in err
+
 
 class TestBlindnessNeverBecomesSilence:
 
