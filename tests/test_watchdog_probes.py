@@ -3067,14 +3067,17 @@ def test_delivery_canary_quiet_when_healthy():
     assert sig is None
 
 
-def test_delivery_canary_quiet_when_endpoint_unreachable():
+def test_delivery_canary_quiet_when_endpoint_unreachable(tmp_path):
     """Gateway not running or HTTP error → return None. A different
-    probe surfaces gateway-down."""
+    probe surfaces gateway-down. snapshot_state_path is pinned to a
+    nonexistent file so the verdict never depends on the running box's
+    real snapshot state (tests must pin ambient state)."""
     from urllib.error import URLError
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
     with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-        sig = probe_delivery_write_canary()
+        sig = probe_delivery_write_canary(
+            snapshot_state_path=str(tmp_path / "absent.json"))
     assert sig is None
 
 
@@ -3916,14 +3919,17 @@ def _delivery_payload(*, confirmed=0, failed=0, mesh_sent=0, dedup_drops=0,
     }
 
 
-def test_confirmation_stall_none_on_unreachable_endpoint():
+def test_confirmation_stall_none_on_unreachable_endpoint(tmp_path):
+    """snapshot_state_path pinned to a nonexistent file — the verdict must
+    not depend on whether the running box has a real snapshot state file."""
     from urllib.error import URLError
 
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
 
     with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-        assert probe_delivery_confirmation_stall() is None
+        assert probe_delivery_confirmation_stall(
+            snapshot_state_path=str(tmp_path / "absent.json")) is None
 
 
 def test_confirmation_stall_mesh_sends_do_not_false_alarm():
@@ -8655,3 +8661,190 @@ class TestParityStreakSurvivesUnwritableState:
         assert _load_parity_streak(path) == 3
         _save_parity_streak(path, 0)
         assert _load_parity_streak(path) == 0
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-07-31 — delivery snapshot state-file fallback (moc3 detector_blind)
+# A gateway-only box (meshforge-map disabled BY DESIGN) serves nothing on
+# :5000, so the two /api/gateway/delivery probes sat permanently
+# detector-blind on the one box whose delivery truth matters most, while
+# that truth was on disk the whole time. The gateway now publishes its
+# full snapshot() to a state file and the probes fall back to it.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestDeliverySnapshotFileFallback:
+
+    def _stall_snap(self, *, confirmed, failed):
+        return _delivery_payload(confirmed=confirmed, failed=failed)
+
+    def test_reader_and_writer_pin_one_subpath(self):
+        """Two consumers of one artifact share ONE constant
+        (honest_failure_modes #5) — the probe-side literal must equal the
+        writer's, and the writer's path helper must resolve under it."""
+        import utils.watchdog_probes_gateway as wpg
+        from gateway import delivery_counters as dc
+        assert wpg._DELIVERY_SNAPSHOT_SUBPATH == dc.DELIVERY_SNAPSHOT_STATE_SUBPATH
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MESHFORGE_DELIVERY_SNAPSHOT_STATE", None)
+            with patch("gateway.delivery_counters.get_real_user_home",
+                       return_value=Path("/home/op")):
+                assert str(dc.delivery_snapshot_state_path()) == os.path.join(
+                    "/home/op", wpg._DELIVERY_SNAPSHOT_SUBPATH)
+
+    def test_writer_to_probe_round_trip_fires_on_stall(self, tmp_path):
+        """Reader/writer pairs wire together or fail together
+        (honest_failure_modes #4): the REAL writer's file, read through the
+        REAL fallback, must let the probe judge a collapse — 2/25 confirmed
+        → wedge."""
+        from gateway.delivery_counters import write_delivery_snapshot_state
+        from urllib.error import URLError
+        p = tmp_path / "delivery_snapshot.json"
+        assert write_delivery_snapshot_state(
+            snap=self._stall_snap(confirmed=2, failed=23), path=p) is True
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_confirmation_stall(
+                min_terminal=20, snapshot_state_path=str(p))
+        assert sig is not None
+        assert sig.cls == "delivery_confirmation_stall"
+        assert sig.severity == "wedge"
+
+    def test_fallback_healthy_is_quiet_with_clean_disposition(self, tmp_path):
+        from gateway.delivery_counters import write_delivery_snapshot_state
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+        p = tmp_path / "delivery_snapshot.json"
+        write_delivery_snapshot_state(
+            snap=self._stall_snap(confirmed=24, failed=1), path=p)
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_confirmation_stall(
+                min_terminal=20, snapshot_state_path=str(p))
+        assert sig is None
+        assert collect()["delivery_confirmation_stall"]["disp"] == "clean"
+
+    def test_fallback_write_canary_reads_health_through_file(self, tmp_path):
+        """The OTHER consumer of the same payload — a preflight failure
+        published in the snapshot file must still surface as wedge."""
+        from gateway.delivery_counters import write_delivery_snapshot_state
+        from urllib.error import URLError
+        p = tmp_path / "delivery_snapshot.json"
+        write_delivery_snapshot_state(
+            snap={"health": {
+                "preflight_ok": False,
+                "consecutive_write_errors": 9,
+                "last_write_error": "unable to open database file",
+                "db_path": "/x/y/z.db",
+            }}, path=p)
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_write_canary(snapshot_state_path=str(p))
+        assert sig is not None
+        assert sig.cls == "delivery_write_canary"
+        assert sig.severity == "wedge"
+
+    def test_fallback_absent_file_names_the_gap(self, tmp_path):
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_confirmation_stall(
+                snapshot_state_path=str(tmp_path / "absent.json"))
+        assert sig is None
+        got = collect()["delivery_confirmation_stall"]
+        assert got["disp"] == "indeterminate"
+        assert "no delivery snapshot state file" in got["reason"]
+
+    def test_fallback_stale_file_is_indeterminate_not_observation(
+            self, tmp_path):
+        """A corpse never testifies: gateway stopped publishing → the file's
+        content must NOT be judged (honest_failure_modes #2)."""
+        import time as _time
+        from gateway.delivery_counters import write_delivery_snapshot_state
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+        p = tmp_path / "delivery_snapshot.json"
+        write_delivery_snapshot_state(
+            snap=self._stall_snap(confirmed=2, failed=23), path=p,
+            now=_time.time() - 3600)
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_confirmation_stall(
+                min_terminal=20, snapshot_state_path=str(p))
+        assert sig is None
+        got = collect()["delivery_confirmation_stall"]
+        assert got["disp"] == "indeterminate"
+        assert "stale" in got["reason"]
+
+    def test_fallback_future_ts_is_clock_artifact(self, tmp_path):
+        """Wall-clock is forgeable on RTC-less Pis (honest_failure_modes
+        #6) — a far-future ts is not an observation."""
+        import time as _time
+        from gateway.delivery_counters import write_delivery_snapshot_state
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+        p = tmp_path / "delivery_snapshot.json"
+        write_delivery_snapshot_state(
+            snap=self._stall_snap(confirmed=2, failed=23), path=p,
+            now=_time.time() + 7200)
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_confirmation_stall(
+                min_terminal=20, snapshot_state_path=str(p))
+        assert sig is None
+        got = collect()["delivery_confirmation_stall"]
+        assert got["disp"] == "indeterminate"
+        assert "future" in got["reason"]
+
+    def test_fallback_misshaped_file_is_indeterminate(self, tmp_path):
+        import time as _time
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+        p = tmp_path / "delivery_snapshot.json"
+        p.write_text(json.dumps({"ts": _time.time(), "snapshot": []}))
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_delivery_confirmation_stall(
+                snapshot_state_path=str(p))
+        assert sig is None
+        got = collect()["delivery_confirmation_stall"]
+        assert got["disp"] == "indeterminate"
+        assert "misshaped" in got["reason"]
+
+    def test_http_success_never_touches_the_file(self, tmp_path):
+        """On every map-running box the HTTP path is authoritative — a
+        stale file on disk must not shadow a live endpoint."""
+        import time as _time
+        from gateway.delivery_counters import write_delivery_snapshot_state
+        p = tmp_path / "delivery_snapshot.json"
+        write_delivery_snapshot_state(
+            snap=self._stall_snap(confirmed=2, failed=23), path=p,
+            now=_time.time() - 9999)  # corpse — would be refused anyway
+        payload = _delivery_payload(confirmed=24, failed=1)
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(payload)):
+            sig = probe_delivery_confirmation_stall(
+                min_terminal=20, snapshot_state_path=str(p))
+        assert sig is None

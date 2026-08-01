@@ -1246,6 +1246,76 @@ def write_content_id_view_state(
         return False
 
 
+# ── Delivery snapshot state file — the map-less box's /api/gateway/delivery ──
+
+DELIVERY_SNAPSHOT_STATE_SCHEMA = 1
+
+#: One relative path shared by the WRITER (below) and the watchdog-probe
+#: READER (``utils.watchdog_probes_gateway._DELIVERY_SNAPSHOT_SUBPATH``) —
+#: two consumers of one artifact share ONE constant (honest_failure_modes
+#: #5); a test pins the two equal. The reader cannot call
+#: ``delivery_snapshot_state_path()``: it runs as root in the watchdog,
+#: where ``get_real_user_home()`` is not the operator's home.
+DELIVERY_SNAPSHOT_STATE_SUBPATH = os.path.join(
+    ".local", "share", "meshforge", "delivery_snapshot.json")
+
+
+def delivery_snapshot_state_path() -> Path:
+    """Where this gateway publishes its full ``snapshot()`` (atomic JSON).
+
+    Exists for the gateway-only box shape (moc3, found 2026-07-31): with
+    meshforge-map disabled BY DESIGN nothing serves
+    ``/api/gateway/delivery``, so the delivery watchdog probes sat
+    permanently detector-blind on the one box whose delivery truth matters
+    most. The probes cannot read the SQLite DB themselves — they run as
+    root, and a root reader can strand root-owned WAL/SHM files in the
+    operator's data dir (the #60-class trap) — so the gateway publishes,
+    next to the DB (the same proven ``ReadWritePaths`` coverage as
+    ``content_id_view.json``), and the probes fall back to this file when
+    :5000 is unreachable.
+
+    ``MESHFORGE_DELIVERY_SNAPSHOT_STATE`` (full path) overrides — a test
+    seam, mirrors ``MESHFORGE_CONTENT_ID_VIEW_STATE``."""
+    override = os.environ.get("MESHFORGE_DELIVERY_SNAPSHOT_STATE")
+    if override:
+        return Path(override)
+    return get_real_user_home() / DELIVERY_SNAPSHOT_STATE_SUBPATH
+
+
+def write_delivery_snapshot_state(
+    *,
+    snap: Optional[Dict[str, Any]] = None,
+    path: Optional[Path] = None,
+    host: Optional[str] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """Best-effort: publish the full ``snapshot()`` to the state file
+    (atomic). NEVER raises — a publish failure must never touch the bridge.
+    Returns True on success.
+
+    The envelope carries ``ts`` so the reader can refuse a corpse: a stale
+    file must read as "gateway not publishing" (indeterminate), never as a
+    live observation (honest_failure_modes #2)."""
+    try:
+        if snap is None:
+            snap = snapshot()
+        if not isinstance(snap, dict):
+            return False
+        payload = {
+            "schema": DELIVERY_SNAPSHOT_STATE_SCHEMA,
+            "host": host if host is not None else socket.gethostname(),
+            "ts": float(now) if now is not None else time.time(),
+            "snapshot": snap,
+        }
+        target = (Path(path) if path is not None
+                  else delivery_snapshot_state_path())
+        atomic_write_text(target, json.dumps(payload, separators=(",", ":")))
+        return True
+    except Exception:
+        logger.debug("delivery snapshot state publish failed", exc_info=True)
+        return False
+
+
 def _reset_singleton_for_tests() -> None:
     """Test-only: drop the singleton. Production code must never call."""
     global _singleton

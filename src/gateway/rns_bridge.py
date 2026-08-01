@@ -1049,6 +1049,11 @@ class RNSMeshtasticBridge(
             self._last_content_id_view_write = now
             _dc.write_content_id_view_state(
                 infra_hashes=self._content_id_view_infra_hashes())
+            # Same cadence: the full snapshot() state file — the map-less
+            # (gateway-only, e.g. moc3) box's substitute for
+            # /api/gateway/delivery, read by the delivery watchdog probes
+            # when :5000 is absent by design (2026-07-31 detector_blind fix).
+            _dc.write_delivery_snapshot_state()
         except Exception:
             logger.debug("content_id_view publish hook error", exc_info=True)
 

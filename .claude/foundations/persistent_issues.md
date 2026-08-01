@@ -310,31 +310,36 @@ body in `persistent_issues_archive.md`.
 
 ---
 
-## Issue #77 (2026-06-07): mqtt_root_drift probe — RESOLVED, body in archive (trimmed 2026-06-16)
+## #77 + #78 — row summaries (demoted 2026-07-31, MF012)
 
-`probe_mqtt_root_drift` (degraded, issue_ref 77): radio's OBSERVED publish root
-(meshtasticd journal `JSON publish message to <root>/…` — journal-only, never
-queries the radio #17) vs the DECLARED consumer root (`gateway.json
-mqtt_bridge.root_topic`, default `msh`) — catches a zero-config/factory-reset
-radio reintroducing a divergent root before `channel_feed_dark` proves it. Local
-invariant; 2-tick debounce; fix `meshtastic --host localhost --set mqtt.root
-<declared>`. Full body + tests in `persistent_issues_archive.md`.
-
+**#77 mqtt_root_drift** (2026-06-07): OBSERVED radio publish root (meshtasticd
+journal, never queries the radio #17) vs DECLARED `gateway.json
+mqtt_bridge.root_topic`; 2-tick; fix `meshtastic --host localhost --set
+mqtt.root <declared>`. **#78 cron_verdict_stale** (2026-06-07): alerter for
+wired-cron silence/FAIL (judges only `cron_verdict.sh`-wired crons; cadence
+×3, 2h floor; INERT when none). ⚠️ post-07-10 a silent(never) page is REAL
+(the pre-07-10 log-cap false leg is fixed, `d0254dae`); eval
+`oracle-cron-silent-never-was-false`. Bodies in `persistent_issues_archive.md`.
 
 ---
 
-## Issue #78: cron_verdict_stale probe — RESOLVED, body in archive (trimmed 2026-07-14)
+## Delivery probes blind on the gateway-only box shape — RESOLVED (2026-07-31)
 
-`probe_cron_verdict_stale` (degraded, issue_ref 78): watchdog-layer alerter for
-the wired-cron silence/FAIL class (origin: 7 dead crons undetected ~1 month).
-Judges ONLY crons wired to `cron_verdict.sh` (orphans ignored); cadence from
-schedule ×3, 2h floor; INERT when none wired; 2-tick debounce. ⚠️ **The
-"silent(never)" leg was FALSE until 07-10** (global log-cap truncated daily
-crons' verdicts → manufactured never-reported pages; fixed `d0254dae` per-name
-retention) — post-07-10 a silent(never) page is REAL, investigate the cron.
-Eval case `oracle-cron-silent-never-was-false`. Full body in
-`persistent_issues_archive.md`.
-
+`delivery_confirmation_stall` + `delivery_write_canary` read ONLY the map's
+`:5000` relay of `/api/gateway/delivery`, so on moc3 (role gateway-only, map
+disabled BY DESIGN) they sat permanently `detector_blind_any` while the
+gateway's truth was on disk the whole time. ⚠️ **NEVER cure this by starting
+the map** — that re-runs the 07-24 deploy incident.
+Cure: the gateway publishes full `snapshot()` to
+`~/.local/share/meshforge/delivery_snapshot.json` (atomic, ts-stamped, rides
+the 60s content_id_view throttle in `rns_bridge`); `_fetch_delivery_payload`
+falls back to the file when :5000 is unreachable, refusing stale (>300s) /
+misshaped / future-stamped corpses as indeterminate with the failing leg
+named. Never the SQLite DB from root (#60 WAL-strand trap). Residual:
+`probe_queue_backlog` is still map-only — port the pattern if its blindness
+matters. LXMF propagation probes split to `watchdog_probes_gateway_lxmf.py`
+(MF025), API-preserving. Tests: `TestDeliverySnapshotFileFallback` (9). Eval:
+`detector_blind_gateway_only_2026_07_31.jsonl`.
 
 ---
 
