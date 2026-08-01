@@ -315,9 +315,23 @@ class TestSelfhealRefusesLoudOnLockContention:
         try:
             env = dict(os.environ)
             env["CLAW_PINHOLE_SELFHEAL_LOCK"] = str(lock)
+            # Route the verdict into the sandbox. Without these, `say CONCERN`
+            # goes through the REAL cron_verdict.sh into ~/cron_verdicts.log on
+            # every box that runs the suite — and on boxes with no claw-pinhole
+            # cron nothing ever supersedes it, so the fleet reads a manufactured
+            # "two firewall writers" CONCERN forever (live 2026-07-31; the
+            # tests-must-pin-ambient-state class, writer form).
+            env["CRON_VERDICT_LOG"] = str(verdicts / "cron_verdicts.log")
+            env["CRON_VERDICT_OUT_DIR"] = str(verdicts)
             r = subprocess.run(["bash", self.SCRIPT], env=env,
                                capture_output=True, text=True, timeout=60)
             assert r.returncode == 0, r.stderr[-400:]
+            logged = (verdicts / "cron_verdicts.log").read_text()
+            assert ("claw_pinhole_drift CONCERN" in logged
+                    and "skipping this cycle" in logged), (
+                "expected the contended-lock skip verdict in the sandboxed "
+                "ledger — rc==0 alone also matches the uncontended check "
+                "path: %r" % logged)
         finally:
             holder.kill()
             holder.wait()
