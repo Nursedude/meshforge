@@ -126,7 +126,17 @@ def record_annotation(claim_id: str, topic: str, note: str, *,
     rec = {"kind": "annotation", "claim_id": claim_id, "ts": ts,
            "topic": topic, "note": note}
     if extra:
-        rec.update(extra)
+        # The reserved keys are what MAKE this an annotation: an extra dict
+        # carrying {"kind": "verdict", "outcome": "held"} would otherwise
+        # override them and mint a hand-written verdict through the one door
+        # the docstring promises cannot (ultra review 2026-07-31). The
+        # unforgeability lives in code, not caller convention.
+        reserved = {"kind", "claim_id", "ts", "topic", "note", "outcome"}
+        dropped = sorted(k for k in extra if k in reserved)
+        rec.update({k: v for k, v in extra.items() if k not in reserved})
+        if dropped:
+            log_warning(f"calibration_ledger: annotation extra tried to set "
+                        f"reserved key(s) {dropped} — dropped")
     err = append_jsonl(path, [rec], max_bytes)
     if err:
         log_warning(f"calibration_ledger: could not record annotation for "
@@ -273,15 +283,27 @@ def rederive_open(events: list[dict], head_full_now: str | None,
     if not m_head or m_head != head_full_now:
         return []
     # The verdict must name the instrument that actually produced it. This
-    # previously hardcoded "honest_status ..." for EVERY marker, including the
-    # one calibration_reverify supplies — so a verdict minted from that job's
-    # own pytest+lint run was recorded as honest_status evidence. The marker
-    # already carried a `summary` naming its source and nothing read it (a
-    # writer with no reader, #4); the 2026-07-31 provenance audit could not
-    # attribute verdicts from the ledger at all and had to derive them from
-    # landing time. Use the supplied summary when present.
-    src = marker.get("summary")
-    src = str(src).strip() if src else "honest_status"
+    # previously hardcoded "honest_status ..." for EVERY marker; the first fix
+    # then read `summary` as the producer name — but honest_status writes its
+    # verdict MESSAGE there ("12 checks: 12 OK (fully verified green)"), so the
+    # majority path still named no instrument and doubled the text (review
+    # 2026-07-31, finding 8: attribution only worked for calibration_reverify
+    # because its message HAPPENS to start with its own name). Producer and
+    # message are separate fields now: `instrument` names the tool, `summary`
+    # rides along as the message. A summary-only marker is attributed as
+    # exactly what it is — a message from an unnamed producer — never dressed
+    # up as a tool name; a bare legacy marker keeps the historical writer.
+    inst = marker.get("instrument")
+    summ = marker.get("summary")
+    summ = str(summ).strip() if summ else ""
+    if inst:
+        src = str(inst).strip()
+        if summ:
+            src = "%s (%s)" % (src, summ)
+    elif summ:
+        src = "unattributed marker (%s)" % summ
+    else:
+        src = "honest_status"
     if m_exit == 0:
         outcome, detail = "held", f"{src} green on {str(m_head)[:7]}"
     elif m_exit == 1:

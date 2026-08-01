@@ -501,6 +501,9 @@ payload = json.dumps({
     "ts": time.time(),
     "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     "summary": os.environ.get("HV_MSG", ""),
+    # Producer name, separate from the message: rederive_open attributes the
+    # verdict to `instrument`; `summary` is display text (2026-07-31, f8).
+    "instrument": "honest_status",
     "ran_full_suite": os.environ.get("HV_FULL") == "1",
     "strict": os.environ.get("HV_STRICT") == "1",
 }, indent=2)

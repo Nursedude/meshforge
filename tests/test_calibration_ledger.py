@@ -175,15 +175,17 @@ class TestRederiveOpen:
         attributed to an instrument that did not produce it. The 2026-07-31
         provenance audit could not answer 'which verdicts came from the
         unguarded bare-rc path?' from the ledger at all and had to derive it
-        from wall-clock landing time.
+        from wall-clock landing time. Producer travels in `instrument`;
+        `summary` is the message riding along.
         """
         events = [self._open_claim()]
         new = cl.rederive_open(
             events, HEAD,
-            self._marker(summary="calibration_reverify suite=PASS(rc=0)+lint(rc=0)"),
+            self._marker(instrument="calibration_reverify",
+                         summary="suite=PASS(rc=0)+lint(rc=0)"),
             now_ts=9.0)
         assert len(new) == 1
-        assert "calibration_reverify" in new[0]["detail"]
+        assert new[0]["detail"].startswith("calibration_reverify (suite=PASS")
         assert "honest_status" not in new[0]["detail"], (
             "a reverify-minted verdict must not claim honest_status as its source")
 
@@ -191,10 +193,40 @@ class TestRederiveOpen:
         events = [self._open_claim()]
         new = cl.rederive_open(
             events, HEAD,
-            self._marker(exit_code=1, summary="calibration_reverify suite=FAIL(rc=1)+lint(rc=0)"),
+            self._marker(exit_code=1, instrument="calibration_reverify",
+                         summary="suite=FAIL(rc=1)+lint(rc=0)"),
             now_ts=9.0)
         assert len(new) == 1 and new[0]["outcome"] == "broke"
-        assert "calibration_reverify" in new[0]["detail"]
+        assert new[0]["detail"].startswith("calibration_reverify (")
+
+    def test_honest_status_message_summary_is_not_read_as_a_producer(self):
+        """Finding 8's core case: honest_status writes its verdict MESSAGE in
+        `summary` ("12 checks: 12 OK …"), so the summary-as-source fix still
+        named no instrument on the MAJORITY path and doubled the text. With
+        `instrument` present the producer leads and the message follows."""
+        events = [self._open_claim()]
+        new = cl.rederive_open(
+            events, HEAD,
+            self._marker(instrument="honest_status",
+                         summary="12 checks: 12 OK (fully verified green)"),
+            now_ts=9.0)
+        assert len(new) == 1
+        assert new[0]["detail"].startswith(
+            "honest_status (12 checks: 12 OK (fully verified green)) green on")
+
+    def test_summary_only_marker_is_attributed_as_unattributed(self):
+        """A legacy or third-party marker with a message but no producer name
+        must say exactly that — never dress the message up as a tool name (a
+        third marker writer would otherwise be indistinguishable from the
+        first two)."""
+        events = [self._open_claim()]
+        new = cl.rederive_open(
+            events, HEAD,
+            self._marker(summary="something a tool once printed"),
+            now_ts=9.0)
+        assert len(new) == 1
+        assert new[0]["detail"].startswith(
+            "unattributed marker (something a tool once printed)")
 
     def test_marker_without_summary_still_reads_honest_status(self):
         """The warm-start emitter supplies no summary — that path is genuinely
@@ -315,6 +347,28 @@ class TestAnnotations:
         assert rows[0]["kind"] != "verdict"
         assert rows[0]["claim_id"] == "cid1"
         assert rows[0]["topic"] == "evidence_provenance"
+
+    def test_annotation_extra_cannot_forge_a_verdict(self, tmp_path):
+        """Ultra review 2026-07-31: ``rec.update(extra)`` let an extra dict
+        override the reserved keys — {"kind": "verdict", "outcome": "held"}
+        minted a definitive hand-written verdict through the one event kind
+        whose docstring promises it can only reduce confidence. The
+        unforgeability must live in code, not caller convention."""
+        p = tmp_path / "ledger.jsonl"
+        p.write_text("")
+        cl.record_annotation(
+            "cid1", "evidence_provenance", "note", ts=7.0, path=str(p),
+            extra={"kind": "verdict", "outcome": "held", "source": "manual"})
+        rows = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
+        assert len(rows) == 1
+        assert rows[0]["kind"] == "annotation", "reserved key overridden"
+        assert "outcome" not in rows[0]
+        assert rows[0]["source"] == "manual", "non-reserved extras still land"
+        # And the fold must agree: nothing here counts as a verdict.
+        cid = "cid1"
+        events = [{"kind": "claim", "id": cid, "head_full": HEAD}] + rows
+        state = cl.fold(events)
+        assert state["n_held"] == 0 and state["n_open"] == 1
 
     def test_annotation_for_an_unknown_claim_is_inert(self, tmp_path):
         """Annotating a claim id that isn't in the ledger must not invent a

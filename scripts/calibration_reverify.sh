@@ -101,9 +101,12 @@ marker = {
     "exit_code": code_exit,          # 0 held / 1 broke (code-only, no fleet/CI)
     "ran_full_suite": True,
     "ts": time.time(),
-    # Read by rederive_open into the verdict's `detail`, so a verdict names the
-    # instrument that produced it rather than borrowing honest_status's name.
-    "summary": (f"calibration_reverify suite={os.environ['HV_SUITE']}"
+    # `instrument` names the producer; `summary` is the message that rides
+    # along in the verdict detail. They were one field until 2026-07-31 (f8):
+    # rederive_open read `summary` as the producer name, which only worked
+    # here because this message happens to start with the tool's name.
+    "instrument": "calibration_reverify",
+    "summary": (f"suite={os.environ['HV_SUITE']}"
                 f"(rc={os.environ['HV_PY']})+lint(rc={os.environ['HV_LINT']})"),
 }
 state = cl.rederive_and_persist(cl.ledger_path(), head, marker, time.time())
