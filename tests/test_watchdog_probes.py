@@ -4756,6 +4756,35 @@ class TestRouterScoutDegraded:
         assert "corpse" in sig.detail
         assert sig.extra["routers"][0]["device"] == "owrt-test"
 
+    def test_pull_gap_does_not_read_as_agent_dark(self, tmp_path):
+        """THE 2026-07-31 manager-box false positive: a reboot ate one pull
+        slot, so the mirror aged 50 min (still 'fresh' under the 90-min
+        bar) while holding a tick that was only 7 min old WHEN PULLED.
+        Agent staleness must be measured at the last observation (mirror
+        mtime), never against now — time since the last pull is
+        UNOBSERVED, not evidence of agent death (honest_failure_modes #2)."""
+        ticks = [("owrt-test_tick.json", self._tick(age_s=3420.0),
+                  self.NOW - 3000)]   # pulled 50 min ago; tick 7 min old THEN
+        assert self._fire(tmp_path, ticks) is None
+
+    def test_agent_dark_at_pull_time_fires(self, tmp_path):
+        """Converse guard: a RECENT pull that still carried an old tick IS
+        real evidence — while the agent is dead every pull re-copies the
+        same tick, so the pull-relative delta keeps growing and detection
+        survives the measurement change (at most one pull cycle later)."""
+        ticks = [("owrt-test_tick.json", self._tick(age_s=3300.0),
+                  self.NOW - 300)]    # pulled 5 min ago; tick 50 min old THEN
+        sig = self._fire(tmp_path, ticks)
+        assert sig is not None
+        assert "corpse" in sig.detail
+
+    def test_no_mtime_falls_back_to_now_relative(self, tmp_path):
+        """A tick injected with no mtime has no observation timestamp to
+        anchor on — fall back to now-relative age (the old measure) rather
+        than skipping the dark check entirely."""
+        ticks = [("owrt-test_tick.json", self._tick(age_s=90000.0), None)]
+        assert self._fire(tmp_path, ticks) is not None
+
     def test_tick_ok_false_fires_with_witness(self, tmp_path):
         ticks = [("owrt-test_tick.json",
                   self._tick(ok=False, errors=["data_dir on tmpfs"]),

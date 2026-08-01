@@ -48,8 +48,9 @@ ROUTER_SCOUT_MIRROR_STALE_S = 5400   # 3 × the pull cron's 30-min cadence —
                                      # older = the pull stopped; skip the file
                                      # (cron_verdict_stale owns the dead cron)
 ROUTER_SCOUT_TICK_STALE_S = 2700     # 3 × the agent's */15 router cadence —
-                                     # a fresh mirror whose captured_at is
-                                     # older than this = agent dark on-router
+                                     # a fresh mirror whose captured_at was
+                                     # older than this AT THE LAST PULL
+                                     # (mirror mtime) = agent dark on-router
 
 
 def _read_router_scout_ticks(
@@ -108,10 +109,12 @@ def probe_router_scout_degraded(
     the pull. Fires ``degraded`` (never wedge — remote conditions) when,
     for any FRESH mirror:
 
-      * the tick's ``captured_at`` is older than ``tick_stale_s`` — the
-        agent cron died on the router while the pull keeps re-copying the
-        same old tick (a fresh mtime hides the corpse from mtime-only
-        consumers);
+      * the tick's ``captured_at`` was older than ``tick_stale_s`` at the
+        mirror's mtime (the last pull — never measured against ``now``:
+        time since the last pull is unobserved, and a reboot that eats a
+        pull slot must not read as agent death) — the agent cron died on
+        the router while the pull keeps re-copying the same old tick (a
+        fresh mtime hides the corpse from mtime-only consumers);
       * the tick self-reports ``ok=false`` (its ``errors[]`` are the
         agent's own tri-state witnesses: tmpfs data_dir, unreadable
         /proc, dead radio TCP, ...);
@@ -186,11 +189,20 @@ def probe_router_scout_degraded(
             if isinstance(cap, bool) or not isinstance(cap, (int, float)):
                 bad.append((device, "tick has no captured_at"))
                 continue
-            age = now - float(cap)
+            # Age at the LAST OBSERVATION (mirror mtime = when the pull
+            # copied the router's tick), never at `now`: time since the
+            # last pull is unobserved, not evidence of agent death — a
+            # reboot that eats one pull slot must not read as "agent
+            # dark" (2026-07-31 manager-box false positive). A genuinely
+            # dead agent still fires: every later pull re-copies the
+            # same tick, so this delta grows past the bar within one
+            # pull cycle.
+            observed_at = float(mtime) if mtime is not None else now
+            age = observed_at - float(cap)
             if age > tick_stale_s:
                 bad.append((device,
-                            f"agent dark on the router — tick captured "
-                            f"{int(age)}s ago but the mirror is fresh "
+                            f"agent dark on the router — tick was "
+                            f"already {int(age)}s old at the last pull "
                             f"(pull keeps copying a corpse)"))
                 continue
             if tick.get("ok") is False:
