@@ -1054,6 +1054,13 @@ class RNSMeshtasticBridge(
             # /api/gateway/delivery, read by the delivery watchdog probes
             # when :5000 is absent by design (2026-07-31 detector_blind fix).
             _dc.write_delivery_snapshot_state()
+            # And the queue twin for /api/gateway/queue (probe_queue_backlog).
+            # No queue → no publish: an absent file is honestly "no data",
+            # never a forged healthy zero.
+            if self._persistent_queue is not None:
+                from gateway.message_queue import write_queue_stats_state
+                write_queue_stats_state(
+                    stats=self._persistent_queue.get_stats())
         except Exception:
             logger.debug("content_id_view publish hook error", exc_info=True)
 

@@ -3592,13 +3592,17 @@ def _queue_payload(depth=0, max_size=1000, dead_letter=0):
 
 
 def test_queue_backlog_none_on_unreachable_endpoint(tmp_path):
+    """stats_state_path pinned to a nonexistent file — the verdict must not
+    depend on whether the running box has a real queue stats state file."""
     from urllib.error import URLError
 
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
 
     with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+        sig = probe_queue_backlog(
+            state_path=str(tmp_path / "s.json"),
+            stats_state_path=str(tmp_path / "absent.json"))
     assert sig is None
 
 
@@ -8848,3 +8852,120 @@ class TestDeliverySnapshotFileFallback:
             sig = probe_delivery_confirmation_stall(
                 min_terminal=20, snapshot_state_path=str(p))
         assert sig is None
+
+
+class TestQueueStatsFileFallback:
+    """queue-side twin of TestDeliverySnapshotFileFallback (2026-07-31):
+    probe_queue_backlog falls back to the gateway-published queue_stats.json
+    when :5000 is unreachable, so the gateway-only box shape (moc3) is no
+    longer structurally blind to queue backpressure."""
+
+    def test_reader_and_writer_pin_one_subpath(self):
+        import utils.watchdog_probes_gateway as wpg
+        from gateway import message_queue as mq
+        assert wpg._QUEUE_STATS_SUBPATH == mq.QUEUE_STATS_STATE_SUBPATH
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MESHFORGE_QUEUE_STATS_STATE", None)
+            with patch("gateway.message_queue.get_real_user_home",
+                       return_value=Path("/home/op")):
+                assert str(mq.queue_stats_state_path()) == os.path.join(
+                    "/home/op", wpg._QUEUE_STATS_SUBPATH)
+
+    def test_writer_to_probe_round_trip_fires_on_depth(self, tmp_path):
+        """The REAL writer's file, read through the REAL fallback, must let
+        the probe judge depth pressure — 96% of max → wedge."""
+        from gateway.message_queue import write_queue_stats_state
+        from urllib.error import URLError
+        p = tmp_path / "queue_stats.json"
+        assert write_queue_stats_state(
+            stats=_queue_payload(depth=960, max_size=1000), path=p) is True
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_queue_backlog(
+                state_path=str(tmp_path / "dl.json"),
+                stats_state_path=str(p))
+        assert sig is not None
+        assert sig.cls == "queue_backlog"
+        assert sig.severity == "wedge"
+
+    def test_fallback_healthy_is_quiet(self, tmp_path):
+        from gateway.message_queue import write_queue_stats_state
+        from urllib.error import URLError
+        p = tmp_path / "queue_stats.json"
+        write_queue_stats_state(
+            stats=_queue_payload(depth=10, max_size=1000), path=p)
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_queue_backlog(
+                state_path=str(tmp_path / "dl.json"),
+                stats_state_path=str(p))
+        assert sig is None
+
+    def test_fallback_absent_file_names_the_gap(self, tmp_path):
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_queue_backlog(
+                state_path=str(tmp_path / "dl.json"),
+                stats_state_path=str(tmp_path / "absent.json"))
+        assert sig is None
+        got = collect()["queue_backlog"]
+        assert got["disp"] == "indeterminate"
+        assert "no queue stats state file" in got["reason"]
+
+    def test_fallback_stale_file_is_indeterminate(self, tmp_path):
+        import time as _time
+        from gateway.message_queue import write_queue_stats_state
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+        p = tmp_path / "queue_stats.json"
+        write_queue_stats_state(
+            stats=_queue_payload(depth=960, max_size=1000), path=p,
+            now=_time.time() - 3600)
+
+        def _raise(*args, **kwargs):
+            raise URLError("connection refused")
+
+        with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
+            sig = probe_queue_backlog(
+                state_path=str(tmp_path / "dl.json"),
+                stats_state_path=str(p))
+        assert sig is None
+        got = collect()["queue_backlog"]
+        assert got["disp"] == "indeterminate"
+        assert "stale" in got["reason"]
+
+    def test_http_success_never_touches_the_file(self, tmp_path):
+        """A live endpoint is authoritative — a wedge-shaped corpse on disk
+        must not shadow a healthy HTTP answer."""
+        import time as _time
+        from gateway.message_queue import write_queue_stats_state
+        p = tmp_path / "queue_stats.json"
+        write_queue_stats_state(
+            stats=_queue_payload(depth=960, max_size=1000), path=p,
+            now=_time.time())
+        payload = _queue_payload(depth=10, max_size=1000)
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(payload)):
+            sig = probe_queue_backlog(
+                state_path=str(tmp_path / "dl.json"),
+                stats_state_path=str(p))
+        assert sig is None
+
+    def test_writer_refuses_non_dict_stats(self, tmp_path):
+        """A publish of garbage must not create a valid-looking file —
+        absent is honestly 'no data' (honest_failure_modes #3)."""
+        from gateway.message_queue import write_queue_stats_state
+        p = tmp_path / "queue_stats.json"
+        assert write_queue_stats_state(stats=None, path=p) is False
+        assert not p.exists()

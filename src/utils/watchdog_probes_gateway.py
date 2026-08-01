@@ -41,21 +41,67 @@ logger = logging.getLogger("watchdog")
 # (delivery_write_canary + delivery_confirmation_stall)
 # ─────────────────────────────────────────────────────────────────────
 
-#: Reader half of ``gateway.delivery_counters.DELIVERY_SNAPSHOT_STATE_SUBPATH``
-#: — two consumers of one artifact share ONE constant (honest_failure_modes
-#: #5); a test pins the two equal rather than importing the gateway module
-#: into the watchdog at probe load.
+#: Reader halves of ``gateway.delivery_counters.DELIVERY_SNAPSHOT_STATE_SUBPATH``
+#: and ``gateway.message_queue.QUEUE_STATS_STATE_SUBPATH`` — two consumers of
+#: one artifact share ONE constant (honest_failure_modes #5); tests pin each
+#: pair equal rather than importing the gateway modules into the watchdog at
+#: probe load.
 _DELIVERY_SNAPSHOT_SUBPATH = os.path.join(
     ".local", "share", "meshforge", "delivery_snapshot.json")
+_QUEUE_STATS_SUBPATH = os.path.join(
+    ".local", "share", "meshforge", "queue_stats.json")
 
-#: The gateway publishes every ~60s (it rides rns_bridge's content_id_view
-#: throttle). Older than this and the file is a corpse: the gateway stopped
-#: publishing, which is NOT an observation of delivery state.
+#: The gateway publishes every ~60s (both files ride rns_bridge's
+#: content_id_view throttle). Older than this and the file is a corpse: the
+#: gateway stopped publishing, which is NOT an observation.
 _DELIVERY_SNAPSHOT_FRESH_S = 300.0
 
 #: Wall-clock is forgeable on RTC-less Pis (honest_failure_modes #6) — a
 #: ts this far in the future is a clock artifact, not an observation.
 _DELIVERY_SNAPSHOT_FUTURE_SLOP_S = 900.0
+
+
+def _read_gateway_state_file(
+    *, state_path: Optional[str], api: str, noun: str, key: str,
+    subpath: str, now: Optional[float] = None,
+) -> Tuple[Optional[dict], Optional[str]]:
+    """``(payload, blind_reason)`` from a gateway-published state file.
+
+    Shared fallback for the delivery and queue probes. The envelope is
+    ``{schema, host, ts, <key>: {...}}``; a missing/stale/misshaped/
+    future-stamped file returns ``(None, reason)`` naming the failing leg —
+    a corpse never testifies (honest_failure_modes #2/#6).
+    """
+    import time as _time
+    now = _time.time() if now is None else now
+    if state_path is None:
+        home = _operator_home()
+        if not home:
+            return None, (f"{api} unreachable and operator home "
+                          "unresolvable — no fallback state to read")
+        state_path = os.path.join(home, subpath)
+    if not os.path.exists(state_path):
+        return None, (f"{api} unreachable and no {noun} state file — "
+                      "no gateway publishing here")
+    try:
+        with open(state_path, "r", encoding="utf-8") as fh:
+            wrapped = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return None, f"{api} unreachable and {noun} state file unreadable"
+    if not isinstance(wrapped, dict) or not isinstance(
+            wrapped.get(key), dict):
+        return None, f"{api} unreachable and {noun} state file misshaped"
+    ts = wrapped.get("ts")
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None, f"{api} unreachable and {noun} state ts missing/garbage"
+    age = now - float(ts)
+    if age < -_DELIVERY_SNAPSHOT_FUTURE_SLOP_S:
+        return None, (f"{api} unreachable and {noun} state ts is in the "
+                      "future — clock artifact, not an observation")
+    if age > _DELIVERY_SNAPSHOT_FRESH_S:
+        return None, (f"{api} unreachable and {noun} state stale "
+                      f"({int(age)}s) — gateway not publishing")
+    return wrapped[key], None
 
 
 def _fetch_delivery_payload(
@@ -88,41 +134,32 @@ def _fetch_delivery_payload(
     except (URLError, socket.timeout, json.JSONDecodeError, OSError,
             ValueError):
         pass
+    return _read_gateway_state_file(
+        state_path=state_path, api="delivery API", noun="delivery snapshot",
+        key="snapshot", subpath=_DELIVERY_SNAPSHOT_SUBPATH, now=now)
 
-    import time as _time
-    now = _time.time() if now is None else now
-    if state_path is None:
-        home = _operator_home()
-        if not home:
-            return None, ("delivery API unreachable and operator home "
-                          "unresolvable — no fallback snapshot to read")
-        state_path = os.path.join(home, _DELIVERY_SNAPSHOT_SUBPATH)
-    if not os.path.exists(state_path):
-        return None, ("delivery API unreachable and no delivery snapshot "
-                      "state file — no gateway publishing here")
+
+def _fetch_queue_payload(
+    host: str, port: int, timeout_s: float,
+    *, state_path: Optional[str] = None, now: Optional[float] = None,
+) -> Tuple[Optional[dict], Optional[str]]:
+    """``(payload, blind_reason)`` for the queue stats — the queue-side twin
+    of ``_fetch_delivery_payload``: ``/api/gateway/queue`` over HTTP first,
+    then the ``queue_stats.json`` state file the gateway publishes (same
+    moc3 gateway-only rationale, same corpse-refusal guards)."""
+    url = f"http://{host}:{port}/api/gateway/queue"
     try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            wrapped = json.load(fh)
-    except (OSError, ValueError, TypeError):
-        return None, ("delivery API unreachable and delivery snapshot state "
-                      "file unreadable")
-    if not isinstance(wrapped, dict) or not isinstance(
-            wrapped.get("snapshot"), dict):
-        return None, ("delivery API unreachable and delivery snapshot state "
-                      "file misshaped")
-    ts = wrapped.get("ts")
-    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
-        return None, ("delivery API unreachable and delivery snapshot state "
-                      "ts missing/garbage")
-    age = now - float(ts)
-    if age < -_DELIVERY_SNAPSHOT_FUTURE_SLOP_S:
-        return None, ("delivery API unreachable and delivery snapshot state "
-                      "ts is in the future — clock artifact, not an "
-                      "observation")
-    if age > _DELIVERY_SNAPSHOT_FRESH_S:
-        return None, (f"delivery API unreachable and delivery snapshot state "
-                      f"stale ({int(age)}s) — gateway not publishing")
-    return wrapped["snapshot"], None
+        with urlopen(url, timeout=timeout_s) as resp:
+            payload = json.loads(resp.read())
+        if isinstance(payload, dict):
+            return payload, None
+        return None, "queue payload not a dict"
+    except (URLError, socket.timeout, json.JSONDecodeError, OSError,
+            ValueError):
+        pass
+    return _read_gateway_state_file(
+        state_path=state_path, api="queue API", noun="queue stats",
+        key="stats", subpath=_QUEUE_STATS_SUBPATH, now=now)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -276,6 +313,7 @@ def probe_queue_backlog(
     dead_letter_growth_degraded: int = 10,
     dead_letter_growth_wedge: int = 50,
     state_path: Optional[str] = None,
+    stats_state_path: Optional[str] = None,
 ) -> Optional[Signal]:
     """Persistent-queue backpressure via ``/api/gateway/queue`` (Issue #74).
 
@@ -296,16 +334,17 @@ def probe_queue_backlog(
     Reads over localhost HTTP, never the queue DB directly — the
     watchdog is root in a hardened sandbox and the DB lives under the
     operator's home (the #60-class trap; derive context from the
-    SERVICE). Transport/shape errors → None (http_local /
-    service_inactive own those).
+    SERVICE). On a gateway-only box (no map serving :5000) the payload
+    comes from the gateway-published queue stats state file instead —
+    see ``_fetch_queue_payload``; ``stats_state_path`` overrides the
+    fallback file location (test seam; distinct from ``state_path``,
+    the dead-letter baseline). Transport/shape errors → None
+    (http_local / service_inactive own those).
     """
-    url = f"http://{host}:{port}/api/gateway/queue"
-    try:
-        with urlopen(url, timeout=timeout_s) as resp:
-            payload = json.loads(resp.read())
-    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
-        note_disposition("queue_backlog", "indeterminate",
-                         reason="queue API unreachable/unparseable")
+    payload, blind = _fetch_queue_payload(
+        host, port, timeout_s, state_path=stats_state_path)
+    if payload is None:
+        note_disposition("queue_backlog", "indeterminate", reason=blind)
         return None
     if not isinstance(payload, dict) or "queue_depth" not in payload:
         note_disposition("queue_backlog", "indeterminate",

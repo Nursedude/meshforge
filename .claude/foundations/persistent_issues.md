@@ -335,10 +335,11 @@ Cure: the gateway publishes full `snapshot()` to
 the 60s content_id_view throttle in `rns_bridge`); `_fetch_delivery_payload`
 falls back to the file when :5000 is unreachable, refusing stale (>300s) /
 misshaped / future-stamped corpses as indeterminate with the failing leg
-named. Never the SQLite DB from root (#60 WAL-strand trap). Residual:
-`probe_queue_backlog` is still map-only — port the pattern if its blindness
-matters. LXMF propagation probes split to `watchdog_probes_gateway_lxmf.py`
-(MF025), API-preserving. Tests: `TestDeliverySnapshotFileFallback` (9). Eval:
+named. Never the SQLite DB from root (#60 WAL-strand trap). Same-day port:
+`probe_queue_backlog` falls back to `queue_stats.json` (writer in
+`message_queue.py`, same guards). LXMF propagation probes split to
+`watchdog_probes_gateway_lxmf.py` (MF025). Tests: the two
+`*FileFallback` classes (16). Eval:
 `detector_blind_gateway_only_2026_07_31.jsonl`.
 
 ---

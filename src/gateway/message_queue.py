@@ -20,6 +20,8 @@ import hashlib
 import itertools
 import json
 import logging
+import os
+import socket
 import sqlite3
 import threading
 import time
@@ -30,7 +32,7 @@ from contextlib import contextmanager
 
 # Import centralized path utility for sudo compatibility
 from utils.db_helpers import connect_tuned
-from utils.paths import get_real_user_home
+from utils.paths import atomic_write_text, get_real_user_home
 from utils.timeouts import MESSAGE_STALE as _MESSAGE_STALE_TIMEOUT
 from gateway import delivery_counters as _dc
 
@@ -1331,3 +1333,67 @@ class PersistentMessageQueue(MessageQueueLifecycleMixin):
         with self._get_connection() as conn:
             cursor = conn.execute("DELETE FROM messages")
             return cursor.rowcount
+
+
+# ── Queue stats state file — the map-less box's /api/gateway/queue ──────────
+#
+# Same shape and rationale as delivery_counters' delivery snapshot state file
+# (2026-07-31, moc3 detector_blind fix): on a gateway-only box the map that
+# serves /api/gateway/queue is disabled BY DESIGN, so probe_queue_backlog was
+# structurally blind there. The gateway publishes its own queue.get_stats()
+# next to the DB; the probe falls back to the file when :5000 is unreachable.
+
+QUEUE_STATS_STATE_SCHEMA = 1
+
+#: One relative path shared by this WRITER and the watchdog-probe READER
+#: (``utils.watchdog_probes_gateway._QUEUE_STATS_SUBPATH``) — two consumers
+#: of one artifact share ONE constant (honest_failure_modes #5); a test pins
+#: the two equal. The reader cannot call ``queue_stats_state_path()``: it
+#: runs as root in the watchdog, where ``get_real_user_home()`` is not the
+#: operator's home.
+QUEUE_STATS_STATE_SUBPATH = os.path.join(
+    ".local", "share", "meshforge", "queue_stats.json")
+
+
+def queue_stats_state_path() -> Path:
+    """Where the gateway publishes its queue stats (atomic JSON).
+
+    ``MESHFORGE_QUEUE_STATS_STATE`` (full path) overrides — a test seam,
+    mirrors ``MESHFORGE_DELIVERY_SNAPSHOT_STATE``."""
+    override = os.environ.get("MESHFORGE_QUEUE_STATS_STATE")
+    if override:
+        return Path(override)
+    return get_real_user_home() / QUEUE_STATS_STATE_SUBPATH
+
+
+def write_queue_stats_state(
+    *,
+    stats: Optional[Dict[str, Any]] = None,
+    path: Optional[Path] = None,
+    host: Optional[str] = None,
+    now: Optional[float] = None,
+) -> bool:
+    """Best-effort: publish ``get_stats()`` output to the state file
+    (atomic). NEVER raises — a publish failure must never touch the bridge.
+    Returns True on success.
+
+    ``stats`` is required in practice (the caller owns a live queue; this
+    module never constructs one just to publish). A non-dict is NOT
+    published — an absent file is honestly "no data" to the reader, never a
+    forged healthy zero. The envelope carries ``ts`` so the reader can
+    refuse a corpse (honest_failure_modes #2)."""
+    try:
+        if not isinstance(stats, dict):
+            return False
+        payload = {
+            "schema": QUEUE_STATS_STATE_SCHEMA,
+            "host": host if host is not None else socket.gethostname(),
+            "ts": float(now) if now is not None else time.time(),
+            "stats": stats,
+        }
+        target = Path(path) if path is not None else queue_stats_state_path()
+        atomic_write_text(target, json.dumps(payload, separators=(",", ":")))
+        return True
+    except Exception:
+        logger.debug("queue stats state publish failed", exc_info=True)
+        return False
