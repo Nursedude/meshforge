@@ -370,6 +370,14 @@ def main():
     print("  MeshForge Gateway Bridge")
     print("="*50)
 
+    # Heap-attribution diagnostic (2026-08-02 gateway memory-growth arc).
+    # Inert unless MESHFORGE_TRACEMALLOC is set (see utils/tracemalloc_probe).
+    # Armed here — before any bridge is constructed — so construction-time
+    # allocations are traced too.
+    from utils.tracemalloc_probe import maybe_start_from_env
+    if maybe_start_from_env():
+        print("  tracemalloc probe: ACTIVE (MESHFORGE_TRACEMALLOC set)")
+
     # Sandbox preflight (Issue #58/#60 class). When systemd's
     # ProtectHome=read-only + ReadWritePaths= drift from the directories the
     # gateway actually writes, we want to fail at startup with a precise
