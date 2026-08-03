@@ -5865,3 +5865,85 @@ class TestBridgeThreadTeardownWitness20260803:
             "bridge loop thread(s) survived stop(): %s — these keep logging "
             "into the NEXT test's captured stdout" % leaked
         )
+
+
+class TestStopJoinIsVerified20260803:
+    """stop() must know whether its threads actually died.
+
+    Third instance today of the same shape: join(timeout=N) returns None
+    whether the thread exited or not, so an expired join is indistinguishable
+    from a clean one. Here it is in PRODUCTION shutdown — a bridge that
+    reports "Stopping bridge..." and returns while its loops keep running and
+    logging (honest_failure_modes #9: every swallow leaves a witness).
+
+    Also pins the two threads start() creates but stop() never joined at all:
+    _oracle_tap_thread and _channel_diagnostic_thread. Neither is initialised
+    in __init__ — they exist only after start() — so the lookup must tolerate
+    their absence rather than AttributeError on an early stop.
+    """
+
+    def _prep(self, bridge):
+        bridge._running = True
+        bridge._persistent_queue = None
+        bridge._mesh_handler = None
+        bridge._meshcore_handler = None
+        bridge._meshtastic_broadcast = None
+        bridge._load_balancer = None
+        bridge._failover_manager = None
+        bridge._heartbeat = None
+
+    def _live_thread(self):
+        """A thread that ignores the stop event, i.e. one that will survive."""
+        ev = threading.Event()
+        t = threading.Thread(target=lambda: ev.wait(30), daemon=True)
+        t.start()
+        return t, ev
+
+    def test_surviving_thread_is_recorded_not_swallowed(self, bridge):
+        self._prep(bridge)
+        t, ev = self._live_thread()
+        bridge._rns_thread = t
+        try:
+            with patch.object(bridge, '_disconnect_rns'), \
+                 patch.object(bridge, '_stop_websocket_server'), \
+                 patch.object(t, 'join'):          # simulate an EXPIRED join
+                bridge.stop()
+            assert getattr(bridge, '_stop_survivors', None), (
+                "stop() returned with a live loop thread and recorded nothing"
+            )
+        finally:
+            ev.set(); t.join(timeout=5)
+
+    def test_clean_stop_records_no_survivors(self, bridge):
+        self._prep(bridge)
+        with patch.object(bridge, '_disconnect_rns'), \
+             patch.object(bridge, '_stop_websocket_server'):
+            bridge.stop()
+        assert bridge._stop_survivors == []
+
+    def test_oracle_tap_and_channel_diagnostic_are_joined(self, bridge):
+        """Both are started by start() and were absent from the join list."""
+        self._prep(bridge)
+        oracle = MagicMock(); oracle.is_alive.return_value = True
+        oracle.name = "OraclePhoneAPITap"
+        chan = MagicMock(); chan.is_alive.return_value = True
+        chan.name = "ChannelDiagnostic"
+        bridge._oracle_tap_thread = oracle
+        bridge._channel_diagnostic_thread = chan
+        with patch.object(bridge, '_disconnect_rns'), \
+             patch.object(bridge, '_stop_websocket_server'):
+            bridge.stop()
+        assert oracle.join.called, "_oracle_tap_thread was never joined"
+        assert chan.join.called, "_channel_diagnostic_thread was never joined"
+
+    def test_stop_tolerates_threads_start_never_created(self, bridge):
+        """_oracle_tap_thread/_channel_diagnostic_thread do not exist until
+        start() runs; stopping a never-started bridge must not AttributeError."""
+        self._prep(bridge)
+        for attr in ("_oracle_tap_thread", "_channel_diagnostic_thread"):
+            if hasattr(bridge, attr):
+                delattr(bridge, attr)
+        with patch.object(bridge, '_disconnect_rns'), \
+             patch.object(bridge, '_stop_websocket_server'):
+            bridge.stop()   # must not raise
+        assert bridge._stop_survivors == []

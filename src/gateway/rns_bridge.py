@@ -247,6 +247,9 @@ class RNSMeshtasticBridge(
 
         # Threads
         self._mesh_thread = None
+        # Names of loop threads that outlived the last stop(). Empty after a
+        # clean shutdown; populated (and logged at ERROR) when a join expires.
+        self._stop_survivors = []
         self._rns_thread = None
         self._bridge_thread = None
         self._meshcore_thread = None
@@ -805,11 +808,33 @@ class RNSMeshtasticBridge(
                 logger.debug(f"Meshtastic broadcast stop error: {e}")
         self._disconnect_rns()
 
-        # Wait for threads
+        # Wait for threads, and VERIFY they went. join(timeout=N) returns None
+        # whether the thread exited or not, so an expired join used to be
+        # indistinguishable from a clean one: stop() logged "Stopping
+        # bridge...", returned, and any loop that ignored the stop event kept
+        # running and logging past shutdown with nothing recorded
+        # (honest_failure_modes #9 — every swallow leaves a witness).
+        #
+        # _oracle_tap_thread and _channel_diagnostic_thread are started by
+        # start() but were absent from this list entirely, so they were never
+        # joined at all. getattr because neither is initialised in __init__ —
+        # they exist only after start(), and stopping a never-started bridge
+        # must not AttributeError.
+        self._stop_survivors = []
         for thread in [self._mesh_thread, self._rns_thread,
-                        self._bridge_thread, self._meshcore_thread]:
+                       self._bridge_thread, self._meshcore_thread,
+                       getattr(self, '_oracle_tap_thread', None),
+                       getattr(self, '_channel_diagnostic_thread', None)]:
             if thread and thread.is_alive():
                 thread.join(timeout=5)
+                if thread.is_alive():
+                    self._stop_survivors.append(
+                        getattr(thread, 'name', repr(thread)))
+        if self._stop_survivors:
+            logger.error(
+                "Bridge stop(): %d thread(s) still alive after a 5s join: %s. "
+                "They keep running and logging after shutdown.",
+                len(self._stop_survivors), ", ".join(self._stop_survivors))
 
         # Stop WebSocket server
         self._stop_websocket_server()
