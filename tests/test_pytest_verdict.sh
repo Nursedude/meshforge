@@ -105,6 +105,75 @@ run 0 'ERROR tests/test_a.py - ImportError: boom\n1 error in 1.00s\n'
 check "a real single-space ERROR verdict line still fails the run" "$(has "$out" '^FAIL')"
 check "  ...and is named" "$(has "$out" 'tests/test_a.py')"
 
+# ── A NON-SUMMARY line must not be mistaken for the summary. CI run
+#    30845638291 (2026-08-03) classified a 10117-passed 3.9 suite as FAIL:
+#    `summ` takes the LAST line matching the count pattern, and background
+#    output landing after the real summary included mini's liveness detail
+#    "fire_count=0 error_count=0" — whose substring "0 error" matched both
+#    `[0-9]+ (passed|failed|error)` and the nsumbad probe. The verdict line
+#    read "FAIL exit 0, 0 FAILED/ERROR", i.e. it announced zero failures
+#    while failing. Word-boundary the count words, and require the line to
+#    actually look like a pytest summary. ─────────────────────────────────────
+run 0 '10117 passed, 49 skipped in 344.40s\n  [OK ] liveness: ticking — last tick 0s ago, fire_count=0 error_count=0.\n'
+check "trailing 'error_count=0' noise does not fail a green run" "$(has "$out" '^PASS')"
+check "  ...and the REAL summary is quoted, not the noise" "$(has "$out" '10117 passed')"
+
+# the same shape must not HIDE a real failure either (don't over-correct)
+run 0 '1 failed, 10 passed in 2.00s\n  [OK ] liveness: ticking — fire_count=0 error_count=0.\n'
+check "trailing noise does not mask a genuinely failed summary" "$(has "$out" '^FAIL')"
+
+# a real plural "errors" summary is still a failure
+run 0 '1 failed, 2 errors in 1.00s\n'
+check "a real 'N errors' summary still reads FAIL" "$(has "$out" '^FAIL')"
+
+# ── a BINARY log still classifies. The log goes binary in CI (a test emits a
+#    NUL); plain grep then reports "binary file matches" and yields no lines,
+#    so every signal here silently reads zero. ci.yml already learned this and
+#    uses `grep -aE` — this script did not, which is the sibling-consumer
+#    drift its own header warns about, turned on itself. ──────────────────────
+printf '10078 passed, 1 skipped in 244.82s\n' > "$TMP/binlog"
+printf 'stray \000 nul byte from a test\n' >> "$TMP/binlog"
+out="$("$VERDICT" --log "$TMP/binlog" --rc 0)"; rc_out=$?
+check "binary log with a healthy summary reads PASS" "$(has "$out" '^PASS')"
+
+printf 'FAILED tests/test_a.py::test_x - assert\n1 failed, 9 passed in 1.00s\n' > "$TMP/binlog2"
+printf 'stray \000 nul byte\n' >> "$TMP/binlog2"
+out="$("$VERDICT" --log "$TMP/binlog2" --rc 1)"; rc_out=$?
+check "binary log with real failures still reads FAIL" "$(has "$out" '^FAIL')"
+check "  ...and still names the failing test" "$(has "$out" 'test_a.py::test_x')"
+
+# ── THE ACTUAL CI FAILURE (run 30845638291 + its rerun, 2026-08-03), which
+#    needs BOTH defects and a log big enough to span grep's read buffer:
+#    a NUL lands mid-log, grep prints matches up to it and then stops with
+#    "binary file matches", so `tail -1` returns the last match BEFORE the nul
+#    -- a liveness line -- and the real summary further down is never seen.
+#    The loose count pattern then accepted "fire_count=0 error_count=0" as a
+#    summary and read its "0 error" as failures. Verdict: FAIL on a
+#    10117-passed suite, while announcing "0 FAILED/ERROR".
+#    A SMALL binary file does not reproduce it (grep decides binary within the
+#    first buffer and prints nothing => UNKNOWN), which is why this case pads.
+{
+  printf '  [OK ] liveness: ticking — last tick 0s ago, fire_count=0 error_count=0.\n'
+  awk 'BEGIN{for(i=0;i<4000;i++) print "tests/test_filler.py::test_" i " PASSED padding"}'
+  printf 'a test emitted a nul \000 byte here\n'
+  printf '================ 10117 passed, 49 skipped in 394.07s (0:06:34) =================\n'
+} > "$TMP/ci_shape.log"
+out="$("$VERDICT" --log "$TMP/ci_shape.log" --rc 0 2>/dev/null)"; rc_out=$?
+check "nul-truncated grep does not turn a passing suite into FAIL" "$(has "$out" '^PASS')"
+check "  ...and the REAL summary past the nul is found" "$(has "$out" '10117 passed')"
+
+# the same shape must still report a genuine failure that sits past the nul
+{
+  printf '  [OK ] liveness: ticking — fire_count=0 error_count=0.\n'
+  awk 'BEGIN{for(i=0;i<4000;i++) print "tests/test_filler.py::test_" i " PASSED padding"}'
+  printf 'a test emitted a nul \000 byte here\n'
+  printf 'FAILED tests/test_z.py::test_q - assert\n'
+  printf '================ 1 failed, 10116 passed in 394.07s =================\n'
+} > "$TMP/ci_shape_bad.log"
+out="$("$VERDICT" --log "$TMP/ci_shape_bad.log" --rc 1 2>/dev/null)"; rc_out=$?
+check "a real failure past the nul is still FAIL" "$(has "$out" '^FAIL')"
+check "  ...and is named" "$(has "$out" 'test_z.py::test_q')"
+
 # ── an unreadable log is UNKNOWN, never a pass ──────────────────────────────
 out="$("$VERDICT" --log "$TMP/definitely-absent" --rc 0)"; rc_out=$?
 check "unreadable log => UNKNOWN" "$(has "$out" '^UNKNOWN')"

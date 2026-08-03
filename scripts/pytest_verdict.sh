@@ -58,12 +58,28 @@ fi
 # log lines pad the level name to 8 chars ("ERROR    logger:file.py:N msg",
 # column 0) — the first CI run through this classifier failed a 10000-passed
 # suite on 203 such lines (2026-07-31, run 30669844039).
-summ=$(grep -E "[0-9]+ (passed|failed|error)|no tests ran" "$LOG" | tail -1)
-nfail=$(grep -cE "^(FAILED|ERROR) [^ ]" "$LOG")
-ninternal=$(grep -cE "^INTERNALERROR" "$LOG")
-nsumbad=$(printf '%s' "$summ" | grep -cE "[0-9]+ (failed|errors?)")
-nsumok=$(printf '%s' "$summ" | grep -cE "[0-9]+ passed")
-names=$(grep -E "^(FAILED|ERROR) [^ ]" "$LOG" | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' \
+#
+# Every grep over $LOG passes -a. A single NUL byte from any test turns the
+# log "binary", and plain grep then prints "binary file matches" and yields NO
+# lines — so every signal below silently reads zero and a failing suite can
+# classify green. ci.yml's own log excerpt already used `grep -aE`; this
+# script did not. That is the sibling-consumer drift this file's header warns
+# about, turned on itself (CI run 30845638291, 2026-08-03).
+#
+# The summary pattern requires the duration clause and word-boundaried count
+# words. `summ` takes the LAST match, and background threads keep writing
+# after pytest's summary during interpreter shutdown; one such line —
+# mini's "fire_count=0 error_count=0" — contains the substring "0 error",
+# which the old pattern accepted as a summary and the nsumbad probe then read
+# as failures. The verdict line literally announced "0 FAILED/ERROR" while
+# returning FAIL on a 10117-passed suite.
+_SUMMARY_RE='[0-9]+ (passed|failed|errors?|skipped)([^a-zA-Z_].*)? in [0-9.]+s|no tests ran'
+summ=$(grep -aE "$_SUMMARY_RE" "$LOG" | tail -1)
+nfail=$(grep -acE "^(FAILED|ERROR) [^ ]" "$LOG")
+ninternal=$(grep -acE "^INTERNALERROR" "$LOG")
+nsumbad=$(printf '%s' "$summ" | grep -cE "[0-9]+ (failed|errors?)([^a-zA-Z_]|$)")
+nsumok=$(printf '%s' "$summ" | grep -cE "[0-9]+ passed([^a-zA-Z_]|$)")
+names=$(grep -aE "^(FAILED|ERROR) [^ ]" "$LOG" | sed -E 's/^(FAILED|ERROR) //; s/ -.*//' \
         | head -3 | paste -sd' ' -)
 intern=""; [ "$ninternal" != 0 ] && intern=", $ninternal INTERNALERROR"
 
