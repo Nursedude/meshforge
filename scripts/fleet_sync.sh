@@ -205,6 +205,20 @@ mirror_memory_to_host() {
 #   PASS meshforge a48ff82 restarted
 #   PASS meshforge-maps 222265e no_unit
 #   SKIP meshforge-maps no_repo
+
+# The .git ownership heal is EMBEDDED in the remote script, not read as a file
+# on the target: a box whose .git is poisoned is precisely a box that cannot
+# pull the heal script itself (2026-08-02 moc3, 4 commits behind and silent).
+# ONE implementation shared with fleet_pull.sh — two hand-copies of a repair
+# WILL drift (honest_failure_modes #5).
+GIT_HEAL_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/git_heal.sh"
+if ! GIT_HEAL_SRC="$(cat "$GIT_HEAL_LIB" 2>/dev/null)" || [ -z "$GIT_HEAL_SRC" ]; then
+    # Wire together or fail together (#4) — a sync without the heal silently
+    # re-opens the class on every poisoned box.
+    echo "$SELF: missing or empty $GIT_HEAL_LIB — refusing to sync without the .git ownership heal." >&2
+    exit 2
+fi
+
 REMOTE_SCRIPT='
 set -u
 
@@ -230,9 +244,32 @@ sync_repo() {
         return 1
     fi
 
+    # Repair a .git already poisoned by a prior `sudo git` run BEFORE
+    # pulling, or the pull dies with "insufficient permission for adding an
+    # object" and this box silently stops receiving code (2026-08-02 moc3:
+    # 24 root-owned objects from 07-31, 4 commits behind, nobody watching).
+    # A repair is announced as WARN — advisory, the sync proceeds — because a
+    # box being re-poisoned every deploy must not look identical to a clean
+    # one (fleet_hosts_selfheal convention). Unrepairable is FAIL: that box
+    # cannot receive code at all, and must never be confused with a box that
+    # had nothing to heal (honest_failure_modes #9).
+    local heal_out
+    heal_out="$(git_heal_ownership "$repo")"
+    case "${heal_out%% *}" in
+        HEAL_NONE) ;;
+        HEAL_OK)
+            echo "WARN $short git_heal repaired ${heal_out#* } foreign-owned .git artifact(s) — something ran sudo git here"
+            ;;
+        *)
+            echo "FAIL $short git_heal $heal_out"
+            return 1
+            ;;
+    esac
+
     # NOT sudo: pulling as root creates root-owned refs/objects under .git/,
     # which silently break subsequent unprivileged fetches (Insight 7,
-    # 2026-05-03). The repo tree is wh6gxz-owned on every fleet box; if a
+    # 2026-05-03) — the heal above cleans up after a violation, it does not
+    # license one. The repo tree is wh6gxz-owned on every fleet box; if a
     # future box has different ownership, this fails LOUD rather than
     # leaking a root-owned ref. Use `sudo -u <user>` if elevation is ever
     # truly required for path access — never `sudo git pull` directly.
@@ -676,6 +713,14 @@ fi
 
 exit $(( ${rc1:-0} + ${rc1b:-0} + ${rc2:-0} ))
 '
+
+# Prepend the .git ownership heal AFTER the recipe is bound, never inside the
+# single-quoted body. Two reasons: the heal source contains apostrophes (which
+# would unbind the recipe), and TestRemoteScriptBinds anchors on a line
+# starting exactly `REMOTE_SCRIPT='` — changing that opener does not trip the
+# apostrophe guard, it BLINDS it, which is strictly worse.
+REMOTE_SCRIPT="$GIT_HEAL_SRC
+$REMOTE_SCRIPT"
 
 # Pre-sync: auto-commit memory changes on the canonical box and push to
 # origin. Runs ONCE before the host loop so all fleet boxes receive the

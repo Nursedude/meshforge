@@ -59,6 +59,18 @@ if [ ! -f "$FP_LIB" ]; then
     exit 2
 fi
 . "$FP_LIB"
+
+# The .git ownership heal travels WITH the remote command (its text is
+# embedded below), not as a file on the target — a box whose .git is poisoned
+# is exactly a box that cannot pull the heal script itself (2026-08-02 moc3).
+GIT_HEAL_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/git_heal.sh"
+if ! GIT_HEAL_SRC="$(cat "$GIT_HEAL_LIB" 2>/dev/null)" || [ -z "$GIT_HEAL_SRC" ]; then
+    # Fail together, never half-wired (honest_failure_modes #4): deploying
+    # without the heal silently re-opens the class on any poisoned box.
+    echo "fleet_pull: missing or empty $GIT_HEAL_LIB — refusing to deploy without the .git ownership heal." >&2
+    exit 2
+fi
+
 if ! fleet_hosts_resolve "$REPO_DIR"; then
     echo "fleet_pull: no fleet_hosts list found (set \$MESHFORGE_FLEET_HOSTS or create ~/.config/meshforge/fleet_hosts[.$REPO_BASE])." >&2
     exit 2
@@ -78,11 +90,22 @@ echo "fleet_pull: $REPO_DIR @ ${BRANCH}=${TARGET_SHORT} → ${#HOSTS[@]} host(s)
 # pull, then print a status token + the resulting short sha. Always prints a
 # sha even on pull failure so a divergence is distinguishable from unreachable.
 remote_cmd=$(cat <<REMOTE
+$GIT_HEAL_SRC
 cd "$REPO_DIR" 2>/dev/null || { echo "NOREPO"; exit 0; }
+# Repair a .git poisoned by a prior \`sudo git\` BEFORE pulling, or the pull
+# dies with "insufficient permission for adding an object". A repair is
+# REPORTED (HEALED), never swallowed — a box being re-poisoned every deploy
+# must not look identical to a clean one (fleet_hosts_selfheal convention).
+heal_out="\$(git_heal_ownership "$REPO_DIR")"
+case "\${heal_out%% *}" in
+    HEAL_NONE) heal_note="" ;;
+    HEAL_OK)   heal_note=" HEALED(\${heal_out#* })" ;;
+    *)         echo "HEALFAIL \$heal_out"; exit 0 ;;
+esac
 if git pull --ff-only origin main >/dev/null 2>&1; then
-    echo "PULLED \$(git rev-parse --short HEAD)"
+    echo "PULLED \$(git rev-parse --short HEAD)\$heal_note"
 else
-    echo "PULLFAIL \$(git rev-parse --short HEAD 2>/dev/null || echo '?')"
+    echo "PULLFAIL \$(git rev-parse --short HEAD 2>/dev/null || echo '?')\$heal_note"
 fi
 REMOTE
 )
@@ -90,19 +113,30 @@ REMOTE
 failures=0
 for h in "${HOSTS[@]}"; do
     out=$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$h" "$remote_cmd" 2>/dev/null)
-    status=${out%% *}
-    sha=${out#* }
+    # Fields, not suffix-strip: the sha may now carry a trailing HEALED(n)
+    # note, and `${out#* }` would fold it into the sha and fail every
+    # comparison against $TARGET_SHORT.
+    read -r status sha heal_note <<<"$out"
+    heal_note=${heal_note:+ $heal_note}
     case "$status" in
         PULLED)
             if [ "$sha" = "$TARGET_SHORT" ]; then
-                printf '  %-20s OK        %s\n' "$h" "$sha"
+                printf '  %-20s OK        %s%s\n' "$h" "$sha" "$heal_note"
             else
-                printf '  %-20s MISMATCH  %s (target %s)\n' "$h" "$sha" "$TARGET_SHORT"
+                printf '  %-20s MISMATCH  %s (target %s)%s\n' "$h" "$sha" "$TARGET_SHORT" "$heal_note"
                 failures=$((failures + 1))
             fi
             ;;
         PULLFAIL)
-            printf '  %-20s PULL_FAIL %s (diverged / not ff-only — inspect)\n' "$h" "$sha"
+            printf '  %-20s PULL_FAIL %s (diverged / not ff-only — inspect)%s\n' "$h" "$sha" "$heal_note"
+            failures=$((failures + 1))
+            ;;
+        HEALFAIL)
+            # Found foreign-owned .git artifacts and could NOT repair them —
+            # this box cannot receive code until a human intervenes. Never
+            # silently degraded to "unreachable" (honest_failure_modes #9).
+            printf '  %-20s HEAL_FAIL %s %s (cannot receive deploys — chown %s/.git)\n' \
+                "$h" "$sha" "$heal_note" "$REPO_DIR"
             failures=$((failures + 1))
             ;;
         NOREPO)
