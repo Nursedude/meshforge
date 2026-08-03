@@ -3466,7 +3466,14 @@ def test_load_config_file_parses_valid_object(tmp_path):
 
 
 def test_resolve_probe_targets_uses_defaults_for_empty_config():
-    sea, swc, port = resolve_probe_targets({})
+    # Pin the ambient state. Since 2026-08-03 the empty-config default is
+    # DERIVED FROM THE BOX'S DECLARED ROLE, so without this patch the verdict
+    # depends on which machine ran the suite — green on a role-less box, red
+    # on any fleet box (feedback_tests_must_pin_ambient_state). Patched to the
+    # unresolvable case, which is what this test is actually about: the
+    # hardcoded fallback.
+    with patch("utils.watchdog_runner._role_expected_active", return_value=None):
+        sea, swc, port = resolve_probe_targets({})
     assert sea == _DEFAULT_SERVICES_EXPECTED_ACTIVE
     assert swc == _DEFAULT_SERVICES_WEDGE_CHECK
     assert port == 5000
@@ -3489,7 +3496,9 @@ def test_resolve_probe_targets_moc3_override_drops_meshforge_map():
 
 def test_resolve_probe_targets_partial_override_keeps_other_defaults():
     """Only overriding one key shouldn't touch the others."""
-    sea, swc, port = resolve_probe_targets({"http_port": 8808})
+    with patch("utils.watchdog_runner._role_expected_active",
+               return_value=None):
+        sea, swc, port = resolve_probe_targets({"http_port": 8808})
     assert sea == _DEFAULT_SERVICES_EXPECTED_ACTIVE
     assert swc == _DEFAULT_SERVICES_WEDGE_CHECK
     assert port == 8808
@@ -3497,7 +3506,9 @@ def test_resolve_probe_targets_partial_override_keeps_other_defaults():
 
 def test_resolve_probe_targets_rejects_garbage_overrides():
     """Bad types fall back to defaults silently (warning logged), don't crash."""
-    sea, swc, port = resolve_probe_targets({
+    with patch("utils.watchdog_runner._role_expected_active",
+               return_value=None):
+        sea, swc, port = resolve_probe_targets({
         "services_expected_active": "not a list",
         "services_wedge_check": [1, 2, 3],
         "http_port": "8080",   # string, not int
@@ -8969,3 +8980,73 @@ class TestQueueStatsFileFallback:
         p = tmp_path / "queue_stats.json"
         assert write_queue_stats_state(stats=None, path=p) is False
         assert not p.exists()
+
+
+class TestExpectedActiveFollowsDeclaredRole20260803:
+    """The paging probe must watch what the box's ROLE says must run.
+
+    Measured 2026-08-03: moc's meshforge-gateway was down for 9m49s and NOTHING
+    paged. probe_service_inactive is the paging probe for unit state, and it is
+    fed from services_expected_active — which defaulted to a hardcoded
+    (rnsd, meshforge-map) pair that never included meshforge-gateway. On moc3 a
+    per-box override narrowed it further, to rnsd ALONE: that override existed
+    to silence a true false-positive (map is deliberately inactive on a
+    gateway-only box) and in removing map it left the box watching nothing
+    else. A cure for a false positive that created a blind spot.
+
+    role_drift DID detect the outage within 2 ticks — it just escalates
+    without paging, by design. The truth was already on the box; the paging
+    probe simply was not reading it.
+    """
+
+    def test_default_targets_include_the_role_declared_units(self, tmp_path):
+        from utils.watchdog_runner import resolve_probe_targets
+
+        with patch("utils.watchdog_runner._role_expected_active",
+                   return_value=("rnsd.service", "meshforge-gateway.service")):
+            targets = resolve_probe_targets({})
+        sea = targets[0] if isinstance(targets, tuple) else targets
+        assert "meshforge-gateway.service" in sea, (
+            "the gateway is not watched by the probe that pages — the exact "
+            "gap that let a 10-minute outage go unpaged"
+        )
+
+    def test_falls_back_when_the_role_cannot_be_resolved(self):
+        """Unresolvable role is INDETERMINATE — keep the old default, never
+        widen or narrow on a guess (honest_failure_modes #2)."""
+        from utils.watchdog_runner import (
+            resolve_probe_targets, _DEFAULT_SERVICES_EXPECTED_ACTIVE)
+
+        with patch("utils.watchdog_runner._role_expected_active",
+                   return_value=None):
+            targets = resolve_probe_targets({})
+        sea = targets[0] if isinstance(targets, tuple) else targets
+        assert tuple(sea) == _DEFAULT_SERVICES_EXPECTED_ACTIVE
+
+    def test_explicit_override_still_wins(self):
+        """Operator control is preserved — the override is authoritative."""
+        from utils.watchdog_runner import resolve_probe_targets
+
+        with patch("utils.watchdog_runner._role_expected_active",
+                   return_value=("rnsd.service", "meshforge-gateway.service")):
+            targets = resolve_probe_targets(
+                {"services_expected_active": ["rnsd.service"]})
+        sea = targets[0] if isinstance(targets, tuple) else targets
+        assert tuple(sea) == ("rnsd.service",)
+
+    def test_override_that_drops_a_role_required_unit_warns(self, caplog):
+        """...but silently is not an option. moc3's override omitted the
+        gateway and nobody knew for months; an omission must leave a witness
+        (honest_failure_modes #9)."""
+        import logging as _logging
+        from utils.watchdog_runner import resolve_probe_targets
+
+        with patch("utils.watchdog_runner._role_expected_active",
+                   return_value=("rnsd.service", "meshforge-gateway.service")):
+            with caplog.at_level(_logging.WARNING, logger="watchdog"):
+                resolve_probe_targets(
+                    {"services_expected_active": ["rnsd.service"]})
+        msg = " ".join(r.getMessage() for r in caplog.records)
+        assert "meshforge-gateway.service" in msg, (
+            "override silently dropped a role-declared-active unit: %r" % msg
+        )

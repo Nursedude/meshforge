@@ -1370,3 +1370,56 @@ from utils.watchdog_probes_env import (  # noqa: E402,F401 (back-compat re-expor
     _resolve_operator_home,
     probe_inherited_app_drift,
 )
+
+
+def role_expected_active() -> Optional[Tuple[str, ...]]:
+    """Units this box's declared role says must be ACTIVE, or None.
+
+    Reuses probe_role_drift's plan helper — the converge SSOT
+    (scripts/provision_role.py + docs/fleet_roles.yaml + the box's documented
+    service_overrides) — so the probe that PAGES and the probe that reports
+    drift read one source instead of two hand-maintained lists.
+
+    None means the role or the tooling could not be resolved. That is
+    indeterminate, not "nothing to watch": the caller holds its previous
+    default rather than widening or narrowing on a guess.
+    """
+    try:
+        try:
+            from utils.rns_tree_perms import _read_rnsd_user
+            service_user = _read_rnsd_user()
+        except Exception:
+            service_user = None
+        role, overrides = _read_deployment_declaration(service_user)
+    except Exception:
+        return None
+    if not role:
+        return None
+    try:
+        actions = _plan_role_actions(role, overrides or {}, "/opt/meshforge")
+    except Exception:
+        return None
+    if not actions:
+        return None
+
+    # provision_role.Action: item / current / desired / verb. `desired` is
+    # "enabled" for units the role wants running and "disabled" otherwise, so
+    # a documented service_override (moc3's deliberately-off meshforge-map)
+    # lands on "disabled" and is correctly NOT watched — the false positive
+    # moc3's hand-written override existed to suppress, now handled by the
+    # declaration itself instead of by deleting entries from a list.
+    units = []
+    for a in actions:
+        item = getattr(a, "item", None)
+        desired = getattr(a, "desired", None)
+        if not item or not desired:
+            continue
+        if str(desired).strip() != "enabled":
+            continue
+        item = str(item)
+        if ":" in item:
+            continue          # delta:/foundation: pseudo-actions
+        if item.endswith(".timer"):
+            continue          # timers are not "expected active" units
+        units.append(item if item.endswith(".service") else f"{item}.service")
+    return tuple(dict.fromkeys(units)) or None

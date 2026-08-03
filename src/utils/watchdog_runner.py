@@ -1084,6 +1084,16 @@ def load_config_file(
     return {}
 
 
+# Role-derived watch list lives with its dependencies in
+# watchdog_probes_drift (_plan_role_actions / _read_deployment_declaration).
+# Imported under the private alias so it stays patchable at
+# utils.watchdog_runner._role_expected_active, and to keep this file under
+# the MF025 1,500-line cap.
+from utils.watchdog_probes_drift import (  # noqa: E402
+    role_expected_active as _role_expected_active,
+)
+
+
 def resolve_probe_targets(
     config: Dict[str, object],
 ) -> Tuple[Tuple[str, ...], Tuple[str, ...], int]:
@@ -1096,18 +1106,42 @@ def resolve_probe_targets(
     semantics — the operator sees exactly what's probed by reading the
     file. Cuts ambiguity at the cost of slightly more typing.
     """
+    # What the box's declared ROLE says must be active. This is the same
+    # source probe_role_drift already reads, so the paging probe and the
+    # legibility probe agree by construction rather than by two hand-kept
+    # lists (honest_failure_modes #5).
+    role_units = _role_expected_active()
+
     services_expected = config.get("services_expected_active")
     if isinstance(services_expected, list) and all(
         isinstance(s, str) for s in services_expected
     ):
         sea: Tuple[str, ...] = tuple(services_expected)
+        # The override stays a FULL REPLACEMENT — operator control, and what
+        # you read in the file is what gets probed. But dropping a unit the
+        # role requires must not be SILENT: moc3's override existed to
+        # suppress a real false positive (map is deliberately inactive on a
+        # gateway-only box) and in doing so left meshforge-gateway unwatched,
+        # which is how a 9m49s gateway outage produced no page on 2026-08-03.
+        if role_units:
+            missing = [u for u in role_units if u not in sea]
+            if missing:
+                logger.warning(
+                    "watchdog: services_expected_active override omits "
+                    "role-declared-active unit(s): %s — these will NOT page "
+                    "if they go down. Add them or correct the declared role.",
+                    ", ".join(sorted(missing)),
+                )
     else:
         if services_expected is not None:
             logger.warning(
                 "watchdog: services_expected_active override is not a list "
                 "of strings — ignoring",
             )
-        sea = _DEFAULT_SERVICES_EXPECTED_ACTIVE
+        # Role-derived by default; the hardcoded pair is the fallback for an
+        # unresolvable role. Unresolvable is INDETERMINATE — hold the previous
+        # behaviour rather than widening or narrowing on a guess (#2).
+        sea = role_units or _DEFAULT_SERVICES_EXPECTED_ACTIVE
 
     services_wedge = config.get("services_wedge_check")
     if isinstance(services_wedge, list) and all(
