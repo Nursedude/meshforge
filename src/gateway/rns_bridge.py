@@ -208,6 +208,17 @@ class RNSMeshtasticBridge(
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or GatewayConfig.load()
         self.node_tracker = UnifiedNodeTracker()
+        # Arm node retention. This call is what makes TTL eviction live — the
+        # tracker stays inert until told what is pinned, so this line and
+        # _evict_expired_nodes wire together or fail together
+        # (honest_failure_modes #4). Pass it even when the list is empty.
+        try:
+            self.node_tracker.set_retention_pins(self.config.rns.get_retention_pins())
+        except Exception as e:
+            # Leaving retention inert keeps the old unbounded-population
+            # behaviour, which is survivable; evicting with a half-built pin
+            # set would not be.
+            logger.warning(f"Node retention left inert — could not derive pins: {e}")
 
         # State
         self._running = False

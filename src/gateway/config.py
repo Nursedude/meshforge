@@ -550,6 +550,22 @@ class RNSConfig:
             return [d for d in raw if isinstance(d, str) and d]
         return []
 
+    def get_retention_pins(self) -> List[str]:
+        """Hashes the node tracker must never evict on age alone.
+
+        Every identity this gateway is CONFIGURED to depend on: the
+        propagation node, peer gateways, and default LXMF destinations. These
+        can legitimately go quiet for longer than the announce-space TTL, and
+        dropping one turns lxmf_propagation_node_dark's STALE verdict into
+        UNHEARD — which reads as "wrong or truncated hash", a config error
+        that did not happen.
+        """
+        pins = list(self.get_lxmf_destinations())
+        pins += self.get_peer_gateway_destinations()
+        if isinstance(self.propagation_node, str) and self.propagation_node:
+            pins.append(self.propagation_node)
+        return [p.strip().lower() for p in pins if isinstance(p, str) and p.strip()]
+
     def get_peer_gateway_destinations(self) -> List[str]:
         """Return peer_gateway_destinations normalized to a list of non-empty hex strings."""
         raw = self.peer_gateway_destinations

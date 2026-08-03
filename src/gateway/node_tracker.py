@@ -27,6 +27,10 @@ from .node_models import (
     NODE_STATE_AVAILABLE, RNS_SERVICES_AVAILABLE
 )
 
+from utils.node_history_config import (
+    DEFAULT_DIRECTORY_RETENTION_LOCAL,
+    DEFAULT_DIRECTORY_RETENTION_EXTERNAL,
+)
 from utils.boundary_timing import timed_boundary
 from gateway.bounded_rpc import bounded_call
 from utils.safe_import import safe_import
@@ -85,6 +89,20 @@ class UnifiedNodeTracker:
     # (honest_failure_modes #9: no permanent silent blindness).
     CACHE_MAX_STALENESS = 1800
 
+    # Population retention (2026-08-03). moc3 held 9,345 RNS announce-space
+    # nodes for SIX local Meshtastic radios: the population tracks the
+    # reachable Reticulum network, not this box's workload, and every node is
+    # serialized into both cache files on every save. Measured age
+    # distribution: 2.8% heard inside a day, 16.7% inside a week, 42.6%
+    # sitting in the 30-90 day band.
+    #
+    # The tiers are IMPORTED from the node-directory retention (#49), never
+    # re-declared — two consumers of "how long is a node interesting" sharing
+    # one constant instead of two hardcodes that WILL drift
+    # (honest_failure_modes #5).
+    RETENTION_LOCAL = DEFAULT_DIRECTORY_RETENTION_LOCAL        # 30d — our own RF
+    RETENTION_EXTERNAL = DEFAULT_DIRECTORY_RETENTION_EXTERNAL  # 7d  — announce firehose
+
     @classmethod
     def get_cache_file(cls) -> Path:
         """Get the cache file path (evaluated at runtime, not import time)"""
@@ -107,6 +125,13 @@ class UnifiedNodeTracker:
         # fleet's Pis are RTC-less and NTP steps the wall clock (#74).
         self._cache_dirty = True
         self._last_cache_save = 0.0
+
+        # Retention pins — hashes that must survive any TTL sweep (the
+        # configured propagation node, peer gateways, default LXMF
+        # destinations). None means NOBODY HAS TOLD US YET, which keeps TTL
+        # eviction inert; see set_retention_pins.
+        self._retention_pins: Optional[set] = None
+        self._retention_unwired_warned = False
 
         # Enhanced RNS service tracking
         self._service_registry: Optional[RNSServiceRegistry] = None
@@ -738,6 +763,93 @@ class UnifiedNodeTracker:
         except Exception as e:
             logger.debug(f"EventBus node emit failed: {e}")
 
+    def set_retention_pins(self, hashes):
+        """Declare the RNS hashes that TTL eviction must never drop.
+
+        Call this even with an EMPTY list — that is the signal "pins have been
+        computed and there are none", and it is what arms TTL eviction. Until
+        it is called, _evict_expired_nodes is inert.
+
+        The pins exist because eviction is not a neutral act: the
+        lxmf_propagation_node_dark probe reports STALE when the configured
+        propagation node is present in the cache but quiet, and UNHEARD — read
+        as "wrong or truncated hash" — when it is absent entirely. Dropping a
+        quiet propagation node would therefore manufacture a false diagnosis
+        of a config error, the same shape as the 2026-07-21 false-UNHEARD page.
+        """
+        pins = set()
+        for h in hashes or []:
+            if isinstance(h, bytes):
+                h = h.hex()
+            h = str(h).strip().lower()
+            if h:
+                pins.add(h)
+        self._retention_pins = pins
+        logger.debug(f"Retention pins set: {len(pins)} hash(es)")
+
+    def _is_pinned(self, node) -> bool:
+        """True when a node must survive TTL eviction regardless of age."""
+        if node.is_gateway or node.is_local:
+            return True
+        pins = self._retention_pins or set()
+        h = getattr(node, "rns_hash", None)
+        if h:
+            try:
+                return (h.hex() if isinstance(h, bytes) else str(h)).lower() in pins
+            except Exception:
+                return False
+        return False
+
+    def _retention_seconds(self, node) -> int:
+        """Longer tier for our own RF, shorter for the announce firehose."""
+        if node.network in ("meshtastic", "both"):
+            return self.RETENTION_LOCAL
+        return self.RETENTION_EXTERNAL
+
+    def _evict_expired_nodes(self) -> int:
+        """Drop nodes past their tier's TTL. Returns the number evicted.
+
+        INERT until set_retention_pins() has been called: an unwired deploy
+        must degrade to today's keep-everything behaviour, never to
+        'evict with an empty pin set' (honest_failure_modes #4 — the reader
+        and writer of the pin list wire together or fail together).
+
+        A node with no last_seen is HELD, not evicted: unknown age is not
+        evidence of staleness (#2).
+        """
+        if self._retention_pins is None:
+            if not self._retention_unwired_warned:
+                self._retention_unwired_warned = True
+                logger.warning(
+                    "Node retention is INERT — set_retention_pins() was never "
+                    "called, so the announce-space population will grow "
+                    "unbounded. Wire it from the gateway config."
+                )
+            return 0
+
+        now = datetime.now()
+        evicted = 0
+        with self._lock:
+            for nid in [
+                nid for nid, n in self._nodes.items()
+                if n.last_seen is not None
+                and not self._is_pinned(n)
+                and (now - n.last_seen).total_seconds() > self._retention_seconds(n)
+            ]:
+                del self._nodes[nid]
+                evicted += 1
+            if evicted:
+                self._mark_cache_dirty()
+
+        if evicted:
+            logger.info(
+                f"Retention sweep evicted {evicted} node(s) past TTL "
+                f"(local {self.RETENTION_LOCAL // 86400}d / "
+                f"external {self.RETENTION_EXTERNAL // 86400}d); "
+                f"{len(self._nodes)} remain"
+            )
+        return evicted
+
     def _mark_cache_dirty(self):
         """Record that in-memory node state has diverged from the cache file."""
         self._cache_dirty = True
@@ -779,6 +891,10 @@ class UnifiedNodeTracker:
                             if node.is_online:
                                 self._mark_cache_dirty()
                             node.is_online = False
+
+            # Same pass, so the population sweep is free: we already walked
+            # every node above.
+            self._evict_expired_nodes()
 
             # Timeout state is swept every tick; the cache is written at
             # CACHE_SAVE_INTERVAL. This line used to call _save_cache()

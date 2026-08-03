@@ -1798,3 +1798,150 @@ class TestCacheWriteChurn20260803:
         cache_file.unlink(missing_ok=True)
         t.stop(timeout=0.1)
         assert cache_file.exists(), "stop() did not flush the cache"
+
+
+class TestPopulationRetention20260803:
+    """The tracker held the whole reachable Reticulum announce space.
+
+    Measured on moc3 2026-08-03: 9,345 RNS nodes resident for SIX local
+    Meshtastic radios. The population grows with the NETWORK, not with this
+    box's workload, and every node is serialized into both cache files on
+    every save. Age distribution said the mass is nearly all cold — only 2.8%
+    heard inside a day, 16.7% inside a week, while 42.6% sat in the 30-90 day
+    band.
+
+    Retention tiers are IMPORTED from the node-directory retention (#49)
+    rather than re-declared, so the two consumers of "how long is a node
+    interesting" cannot drift (honest_failure_modes #5).
+    """
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            yield UnifiedNodeTracker()
+
+    @staticmethod
+    def _node(nid, network="rns", age_days=0.0, rns_hash=None, **kw):
+        n = UnifiedNode(id=nid, network=network, name=nid, **kw)
+        n.last_seen = datetime.now() - timedelta(days=age_days)
+        if rns_hash:
+            n.rns_hash = bytes.fromhex(rns_hash)
+        return n
+
+    # --- the reader/writer pair must fail together (hfm #4) --------------
+
+    def test_inert_until_pins_are_wired(self, tracker):
+        """Never evict while we have not been told what is pinned.
+
+        The pin list comes from gateway.json via the bridge. If that wiring is
+        missing, the safe degradation is TODAY'S behaviour (keep everything) —
+        never 'evict with an empty pin set', which would silently drop the
+        configured propagation node and turn lxmf_propagation_node_dark into a
+        false UNHEARD page (the 2026-07-21 class).
+        """
+        tracker.add_node(self._node("rns_old", age_days=99))
+        assert tracker._retention_pins is None
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_old") is not None, "evicted with pins unwired"
+
+    # --- the tiers --------------------------------------------------------
+
+    def test_tiers_are_imported_not_redeclared(self):
+        from src.utils.node_history_config import (
+            DEFAULT_DIRECTORY_RETENTION_LOCAL,
+            DEFAULT_DIRECTORY_RETENTION_EXTERNAL,
+        )
+        assert UnifiedNodeTracker.RETENTION_LOCAL == DEFAULT_DIRECTORY_RETENTION_LOCAL
+        assert UnifiedNodeTracker.RETENTION_EXTERNAL == DEFAULT_DIRECTORY_RETENTION_EXTERNAL
+
+    def test_cold_rns_node_evicted_at_external_tier(self, tracker):
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("rns_cold", age_days=30))
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_cold") is None
+
+    def test_warm_rns_node_survives(self, tracker):
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("rns_warm", age_days=2))
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_warm") is not None
+
+    def test_meshtastic_node_gets_the_longer_local_tier(self, tracker):
+        """The 6 local radios are the WORKLOAD — they outlive the firehose."""
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("mesh_10d", network="meshtastic", age_days=10))
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("mesh_10d") is not None, (
+            "a local Meshtastic node was evicted on the external (7d) tier"
+        )
+
+    def test_unknown_age_is_held_not_evicted(self, tracker):
+        """last_seen=None means we cannot observe age — absence is not staleness
+        (honest_failure_modes #2)."""
+        tracker.set_retention_pins([])
+        n = self._node("rns_unknown", age_days=0)
+        n.last_seen = None
+        tracker.add_node(n)
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_unknown") is not None
+
+    # --- the pins that keep probes honest --------------------------------
+
+    def test_pinned_propagation_node_is_never_evicted(self, tracker):
+        """THE constraint. lxmf_propagation_node_dark reports STALE when the
+        configured node is in the cache and UNHEARD (= wrong/truncated hash)
+        when it is absent. Evicting a quiet propagation node would manufacture
+        a false 'wrong hash' diagnosis."""
+        h = "3968a2eeac25e2e7a7961f25842d3d85"
+        tracker.set_retention_pins([h])
+        tracker.add_node(self._node("rns_prop", age_days=99, rns_hash=h))
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_prop") is not None, (
+            "configured propagation node evicted -> probe flips STALE to UNHEARD"
+        )
+
+    def test_pins_match_case_insensitively(self, tracker):
+        h = "3968A2EEAC25E2E7A7961F25842D3D85"
+        tracker.set_retention_pins([h])
+        tracker.add_node(self._node("rns_prop", age_days=99, rns_hash=h.lower()))
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_prop") is not None
+
+    def test_gateway_and_local_flags_are_never_evicted(self, tracker):
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("rns_gw", age_days=99, is_gateway=True))
+        tracker.add_node(self._node("rns_local", age_days=99, is_local=True))
+        tracker._evict_expired_nodes()
+        assert tracker.get_node("rns_gw") is not None
+        assert tracker.get_node("rns_local") is not None
+
+    # --- integration with the write path ---------------------------------
+
+    def test_eviction_marks_cache_dirty(self, tracker):
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("rns_cold", age_days=30))
+        tracker._cache_dirty = False
+        tracker._evict_expired_nodes()
+        assert tracker._cache_dirty is True
+
+    def test_no_eviction_leaves_cache_clean(self, tracker):
+        """A no-op sweep must not force a 20 MB write every tick."""
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("rns_warm", age_days=1))
+        tracker._cache_dirty = False
+        tracker._evict_expired_nodes()
+        assert tracker._cache_dirty is False
+
+    def test_population_shrinks_to_the_warm_set(self, tracker):
+        """End to end on a moc3-shaped population."""
+        tracker.set_retention_pins([])
+        for i in range(50):
+            tracker.add_node(self._node(f"cold{i}", age_days=30))
+        for i in range(5):
+            tracker.add_node(self._node(f"warm{i}", age_days=1))
+        for i in range(6):
+            tracker.add_node(self._node(f"mesh{i}", network="meshtastic", age_days=10))
+        tracker._evict_expired_nodes()
+        remaining = {n.id for n in tracker.get_all_nodes()}
+        assert len(remaining) == 11, sorted(remaining)
+        assert not any(r.startswith("cold") for r in remaining)

@@ -5726,3 +5726,57 @@ class TestRnsConfigdirGuardDegrades:
             # RuntimeError has to degrade like a wedged rnsd, not crash start()
             bridge._init_rns_main_thread()
         assert bridge._rns_pre_initialized is False  # degraded, not crashed
+
+
+class TestRetentionPinsWired20260803:
+    """The bridge must actually ARM node retention.
+
+    node_tracker keeps TTL eviction inert until set_retention_pins() is
+    called, so this wiring is what makes the population cap live. Verified on
+    the constructed object rather than by reading rns_bridge.py — a registered
+    call is not a running call (calibrated_claims #7).
+    """
+
+    def _build(self, rns_overrides):
+        from gateway.config import GatewayConfig
+        cfg = GatewayConfig()
+        for k, v in rns_overrides.items():
+            setattr(cfg.rns, k, v)
+        with patch("gateway.rns_bridge.UnifiedNodeTracker") as MockTracker, \
+             patch("gateway.rns_bridge.BridgeHealthMonitor"), \
+             patch("gateway.rns_bridge.DeliveryTracker"), \
+             patch("gateway.rns_bridge.MeshtasticHandler"), \
+             patch("gateway.rns_bridge.ReconnectStrategy"), \
+             patch("gateway.rns_bridge.HAS_CIRCUIT_BREAKER", False), \
+             patch("gateway.rns_bridge.HAS_PERSISTENT_QUEUE", False), \
+             patch("gateway.message_routing.CLASSIFIER_AVAILABLE", False), \
+             patch("gateway.rns_bridge.HAS_SERVICE_CHECK", False), \
+             patch("gateway.rns_bridge.HAS_EVENT_BUS", False), \
+             patch("gateway.rns_bridge.HAS_RNS_SNIFFER", False):
+            from gateway.rns_bridge import RNSMeshtasticBridge
+            RNSMeshtasticBridge(config=cfg)
+            return MockTracker.return_value.set_retention_pins
+
+    def test_pins_are_armed_on_construction(self):
+        call = self._build({"propagation_node": "3968A2EEAC25E2E7A7961F25842D3D85"})
+        assert call.called, "tracker retention never armed — eviction stays inert forever"
+        pins = set(call.call_args[0][0])
+        assert "3968a2eeac25e2e7a7961f25842d3d85" in pins, pins
+
+    def test_peer_gateways_and_lxmf_destinations_are_pinned(self):
+        call = self._build({
+            "propagation_node": "",
+            "peer_gateway_destinations": ["aa" * 16],
+            "default_lxmf_destination": ["bb" * 16, "cc" * 16],
+        })
+        pins = set(call.call_args[0][0])
+        assert {"aa" * 16, "bb" * 16, "cc" * 16} <= pins, pins
+
+    def test_armed_even_when_nothing_is_configured(self):
+        """An EMPTY pin list still arms eviction — 'no pins' is a result, not
+        a reason to leave the cap switched off."""
+        call = self._build({"propagation_node": "",
+                            "peer_gateway_destinations": "",
+                            "default_lxmf_destination": ""})
+        assert call.called
+        assert list(call.call_args[0][0]) == []
