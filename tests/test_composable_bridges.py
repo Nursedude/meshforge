@@ -391,7 +391,14 @@ class TestSignalHandlerReclaim20260803:
                 return {"running": True, "meshtastic_connected": True,
                         "rns_connected": True}
 
-        with patch.object(bridge_cli, "signal") as sig_mod, \
+        # assert_writable_or_exit() runs at the very top of main() and EXITS
+        # when the gateway's write paths are absent — true in CI's container,
+        # false on a real box. Without this patch the test passes locally and
+        # fails in CI having never reached the registration at all
+        # (feedback_tests_must_pin_ambient_state; it did exactly that on
+        # 6fb3b756/ae9bf872).
+        with patch.object(bridge_cli, "assert_writable_or_exit"), \
+             patch.object(bridge_cli, "signal") as sig_mod, \
              patch.object(bridge_cli, "resolve_bridges",
                           return_value=[{"name": "fake", "label": "Fake",
                                          "builder": lambda: FakeBridge()}]), \
