@@ -89,6 +89,38 @@ def pytest_collection_modifyitems(config, items):
             item.add_marker(skip_hardware)
 
 
+@pytest.fixture(autouse=True)
+def _isolate_node_cache_files(tmp_path_factory):
+    """Keep the node-cache writers out of the operator's live data directory.
+
+    ``UnifiedNodeTracker._save_cache`` writes TWO files: the one
+    ``get_cache_file()`` names (``~/.config/meshforge/node_cache.json``) and an
+    operator-owned copy at ``MeshForgePaths.rns_nodes_cache_path()``
+    (``~/.cache/meshforge/rns_nodes.json``). Any test that constructs a bare
+    ``UnifiedNodeTracker()`` therefore reads and overwrites real fleet data —
+    measured 2026-08-03: a full-suite run on this box replaced a live
+    ``rns_nodes.json`` with 917 KB it had loaded from the box's own config,
+    and on a GATEWAY box that file is the 10 MB RNS node cache the map
+    collectors read.
+
+    Autouse and suite-wide on purpose. A per-file guard only holds until the
+    next test file constructs a tracker (``test_gateway_integration`` already
+    did), so this is a gate, not a convention: a test's verdict must not depend
+    on which box ran it, and neither must its side effects
+    (feedback_tests_must_pin_ambient_state).
+
+    Tests that assert on cache CONTENT patch these to their own tmp paths;
+    an inner patch wins, so this only catches what would otherwise escape.
+    """
+    root = tmp_path_factory.mktemp("node_cache_isolation")
+    with patch('utils.paths.MeshForgePaths.rns_nodes_cache_path',
+               return_value=root / "rns_nodes.json"), \
+         patch('utils.paths.chown_to_operator'), \
+         patch('gateway.node_tracker.UnifiedNodeTracker.get_cache_file',
+               return_value=root / "node_cache.json"):
+        yield root
+
+
 @pytest.fixture
 def mock_meshtastic():
     """Mock meshtastic module for tests that don't need real hardware."""

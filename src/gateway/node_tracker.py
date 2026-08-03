@@ -67,6 +67,24 @@ class UnifiedNodeTracker:
     OFFLINE_THRESHOLD = 900  # 15 minutes — consistent with map_data_collector default
     MAX_NODES = 10000  # Prevent unbounded memory growth
 
+    # Cache-write budget (2026-08-03 tracemalloc soak, 18.6 h on moc).
+    # The gateway was never leaking: retained growth measured 3.8 MB over the
+    # soak, and every growing structure is capped. What it WAS doing is
+    # serializing 9.2k nodes — 23.09 MB across two files, one of them
+    # pretty-printed — on every 60 s tick: 31.7 GB/day of fsync'd writes per
+    # gateway box, on moc3 the same SD card it swaps to.
+    #
+    # CLEANUP_TICK still drives timeout state at 60 s (node online/offline
+    # must stay responsive); only the WRITE moves to the 5-minute cadence the
+    # loop's own comment had claimed since it was written.
+    CLEANUP_TICK = 60
+    CACHE_SAVE_INTERVAL = 300
+    # Backstop for a missed dirty marker. The dirty flag is an optimization,
+    # never a correctness dependency — if a future mutation path forgets to
+    # mark, the cache must go stale for minutes, not forever
+    # (honest_failure_modes #9: no permanent silent blindness).
+    CACHE_MAX_STALENESS = 1800
+
     @classmethod
     def get_cache_file(cls) -> Path:
         """Get the cache file path (evaluated at runtime, not import time)"""
@@ -82,6 +100,13 @@ class UnifiedNodeTracker:
         self._rns_thread = None
         self._reticulum = None
         self._rns_connected = False
+
+        # Cache-write gating. Starts dirty: _load_cache is lossy by design
+        # (is_online is forced False, unknown fields dropped), so in-memory
+        # state never matches the file at construction. MONOTONIC only — this
+        # fleet's Pis are RTC-less and NTP steps the wall clock (#74).
+        self._cache_dirty = True
+        self._last_cache_save = 0.0
 
         # Enhanced RNS service tracking
         self._service_registry: Optional[RNSServiceRegistry] = None
@@ -392,6 +417,7 @@ class UnifiedNodeTracker:
                 is_new = True
                 logger.debug(f"Added new node: {node.id} ({node.name})")
 
+            self._mark_cache_dirty()
             self._notify_callbacks("update", node)
 
         # Add topology edge for Meshtastic nodes (outside lock to avoid deadlock)
@@ -425,6 +451,7 @@ class UnifiedNodeTracker:
         evict_count = max(1, len(self._nodes) // 10)
         for nid, _ in offline[:evict_count]:
             del self._nodes[nid]
+            self._mark_cache_dirty()
 
         if evict_count > 0:
             logger.info(f"Evicted {evict_count} stale nodes (capacity: {self.MAX_NODES})")
@@ -434,6 +461,7 @@ class UnifiedNodeTracker:
         with self._lock:
             if node_id in self._nodes:
                 node = self._nodes.pop(node_id)
+                self._mark_cache_dirty()
                 self._notify_callbacks("remove", node)
                 logger.debug(f"Removed node: {node_id}")
 
@@ -710,10 +738,31 @@ class UnifiedNodeTracker:
         except Exception as e:
             logger.debug(f"EventBus node emit failed: {e}")
 
+    def _mark_cache_dirty(self):
+        """Record that in-memory node state has diverged from the cache file."""
+        self._cache_dirty = True
+
+    def _maybe_save_cache(self) -> bool:
+        """Write the node cache only if it is due. Returns True if written.
+
+        Two gates, in order: unchanged state is not worth a 20 MB fsync'd
+        write, and changed state is not worth writing more than once per
+        CACHE_SAVE_INTERVAL. CACHE_MAX_STALENESS is the backstop — a mutation
+        path that forgets to mark dirty costs staleness, never permanence.
+        """
+        elapsed = time.monotonic() - self._last_cache_save
+        if self._cache_dirty:
+            if elapsed < self.CACHE_SAVE_INTERVAL:
+                return False
+        elif elapsed < self.CACHE_MAX_STALENESS:
+            return False
+        self._save_cache()
+        return True
+
     def _cleanup_loop(self):
-        """Periodically check node timeouts and save cache"""
+        """Periodically check node timeouts; write the cache when it is due."""
         while self._running:
-            if self._stop_event.wait(60):
+            if self._stop_event.wait(self.CLEANUP_TICK):
                 break
 
             with self._lock:
@@ -721,15 +770,21 @@ class UnifiedNodeTracker:
                 for node in self._nodes.values():
                     # Use state machine for timeout checking if available
                     if node._state_machine is not None:
-                        node.check_timeout()
+                        if node.check_timeout():
+                            self._mark_cache_dirty()
                     elif node.last_seen:
                         # Fallback to simple threshold check
                         age = (now - node.last_seen).total_seconds()
                         if age > self.OFFLINE_THRESHOLD:
+                            if node.is_online:
+                                self._mark_cache_dirty()
                             node.is_online = False
 
-            # Save cache every 5 minutes
-            self._save_cache()
+            # Timeout state is swept every tick; the cache is written at
+            # CACHE_SAVE_INTERVAL. This line used to call _save_cache()
+            # unconditionally under a comment that said "every 5 minutes" —
+            # the comment was the intent, the code was 31.7 GB/day.
+            self._maybe_save_cache()
 
     def _load_cache(self):
         """Load node cache from file"""
@@ -880,6 +935,13 @@ class UnifiedNodeTracker:
             with self._lock:
                 # Include signal history in cache for persistence
                 nodes_data = [n.to_dict(include_signal_history=True) for n in self._nodes.values()]
+                # Clear the gate against THIS snapshot, under the same lock
+                # that guards it. Clearing after the write instead would drop
+                # any mutation that raced the serialization — it would be
+                # marked dirty, then un-marked by a write that never contained
+                # it, and wait out CACHE_MAX_STALENESS. Restored below if the
+                # write fails.
+                self._cache_dirty = False
 
             cache_data = {
                 'version': 1,
@@ -888,7 +950,20 @@ class UnifiedNodeTracker:
             }
 
             from utils.paths import atomic_write_text
-            atomic_write_text(cache_file, json.dumps(cache_data, indent=2))
+            # ONE serialization, reused for both files. The indent=2 copy cost
+            # 2.8 MB more per write than the compact one and nothing reads a
+            # 10 MB file by eye; dumping twice also doubled the transient
+            # allocation swing the soak measured (peak 86.5 MB vs current
+            # 45.2 MB traced).
+            payload = json.dumps(cache_data)
+            atomic_write_text(cache_file, payload)
+            # The authoritative write landed. Advance the cadence clock HERE,
+            # not at the end: the operator-owned copy below is best-effort and
+            # must not make a save that already succeeded look like it didn't
+            # (feedback_review_your_own_fixes — a failing post-step
+            # misreporting a completed publish is the half-state bug that
+            # caught us on 69ad7ee).
+            self._last_cache_save = time.monotonic()
 
             # Also save an operator-owned cache for cross-process web-API access.
             # Under ~/.cache/meshforge (not world-writable /tmp) so another local
@@ -905,7 +980,7 @@ class UnifiedNodeTracker:
                 if cache_path.is_symlink():
                     logger.warning(f"Refusing to write to symlink: {cache_path}")
                 else:
-                    _awt(cache_path, json.dumps(cache_data))
+                    _awt(cache_path, payload)
                     chown_to_operator(cache_path.parent, cache_path)
             except PermissionError as e:
                 # A permission failure here silently freezes RNS positions on
@@ -919,6 +994,10 @@ class UnifiedNodeTracker:
                 logger.debug(f"Could not save web API cache: {e}")
 
         except Exception as e:
+            # A save that raised did not happen: restore the gate so the next
+            # tick retries, rather than letting a cleared flag hide the loss
+            # until the staleness ceiling (honest_failure_modes #9).
+            self._cache_dirty = True
             logger.warning(f"Failed to save node cache: {e}")
 
     def to_geojson(self) -> dict:

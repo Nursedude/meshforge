@@ -20,6 +20,11 @@ from src.gateway.node_tracker import (
 )
 
 
+# Suite-wide isolation of BOTH node-cache files lives in tests/conftest.py
+# (_isolate_node_cache_files) — a per-file guard here would not have covered
+# test_gateway_integration, which was the module measured clobbering live data.
+
+
 class TestPosition:
     """Tests for Position dataclass."""
 
@@ -1563,3 +1568,233 @@ class TestMergeSweepCompleteness20260723:
         d = node.to_dict()
         assert d["discovered_via_relay"] is True
         assert d["relay_node"] == 0x42 and d["next_hop"] == 0x17
+
+
+class TestCacheWriteChurn20260803:
+    """Cache-write churn — the cost the 2026-08-03 tracemalloc soak actually found.
+
+    18.6 h of tracing on moc measured 3.8 MB of retained growth (probe's own
+    linecache excluded) against a 23.09 MB payload serialized on EVERY 60 s
+    tick: 31.7 GB/day of fsync'd writes per gateway box, on moc3 the same SD
+    card it swaps to. The gateway was never leaking; it was churning.
+
+    These pin the cure: ONE compact serialization reused for both files, the
+    5-minute cadence the loop's comment had already claimed, and a dirty gate
+    built so it can never silently freeze the cache.
+    """
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        """A tracker whose BOTH cache files land in tmp_path.
+
+        The web-API copy is patched too, deliberately: _save_cache writes a
+        second operator-owned file via MeshForgePaths.rns_nodes_cache_path(),
+        and a test that leaves it unpatched overwrites the live 10 MB node
+        cache of whatever box runs the suite (feedback_tests_must_pin_ambient_state).
+        """
+        cache_file = tmp_path / "node_cache.json"
+        web_cache = tmp_path / "rns_nodes.json"
+        with patch.object(UnifiedNodeTracker, 'get_cache_file', return_value=cache_file), \
+             patch.object(UnifiedNodeTracker, '_load_cache'), \
+             patch('utils.paths.MeshForgePaths.rns_nodes_cache_path', return_value=web_cache), \
+             patch('utils.paths.chown_to_operator'):
+            t = UnifiedNodeTracker()
+            t.add_node(UnifiedNode(id="n1", network="meshtastic", name="One"))
+            yield t, cache_file, web_cache
+
+    # --- one compact serialization, not two (one indented) ------------------
+
+    def test_primary_cache_is_compact_not_indented(self, tracker):
+        """indent=2 cost 2.8 MB per write and nothing reads 10 MB by eye."""
+        t, cache_file, _ = tracker
+        t._save_cache()
+        text = cache_file.read_text()
+        assert '\n  ' not in text, "cache is pretty-printed; indent=2 is pure write amplification"
+        json.loads(text)  # still valid JSON
+
+    def test_both_files_receive_identical_bytes(self, tracker):
+        """Same payload -> serialize once, write twice."""
+        t, cache_file, web_cache = tracker
+        t._save_cache()
+        assert cache_file.read_bytes() == web_cache.read_bytes()
+
+    def test_serializes_exactly_once_per_save(self, tracker):
+        """Two json.dumps of 9k nodes doubled the transient allocation peak."""
+        t, _, _ = tracker
+        import src.gateway.node_tracker as nt
+        with patch.object(nt.json, 'dumps', wraps=nt.json.dumps) as dumps:
+            t._save_cache()
+        assert dumps.call_count == 1, f"serialized {dumps.call_count}x per save"
+
+    # --- cadence: 5 minutes, not every 60 s tick ----------------------------
+
+    def test_cadence_is_five_minutes_not_every_tick(self, tracker):
+        """Ten minutes of 60 s ticks must produce at most 2 writes, not 10."""
+        t, _, _ = tracker
+        clock = [1000.0]
+        # wraps=, not a bare mock: _save_cache is what advances the cadence
+        # clock, so replacing it outright would break the very feedback loop
+        # under test and the assertion would pin nothing
+        # (feedback_verify_the_verification — the mock standing in for the
+        # layer that matters).
+        with patch.object(t, '_save_cache', wraps=t._save_cache) as save, \
+             patch('src.gateway.node_tracker.time.monotonic', side_effect=lambda: clock[0]):
+            t._last_cache_save = clock[0]
+            for _ in range(10):          # 10 ticks x 60 s = 10 minutes
+                clock[0] += 60.0
+                t._mark_cache_dirty()
+                t._maybe_save_cache()
+        assert save.call_count <= 2, f"{save.call_count} writes in 10 min; cadence not applied"
+
+    def test_clean_tracker_inside_window_does_not_write(self, tracker):
+        """Unchanged state is not worth 20 MB of fsync'd writes."""
+        t, _, _ = tracker
+        clock = [1000.0]
+        with patch.object(UnifiedNodeTracker, '_save_cache') as save, \
+             patch('src.gateway.node_tracker.time.monotonic', side_effect=lambda: clock[0]):
+            t._cache_dirty = False
+            t._last_cache_save = clock[0]
+            clock[0] += 120.0
+            t._maybe_save_cache()
+        assert save.call_count == 0
+
+    def test_staleness_ceiling_writes_even_when_never_marked_dirty(self, tracker):
+        """A missed dirty marker must go stale for minutes, never forever.
+
+        The dirty flag is an optimization; it must not become a correctness
+        dependency (honest_failure_modes #9 — no permanent silent blindness).
+        """
+        t, _, _ = tracker
+        clock = [1000.0]
+        with patch.object(UnifiedNodeTracker, '_save_cache') as save, \
+             patch('src.gateway.node_tracker.time.monotonic', side_effect=lambda: clock[0]):
+            t._cache_dirty = False
+            t._last_cache_save = clock[0]
+            clock[0] += UnifiedNodeTracker.CACHE_MAX_STALENESS + 1
+            t._maybe_save_cache()
+        assert save.call_count == 1, "clean cache can never be refreshed — permanently stale"
+
+    # --- the dirty markers themselves ---------------------------------------
+
+    def test_add_node_marks_dirty(self, tracker):
+        t, _, _ = tracker
+        t._cache_dirty = False
+        t.add_node(UnifiedNode(id="n2", network="rns", name="Two"))
+        assert t._cache_dirty is True
+
+    def test_merge_of_existing_node_marks_dirty(self, tracker):
+        t, _, _ = tracker
+        t._cache_dirty = False
+        t.add_node(UnifiedNode(id="n1", network="meshtastic", name="One-updated"))
+        assert t._cache_dirty is True
+
+    def test_remove_node_marks_dirty(self, tracker):
+        t, _, _ = tracker
+        t._cache_dirty = False
+        t.remove_node("n1")
+        assert t._cache_dirty is True
+
+    def test_eviction_marks_dirty(self, tracker):
+        t, _, _ = tracker
+        t._cache_dirty = False
+        with t._lock:
+            t._evict_stale_nodes()
+        assert t._cache_dirty is True
+
+    def test_timeout_state_change_marks_dirty(self, tracker):
+        """The loop's own mutation is a mutation — it must mark dirty too."""
+        t, _, _ = tracker
+        node = t.get_node("n1")
+        if node._state_machine is None:
+            pytest.skip("state machine unavailable in this build")
+        # A node must be HEARD before it can time out: a fresh node sits in
+        # STALE_CACHE, which is_active() excludes, so check_timeout is a no-op
+        # until something responds. Drive the real path.
+        node.update_seen()
+        node.last_seen = datetime.now() - timedelta(hours=6)
+        t._cache_dirty = False
+        with t._lock:
+            changed = node.check_timeout()
+            if changed:
+                t._mark_cache_dirty()
+        assert changed is True and t._cache_dirty is True
+
+    # --- failure + clock honesty --------------------------------------------
+
+    def test_failed_write_keeps_dirty_for_retry(self, tracker):
+        """A save that raised did not happen — the gate must not clear."""
+        t, _, _ = tracker
+        t._mark_cache_dirty()
+        before = t._last_cache_save
+        with patch('utils.paths.atomic_write_text', side_effect=OSError("disk full")):
+            t._save_cache()   # swallowed + logged by design
+        assert t._cache_dirty is True, "failed write cleared the dirty gate"
+        assert t._last_cache_save == before, "failed write advanced the cadence clock"
+
+    def test_mutation_racing_the_write_is_not_lost(self, tracker):
+        """A node added mid-serialization must still be dirty afterwards.
+
+        The gate is cleared against the SNAPSHOT, under the lock that guards
+        it. If it were cleared after the write instead, a mutation landing
+        between snapshot and clear would be marked dirty, then un-marked by a
+        write that never contained it — invisible until CACHE_MAX_STALENESS.
+        """
+        t, _, _ = tracker
+        import src.gateway.node_tracker as nt
+        real_dumps = nt.json.dumps
+
+        def racing_dumps(obj, *a, **kw):
+            # Simulate a concurrent announce arriving while we serialize.
+            if not getattr(t, "_raced", False):
+                t._raced = True
+                t.add_node(UnifiedNode(id="racer", network="rns", name="Racer"))
+            return real_dumps(obj, *a, **kw)
+
+        with patch.object(nt.json, 'dumps', side_effect=racing_dumps):
+            t._save_cache()
+
+        assert t._cache_dirty is True, "the racing mutation was silently dropped"
+
+    def test_cadence_uses_monotonic_not_wallclock(self, tracker):
+        """RTC-less Pis + NTP steps forge wall-clock durations (#74).
+
+        A wall clock that jumps a day backwards must not stall the cache.
+        """
+        t, _, _ = tracker
+        clock = [1000.0]
+        with patch.object(UnifiedNodeTracker, '_save_cache') as save, \
+             patch('src.gateway.node_tracker.time.monotonic', side_effect=lambda: clock[0]), \
+             patch('src.gateway.node_tracker.time.time', return_value=0.0):
+            t._mark_cache_dirty()
+            t._last_cache_save = clock[0]
+            clock[0] += UnifiedNodeTracker.CACHE_SAVE_INTERVAL + 1
+            t._maybe_save_cache()
+        assert save.call_count == 1, "cadence is driven by the forgeable wall clock"
+
+    def test_cadence_stays_inside_every_downstream_freshness_window(self):
+        """Two consumers of one artifact must not drift (honest_failure_modes #5).
+
+        Slowing the writer is only safe while every READER still considers the
+        file fresh. The LXMF propagation probes hold-rather-than-fire on a
+        cache older than _PROPAGATION_CACHE_FRESH_S, and the map collector
+        rejects node_cache.json past node_cache_max_age_hours. Import the real
+        constants — a future cadence bump must fail HERE, not silently blind a
+        probe in the field.
+        """
+        from src.utils.watchdog_probes_gateway_lxmf import _PROPAGATION_CACHE_FRESH_S
+
+        worst_case = UnifiedNodeTracker.CACHE_MAX_STALENESS
+        assert UnifiedNodeTracker.CACHE_SAVE_INTERVAL <= worst_case
+        assert worst_case * 2 < _PROPAGATION_CACHE_FRESH_S, (
+            f"worst-case cache age {worst_case}s leaves under 2x margin on the "
+            f"{_PROPAGATION_CACHE_FRESH_S}s LXMF propagation freshness window"
+        )
+
+    def test_stop_flushes_unconditionally(self, tracker):
+        """Shutdown must not lose up to CACHE_SAVE_INTERVAL of state."""
+        t, cache_file, _ = tracker
+        t._cache_dirty = False
+        t._last_cache_save = time.monotonic()
+        cache_file.unlink(missing_ok=True)
+        t.stop(timeout=0.1)
+        assert cache_file.exists(), "stop() did not flush the cache"
