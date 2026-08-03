@@ -54,6 +54,15 @@ ExecStart=/opt/meshforge/scripts/lab_propagation_soak_fire.sh
 # on a fresh link. Default timeouts are 180s each, so one round can legitimately
 # take ~6 min before the script gives up and publishes a failed envelope.
 TimeoutStartSec=900
+# Backstop, NOT the cure (2026-08-02). The cure is in _run_role: the send
+# role's LXMF stamp workers are forked one-per-core, and killing only the
+# direct child on timeout orphaned them INTO THIS CGROUP — ExecStart exited 0
+# but oneshot then waited out the full default 90s stop window with 4 cores
+# pegged, and reported `Result: timeout` on a drill whose own verdict was
+# "OK indeterminate". If anything ever survives ExecStart again, fail FAST
+# and cheap. Deliberately still VISIBLE (the unit does go red) — a survivor
+# is a real regression, and the whole point is not to hide it.
+TimeoutStopSec=15
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=meshforge-propagation-soak

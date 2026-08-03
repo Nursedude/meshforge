@@ -378,6 +378,35 @@ def _src_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _terminate_process_group(proc) -> None:
+    """SIGKILL the child's whole process GROUP, best effort.
+
+    ⚠️ Refuses to signal our OWN group. With ``start_new_session=True`` the
+    child always leads its own group so this can't happen — but if that flag
+    is ever dropped, ``killpg`` would take out the fire script and this
+    parent along with the child. A safety check, not dead code.
+    """
+    import signal
+
+    try:
+        pgid = os.getpgid(proc.pid)
+        own = os.getpgid(0)
+    except OSError:                        # child already reaped
+        pgid = own = None
+
+    if pgid is not None and pgid != own:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            return
+        except OSError:                    # noqa: BLE001 - fall through
+            pass
+
+    try:                                   # last resort: the child alone
+        proc.kill()
+    except OSError:                        # noqa: BLE001 - already gone
+        pass
+
+
 def _run_role(role: str, body: str, node_hash: str, timeout_s: float,
               identity_path: str) -> dict:
     """Run one role in a CHILD PROCESS and return its JSON result.
@@ -409,17 +438,45 @@ def _run_role(role: str, body: str, node_hash: str, timeout_s: float,
     # nothing about the node — "indeterminate" lets run_round classify pull
     # failures honestly (review F1); the send stage is already indeterminate
     # by stage.
+    #
+    # ⚠️ start_new_session + killpg, NOT subprocess.run(timeout=) — the
+    # 2026-08-02 moc3 defect. The send role's propagation stamp is CPU-bound
+    # proof-of-work that LXMF farms out to one FORKED worker per core
+    # (LXStamper: multiprocessing.get_context("fork"), Process(daemon=True)).
+    # subprocess.run's timeout path SIGKILLs only the DIRECT child, and
+    # SIGKILL skips the atexit handler that reaps daemonic workers — so every
+    # send-timeout orphaned 4 workers INTO THE SERVICE CGROUP, still pegging
+    # every core. Type=oneshot then waited on that non-empty cgroup, SIGTERMed
+    # (absorbed: the workers inherit RNS's SIGTERM handler by fork), and
+    # SIGKILLed 90s later — turning an honest "OK indeterminate" drill into
+    # `Result: timeout`, a red unit and a user_timer_unit_failing_any
+    # escalation, plus ~6 core-minutes burned after the drill gave up.
+    # Killing the process GROUP reaps the workers with the child and does not
+    # depend on LXMF's or RNS's signal handling.
     try:
-        proc = subprocess.run(cmd, cwd=_src_root(), capture_output=True,
-                              text=True, timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        return {"ok": False, "indeterminate": True,
-                "reason": f"{role} phase exceeded {timeout_s:.0f}s"}
+        proc = subprocess.Popen(cmd, cwd=_src_root(), text=True,
+                                stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE,
+                                start_new_session=True)
     except OSError as exc:
         return {"ok": False, "indeterminate": True,
                 "reason": f"{role} phase could not start: {exc}"}
 
-    out = (proc.stdout or "").strip().splitlines()
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        _terminate_process_group(proc)
+        try:                               # reap; never leave a zombie
+            proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:  # noqa: BLE001 - already killed
+            pass
+        return {"ok": False, "indeterminate": True,
+                "reason": f"{role} phase exceeded {timeout_s:.0f}s"}
+    except BaseException:                  # Ctrl-C on a manual run
+        _terminate_process_group(proc)
+        raise
+
+    out = (stdout or "").strip().splitlines()
     for line in reversed(out):                 # last JSON line is the result
         line = line.strip()
         if line.startswith("{"):
@@ -427,7 +484,7 @@ def _run_role(role: str, body: str, node_hash: str, timeout_s: float,
                 return json.loads(line)
             except ValueError:
                 continue
-    err = (proc.stderr or "").strip().splitlines()
+    err = (stderr or "").strip().splitlines()
     tail = err[-1] if err else f"rc={proc.returncode}, no result line"
     return {"ok": False, "indeterminate": True,
             "reason": f"{role} phase produced no result ({tail})"}

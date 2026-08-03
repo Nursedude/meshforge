@@ -7,7 +7,10 @@ here.
 
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 
 sys.path.insert(0, 'src')
 
@@ -340,3 +343,169 @@ class TestLiveCaughtFaultInvariantsPinned:
         assert "open_reticulum(" not in head.replace(
             "# open_reticulum(", ""), (
             "module-level/parent RNS init would re-introduce fault 2")
+
+
+def _alive(pid: int) -> bool:
+    """True while `pid` exists (zombies included — we only ever ask about
+    processes we did not fork, so they are reaped by init, not by us)."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:                # exists, owned by someone else
+        return True
+    return True
+
+
+def _wait_gone(pid: int, timeout_s: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return not _alive(pid)
+
+
+class TestTimeoutReapsTheWholeProcessTree:
+    """2026-08-02, moc3: `meshforge-propagation-soak.service` failed every
+    time the stamp overran, while the drill's OWN verdict was the honest
+    "OK indeterminate: node not exercised".
+
+    The send role's propagation stamp is CPU-bound proof-of-work that LXMF
+    farms out to one FORKED worker per core (LXStamper uses
+    ``multiprocessing.get_context("fork")`` + ``Process(daemon=True)``).
+    ``subprocess.run(timeout=)`` SIGKILLs only the DIRECT child, and SIGKILL
+    skips the atexit handler that reaps daemonic workers — so 4 workers were
+    orphaned into the service cgroup and kept pegging every core. systemd
+    (Type=oneshot) then waited out the stop window and reported
+    ``Result: timeout``: a red unit, a `user_timer_unit_failing_any`
+    escalation, and ~6 wasted core-minutes, none of it about the node.
+
+    These are BEHAVIOURAL tests against real process trees — the unit tests
+    that mocked the spawn layer could never have caught this (the 07-25
+    "a detector that reads what it audits" lesson, in test form)."""
+
+    def _tree(self):
+        """A child that forks a grandchild which outlives a bare child kill.
+        Returns (proc, grandchild_pid)."""
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", "sleep 60 & echo $!; wait"],
+            stdout=subprocess.PIPE, text=True, start_new_session=True)
+        gpid = int(proc.stdout.readline().strip())
+        assert _alive(gpid), "fixture never started its grandchild"
+        return proc, gpid
+
+    def test_group_kill_reaps_the_grandchild(self):
+        proc, gpid = self._tree()
+        try:
+            soak_mod._terminate_process_group(proc)
+            proc.wait(timeout=10)
+            assert _wait_gone(gpid), (
+                "grandchild survived _terminate_process_group — the stamp "
+                "workers would again be orphaned into the service cgroup")
+        finally:
+            for p in (gpid,):
+                try:
+                    os.kill(p, signal.SIGKILL)
+                except OSError:
+                    pass
+            proc.stdout.close()
+
+    def test_bare_child_kill_leaves_the_grandchild_behind(self):
+        """The defect itself, pinned: this is what subprocess.run's timeout
+        path did. If this ever stops holding, the cure is no longer needed —
+        but until then it is WHY the group kill exists."""
+        proc, gpid = self._tree()
+        try:
+            proc.kill()
+            proc.wait(timeout=10)
+            time.sleep(0.3)
+            assert _alive(gpid), (
+                "grandchild died with a bare child kill — the orphaning "
+                "mechanism this fix exists for no longer reproduces")
+        finally:
+            try:
+                os.kill(gpid, signal.SIGKILL)
+            except OSError:
+                pass
+            proc.stdout.close()
+
+    def test_refuses_to_signal_our_own_process_group(self):
+        """Safety: with start_new_session dropped, a naive killpg would take
+        out the fire script and the orchestrating parent too. Must fall back
+        to killing the single process instead."""
+        killed = []
+
+        class _SameGroupProc:
+            pid = os.getpid()               # our own group leader-ish
+
+            def kill(self):
+                killed.append(True)
+
+        soak_mod._terminate_process_group(_SameGroupProc())
+        assert killed == [True], (
+            "_terminate_process_group must fall back to proc.kill() rather "
+            "than killpg our own group")
+        assert _alive(os.getpid()), "we killed ourselves"
+
+    def test_timeout_path_still_reports_the_same_reason_string(self):
+        """The envelope reason and the cron verdict text are consumed
+        downstream (and 13 days of retained envelopes carry it). Reaping the
+        tree must not change what the drill SAYS."""
+        src = self._src()
+        assert 'f"{role} phase exceeded {timeout_s:.0f}s"' in src, (
+            "the send/pull timeout reason string changed — probe and "
+            "verdict consumers read it")
+
+    SRC = os.path.join(os.path.dirname(__file__), "..", "src", "lab",
+                       "lxmf_propagation_soak.py")
+
+    def _src(self):
+        with open(self.SRC, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_spawn_uses_its_own_session(self):
+        src = self._src()
+        assert "start_new_session=True" in src, (
+            "the role child must lead its own process group, or a timeout "
+            "cannot reap the forked stamp workers")
+
+    def test_no_subprocess_run_timeout_regression(self):
+        """subprocess.run(timeout=) is exactly the pattern that orphaned the
+        workers. Reintroducing it re-opens the defect silently."""
+        # Comments are stripped: this file DOCUMENTS the banned pattern by
+        # name, and a pin that reads its own prose pins nothing (07-25).
+        code = "\n".join(
+            line for line in self._src().splitlines()
+            if not line.lstrip().startswith("#"))
+        assert "subprocess.run(" not in code, (
+            "subprocess.run() is back in the soak — its timeout path kills "
+            "only the direct child and re-orphans the stamp workers")
+
+    def test_run_role_still_reads_the_childs_streams(self):
+        """End-to-end through the REAL Popen/communicate path (no RNS: an
+        invalid --role is rejected by argparse before any import).
+
+        This is the test that would have caught the bug this very rewrite
+        nearly shipped — `proc.stderr` is a string under subprocess.run but a
+        (closed) file object under Popen+communicate, so the no-result branch
+        would have raised AttributeError instead of reporting honestly. Pure
+        source pins could not see it."""
+        result = soak_mod._run_role(
+            "bogus", "body", "00" * 16, 60.0, "/nonexistent/identity")
+        assert result["ok"] is False
+        assert result["indeterminate"] is True
+        assert "produced no result" in result["reason"], result
+        # The child's stderr must reach the reason — not a repr of a file
+        # object, and not an empty fallback.
+        assert "invalid choice" in result["reason"], result
+
+    def test_unit_template_bounds_the_stop_window(self):
+        unit = os.path.join(
+            os.path.dirname(__file__), "..", "templates", "systemd",
+            "meshforge-propagation-soak-user.service")
+        with open(unit, encoding="utf-8") as fh:
+            text = fh.read()
+        assert "TimeoutStopSec=" in text, (
+            "no bounded stop window: a surviving worker would again peg the "
+            "cores for the full 90s default before SIGKILL")
