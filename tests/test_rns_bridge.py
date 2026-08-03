@@ -192,6 +192,23 @@ def _mock_gateway_config(**overrides):
     return config
 
 
+
+# Bridge loop threads, by the names rns_bridge.py gives them. Kept here rather
+# than imported so a rename in the source shows up as "no survivors ever
+# reported" rather than silently matching nothing.
+_BRIDGE_THREAD_NAMES = {
+    "MeshtasticBridge", "RNSBridge", "MessageBridge",
+    "MeshCoreBridge", "OraclePhoneAPITap", "ChannelDiagnostic",
+}
+
+
+def _surviving_bridge_threads():
+    """Live bridge loop threads, by name. Empty list = clean teardown."""
+    import threading as _t
+    return [t.name for t in _t.enumerate()
+            if t.name in _BRIDGE_THREAD_NAMES and t.is_alive()]
+
+
 @pytest.fixture
 def bridge():
     """Create a fully-mocked RNSMeshtasticBridge for unit testing."""
@@ -236,8 +253,25 @@ def bridge():
         # stop() is a no-op when the bridge was never started.
         try:
             b.stop()
-        except Exception:
-            pass
+        except Exception as _e:
+            # Was a bare `pass`. A stop() that raised left the loops running
+            # and said nothing — a swallow with no witness (hfm #9).
+            print("BRIDGE_TEARDOWN_WITNESS stop-raised: %r" % (_e,))
+        # OBSERVE ONLY — deliberately no assert here (2026-08-03). This
+        # fixture backs ~410 tests and the leak is not reproducible off the
+        # minimal-deps CI profile, so a hard gate here could turn a green
+        # suite red on timing alone. One dedicated test
+        # (TestBridgeThreadTeardownWitness) carries the strict assertion; this
+        # line only makes a survivor GREPPABLE in the CI log.
+        #
+        # Why it matters: a surviving loop keeps logging into whatever test's
+        # captured stdout comes next. CI job 91806119508 carried a 699-byte
+        # NUL hole in one teardown capture followed by a bridge log line
+        # stamped 2.3 minutes earlier — a writer at a stale offset in the
+        # capture file. That NUL is what turned the pytest log binary.
+        _alive = _surviving_bridge_threads()
+        if _alive:
+            print("BRIDGE_TEARDOWN_WITNESS survivors: %s" % sorted(_alive))
 
 
 @pytest.fixture
@@ -5780,3 +5814,54 @@ class TestRetentionPinsWired20260803:
                             "default_lxmf_destination": ""})
         assert call.called
         assert list(call.call_args[0][0]) == []
+
+
+class TestBridgeThreadTeardownWitness20260803:
+    """One hard signal for the bridge-thread leak, scoped to a single test.
+
+    Chain, three defects deep, found 2026-08-03: a bridge loop thread outlives
+    its test -> keeps logging into the NEXT test's captured stdout at a stale
+    file offset -> the capture file gains a NUL hole and goes binary -> grep in
+    the CI verdict gate truncates before pytest's summary -> a 10117-passed
+    suite is classified FAIL (job 91793121072). The gate is fixed separately
+    (5c703b78) so the NUL is no longer load-bearing; this is about the leak
+    itself.
+
+    Deliberately NOT an assertion in the shared `bridge` fixture, which backs
+    ~410 tests: the leak has never reproduced off the minimal-deps CI profile,
+    and a hard gate there could redden a green suite on timing alone. This one
+    test is the narrow probe — if it fails in CI, the leak is real and
+    reproducible and the fixture-wide assert is justified; if it passes while
+    BRIDGE_TEARDOWN_WITNESS lines appear in the log, the survivor comes from a
+    path this test does not exercise.
+
+    ⚠️ rns_bridge.stop() joins with timeout=5 and never checks whether the join
+    succeeded, and _oracle_tap_thread / _channel_diagnostic_thread are not in
+    its join list at all. That is the production-side half of this and is
+    untouched here.
+    """
+
+    def test_started_bridge_leaves_no_live_loop_threads(self, bridge):
+        before = set(_surviving_bridge_threads())
+
+        with patch.object(bridge, '_start_websocket_server'), \
+             patch.object(bridge, '_init_rns_main_thread'), \
+             patch("gateway._channel_resolver.apply_resolved_channel"):
+            bridge.start()
+        assert bridge._running is True
+
+        bridge.stop()
+
+        # stop() joins with timeout=5; give the same budget again before
+        # declaring a survivor, so this reports a real leak and not a race.
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if not (set(_surviving_bridge_threads()) - before):
+                break
+            time.sleep(0.1)
+
+        leaked = sorted(set(_surviving_bridge_threads()) - before)
+        assert not leaked, (
+            "bridge loop thread(s) survived stop(): %s — these keep logging "
+            "into the NEXT test's captured stdout" % leaked
+        )
