@@ -183,8 +183,11 @@ def send_text_direct_with_id(
         )
         ctx = _stateless_ssl_ctx if tls else None
         # threshold matches caller-supplied HTTP timeout (default 5s)
+        # No target= here: timed_boundary mints a permanent metrics key per
+        # unique target, and packet_id is unique per send — that turned this
+        # metric into an unbounded per-message accumulator (2026-08-02 arc).
+        # The packet_id is already in the success/failure logs below.
         with timed_boundary("meshtasticd.toradio_put",
-                            target=f"{packet_id:08x}",
                             threshold_s=max(timeout, 2.0)):
             with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
                 if resp.status in (200, 204):

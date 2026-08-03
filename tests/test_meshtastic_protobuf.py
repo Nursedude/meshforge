@@ -1024,3 +1024,46 @@ class TestIntegration:
         client._handle_session_setup(fr)
         assert client._module_config.mqtt is not None
         assert client._module_config.mqtt.enabled is True
+
+
+class TestBoundaryTimingKeyCardinality:
+    """TX metrics keys must be bounded (2026-08-02 gateway memory arc).
+
+    timed_boundary(label, target=...) mints a PERMANENT key per unique
+    target in two module-level dicts with no eviction and no production
+    reader. Passing the per-packet id as target= turned the TX-timing
+    metric into an unbounded per-message accumulator (~1KB per send,
+    forever — confirmed growing on moc's live heap via tracemalloc).
+    This pins the aggregate-label behavior so it cannot regress.
+    """
+
+    def _send_twice(self):
+        from gateway import meshtastic_protobuf_client as mpc
+        from unittest.mock import patch, MagicMock
+
+        resp = MagicMock()
+        resp.status = 200
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        with patch.object(mpc.urllib.request, "urlopen", return_value=resp):
+            id1 = mpc.send_text_direct_with_id("ping-1", tls=False)
+            id2 = mpc.send_text_direct_with_id("ping-2", tls=False)
+        assert id1 is not None and id2 is not None and id1 != id2
+
+    def test_toradio_put_key_count_does_not_scale_with_packets(self):
+        from utils import boundary_timing
+
+        boundary_timing.reset_boundary_stats()
+        try:
+            self._send_twice()
+            stats = boundary_timing.get_boundary_stats()
+            put_keys = [k for k in stats if k.startswith("meshtasticd.toradio_put")]
+            assert len(put_keys) == 1, (
+                f"expected ONE aggregate toradio_put key, got {put_keys} — "
+                f"a per-packet target= mints unbounded metric keys"
+            )
+            # And the one key must be the bare label, not label[<unique id>].
+            assert put_keys == ["meshtasticd.toradio_put"]
+            assert stats["meshtasticd.toradio_put"]["count"] == 2
+        finally:
+            boundary_timing.reset_boundary_stats()
