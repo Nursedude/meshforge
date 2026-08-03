@@ -211,3 +211,141 @@ class TestConfigRoundTrip:
 
         loaded = GatewayConfig.load()
         assert loaded.rns_bridge_enabled is True
+
+
+class TestStatusDialects20260803:
+    """A bridge's status must be read in ITS OWN dialect.
+
+    Measured on moc 2026-08-03: the gateway printed
+
+        [Meshtastic Preset Bridge (cross-preset)]
+          Meshtastic: disconnected   RNS: n/a
+          Messages bridged: 0 (M->R: 0, R->M: 0)
+
+    while the journal showed both legs connected and real traffic crossing
+    ("Bridged SHORT_TURBO -> primary ... Kilauea Volcano ADVISORY YELLOW").
+
+    Cause: the printers read RNSMeshtasticBridge's vocabulary
+    (meshtastic_connected / messages_mesh_to_rns) against MeshBridge's status
+    dict (primary{connected} / messages_primary_to_secondary). Every missing
+    key fell through to a default that LOOKS like a reading — absent became
+    False became "disconnected", absent counters became 0 — so absence was
+    rendered as a fault claim (honest_failure_modes #1).
+
+    Note the asymmetry that made it survive: the RNS line already had an
+    absence branch ("n/a"); the Meshtastic line did not.
+    """
+
+    MESH_STATUS = {
+        "running": True,
+        "enabled": True,
+        "primary": {"connected": True, "preset": "LONG_FAST", "mode": "mqtt"},
+        "secondary": {"connected": True, "preset": "SHORT_TURBO", "mode": "tcp"},
+        "statistics": {
+            "messages_primary_to_secondary": 7,
+            "messages_secondary_to_primary": 3,
+        },
+    }
+    RNS_STATUS = {
+        "running": True,
+        "meshtastic_connected": True,
+        "rns_connected": True,
+        "statistics": {"messages_mesh_to_rns": 5, "messages_rns_to_mesh": 2},
+    }
+
+    def _render(self, statuses, capsys):
+        from gateway.bridge_cli import print_multi_status
+
+        insts = []
+        for i, st in enumerate(statuses):
+            m = MagicMock()
+            m.get_status.return_value = st
+            m._bridge_label = f"bridge{i}"
+            insts.append(m)
+        print_multi_status(insts)
+        return capsys.readouterr().out
+
+    # --- the reported symptom -------------------------------------------
+
+    def test_connected_mesh_bridge_is_never_called_disconnected(self, capsys):
+        out = self._render([self.MESH_STATUS, self.RNS_STATUS], capsys)
+        mesh_block = out.split("bridge1")[0]
+        assert "disconnected" not in mesh_block, (
+            "a fully connected cross-preset bridge was reported disconnected:\n" + mesh_block
+        )
+
+    def test_mesh_bridge_shows_both_preset_legs(self, capsys):
+        out = self._render([self.MESH_STATUS, self.RNS_STATUS], capsys)
+        assert "LONG_FAST" in out and "SHORT_TURBO" in out
+
+    def test_mesh_bridge_counters_are_visible(self, capsys):
+        """10 bridged messages must not render as 0."""
+        out = self._render([self.MESH_STATUS, self.RNS_STATUS], capsys)
+        mesh_block = out.split("bridge1")[0]
+        assert "7" in mesh_block and "3" in mesh_block, (
+            "mesh<->mesh counters invisible; display read the RNS key names:\n" + mesh_block
+        )
+        assert "M->R: 0" not in mesh_block
+
+    def test_disconnected_leg_still_reads_disconnected(self, capsys):
+        """The fix must not make everything look healthy — a real down leg shows."""
+        down = dict(self.MESH_STATUS)
+        down["secondary"] = {"connected": False, "preset": "SHORT_TURBO"}
+        out = self._render([down, self.RNS_STATUS], capsys)
+        assert "disconnected" in out.split("bridge1")[0]
+
+    # --- absence is never a definitive claim -----------------------------
+
+    def test_unrecognized_shape_is_not_claimed_disconnected(self, capsys):
+        """A future bridge type must report unknown, not manufacture a fault."""
+        out = self._render([{"running": True, "something_else": 1}, self.RNS_STATUS], capsys)
+        block = out.split("bridge1")[0]
+        assert "disconnected" not in block, "absence rendered as a fault claim:\n" + block
+        assert "unknown" in block.lower()
+
+    # --- the legacy single-bridge format must not regress ----------------
+
+    def test_rns_dialect_rendering_unchanged(self, capsys):
+        from gateway.bridge_cli import print_status
+
+        print_status(self.RNS_STATUS)
+        out = capsys.readouterr().out
+        assert "Meshtastic: connected" in out
+        assert "RNS: connected" in out
+        assert "Messages bridged: 7 (M->R: 5, R->M: 2)" in out
+
+    def test_single_mesh_bridge_also_reads_its_own_dialect(self, capsys):
+        """print_multi_status delegates to print_status when only one bridge
+        runs — a pure cross-preset box must not hit the same lie."""
+        out = self._render([self.MESH_STATUS], capsys)
+        assert "disconnected" not in out, out
+
+    # --- readiness gate reads the same dialects --------------------------
+
+    def test_bridge_is_ready_recognizes_the_mesh_dialect(self):
+        from gateway.bridge_cli import _bridge_is_ready
+
+        inst = MagicMock()
+        inst.get_status.return_value = self.MESH_STATUS
+        assert _bridge_is_ready(inst) is True, (
+            "mesh_bridge could never be 'ready': meshtastic_connected is absent, "
+            "so bool(None) was False forever"
+        )
+
+    def test_bridge_is_ready_mesh_partial_is_not_ready(self):
+        from gateway.bridge_cli import _bridge_is_ready
+
+        half = dict(self.MESH_STATUS)
+        half["secondary"] = {"connected": False, "preset": "SHORT_TURBO"}
+        inst = MagicMock()
+        inst.get_status.return_value = half
+        assert _bridge_is_ready(inst) is False
+
+    def test_bridge_is_ready_rns_dialect_unchanged(self):
+        from gateway.bridge_cli import _bridge_is_ready
+
+        inst = MagicMock()
+        inst.get_status.return_value = self.RNS_STATUS
+        assert _bridge_is_ready(inst) is True
+        inst.get_status.return_value = dict(self.RNS_STATUS, rns_connected=False)
+        assert _bridge_is_ready(inst) is False

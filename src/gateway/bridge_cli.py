@@ -244,27 +244,71 @@ def preflight_checks(config: GatewayConfig) -> bool:
     return all_ok
 
 
-def print_status(status: dict):
-    """Print bridge status."""
-    running = status.get('running', False)
-    mesh = "connected" if status.get('meshtastic_connected') else "disconnected"
-    if status.get('rns_connected'):
-        rns = "connected"
-    elif status.get('rns_via_rnsd'):
-        rns = "via rnsd (transport handled by rnsd)"
-    else:
-        rns = "disconnected"
+def _is_mesh_dialect(status: dict) -> bool:
+    """True when this status speaks MeshBridge's primary/secondary vocabulary."""
+    return (isinstance(status.get("primary"), dict)
+            and isinstance(status.get("secondary"), dict))
 
-    print(f"\n{'='*50}")
-    print(f"Gateway Status: {'RUNNING' if running else 'STOPPED'}")
-    print(f"Meshtastic: {mesh}")
-    print(f"RNS: {rns}")
 
-    stats = status.get('statistics', {})
-    if stats:
-        mesh_to_rns = stats.get('messages_mesh_to_rns', 0)
-        rns_to_mesh = stats.get('messages_rns_to_mesh', 0)
-        print(f"Messages bridged: {mesh_to_rns + rns_to_mesh} (M->R: {mesh_to_rns}, R->M: {rns_to_mesh})")
+def _is_rns_dialect(status: dict) -> bool:
+    """True when this status speaks RNSMeshtasticBridge's vocabulary.
+
+    Membership, not truthiness — a present-and-False key is a reading, an
+    absent key is not.
+    """
+    return ("meshtastic_connected" in status
+            or "rns_connected" in status
+            or "rns_via_rnsd" in status)
+
+
+def _link_legs(status: dict):
+    """``[(label, connected)]`` in the bridge's OWN dialect, or None if unknown.
+
+    ``None`` means CANNOT OBSERVE — never "down".
+
+    Bridges do not share a status vocabulary: RNSMeshtasticBridge reports
+    ``meshtastic_connected``/``rns_connected``, MeshBridge reports
+    ``primary``/``secondary`` sub-dicts. Reading one dialect against the other
+    turns a MISSING key into False and prints "disconnected" — a fault claim
+    manufactured out of absence (honest_failure_modes #1). Measured on moc
+    2026-08-03: the cross-preset bridge reported "Meshtastic: disconnected /
+    Messages bridged: 0" while its journal showed both legs connected and real
+    SHORT_TURBO traffic crossing.
+
+    Every branch below is reachable only from a key that is actually PRESENT.
+    """
+    if _is_mesh_dialect(status):
+        out = []
+        for leg in ("primary", "secondary"):
+            info = status.get(leg) or {}
+            out.append((str(info.get("preset") or leg), bool(info.get("connected"))))
+        return out
+
+    legs = []
+    if "meshtastic_connected" in status:
+        legs.append(("Meshtastic", bool(status.get("meshtastic_connected"))))
+    if "rns_connected" in status or "rns_via_rnsd" in status:
+        legs.append(("RNS", bool(status.get("rns_connected")
+                                 or status.get("rns_via_rnsd"))))
+    return legs or None
+
+
+def _format_counts(stats: dict) -> list:
+    """Bridged-message lines in the stats' own dialect; [] if unreadable.
+
+    Printing 0 for a counter you cannot read is the same lie as printing
+    "disconnected" for a link you cannot see — say nothing instead.
+    """
+    if ("messages_primary_to_secondary" in stats
+            or "messages_secondary_to_primary" in stats):
+        p2s = stats.get("messages_primary_to_secondary", 0)
+        s2p = stats.get("messages_secondary_to_primary", 0)
+        return [f"Messages bridged: {p2s + s2p} (P->S: {p2s}, S->P: {s2p})"]
+
+    if "messages_mesh_to_rns" in stats or "messages_rns_to_mesh" in stats:
+        m2r = stats.get('messages_mesh_to_rns', 0)
+        r2m = stats.get('messages_rns_to_mesh', 0)
+        lines = [f"Messages bridged: {m2r + r2m} (M->R: {m2r}, R->M: {r2m})"]
         # Hardening D triplet — surfaces "tried but didn't deliver" so a
         # silent stall (queue full / channel deployment gap) doesn't hide
         # behind the legacy single delivered counter.
@@ -273,11 +317,45 @@ def print_status(status: dict):
         r2m_a = stats.get('rns_to_mesh_attempted', 0)
         r2m_d = stats.get('rns_to_mesh_dropped', 0)
         if m2r_a or r2m_a:
-            print(
+            lines.append(
                 f"  attempted/delivered/dropped — "
-                f"M->R: {m2r_a}/{mesh_to_rns}/{m2r_d}  "
-                f"R->M: {r2m_a}/{rns_to_mesh}/{r2m_d}"
+                f"M->R: {m2r_a}/{m2r}/{m2r_d}  "
+                f"R->M: {r2m_a}/{r2m}/{r2m_d}"
             )
+        return lines
+
+    return []
+
+
+def print_status(status: dict):
+    """Print bridge status."""
+    running = status.get('running', False)
+
+    print(f"\n{'='*50}")
+    print(f"Gateway Status: {'RUNNING' if running else 'STOPPED'}")
+
+    if _is_mesh_dialect(status):
+        for label, ok in _link_legs(status):
+            print(f"{label}: {'connected' if ok else 'disconnected'}")
+    elif _is_rns_dialect(status):
+        # Legacy wording preserved verbatim — field tooling and log consumers
+        # match on these exact lines.
+        mesh = "connected" if status.get('meshtastic_connected') else "disconnected"
+        if status.get('rns_connected'):
+            rns = "connected"
+        elif status.get('rns_via_rnsd'):
+            rns = "via rnsd (transport handled by rnsd)"
+        else:
+            rns = "disconnected"
+        print(f"Meshtastic: {mesh}")
+        print(f"RNS: {rns}")
+    else:
+        print("Link state: unknown (unrecognized bridge status shape)")
+
+    stats = status.get('statistics', {})
+    if stats:
+        for line in _format_counts(stats):
+            print(line)
 
     node_stats = status.get('node_stats', {})
     if node_stats:
@@ -288,21 +366,27 @@ def print_status(status: dict):
 
 
 def _bridge_is_ready(instance) -> bool:
-    """Return True when an instance reports both meshtastic + RNS sides up.
+    """Return True when every link this bridge actually reports is up.
 
-    Bridges that don't expose a status dict with these keys (e.g. pure
-    MeshtasticPresetBridge without an RNS side) count as "ready" as soon
-    as their meshtastic flag flips, so startup doesn't wait for an RNS
-    connection that bridge doesn't need.
+    Reads the bridge's own dialect via _link_legs, so a bridge with no RNS
+    side is judged on the legs it HAS rather than on an RNS key it never
+    emits. Before 2026-08-03 this read ``meshtastic_connected`` unconditionally,
+    so MeshBridge — which reports primary/secondary — evaluated bool(None) and
+    could never become ready. On moc that was masked by the ``any()`` at the
+    call site (rns_bridge reported ready); a pure cross-preset box waited out
+    the full startup window every start.
+
+    An unrecognized status shape stays not-ready: the caller's wait is bounded,
+    and claiming readiness for a bridge we cannot observe would be the same
+    absence-as-fact error in the other direction.
     """
     if not hasattr(instance, "get_status"):
         return True
     status = instance.get_status() or {}
-    mesh_ok = status.get("meshtastic_connected")
-    if "rns_connected" in status or "rns_via_rnsd" in status:
-        rns_ok = status.get("rns_connected") or status.get("rns_via_rnsd")
-        return bool(mesh_ok and rns_ok)
-    return bool(mesh_ok)
+    legs = _link_legs(status)
+    if legs is None:
+        return False
+    return all(ok for _, ok in legs)
 
 
 def print_multi_status(instances):
@@ -319,31 +403,31 @@ def print_multi_status(instances):
         status = inst.get_status() if hasattr(inst, "get_status") else {}
         label = getattr(inst, "_bridge_label", getattr(inst, "_bridge_name", "bridge"))
         print(f"  [{label}]")
-        mesh = "connected" if status.get("meshtastic_connected") else "disconnected"
-        if status.get("rns_connected"):
-            rns = "connected"
-        elif status.get("rns_via_rnsd"):
-            rns = "via rnsd"
-        elif "rns_connected" in status or "rns_via_rnsd" in status:
-            rns = "disconnected"
+        if _is_mesh_dialect(status):
+            legs = "   ".join(
+                f"{leg_label}: {'connected' if ok else 'disconnected'}"
+                for leg_label, ok in _link_legs(status)
+            )
+            print(f"    {legs}")
+        elif _is_rns_dialect(status):
+            mesh = "connected" if status.get("meshtastic_connected") else "disconnected"
+            if status.get("rns_connected"):
+                rns = "connected"
+            elif status.get("rns_via_rnsd"):
+                rns = "via rnsd"
+            else:
+                rns = "disconnected"
+            print(f"    Meshtastic: {mesh}   RNS: {rns}")
         else:
-            rns = "n/a"
-        print(f"    Meshtastic: {mesh}   RNS: {rns}")
+            print("    Link state: unknown (unrecognized bridge status shape)")
         stats = status.get("statistics", {}) or {}
         if stats:
-            m2r = stats.get("messages_mesh_to_rns", 0)
-            r2m = stats.get("messages_rns_to_mesh", 0)
-            print(f"    Messages bridged: {m2r + r2m} (M->R: {m2r}, R->M: {r2m})")
-            m2r_a = stats.get("mesh_to_rns_attempted", 0)
-            m2r_d = stats.get("mesh_to_rns_dropped", 0)
-            r2m_a = stats.get("rns_to_mesh_attempted", 0)
-            r2m_d = stats.get("rns_to_mesh_dropped", 0)
-            if m2r_a or r2m_a:
-                print(
-                    f"      att/del/drop — "
-                    f"M->R: {m2r_a}/{m2r}/{m2r_d}  "
-                    f"R->M: {r2m_a}/{r2m}/{r2m_d}"
-                )
+            # Same renderer as print_status — one counter vocabulary, not two
+            # copies to drift (honest_failure_modes #5). Continuation lines
+            # carry their own leading spaces, so a flat 4-space prefix keeps
+            # the relative indent.
+            for line in _format_counts(stats):
+                print(f"    {line}")
     print(f"{'='*50}")
     print("Press Ctrl+C to stop and return to menu\n")
 
