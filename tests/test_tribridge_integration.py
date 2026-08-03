@@ -484,6 +484,37 @@ class TestRouterStats:
 # TEST: MeshCoreHandler in Simulation — Queue Integration
 # =============================================================================
 
+
+
+def _join_or_fail(thread, stop_event, timeout=10.0):
+    """Join a handler thread and PROVE it died.
+
+    A bare ``thread.join(timeout=...)`` returns None whether the thread
+    stopped or not, so an expired join is indistinguishable from a clean
+    one — the swallow-with-no-witness pattern, in a test
+    (honest_failure_modes #9).
+
+    The consequence is not hypothetical. These threads run the MeshCore
+    handler's asyncio loop, which logs; a survivor keeps writing to the
+    stdout file descriptor pytest captured for whatever test runs NEXT. On
+    2026-08-03 CI job 91798063845 a "Captured stdout teardown" block for an
+    unrelated test contained a 103-byte NUL hole followed by a MeshCore
+    simulator log line stamped 2.4 minutes earlier — a writer at a stale
+    offset in the capture file. That NUL turned the whole pytest log binary,
+    which truncated the CI verdict gate's grep and classified a
+    10117-passed suite as FAIL (fixed separately in pytest_verdict.sh).
+
+    So: a leaked thread here is not tidy-up debt, it corrupts another test's
+    captured output. Fail loudly instead.
+    """
+    stop_event.set()
+    thread.join(timeout=timeout)
+    assert not thread.is_alive(), (
+        "MeshCore handler thread did not stop within %.0fs after stop_event "
+        "was set. A survivor logs into the NEXT test's captured stdout." % timeout
+    )
+
+
 class TestMeshCoreHandlerQueueIntegration:
     """Test MeshCoreHandler message queue flow in simulation mode."""
 
@@ -542,8 +573,7 @@ class TestMeshCoreHandlerQueueIntegration:
             time.sleep(0.05)
 
         assert handler.is_connected
-        stop.set()
-        thread.join(timeout=3)
+        _join_or_fail(thread, stop)
 
     def test_send_text_queues_message(self, handler_with_queues):
         """send_text queues a CanonicalMessage for async processing."""
@@ -565,8 +595,7 @@ class TestMeshCoreHandlerQueueIntegration:
         result = handler.send_text("Test message to MeshCore")
         assert result is True
 
-        stop.set()
-        thread.join(timeout=3)
+        _join_or_fail(thread, stop)
 
     def test_simulation_disconnect_clean(self, handler_with_queues):
         """Handler disconnects cleanly in simulation mode."""
@@ -585,7 +614,6 @@ class TestMeshCoreHandlerQueueIntegration:
         handler.disconnect()
         assert handler.is_connected is False
 
-        stop.set()
-        thread.join(timeout=3)
+        _join_or_fail(thread, stop)
 
 
