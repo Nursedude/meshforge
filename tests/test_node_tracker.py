@@ -1628,8 +1628,15 @@ class TestCacheWriteChurn20260803:
 
     # --- cadence: 5 minutes, not every 60 s tick ----------------------------
 
-    def test_cadence_is_five_minutes_not_every_tick(self, tracker):
-        """Ten minutes of 60 s ticks must produce at most 2 writes, not 10."""
+    def test_cadence_follows_the_constant_not_the_tick(self, tracker):
+        """Writes track CACHE_SAVE_INTERVAL, not the 60 s sweep tick.
+
+        Derived from the constant rather than hardcoding a count: the interval
+        was 300s when written and moved to 120s the same day once it emerged
+        that shutdown never flushes. A test that pins the VALUE has to be
+        edited every time the value is tuned, and an edited test is one nobody
+        re-derives — pin the relationship instead.
+        """
         t, _, _ = tracker
         clock = [1000.0]
         # wraps=, not a bare mock: _save_cache is what advances the cadence
@@ -1640,11 +1647,27 @@ class TestCacheWriteChurn20260803:
         with patch.object(t, '_save_cache', wraps=t._save_cache) as save, \
              patch('src.gateway.node_tracker.time.monotonic', side_effect=lambda: clock[0]):
             t._last_cache_save = clock[0]
-            for _ in range(10):          # 10 ticks x 60 s = 10 minutes
-                clock[0] += 60.0
+            ticks = 20
+            for _ in range(ticks):
+                clock[0] += UnifiedNodeTracker.CLEANUP_TICK
                 t._mark_cache_dirty()
                 t._maybe_save_cache()
-        assert save.call_count <= 2, f"{save.call_count} writes in 10 min; cadence not applied"
+        elapsed = ticks * UnifiedNodeTracker.CLEANUP_TICK
+        expected = elapsed // UnifiedNodeTracker.CACHE_SAVE_INTERVAL
+        assert save.call_count <= expected, (
+            f"{save.call_count} writes in {elapsed}s; cadence not applied "
+            f"(interval={UnifiedNodeTracker.CACHE_SAVE_INTERVAL}s => <={expected})"
+        )
+        # ...and the config invariant behind it: the write interval must be a
+        # real multiple of the sweep tick, or the cadence collapses back to
+        # per-tick writing, which is the defect this whole class exists for.
+        assert (UnifiedNodeTracker.CACHE_SAVE_INTERVAL
+                >= 2 * UnifiedNodeTracker.CLEANUP_TICK), (
+            f"CACHE_SAVE_INTERVAL={UnifiedNodeTracker.CACHE_SAVE_INTERVAL}s is "
+            f"under 2x CLEANUP_TICK={UnifiedNodeTracker.CLEANUP_TICK}s — writes "
+            f"are effectively per-tick again"
+        )
+        assert save.call_count < ticks, "wrote on every sweep tick"
 
     def test_clean_tracker_inside_window_does_not_write(self, tracker):
         """Unchanged state is not worth 20 MB of fsync'd writes."""

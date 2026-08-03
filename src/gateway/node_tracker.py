@@ -82,7 +82,20 @@ class UnifiedNodeTracker:
     # must stay responsive); only the WRITE moves to the 5-minute cadence the
     # loop's own comment had claimed since it was written.
     CLEANUP_TICK = 60
-    CACHE_SAVE_INTERVAL = 300
+    # 2026-08-03, revised same day from 300s. The 300s value assumed stop()
+    # flushes the cache at shutdown — test_stop_flushes_unconditionally proves
+    # it does, and it is NEVER CALLED in production: the systemd unit sends
+    # SIGTERM and the process exits without reaching bridge_cli's stop path
+    # (measured: zero "Stopping bridge" lines across 24 gateway starts in a
+    # day). So the real worst-case loss on restart is a full interval, not
+    # zero — a proxy-verified assumption, exactly what calibrated_claims #7
+    # warns about.
+    #
+    # 120s keeps the loss window near the pre-change 60s while the population
+    # cap does the heavy lifting: measured on moc, 4.44 MB/pass means 3.2
+    # GB/day here versus 33.3 GB/day this morning. Restore a longer interval
+    # only once shutdown genuinely flushes.
+    CACHE_SAVE_INTERVAL = 120
     # Backstop for a missed dirty marker. The dirty flag is an optimization,
     # never a correctness dependency — if a future mutation path forgets to
     # mark, the cache must go stale for minutes, not forever

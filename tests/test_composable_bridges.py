@@ -349,3 +349,76 @@ class TestStatusDialects20260803:
         assert _bridge_is_ready(inst) is True
         inst.get_status.return_value = dict(self.RNS_STATUS, rns_connected=False)
         assert _bridge_is_ready(inst) is False
+
+
+class TestSignalHandlerReclaim20260803:
+    """main() must own SIGTERM after the bridges start, not RNS.
+
+    RNS.Reticulum.__init__ installs its own SIGINT/SIGTERM handlers, and it is
+    constructed inside inst.start() — after main()'s registration. RNS's
+    handler spawns its own shutdown and exits, so main()'s loop never broke and
+    the finally block that calls inst.stop() never ran. Measured on moc
+    2026-08-03: zero "Stopping bridge" lines across 24 starts, and a direct
+    SIGTERM killed the process in <1s with no shutdown output.
+
+    This pins the ORDER, which is the whole property: registering before
+    start() is not enough, because start() overwrites it.
+    """
+
+    def test_handler_is_reinstalled_after_bridges_start(self):
+        import signal as _signal
+        from gateway import bridge_cli
+
+        calls = []
+
+        def fake_signal(sig, handler):
+            calls.append((sig, handler))
+            return None
+
+        class FakeBridge:
+            _bridge_name = "fake"
+            _bridge_label = "Fake"
+
+            def start(self):
+                # Stand in for RNS.Reticulum.__init__ stealing the handler.
+                calls.append((_signal.SIGTERM, "RNS_HANDLER"))
+                return True
+
+            def stop(self):
+                return None
+
+            def get_status(self):
+                return {"running": True, "meshtastic_connected": True,
+                        "rns_connected": True}
+
+        with patch.object(bridge_cli, "signal") as sig_mod, \
+             patch.object(bridge_cli, "resolve_bridges",
+                          return_value=[{"name": "fake", "label": "Fake",
+                                         "builder": lambda: FakeBridge()}]), \
+             patch.object(bridge_cli, "validate_bridge_conflicts", return_value=[]), \
+             patch.object(bridge_cli, "preflight_checks", return_value=True), \
+             patch.object(bridge_cli, "print_multi_status"), \
+             patch.object(bridge_cli, "GatewayConfig") as MockCfg:
+            sig_mod.signal.side_effect = fake_signal
+            sig_mod.SIGINT = _signal.SIGINT
+            sig_mod.SIGTERM = _signal.SIGTERM
+            MockCfg.load.return_value = MagicMock()
+
+            # Break the main loop immediately: the event is already set.
+            with patch("threading.Event") as MockEv:
+                ev = MagicMock()
+                ev.is_set.return_value = True
+                ev.wait.return_value = True
+                MockEv.return_value = ev
+                try:
+                    bridge_cli.main()
+                except SystemExit:
+                    pass
+
+        sigterm = [h for s, h in calls if s == _signal.SIGTERM]
+        assert sigterm, "no SIGTERM handler was ever registered"
+        assert sigterm[-1] != "RNS_HANDLER", (
+            "RNS's handler is the LAST SIGTERM registration — main()'s "
+            "shutdown path (and inst.stop()) will never run. Registrations "
+            "in order: %r" % (sigterm,)
+        )

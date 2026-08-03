@@ -574,6 +574,29 @@ def main():
 
         print(f"Gateway started successfully! ({len(started)} bridge(s) running)")
 
+        # RECLAIM the signal handlers. RNS.Reticulum.__init__ installs its own
+        # SIGINT/SIGTERM handlers (RNS/Reticulum.py), and it is constructed
+        # inside inst.start() above — i.e. AFTER the registration near the top
+        # of main(). RNS's SIGTERM handler spawns its own shutdown and exits
+        # the process, so this function's main loop never breaks and the
+        # `finally:` block below — the only thing that calls inst.stop() —
+        # never ran. Measured 2026-08-03: zero "Stopping bridge" lines across
+        # 24 gateway starts in a day, and a direct SIGTERM killed the process
+        # in under a second with no shutdown output at all.
+        #
+        # Consequence: no clean bridge shutdown, and the node cache was never
+        # flushed on restart, so up to CACHE_SAVE_INTERVAL of node state was
+        # lost every time.
+        #
+        # The handler stays deliberately trivial — it sets a flag and an event,
+        # nothing more. Issue #61 was a SIGTERM deadlock caused by doing the
+        # shutdown work on the signal path; the work belongs on the main
+        # thread, in the finally block.
+        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, signal_handler)
+        logger.debug("Signal handlers reclaimed after bridge start (RNS "
+                     "installs its own during Reticulum init)")
+
         # Auto-start metrics server for Grafana integration
         try:
             from utils.metrics_export import start_metrics_server
