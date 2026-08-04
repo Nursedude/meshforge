@@ -65,6 +65,8 @@
 
 | `host_memory_caps_and_watchdog_2026_07_24.md` | Three lessons from reset #8 and the self-inflicted outage 100 min later: never pair `MemoryHigh` (throttles BY generating reclaim pressure) with systemd-oomd's `ManagedOOMMemoryPressure=kill` (fires ON it) — one implicit shared signal, and oomd kills a whole SCOPE where `MemoryMax` kills one PROCESS; verify a cap at the cgroup FILE, never `systemctl show` (which read `MemoryHigh=infinity` while `memory.high` held 7 GB); and `system.conf` drop-ins merge in LEXICAL order across ALL directories, so a vendor `40-` file beats a local `10-` one (`/etc` outranks `/usr/lib` only for the SAME filename) — read `RuntimeWatchdogUSec` and re-exec, never reload. Includes the cap-viability test (window < 2x = no safe value) |
 
+| `map_wedge_classes_2026_05_22.md` | `http_local_unresponsive` on :5000 has SIX different causes sharing one symptom, so the useful knowledge is which class this one is. The GIL-bound serialization class (#70/#71): `json.dumps`+`gzip.compress` hold the GIL for seconds on a 24–47 MB body, federation polls queue behind it and `/healthz` misses the watchdog's 2 s probe — nothing deadlocked, the process just cannot answer. Cure is caching the SERIALIZED BYTES with single-flight rebuild (a data cache does NOT fix it; geojson already had one). ⚠️ All known instances are cured, so a NEW wedge is a NEW class — includes the differential table against fd leak (#73), RNS wedge, `TCPInterface` leak (#75), dead probe (#76) and collect-coupling, plus the two lint/guard-pinned invariants |
+
 ---
 
-*25 research documents. Updated 2026-08-04.*
+*26 research documents. Updated 2026-08-04.*
