@@ -63,6 +63,8 @@
 | `session_rns_address_in_use.md` | RNS address-in-use troubleshooting session |
 | `pytest_exit_status_flap_2026_07_28.md` | pytest exits 0 while reporting a failure (~50% of full-suite runs, byte-identical output). Its own `sessionfinish` hook says `TESTS_FAILED: 1` — the status is lost in CPython shutdown, where ~25 leaked non-daemon `ThreadPoolExecutor` workers are joined. Heisenbug: instrumentation suppresses it. 6 hypotheses refuted by measurement; cure is consumer-side (no gate may trust an exit code alone) |
 
+| `host_memory_caps_and_watchdog_2026_07_24.md` | Three lessons from reset #8 and the self-inflicted outage 100 min later: never pair `MemoryHigh` (throttles BY generating reclaim pressure) with systemd-oomd's `ManagedOOMMemoryPressure=kill` (fires ON it) — one implicit shared signal, and oomd kills a whole SCOPE where `MemoryMax` kills one PROCESS; verify a cap at the cgroup FILE, never `systemctl show` (which read `MemoryHigh=infinity` while `memory.high` held 7 GB); and `system.conf` drop-ins merge in LEXICAL order across ALL directories, so a vendor `40-` file beats a local `10-` one (`/etc` outranks `/usr/lib` only for the SAME filename) — read `RuntimeWatchdogUSec` and re-exec, never reload. Includes the cap-viability test (window < 2x = no safe value) |
+
 ---
 
-*24 research documents. Updated 2026-07-28.*
+*25 research documents. Updated 2026-08-04.*
