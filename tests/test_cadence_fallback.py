@@ -142,6 +142,172 @@ class TestRun:
         assert be.calls == []  # no backlog -> no token spend
 
 
+class _ChunkBackend:
+    """Backend that answers each call with ONLY the keys it was fed.
+
+    The module-level FakeBackend returns one canned reply regardless of input,
+    which cannot distinguish "triaged in one batch" from "triaged in slices" —
+    so it would pass either way. This one replies per fed set, which is what
+    makes the chunking assertions below mean anything.
+    """
+
+    model = "fake:3b"
+
+    def __init__(self, fail_keys=None, exc_for=None, durations=None):
+        self.calls = []
+        self.prompts = []
+        self.fail_keys = set(fail_keys or ())      # -> unusable reply (content)
+        self.exc_for = set(exc_for or ())          # -> CompilerError (transport)
+        self.durations = list(durations or [])
+        self.clock = 0.0
+
+    def monotonic(self):
+        return self.clock
+
+    def complete(self, system, user, fmt="json"):
+        keys = [ln.split('key="', 1)[1].split('"', 1)[0]
+                for ln in user.splitlines()
+                if ln[:1].isdigit() and 'key="' in ln]
+        self.calls.append(keys)
+        self.prompts.append(user)
+        self.clock += (self.durations.pop(0) if self.durations else 1.0)
+        if self.exc_for & set(keys):
+            raise CompilerError("ollama down")
+        if self.fail_keys & set(keys):
+            return "not json {"
+        return _good_reply(keys)
+
+
+class TestChunkedTriage:
+    """2026-08-04: a 4-delta backlog was fed as ONE call, hit the client bound,
+    and banked NOTHING three tries running — on exactly the busy night the
+    fallback exists for. Measured A/B on the real backlog: 0/4 as a batch vs
+    4/4 one-at-a-time. These pin the partial-credit contract."""
+
+    def test_each_delta_is_its_own_call_and_all_land(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b"), _delta("c")])
+        be = _ChunkBackend()
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls == [["a"], ["b"], ["c"]]
+        assert [d["key"] for d in w["deltas"]] == ["a", "b", "c"]
+        assert w["triaged"] == 3 and w["proposed_total"] == 3
+
+    def test_budget_stops_starting_chunks_and_banks_what_landed(self, tmp_path):
+        """THE regression: crossing the wall must cost only the deltas not yet
+        reached, never the ones already triaged."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(durations=[100.0, 100.0, 100.0, 100.0])
+        w = cf.run(path, be, frontier_rc=1, now=NOW, budget_s=150.0,
+                   monotonic=be.monotonic)
+        # a runs (nothing banked yet), b starts at 100 < 150, c would start at
+        # 200 >= 150 and does not.
+        assert be.calls == [["a"], ["b"]]
+        assert w["brain_tier"] == "local"
+        assert w["triaged"] == 2 and w["proposed_total"] == 4
+        assert "partial" in w["summary"]
+
+    def test_first_chunk_always_runs_even_with_a_spent_budget(self, tmp_path):
+        """A budget of zero must still buy the attempt today's code makes —
+        the cure may never do LESS than the defect it replaces."""
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
+        be = _ChunkBackend()
+        w = cf.run(path, be, frontier_rc=1, now=NOW, budget_s=0.0,
+                   monotonic=be.monotonic)
+        assert be.calls == [["a"]] and w["triaged"] == 1
+
+    def test_transport_failure_stops_the_run(self, tmp_path):
+        """A wedged tier must not be asked N more times: each retry pays a full
+        client timeout, and paying them is how a run overruns the outer wall
+        and loses its witness entirely."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(exc_for={"b"})
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls == [["a"], ["b"]]           # c and d never attempted
+        assert w["triaged"] == 1 and w["brain_tier"] == "local"
+        assert "partial" in w["summary"]
+
+    def test_content_failure_continues_to_the_next_delta(self, tmp_path):
+        """The mirror case, and the reason the two are not one branch: the tier
+        ANSWERED, so a malformed reply about b says nothing about c."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(fail_keys={"b"})
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls == [["a"], ["b"], ["c"], ["d"]]
+        assert [d["key"] for d in w["deltas"]] == ["a", "c", "d"]
+        assert w["triaged"] == 3 and w["proposed_total"] == 4
+        # and the missing delta is not a silent subtraction: 3/4 says HOW MANY,
+        # this says WHY (hfm #9).
+        assert "partial" in w["summary"] and "unusable" in w["summary"]
+
+    def test_total_transport_failure_still_degrades_to_rules(self, tmp_path):
+        """Unchanged contract: nothing landed anywhere -> an honest untriaged
+        note, never an empty-but-successful-looking triage (#80)."""
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
+        be = _ChunkBackend(exc_for={"a"})
+        w = cf.run(path, be, frontier_rc=None, now=NOW, monotonic=be.monotonic)
+        assert w["brain_tier"] == "rules" and w["triaged"] == 0
+        assert w["deltas"] == [] and "pending" in w["summary"]
+        assert "ollama down" in w["error"]
+
+    def test_chunk_context_is_sliced_to_the_chunk(self, tmp_path, monkeypatch):
+        """A 1-delta call must not carry the WHOLE backlog's excerpts — the
+        prompt is KV cache and KV cache is RAM on a 905 MB box. Grounding is
+        still retrieved ONCE for the run; only the rendering is per chunk."""
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
+        be = _ChunkBackend()
+        ctx = {"a": [{"path": "p/a.md", "heading": "A", "text": "excerpt-a"}],
+               "b": [{"path": "p/b.md", "heading": "B", "text": "excerpt-b"}]}
+        seen = []
+
+        def _fake_retrieve(proposed, **kw):
+            seen.append([d.get("key") for d in proposed])
+            return ctx, None
+
+        monkeypatch.setattr(cf, "retrieve_context", _fake_retrieve)
+        cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert seen == [["a", "b"]], "grounding must be retrieved once, not per chunk"
+        assert "excerpt-a" in be.prompts[0] and "excerpt-b" not in be.prompts[0]
+        assert "excerpt-b" in be.prompts[1] and "excerpt-a" not in be.prompts[1]
+
+
+class TestTriageBounds:
+    """The bound is STRUCTURAL: budget + chunk timeout + margin == wall, so a
+    chunk begun at the last permitted instant still lands inside the wall
+    without anyone predicting how long it will take."""
+
+    def test_invariant_holds_for_the_default_wall(self):
+        wall, chunk_timeout, budget = cf.triage_bounds({})
+        assert wall == cf.LOCAL_TRIAGE_WALL_DEFAULT_S
+        assert budget + chunk_timeout <= wall
+        assert budget > 0                      # a second chunk is reachable
+
+    @pytest.mark.parametrize("wall", ["120", "600", "3600", "45"])
+    def test_invariant_holds_for_any_operator_wall(self, wall):
+        w, chunk_timeout, budget = cf.triage_bounds(
+            {"MINI_CADENCE_LOCAL_TIMEOUT_S": wall})
+        assert w == float(wall)
+        assert budget + chunk_timeout <= w
+
+    @pytest.mark.parametrize("bad", ["", "abc", "0", "-5", None])
+    def test_garbage_override_falls_back_to_the_shell_default(self, bad):
+        env = {} if bad is None else {"MINI_CADENCE_LOCAL_TIMEOUT_S": bad}
+        wall, _, _ = cf.triage_bounds(env)
+        assert wall == cf.LOCAL_TRIAGE_WALL_DEFAULT_S
+
+    def test_wall_default_matches_the_launcher(self):
+        """hfm #5, and the exact shape that caused this bug: two consumers of
+        one number must not hardcode it twice. If the launcher's timeout moves,
+        this fails until the module follows."""
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(cf.__file__)))
+        sh = os.path.join(os.path.dirname(repo), "scripts",
+                          "mini_cadence_launch.sh")
+        text = open(sh, encoding="utf-8").read()
+        assert "MINI_CADENCE_LOCAL_TIMEOUT_S:-600" in text, (
+            "launcher's local-tier wall changed; update "
+            "LOCAL_TRIAGE_WALL_DEFAULT_S to match")
+        assert cf.LOCAL_TRIAGE_WALL_DEFAULT_S == 600.0
+
+
 class TestNeverRatifiesTripwire:
     def test_module_never_imports_ratification_machinery(self):
         # The fallback's hard invariant, pinned at the source level: the ONLY

@@ -42,7 +42,6 @@ from ._util import atomic_write_json, iso_or_none, resolve_home
 from .chat_compiler import (
     DEFAULT_MODEL,
     DEFAULT_OLLAMA_URL,
-    LOCAL_BRAIN_TIMEOUT_S,
     CompilerError,
     OllamaBackend,
 )
@@ -56,14 +55,81 @@ CADENCE_TRIAGE_BASENAME = "mini_dudeai_cadence_triage.json"
 # frontier session has either handled the backlog or will re-derive it).
 TRIAGE_FRESH_S = 24 * 3600.0
 
-# Fed-set cap, derived from measured latency (qwen3-4B warm ≈ 30 s/entry on
-# the Pi 5): 12 entries ≈ 6 min, inside the 480 s client bound below. The
-# TOTAL count stays honest in the witness regardless of the cap.
+# Fed-set ceiling. NOT a latency budget — that job belongs to the wall-clock
+# bounds below, and this constant is why: it was derived 2026-07-03 from "qwen3-4B
+# warm ≈ 30 s/entry, so 12 entries ≈ 6 min, inside the 480 s client bound". Three
+# weeks later retrieval grounding (702123a8) added up to 3 excerpts x 700 chars of
+# domain context to every prompt, and nobody re-derived the cap. Measured
+# 2026-08-04: 85-232 s PER DELTA, ~4x the assumed rate — so a 4-delta backlog blew
+# the client bound and triaged NOTHING, three times, on exactly the busy night the
+# fallback exists for. A constant cannot follow an input it does not read
+# (honest_failure_modes #5); the cure is to stop deriving a COUNT from a latency
+# guess and bound the wall clock directly. This just caps how much we would ever
+# attempt in one run. The TOTAL count stays honest in the witness regardless.
 MAX_DELTAS_DEFAULT = 12
+
+# The OUTER wall. Where a cadence launcher is wired (scripts/mini_cadence_launch.sh)
+# it runs this module under `timeout ${MINI_CADENCE_LOCAL_TIMEOUT_S:-600}`, and
+# overrunning that is a SIGTERM
+# BEFORE the witness is written — no witness at all, which is strictly worse than
+# an honest partial one. So every bound below derives from this ONE number, read
+# from the SAME env var the shell reads, so an operator override moves both halves
+# together (hfm #5: two consumers of one artifact share a constant, never two
+# hardcodes). TestTriageWallMatchesLauncher pins the fallback against the shell.
+LOCAL_TRIAGE_WALL_DEFAULT_S = 600.0
+
+#: Per-CHUNK client bound, and the reserve left for imports, corpus load and the
+#: witness write. Deliberately below chat_compiler's LOCAL_BRAIN_TIMEOUT_S (the
+#: general client bound) so the arithmetic in :func:`triage_bounds` can close.
+TRIAGE_CHUNK_TIMEOUT_S = 300.0
+TRIAGE_MARGIN_S = 30.0
+
+#: Deltas per model call. ONE, from the 2026-08-04 A/B on the real backlog
+#: (triage-four-mixed, live Ollama, this box): as a single 4-delta call it hit the
+#: client bound and banked 0; one delta per call banked each result as it landed
+#: (231.7 s, 190.9 s, 209.6 s ...). The win is PARTIAL CREDIT, not throughput —
+#: batching is not measurably cheaper per delta, but a batch that crosses the wall
+#: loses every delta in it, while a chunk that crosses the wall loses only its own.
+TRIAGE_CHUNK_DEFAULT = 1
 _ASSESSMENT_CLAMP = 300
 _SUMMARY_CLAMP = 500
 
 DISPOSITIONS = ("looks-ratifiable", "looks-rejectable", "needs-live-check")
+
+
+def triage_bounds(env: Optional[Dict[str, str]] = None,
+                  ) -> Tuple[float, float, float]:
+    """``(wall_s, chunk_timeout_s, budget_s)`` — every bound from ONE number.
+
+    ``budget_s`` is "start no NEW chunk after this much elapsed". The safety
+    property is STRUCTURAL, not predictive::
+
+        budget_s + chunk_timeout_s + margin == wall_s
+
+    so a chunk begun at the last permitted instant and running to its full
+    timeout still lands inside the wall. Nothing here estimates how long the
+    next chunk will take, and nothing should: measured per-delta cost on this
+    fleet spans 85-232 s (2026-08-04), so any estimator would be wrong often
+    enough to matter — and being wrong would mean SIGTERM with no witness.
+
+    A malformed or absent override falls back to the shell's own default rather
+    than to something permissive: the only thing this knob can do is make the
+    run SHORTER, and an unreadable value must not silently buy a longer one
+    (hfm #3 — reject what the author cannot have meant).
+    """
+    src = os.environ if env is None else env
+    wall = LOCAL_TRIAGE_WALL_DEFAULT_S
+    try:
+        raw = float(src.get("MINI_CADENCE_LOCAL_TIMEOUT_S", ""))
+        if raw > 0:
+            wall = raw
+    except (TypeError, ValueError):
+        pass
+    # Scale down for a wall too small to hold the standard reserve, so the
+    # invariant holds for ANY wall rather than only the default one.
+    chunk_timeout = min(TRIAGE_CHUNK_TIMEOUT_S, wall * 0.5)
+    margin = min(TRIAGE_MARGIN_S, wall * 0.1)
+    return wall, chunk_timeout, max(0.0, wall - chunk_timeout - margin)
 
 # WHY the local triage ran — kept honest and distinct (honest_failure_modes #2:
 # never conflate two states). "pre-score": the frontier session is about to run
@@ -324,13 +390,25 @@ def _validate_triage(raw: str, fed_keys: set) -> Tuple[dict, int]:
 
 def run(deltas_path: str, backend, frontier_rc: Optional[int],
         max_deltas: int = MAX_DELTAS_DEFAULT,
-        now: Optional[float] = None, mode: str = DEFAULT_MODE) -> dict:
+        now: Optional[float] = None, mode: str = DEFAULT_MODE,
+        chunk_size: int = TRIAGE_CHUNK_DEFAULT,
+        budget_s: Optional[float] = None,
+        monotonic=time.monotonic) -> dict:
     """Produce the witness dict (pure orchestration; no writes here).
 
     ``mode`` records WHY the triage ran (``MODES``): ``pre-score`` when the
     frontier session is about to consume it to prioritise, ``fallback`` when the
     frontier was gone. It changes nothing about the never-ratifies contract —
     both modes only SUGGEST — it just keeps the two states honest for the brief.
+
+    The backlog is triaged in ``chunk_size`` slices and each landed slice is
+    kept, so a run that runs out of time returns a PARTIAL triage instead of
+    nothing. ``budget_s`` bounds when a new slice may START (``None`` = no
+    wall-clock bound, for callers with their own outer timeout, e.g. the eval
+    harness); see :func:`triage_bounds` for why that bound is structural rather
+    than an estimate. ``monotonic`` is injectable so tests can pin the pacing
+    without sleeping — and it is monotonic, not wall clock, because this fleet's
+    RTC-less Pis step their clocks (hfm #6).
     """
     now = time.time() if now is None else now
     iso = iso_or_none(now)
@@ -374,28 +452,82 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
     grounded_keys = sum(1 for v in ctx.values() if v)
     base["context_grounded_keys"] = grounded_keys
     base["context_note"] = ctx_note
-    try:
-        raw = backend.complete(_SYSTEM_PROMPT,
-                               build_user_prompt(proposed, ctx, ctx_note),
-                               fmt=TRIAGE_SCHEMA)
-        triage, dropped = _validate_triage(raw, {d.get("key") for d in proposed})
-    except (CompilerError, ValueError) as e:
-        # The LLM tier failed too: the witness degrades to a deterministic
+    # Chunked, wall-clock-bounded triage. Each chunk that lands is BANKED before
+    # the next is attempted, so crossing the budget costs only the deltas not yet
+    # reached — never, as the single-batch version did, every delta in the run.
+    started = monotonic()
+    merged: List[dict] = []
+    summaries: List[str] = []
+    dropped_total = 0
+    stop_note: Optional[str] = None
+    first_error: Optional[str] = None
+    size = max(1, int(chunk_size))
+    for i in range(0, len(proposed), size):
+        if merged and budget_s is not None and monotonic() - started >= budget_s:
+            stop_note = "time budget spent"
+            break
+        chunk = proposed[i:i + size]
+        try:
+            raw = backend.complete(_SYSTEM_PROMPT,
+                                   build_user_prompt(chunk, ctx, ctx_note),
+                                   fmt=TRIAGE_SCHEMA)
+            triage, dropped = _validate_triage(
+                raw, {d.get("key") for d in chunk})
+        except CompilerError as e:
+            # TRANSPORT: the tier itself is unreachable, wedged, or timed out.
+            # Every further chunk would pay a full timeout to fail identically —
+            # and paying them is exactly how a run overruns the wall and loses
+            # its witness. Stop and keep what landed.
+            first_error = first_error or str(e)
+            stop_note = "local tier unavailable"
+            break
+        except ValueError as e:
+            # CONTENT: the tier answered, but THIS reply was unusable. The tier
+            # is alive, so a malformed reply about delta A is not evidence about
+            # delta B (hfm #2) — carry on and let the next chunk speak for
+            # itself. Its deltas are simply absent from `triaged`, which the
+            # brief already renders against `proposed_total`.
+            first_error = first_error or str(e)
+            continue
+        merged.extend(triage["deltas"])
+        summaries.append(triage["summary"])
+        dropped_total += dropped
+    if not merged:
+        # Nothing survived anywhere: the witness degrades to a deterministic
         # note — an honest "backlog pending, nobody triaged it", never a
         # fabricated triage (#80).
         return {**base, "brain_tier": "rules", "triaged": 0, "deltas": [],
                 "summary": f"{total} proposed delta(s) pending; local LLM "
                            f"triage unavailable",
-                "error": str(e)[:300]}
+                "error": (first_error
+                          or "no chunk produced a usable triage")[:300]}
     # Tier comes from the BACKEND's declaration (default keeps the historic
     # Ollama behavior byte-identical): an api_small triage must never stamp
     # itself tier-L (haiku_watcher_eval charter invariant 4).
+    # Partial coverage must never read as "this was all there was". The COUNTS
+    # are already honest downstream — brief.py renders triaged/proposed_total —
+    # so the only thing missing is WHY it stopped, and that rides in the summary
+    # brief.py already prints rather than in a field nobody reads (the
+    # writer-with-no-reader class, #4).
+    summary = summaries[0] if summaries else ""
+    if len(merged) < total:
+        # Two different reasons to come up short, and they are not the same
+        # news: we ran out of wall clock / the tier died (stop_note), or the
+        # tier answered something unusable about a specific delta
+        # (first_error). Either way it rides here rather than dying silently
+        # behind an honest-looking count (hfm #9 — every swallow gets a
+        # witness, and this one has to survive in the 160 chars brief.py
+        # prints).
+        why = stop_note or (f"unusable reply ({first_error[:60]})"
+                            if first_error else None)
+        if why:
+            summary = f"{summary} [partial: {why}]"
     return {**base, "brain_tier": getattr(backend, "brain_tier", "local"),
             "model": getattr(backend, "model", "?"),
-            "triaged": len(triage["deltas"]),
-            "dropped_entries": dropped,
-            "summary": triage["summary"],
-            "deltas": triage["deltas"]}
+            "triaged": len(merged),
+            "dropped_entries": dropped_total,
+            "summary": summary[:_SUMMARY_CLAMP],
+            "deltas": merged}
 
 
 def default_witness_path() -> str:
@@ -426,7 +558,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--model",
                     default=os.environ.get("MINI_DUDEAI_OLLAMA_MODEL",
                                            DEFAULT_MODEL))
-    ap.add_argument("--timeout-s", type=float, default=LOCAL_BRAIN_TIMEOUT_S)
+    # Bounds derive from the SAME wall the launcher enforces (triage_bounds), so
+    # an operator who raises MINI_CADENCE_LOCAL_TIMEOUT_S moves the outer timeout
+    # and these together instead of leaving them to drift apart.
+    _wall, _chunk_timeout, _budget = triage_bounds()
+    ap.add_argument("--timeout-s", type=float, default=_chunk_timeout,
+                    help="per-CHUNK client bound (default derives from "
+                         "MINI_CADENCE_LOCAL_TIMEOUT_S)")
+    ap.add_argument("--chunk-size", type=int, default=TRIAGE_CHUNK_DEFAULT,
+                    help="deltas per model call (default 1: a slice that "
+                         "crosses the wall loses only its own deltas)")
+    ap.add_argument("--budget-s", type=float, default=_budget,
+                    help="start no new chunk after this much elapsed; "
+                         "budget + timeout + margin == the outer wall")
     args = ap.parse_args(argv)
 
     if args.clear:
@@ -451,7 +595,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     backend = OllamaBackend(url=args.url, model=args.model,
                             timeout_s=args.timeout_s)
     witness = run(args.deltas, backend, frontier_rc,
-                  max_deltas=args.max_deltas, mode=args.mode)
+                  max_deltas=args.max_deltas, mode=args.mode,
+                  chunk_size=args.chunk_size, budget_s=args.budget_s)
     try:
         atomic_write_json(args.out, witness)
     except OSError as e:
