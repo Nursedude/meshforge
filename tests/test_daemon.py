@@ -607,3 +607,72 @@ class TestEventBusThreadPool:
         assert bus._executor._max_workers <= 8  # Reasonable bound
 
         bus.shutdown()
+
+
+class TestSingletonRetentionArmed20260803:
+    """The daemon's singleton tracker must be armed too.
+
+    When this daemon runs the gateway, it holds TWO UnifiedNodeTracker
+    instances — RNSMeshtasticBridge's and the get_node_tracker() singleton
+    this service wraps — and both write the same two cache files
+    (honest_failure_modes #8). The singleton is never start()ed, so its only
+    write is in stop(), and services stop in reverse registration order, so it
+    writes LAST. An un-armed singleton would hand back the full announce-space
+    population it loaded at startup, silently undoing the bridge's sweep on
+    every clean shutdown.
+
+    Latent on today's gateway boxes (they run bridge_cli with
+    meshforge.service inactive), live on MeshAnchor where the daemon runs
+    both. Asserted on the object the service actually holds, not by reading
+    daemon.py — a registered call is not a running call (calibrated_claims #7).
+    """
+
+    def _start_service(self, pins):
+        from daemon import NodeTrackerService
+        from unittest.mock import MagicMock, patch
+
+        tracker = MagicMock()
+        cfg = MagicMock()
+        cfg.rns.get_retention_pins.return_value = pins
+        svc = NodeTrackerService()
+        with patch('gateway.node_tracker.get_node_tracker', return_value=tracker), \
+             patch('gateway.config.GatewayConfig.load', return_value=cfg):
+            assert svc.start() is True
+        return tracker
+
+    def test_singleton_is_armed_with_the_configured_pins(self):
+        tracker = self._start_service(["aa" * 16])
+        assert tracker.set_retention_pins.called, (
+            "singleton retention never armed — its shutdown write restores the "
+            "full population the bridge just evicted"
+        )
+        assert list(tracker.set_retention_pins.call_args[0][0]) == ["aa" * 16]
+
+    def test_singleton_is_armed_even_with_no_pins(self):
+        """An EMPTY pin list still arms eviction — 'no pins' is a result, not
+        a reason to leave the cap switched off."""
+        tracker = self._start_service([])
+        assert tracker.set_retention_pins.called
+        assert list(tracker.set_retention_pins.call_args[0][0]) == []
+
+    def test_start_still_succeeds_when_pins_cannot_be_derived(self):
+        """A broken config leaves retention inert — it must not kill the service."""
+        from daemon import NodeTrackerService
+        from unittest.mock import MagicMock, patch
+
+        tracker = MagicMock()
+        svc = NodeTrackerService()
+        with patch('gateway.node_tracker.get_node_tracker', return_value=tracker), \
+             patch('gateway.config.GatewayConfig.load', side_effect=ValueError("bad json")):
+            assert svc.start() is True
+        assert not tracker.set_retention_pins.called
+
+    def test_start_still_fails_when_the_tracker_itself_is_unavailable(self):
+        """The added wiring must not swallow the failure it sits behind."""
+        from daemon import NodeTrackerService
+        from unittest.mock import patch
+
+        svc = NodeTrackerService()
+        with patch('gateway.node_tracker.get_node_tracker',
+                   side_effect=RuntimeError("no tracker")):
+            assert svc.start() is False

@@ -436,6 +436,14 @@ class UnifiedNodeTracker:
             if self._rns_thread.is_alive():
                 logger.warning("RNS thread did not stop in time")
 
+        # Sweep before the final write. The flush below is unconditional, and
+        # this instance may never have run _cleanup_loop at all — the daemon's
+        # NodeTrackerService holds a get_node_tracker() singleton it never
+        # calls start() on, so its ONLY write is this one. Without the sweep it
+        # would hand the full announce-space population it loaded at startup
+        # back to disk, undoing the bridge tracker's TTL work on every clean
+        # shutdown. Inert when retention was never wired.
+        self._evict_expired_nodes()
         self._save_cache()
         logger.info("Node tracker stopped")
 

@@ -2022,3 +2022,73 @@ class TestCacheIsolationCoversBothAliases20260803:
         assert plain.UnifiedNodeTracker is not srcalias.UnifiedNodeTracker, (
             "aliases now resolve to one class — the dual patch can be collapsed"
         )
+
+
+class TestStopSweepsBeforeFlush20260803:
+    """The unconditional shutdown flush must not publish an unswept population.
+
+    When the daemon runs the gateway, TWO UnifiedNodeTracker instances write
+    the same two cache files (honest_failure_modes #8): the bridge's, and the
+    get_node_tracker() singleton NodeTrackerService holds. The singleton is
+    never start()ed, so its cleanup loop — the only other caller of
+    _evict_expired_nodes — never runs, and because services stop in reverse
+    registration order it writes LAST. Without a sweep here it hands the full
+    announce-space population it loaded at startup back to disk, undoing the
+    bridge's TTL work once per restart, invisibly.
+
+    Found live on MeshAnchor 2026-08-03, whose daemon runs both in one
+    process; latent here only because gateway boxes run bridge_cli with
+    meshforge.service inactive.
+    """
+
+    @pytest.fixture
+    def tracker(self, tmp_path):
+        with patch.object(UnifiedNodeTracker, '_load_cache'):
+            yield UnifiedNodeTracker()
+
+    @staticmethod
+    def _node(nid, network="rns", age_days=0.0):
+        n = UnifiedNode(id=nid, network=network, name=nid)
+        n.last_seen = datetime.now() - timedelta(days=age_days)
+        return n
+
+    def test_stop_sweeps_before_the_final_flush(self, tracker):
+        tracker.set_retention_pins([])
+        tracker.add_node(self._node("rns_cold", age_days=30))
+        tracker.add_node(self._node("rns_warm", age_days=1))
+        written = {}
+
+        def capture():
+            written["ids"] = {n.id for n in tracker.get_all_nodes()}
+
+        with patch.object(tracker, '_save_cache', side_effect=capture):
+            tracker.stop(timeout=0.1)
+        assert written["ids"] == {"rns_warm"}, (
+            f"stop() flushed an unswept population: {written.get('ids')}"
+        )
+
+    def test_stop_sweep_is_inert_when_retention_unwired(self, tracker):
+        """An unwired tracker must still flush — just without evicting."""
+        tracker.add_node(self._node("rns_old", age_days=99))
+        written = {}
+        with patch.object(tracker, '_save_cache',
+                          side_effect=lambda: written.update(
+                              ids={n.id for n in tracker.get_all_nodes()})):
+            tracker.stop(timeout=0.1)
+        assert written["ids"] == {"rns_old"}
+
+    def test_pinned_node_survives_the_shutdown_sweep(self, tracker):
+        """The sweep at shutdown is the same sweep — pins still hold."""
+        h = "3968a2eeac25e2e7a7961f25842d3d85"
+        tracker.set_retention_pins([h])
+        n = self._node("rns_prop", age_days=99)
+        n.rns_hash = bytes.fromhex(h)
+        tracker.add_node(n)
+        written = {}
+        with patch.object(tracker, '_save_cache',
+                          side_effect=lambda: written.update(
+                              ids={x.id for x in tracker.get_all_nodes()})):
+            tracker.stop(timeout=0.1)
+        assert written["ids"] == {"rns_prop"}, (
+            "shutdown sweep evicted a pinned identity"
+        )
