@@ -157,6 +157,7 @@ def _validate_expect(case: dict, where: str) -> None:
 
 def load_cases(paths: List[str]) -> List[dict]:
     cases: List[dict] = []
+    wheres: List[str] = []
     seen_ids: set = set()
     if not paths:
         raise EvalConfigError("no eval case files found — nothing to run is "
@@ -195,7 +196,77 @@ def load_cases(paths: List[str]) -> List[dict]:
             _validate_expect(case, where)
             seen_ids.add(cid)
             cases.append(case)
+            wheres.append(where)
+    _validate_discriminating(cases, wheres)
     return cases
+
+
+#: A term this short cannot characterise an answer. Measured 2026-08-04: the
+#: literal term ``"0"`` let five unrelated cases' answers pass, because almost
+#: any prose containing a number satisfies it. The floor is deliberately LOW —
+#: short does not mean weak (``GIL`` is decisive, and so is the issue number
+#: ``10468``) — because the containment rule below, not length, is what actually
+#: does the discriminating.
+_MIN_TERM_LEN = 3
+
+
+def _validate_discriminating(cases: List[dict],
+                             wheres: Optional[List[str]] = None) -> None:
+    """Reject an expectation that cannot tell a RIGHT answer from a WRONG one.
+
+    WHY THIS EXISTS (2026-08-04). The eval's structure was sound — retrieval and
+    synthesis graded separately, production code paths, best-of-N — but its
+    ASSERTIONS were not, and nothing measured that. Mutation-testing the eval
+    (feed each case another case's answer and assert it FAILS) found 17 of 31
+    answer-graded cases accepting an answer about a DIFFERENT case, every one of
+    them through a term shared with another case's list: ``restart`` alone let 12
+    foreign answers through, then ``offline``, ``announce``, ``0``, ``gate``.
+    Since ``answer_contains_any`` is an OR, ONE such term makes the whole
+    assertion vacuous no matter how precise its siblings are.
+
+    Fixing the 17 cases by hand would leave the next author free to reintroduce
+    it, so the rule lives here instead: reject at AUTHORING time what the author
+    cannot have meant (honest_failure_modes #3). A term that appears in two
+    cases' lists is by construction unable to separate them.
+    """
+    seen: List[Tuple[str, str]] = []          # (term, owning case id)
+    problems: List[str] = []
+    for i, case in enumerate(cases):
+        where = (wheres[i] if wheres and i < len(wheres)
+                 else case.get("id", "?"))
+        for term in (case.get("expect", {}).get("answer_contains_any") or []):
+            key = term.strip().lower()
+            if len(key) < _MIN_TERM_LEN:
+                problems.append(
+                    f"{where}: term {term!r} is too short to discriminate "
+                    f"(need >= {_MIN_TERM_LEN} chars)")
+                continue
+            # CONTAINMENT, not equality — the grader asks `term in answer`, so
+            # a case claiming 'truncat' is satisfied by an answer whose real
+            # subject is another case's 'truncated'. Equality would have called
+            # that pair distinct while the grader could not tell them apart;
+            # the check has to use the same relation the consumer does.
+            clash = next(((t, owner) for t, owner in seen
+                          if owner != case["id"] and (t in key or key in t)),
+                         None)
+            if clash:
+                t, owner = clash
+                how = "identical to" if t == key else \
+                      (f"contains {t!r} from" if t in key else
+                       f"is contained in {t!r} from")
+                problems.append(
+                    f"{where}: term {term!r} {how} case {owner!r} — the grader "
+                    f"could not tell those two answers apart")
+                continue
+            seen.append((key, case["id"]))
+    if problems:
+        # Report the WHOLE set, not the first: an author fixing these one
+        # re-run at a time learns the rule far more slowly than one who sees
+        # the shape of the problem at once.
+        raise EvalConfigError(
+            f"{len(problems)} non-discriminating answer term(s) — "
+            f"answer_contains_any is an OR, so ONE of these makes its whole "
+            f"case vacuous:\n  " + "\n  ".join(problems))
 
 
 def _dotted(obj: Any, path: str) -> Any:
@@ -294,6 +365,21 @@ def grade_compile(case: dict, backend) -> Tuple[bool, List[str], dict]:
     return not reasons, reasons, rule
 
 
+def _path_satisfies(frag: str, paths: List[str]) -> bool:
+    """Does any retrieved path NAME the file this fragment asks for?
+
+    Matched on the basename's PREFIX. The old rule — substring against every
+    path joined into one string — is satisfied by anything that merely contains
+    the fragment somewhere: a fabricated ``/tmp/decoy-<frag>-notreal.md``, or
+    the corpus DIRECTORY, which is why ``memory`` was satisfied by all 339 files
+    under the memory root. Measured 2026-08-04 by mutation-testing the eval: a
+    decoy path satisfied 29 of 29 retrieval assertions, so this axis was
+    asserting nothing at all. A checker that accepts fabricated evidence is the
+    07-25 self-confirming-detector lesson, one layer up.
+    """
+    return any(os.path.basename(p).startswith(frag) for p in paths)
+
+
 def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
     """Ask the PRODUCTION oracle path and grade retrieval + citations +
     answer content separately — a retrieval miss and a synthesis miss are
@@ -304,9 +390,9 @@ def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
                                 top_k=inp.get("top_k", 6))
     reasons: List[str] = []
     expected_tier = getattr(backend, "brain_tier", "local")
-    retrieved_paths = " ".join(r["path"] for r in result.get("retrieved") or [])
+    retrieved_paths = [r["path"] for r in result.get("retrieved") or []]
     for frag in expect.get("retrieve_must_include") or []:
-        if frag not in retrieved_paths:
+        if not _path_satisfies(frag, retrieved_paths):
             reasons.append(f"retrieval missing {frag!r}")
     if expect.get("expect_refusal"):
         # Honest-refusal case (the substitute-and-narrate-success wart, W5.1):
@@ -322,9 +408,9 @@ def grade_oracle(case: dict, backend) -> Tuple[bool, List[str], dict]:
             reasons.append(f"no grounded answer: "
                            f"{str(result.get('note', '?'))[:160]}")
         else:
-            cited_paths = " ".join(s["path"] for s in result["sources"])
+            cited_paths = [s["path"] for s in result["sources"]]
             for frag in expect.get("cite_must_include") or []:
-                if frag not in cited_paths:
+                if not _path_satisfies(frag, cited_paths):
                     reasons.append(f"citations missing {frag!r}")
             anyof = expect.get("answer_contains_any") or []
             if anyof and not any(a.lower() in result["answer"].lower()

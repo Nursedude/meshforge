@@ -252,6 +252,168 @@ class TestAttemptsBestOfN:
                 lbe._validate_expect(case, "x:1")
 
 
+class TestAssertionsDiscriminate:
+    """The eval must NOTICE a wrong answer — measured, not assumed.
+
+    WHY THIS EXISTS (2026-08-04). The harness's structure was sound (retrieval
+    and synthesis graded separately, production code paths, best-of-N) and its
+    ASSERTIONS were not, and nothing measured that. Mutation-testing it — feed
+    each case deliberately wrong material and require it to FAIL — found 17 of
+    31 answer-graded cases accepting an answer about a DIFFERENT case, and 29 of
+    29 retrieval assertions accepting a FABRICATED path. Those cases were
+    scoring the model on axes that could not fail.
+
+    The measurement is the gate now, because a number nobody re-derives is the
+    same as no number: this is the 07-25 self-confirming-checker lesson applied
+    to the checker's own corpus.
+    """
+
+    @staticmethod
+    def _shipped():
+        import glob as _glob
+        return lbe.load_cases(sorted(_glob.glob(lbe.DEFAULT_CASES_GLOB)))
+
+    @staticmethod
+    def _grade(case, *, answer, paths=None, cited=None, tier="local"):
+        """Grade a SYNTHETIC oracle result through the real grader."""
+        exp = case["expect"]
+        if paths is None:
+            paths = [f"/repo/{f}.md"
+                     for f in (exp.get("retrieve_must_include") or [])]
+        if cited is None:
+            cited = [f"/repo/{f}.md"
+                     for f in (exp.get("cite_must_include") or [])]
+        result = {
+            "retrieved": [{"path": p, "id": f"S{i}"} for i, p in enumerate(paths)],
+            "sources": [{"path": p, "id": f"S{i}"} for i, p in enumerate(cited)],
+            "brain_tier": tier, "answer": answer, "confidence": "high",
+            "note": "synthetic"}
+
+        class _B:
+            brain_tier = "local"
+            model = "fake"
+
+        orig = lbe.offline_oracle.ask
+        lbe.offline_oracle.ask = lambda *a, **k: result
+        try:
+            return lbe.grade_oracle(case, _B())[0]
+        finally:
+            lbe.offline_oracle.ask = orig
+
+    def _answer_cases(self):
+        return [c for c in self._shipped()
+                if c["kind"] == "oracle"
+                and not c["expect"].get("expect_refusal")
+                and (c["expect"].get("answer_contains_any") or [])]
+
+    def test_control_material_passes(self):
+        """Harness sanity: if the material a case WANTS does not pass, every
+        assertion below would be vacuously true."""
+        for c in self._answer_cases():
+            answer = "Control. " + " ".join(c["expect"]["answer_contains_any"])
+            assert self._grade(c, answer=answer), f"{c['id']} rejects its own"
+
+    def test_no_case_accepts_another_cases_answer(self):
+        cases = self._answer_cases()
+        confused = []
+        for c in cases:
+            for d in cases:
+                if d["id"] == c["id"]:
+                    continue
+                for term in d["expect"]["answer_contains_any"]:
+                    if self._grade(c, answer=f"An answer about something "
+                                             f"else entirely: {term}."):
+                        confused.append((c["id"], d["id"], term))
+        assert not confused, (
+            f"{len(confused)} case(s) accept an answer about a DIFFERENT case; "
+            f"answer_contains_any is an OR, so one shared term is enough: "
+            f"{confused[:5]}")
+
+    def test_no_case_accepts_a_decoy_retrieval_path(self):
+        """A path that merely CONTAINS the fragment is not the file."""
+        accepted = []
+        for c in self._shipped():
+            if c["kind"] != "oracle":
+                continue
+            frags = c["expect"].get("retrieve_must_include") or []
+            if not frags:
+                continue
+            decoy = [f"/tmp/decoy-{f}-notreal.md" for f in frags]
+            cited = ([f"/tmp/decoy-{f}-notreal.md"
+                      for f in (c["expect"].get("cite_must_include") or [])]
+                     or None)
+            answer = "Control. " + " ".join(
+                c["expect"].get("answer_contains_any") or [])
+            if self._grade(c, answer=answer, paths=decoy, cited=cited):
+                accepted.append(c["id"])
+        assert not accepted, (
+            f"{len(accepted)} case(s) accept a FABRICATED retrieval path: "
+            f"{accepted[:5]}")
+
+    def test_degenerate_answers_are_rejected(self):
+        for c in self._answer_cases():
+            assert not self._grade(c, answer="I don't know."), \
+                f"{c['id']} accepts a non-answer"
+            assert not self._grade(c, answer=None, tier="rules"), \
+                f"{c['id']} accepts an ungrounded reply"
+
+
+class TestDiscriminatingValidator:
+    """The authoring gate — so the class cannot come back by hand."""
+
+    def _cases(self, terms_a, terms_b):
+        mk = lambda cid, terms: {                     # noqa: E731
+            "id": cid, "kind": "oracle", "input": {"question": "q"},
+            "expect": {"answer_contains_any": terms}}
+        return [mk("case-a", terms_a), mk("case-b", terms_b)]
+
+    def test_identical_term_across_cases_is_rejected(self):
+        with pytest.raises(lbe.EvalConfigError, match="could not tell"):
+            lbe._validate_discriminating(self._cases(["restart"], ["restart"]))
+
+    def test_contained_term_is_rejected(self):
+        """The grader asks `term in answer`, so 'truncat' is satisfied by an
+        answer whose real subject is another case's 'truncated'. Equality would
+        call that pair distinct while the grader cannot."""
+        with pytest.raises(lbe.EvalConfigError, match="could not tell"):
+            lbe._validate_discriminating(
+                self._cases(["truncat"], ["truncated"]))
+
+    def test_too_short_term_is_rejected(self):
+        with pytest.raises(lbe.EvalConfigError, match="too short"):
+            lbe._validate_discriminating(self._cases(["0"], ["something"]))
+
+    def test_distinct_terms_pass(self):
+        lbe._validate_discriminating(
+            self._cases(["announce interval"], ["messagestore"]))
+
+    def test_a_case_may_reuse_its_own_terms(self):
+        """Containment WITHIN one case is fine — '_merge_node' and 'merge'
+        describe the same answer, and only cross-case overlap blinds the grader."""
+        lbe._validate_discriminating(
+            [{"id": "c", "kind": "oracle", "input": {},
+              "expect": {"answer_contains_any": ["merge", "_merge_node"]}}])
+
+    def test_load_cases_actually_runs_the_check(self, tmp_path):
+        """A validator nothing CALLS is a registered check, not a running one
+        (calibrated_claims #7). Caught by drill: unwiring the call from
+        load_cases left every other test in this file green, because they all
+        exercise the validator directly."""
+        shared = [{"id": "a", "kind": "oracle", "input": {"question": "q"},
+                   "expect": {"answer_contains_any": ["restart"]}},
+                  {"id": "b", "kind": "oracle", "input": {"question": "q"},
+                   "expect": {"answer_contains_any": ["restart"]}}]
+        path = _cases_file(tmp_path, shared)
+        with pytest.raises(lbe.EvalConfigError, match="non-discriminating"):
+            lbe.load_cases([path])
+
+    def test_reports_every_violation_not_just_the_first(self):
+        with pytest.raises(lbe.EvalConfigError) as e:
+            lbe._validate_discriminating(
+                self._cases(["restart", "offline"], ["restart", "offline"]))
+        assert "2 non-discriminating" in str(e.value)
+
+
 class TestSeedFileIsValid:
     def test_shipped_seed_cases_load(self):
         import glob as _glob
