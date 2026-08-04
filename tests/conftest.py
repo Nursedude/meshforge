@@ -15,6 +15,8 @@ pattern-audit cleanup (Finding #9).
 
 import os
 import sys
+from contextlib import ExitStack
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -111,13 +113,47 @@ def _isolate_node_cache_files(tmp_path_factory):
 
     Tests that assert on cache CONTENT patch these to their own tmp paths;
     an inner patch wins, so this only catches what would otherwise escape.
+
+    BOTH import aliases are patched (2026-08-03, found porting this fixture to
+    MeshAnchor). ``sys.path`` carries the repo root AND ``src/``, so
+    ``gateway.node_tracker`` and ``src.gateway.node_tracker`` are two distinct
+    module objects holding two distinct ``UnifiedNodeTracker`` classes —
+    measured, not assumed: under the single-alias version of this fixture the
+    ``src.*`` class still returned ``~/.config/meshforge/node_cache.json``.
+    ``test_gateway_integration`` and ``test_node_tracker`` import via ``src.``,
+    so the gate was covering the alias those files do NOT use. The md5 check
+    that blessed it held only because those files also patch locally — a
+    property of today's tests, not of the gate. Patching the alias in front of
+    you is exactly the half-covered guard this fixture exists to prevent.
     """
     root = tmp_path_factory.mktemp("node_cache_isolation")
-    with patch('utils.paths.MeshForgePaths.rns_nodes_cache_path',
-               return_value=root / "rns_nodes.json"), \
-         patch('utils.paths.chown_to_operator'), \
-         patch('gateway.node_tracker.UnifiedNodeTracker.get_cache_file',
-               return_value=root / "node_cache.json"):
+    targets = [
+        ('utils.paths.MeshForgePaths.rns_nodes_cache_path', root / "rns_nodes.json"),
+        ('src.utils.paths.MeshForgePaths.rns_nodes_cache_path', root / "rns_nodes.json"),
+        ('gateway.node_tracker.UnifiedNodeTracker.get_cache_file', root / "node_cache.json"),
+        ('src.gateway.node_tracker.UnifiedNodeTracker.get_cache_file', root / "node_cache.json"),
+    ]
+    with ExitStack() as stack:
+        patched = 0
+        for target, value in targets:
+            try:
+                stack.enter_context(patch(target, return_value=value))
+                patched += 1
+            except (ImportError, AttributeError, ModuleNotFoundError):
+                # An alias that is not importable in this environment cannot
+                # be the one writing to the live path either.
+                continue
+        for target in ('utils.paths.chown_to_operator',
+                       'src.utils.paths.chown_to_operator'):
+            try:
+                stack.enter_context(patch(target))
+            except (ImportError, AttributeError, ModuleNotFoundError):
+                continue
+        if not patched:
+            raise RuntimeError(
+                "node cache isolation patched NOTHING — the suite would write "
+                "to the operator's live node_cache.json / rns_nodes.json"
+            )
         yield root
 
 

@@ -1968,3 +1968,57 @@ class TestPopulationRetention20260803:
         remaining = {n.id for n in tracker.get_all_nodes()}
         assert len(remaining) == 11, sorted(remaining)
         assert not any(r.startswith("cold") for r in remaining)
+
+
+class TestCacheIsolationCoversBothAliases20260803:
+    """The isolation GATE itself, pinned.
+
+    tests/conftest.py::_isolate_node_cache_files exists so a suite run cannot
+    overwrite the operator's live node_cache.json / rns_nodes.json. It patched
+    ONE import alias until 2026-08-03 — and because sys.path carries the repo
+    root and src/, `gateway.node_tracker` and `src.gateway.node_tracker` are
+    two distinct classes. The alias it patched was the one the affected test
+    files do NOT import. Measured at the time: the src.* class still returned
+    ~/.config/meshforge/node_cache.json under the fixture.
+
+    A checker must not be graded by the artifact it protects. The md5 run that
+    blessed the single-alias version held only because the individual tests
+    also patched locally — a property of today's tests, not of the gate. These
+    assert the gate directly.
+    """
+
+    def test_both_tracker_aliases_are_isolated(self, _isolate_node_cache_files):
+        """Neither alias may resolve to a path outside the fixture's tmp root."""
+        root = _isolate_node_cache_files
+        import gateway.node_tracker as plain
+        import src.gateway.node_tracker as srcalias
+
+        for label, mod in (("gateway.*", plain), ("src.gateway.*", srcalias)):
+            resolved = Path(mod.UnifiedNodeTracker.get_cache_file())
+            assert root in resolved.parents, (
+                f"{label} get_cache_file() escapes isolation -> {resolved}"
+            )
+
+    def test_both_paths_aliases_are_isolated(self, _isolate_node_cache_files):
+        root = _isolate_node_cache_files
+        import utils.paths as pa
+        import src.utils.paths as pb
+
+        for label, mod in (("utils.paths", pa), ("src.utils.paths", pb)):
+            resolved = Path(mod.MeshForgePaths.rns_nodes_cache_path())
+            assert root in resolved.parents, (
+                f"{label} rns_nodes_cache_path() escapes isolation -> {resolved}"
+            )
+
+    def test_the_two_aliases_really_are_distinct_objects(self):
+        """The premise. If this ever becomes False the fixture may be simplified.
+
+        Kept as a test rather than a comment so the day Python or the path
+        layout makes them one object, someone is told rather than left
+        maintaining a double patch for a reason that no longer exists.
+        """
+        import gateway.node_tracker as plain
+        import src.gateway.node_tracker as srcalias
+        assert plain.UnifiedNodeTracker is not srcalias.UnifiedNodeTracker, (
+            "aliases now resolve to one class — the dual patch can be collapsed"
+        )
