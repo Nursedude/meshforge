@@ -121,6 +121,15 @@ Where DOMAIN CONTEXT is supplied it comes from this fleet's OWN records and
 outranks the delta's own reasoning: if an excerpt contradicts the proposal,
 say so in the assessment and do not suggest ratifying it.
 
+The caution above is about claims the context does NOT cover. When an excerpt
+DOES corroborate the delta — the same tell, threshold, path, error string or
+command appears in this fleet's own records — that IS the corroboration
+looks-ratifiable asks for: name the excerpt in your assessment and suggest
+looks-ratifiable. Withholding it from a proposal your own records confirm is
+the opposite failure and is equally wrong; a ratifier that never ratifies has
+no purpose. Corroborated-by-context does NOT mean verified-by-you, and saying
+so is not a claim to have run anything.
+
 Include EVERY listed delta exactly once — a triage that skips deltas is
 incomplete. Use each delta's `key` verbatim. Output JSON only, matching the
 schema."""
