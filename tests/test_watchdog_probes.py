@@ -3948,6 +3948,15 @@ def _delivery_payload(*, confirmed=0, failed=0, mesh_sent=0, dedup_drops=0,
     }
 
 
+#: probe_delivery_confirmation_stall gained an organ-presence check
+#: 2026-08-05 (no gateway on this box -> inert). Every test below is about
+#: the PAYLOAD logic, so each pins the gateway as present — otherwise the
+#: verdict would depend on whether the box running the suite happens to run
+#: meshforge-gateway, and these tests would silently pass for the wrong
+#: reason (inert) instead of the verdict they claim to assert.
+_GW_RUNNING = 4242
+
+
 def test_confirmation_stall_none_on_unreachable_endpoint(tmp_path):
     """snapshot_state_path pinned to a nonexistent file — the verdict must
     not depend on whether the running box has a real snapshot state file."""
@@ -3957,7 +3966,7 @@ def test_confirmation_stall_none_on_unreachable_endpoint(tmp_path):
         raise URLError("connection refused")
 
     with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-        assert probe_delivery_confirmation_stall(
+        assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
             snapshot_state_path=str(tmp_path / "absent.json")) is None
 
 
@@ -3969,7 +3978,7 @@ def test_confirmation_stall_mesh_sends_do_not_false_alarm():
     payload = _delivery_payload(confirmed=10, failed=0, mesh_sent=20)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_terminal=5) is None
+        assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=5) is None
 
 
 def test_confirmation_stall_no_confirmable_protocol_is_none():
@@ -3978,7 +3987,7 @@ def test_confirmation_stall_no_confirmable_protocol_is_none():
     payload = _delivery_payload(mesh_sent=30, confirmable=())
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_terminal=5) is None
+        assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=5) is None
 
 
 def test_confirmation_stall_below_min_terminal_is_none():
@@ -3987,14 +3996,14 @@ def test_confirmation_stall_below_min_terminal_is_none():
     payload = _delivery_payload(confirmed=2, failed=1, mesh_sent=40)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_terminal=20) is None
+        assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20) is None
 
 
 def test_confirmation_stall_rns_healthy_is_quiet():
     payload = _delivery_payload(confirmed=24, failed=1)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_terminal=20) is None
+        assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20) is None
 
 
 def test_confirmation_stall_dedup_drops_excluded():
@@ -4003,7 +4012,7 @@ def test_confirmation_stall_dedup_drops_excluded():
     payload = _delivery_payload(confirmed=24, failed=0, dedup_drops=30)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_terminal=20)
+        sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20)
     assert sig is None
 
 
@@ -4011,7 +4020,7 @@ def test_confirmation_stall_rns_collapse_degraded():
     payload = _delivery_payload(confirmed=10, failed=15)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_terminal=20)
+        sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20)
     assert sig is not None
     assert sig.cls == "delivery_confirmation_stall"
     assert sig.severity == "degraded"           # 10/25 = 40%
@@ -4026,7 +4035,7 @@ def test_confirmation_stall_rns_collapse_wedge():
     payload = _delivery_payload(confirmed=2, failed=23)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_terminal=20)
+        sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20)
     assert sig is not None
     assert sig.severity == "wedge"               # 2/25 = 8%
 
@@ -4058,7 +4067,7 @@ def test_confirmation_stall_meshtastic_joins_confirmable_set():
     payload = _mesh_delivery_payload(confirmed=2, failed=23)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_confirmation_stall(min_terminal=20)
+        sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20)
     assert sig is not None
     assert sig.cls == "delivery_confirmation_stall"
     assert sig.severity == "wedge"               # 2/25 = 8% ≤ 10% wedge
@@ -4073,7 +4082,7 @@ def test_confirmation_stall_meshtastic_healthy_is_quiet():
     payload = _mesh_delivery_payload(confirmed=24, failed=1)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        assert probe_delivery_confirmation_stall(min_terminal=20) is None
+        assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20) is None
 
 
 def test_confirmation_stall_meshtastic_nak_reasons_count_as_failures():
@@ -4086,7 +4095,7 @@ def test_confirmation_stall_meshtastic_nak_reasons_count_as_failures():
                                          drop_reason=dr.value)
         with patch("utils.watchdog_probes_gateway.urlopen",
                    return_value=_http_json_mock(payload)):
-            sig = probe_delivery_confirmation_stall(min_terminal=20)
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20)
         assert sig is not None, f"{dr.value} did not count as a failure"
         assert sig.extra["ring_failed"] == 24
 
@@ -4265,8 +4274,13 @@ def test_read_declared_root_topic_default_when_key_absent(tmp_path):
 
 
 def test_read_declared_root_topic_none_when_file_missing(tmp_path):
-    """No gateway.json → None (indeterminate), never the default —
-    a box with no gateway config has no declared consumer contract."""
+    """No gateway.json → no declared value, never the default — a box with
+    no gateway config has no declared consumer contract.
+
+    ⚠️ The VALUE stays None, but as of 2026-08-05 the STATUS distinguishes
+    absent from unreadable; see
+    TestDeclaredRootStatusSeparatesAbsentFromUnreadable.
+    """
     from utils.watchdog_probes import _read_declared_root_topic
     import pwd as _pwd
 
@@ -8736,7 +8750,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 min_terminal=20, snapshot_state_path=str(p))
         assert sig is not None
         assert sig.cls == "delivery_confirmation_stall"
@@ -8754,7 +8768,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 min_terminal=20, snapshot_state_path=str(p))
         assert sig is None
         assert collect()["delivery_confirmation_stall"]["disp"] == "clean"
@@ -8790,7 +8804,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 snapshot_state_path=str(tmp_path / "absent.json"))
         assert sig is None
         got = collect()["delivery_confirmation_stall"]
@@ -8814,7 +8828,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 min_terminal=20, snapshot_state_path=str(p))
         assert sig is None
         got = collect()["delivery_confirmation_stall"]
@@ -8837,7 +8851,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 min_terminal=20, snapshot_state_path=str(p))
         assert sig is None
         got = collect()["delivery_confirmation_stall"]
@@ -8855,7 +8869,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 snapshot_state_path=str(p))
         assert sig is None
         got = collect()["delivery_confirmation_stall"]
@@ -8874,7 +8888,7 @@ class TestDeliverySnapshotFileFallback:
         payload = _delivery_payload(confirmed=24, failed=1)
         with patch("utils.watchdog_probes_gateway.urlopen",
                    return_value=_http_json_mock(payload)):
-            sig = probe_delivery_confirmation_stall(
+            sig = probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, 
                 min_terminal=20, snapshot_state_path=str(p))
         assert sig is None
 

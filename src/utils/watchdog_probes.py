@@ -128,6 +128,7 @@ from utils.watchdog_probes_drift import (
     _cron_max_interval,
     _parse_kernel_release,
     _plan_role_actions,
+    _declared_root_status,
     _read_declared_root_topic,
     _read_git_origin_url,
     _real_code_patches,

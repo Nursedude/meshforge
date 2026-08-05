@@ -442,6 +442,85 @@ _DELIVERY_FAILURE_REASONS = frozenset({
     "delivery_timeout", "non_retriable_error", "circuit_open", "wedged",
 })
 
+#: Protocols that HAVE a confirmation mechanism today. Membership means "an
+#: absence of `confirmed` events for this protocol is a fact about the
+#: WIRING, not about the protocol" — the discriminator that lets the
+#: never-confirmed-anything case below be a signal instead of a shrug.
+#: Meshtastic joins this set once ROUTING_APP ACK consumption lands.
+_CONFIRMABLE_CAPABLE_PROTOCOLS = frozenset({"rns"})
+
+#: Confirmable-capable terminal events (sent + failed drops) needed before
+#: "zero confirmations EVER" is called a fault rather than a quiet box.
+#: Set well above incidental traffic: the live federator box carried ~11,800
+#: when this was written, and both real gateways confirm in the tens of
+#: thousands, so no healthy fleet box is anywhere near this boundary.
+_NEVER_CONFIRMED_MIN_TERMINAL = 50
+
+
+def _count(bucket, proto) -> int:
+    """One protocol's count out of a state bucket; 0 for anything non-numeric
+    (a misshaped payload must not manufacture traffic)."""
+    v = (bucket or {}).get(proto)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return 0
+    return int(v) if v > 0 else 0
+
+
+def _never_confirmed_signal(by_proto: dict) -> Optional[Signal]:
+    """A confirmable-capable protocol terminated real traffic and has NEVER
+    recorded a confirmation → the confirmation channel is unwired.
+
+    Deliberately cumulative, not windowed: the claim is "not once, ever",
+    which is precisely what a windowed rate cannot express. Returns None
+    (caller falls through to indeterminate) unless the evidence is
+    unambiguous — a gateway with no RNS traffic at all is quiet, not broken.
+    """
+    sent, dropped = by_proto.get("sent") or {}, by_proto.get("dropped") or {}
+    confirmed = by_proto.get("confirmed") or {}
+    worst = None
+    for proto in sorted(_CONFIRMABLE_CAPABLE_PROTOCOLS):
+        # SELF-GUARD, not redundancy: the caller only reaches here when no
+        # protocol has confirmed, but a helper that answers wrongly on its
+        # own inputs is a trap for the next caller. "Never confirmed" must
+        # mean it, whoever asks.
+        raw = (confirmed or {}).get(proto)
+        if raw is not None and (isinstance(raw, bool)
+                                or not isinstance(raw, (int, float))):
+            continue  # present but not a count → UNOBSERVABLE, never "zero"
+        if _count(confirmed, proto) > 0:
+            continue
+        terminal = _count(sent, proto) + _count(dropped, proto)
+        if terminal >= _NEVER_CONFIRMED_MIN_TERMINAL:
+            if worst is None or terminal > worst[1]:
+                worst = (proto, terminal, _count(sent, proto),
+                         _count(dropped, proto))
+    if worst is None:
+        return None
+    proto, terminal, n_sent, n_dropped = worst
+    return Signal(
+        cls="delivery_confirmation_stall",
+        subject=f"{proto}:never-confirmed",
+        severity="degraded",
+        detail=(
+            f"{proto} has terminated {terminal} deliveries on this gateway "
+            f"({n_sent} sent, {n_dropped} dropped) and has recorded ZERO "
+            f"confirmations — not a low rate, none at all, ever. {proto} "
+            f"has a confirmation mechanism, so an empty `confirmed` bucket "
+            f"is a fact about the WIRING, not the protocol: the ack/proof "
+            f"path is not recording. Until 2026-08-05 this state was "
+            f"structurally invisible — the rate guard needed at least one "
+            f"confirmation to exist before it could judge, so a TOTAL "
+            f"collapse read as 'nothing to judge' while a partial one "
+            f"fired. Check the gateway's ack tracker is running and that "
+            f"delivery proofs reach delivery_counters; compare a healthy "
+            f"gateway's state_proto.confirmed.{proto}. See the 2026-08-05 "
+            f"persistent_issues entry."
+        ),
+        issue_ref=74,
+        extra={"protocol": proto, "terminal_events": terminal,
+               "sent": n_sent, "dropped": n_dropped, "confirmed": 0},
+    )
+
 
 def probe_delivery_confirmation_stall(
     *,
@@ -452,6 +531,8 @@ def probe_delivery_confirmation_stall(
     rate_degraded: float = 0.50,
     rate_wedge: float = 0.10,
     snapshot_state_path: Optional[str] = None,
+    gateway_unit: str = "meshforge-gateway.service",
+    gateway_main_pid: Optional[int] = None,
 ) -> Optional[Signal]:
     """A confirmable protocol's deliveries are failing instead of confirming
     (Issue #74).
@@ -488,6 +569,19 @@ def probe_delivery_confirmation_stall(
 
     Severities: rate ≤ 10% → wedge, ≤ 50% → degraded.
     """
+    # Organ presence FIRST. Without a gateway on this box there is no
+    # delivery organ to stall, so the honest answer is INERT — what the
+    # sibling gateway_delivery_degraded has always said. Until 2026-08-05
+    # this probe instead fell through to "no confirmable protocol recorded"
+    # and sat INDETERMINATE forever on every non-gateway box, which both
+    # buried a real blindness and made the disposition meaningless.
+    gw_pid = gateway_main_pid if gateway_main_pid is not None else \
+        _resolve_main_pid(gateway_unit)
+    if gw_pid is None:
+        note_disposition("delivery_confirmation_stall", "inert",
+                         reason="gateway not running on this box")
+        return None
+
     payload, blind = _fetch_delivery_payload(
         host, port, timeout_s, state_path=snapshot_state_path)
     if payload is None:
@@ -498,12 +592,27 @@ def probe_delivery_confirmation_stall(
     # Confirmable = protocols that have ever recorded a `confirmed` event.
     # Meshtastic isn't here until ACK consumption exists, so its
     # structurally-unconfirmable sends never drag the rate.
-    confirmed_by_proto = (payload.get("state_by_protocol") or {}).get("confirmed") or {}
+    by_proto = payload.get("state_by_protocol") or {}
+    confirmed_by_proto = by_proto.get("confirmed") or {}
     confirmable = {
         p for p, c in confirmed_by_proto.items()
         if isinstance(c, (int, float)) and not isinstance(c, bool) and c > 0
     }
     if not confirmable:
+        # ⚠️ THE BLIND SPOT this guard used to be (2026-08-05): "no protocol
+        # has ever confirmed" was treated as nothing-to-judge, so a TOTAL,
+        # permanent confirmation collapse — the most extreme form of exactly
+        # the #74 class this probe exists for — could never fire, while a
+        # partial one did. The detector only worked once at least one
+        # confirmation had been recorded.
+        #
+        # Discriminate: if a CONFIRMABLE-CAPABLE protocol is terminating
+        # real traffic and has never once confirmed, the confirmation
+        # channel is unwired, not absent. Anything else (mesh-only gateway,
+        # quiet box) stays the honest indeterminate.
+        sig = _never_confirmed_signal(by_proto)
+        if sig is not None:
+            return sig
         note_disposition("delivery_confirmation_stall", "indeterminate",
                          reason="no confirmable protocol recorded — cannot judge")
         return None

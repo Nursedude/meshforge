@@ -1118,32 +1118,58 @@ _MQTT_PUBLISH_TOPIC_RE = re.compile(
 _GATEWAY_DEFAULT_ROOT_TOPIC = "msh"
 
 
-def _read_declared_root_topic(service_user) -> Optional[str]:
-    """Read ``mqtt_bridge.root_topic`` from the service user's gateway.json.
+def _declared_root_status(service_user) -> Tuple[str, Optional[str]]:
+    """Tri-state read of ``mqtt_bridge.root_topic`` from gateway.json.
+
+    Returns ``("ok", root)``, ``("absent", None)`` when there is no
+    gateway.json at all, or ``("unreadable", None)`` when one should be
+    readable and isn't.
+
+    ⚠️ Why tri-state (2026-08-05): these three used to collapse to None,
+    so "this box runs no MQTT bridge consumer" — the normal state of every
+    non-gateway box — was indistinguishable from "I could not read the
+    declaration". The federator box sat ``indeterminate`` on this class for
+    over a week, and, worse, a genuinely unreadable gateway.json on a REAL
+    gateway would have looked exactly like that benign noise. Absent is
+    INERT (nothing here can be deaf); unreadable is INDETERMINATE.
 
     The watchdog runs as sandboxed root — home is derived from the service
     user and READ directly, never escalate (the rns_version_drift lesson).
-    Returns the configured value, the GatewayConfig default when the key is
-    absent (that is the consumer's effective root), or None when the file is
-    unreadable/unparseable (indeterminate → caller stays silent).
+    A missing ``root_topic`` key still yields the GatewayConfig default:
+    that IS the consumer's effective root, which is knowledge, not absence.
     """
     if not service_user:
-        return None
+        return ("unreadable", None)  # can't resolve the user → can't observe
     try:
         import pwd
         home = pwd.getpwnam(service_user).pw_dir
         path = os.path.join(home, ".config", "meshforge", "gateway.json")
+    except (KeyError, OSError, TypeError):
+        return ("unreadable", None)
+    try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
+    except FileNotFoundError:
+        return ("absent", None)  # no gateway config → no consumer on this box
+    except (OSError, ValueError, TypeError):
+        return ("unreadable", None)
+    try:
         mqtt = data.get("mqtt_bridge")
         if not isinstance(mqtt, dict):
-            return _GATEWAY_DEFAULT_ROOT_TOPIC
+            return ("ok", _GATEWAY_DEFAULT_ROOT_TOPIC)
         root = mqtt.get("root_topic", _GATEWAY_DEFAULT_ROOT_TOPIC)
         if isinstance(root, str) and root:
-            return root.strip().strip("/")
-        return _GATEWAY_DEFAULT_ROOT_TOPIC
-    except (KeyError, OSError, ValueError, TypeError):
-        return None
+            return ("ok", root.strip().strip("/"))
+        return ("ok", _GATEWAY_DEFAULT_ROOT_TOPIC)
+    except (AttributeError, TypeError):
+        return ("unreadable", None)
+
+
+def _read_declared_root_topic(service_user) -> Optional[str]:
+    """Back-compat shim over ``_declared_root_status`` (ONE implementation —
+    honest_failure_modes #5). Callers that must distinguish "no gateway on
+    this box" from "could not read it" need the status form."""
+    return _declared_root_status(service_user)[1]
 
 
 def probe_mqtt_root_drift(
@@ -1224,14 +1250,22 @@ def probe_mqtt_root_drift(
     observed = m.group(1).strip("/")
 
     if declared_root is not None:
-        declared = declared_root.strip().strip("/")
+        declared, status = declared_root.strip().strip("/"), "ok"
     else:
         user_fn = service_user_fn
         if user_fn is None:
             from utils.rns_tree_perms import _read_rnsd_user
             user_fn = _read_rnsd_user
-        declared = _read_declared_root_topic(user_fn())
-    if not declared:
+        status, declared = _declared_root_status(user_fn())
+    if status == "absent":
+        # No gateway.json → this box runs no MQTT bridge consumer, so there
+        # is nothing here that CAN be deaf to the radio's root. That is the
+        # organ being legitimately absent, not a failed observation.
+        note_disposition(
+            "mqtt_root_drift", "inert",
+            reason="no gateway.json on this box — no MQTT bridge consumer")
+        return None
+    if status != "ok" or not declared:
         note_disposition("mqtt_root_drift", "indeterminate",
                          reason="declared consumer root unreadable")
         return None  # declared side indeterminate — never alarm on a guess
