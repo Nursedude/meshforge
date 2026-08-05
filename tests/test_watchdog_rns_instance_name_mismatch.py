@@ -280,6 +280,66 @@ class TestInstanceNameSourceIsRnsdsConfig:
             read_rns_instance_name()  # must not raise
 
 
+class TestOmittedInstanceNameResolvesToRnsDefault:
+    """The name-UNKNOWN leg of the same class, found on the fleet while
+    verifying the wrong-name fix: a box whose config omits instance_name
+    had BOTH RNS probes silently inert while its rnsd was plainly serving
+    @rns/default. An omitted directive is not unknown — RNS resolves it."""
+
+    def _write(self, root: Path, rel: str, body: str) -> None:
+        p = root / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(body)
+
+    def test_readable_config_without_the_directive_yields_default(
+            self, tmp_path):
+        from utils.rns_alignment import (
+            RNS_DEFAULT_INSTANCE_NAME, read_rns_instance_name,
+        )
+        cfgdir = tmp_path / "etc" / "reticulum"
+        self._write(tmp_path, "etc/reticulum/config",
+                    "[reticulum]\n  enable_transport = True\n")
+
+        with patch("utils.rns_alignment.rnsd_configdir_of_record",
+                   return_value=cfgdir), \
+             patch("utils.rns_alignment.CANONICAL_CONFIGDIR",
+                   tmp_path / "no-etc"), \
+             patch("utils.paths.get_real_user_home",
+                   return_value=tmp_path / "nohome"):
+            assert read_rns_instance_name() == RNS_DEFAULT_INSTANCE_NAME
+
+    def test_no_config_anywhere_still_yields_none(self, tmp_path):
+        """A genuine unknown must stay None — guessing 'default' with no
+        config at all would point the probes at a name we have no evidence
+        for, which is the defect this file exists to prevent.
+
+        ⚠️ CANONICAL_CONFIGDIR is patched. It is the last candidate, and
+        unpatched it reads the REAL /etc/reticulum — which on any fleet box
+        answers with that box's live name and made this test meaningless.
+        """
+        from utils.rns_alignment import read_rns_instance_name
+        with patch("utils.rns_alignment.rnsd_configdir_of_record",
+                   return_value=tmp_path / "nothing"), \
+             patch("utils.rns_alignment.CANONICAL_CONFIGDIR",
+                   tmp_path / "no-etc"), \
+             patch("utils.paths.get_real_user_home",
+                   return_value=tmp_path / "nohome"):
+            assert read_rns_instance_name() is None
+
+    def test_default_constant_matches_the_installed_library(self):
+        """Pin the constant to RNS's OWN fallback. If upstream renames it,
+        this fails instead of silently blinding every box that omits the
+        directive (honest_failure_modes #5 — two consumers, one constant)."""
+        RNS = pytest.importorskip("RNS")
+        src = Path(RNS.__file__).parent / "Reticulum.py"
+        text = src.read_text(errors="replace")
+        from utils.rns_alignment import RNS_DEFAULT_INSTANCE_NAME
+        assert f'self.local_socket_path = "{RNS_DEFAULT_INSTANCE_NAME}"' in text, (
+            "RNS's fallback instance name no longer matches "
+            f"{RNS_DEFAULT_INSTANCE_NAME!r} — re-derive it from "
+            "Reticulum.py before shipping")
+
+
 class TestConfigdirOfRecordParsesTheUnit:
     """systemd's last-non-empty-``ExecStart=`` wins, so a drop-in that
     resets and re-declares changes the answer. Missing a drop-in reads

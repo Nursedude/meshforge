@@ -136,6 +136,12 @@ def _read_systemd_unit(*paths: str) -> dict:
     return {'user': user, 'exec_start': exec_start}
 
 
+# RNS's own fallback when `instance_name` is omitted — pinned by
+# TestRnsDefaultInstanceNameMatchesLibrary against the installed library,
+# so an upstream change fails a TEST instead of silently blinding a box.
+RNS_DEFAULT_INSTANCE_NAME = 'default'
+
+
 def rnsd_unit_paths() -> List[str]:
     """The rnsd unit file + its drop-ins, in systemd's own read order.
 
@@ -189,8 +195,18 @@ def read_rns_instance_name() -> Optional[str]:
     the ``rns_instance_name_mismatch`` entry in
     ``watchdog_probe_core.SIGNAL_CLASSES``.
 
-    Returns None when unreadable/unconfigured — callers must treat that as
-    "don't know" (mark dependent probes inert), never as a default name.
+    An OMITTED ``instance_name`` in a config we CAN read is not unknown —
+    RNS itself resolves it to ``default`` (Reticulum.py: ``if
+    self.local_socket_path == None and self.use_af_unix:
+    self.local_socket_path = "default"``), which is why such a box serves
+    ``@rns/default``. Returning None there left a box whose rnsd was
+    plainly listening with BOTH its RNS probes silently inert — the same
+    class as the wrong-name defect, in its name-UNKNOWN leg (found on the
+    fleet 2026-08-05 while verifying the wrong-name fix).
+
+    Returns None only when NO config is readable at all — a genuine
+    unknown, where callers must mark dependent probes inert rather than
+    guess.
     """
     # Lazy import: rns_init pulls in no RNS/heavy modules at import time,
     # and this keeps the two modules acyclic.
@@ -205,13 +221,19 @@ def read_rns_instance_name() -> Optional[str]:
         candidates.append(get_real_user_home() / '.reticulum')
     except Exception:
         pass
-    candidates.append(Path('/etc/reticulum'))
+    candidates.append(CANONICAL_CONFIGDIR)
 
+    saw_a_readable_config = False
     for configdir in candidates:
         name = _read_instance_name_from_config(configdir)
         if name:
             return name
-    return None
+        try:
+            if (configdir / 'config').is_file():
+                saw_a_readable_config = True
+        except OSError:
+            pass
+    return RNS_DEFAULT_INSTANCE_NAME if saw_a_readable_config else None
 
 
 def _resolve_rnsd_configdir(user: Optional[str], exec_start: Optional[str]) -> Path:
