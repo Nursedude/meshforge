@@ -536,11 +536,25 @@ def run_cases(cases: List[dict], backend, progress=None,
         if progress is not None:
             progress(len(results), planned, results[-1])
     passed = sum(1 for r in results if r["ok"])
+    # pass@1 alongside pass@N, always. PRODUCTION NEVER RETRIES —
+    # offline_oracle.ask and cadence_fallback each make exactly ONE call per
+    # question/chunk — so a best-of-N rate measures a capability the night
+    # watcher does not have, and model_router reads these numbers to decide
+    # whether to delegate to tier-L at all. Reporting only the retried rate
+    # would overstate delivered reliability; reporting only pass@1 would fail a
+    # capable tier on sampling variance. Both, so the DIFFERENCE is visible as
+    # its own quantity instead of folded into a headline (calibrated-claims:
+    # surface the blind spot, never average it away).
+    passed_first = sum(1 for r in results
+                       if r["ok"] and r.get("attempts_used") == 1)
     per_kind: Dict[str, dict] = {}
     for r in results:
-        k = per_kind.setdefault(r["kind"], {"passed": 0, "total": 0})
+        k = per_kind.setdefault(r["kind"],
+                                {"passed": 0, "total": 0, "passed_first": 0})
         k["total"] += 1
         k["passed"] += 1 if r["ok"] else 0
+        k["passed_first"] += 1 if (r["ok"]
+                                   and r.get("attempts_used") == 1) else 0
     now = time.time()
     iso = iso_or_none(now)
     summary = {
@@ -550,7 +564,9 @@ def run_cases(cases: List[dict], backend, progress=None,
         "backend": type(backend).__name__,
         "brain_tier": getattr(backend, "brain_tier", "local"),
         "total": len(results), "passed": passed,
+        "passed_first": passed_first,
         "pass_rate": round(passed / len(results), 3) if results else 0.0,
+        "pass_at_1": round(passed_first / len(results), 3) if results else 0.0,
         "per_kind": per_kind,
         "failed_ids": [r["id"] for r in results if not r["ok"]],
         # Budget-chunking honesty: pass_rate/total judge only COMPLETED
@@ -660,6 +676,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                   + ("" if r["ok"] else f"  — {'; '.join(r['reasons'])[:200]}"))
         print(f"local_brain_eval: {summary['passed']}/{summary['total']} "
               f"passed (rate {summary['pass_rate']}) — model {summary['model']}")
+        # The retried rate is what the gate judges; pass@1 is what production
+        # actually gets, since neither the oracle nor the cadence fallback
+        # retries. Printed side by side so a widening gap is visible.
+        if summary["pass_at_1"] != summary["pass_rate"]:
+            print(f"local_brain_eval: pass@1 {summary['passed_first']}/"
+                  f"{summary['total']} (rate {summary['pass_at_1']}) — "
+                  f"{summary['passed'] - summary['passed_first']} case(s) "
+                  f"needed a retry; production does NOT retry")
     if summary["budget_exhausted"]:
         print(f"local_brain_eval: budget exhausted — "
               f"{len(summary['not_run_ids'])} of "

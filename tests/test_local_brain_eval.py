@@ -168,7 +168,8 @@ class TestRunAndGate:
             [_triage_case(), _compile_case()], be)
         assert summary["total"] == 2 and summary["passed"] == 2
         assert summary["pass_rate"] == 1.0
-        assert summary["per_kind"]["triage"] == {"passed": 1, "total": 1}
+        assert summary["per_kind"]["triage"] == {"passed": 1, "total": 1,
+                                                 "passed_first": 1}
         assert summary["failed_ids"] == []
         assert all("latency_s" in r for r in results)
 
@@ -203,6 +204,58 @@ class TestRunAndGate:
         p = tmp_path / "bad.jsonl"
         p.write_text("{broken")
         assert lbe.main(["--cases", str(p), "--history", ""]) == 2
+
+
+class TestPassAtOne:
+    """Report what PRODUCTION gets, not only what best-of-N can reach.
+
+    Neither offline_oracle.ask nor cadence_fallback retries — each makes exactly
+    one call — so a best-of-N pass_rate measures a capability the night watcher
+    does not have, and model_router reads these numbers to decide whether to
+    delegate to tier-L. Both rates are reported so the difference is a visible
+    quantity rather than folded into a headline.
+    """
+
+    def test_pass_at_1_excludes_cases_that_needed_a_retry(self):
+        case = _triage_case()
+        case["expect"]["attempts"] = 3
+        # attempt 1 under-covers, attempt 2 is clean -> passes, but NOT first try
+        be = FakeBackend([_triage_reply(["a"]), _triage_reply(["a", "b"])])
+        _results, summary = lbe.run_cases([case], be)
+        assert summary["pass_rate"] == 1.0        # best-of-N says perfect
+        assert summary["pass_at_1"] == 0.0        # production would have failed
+        assert summary["passed"] == 1 and summary["passed_first"] == 0
+
+    def test_pass_at_1_equals_pass_rate_when_nothing_retried(self):
+        be = FakeBackend([_triage_reply(["a", "b"])])
+        _results, summary = lbe.run_cases([_triage_case()], be)
+        assert summary["pass_at_1"] == summary["pass_rate"] == 1.0
+        assert summary["passed_first"] == 1
+
+    def test_a_failed_case_counts_in_neither(self):
+        be = FakeBackend([_triage_reply(["a"])])       # under-covers, no retry
+        _results, summary = lbe.run_cases([_triage_case()], be)
+        assert summary["passed"] == 0 and summary["passed_first"] == 0
+        assert summary["pass_rate"] == summary["pass_at_1"] == 0.0
+
+    def test_per_kind_carries_the_first_try_count(self):
+        t_case = _triage_case()
+        t_case["expect"]["attempts"] = 3
+        be = FakeBackend([_triage_reply(["a"]), _triage_reply(["a", "b"]),
+                          json.dumps(VALID_RULE)])
+        _results, summary = lbe.run_cases([t_case, _compile_case()], be)
+        assert summary["per_kind"]["triage"]["passed"] == 1
+        assert summary["per_kind"]["triage"]["passed_first"] == 0
+        assert summary["per_kind"]["compile"]["passed_first"] == 1
+
+    def test_router_still_reads_the_kind_counts_it_expects(self):
+        """Additive only: model_router derives competence from
+        per_kind[kind].passed/total, so the new key must not disturb it."""
+        from mini_dudeai import model_router as mr
+        be = FakeBackend([_triage_reply(["a", "b"])])
+        _results, summary = lbe.run_cases([_triage_case()], be)
+        rate, n = mr.eval_kind_competence([summary], "triage")
+        assert (rate, n) == (1.0, 1)
 
 
 class TestAttemptsBestOfN:
