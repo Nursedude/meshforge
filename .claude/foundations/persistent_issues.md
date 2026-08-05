@@ -116,6 +116,10 @@ Full history in `persistent_issues_archive.md`.
 | #57 Gateway data-path watchdog (2026-05-17) | `bounded_call` wraps 11 RNS RPC sites; wedged peer trips breaker + `os._exit(2)` → systemd restart. Body in archive | `test_wedge_events.py` (17) + `test_bounded_rpc.py` (19) + `test_circuit_breaker.py` (+6) |
 | kernel_reboot_pending probe (2026-06-09) | Newer same-flavor kernel under `/lib/modules` than running `os.uname()`, OR `/var/run/reboot-required`. Flavor-aware (rpi-v8 ≠ rpi-2712), read-only, 2-tick debounce, both seeds. Body in archive; row demoted 2026-07-27 (MF012). | 12 tests |
 | aredn_source_dark probe (2026-06-12) | Intent = map-user `map_settings.json` `aredn_node_ips` vs observation = local `/api/status` `source_diagnostics.aredn`; fires 2-tick on `unreachable`/`not_configured` by a running service with IPs (fix: restart meshforge-map). Body in archive; row demoted 2026-07-27 (MF012). | 10 tests |
+| #81 paging honesty (2026-06-11) | Failed ntfy sends never retried + back-to-back crash boots coalesced by cooldown. Cure: `pending_sends` queue (10-attempt cap, survives restarts) + subject `host@boot_id[:8]`. LIVE-DRILL verified. Body in archive. | 10 send-retry + 5 per-boot tests |
+| #83 TUI updates (2026-07-21) | 6 causes incl. stale OBS repo pinning an uninstallable candidate ('held broken packages') + a pip `--user` script SHADOWING the pipx shim. SSOT `updates/meshtasticd_apt.py`. ⚠️ apt dry-run banner 'NOTE:' ends in 'E:' — match line-anchored. Body in archive. | — |
+| #75 leaked TCPInterface starves :9443 (2026-06-12) | Map held an unaccounted persistent TCP to :4403, draining the PhoneAPI stream (#17 leak form); web client went deaf while RX was healthy. Cure: restart meshforge-map. ⚠️ honest RX record is `grep 'Received text msg'` (json-journal greps miss `via_mqtt`). Body in archive. | `probe_phoneapi_tcp_leak` + `test_phoneapi_leak_*` (10) |
+| #76 /json/* NEVER served by meshtasticd (2026-06-12) | ESP32-only (firmware#9164); old probe fell through to GET `/api/v1/fromradio` on 404 — "available" forever + a PhoneAPI packet eaten per re-check. Fix: tri-state `ok`/`absent`/`down`. Body in archive. | `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4) |
 | #12, #22, #23 | RNS configdir= (#12, lint MF009), don't overwrite meshtasticd `config.yaml` (#22, inverse companion of #58), post-install verification via `scripts/verify_post_install.sh` (#23). Bodies in archive. | — |
 | #58 (2026-05-18) | Upstream HAT template `Webserver: Port: 443` smuggled into `config.d/`, silently moved meshtasticd off `:9443`. `_sanitize_hat_overlay` strips forbidden top-level blocks; 7 tests pin the moc3-actual broken template. Body in archive. | `tests/test_hat_overlay_sanitizer.py` |
 | #59 (2026-05-18) | Federation per-peer exponential backoff (`backoff_threshold=3`, cap `10×poll_interval`); `/api/status` exposes backoff fields; tier-2 cap in #65. Body in archive. | `TestBackoff*` in `tests/test_map_federation.py` |
@@ -240,9 +244,6 @@ keep MF012 ≤40k chars headroom open for future entries.
 
 ---
 
----
-
-
 ## Issue #69: Foreign daemon / boot race claims `@rns/<instance>` — RESOLVED, body in archive (trimmed 2026-06-07)
 
 5th rnsd-RPC-fragility variant. MeshAnchor daemon hijacked VolcanoAI's `@rns`
@@ -260,7 +261,6 @@ Quick check: `sudo ss -xnpl | grep "@rns/"` — owner must be rnsd.
 
 6th rnsd-RPC-fragility variant — rnsd **accepts the connection but the RPC round-trip hangs/EOFs**, a gap between the two existing RNS probes. Cure: `RNSStatus.timed_out` (set only on a `run_rnstatus` subprocess TIMEOUT) + `probe_rns_rpc_responsive` (`rns_rpc_unresponsive`, wedge), and **FIXED AT SOURCE** in fork `rns 1.2.5+mf.2` (`_rpc_recv()` poll(8s) before recv). Recovery: restart rnsd then RNS-using services. Quick check: `timeout 8 rnstatus >/dev/null 2>&1 || echo wedged`. **Full body + detection recipe + tests in `persistent_issues_archive.md`** (trimmed 2026-06-09 for MF012 headroom).
 
-
 ---
 
 ## Issue #73 (2026-05-31): meshforge-map fd-leak — RESOLVED, body in archive (trimmed 2026-06-09)
@@ -277,36 +277,6 @@ from the SERVICE, not the root watchdog env** — never sudo when euid==0):
 `probe_foundation_drift`, `probe_parity_drift`, `probe_rns_version_drift`,
 `probe_role_drift` (fix `provision_role.py --apply`), `probe_channel_feed_dark`
 (match by channel NAME never slot index). Bodies in archive (07-14).
-
-
----
-
-## Issue #75: leaked TCPInterface starves :9443 — RESOLVED, body in archive (trimmed 2026-06-12)
-
-Map service held an UNACCOUNTED persistent TCP to :4403 — leaked `TCPInterface`
-drained the PhoneAPI stream (#17 leak form); moc1's web client went deaf while
-RX was healthy. `probe_phoneapi_tcp_leak` (same-inode ≥20 ticks + null
-persistent_owner) catches recurrence; restart meshforge-map cures. ⚠️ Diagnosis
-trap: json-journal greps can't see `via_mqtt`/downlinked traffic — honest RX
-record is `grep 'Received text msg'`. Leak origin still unfound. Tests:
-`test_phoneapi_leak_*` (10). Full body in `persistent_issues_archive.md`.
-
-
----
-
-## Issue #76: /json/* NEVER served by meshtasticd — RESOLVED, body in archive (trimmed 2026-06-12)
-
-`/json/report`+`/json/nodes` are ESP32-only; meshtasticd's HTTP leg was dead from
-day one (firmware#9164), and the old availability probe fell through to GET
-`/api/v1/fromradio` on 404 — "available" forever + a PhoneAPI packet eaten per
-60s re-check (#17 class). Fix (`meshtastic_http.py`): tri-state `ok`/`absent`/
-`down` probe, sticky `json_api_absent` + 1h recheck, fromradio probe deleted,
-4403 depinned. Residual: `radio_failover` HTTP polls never worked vs meshtasticd.
-Missed consumer fixed 2026-07-19 (`f07480d2`, MA `e89a516a` dormant): TUI
-data-path check read `absent` as FAIL — now N/A via `_classify_http_unavailable`.
-Tests: `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4). Full
-body in `persistent_issues_archive.md`.
-
 
 ---
 
@@ -356,7 +326,6 @@ warn+demote, JSONL rotation, **MF021** observation-only lint, rules `.bak` +
 pin. ⚠️ Probes self-guard None off-box; user-bus restart needs linger. Full
 body in `persistent_issues_archive.md`.
 
-
 ---
 
 ## Issue #80: mini-dudeai honest-failure-modes review — RESOLVED, body in archive (trimmed 2026-07-09)
@@ -370,7 +339,6 @@ seed-routed. **THE LESSON** = `.claude/rules/honest_failure_modes.md` (the
 write-time checklist, now 10 points). Residual seed-CONTENT drift closed same
 day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
 
-
 ---
 
 ## synth_soak_degraded probe — RESOLVED, body in archive (trimmed 2026-07-21)
@@ -382,22 +350,6 @@ exercised the gateway round-trip but **watched nothing** — fire script always
 **SILENCE** (newest `synth-*.json` >~2.5 cadences old — silence IS the failure
 for a fixed-cadence generator) + **ENVELOPE** (`pass_envelope` false). Full
 body + self-guards in `persistent_issues_archive.md`.
-
-
----
-
-
----
-
-## Issue #81 (2026-06-11): mini paging honesty — RESOLVED, body in archive (trimmed 2026-07-12)
-
-Both real 06-11 crash pages lost to one defect pair: failed sends never
-retried (cure: `pending_sends` queue, retried per tick, 10-attempt cap, loud
-exhaustion, survives restarts) + back-to-back crash boots coalesced by
-cooldown (cure: subject = `host@boot_id[:8]` — each crash boot is a fresh
-state key). LIVE-DRILL VERIFIED 06-11 (ntfy blocked → 3 held attempts →
-delivered on unblock). Tests: 10 send-retry + 5 per-boot identity. Full body
-+ drill transcript in `persistent_issues_archive.md`.
 
 ---
 
@@ -413,22 +365,6 @@ DETECTION gap (`probe_service_inactive` is structurally blind to USER units).
 Bonus: the "multi-chunk RNS reply drops chunks" symptom was downstream of this —
 the bridge was fine, the box's own NomadNet was the broken reader. Full body +
 detection recipe in `persistent_issues_archive.md`.
-
----
-
-## Issue #83: TUI updates — apt truth, holds, mismatched repo — RESOLVED, body in archive (trimmed 2026-07-21)
-
-"meshtasticd update failed" audit, 6 causes: stale `Debian_Testing` OBS repo
-published the same version built against a newer libc (apt bound the candidate
-to an uninstallable stanza → "held broken packages"); `apt upgrade` without
-`-y`; GitHub firmware tags ≠ apt candidate; fleet-wide apt hold invisible;
-exit 0 read as success when the package was kept back; and a pip `--user`
-script SHADOWING the pipx shim. Cure: `updates/meshtasticd_apt.py` SSOT
-(candidate/hold/dry-run, guided repo repair, verified upgrade with re-read) +
-floor-pinned `pipx install --force`. ⚠️ apt dry-run banner "NOTE:" ends in
-'E:' — error matching must be line-anchored. Quick check: `apt-get -s install
---only-upgrade meshtasticd`; `head -1 ~/.local/bin/meshtastic`. Full body in
-`persistent_issues_archive.md`.
 
 ---
 
@@ -472,9 +408,7 @@ Quick check: `wc -l /proc/<pid>/maps` — climbing over 30 min = leaking, flat
 (comm is `meshtasticd-patched`); use `pgrep -f`. Detail:
 [[project_updates_design_arc_2026_07_10]].
 
-
 ---
-
 
 ## node cache dropped `service_type` on load (2026-07-21) — row summary; full body in archive
 
@@ -566,3 +500,34 @@ server is UNKNOWN and falls through, never NXDOMAIN. The test that had
 not consume the artifact it validates.* Ask what input would make the
 detector and the thing it watches disagree — then feed it that input.
 
+---
+
+## A detector keyed to the wrong NAME reads healthy, not broken (2026-08-05)
+
+Second instance of the rule above, from the other side: the checker did not
+consume what it audits — it audited **something that did not exist**.
+
+Both RNS probes build `@rns/<instance_name>`. The federator box's watchdog got
+a name nothing served, so for **8.8 days** `rns_shared_instance_unresponsive`
+sat `indeterminate` *blaming rnsd* while `rns_namespace_collision` reported an
+affirmative **`clean`** — the #69 detector blind and green on the very box #69
+happened to. rnsd was fine. Three defects, each enough to hide the others: (1) the name came from `~/.reticulum` via `get_real_user_home()`,
+which under a **ROOT service is `/root`** — a stale root config beat rnsd's own
+`--config /etc/reticulum`; (2) Linux answers a nonexistent **abstract** socket
+with `ECONNREFUSED`, never `ENOENT`, so permanent misconfiguration was
+indistinguishable from a transient rnsd shutdown; (3) `namespace_collision`
+noted `clean` after matching **zero** listeners. New class
+`rns_instance_name_mismatch` (degraded). Second leg: an **omitted**
+`instance_name` left probes silently `inert` — RNS resolves the omission to
+`default` itself, so absence is knowledge. Full account: that class's
+`SIGNAL_CLASSES` comment.
+
+**Decision tell**: an RNS probe `indeterminate`/`clean` while `rnstatus` is
+plainly healthy = check the NAME first. **Quick check**:
+`sudo ss -xnpl | grep @rns/` must match the watchdog's
+`instance_name resolved to` log line.
+
+⚠️ mini escalated this the whole time (`detector_blind_any` + three
+`persistent_active` proposals at 70m/170h/170h), all rejected *unspecified*.
+The witness worked; the READ failed. A long-running `detector_blind` is a
+finding, not furniture.

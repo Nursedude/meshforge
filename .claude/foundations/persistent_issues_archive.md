@@ -3289,3 +3289,58 @@ too — it is "safe" only because the SOA-stripping disables the caching that wo
 break it. Building on a bug.) And a perfect router-side fix still leaves fleet
 names coupled to m1 being up; the hosts block resolves with m1 AND the uplink
 down, which is the point.
+
+---
+
+## Issue #81 (2026-06-11): mini paging honesty — RESOLVED, body in archive (trimmed 2026-07-12)
+
+Both real 06-11 crash pages lost to one defect pair: failed sends never
+retried (cure: `pending_sends` queue, retried per tick, 10-attempt cap, loud
+exhaustion, survives restarts) + back-to-back crash boots coalesced by
+cooldown (cure: subject = `host@boot_id[:8]` — each crash boot is a fresh
+state key). LIVE-DRILL VERIFIED 06-11 (ntfy blocked → 3 held attempts →
+delivered on unblock). Tests: 10 send-retry + 5 per-boot identity. Full body
++ drill transcript in `persistent_issues_archive.md`.
+
+---
+
+## Issue #83: TUI updates — apt truth, holds, mismatched repo — RESOLVED, body in archive (trimmed 2026-07-21)
+
+"meshtasticd update failed" audit, 6 causes: stale `Debian_Testing` OBS repo
+published the same version built against a newer libc (apt bound the candidate
+to an uninstallable stanza → "held broken packages"); `apt upgrade` without
+`-y`; GitHub firmware tags ≠ apt candidate; fleet-wide apt hold invisible;
+exit 0 read as success when the package was kept back; and a pip `--user`
+script SHADOWING the pipx shim. Cure: `updates/meshtasticd_apt.py` SSOT
+(candidate/hold/dry-run, guided repo repair, verified upgrade with re-read) +
+floor-pinned `pipx install --force`. ⚠️ apt dry-run banner "NOTE:" ends in
+'E:' — error matching must be line-anchored. Quick check: `apt-get -s install
+--only-upgrade meshtasticd`; `head -1 ~/.local/bin/meshtastic`. Full body in
+`persistent_issues_archive.md`.
+
+---
+
+## Issue #75: leaked TCPInterface starves :9443 — RESOLVED, body in archive (trimmed 2026-06-12)
+
+Map service held an UNACCOUNTED persistent TCP to :4403 — leaked `TCPInterface`
+drained the PhoneAPI stream (#17 leak form); moc1's web client went deaf while
+RX was healthy. `probe_phoneapi_tcp_leak` (same-inode ≥20 ticks + null
+persistent_owner) catches recurrence; restart meshforge-map cures. ⚠️ Diagnosis
+trap: json-journal greps can't see `via_mqtt`/downlinked traffic — honest RX
+record is `grep 'Received text msg'`. Leak origin still unfound. Tests:
+`test_phoneapi_leak_*` (10). Full body in `persistent_issues_archive.md`.
+
+---
+
+## Issue #76: /json/* NEVER served by meshtasticd — RESOLVED, body in archive (trimmed 2026-06-12)
+
+`/json/report`+`/json/nodes` are ESP32-only; meshtasticd's HTTP leg was dead from
+day one (firmware#9164), and the old availability probe fell through to GET
+`/api/v1/fromradio` on 404 — "available" forever + a PhoneAPI packet eaten per
+60s re-check (#17 class). Fix (`meshtastic_http.py`): tri-state `ok`/`absent`/
+`down` probe, sticky `json_api_absent` + 1h recheck, fromradio probe deleted,
+4403 depinned. Residual: `radio_failover` HTTP polls never worked vs meshtasticd.
+Missed consumer fixed 2026-07-19 (`f07480d2`, MA `e89a516a` dormant): TUI
+data-path check read `absent` as FAIL — now N/A via `_classify_http_unavailable`.
+Tests: `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4). Full
+body in `persistent_issues_archive.md`.
