@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 from utils.watchdog_probe_core import (
     Signal,
     _journal_newest_match,
+    _journal_newest_match_status,
     _load_parity_streak,
     _read_deployment_declaration,
     _resolve_main_pid,
@@ -1227,21 +1228,40 @@ def probe_mqtt_root_drift(
                          reason="meshtasticd inactive or MainPID unresolvable")
         return None
 
+    # The default reader records WHETHER the journal answered, alongside the
+    # line itself — captured from the one call it already makes, never a
+    # second subprocess per tick (a per-tick journalctl on a 905 MB box is
+    # not a rounding error). An INJECTED newest_line_fn is a test seam that
+    # positively returned its answer, so it defaults to "ok".
+    read_status = {"status": "ok"}
     if newest_line_fn is None:
         def newest_line_fn(pattern: str) -> Optional[str]:
-            return _journal_newest_match(
+            st, ln = _journal_newest_match_status(
                 unit, pattern, lookback, journalctl_path=journalctl_path
             )
+            read_status["status"] = st
+            return ln
 
     line = newest_line_fn("JSON publish message to ")
     if line is None:
-        # _journal_newest_match None conflates "no publish line in the
-        # lookback" (RX-only box) with "journalctl unavailable/timeout" —
-        # indistinguishable here, so the merged note is the worse one.
-        note_disposition(
-            "mqtt_root_drift", "indeterminate",
-            reason="no json publish line observed (or journal unavailable)")
-        return None  # no json uplink at all — unobservable, not drift
+        # These used to be one None. What the silence MEANS depends on
+        # whether the channel worked (honest_failure_modes #2): a journalctl
+        # that ran and found nothing is a positive observation that this
+        # radio has no MQTT JSON uplink — the RX-only collector case, where
+        # there is no consumer/radio pair to drift and INERT is the truth.
+        # Only a journal we could not read is indeterminate. Before
+        # 2026-08-05 both were the pessimistic note, so four fleet boxes sat
+        # permanently indeterminate and a real journal outage would have
+        # been invisible inside that noise.
+        if read_status["status"] == "ok":
+            note_disposition(
+                "mqtt_root_drift", "inert",
+                reason="no MQTT JSON uplink from this radio — nothing to compare")
+        else:
+            note_disposition(
+                "mqtt_root_drift", "indeterminate",
+                reason="journal unavailable — cannot observe the publish root")
+        return None  # no json uplink at all — nothing to compare
     m = _MQTT_PUBLISH_TOPIC_RE.search(line)
     if m is None:
         note_disposition("mqtt_root_drift", "indeterminate",

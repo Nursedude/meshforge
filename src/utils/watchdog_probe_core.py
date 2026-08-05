@@ -228,6 +228,46 @@ def _read_deployment_declaration(service_user) -> Tuple[Optional[str], dict]:
     except (KeyError, OSError, ValueError, TypeError):
         return None, {}
 
+def _journal_newest_match_status(
+    unit: str,
+    pattern: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Tuple[str, Optional[str]]:
+    """Tri-state form of ``_journal_newest_match``.
+
+    Returns ``("ok", line)`` for a match, ``("ok", None)`` when journalctl
+    RAN and positively found nothing, or ``("unobservable", None)`` when
+    the query could not be answered at all.
+
+    ⚠️ Why (2026-08-05): the flat form collapses "this unit genuinely
+    logged no such line" into the same None as "journalctl is wedged", and
+    callers then have to pick one meaning for both. ``mqtt_root_drift``
+    picked the pessimistic one and consequently sat ``indeterminate``
+    forever on every RX-only box — permanent noise that a REAL journal
+    outage would have been invisible inside. Absence of evidence is only
+    evidence of absence once you have shown the channel works
+    (honest_failure_modes #2). Mirrors ``_journal_count_match``, which has
+    always kept the distinction.
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-u", unit, "--since", f"-{lookback}",
+                "-g", pattern, "-r", "-n", "1", "-o", "short-unix",
+                "-q", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ("unobservable", None)
+    # rc 1 = "no entries matched" on some systemd builds; only >1 is an error.
+    if proc.returncode not in (0, 1):
+        return ("unobservable", None)
+    lines = proc.stdout.strip().splitlines()
+    return ("ok", lines[0] if lines else None)
+
+
 def _journal_newest_match(
     unit: str,
     pattern: str,
@@ -240,23 +280,13 @@ def _journal_newest_match(
     None on no match / journalctl unavailable / timeout. ``-r -n 1`` makes the
     busy-feed case cheap (journalctl stops at the first newest-first match);
     the no-match case is bounded by ``--since`` and the subprocess timeout.
+
+    Callers that must tell "nothing logged" from "could not look" want
+    ``_journal_newest_match_status`` — ONE implementation, this is its shim
+    (honest_failure_modes #5).
     """
-    try:
-        proc = subprocess.run(
-            [
-                journalctl_path, "-u", unit, "--since", f"-{lookback}",
-                "-g", pattern, "-r", "-n", "1", "-o", "short-unix",
-                "-q", "--no-pager",
-            ],
-            capture_output=True, text=True, timeout=10,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    # rc 1 = "no entries matched" on some systemd builds; only >1 is an error.
-    if proc.returncode not in (0, 1):
-        return None
-    lines = proc.stdout.strip().splitlines()
-    return lines[0] if lines else None
+    return _journal_newest_match_status(
+        unit, pattern, lookback, journalctl_path=journalctl_path)[1]
 
 
 def _journal_count_match(

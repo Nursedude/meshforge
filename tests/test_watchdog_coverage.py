@@ -476,17 +476,33 @@ class TestRoleDriftUndeclaredIndeterminate:
 
 
 class TestMqttRootNoLineIndeterminate:
-    """D3: _journal_newest_match None conflates no-match (RX-only box) with
-    journalctl unavailable/timeout — the note must be indeterminate."""
+    """D3 lineage. This test PINNED the conflation: `_journal_newest_match`
+    returns None for both no-match (RX-only box) and journalctl
+    unavailable/timeout, and D3 resolved it by noting the pessimistic
+    `indeterminate` for both.
 
-    def test_no_publish_line_notes_indeterminate(self, tmp_path):
+    ⚠️ INVERTED 2026-08-05. That resolution left four fleet boxes sitting
+    permanently indeterminate on a class they can never be in trouble for,
+    and a real journal outage would have been invisible inside that noise
+    (`detector_blind_any` was live on three of them). The probe now asks
+    whether the channel WORKED before deciding what its silence means —
+    `_journal_newest_match_status`. An INJECTED seam returning None is a
+    positive answer ("nothing logged"), so it is now INERT; the
+    unobservable path is exercised against the real reader in
+    tests/test_watchdog_detector_blind_legs_2026_08_05.py
+    (TestMqttRootDriftSilenceDisposition.test_broken_journal_stays_indeterminate).
+    """
+
+    def test_no_publish_line_from_a_working_channel_is_inert(self, tmp_path):
         sig = probe_mqtt_root_drift(
             main_pid=1002, newest_line_fn=lambda pattern: None,
             declared_root="msh", state_path=str(tmp_path / "mq.json"))
         assert sig is None
         got = collect_dispositions()["mqtt_root_drift"]
-        assert got["disp"] == "indeterminate"
-        assert "journal unavailable" in got["reason"]
+        assert got["disp"] == "inert", (
+            "a channel that answered 'nothing logged' is an observation; "
+            "calling it 'cannot observe' is what buried the RX-only boxes")
+        assert "no MQTT JSON uplink" in got["reason"]
 
 
 class TestDepWatchedTupleClosedConsumer:

@@ -235,3 +235,131 @@ class TestTotalConfirmationCollapseIsVisible:
             sig = probe_delivery_confirmation_stall()
         assert sig is None
         assert dispositions()["delivery_confirmation_stall"]["disp"] == "indeterminate"
+
+
+# ─────────────────────────────────────────────────────────────────────
+# mqtt_root_drift, third leg — silence means nothing until the channel
+# is known to work
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestJournalSilenceIsNotUnobservable:
+    """`_journal_newest_match` returns None for "nothing logged" AND for
+    "journalctl is wedged". mqtt_root_drift picked the pessimistic reading
+    for both and sat indeterminate forever on four RX-only fleet boxes —
+    noise a REAL journal outage would have been invisible inside."""
+
+    from utils.watchdog_probe_core import (  # noqa: E402
+        _journal_newest_match_status as _status,
+    )
+
+    def _fake_run(self, *, stdout="", returncode=0, exc=None):
+        def _runner(*a, **k):
+            if exc:
+                raise exc
+
+            class _R:
+                pass
+            r = _R()
+            r.stdout, r.returncode = stdout, returncode
+            return r
+        return _runner
+
+    def test_match_is_ok_with_the_line(self):
+        from utils.watchdog_probe_core import _journal_newest_match_status
+        with patch("utils.watchdog_probe_core.subprocess.run",
+                   self._fake_run(stdout="123 a line\n")):
+            assert _journal_newest_match_status("u", "p", "1h") == ("ok", "123 a line")
+
+    def test_ran_and_found_nothing_is_ok_none_not_unobservable(self):
+        from utils.watchdog_probe_core import _journal_newest_match_status
+        with patch("utils.watchdog_probe_core.subprocess.run",
+                   self._fake_run(stdout="", returncode=1)):
+            assert _journal_newest_match_status("u", "p", "1h") == ("ok", None)
+
+    @pytest.mark.parametrize("kw", [
+        {"exc": FileNotFoundError("no journalctl")},
+        {"exc": OSError("boom")},
+        {"returncode": 2},
+    ])
+    def test_broken_channel_is_unobservable(self, kw):
+        from utils.watchdog_probe_core import _journal_newest_match_status
+        with patch("utils.watchdog_probe_core.subprocess.run",
+                   self._fake_run(**kw)):
+            assert _journal_newest_match_status("u", "p", "1h") == ("unobservable", None)
+
+    def test_flat_shim_still_collapses_both_for_old_callers(self):
+        """The shim keeps its contract — ONE implementation underneath."""
+        from utils.watchdog_probe_core import _journal_newest_match
+        with patch("utils.watchdog_probe_core.subprocess.run",
+                   self._fake_run(stdout="", returncode=1)):
+            assert _journal_newest_match("u", "p", "1h") is None
+        with patch("utils.watchdog_probe_core.subprocess.run",
+                   self._fake_run(exc=OSError("boom"))):
+            assert _journal_newest_match("u", "p", "1h") is None
+
+
+class TestMqttRootDriftSilenceDisposition:
+
+    def _run(self, run_mock, dispositions):
+        with patch("utils.watchdog_probes_drift._resolve_main_pid",
+                   return_value=1234), \
+             patch("utils.watchdog_probe_core.subprocess.run", run_mock):
+            return probe_mqtt_root_drift()
+
+    def _fake_run(self, *, returncode=0, exc=None):
+        def _runner(*a, **k):
+            if exc:
+                raise exc
+
+            class _R:
+                pass
+            r = _R()
+            r.stdout, r.returncode = "", returncode
+            return r
+        return _runner
+
+    def test_no_publish_line_with_working_journal_is_inert(self, dispositions):
+        """An RX-only box: journalctl ran, this radio publishes no JSON, so
+        there is no consumer/radio pair that CAN drift."""
+        self._run(self._fake_run(returncode=1), dispositions)
+        got = dispositions()["mqtt_root_drift"]
+        assert got["disp"] == "inert", (
+            "a working journal that found nothing is a positive observation, "
+            "not a failure to observe")
+        assert "no MQTT JSON uplink" in got["reason"]
+
+    def test_broken_journal_stays_indeterminate(self, dispositions):
+        self._run(self._fake_run(exc=OSError("journalctl wedged")), dispositions)
+        got = dispositions()["mqtt_root_drift"]
+        assert got["disp"] == "indeterminate", (
+            "a journal we could not read must NEVER downgrade to inert — "
+            "that is the outage this split exists to keep visible")
+        assert "journal unavailable" in got["reason"]
+
+    def test_injected_seam_defaults_to_observed(self, dispositions):
+        """A test seam that returns None answered positively; it must not be
+        treated as a broken channel."""
+        with patch("utils.watchdog_probes_drift._resolve_main_pid",
+                   return_value=1234):
+            probe_mqtt_root_drift(newest_line_fn=lambda p: None)
+        assert dispositions()["mqtt_root_drift"]["disp"] == "inert"
+
+    def test_default_reader_makes_exactly_one_journal_call(self):
+        """Cost guard: the status must come from the call already made, not
+        a second subprocess per tick on every RX-only box."""
+        calls = []
+
+        def _runner(*a, **k):
+            calls.append(a)
+
+            class _R:
+                pass
+            r = _R()
+            r.stdout, r.returncode = "", 1
+            return r
+        with patch("utils.watchdog_probes_drift._resolve_main_pid",
+                   return_value=1234), \
+             patch("utils.watchdog_probe_core.subprocess.run", _runner):
+            probe_mqtt_root_drift()
+        assert len(calls) == 1, f"expected 1 journalctl call, made {len(calls)}"
