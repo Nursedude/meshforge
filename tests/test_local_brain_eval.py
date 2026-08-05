@@ -46,17 +46,12 @@ def _triage_reply(keys):
          "needs-live-check"} for k in keys]})
 
 
-def _triage_replies(*per_call):
-    """One reply PER MODEL CALL, not per attempt.
-
-    Since 2026-08-04 the production path triages ONE delta per call (a batch
-    that crosses the client bound loses every delta in it; one that crosses it
-    loses only its own). So a 2-delta case consumes TWO replies per attempt,
-    and ``len(be.calls)`` counts attempts x deltas. An empty reply stands in
-    for "the tier answered something unusable about this delta" — it fails
-    validation, which the run treats as a CONTENT failure and carries on.
-    """
-    return [_triage_reply(list(keys)) for keys in per_call]
+# NOTE (2026-08-04): the production path packs deltas to fit the model's
+# context window, so a small case is ONE call whose reply covers every fed key —
+# which is what these fixtures assume. It briefly used a fixed chunk of 1 (one
+# reply per delta); that was reverted when the real bound turned out to be the
+# 4096-token window, not latency. If a case ever grows past the window, its
+# fixture needs one reply per PACKED CHUNK, not per delta.
 
 
 VALID_RULE = {"id": "eval_rule", "match": {"kind": "sensor_breach",
@@ -108,7 +103,7 @@ class TestLoadCases:
 class TestGradeTriage:
     def test_full_coverage_passes(self):
         ok, reasons, w = lbe.grade_triage(
-            _triage_case(), FakeBackend(_triage_replies(["a"], ["b"])))
+            _triage_case(), FakeBackend([_triage_reply(["a", "b"])]))
         assert ok, reasons
         assert w["brain_tier"] == "local"
 
@@ -167,8 +162,8 @@ class TestGradeCompile:
 
 class TestRunAndGate:
     def test_summary_counts_and_ledger_shape(self):
-        be = FakeBackend(_triage_replies(["a"], ["b"])
-                         + [json.dumps(VALID_RULE)])
+        be = FakeBackend([_triage_reply(["a", "b"]),
+                          json.dumps(VALID_RULE)])
         results, summary = lbe.run_cases(
             [_triage_case(), _compile_case()], be)
         assert summary["total"] == 2 and summary["passed"] == 2
@@ -197,7 +192,7 @@ class TestRunAndGate:
 
     def test_main_passes_and_appends_history(self, tmp_path, monkeypatch):
         path = _cases_file(tmp_path, [_triage_case()])
-        be = FakeBackend(_triage_replies(["a"], ["b"]))
+        be = FakeBackend([_triage_reply(["a", "b"])])
         monkeypatch.setattr(lbe, "OllamaBackend", lambda **k: be)
         hist = tmp_path / "hist.jsonl"
         assert lbe.main(["--cases", path, "--history", str(hist),
@@ -218,31 +213,30 @@ class TestAttemptsBestOfN:
     def test_retries_until_a_clean_pass(self):
         case = _triage_case()
         case["expect"]["attempts"] = 3
-        # attempt 1 under-covers (fail); attempt 2 is complete (pass).
-        # Two calls per attempt now: delta a, then delta b.
-        be = FakeBackend(_triage_replies(["a"], [], ["a"], ["b"]))
+        # attempt 1 under-covers (fail); attempt 2 is complete (pass)
+        be = FakeBackend([_triage_reply(["a"]), _triage_reply(["a", "b"])])
         results, summary = lbe.run_cases([case], be)
         assert summary["passed"] == 1 and results[0]["ok"] is True
         assert results[0]["attempts"] == 3
         assert results[0]["attempts_used"] == 2      # stopped on first success
-        assert len(be.calls) == 4      # 2 attempts x 2 deltas; 3rd try unburned
+        assert len(be.calls) == 2                    # did NOT burn the 3rd try
 
     def test_exhausted_attempts_still_fail_never_masking_a_miss(self):
         case = _triage_case()
         case["expect"]["attempts"] = 2
-        be = FakeBackend(_triage_replies(["a"], [], ["a"], []))  # both under
+        be = FakeBackend([_triage_reply(["a"]), _triage_reply(["a"])])  # both under
         results, summary = lbe.run_cases([case], be)
         assert summary["passed"] == 0 and results[0]["ok"] is False
         assert results[0]["attempts_used"] == 2      # used every try
-        assert len(be.calls) == 4                    # 2 attempts x 2 deltas
+        assert len(be.calls) == 2
 
     def test_default_is_single_shot_no_retry(self):
         case = _triage_case()                        # no attempts key
-        be = FakeBackend(_triage_replies(["a"], []))  # one under-coverage fail
+        be = FakeBackend([_triage_reply(["a"])])     # one under-coverage fail
         results, _ = lbe.run_cases([case], be)
         assert results[0]["ok"] is False
         assert results[0]["attempts"] == 1 and results[0]["attempts_used"] == 1
-        assert len(be.calls) == 2                    # one attempt x 2 deltas
+        assert len(be.calls) == 1                    # exactly one attempt
 
     def test_attempts_must_be_positive_int_at_load(self):
         for bad in (0, -1, "3", 1.5, True):
@@ -774,14 +768,14 @@ class ApiSmallFakeBackend(FakeBackend):
 class TestBackendAwareTiers:
     def test_triage_witness_carries_the_backends_tier(self):
         ok, reasons, witness = lbe.grade_triage(
-            _triage_case(), ApiSmallFakeBackend(_triage_replies(["a"], ["b"])))
+            _triage_case(), ApiSmallFakeBackend([_triage_reply(["a", "b"])]))
         assert ok, reasons
         assert witness["brain_tier"] == "api_small"
 
     def test_default_backend_still_stamps_local(self):
         # the production Ollama path must be byte-identical in behavior
         ok, reasons, witness = lbe.grade_triage(
-            _triage_case(), FakeBackend(_triage_replies(["a"], ["b"])))
+            _triage_case(), FakeBackend([_triage_reply(["a", "b"])]))
         assert ok, reasons
         assert witness["brain_tier"] == "local"
 
@@ -789,7 +783,7 @@ class TestBackendAwareTiers:
         # ADDITIVE ledger keys: trend readers must be able to split the two
         # calibration histories; blending them would poison tier-L's record
         results, summary = lbe.run_cases(
-            [_triage_case()], ApiSmallFakeBackend(_triage_replies(["a"], ["b"])))
+            [_triage_case()], ApiSmallFakeBackend([_triage_reply(["a", "b"])]))
         assert summary["backend"] == "ApiSmallFakeBackend"
         assert summary["brain_tier"] == "api_small"
         assert summary["model"] == "claude-haiku-4-5"

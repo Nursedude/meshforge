@@ -153,11 +153,15 @@ class _ChunkBackend:
 
     model = "fake:3b"
 
-    def __init__(self, fail_keys=None, exc_for=None, durations=None):
+    def __init__(self, fail_keys=None, exc_for=None, durations=None,
+                 exc_for_sizes=None):
         self.calls = []
         self.prompts = []
         self.fail_keys = set(fail_keys or ())      # -> unusable reply (content)
         self.exc_for = set(exc_for or ())          # -> CompilerError (transport)
+        # chunk SIZES that time out — models "this batch was too big", which is
+        # the condition bisection exists to discover.
+        self.exc_for_sizes = set(exc_for_sizes or ())
         self.durations = list(durations or [])
         self.clock = 0.0
 
@@ -171,7 +175,7 @@ class _ChunkBackend:
         self.calls.append(keys)
         self.prompts.append(user)
         self.clock += (self.durations.pop(0) if self.durations else 1.0)
-        if self.exc_for & set(keys):
+        if self.exc_for & set(keys) or len(keys) in self.exc_for_sizes:
             raise CompilerError("ollama down")
         if self.fail_keys & set(keys):
             return "not json {"
@@ -181,16 +185,82 @@ class _ChunkBackend:
 class TestChunkedTriage:
     """2026-08-04: a 4-delta backlog was fed as ONE call, hit the client bound,
     and banked NOTHING three tries running — on exactly the busy night the
-    fallback exists for. Measured A/B on the real backlog: 0/4 as a batch vs
-    4/4 one-at-a-time. These pin the partial-credit contract."""
+    fallback exists for. The first cure was a FIXED chunk of 1, generalised from
+    that one case; it then cost triage-five-mixed 861 s and its max_dropped gate,
+    because a one-item list is a different prompt shape. These pin the ADAPTIVE
+    contract: batch efficiency when it fits, partial credit when it does not,
+    and no size constant left to go stale."""
 
-    def test_each_delta_is_its_own_call_and_all_land(self, tmp_path):
+    def test_adaptive_sends_the_whole_backlog_in_one_call(self, tmp_path):
+        """The default must NOT pay N round trips when one would do — that was
+        the regression the fixed chunk of 1 introduced."""
         path = _deltas_file(tmp_path, [_delta("a"), _delta("b"), _delta("c")])
         be = _ChunkBackend()
         w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
-        assert be.calls == [["a"], ["b"], ["c"]]
+        assert be.calls == [["a", "b", "c"]]
         assert [d["key"] for d in w["deltas"]] == ["a", "b", "c"]
         assert w["triaged"] == 3 and w["proposed_total"] == 3
+
+    def test_timeout_bisects_and_the_halves_land(self, tmp_path):
+        """THE adaptive behaviour: a chunk too big to finish is not a dead
+        backlog, it is a chunk to split. Only the whole-set call times out here;
+        both halves succeed, so all 4 deltas land."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(exc_for_sizes={4})
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls == [["a", "b", "c", "d"], ["a", "b"], ["c", "d"]]
+        assert [d["key"] for d in w["deltas"]] == ["a", "b", "c", "d"]
+        assert w["triaged"] == 4
+
+    def test_bisect_recurses_until_the_pieces_fit(self, tmp_path):
+        """Halving once is not a rule, it is a step: keep splitting while the
+        pieces still time out."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(exc_for_sizes={4, 2})
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls == [["a", "b", "c", "d"], ["a", "b"], ["a"], ["b"],
+                            ["c", "d"], ["c"], ["d"]]
+        assert w["triaged"] == 4
+
+    def test_bisected_order_is_oldest_first(self, tmp_path):
+        """Partial coverage must always be the OLDEST deltas — a bisect that
+        reordered the queue would silently change WHICH deltas a budget-limited
+        run covers."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(exc_for_sizes={4})
+        cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        flat = [k for call in be.calls[1:] for k in call]
+        assert flat == ["a", "b", "c", "d"]
+
+    def test_single_delta_timeout_stops_the_run(self, tmp_path):
+        """A single delta cannot be split, so the size hypothesis is exhausted
+        and the tier itself is the remaining explanation. Stop — every further
+        chunk would pay a full timeout to fail identically, which is how a run
+        overruns the wall and loses its witness entirely."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(exc_for_sizes={4, 2, 1})
+        w = cf.run(path, be, frontier_rc=None, now=NOW, monotonic=be.monotonic)
+        # whole set -> halve -> single 'a' times out -> stop, nothing banked
+        assert be.calls == [["a", "b", "c", "d"], ["a", "b"], ["a"]]
+        assert w["brain_tier"] == "rules" and w["triaged"] == 0
+        assert "ollama down" in w["error"]
+
+    def test_content_failure_does_NOT_bisect(self, tmp_path):
+        """Splitting cannot cure a malformed reply — re-asking a question
+        already answered badly just spends the budget. Bisect is for SIZE."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(fail_keys={"a"})     # unusable reply, tier alive
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls == [["a", "b", "c", "d"]]   # no split attempted
+        assert w["brain_tier"] == "rules" and w["triaged"] == 0
+
+    def test_explicit_chunk_size_still_forced(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b"), _delta("c")])
+        be = _ChunkBackend()
+        w = cf.run(path, be, frontier_rc=1, now=NOW, chunk_size=1,
+                   monotonic=be.monotonic)
+        assert be.calls == [["a"], ["b"], ["c"]]
+        assert w["triaged"] == 3
 
     def test_budget_stops_starting_chunks_and_banks_what_landed(self, tmp_path):
         """THE regression: crossing the wall must cost only the deltas not yet
@@ -198,7 +268,7 @@ class TestChunkedTriage:
         path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
         be = _ChunkBackend(durations=[100.0, 100.0, 100.0, 100.0])
         w = cf.run(path, be, frontier_rc=1, now=NOW, budget_s=150.0,
-                   monotonic=be.monotonic)
+                   chunk_size=1, monotonic=be.monotonic)
         # a runs (nothing banked yet), b starts at 100 < 150, c would start at
         # 200 >= 150 and does not.
         assert be.calls == [["a"], ["b"]]
@@ -212,7 +282,7 @@ class TestChunkedTriage:
         path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
         be = _ChunkBackend()
         w = cf.run(path, be, frontier_rc=1, now=NOW, budget_s=0.0,
-                   monotonic=be.monotonic)
+                   chunk_size=1, monotonic=be.monotonic)
         assert be.calls == [["a"]] and w["triaged"] == 1
 
     def test_transport_failure_stops_the_run(self, tmp_path):
@@ -221,7 +291,8 @@ class TestChunkedTriage:
         and loses its witness entirely."""
         path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
         be = _ChunkBackend(exc_for={"b"})
-        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        w = cf.run(path, be, frontier_rc=1, now=NOW, chunk_size=1,
+                   monotonic=be.monotonic)
         assert be.calls == [["a"], ["b"]]           # c and d never attempted
         assert w["triaged"] == 1 and w["brain_tier"] == "local"
         assert "partial" in w["summary"]
@@ -231,7 +302,8 @@ class TestChunkedTriage:
         ANSWERED, so a malformed reply about b says nothing about c."""
         path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
         be = _ChunkBackend(fail_keys={"b"})
-        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        w = cf.run(path, be, frontier_rc=1, now=NOW, chunk_size=1,
+                   monotonic=be.monotonic)
         assert be.calls == [["a"], ["b"], ["c"], ["d"]]
         assert [d["key"] for d in w["deltas"]] == ["a", "c", "d"]
         assert w["triaged"] == 3 and w["proposed_total"] == 4
@@ -244,7 +316,8 @@ class TestChunkedTriage:
         note, never an empty-but-successful-looking triage (#80)."""
         path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
         be = _ChunkBackend(exc_for={"a"})
-        w = cf.run(path, be, frontier_rc=None, now=NOW, monotonic=be.monotonic)
+        w = cf.run(path, be, frontier_rc=None, now=NOW, chunk_size=1,
+                   monotonic=be.monotonic)
         assert w["brain_tier"] == "rules" and w["triaged"] == 0
         assert w["deltas"] == [] and "pending" in w["summary"]
         assert "ollama down" in w["error"]
@@ -264,10 +337,117 @@ class TestChunkedTriage:
             return ctx, None
 
         monkeypatch.setattr(cf, "retrieve_context", _fake_retrieve)
-        cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        cf.run(path, be, frontier_rc=1, now=NOW, chunk_size=1,
+               monotonic=be.monotonic)
         assert seen == [["a", "b"]], "grounding must be retrieved once, not per chunk"
         assert "excerpt-a" in be.prompts[0] and "excerpt-b" not in be.prompts[0]
         assert "excerpt-b" in be.prompts[1] and "excerpt-a" not in be.prompts[1]
+
+
+class TestContextWindowPacking:
+    """2026-08-04: the REAL bound was never time, it was the context window.
+
+    Ollama's runtime default is 4096 tokens no matter what the model can do
+    (this one advertises 262,144), and nothing in the codebase set it. When
+    grounding added ~817 tokens of context PER DELTA, a 5-delta backlog became
+    a 4,469-token prompt and was REJECTED — HTTP 400 in 0.8 s, not a timeout.
+    The witness said "local LLM triage unavailable", which reads as the tier
+    being down rather than the prompt being too big, so it hid for 11 days.
+
+    Packing makes the limit arithmetic done BEFORE sending. Bisect stays for
+    what the estimate misses; neither mechanism is sufficient alone.
+    """
+
+    def _big(self, n):
+        # ~1 token/char*3 -> each delta's summary alone is ~200 tokens, so a
+        # 4096 window fills after a handful.
+        return [_delta(f"k{i}", summary="x" * 600) for i in range(n)]
+
+    def test_packs_to_fit_the_window_instead_of_one_giant_call(self):
+        chunks = cf.pack_chunks(self._big(10), None, None, 4096)
+        assert len(chunks) > 1, "a 10-delta backlog cannot fit 4096 tokens"
+        for c in chunks:
+            assert cf._estimated_tokens(c, None, None) <= 4096
+
+    def test_packing_preserves_order(self):
+        deltas = self._big(10)
+        flat = [d["key"] for c in cf.pack_chunks(deltas, None, None, 4096)
+                for d in c]
+        assert flat == [d["key"] for d in deltas], \
+            "partial coverage must always be the OLDEST deltas"
+
+    def test_a_bigger_declared_window_packs_more_per_call(self):
+        deltas = self._big(10)
+        small = cf.pack_chunks(deltas, None, None, 4096)
+        large = cf.pack_chunks(deltas, None, None, 16384)
+        assert len(large) < len(small), \
+            "the declared window must actually drive the packing"
+
+    def test_an_oversized_single_delta_is_still_sent(self):
+        """It cannot be split, and sending it to be REFUSED is more honest than
+        dropping it from the backlog — a refusal is recorded, an omission is
+        not (hfm #9)."""
+        huge = [_delta("huge", summary="x" * 100_000)]
+        chunks = cf.pack_chunks(huge, None, None, 4096)
+        assert chunks == [huge]
+
+    def test_run_reads_the_window_the_BACKEND_declares(self, tmp_path):
+        """Not a constant in this module: the backend owns the window, so a
+        backend configured differently must change the packing (hfm #5 — one
+        constant, not two hardcodes)."""
+        path = _deltas_file(tmp_path, self._big(8))
+
+        class _Narrow(_ChunkBackend):
+            num_ctx = 4096
+
+        class _Wide(_ChunkBackend):
+            num_ctx = 32768
+
+        narrow, wide = _Narrow(), _Wide()
+        cf.run(path, narrow, frontier_rc=1, now=NOW, monotonic=narrow.monotonic)
+        cf.run(path, wide, frontier_rc=1, now=NOW, monotonic=wide.monotonic)
+        assert len(narrow.calls) > len(wide.calls)
+
+    def test_oversize_estimate_still_falls_back_to_bisect(self, tmp_path):
+        """Packing is an ESTIMATE. When it packs something the server still
+        refuses, the bisect must catch it — that is why both exist."""
+        path = _deltas_file(tmp_path, [_delta(k) for k in "abcd"])
+        be = _ChunkBackend(exc_for_sizes={4})   # packed together, server refuses
+        w = cf.run(path, be, frontier_rc=1, now=NOW, monotonic=be.monotonic)
+        assert be.calls[0] == ["a", "b", "c", "d"]      # packed as one
+        assert len(be.calls) > 1                         # then bisected
+        assert w["triaged"] == 4
+
+
+class TestDeclaredContextWindow:
+    def test_backend_sends_num_ctx(self):
+        """The window must be DECLARED on the wire. Inheriting the server's
+        default is what let a 4096 ceiling go unnoticed for 11 days."""
+        import json as _json
+        from mini_dudeai import chat_compiler as cc
+        sent = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return _json.dumps(
+                    {"message": {"content": "{}"}}).encode()
+
+        def _fake_urlopen(req, timeout=None):
+            sent.update(_json.loads(req.data.decode()))
+            return _Resp()
+
+        be = cc.OllamaBackend()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(cc.urllib.request, "urlopen", _fake_urlopen)
+            be.complete("sys", "user")
+        assert sent["options"]["num_ctx"] == cc.OLLAMA_NUM_CTX
+        assert cc.OLLAMA_NUM_CTX >= 8192
 
 
 class TestTriageBounds:

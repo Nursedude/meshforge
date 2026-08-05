@@ -52,6 +52,35 @@ DEFAULT_TIMEOUT_S = 240.0
 # the CLIs passed 480, so the same question could time out in-app but
 # succeed on the CLI (surface divergence the oracle handler promises away).
 LOCAL_BRAIN_TIMEOUT_S = 480.0
+
+#: Context window DECLARED on every request, in tokens.
+#:
+#: WHY THIS IS SET AT ALL (2026-08-04). It was not, and the cost was invisible:
+#: Ollama's default runtime window is 4096 regardless of what the model can do
+#: (this one advertises 262,144), so every request silently inherited 4096. When
+#: retrieval grounding landed 2026-07-24 it added ~817 tokens of domain context
+#: PER DELTA on top of a 728-token system prompt, and any backlog of 5+ deltas
+#: began exceeding the window — rejected outright with HTTP 400
+#: ("request (4469 tokens) exceeds the available context size (4096)"), in under
+#: a second. The cadence fallback reported that honestly as "local LLM triage
+#: unavailable", which reads as the TIER being down rather than the prompt being
+#: too big, so it went unnoticed for eleven days. An inherited default that can
+#: move under you is not a bound you control; declare it.
+#:
+#: WHY 8192 AND NOT MORE, measured on the manager box 2026-08-04 (a clean load
+#: at each window, ollama's own accounting and the host's MemAvailable):
+#:
+#:     num_ctx   ollama SIZE   host cost   vs 4096
+#:        4096        3.5 GB     3490 MB         -
+#:        8192        4.2 GB     3847 MB    +357 MB
+#:       16384        5.4 GB     4947 MB   +1457 MB
+#:
+#: 8192 holds 6 grounded deltas (728 + ~1199/delta) for +357 MB against ollama's
+#: 8 GB cap. 16384 costs 4x that for capacity the backlog does not need, on the
+#: box this fleet has hard-reset eight times — KV cache is RAM
+#: (feedback_my_footprint_is_the_constraint).
+OLLAMA_NUM_CTX = 8192
+
 # Bounded "is the local brain up" reachability probe (GET /api/version).
 OLLAMA_PROBE_TIMEOUT_S = 4.0
 
@@ -98,10 +127,12 @@ class OllamaBackend:
 
     def __init__(self, url: str = DEFAULT_OLLAMA_URL,
                  model: str = DEFAULT_MODEL,
-                 timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
+                 timeout_s: float = DEFAULT_TIMEOUT_S,
+                 num_ctx: int = OLLAMA_NUM_CTX) -> None:
         self.url = url.rstrip("/")
         self.model = model
         self.timeout_s = float(timeout_s)
+        self.num_ctx = int(num_ctx)
 
     def complete(self, system: str, user: str,
                  fmt: "str | dict" = "json") -> str:
@@ -118,7 +149,7 @@ class OllamaBackend:
             "model": self.model,
             "stream": False,
             "format": fmt,
-            "options": {"temperature": 0.2},
+            "options": {"temperature": 0.2, "num_ctx": self.num_ctx},
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},

@@ -84,17 +84,72 @@ LOCAL_TRIAGE_WALL_DEFAULT_S = 600.0
 TRIAGE_CHUNK_TIMEOUT_S = 300.0
 TRIAGE_MARGIN_S = 30.0
 
-#: Deltas per model call. ONE, from the 2026-08-04 A/B on the real backlog
-#: (triage-four-mixed, live Ollama, this box): as a single 4-delta call it hit the
-#: client bound and banked 0; one delta per call banked each result as it landed
-#: (231.7 s, 190.9 s, 209.6 s ...). The win is PARTIAL CREDIT, not throughput —
-#: batching is not measurably cheaper per delta, but a batch that crosses the wall
-#: loses every delta in it, while a chunk that crosses the wall loses only its own.
-TRIAGE_CHUNK_DEFAULT = 1
+#: Deltas per model call. ``None`` = ADAPTIVE: attempt the whole fed set, and
+#: BISECT on a transport timeout until the pieces land (or a single delta still
+#: times out, which is the tier being down rather than the chunk being big).
+#:
+#: It was briefly a fixed 1, from an A/B on ONE case (triage-four-mixed) where a
+#: 4-delta batch hit the client bound and banked 0 while one-per-call banked 4.
+#: That generalised from n=1 and cost two things the same day: five separate
+#: calls on triage-five-mixed took 861 s and tripped its `max_dropped: 0` gate,
+#: because a ONE-item list is a different prompt shape from the list this system
+#: prompt was written for. And the A/B never showed batching was slower — only
+#: that one batch exceeded one fixed timeout, which is a statement about the
+#: timeout. Adaptive keeps the batch's efficiency when it fits and the chunk's
+#: partial credit when it does not, and re-derives the size every run, so there
+#: is no number left to go stale the next time the prompt grows.
+TRIAGE_CHUNK_DEFAULT: Optional[int] = None
 _ASSESSMENT_CLAMP = 300
 _SUMMARY_CLAMP = 500
 
 DISPOSITIONS = ("looks-ratifiable", "looks-rejectable", "needs-live-check")
+
+#: Prompt-size accounting, measured 2026-08-04 against the live server's own
+#: token count (it reported 4469 tokens for a 13,460-char grounded prompt).
+#: These turn "how many deltas fit" into arithmetic done BEFORE sending, instead
+#: of a limit discovered by having a request rejected.
+_CHARS_PER_TOKEN = 3.0
+#: Reply length scales with the delta count — a 1-delta reply measured ~1150
+#: chars — and the window must hold the reply as well as the prompt.
+_OUTPUT_TOKENS_PER_DELTA = 400
+#: Headroom for the estimate being wrong. It is an ESTIMATE: tokenization is not
+#: uniform, and triage-four-mixed sat close enough to the 4096 line that this
+#: arithmetic could not call it (it timed out rather than being rejected, so it
+#: evidently fit). Pack conservatively and let the bisect catch what this misses
+#: — the two mechanisms cover different failures and neither is sufficient alone.
+_CTX_SAFETY = 0.85
+
+
+def _estimated_tokens(chunk: List[dict], context, context_note) -> float:
+    """Tokens this chunk would cost: system + rendered prompt + expected reply."""
+    chars = len(_SYSTEM_PROMPT) + len(
+        build_user_prompt(chunk, context, context_note))
+    return chars / _CHARS_PER_TOKEN + _OUTPUT_TOKENS_PER_DELTA * len(chunk)
+
+
+def pack_chunks(proposed: List[dict], context, context_note,
+                window_tokens: int) -> List[List[dict]]:
+    """Greedily pack deltas into chunks that FIT the declared context window.
+
+    Order is preserved, so partial coverage is always the OLDEST deltas.
+
+    A delta whose own chunk still exceeds the window gets one anyway: it cannot
+    be split further, and sending it to be refused is more honest than silently
+    dropping it from the backlog — the refusal is recorded, a silent omission
+    would not be (hfm #9).
+    """
+    budget = window_tokens * _CTX_SAFETY
+    chunks: List[List[dict]] = []
+    cur: List[dict] = []
+    for d in proposed:
+        if cur and _estimated_tokens(cur + [d], context, context_note) > budget:
+            chunks.append(cur)
+            cur = [d]
+        else:
+            cur.append(d)
+    if cur:
+        chunks.append(cur)
+    return chunks
 
 
 def triage_bounds(env: Optional[Dict[str, str]] = None,
@@ -391,7 +446,7 @@ def _validate_triage(raw: str, fed_keys: set) -> Tuple[dict, int]:
 def run(deltas_path: str, backend, frontier_rc: Optional[int],
         max_deltas: int = MAX_DELTAS_DEFAULT,
         now: Optional[float] = None, mode: str = DEFAULT_MODE,
-        chunk_size: int = TRIAGE_CHUNK_DEFAULT,
+        chunk_size: Optional[int] = TRIAGE_CHUNK_DEFAULT,
         budget_s: Optional[float] = None,
         monotonic=time.monotonic) -> dict:
     """Produce the witness dict (pure orchestration; no writes here).
@@ -401,9 +456,13 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
     frontier was gone. It changes nothing about the never-ratifies contract —
     both modes only SUGGEST — it just keeps the two states honest for the brief.
 
-    The backlog is triaged in ``chunk_size`` slices and each landed slice is
-    kept, so a run that runs out of time returns a PARTIAL triage instead of
-    nothing. ``budget_s`` bounds when a new slice may START (``None`` = no
+    The backlog is triaged in slices and each landed slice is KEPT, so a run
+    that runs out of time returns a PARTIAL triage instead of nothing.
+    ``chunk_size=None`` (the default) is ADAPTIVE: it attempts the whole fed set
+    and bisects on a transport timeout, so the affordable size is re-derived
+    every run instead of inherited from a constant measured on a different
+    prompt. An explicit int forces a fixed slice size (tests, and callers who
+    have a reason). ``budget_s`` bounds when a new slice may START (``None`` = no
     wall-clock bound, for callers with their own outer timeout, e.g. the eval
     harness); see :func:`triage_bounds` for why that bound is structural rather
     than an estimate. ``monotonic`` is injectable so tests can pin the pacing
@@ -461,12 +520,25 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
     dropped_total = 0
     stop_note: Optional[str] = None
     first_error: Optional[str] = None
-    size = max(1, int(chunk_size))
-    for i in range(0, len(proposed), size):
+    attempts = 0
+    # Work queue, oldest-first, so partial coverage is always the OLDEST deltas.
+    if chunk_size is None:
+        # ADAPTIVE: size the chunks to the window the backend DECLARES, so the
+        # limit is arithmetic rather than a rejected request. Bisect below still
+        # covers what the estimate gets wrong, and genuine timeouts.
+        window = int(getattr(backend, "num_ctx", 0) or 4096)
+        pending: List[List[dict]] = pack_chunks(
+            proposed, ctx, ctx_note, window)
+    else:
+        size = max(1, int(chunk_size))
+        pending = [proposed[i:i + size]
+                   for i in range(0, len(proposed), size)]
+    while pending:
         if merged and budget_s is not None and monotonic() - started >= budget_s:
             stop_note = "time budget spent"
             break
-        chunk = proposed[i:i + size]
+        chunk = pending.pop(0)
+        attempts += 1
         try:
             raw = backend.complete(_SYSTEM_PROMPT,
                                    build_user_prompt(chunk, ctx, ctx_note),
@@ -474,19 +546,34 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
             triage, dropped = _validate_triage(
                 raw, {d.get("key") for d in chunk})
         except CompilerError as e:
-            # TRANSPORT: the tier itself is unreachable, wedged, or timed out.
-            # Every further chunk would pay a full timeout to fail identically —
-            # and paying them is exactly how a run overruns the wall and loses
-            # its witness. Stop and keep what landed.
             first_error = first_error or str(e)
+            if len(chunk) > 1:
+                # TRANSPORT failure on a MULTI-delta chunk is ambiguous: the
+                # tier may be down, or this chunk may simply have been too big
+                # to finish inside the client bound. Those are different facts
+                # and only one of them is fatal, so BISECT and let the halves
+                # decide — the same chunk that times out whole often lands in
+                # two pieces. This is why there is no chunk-size constant to go
+                # stale: the run discovers the size the box can afford today
+                # instead of inheriting a number measured on a different prompt.
+                mid = len(chunk) // 2
+                pending.insert(0, chunk[mid:])
+                pending.insert(0, chunk[:mid])
+                continue
+            # A SINGLE delta that still times out cannot be split further, so
+            # the size hypothesis is exhausted and the tier itself is the
+            # remaining explanation. Stop: every further chunk would pay a full
+            # timeout to fail identically, and paying them is exactly how a run
+            # overruns the wall and loses its witness entirely.
             stop_note = "local tier unavailable"
             break
         except ValueError as e:
-            # CONTENT: the tier answered, but THIS reply was unusable. The tier
-            # is alive, so a malformed reply about delta A is not evidence about
-            # delta B (hfm #2) — carry on and let the next chunk speak for
-            # itself. Its deltas are simply absent from `triaged`, which the
-            # brief already renders against `proposed_total`.
+            # CONTENT: the tier answered, but THIS reply was unusable. Splitting
+            # cannot cure a malformed reply, so do NOT bisect — that would spend
+            # the budget re-asking a question already answered badly. The tier is
+            # alive, so a bad reply about delta A is not evidence about delta B
+            # (hfm #2); carry on. Its deltas are simply absent from `triaged`,
+            # which the brief already renders against `proposed_total`.
             first_error = first_error or str(e)
             continue
         merged.extend(triage["deltas"])
@@ -566,8 +653,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="per-CHUNK client bound (default derives from "
                          "MINI_CADENCE_LOCAL_TIMEOUT_S)")
     ap.add_argument("--chunk-size", type=int, default=TRIAGE_CHUNK_DEFAULT,
-                    help="deltas per model call (default 1: a slice that "
-                         "crosses the wall loses only its own deltas)")
+                    help="deltas per model call; omit for ADAPTIVE (attempt "
+                         "the whole backlog, bisect on a transport timeout)")
     ap.add_argument("--budget-s", type=float, default=_budget,
                     help="start no new chunk after this much elapsed; "
                          "budget + timeout + margin == the outer wall")
