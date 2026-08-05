@@ -157,6 +157,55 @@ def _isolate_node_cache_files(tmp_path_factory):
         yield root
 
 
+@pytest.fixture(autouse=True)
+def _isolate_delivery_counters_db(tmp_path_factory, monkeypatch):
+    """Keep delivery-counter writes out of the operator's live DB.
+
+    Sibling of ``_isolate_node_cache_files``, same class, found the same
+    way. ``delivery_counters`` is SQLite-backed at
+    ``~/.local/share/meshforge/delivery_counters.db``, and the coupling is
+    INDIRECT: a test never names it — it constructs a
+    ``PersistentMessageQueue`` or a bridge, and lifecycle events flow
+    through. So per-file fixtures kept missing it.
+    ``test_delivery_counters.py`` and ``test_rns_bridge.py`` had one;
+    ``test_message_queue.py`` did not, and its module docstring said
+    "isolated tests" because its OWN queue DB was.
+
+    Measured 2026-08-05: the manager box — which runs no gateway — held
+    252k queued delivery events accumulated since May, purely from suite
+    runs. A full run added ~240; test_message_queue alone ~111. That
+    garbage is indistinguishable from real telemetry (``queued`` /
+    ``dropped`` with ``queue_shed``, protocols ``meshtastic`` / ``rns`` /
+    ``primary``) and was briefly reasoned about AS fleet evidence before
+    the write schedule gave it away — three bursts in a 500-event ring,
+    two of them during that session's own pytest runs.
+
+    Suite-wide and autouse on purpose: a gate, not a convention. A file
+    that sets the env var itself still wins (both point at tmp dirs), and
+    a test that needs the real resolution deletes the var explicitly
+    (``test_state_path_is_in_share_dir_next_to_db`` already does).
+    """
+    root = tmp_path_factory.mktemp("delivery_counters_isolation")
+    monkeypatch.setenv("MESHFORGE_DELIVERY_COUNTERS_DB",
+                       str(root / "delivery_counters.db"))
+    monkeypatch.setenv("MESHFORGE_DELIVERY_SNAPSHOT_STATE",
+                       str(root / "delivery_snapshot.json"))
+    monkeypatch.setenv("MESHFORGE_CONTENT_ID_VIEW_STATE",
+                       str(root / "content_id_view.json"))
+    for alias in ("gateway.delivery_counters", "src.gateway.delivery_counters"):
+        try:
+            __import__(alias)
+            sys.modules[alias]._reset_singleton_for_tests()
+        except (ImportError, AttributeError, ModuleNotFoundError, KeyError):
+            continue
+    yield root
+    for alias in ("gateway.delivery_counters", "src.gateway.delivery_counters"):
+        try:
+            sys.modules[alias]._reset_singleton_for_tests()
+        except (AttributeError, KeyError):
+            continue
+
+
 @pytest.fixture
 def mock_meshtastic():
     """Mock meshtastic module for tests that don't need real hardware."""

@@ -37,6 +37,40 @@ from gateway.message_queue import (
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
+@pytest.fixture(autouse=True)
+def _isolate_delivery_counters(tmp_path, monkeypatch):
+    """Point delivery_counters at a per-test tmp DB.
+
+    ⚠️ This file's own queue DB was always isolated (``:memory:`` / tmp
+    file), and the module docstring says so — but ``PersistentMessageQueue``
+    ALSO emits lifecycle events into the SEPARATE, SQLite-backed
+    ``delivery_counters`` DB, which nothing here redirected. Every run
+    therefore wrote ~111 rows into the OPERATOR'S real
+    ``~/.local/share/meshforge/delivery_counters.db`` on whatever box ran
+    the suite.
+
+    Found 2026-08-05 while investigating why the manager box — which runs
+    no gateway — held 250k queued delivery events: it was this file,
+    accumulating since May. That garbage then looked exactly like real
+    delivery telemetry (`queued`/`dropped` with `queue_shed`, protocols
+    `meshtastic`/`rns`/`primary`/`secondary`), and was briefly reasoned
+    about AS real fleet evidence.
+
+    Same class as the ``cron_verdict`` pollution
+    (feedback_tests_must_pin_ambient_state, writer form): a test must not
+    WRITE ambient state either. ``test_delivery_counters.py`` has had this
+    fixture all along; this file needed it because the coupling is
+    indirect.
+    """
+    import gateway.delivery_counters as _dc
+    monkeypatch.setenv(
+        "MESHFORGE_DELIVERY_COUNTERS_DB", str(tmp_path / "delivery.db"))
+    _dc._reset_singleton_for_tests()
+    yield
+    _dc._reset_singleton_for_tests()
+
+
 @pytest.fixture
 def queue(tmp_path):
     """Queue backed by temp file (each _get_connection shares the same DB)."""

@@ -123,6 +123,9 @@ Full history in `persistent_issues_archive.md`.
 | #73 meshforge-map fd-leak (2026-05-31) | mqtt_subscriber `_connect()` leaked a paho Client per reconnect → 1024 fds → `[Errno 24]` wedged `:5000` (NOT the RNS class). **Decision tell**: `[Errno 24]`/climbing fds = fd leak (restart map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Body in archive. | `probe_fd_exhaustion` (degraded ≥80% / wedge ≥95% of soft RLIMIT_NOFILE) |
 | #72 wedged rnsd RPC (2026-05-30) | rnsd ACCEPTS the connection but the RPC round-trip hangs — the gap between the two other RNS probes. Fixed at source in fork `1.2.5+mf.2`. **Quick check**: `timeout 8 rnstatus >/dev/null 2>&1 \|\| echo wedged`; recovery = restart rnsd then RNS-using services. Body in archive. | `rns_rpc_unresponsive` |
 | synth_soak_degraded (2026-06-15) | The hourly LXMF synth soak exercised the gateway round-trip but WATCHED nothing (fire script always exit 0). Legs: SILENCE (newest `synth-*.json` >~2.5 cadences old) + ENVELOPE (`pass_envelope` false). Body in archive. | `probe_synth_soak_degraded` |
+| tests wrote the operator's delivery DB (2026-08-05) | `delivery_counters` is SQLite under `~/.local/share/meshforge/`, and the coupling is INDIRECT — a test builds a queue/bridge and lifecycle events flow through — so per-file fixtures kept missing it. The manager box held **252k queued events from suite runs since May**, indistinguishable from real telemetry and briefly reasoned about AS evidence. **Tell**: 3 bursts in a 500-event ring, two during that session's own pytest runs. Cure: suite-wide autouse fixture in `conftest.py`, 3 env seams. | full-suite mtime guard |
+| #79 mini hardening + DEPLOY-RESTART GAP (2026-07-14) | Nothing restarted USER daemons after `git pull` (only the 3 SYSTEM units). Cure: `sync_user_unit` in fleet_sync + update.sh restarts + enrollment of all mini user units. Also MF021 observation-only lint, rules `.bak`. ⚠️ user-bus restart needs linger. Body in archive. | `TestDeployRestartHook` |
+| #80 mini honest-failure-modes review (2026-07-09) | 18/18 findings, ALL one class: degraded state mapped to a valid-looking value. Cures: HOLD edge state on unobservable, observed-tick grace, atomic writes + torn-tail repair, boot_id latching. **THE LESSON = `.claude/rules/honest_failure_modes.md`.** Body in archive. | `test_mini_dudeai_honest_failure_modes.py` (30) + seed-coverage gate |
 | #12, #22, #23 | RNS configdir= (#12, lint MF009), don't overwrite meshtasticd `config.yaml` (#22, inverse companion of #58), post-install verification via `scripts/verify_post_install.sh` (#23). Bodies in archive. | — |
 | #58 (2026-05-18) | Upstream HAT template `Webserver: Port: 443` smuggled into `config.d/`, silently moved meshtasticd off `:9443`. `_sanitize_hat_overlay` strips forbidden top-level blocks; 7 tests pin the moc3-actual broken template. Body in archive. | `tests/test_hat_overlay_sanitizer.py` |
 | #59 (2026-05-18) | Federation per-peer exponential backoff (`backoff_threshold=3`, cap `10×poll_interval`); `/api/status` exposes backoff fields; tier-2 cap in #65. Body in archive. | `TestBackoff*` in `tests/test_map_federation.py` |
@@ -291,33 +294,6 @@ named. Never the SQLite DB from root (#60 WAL-strand trap). Same-day port:
 `watchdog_probes_gateway_lxmf.py` (MF025). Tests: the two
 `*FileFallback` classes (16). Eval:
 `detector_blind_gateway_only_2026_07_31.jsonl`.
-
----
-
-## Issue #79: mini-dudeai hardening + the deploy-restart gap class — RESOLVED, body in archive (trimmed 2026-07-14)
-
-Headline = the **DEPLOY-RESTART GAP class**: nothing restarted USER daemons
-after `git pull` (only the 3 SYSTEM units) → `sync_user_unit` in fleet_sync +
-update.sh restarts + install_noc enrollment of all 3 mini user units; extended
-06-15 to `meshforge-echo` + `nomadnet-silence-watch` (`TestDeployRestartHook`
-pins red-test-first; MA parity same). Also shipped: MEMORY.md 24KB
-warn+demote, JSONL rotation, **MF021** observation-only lint, rules `.bak` +
-`probe_rules_seed_drift`, `probe_history_write_failure`, schema-vs-validator
-pin. ⚠️ Probes self-guard None off-box; user-bus restart needs linger. Full
-body in `persistent_issues_archive.md`.
-
----
-
-## Issue #80: mini-dudeai honest-failure-modes review — RESOLVED, body in archive (trimmed 2026-07-09)
-
-18/18 confirmed findings, ALL one class: **degraded internal state mapped to
-a valid-looking value** (error reads as empty/recovered/valid). Cures pinned
-by `tests/test_mini_dudeai_honest_failure_modes.py` (30) + seed-coverage
-gate; key patterns: HOLD edge state on unobservable, observed-tick grace,
-atomic writes + torn-tail repair, boot_id latching, all signal classes
-seed-routed. **THE LESSON** = `.claude/rules/honest_failure_modes.md` (the
-write-time checklist, now 10 points). Residual seed-CONTENT drift closed same
-day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
 
 ---
 
@@ -510,8 +486,10 @@ and separately treated journal silence as unobservable without ever checking
 the journal WORKED — leaving four RX-only boxes permanently indeterminate.
 **And the hole under the first**: `if not confirmable: return None` meant a box
 that had NEVER confirmed could not trip the detector at all — a TOTAL collapse
-read as nothing-to-judge while a partial one fired. Measured that day: moc
-16,759 confirmed RNS, moc3 26,732, the federator box 6,286 sent / 5,585
-dropped / **zero, ever**. **Rule**: `inert` and `indeterminate` are different
+read as nothing-to-judge while a partial one fired. Real gateways confirm
+heavily (moc 16,759 RNS, moc3 26,732), so an empty `confirmed` bucket beside
+live RNS traffic is a wiring fact. ⚠️ The federator box's "zero ever" that
+prompted this was **test pollution, not telemetry** — see the row below; the
+leg's logic stands, its motivating example did not. **Rule**: `inert` and `indeterminate` are different
 claims — an organ that is absent by design must never be reported as an
 observation that failed, or the real failures have nowhere to stand out.

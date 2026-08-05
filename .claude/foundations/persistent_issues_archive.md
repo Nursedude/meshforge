@@ -3379,3 +3379,30 @@ exercised the gateway round-trip but **watched nothing** — fire script always
 **SILENCE** (newest `synth-*.json` >~2.5 cadences old — silence IS the failure
 for a fixed-cadence generator) + **ENVELOPE** (`pass_envelope` false). Full
 body + self-guards in `persistent_issues_archive.md`.
+
+---
+
+## Issue #79: mini-dudeai hardening + the deploy-restart gap class — RESOLVED, body in archive (trimmed 2026-07-14)
+
+Headline = the **DEPLOY-RESTART GAP class**: nothing restarted USER daemons
+after `git pull` (only the 3 SYSTEM units) → `sync_user_unit` in fleet_sync +
+update.sh restarts + install_noc enrollment of all 3 mini user units; extended
+06-15 to `meshforge-echo` + `nomadnet-silence-watch` (`TestDeployRestartHook`
+pins red-test-first; MA parity same). Also shipped: MEMORY.md 24KB
+warn+demote, JSONL rotation, **MF021** observation-only lint, rules `.bak` +
+`probe_rules_seed_drift`, `probe_history_write_failure`, schema-vs-validator
+pin. ⚠️ Probes self-guard None off-box; user-bus restart needs linger. Full
+body in `persistent_issues_archive.md`.
+
+---
+
+## Issue #80: mini-dudeai honest-failure-modes review — RESOLVED, body in archive (trimmed 2026-07-09)
+
+18/18 confirmed findings, ALL one class: **degraded internal state mapped to
+a valid-looking value** (error reads as empty/recovered/valid). Cures pinned
+by `tests/test_mini_dudeai_honest_failure_modes.py` (30) + seed-coverage
+gate; key patterns: HOLD edge state on unobservable, observed-tick grace,
+atomic writes + torn-tail repair, boot_id latching, all signal classes
+seed-routed. **THE LESSON** = `.claude/rules/honest_failure_modes.md` (the
+write-time checklist, now 10 points). Residual seed-CONTENT drift closed same
+day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
