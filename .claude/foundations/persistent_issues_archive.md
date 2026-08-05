@@ -3344,3 +3344,38 @@ Missed consumer fixed 2026-07-19 (`f07480d2`, MA `e89a516a` dormant): TUI
 data-path check read `absent` as FAIL — now N/A via `_classify_http_unavailable`.
 Tests: `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4). Full
 body in `persistent_issues_archive.md`.
+
+---
+
+## Issue #73 (2026-05-31): meshforge-map fd-leak — RESOLVED, body in archive (trimmed 2026-06-09)
+
+mqtt_subscriber `_connect()` leaked a paho Client per reconnect → 1024 fds →
+`[Errno 24]` wedged `:5000` (NOT the RNS class). Fixed both repos (MF `5712b56`,
+MA `6e1d2306`); proactive `probe_fd_exhaustion` (degraded ≥80% / wedge ≥95% of
+soft RLIMIT_NOFILE). Decision tell: `[Errno 24]`/climbing fds = fd leak (restart
+map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Full body +
+operator recipe in `persistent_issues_archive.md`.
+
+Five watchdog probes 2026-06-01→06-04, all `degraded` (**trap: derive context
+from the SERVICE, not the root watchdog env** — never sudo when euid==0):
+`probe_foundation_drift`, `probe_parity_drift`, `probe_rns_version_drift`,
+`probe_role_drift` (fix `provision_role.py --apply`), `probe_channel_feed_dark`
+(match by channel NAME never slot index). Bodies in archive (07-14).
+
+---
+
+## Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
+
+6th rnsd-RPC-fragility variant — rnsd **accepts the connection but the RPC round-trip hangs/EOFs**, a gap between the two existing RNS probes. Cure: `RNSStatus.timed_out` (set only on a `run_rnstatus` subprocess TIMEOUT) + `probe_rns_rpc_responsive` (`rns_rpc_unresponsive`, wedge), and **FIXED AT SOURCE** in fork `rns 1.2.5+mf.2` (`_rpc_recv()` poll(8s) before recv). Recovery: restart rnsd then RNS-using services. Quick check: `timeout 8 rnstatus >/dev/null 2>&1 || echo wedged`. **Full body + detection recipe + tests in `persistent_issues_archive.md`** (trimmed 2026-06-09 for MF012 headroom).
+
+---
+
+## synth_soak_degraded probe — RESOLVED, body in archive (trimmed 2026-07-21)
+
+`probe_synth_soak_degraded` (degraded, no issue#): the hourly LXMF synth soak
+exercised the gateway round-trip but **watched nothing** — fire script always
+`exit 0`, no `cron_verdict` (fixed 2026-06-27 `c68ed0c0`), and
+`probe_lxmf_process_wedge` checks the *process* not the *result*. Two legs:
+**SILENCE** (newest `synth-*.json` >~2.5 cadences old — silence IS the failure
+for a fixed-cadence generator) + **ENVELOPE** (`pass_envelope` false). Full
+body + self-guards in `persistent_issues_archive.md`.

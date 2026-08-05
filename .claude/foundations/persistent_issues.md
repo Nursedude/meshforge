@@ -120,6 +120,9 @@ Full history in `persistent_issues_archive.md`.
 | #83 TUI updates (2026-07-21) | 6 causes incl. stale OBS repo pinning an uninstallable candidate ('held broken packages') + a pip `--user` script SHADOWING the pipx shim. SSOT `updates/meshtasticd_apt.py`. ⚠️ apt dry-run banner 'NOTE:' ends in 'E:' — match line-anchored. Body in archive. | — |
 | #75 leaked TCPInterface starves :9443 (2026-06-12) | Map held an unaccounted persistent TCP to :4403, draining the PhoneAPI stream (#17 leak form); web client went deaf while RX was healthy. Cure: restart meshforge-map. ⚠️ honest RX record is `grep 'Received text msg'` (json-journal greps miss `via_mqtt`). Body in archive. | `probe_phoneapi_tcp_leak` + `test_phoneapi_leak_*` (10) |
 | #76 /json/* NEVER served by meshtasticd (2026-06-12) | ESP32-only (firmware#9164); old probe fell through to GET `/api/v1/fromradio` on 404 — "available" forever + a PhoneAPI packet eaten per re-check. Fix: tri-state `ok`/`absent`/`down`. Body in archive. | `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4) |
+| #73 meshforge-map fd-leak (2026-05-31) | mqtt_subscriber `_connect()` leaked a paho Client per reconnect → 1024 fds → `[Errno 24]` wedged `:5000` (NOT the RNS class). **Decision tell**: `[Errno 24]`/climbing fds = fd leak (restart map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Body in archive. | `probe_fd_exhaustion` (degraded ≥80% / wedge ≥95% of soft RLIMIT_NOFILE) |
+| #72 wedged rnsd RPC (2026-05-30) | rnsd ACCEPTS the connection but the RPC round-trip hangs — the gap between the two other RNS probes. Fixed at source in fork `1.2.5+mf.2`. **Quick check**: `timeout 8 rnstatus >/dev/null 2>&1 \|\| echo wedged`; recovery = restart rnsd then RNS-using services. Body in archive. | `rns_rpc_unresponsive` |
+| synth_soak_degraded (2026-06-15) | The hourly LXMF synth soak exercised the gateway round-trip but WATCHED nothing (fire script always exit 0). Legs: SILENCE (newest `synth-*.json` >~2.5 cadences old) + ENVELOPE (`pass_envelope` false). Body in archive. | `probe_synth_soak_degraded` |
 | #12, #22, #23 | RNS configdir= (#12, lint MF009), don't overwrite meshtasticd `config.yaml` (#22, inverse companion of #58), post-install verification via `scripts/verify_post_install.sh` (#23). Bodies in archive. | — |
 | #58 (2026-05-18) | Upstream HAT template `Webserver: Port: 443` smuggled into `config.d/`, silently moved meshtasticd off `:9443`. `_sanitize_hat_overlay` strips forbidden top-level blocks; 7 tests pin the moc3-actual broken template. Body in archive. | `tests/test_hat_overlay_sanitizer.py` |
 | #59 (2026-05-18) | Federation per-peer exponential backoff (`backoff_threshold=3`, cap `10×poll_interval`); `/api/status` exposes backoff fields; tier-2 cap in #65. Body in archive. | `TestBackoff*` in `tests/test_map_federation.py` |
@@ -257,29 +260,6 @@ instance_name per box) in `persistent_issues_archive.md`.
 Quick check: `sudo ss -xnpl | grep "@rns/"` — owner must be rnsd.
 ---
 
-## Issue #72: wedged rnsd RPC — rnstatus hangs though the socket accepts (2026-05-30)
-
-6th rnsd-RPC-fragility variant — rnsd **accepts the connection but the RPC round-trip hangs/EOFs**, a gap between the two existing RNS probes. Cure: `RNSStatus.timed_out` (set only on a `run_rnstatus` subprocess TIMEOUT) + `probe_rns_rpc_responsive` (`rns_rpc_unresponsive`, wedge), and **FIXED AT SOURCE** in fork `rns 1.2.5+mf.2` (`_rpc_recv()` poll(8s) before recv). Recovery: restart rnsd then RNS-using services. Quick check: `timeout 8 rnstatus >/dev/null 2>&1 || echo wedged`. **Full body + detection recipe + tests in `persistent_issues_archive.md`** (trimmed 2026-06-09 for MF012 headroom).
-
----
-
-## Issue #73 (2026-05-31): meshforge-map fd-leak — RESOLVED, body in archive (trimmed 2026-06-09)
-
-mqtt_subscriber `_connect()` leaked a paho Client per reconnect → 1024 fds →
-`[Errno 24]` wedged `:5000` (NOT the RNS class). Fixed both repos (MF `5712b56`,
-MA `6e1d2306`); proactive `probe_fd_exhaustion` (degraded ≥80% / wedge ≥95% of
-soft RLIMIT_NOFILE). Decision tell: `[Errno 24]`/climbing fds = fd leak (restart
-map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Full body +
-operator recipe in `persistent_issues_archive.md`.
-
-Five watchdog probes 2026-06-01→06-04, all `degraded` (**trap: derive context
-from the SERVICE, not the root watchdog env** — never sudo when euid==0):
-`probe_foundation_drift`, `probe_parity_drift`, `probe_rns_version_drift`,
-`probe_role_drift` (fix `provision_role.py --apply`), `probe_channel_feed_dark`
-(match by channel NAME never slot index). Bodies in archive (07-14).
-
----
-
 ## #77 + #78 — row summaries (demoted 2026-07-31, MF012)
 
 **#77 mqtt_root_drift** (2026-06-07): OBSERVED radio publish root (meshtasticd
@@ -338,18 +318,6 @@ atomic writes + torn-tail repair, boot_id latching, all signal classes
 seed-routed. **THE LESSON** = `.claude/rules/honest_failure_modes.md` (the
 write-time checklist, now 10 points). Residual seed-CONTENT drift closed same
 day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
-
----
-
-## synth_soak_degraded probe — RESOLVED, body in archive (trimmed 2026-07-21)
-
-`probe_synth_soak_degraded` (degraded, no issue#): the hourly LXMF synth soak
-exercised the gateway round-trip but **watched nothing** — fire script always
-`exit 0`, no `cron_verdict` (fixed 2026-06-27 `c68ed0c0`), and
-`probe_lxmf_process_wedge` checks the *process* not the *result*. Two legs:
-**SILENCE** (newest `synth-*.json` >~2.5 cadences old — silence IS the failure
-for a fixed-cadence generator) + **ENVELOPE** (`pass_envelope` false). Full
-body + self-guards in `persistent_issues_archive.md`.
 
 ---
 
@@ -531,3 +499,19 @@ plainly healthy = check the NAME first. **Quick check**:
 `persistent_active` proposals at 70m/170h/170h), all rejected *unspecified*.
 The witness worked; the READ failed. A long-running `detector_blind` is a
 finding, not furniture.
+
+**Same day, same class, three more legs** (the other two long-blind
+detectors). `delivery_confirmation_stall` never asked whether a gateway runs
+here, so every non-gateway box fell through to "no confirmable protocol
+recorded" forever — while its sibling `gateway_delivery_degraded` had always
+said `inert`. `mqtt_root_drift` collapsed *no gateway.json at all* (nothing
+here CAN be deaf → inert) into the same None as *unreadable* (indeterminate),
+and separately treated journal silence as unobservable without ever checking
+the journal WORKED — leaving four RX-only boxes permanently indeterminate.
+**And the hole under the first**: `if not confirmable: return None` meant a box
+that had NEVER confirmed could not trip the detector at all — a TOTAL collapse
+read as nothing-to-judge while a partial one fired. Measured that day: moc
+16,759 confirmed RNS, moc3 26,732, the federator box 6,286 sent / 5,585
+dropped / **zero, ever**. **Rule**: `inert` and `indeterminate` are different
+claims — an organ that is absent by design must never be reported as an
+observation that failed, or the real failures have nowhere to stand out.
