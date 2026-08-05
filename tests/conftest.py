@@ -157,8 +157,8 @@ def _isolate_node_cache_files(tmp_path_factory):
         yield root
 
 
-@pytest.fixture(autouse=True)
-def _isolate_delivery_counters_db(tmp_path_factory, monkeypatch):
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_delivery_counters_db(tmp_path_factory):
     """Keep delivery-counter writes out of the operator's live DB.
 
     Sibling of ``_isolate_node_cache_files``, same class, found the same
@@ -184,14 +184,24 @@ def _isolate_delivery_counters_db(tmp_path_factory, monkeypatch):
     that sets the env var itself still wins (both point at tmp dirs), and
     a test that needs the real resolution deletes the var explicitly
     (``test_state_path_is_in_share_dir_next_to_db`` already does).
+
+    ⚠️ SESSION-scoped deliberately. The first version was function-scoped
+    and cost a ``mktemp`` + two imports + two singleton resets PER TEST —
+    across 10,333 tests that added ~45% to suite wall-clock (6:08 → 8:54
+    locally) and CANCELLED the CI 3.9 job on its timeout. Redirection is
+    the whole job here and it is idempotent, so it belongs at session
+    scope; per-test ISOLATION between cases that assert on counter
+    CONTENT is the business of those files' own fixtures, which already
+    exist and still win. A guard that makes the suite 45% more expensive
+    is the wrong trade on a Pi fleet — cheap gates get kept.
     """
     root = tmp_path_factory.mktemp("delivery_counters_isolation")
-    monkeypatch.setenv("MESHFORGE_DELIVERY_COUNTERS_DB",
-                       str(root / "delivery_counters.db"))
-    monkeypatch.setenv("MESHFORGE_DELIVERY_SNAPSHOT_STATE",
-                       str(root / "delivery_snapshot.json"))
-    monkeypatch.setenv("MESHFORGE_CONTENT_ID_VIEW_STATE",
-                       str(root / "content_id_view.json"))
+    prior = {}
+    for var, name in (("MESHFORGE_DELIVERY_COUNTERS_DB", "delivery_counters.db"),
+                      ("MESHFORGE_DELIVERY_SNAPSHOT_STATE", "delivery_snapshot.json"),
+                      ("MESHFORGE_CONTENT_ID_VIEW_STATE", "content_id_view.json")):
+        prior[var] = os.environ.get(var)
+        os.environ[var] = str(root / name)
     for alias in ("gateway.delivery_counters", "src.gateway.delivery_counters"):
         try:
             __import__(alias)
@@ -199,11 +209,11 @@ def _isolate_delivery_counters_db(tmp_path_factory, monkeypatch):
         except (ImportError, AttributeError, ModuleNotFoundError, KeyError):
             continue
     yield root
-    for alias in ("gateway.delivery_counters", "src.gateway.delivery_counters"):
-        try:
-            sys.modules[alias]._reset_singleton_for_tests()
-        except (AttributeError, KeyError):
-            continue
+    for var, was in prior.items():
+        if was is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = was
 
 
 @pytest.fixture
