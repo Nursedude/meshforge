@@ -23,6 +23,50 @@ if TYPE_CHECKING:
     from utils.rns_status_parser import RNSStatus
 
 # ─────────────────────────────────────────────────────────────────────
+# Shared: the @rns/* listener table
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _rns_listener_tokens(
+    *, ss_path: str = "ss", ss_output: Optional[str] = None,
+) -> Optional[List[str]]:
+    """Every ``@rns/<name>`` token the kernel is advertising, or None.
+
+    None means the table is UNOBSERVABLE (ss missing/timed out/nonzero) —
+    which must never be allowed to read as "no listeners exist"
+    (honest_failure_modes #2). ``ss_output`` is injectable for tests.
+
+    ⚠️ The tokens are the kernel's DISPLAY form: ``ss`` splits columns on
+    whitespace, so a spaced instance_name is truncated at the first space
+    (``volcano ai rns`` → ``volcano``). Compare with ``_token_is_ours``,
+    never with raw equality.
+    """
+    if ss_output is None:
+        try:
+            proc = subprocess.run(
+                [ss_path, "-xnpl"], capture_output=True, text=True, timeout=5,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            return None
+        if proc.returncode != 0:
+            return None
+        ss_output = proc.stdout
+    return re.findall(r"@rns/(\S+)", ss_output)
+
+
+def _token_is_ours(token: str, instance_name: str) -> bool:
+    """Could this ss display token BE our instance's listener?
+
+    Exact match, or the truncated-at-first-space display of our spaced
+    name. Deliberately permissive: a false "yes" costs us a missed
+    mismatch (under-fire), a false "no" would page on a healthy box.
+    """
+    if token == instance_name:
+        return True
+    return " " in instance_name and token == instance_name.split(" ", 1)[0]
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Probe: RNS namespace collision (Issue #69)
 # ─────────────────────────────────────────────────────────────────────
 
@@ -91,6 +135,28 @@ def probe_rns_namespace_collision(
         if proc.returncode != 0:
             note_disposition("rns_namespace_collision", "indeterminate",
                              reason="ss exited nonzero; listener table unobservable")
+            return None
+        # Matched ZERO listeners. That is only "clean" if there is no
+        # @rns/* listener AT ALL — if the kernel is advertising some other
+        # instance, we are looking for a name that does not exist on this
+        # box and this probe is DARK, not healthy. The 2026-08-05 finding:
+        # the watchdog was handed the box's HOSTNAME (from a stale /root
+        # config) while rnsd served the configured spaced instance name
+        # from /etc/reticulum, and this branch reported an
+        # affirmative clean — the #69 foreign-owner detector blind and
+        # green at the same time, on the box #69 happened to. The N1 fix
+        # above hardened the PARSE for spaced names; nothing checked that
+        # the NAME had a listener behind it at all.
+        # rns_shared_instance_unresponsive owns the signal (it holds the
+        # connect evidence) — one fault, one owner.
+        others = _rns_listener_tokens(ss_output=proc.stdout)
+        if others:
+            note_disposition(
+                "rns_namespace_collision", "indeterminate",
+                reason=(f"no listener for instance_name {instance_name!r}; "
+                        f"kernel advertises @rns/{others[0]} — probing a "
+                        f"name that does not exist here (cannot judge)"),
+            )
         else:
             note_disposition("rns_namespace_collision", "clean")
         return None  # no listener → not a collision
@@ -377,6 +443,8 @@ def probe_rns_shared_instance_responsive(
     instance_name: str,
     *,
     timeout_s: float = 2.0,
+    ss_path: str = "ss",
+    ss_output: Optional[str] = None,
 ) -> Optional[Signal]:
     """Verify ``@rns/<instance>`` actually accepts new connect() attempts.
 
@@ -391,16 +459,21 @@ def probe_rns_shared_instance_responsive(
     Implementation: open an abstract Unix stream socket to
     ``@rns/<instance_name>`` with a short timeout. If connect succeeds
     quickly → healthy (return None). If it hangs past timeout → wedge.
-    If the socket address doesn't exist → return None (rnsd isn't
-    running; service_inactive probe owns that signal).
+    On ECONNREFUSED the listener table disambiguates (see that branch):
+    rnsd genuinely refusing and rnsd absent are both indeterminate, but a
+    listener existing under a DIFFERENT name means the watchdog itself is
+    misconfigured and emits ``rns_instance_name_mismatch``.
 
     Distinct from rns_namespace_collision (which checks WHO owns the
     listener) — this checks WHETHER the owner is actually serving.
-    Both fire on rnsd-side faults but at different layers.
+    Both fire on rnsd-side faults but at different layers, and both are
+    keyed to ``instance_name``, which is why a wrong name blinds BOTH.
     """
     if not instance_name:
-        note_disposition("rns_shared_instance_unresponsive", "inert",
-                         reason="no rns instance name provided")
+        for _cls in ("rns_shared_instance_unresponsive",
+                     "rns_instance_name_mismatch"):
+            note_disposition(_cls, "inert",
+                             reason="no rns instance name provided")
         return None
 
     # Abstract Unix socket address: leading NUL byte then the name.
@@ -411,20 +484,85 @@ def probe_rns_shared_instance_responsive(
     try:
         sock.connect(addr)
     except FileNotFoundError:
-        # No such socket — listener doesn't exist; service_inactive owns it.
+        # Effectively unreachable for an ABSTRACT socket: Linux answers a
+        # nonexistent abstract address with ECONNREFUSED, never ENOENT
+        # (measured 2026-08-05). Retained only so a future filesystem-path
+        # socket keeps a correct branch.
         sock.close()
-        note_disposition("rns_shared_instance_unresponsive", "indeterminate",
-                         reason="listener absent; rnsd down — service_inactive owns")
+        for _cls in ("rns_shared_instance_unresponsive",
+                     "rns_instance_name_mismatch"):
+            note_disposition(_cls, "indeterminate",
+                             reason="listener absent; rnsd down — "
+                                    "service_inactive owns")
         return None
     except ConnectionRefusedError:
-        # Listener exists but actively refused — rnsd may be shutting down.
-        # Not a wedge in the connect-hang sense; let service state catch it.
+        # ECONNREFUSED is THREE different facts wearing one costume, and
+        # the connect alone cannot tell them apart:
+        #   a) rnsd is shutting down / not serving  → transient, not ours
+        #   b) no @rns/* listener at all            → service_inactive owns
+        #   c) a listener exists under a DIFFERENT name → WE are misconfigured
+        # Until 2026-08-05 all three were reported as (a), so (c) —
+        # permanent, self-inflicted blindness — wore the costume of a
+        # benign transient for 8.8 days on the federator box while this
+        # probe and rns_namespace_collision were both dark. Consult the
+        # listener table to separate them. Only reached on the refused
+        # path, so the healthy tick still spawns no subprocess.
         sock.close()
-        note_disposition("rns_shared_instance_unresponsive", "indeterminate",
-                         reason="connect refused; rnsd shutting down or not serving")
-        return None
+        tokens = _rns_listener_tokens(ss_path=ss_path, ss_output=ss_output)
+        if tokens is None:
+            for _cls in ("rns_shared_instance_unresponsive",
+                         "rns_instance_name_mismatch"):
+                note_disposition(
+                    _cls, "indeterminate",
+                    reason=("connect refused and listener table unobservable "
+                            "(ss unavailable) — cannot judge"))
+            return None
+        if any(_token_is_ours(t, instance_name) for t in tokens):
+            note_disposition(
+                "rns_shared_instance_unresponsive", "indeterminate",
+                reason="connect refused; rnsd shutting down or not serving")
+            note_disposition(
+                "rns_instance_name_mismatch", "clean",
+                reason="a listener exists under our own name")
+            return None
+        if not tokens:
+            for _cls in ("rns_shared_instance_unresponsive",
+                         "rns_instance_name_mismatch"):
+                note_disposition(
+                    _cls, "indeterminate",
+                    reason="listener absent; rnsd down — "
+                           "service_inactive owns")
+            return None
+        return Signal(
+            cls="rns_instance_name_mismatch",
+            subject=f"@rns/{instance_name}",
+            severity="degraded",
+            detail=(
+                f"the watchdog is probing @rns/{instance_name} but no such "
+                f"listener exists — the kernel advertises "
+                f"{', '.join('@rns/' + t for t in sorted(set(tokens))[:3])}. "
+                f"Every RNS probe keyed to this name is DARK: "
+                f"rns_shared_instance_unresponsive cannot see the #68 "
+                f"connect-hang wedge, and rns_namespace_collision cannot "
+                f"see the #69 foreign-owner class. Nothing is wrong with "
+                f"rnsd — the watchdog is looking in the wrong place. Fix: "
+                f"reconcile instance_name so the watchdog reads the config "
+                f"rnsd actually runs with (its unit's --config), then "
+                f"confirm with `sudo ss -xnpl | grep @rns/`. "
+                f"See 2026-08-05 persistent_issues entry."
+            ),
+            extra={
+                "probed_name": instance_name,
+                "listener_tokens": sorted(set(tokens))[:8],
+            },
+        )
     except socket.timeout:
         sock.close()
+        # A HANG proves something is bound at our exact name — the name is
+        # right, the daemon behind it is wedged. Say so, or the mismatch
+        # class reads dark on exactly the boxes that are in trouble.
+        note_disposition("rns_instance_name_mismatch", "clean",
+                         reason="connect to our own name hung — it is bound")
         return Signal(
             cls="rns_shared_instance_unresponsive",
             subject=f"@rns/{instance_name}",
@@ -444,8 +582,10 @@ def probe_rns_shared_instance_responsive(
         )
     except OSError:
         sock.close()
-        note_disposition("rns_shared_instance_unresponsive", "indeterminate",
-                         reason="connect OSError; accept path unobservable")
+        for _cls in ("rns_shared_instance_unresponsive",
+                     "rns_instance_name_mismatch"):
+            note_disposition(_cls, "indeterminate",
+                             reason="connect OSError; accept path unobservable")
         return None
     # Connected successfully — healthy. Close cleanly without sending
     # any RNS protocol bytes (which would confuse rnsd's accept loop).
@@ -454,6 +594,8 @@ def probe_rns_shared_instance_responsive(
     except OSError:
         pass
     note_disposition("rns_shared_instance_unresponsive", "clean")
+    note_disposition("rns_instance_name_mismatch", "clean",
+                     reason="connect to our own name succeeded")
     return None
 
 

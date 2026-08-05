@@ -136,6 +136,19 @@
       "annotation": "Listener UP + no SYN-SENT pile-up but new connects hang. Recovery: systemctl restart rnsd.service then restart RNS-using services."
     },
     {
+      "id": "rns_instance_name_mismatch_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rns_instance_name_mismatch",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-08-05: the watchdog is probing an @rns/<name> with NO listener while the kernel advertises a different one -- so BOTH RNS probes are dark: rns_shared_instance_unresponsive cannot see the #68 connect-hang wedge and rns_namespace_collision cannot see the #69 foreign-owner class. rnsd is FINE; the watchdog is looking in the wrong place. Found live on the federator box, where _read_rns_instance_name() read a stale /root/.reticulum/config (get_real_user_home() is /root under this ROOT service) while rnsd ran --config /etc/reticulum -- 8.8 days blind, the whole time reporting 'rnsd shutting down or not serving'. Fix: reconcile instance_name so the watchdog reads the config rnsd actually runs with (its unit's --config); verify with `sudo ss -xnpl | grep @rns/`. Side-effect-free escalation; NO ntfy page -- this is monitoring blindness, not impaired traffic."
+    },
+    {
       "id": "moc3_federation_backoff_known_normal",
       "match": {
         "kind": "federation_peer_unhealthy",

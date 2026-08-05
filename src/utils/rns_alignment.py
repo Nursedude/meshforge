@@ -136,6 +136,84 @@ def _read_systemd_unit(*paths: str) -> dict:
     return {'user': user, 'exec_start': exec_start}
 
 
+def rnsd_unit_paths() -> List[str]:
+    """The rnsd unit file + its drop-ins, in systemd's own read order.
+
+    SSOT so callers can't drift on which drop-ins count (last non-empty
+    ``ExecStart=`` wins, so missing one silently changes the answer).
+    """
+    paths = [
+        '/etc/systemd/system/rnsd.service',
+        '/lib/systemd/system/rnsd.service',
+    ]
+    dropin_dir = Path('/etc/systemd/system/rnsd.service.d')
+    try:
+        if dropin_dir.is_dir():
+            paths.extend(str(p) for p in sorted(dropin_dir.glob('*.conf')))
+    except OSError:
+        pass
+    return paths
+
+
+def rnsd_configdir_of_record() -> Optional[Path]:
+    """The configdir the RUNNING rnsd actually uses, or None if no unit.
+
+    The consumer-of-record answer to "which config is authoritative on
+    this box" (calibrated_claims #7). Asking ``~/.reticulum`` instead is
+    how the watchdog spent 8.8 days probing an RNS instance name that had
+    no listener behind it (2026-08-05): under a ROOT systemd service
+    ``get_real_user_home()`` is ``/root``, not the operator, and a stale
+    ``/root/.reticulum/config`` answered for a daemon running
+    ``--config /etc/reticulum``.
+
+    Returns None when no rnsd unit is readable — the caller must treat
+    that as "don't know", never as a default.
+    """
+    try:
+        unit = _read_systemd_unit(*rnsd_unit_paths())
+        if not unit.get('user') and not unit.get('exec_start'):
+            return None
+        return _resolve_rnsd_configdir(unit.get('user'), unit.get('exec_start'))
+    except OSError:
+        return None
+
+
+def read_rns_instance_name() -> Optional[str]:
+    """This box's RNS instance_name, from the config rnsd RUNS AGAINST first.
+
+    Order matters and is the whole point: asking
+    ``get_real_user_home()/.reticulum/config`` first is what blinded both
+    RNS watchdog probes for 8.8 days — under a ROOT systemd service that
+    path is ``/root``, not the operator, and a stale root config answered
+    for a daemon started with ``--config /etc/reticulum``. Full account:
+    the ``rns_instance_name_mismatch`` entry in
+    ``watchdog_probe_core.SIGNAL_CLASSES``.
+
+    Returns None when unreadable/unconfigured — callers must treat that as
+    "don't know" (mark dependent probes inert), never as a default name.
+    """
+    # Lazy import: rns_init pulls in no RNS/heavy modules at import time,
+    # and this keeps the two modules acyclic.
+    from utils.rns_init import _read_instance_name_from_config
+
+    candidates: List[Path] = []
+    rnsd_dir = rnsd_configdir_of_record()
+    if rnsd_dir is not None:
+        candidates.append(rnsd_dir)
+    try:
+        from utils.paths import get_real_user_home
+        candidates.append(get_real_user_home() / '.reticulum')
+    except Exception:
+        pass
+    candidates.append(Path('/etc/reticulum'))
+
+    for configdir in candidates:
+        name = _read_instance_name_from_config(configdir)
+        if name:
+            return name
+    return None
+
+
 def _resolve_rnsd_configdir(user: Optional[str], exec_start: Optional[str]) -> Path:
     """Decide which configdir rnsd is *actually* using.
 
@@ -289,16 +367,7 @@ def probe_local() -> RNSAlignmentState:
         ['hostname'], capture_output=True, text=True, timeout=2,
     ).stdout.strip() or 'unknown'
 
-    rnsd_unit_paths = [
-        '/etc/systemd/system/rnsd.service',
-        '/lib/systemd/system/rnsd.service',
-    ]
-    # Drop-ins
-    dropin_dir = Path('/etc/systemd/system/rnsd.service.d')
-    if dropin_dir.is_dir():
-        rnsd_unit_paths.extend(str(p) for p in sorted(dropin_dir.glob('*.conf')))
-
-    unit = _read_systemd_unit(*rnsd_unit_paths)
+    unit = _read_systemd_unit(*rnsd_unit_paths())
     rnsd_user = unit['user']
     rnsd_exec = unit['exec_start']
     rnsd_configdir = _resolve_rnsd_configdir(rnsd_user, rnsd_exec)

@@ -272,8 +272,10 @@ def run_all_probes(
         if sig is not None:
             signals.append(sig)
     else:
-        note_disposition("rns_shared_instance_unresponsive", "inert",
-                         reason="no rns instance_name declared on this box")
+        for _cls in ("rns_shared_instance_unresponsive",
+                     "rns_instance_name_mismatch"):
+            note_disposition(_cls, "inert",
+                             reason="no rns instance_name declared on this box")
 
     # RNS rnstatus-consuming probes share ONE bounded rnstatus call so a
     # wedged rnsd can't stall the 30s tick with two long-timeout
@@ -1170,32 +1172,18 @@ def resolve_probe_targets(
 
 
 def _read_rns_instance_name() -> Optional[str]:
-    """Best-effort lookup of this box's RNS instance_name.
+    """Seam over ``rns_alignment.read_rns_instance_name`` (the SSOT), so the
+    watchdog degrades rather than dies if that module is unimportable.
 
-    Reads ``~<operator>/.reticulum/config`` (the canonical fleet path).
-    Returns None if not readable or not configured.
+    The ORDER inside it is load-bearing — it reads the config rnsd actually
+    runs against first; see that docstring and the
+    ``rns_instance_name_mismatch`` SIGNAL_CLASSES entry.
     """
-    candidates: List[Path] = []
     try:
-        from utils.paths import get_real_user_home
-        candidates.append(get_real_user_home() / ".reticulum" / "config")
+        from utils.rns_alignment import read_rns_instance_name
+        return read_rns_instance_name()
     except Exception:
-        pass
-    candidates.append(Path("/etc/reticulum/config"))
-
-    for cfg_path in candidates:
-        try:
-            text = cfg_path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for raw in text.splitlines():
-            line = raw.strip()
-            if line.startswith("instance_name"):
-                _, _, rhs = line.partition("=")
-                name = rhs.strip()
-                if name:
-                    return name
-    return None
+        return None
 
 
 def run_loop(

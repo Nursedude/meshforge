@@ -137,6 +137,7 @@ def test_signal_classes_closed_enum_is_documented():
         "service_inactive",
         "tracer_peer_unreachable",
         "rns_shared_instance_unresponsive",
+        "rns_instance_name_mismatch",   # 2026-08-05: probing an @rns/<name> with no listener while the kernel advertises another — both RNS probes keyed to a name this box doesn't serve, so both were dark (one indeterminate blaming rnsd, one affirmatively clean). Documented inline in SIGNAL_CLASSES + the 2026-08-05 persistent_issues entry; tests in test_watchdog_rns_instance_name_mismatch.py
         "rns_interface_down_peer_reachable",
         "rns_rpc_unresponsive",
         "fd_exhaustion",
@@ -639,12 +640,21 @@ def test_lxmf_process_wedge_skips_non_digit_proc_entries(tmp_path):
 
 
 def test_rns_shared_instance_responsive_returns_none_when_no_listener():
-    """No listener at @rns/<name> → FileNotFoundError → return None
-    (service_inactive owns the 'rnsd not running' signal)."""
-    # Pick an instance name nothing's listening on.
+    """No listener at @rns/<name> AND no @rns/* at all → return None
+    (service_inactive owns the 'rnsd not running' signal).
+
+    ⚠️ ``ss_output`` is PINNED (2026-08-05). The docstring used to say
+    "FileNotFoundError"; Linux actually answers a nonexistent ABSTRACT
+    socket with ECONNREFUSED, and that branch now consults the listener
+    table — so without pinning, this test's verdict would depend on
+    whether the box running the suite happens to have rnsd up. Green on
+    a dev laptop, a mismatch signal on any fleet box
+    (feedback_tests_must_pin_ambient_state).
+    """
     import secrets
     name = f"watchdog-test-nope-{secrets.token_hex(8)}"
-    sig = probe_rns_shared_instance_responsive(name, timeout_s=0.5)
+    sig = probe_rns_shared_instance_responsive(
+        name, timeout_s=0.5, ss_output="")
     assert sig is None
 
 
@@ -728,7 +738,11 @@ def test_rns_shared_instance_responsive_fires_wedge_on_full_backlog():
             break
 
     try:
-        sig = probe_rns_shared_instance_responsive(name, timeout_s=0.5)
+        # ss_output pinned empty: this test is about the WEDGE branch, and
+        # an unpinned listener table would let the refused-path fork into
+        # rns_instance_name_mismatch on any box that runs rnsd.
+        sig = probe_rns_shared_instance_responsive(
+            name, timeout_s=0.5, ss_output="")
     finally:
         for s in fillers:
             try:
