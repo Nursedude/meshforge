@@ -103,13 +103,22 @@ class TestMqttRootDriftInertWithoutAConsumer:
     """A box with no gateway.json has nothing that CAN be deaf."""
 
     def _run(self, status, dispositions):
+        # ⚠️ The publish line comes through the INJECTED newest_line_fn seam,
+        # not a patch of `_journal_newest_match`. These tests originally
+        # patched that module function; the third-leg fix later changed the
+        # default reader to `_journal_newest_match_status`, which silently
+        # made the patch a no-op — so the real journalctl ran and the verdict
+        # depended on whether the box had a publishing meshtasticd. Green
+        # here, RED in CI. The seam is part of the probe's contract and
+        # cannot go stale under it (feedback_tests_must_pin_ambient_state:
+        # when a fix changes what code READS, re-audit that function's tests).
         with patch("utils.watchdog_probes_drift._resolve_main_pid",
                    return_value=1234), \
              patch("utils.watchdog_probes_drift._declared_root_status",
-                   return_value=status), \
-             patch("utils.watchdog_probes_drift._journal_newest_match",
-                   return_value="JSON publish message to msh/US/2/json/x"):
-            return probe_mqtt_root_drift(service_user_fn=lambda: "u")
+                   return_value=status):
+            return probe_mqtt_root_drift(
+                service_user_fn=lambda: "u",
+                newest_line_fn=lambda p: "JSON publish message to msh/US/2/json/x")
 
     def test_absent_declaration_is_inert(self, dispositions):
         sig = self._run(("absent", None), dispositions)
