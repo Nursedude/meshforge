@@ -69,6 +69,18 @@ case "$box" in
       *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
       *WDSEP*) echo "$(date +%s)"; echo "failed"; echo "loaded"; echo "---WDSEP---" ;;
     esac ;;
+  box-heldonly)                                # ONLY a held (observer-blind) signal
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
+               echo "{\"ts\": $(date +%s), \"signals\": [{\"class\": \"kernel_reboot_pending\", \"severity\": \"degraded\", \"extra\": {\"unobserved_hold\": true}}]}" ;;
+    esac ;;
+  box-mixhold)                                 # one LIVE degraded + one held
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
+               echo "{\"ts\": $(date +%s), \"signals\": [{\"class\": \"service_inactive\", \"severity\": \"degraded\", \"extra\": {}}, {\"class\": \"kernel_reboot_pending\", \"severity\": \"degraded\", \"extra\": {\"unobserved_hold\": true}}]}" ;;
+    esac ;;
 esac
 exit 0
 EOF
@@ -296,6 +308,31 @@ check "trailing comment stripped: 2 boxes (host + self), not a garbage token" \
   "$(echo "$out" | grep -q 'fleet legs cover 2 box(es)' && echo ok)"
 check "and the commented host itself resolved (drift 1/1)" \
   "$(echo "$out" | grep -E 'fleet SHA drift' | grep -q '1/1' && echo ok)"
+
+# ── 14. a HELD (observer-blind) signal is UNKNOWN, never degraded ────────
+#
+# Row-92 contract (ratified 2026-08-06): watchdog_tracker re-emits a signal
+# whose observer went blind (extra.unobserved_hold) so silence cannot read
+# as recovery — but the gate of record must file it as LAST-KNOWN evidence
+# (UNKNOWN tier), never as a live "degraded" observation (moc5 held
+# kernel_reboot_pending 347 ticks AFTER the condition was cured). Chronic
+# blindness escalation belongs to mini's detector_blind_any (24h grace) —
+# the tracker and this gate deliberately carry no second debounce.
+# Self's REAL watchdog state must not leak into these verdicts (it carried a
+# live degraded signal when this section was written) — pin self to the clean
+# fixture; the stub boxes still answer over the stubbed ssh.
+printf 'box-heldonly\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" run)"
+check "held-only box reports held-blind (last-known), not a live signal" \
+  "$(echo "$out" | grep 'watchdog' | grep -q 'held-blind' && echo ok)"
+check "held-only box produces NO degraded WARN line" \
+  "$(echo "$out" | grep -q 'watchdog (degraded)' || echo ok)"
+printf 'box-mixhold\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" run)"
+check "mixed box: only the LIVE signal counts as degraded (1, not 2)" \
+  "$(echo "$out" | grep 'watchdog (degraded)' | grep -q '1 degraded, 0 wedge' && echo ok)"
+check "mixed box: the held signal stays visible in the class list" \
+  "$(echo "$out" | grep -q 'held-blind' && echo ok)"
 
 echo "---"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi
