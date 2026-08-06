@@ -20,9 +20,52 @@ import sys
 
 import pytest
 
-# Source directory
-SRC_DIR = os.path.join(os.path.dirname(__file__), '..', 'src')
-REPO_ROOT = os.path.join(os.path.dirname(__file__), '..')
+# Source directory.
+#
+# ⚠️ These MUST be absolute/normalised. Un-normalised, they read
+# ``<repo>/tests/../src``, so every path produced by ``_scan_python_files``
+# literally contained ``/tests/`` — and NINE guards below skip a match with
+# ``if 'test_' in basename or '/tests/' in filepath``. That skip therefore
+# discarded EVERY match, and those nine guards could not fail no matter what
+# landed in src/. Proven by live drill 2026-08-05: a file added to src/ with
+# a bare ``shell=True`` AND a bare ``Path.home()`` passed both
+# ``TestNoShellTrue`` and ``TestPathHomeContract``. Layer 1 (scripts/lint.py)
+# still caught it, so the fleet was not unprotected — but every Layer-2
+# contract with no lint twin was inert.
+#
+# ``TestGuardsAreNotInert`` at the bottom of this file now pins that the
+# scanner can actually see src/, so this cannot silently regress.
+SRC_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src'))
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+
+
+def _strip_trailing_comment(line):
+    """Return the code portion of ``line``, dropping any trailing ``#`` comment.
+
+    Quote-aware, so a ``#`` inside a string literal is not mistaken for the
+    start of a comment. Needed because ``skip_comments`` only ever skipped
+    lines that BEGIN with ``#``, leaving trailing comments to be scanned as
+    though they were code — e.g. the trailing note in auto_review.py's own
+    MF001 rule text, which spells the banned call out in prose,
+    inside auto_review.py's own rule text was reported as an MF001 violation.
+    Prose about a banned pattern is not a use of it.
+    """
+    quote = None
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ('"', "'"):
+            quote = ch
+        elif ch == '#':
+            return line[:i]
+        i += 1
+    return line
 
 
 def _scan_python_files(pattern, exclude_files=None, exclude_dirs=None,
@@ -59,7 +102,9 @@ def _scan_python_files(pattern, exclude_files=None, exclude_dirs=None,
                         if skip_strings and (stripped.startswith('"') or stripped.startswith("'")):
                             continue
 
-                        if re.search(pattern, line):
+                        haystack = (_strip_trailing_comment(line)
+                                    if skip_comments else line)
+                        if re.search(pattern, haystack):
                             matches.append((filepath, lineno, line.rstrip()))
             except (IOError, OSError):
                 continue
@@ -1417,3 +1462,87 @@ class TestCIPytestVerdictContract:
             "ci.yml pytest pipeline no longer captures rc for the classifier; "
             "under `bash -e` the bare rc would decide the step again"
         )
+
+
+class TestGuardsAreNotInert:
+    """The guards must be able to SEE src/ — a scanner that matches nothing
+    passes every contract in this file while enforcing none of them.
+
+    Found 2026-08-05 by live drill. ``SRC_DIR`` was ``<repo>/tests/../src``,
+    un-normalised, so every path ``_scan_python_files`` produced literally
+    contained ``/tests/`` — and NINE guards skip a match with
+    ``if 'test_' in basename or '/tests/' in filepath``. That skip discarded
+    EVERY match. A file added to src/ carrying a bare ``shell=True`` and a
+    bare home-directory call (MF001) passed both ``TestNoShellTrue`` and
+    ``TestPathHomeContract``; Layer 1 (scripts/lint.py) still caught it, so
+    the fleet was not unprotected, but every Layer-2 contract without a lint
+    twin enforced nothing.
+
+    This is the file's own instance of the defect it exists to prevent:
+    a degraded internal state (an empty match set) mapped to a valid-looking
+    value (no violations) and read downstream as a real-world claim
+    ("the contract holds"). honest_failure_modes #1 — empty is not the same
+    as error, and here it was not even the same as clean.
+    """
+
+    def test_src_dir_is_normalised(self):
+        """The root cause, pinned directly."""
+        assert '..' not in SRC_DIR, (
+            f"SRC_DIR is un-normalised ({SRC_DIR}); every scanned path will "
+            f"contain '/tests/' and the nine guards that skip on '/tests/' "
+            f"will discard every match"
+        )
+        assert os.path.isdir(SRC_DIR)
+
+    def test_scanner_finds_known_source(self):
+        """A pattern that certainly exists in src/ must actually be found."""
+        matches = _scan_python_files(r'^import \w+|^from \w+ import')
+        assert len(matches) > 100, (
+            f"scanner found only {len(matches)} import lines in src/ — it is "
+            f"not seeing the tree, so every scan-based guard is inert"
+        )
+
+    def test_no_guard_skips_every_path_it_scans(self):
+        """The `/tests/` skip must not be able to swallow the whole tree.
+
+        Pins the invariant rather than the spelling: whatever SRC_DIR is,
+        paths produced from it must not all match the skip condition the
+        guards use.
+        """
+        matches = _scan_python_files(r'^import ')
+        assert matches, "scanner returned nothing at all"
+        survivors = [
+            fp for fp, _, _ in matches
+            if 'test_' not in os.path.basename(fp) and '/tests/' not in fp
+        ]
+        assert survivors, (
+            "every scanned path was discarded by the guards' own skip "
+            "condition — the contracts in this file enforce nothing"
+        )
+
+    def test_a_planted_violation_is_actually_caught(self):
+        """End-to-end: the drill, as a test.
+
+        Writes a file into src/ carrying a banned pattern, asserts the
+        scanner reports it, and removes it again. Without this, a future
+        refactor can quietly return the guards to matching nothing and every
+        other test here would still be green.
+        """
+        drill = os.path.join(SRC_DIR, 'utils', '_guard_selftest_tmp.py')
+        try:
+            with open(drill, 'w', encoding='utf-8') as fh:
+                fh.write(
+                    '"""Transient guard self-test file."""\n'
+                    'import subprocess\n\n\n'
+                    'def planted(cmd):\n'
+                    '    return subprocess.run(cmd, shell=True, timeout=5)\n'
+                )
+            matches = _scan_python_files(r'shell\s*=\s*True')
+            hits = [fp for fp, _, _ in matches if fp.endswith('_guard_selftest_tmp.py')]
+            assert hits, (
+                "a file planted in src/ with a bare `shell=True` was NOT seen "
+                "by the scanner — the guards in this file are inert"
+            )
+        finally:
+            if os.path.exists(drill):
+                os.remove(drill)

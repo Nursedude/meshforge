@@ -107,7 +107,11 @@ class ServiceOrchestrator:
             check_port=4403,
             startup_delay=5,  # Device init takes time
             required=True,
-            install_command=['pip3', 'install', 'meshtastic'],
+            # pipx, not pip3: meshtastic is a CLI, raw `pip3 install`
+            # fails outright on a PEP 668 box, and this repo's canonical
+            # form (updates/version_checker.py) and the rnsd entry below
+            # both already use pipx.
+            install_command=['pipx', 'install', 'meshtastic'],
         ),
         'rnsd': ServiceConfig(
             name='rnsd',
@@ -289,7 +293,11 @@ class ServiceOrchestrator:
                 check_port=4403,
                 startup_delay=5,
                 required=True,
-                install_command=['pip3', 'install', 'meshtastic'],
+                # pipx, not pip3: meshtastic is a CLI, raw `pip3 install`
+            # fails outright on a PEP 668 box, and this repo's canonical
+            # form (updates/version_checker.py) and the rnsd entry below
+            # both already use pipx.
+            install_command=['pipx', 'install', 'meshtastic'],
             )
             logger.info("Configured for Python meshtastic CLI (USB radio)")
 
@@ -1211,9 +1219,28 @@ class ServiceOrchestrator:
                 logger.info(f"Installing {name}...")
                 if config.install_command:
                     try:
+                        cmd = config.install_command
+
+                        # Raw `pip3 install` bypasses the ONE hardened invoker
+                        # and simply FAILS on a PEP 668 box (externally-managed
+                        # environment) with a message this loop only logs. Route
+                        # pip through utils.pip_install, which handles PEP 668,
+                        # ensures pip exists, checks the return code, and can
+                        # verify the import in the consumer's interpreter.
+                        # (feedback_version_env_rigor; the guard that should
+                        # have caught this was dormant until 2026-08-05.)
+                        if cmd and cmd[0] in ('pip', 'pip3'):
+                            from utils.pip_install import pip_install
+                            packages = [a for a in cmd[2:] if not a.startswith('-')]
+                            pip_result = pip_install(packages, timeout=300)
+                            if not pip_result.ok:
+                                logger.error(
+                                    f"Failed to install {name}: {pip_result.detail}")
+                                success = False
+                            continue
+
                         # For pipx commands, run as real user if we're under sudo
                         # This ensures packages install to user's ~/.local/bin not root's
-                        cmd = config.install_command
                         if cmd and cmd[0] == 'pipx':
                             sudo_user = os.environ.get('SUDO_USER')
                             if sudo_user and sudo_user != 'root':
