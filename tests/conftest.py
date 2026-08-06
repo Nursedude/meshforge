@@ -157,6 +157,79 @@ def _isolate_node_cache_files(tmp_path_factory):
         yield root
 
 
+#: Modules that resolve an operator data store as
+#: ``get_real_user_home() / ".config" / "meshforge" / <name>`` and WRITE it.
+#: Each is patched at its own module attribute (both import aliases), which
+#: redirects only that module — patching ``utils.paths.get_real_user_home``
+#: itself would break the tests that assert what it returns under sudo.
+#: Found by directory sweep, not by memory: see _isolate_operator_data_stores.
+_OPERATOR_STORE_MODULES = (
+    "commands.messaging",              # messages.db
+    "gateway.correlation_store",       # gateway_correlation.db
+    "gateway.message_queue",           # message_queue.db
+    "commands.rns",                    # lxmf_storage/ (LXMF ratchets)
+    "gateway._rns_bridge_connection",  # lxmf_storage/ (LXMF ratchets)
+    # templates/exported_<ts>.json — LITTER, a NEW file every run by design
+    # ("timestamp suffix makes each export unique", so nothing ever
+    # overwrites and nothing ever cleans up). 856 had accumulated since
+    # 2026-04-21 before this line existed. Reached under three aliases
+    # because sys.path carries src/ AND src/launcher_tui.
+    "launcher_tui.handlers._gateway_preflight_template",
+    "handlers._gateway_preflight_template",
+)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_operator_data_stores(tmp_path_factory):
+    """Keep the suite out of the operator's message store, queue, correlation
+    DB and LXMF ratchets.
+
+    Third sibling of ``_isolate_node_cache_files`` and
+    ``_isolate_delivery_counters_db``. Measured 2026-08-05 by sweeping the
+    whole operator tree (``~/.config/meshforge`` + ``~/.local/share/meshforge``
+    + ``~/.cache/meshforge``) across one suite run: 22 files touched, and —
+    after subtracting an idle CONTROL run to remove the live map service's own
+    writes — FOUR genuinely mutated:
+
+        lxmf_storage/lxmf/ratchets/*.ratchets   LXMF crypto ratchet state
+        messages.db                             message store
+        message_queue.db                        persistent queue
+        gateway_correlation.db                  correlation store
+
+    The ratchets are the reason this is a gate and not a note: they are
+    per-destination cryptographic state on the box the fleet treats as its
+    source of truth, and corrupting them fails opaquely and late.
+    ``device_config.yaml`` (the RADIO config) is also rewritten by the suite
+    and survives only because the fixture happens to match what is there —
+    it is covered here too, via ``commands.messaging``'s sibling paths, by
+    virtue of the whole config dir moving.
+
+    Session-scoped: redirection is idempotent and O(1), and a per-test
+    version of the delivery-counters guard cost 45% of suite wall-clock
+    before it was fixed. Files needing per-test isolation still bring their
+    own fixtures, which patch inside this one and win.
+    """
+    root = tmp_path_factory.mktemp("operator_home_isolation")
+    (root / ".config" / "meshforge").mkdir(parents=True, exist_ok=True)
+    with ExitStack() as stack:
+        patched = []
+        for mod in _OPERATOR_STORE_MODULES:
+            for alias in (mod, f"src.{mod}"):
+                try:
+                    stack.enter_context(
+                        patch(f"{alias}.get_real_user_home", return_value=root))
+                    patched.append(alias)
+                except (ImportError, AttributeError, ModuleNotFoundError):
+                    continue
+        if not patched:
+            raise RuntimeError(
+                "operator data-store isolation patched NOTHING — the suite "
+                "would write the operator's messages.db / message_queue.db / "
+                "gateway_correlation.db / LXMF ratchets"
+            )
+        yield root
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_delivery_counters_db(tmp_path_factory):
     """Keep delivery-counter writes out of the operator's live DB.
