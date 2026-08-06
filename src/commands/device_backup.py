@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Dict, Optional, List
 from dataclasses import dataclass, asdict
 
+from utils.backup_paths import reserve_backup_path
 from utils.paths import get_real_user_home
 from utils.cli import find_meshtastic_cli
 from utils.safe_import import safe_import
@@ -236,15 +237,21 @@ def create_backup(
             owner=owner_data,
         )
 
-        # Save backup
-        backup_dir = get_backup_dir()
-        backup_file = backup_dir / f"{backup_id}.json"
+        # Save backup. backup_id is <device>_<second-resolution timestamp>, so
+        # two backups of one device inside the same second collide; stepping
+        # aside is right here because the second backup is still wanted, it
+        # just must not land on the first.
+        backup_file = reserve_backup_path(
+            get_backup_dir(), f"{backup_id}.json", on_exists="unique")
 
         with open(backup_file, 'w') as f:
             json.dump(backup.to_dict(), f, indent=2)
 
         result['success'] = True
-        result['backup_id'] = backup_id
+        # Report the id that matches the file actually written — a disambiguated
+        # name must not be reported under the name it stepped aside from, or
+        # restore/delete would target the wrong backup.
+        result['backup_id'] = backup_file.stem
         result['file_path'] = str(backup_file)
         logger.info(f"Backup created: {backup_file}")
 

@@ -443,6 +443,78 @@ class TestPipInvocationContract:
         )
 
 
+class TestBackupNeverOverwrites:
+    """Enforce: backup destinations are reserved, never named-and-written.
+
+    A backup step that can overwrite is not a backup step. On 2026-08-05 a
+    session reusing the fleet's documented generic
+    ``~/delivery_db_backup_<date>/`` path destroyed the same day's MeshForge
+    ``delivery_counters.db`` backup — ``sqlite3.Connection.backup()`` opened
+    the existing file and overwrote it, and no other copy existed. The safety
+    net underneath an authorised deletion is exactly what a backup is for.
+
+    The same class was already shipped in three writers whose collision
+    window happened to be one second (``commands/rns.py``,
+    ``commands/device_backup.py``, ``commands/fleet_backup.py``). All three
+    now reserve through ``utils.backup_paths``. This guard exists so the
+    fourth one cannot land as a plain path join.
+
+    ``honest_failure_modes`` #8: fixed shared names are a collision, not a
+    convention.
+    """
+
+    ALLOWLISTED = {
+        'backup_paths.py',  # IS the chokepoint
+    }
+
+    def test_backup_writers_reserve_their_destination(self):
+        """Any module naming a backup file must import the reserver."""
+        matches = _scan_python_files(
+            r"""backup_dir\s*/\s*f?['"]|backup_path\s*=\s*\w*\s*/\s*f?['"]""",
+            exclude_files=list(self.ALLOWLISTED),
+        )
+        violations = []
+        for filepath, lineno, line in matches:
+            basename = os.path.basename(filepath)
+            if 'test_' in basename or '/tests/' in filepath:
+                continue
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    source = f.read()
+            except OSError:
+                continue
+            # Importing the reserver is the contract. A module that has it
+            # resolves its destinations there; one that does not is naming a
+            # backup path by hand.
+            if 'reserve_backup_path' in source or 'reserve_backup_dir' in source:
+                continue
+            violations.append(
+                f"{os.path.relpath(filepath, REPO_ROOT)}:{lineno}: {line.strip()}")
+        assert not violations, (
+            f"Found {len(violations)} hand-named backup destination(s).\n"
+            f"Route through utils.backup_paths.reserve_backup_path "
+            f"(atomic O_EXCL reservation; refuses or steps aside, never "
+            f"overwrites).\n\n" + "\n".join(violations)
+        )
+
+    def test_chokepoint_exports_the_reservers(self):
+        """The guard above is meaningless if the chokepoint moved."""
+        from utils.backup_paths import (  # noqa: F401
+            BackupDestinationExists,
+            reserve_backup_dir,
+            reserve_backup_path,
+        )
+
+    def test_reserver_refuses_rather_than_overwrites_by_default(self):
+        """Pin the DEFAULT. A future edit flipping it to overwrite-by-default
+        would satisfy every other test in this class while re-opening the
+        exact defect."""
+        import inspect
+        from utils.backup_paths import reserve_backup_path
+        sig = inspect.signature(reserve_backup_path)
+        assert sig.parameters['on_exists'].default == 'refuse'
+
+
 class TestEventBusThreadPool:
     """Enforce: EventBus.emit() uses bounded ThreadPoolExecutor.
 

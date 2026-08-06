@@ -18,6 +18,7 @@ from typing import Optional, Dict, Any, List, Tuple
 from dataclasses import dataclass, field
 
 from .base import CommandResult
+from utils.backup_paths import reserve_backup_path
 from utils.boundary_timing import call_boundary
 from utils.safe_import import safe_import
 from utils.service_check import check_service, start_service, stop_service
@@ -204,12 +205,17 @@ def write_config(content: str, backup: bool = True) -> CommandResult:
     backup_path = None
 
     try:
-        # Create backup if requested
+        # Create backup if requested. The name is second-resolution, so two
+        # config writes in the same second used to land on ONE path — and the
+        # backup being overwritten was the one holding the true pre-change
+        # original. reserve_backup_path steps aside instead of clobbering.
         if backup and config_path.exists():
-            backup_dir = config_path.parent / "backups"
-            backup_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = backup_dir / f"config_{timestamp}.bak"
+            backup_path = reserve_backup_path(
+                config_path.parent / "backups",
+                f"config_{timestamp}.bak",
+                on_exists="unique",
+            )
             shutil.copy2(config_path, backup_path)
 
         # Ensure directory exists

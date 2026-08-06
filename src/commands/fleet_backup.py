@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from commands.base import CommandResult, ResultStatus
+from utils.backup_paths import reserve_backup_path
 from utils.paths import (
     MeshForgePaths,
     MeshtasticPaths,
@@ -273,8 +274,11 @@ def create_local_backup(backup_dir: Optional[Path] = None) -> CommandResult:
             with open(manifest_path, "w") as f:
                 json.dump(manifest.__dict__, f, indent=2)
 
-            # Create tarball
-            archive_path = backup_dir / f"{archive_name}.tar.gz"
+            # Create tarball. archive_name is <hostname>-<second-resolution
+            # timestamp>; two runs inside the same second used to overwrite
+            # the first archive, which on this path contains identity keys.
+            archive_path = reserve_backup_path(
+                backup_dir, f"{archive_name}.tar.gz", on_exists="unique")
             with tarfile.open(str(archive_path), "w:gz") as tar:
                 tar.add(str(staging), arcname=archive_name)
 
