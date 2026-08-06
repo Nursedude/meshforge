@@ -123,12 +123,17 @@ class TestTCPConnectionContract:
     """
 
     # Files that ARE the connection infrastructure or use the global lock correctly
+    # ⚠️ Every entry must name a file that EXISTS. 'connections.py' and
+    # 'device_controller.py' sat here from this file's first commit
+    # (c378be1a, 2026-02-23) naming files that were never in the tree —
+    # inert while absent, but a standing exemption for any future file that
+    # happens to take one of those names. An allowlist is a list of granted
+    # exceptions, so an entry that grants nothing is a trap, not a no-op.
+    # Removed 2026-08-05 by the guard audit.
     ALLOWLISTED = {
         'connection_manager.py',    # IS the connection manager
         'meshtastic_connection.py', # IS connection infrastructure
-        'connections.py',           # IS connection infrastructure
         'node_monitor.py',          # Uses MESHTASTIC_CONNECTION_LOCK
-        'device_controller.py',     # Uses MESHTASTIC_CONNECTION_LOCK
         'rns_transport.py',         # Uses MESHTASTIC_CONNECTION_LOCK
         'mesh_bridge.py',           # Uses MESHTASTIC_CONNECTION_LOCK
     }
@@ -259,8 +264,22 @@ class TestServiceCheckContract:
     caused inconsistent status display regressions (Issue #20).
     """
 
-    # Known exceptions (non-core services, display-only)
-    KNOWN_EXCEPTIONS = 1  # cli/diagnose.py openwebrx check
+    # Files allowed a raw is-active read, BY NAME and with a reason.
+    #
+    # Was `KNOWN_EXCEPTIONS = 1`, a numeric budget — which is a free pass for
+    # ANY one violation, not for the specific one it was reserved for. Once
+    # the scanner started working (2026-08-05) the tree matched this pattern
+    # ZERO times, so the whole budget was unused slack: a drill planting a
+    # brand-new raw `subprocess.run([... 'is-active' ...])` in src/ PASSED.
+    # A named allowlist cannot drift that way — it grants exactly the
+    # exception it documents.
+    SINGLE_LINE_ALLOW = {
+        # Standalone diagnostic: uses check_service() when importable and
+        # falls back to raw systemctl only when SERVICE_CHECK_AVAILABLE is
+        # False, so it still works on a box where the import is broken —
+        # which is exactly when someone runs it.
+        'diagnose.py',
+    }
 
     # Handler files that legitimately read raw systemctl status_text because
     # check_service() is lossy for their purpose (documented at the call site).
@@ -279,12 +298,15 @@ class TestServiceCheckContract:
             basename = os.path.basename(filepath)
             if 'test_' in basename or '/tests/' in filepath:
                 continue
+            if basename in self.SINGLE_LINE_ALLOW:
+                continue
             violations.append(f"{filepath}:{lineno}")
 
-        assert len(violations) <= self.KNOWN_EXCEPTIONS, (
-            f"Found {len(violations)} raw systemctl is-active calls "
-            f"(expected <= {self.KNOWN_EXCEPTIONS}).\n"
-            f"Use check_service() from utils.service_check instead (Issue #20).\n\n"
+        assert not violations, (
+            f"Found {len(violations)} raw systemctl is-active call(s).\n"
+            f"Use check_service() from utils.service_check instead (Issue #20).\n"
+            f"If a raw read is genuinely required, add the file to "
+            f"SINGLE_LINE_ALLOW with a reason.\n\n"
             f"Violations:\n" + "\n".join(violations)
         )
 
@@ -350,35 +372,32 @@ class TestConfigPathContract:
     """Enforce: RNS config paths use ReticulumPaths, not hardcoded paths.
 
     Config drift between gateway and rnsd causes silent divergence (Issue #12).
-    """
 
-    def test_no_hardcoded_reticulum_paths_in_code(self):
-        """No hardcoded ~/.reticulum or /root/.reticulum in Python code."""
-        matches = _scan_python_files(
-            r'(?:~/\.reticulum|/root/\.reticulum|/home/\w+/\.reticulum)',
-            skip_comments=True,
-            skip_strings=False,  # Hardcoded paths might be in strings
-        )
+    ⚠️ ``test_no_hardcoded_reticulum_paths_in_code`` was REMOVED 2026-08-05.
+    It collected violations and then did nothing with them::
 
-        # Filter: allow in test files, doc files, and comments
-        violations = []
-        for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
-            # Allow in config_drift.py (it detects these paths)
-            if 'config_drift' in filepath:
-                continue
-            # Allow in documentation/knowledge content
-            if 'knowledge' in filepath or 'diagnostic' in filepath:
-                continue
-            violations.append(f"{filepath}:{lineno}: {line.strip()}")
-
-        # This is informational — hardcoded paths in string configs may be
-        # acceptable if they're defaults. Track but don't block.
         if violations:
             # Just print for awareness, don't fail (too many legitimate uses)
             pass
+
+    — no assert, and despite the comment, no print either. It could not fail
+    and did not inform, but it counted as a guard and read as coverage. A
+    drill planting ``Path('/home/pi/.reticulum/config')`` in src/ passed, and
+    always would have; unlike the rest of this file that was never the
+    SRC_DIR bug, it was written that way.
+
+    Its premise doesn't survive contact with the tree: the pattern matches 47
+    places, nearly all user-facing strings and docstrings ("Edit
+    ~/.reticulum/config and ensure 'share_instance = Yes'"). Those are correct
+    — the path belongs in prose telling an operator what to edit. There is no
+    threshold that separates them from a real hardcode with a line scanner, so
+    the honest move is to stop pretending this is a gate.
+
+    What actually enforces this contract: lint MF009 (``RNS.Reticulum()``
+    without ``configdir=``), lint MF019 (construction outside the chokepoint),
+    ``ReticulumPaths`` as the path SSOT, and the sibling test below — all of
+    which have teeth.
+    """
 
     def test_gateway_rns_clients_use_shared_configdir(self):
         """Both gateway RNS clients init through
