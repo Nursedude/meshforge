@@ -213,6 +213,24 @@ def _isolate_operator_data_stores(tmp_path_factory):
     (root / ".config" / "meshforge").mkdir(parents=True, exist_ok=True)
     with ExitStack() as stack:
         patched = []
+        # device_config.yaml — the RADIO config, and the one file here that
+        # could do real-world harm. Its header says "Re-applied automatically
+        # after meshtasticd restart", so a wrong value is pushed to the radio.
+        # On this box the suite rewrote it BYTE-IDENTICALLY, which read as
+        # harmless — but that is a coincidence of the fixture matching this
+        # box's LONG_FAST/ch20. moc3 runs SHORT_TURBO/ch8: the same write
+        # there would take a gateway off its preset and break the
+        # moc2<->moc3 RNS leg. Gate the single chokepoint both writers use
+        # (`save_device_setting` / `save_device_settings` both go through
+        # `_get_config_path`), rather than hunting whichever test does it.
+        for alias in ("utils.device_config_store", "src.utils.device_config_store"):
+            try:
+                stack.enter_context(patch(
+                    f"{alias}._get_config_path",
+                    return_value=root / ".config" / "meshforge" / "device_config.yaml"))
+                patched.append(alias)
+            except (ImportError, AttributeError, ModuleNotFoundError):
+                continue
         for mod in _OPERATOR_STORE_MODULES:
             for alias in (mod, f"src.{mod}"):
                 try:
