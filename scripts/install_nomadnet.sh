@@ -20,7 +20,8 @@
 # this one normalizes the nomadnet client install. Both must succeed
 # for a working tmux-wrapped nomadnet.service.
 #
-# See .claude/foundations/persistent_issues.md Issue #46 for context.
+# See .claude/foundations/persistent_issues*.md Issue #46 for context
+# (resolved-issue index moved to the archive 2026-08-05, MF012).
 
 set -euo pipefail
 

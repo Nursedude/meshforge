@@ -1068,7 +1068,8 @@ def _init_rns_client():
 
     Creates a client-only config with no interfaces to avoid
     "Address already in use" errors when rnsd already owns the ports.
-    See: .claude/foundations/persistent_issues.md Issue #12
+    See: .claude/foundations/persistent_issues*.md Issue #12 (the
+    resolved-issue index moved to the archive 2026-08-05, MF012).
     """
     import tempfile
 

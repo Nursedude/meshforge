@@ -1,13 +1,35 @@
 # MeshForge Persistent Issues & Resolution Patterns
 
-> **Purpose**: Document recurring issues and their proper fixes to prevent regression.
-> **Last audited**: 2026-04-22 — Trimmed to <40k chars; resolved issues archived.
+> **Purpose**: what is still LIVE, and the decision tells worth carrying in
+> every conversation. NOT the history of what we fixed — that is the
+> resolved-issue index in `persistent_issues_archive.md`.
+> **Last audited**: 2026-08-05 — restructured; see the growth rule below.
 >
-> **Bloat guard**: lint rule MF012 (`scripts/lint.py --all`) fails when this file
-> exceeds 40,000 chars. If it trips, move the oldest fully-resolved issues to
-> `persistent_issues_archive.md` and leave a one-row summary in the table below —
-> DO NOT raise the limit. The cap exists because the loaded-context overhead of
-> this file scales with every conversation turn.
+> **Bloat guard**: lint rule MF012 (`scripts/lint.py --all`) fails when this
+> file exceeds 40,000 chars. DO NOT raise the limit — the cap exists because
+> this file is `@`-included into CLAUDE.md, so its cost is paid on EVERY
+> conversation turn, forever, by every session.
+>
+> **Growth rule (2026-08-05, the structural fix).** This file is bounded by
+> VALUE-PER-TURN, not by chronology. A newly-RESOLVED issue goes straight to
+> the archive index — it does not land here first and get demoted later. Only
+> two things earn a place here:
+>   1. something still LIVE (unresolved, or a standing operating rule), or
+>   2. a decision tell an operator would reach for at a terminal.
+>
+> Why the rule exists: the old model was "add here, demote the oldest when it
+> trips", and it converged on a permanently-full file. On 2026-08-05 landing
+> THREE entries required demoting NINE sections, and the resolved-issue index
+> had grown to 17,534 chars — 44% of the file — describing only work that was
+> already fixed AND guarded by lint rules and regression tests. Moving it out
+> took the file from 48 chars of headroom to ~15,000. If you find yourself
+> demoting to make room, the thing you are adding probably belongs in the
+> archive too.
+>
+> **Nothing is deleted, only relocated**: `grep -n "#43"
+> .claude/foundations/persistent_issues*.md` spans both files, and that glob
+> is what tier-L's corpus indexes and what every "see persistent_issues.md
+> Issue #N" comment in the tree resolves through.
 
 ---
 
@@ -60,85 +82,41 @@ See [[project_rns_fork_shipped_2026_05_30]] and
 
 ---
 
-## Archived / Fully Resolved Issues
+## Resolved issues — index moved to the archive (2026-08-05)
 
-The following are **RESOLVED** with automated prevention (linter + regression tests).
-Full history in `persistent_issues_archive.md`.
+The chronological index of ~72 fully-resolved issues now lives in
+`persistent_issues_archive.md`, beside the bodies it points at. It was 44% of
+this file while describing only work already fixed AND guarded by lint rules +
+regression tests — the lowest per-turn value in a file that loads every turn.
 
-| Issue | Summary | Prevention |
-|-------|---------|------------|
-| Health Check Reconciliation | C1-C5, H1 all fixed (2026-02-20) | — |
-| Handler Registry Migration | 49 mixins → 60 handler files (2026-02-28) | — |
-| #1 Path.home() | Use `get_real_user_home()` | Lint MF001 + regression test |
-| #5 Duplicate Utilities | `safe_import` for external deps only | Direct imports for first-party |
-| #7 Missing File References | Create scripts before referencing them | — |
-| #8 Outdated Fallback Versions | Search hardcoded versions on bump | `grep -rn "0\.[0-9]\.[0-9]" src/` |
-| #9 Broad Exception Swallowing | 28/30 fixed; 2 benign by design | `grep except.*:.*pass` |
-| #10 Map Scrollbar Overlap | Thin dark-themed scrollbar CSS | — |
-| #4 Silent Debug Logging | ERROR/WARNING/INFO/DEBUG level guidance | Behavioral pattern |
-| #16 Best-Effort Delivery | SQLite retry queue + "Sent (not guaranteed)" UI wording | Behavioral pattern |
-| #17 TCP Connection Contention | Connection manager + `send_text_direct()` | Lint MF007 + `TestTCPConnectionContract` + `TestFromradioContract` |
-| #18 Auto-Reconnect | Health monitor + exp. backoff in `rns_bridge.py` | Behavioral pattern |
-| #19 RNS path_table discovery | `path_table` (not `destinations`), delayed re-checks | Implementation stable |
-| #20 Service Detection / Status | systemctl-only SSOT; state vs. capability separation | Lint MF008 + `TestServiceCheckContract` + `TestKnownServicesConsistency` |
-| #24 Python Env Mismatch (rnsd) | Install `meshtastic` module where rnsd's Python finds it | Upstream fix, stable |
-| #25, #26, #28 | rnsd ratchets, ReticulumPaths copies, API proxy | — |
-| #27 rnsd is OPTIONAL | Two independent transports (MQTT, RNS); preset bridging needs only mosquitto | Design principle |
-| #30 NomadNet RPC ConnectionRefusedError | Pre-launch check in `_nomadnet_rns_checks.py`; auto-restart rnsd | Upstream-aware preflight |
-| #31 Silent persistent startup changes | `auto_lock_port()` removed; explicit user action only | Design principle |
-| #32 NomadNet "enabled but disconnected" | `/proc/cmdline` pgrep verify + shared-instance explicit check | Behavioral pattern |
-| #33 Gateway first green end-to-end (2026-04-18) | RX field-validated; 5 install-path gotchas (LXMF pip, uplink default off, topic shape, local TX uplink, traffic.log perms) | Superseded by #34/#40 |
-| #34 MQTT topic shape mismatch | Subscribe to `{root}/+/2/json/{ch}/#` AND `{root}/2/json/{ch}/#`; `region=""` default | Code `be6f411` |
-| #36 Meshtastic_Interface plugin | Keep rnsd's plugin disabled; MeshForge gateway owns text-bridging | Decision record |
-| #37 rnsd AuthenticationError on startup | Authkey derives from identity; `systemctl restart rnsd` after `/etc/reticulum/config` changes | Wrapper catch + Issue #41 pin |
-| #38 NomadNet single-identity consolidation | One `~/.nomadnetwork/` per box; tmux-wrapped `nomadnet.service` systemd-user unit | `templates/systemd/nomadnet-user.service` |
-| #39 Gateway bridge identifying + directable (2026-04-21) | Mesh→RNS shows long_name in subject; `@id`/`@short_name` parses for directed downlink; `meshforge_*` LXMF fields namespace | Body in archive |
-| #3 Services Not Started/Verified | `check_service()` before connect; advisory (daemons) vs blocking (TUI). Body in archive | — |
-| #6 Large Files — all under 1,500-line threshold | `knowledge_content.py` (1,993) is the only acceptable exception. Body in archive | — |
-| #21 Meshtastic CLI Preset Bug (upstream) | Not a MeshForge bug; verify presets in `:9443` browser after CLI. Body in archive | — |
-| GTK Issues (#2, #11, #13–#15) | GTK4 removed in v0.5.x | — |
-| #35 Gateway LXMF indexing (2026-04-20) | Bridged messages aggregate under gateway's source hash, prefixed `[Mesh:xxxx]`. Body in archive | TUI Delivery Audit menu |
-| #43 MeshCore + AREDN visibility on :5000 (2026-04-22) | Position filter ≠ protocol filter; `_record_diagnostic` taxonomy + operator position promotion. Body in archive | `tests/test_map_data_collector_diagnostics.py` (19 tests) |
-| #44 Map server threading — RNS main-thread invariant (2026-04-22) | Pre-warm RNS on main thread; `get_instance()` not name-mangled attr; `_collect_lock` serializes. Body in archive | `TestCollectIsThreadSafe` + lint MF009 |
-| #45 NomadNet TUI tmux-wrapped service first-class (2026-04-23) | SSOT `_nomadnet_service_state()`; never `pkill` supervised processes; unified logs. Body in archive | 33 assertions in `tests/test_nomadnet_handler.py` |
-| #46 Fleet-wide RNS config alignment + canonical NomadNet installer (2026-04-25) | `rns_alignment.py audit/normalize`; pipx-first idempotent installer; wrapper v8 refuses-loud. Body in archive | `TestPlanNormalize::test_idempotent_on_already_normalized` |
-| #54 Federation peer_name correlation (2026-05-17) | `FederationPeerStatus.peer_name` plumbed end-to-end so `/api/status.federation` rows line up with MA `/fleet/rollup` + tracer leaderboard. Body in archive | `TestPeerNamePlumbing` (6 tests) |
-| #55 `/fleet/slo` latency cliff (2026-05-17) | TTL-cached + parallel `_systemctl_state` probes; cold call 2.4s → 400ms, well under MA's 3s peer-fetch budget. Body in archive | `tests/test_fleet_snapshot.py` (10 tests) |
-| #56 Federation directory timeout (2026-05-17) | `DEFAULT_TIMEOUT` 5s→30s in `map_federation`; 35 MB `/api/nodes/directory` couldn't fit the old budget. Body in archive | `TestDefaultTimeout` (3 tests) |
-| #47 NomadNet two-conversations UX (2026-04-25) | Known Nodes vs Conversations panel distinction; gateway thread vs peer LXMF thread. Operator seeding flow. Body in archive | UX/documentation |
-| #53 meshforge-map stale daemon (2026-05-02) | fleet_sync.sh now restarts `meshforge-map.service` alongside `meshforge` + `meshforge-maps`. Body in archive | `scripts/fleet_sync.sh` (commit `660f26f`) |
-| #40 RNS→Mesh bridge bytes-payload + MQTT topic (2026-04-21) | Decode bytes→str at `_process_rns_to_mesh()` entry; reroute MQTT-bridge enqueue to `destination="meshtastic"` (HTTP `/api/v1/toradio` SSOT). Body in archive | `tests/test_rns_bridge.py` (5 tests) |
-| #41 rpc_key pinning for gateway inbound (2026-04-21) | Propagate rnsd's `rpc_key` into MeshForge's 3 client-only RNS configs (`paths.ReticulumPaths.get_shared_rpc_key()`); RNS 1.1.x literal `rpc_key`. Body in archive | — |
-| #48 Phase-2 migration inherits WAL → cold-start stall (2026-04-27) | `PRAGMA wal_checkpoint(TRUNCATE)` on source DB before cp; new service first-open is fast. Body in archive | `tests/test_migrate_map_service.py` (6 assertions) |
-| #49 Lean node directory (2026-04-28) | Persistent `nodes` table split from time-series; tiered retention (local 30d / external 7d) + 50k LRU cap; sticky source-origin promotion. Body in archive | `tests/test_node_history.py` (17) + diagnostics (3) |
-| #50 Directory tier retention defeated by UPSERT `last_seen=now` (2026-04-30) | Fix: upstream `last_heard` + `MAX(nodes.last_seen, excluded.last_seen)` ON CONFLICT. Body in archive | `TestDirectoryUpstreamTimestamp` in `tests/test_node_history.py` (9 tests) |
-| #51 meshcore parser emitted ISO-8601 not Unix epoch (2026-04-30) | Inline ISO→epoch normalization in `_parse_meshcore_public_node`. Body in archive | 5 new in `TestMeshCorePublicCollector` |
-| #57 Gateway data-path watchdog (2026-05-17) | `bounded_call` wraps 11 RNS RPC sites; wedged peer trips breaker + `os._exit(2)` → systemd restart. Body in archive | `test_wedge_events.py` (17) + `test_bounded_rpc.py` (19) + `test_circuit_breaker.py` (+6) |
-| kernel_reboot_pending probe (2026-06-09) | Newer same-flavor kernel under `/lib/modules` than running `os.uname()`, OR `/var/run/reboot-required`. Flavor-aware (rpi-v8 ≠ rpi-2712), read-only, 2-tick debounce, both seeds. Body in archive; row demoted 2026-07-27 (MF012). | 12 tests |
-| aredn_source_dark probe (2026-06-12) | Intent = map-user `map_settings.json` `aredn_node_ips` vs observation = local `/api/status` `source_diagnostics.aredn`; fires 2-tick on `unreachable`/`not_configured` by a running service with IPs (fix: restart meshforge-map). Body in archive; row demoted 2026-07-27 (MF012). | 10 tests |
-| #81 paging honesty (2026-06-11) | Failed ntfy sends never retried + back-to-back crash boots coalesced by cooldown. Cure: `pending_sends` queue (10-attempt cap, survives restarts) + subject `host@boot_id[:8]`. LIVE-DRILL verified. Body in archive. | 10 send-retry + 5 per-boot tests |
-| #83 TUI updates (2026-07-21) | 6 causes incl. stale OBS repo pinning an uninstallable candidate ('held broken packages') + a pip `--user` script SHADOWING the pipx shim. SSOT `updates/meshtasticd_apt.py`. ⚠️ apt dry-run banner 'NOTE:' ends in 'E:' — match line-anchored. Body in archive. | — |
-| #75 leaked TCPInterface starves :9443 (2026-06-12) | Map held an unaccounted persistent TCP to :4403, draining the PhoneAPI stream (#17 leak form); web client went deaf while RX was healthy. Cure: restart meshforge-map. ⚠️ honest RX record is `grep 'Received text msg'` (json-journal greps miss `via_mqtt`). Body in archive. | `probe_phoneapi_tcp_leak` + `test_phoneapi_leak_*` (10) |
-| #76 /json/* NEVER served by meshtasticd (2026-06-12) | ESP32-only (firmware#9164); old probe fell through to GET `/api/v1/fromradio` on 404 — "available" forever + a PhoneAPI packet eaten per re-check. Fix: tri-state `ok`/`absent`/`down`. Body in archive. | `TestJsonApiAbsentIssue76` (8) + `TestDataPathHttpTriState` (4) |
-| #73 meshforge-map fd-leak (2026-05-31) | mqtt_subscriber `_connect()` leaked a paho Client per reconnect → 1024 fds → `[Errno 24]` wedged `:5000` (NOT the RNS class). **Decision tell**: `[Errno 24]`/climbing fds = fd leak (restart map, find leak); `rnstatus` wedged = RNS class (restart rnsd). Body in archive. | `probe_fd_exhaustion` (degraded ≥80% / wedge ≥95% of soft RLIMIT_NOFILE) |
-| #72 wedged rnsd RPC (2026-05-30) | rnsd ACCEPTS the connection but the RPC round-trip hangs — the gap between the two other RNS probes. Fixed at source in fork `1.2.5+mf.2`. **Quick check**: `timeout 8 rnstatus >/dev/null 2>&1 \|\| echo wedged`; recovery = restart rnsd then RNS-using services. Body in archive. | `rns_rpc_unresponsive` |
-| synth_soak_degraded (2026-06-15) | The hourly LXMF synth soak exercised the gateway round-trip but WATCHED nothing (fire script always exit 0). Legs: SILENCE (newest `synth-*.json` >~2.5 cadences old) + ENVELOPE (`pass_envelope` false). Body in archive. | `probe_synth_soak_degraded` |
-| tests wrote the operator's delivery DB (2026-08-05) | `delivery_counters` is SQLite under `~/.local/share/meshforge/`, and the coupling is INDIRECT — a test builds a queue/bridge and lifecycle events flow through — so per-file fixtures kept missing it. The manager box held **252k queued events from suite runs since May**, indistinguishable from real telemetry and briefly reasoned about AS evidence. **Tell**: 3 bursts in a 500-event ring, two during that session's own pytest runs. Cure: suite-wide autouse fixture in `conftest.py`, 3 env seams. | full-suite mtime guard |
-| #79 mini hardening + DEPLOY-RESTART GAP (2026-07-14) | Nothing restarted USER daemons after `git pull` (only the 3 SYSTEM units). Cure: `sync_user_unit` in fleet_sync + update.sh restarts + enrollment of all mini user units. Also MF021 observation-only lint, rules `.bak`. ⚠️ user-bus restart needs linger. Body in archive. | `TestDeployRestartHook` |
-| #80 mini honest-failure-modes review (2026-07-09) | 18/18 findings, ALL one class: degraded state mapped to a valid-looking value. Cures: HOLD edge state on unobservable, observed-tick grace, atomic writes + torn-tail repair, boot_id latching. **THE LESSON = `.claude/rules/honest_failure_modes.md`.** Body in archive. | `test_mini_dudeai_honest_failure_modes.py` (30) + seed-coverage gate |
-| #12, #22, #23 | RNS configdir= (#12, lint MF009), don't overwrite meshtasticd `config.yaml` (#22, inverse companion of #58), post-install verification via `scripts/verify_post_install.sh` (#23). Bodies in archive. | — |
-| #58 (2026-05-18) | Upstream HAT template `Webserver: Port: 443` smuggled into `config.d/`, silently moved meshtasticd off `:9443`. `_sanitize_hat_overlay` strips forbidden top-level blocks; 7 tests pin the moc3-actual broken template. Body in archive. | `tests/test_hat_overlay_sanitizer.py` |
-| #59 (2026-05-18) | Federation per-peer exponential backoff (`backoff_threshold=3`, cap `10×poll_interval`); `/api/status` exposes backoff fields; tier-2 cap in #65. Body in archive. | `TestBackoff*` in `tests/test_map_federation.py` |
-| #60 (2026-05-18) | Systemd sandbox path drift — `ReadWritePaths=` drifts from where code writes; writes silently fail while the service stays `active`. Cure: runtime preflight (`sandbox_check.py` + `assert_writable_or_exit`) + MF017 lint audit. Body in archive. | `tests/test_sandbox_check.py` (15) + `tests/test_lint_mf017.py` (8) |
-| #61 (2026-05-18) | `meshforge-map` daemon-mode SIGTERM deadlock — `socketserver.BaseServer.shutdown()` invariant broken because `serve_forever()` ran on the main thread (signal target). Fix: signal handler spawns `map-shutdown` daemon thread; main thread observes `__shutdown_request` naturally. Body in archive. | `tests/test_map_daemon_shutdown.py` (6) |
-| #62 (2026-05-18) | `SettingsManager.save()` baked every default as a saved value, blocking code-default bumps (#56 timeout bump didn't take). Fix: `_explicit_keys` tracking + `stale_defaults={"k": [OLD]}` migration registry. Body in archive. | `TestExplicitKeyTrackingIssue62` (5) + `TestStaleDefaultsRegistryIssue62` (6) + `TestStaleFederationTimeoutMigrationIssue62` (3) in `tests/test_common.py` + `tests/test_map_collector_federation.py` |
-| #63 (2026-05-18) | `delivery_counters` silent write-path failures (Issue #58 burned 18h before detection). Cure: startup preflight at `__init__` writes/reads `meta.preflight_*` and surfaces via `snapshot()["health"]`; runtime `consecutive_write_errors` counter; ERROR-throttle on first fail, INFO on recovery. Body in archive. | `tests/test_delivery_counters.py` (11): `TestPreflightHealthy` (3), `TestPreflightFailureSurfaces` (2), `TestRuntimeWriteErrorTracking` (4), `TestLastSuccessfulWriteTsHeartbeat` (2) |
-| #64 + #65 (2026-05-18) | Federation directory gzip (35→4.7 MB wire, `size_alarm`) + two-tier backoff cap (`backoff_multiplier=60` = permanent-outage tell). Bodies in archive | `TestGzipNegotiationIssue64` + `TestBackoffExtendedCapIssue65` |
-| #70 (2026-05-22) | `meshforge-map` `http_local_unresponsive` wedges every few hours: `/api/nodes/directory`'s 35 MB `json.dumps`+`gzip.compress` hold the GIL ~6-10 s, federation polls pile up, `/healthz` stalls past the watchdog's 2 s probe. Fix: short-TTL `DirectoryResponseCache` (5 s) with single-flight rebuild; hits skip dumps+gzip. Stats at `/api/status.directory.cache`. Body in archive. | `tests/test_directory_response_cache.py` (13) + `TestDirectoryHandlerCacheIssue70` (5) + `TestStatusExposesDirectoryCache` (2) |
-| #71 (2026-05-22, GitHub #1168) | Same GIL-bound serialization wedge class, last two instances. `DirectoryResponseCache` → `ResponseByteCache`; `_geojson_response_cache` (TTL 2 s, keyed by `(bbox, region, preset)`) wraps `/api/nodes/geojson` (47 MB, ~35 s cold); `_topology_response_cache` (TTL 5 s) wraps `/api/network/topology` (24 MB). **Decision tell: any future `http_local_unresponsive` is a NEW class.** `7d0b8e5` + `000201f`. Body in archive. | `tests/test_response_byte_cache.py` (32) + `TestGeojsonHandlerCacheIssue71` (5) + `TestTopologyHandlerCacheIssue71` (5) + status-cache (4) |
-| #68 (2026-05-20) | rnsd hard-wedge → map main thread silent-stuck in `unix_stream_connect`; bg threads kept logging, `:5000` never bound. Cure: bounded AF_UNIX probe in `open_reticulum()` chokepoint (MF019) + FIXED AT SOURCE in fork `rns 1.2.5+mf.1` (`LocalClientInterface.connect` settimeout). Detection/recovery recipes + body in archive. | `TestRNSReticulumChokepoint` + fork test `meshforge_local_connect.py` (4) |
-| manager_deadman transient (2026-07-16) | FALSE `MANAGER DARK`, self-cleared in 10 min: a transient manager→peer ssh gap let the beat write exit 0 without landing. Staleness was REAL; the deadman was CORRECT. **Tell**: FAIL + manager box UP + a manual beat lands live = delivery gap, self-heals. Cure = DHCP reservations, not a threshold bump. Body in archive (demoted 07-27). | `cron_verdict.sh` truncation race fixed (MF `2d34877d`, MA `a1f32f93`) |
-| #74 (2026-06-06, stall-probe fix 06-09) | Gateway health core: write-only circuit breaker, NTP-backstep recovery freeze (→`time.monotonic()`), dead write-canary branch, 2 probes (`queue_backlog`, `delivery_confirmation_stall`); 06-09 stall probe stopped comparing disjoint protocol populations. Body in archive. DISPLAY residual FIXED 2026-06-15: `confirmation_rate` was cross-population (`confirmed/sent`, read 1.64=">164%" while mesh had zero proof) → now `confirmed/(confirmed+failures)` over the confirmable pop (bounded, live 0.99) + `unconfirmable_sent` surfaces the mesh blind spot (`compute_confirmation_view`; snapshot+pulse fallback; failure-set pinned to watchdog). Real mesh-completeness still = ACK consumption (T2 step 4). | `TestComputeConfirmationView` + `TestConfirmationRate` (rewritten) + `TestDeliveryFailureReasonsParity` + circuit/probe tests |
+**Look one up**: `grep -n "#43" .claude/foundations/persistent_issues*.md`
+(the glob covers both files, is what tier-L's corpus already indexes, and is
+what every `see persistent_issues.md Issue #N` comment in the tree resolves
+through).
+
+### Quick diagnostic tells — the part worth loading every turn
+
+Symptom you can see at a terminal → which class it is. Full bodies in the archive.
+
+| Symptom | Class / first move |
+|---|---|
+| `[Errno 24]` or climbing fds on `:5000` | fd leak (#73) — restart `meshforge-map`, then find the leak |
+| `rnstatus` hangs but the socket accepts | rnsd RPC wedge (#72) — `timeout 8 rnstatus >/dev/null \|\| echo wedged`; restart rnsd THEN its clients |
+| `@rns/` listener owned by a non-rnsd process | namespace collision (#69) — `sudo ss -xnpl \| grep "@rns/"`; owner must be rnsd |
+| RNS probe `indeterminate`/`clean` while `rnstatus` is healthy | probing a name this box doesn't serve (2026-08-05) — the ss owner must MATCH the watchdog's `instance_name resolved to` line |
+| `:9443` web client deaf while RX is healthy | leaked `TCPInterface` starving PhoneAPI (#17/#75) — restart the map; honest RX record is `grep 'Received text msg'` |
+| meshtasticd `/json/report` or `/json/nodes` 404 | ESP32-only, NEVER served by meshtasticd (#76) — not a fault |
+| a NEW `http_local_unresponsive` | a NEW class — the GIL-serialization family (#70/#71) is closed by response caches |
+| service `active` but its writes vanish | systemd sandbox path drift (#60) — check `ReadWritePaths=` vs where the code writes |
+| meshtasticd moved off `:9443` after a HAT change | upstream overlay smuggled `Webserver: Port:` (#58) |
+| a probe reports `indeterminate` for DAYS | it is a FINDING, not weather — and `inert` (absent by design) is a different claim (2026-08-05) |
+
+⚠️ **Growth rule (this is the structural fix, 2026-08-05).** This file is
+bounded by VALUE-PER-TURN, not chronology. A newly-resolved issue goes
+STRAIGHT to the archive index — it does not land here first and get demoted
+later. Only two things earn a place here: something still LIVE, or a decision
+tell an operator would reach for at a terminal. Nine sections had to be demoted
+in one day to land three entries before this rule existed.
 
 ---
 
@@ -239,16 +217,6 @@ if MESHTASTIC_CONNECTION_LOCK.acquire(timeout=10):
 
 ---
 
-## Issues #60–#63: bodies in archive (trimmed 2026-05-22)
-
-Full investigation narratives + tests + operator detection recipes for
-Issues #60 (sandbox path drift), #61 (map daemon SIGTERM deadlock), #62
-(saved-defaults bump trap), and #63 (delivery_counters write canary)
-live in `persistent_issues_archive.md`. Table rows above carry the
-diagnostic essence; archive carries the reasoning. Trimmed here to
-keep MF012 ≤40k chars headroom open for future entries.
-
----
 
 ## Issue #69: Foreign daemon / boot race claims `@rns/<instance>` — RESOLVED, body in archive (trimmed 2026-06-07)
 

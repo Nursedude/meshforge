@@ -31,7 +31,9 @@
 #
 # See the parallel:
 #   scripts/install_nomadnet.sh                 (model for this script)
-#   .claude/foundations/persistent_issues.md    (Issues #41, #46)
+#   .claude/foundations/persistent_issues*.md   (Issues #41, #46 — the
+#                                                resolved index lives in
+#                                                the archive since 08-05)
 
 set -euo pipefail
 
