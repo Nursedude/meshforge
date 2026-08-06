@@ -68,9 +68,40 @@ def _strip_trailing_comment(line):
     return line
 
 
+def _is_test_path(filepath):
+    """True if ``filepath`` lives under a directory literally named ``tests``.
+
+    Structural, not a substring match. The guards used to each carry
+
+        if 'test_' in basename or '/tests/' in filepath: continue
+
+    and both halves were defective:
+
+    * ``'/tests/' in filepath`` compared a substring of an ABSOLUTE path. With
+      ``SRC_DIR`` un-normalised as ``<repo>/tests/../src`` it matched every
+      file in the tree and silently disabled nine contracts for 5.5 months.
+      The job is real — ``src/moc_analysis_tool/tests/`` exists — but it must
+      be answered from path STRUCTURE relative to SRC_DIR, where no parent
+      directory outside src/ can influence the result.
+    * ``'test_' in basename`` is a substring too, and it exempted PRODUCTION
+      files: ``utils/fleet_test_runner.py`` and, worse, the TUI handler
+      ``launcher_tui/handlers/test_gateway_rx.py`` — a handler excused from
+      every contract, including the handler-scoped ones, purely because of
+      how it is named. Removed outright: a file that ships in src/ obeys the
+      contracts, and a genuine exception belongs in a guard's named
+      ALLOWLIST where it is visible and justified.
+    """
+    rel = os.path.relpath(filepath, SRC_DIR)
+    return 'tests' in os.path.dirname(rel).split(os.sep)
+
+
 def _scan_python_files(pattern, exclude_files=None, exclude_dirs=None,
                        skip_comments=True, skip_strings=True):
     """Scan all Python files in src/ for a regex pattern.
+
+    Test-support trees under src/ are excluded HERE, once, so no caller has
+    to re-implement that filter — nine hand-rolled copies is how the
+    2026-08-05 inertness went unnoticed.
 
     Returns list of (filepath, lineno, line_text) tuples.
     """
@@ -89,6 +120,8 @@ def _scan_python_files(pattern, exclude_files=None, exclude_dirs=None,
                 continue
 
             filepath = os.path.join(root, filename)
+            if _is_test_path(filepath):
+                continue
             try:
                 with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                     for lineno, line in enumerate(f, 1):
@@ -147,10 +180,6 @@ class TestTCPConnectionContract:
 
         violating_files = set()
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            # Skip test files
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             violating_files.add(f"{filepath}:{lineno}: {line.strip()}")
 
         assert len(violating_files) == 0, (
@@ -195,9 +224,6 @@ class TestRNSReticulumChokepoint:
 
         violating = set()
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             violating.add(f"{filepath}:{lineno}: {line.strip()}")
 
         assert len(violating) == 0, (
@@ -296,8 +322,6 @@ class TestServiceCheckContract:
         violations = []
         for filepath, lineno, line in matches:
             basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             if basename in self.SINGLE_LINE_ALLOW:
                 continue
             violations.append(f"{filepath}:{lineno}")
@@ -436,9 +460,6 @@ class TestPathHomeContract:
 
         violations = []
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             # Allow in fallback functions that define get_real_user_home
             stripped = line.strip()
             if 'return Path.home()' in stripped or 'else Path.home()' in stripped:
@@ -463,9 +484,6 @@ class TestNoShellTrue:
 
         violations = []
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             violations.append(f"{filepath}:{lineno}: {line.strip()}")
 
         assert len(violations) == 0, (
@@ -496,9 +514,6 @@ class TestPipInvocationContract:
         )
         violations = []
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             violations.append(f"{os.path.relpath(filepath, REPO_ROOT)}:{lineno}: {line.strip()}")
         assert not violations, (
             f"Found {len(violations)} raw pip-install construction(s) outside "
@@ -539,9 +554,6 @@ class TestBackupNeverOverwrites:
         )
         violations = []
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             try:
                 with open(filepath, 'r', encoding='utf-8') as f:
                     source = f.read()
@@ -806,9 +818,6 @@ class TestSqliteConnectContract:
 
         violations = []
         for filepath, lineno, line in matches:
-            basename = os.path.basename(filepath)
-            if 'test_' in basename or '/tests/' in filepath:
-                continue
             violations.append(f"{filepath}:{lineno}: {line.strip()}")
 
         assert len(violations) == 0, (
@@ -1521,23 +1530,41 @@ class TestGuardsAreNotInert:
             f"not seeing the tree, so every scan-based guard is inert"
         )
 
-    def test_no_guard_skips_every_path_it_scans(self):
-        """The `/tests/` skip must not be able to swallow the whole tree.
+    def test_test_path_exclusion_is_structural_not_substring(self):
+        """Exclusion must come from path STRUCTURE, never a substring.
 
-        Pins the invariant rather than the spelling: whatever SRC_DIR is,
-        paths produced from it must not all match the skip condition the
-        guards use.
+        Both halves of the old per-guard filter were substring tests and both
+        were wrong: `'/tests/' in filepath` matched the whole tree through an
+        un-normalised SRC_DIR, and `'test_' in basename` exempted PRODUCTION
+        files. `_is_test_path` answers from directory components relative to
+        SRC_DIR, so nothing above src/ can influence it.
         """
-        matches = _scan_python_files(r'^import ')
-        assert matches, "scanner returned nothing at all"
-        survivors = [
-            fp for fp, _, _ in matches
-            if 'test_' not in os.path.basename(fp) and '/tests/' not in fp
-        ]
-        assert survivors, (
-            "every scanned path was discarded by the guards' own skip "
-            "condition — the contracts in this file enforce nothing"
-        )
+        base = os.path.join(SRC_DIR, 'utils')
+        # A real tests/ package under src/ is excluded...
+        assert _is_test_path(os.path.join(SRC_DIR, 'moc_analysis_tool',
+                                          'tests', 'test_thing.py'))
+        # ...but a production file merely NAMED like a test is not.
+        assert not _is_test_path(os.path.join(base, 'fleet_test_runner.py'))
+        assert not _is_test_path(
+            os.path.join(SRC_DIR, 'launcher_tui', 'handlers',
+                         'test_gateway_rx.py'))
+        assert not _is_test_path(os.path.join(base, 'service_check.py'))
+        # And the repo's own tests/ dir, one level ABOVE src/, must not make
+        # every path look like a test path — the 5.5-month failure exactly.
+        assert not _is_test_path(os.path.join(SRC_DIR, 'utils', 'paths.py'))
+
+    def test_production_files_named_like_tests_are_scanned(self):
+        """The two files the old substring filter silently excused."""
+        scanned = {fp for fp, _, _ in _scan_python_files(r'^import |^from ')}
+        for rel in ('utils/fleet_test_runner.py',
+                    'launcher_tui/handlers/test_gateway_rx.py'):
+            expected = os.path.join(SRC_DIR, *rel.split('/'))
+            if os.path.exists(expected):
+                assert expected in scanned, (
+                    f"{rel} ships in src/ but the scanner skips it — it is "
+                    f"exempt from every contract in this file because of how "
+                    f"it is NAMED"
+                )
 
     def test_a_planted_violation_is_actually_caught(self):
         """End-to-end: the drill, as a test.
