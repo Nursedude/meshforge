@@ -21,7 +21,13 @@ Design: `.claude/plans/upshift_witness_design.md`. Three legs:
       You may always QUEUE; you may not CLAIM the rationed frontier pass on a
       smaller model. Unknown/absent ledger model → warn, never block.
 
-  Leg 3 (advisory nudge): src lines changed since the last CLOSING provenance
+  Structure leg (HARD on new damage, warn on old): a table row some parser
+      would silently misread — a merged line (two rows on one line: hid a
+      whole completed pass for 12 days, found 2026-08-06) or a literal ``|``
+      in prose (truncates every later cell). New malformed rows block (the
+      reword is a one-minute fix); pre-existing ones warn.
+
+  Leg 3 (advisory nudge): src+scripts lines changed since the last CLOSING provenance
       boundary, on a non-frontier session, exceeding a threshold → one advisory
       block. Never affects the exit code. The boundary is the newest commit
       whose diff ADDS a completed-table row (first cell a date) — a commit that
@@ -234,6 +240,29 @@ def parse_completed_rows(text):
     return rows
 
 
+def malformed_table_rows(text):
+    """Table lines some consumer will silently misread. Added 2026-08-06 after
+    an audit found the live ledger had carried a MERGED row for 12 days (the
+    2026-07-25 Pri-2 commit overwrote the taxonomy row's leading cells — 36
+    recorded passes, 35 parseable rows) and literal ``|| true`` prose had
+    truncated the 07-29 row's fix/residual cells. Flags a DATE-first row whose
+    cell count is not exactly 5, and any other ``|`` line whose cell count is
+    neither 3 (worklist) nor 5 (completed header/row). Returns
+    ``[(line_no, cell_count, raw_line)]``."""
+    bad = []
+    for i, line in enumerate((text or "").splitlines(), 1):
+        s = line.strip()
+        if not s.startswith("|"):
+            continue
+        cells = [c.strip() for c in s.strip("|").split("|")]
+        if re.match(r"\d{4}-\d{2}-\d{2}", cells[0]):
+            if len(cells) != 5:
+                bad.append((i, len(cells), s))
+        elif len(cells) not in (3, 5):
+            bad.append((i, len(cells), s))
+    return bad
+
+
 def row_claims_frontier_tier(mechanism):
     """True if a Mechanism cell asserts the rationed frontier pass ran."""
     if not mechanism:
@@ -394,7 +423,13 @@ def _last_closing_provenance_commit(repo):
 
 
 def _src_lines_changed(repo, since_sha):
-    out = _git(repo, ["diff", "--numstat", f"{since_sha}..HEAD", "--", "src/"])
+    """Changed lines since the boundary across the reviewable surfaces:
+    src/ plus the enforcement layer itself (scripts/, .githooks/) — the two
+    most recent Pri-1 arcs (pytest-rc trust, guard-spine) lived almost
+    entirely in scripts/ and the hooks, and a src/-only counter was blind to
+    exactly the layer whose 5.5-month inertness the 08-05 arc exposed."""
+    out = _git(repo, ["diff", "--numstat", f"{since_sha}..HEAD", "--",
+                      "src/", "scripts/", ".githooks/"])
     if out is None:
         return None
     total = 0
@@ -489,6 +524,27 @@ def _fmt_leg2_block(rows, model_id):
     return "\n".join(lines)
 
 
+def _fmt_structure_block(rows):
+    lines = [
+        "UPSHIFT-WITNESS (structure): new table row(s) in",
+        f"{PROVENANCE_REL} are malformed — a parser-invisible row is a silent",
+        "hole in review coverage (a merged line hid a whole completed pass for",
+        "12 days; a literal | in prose truncates every later cell):",
+        "",
+    ]
+    for line_no, n, raw in rows:
+        lines.append(f"  line {line_no}: {n} cells (a completed row has "
+                     "exactly 5, a worklist row 3)")
+        lines.append(f"    {raw[:90]}")
+    lines += [
+        "",
+        "One row per line; reword any literal | in prose (e.g. \"an or-true",
+        "guard\" instead of quoted shell). Then re-push.",
+        "(Override, sparingly: git push --no-verify)",
+    ]
+    return "\n".join(lines)
+
+
 def run(repo, rev_range, base_ref, ledger_path, witness_path):
     """Execute all three legs. Returns (exit_code, out_lines, warn_lines)."""
     out = []
@@ -527,6 +583,29 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path):
                         "but the ledger carries no model_id — warning, not "
                         "blocking (unobservable ≠ violation)")
 
+    # --- Structure leg (hard on NEW damage, warn on pre-existing) ----------
+    # A malformed row is invisible to every parser of this file — a merged
+    # line hides a whole pass (the 2026-07-25 line-merge, found 12 days
+    # later), a stray literal | truncates every later cell. New damage
+    # blocks (the fix is a one-minute reword); damage already in the base
+    # only warns, so unrelated pushes aren't held hostage to old debt.
+    structure_new = []
+    malformed = malformed_table_rows(prov_head)
+    if malformed:
+        if base_prov is None:
+            warn.append(
+                f"structure: {len(malformed)} malformed table row(s) in "
+                f"{PROVENANCE_REL} — base unreadable, cannot tell which are "
+                "new; not blocking")
+        else:
+            base_lines = {line.strip() for line in base_prov.splitlines()}
+            structure_new = [m for m in malformed if m[2] not in base_lines]
+            preexisting = len(malformed) - len(structure_new)
+            if preexisting:
+                warn.append(
+                    f"structure: {preexisting} pre-existing malformed table "
+                    f"row(s) in {PROVENANCE_REL} — repair when convenient")
+
     # --- Leg 3 (advisory) --------------------------------------------------
     leg3_msg = None
     if session_is_frontier is False:  # only nudge a KNOWN non-frontier session
@@ -535,14 +614,17 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path):
             changed = _src_lines_changed(repo, boundary)
             if changed is not None and changed > UNREVIEWED_SRC_LINES_NUDGE:
                 leg3_msg = (
-                    f"UPSHIFT-WITNESS (leg 3, advisory): {changed} src lines "
-                    f"changed since the last CLOSING review boundary "
+                    f"UPSHIFT-WITNESS (leg 3, advisory): {changed} src+scripts "
+                    f"lines changed since the last CLOSING review boundary "
                     f"({boundary[:9]}) > {UNREVIEWED_SRC_LINES_NUDGE}. "
                     "Consider queueing an upshift row (review_provenance "
                     "worklist) for the next frontier pass. This never blocks.")
+        else:
+            warn.append("leg3: could not resolve the closing review boundary "
+                        "(git log unreadable/timed out) — advisory skipped")
 
     # --- Verdict + witnesses ----------------------------------------------
-    blocked = bool(leg1_violations or leg2_violations)
+    blocked = bool(leg1_violations or leg2_violations or structure_new)
     if leg1_violations:
         out.append(_fmt_leg1_block(leg1_violations))
         append_witness(
@@ -553,6 +635,11 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path):
         append_witness(
             f"leg2 BLOCK: {len(leg2_violations)} frontier-claim row(s) under "
             f"model={model_id}", witness_path)
+    if structure_new:
+        out.append(_fmt_structure_block(structure_new))
+        append_witness(
+            f"structure BLOCK: {len(structure_new)} new malformed table "
+            "row(s)", witness_path)
     if leg3_msg:
         out.append(leg3_msg)
         append_witness(f"leg3 advisory under model={model_id}", witness_path)
@@ -597,6 +684,10 @@ def main(argv=None):
         code, out, warn = run(repo, rev_range, args.base_ref,
                               ledger_path, args.witness)
     except Exception as e:  # noqa: BLE001 — a gate bug must not wedge a push
+        # Pass open, but never silently: a fail-dark gate is indistinguishable
+        # from a healthy one (#9) — the witness log is what makes "did the
+        # guard even run?" answerable after the fact.
+        append_witness(f"internal error — PASSED OPEN: {e!r}", args.witness)
         print(f"review_provenance_check: WARN — internal error ({e!r}); "
               "passing open", file=sys.stderr)
         return 0

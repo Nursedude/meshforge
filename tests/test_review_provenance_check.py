@@ -611,5 +611,153 @@ class TestCliSubprocess(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
 
+class TestTableStructurePure(unittest.TestCase):
+    """malformed_table_rows — added 2026-08-06 after an audit found the live
+    ledger had carried a MERGED row for 12 days (the 2026-07-25 Pri-2 commit
+    overwrote the taxonomy row's leading cells: 36 recorded passes, 35
+    parseable rows) and literal ``|| true`` prose had truncated the 07-29
+    row's fix/residual cells. A parser-invisible row is a silent hole in
+    review coverage — exactly the absence this ledger exists to make legible."""
+
+    def test_wellformed_rows_pass(self):
+        text = (
+            "| Date | Scope | Mechanism | Fix commits | Residuals |\n"
+            "|------|-------|-----------|-------------|-----------|\n"
+            "| 2026-08-06 | scope | mech | `abc1234` | none |\n"
+            "| Pri | Scope | Why |\n"
+            "| Pri-1 | queued arc | frontier-shaped |\n"
+            "prose outside tables is ignored\n"
+        )
+        self.assertEqual(rpc.malformed_table_rows(text), [])
+
+    def test_merged_row_detected(self):
+        merged = ("| 2026-08-06 | scope | mech | fix | residual "
+                  "| second-row scope | second mech | second fix | second residual |")
+        bad = rpc.malformed_table_rows(merged)
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0][1], 9)
+
+    def test_stray_pipe_in_prose_detected(self):
+        row = "| 2026-08-06 | scope | mech | fix | fell through via `|| true` guard |"
+        bad = rpc.malformed_table_rows(row)
+        self.assertEqual(len(bad), 1, "a literal | in prose truncates cells")
+
+    def test_short_date_row_detected(self):
+        bad = rpc.malformed_table_rows("| 2026-08-06 | scope | mech | fix |")
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0][1], 4)
+
+    def test_queued_row_wrong_cells_detected(self):
+        bad = rpc.malformed_table_rows("| **BIG ARC — scope text** | why |")
+        self.assertEqual(len(bad), 1)
+        self.assertEqual(bad[0][1], 2)
+
+
+class TestTableStructureIntegration(unittest.TestCase):
+    MERGED = ("| 2026-08-06 | scope | mech | fix | residual "
+              "| ghost scope | ghost mech | ghost fix | ghost residual |\n")
+
+    def _ledger(self, repo):
+        path = os.path.join(repo, "ledger.jsonl")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write('{"kind":"claim","ts":100,"model_id":"claude-fable-5"}\n')
+        return path
+
+    def test_new_malformed_row_blocks(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+            base = _commit(repo, "chore: base")
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + self.MERGED + WORKLIST)
+            _commit(repo, "docs: record pass (merged row)")
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base,
+                                   ledger_path=self._ledger(repo),
+                                   witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 1, f"new malformed row must block; out={out}")
+            self.assertIn("structure", "\n".join(out))
+
+    def test_preexisting_malformed_row_warns_not_blocks(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + self.MERGED + WORKLIST)
+            base = _commit(repo, "chore: base already carries the damage")
+            _write(repo, "src/x.py", "x = 1\n")
+            _commit(repo, "fix: unrelated change")
+            code, out, warn = rpc.run(repo, f"{base}..HEAD", base,
+                                      ledger_path=self._ledger(repo),
+                                      witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0, f"pre-existing damage must not block; out={out}")
+            self.assertTrue(any("structure" in w for w in warn), warn)
+
+
+class TestLiveLedgerStructure(unittest.TestCase):
+    """Pins the REAL ledger file — the repaired state, so the two damage
+    classes found 2026-08-06 (merged row, stray pipe) cannot silently recur."""
+
+    LIVE = os.path.join(os.path.dirname(__file__), "..", rpc.PROVENANCE_REL)
+
+    def _text(self):
+        with open(self.LIVE, encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_no_malformed_rows(self):
+        self.assertEqual(rpc.malformed_table_rows(self._text()), [])
+
+    def test_taxonomy_row_is_its_own_row(self):
+        rows = rpc.parse_completed_rows(self._text())
+        tax = [r for r in rows if "SECOND-BRAIN TAXONOMY design pass" in r[2]]
+        self.assertEqual(len(tax), 1,
+                         "the row un-merged 2026-08-06 must stay parseable")
+        self.assertEqual(tax[0][0], "2026-07-26")
+
+
+class TestLeg3CountsScripts(unittest.TestCase):
+    """The two most recent Pri-1 arcs (pytest-rc trust, guard-spine) lived in
+    scripts/ and the hooks — a src/-only debt counter was blind to exactly the
+    enforcement layer whose 5.5-month inertness the 08-05 arc exposed."""
+
+    def test_scripts_only_diff_still_nudges(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+            _commit(repo, "chore: base + provenance boundary")
+            n = rpc.UNREVIEWED_SRC_LINES_NUDGE + 100
+            _write(repo, "scripts/big.sh",
+                   "\n".join(f"echo {i}" for i in range(n)) + "\n")
+            _commit(repo, "feat: large scripts change (no review claim)")
+            ledger = os.path.join(repo, "ledger.jsonl")
+            with open(ledger, "w") as fh:
+                fh.write('{"kind":"claim","ts":100,"model_id":"claude-opus-4-8[1m]"}\n')
+            base = subprocess.run(["git", "rev-list", "--max-parents=0", "HEAD"],
+                                  cwd=repo, capture_output=True, text=True,
+                                  timeout=30).stdout.strip()
+            code, out, _ = rpc.run(repo, f"{base}..HEAD", base, ledger_path=ledger,
+                                   witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0, "leg3 never blocks")
+            self.assertIn("leg 3", "\n".join(out))
+
+
+class TestInternalErrorWitness(unittest.TestCase):
+    """A gate bug passes open by design (must not wedge a push) — but a silent
+    pass-open is a fail-dark (#9): it must leave a witness-log line."""
+
+    def test_pass_open_leaves_witness(self):
+        with tempfile.TemporaryDirectory() as d:
+            wit = os.path.join(d, "wit.log")
+            orig = rpc.run
+
+            def boom(*_a, **_k):
+                raise RuntimeError("drill")
+
+            rpc.run = boom
+            try:
+                code = rpc.main(["--witness", wit])
+            finally:
+                rpc.run = orig
+            self.assertEqual(code, 0, "internal error must pass open")
+            with open(wit, encoding="utf-8") as fh:
+                self.assertIn("PASSED OPEN", fh.read())
+
+
 if __name__ == "__main__":
     unittest.main()
