@@ -171,6 +171,15 @@ def _isolate_delivery_counters_db(tmp_path_factory):
     ``test_message_queue.py`` did not, and its module docstring said
     "isolated tests" because its OWN queue DB was.
 
+    ⚠️ FOUR seams, not three. The first version pinned the three
+    delivery_counters paths and I verified it by watching exactly those
+    two files' mtimes — so ``queue_stats.json``, written by
+    ``message_queue`` through its OWN seam, kept being overwritten and my
+    "operator DB untouched: YES" check could not see it. Verify a guard
+    against EVERY artifact the guarded code writes, not the ones you
+    happened to think of; the check that only looks where you already
+    looked cannot find what you missed.
+
     Measured 2026-08-05: the manager box — which runs no gateway — held
     252k queued delivery events accumulated since May, purely from suite
     runs. A full run added ~240; test_message_queue alone ~111. That
@@ -199,7 +208,8 @@ def _isolate_delivery_counters_db(tmp_path_factory):
     prior = {}
     for var, name in (("MESHFORGE_DELIVERY_COUNTERS_DB", "delivery_counters.db"),
                       ("MESHFORGE_DELIVERY_SNAPSHOT_STATE", "delivery_snapshot.json"),
-                      ("MESHFORGE_CONTENT_ID_VIEW_STATE", "content_id_view.json")):
+                      ("MESHFORGE_CONTENT_ID_VIEW_STATE", "content_id_view.json"),
+                      ("MESHFORGE_QUEUE_STATS_STATE", "queue_stats.json")):
         prior[var] = os.environ.get(var)
         os.environ[var] = str(root / name)
     for alias in ("gateway.delivery_counters", "src.gateway.delivery_counters"):
