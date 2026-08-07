@@ -244,6 +244,13 @@ def create_backup(
         backup_file = reserve_backup_path(
             get_backup_dir(), f"{backup_id}.json", on_exists="unique")
 
+        # Identity follows the FILE: if the reservation stepped aside, the
+        # on-disk metadata must carry the disambiguated stem too — otherwise
+        # list/restore/delete key two files under one id and resolve the
+        # WRONG one (a delete then destroys the unselected backup; 2026-08-06
+        # ultra finding on this arc).
+        metadata.backup_id = backup_file.stem
+
         with open(backup_file, 'w') as f:
             json.dump(backup.to_dict(), f, indent=2)
 
