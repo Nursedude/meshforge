@@ -136,20 +136,25 @@ def _newest_synth_file(state_dir: str,
         ]
     except OSError:
         return None
+    # Tie-break equal mtimes by NAME (stamp-named files sort chronologically),
+    # never by listdir order: strict `>` used to let the filesystem's
+    # directory-hash order pick the winner among same-mtime files, which is
+    # per-box/per-VM state — CI 3.11 flaked on exactly that 2026-08-07 while
+    # 3.9 and local passed the identical tree.
     newest_path: Optional[str] = None
-    newest_mtime = -1.0
+    newest_key: Tuple[float, str] = (-1.0, "")
     for name in entries:
         p = os.path.join(state_dir, name)
         try:
             m = os.path.getmtime(p)
         except OSError:
             continue
-        if m > newest_mtime:
-            newest_mtime = m
+        if (m, name) > newest_key:
+            newest_key = (m, name)
             newest_path = p
     if newest_path is None:
         return None
-    return newest_path, newest_mtime
+    return newest_path, newest_key[0]
 
 
 def _worst_synth_pair(pair_results) -> Optional[str]:

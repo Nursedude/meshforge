@@ -8137,7 +8137,11 @@ def test_propagation_soak_sustained_indeterminate_escalates(tmp_path):
         p = _write_prop_envelope(sdir, passed=None, age_s=60.0, now=now)
         newp = _os.path.join(sdir, f"prop-2026072{i}T000000Z.json")
         _os.rename(p, newp)                  # each fire = a NEW envelope file
-        _os.utime(newp, (now - 60, now - 60))
+        # Distinct, increasing mtimes: real fires are ~1h apart. Identical
+        # mtimes left "newest" to the fs directory-hash order and flaked CI
+        # 3.11 (2026-08-07) — the helper now tie-breaks by name too, but the
+        # fixture should model reality, not lean on the tie-break.
+        _os.utime(newp, (now - 60 + i, now - 60 + i))
         for _ in range(2):                   # multiple ticks per envelope
             sig = _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
                               indet_state_path=ip, indeterminate_after=3)
@@ -8150,6 +8154,31 @@ def test_propagation_soak_sustained_indeterminate_escalates(tmp_path):
                        debounce_path=str(tmp_path / "d2.json"),
                        indet_state_path=ip, indeterminate_after=3) is None
     assert not _os.path.exists(ip)
+
+
+def test_newest_synth_file_ties_break_by_name_not_listdir_order(tmp_path):
+    """Equal mtimes must resolve by NAME (stamp names sort chronologically),
+    never by the filesystem's directory-hash order — that order is per-box
+    ambient state, and it flaked CI 3.11 on 2026-08-07 while 3.9 and local
+    passed the identical tree."""
+    import os as _os
+
+    from utils.watchdog_probes_gateway_flow import _newest_synth_file
+
+    d = str(tmp_path)
+    # Create in REVERSE lexical order so creation order disagrees with name
+    # order; then force identical mtimes so only the tie-break decides.
+    for name in ("prop-20260722T000000Z.json", "prop-20260720T000000Z.json",
+                 "prop-20260721T000000Z.json"):
+        p = _os.path.join(d, name)
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        _os.utime(p, (100000, 100000))
+    got = _newest_synth_file(d, prefix="prop-")
+    assert got is not None
+    assert _os.path.basename(got[0]) == "prop-20260722T000000Z.json", (
+        "the lexically-latest stamp must win an mtime tie deterministically")
+    assert got[1] == 100000
 
 
 def test_propagation_soak_holds_when_no_envelope_yet(tmp_path):
