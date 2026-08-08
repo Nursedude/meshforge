@@ -423,6 +423,37 @@ _GRADERS = {"triage": grade_triage, "compile": grade_compile,
             "oracle": grade_oracle}
 
 
+#: Markers that identify a failure as the BACKEND being unreachable rather
+#: than the model answering wrongly. Kept as ONE constant, here beside the
+#: graders that surface them, and pinned by a test against the real strings
+#: (honest_failure_modes #5 — two independent copies WILL drift).
+#:
+#: ⚠️ "synthesis failed" is deliberately NOT a marker. offline_oracle wraps
+#: BOTH a transport ``CompilerError`` AND a genuine bad-shape ``ValueError``
+#: from the model in that same sentence, so matching on it would launder a
+#: real model failure into "unobserved" — the opposite error, and the more
+#: dangerous one (a capability loss silently excused).
+TRANSPORT_FAILURE_MARKERS = (
+    # chat_compiler: URLError / OSError / TimeoutError reaching Ollama.
+    "is the server up and the model",
+    # chat_compiler: the backend answered, with nothing in it.
+    "returned no message content",
+)
+
+
+def _is_transport_failure(reasons) -> bool:
+    """True when EVERY reason is a backend-unreachable marker.
+
+    Deliberately ALL, not ANY: a case that both timed out on one attempt and
+    produced a wrong answer on another has demonstrated a real miss, and
+    excusing it would hide a regression behind a flaky link.
+    """
+    texts = [str(r) for r in (reasons or [])]
+    if not texts:
+        return False
+    return all(any(m in t for m in TRANSPORT_FAILURE_MARKERS) for t in texts)
+
+
 def _rotate_cases(cases: List[dict], last_id: Optional[str]) -> List[dict]:
     """Rotate the (deterministically ordered) case list to start AFTER the
     last completed case, wrapping — so budget-chunked runs walk the whole
@@ -528,6 +559,15 @@ def run_cases(cases: List[dict], backend, progress=None,
             "kind": case["kind"],
             "ok": ok,
             "reasons": reasons,
+            # Did this case fail because the BACKEND could not be reached,
+            # rather than because the model answered wrongly? Recorded
+            # structurally so no consumer has to substring-match a human
+            # sentence (2026-08-07): probe_local_brain_regressed counted a
+            # timed-out Ollama as "the tier-L model lost a capability" and
+            # asserted that for three days off one saturated run. A case the
+            # channel never reached was not OBSERVED — it is neither a pass
+            # nor a regression (honest_failure_modes #2).
+            "transport_error": (not ok) and _is_transport_failure(reasons),
             "latency_s": round(time.monotonic() - t0, 1),
             "attempts": attempts,
             "attempts_used": used,

@@ -35,6 +35,33 @@ _MINI_HISTORY_NAME = "mini_dudeai_history.jsonl"
 _MINI_RULES_NAME = "mini_dudeai_rules.json"
 
 
+def _result_is_transport_failure(r: dict) -> bool:
+    """Did this eval result fail because the BACKEND was unreachable?
+
+    Prefers the structured ``transport_error`` flag the eval records since
+    2026-08-07. Falls back to matching the producer's own marker constant for
+    ledger rows written BEFORE that flag existed — including the 08-04 run
+    that motivated this, which is the row currently driving the signal.
+
+    The markers are IMPORTED from ``mini_dudeai.local_brain_eval``, never
+    re-typed here: two independent copies of a match list drift, and this
+    file's whole subject is what happens when a consumer's idea of a
+    producer's output goes stale (honest_failure_modes #5). If that import
+    fails we return False — the conservative direction, since it can only
+    make the probe fire as it did before, never silence a real regression.
+    """
+    if not isinstance(r, dict) or r.get("ok"):
+        return False
+    flag = r.get("transport_error")
+    if isinstance(flag, bool):
+        return flag
+    try:
+        from mini_dudeai.local_brain_eval import _is_transport_failure
+    except Exception:
+        return False
+    return _is_transport_failure(r.get("reasons"))
+
+
 def _seed_rules_path(meshforge_root: str, seed_name: str) -> str:
     """Path to a role seed's rules file (``configs/mini_dudeai_rules.<seed>.json``).
 
@@ -1090,6 +1117,24 @@ def probe_local_brain_regressed(
                 cid = r.get("id")
                 if not cid:
                     continue
+                # A case whose BACKEND was unreachable was not OBSERVED this
+                # run: it is neither a pass nor a regression, so it must not
+                # enter the history at all (honest_failure_modes #2).
+                #
+                # ⚠️ 2026-08-07, why this exists: the 08-04 run saturated
+                # Ollama — three oracle cases died on literal
+                # "TimeoutError: timed out", one triage case ran 861s, and
+                # the budget expired with four cases never started. All four
+                # had long clean histories and "broke" in that single run.
+                # This probe read only ok=false, never `reasons`, and so
+                # asserted "the tier-L model lost a capability" for three
+                # days. Four simultaneous losses after clean histories is a
+                # saturated backend, not four capability regressions; the
+                # 08-04 triage reached the same conclusion BY HAND and wrote
+                # the cure down as an instruction to a human, which is why
+                # it kept re-firing.
+                if _result_is_transport_failure(r):
+                    continue
                 history.setdefault(cid, []).append(
                     (rts, bool(r.get("ok")), r.get("kind")))
 
@@ -1104,6 +1149,31 @@ def probe_local_brain_regressed(
                 regressed.append((cid, kind, prior_passes))
 
         if not regressed:
+            # Distinguish "evaluated, nothing regressed" from "the newest run
+            # could barely reach the backend". Reporting the second as clean
+            # would be the mirror of the bug fixed above — a run that proved
+            # almost nothing rendered as a positive all-clear.
+            newest = None
+            for rec in records:
+                if not isinstance(rec, dict) or _model_of(rec) != current_model:
+                    continue
+                rts = rec.get("ts")
+                rts = rts if isinstance(rts, (int, float)) else 0.0
+                if newest is None or rts >= newest[0]:
+                    newest = (rts, rec)
+            if newest is not None:
+                rec = newest[1]
+                rows = [r for r in (rec.get("results") or [])
+                        if isinstance(r, dict)]
+                unreached = sum(1 for r in rows
+                                if _result_is_transport_failure(r))
+                if rows and unreached * 2 >= len(rows):
+                    note_disposition(
+                        cls, "indeterminate",
+                        reason=(f"newest run could not reach the backend for "
+                                f"{unreached}/{len(rows)} case(s) — local "
+                                f"brain not meaningfully evaluated"))
+                    return None
             note_disposition(cls, "clean",
                              reason=f"model={current_model or 'unspecified'}")
             return None

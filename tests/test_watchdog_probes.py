@@ -9432,3 +9432,138 @@ class TestExpectedActiveFollowsDeclaredRole20260803:
         assert "meshforge-gateway.service" in msg, (
             "override silently dropped a role-declared-active unit: %r" % msg
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-08-07 — a timed-out BACKEND is not a lost capability
+# ─────────────────────────────────────────────────────────────────────
+
+#: The exact reason strings the 2026-08-04 run wrote, copied from the live
+#: ledger. Pinning the REAL producer output, not a paraphrase of it — the
+#: whole defect was a consumer whose idea of the producer had gone stale.
+_REAL_TIMEOUT_REASON = (
+    "no grounded answer: synthesis failed (Ollama at http://localhost:11434 "
+    "failed: TimeoutError: timed out — is the server up and the model "
+    "(qwen3:4b-instruct-2507-q4_K_M) pulled?) — r")
+_REAL_CONTENT_REASON = "2 entries dropped in validation (> 0)"
+
+
+def _eval_rec_r(ts, results):
+    """Ledger record carrying full result dicts (id, kind, ok, reasons)."""
+    return {"ts": ts, "results": [
+        {"id": i, "kind": k, "ok": o, "reasons": rs}
+        for i, k, o, rs in results]}
+
+
+class TestLocalBrainTransportFailures:
+    """A case the backend never answered was not OBSERVED — neither a pass
+    nor a regression.
+
+    2026-08-04 saturated Ollama: three oracle cases died on literal
+    "TimeoutError: timed out", one triage case ran 861s, and the budget
+    expired with four cases never started. All four had long clean histories
+    and "broke" in that one run. The probe read only ok=false and asserted
+    "the tier-L model lost a capability" for three days. The same triage was
+    done BY HAND on 08-04 and written down as an instruction to a human,
+    which is exactly why it kept re-firing.
+    """
+
+    def test_marker_matches_the_real_producer_string(self):
+        from mini_dudeai.local_brain_eval import _is_transport_failure
+        assert _is_transport_failure([_REAL_TIMEOUT_REASON]) is True
+
+    def test_content_failure_is_not_transport(self):
+        from mini_dudeai.local_brain_eval import _is_transport_failure
+        assert _is_transport_failure([_REAL_CONTENT_REASON]) is False
+
+    def test_synthesis_failed_alone_is_not_transport(self):
+        """⚠️ The dangerous direction. offline_oracle wraps BOTH a transport
+        CompilerError AND a genuine bad-shape ValueError from the model in
+        "synthesis failed", so matching that phrase would launder a real
+        capability loss into "unobserved" — silently excusing the very thing
+        this probe exists to catch."""
+        from mini_dudeai.local_brain_eval import _is_transport_failure
+        assert _is_transport_failure([
+            "no grounded answer: synthesis failed (oracle reply missing "
+            "required shape: {...}) — retrieval results above are still good"
+        ]) is False
+
+    def test_mixed_reasons_are_not_excused(self):
+        """ALL, not ANY: a case that both timed out and answered wrongly has
+        demonstrated a real miss."""
+        from mini_dudeai.local_brain_eval import _is_transport_failure
+        assert _is_transport_failure(
+            [_REAL_TIMEOUT_REASON, _REAL_CONTENT_REASON]) is False
+
+    def test_empty_reasons_are_not_transport(self):
+        from mini_dudeai.local_brain_eval import _is_transport_failure
+        assert _is_transport_failure([]) is False
+        assert _is_transport_failure(None) is False
+
+    def test_timed_out_case_does_not_count_as_a_regression(self):
+        _reset_disp()
+        recs = [_eval_rec_r(1, [("o1", "oracle", True, [])]),
+                _eval_rec_r(2, [("o1", "oracle", True, [])]),
+                _eval_rec_r(3, [("o1", "oracle", False,
+                                 [_REAL_TIMEOUT_REASON])])]
+        sig = probe_local_brain_regressed(records=recs)
+        assert sig is None, (
+            "a case whose backend was unreachable was not observed — "
+            "reporting it as a lost capability is the 08-04 false alarm")
+
+    def test_genuine_content_failure_still_fires(self):
+        """The guard must not become a blanket excuse."""
+        _reset_disp()
+        recs = [_eval_rec_r(1, [("t1", "triage", True, [])]),
+                _eval_rec_r(2, [("t1", "triage", True, [])]),
+                _eval_rec_r(3, [("t1", "triage", False,
+                                 [_REAL_CONTENT_REASON])])]
+        sig = probe_local_brain_regressed(records=recs)
+        assert sig is not None
+        assert sig.extra["case_ids"] == ["t1"]
+
+    def test_structured_flag_is_preferred_over_markers(self):
+        """Rows written after 2026-08-07 carry transport_error explicitly;
+        it must win over any text matching."""
+        _reset_disp()
+        recs = [_eval_rec_r(1, [("o1", "oracle", True, [])]),
+                _eval_rec_r(2, [("o1", "oracle", True, [])]),
+                {"ts": 3, "results": [{"id": "o1", "kind": "oracle",
+                                       "ok": False, "reasons": ["anything"],
+                                       "transport_error": True}]}]
+        assert probe_local_brain_regressed(records=recs) is None
+
+    def test_structured_false_flag_keeps_a_real_regression(self):
+        _reset_disp()
+        recs = [_eval_rec_r(1, [("o1", "oracle", True, [])]),
+                _eval_rec_r(2, [("o1", "oracle", True, [])]),
+                {"ts": 3, "results": [{"id": "o1", "kind": "oracle",
+                                       "ok": False,
+                                       "reasons": [_REAL_TIMEOUT_REASON],
+                                       "transport_error": False}]}]
+        sig = probe_local_brain_regressed(records=recs)
+        assert sig is not None and sig.extra["case_ids"] == ["o1"]
+
+    def test_mostly_unreachable_run_is_indeterminate_not_clean(self):
+        """The mirror of the original bug: a run that proved almost nothing
+        must not render as a positive all-clear."""
+        from utils.watchdog_probe_core import collect_dispositions
+        _reset_disp()
+        recs = [_eval_rec_r(1, [("o1", "oracle", True, []),
+                                ("o2", "oracle", True, [])]),
+                _eval_rec_r(2, [("o1", "oracle", False,
+                                 [_REAL_TIMEOUT_REASON]),
+                                ("o2", "oracle", False,
+                                 [_REAL_TIMEOUT_REASON])])]
+        assert probe_local_brain_regressed(records=recs) is None
+        got = collect_dispositions()["local_brain_regressed"]
+        assert got["disp"] == "indeterminate"
+        assert "could not reach the backend" in got["reason"]
+
+    def test_healthy_run_is_still_clean(self):
+        from utils.watchdog_probe_core import collect_dispositions
+        _reset_disp()
+        recs = [_eval_rec_r(1, [("o1", "oracle", True, [])]),
+                _eval_rec_r(2, [("o1", "oracle", True, [])])]
+        assert probe_local_brain_regressed(records=recs) is None
+        assert collect_dispositions()["local_brain_regressed"]["disp"] == "clean"
