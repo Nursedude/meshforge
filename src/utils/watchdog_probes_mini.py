@@ -14,7 +14,7 @@ from typing import Optional
 
 from utils.watchdog_probe_core import (
     Signal,
-    _read_deployment_declaration,
+    _read_deployment_declaration_status,
     note_disposition,
 )
 
@@ -333,16 +333,30 @@ def probe_rules_seed_drift(
         if (live_ids is None and live_rules is None) or \
                 (seed_ids is None and seed_rules is None):
             # Resolve role (deployment.json) → seed name.
+            # An INJECTED role is a seam that positively returned its answer.
+            decl_status = "declared" if role else "undeclared"
             if role is None:
                 try:
                     from utils.rns_tree_perms import _read_rnsd_user
                     service_user = _read_rnsd_user()
                 except Exception:
                     service_user = None
-                role, _ov = _read_deployment_declaration(service_user)
+                decl_status, role, _ov = _read_deployment_declaration_status(
+                    service_user)
             if not role:
-                note_disposition("rules_seed_drift", "indeterminate",
-                                 reason="role unresolvable (deployment.json absent/unreadable)")
+                # Was ONE indeterminate for both, and the reason string said
+                # so out loud ("absent/unreadable") — the 2026-08-07 collapse.
+                # A box with no deployment.json is not role-managed by
+                # MeshForge at all (meshanchor-server), which is an organ
+                # absent by design, not an observation that failed.
+                if decl_status == "unreadable":
+                    note_disposition(
+                        "rules_seed_drift", "indeterminate",
+                        reason="deployment.json unreadable — role unresolvable")
+                else:
+                    note_disposition(
+                        "rules_seed_drift", "inert",
+                        reason="box declares no MeshForge role; no seed applies")
                 return None  # no declared role → not applicable
             seed_name = _ROLE_TO_MINI_SEED.get(role)
             if not seed_name:

@@ -21,10 +21,10 @@ from typing import Dict, List, Optional, Tuple
 
 from utils.watchdog_probe_core import (
     Signal,
-    _journal_newest_match,
     _journal_newest_match_status,
     _load_parity_streak,
     _read_deployment_declaration,
+    _read_deployment_declaration_status,
     _resolve_main_pid,
     _save_parity_streak,
     note_disposition,
@@ -1024,16 +1024,31 @@ def probe_role_drift(
             service_user = _read_rnsd_user()
         except Exception:
             service_user = None
-        deployment = _read_deployment_declaration(service_user)
-    role, overrides = deployment
+        decl_status, role, overrides = _read_deployment_declaration_status(
+            service_user)
+    else:
+        # An INJECTED deployment is a seam that positively returned its
+        # answer, so a None role there means "observed: no role", never
+        # "could not look" (same convention as newest_line_fn elsewhere).
+        role, overrides = deployment
+        decl_status = "declared" if role else "undeclared"
     if not role:
         _save_parity_streak(state_path, 0)
-        # _read_deployment_declaration returns (None, {}) for BOTH a
-        # genuinely-undeclared box AND an unreadable/corrupt declaration —
-        # per its own docstring the latter is indeterminate, and the two
-        # cannot be told apart here, so the merged note must be the worse.
-        note_disposition("role_drift", "indeterminate",
-                         reason="no declared role, or declaration unreadable")
+        # These used to be ONE indeterminate, because the flat reader
+        # returned (None, {}) for both and this code said so in a comment.
+        # meshanchor-server legitimately has NO deployment.json — it is a
+        # MeshAnchor box, not MeshForge role-managed — so it sat permanently
+        # indeterminate on this class, and a genuinely corrupt declaration on
+        # a REAL fleet box would have been invisible inside that noise
+        # (2026-08-07; the channel_feed_dark / mqtt_root_drift family).
+        if decl_status == "unreadable":
+            note_disposition(
+                "role_drift", "indeterminate",
+                reason="role declaration unreadable — cannot judge drift")
+        else:
+            note_disposition(
+                "role_drift", "inert",
+                reason="box declares no MeshForge role — nothing to drift from")
         return None  # box not role-declared (or unreadable) → not applicable
 
     if plan_fn is None:

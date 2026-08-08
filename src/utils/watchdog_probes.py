@@ -67,6 +67,7 @@ from utils.watchdog_probe_core import (
     signal_to_dict,
     _journal_newest_match,
     _read_deployment_declaration,
+    _read_deployment_declaration_status,
     _resolve_main_pid,
     _short_unix_ts,
 )

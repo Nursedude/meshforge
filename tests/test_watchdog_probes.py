@@ -2116,6 +2116,64 @@ class TestChannelFeedDarkFiveState:
         assert sig.cls == "channel_feed_dark"
 
 
+class TestDeploymentDeclarationStatus:
+    """The 2026-08-07 tri-state on the role declaration. Absent and
+    unreadable are OPPOSITE facts; the shim below must keep collapsing them
+    (that is what a shim IS) without any caller depending on the collapse."""
+
+    def _as_home(self, tmp_path, monkeypatch):
+        import pwd as _pwd
+
+        class _Ent:
+            pw_dir = str(tmp_path)
+        monkeypatch.setattr(_pwd, "getpwnam", lambda u: _Ent())
+
+    def _write(self, tmp_path, payload):
+        cfg = tmp_path / ".config" / "meshforge"
+        cfg.mkdir(parents=True)
+        (cfg / "deployment.json").write_text(payload)
+
+    def test_missing_file_is_undeclared(self, tmp_path, monkeypatch):
+        from utils.watchdog_probe_core import _read_deployment_declaration_status
+        self._as_home(tmp_path, monkeypatch)
+        assert _read_deployment_declaration_status("svc")[0] == "undeclared"
+
+    def test_unparseable_is_unreadable(self, tmp_path, monkeypatch):
+        from utils.watchdog_probe_core import _read_deployment_declaration_status
+        self._as_home(tmp_path, monkeypatch)
+        self._write(tmp_path, "{ not json")
+        assert _read_deployment_declaration_status("svc")[0] == "unreadable"
+
+    def test_declared_returns_role_and_overrides(self, tmp_path, monkeypatch):
+        from utils.watchdog_probe_core import _read_deployment_declaration_status
+        self._as_home(tmp_path, monkeypatch)
+        self._write(tmp_path,
+                    '{"role": "full-gateway", "service_overrides": {"a": 1}}')
+        st, role, ov = _read_deployment_declaration_status("svc")
+        assert (st, role, ov) == ("declared", "full-gateway", {"a": 1})
+
+    def test_file_without_role_is_undeclared_not_unreadable(self, tmp_path,
+                                                            monkeypatch):
+        """A readable file that simply declares no role is a POSITIVE
+        observation — the box is not role-managed."""
+        from utils.watchdog_probe_core import _read_deployment_declaration_status
+        self._as_home(tmp_path, monkeypatch)
+        self._write(tmp_path, '{"profile": "full"}')
+        assert _read_deployment_declaration_status("svc")[0] == "undeclared"
+
+    def test_no_service_user_is_unreadable(self):
+        from utils.watchdog_probe_core import _read_deployment_declaration_status
+        assert _read_deployment_declaration_status("")[0] == "unreadable"
+
+    def test_shim_still_returns_the_legacy_pair(self, tmp_path, monkeypatch):
+        """Back-compat: the flat form keeps its (role, overrides) contract for
+        the remaining caller that genuinely does not need the distinction."""
+        from utils.watchdog_probe_core import _read_deployment_declaration
+        self._as_home(tmp_path, monkeypatch)
+        self._write(tmp_path, '{"role": "collector"}')
+        assert _read_deployment_declaration("svc") == ("collector", {})
+
+
 class TestJsonUplinkExpectationReader:
     """The declaration reader's own tri-state. Absent and unreadable are
     OPPOSITE facts (the _declared_root_status lesson, 2026-08-05)."""
@@ -5589,13 +5647,40 @@ class TestRulesSeedDrift:
             role="primary", seed_ids={"a", "b"}, live_ids={"a", "b"})
         assert sig is None
 
-    def test_no_role_is_none(self):
-        """Box declares no role → not applicable. _read_deployment_declaration
-        returning (None, {}) short-circuits before any seed/home read."""
-        with patch("utils.watchdog_probes_mini._read_deployment_declaration",
-                   return_value=(None, {})):
+    def test_no_role_is_inert_not_indeterminate(self):
+        """Box declares no role → INERT, and short-circuits before any
+        seed/home read.
+
+        ⚠️ Was `indeterminate` until 2026-08-07: the flat reader collapsed
+        "no deployment.json" with "could not read it", so meshanchor-server —
+        a MeshAnchor box that is legitimately not MeshForge role-managed —
+        sat permanently indeterminate on this class."""
+        with patch(
+            "utils.watchdog_probes_mini._read_deployment_declaration_status",
+            return_value=("undeclared", None, {}),
+        ):
             sig = probe_rules_seed_drift()
         assert sig is None
+        from utils.watchdog_probe_core import collect_dispositions
+        got = collect_dispositions()["rules_seed_drift"]
+        assert got["disp"] == "inert"
+        assert "no MeshForge role" in got["reason"]
+
+    def test_unreadable_declaration_is_indeterminate(self):
+        """The other half: a declaration we could not read must never be
+        laundered into the benign inert."""
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        with patch(
+            "utils.watchdog_probes_mini._read_deployment_declaration_status",
+            return_value=("unreadable", None, {}),
+        ):
+            sig = probe_rules_seed_drift()
+        assert sig is None
+        from utils.watchdog_probe_core import collect_dispositions
+        got = collect_dispositions()["rules_seed_drift"]
+        assert got["disp"] == "indeterminate"
+        assert "unreadable" in got["reason"]
 
     def test_ambiguous_role_is_none(self, tmp_path):
         """A role with no dedicated mini seed → None, no guess. (collector and

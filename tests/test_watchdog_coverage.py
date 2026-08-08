@@ -463,12 +463,41 @@ class TestDepFragmentUserScopeDark:
 
 
 class TestRoleDriftUndeclaredIndeterminate:
-    """D2: (None, {}) from _read_deployment_declaration conflates genuinely-
-    undeclared with unreadable/corrupt — the note must be the worse one."""
+    """D2 lineage. This test PINNED the conflation: (None, {}) from
+    `_read_deployment_declaration` meant BOTH genuinely-undeclared and
+    unreadable/corrupt, so the note had to be the worse one.
 
-    def test_no_role_notes_indeterminate(self, tmp_path):
+    ⚠️ INVERTED 2026-08-07, the same way TestMqttRootNoLineIndeterminate below
+    was on 08-05 — and found by the grep that lesson demanded ("a fix applied
+    to one instance is not applied to the class"). That resolution left
+    meshanchor-server, which has NO deployment.json because it is a MeshAnchor
+    box and not MeshForge role-managed, permanently indeterminate on this
+    class; a genuinely corrupt declaration on a real fleet box would have been
+    invisible inside that standing noise. The reader is now tri-state
+    (`_read_deployment_declaration_status`). An INJECTED deployment is a
+    positive answer ("observed: no role"), so it is now INERT; the unreadable
+    path is exercised against the real reader below."""
+
+    def test_undeclared_box_is_inert(self, tmp_path):
         sig = probe_role_drift(deployment=(None, {}),
                                state_path=str(tmp_path / "rd.json"))
+        assert sig is None
+        got = collect_dispositions()["role_drift"]
+        assert got["disp"] == "inert", (
+            "a box that declares no MeshForge role has nothing to drift FROM "
+            "— reporting that as a failed observation is what buried the real "
+            "unreadable case")
+        assert "no MeshForge role" in got["reason"]
+
+    def test_unreadable_declaration_still_indeterminate(self, tmp_path,
+                                                        monkeypatch):
+        """The other half of the split, driven through the REAL reader: a
+        service user that cannot be resolved is unobservable, not undeclared."""
+        from utils import watchdog_probes_drift as drift
+        monkeypatch.setattr(
+            drift, "_read_deployment_declaration_status",
+            lambda u: ("unreadable", None, {}))
+        sig = probe_role_drift(state_path=str(tmp_path / "rd2.json"))
         assert sig is None
         got = collect_dispositions()["role_drift"]
         assert got["disp"] == "indeterminate"

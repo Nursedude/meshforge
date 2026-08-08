@@ -205,29 +205,72 @@ def _resolve_main_pid(
     return pid if pid > 1 else None
 
 
-def _read_deployment_declaration(service_user) -> Tuple[Optional[str], dict]:
-    """Read ``(role, service_overrides)`` from the service user's deployment.json.
+def _read_deployment_declaration_status(
+    service_user,
+) -> Tuple[str, Optional[str], dict]:
+    """Tri-state read of ``role`` + ``service_overrides`` from deployment.json.
+
+    Returns ``("declared", role, overrides)``, ``("undeclared", None, {})``
+    when there is no deployment.json (or one that declares no role — a
+    positive observation that this box is not role-managed), or
+    ``("unreadable", None, {})`` when a file that should be readable isn't,
+    or the service user can't be resolved.
+
+    ⚠️ Why tri-state (2026-08-07): the flat form below collapsed *absent* and
+    *unreadable* into ``(None, {})``, and both callers then had to pick the
+    pessimistic meaning for both — ``probe_role_drift`` said so in a comment
+    ("the two cannot be told apart here, so the merged note must be the
+    worse"). Measured that day on meshanchor-server, which legitimately has
+    NO deployment.json because it is a MeshAnchor box and not MeshForge
+    role-managed: ``role_drift`` and ``rules_seed_drift`` both sat
+    permanently ``indeterminate``, each naming "absent/unreadable" in its own
+    reason string — the collapse spelled out loud, and a genuinely corrupt
+    declaration on a REAL fleet box would have been invisible inside that
+    standing noise. Same defect as the ``channel_feed_dark`` /
+    ``mqtt_root_drift`` family: an organ absent by design must not read as an
+    observation that failed. Mirrors
+    ``watchdog_probes_channel._read_json_uplink_expectation``.
 
     The watchdog runs as sandboxed root: ``get_real_user_home()`` (which
-    ``provision_role.py`` uses at import time) would resolve to ``/root`` here,
-    so the home is derived from the service user and READ directly — never
-    escalate/switch user (the rns_version_drift lesson). Any unreadability →
-    ``(None, {})`` = indeterminate, never false-alarm.
+    ``provision_role.py`` uses at import time) would resolve to ``/root``
+    here, so the home is derived from the service user and READ directly —
+    never escalate/switch user (the rns_version_drift lesson).
     """
     if not service_user:
-        return None, {}
+        return ("unreadable", None, {})  # can't resolve user → can't observe
     try:
         import pwd
         home = pwd.getpwnam(service_user).pw_dir
         path = os.path.join(home, ".config", "meshforge", "deployment.json")
+    except (KeyError, OSError, TypeError):
+        return ("unreadable", None, {})
+    try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
+    except FileNotFoundError:
+        return ("undeclared", None, {})  # no file → box is not role-managed
+    except (OSError, ValueError, TypeError):
+        return ("unreadable", None, {})
+    try:
         role = data.get("role")
         ov = data.get("service_overrides") or {}
-        return (role if isinstance(role, str) and role else None,
-                ov if isinstance(ov, dict) else {})
-    except (KeyError, OSError, ValueError, TypeError):
-        return None, {}
+        ov = ov if isinstance(ov, dict) else {}
+        if isinstance(role, str) and role:
+            return ("declared", role, ov)
+        # File read fine and declares no role: a positive observation, not a
+        # failed one.
+        return ("undeclared", None, ov)
+    except (AttributeError, TypeError):
+        return ("unreadable", None, {})
+
+
+def _read_deployment_declaration(service_user) -> Tuple[Optional[str], dict]:
+    """Back-compat shim over ``_read_deployment_declaration_status`` (ONE
+    implementation — honest_failure_modes #5). Callers that must distinguish
+    "this box declares no role" from "I could not read the declaration" need
+    the status form; collapsing them is what this shim cannot avoid."""
+    status, role, ov = _read_deployment_declaration_status(service_user)
+    return (role, ov if status != "unreadable" else {})
 
 def _journal_newest_match_status(
     unit: str,
