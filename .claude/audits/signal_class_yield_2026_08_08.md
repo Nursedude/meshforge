@@ -257,12 +257,33 @@ byte-identical to the rehearsal. `bash scripts/honest_status.sh` → **`exit 0`*
 pre-existing legs (`synth_soak_degraded` on meshanchor-server,
 `local_brain_regressed` on VolcanoAI).
 
-**What is still BELIEVED, not verified**: that the *firing* path behaves in
-production. Its guards are drilled in tests and rehearsed on the real log, but
-no oracle on this fleet has produced a `send_error` — so the page itself has
-never been observed live. The check that would upgrade it is a real degraded
-burst, or a deliberate drill against a copy of the log with injected
-send_errors on a box where firing is harmless.
+~~**What is still BELIEVED**: that the *firing* path behaves in production.~~
+**DRILLED AND VERIFIED** the same session (`5e63aa19`,
+`scripts/oracle_fire_drill.py`), by the check that was named. It runs the
+**deployed** probe on moc3 under the watchdog's own uid and interpreter —
+`/usr/bin/python3`, `uid 0`, `PYTHONPATH=/opt/meshforge/src`, matching the
+unit's `ExecStart` — against the box's **real log content** with synthetic
+`send_error` records appended to a **copy**. `RESULT: ALL PASS`, **`exit 0`**,
+12 checks:
+
+| Case | Expected | Observed |
+|---|---|---|
+| baseline (untouched copy) | no signal, `inert` | `inert` — "last 8 answers rate 1.00, newest 19.3d ago (stale > 24h; not paged)" |
+| 6 send_errors **3 days** old | staleness guard refuses to page | no signal; `inert` — "rate 0.25 **BELOW** threshold 0.80, newest 3.0d ago" |
+| 5 send_errors **30 days** old + 3 fresh deliveries | fresh-failure guard | no signal; **`clean`** — "every send-error is older than 24h — recent answers all landed" |
+| 6 send_errors **now** | debounce, then FIRE | tick 1 `indeterminate` (held); tick 2 **Signal**, rate 0.25, `fresh_send_errors: 6`, `debounce_streak: 2` |
+
+The real log was opened read-only and asserted unchanged at the end —
+`(25208, 1784565698) -> (25208, 1784565698)`. Synthetic records carry
+`from: DRILLSYNTH` so a stray copy can never read as telemetry. On a box with
+no oracle the drill SKIPs rather than pretending to test.
+
+**The one gap that remains, named rather than folded in**: the drill runs the
+probe in a root process *beside* the daemon, not inside the systemd unit's
+sandbox, so the runner's own dispatch of **this class** (tracker → `watchdog.json`
+→ the seed's ntfy rule) is still inferred rather than observed. That path is
+class-agnostic and other classes ride it daily; closing it for this one would
+mean falsifying moc3's live audit log, which is not worth the page.
 
 **The prediction, written before the deploy** (so it can be wrong): after this
 lands and each box's watchdog restarts, `oracle_delivery_degraded` reads
