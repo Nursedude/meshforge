@@ -141,8 +141,26 @@ no vocabulary to say "I am watching and it is fine."
 ⚠️ **Do not delete it** — it guards #82, which ran undetected for 10 days
 (NRestarts=7842). **Fix the disposition**: split *no nomadnet user unit
 enrolled here* (`inert`) from *enrolled, observed, not looping* (`clean`).
-That is a 3-line change and it converts a dead-looking cell into a
-provably-armed one.
+
+**FIXED + DEPLOYED 2026-08-08 (`e25469ff`).** Four dispositions now: `clean`
+(enrolled + journal read + no loop), `inert` (not enrolled — nothing to
+watch), `indeterminate` (journal unobservable **or** enrollment unreadable),
+`degraded`/`wedge` (confirmed loop). The declaration is the
+`default.target.wants` symlink, read through the same helper
+`probe_user_unit_inactive` uses so the two probes can never disagree about
+what is enrolled. Detection is unchanged — the journal read still decides
+firing; only the quiet case is refined.
+
+*How it was verified, because this is the part that matters*: the existing 13
+tests asserted only `sig is None` — which cannot distinguish four reasons for
+returning None, **the same collapse one layer up**, and exactly why the defect
+survived. New tests assert the disposition, with `enabled_fn` injected so the
+verdict cannot depend on whether the box running the suite has nomadnet
+enrolled. Then a **drill**: reverted the probe to the old code → 7 failed;
+restored → 31 passed. And a **live prediction made before deploying** —
+`clean` on moc/moc1/moc2/moc3/VolcanoAI (enrolled), `inert` on
+moc4/moc5/kiai (not) — **held 8/8**, read from each box's own
+`watchdog.json` where the relay lagged. Before the fix all 8 read `inert`.
 
 ### 2. The "49 rejected `unspecified`" statistic is misleading
 
@@ -220,10 +238,15 @@ re-export hubs, and every ghost reference updated.
 **1 blindness fixed**: `propagation_soak_degraded` intent gate now resolves the
 operator home by UID instead of `get_real_user_home()`.
 
+**Also fixed** (`e25469ff`): the `nomadnet_crashloop` disposition split — see
+the dark-corner section above. It now reports `clean` on the 5 boxes where
+nomadnet is enrolled and `inert` on the 3 where it isn't; previously all 8
+read `inert` and the probe could not prove it was watching anything.
+
 **Not yet done** (Tier 3 + the tuning list): `oracle_delivery_degraded`,
-`inherited_app_drift`, `claw_uplink_node_moved` demotions; the
-`nomadnet_crashloop` disposition split; `ntfy_loopback`'s threshold;
-`new_subject` suppression; the `unspecified` stat.
+`inherited_app_drift`, `claw_uplink_node_moved` demotions; `ntfy_loopback`'s
+threshold; `new_subject` suppression; the `unspecified` stat; and the
+half-wired post-commit hook (refreshes the map's enum, not the watchdog's).
 
 Nothing removed coverage of any incident recorded in `persistent_issues.md`.
 
