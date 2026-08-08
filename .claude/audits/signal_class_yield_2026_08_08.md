@@ -213,7 +213,18 @@ wrote a log"** on the other seven; `claw_uplink_node_moved` is **unchanged
 everywhere** (moc2 `clean`, the rest `inert`) because its altered branch is
 unreachable while the operator home resolves — which it does on all eight.
 
-**Result** — see "Verification status".
+**Result: held 8/8.** Deployed `951ae565` to all 8 boxes (`fleet_pull.sh`,
+ff-only), restarted `meshforge-watchdog` only where it was already `is-active`
+(the 07-24 rule), and read each box's own `watchdog.json` on a tick < 30 s old:
+
+    moc3       oracle=inert  ["oracle enrolled but idle — 0 queries in the ~6h…"]
+    other 7    oracle=inert  ["oracle never wrote a log (disabled/never queried)"]
+    moc2       claw=clean    ["2 claw uplink node(s) at their declared addr…"]
+    moc5       inherited=clean
+
+moc3's permanent `indeterminate` is gone, and the two idle-vs-absent reasons
+are distinguishable at a glance. `claw_uplink_node_moved` and
+`inherited_app_drift` are byte-for-byte where they were.
 
 ---
 
@@ -397,7 +408,17 @@ Nothing removed coverage of any incident recorded in `persistent_issues.md`.
 
 ## Verification status
 
-**VERIFIED for the code change** — checks run this turn on this working tree:
+**VERIFIED — second session (Tier 3), `951ae565`:**
+
+- `python3 -m pytest tests/ -q` → **`exit 0`, 10425 passed, 1 skipped**; the touched-file subset re-run after the last (comment-only) edit → **`exit 0`, 752 passed**.
+- `python3 scripts/lint.py --all` → **`exit 0`**; `python3 scripts/parity_check.py` → **`exit 0`, "in sync"**.
+- **Drilled**, both fixes: reverting the probe file makes 2 oracle tests and 1 claw test fail; restoring it makes them pass. A guard that has never failed is not evidence.
+- **Live, post-deploy**: all 8 boxes at `951ae565`, watchdog restarted only where already active, cells read from each box's own `watchdog.json` — the pre-written prediction held 8/8 (table above).
+- **Measured, not guessed**: `inherited_app_drift` costs 0.062 s/tick on moc5 (4 inherited checkouts, mean of 3 runs, root context, via the probe's own helpers).
+- **Live premise check**: the oracle is `MESHFORGE_ORACLE_ENABLED=1` on moc3's active gateway with 106 lifetime queries (newest 19 d old) — which is what falsified the delete recommendation.
+- **Check of record**: `bash scripts/honest_status.sh` → **`exit 0`** — CI(`951ae565`) run 31280690694 success, fleet SHA drift 8/8, full suite exit 0, lint exit 0, live `confirmation_rate ≤ 1.0` 8 checked. One WARN, both legs **pre-existing and unrelated**: `synth_soak_degraded` on meshanchor-server and `local_brain_regressed` on VolcanoAI (already active in this session's warm brief).
+
+**VERIFIED for the code change (first session)** — checks run on that working tree:
 
 - `python3 -m pytest tests/ -q` → **`exit 0`, 10397 passed, 1 skipped** (baseline before the cuts: 836 passed on the watchdog subset, exit 0).
 - `python3 scripts/lint.py --all` → **`exit 0`**.
