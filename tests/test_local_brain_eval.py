@@ -967,3 +967,49 @@ class TestMainChunkedRuns:
         rc = lbe.main(["--cases", cases, "--budget-s", "0",
                        "--gate", "0.85", "--history", ""])
         assert rc == 0
+
+
+class TestChunkingPassthrough:
+    """The chunker's witness must reach the recorded result.
+
+    2026-08-07: the witness shipped in cadence_fallback and this loop
+    DISCARDED it — `artifact` was captured and never recorded. A 22-minute
+    run then still could not say what the chunker did, which is the entire
+    reason the witness was written. Producer without reader is half a
+    mechanism (honest_failure_modes #4).
+    """
+
+    def _triage_case(self):
+        return {"id": "t", "kind": "triage", "where": "x",
+                "input": {"deltas": [{"ts": 1, "kind": "escalation",
+                                      "key": "a", "status": "proposed",
+                                      "summary": "s"}],
+                          "frontier_rc": 1},
+                "expect": {"coverage_min": 1.0, "max_dropped": 0}}
+
+    def test_chunking_reaches_the_recorded_result(self, monkeypatch):
+        import mini_dudeai.local_brain_eval as lbe
+        witness = {"triaged": 1, "dropped_entries": 0, "proposed_total": 1,
+                   "chunking": {"planned_chunks": 1, "attempts": 3,
+                                "bisects": 2, "chunk_s": [300.0, 12.0, 9.0],
+                                "slowest_chunk_s": 300.0, "wall_s": 321.0}}
+        monkeypatch.setitem(lbe._GRADERS, "triage",
+                            lambda case, backend: (True, [], witness))
+        results, _summary = lbe.run_cases([self._triage_case()],
+                                          backend=object())
+        r = results[0]
+        assert "chunking" in r, (
+            "the chunker's decisions must survive into the recorded result — "
+            "a witness nothing can read is half a mechanism")
+        assert r["chunking"]["bisects"] == 2
+        assert r["chunking"]["attempts"] == 3
+        assert r["chunking"]["slowest_chunk_s"] == 300.0
+
+    def test_absent_when_the_grader_produces_none(self, monkeypatch):
+        """oracle/compile carry no chunking; the key must simply not appear
+        rather than arriving as a misleading empty dict."""
+        import mini_dudeai.local_brain_eval as lbe
+        monkeypatch.setitem(lbe._GRADERS, "triage",
+                            lambda case, backend: (True, [], {"triaged": 1}))
+        results, _ = lbe.run_cases([self._triage_case()], backend=object())
+        assert "chunking" not in results[0]

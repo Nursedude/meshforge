@@ -571,6 +571,17 @@ def run_cases(cases: List[dict], backend, progress=None,
             "latency_s": round(time.monotonic() - t0, 1),
             "attempts": attempts,
             "attempts_used": used,
+            # The triage chunker's own account of what it did (2026-08-07).
+            # The witness shipped in cadence_fallback the same day and this
+            # loop DISCARDED it: `artifact` was captured and never recorded,
+            # so a chunking witness existed that nothing downstream could
+            # read. A producer without its reader is half a mechanism
+            # (honest_failure_modes #4) — and the run that proved the point
+            # cost 22 minutes and still could not say what the chunker did.
+            # Only triage produces it; absent for oracle/compile.
+            **({"chunking": artifact["chunking"]}
+               if isinstance(artifact, dict) and "chunking" in artifact
+               else {}),
             "provenance": case.get("provenance"),
         })
         if progress is not None:
