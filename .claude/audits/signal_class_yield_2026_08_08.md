@@ -65,7 +65,57 @@ These have never been observable on any box in the fleet.
 | `json_uplink_dark` | added **2026-08-07**, 0 fires | Its coverage split is `clean:4 / inert:4` — **byte-for-byte the same split as `channel_feed_dark`**, the detector it sits behind. It carries no information the class below it does not already have. This is the one the operator flagged in his own accounting: *"it watches the instrument behind another detector, which is literally a layer up. The cheaper design was a richer disposition on the existing class."* The measurement agrees with the instinct. |
 | `dream_ratification_stalled` | added 2026-07-22, 0 fires in 17 days, observable on 1 box | Machinery watching machinery, by definition: it watches mini's own ratification cadence. The warm brief already prints the ratio on every session start. Nothing is added by a 30 s probe on 9 boxes. |
 
-### Tier 3 — demote off the 30 s tick, don't delete (3 classes)
+### Tier 3 — HANDOFF: re-decide before implementing
+
+> ⚠️ **Read this before doing the demotions below.** Written 2026-08-08 at the
+> end of the session that executed Tiers 1–2, from things learned *during*
+> execution that change the recommendation.
+>
+> **The cost side is smaller than I assumed.** Each of these three is `inert`
+> on 7 of 8 boxes, and an `inert` probe is an early return — a file-existence
+> check, not work. The real per-tick cost is on the ONE box where each is
+> observable. So "demote to cron" buys very little tick time.
+>
+> **The cost of demoting is larger than I assumed.** A demotion is not a code
+> move; it is a script + a crontab line + `cron_verdict` wiring, **per box**.
+> And **crontabs are per-box and NOT repo-tracked** — so this adds three
+> hand-maintained entries that only `cron_verdict_stale` can see, on three
+> different boxes. That is adding machinery to watch machinery, which is the
+> rule this whole arc serves.
+>
+> **So the honest options are three, not one**, and the next session should
+> pick deliberately rather than execute the word "demote":
+>   1. **Leave them.** Cheapest. They cost ~nothing on 7 boxes and one file
+>      read on the eighth. Revisit if a tick-cost measurement ever indicts them.
+>   2. **Delete them**, on the same Tier-1 reasoning — never fired, and the
+>      thing they watch is a deploy-timescale fact a human is present for.
+>   3. **Demote**, accepting three untracked crontab entries.
+>
+> My recommendation is **(1) leave `claw_uplink_node_moved`** (10 days old,
+> too young to judge), **(2) delete `oracle_delivery_degraded`** (0 fires in
+> 47 days; `inert` ×7 because the oracle *never wrote a log* — the organ is
+> out of service fleet-wide, so there is nothing to move to a cron), and
+> **(1) or (3) for `inherited_app_drift`** on measurement of what it costs on
+> moc5, the only box where it can see.
+>
+> **If you do demote, the cron-verdict wiring has TWO idioms and they must not
+> be mixed** (learned the hard way in `9193dd6a`):
+>   - **`$?`-mapping**: the crontab runs `<script> ; cron_verdict.sh <name> $?`.
+>     `cron_verdict.sh` maps `0 → OK`, nonzero → `FAIL(n)`. **`CONCERN` is
+>     unreachable in this idiom** — which is why `fleet_ntfy_loopback.sh` had
+>     to exit 0 on a transient rather than emit a CONCERN.
+>   - **script-speaks-its-own-verdict**: the script calls `cron_verdict.sh`
+>     itself (`say CONCERN "..."`) and the crontab guards with
+>     `|| cron_verdict.sh <name> FAIL wrapper_crashed`. `CONCERN` is reachable.
+>     ⚠️ The script must then **exit 0 after speaking**, or the wrapper appends
+>     a second, contradicting verdict over the real one — and the newest line
+>     is what `cron_verdict_stale` and the operator read first.
+>     `pytest_tmp_prune.sh` is the reference implementation.
+>
+> Whichever idiom: a newly-wired cron is only visible to `cron_verdict_stale`
+> once it writes a verdict, and that probe judges **only** wired crons.
+
+### Tier 3 — the original recommendation (demote off the 30 s tick)
 
 Real checks, wrong cadence. Move to a daily/6-hourly cron with a
 `cron_verdict` wire; keep the finding, drop 2,880 ticks/day/box.
