@@ -51,8 +51,16 @@ Honest-failure-mode rules enforced here:
     mistaken for an empty fleet.
   * Only the delimited managed block is ever touched; the rest of /etc/hosts
     is preserved byte-for-byte.
-  * FQDNs only -- no bare short names. A bare alias would shadow the box's
-    own hostname entry and the `search lan` domain.
+  * Each entry is `<ip>  <fqdn> <bare-alias>`, EXCEPT that the bare alias
+    matching this box's own hostname is never emitted (2026-08-08). It was
+    FQDN-only until then, to avoid shadowing the box's own hostname entry and
+    the `search lan` domain. Re-measured before changing: `.lan` resolves to
+    nothing for any fleet name, so there was no search-domain answer to
+    shadow; the own-hostname hazard is real and is handled by omitting that
+    one name outright rather than by trusting file order in a file two other
+    owners write. FQDN-only only half-delivered the "resolves with DNS down"
+    promise -- bare names still went to m1, so moc4/moc5/kiai stopped
+    resolving bare while their FQDNs were fine.
 
 Usage:
     python3 scripts/gen_fleet_hosts.py --print     # show the block, no root
@@ -297,12 +305,56 @@ def build_entries(registry, current: Optional[Dict[str, str]] = None,
     return entries, warnings
 
 
-def render_block(entries: List[Tuple[str, str, str]]) -> str:
+def local_hostname() -> str:
+    """This box's own hostname, lowercased. Its bare alias is the ONE name
+    this block must never claim — see ``render_block``."""
+    try:
+        return socket.gethostname().split(".", 1)[0].strip().lower()
+    except OSError:
+        return ""
+
+
+def render_block(entries: List[Tuple[str, str, str]],
+                 local: Optional[str] = None) -> str:
+    """Render the managed block: ``<ip>  <fqdn> <bare-alias>``.
+
+    BARE ALIASES (2026-08-08). Originally FQDN-only, on the reasoning that "a
+    bare alias would shadow the box's own hostname entry and the ``search lan``
+    domain". Both halves were re-tested before this changed:
+
+    * ``search lan`` — MEASURED inert: ``<alias>.lan`` resolves to nothing for
+      any fleet name, so there is no search-domain answer to shadow. (If a
+      fleet alias ever gains a DIFFERENT ``.lan`` address, this block would
+      shadow it — that is the standing cost, and it is the same cost the FQDN
+      entries already carry.)
+    * the box's own hostname — REAL, and handled directly: the bare alias
+      matching this box's hostname is never emitted. Relying on file order
+      (``127.0.1.1 <host>`` sits above this block, and files-nss is
+      first-match-wins) would be a guess about a file two other owners write,
+      and ``getaddrinfo`` may aggregate matches across lines rather than stop
+      at the first. Omitting the name is the only version that cannot be
+      wrong.
+
+    WHY IT MATTERS: the block exists so fleet names resolve with the uplink or
+    the router's DNS down. FQDN-only only half-delivered that — bare names
+    still went to m1, so ``moc4``/``moc5``/``kiai`` did not resolve at all
+    once their single-label DNS answers went away, while their FQDNs were fine.
+    """
+    # Normalise HERE, not only in local_hostname(): hostnames are
+    # case-insensitive, and an explicitly-passed value must be held to the
+    # same rule as the one we look up, or the exception silently stops
+    # applying on any box whose hostname carries capitals (the fleet has
+    # such boxes; a unit test pins the case-insensitivity).
+    local = (local if local is not None else local_hostname()).strip().lower()
     lines = [BEGIN,
              "# DO NOT EDIT BY HAND. Regenerate with:",
              "#   sudo python3 scripts/gen_fleet_hosts.py --apply",
              "# Seeded from live DNS; 'via ip_fallback' marks a name DNS "
-             "could not answer."]
+             "could not answer.",
+             "# <ip>  <fqdn> <bare>. The bare alias matching THIS box's own "
+             "hostname is",
+             "# deliberately omitted so it can never contend with the "
+             "127.0.1.1 entry."]
     width = max((len(ip) for ip, _f, _s in entries), default=15)
     for ip, fqdn, source in entries:
         if source == "ip_fallback":
@@ -311,7 +363,9 @@ def render_block(entries: List[Tuple[str, str, str]]) -> str:
             suffix = "    # held (DNS unobservable)"
         else:
             suffix = ""
-        lines.append(f"{ip:<{width}}  {fqdn}{suffix}")
+        alias = fqdn.split(".", 1)[0]
+        names = fqdn if alias.lower() == local else f"{fqdn} {alias}"
+        lines.append(f"{ip:<{width}}  {names}{suffix}")
     lines.append(END)
     return "\n".join(lines) + "\n"
 
@@ -352,7 +406,21 @@ def current_block(path: Path) -> Optional[str]:
 
 
 def parse_block(block: Optional[str]) -> Dict[str, str]:
-    """fqdn -> ip for the managed block (comments/markers ignored)."""
+    """name -> ip for EVERY name in the managed block (comments ignored).
+
+    Includes bare aliases, not just the canonical FQDN. This map is what
+    ``--check`` and ``--apply`` compare, so it must carry everything the block
+    CLAIMS: keyed on the FQDN alone, adding bare aliases in 2026-08-08 was
+    invisible to both — ``--check`` reported "in sync" and ``--apply`` said
+    "already current" and declined to write, so the change could never have
+    reached a single box while reporting success. A comparison that cannot see
+    the thing you changed is not a comparison (the 2026-07-25 self-confirming
+    -checker lesson, one layer over).
+
+    Formatting and comments stay OUT of the comparison deliberately: the
+    block's MEANING is "these names resolve to these addresses", and a
+    reworded comment must not trigger a fleet-wide /etc/hosts rewrite.
+    """
     out: Dict[str, str] = {}
     if not block:
         return out
@@ -362,7 +430,8 @@ def parse_block(block: Optional[str]) -> Dict[str, str]:
             continue
         parts = line.split()
         if len(parts) >= 2:
-            out[parts[1]] = parts[0]
+            for name in parts[1:]:
+                out[name] = parts[0]
     return out
 
 

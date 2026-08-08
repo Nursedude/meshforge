@@ -87,18 +87,67 @@ class TestSeedsFromLiveDnsNotTheSnapshot:
         assert entries == []
         assert any("omitted" in w for w in warnings)
 
-    def test_only_fqdns_are_emitted(self, registry, monkeypatch):
-        """A bare alias would shadow the box's own hostname entry and the
-        `search lan` domain — FQDN only."""
-        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
-        entries, _w = gfh.build_entries(registry)
-        block = gfh.render_block(entries)
+    def _name_lines(self, block):
         for line in block.splitlines():
             line = line.split("#", 1)[0].strip()
-            if not line:
-                continue
+            if line:
+                yield line
+
+    def test_each_entry_carries_the_fqdn_then_the_bare_alias(
+            self, registry, monkeypatch):
+        """The block exists so fleet names resolve with the router's DNS down.
+        FQDN-only half-delivered that: bare names still went to m1, so
+        moc4/moc5/kiai stopped resolving bare while their FQDNs were fine
+        (2026-08-08). Canonical FQDN first, bare alias second."""
+        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
+        entries, _w = gfh.build_entries(registry)
+        block = gfh.render_block(entries, local="somethingelse")
+        seen = 0
+        for line in self._name_lines(block):
             names = line.split()[1:]
-            assert all(n.endswith(".mf.internal") for n in names), line
+            assert len(names) == 2, f"want '<fqdn> <bare>': {line}"
+            fqdn, bare = names
+            assert fqdn.endswith(".mf.internal"), line
+            assert fqdn.split(".", 1)[0] == bare, line
+            seen += 1
+        assert seen, "no entries rendered — the assertions above proved nothing"
+
+    def test_check_compares_every_name_not_just_the_fqdn(self, registry,
+                                                         monkeypatch):
+        """--check/--apply compare parse_block() maps. If that map keys only on
+        the FQDN, adding bare aliases is INVISIBLE to both: --check reports
+        "in sync", --apply says "already current" and declines to write, and
+        the change reaches no box while reporting success. Drilled 2026-08-08
+        — this is exactly what happened."""
+        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
+        entries, _w = gfh.build_entries(registry)
+        fqdn_only = "\n".join(
+            f"{ip}  {fqdn}" for ip, fqdn, _s in entries) + "\n"
+        with_aliases = gfh.render_block(entries, local="somethingelse")
+        assert gfh.parse_block(fqdn_only) != gfh.parse_block(with_aliases), (
+            "parse_block cannot distinguish a block WITH bare aliases from one "
+            "without — so no deploy path could ever apply them")
+
+    def test_local_hostname_never_gets_a_bare_alias(self, registry, monkeypatch):
+        """The ONE name this block must not claim. `127.0.1.1 <host>` is
+        written by another owner (cloud-init), and getaddrinfo may aggregate
+        matches across lines rather than stop at the first — so a second entry
+        for our own hostname could contend with loopback self-resolution.
+        Relying on file order would be a guess; omitting the name cannot be
+        wrong. (This is the surviving half of the original FQDN-only
+        rationale; the `search lan` half was measured inert.)"""
+        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
+        entries, _w = gfh.build_entries(registry)
+        alias = sorted(registry.hosts)[0]
+        block = gfh.render_block(entries, local=alias.upper())  # case-insensitive
+        for line in self._name_lines(block):
+            names = line.split()[1:]
+            if names[0] == f"{alias}.mf.internal":
+                assert names == [f"{alias}.mf.internal"], (
+                    f"emitted a bare alias for THIS box's hostname: {line}")
+                break
+        else:
+            raise AssertionError(f"{alias} not rendered — test proved nothing")
 
 
 class TestBlindnessIsNeverAnEmptyFleet:
