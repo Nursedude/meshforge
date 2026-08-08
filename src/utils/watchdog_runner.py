@@ -612,10 +612,12 @@ def run_all_probes(
     # on a cooldowned/quiet channel. Reads the operator's ~/.local/share dir
     # directly (root-context safe); self-guards None (INERT) off a box where the
     # oracle never wrote a log (disabled / never queried) — the common case —
-    # and (2026-08-08) INERT on an EMPTY window where it DID write one:
+    # and (2026-08-08) INERT when it wrote one but has answered nothing:
     # enrolled-but-idle is a successful observation, not a blind detector.
-    # degraded only; min-sample guard (no silence leg — a reactive service
-    # nobody queried isn't "broken"); 2-tick debounce.
+    # v2 rates the last 8 confirmable answers (COUNT window — the 6h time
+    # window was unmeetable on ~5 queries a month) behind a STALENESS guard:
+    # stale evidence is reported INERT with its rate + age, never `clean`,
+    # never paged. degraded only; 2-tick debounce.
     sig = probe_oracle_delivery_degraded()
     if sig is not None:
         signals.append(sig)

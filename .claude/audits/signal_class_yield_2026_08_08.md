@@ -199,12 +199,49 @@ unobservable condition found exactly one more — `claw_uplink_node_moved` said
 `inert`, *"operator home unresolvable; no uplink declaration here"*. That is a
 claim about the box made from a failure to look. Now `indeterminate`.
 
-**Open question left for the operator, not decided here**: even fixed, this
-probe cannot yield on today's traffic — it needs ≥8 confirmable queries inside
-6 h, and moc3's oracle has served 106 queries in its *lifetime*. That is a
-**tuning** question (a last-N-answers window with a staleness guard would let
-it say something), not a delete question, and changing when a detector fires
-is your call, not mine.
+~~**Open question left for the operator**: even fixed, this probe cannot yield
+on today's traffic — it needs ≥8 confirmable queries inside 6 h, and moc3's
+oracle has served 106 queries in its *lifetime*.~~ **ANSWERED by the operator
+the same session: do the last-N window with a staleness guard.** Shipped as
+v2 below.
+
+### v2 — the count window + staleness guard (2026-08-08)
+
+**The measure changed; the guard is what makes it honest.** v1 rated a 6 h
+*time* window and required ≥8 confirmable inside it — a gate the fleet's only
+oracle box cannot meet, because moc3 answers ~5 queries a month in bursts
+weeks apart. v2 rates **the last 8 confirmable answers, however long ago they
+were given**. That yields on the real traffic; it also opens a new way to
+lie, since a sample can now span weeks and "the last 8 answers" is not
+automatically a statement about *now*. Hence:
+
+- **Freshness gates the verdict.** Only a sample whose newest confirmable
+  record is within 24 h may read `clean` or fire. A **stale** sample is
+  `inert` with its rate and age in the reason — *"oracle idle — last 8
+  answers rate 1.00, newest 19.2d ago (stale > 24h; not paged)"*. The finding
+  stays readable in coverage without paging at a 30 s cadence about answers
+  given three weeks ago.
+- **Firing additionally requires a fresh failure.** Without that, a rate
+  dragged below threshold by month-old `send_error`s would page while every
+  recent answer landed — the pollution a count window introduces. The guard is
+  on **action**, not on the measure: the rate is always reported.
+- **Order is FILE order, not `ts` order.** The append sequence is causal; a
+  stepped clock on an RTC-less Pi is not (honest_failure_modes #6). `ts` is
+  used only for freshness and to clamp forgery — non-numeric, ≤ 0, and
+  far-future stamps are still skipped, exactly as the time window did.
+- **Small-N now resolves permanently.** "Fewer than 8 confirmable answers
+  *ever recorded*" replaces "…inside this window", so the guard stops
+  re-arming every 6 h once the oracle has answered 8 times.
+
+**Both guards drilled.** Neutering the staleness branch fails 5 tests;
+neutering the fresh-failure branch fails the one that exists for it. A guard
+that has never refused anything is not evidence it works.
+
+**Rehearsed on the real artifact before deploying**: moc3's actual
+`mesh_oracle_log.jsonl` (106 records, 99 confirmable, all delivered, newest
+19.2 d) run through the new code returns no signal and the cell above.
+**Prediction for the deploy**: moc3 reads `inert` with that reason; the other
+seven are untouched (`inert`, "never wrote a log").
 
 **The prediction, written before the deploy** (so it can be wrong): after this
 lands and each box's watchdog restarts, `oracle_delivery_degraded` reads

@@ -32,7 +32,7 @@ from utils.watchdog_probe_core import (  # noqa: E402
 from utils.watchdog_probes import probe_oracle_delivery_degraded  # noqa: E402
 from utils.watchdog_probes_gateway import (  # noqa: E402
     _classify_oracle_record,
-    _read_oracle_window,
+    _read_oracle_recent,
 )
 
 NOW = 1_800_000_000.0
@@ -160,10 +160,13 @@ def test_fires_below_threshold(tmp_path):
     assert sig is not None
     assert sig.cls == "oracle_delivery_degraded"
     assert sig.severity == "degraded"
-    assert sig.extra["confirmable"] == 10
-    assert sig.extra["delivered"] == 3
+    # The sample is the LAST 8 confirmable (v2 count window), so the oldest of
+    # the 3 deliveries falls out: 1 delivered + 7 send_error.
+    assert sig.extra["confirmable"] == 8
+    assert sig.extra["sample_n"] == 8
+    assert sig.extra["delivered"] == 1
     assert sig.extra["send_errors"] == 7
-    assert sig.extra["rate"] == pytest.approx(0.3, abs=0.01)
+    assert sig.extra["rate"] == pytest.approx(0.125, abs=0.01)
 
 
 def test_healthy_above_threshold_no_fire(tmp_path):
@@ -206,14 +209,16 @@ def test_excluded_buckets_are_surfaced_on_fire(tmp_path):
     _write_log(log, recs)
     sig = _probe(log, tmp_path, debounce_ticks=1)
     assert sig is not None
-    assert sig.extra["confirmable"] == 10            # 4 delivered + 6 send_error
+    assert sig.extra["confirmable"] == 8             # last 8: 2 delivered + 6 send_error
     assert sig.extra["declines_excluded"] == 15      # 10 cooldown + 5 not_allowlisted
     assert sig.extra["benign_nondeliveries_excluded"] == 3
-    assert sig.extra["rate"] == pytest.approx(0.4, abs=0.01)
+    assert sig.extra["rate"] == pytest.approx(0.25, abs=0.01)
 
 
 def test_min_sample_guard_holds(tmp_path):
-    # Below-threshold rate but only 3 confirmable (< 8) → pass@small-N → None.
+    # Below-threshold rate but only 3 confirmable EVER (< 8) → pass@small-N →
+    # None. v2 counts over the log's lifetime, not per window, so this
+    # resolves permanently once the oracle has answered 8 times.
     log = tmp_path / "oracle.jsonl"
     recs = [_rec(True)] + [_rec(False, reason="send_error: x") for _ in range(2)]
     _write_log(log, recs)
@@ -229,15 +234,16 @@ def test_silence_is_not_a_failure(tmp_path):
 
 # ── ts windowing + forged clock (trap #5) ────────────────────────────
 
-def test_old_records_excluded_from_window(tmp_path):
-    # 10 send_error all OLDER than the window + 10 fresh delivered.
-    # Only the fresh ones count → rate 1.0 → None (the old failures are stale).
+def test_old_failures_pushed_out_of_the_sample(tmp_path):
+    # 10 old send_error then 10 fresh delivered. Under v1 the 6h TIME window
+    # dropped the old ones; under v2's count window newer answers push them
+    # out of the last-8 sample. Same verdict, different mechanism → None.
     log = tmp_path / "oracle.jsonl"
     recs = ([_rec(False, reason="send_error: old", age_s=10 * 3600)
              for _ in range(10)]
             + [_rec(True, age_s=60) for _ in range(10)])
     _write_log(log, recs)
-    assert _probe(log, tmp_path, window_s=6 * 3600.0, debounce_ticks=1) is None
+    assert _probe(log, tmp_path, debounce_ticks=1) is None
 
 
 def test_future_and_negative_ts_skipped(tmp_path):
@@ -265,7 +271,7 @@ def test_malformed_lines_skipped(tmp_path):
             fh.write(json.dumps(r) + "\n")
     sig = _probe(log, tmp_path, debounce_ticks=1)
     assert sig is not None
-    assert sig.extra["confirmable"] == 10  # garbage lines ignored
+    assert sig.extra["confirmable"] == 8  # garbage lines ignored; last 8 sampled
 
 
 # ── debounce ─────────────────────────────────────────────────────────
@@ -305,8 +311,8 @@ def test_healthy_observation_resets_streak(tmp_path):
 
 # ── helper direct ────────────────────────────────────────────────────
 
-def test_read_oracle_window_unreadable_returns_none(tmp_path):
-    assert _read_oracle_window(str(tmp_path), NOW, 3600.0, 4096) is None
+def test_read_oracle_recent_unreadable_returns_none(tmp_path):
+    assert _read_oracle_recent(str(tmp_path), NOW, 8, 4096) is None
 
 
 class TestRnsAmbiguousBenignSplit:
@@ -357,8 +363,8 @@ class TestRnsAmbiguousBenignSplit:
         """It measures what we cannot tell apart — it must not become a
         failure count, or the probe would fire on RNS no-paths."""
         sig = self._fire(tmp_path, [_rec(False, transport="rns") for _ in range(9)])
-        assert sig.extra["confirmable"] == 10          # 4 delivered + 6 send_error
-        assert sig.extra["rate"] == pytest.approx(0.4, abs=0.01)
+        assert sig.extra["confirmable"] == 8           # last 8: 2 delivered + 6 send_error
+        assert sig.extra["rate"] == pytest.approx(0.25, abs=0.01)
 
     def test_named_benign_reason_is_no_longer_ambiguous(self, tmp_path):
         """Row 2's cure: send_to_rns now returns an RnsSendResult, so an RNS
@@ -432,14 +438,22 @@ class TestOracleDispositions:
         assert "idle" in cell["reason"]
         assert "never wrote a log" not in cell["reason"]
 
-    def test_all_records_out_of_window_is_inert_idle(self, tmp_path):
-        # moc3 exactly: 106 lifetime records, newest ~19 days old.
+    def test_moc3_shape_is_inert_stale_with_the_rate_in_the_reason(self, tmp_path):
+        """moc3 exactly: 99 confirmable answers, all delivered, newest ~19 d.
+
+        Under v1 this was `indeterminate` FOREVER — the 6h/min-8 gate could
+        never be met by a service answering ~5 queries a month. Under v2 the
+        probe has a measurement to report, and the staleness guard makes it
+        `inert` rather than `clean`: old answers are evidence about the past,
+        never a claim about now."""
         log = tmp_path / "oracle.jsonl"
-        _write_log(log, [_rec(True, age_s=19 * 24 * 3600) for _ in range(106)])
-        out, cell = self._disp(log, tmp_path, window_s=6 * 3600.0)
+        _write_log(log, [_rec(True, age_s=19 * 24 * 3600) for _ in range(99)])
+        out, cell = self._disp(log, tmp_path)
         assert out is None
         assert cell["disp"] == "inert"
-        assert "idle" in cell["reason"]
+        assert "stale" in cell["reason"]
+        assert "1.00" in cell["reason"]     # the rate it CAN now report
+        assert "19.0d" in cell["reason"]    # and how old that evidence is
 
     def test_small_sample_in_a_NON_empty_window_stays_indeterminate(self, tmp_path):
         """The anti-hiding pin. A window with records but < min_sample
@@ -495,3 +509,128 @@ class TestOracleDispositions:
             now=NOW, debounce_path=str(tmp_path / "d.json")) is None
         assert collect_dispositions()[
             "oracle_delivery_degraded"]["disp"] == "indeterminate"
+
+
+class TestCountWindowAndStalenessGuard:
+    """v2 (2026-08-08): rate the last N answers, guard on their AGE.
+
+    v1 rated a 6 h time window and needed ≥8 confirmable inside it. The
+    fleet's only oracle box answers ~5 queries a month in bursts weeks
+    apart, so that gate was unmeetable and the probe could never judge
+    anything at all — it sat `indeterminate` on the one box that could see.
+
+    A count window fixes the yield but introduces a new way to lie: a
+    sample can span weeks, so "the last 8 answers" is not automatically a
+    statement about NOW. These tests pin the guard that keeps the two
+    apart — and pin it from the failing side, since a guard that has never
+    refused anything is not evidence it works.
+    """
+
+    @staticmethod
+    def _disp(log, tmp_path, **kw):
+        reset_dispositions()
+        out = _probe(log, tmp_path, **kw)
+        return out, collect_dispositions().get("oracle_delivery_degraded")
+
+    def test_stale_degraded_sample_is_reported_but_never_paged(self, tmp_path):
+        """5 of the last 8 answers failed — three weeks ago. Nobody can act on
+        that, and at a 30 s cadence it would page forever. Report it in the
+        cell; do not fire."""
+        old = 21 * 24 * 3600.0
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True, age_s=old) for _ in range(3)]
+                   + [_rec(False, reason="send_error: x", age_s=old)
+                      for _ in range(5)])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None                       # NOT a page
+        assert cell["disp"] == "inert"
+        assert "BELOW" in cell["reason"]         # but the finding is visible
+        assert "0.38" in cell["reason"]
+
+    def test_a_stale_healthy_sample_is_never_called_clean(self, tmp_path):
+        """THE guard. 8 old deliveries are evidence the path worked in July,
+        not evidence it works now — `clean` there would be absence-of-evidence
+        dressed as health (honest_failure_modes #2)."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True, age_s=30 * 24 * 3600) for _ in range(8)])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None
+        assert cell["disp"] == "inert"
+        assert cell["disp"] != "clean"
+
+    def test_fresh_failures_fire(self, tmp_path):
+        """The case the whole change exists to make reachable: a burst of
+        queries after weeks of silence, and the replies are not landing."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True, age_s=40 * 24 * 3600) for _ in range(2)]
+                   + [_rec(False, reason="send_error: x", age_s=120)
+                      for _ in range(6)])
+        sig = _probe(log, tmp_path, debounce_ticks=1)
+        assert sig is not None
+        assert sig.extra["fresh_send_errors"] == 6
+        assert sig.extra["rate"] == pytest.approx(0.25, abs=0.01)
+        # the span is surfaced, so a wide sample can never read as "last hour"
+        assert sig.extra["sample_span_h"] > 900
+
+    def test_old_failures_inside_a_fresh_sample_do_not_page(self, tmp_path):
+        """The pollution a count window would otherwise introduce: the sample
+        is fresh (newest answer minutes ago) and its rate is 0.38, but every
+        failure in it is from last month and the recent answers all landed.
+        Clean, not a page — the guard is on ACTION, not on the measure."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(False, reason="send_error: x",
+                              age_s=30 * 24 * 3600) for _ in range(5)]
+                   + [_rec(True, age_s=120) for _ in range(3)])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None                       # NOT a page
+        assert cell["disp"] == "clean"
+        assert "older than" in cell["reason"]
+
+    def test_one_fresh_failure_is_enough_to_arm_the_fire(self, tmp_path):
+        """Boundary from the other side of the same guard: identical sample,
+        one of the failures moved inside the freshness bound → it fires."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(False, reason="send_error: x",
+                              age_s=30 * 24 * 3600) for _ in range(4)]
+                   + [_rec(False, reason="send_error: x", age_s=3600)]
+                   + [_rec(True, age_s=120) for _ in range(3)])
+        sig = _probe(log, tmp_path, debounce_ticks=1)
+        assert sig is not None
+        assert sig.extra["fresh_send_errors"] == 1
+
+    def test_sample_is_capped_at_n_however_long_the_log(self, tmp_path):
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True) for _ in range(200)]
+                   + [_rec(False, reason="send_error: x") for _ in range(7)])
+        sig = _probe(log, tmp_path, debounce_ticks=1)
+        assert sig is not None
+        assert sig.extra["confirmable"] == 8      # 1 delivered + 7 send_error
+        assert sig.extra["delivered"] == 1
+
+    def test_freshness_is_configurable_and_actually_gates(self, tmp_path):
+        """Same log, two freshness bounds: inside it the sample is live and
+        fires, outside it the sample is stale and cannot."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True, age_s=2 * 3600) for _ in range(2)]
+                   + [_rec(False, reason="send_error: x", age_s=2 * 3600)
+                      for _ in range(6)])
+        assert _probe(log, tmp_path, debounce_ticks=1,
+                      fresh_s=6 * 3600.0) is not None
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1,
+                               fresh_s=1 * 3600.0)
+        assert out is None
+        assert cell["disp"] == "inert"
+
+    def test_ordering_is_file_order_not_ts_order(self, tmp_path):
+        """A stepped clock (RTC-less Pis, NTP) can scramble ts; the append
+        sequence cannot. The last 8 records WRITTEN are the sample, so a
+        later record carrying an older ts does not reorder the window."""
+        log = tmp_path / "oracle.jsonl"
+        # written last, but stamped 10 h ago: still in the sample, and it is
+        # what makes the sample stale under a 1 h bound.
+        _write_log(log, [_rec(True, age_s=60) for _ in range(8)]
+                   + [_rec(True, age_s=10 * 3600)])
+        out, cell = self._disp(log, tmp_path, fresh_s=3600.0)
+        assert out is None
+        assert cell["disp"] == "inert"
+        assert "stale" in cell["reason"]

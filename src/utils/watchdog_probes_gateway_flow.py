@@ -947,17 +947,26 @@ def probe_resource_canary_degraded(
 # degraded ONLY (a low oracle rate is a warning — the oracle is read-only,
 # low-traffic, operator-test-only today; the hard delivery surface is owned
 # by gateway_delivery_degraded / synth_soak / resource_canary). Fires when
-# rate < threshold AND a MINIMUM confirmable sample exists (else pass@small-N
-# noise; #6/#2). Silence (no queries) is NOT a failure for a reactive service
-# — nobody asked — so there is no silence leg in v1 (the min-sample guard
-# absorbs a quiet window; a v2 silence leg ties to channel_feed_dark, not a
-# naive "no log for Xh" that false-alarms every quiet night). INERT (None)
-# off a box where the oracle never wrote a log (disabled / never queried).
-# Reads the operator home directly (root-context safe); 2-tick debounce.
-# Mirrors synth_soak_degraded.
+# rate < threshold over the last N confirmable answers AND at least one of the
+# failures is FRESH (else pass@small-N noise and stale-history pages; #6/#2).
+# Silence (no queries) is NOT a failure for a reactive service — nobody asked
+# — so there is no silence leg (a v2 silence leg ties to channel_feed_dark,
+# not a naive "no log for Xh" that false-alarms every quiet night). INERT
+# (None) off a box where the oracle never wrote a log (disabled / never
+# queried), and INERT with the measurement in the reason when the sample is
+# stale. Reads the operator home directly (root-context safe); 2-tick
+# debounce. Mirrors synth_soak_degraded.
+#
+# ⚠️ v2 (2026-08-08) replaced the 6h TIME window with a COUNT window + a
+# staleness guard. v1's gate (≥8 confirmable inside 6h) could not be met by
+# the fleet's only oracle box — moc3 answers ~5 queries a month, in bursts
+# weeks apart — so the probe was structurally unable to judge anything. The
+# guard, not the window, is what keeps old evidence from being spoken about
+# as current health.
 
-_ORACLE_LOG_WINDOW_S = 6 * 3600.0           # rate over the last ~6h of ts
-_ORACLE_MIN_SAMPLE = 8                       # ≥8 confirmable queries or hold (small-N)
+# COUNT window, not time window (2026-08-08) — see probe_oracle_delivery_degraded.
+_ORACLE_SAMPLE_N = 8                         # rate over the last 8 confirmable answers
+_ORACLE_FRESH_S = 24 * 3600.0                # staleness guard: evidence currency bound
 _ORACLE_RATE_THRESHOLD = 0.8                 # fire when the confirmable rate < 0.8
 _ORACLE_LOG_READ_BYTES = 4 * 1024 * 1024     # bounded tail read (log rotates at 2 MB)
 _ORACLE_TS_FUTURE_SLOP_S = 300.0             # tolerate small forward clock skew on ts
@@ -1050,17 +1059,39 @@ def _classify_oracle_record(rec: dict) -> Optional[str]:
     return None  # not a record we recognise (neither delivered nor a non-delivery)
 
 
-def _read_oracle_window(
-    log_path: str, now: float, window_s: float, read_bytes: int,
-) -> Optional[Tuple[dict, int]]:
-    """Parse the audit log's recent tail into per-bucket counts over the ts
-    window. Returns ``(counts, total_in_window)`` or None when the file is
-    unreadable (caller HOLDS the streak — unobservable ≠ healthy).
+def _read_oracle_recent(
+    log_path: str, now: float, sample_n: int, read_bytes: int,
+) -> Optional[dict]:
+    """Parse the audit log's tail into the LAST ``sample_n`` confirmable records.
 
-    The log rotates at 2 MB; read at most ``read_bytes`` from the END so a busy
-    log stays bounded and the window is by ``ts``, never "all history". ``ts`` is
-    wall-clock (RTC-less Pis, NTP steps) — a non-numeric / negative / far-future
-    ts is skipped (clamp the forgeable clock).
+    Returns a dict, or None when the file is unreadable (caller HOLDS the streak
+    — unobservable ≠ healthy)::
+
+        {"total_records":      classified records seen in the tail (any bucket),
+         "confirmable_total":  delivered + send_error seen in the tail,
+         "sample":             [(bucket, ts), …] — the last ``sample_n``
+                               confirmable records, OLDEST → NEWEST,
+         "counts":             {delivered, send_error, decline, benign,
+                                benign_rns} — the confirmable pair over the
+                               sample, the excluded buckets over the SPAN the
+                               sample covers}
+
+    **Count window, not time window (2026-08-08).** The 6 h/min-8 time window
+    this replaced could never be satisfied by the fleet's only oracle box
+    (moc3: 99 confirmable answers in its LIFETIME, arriving in bursts weeks
+    apart), so the probe could never judge a rate at all. Rating the last N
+    answers *whenever they were given* is a measure the traffic can actually
+    support; the caller's staleness guard is what keeps old evidence from
+    being spoken about as current health.
+
+    ORDER IS FILE ORDER, not ts order — the append sequence is causal and a
+    stepped clock cannot scramble it (honest_failure_modes #6). ``ts`` is used
+    only for freshness and for clamping forgery: non-numeric, ≤ 0, or
+    far-future timestamps are skipped, exactly as the time window used to do.
+
+    The log rotates at 2 MB; at most ``read_bytes`` is read from the END, so a
+    busy log stays bounded — and on a busy box the last N confirmable records
+    are in the final few KB regardless.
     """
     try:
         size = os.path.getsize(log_path)
@@ -1080,11 +1111,10 @@ def _read_oracle_window(
     # number averages a known blind spot into a clean-looking figure; counting
     # the ambiguous leg separately makes the blind spot's SIZE visible while
     # the root fix waits on the RNS roll (honest_failure_modes #5).
-    counts = {"delivered": 0, "send_error": 0, "decline": 0, "benign": 0,
-              "benign_rns": 0}
-    total = 0
-    lo = now - window_s
     hi = now + _ORACLE_TS_FUTURE_SLOP_S
+    # (bucket, ts, is_ambiguous_rns) in file order — every classified record in
+    # the tail, at any age. The sample is sliced out of this below.
+    records: List[Tuple[str, float, bool]] = []
     for line in raw.split(b"\n"):
         if not line.strip():
             continue
@@ -1098,54 +1128,93 @@ def _read_oracle_window(
             ts = float(rec.get("ts"))
         except (TypeError, ValueError):
             continue
-        if ts < lo or ts > hi:
-            continue
+        if ts <= 0 or ts > hi:
+            continue  # forged / unset clock — skip, never rate it
         bucket = _classify_oracle_record(rec)
         if bucket is None:
             continue
-        counts[bucket] += 1
         # AMBIGUOUS = a benign-bucket RNS non-delivery with NO stated reason —
         # the row-2 blind spot proper. Once send_to_rns returns an RnsSendResult
         # the record names its reason (no_path / circuit_open / ...), which is
         # benign AND explained, so it must stop counting here or the measure
         # would never shrink as the blind spot closes.
-        if (bucket == "benign"
-                and str(rec.get("transport") or "").lower() == "rns"
-                and not str(rec.get("reason") or "").strip()):
+        ambiguous = (bucket == "benign"
+                     and str(rec.get("transport") or "").lower() == "rns"
+                     and not str(rec.get("reason") or "").strip())
+        records.append((bucket, ts, ambiguous))
+
+    counts = {"delivered": 0, "send_error": 0, "decline": 0, "benign": 0,
+              "benign_rns": 0}
+    conf_idx = [i for i, (b, _, _) in enumerate(records)
+                if b in ("delivered", "send_error")]
+    out = {"total_records": len(records), "confirmable_total": len(conf_idx),
+           "sample": [], "counts": counts}
+    if len(conf_idx) < sample_n:
+        return out  # caller decides: idle (nothing at all) vs small-N
+
+    # The span the sample covers = from the OLDEST sampled confirmable record
+    # to the end of the tail, in file order. Declines and benign non-deliveries
+    # are surfaced over exactly that span, so the excluded numbers describe the
+    # same stretch of the log as the rate does (never a different window).
+    start = conf_idx[-sample_n]
+    for bucket, ts, ambiguous in records[start:]:
+        counts[bucket] += 1
+        if ambiguous:
             counts["benign_rns"] += 1
-        total += 1
-    return counts, total
+        if bucket in ("delivered", "send_error"):
+            out["sample"].append((bucket, ts))
+    return out
 
 
 def probe_oracle_delivery_degraded(
     *,
     log_path: Optional[str] = None,
     now: Optional[float] = None,
-    window_s: float = _ORACLE_LOG_WINDOW_S,
-    min_sample: int = _ORACLE_MIN_SAMPLE,
+    sample_n: int = _ORACLE_SAMPLE_N,
+    fresh_s: float = _ORACLE_FRESH_S,
     threshold: float = _ORACLE_RATE_THRESHOLD,
     debounce_path: Optional[str] = None,
     debounce_ticks: int = 2,
 ) -> Optional[Signal]:
     """The mesh oracle's confirmable delivery rate fell below threshold.
 
-    Over the last ``window_s`` of audit-log ``ts``, compute the #74 confirmation
-    view: ``rate = delivered / (delivered + send_errors)``, where declines
-    (cooldown / not_allowlisted) and benign non-deliveries (reason-less
-    delivered:false — RNS no-path / MeshCore restart race) are EXCLUDED from the
-    failure set. Fire ``degraded`` when ``rate < threshold`` and at least
-    ``min_sample`` confirmable queries exist, after a ``debounce_ticks`` streak.
+    Over the **last ``sample_n`` confirmable answers** — however long ago they
+    were given — compute the #74 confirmation view:
+    ``rate = delivered / (delivered + send_errors)``, where declines (cooldown /
+    not_allowlisted) and benign non-deliveries (reason-less delivered:false —
+    RNS no-path / MeshCore restart race) are EXCLUDED from the failure set.
+
+    **Count window + staleness guard (2026-08-08).** v1 rated a 6 h *time*
+    window and needed ≥8 confirmable inside it. The fleet's only oracle box
+    answers ~5 queries a month in bursts, so that gate was unmeetable and the
+    probe could never say anything at all. A count window is a measure this
+    traffic supports; the staleness guard is what stops old evidence from
+    being spoken about as current health:
+
+      - the sample is **fresh** when its newest confirmable record is within
+        ``fresh_s``. Only a fresh sample can be called ``clean``, and only a
+        fresh sample can fire.
+      - a **stale** sample is reported ``inert`` with its rate and age in the
+        reason — the finding stays visible in coverage without paging about
+        answers given weeks ago at a 30 s cadence.
+      - firing also requires a **send_error inside ``fresh_s``**. Without it,
+        every failure in the sample is history and the recent answers all
+        landed; paging on a rate dragged down by old failures would be a page
+        nobody can act on. (This is the pollution the count window would
+        otherwise introduce, and the guard is on ACTION, not on the measure.)
 
     Honest self-guards (favour silence on uncertainty):
       - operator unresolvable → None (INDETERMINATE: cannot locate the log).
       - log file absent → None (INERT: the oracle never answered on this box).
       - log tail unreadable (transient/torn) → None, HOLDING the streak (neither
         fires nor resets).
-      - zero records in the window → None (INERT: enrolled but idle — the
+      - zero records in the tail → None (INERT: enrolled but idle — the
         observation SUCCEEDED and says nobody asked; not a blind detector).
-      - confirmable sample < ``min_sample`` on a non-empty window → None
+      - fewer than ``sample_n`` confirmable answers EVER recorded → None
         (INDETERMINATE): a rate over a handful of queries is pass@small-N noise.
-      - rate ≥ threshold on a real sample → explicit healthy → reset the streak.
+        Unlike v1's per-window guard this resolves permanently once the oracle
+        has answered ``sample_n`` times, instead of re-arming every window.
+      - rate ≥ threshold on a fresh sample → explicit healthy → reset the streak.
       - a degraded candidate must persist ``debounce_ticks`` consecutive ticks.
     """
     import time as _time
@@ -1163,46 +1232,61 @@ def probe_oracle_delivery_degraded(
 
     sp = debounce_path or DEFAULT_ORACLE_DELIVERY_DEBOUNCE_PATH
 
-    parsed = _read_oracle_window(lp, now, window_s, _ORACLE_LOG_READ_BYTES)
+    parsed = _read_oracle_recent(lp, now, sample_n, _ORACLE_LOG_READ_BYTES)
     if parsed is None:
         note_disposition("oracle_delivery_degraded", "indeterminate",
                          reason="oracle log tail unreadable — streak held")
         return None  # unreadable tail — HOLD the streak (don't reset, don't fire)
-    counts, total = parsed
+    counts = parsed["counts"]
 
     # IDLE ≠ UNOBSERVABLE (2026-08-08, Tier-3 re-decide). The observation
-    # SUCCEEDED and its answer is "the oracle answered nothing in this window"
-    # — a reactive service nobody queried, which is the steady state on the one
-    # box that enrolls it (moc3: 106 lifetime queries, newest 19 days old, so
-    # the 6h/min-8 gate is never met). Reporting that as ``indeterminate``
-    # made the cell read detector-blind FOREVER on the only box that can see —
-    # the standing-indeterminate-is-a-finding trap, one layer up.
-    # ⚠️ Only a TOTALLY empty window is idle. total > 0 with confirmable == 0
-    # (every record a decline, or every one a reason-less RNS non-delivery)
-    # stays ``indeterminate`` below: the oracle IS being exercised, and the
-    # all-benign-RNS shape is exactly the row-2 blind spot — calling that
-    # "nothing to watch" would hide the failure this probe exists to size.
-    if total == 0:
+    # SUCCEEDED and its answer is "the oracle has answered nothing" — a
+    # reactive service nobody queried. Reporting that as ``indeterminate``
+    # made the cell read detector-blind FOREVER on the only box that can see
+    # (moc3) — the standing-indeterminate-is-a-finding trap, one layer up.
+    if parsed["total_records"] == 0:
         note_disposition(
             "oracle_delivery_degraded", "inert",
-            reason=(f"oracle enrolled but idle — 0 queries in the last "
-                    f"~{window_s / 3600.0:.0f}h; no delivery to rate"))
+            reason="oracle enrolled but idle — no answers recorded at all")
         return None
 
+    # ⚠️ Records but too few CONFIRMABLE ones is NOT idle. A log of nothing but
+    # declines, or nothing but reason-less RNS non-deliveries, means the oracle
+    # IS being exercised — and the all-benign-RNS shape is exactly the row-2
+    # blind spot. Calling that "nothing to watch" would hide the failure this
+    # probe exists to size (honest_failure_modes #2).
+    if parsed["confirmable_total"] < sample_n:
+        note_disposition(
+            "oracle_delivery_degraded", "indeterminate",
+            reason=(f"only {parsed['confirmable_total']} confirmable answer(s) "
+                    f"ever recorded (< {sample_n}) — cannot judge a rate"))
+        return None
+
+    sample = parsed["sample"]
     delivered = counts["delivered"]
     real_failures = counts["send_error"]
-    confirmable = delivered + real_failures
-    if confirmable < min_sample:
-        note_disposition("oracle_delivery_degraded", "indeterminate",
-                         reason="confirmable sample below minimum — cannot judge")
-        return None  # small-N (incl. a quiet window) — can't judge a rate honestly
+    confirmable = delivered + real_failures       # == sample_n by construction
+    rate = delivered / confirmable
 
-    rate = delivered / confirmable  # confirmable >= min_sample >= 1, safe
+    newest_ts = sample[-1][1]
+    oldest_ts = sample[0][1]
+    newest_age_s = max(0.0, now - newest_ts)
+    # Span from the sample's own endpoints. A stepped clock can make this
+    # negative (file order is causal, ts is not); clamp rather than print a
+    # negative duration (honest_failure_modes #6).
+    span_s = max(0.0, newest_ts - oldest_ts)
+    fresh_errors = sum(1 for b, ts in sample
+                       if b == "send_error" and (now - ts) <= fresh_s)
+
     extra = {
-        "window_h": round(window_s / 3600.0, 1),
+        "sample_n": sample_n,
         "confirmable": confirmable,
         "delivered": delivered,
         "send_errors": real_failures,
+        "fresh_send_errors": fresh_errors,
+        "newest_age_h": round(newest_age_s / 3600.0, 1),
+        "sample_span_h": round(span_s / 3600.0, 1),
+        "fresh_h": round(fresh_s / 3600.0, 1),
         "declines_excluded": counts["decline"],
         "benign_nondeliveries_excluded": counts["benign"],
         # The ambiguous slice of the line above: RNS-leg non-deliveries that
@@ -1214,9 +1298,38 @@ def probe_oracle_delivery_degraded(
         "threshold": threshold,
     }
 
+    # THE STALENESS GUARD. Old answers are evidence about the past, never a
+    # claim about now — so a stale sample can be neither `clean` (that would be
+    # absence-of-evidence dressed as health) nor a page (nobody can act on a
+    # failure from three weeks ago, and at 30 s a tick it would never stop).
+    # It is `inert` with the measurement in the reason, so the finding stays
+    # readable in coverage. This is moc3's steady state.
+    if newest_age_s > fresh_s:
+        _save_oracle_streak(sp, 0)
+        verdict = ("rate %.2f BELOW threshold %.2f" % (rate, threshold)
+                   if rate < threshold else "rate %.2f" % rate)
+        note_disposition(
+            "oracle_delivery_degraded", "inert",
+            reason=(f"oracle idle — last {confirmable} answers {verdict}, "
+                    f"newest {newest_age_s / 86400.0:.1f}d ago "
+                    f"(stale > {fresh_s / 3600.0:.0f}h; not paged)"))
+        return None
+
     if rate >= threshold:
         _save_oracle_streak(sp, 0)  # explicit healthy observation → reset
         note_disposition("oracle_delivery_degraded", "clean")
+        return None
+
+    # Fresh sample, degraded rate — but if every send_error in it is OLD, the
+    # recent answers all landed and the rate is being dragged down by history.
+    # Report the healthy fresh evidence; do not page about the past.
+    if fresh_errors == 0:
+        _save_oracle_streak(sp, 0)
+        note_disposition(
+            "oracle_delivery_degraded", "clean",
+            reason=(f"last {confirmable} answers rate {rate:.2f} (below "
+                    f"{threshold:.2f}) but every send-error is older than "
+                    f"{fresh_s / 3600.0:.0f}h — recent answers all landed"))
         return None
 
     streak = min(_load_oracle_streak(sp) + 1, debounce_ticks)
@@ -1228,12 +1341,14 @@ def probe_oracle_delivery_degraded(
     extra["debounce_streak"] = streak
     detail = (
         f"oracle delivery degraded: {rate:.2f} rate (threshold {threshold:.2f}) "
-        f"over ~{extra['window_h']}h — {delivered} delivered / {real_failures} "
-        f"send-error of {confirmable} confirmable queries "
-        f"({counts['decline']} declines + {counts['benign']} benign "
-        f"non-deliveries excluded). The oracle answered but its replies are not "
-        f"landing — check the gateway's RNS/Meshtastic send path + the oracle "
-        f"audit log (~/.local/share/meshforge/mesh_oracle_log.jsonl)."
+        f"over its last {confirmable} answers — {delivered} delivered / "
+        f"{real_failures} send-error, {fresh_errors} of those failures within "
+        f"{extra['fresh_h']:.0f}h ({counts['decline']} declines + "
+        f"{counts['benign']} benign non-deliveries excluded). The sample spans "
+        f"~{extra['sample_span_h']:.0f}h, newest answer "
+        f"{extra['newest_age_h']:.1f}h ago. The oracle answered but its replies "
+        f"are not landing — check the gateway's RNS/Meshtastic send path + the "
+        f"oracle audit log (~/.local/share/meshforge/mesh_oracle_log.jsonl)."
     )
     return Signal(
         cls="oracle_delivery_degraded",

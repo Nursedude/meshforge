@@ -1191,8 +1191,8 @@ from utils.watchdog_probes_gateway_flow import (  # noqa: E402,F401 (back-compat
     _load_resource_canary_streak,
     _save_resource_canary_streak,
     probe_resource_canary_degraded,
-    _ORACLE_LOG_WINDOW_S,
-    _ORACLE_MIN_SAMPLE,
+    _ORACLE_SAMPLE_N,
+    _ORACLE_FRESH_S,
     _ORACLE_RATE_THRESHOLD,
     _ORACLE_LOG_READ_BYTES,
     _ORACLE_TS_FUTURE_SLOP_S,
@@ -1201,6 +1201,6 @@ from utils.watchdog_probes_gateway_flow import (  # noqa: E402,F401 (back-compat
     _load_oracle_streak,
     _save_oracle_streak,
     _classify_oracle_record,
-    _read_oracle_window,
+    _read_oracle_recent,
     probe_oracle_delivery_degraded,
 )
