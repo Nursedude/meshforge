@@ -805,3 +805,98 @@ class TestRetrievalGrounding:
              "context_grounded_keys": 2, "context_note": None}
         text = build_brief({}, [], NOW, cadence_triage=w)
         assert "grounded on 2 key(s)" in text and "JUDGED BLIND" not in text
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-08-07 — the chunker's decisions leave a witness
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _BisectBackend:
+    """Times out on any multi-delta chunk; answers a single delta.
+
+    Reproduces the shape that made triage-five-mixed take 18-22 minutes:
+    the whole-set attempt exceeds the client bound, the run bisects, and
+    the pieces land. Before the witness, that was indistinguishable in the
+    output from "packed cleanly, box was just slow".
+    """
+    model = "fake:3b"
+
+    def __init__(self):
+        self.calls = []
+
+    def complete(self, system, user, fmt="json"):
+        self.calls.append(user)
+        keys = [k for k in ("a", "b", "c", "d") if f'"{k}"' in user
+                or f"'{k}'" in user or f"key: {k}" in user]
+        # Count deltas by the rendered key markers the prompt carries.
+        n = sum(user.count(f'"{k}"') > 0 for k in ("a", "b", "c", "d"))
+        if n > 1:
+            raise CompilerError("client bound exceeded")
+        return _good_reply([k for k in ("a", "b", "c", "d")
+                            if f'"{k}"' in user][:1])
+
+
+class TestChunkerWitness:
+    """`attempts` was counted in the loop and then DISCARDED — it never
+    reached the returned dict, so the adaptive chunker was unobservable
+    after the fact. On 2026-08-07 triage-five-mixed took 18-22 min for five
+    deltas and nothing in the output could say whether it bisected four
+    times or simply ran slow: different problems, different cures, and no
+    way to tell them apart."""
+
+    def test_clean_run_reports_one_attempt_no_bisect(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
+        w = cf.run(path, FakeBackend(reply=_good_reply(["a", "b"])),
+                   frontier_rc=1, now=NOW)
+        c = w["chunking"]
+        assert c["attempts"] == 1
+        assert c["bisects"] == 0
+        assert c["planned_chunks"] == 1
+        assert len(c["chunk_s"]) == 1
+        assert c["wall_s"] >= 0.0
+
+    def test_bisect_is_counted_and_visible(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a"), _delta("b")])
+        be = _BisectBackend()
+        w = cf.run(path, be, frontier_rc=1, now=NOW)
+        c = w["chunking"]
+        assert c["bisects"] >= 1, (
+            "a bisect must leave a trace — it is the difference between "
+            "'the chunk was too big' and 'the box is slow'")
+        # 1 failed whole-chunk attempt + one per half.
+        assert c["attempts"] == 3
+        assert len(c["chunk_s"]) == 3
+        assert w["triaged"] == 2  # the halves landed
+
+    def test_witness_survives_total_failure(self, tmp_path):
+        """The failure path is exactly when the chunker's behaviour matters;
+        a witness that only rides the success return would be missing when
+        it is needed (hfm #4 — reader/writer pairs wire together)."""
+        path = _deltas_file(tmp_path, [_delta("a")])
+        w = cf.run(path, FakeBackend(exc=CompilerError("ollama down")),
+                   frontier_rc=None, now=NOW)
+        assert w["brain_tier"] == "rules"
+        c = w["chunking"]
+        assert c["attempts"] == 1
+        assert c["bisects"] == 0
+        assert len(c["chunk_s"]) == 1, (
+            "a chunk that FAILED still consumed wall clock — omitting its "
+            "duration would understate exactly the expensive case")
+
+    def test_slowest_chunk_is_reported(self, tmp_path):
+        path = _deltas_file(tmp_path, [_delta("a")])
+        w = cf.run(path, FakeBackend(reply=_good_reply(["a"])),
+                   frontier_rc=1, now=NOW)
+        c = w["chunking"]
+        assert c["slowest_chunk_s"] == max(c["chunk_s"])
+
+    def test_additive_only_existing_fields_intact(self, tmp_path):
+        """The witness must not disturb what brief.py and local_brain_eval
+        already read."""
+        path = _deltas_file(tmp_path, [_delta("a")])
+        w = cf.run(path, FakeBackend(reply=_good_reply(["a"])),
+                   frontier_rc=1, now=NOW)
+        for k in ("brain_tier", "triaged", "dropped_entries", "summary",
+                  "deltas", "proposed_total"):
+            assert k in w, f"{k} disappeared — downstream consumers read it"

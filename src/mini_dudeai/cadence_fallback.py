@@ -521,6 +521,17 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
     stop_note: Optional[str] = None
     first_error: Optional[str] = None
     attempts = 0
+    # Chunker witness (2026-08-07). `attempts` was already counted here and
+    # then DISCARDED — it never reached the returned dict, so the adaptive
+    # chunker's decisions were unobservable after the fact. That mattered the
+    # day triage-five-mixed took 18-22 min for FIVE deltas and nothing in the
+    # output could say whether it packed once and bisected four times or
+    # packed cleanly and was simply slow. Those are different problems with
+    # different cures (chunk timeout vs box throughput), and the run had no
+    # way to tell them apart. Counters only — MF021 observation-only holds.
+    bisects = 0
+    chunk_secs: List[float] = []
+    planned_chunks = 0
     # Work queue, oldest-first, so partial coverage is always the OLDEST deltas.
     if chunk_size is None:
         # ADAPTIVE: size the chunks to the window the backend DECLARES, so the
@@ -533,12 +544,14 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
         size = max(1, int(chunk_size))
         pending = [proposed[i:i + size]
                    for i in range(0, len(proposed), size)]
+    planned_chunks = len(pending)
     while pending:
         if merged and budget_s is not None and monotonic() - started >= budget_s:
             stop_note = "time budget spent"
             break
         chunk = pending.pop(0)
         attempts += 1
+        _chunk_t0 = monotonic()
         try:
             raw = backend.complete(_SYSTEM_PROMPT,
                                    build_user_prompt(chunk, ctx, ctx_note),
@@ -546,6 +559,7 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
             triage, dropped = _validate_triage(
                 raw, {d.get("key") for d in chunk})
         except CompilerError as e:
+            chunk_secs.append(round(monotonic() - _chunk_t0, 1))
             first_error = first_error or str(e)
             if len(chunk) > 1:
                 # TRANSPORT failure on a MULTI-delta chunk is ambiguous: the
@@ -559,6 +573,7 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
                 mid = len(chunk) // 2
                 pending.insert(0, chunk[mid:])
                 pending.insert(0, chunk[:mid])
+                bisects += 1
                 continue
             # A SINGLE delta that still times out cannot be split further, so
             # the size hypothesis is exhausted and the tier itself is the
@@ -574,11 +589,25 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
             # alive, so a bad reply about delta A is not evidence about delta B
             # (hfm #2); carry on. Its deltas are simply absent from `triaged`,
             # which the brief already renders against `proposed_total`.
+            chunk_secs.append(round(monotonic() - _chunk_t0, 1))
             first_error = first_error or str(e)
             continue
+        chunk_secs.append(round(monotonic() - _chunk_t0, 1))
         merged.extend(triage["deltas"])
         summaries.append(triage["summary"])
         dropped_total += dropped
+    # ONE builder, used on BOTH exits below. The failure path is precisely
+    # where the chunker's behaviour matters most, so a witness that only
+    # rides the success return would be missing exactly when it is needed
+    # (the reader/writer-pair rule, hfm #4).
+    chunking = {
+        "planned_chunks": planned_chunks,
+        "attempts": attempts,
+        "bisects": bisects,
+        "chunk_s": chunk_secs,
+        "slowest_chunk_s": max(chunk_secs) if chunk_secs else 0.0,
+        "wall_s": round(monotonic() - started, 1),
+    }
     if not merged:
         # Nothing survived anywhere: the witness degrades to a deterministic
         # note — an honest "backlog pending, nobody triaged it", never a
@@ -586,6 +615,7 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
         return {**base, "brain_tier": "rules", "triaged": 0, "deltas": [],
                 "summary": f"{total} proposed delta(s) pending; local LLM "
                            f"triage unavailable",
+                "chunking": chunking,
                 "error": (first_error
                           or "no chunk produced a usable triage")[:300]}
     # Tier comes from the BACKEND's declaration (default keeps the historic
@@ -613,6 +643,7 @@ def run(deltas_path: str, backend, frontier_rc: Optional[int],
             "model": getattr(backend, "model", "?"),
             "triaged": len(merged),
             "dropped_entries": dropped_total,
+            "chunking": chunking,
             "summary": summary[:_SUMMARY_CLAMP],
             "deltas": merged}
 
