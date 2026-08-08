@@ -446,20 +446,21 @@ STRUCTURAL_DARK: List[Dict[str, str]] = [
                "size- or volume-dependent failure would still read clean",
      "ref": "watchdog_probes_gateway.py :: probe_propagation_soak_degraded"},
     {"id": "aredn_configured_source_only",
-     "detail": "CLOSED 2026-07-20 (row 5). Three legs now: configured-source dark, "
-               "declared-but-unconfigured (2026-07-19), and — the last gap — "
-               "probe_aredn_organ_undeclared, which catches a box that made NEITHER "
-               "statement. It cannot be closed by absence ('did we forget to declare?' "
-               "is unfalsifiable), so it is closed by POSITIVE evidence: an AREDN node "
-               "answering sysinfo on the box's own LAN (localnode.local.mesh resolves "
-               "only where an AREDN node serves DNS) while the box collects nothing from "
-               "it — the 2026-06-12 Phase-0 state itself, now detectable without anyone "
-               "having remembered. Companion fix: an ABSENT map_settings.json no longer "
-               "collapses into 'unreadable', so wiping the whole settings file (the "
-               "strongest form of the wipe class) reaches the declaration leg instead of "
-               "returning indeterminate. RESIDUAL: a site with no AREDN LAN path is "
-               "correctly invisible — there is nothing to observe; slow != dark",
-     "ref": "watchdog_probes_aredn.py :: probe_aredn_organ_undeclared"},
+     "detail": "REOPENED BY CHOICE 2026-08-08 (signal-class yield audit). Was CLOSED "
+               "2026-07-20 by probe_aredn_organ_undeclared, the positive-evidence leg "
+               "that caught a box sitting on an AREDN node's LAN having neither "
+               "configured aredn_node_ips NOR declared organ_expectations.aredn. That "
+               "probe was removed: it read INERT on all 8 boxes (4 with no AREDN LAN, "
+               "3 where the configured-source legs own the box) and had fired exactly "
+               "once in 49 days, at bring-up. Its only firing state is a NEW box with "
+               "an AREDN LAN and no config -- a state a human is present for. The two "
+               "surviving legs (configured-source dark, declared-but-unconfigured) "
+               "still cover every box that made a STATEMENT. ACCEPTED GAP: a box that "
+               "makes NEITHER statement is invisible again, exactly as it was before "
+               "2026-07-20. Recorded here rather than dropped, so the coverage claim "
+               "stays honest -- an audit that silently deletes a row is the defect "
+               "this file exists to prevent",
+     "ref": "removed 2026-08-08; see .claude/audits/signal_class_yield_2026_08_08.md"},
     {"id": "claw_edge_rf_coverage_partial",
      "detail": "NARROWED 2026-07-19 (row 7): claw edge nodes now have their OWN signals — "
                "claw_device_dark (fresh capture tick says the DEVICE didn't answer) and "

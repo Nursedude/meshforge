@@ -426,19 +426,6 @@
       "annotation": "2026-06-04 .32 dark-feed lesson: hours of zero decoded text on the meshforge channel while the json-uplink pipeline is alive = missed PSK re-key (decode gate = hash(name,psk)), deaf radio (channel_utilization=0.0 tell), or dead uplink. Send a ch2 test from another fleet box to discriminate."
     },
     {
-      "id": "json_uplink_dark_any",
-      "match": {
-        "kind": "signal_class",
-        "class": "json_uplink_dark",
-        "subject_glob": "*"
-      },
-      "action": {
-        "kind": "propose_escalation"
-      },
-      "cooldown_s": 21600,
-      "annotation": "2026-08-07: the instrument-liveness half of channel_feed_dark. This box DECLARES organ_expectations.json_uplink and no 'serialized json message' line is observable, though its journal covers the window — so the channel-dark canary is BLIND here, not quiet. First move: journalctl -u meshtasticd --since -1h | grep 'serialized json message'; then check the radio's mqtt.json_enabled (the setting that actually gates it — mqtt.enabled being True proves nothing, which is exactly what made the 2026-08-07 blindness read as 'mqtt off' on three boxes where MQTT was running). If the box is not meant to uplink json, drop the declaration and the probe goes inert. ⚠️ ESCALATE-ONLY, UNSOAKED — no real firing has ever been observed on this fleet; promote to an ntfy page only from measured data (the claw_rf_silent / calibration_drift 34-day precedent). Cooldown 6h: a config-shaped condition does not resolve on its own."
-    },
-    {
       "id": "queue_backlog_any",
       "match": {
         "kind": "signal_class",
@@ -751,32 +738,6 @@
       "annotation": "AREDN Phase 0 (2026-06-12) \u2014 a box with aredn_node_ips configured whose local AREDN sysinfo collection went dark: node unreachable, or the running service predates the config (reports not_configured while the settings file carries IPs \u2014 restart meshforge-map to load). The worldmap fallback masks the loss; found dormant on the AREDN-site box itself. Side-effect-free escalation; NO ntfy page (degraded \u2014 the map serves, the AREDN leg is blind)."
     },
     {
-      "id": "aredn_organ_undeclared_any",
-      "match": {
-        "kind": "signal_class",
-        "class": "aredn_organ_undeclared",
-        "subject_glob": "*"
-      },
-      "action": {
-        "kind": "propose_escalation"
-      },
-      "cooldown_s": 86400,
-      "annotation": "AREDN organ available but NEVER ADOPTED (2026-07-20) \u2014 an AREDN node answers sysinfo on this box's own LAN (localnode.local.mesh resolves, which it cannot without an AREDN node serving DNS) while the box neither configures aredn_node_ips nor declares organ_expectations.aredn. This is the 2026-06-12 Phase-0 state itself: the organ sits dormant and every AREDN node on the map comes from the worldmap fallback. Both older legs need a statement the operator had to remember to make, so this one is closed by POSITIVE evidence instead. Escalation only, NO ntfy page: lost coverage rather than an outage, and by construction it has already been this way a long time \u2014 a page would arrive years late and nightly. Fix: add the node IP to map_settings.json aredn_node_ips + restart meshforge-map, or write the decision down as an organ_expectations declaration."
-    },
-    {
-      "id": "lxmf_propagation_unused_any",
-      "match": {
-        "kind": "signal_class",
-        "class": "lxmf_propagation_unused",
-        "subject_glob": "*"
-      },
-      "action": {
-        "kind": "propose_escalation"
-      },
-      "cooldown_s": 86400,
-      "annotation": "LXMF propagation available but UNADOPTED (2026-07-20) \u2014 propagation nodes are announcing on the RNS network (this gateway parses them into its own node cache) while gateway.json rns.propagation_node is empty, so nothing is stored and forwarded: an LXMF message to a peer that is OFFLINE right now fails outright instead of waiting for it to return. Escalation only, NO ntfy page \u2014 lost coverage rather than an outage, and by construction long-standing. \u26a0\ufe0f Adopting is a TRUST decision, not a mechanical fix: a propagation node sees stored-traffic metadata, so prefer standing one up on our own rnsd over pointing at a stranger's. The edit lands in gateway.json and needs a meshforge-gateway restart \u2014 never mid-soak (the wedge watchdog's os._exit(2) activates new code non-deterministically)."
-    },
-    {
       "id": "lxmf_propagation_node_dark_any",
       "match": {
         "kind": "signal_class",
@@ -1044,19 +1005,6 @@
       },
       "cooldown_s": 21600,
       "annotation": "2026-07-19 row-8 accept, LEADING indicator \u2014 a recipient became reachable from MORE THAN ONE gateway. This is the PRECONDITION for a cross-gateway duplicate, NOT a duplicate and NOT a fault. Row 8 was accepted-permanent (keep the detector, never build coordination) on COST ASYMMETRY: an unsuppressed dup means the message arrived twice (redundancy), while a yield protocol that misfires means it arrived zero times (silence) \u2014 emergency-comms infrastructure must fail toward redundancy. That accept did NOT claim dups are rare: three human recipients were already dual-homed the day it was made. So this tracks the exposure the decision knowingly accepts, and answers 'is time changing this?' with a number that moves BEFORE any duplicate happens. propose_escalation, never ntfy \u2014 a routing change is something to look at, not an outage; check whether the new dual-homing was intended. Fires once per newly-observed recipient (never on the count, which churns with the rollup window). \u26a0\ufe0f Confirmable population only \u2014 a mesh recipient never confirms, so mesh exposure stays invisible until the gateway-side attempted/routing emission lands (the residual)."
-    },
-    {
-      "id": "dream_ratification_stalled_any",
-      "match": {
-        "kind": "signal_class",
-        "class": "dream_ratification_stalled",
-        "subject_glob": "*"
-      },
-      "action": {
-        "kind": "propose_escalation"
-      },
-      "cooldown_s": 21600,
-      "annotation": "2026-07-22 second-brain arc WS-C -- mini's dream propose->ratify VALUE loop runs but is not closing: proposals sit unresolved past a long age WHILE the mini_cadence session is demonstrably alive (its cron verdict fresh + OK). Fix: `python3 -m mini_dudeai.dreams --list-proposed`, then ratify or reject each with a --reason (if noise, retune the detector; the 2026-07-18 sweep found 0/164 ratified and could not say why). Side-effect-free escalation; NO ntfy page (unsoaked -- the calibration_drift 34-day precedent). NON-redundant with cron_verdict_stale #78, which owns the cadence-DOWN case; this fires only when the ratifier is UP but the backlog is not clearing. INERT off the manager box (no mini_cadence verdict = no ratifier -- on a gateway box, with no cadence ratifier at all, this class stays permanently inert)."
     },
     {
       "id": "local_brain_regressed_any",

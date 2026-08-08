@@ -596,10 +596,6 @@ def _traffic_signal_classes() -> frozenset:
     return frozenset({
         "channel_feed_dark", "delivery_confirmation_stall", "mqtt_root_drift",
         "queue_backlog", "delivery_write_canary", "aredn_source_dark",
-        # Same family as aredn_source_dark: a local data source yielding
-        # nothing. Dark = a configured source went blind; undeclared = one that
-        # was never adopted at all (2026-07-20).
-        "aredn_organ_undeclared",
         "phoneapi_tcp_leak", "meshtasticd_phoneapi_wedge",
     })
 

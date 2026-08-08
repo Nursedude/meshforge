@@ -878,17 +878,12 @@ def probe_kernel_reboot_pending(
 # ─────────────────────────────────────────────────────────────────────
 from utils.watchdog_probes_aredn import (  # noqa: E402,F401
     DEFAULT_AREDN_SOURCE_DEBOUNCE_PATH,
-    DEFAULT_AREDN_UNDECLARED_DEBOUNCE_PATH,
-    AREDN_LOCALNODE_NAME,
     _AREDN_DARK_REASONS,
     _read_configured_aredn_ips,
     _read_configured_aredn_ips_state,
     _read_aredn_expectation,
     _fetch_local_status_json,
-    _resolve_aredn_localnode,
-    _fetch_aredn_sysinfo,
     probe_aredn_source_dark,
-    probe_aredn_organ_undeclared,
 )
 
 

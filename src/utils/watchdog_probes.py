@@ -105,7 +105,6 @@ from utils.watchdog_probes_tracer import (
     probe_tracer_peer_unreachable,
 )
 from utils.watchdog_probes_drift import (
-    probe_aredn_organ_undeclared,
     probe_aredn_source_dark,
     probe_cron_verdict_stale,
     probe_dep_install_fragmented,
@@ -144,7 +143,6 @@ from utils.watchdog_probes_gateway import (
     probe_gateway_dup_degraded,
     probe_gateway_dual_homed_exposure,
     probe_lxmf_propagation_node_dark,
-    probe_lxmf_propagation_unused,
     probe_oracle_delivery_degraded,
     probe_queue_backlog,
     probe_resource_canary_degraded,
@@ -154,7 +152,6 @@ from utils.watchdog_probes_gateway import (
 from utils.watchdog_probes_mini import (
     MEMORY_INDEX_LIMIT_BYTES,
     probe_calibration_drift,
-    probe_dream_ratification_stalled,
     probe_history_write_failure,
     probe_local_brain_regressed,
     probe_memory_index_oversize,
@@ -203,7 +200,6 @@ __all__ = [
     "probe_gateway_dup_degraded",
     "probe_gateway_dual_homed_exposure",
     "probe_lxmf_propagation_node_dark",
-    "probe_lxmf_propagation_unused",
     "probe_oracle_delivery_degraded",
     "probe_resource_canary_degraded",
     "probe_synth_soak_degraded",
@@ -216,7 +212,6 @@ __all__ = [
     "probe_cron_verdict_stale",
     "probe_kernel_reboot_pending",
     "probe_aredn_source_dark",
-    "probe_aredn_organ_undeclared",
     "probe_inherited_app_drift",
     "probe_fleet_box_unreachable",
     "probe_host_frozen",
@@ -233,6 +228,5 @@ __all__ = [
     "probe_rules_seed_drift",
     "probe_memory_index_oversize",
     "probe_calibration_drift",
-    "probe_dream_ratification_stalled",
     "probe_local_brain_regressed",
 ]

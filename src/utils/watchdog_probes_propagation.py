@@ -156,12 +156,26 @@ def probe_propagation_soak_degraded(
     # false in both directions — the fire script's old unconditional mkdir
     # created the dir on unconfigured boxes (permanent indeterminate), and a
     # box de-adopted later kept a dir of aging envelopes (false silence page).
+    # ⚠️ The home this reads MUST come from the operator-UID lookup, never
+    # ``get_real_user_home()``. This daemon runs ``User=root`` with no
+    # SUDO_USER and LOGNAME=root, so that helper falls back to ``/root`` —
+    # and ``/root/.config/meshforge/gateway.json`` does not exist, so the
+    # intent gate below read "absent" and this probe reported INERT ("no
+    # propagation node adopted") on every box in the fleet, INCLUDING the two
+    # actually running the hourly drill. Found 2026-08-08: moc3 was firing a
+    # 4m47s-CPU drill every hour, publishing healthy envelopes, while its
+    # watchdog said there was nothing to exercise. Same root cause as the
+    # 2026-08-05 rns_instance_name_mismatch dig (a ROOT service's ~ is /root);
+    # ``watchdog_runner._operator_home_for_root`` documents the same trap.
+    # ``_operator_home`` is the resolver the sibling propagation probes
+    # already use — one resolver, one answer (honest_failure_modes #5).
     if configured_fn is None:
         def configured_fn():
-            from utils.paths import get_real_user_home
-            from utils.watchdog_probes_gateway import (
-                _read_configured_propagation_node)
-            h = home or str(get_real_user_home())
+            from utils.watchdog_probes_gateway_lxmf import (
+                _operator_home, _read_configured_propagation_node)
+            h = home or _operator_home()
+            if not h:
+                return None, "unreadable"
             return _read_configured_propagation_node(h)
     try:
         cfg_val, cfg_state = configured_fn()

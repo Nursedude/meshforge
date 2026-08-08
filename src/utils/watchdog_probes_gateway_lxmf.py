@@ -21,8 +21,12 @@ from utils.watchdog_probe_core import (
 )
 
 # ─────────────────────────────────────────────────────────────────────
-# Probe: LXMF propagation nodes available but this gateway uses none
-# (2026-07-20 — the second shape-C organ, after aredn_organ_undeclared).
+# The shape-C leg (LXMF propagation available but unadopted) lived here
+# 2026-07-20 .. 2026-08-08. Removed by the signal-class yield audit: it was
+# INERT on all 8 boxes — inert without a gateway, and inert BY DESIGN on the
+# two that adopted a node — so it was a one-time adoption nudge running in a
+# 30s loop. The shape-A leg below (the configured node went quiet) stays: it
+# watches a live dependency, which is the half that earns a tick.
 #
 # Found by the optional-organ sweep: of 50 signal classes, exactly ONE
 # watched for an available-but-UNADOPTED capability. Everything else waits
@@ -162,141 +166,17 @@ def _read_fresh_propagation_nodes(home: str, now: float):
     return out, "ok"
 
 
-def probe_lxmf_propagation_unused(
-    *,
-    home: Optional[str] = None,
-    now: Optional[float] = None,
-    configured_fn=None,
-    candidates_fn=None,
-    state_path: Optional[str] = None,
-    debounce_ticks: int = 2,
-) -> Optional[Signal]:
-    """LXMF propagation nodes are reachable and this gateway is configured
-    to use none — store-and-forward to offline peers is available and unused.
-
-    The shape-C rule (row 5's lesson): a capability nobody adopted cannot be
-    detected from the ABSENCE of configuration, only from POSITIVE evidence
-    that the capability is there. Here that evidence is the gateway's own
-    node cache — it heard the announces and filed them.
-
-    Honest failure modes, every one of which prefers silence:
-      - no operator resolvable → indeterminate (cannot read either side).
-      - gateway.json ABSENT → INERT: no gateway organ on this box. (An
-        UNREADABLE gateway.json is indeterminate — intent unknown, never
-        read as "unconfigured", which would invent an alarm.)
-      - propagation_node already set → INERT + streak reset. Adopted; a
-        future shape-A leg could check the configured one still answers, but
-        one fault keeps one owner.
-      - node cache ABSENT → INERT (the gateway never ran here).
-      - node cache UNREADABLE or STALE → indeterminate, streak HELD: stale
-        bytes cannot testify about the present, and unobservable is not
-        "nothing available" (honest_failure_modes #2).
-      - zero FRESH propagation nodes → explicit healthy-ish observation:
-        nothing to adopt, reset the streak. Absence of an announce is not a
-        fault — it is the ordinary state of a mesh with no propagation node.
-      - 2-tick debounce so one torn cache read cannot page.
-
-    ``degraded``, escalation-only by seed policy: an unadopted capability is
-    lost coverage, not an outage, and has by construction been that way a
-    long time already (row 5 + row 9 precedent).
-    """
-    import time as _time
-    now = _time.time() if now is None else now
-    sp = state_path or DEFAULT_LXMF_PROPAGATION_DEBOUNCE_PATH
-
-    if home is None:
-        home = _operator_home()
-    if not home:
-        note_disposition("lxmf_propagation_unused", "indeterminate",
-                         reason="operator unresolvable — cannot read either side")
-        return None
-
-    if configured_fn is not None:
-        configured, cfg_state = configured_fn()
-    else:
-        configured, cfg_state = _read_configured_propagation_node(home)
-    if cfg_state == "absent":
-        note_disposition("lxmf_propagation_unused", "inert",
-                         reason="no gateway.json — box runs no gateway organ")
-        _save_parity_streak(sp, 0)
-        return None
-    if cfg_state != "ok":
-        note_disposition("lxmf_propagation_unused", "indeterminate",
-                         reason="gateway.json unreadable — intent unknown")
-        return None
-    if configured:
-        note_disposition("lxmf_propagation_unused", "inert",
-                         reason="propagation_node configured — capability adopted")
-        _save_parity_streak(sp, 0)
-        return None
-
-    if candidates_fn is not None:
-        cands, cache_state = candidates_fn()
-    else:
-        cands, cache_state = _read_fresh_propagation_nodes(home, now)
-    if cache_state == "absent":
-        note_disposition("lxmf_propagation_unused", "inert",
-                         reason="no RNS node cache — gateway never ran here")
-        _save_parity_streak(sp, 0)
-        return None
-    if cache_state in ("unreadable", "stale"):
-        note_disposition(
-            "lxmf_propagation_unused", "indeterminate",
-            reason=f"node cache {cache_state} — cannot speak for the present; streak held")
-        return None  # HOLD — stale/unreadable is not "nothing available"
-    if not cands:
-        note_disposition("lxmf_propagation_unused", "clean",
-                         reason="no propagation node heard recently — nothing to adopt")
-        _save_parity_streak(sp, 0)
-        return None
-
-    streak = _load_parity_streak(sp) + 1
-    _save_parity_streak(sp, streak)
-    if streak < debounce_ticks:
-        note_disposition("lxmf_propagation_unused", "indeterminate",
-                         reason="unused capability seen; held by debounce")
-        return None
-
-    age_s, node_id, name = cands[0]  # seconds (review note: was misnamed age_h)
-    return Signal(
-        cls="lxmf_propagation_unused",
-        subject="propagation-unconfigured",   # stable: node sets rotate
-        severity="degraded",
-        detail=(
-            f"{len(cands)} LXMF propagation node(s) heard within "
-            f"{int(_PROPAGATION_FRESH_S / 3600)}h (nearest {node_id}"
-            + (f" '{name}'" if name else "")
-            + f", {age_s / 60:.0f} min ago) but gateway.json "
-            "rns.propagation_node is empty — this gateway stores and forwards "
-            "nothing. LXMF to an OFFLINE peer fails outright today; with a "
-            "propagation node it is held until the peer returns. NOTE this is "
-            "a TRUST decision, not a mechanical fix: a propagation node sees "
-            "stored-traffic metadata, so prefer standing one up on our own "
-            "rnsd over adopting a stranger's. Adopting edits gateway.json and "
-            "needs a meshforge-gateway restart — never mid-soak."
-        ),
-        extra={
-            "candidates": len(cands),
-            "nearest": node_id,
-            "nearest_age_min": round(age_s / 60.0, 1),
-            "freshness_window_h": _PROPAGATION_FRESH_S / 3600.0,
-            "debounce_streak": streak,
-        },
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────
 # Probe: the CONFIGURED LXMF propagation node stopped answering
 # (2026-07-20 — the shape-A leg that must ship WITH adoption).
 #
-# The moment `rns.propagation_node` is set, probe_lxmf_propagation_unused
-# above goes INERT by design (one fault, one owner). Without this leg the
-# fleet would trade a WATCHED gap for an UNWATCHED dependency — strictly
-# worse than before adoption, because offline-peer delivery would now
-# silently depend on a node nobody checks. That is the whole reason the
-# propagation-leg plan forbids splitting adoption from this probe.
+# Without this leg, adopting a node would trade a watched gap for an
+# UNWATCHED dependency — offline-peer delivery silently depending on a node
+# nobody checks. That is why the propagation-leg plan forbids splitting
+# adoption from this probe, and why this leg survived the 2026-08-08 yield
+# audit that removed its shape-C sibling: this one watches something LIVE.
 #
-# Evidence is the same durable, operator-owned node cache slice 1 reads —
+# Evidence is the durable, operator-owned node cache —
 # NOT the journal (fleet boxes run Storage=volatile, so an absence of log
 # lines proves nothing). A propagation node re-announces periodically
 # (360 min in our own lxmd template, and the upstream default), so the
@@ -404,9 +284,10 @@ def probe_lxmf_propagation_node_dark(
 ) -> Optional[Signal]:
     """The propagation node this gateway is CONFIGURED to use has gone quiet.
 
-    The shape-A companion to :func:`probe_lxmf_propagation_unused`. Adoption
-    makes a node load-bearing for offline-peer delivery; this is the leg that
-    keeps that dependency watched once slice 1 falls silent.
+    Adoption makes a node load-bearing for offline-peer delivery; this is the
+    leg that keeps that dependency watched. (Its shape-C sibling, which
+    watched for an available-but-unadopted node, was removed 2026-08-08 —
+    see the module header.)
 
     Two fault legs, reported distinctly because they need different fixes:
       - **STALE** — the node is in the cache but its newest announce is older
@@ -461,7 +342,9 @@ def probe_lxmf_propagation_node_dark(
     if not configured:
         note_disposition(
             "lxmf_propagation_node_dark", "inert",
-            reason="no propagation_node configured — lxmf_propagation_unused owns this")
+            reason="no propagation_node configured — nothing adopted to watch "
+                   "(the available-but-unadopted gap is knowingly unwatched "
+                   "since the 2026-08-08 yield audit removed that probe)")
         _save_parity_streak(sp, 0)
         return None
 
@@ -535,8 +418,8 @@ def probe_lxmf_propagation_node_dark(
             "that is down right now fails outright again, as it did before "
             "adoption. Live delivery is unaffected. " + fix +
             "If the node is genuinely gone, either point rns.propagation_node "
-            "at a replacement or clear it — clearing hands the gap back to "
-            "lxmf_propagation_unused, which is honest, not a regression."
+            "at a replacement or clear it — clearing leaves the gap "
+            "knowingly unwatched, which is a choice, not a regression."
         ),
         extra={
             "leg": leg,

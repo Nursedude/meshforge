@@ -1147,7 +1147,6 @@ from utils.watchdog_probes_gateway_lxmf import (  # noqa: E402,F401 (back-compat
     _operator_home,
     _read_configured_propagation_node,
     _read_fresh_propagation_nodes,
-    probe_lxmf_propagation_unused,
     DEFAULT_LXMF_PROPAGATION_DARK_DEBOUNCE_PATH,
     _PROPAGATION_ANNOUNCE_INTERVAL_S,
     _PROPAGATION_DARK_AFTER_S,

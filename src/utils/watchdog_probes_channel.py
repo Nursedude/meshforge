@@ -34,8 +34,9 @@ turns this probe's own failure mode ("silence looks like no traffic") on the
 instrument itself. So absence is only benign where the box never claimed to
 have the instrument: the declaration
 (``deployment.json organ_expectations.json_uplink``) is what separates
-*off by design* from *died quietly*, and the declared-and-absent case is a
-NEW finding (``json_uplink_dark``) that nothing detected before.
+*off by design* from *died quietly*. Undeclared-and-absent is ``inert``;
+declared-and-absent is ``indeterminate`` carrying the full diagnosis as its
+reason, which is what ``detector_blind`` escalates when it persists.
 
 Deliberately journal-only: reading ``mqtt.json_enabled`` from the radio
 would open a ``TCPInterface`` and steal a PhoneAPI slot (#17 / MF007), which
@@ -182,19 +183,20 @@ def probe_channel_feed_dark(
     payload: ``JSON publish message to msh/2/json/<name>/!<id>, N bytes:
     {...,"type":"text",...}`` — so one pattern matches name + text.
 
-    **Five states** (see the module docstring for why):
+    **Four states** (see the module docstring for why):
 
     ===================  ==========================================
     ``indeterminate``    meshtasticd MainPID unresolved; journalctl
                          unobservable; declaration unreadable;
                          journal too short to cover the window;
-                         unparseable timestamp
+                         unparseable timestamp; or the box DECLARES
+                         a json uplink and none is observed (zero
+                         lines, or newest line older than
+                         ``dark_after_s``) — BLIND, and the reason
+                         carries the diagnosis
     ``inert``            journal ran, ZERO json-uplink lines, box
                          declares no json uplink — there is no
                          channel instrument here, by design
-    ``json_uplink_dark`` box DECLARES a json uplink and none is
-                         observed (zero lines, or newest line older
-                         than ``dark_after_s``) — degraded, NEW
     ``clean``            json alive and channel text is fresh
     ``channel_feed_dark``json alive, channel text stale/absent —
                          degraded, the original finding
@@ -260,11 +262,10 @@ def probe_channel_feed_dark(
 
     if any_json is None or instrument_stale:
         if any_json is None and read_status["status"] != "ok":
-            for _cls in ("channel_feed_dark", "json_uplink_dark"):
-                note_disposition(
-                    _cls, "indeterminate",
-                    reason="journal unavailable — cannot observe the json uplink",
-                )
+            note_disposition(
+                "channel_feed_dark", "indeterminate",
+                reason="journal unavailable — cannot observe the json uplink",
+            )
             return None
         return _judge_absent_instrument(
             channel_name=channel_name,
@@ -277,13 +278,6 @@ def probe_channel_feed_dark(
             coverage_fn=coverage_fn,
             stale_line_age_s=(ts_now - json_ts) if instrument_stale else None,
         )
-
-    # The instrument is demonstrably producing, whatever the channel says
-    # next. That is a POSITIVE observation and it is what heals a prior
-    # json_uplink_dark — without it the class could fire and then hold
-    # stale forever, which is the fires-then-never-heals shape the
-    # disposition-adoption gate exists to catch.
-    note_disposition("json_uplink_dark", "clean")
 
     ch_text = newest_line_fn(f'json/{channel_name}/.*"type":"text"')
 
@@ -349,9 +343,22 @@ def _judge_absent_instrument(
     """No usable json uplink — decide whether that is by design or a finding.
 
     Split out so the ``channel_feed_dark`` path above reads as one straight
-    line. Emits ``inert`` (no instrument declared), ``json_uplink_dark``
-    (declared and absent), or ``indeterminate`` (declaration unreadable, or
-    a journal too short to hold the answer).
+    line. Emits ``inert`` (no instrument declared) or ``indeterminate``
+    (declaration unreadable, journal too short to hold the answer, or the
+    box DECLARES an uplink that is absent).
+
+    That last case had its own signal class (``json_uplink_dark``, born
+    2026-08-07) for one day. It was removed in the 2026-08-08 subtraction
+    audit: its coverage split was identical to ``channel_feed_dark`` on
+    every box, so it carried no information this class does not, and it
+    watched the instrument BEHIND a detector — a layer up, the exact
+    "machinery watching machinery" shape
+    ``feedback_my_footprint_is_the_constraint`` warns against. The finding
+    is preserved as a REASON on this class's ``indeterminate``: a declared
+    uplink that is absent makes this probe blind, and a persistently blind
+    coverage class is what ``detector_blind`` exists to escalate. The
+    2026-08-07 fix that DID earn its place — undeclared boxes read ``inert``
+    rather than a failed observation — is the branch below, and it stays.
     """
     exp_fn = expectation_fn
     if exp_fn is None:
@@ -366,12 +373,11 @@ def _judge_absent_instrument(
     status, why = exp_fn()
 
     if status == "unreadable":
-        for _cls in ("channel_feed_dark", "json_uplink_dark"):
-            note_disposition(
-                _cls, "indeterminate",
-                reason=("json-uplink declaration unreadable — never alarm on "
-                        "a guess"),
-            )
+        note_disposition(
+            "channel_feed_dark", "indeterminate",
+            reason=("json-uplink declaration unreadable — never alarm on "
+                    "a guess"),
+        )
         return None
 
     if status != "declared":
@@ -380,12 +386,11 @@ def _judge_absent_instrument(
         # organ absent by design must never read as an observation that
         # failed, or the real failures have nowhere to stand out
         # (2026-08-05). This is the kiai/moc1/moc4/moc5 shape.
-        for _cls in ("channel_feed_dark", "json_uplink_dark"):
-            note_disposition(
-                _cls, "inert",
-                reason=("no MQTT-json uplink on this box (mqtt.json_enabled "
-                        "off) — no channel instrument here"),
-            )
+        note_disposition(
+            "channel_feed_dark", "inert",
+            reason=("no MQTT-json uplink on this box (mqtt.json_enabled "
+                    "off) — no channel instrument here"),
+        )
         return None
 
     # Declared. Before calling it dark, prove the journal could have held the
@@ -398,20 +403,18 @@ def _judge_absent_instrument(
                 unit, dark_after_s, journalctl_path=journalctl_path)
     covers = cov_fn()
     if covers is None:
-        for _cls in ("channel_feed_dark", "json_uplink_dark"):
-            note_disposition(
-                _cls, "indeterminate",
-                reason=("journal coverage unobservable — cannot judge "
-                        "declared uplink"),
-            )
+        note_disposition(
+            "channel_feed_dark", "indeterminate",
+            reason=("journal coverage unobservable — cannot judge "
+                    "declared uplink"),
+        )
         return None
     if not covers:
-        for _cls in ("channel_feed_dark", "json_uplink_dark"):
-            note_disposition(
-                _cls, "indeterminate",
-                reason=("journal does not reach back "
-                        f"{dark_after_s / 3600.0:.1f}h — too short to judge"),
-            )
+        note_disposition(
+            "channel_feed_dark", "indeterminate",
+            reason=("journal does not reach back "
+                    f"{dark_after_s / 3600.0:.1f}h — too short to judge"),
+        )
         return None
 
     if stale_line_age_s is None:
@@ -420,30 +423,23 @@ def _judge_absent_instrument(
         observed = (f"newest json-uplink line is "
                     f"{stale_line_age_s / 3600.0:.1f}h old")
     because = f" (declared: {why})" if why else ""
-    detail = (
-        f"This box DECLARES an MQTT-json uplink{because} but none is "
-        f"observable: {observed}, while its {unit} journal does cover "
-        f"the window. The channel-dark canary for '{channel_name}' is "
-        f"therefore BLIND here — it watches the mesh through this uplink. "
-        f"Likely: mqtt.json_enabled was turned off (or reset by a "
-        f"zero-config radio join), the MQTT module lost its broker, or "
-        f"meshtasticd stopped publishing. Verify: journalctl -u {unit} "
-        f"--since -1h | grep 'serialized json message' ; then check the "
-        f"radio's mqtt.json_enabled. If this box is NOT meant to uplink "
-        f"json, remove organ_expectations.json_uplink from deployment.json "
-        f"and the probe goes inert."
+    # DECLARED and absent — this probe is blind, and it says so in its own
+    # disposition rather than in a class of its own. A sustained blind here
+    # is escalated by ``detector_blind``; the reason carries the whole
+    # diagnosis so the read is not a guess (2026-08-05: the witness worked,
+    # the READ failed — so the reason must be specific enough to act on).
+    note_disposition(
+        "channel_feed_dark", "indeterminate",
+        reason=(
+            f"BLIND: box DECLARES an MQTT-json uplink{because} but none is "
+            f"observable ({observed}) though the {unit} journal covers the "
+            f"window — the '{channel_name}' canary watches the mesh THROUGH "
+            f"this uplink. Likely mqtt.json_enabled off (or reset by a "
+            f"zero-config radio join), MQTT module lost its broker, or "
+            f"meshtasticd stopped publishing. Verify: journalctl -u {unit} "
+            f"--since -1h | grep 'serialized json message'. If this box is "
+            f"NOT meant to uplink json, remove organ_expectations.json_uplink "
+            f"from deployment.json and this goes inert."
+        ),
     )
-    return Signal(
-        cls="json_uplink_dark",
-        subject=f"meshtastic-json-{channel_name}",
-        severity="degraded",
-        detail=detail,
-        extra={
-            "channel_name": channel_name,
-            "dark_after_s": dark_after_s,
-            "lookback": lookback,
-            "newest_json_age_s": (
-                round(stale_line_age_s, 1)
-                if stale_line_age_s is not None else None),
-        },
-    )
+    return None

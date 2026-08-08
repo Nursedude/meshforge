@@ -52,7 +52,6 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_rules_seed_drift,
     probe_memory_index_oversize,
     probe_calibration_drift,
-    probe_dream_ratification_stalled,
     probe_local_brain_regressed,
     MEMORY_INDEX_LIMIT_BYTES,
     probe_delivery_confirmation_stall,
@@ -146,7 +145,6 @@ def test_signal_classes_closed_enum_is_documented():
         "rns_version_drift",
         "role_drift",
         "channel_feed_dark",
-        "json_uplink_dark",             # 2026-08-07: the instrument-liveness half of channel_feed_dark — a box DECLARING organ_expectations.json_uplink that produces no MQTT-json at all, while its journal covers the window. Split out because "no json uplink" was previously collapsed into channel_feed_dark's indeterminate, leaving four boxes permanently "blind" for a condition that was simply mqtt.json_enabled=False; documented inline in the SIGNAL_CLASSES comment (MF012 40k cap, same precedent as meshtasticd_vsz_leak)
         "queue_backlog",                # Issue #74
         "delivery_confirmation_stall",  # Issue #74
         "phoneapi_tcp_leak",            # Issue #75
@@ -158,8 +156,6 @@ def test_signal_classes_closed_enum_is_documented():
         "memory_index_oversize",        # mini-dudeai audit #2
         "kernel_reboot_pending",        # 2026-06-09 version-updates arc
         "aredn_source_dark",            # 2026-06-12 AREDN Phase 0
-        "aredn_organ_undeclared",       # 2026-07-20 AREDN organ available, never adopted
-        "lxmf_propagation_unused",      # 2026-07-20 propagation nodes available, none adopted
         "lxmf_propagation_node_dark",   # 2026-07-20 the CONFIGURED propagation node stopped answering (shape-A companion)
         "dep_version_drift",            # 2026-06-12 recurring update class
         "dep_install_fragmented",       # 2026-06-17 install-fragmentation half of the recurring update class (feedback_version_env_rigor); documented inline in the SIGNAL_CLASSES comment — no new persistent_issues.md row, that file is at its MF012 40k cap (same precedent as meshtasticd_phoneapi_wedge / calibration_drift)
@@ -187,7 +183,6 @@ def test_signal_classes_closed_enum_is_documented():
         "user_unit_inactive",           # 2026-07-19 — an enrolled always-on USER .service not running (default.target.wants symlink present, no invocation:* marker in /run/user/<uid>/systemd/units — bus-free root reads both sides) or the user manager itself down while daemons are enrolled (linger off, the #79 class); closes user_unit_inactivity_blind (probe_service_inactive is user-blind; nomadnet_crashloop covers only a LIVE loop — the parked-failed/stopped/manager-down modes had no steady-state detector); timers deliberately out of scope (no invocation marker; schedules/SLO layer owns their staleness); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as rns_stray_env_drift). No own issue#.
         "user_timer_unit_failing",       # 2026-07-19 — an enabled USER *timer*'s job fails on EVERY firing (repeated "Failed with result" in a short window, newest fresh, no success since); the last uncovered corner of the user-unit blindness class, since user_unit_inactive explicitly excludes timers (no invocation marker; a oneshot is inactive between firings by design) and nomadnet_crashloop covers only a LIVE loop on one unit. Origin: kiai's meshforge-tracer.timer fired every 10 min from 2026-07-12 while its oneshot exited 2 ("no peers in lab_peers") every time — a week silent with every existing leg reading healthy. Documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as user_unit_inactive). No own issue#.
         "rns_stray_env_drift",          # 2026-07-19 — rns/lxmf copies across a box's root-readable envs DISAGREE (intra-box coherence; probe_rns_version_drift owns pin compliance): the missed-venv roll hazard, pipx globs wildcarded across venv names because a library rides inside every app venv depending on it (moc3's nomadnet pipx venv sat silently stock 1.1.4, invisible to every prior drift probe); closes the rns/lxmf leg of the dep_version_drift_strays_blind structural-dark row; documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as dep_install_fragmented). No own issue#.
-        "dream_ratification_stalled",   # 2026-07-22 second-brain arc WS-C — mini's dream propose->ratify VALUE loop runs but is not closing (proposals unresolved past a long age while the mini_cadence ratifier is alive; the 2026-07-18 0/164 sweep had no signal for this); NON-redundant with cron_verdict_stale #78 (that owns cadence-DOWN); scopes to the manager box via the cadence-liveness gate (INERT with no ratifier); degraded, escalate-only in seed until soaked (calibration_drift precedent); documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap). No own issue#.
         "claw_uplink_node_moved",       # 2026-07-29 live incident: a declared claw UPLINK node (the AREDN/AP box bridging a claw's own subnet to the fleet segment) answers at an address other than the declared one. THE distinction: a claw can be entirely healthy — booted, associated, holding its lease, dialling the correct broker — and still be unreachable because its uplink moved out from under it; the fleet's only word for that was claw_device_dark, which sends the operator at working hardware. Born from dudeclaw-01 going ~5 h dark while a power cycle, an antenna reseat, two chip resets and three dead hypotheses were spent on a device that was never at fault (its config, read off its own LittleFS, was correct throughout). LEADING indicator — fires on the CONDITION (uplink not where declared), not the OUTCOME (a claw went quiet), per gateway_dual_homed_exposure. Observation-only: reads /proc/net/arp, a plain file — no packets, no subprocess. ⚠️ ONLY ATF_COM (0x2) rows count: /proc/net/arp also lists INCOMPLETE (0x0) rows for FAILED resolutions, and probing a stale address manufactures exactly such a row with the target MAC — a flags-blind reader invents drift from its own footprints, most reliably when someone goes looking (found by testing the probe's input, not by reading it). Declared-address sighting alongside another counts as home (under-fire, never false-page); MAC seen nowhere is indeterminate, never "moved". INERT undeclared; 2-tick debounce. Documented inline (MF012 40k cap). No own issue#.
         "memory_cap_engaged",           # 2026-07-24 hard-reset arc, same session that created the gap: eight boxes gained hard MemoryMax caps on user-1000.slice (plus ollama's 8G) and NOTHING watched them fire — an OOM-killed ssh session or user unit leaves only a missing process (honest_failure_modes #9). Reads cgroup memory.events per CAPPED cgroup. KILL leg (wedge, immediate — a kill is discrete and irreversible) on a rise in oom_kill/oom_group_kill; the detail carries BOTH readings because the counter cannot separate "runaway correctly bounded" from "legitimate work killed by a too-tight cap" (the 18:22 failure of that same session). CEILING leg (degraded, 2-tick) when `max` keeps rising WITHOUT kills — the evidence-based trigger to revisit a cap, replacing the "re-read memory.peak in a week" calendar plan. Baselines keyed to boot_id (counters restart at boot); a DECREASE re-baselines silently rather than reading as recovery; unreadable memory.events is indeterminate, never "no kills"; no finite cap anywhere is INERT (moc3). Returns 0..N signals, one per capped cgroup. Documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as host_memory_pressure). No own issue#.
         "host_memory_pressure",         # 2026-07-24 manager-box hard-reset arc (8th) — the box is running out of RAM and nothing watched for it. Two legs (MemAvailable/MemTotal under 20%, wedge under 8%; /proc/pressure/memory some/avg60 over 10%, wedge over 40%), worst wins, either can fire alone. The 07-24 reset proved the mechanism and lost the culprit: memory fell 9.85->2.56 GB in 2 min with ext5v flat and throttled=0x0, then the box died with ~2.5 GB free and NO oom-kill — a memory stall starved PID 1 past RuntimeWatchdogUSec=1min and the HARDWARE watchdog reset it. The detail carries the top-5 RSS roster because /tmp is tmpfs (wiped by the reset) and sysstat is disabled, so nothing recorded WHO. UNCONDITIONAL (every box has RAM; the failure kills the box, not one unit). degraded debounced 2 ticks, wedge immediate. Documented inline in the SIGNAL_CLASSES comment (no persistent_issues row — MF012 40k cap; same precedent as meshtasticd_vsz_leak). No own issue#.
@@ -1928,9 +1923,17 @@ def test_channel_feed_dark_threshold_boundary():
 
 
 # ─────────────────────────────────────────────────────────────────────
-# 2026-08-07 — channel_feed_dark five-state: inert vs indeterminate vs
-# the new json_uplink_dark. Every test PINS both the journal and the
+# 2026-08-07 — channel_feed_dark four-state: inert vs indeterminate vs
+# clean vs the finding. Every test PINS both the journal and the
 # declaration; nothing here may consult the box running the suite.
+#
+# 2026-08-08 subtraction audit: the declared-and-absent case briefly had
+# its own class (``json_uplink_dark``). It was removed — its coverage
+# split was identical to channel_feed_dark's on every box, so it carried
+# no independent information. The case is now an ``indeterminate`` whose
+# REASON carries the diagnosis, so the tests below assert the reason
+# text; the 2026-08-07 lesson (name mqtt.json_enabled, not "mqtt off")
+# is pinned exactly as hard as before, just on a different carrier.
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -1942,6 +1945,15 @@ def _disp(cls="channel_feed_dark"):
     from utils.watchdog_probe_core import collect_dispositions
     entry = collect_dispositions().get(cls)
     return entry.get("disp") if entry else None
+
+
+def _reason(cls="channel_feed_dark"):
+    """The reason recorded alongside the disposition. Load-bearing since
+    2026-08-08: for the declared-but-absent box this string IS the finding,
+    so an empty or vague reason is the defect, not a cosmetic gap."""
+    from utils.watchdog_probe_core import collect_dispositions
+    entry = collect_dispositions().get(cls)
+    return (entry or {}).get("reason") or ""
 
 
 class TestChannelFeedDarkFiveState:
@@ -1989,36 +2001,39 @@ class TestChannelFeedDarkFiveState:
         assert sig2 is None
         assert _disp() == "indeterminate"
 
-    def test_declared_but_no_json_fires_json_uplink_dark(self):
-        """State 3, the NEW finding: the box says it uplinks json, the
-        journal covers the window, and there is none."""
+    def test_declared_but_no_json_is_blind_with_the_diagnosis(self):
+        """The box says it uplinks json, the journal covers the window, and
+        there is none. This probe is therefore BLIND — and it must say so
+        specifically enough that the read is not a guess (2026-08-05: the
+        witness worked, the READ failed)."""
         sig = probe_channel_feed_dark(
             main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
             expectation_fn=lambda: ("declared", "gateway uplink"),
             coverage_fn=lambda: True,
         )
-        assert sig is not None
-        assert sig.cls == "json_uplink_dark"
-        assert sig.severity == "degraded"
-        assert "gateway uplink" in sig.detail
-        assert "mqtt.json_enabled" in sig.detail, (
-            "the detail must name the setting that actually gates this — "
+        assert sig is None
+        assert _disp() == "indeterminate"
+        reason = _reason()
+        assert "BLIND" in reason
+        assert "gateway uplink" in reason
+        assert "mqtt.json_enabled" in reason, (
+            "the reason must name the setting that actually gates this — "
             "'mqtt off' was the wrong advice that cost the 2026-08-07 dig")
 
-    def test_declared_and_json_stale_also_fires(self):
+    def test_declared_and_json_stale_is_also_blind(self):
         """Same fact, corpse still inside the window: a newest json line
         older than the threshold is no usable instrument either. Undeclared
-        this stays indeterminate (test below) — the declaration is what
-        turns it into a finding."""
+        this carries a different reason (test below) — the declaration is
+        what turns silence into a finding."""
         sig = probe_channel_feed_dark(
             main_pid=1002,
             newest_line_fn=_journal_fake(json_age_s=10 * 3600.0), now=_NOW,
             expectation_fn=lambda: ("declared", ""),
             coverage_fn=lambda: True,
         )
-        assert sig is not None
-        assert sig.cls == "json_uplink_dark"
-        assert sig.extra["newest_json_age_s"] == pytest.approx(36000.0, abs=1)
+        assert sig is None
+        assert _disp() == "indeterminate"
+        assert "10.0h old" in _reason()
 
     def test_short_journal_cannot_convict_a_declared_box(self):
         """The fresh-boot / vacuumed-journal guard. Zero json lines proves
@@ -2080,27 +2095,36 @@ class TestChannelFeedDarkFiveState:
         assert sig is None
         assert _disp() == "clean"
 
-    def test_live_instrument_heals_json_uplink_dark(self):
-        """A producing uplink must POSITIVELY note json_uplink_dark clean.
-        Without it the class fires once and then holds stale forever — it
-        has no other healing path, because every other branch is a form of
-        'no uplink observed'."""
-        probe_channel_feed_dark(
-            main_pid=1002,
-            newest_line_fn=_journal_fake(json_age_s=120.0, ch_text_age_s=60.0),
-            now=_NOW,
-            expectation_fn=lambda: ("declared", ""),
-        )
-        assert _disp("json_uplink_dark") == "clean"
+    def test_json_uplink_dark_stays_deleted(self):
+        """2026-08-08 subtraction audit: this probe must emit exactly ONE
+        signal class.
 
-    def test_undeclared_box_also_heals_json_uplink_dark(self):
-        """The inert leg must settle BOTH classes — a box that stops
-        declaring the organ should not strand a previous firing."""
-        probe_channel_feed_dark(
-            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
-            expectation_fn=lambda: ("undeclared", ""),
+        ``json_uplink_dark`` existed for one day. Its coverage split was
+        identical to ``channel_feed_dark``'s on all 8 boxes — it watched
+        the instrument BEHIND a detector, which is a layer up, and carried
+        no information this class does not. The removal is the point, so
+        pin it: re-adding a second class here is the "add a probe" reflex
+        that ``feedback_my_footprint_is_the_constraint`` exists to stop,
+        and the cheaper fix (a richer disposition + reason) is already in
+        place. If a future arc genuinely needs a second class, delete this
+        test deliberately rather than letting it drift back in."""
+        from utils.watchdog_probe_core import (
+            SIGNAL_CLASSES, collect_dispositions, reset_dispositions,
         )
-        assert _disp("json_uplink_dark") == "inert"
+        assert "json_uplink_dark" not in SIGNAL_CLASSES
+
+        for expectation in (("declared", ""), ("undeclared", ""),
+                            ("unreadable", "")):
+            reset_dispositions()
+            probe_channel_feed_dark(
+                main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+                expectation_fn=lambda e=expectation: e,
+                coverage_fn=lambda: True,
+            )
+            noted = set(collect_dispositions())
+            assert noted <= {"channel_feed_dark"}, (
+                f"probe noted {noted - {'channel_feed_dark'}} for "
+                f"expectation={expectation[0]} — one probe, one class")
 
     def test_channel_dark_still_fires_with_live_instrument(self):
         """State 5 — the original 2026-06-04 finding must survive the
@@ -5996,143 +6020,6 @@ def _asd_kw(tmp_path, diag, *, ips=None, status=None):
     )
 
 
-# ─────────────────────────────────────────────────────────────────────
-# 2026-07-20 — aredn_organ_undeclared (the AREDN organ is physically
-# available on this box's LAN and nobody ever adopted it). Closes the last
-# leg of the aredn_configured_source_only structural-dark row: both older
-# legs need a statement (config, or declaration) the operator had to
-# remember to make, so the 2026-06-12 origin state itself was invisible.
-# The detector is POSITIVE evidence only — a resolving localnode that
-# answers sysinfo — because "did we forget to declare?" cannot be answered
-# from absence (honest_failure_modes #2).
-# ─────────────────────────────────────────────────────────────────────
-
-_SYSINFO = {"node": "AE7XYZ-hilo-relay", "api_version": "1.13"}
-
-
-_AOU_DEFAULT = object()   # sentinel: "" and None are both meaningful here
-
-
-def _aou_kw(tmp_path, *, ips=(), declared=(False, ""), ip="10.20.30.65",
-            sysinfo=_AOU_DEFAULT):
-    return dict(
-        service_user_fn=lambda: "op",
-        resolve_fn=lambda: ip,
-        sysinfo_fn=lambda _ip: (_SYSINFO if sysinfo is _AOU_DEFAULT else sysinfo),
-        expectation_fn=lambda: declared,
-        state_path=str(tmp_path / "aou_debounce.json"),
-    )
-
-
-def _aou_run(tmp_path, monkeypatch, *, ips=(), state="ok", **kw):
-    """Run one tick with the settings read stubbed to (ips, state).
-
-    Patches watchdog_probes_AREDN (where the probe looks the name up) — the
-    module moved out of watchdog_probes_env under the MF025 cap on 2026-07-20;
-    patching the old module would silently stub nothing.
-    """
-    from utils import watchdog_probes_aredn as _env
-    from utils.watchdog_probes_env import probe_aredn_organ_undeclared
-    monkeypatch.setattr(_env, "_read_configured_aredn_ips_state",
-                        lambda _u: (list(ips) if ips is not None else None, state))
-    base = _aou_kw(tmp_path, **kw)
-    return probe_aredn_organ_undeclared(**base)
-
-
-def test_aredn_organ_undeclared_fires_after_debounce(tmp_path, monkeypatch):
-    """Unconfigured + undeclared + an AREDN node answering on the LAN = the
-    dormant organ. Fires on the second consecutive tick, naming the node."""
-    assert _aou_run(tmp_path, monkeypatch) is None        # tick 1: debounce
-    sig = _aou_run(tmp_path, monkeypatch)                 # tick 2: confirmed
-    assert sig is not None
-    assert sig.cls == "aredn_organ_undeclared"
-    assert sig.severity == "degraded"
-    assert sig.subject == "AE7XYZ-hilo-relay"
-    assert sig.extra["localnode_ip"] == "10.20.30.65"
-    assert "aredn_node_ips" in sig.detail
-
-
-def test_aredn_organ_undeclared_inert_without_an_aredn_lan(tmp_path, monkeypatch):
-    """The 95% case: localnode does not resolve → INERT forever, streak reset.
-    A failed mesh-DNS answer is evidence of nothing else."""
-    for _ in range(4):
-        assert _aou_run(tmp_path, monkeypatch, ip=None) is None
-    assert json.loads((tmp_path / "aou_debounce.json").read_text())["streak"] == 0
-
-
-def test_aredn_organ_undeclared_inert_when_configured(tmp_path, monkeypatch):
-    """A configured box belongs to the configured-source legs — one fault,
-    one owner. Never double-report with probe_aredn_source_dark."""
-    for _ in range(3):
-        assert _aou_run(tmp_path, monkeypatch, ips=["10.20.30.65"]) is None
-
-
-def test_aredn_organ_undeclared_inert_when_declared(tmp_path, monkeypatch):
-    """A DECLARED box is probe_aredn_source_dark's declared-unconfigured leg.
-    Same rule: two probes must not describe one fault."""
-    for _ in range(3):
-        assert _aou_run(tmp_path, monkeypatch,
-                        declared=(True, "AREDN site box")) is None
-
-
-def test_aredn_organ_undeclared_indeterminate_when_declaration_unknown(
-    tmp_path, monkeypatch
-):
-    """An unreadable deployment.json must never read as 'not declared' —
-    that would invent an alarm out of a failed observation."""
-    assert _aou_run(tmp_path, monkeypatch, declared=(None, "")) is None
-    assert _aou_run(tmp_path, monkeypatch, declared=(None, "")) is None
-
-
-def test_aredn_organ_undeclared_indeterminate_when_settings_unreadable(
-    tmp_path, monkeypatch
-):
-    """Unreadable settings = intent unknown → silent, even twice."""
-    assert _aou_run(tmp_path, monkeypatch, ips=None, state="unreadable") is None
-    assert _aou_run(tmp_path, monkeypatch, ips=None, state="unreadable") is None
-
-
-def test_aredn_organ_undeclared_absent_settings_file_is_no_config(
-    tmp_path, monkeypatch
-):
-    """An ABSENT map_settings.json is a real observation ('no configuration is
-    expressed here'), not a failure to observe — the probe may act on it."""
-    assert _aou_run(tmp_path, monkeypatch, state="absent") is None
-    sig = _aou_run(tmp_path, monkeypatch, state="absent")
-    assert sig is not None and sig.extra["settings_state"] == "absent"
-
-
-def test_aredn_organ_undeclared_holds_when_sysinfo_silent(tmp_path, monkeypatch):
-    """localnode resolves but sysinfo does not answer: something owns the name,
-    which is NOT proof of a collectable AREDN node (it may be rebooting). Hold
-    the streak — never fire on a maybe — and never reset it either."""
-    for _ in range(4):
-        assert _aou_run(tmp_path, monkeypatch, sysinfo=None) is None
-    # one real observation now confirms immediately: the streak was HELD at 0,
-    # so a genuine node still needs its full debounce
-    assert _aou_run(tmp_path, monkeypatch) is None
-    assert _aou_run(tmp_path, monkeypatch) is not None
-
-
-def test_aredn_localnode_resolver_is_bounded_and_quiet(monkeypatch):
-    """The resolve runs in a bounded subprocess (the libc resolver ignores
-    socket timeouts, and a blackholed DNS server must not stall the tick).
-    Any failure reads as 'no AREDN LAN', never as an error."""
-    import subprocess as _sp
-    from utils import watchdog_probes_aredn as _env
-
-    calls = {}
-
-    def _fake_run(cmd, **kw):
-        calls.update(cmd=cmd, timeout=kw.get("timeout"))
-        raise _sp.TimeoutExpired(cmd, kw.get("timeout"))
-
-    monkeypatch.setattr(_env.subprocess, "run", _fake_run)
-    assert _env._resolve_aredn_localnode() is None
-    assert calls["cmd"][:2] == ["getent", "hosts"]
-    assert calls["timeout"] and calls["timeout"] <= 5.0
-
-
 def test_aredn_source_dark_declared_names_an_absent_settings_file(tmp_path):
     """The wipe class includes deleting the whole settings file, not just the
     key. Before the tri-state read, an absent map_settings.json returned the
@@ -7958,92 +7845,6 @@ def test_user_timer_failing_is_in_the_closed_enum():
     assert "user_timer_unit_failing" in SIGNAL_CLASSES
 
 
-# ─────────────────────────────────────────────────────────────────────
-# 2026-07-20 — lxmf_propagation_unused: propagation nodes are announcing
-# and this gateway adopted none. The SECOND shape-C probe (a capability
-# present and unused), after aredn_organ_undeclared. Evidence is the
-# gateway's own operator-owned node cache — deliberately not the journal,
-# which is volatile on fleet boxes, so its silence proves nothing.
-# ─────────────────────────────────────────────────────────────────────
-
-def _lpu(tmp_path, *, configured=("", "ok"), cands=None, cache_state="ok",
-         ticks=2):
-    from utils.watchdog_probes_gateway import probe_lxmf_propagation_unused
-    if cands is None:
-        cands = [(600.0, "rns_aed1f551", "prop-1")]
-    return probe_lxmf_propagation_unused(
-        home="/nonexistent-but-unused",
-        now=1_784_000_000.0,
-        configured_fn=lambda: configured,
-        candidates_fn=lambda: (cands, cache_state),
-        state_path=str(tmp_path / "lpu.json"),
-        debounce_ticks=ticks,
-    )
-
-
-def test_lxmf_propagation_unused_fires_after_debounce(tmp_path):
-    """Fresh propagation nodes + empty propagation_node = the unused
-    capability. Fires on the second consecutive tick."""
-    assert _lpu(tmp_path) is None                     # tick 1: debounce
-    sig = _lpu(tmp_path)                              # tick 2: confirmed
-    assert sig is not None
-    assert sig.cls == "lxmf_propagation_unused"
-    assert sig.severity == "degraded"
-    assert sig.subject == "propagation-unconfigured"  # stable across node churn
-    assert sig.extra["candidates"] == 1
-    assert "OFFLINE" in sig.detail and "TRUST" in sig.detail
-
-
-def test_lxmf_propagation_inert_when_configured(tmp_path):
-    """Adopted = this probe's job is done; the streak resets so a later
-    un-configuring still needs its full debounce."""
-    _lpu(tmp_path)                                    # prime a streak
-    for _ in range(3):
-        assert _lpu(tmp_path, configured=("aed1f551…", "ok")) is None
-    assert json.loads((tmp_path / "lpu.json").read_text())["streak"] == 0
-
-
-def test_lxmf_propagation_inert_without_a_gateway(tmp_path):
-    """No gateway.json = no gateway organ here. ABSENT is an observation the
-    probe may act on (INERT) — it is not the same as unreadable."""
-    for _ in range(3):
-        assert _lpu(tmp_path, configured=(None, "absent")) is None
-
-
-def test_lxmf_propagation_indeterminate_when_config_unreadable(tmp_path):
-    """A corrupt gateway.json must never read as 'unconfigured' — that would
-    invent an alarm from a failure to observe."""
-    assert _lpu(tmp_path, configured=(None, "unreadable")) is None
-    assert _lpu(tmp_path, configured=(None, "unreadable")) is None
-
-
-def test_lxmf_propagation_inert_without_a_node_cache(tmp_path):
-    """No cache = the gateway never ran here → INERT, not 'no nodes'."""
-    for _ in range(3):
-        assert _lpu(tmp_path, cands=[], cache_state="absent") is None
-
-
-def test_lxmf_propagation_holds_on_stale_or_unreadable_cache(tmp_path):
-    """Stale/unreadable bytes cannot testify about the present. HOLD the
-    streak: neither fire (we don't know nodes are up) nor reset (we don't
-    know they're gone) — unobservable is not 'nothing available'."""
-    _lpu(tmp_path)                                    # streak = 1
-    for state in ("stale", "unreadable"):
-        assert _lpu(tmp_path, cands=[], cache_state=state) is None
-    # held, not reset — so ONE more real observation confirms
-    assert json.loads((tmp_path / "lpu.json").read_text())["streak"] == 1
-    assert _lpu(tmp_path) is not None
-
-
-def test_lxmf_propagation_no_fresh_nodes_is_clean(tmp_path):
-    """No propagation node heard = nothing to adopt. That is the ordinary
-    state of a mesh without one, so it resets the streak rather than firing."""
-    _lpu(tmp_path)
-    for _ in range(2):
-        assert _lpu(tmp_path, cands=[]) is None
-    assert json.loads((tmp_path / "lpu.json").read_text())["streak"] == 0
-
-
 def test_lxmf_propagation_cache_reader_rejects_stale_and_skewed(tmp_path):
     """The real reader: a cache older than the freshness bound is 'stale',
     and a last_seen from the future is a clock artifact on these RTC-less
@@ -8174,8 +7975,9 @@ def test_lxmf_propagation_dark_matches_a_short_form_hash(tmp_path):
 
 
 def test_lxmf_propagation_dark_inert_when_nothing_is_configured(tmp_path):
-    """One fault, one owner: the unadopted gap belongs to
-    lxmf_propagation_unused, and this probe must never double-report it."""
+    """Nothing adopted = nothing to watch. (Until 2026-08-08 the unadopted
+    gap belonged to lxmf_propagation_unused; that probe was removed and the
+    gap is knowingly unwatched, but this probe's INERT here is unchanged.)"""
     _lpd(tmp_path)
     for _ in range(3):
         assert _lpd(tmp_path, configured=("", "ok")) is None
@@ -8294,8 +8096,8 @@ def test_lxmf_propagation_dark_reader_handles_the_real_cache_shape(tmp_path):
     assert freshest == 1740.0
 
 
-def test_lxmf_propagation_unused_reader_consumes_the_writers_own_shape(tmp_path):
-    """2026-07-21 review (W3): the unused-probe reader keyed on node_id /
+def test_lxmf_propagation_reader_consumes_the_writers_own_shape(tmp_path):
+    """2026-07-21 review (W3): the propagation reader keyed on node_id /
     display_name / long_name — keys the production writer (UnifiedNode.
     to_dict via the node tracker's web cache) NEVER emits ("id"/"name"),
     so the nearest-node name enrichment was a dead read and the fixtures
@@ -8662,196 +8464,9 @@ def test_worst_propagation_round_never_raises_on_junk():
     assert _worst_propagation_round([{"ok": True, "seq": 1}]) is None
 
 
-# ─────────────────────────────────────────────────────────────────────
-# probe_dream_ratification_stalled (2026-07-22, second-brain arc WS-C):
-# the dream propose->ratify VALUE loop runs but is not closing. HIGH-
-# precision by design — gated on a live mini_cadence verdict so it (a)
-# scopes to the manager box and (b) never double-fires with #78.
-# ─────────────────────────────────────────────────────────────────────
-
-def _cadence_line(status, age_s, now, name="mini_cadence"):
-    """One ~/cron_verdicts.log line for `name` aged `age_s` before `now`."""
-    from datetime import datetime
-    iso = datetime.fromtimestamp(now - age_s).isoformat()
-    return f"{iso} {name} {status} ran"
-
-
-def _stall_deltas(n, age_s, now, status="proposed"):
-    """n memory-deltas of the given status, each first-proposed `age_s` ago."""
-    return [{"key": f"k{i}", "status": status, "ts": now - age_s}
-            for i in range(n)]
-
-
-_STALL_NOW = 1_780_000_000.0
-
-
 def _reset_disp():
     from utils.watchdog_probe_core import reset_dispositions
     reset_dispositions()
-
-
-def test_dream_stall_fires_when_backlog_old_and_cadence_alive():
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(6, 20 * 86400, _STALL_NOW),
-        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is not None
-    assert sig.cls == "dream_ratification_stalled"
-    assert sig.subject == "dream-loop" and sig.severity == "degraded"
-    assert sig.extra["unresolved"] == 6
-    # It must talk about the LOOP not closing, and point at the review command.
-    assert "not closing" in sig.detail and "--list-proposed" in sig.detail
-
-
-def test_dream_stall_inert_when_cadence_failing_defers_to_78():
-    """cron_verdict_stale (#78) owns the cadence-DOWN case — do not double-fire."""
-    from utils.watchdog_probe_core import collect_dispositions
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),   # a big old backlog
-        verdicts_text=_cadence_line("FAIL", 3600, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is None
-    disp = collect_dispositions()["dream_ratification_stalled"]
-    assert disp["disp"] == "inert" and "#78" in disp["reason"]
-
-
-def test_dream_stall_inert_when_stale_cadence_verdict_within_horizon():
-    # 3d old: past the 2d liveness cap but inside 2x — #78 owns it (it still
-    # judges a WIRED cron there), so this probe defers.
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
-        verdicts_text=_cadence_line("OK", 3 * 86400, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is None
-
-
-def test_dream_stall_fires_on_ancient_verdict_unwired_leg():
-    # 07-23 audit (mutual-deferral gap): #78 only judges crons currently WIRED
-    # in the crontab — a deleted/never-installed cadence cron is an orphan it
-    # ignores. Beyond 2x the liveness window this probe must fire itself, or
-    # the propose->ratify loop stalls with ZERO watchers.
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
-        verdicts_text=_cadence_line("OK", 5 * 86400, _STALL_NOW),  # > 2x 2d
-        now_ts=_STALL_NOW)
-    assert sig is not None
-    assert sig.extra.get("leg") == "unwired_cadence"
-    assert "crontab" in sig.detail
-
-
-def test_dream_stall_missing_age_s_is_indeterminate_not_fresh():
-    # A verdict record without numeric age_s must not read as "landed just
-    # now" (the healthiest possible value) — 07-23 audit.
-    from utils.watchdog_probe_core import collect_dispositions
-    _reset_disp()
-    from utils import watchdog_probes_mini as wpm
-    orig = wpm._latest_cadence_verdict
-    try:
-        wpm._latest_cadence_verdict = lambda text, now: (
-            {"name": "mini_cadence", "status": "OK"}, None)  # no age_s
-        sig = probe_dream_ratification_stalled(
-            deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
-            verdicts_text="anything",
-            now_ts=_STALL_NOW)
-    finally:
-        wpm._latest_cadence_verdict = orig
-    assert sig is None
-    disp = collect_dispositions().get("dream_ratification_stalled")
-    assert disp and disp.get("disp") == "indeterminate"
-
-
-def test_dream_stall_parser_error_is_indeterminate_not_benign_absence():
-    # A fleet_snapshot parser failure is NOT "no verdict on this box" — the
-    # probe must hold indeterminate, never retire under a benign label.
-    from utils.watchdog_probe_core import collect_dispositions
-    _reset_disp()
-    from utils import watchdog_probes_mini as wpm
-    orig = wpm._latest_cadence_verdict
-    try:
-        wpm._latest_cadence_verdict = lambda text, now: (None, "ImportError: x")
-        sig = probe_dream_ratification_stalled(
-            deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
-            verdicts_text="anything",
-            now_ts=_STALL_NOW)
-    finally:
-        wpm._latest_cadence_verdict = orig
-    assert sig is None
-    disp = collect_dispositions().get("dream_ratification_stalled")
-    assert disp and disp.get("disp") == "indeterminate"
-
-
-def test_dream_stall_inert_on_gateway_box_no_cadence_verdict():
-    """No mini_cadence verdict = no ratifier on this box (a gateway). A backlog
-    there is EXPECTED, not a stall — inert, never clean/fire."""
-    from utils.watchdog_probe_core import collect_dispositions
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(9, 30 * 86400, _STALL_NOW),
-        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW, name="some_other_cron"),
-        now_ts=_STALL_NOW)
-    assert sig is None
-    disp = collect_dispositions()["dream_ratification_stalled"]
-    assert disp["disp"] == "inert" and "no ratifier" in disp["reason"]
-
-
-def test_dream_stall_clean_when_backlog_below_min_keys():
-    from utils.watchdog_probe_core import collect_dispositions
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(3, 30 * 86400, _STALL_NOW),   # old but only 3 < 5
-        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is None
-    assert collect_dispositions()["dream_ratification_stalled"]["disp"] == "clean"
-
-
-def test_dream_stall_clean_when_backlog_young():
-    _reset_disp()
-    sig = probe_dream_ratification_stalled(
-        deltas=_stall_deltas(9, 2 * 86400, _STALL_NOW),    # many but only 2d old
-        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is None
-
-
-def test_dream_stall_ignores_resolved_deltas():
-    """Ratified/rejected proposals are CLOSED — only 'proposed' counts."""
-    _reset_disp()
-    deltas = (_stall_deltas(9, 30 * 86400, _STALL_NOW, status="rejected")
-              + _stall_deltas(2, 30 * 86400, _STALL_NOW))   # only 2 still proposed
-    sig = probe_dream_ratification_stalled(
-        deltas=deltas,
-        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is None   # 2 unresolved < min_keys 5
-
-
-def test_dream_stall_latest_status_wins_per_key():
-    """A key proposed then later rejected must NOT count as an open backlog."""
-    _reset_disp()
-    deltas = []
-    for i in range(9):
-        deltas.append({"key": f"k{i}", "status": "proposed",
-                       "ts": _STALL_NOW - 30 * 86400})
-        deltas.append({"key": f"k{i}", "status": "rejected",
-                       "ts": _STALL_NOW - 1 * 86400})   # later row closes it
-    sig = probe_dream_ratification_stalled(
-        deltas=deltas,
-        verdicts_text=_cadence_line("OK", 3600, _STALL_NOW),
-        now_ts=_STALL_NOW)
-    assert sig is None   # every key resolved → zero open
-
-
-def test_dream_stall_cadence_verdict_name_is_ssot_pinned():
-    """The local literal must equal the mini package's SSOT so the probe reads
-    the same verdict name the cadence launcher writes (honest_failure_modes #5)."""
-    from utils.watchdog_probes_mini import _CADENCE_VERDICT_NAME
-    from mini_dudeai.claw_telemetry import CADENCE_VERDICT_NAME
-    assert _CADENCE_VERDICT_NAME == CADENCE_VERDICT_NAME
 
 
 # ─────────────────────────────────────────────────────────────────────

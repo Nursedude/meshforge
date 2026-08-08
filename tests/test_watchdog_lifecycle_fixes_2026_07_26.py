@@ -147,8 +147,6 @@ class TestDispositionAdoptionGate:
         # four DO note (multi-line and cls-variable call shapes defeated the
         # reviewer's single-line grep). Pinned so they stay noted.
         "nomadnet_crashloop",
-        "aredn_organ_undeclared",
-        "dream_ratification_stalled",
         "local_brain_regressed",
     ])
     def test_reviewed_classes_are_noted(self, cls):

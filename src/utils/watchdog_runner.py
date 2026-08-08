@@ -51,10 +51,8 @@ from utils.watchdog_probes import (
     collect_dispositions,
     note_disposition,
     reset_dispositions,
-    probe_aredn_organ_undeclared,
     probe_aredn_source_dark,
     probe_calibration_drift,
-    probe_dream_ratification_stalled,
     probe_local_brain_regressed,
     probe_channel_feed_dark,
     probe_mqtt_root_drift,
@@ -76,7 +74,6 @@ from utils.watchdog_probes import (
     probe_gateway_dup_degraded,
     probe_gateway_dual_homed_exposure,
     probe_lxmf_propagation_node_dark,
-    probe_lxmf_propagation_unused,
     probe_fd_exhaustion,
     probe_history_write_failure,
     probe_inherited_app_drift,
@@ -368,19 +365,9 @@ def run_all_probes(
         )
         if sig is not None:
             signals.append(sig)
-
-        # AREDN organ available but never adopted (2026-07-20) — the leg for a
-        # box that neither configured NOR declared the organ, which both probes
-        # above structurally cannot see. Positive evidence only: an AREDN node
-        # answering sysinfo on this box's own LAN. Goes INERT (one bounded
-        # resolve, no scan) on the 95% box with no AREDN path.
-        sig = probe_aredn_organ_undeclared()
-        if sig is not None:
-            signals.append(sig)
     else:
         for _cls in ("http_local_unresponsive", "fd_exhaustion",
-                     "phoneapi_tcp_leak", "aredn_source_dark",
-                     "aredn_organ_undeclared"):
+                     "phoneapi_tcp_leak", "aredn_source_dark"):
             note_disposition(_cls, "inert",
                              reason="meshforge-map not expected active on this box")
 
@@ -485,11 +472,12 @@ def run_all_probes(
     # hours of silence on a box whose json pipeline is otherwise alive =
     # missed re-key / deaf radio / dead uplink path.
     # Self-guards: None when meshtasticd is down (service_inactive owns that).
-    # Five-state since 2026-08-07: a box with NO json uplink is INERT (an
-    # organ absent by design, not a failed observation — the kiai/moc1/moc4/
-    # moc5 shape that sat `indeterminate` for weeks), while a box DECLARING
-    # organ_expectations.json_uplink and producing none emits the separate
-    # `json_uplink_dark` class. Both come out of this one call.
+    # Four-state since 2026-08-07 (trimmed from five 2026-08-08): a box with
+    # NO json uplink is INERT (an organ absent by design, not a failed
+    # observation — the kiai/moc1/moc4/moc5 shape that sat `indeterminate`
+    # for weeks), while a box DECLARING organ_expectations.json_uplink and
+    # producing none is INDETERMINATE with the diagnosis in its reason —
+    # blind, and `detector_blind` owns escalating a blindness that persists.
     sig = probe_channel_feed_dark()
     if sig is not None:
         signals.append(sig)
@@ -547,17 +535,6 @@ def run_all_probes(
     # moves before any duplicate occurs. Fires only on a NEWLY-observed
     # dual-homed recipient; same manager-box/indeterminate guards as above.
     sig = probe_gateway_dual_homed_exposure(port=http_port)
-    if sig is not None:
-        signals.append(sig)
-
-    # LXMF propagation available but unadopted (2026-07-20) — the second
-    # shape-C probe: positive evidence that a capability is THERE and nobody
-    # took it up. The gateway already hears propagation-node announces and
-    # files them in its node cache; this reads that cache against
-    # gateway.json's empty rns.propagation_node. Self-guards INERT on a box
-    # with no gateway.json and no node cache, so it costs nothing off the
-    # gateway boxes; a stale cache HOLDS rather than claiming availability.
-    sig = probe_lxmf_propagation_unused()
     if sig is not None:
         signals.append(sig)
 
@@ -813,14 +790,6 @@ def run_all_probes(
     # assistant: a VERIFIED claim that did not hold on re-derivation. Self-guards
     # None off the dev/manager box (no ledger).
     sig = probe_calibration_drift()
-    if sig is not None:
-        signals.append(sig)
-
-    # Second-brain value loop (2026-07-22, WS-C): mini's dream propose->ratify
-    # loop runs but is not closing (proposals unresolved while the mini_cadence
-    # ratifier is alive). Self-guards inert off the manager box (no cadence
-    # verdict = no ratifier) and defers the cadence-DOWN case to #78.
-    sig = probe_dream_ratification_stalled()
     if sig is not None:
         signals.append(sig)
 
