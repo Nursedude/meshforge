@@ -1592,3 +1592,191 @@ class TestGuardsAreNotInert:
         finally:
             if os.path.exists(drill):
                 os.remove(drill)
+
+
+# ─────────────────────────────────────────────────────────────────────
+# TestTriStateHelperContract — the class-sweep guard (2026-08-07)
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _core_flat_status_pairs():
+    """Flat helpers in watchdog_probe_core that HAVE a tri-state sibling.
+
+    Derived from the source, never hardcoded: any ``def X_status(`` whose
+    ``def X(`` also exists is a pair, so a future tri-state split is covered
+    the day it lands without anyone remembering to update this list
+    (honest_failure_modes #5 — one constant, derived).
+    """
+    core = os.path.join(SRC_DIR, 'utils', 'watchdog_probe_core.py')
+    with open(core, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    defined = {n.name for n in ast.walk(tree)
+               if isinstance(n, ast.FunctionDef)}
+    return {name[:-len('_status')] for name in defined
+            if name.endswith('_status') and name[:-len('_status')] in defined}
+
+
+def _names_referenced(path):
+    """Every bare name a module imports or references, via AST.
+
+    Deliberately NOT a substring scan: a ``grep`` answers "does this byte
+    sequence appear", which is a different question and the exact trap this
+    arc kept falling into (2026-08-07). Docstrings and comments mentioning a
+    helper by name must NOT count as using it — several modules discuss the
+    flat form in prose explaining why they moved off it.
+    """
+    with open(path, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            for a in node.names:
+                names.add(a.name)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            names.add(node.attr)
+    return names
+
+
+def _names_called(path):
+    """Names actually CALLED in a module — ``f(...)``, not merely imported.
+
+    Distinct from :func:`_names_referenced` on purpose. For the contract
+    below, an unused *import* of a flat helper is still a violation (it is
+    the footgun sitting on the module's surface, and two such dead imports
+    were removed on 2026-08-07). But for judging whether an ALLOWLIST entry
+    is stale, an import is not enough — a lingering dead import would keep a
+    dead entry looking alive forever, which is the very "absence read as
+    presence" shape this file guards. Proven by drill: deleting the
+    allowlisted CALL left the stale-entry check green until this split.
+    """
+    with open(path, encoding='utf-8') as fh:
+        tree = ast.parse(fh.read())
+    called = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            fn = node.func
+            if isinstance(fn, ast.Name):
+                called.add(fn.id)
+            elif isinstance(fn, ast.Attribute):
+                called.add(fn.attr)
+    return called
+
+
+class TestTriStateHelperContract:
+    """A probe module must not use a FLAT helper when its tri-state sibling
+    exists — the ``inert`` vs ``indeterminate`` collapse, guarded.
+
+    Why this exists (2026-08-07). The same defect was fixed three times in
+    three days, each fix correct and each stopping at the instance it was
+    reported for:
+
+      08-05  ``_journal_newest_match_status`` written, ``mqtt_root_drift``
+             converted — and ``channel_feed_dark``, in the same file family,
+             left on the flat shim.
+      08-07  ``channel_feed_dark`` converted (4 boxes had read blind for
+             weeks) — and ``_read_deployment_declaration`` still collapsed
+             absent-vs-unreadable, leaving meshanchor-server permanently
+             indeterminate on two classes.
+      08-07  that fixed too, found only because the operator said "grep for
+             other callers of the flat shim".
+
+    The rule "a fix applied to one instance is not applied to the class" was
+    WRITTEN DOWN before the third instance and still needed a human to
+    trigger it. So it stops being a rule and becomes a gate: prose does not
+    survive a model swap, this does.
+
+    Collapsing empty into error (or absent into unreadable) is the same
+    honest_failure_modes #1 defect this whole file exists to prevent — here
+    in helper-selection form.
+    """
+
+    #: (module basename, flat symbol) -> why the flat form is CORRECT there.
+    #: Never add an entry to silence a finding; add it only when the caller
+    #: provably makes no disposition/health claim from the collapsed value.
+    ALLOWED_FLAT = {
+        ('watchdog_probes_drift.py', '_read_deployment_declaration'):
+            'role-action planner: returns None on a falsy role and notes NO '
+            'disposition, so it makes no health claim either way — nothing '
+            'downstream can read absent-vs-unreadable as a verdict',
+    }
+
+    def _probe_modules(self):
+        """Probe bodies only — the hub re-exports flat names by design, and
+        core DEFINES both halves (its shim must call the status form)."""
+        import glob
+        skip = {'watchdog_probes.py', 'watchdog_probe_core.py'}
+        paths = [p for p in sorted(glob.glob(
+            os.path.join(SRC_DIR, 'utils', 'watchdog_probes*.py')))
+            if os.path.basename(p) not in skip]
+        assert len(paths) >= 4, (
+            f'expected the split watchdog_probes* modules, found {paths} — '
+            f'path moved and this guard would vacuously pass')
+        return paths
+
+    def test_pairs_are_discovered(self):
+        """Non-vacuity: if no pairs are found the whole contract is inert."""
+        pairs = _core_flat_status_pairs()
+        assert pairs, (
+            'no flat/tri-state helper pairs discovered in '
+            'watchdog_probe_core.py — the deriver broke, so this contract '
+            'enforces nothing')
+        assert '_journal_newest_match' in pairs
+        assert '_read_deployment_declaration' in pairs
+
+    def test_scanner_sees_real_uses(self):
+        """Non-vacuity, the harder half: the AST walker must actually detect
+        the one use we KNOW is there (the allowlisted planner call). A
+        scanner that sees nothing would pass the contract below silently —
+        the 2026-08-05 inert-guard shape."""
+        drift = os.path.join(SRC_DIR, 'utils', 'watchdog_probes_drift.py')
+        assert '_read_deployment_declaration' in _names_referenced(drift), (
+            'the AST scan cannot see a reference that is provably in '
+            'watchdog_probes_drift.py — the walker is broken and this '
+            'contract is inert')
+        assert '_read_deployment_declaration' in _names_called(drift), (
+            'the call-walker cannot see the allowlisted CALL in '
+            'watchdog_probes_drift.py — the stale-entry check is inert')
+
+    def test_no_probe_module_uses_a_flat_helper(self):
+        pairs = _core_flat_status_pairs()
+        violations = []
+        for path in self._probe_modules():
+            base = os.path.basename(path)
+            names = _names_referenced(path)
+            for flat in sorted(pairs & names):
+                if (base, flat) in self.ALLOWED_FLAT:
+                    continue
+                violations.append(f'{base} uses {flat}() '
+                                  f'(tri-state {flat}_status exists)')
+        assert not violations, (
+            'probe module(s) using a FLAT helper whose tri-state sibling '
+            'exists:\n  ' + '\n  '.join(violations) + '\n\n'
+            'The flat form collapses "observed nothing" into "could not '
+            'look", so an organ absent BY DESIGN gets reported as an '
+            'observation that FAILED — that is how four boxes read blind '
+            'for weeks (channel_feed_dark) and meshanchor-server sat '
+            'permanently indeterminate (role_drift/rules_seed_drift). Use '
+            f'the *_status form and split inert from indeterminate, or add '
+            'an ALLOWED_FLAT entry stating why this caller makes no health '
+            'claim from the collapsed value.')
+
+    def test_allowlist_has_no_stale_entries(self):
+        """An allowlist that outlives its callers is dead weight that reads
+        as sanctioned — every entry must still correspond to a real CALL.
+
+        Uses :func:`_names_called`, not ``_names_referenced``: the first
+        version of this test accepted a bare import as proof of use, so
+        deleting the allowlisted call left the entry green (drill,
+        2026-08-07). A dead import keeping a dead exemption alive is the
+        same absence-read-as-presence defect the contract above exists for.
+        """
+        stale = []
+        for (base, flat), _why in self.ALLOWED_FLAT.items():
+            path = os.path.join(SRC_DIR, 'utils', base)
+            if not os.path.exists(path) or flat not in _names_called(path):
+                stale.append(f'{base}:{flat}')
+        assert not stale, (
+            f'ALLOWED_FLAT entries no longer correspond to any use: {stale} '
+            f'— delete them so the allowlist keeps meaning what it says')
