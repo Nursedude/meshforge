@@ -146,6 +146,7 @@ def test_signal_classes_closed_enum_is_documented():
         "rns_version_drift",
         "role_drift",
         "channel_feed_dark",
+        "json_uplink_dark",             # 2026-08-07: the instrument-liveness half of channel_feed_dark — a box DECLARING organ_expectations.json_uplink that produces no MQTT-json at all, while its journal covers the window. Split out because "no json uplink" was previously collapsed into channel_feed_dark's indeterminate, leaving four boxes permanently "blind" for a condition that was simply mqtt.json_enabled=False; documented inline in the SIGNAL_CLASSES comment (MF012 40k cap, same precedent as meshtasticd_vsz_leak)
         "queue_backlog",                # Issue #74
         "delivery_confirmation_stall",  # Issue #74
         "phoneapi_tcp_leak",            # Issue #75
@@ -1408,20 +1409,23 @@ def test_channel_feed_dark_scan_window_bounded_to_threshold(monkeypatch):
     freshness gate discards any json line older than dark_after_s, so a longer
     window is pure wasted CPU. Pin the derivation so it can never silently
     regress to a fixed 24h (honest_failure_modes #5 — one bounded constant)."""
-    import utils.watchdog_probes_service as svc
+    # Patch where the name is LOOKED UP: the probe moved to
+    # watchdog_probes_channel on 2026-08-07 (MF025 split) and now uses the
+    # tri-state reader, which is what the default path actually calls.
+    import utils.watchdog_probes_channel as chan
     captured = []
 
     def fake_newest(unit, pattern, lookback, journalctl_path="journalctl"):
         captured.append(lookback)
         if pattern == "serialized json message":
-            return f"{_NOW - 60.0:.6f} host meshtasticd[1]: json"  # fresh json
-        return None  # channel text dark → probe fires, exercising BOTH calls
+            return ("ok", f"{_NOW - 60.0:.6f} host meshtasticd[1]: json")
+        return ("ok", None)  # channel text dark → fires, exercising BOTH calls
 
-    monkeypatch.setattr(svc, "_journal_newest_match", fake_newest)
+    monkeypatch.setattr(chan, "_journal_newest_match_status", fake_newest)
     # No newest_line_fn / lookback passed → the default (derived) path runs.
     sig = probe_channel_feed_dark(main_pid=1002, now=_NOW)
     assert sig is not None and sig.cls == "channel_feed_dark"
-    assert captured, "the default path must call _journal_newest_match"
+    assert captured, "the default path must call the journal reader"
     # 6h dark_after_s → 7h window (6h + 1h margin), and NEVER the old 24h.
     assert set(captured) == {"7h"}
     assert "24h" not in captured
@@ -1838,9 +1842,15 @@ class TestNomadnetCrashloopRealQuery:
 
 def test_channel_feed_dark_none_when_unobservable():
     """The moc5/collector shape: NO json-uplink lines at all (mqtt module
-    unconfigured) → unobservable is not dark → None, never a false alarm."""
+    unconfigured) → no instrument here → None, never a false alarm.
+
+    ``expectation_fn`` is PINNED: since 2026-08-07 this path consults the
+    box's deployment.json, and an unpinned test would read whatever the
+    machine running the suite happens to declare (feedback_tests_must_pin
+    _ambient_state — two probe tests already shipped that way once)."""
     sig = probe_channel_feed_dark(
         main_pid=1002, newest_line_fn=lambda pattern: None, now=_NOW,
+        expectation_fn=lambda: ("undeclared", ""),
     )
     assert sig is None
 
@@ -1915,6 +1925,235 @@ def test_channel_feed_dark_threshold_boundary():
     )
     assert under is None
     assert over is not None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-08-07 — channel_feed_dark five-state: inert vs indeterminate vs
+# the new json_uplink_dark. Every test PINS both the journal and the
+# declaration; nothing here may consult the box running the suite.
+# ─────────────────────────────────────────────────────────────────────
+
+
+def _disp(cls="channel_feed_dark"):
+    """The disposition this tick recorded for ``cls`` — the assertion that
+    actually matters here. The probe returns None for THREE different
+    reasons (inert / indeterminate / clean) and `sig is None` cannot tell
+    them apart, which is the very collapse this arc exists to fix."""
+    from utils.watchdog_probe_core import collect_dispositions
+    entry = collect_dispositions().get(cls)
+    return entry.get("disp") if entry else None
+
+
+class TestChannelFeedDarkFiveState:
+    """The 2026-08-07 dig, pinned. Before this, states 1 and 2 were ONE
+    `indeterminate` and state 3 did not exist."""
+
+    def setup_method(self):
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+
+    def test_no_json_and_undeclared_is_inert_not_indeterminate(self):
+        """THE regression under test: kiai/moc1/moc4/moc5. journalctl RAN
+        and positively found nothing, and the box declares no uplink → the
+        organ is absent by design. Reporting that as a failed observation
+        is what left four boxes 'blind' while nothing was wrong."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+            expectation_fn=lambda: ("undeclared", ""),
+        )
+        assert sig is None
+        assert _disp() == "inert", (
+            "an organ absent by design must not read as an observation that "
+            "failed — otherwise real failures have nowhere to stand out")
+
+    def test_journal_unreadable_stays_indeterminate(self):
+        """The other half of the split: a journal we could not read is
+        genuinely unobservable and must NOT be laundered into inert."""
+        def fn(pattern):
+            return None
+        sig = probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=fn, now=_NOW,
+            journalctl_path="/nonexistent/journalctl",
+            expectation_fn=lambda: ("undeclared", ""),
+        )
+        assert sig is None
+        # The injected fn reports "ok" by construction, so drive the real
+        # reader instead to exercise the unobservable branch.
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        sig2 = probe_channel_feed_dark(
+            main_pid=1002, now=_NOW,
+            journalctl_path="/nonexistent/journalctl",
+            expectation_fn=lambda: ("undeclared", ""),
+        )
+        assert sig2 is None
+        assert _disp() == "indeterminate"
+
+    def test_declared_but_no_json_fires_json_uplink_dark(self):
+        """State 3, the NEW finding: the box says it uplinks json, the
+        journal covers the window, and there is none."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+            expectation_fn=lambda: ("declared", "gateway uplink"),
+            coverage_fn=lambda: True,
+        )
+        assert sig is not None
+        assert sig.cls == "json_uplink_dark"
+        assert sig.severity == "degraded"
+        assert "gateway uplink" in sig.detail
+        assert "mqtt.json_enabled" in sig.detail, (
+            "the detail must name the setting that actually gates this — "
+            "'mqtt off' was the wrong advice that cost the 2026-08-07 dig")
+
+    def test_declared_and_json_stale_also_fires(self):
+        """Same fact, corpse still inside the window: a newest json line
+        older than the threshold is no usable instrument either. Undeclared
+        this stays indeterminate (test below) — the declaration is what
+        turns it into a finding."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002,
+            newest_line_fn=_journal_fake(json_age_s=10 * 3600.0), now=_NOW,
+            expectation_fn=lambda: ("declared", ""),
+            coverage_fn=lambda: True,
+        )
+        assert sig is not None
+        assert sig.cls == "json_uplink_dark"
+        assert sig.extra["newest_json_age_s"] == pytest.approx(36000.0, abs=1)
+
+    def test_short_journal_cannot_convict_a_declared_box(self):
+        """The fresh-boot / vacuumed-journal guard. Zero json lines proves
+        nothing when the journal does not reach back past the threshold —
+        firing here would be a confident claim from an empty channel
+        (honest_failure_modes #2)."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+            expectation_fn=lambda: ("declared", ""),
+            coverage_fn=lambda: False,
+        )
+        assert sig is None
+        assert _disp() == "indeterminate"
+
+    def test_coverage_unobservable_holds(self):
+        """Could not even determine journal coverage → indeterminate, never
+        a fire and never inert."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+            expectation_fn=lambda: ("declared", ""),
+            coverage_fn=lambda: None,
+        )
+        assert sig is None
+        assert _disp() == "indeterminate"
+
+    def test_unreadable_declaration_never_alarms(self):
+        """A deployment.json that exists and won't parse is not a licence to
+        guess in either direction."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+            expectation_fn=lambda: ("unreadable", ""),
+        )
+        assert sig is None
+        assert _disp() == "indeterminate"
+
+    def test_undeclared_with_stale_json_stays_indeterminate(self):
+        """Behaviour deliberately UNCHANGED from before the rework: the
+        instrument existed and stopped, so channel-specific dark is
+        unobservable, and with no declaration nothing says it should still
+        be running."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002,
+            newest_line_fn=_journal_fake(json_age_s=10 * 3600.0), now=_NOW,
+            expectation_fn=lambda: ("undeclared", ""),
+        )
+        assert sig is None
+        assert _disp() == "inert"
+
+    def test_healthy_feed_is_clean_and_never_consults_declaration(self):
+        """State 4. A live feed must not pay for the declaration read —
+        and must not be able to be broken by it."""
+        def boom():
+            raise AssertionError("declaration read on the healthy path")
+        sig = probe_channel_feed_dark(
+            main_pid=1002,
+            newest_line_fn=_journal_fake(ch_text_age_s=60.0), now=_NOW,
+            expectation_fn=boom,
+        )
+        assert sig is None
+        assert _disp() == "clean"
+
+    def test_live_instrument_heals_json_uplink_dark(self):
+        """A producing uplink must POSITIVELY note json_uplink_dark clean.
+        Without it the class fires once and then holds stale forever — it
+        has no other healing path, because every other branch is a form of
+        'no uplink observed'."""
+        probe_channel_feed_dark(
+            main_pid=1002,
+            newest_line_fn=_journal_fake(json_age_s=120.0, ch_text_age_s=60.0),
+            now=_NOW,
+            expectation_fn=lambda: ("declared", ""),
+        )
+        assert _disp("json_uplink_dark") == "clean"
+
+    def test_undeclared_box_also_heals_json_uplink_dark(self):
+        """The inert leg must settle BOTH classes — a box that stops
+        declaring the organ should not strand a previous firing."""
+        probe_channel_feed_dark(
+            main_pid=1002, newest_line_fn=lambda p: None, now=_NOW,
+            expectation_fn=lambda: ("undeclared", ""),
+        )
+        assert _disp("json_uplink_dark") == "inert"
+
+    def test_channel_dark_still_fires_with_live_instrument(self):
+        """State 5 — the original 2026-06-04 finding must survive the
+        rework untouched."""
+        sig = probe_channel_feed_dark(
+            main_pid=1002,
+            newest_line_fn=_journal_fake(
+                json_age_s=120.0, ch_text_age_s=7 * 3600.0),
+            now=_NOW,
+            expectation_fn=lambda: ("declared", ""),
+        )
+        assert sig is not None
+        assert sig.cls == "channel_feed_dark"
+
+
+class TestJsonUplinkExpectationReader:
+    """The declaration reader's own tri-state. Absent and unreadable are
+    OPPOSITE facts (the _declared_root_status lesson, 2026-08-05)."""
+
+    def _write(self, tmp_path, payload):
+        cfg = tmp_path / ".config" / "meshforge"
+        cfg.mkdir(parents=True)
+        (cfg / "deployment.json").write_text(payload)
+        return tmp_path
+
+    def _read_as(self, tmp_path, monkeypatch):
+        import pwd as _pwd
+        from utils import watchdog_probes_channel as mod
+
+        class _Ent:
+            pw_dir = str(tmp_path)
+        monkeypatch.setattr(_pwd, "getpwnam", lambda u: _Ent())
+        return mod._read_json_uplink_expectation("svc")
+
+    def test_missing_file_is_undeclared(self, tmp_path, monkeypatch):
+        assert self._read_as(tmp_path, monkeypatch) == ("undeclared", "")
+
+    def test_declared_carries_the_reason(self, tmp_path, monkeypatch):
+        self._write(tmp_path, '{"organ_expectations": {"json_uplink": "why"}}')
+        assert self._read_as(tmp_path, monkeypatch) == ("declared", "why")
+
+    def test_explicit_false_is_not_a_claim(self, tmp_path, monkeypatch):
+        self._write(tmp_path, '{"organ_expectations": {"json_uplink": false}}')
+        assert self._read_as(tmp_path, monkeypatch)[0] == "undeclared"
+
+    def test_unparseable_is_unreadable_not_undeclared(self, tmp_path,
+                                                     monkeypatch):
+        self._write(tmp_path, "{ this is not json")
+        assert self._read_as(tmp_path, monkeypatch)[0] == "unreadable"
+
+    def test_no_service_user_is_unreadable(self):
+        from utils import watchdog_probes_channel as mod
+        assert mod._read_json_uplink_expectation("")[0] == "unreadable"
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -4113,6 +4352,7 @@ def test_channel_feed_dark_none_when_json_pipeline_itself_stale():
             ch_text_age_s=12 * 3600.0,
         ),
         now=_NOW,
+        expectation_fn=lambda: ("undeclared", ""),  # pinned — see below
     )
     assert sig is None
 

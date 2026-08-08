@@ -484,9 +484,12 @@ def run_all_probes(
     # the 2026-06-06 federator false-alarm had the fleet channel at slot 3);
     # hours of silence on a box whose json pipeline is otherwise alive =
     # missed re-key / deaf radio / dead uplink path.
-    # Self-guards: None when meshtasticd is down (service_inactive owns that)
-    # or when the box emits no json-uplink lines at all (unobservable —
-    # e.g. mqtt module unconfigured; a collector that only RXes).
+    # Self-guards: None when meshtasticd is down (service_inactive owns that).
+    # Five-state since 2026-08-07: a box with NO json uplink is INERT (an
+    # organ absent by design, not a failed observation — the kiai/moc1/moc4/
+    # moc5 shape that sat `indeterminate` for weeks), while a box DECLARING
+    # organ_expectations.json_uplink and producing none emits the separate
+    # `json_uplink_dark` class. Both come out of this one call.
     sig = probe_channel_feed_dark()
     if sig is not None:
         signals.append(sig)

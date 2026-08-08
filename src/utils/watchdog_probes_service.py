@@ -1,8 +1,9 @@
 """Watchdog probes — local service health failure shapes.
 
 HTTP-local unresponsive (#61/#70), fd exhaustion (#73), PhoneAPI TCP leak
-(#75), service-inactive, channel feed dark. Tracer peer unreachable moved
-to ``watchdog_probes_tracer`` (2026-07-19, MF025 split).
+(#75), service-inactive. Tracer peer unreachable moved to
+``watchdog_probes_tracer`` (2026-07-19, MF025 split); channel feed dark
+moved to ``watchdog_probes_channel`` (2026-08-07, same rule).
 Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 ``utils.watchdog_probes`` hub, not from here.
 """
@@ -23,7 +24,6 @@ from urllib.error import HTTPError, URLError
 from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
-    _journal_newest_match,
     _resolve_main_pid,
     _short_unix_ts,
     note_disposition,
@@ -1139,167 +1139,6 @@ def probe_nomadnet_crashloop(
             reason="probe raised unexpectedly; unobservable this tick",
         )
         return None
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Probe: channel feed dark (2026-06-04 — the .32 dark-feed lesson)
-# ─────────────────────────────────────────────────────────────────────
-
-
-def probe_channel_feed_dark(
-    *,
-    channel_name: str = "meshforge",
-    unit: str = "meshtasticd.service",
-    dark_after_s: float = 6 * 3600.0,
-    lookback: Optional[str] = None,
-    journalctl_path: str = "journalctl",
-    systemctl_path: str = "systemctl",
-    main_pid: Optional[int] = None,
-    newest_line_fn=None,
-    now: Optional[float] = None,
-) -> Optional[Signal]:
-    """Fire when a watched channel's decoded-text feed goes silent.
-
-    The .32 dark-feed lesson (2026-06-04 PSK rotation): a consumer missed
-    the re-key and its feed went silently dark — heartbeats stayed green
-    because *silence looks identical to "no traffic"* unless something
-    watches for it. On a normally-busy mesh, hours of zero decoded text on
-    the meshforge channel mean a missed PSK re-key, a deaf radio (the moc2
-    antenna case — ``channel_utilization=0.0`` tell), or a dead uplink path.
-
-    Watched by NAME, not slot index (2026-06-06 federator false-alarm):
-    the ``"channel":N`` field in the json payload is the box-LOCAL slot
-    index, and slot layouts legitimately differ across the fleet (the
-    federator carries a box-local channel at slot 2 and the fleet channel
-    at slot 3 — the old ``"channel":2`` grep read a healthy feed as dark
-    for days). Channel identity is the NAME (half of the decode gate
-    ``hash(name, psk)``), and the json publish-topic journal line carries
-    both the name and the payload:
-    ``JSON publish message to msh/2/json/<name>/!<id>, N bytes:
-    {...,"type":"text",...}`` — so one pattern matches name + text.
-
-    Observation source: meshtasticd's MQTT-json uplink journal lines —
-    the only channel-tagged decoded-text record available without touching
-    the single-consumer ``/api/v1/fromradio`` (#17). Self-guards
-    (returns None):
-
-    - meshtasticd inactive (``service_inactive`` owns that), or
-    - the box emits NO json-uplink lines at all in the lookback window
-      (mqtt module unconfigured — e.g. a collector that only RXes;
-      unobservable is not dark), or
-    - journalctl unavailable/timeout.
-
-    A box whose json pipeline is alive but shows no ``channel_name`` text
-    for ``dark_after_s`` fires ``degraded`` — the sentinel boxes (busy
-    gateways like moc) effectively canary the channel for the whole fleet
-    via the mini signal_class flow.
-    """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        unit, systemctl_path=systemctl_path
-    )
-    if pid is None:
-        note_disposition(
-            "channel_feed_dark", "indeterminate",
-            reason="meshtasticd MainPID unresolved; service_inactive owns that",
-        )
-        return None
-
-    # Bound the journal scan to the darkness threshold. journalctl -g -r -n 1
-    # is cheap on a busy feed (stops at the first newest match) but the
-    # NO-MATCH case scans the ENTIRE --since window every tick — and that is
-    # exactly a dark or collector feed. moc5 (2026-07-01) is a collector with
-    # no json uplink at all, so the observability gate below re-scanned a fixed
-    # 24h of meshtasticd journal each tick and pegged a core. The freshness
-    # gate (dark_after_s) already discards any json line older than the
-    # threshold, so a window longer than dark_after_s is pure wasted CPU.
-    # Derive the window from dark_after_s — rounded UP to the next whole hour
-    # — so the two can never drift (honest_failure_modes #5) and the scan is
-    # bounded to what the decision actually needs. int()+1 guarantees
-    # lookback >= dark_after_s (no false dark); the margin is (0, 1h] and is
-    # exactly 1h only for whole-hour thresholds (floor semantics).
-    if lookback is None:
-        lookback = f"{int(dark_after_s // 3600) + 1}h"
-
-    if newest_line_fn is None:
-        def newest_line_fn(pattern: str) -> Optional[str]:
-            return _journal_newest_match(
-                unit, pattern, lookback, journalctl_path=journalctl_path
-            )
-
-    # Observability gate: any json-uplink line at all? None → this box
-    # cannot see channel traffic (mqtt module off) — silence is not dark.
-    any_json = newest_line_fn("serialized json message")
-    if any_json is None:
-        note_disposition(
-            "channel_feed_dark", "indeterminate",
-            reason="no json-uplink lines observable (mqtt off or journalctl error)",
-        )
-        return None
-
-    ts_now = now if now is not None else time.time()
-
-    # Freshness gate (Issue #74): existence within the scan window (the
-    # derived lookback above) isn't enough — if the newest json line is
-    # ITSELF older than dark_after_s, the whole json pipeline died, and firing
-    # channel_feed_dark would misdirect the operator toward PSK
-    # re-key / deaf radio when the uplink module is the real failure.
-    # Whole-pipeline-dark is unobservable for channel-SPECIFIC dark.
-    json_ts = _short_unix_ts(any_json)
-    if json_ts is not None and (ts_now - json_ts) >= dark_after_s:
-        note_disposition(
-            "channel_feed_dark", "indeterminate",
-            reason="json pipeline itself dark; channel-specific dark unobservable",
-        )
-        return None
-
-    ch_text = newest_line_fn(f'json/{channel_name}/.*"type":"text"')
-
-    if ch_text is None:
-        age_desc = f"none within the {lookback} lookback window"
-        age_s = None
-    else:
-        last_ts = _short_unix_ts(ch_text)
-        if last_ts is None:
-            note_disposition(
-                "channel_feed_dark", "indeterminate",
-                reason="unparseable journal timestamp on newest channel line",
-            )
-            return None  # unparseable journal line — indeterminate
-        age_s = ts_now - last_ts
-        if age_s < dark_after_s:
-            note_disposition("channel_feed_dark", "clean")
-            return None  # feed is alive
-        age_desc = f"last decoded {age_s / 3600.0:.1f}h ago"
-
-    json_age = _short_unix_ts(any_json)
-    json_age_desc = (
-        f"{(ts_now - json_age) / 3600.0:.1f}h ago" if json_age is not None else "unknown"
-    )
-    detail = (
-        f"No decoded text on Meshtastic channel '{channel_name}' "
-        f"({age_desc}) while the json-uplink pipeline is observable (newest "
-        f"json line {json_age_desc}). On a normally-busy mesh this is the "
-        f"dark-feed tell: missed PSK re-key (decode gate = hash(name,psk)), "
-        f"deaf radio (check channel_utilization in DeviceTelemetry), or dead "
-        f"uplink path. Verify: journalctl -u meshtasticd | grep "
-        f"'json/{channel_name}/' ; then send a test message from another "
-        f"fleet box on the '{channel_name}' channel."
-    )
-    extra: dict = {
-        "channel_name": channel_name,
-        "dark_after_s": dark_after_s,
-        "lookback": lookback,
-    }
-    if age_s is not None:
-        extra["age_s"] = round(age_s, 1)
-    return Signal(
-        cls="channel_feed_dark",
-        subject=f"meshtastic-{channel_name}",
-        severity="degraded",
-        detail=detail,
-        extra=extra,
-    )
-
 
 
 

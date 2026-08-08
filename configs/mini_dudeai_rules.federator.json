@@ -489,6 +489,19 @@
       "annotation": "2026-06-04 .32 dark-feed lesson: hours of zero decoded text on the meshforge channel while the json-uplink pipeline is alive = missed PSK re-key (decode gate = hash(name,psk)), deaf radio (channel_utilization=0.0 tell), or dead uplink. Send a ch2 test from another fleet box to discriminate."
     },
     {
+      "id": "json_uplink_dark_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "json_uplink_dark",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-08-07: the instrument-liveness half of channel_feed_dark. This box DECLARES organ_expectations.json_uplink and no 'serialized json message' line is observable, though its journal covers the window — so the channel-dark canary is BLIND here, not quiet. First move: journalctl -u meshtasticd --since -1h | grep 'serialized json message'; then check the radio's mqtt.json_enabled (the setting that actually gates it — mqtt.enabled being True proves nothing, which is exactly what made the 2026-08-07 blindness read as 'mqtt off' on three boxes where MQTT was running). If the box is not meant to uplink json, drop the declaration and the probe goes inert. ⚠️ ESCALATE-ONLY, UNSOAKED — no real firing has ever been observed on this fleet; promote to an ntfy page only from measured data (the claw_rf_silent / calibration_drift 34-day precedent). Cooldown 6h: a config-shaped condition does not resolve on its own."
+    },
+    {
       "id": "queue_backlog_any",
       "match": {
         "kind": "signal_class",

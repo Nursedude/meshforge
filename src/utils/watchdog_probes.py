@@ -41,6 +41,7 @@ live in the sibling modules and are re-exported below:
 * ``watchdog_probe_core``     — Signal, SIGNAL_CLASSES, shared helpers
 * ``watchdog_probes_rns``     — RNS substrate (#68/#69/#72 class)
 * ``watchdog_probes_service`` — local service health (#61/#73/#75)
+* ``watchdog_probes_channel`` — Meshtastic channel feed + json-uplink instrument
 * ``watchdog_probes_drift``   — declared-vs-live drift (#77 + parity/version)
 * ``watchdog_probes_liveness``— cron/fleet/host liveness (#78)
 * ``watchdog_probes_env``     — router/ntfy/kernel/aredn/inherited-app
@@ -78,8 +79,10 @@ from utils.watchdog_probes_rns import (
     probe_rns_shared_instance_responsive,
     _tcp_reachable,
 )
-from utils.watchdog_probes_service import (
+from utils.watchdog_probes_channel import (
     probe_channel_feed_dark,
+)
+from utils.watchdog_probes_service import (
     probe_fd_exhaustion,
     probe_http_local,
     probe_meshtasticd_phoneapi_wedge,
