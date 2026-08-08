@@ -1032,6 +1032,8 @@ def probe_nomadnet_crashloop(
     debounce_ticks: int = 2,
     journalctl_path: str = "journalctl",
     now: Optional[float] = None,
+    enabled_fn=None,
+    user_home: Optional[str] = None,
 ) -> Optional[Signal]:
     """Fire when the NomadNet USER unit is crashlooping — the 2026-06-19
     class (NRestarts=7842, stuck ``activating (start-pre)``, exit 75 from the
@@ -1045,10 +1047,31 @@ def probe_nomadnet_crashloop(
     on the newest being RECENT, so a LIVE loop fires but post-fix history does
     not (a 2h window would false-page right after every remediation).
 
-    Self-guards None (INERT): zero/too-few restart lines (healthy, or the
-    nomadnet-disabled box — moc5), a newest restart older than ``recency_s``
-    (a loop that already stopped — e.g. just remediated), or journalctl
-    unavailable/timeout (unobservable ≠ healthy — never read None as 0).
+    Returns None on everything short of a confirmed live loop, but the
+    DISPOSITION distinguishes four different facts (split 2026-08-08 — before
+    that they were one ``inert`` reading "healthy, remediated, or no
+    nomadnet", which meant this probe could never say ``clean`` and its
+    coverage cell was indistinguishable from a probe that had been deleted):
+
+    ===================  ==========================================
+    ``clean``            ``user_unit`` IS enrolled in
+                         ``default.target.wants``, the journal was
+                         read, and no live loop is in the window —
+                         watching, and fine
+    ``inert``            ``user_unit`` is NOT enrolled here — no
+                         nomadnet to watch (the moc5 shape). Absent
+                         by design, not an observation that failed
+    ``indeterminate``    journalctl unavailable/timeout (unobservable
+                         ≠ healthy — never read None as 0), or the
+                         enrollment itself is unreadable, so absent
+                         and healthy cannot be told apart
+    ``degraded/wedge``   confirmed live loop, past the 2-tick debounce
+    ===================  ==========================================
+
+    Only a DECLARATION separates *absent by design* from *died quietly*, and
+    the ``default.target.wants`` symlink is that declaration — read through
+    the same helper ``probe_user_unit_inactive`` uses, so the two probes can
+    never disagree about what is enrolled (honest_failure_modes #5).
     2-tick debounce rides out a single tick landing mid-restart. Never raises.
 
     KNOWN BOUNDARY (calibrated — do not overclaim): this is a LIVE-loop
@@ -1089,11 +1112,36 @@ def probe_nomadnet_crashloop(
             and (now - newest) <= recency_s
         )
         if not live:
-            _save_nomadnet_crashloop_streak(sp, 0)   # below thresh / stale → INERT
-            note_disposition(
-                "nomadnet_crashloop", "inert",
-                reason="no live restart loop (healthy, remediated, or no nomadnet)",
-            )
+            _save_nomadnet_crashloop_streak(sp, 0)
+            # 2026-08-08: this branch used to note ONE inert for three
+            # different facts — "healthy, remediated, or no nomadnet" — so the
+            # probe could never say `clean`, and its coverage cell was
+            # indistinguishable from a DELETED detector. That is the
+            # honest_failure_modes #2 collapse in disposition form, and it is
+            # what the yield audit caught. Absence and health are different
+            # claims, and only a DECLARATION separates them: the
+            # default.target.wants symlink is that declaration, read from the
+            # same helper probe_user_unit_inactive uses.
+            enabled, why = _user_unit_enrollment(
+                user_home=user_home, enabled_fn=enabled_fn)
+            if enabled is None:
+                note_disposition(
+                    "nomadnet_crashloop", "indeterminate",
+                    reason=(f"{why} — cannot tell an unenrolled box from a "
+                            f"healthy one"),
+                )
+            elif user_unit not in enabled:
+                note_disposition(
+                    "nomadnet_crashloop", "inert",
+                    reason=(f"{user_unit} not enrolled on this box "
+                            f"(default.target.wants) — nothing to watch here"),
+                )
+            else:
+                note_disposition(
+                    "nomadnet_crashloop", "clean",
+                    reason=(f"{user_unit} enrolled; journal read, no live "
+                            f"restart loop in the last {lookback}"),
+                )
             return None
 
         # Clamp at the debounce floor: once confirmed, a sustained loop fires
@@ -1170,6 +1218,66 @@ def _enabled_user_services(user_home: str) -> Optional[set]:
         return None
 
 
+def _operator_unit_paths(operator=None, user_home=None, runtime_dir=None):
+    """``(user_home, runtime_dir)`` for the operator's ``systemd --user`` tree,
+    or ``(None, None)`` when no operator user resolves.
+
+    ONE resolver for every probe that reads the user-unit tree from the
+    watchdog's root context (honest_failure_modes #5 — two consumers of one
+    artifact share one answer, or they drift). Falls back to the rnsd service
+    user when no live user bus is resolvable, so an enrolled-but-dead setup is
+    still legible. Explicit ``user_home``/``runtime_dir`` are test seams and
+    win outright.
+    """
+    if user_home is not None and runtime_dir is not None:
+        return user_home, runtime_dir
+    if operator is None:
+        try:
+            from utils.fleet_test_runner import _find_operator_user
+            operator = _find_operator_user()
+        except Exception:
+            operator = None
+        if operator is None:
+            try:
+                from utils.rns_tree_perms import _read_rnsd_user
+                name = _read_rnsd_user()
+                if name and name != "root":
+                    import pwd as _pwd
+                    rec = _pwd.getpwnam(name)
+                    operator = (rec.pw_uid, name)
+            except Exception:
+                operator = None
+        if operator is None:
+            return None, None
+    uid, name = operator
+    import pwd as _pwd
+    try:
+        home = _pwd.getpwuid(uid).pw_dir
+    except KeyError:
+        home = f"/home/{name}"
+    return (user_home or home), (runtime_dir or f"/run/user/{uid}")
+
+
+def _user_unit_enrollment(*, user_home=None, enabled_fn=None):
+    """``(enrolled_service_names, None)`` or ``(None, why_unreadable)``.
+
+    The DECLARATION side of any user-unit probe. ``None`` means the answer
+    could not be read — never "nothing is enrolled": absence of a readable
+    answer is not evidence of absence, and collapsing the two is exactly the
+    defect this function was extracted to fix.
+    """
+    if enabled_fn is not None:
+        return enabled_fn(), None
+    if user_home is None:
+        user_home, _ = _operator_unit_paths()
+    if user_home is None:
+        return None, "no resolvable operator user"
+    enabled = _enabled_user_services(user_home)
+    if enabled is None:
+        return None, "user wants dir unreadable"
+    return enabled, None
+
+
 def _active_user_units(runtime_dir: str) -> Optional[set]:
     """Unit names with a live invocation marker under
     ``/run/user/<uid>/systemd/units/`` (``invocation:<unit>`` symlinks exist
@@ -1218,37 +1326,12 @@ def probe_user_unit_inactive(
     try:
         sp = state_path or DEFAULT_USER_UNIT_INACTIVE_STATE
 
-        if operator is None and (user_home is None or runtime_dir is None):
-            try:
-                from utils.fleet_test_runner import _find_operator_user
-                operator = _find_operator_user()
-            except Exception:
-                operator = None
-            if operator is None:
-                # No live user bus. Fall back to the rnsd service user so the
-                # manager-down leg can still see an enrolled-but-dead setup.
-                try:
-                    from utils.rns_tree_perms import _read_rnsd_user
-                    name = _read_rnsd_user()
-                    if name and name != "root":
-                        import pwd as _pwd
-                        rec = _pwd.getpwnam(name)
-                        operator = (rec.pw_uid, name)
-                except Exception:
-                    operator = None
-            if operator is None:
-                note_disposition("user_unit_inactive", "inert",
-                                 reason="no resolvable operator user")
-                return None
-        if user_home is None or runtime_dir is None:
-            uid, name = operator
-            import pwd as _pwd
-            try:
-                home = _pwd.getpwuid(uid).pw_dir
-            except KeyError:
-                home = f"/home/{name}"
-            user_home = user_home or home
-            runtime_dir = runtime_dir or f"/run/user/{uid}"
+        user_home, runtime_dir = _operator_unit_paths(
+            operator=operator, user_home=user_home, runtime_dir=runtime_dir)
+        if user_home is None:
+            note_disposition("user_unit_inactive", "inert",
+                             reason="no resolvable operator user")
+            return None
 
         enabled = _enabled_user_services(user_home)
         if enabled is None:

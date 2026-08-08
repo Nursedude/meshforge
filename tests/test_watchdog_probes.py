@@ -1625,6 +1625,68 @@ class TestNomadnetCrashloop:
     def test_signal_class_registered(self):
         assert "nomadnet_crashloop" in SIGNAL_CLASSES
 
+    # ── the 2026-08-08 disposition split ──────────────────────────────
+    # Until this date the quiet path noted ONE `inert` for three different
+    # facts ("healthy, remediated, or no nomadnet"), so the probe could
+    # never say `clean` and its coverage cell was indistinguishable from a
+    # DELETED detector — which is how the yield audit found it. Every test
+    # below asserts the DISPOSITION, not `sig is None`: the probe returns
+    # None for four different reasons and `is None` cannot tell them apart.
+    # That absence of disposition assertions is exactly why this survived.
+
+    def test_enrolled_and_quiet_is_CLEAN_not_inert(self, tmp_path):
+        """The state the old code could not express. Enrolled + journal read +
+        no live loop = watching, and fine. Without this the probe can never
+        prove it can see, and a working detector looks like a dead one."""
+        _reset_disp()
+        probe_nomadnet_crashloop(
+            ts_fn=self._ts_fn([]), state_path=str(tmp_path / "nn.json"),
+            now=_NOW, enabled_fn=lambda: {"nomadnet.service", "other.service"},
+        )
+        assert _disp("nomadnet_crashloop") == "clean"
+
+    def test_not_enrolled_is_INERT(self, tmp_path):
+        """The moc5 shape: no nomadnet user unit here. Absent by design is an
+        organ that isn't present, never an observation that failed."""
+        _reset_disp()
+        probe_nomadnet_crashloop(
+            ts_fn=self._ts_fn([]), state_path=str(tmp_path / "nn.json"),
+            now=_NOW, enabled_fn=lambda: {"meshforge-tracer.service"},
+        )
+        assert _disp("nomadnet_crashloop") == "inert"
+
+    def test_unreadable_enrollment_is_INDETERMINATE(self, tmp_path):
+        """Enrollment unreadable → absent and healthy cannot be told apart, so
+        claim NEITHER. Absence of a readable answer is not evidence of
+        absence (honest_failure_modes #2)."""
+        _reset_disp()
+        probe_nomadnet_crashloop(
+            ts_fn=self._ts_fn([]), state_path=str(tmp_path / "nn.json"),
+            now=_NOW, enabled_fn=lambda: None,
+        )
+        assert _disp("nomadnet_crashloop") == "indeterminate"
+
+    def test_unobservable_journal_stays_INDETERMINATE(self, tmp_path):
+        """The journal leg still wins: if we could not read restarts at all,
+        enrollment cannot rescue the tick into `clean`."""
+        _reset_disp()
+        probe_nomadnet_crashloop(
+            ts_fn=self._ts_fn(None), state_path=str(tmp_path / "nn.json"),
+            now=_NOW, enabled_fn=lambda: {"nomadnet.service"},
+        )
+        assert _disp("nomadnet_crashloop") == "indeterminate"
+
+    def test_enrollment_read_shares_one_answer_with_the_sibling_probe(self):
+        """Both user-unit probes must resolve enrollment through the SAME
+        helper, or they drift into disagreeing about what is installed
+        (honest_failure_modes #5). Pinned structurally, not by comment."""
+        import inspect
+        from utils import watchdog_probes_service as wps
+        src = inspect.getsource(wps.probe_user_unit_inactive)
+        assert "_enabled_user_services(" in src
+        assert "_enabled_user_services" in inspect.getsource(
+            wps._user_unit_enrollment)
+
     def test_two_consecutive_live_ticks_fire(self, tmp_path):
         """RED-FIRST debounce: one live tick → None (streak 1); the second
         consecutive live tick fires degraded (5 restarts ∈ [3, 8))."""
@@ -1667,14 +1729,21 @@ class TestNomadnetCrashloop:
         manager-box case: 19 restarts in 2h, newest 70+ min ago, healthy)."""
         sp = str(tmp_path / "nn.json")
         stale = self._loop(20, newest_age_s=600.0)   # newest 10min > 5min recency
-        kw = dict(ts_fn=self._ts_fn(stale), state_path=sp, now=_NOW)
+        kw = dict(ts_fn=self._ts_fn(stale), state_path=sp, now=_NOW,
+                  enabled_fn=lambda: {"nomadnet.service"})
         assert probe_nomadnet_crashloop(**kw) is None
         assert probe_nomadnet_crashloop(**kw) is None
 
     def test_no_restarts_inert(self, tmp_path):
-        """Healthy / disabled / never-installed (moc5) → empty list → None."""
+        """Healthy / disabled / never-installed (moc5) → empty list → None.
+
+        ``enabled_fn`` is pinned so this test's verdict does not depend on
+        whether the BOX running the suite happens to have nomadnet enrolled
+        (feedback_tests_must_pin_ambient_state — a test whose answer changes
+        with the machine pins nothing)."""
         sp = str(tmp_path / "nn.json")
-        kw = dict(ts_fn=self._ts_fn([]), state_path=sp, now=_NOW)
+        kw = dict(ts_fn=self._ts_fn([]), state_path=sp, now=_NOW,
+                  enabled_fn=lambda: set())
         assert probe_nomadnet_crashloop(**kw) is None
         assert probe_nomadnet_crashloop(**kw) is None
 
