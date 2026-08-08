@@ -121,9 +121,9 @@ fi
 # 4. Write the verdict file atomically (the read-only watchdog probe reads it).
 #    NOTE: the topic is deliberately NOT written here — it must never land in a
 #    probe/api/_fleet surface (MF015).
-python3 - "$STATE" "$now_ts" "$nonce" "$published_ok" "$received" "$latency_s" "$misses" "$INTERVAL_S" <<'PY' 2>/dev/null || true
+python3 - "$STATE" "$now_ts" "$nonce" "$published_ok" "$received" "$latency_s" "$misses" "$INTERVAL_S" "$ESCALATE_AFTER_MISSES" <<'PY' 2>/dev/null || true
 import json, os, sys, tempfile
-path, ts, nonce, pub, recv, lat, misses, interval = sys.argv[1:9]
+path, ts, nonce, pub, recv, lat, misses, interval, escalate = sys.argv[1:10]
 doc = {
     "ts": int(ts),
     "nonce": nonce,
@@ -132,6 +132,12 @@ doc = {
     "latency_s": int(lat),
     "consecutive_misses": int(misses),
     "interval_s": int(interval),
+    # The sustained-miss threshold travels WITH the artifact so the
+    # email leg here, the exit code below, and probe_ntfy_loopback all
+    # fire off ONE number. Three independent copies is what made a
+    # single transient miss produce two pages (2026-08-08 yield audit;
+    # honest_failure_modes #5 — same reason interval_s is recorded).
+    "escalate_after_misses": int(escalate),
 }
 try:
     prev = json.load(open(path))
@@ -161,6 +167,22 @@ if [ "$received" != true ]; then
             || echo "fleet_ntfy_loopback: email escalation ALSO failed (curl exit $?) — both channels dark" >&2
     fi
     echo "fleet_ntfy_loopback: MISS (published_ok=$published_ok received=$received misses=$misses)" >&2
-    exit 1
+    # Exit NONZERO only on a SUSTAINED miss. The crontab maps $? through
+    # cron_verdict.sh, so exiting 1 on a single transient wrote FAIL(1) — and
+    # cron_verdict_stale (#78) then latched onto that FAIL, turning one
+    # self-clearing hiccup into a second, independent-looking page. The
+    # operator's own 2026-06-25 rejection note named it: "cron_verdict_stale
+    # reports FAIL ONLY BECAUSE ntfy_loopback wrote FAIL(1) — same single
+    # transient". Same threshold as the email leg above and as the probe.
+    #
+    # The transient is NOT swallowed: it is in this stderr line (captured to
+    # cron_out/ntfy_loopback.out), in consecutive_misses in the state file, and
+    # probe_ntfy_loopback reports it as `indeterminate` naming the count. This
+    # cron's verdict answers "did the job do its work" — it published, polled,
+    # retried, and recorded — not "is ntfy flawless".
+    if [ "$misses" -ge "$ESCALATE_AFTER_MISSES" ]; then
+        exit 1
+    fi
+    exit 0
 fi
 exit 0

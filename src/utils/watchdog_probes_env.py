@@ -289,6 +289,35 @@ NTFY_LOOPBACK_STATE_STALE_S = 5400   # FLOOR for the stale window. The EFFECTIVE
                                      # cron_verdict_stale owns the dead-cron alert
                                      # (fleet_ntfy_loopback is verdict-wired).
 NTFY_LOOPBACK_WEDGE_MISSES = 3       # this many consecutive misses → wedge
+NTFY_LOOPBACK_DEGRADED_MISSES = 2    # FLOOR for "sustained". The EFFECTIVE value
+                                     # scales to the collector's OWN recorded
+                                     # escalate_after_misses, exactly like
+                                     # interval_s above — the cron is the single
+                                     # source of truth (honest_failure_modes #5).
+                                     #
+                                     # WHY THIS EXISTS (2026-08-08 yield audit):
+                                     # this class fired 16× and every one of its
+                                     # 12 dream proposals was rejected as "a
+                                     # single transient publish miss that
+                                     # self-cleared by the next run". The cause
+                                     # was THREE consumers of one artifact each
+                                     # picking their own threshold: the email
+                                     # backbone escalated at >=2 (correct), while
+                                     # the script's exit code AND this probe both
+                                     # fired at >=1 — so one transient produced a
+                                     # cron FAIL(1) *and* a degraded signal, and
+                                     # cron_verdict_stale then latched onto the
+                                     # FAIL. One event, two pages, neither real:
+                                     # the operator's own rejection note from
+                                     # 2026-06-25 called it "watcher-watching-
+                                     # the-watcher". Note the debounce below is
+                                     # NOT a second opinion — it counts 30s
+                                     # WATCHDOG TICKS re-reading the SAME static
+                                     # 2h-cadence file, so it confirmed nothing
+                                     # and merely delayed the fire by 30s. Only
+                                     # consecutive_misses counts independent
+                                     # loopback RUNS, and each run already
+                                     # retries its publish+poll cycle once.
 
 
 def _read_ntfy_loopback_state(home) -> Tuple[Optional[str], Optional[float]]:
@@ -324,6 +353,7 @@ def probe_ntfy_loopback(
     debounce_ticks: int = 2,
     stale_after_s: float = NTFY_LOOPBACK_STATE_STALE_S,
     wedge_after_misses: int = NTFY_LOOPBACK_WEDGE_MISSES,
+    degraded_after_misses: int = NTFY_LOOPBACK_DEGRADED_MISSES,
 ) -> Optional[Signal]:
     """Surface a failure of the ntfy alerting channel's OWN loopback — Phase 2 of
     the ntfy receipt-heartbeat arc (2026-06-18).
@@ -440,10 +470,39 @@ def probe_ntfy_loopback(
             return None
 
         published_ok = doc.get("published_ok")
-        try:
-            misses = int(doc.get("consecutive_misses", 0))
-        except (ValueError, TypeError):
-            misses = 0
+        raw_misses = doc.get("consecutive_misses")
+        if (not isinstance(raw_misses, int) or isinstance(raw_misses, bool)
+                or raw_misses < 0):
+            # UNKNOWN, never a healthy-looking 0: the old `except → misses = 0`
+            # made an unreadable counter indistinguishable from a fresh miss,
+            # and with the sustained gate below that would silently fail OPEN
+            # (never fire). Absence of the count is not a count of zero.
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason=("miss observed but consecutive_misses is missing or "
+                        "malformed — cannot tell a transient from a sustained "
+                        "outage"),
+            )
+            return None
+        misses = raw_misses
+
+        # Sustained-miss gate, scaled to the collector's own escalate threshold
+        # so the email backbone, the cron verdict, and this probe fire off ONE
+        # number. Clamped (#6) — an absurd recorded value cannot disarm this.
+        recorded = doc.get("escalate_after_misses")
+        if (isinstance(recorded, int) and not isinstance(recorded, bool)
+                and 1 <= recorded <= 10):
+            degraded_at = recorded
+        else:
+            degraded_at = degraded_after_misses
+        if misses < degraded_at:
+            note_disposition(
+                "ntfy_loopback", "indeterminate",
+                reason=(f"single loopback miss ({misses}/{degraded_at}) — the "
+                        f"collector retries in-run and this self-clears on the "
+                        f"next cycle; awaiting a second consecutive miss"),
+            )
+            return None
 
         if published_ok is False:
             cause = ("could NOT publish to the fleet ntfy topic from this box "

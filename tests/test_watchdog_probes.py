@@ -5366,10 +5366,16 @@ class TestNtfyLoopback:
 
     NOW = 2_000_000_000.0
 
-    def _doc(self, *, received, published_ok=True, misses=0):
-        return {"ts": self.NOW, "nonce": "lb-x-1-2", "published_ok": published_ok,
-                "received": received, "latency_s": 4, "consecutive_misses": misses,
-                "interval_s": 1800, "last_received_ts": self.NOW}
+    def _doc(self, *, received, published_ok=True, misses=0, escalate=2):
+        """Mirrors what scripts/fleet_ntfy_loopback.sh actually writes, including
+        escalate_after_misses (recorded 2026-08-08 so the email leg, the exit
+        code, and this probe fire off ONE number)."""
+        doc = {"ts": self.NOW, "nonce": "lb-x-1-2", "published_ok": published_ok,
+               "received": received, "latency_s": 4, "consecutive_misses": misses,
+               "interval_s": 1800, "last_received_ts": self.NOW}
+        if escalate is not None:
+            doc["escalate_after_misses"] = escalate
+        return doc
 
     def _fire(self, tmp_path, doc, *, state_mtime=None, **kw):
         """Run twice (2-tick debounce); return the 2nd. Fresh mtime by default.
@@ -5388,22 +5394,103 @@ class TestNtfyLoopback:
     def test_received_true_is_none(self, tmp_path):
         assert self._fire(tmp_path, self._doc(received=True)) is None
 
+    # ── the 2026-08-08 sustained-miss gate ────────────────────────────
+    # This class fired 16× and ALL 12 of its dream proposals were rejected
+    # as "one transient publish miss that self-cleared next run". Three
+    # consumers of one artifact had each picked a threshold: email at >=2,
+    # the script's exit code at >=1, this probe at >=1 — so one hiccup
+    # produced a cron FAIL(1) *and* a degraded signal, and
+    # cron_verdict_stale latched onto the FAIL. One event, two pages.
+
+    def test_single_miss_does_not_fire(self, tmp_path):
+        """THE fix. One miss is a transient the collector already retried
+        in-run; it self-clears on the next cycle. Firing here is what made
+        every proposal from this class a false alarm."""
+        assert self._fire(
+            tmp_path, self._doc(received=False, misses=1)) is None
+
+    def test_single_miss_is_indeterminate_not_clean(self, tmp_path):
+        """Not firing must not become "healthy". A miss WAS observed; we just
+        cannot yet tell transient from outage. Claiming `clean` here would be
+        the honest_failure_modes #2 collapse in the opposite direction, and
+        this cell self-resolves within one cadence either way."""
+        sp = str(tmp_path / "d.json")
+        text = json.dumps(self._doc(received=False, misses=1))
+        for _ in range(2):                      # past the 2-tick debounce
+            probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
+                                now=self.NOW, state_path=sp)
+        _reset_disp()                           # a fresh tick, as the runner does
+        assert probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
+                                   now=self.NOW, state_path=sp) is None
+        assert _disp("ntfy_loopback") == "indeterminate"
+        assert "1/2" in _reason("ntfy_loopback")
+
+    def test_second_consecutive_miss_fires(self, tmp_path):
+        """A REAL outage misses consecutive runs and still pages — the whole
+        point is to lose the false alarms without losing the detection."""
+        sig = self._fire(tmp_path, self._doc(received=False, misses=2))
+        assert sig is not None and sig.severity == "degraded"
+
+    def test_threshold_travels_with_the_artifact(self, tmp_path):
+        """The collector records escalate_after_misses; raising it there must
+        move this probe too, or the two drift apart again — the very defect
+        (honest_failure_modes #5, same as interval_s)."""
+        assert self._fire(
+            tmp_path, self._doc(received=False, misses=2, escalate=3)) is None
+        sig = self._fire(
+            tmp_path, self._doc(received=False, misses=3, escalate=3))
+        assert sig is not None
+
+    def test_absent_threshold_falls_back_to_the_default(self, tmp_path):
+        """Rollout case: state files written before 2026-08-08 carry no
+        escalate_after_misses until the cron next runs. The probe must still
+        gate at the built-in floor, not fire on every transient."""
+        assert self._fire(
+            tmp_path, self._doc(received=False, misses=1, escalate=None)) is None
+        assert self._fire(
+            tmp_path, self._doc(received=False, misses=2, escalate=None)) is not None
+
+    def test_absurd_recorded_threshold_cannot_disarm_the_probe(self, tmp_path):
+        """A garbage/hostile escalate_after_misses is clamped to the built-in
+        floor — a recorded value must never be able to silence the alerting
+        channel's own liveness check."""
+        sig = self._fire(
+            tmp_path, self._doc(received=False, misses=2, escalate=9999))
+        assert sig is not None
+
+    def test_malformed_miss_count_is_indeterminate_not_zero(self, tmp_path):
+        """The old code did `except → misses = 0`, which under the new gate
+        would fail OPEN (never fire) on a torn write. Absence of the count is
+        not a count of zero."""
+        sp = str(tmp_path / "d.json")
+        doc = self._doc(received=False, misses=2)
+        doc["consecutive_misses"] = "three"
+        text = json.dumps(doc)
+        for _ in range(2):
+            probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
+                                now=self.NOW, state_path=sp)
+        _reset_disp()
+        assert probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
+                                   now=self.NOW, state_path=sp) is None
+        assert _disp("ntfy_loopback") == "indeterminate"
+        assert "malformed" in _reason("ntfy_loopback")
+
     def test_no_state_is_inert(self, tmp_path):
         """No verdict file (not the manager box) → INERT."""
         assert self._fire(tmp_path, None) is None
 
     def test_published_but_lost_fires_degraded(self, tmp_path):
-        sig = self._fire(tmp_path, self._doc(received=False, published_ok=True, misses=1))
+        sig = self._fire(tmp_path, self._doc(received=False, published_ok=True, misses=2))
         assert sig is not None
         assert sig.cls == "ntfy_loopback"
         assert sig.subject == "ntfy"
         assert sig.severity == "degraded"
         assert "did NOT loop back" in sig.detail
         assert sig.extra["published_ok"] is True
-        assert sig.extra["consecutive_misses"] == 1
+        assert sig.extra["consecutive_misses"] == 2
 
     def test_publish_failed_fires(self, tmp_path):
-        sig = self._fire(tmp_path, self._doc(received=False, published_ok=False, misses=1))
+        sig = self._fire(tmp_path, self._doc(received=False, published_ok=False, misses=2))
         assert sig is not None
         assert "could NOT publish" in sig.detail
         assert sig.extra["published_ok"] is False
@@ -5424,7 +5511,7 @@ class TestNtfyLoopback:
         (=6h), so a 2h-old verdict is FRESH and a real miss still fires — a cron
         cadence change needs no second edit in the probe (honest_failure_modes
         #5: the cron is the single source of truth)."""
-        doc = self._doc(received=False, published_ok=True, misses=1)
+        doc = self._doc(received=False, published_ok=True, misses=2)
         doc["interval_s"] = 7200
         sig = self._fire(tmp_path, doc, state_mtime=self.NOW - 7200)   # 2h old
         assert sig is not None and sig.cls == "ntfy_loopback"
@@ -5464,8 +5551,10 @@ class TestNtfyLoopback:
         assert self._fire(tmp_path, doc) is None
 
     def test_debounce_first_tick_silent(self, tmp_path):
+        """The 30s-tick debounce still guards a torn read. misses=2 because a
+        single miss is now owned by the sustained-miss gate above."""
         sp = str(tmp_path / "d.json")
-        text = json.dumps(self._doc(received=False, misses=1))
+        text = json.dumps(self._doc(received=False, misses=2))
         first = probe_ntfy_loopback(state_text=text, state_mtime=self.NOW,
                                     now=self.NOW, state_path=sp)
         assert first is None
