@@ -40,6 +40,19 @@ _streak_mem_fallback: dict = {}
 # Closed enum of failure classes — one per persistent_issues.md entry.
 # Each class maps to a probe function below. To add a class, add it
 # here AND add a row to persistent_issues.md.
+#
+# ⚠️ TWO long-running processes cache this tuple at startup, and the coverage
+# view is only coherent while they AGREE: meshforge-watchdog (the PRODUCER of
+# the per-class dispositions) and meshforge-map (the CONSUMER serving
+# /api/fleet/truth, whose copy is "what the server knows"). They go stale in
+# OPPOSITE directions — a GROWING enum leaves the map behind, a SHRINKING one
+# leaves the watchdog behind — and either way the disagreement surfaces as
+# `unknown_to_server` / `server_class_skew` and turns the fleet verdict DARK
+# with every box healthy (observed 2026-08-08, the first time the enum ever
+# shrank). Editing this tuple therefore requires BOTH to be restarted, never
+# one: locally the .githooks/post-commit hook does it, on every other box it is
+# `fleet_pull.sh` + a watchdog restart. Pinned by
+# TestPostCommitRefreshesBothEnumHolders.
 # ─────────────────────────────────────────────────────────────────────
 
 SIGNAL_CLASSES = (

@@ -1780,3 +1780,71 @@ class TestTriStateHelperContract:
         assert not stale, (
             f'ALLOWED_FLAT entries no longer correspond to any use: {stale} '
             f'— delete them so the allowlist keeps meaning what it says')
+
+
+class TestPostCommitRefreshesBothEnumHolders:
+    """The post-commit hook must refresh EVERY local process holding
+    ``SIGNAL_CLASSES``, not just one of them.
+
+    2026-08-08: the hook restarted ``meshforge-map`` (the CONSUMER that serves
+    ``/api/fleet/truth``) but not ``meshforge-watchdog`` (the PRODUCER that
+    emits the per-class dispositions). Those go stale in OPPOSITE directions —
+    a GROWING enum leaves the map behind, a SHRINKING one leaves the watchdog
+    behind — and the enum had only ever grown, so the gap stayed invisible
+    until the yield audit removed four classes and the fleet verdict read
+    ``dark`` with all 9 boxes healthy.
+
+    This is honest_failure_modes #4 (a mechanism with a producing half and a
+    consuming half must wire both or refuse loudly) found *in the harness*, so
+    the guard belongs here rather than in a comment.
+    """
+
+    HOOK = os.path.join(REPO_ROOT, '.githooks', 'post-commit')
+
+    #: Long-running units that import ``utils.watchdog_probe_core`` at startup
+    #: and therefore cache the enum. Derived by grep at the time of writing;
+    #: mini-dudeai, the gateway and the monitoring daemons do NOT import it.
+    #: If a third process starts importing it, add it here AND to the hook.
+    ENUM_HOLDERS = ('meshforge-map.service', 'meshforge-watchdog.service')
+
+    def _hook_text(self):
+        assert os.path.exists(self.HOOK), f'missing hook: {self.HOOK}'
+        with open(self.HOOK, 'r', encoding='utf-8') as fh:
+            return fh.read()
+
+    def test_hook_refreshes_every_enum_holder(self):
+        text = self._hook_text()
+        missing = [u for u in self.ENUM_HOLDERS if u not in text]
+        assert not missing, (
+            f'post-commit hook does not refresh {missing} — refreshing only '
+            f'SOME holders of SIGNAL_CLASSES manufactures the exact '
+            f'server_class_skew the hook exists to prevent (one half reports '
+            f'classes the other does not know, and the fleet verdict goes '
+            f'dark with every box healthy).')
+
+    def test_hook_uses_try_restart_never_restart(self):
+        """``try-restart`` is a no-op on an inactive unit; ``restart`` STARTS
+        it. A deploy must never change WHICH services run — that is the
+        2026-07-24 incident, where a restart loop started meshforge-map on a
+        gateway-only box whose map is disabled by design."""
+        text = self._hook_text()
+        assert 'try-restart' in text
+        bad = [ln.strip() for ln in text.splitlines()
+               if 'systemctl' in ln and ' restart ' in ln
+               and 'try-restart' not in ln and not ln.strip().startswith('#')
+               and 'echo' not in ln]
+        assert not bad, (
+            f'hook uses a bare `systemctl restart` on a live path: {bad} — '
+            f'that can START a unit the operator deliberately stopped')
+
+    def test_hook_gates_on_is_active(self):
+        """The committed hook ships to every box; it must no-op where the
+        unit is not running rather than assume this box serves the map."""
+        assert 'is-active' in self._hook_text()
+
+    def test_partial_refresh_is_reported_loudly(self):
+        """If one holder cannot be restarted, the hook must SAY the box is
+        left skewed — reporting the successes and going quiet about the rest
+        is the swallow this whole class of bug is made of."""
+        text = self._hook_text()
+        assert 'ENUM HOLDERS LEFT STALE' in text

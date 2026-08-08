@@ -3,16 +3,40 @@
 #
 # Closes the deploy-restart gap for the fleet-truth signal-class enum.
 #
-# `meshforge-map` (the process serving the /fleet coverage view) imports
-# `utils.watchdog_probe_core.SIGNAL_CLASSES` ONCE at startup (fleet_truth.py
-# comment near `unknown_to_server`). After the enum grows, a still-running map
-# process holds the stale set and lists newly-added classes reported by peers as
-# `unknown_to_server` -> coverage renders PARTIAL until the process is restarted.
+# TWO long-running processes import `utils.watchdog_probe_core.SIGNAL_CLASSES`
+# ONCE at startup, and the coverage view is only coherent when they agree:
+#
+#   meshforge-map        the CONSUMER — serves /api/fleet/truth; its enum is
+#                        "what the server knows" (fleet_truth.py, near
+#                        `unknown_to_server`)
+#   meshforge-watchdog   the PRODUCER — runs the probes and emits the per-class
+#                        disposition map each tick
+#
+# They go stale in OPPOSITE directions, which is why refreshing only one was
+# wrong in a way that stayed hidden for the enum's whole life:
+#
+#   enum GROWS   -> the map is behind; it lists the new classes the watchdog
+#                   reports as `unknown_to_server`.  Restarting the MAP fixes it.
+#   enum SHRINKS -> the watchdog is behind; it keeps reporting REMOVED classes
+#                   the server no longer knows -> `unknown_to_server` again,
+#                   and `server_class_skew` turns the whole fleet verdict DARK.
+#                   Restarting the WATCHDOG fixes it.
+#
+# Only the growth case was covered. The enum had only ever grown, so the gap was
+# invisible until 2026-08-08, when the yield audit removed four classes and the
+# fleet read `dark` with all 9 boxes healthy. That is honest_failure_modes #4 —
+# a mechanism with a producing half and a consuming half where the code path
+# that refreshes one must refresh the other (or loudly refuse) — living in the
+# harness itself rather than in the code it watches.
 #
 # Pulling boxes already restart meshforge-map via fleet_sync (Issue #53). The
 # uncovered path is the MANAGER/dev box that COMMITS the enum change locally
-# without a pull. This hook restarts the local map exactly when that file lands
-# in a commit, so the running coverage view re-imports the current enum.
+# without a pull. This hook refreshes BOTH local holders exactly when that file
+# lands in a commit.
+#
+# NOTE this only ever fixes the COMMITTING box. Every other fleet box still
+# needs `fleet_pull.sh` + a watchdog restart; the hook cannot and must not
+# reach across the fleet.
 #
 # git IGNORES a post-commit hook's exit status, so this is best-effort by
 # construction: it never blocks or fails a commit. It no-ops where the map
@@ -21,9 +45,15 @@
 #
 # Setup: git config core.hooksPath .githooks
 
-# The enum SSOT whose change requires the map to re-import it.
+# The enum SSOT whose change requires a re-import.
 ENUM_FILE="src/utils/watchdog_probe_core.py"
-MAP_UNIT="meshforge-map.service"
+
+# EVERY long-running unit on this box that holds SIGNAL_CLASSES in memory.
+# Both halves or neither — refreshing one alone manufactures the exact skew
+# this hook exists to prevent. If a third process ever imports the enum at
+# startup, it belongs here; `TestPostCommitRefreshesBothEnumHolders` fails
+# until it is added.
+ENUM_UNITS="meshforge-map.service meshforge-watchdog.service"
 
 # Did this commit touch the enum SSOT? (files in the just-made commit)
 # -m: a merge commit (e.g. `git commit` after a pull conflict) lists changes
@@ -35,29 +65,51 @@ if ! git diff-tree --no-commit-id --name-only -r -m --root HEAD 2>/dev/null \
     exit 0
 fi
 
-# Only act where the map is actually serving on this box (read-only query, no
-# sudo). A no-op everywhere else keeps the committed hook harmless fleet-wide.
-if ! systemctl is-active --quiet "$MAP_UNIT" 2>/dev/null; then
-    exit 0
-fi
+_announced=0
+_missed=""
 
-echo "post-commit: $ENUM_FILE changed — refreshing $MAP_UNIT signal-class enum."
+for _unit in $ENUM_UNITS; do
+    # Only act where the unit is actually running on this box (read-only query,
+    # no sudo). A no-op everywhere else keeps the committed hook harmless
+    # fleet-wide — and `try-restart` (not `restart`) can never START a unit that
+    # was deliberately inactive, which is the 2026-07-24 deploy incident.
+    if ! systemctl is-active --quiet "$_unit" 2>/dev/null; then
+        continue
+    fi
 
-# --no-block: enqueue the restart and return immediately. The map's ExecStartPre
-# waits on rnstatus (up to 90s); without --no-block this hook would hang the
-# commit for that long. -n: never prompt for a password — if passwordless sudo
-# is unavailable, print the manual step instead of blocking.
-# Keep the real stderr — attributing every failure to "no passwordless
-# sudo" while discarding the actual error (masked unit, systemd refusal)
-# sends the operator down the wrong path.
-_rst_err=$(sudo -n systemctl --no-block try-restart "$MAP_UNIT" 2>&1)
-if [ $? -eq 0 ]; then
-    echo "post-commit: $MAP_UNIT restart enqueued (async); coverage will re-derive."
-else
-    echo "post-commit: could not auto-restart $MAP_UNIT:"
-    echo "    ${_rst_err:-(no error output — likely no passwordless sudo)}"
-    echo "post-commit: restart it manually so /fleet coverage picks up the new enum:"
-    echo "    sudo systemctl restart $MAP_UNIT"
+    if [ "$_announced" -eq 0 ]; then
+        echo "post-commit: $ENUM_FILE changed — refreshing the signal-class enum."
+        _announced=1
+    fi
+
+    # --no-block: enqueue the restart and return immediately. The map's
+    # ExecStartPre waits on rnstatus (up to 90s); without --no-block this hook
+    # would hang the commit for that long. -n: never prompt for a password — if
+    # passwordless sudo is unavailable, print the manual step instead of
+    # blocking. Keep the real stderr — attributing every failure to "no
+    # passwordless sudo" while discarding the actual error (masked unit,
+    # systemd refusal) sends the operator down the wrong path.
+    _rst_err=$(sudo -n systemctl --no-block try-restart "$_unit" 2>&1)
+    if [ $? -eq 0 ]; then
+        echo "post-commit: $_unit restart enqueued (async)."
+    else
+        echo "post-commit: could not auto-restart $_unit:"
+        echo "    ${_rst_err:-(no error output — likely no passwordless sudo)}"
+        _missed="$_missed $_unit"
+    fi
+done
+
+# A PARTIAL refresh is the failure mode this hook is about, so say so loudly
+# rather than reporting the successes and going quiet about the rest: a box
+# with one half refreshed reports `unknown_to_server` and drags the fleet
+# verdict dark until the other half catches up.
+if [ -n "$_missed" ]; then
+    echo "post-commit: ⚠ ENUM HOLDERS LEFT STALE —$_missed"
+    echo "post-commit: restart them or /fleet coverage will report"
+    echo "             server_class_skew and read DARK:"
+    echo "    sudo systemctl restart$_missed"
+elif [ "$_announced" -eq 1 ]; then
+    echo "post-commit: coverage will re-derive on the next tick."
 fi
 
 exit 0
