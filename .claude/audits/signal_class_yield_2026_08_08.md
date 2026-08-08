@@ -243,6 +243,27 @@ that has never refused anything is not evidence it works.
 **Prediction for the deploy**: moc3 reads `inert` with that reason; the other
 seven are untouched (`inert`, "never wrote a log").
 
+**Result: held 8/8.** Deployed `fdc7acee` to all 8 boxes, watchdog restarted
+only where already active, read from each box's own `watchdog.json` on ticks
+< 15 s old:
+
+    moc3     inert  ["oracle idle — last 8 answers rate 1.00, newest 19.2d ago
+                      (stale > 24h; not paged)"]
+    other 7  inert  ["oracle never wrote a log (disabled/never queried)"]
+
+byte-identical to the rehearsal. `bash scripts/honest_status.sh` → **`exit 0`**
+(CI `fdc7acee` run 31282157337 success, fleet SHA 8/8, full suite `exit 0`
+10433 passed / 1 skipped, lint `exit 0`); the one WARN is the same two
+pre-existing legs (`synth_soak_degraded` on meshanchor-server,
+`local_brain_regressed` on VolcanoAI).
+
+**What is still BELIEVED, not verified**: that the *firing* path behaves in
+production. Its guards are drilled in tests and rehearsed on the real log, but
+no oracle on this fleet has produced a `send_error` — so the page itself has
+never been observed live. The check that would upgrade it is a real degraded
+burst, or a deliberate drill against a copy of the log with injected
+send_errors on a box where firing is harmless.
+
 **The prediction, written before the deploy** (so it can be wrong): after this
 lands and each box's watchdog restarts, `oracle_delivery_degraded` reads
 **`inert` with a reason containing "idle"** on moc3 and **`inert` with "never
