@@ -140,9 +140,16 @@ def probe_claw_uplink_node_moved(
         if config_path is None:
             home = _operator_home()
             if not home:
+                # NOT inert (2026-08-08): with no operator home we cannot read
+                # the declaration, so we do not know whether one exists here.
+                # "No uplink declared" is a claim about the box; this is a
+                # failure to look (honest_failure_modes #2). Sibling fix in
+                # probe_oracle_delivery_degraded the same day — the class, not
+                # the instance.
                 note_disposition(
-                    "claw_uplink_node_moved", "inert",
-                    reason="operator home unresolvable; no uplink declaration here")
+                    "claw_uplink_node_moved", "indeterminate",
+                    reason="operator home unresolvable — cannot read the "
+                           "uplink declaration")
                 return None
             config_path = os.path.join(home, ".config", "meshforge",
                                        DEFAULT_CLAW_UPLINK_CONFIG)

@@ -1137,12 +1137,14 @@ def probe_oracle_delivery_degraded(
     ``min_sample`` confirmable queries exist, after a ``debounce_ticks`` streak.
 
     Honest self-guards (favour silence on uncertainty):
-      - operator unresolvable / log file absent → None (INERT: the oracle is
-        disabled or never answered on this box — unobservable ≠ unhealthy).
+      - operator unresolvable → None (INDETERMINATE: cannot locate the log).
+      - log file absent → None (INERT: the oracle never answered on this box).
       - log tail unreadable (transient/torn) → None, HOLDING the streak (neither
         fires nor resets).
-      - confirmable sample < ``min_sample`` (incl. a quiet window — nobody asked)
-        → None: a rate over a handful of queries is pass@small-N noise.
+      - zero records in the window → None (INERT: enrolled but idle — the
+        observation SUCCEEDED and says nobody asked; not a blind detector).
+      - confirmable sample < ``min_sample`` on a non-empty window → None
+        (INDETERMINATE): a rate over a handful of queries is pass@small-N noise.
       - rate ≥ threshold on a real sample → explicit healthy → reset the streak.
       - a degraded candidate must persist ``debounce_ticks`` consecutive ticks.
     """
@@ -1166,7 +1168,26 @@ def probe_oracle_delivery_degraded(
         note_disposition("oracle_delivery_degraded", "indeterminate",
                          reason="oracle log tail unreadable — streak held")
         return None  # unreadable tail — HOLD the streak (don't reset, don't fire)
-    counts, _total = parsed
+    counts, total = parsed
+
+    # IDLE ≠ UNOBSERVABLE (2026-08-08, Tier-3 re-decide). The observation
+    # SUCCEEDED and its answer is "the oracle answered nothing in this window"
+    # — a reactive service nobody queried, which is the steady state on the one
+    # box that enrolls it (moc3: 106 lifetime queries, newest 19 days old, so
+    # the 6h/min-8 gate is never met). Reporting that as ``indeterminate``
+    # made the cell read detector-blind FOREVER on the only box that can see —
+    # the standing-indeterminate-is-a-finding trap, one layer up.
+    # ⚠️ Only a TOTALLY empty window is idle. total > 0 with confirmable == 0
+    # (every record a decline, or every one a reason-less RNS non-delivery)
+    # stays ``indeterminate`` below: the oracle IS being exercised, and the
+    # all-benign-RNS shape is exactly the row-2 blind spot — calling that
+    # "nothing to watch" would hide the failure this probe exists to size.
+    if total == 0:
+        note_disposition(
+            "oracle_delivery_degraded", "inert",
+            reason=(f"oracle enrolled but idle — 0 queries in the last "
+                    f"~{window_s / 3600.0:.0f}h; no delivery to rate"))
+        return None
 
     delivered = counts["delivered"]
     real_failures = counts["send_error"]

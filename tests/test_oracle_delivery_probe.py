@@ -24,7 +24,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from utils.watchdog_probe_core import SIGNAL_CLASSES  # noqa: E402
+from utils.watchdog_probe_core import (  # noqa: E402
+    SIGNAL_CLASSES,
+    collect_dispositions,
+    reset_dispositions,
+)
 from utils.watchdog_probes import probe_oracle_delivery_degraded  # noqa: E402
 from utils.watchdog_probes_gateway import (  # noqa: E402
     _classify_oracle_record,
@@ -122,8 +126,12 @@ def test_inert_when_log_absent(tmp_path):
         debounce_path=str(tmp_path / "d.json")) is None
 
 
-def test_inert_when_operator_unresolvable(monkeypatch, tmp_path):
-    # log_path=None → resolves via _find_operator_user; force it None
+def test_indeterminate_when_operator_unresolvable(monkeypatch, tmp_path):
+    # log_path=None → resolves via _find_operator_user; force it None.
+    # ⚠️ This case is INDETERMINATE, not inert — we cannot even locate the
+    # log, so we know nothing about whether an oracle runs here. The test
+    # was named "inert" for two months while asserting only `is None`,
+    # which cannot tell the two apart (see TestOracleDispositions).
     import utils.fleet_test_runner as ftr
     monkeypatch.setattr(ftr, "_find_operator_user", lambda: None)
     assert probe_oracle_delivery_degraded(
@@ -384,3 +392,106 @@ class TestRnsAmbiguousBenignSplit:
                          [_rec(False, reason="cooldown", transport="rns")
                           for _ in range(4)])
         assert sig.extra["benign_rns_ambiguous"] == 0
+
+
+class TestOracleDispositions:
+    """2026-08-08 (Tier-3 re-decide): the quiet answers were collapsed.
+
+    Every quiet return above asserts only ``is None``, which cannot
+    distinguish FIVE different reasons for silence — the same collapse
+    the audit found one layer up in ``nomadnet_crashloop``, and the reason
+    this probe sat ``indeterminate`` on moc3 (its only enrolled box)
+    permanently: a reactive service nobody queried can never meet the
+    6h/min-8 gate, so "cannot judge" was rendered forever as a blind
+    detector. These tests pin the disposition, not just the silence.
+    """
+
+    @staticmethod
+    def _disp(log, tmp_path, **kw):
+        reset_dispositions()
+        out = _probe(log, tmp_path, **kw)
+        return out, collect_dispositions().get("oracle_delivery_degraded")
+
+    def test_absent_log_is_inert_and_says_never_wrote(self, tmp_path):
+        out, cell = self._disp(tmp_path / "nope.jsonl", tmp_path)
+        assert out is None
+        assert cell["disp"] == "inert"
+        assert "never wrote a log" in cell["reason"]
+
+    def test_empty_window_is_inert_idle_not_indeterminate(self, tmp_path):
+        """The moc3 steady state: log present, oracle enrolled, nobody asked.
+
+        The observation SUCCEEDED — its answer is "no queries" — so this is
+        inert, and its reason must NOT be the absent-log one (an enrolled
+        idle oracle and a box with no oracle are different facts)."""
+        log = tmp_path / "oracle.jsonl"
+        log.write_text("")
+        out, cell = self._disp(log, tmp_path)
+        assert out is None
+        assert cell["disp"] == "inert"
+        assert "idle" in cell["reason"]
+        assert "never wrote a log" not in cell["reason"]
+
+    def test_all_records_out_of_window_is_inert_idle(self, tmp_path):
+        # moc3 exactly: 106 lifetime records, newest ~19 days old.
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True, age_s=19 * 24 * 3600) for _ in range(106)])
+        out, cell = self._disp(log, tmp_path, window_s=6 * 3600.0)
+        assert out is None
+        assert cell["disp"] == "inert"
+        assert "idle" in cell["reason"]
+
+    def test_small_sample_in_a_NON_empty_window_stays_indeterminate(self, tmp_path):
+        """The anti-hiding pin. A window with records but < min_sample
+        confirmable is a genuine cannot-judge — never 'nothing to watch'."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True), _rec(False, reason="send_error: x")])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None
+        assert cell["disp"] == "indeterminate"
+
+    def test_all_benign_rns_window_is_never_inert(self, tmp_path):
+        """THE trap this split had to avoid: an oracle whose every RNS reply
+        comes back a reason-less False has confirmable == 0 — the row-2
+        blind spot at full size. Calling that idle would hide the exact
+        failure the probe exists to size (honest_failure_modes #2)."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(False, transport="rns") for _ in range(30)])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None
+        assert cell["disp"] == "indeterminate"
+
+    def test_all_declines_window_is_never_inert(self, tmp_path):
+        """Same shape from the other side: a cooldowned oracle IS being
+        exercised. Nothing to rate, but not nothing to watch."""
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(False, reason="cooldown") for _ in range(30)])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None
+        assert cell["disp"] == "indeterminate"
+
+    def test_healthy_rate_is_clean(self, tmp_path):
+        log = tmp_path / "oracle.jsonl"
+        _write_log(log, [_rec(True) for _ in range(10)])
+        out, cell = self._disp(log, tmp_path, debounce_ticks=1)
+        assert out is None
+        assert cell["disp"] == "clean"
+
+    def test_unreadable_tail_is_indeterminate(self, tmp_path):
+        reset_dispositions()
+        assert probe_oracle_delivery_degraded(
+            log_path=str(tmp_path), now=NOW,
+            debounce_path=str(tmp_path / "d.json")) is None
+        cell = collect_dispositions()["oracle_delivery_degraded"]
+        assert cell["disp"] == "indeterminate"
+        assert "unreadable" in cell["reason"]
+
+    def test_operator_unresolvable_is_indeterminate_not_inert(self, monkeypatch,
+                                                              tmp_path):
+        import utils.fleet_test_runner as ftr
+        monkeypatch.setattr(ftr, "_find_operator_user", lambda: None)
+        reset_dispositions()
+        assert probe_oracle_delivery_degraded(
+            now=NOW, debounce_path=str(tmp_path / "d.json")) is None
+        assert collect_dispositions()[
+            "oracle_delivery_degraded"]["disp"] == "indeterminate"

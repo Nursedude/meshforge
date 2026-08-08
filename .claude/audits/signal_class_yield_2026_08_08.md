@@ -127,6 +127,94 @@ Real checks, wrong cadence. Move to a daily/6-hourly cron with a
 (`claw_rf_silent`, same shape, is 20 days old and belongs to the live claw-RF
 arc — **too young to judge**. Re-measure 2026-09.)
 
+### Tier 3 — DECIDED 2026-08-08 (second session): **none of the three moves**
+
+The handoff above asked for a deliberate choice among leave / delete / demote.
+Choice made, from live evidence read this session rather than from the
+dispositions the audit was written on.
+
+**The live coverage cells** (each box's own `/var/lib/meshforge/watchdog.json`,
+all ticks < 35 s old, boxes at `828daf42`, VolcanoAI at `45b52fec`):
+
+| Class | VolcanoAI | moc | moc1 | moc2 | moc3 | moc4 | moc5 | kiai |
+|---|---|---|---|---|---|---|---|---|
+| `oracle_delivery_degraded` | inert | inert | inert | inert | **indeterminate** | inert | inert | inert |
+| `inherited_app_drift` | inert | inert | inert | inert | inert | inert | **clean** | inert |
+| `claw_uplink_node_moved` | inert | inert | inert | **clean** | inert | inert | inert | inert |
+| `propagation_soak_degraded` | inert | **clean** | inert | inert | **clean** | inert | inert | inert |
+
+**`claw_uplink_node_moved` → LEAVE.** `clean` on moc2 — an armed backstop by
+the arc's own KEEP rule, and it reads two plain files (`/proc/net/arp` + a
+declaration), no subprocess. There is nothing to buy here.
+
+**`inherited_app_drift` → LEAVE**, and now on a measurement instead of a guess.
+On moc5 — the only box where it can see — the probe's real work (scan the
+operator home + `/opt`, read each `.git/config` origin, `git status
+--porcelain` per inherited checkout) is **4 inherited checkouts, 0.062 s per
+tick** (mean of 3, measured in root context on the box itself, using the
+probe's own helpers so nothing in the detector spine was touched). That is
+~1.4 % of one tick's CPU on one box, ≈3 min of CPU per day. Demoting it costs a
+script, a crontab line, and a `cron_verdict` wire — untracked, on one box — to
+save that. The trade is not worth it, and it reports `clean`: armed backstop.
+
+**`oracle_delivery_degraded` → DO NOT DELETE. Its delete recommendation rested
+on a false premise, and the premise came from reading reason strings again.**
+
+The audit said *"the organ is effectively out of service fleet-wide"*, from
+`inert`×7 (*"oracle never wrote a log"*). What the live check found:
+
+- **The oracle is enabled and running on moc3** — `MESHFORGE_ORACLE_ENABLED=1`,
+  `MESHFORGE_ORACLE_RNS_ALLOWLIST=*`, `MESHFORGE_ORACLE_PHONEAPI_TAP=1`, in
+  `/etc/systemd/system/meshforge-gateway.service.d/10-oracle.conf`, on a gateway
+  that is `active`. Not out of service. Enrolled.
+- Its audit log holds **106 lifetime queries, every one delivered**, newest
+  **19 days old** (Jul 20). Zero in the last 24 h.
+- So moc3's cell was not `inert` at all — it was **`indeterminate`,
+  permanently**, reason *"confirmable sample below minimum — cannot judge"*.
+
+The 7 `inert` boxes were honest. The error was the generalisation: I read
+"never wrote a log" on seven boxes as a fact about the fleet and never asked
+the eighth what it was actually saying. Third instance in this arc of the same
+move (`propagation_soak_degraded`, then the `unspecified` statistic, now this).
+
+**What was wrong, and what was fixed instead of deleted**: an empty window is
+not an unobservable one. The probe read the log successfully; the answer was
+"nobody asked". Rendering that as `indeterminate` made the detector read
+**blind forever on the only box that can see** — the standing-indeterminate
+trap, from the inside. `_read_oracle_window` already computed the distinction
+(`total`) and the probe threw it away as `_total`: the collapse was one
+discarded variable wide.
+
+Now: `total == 0` → **`inert`**, reason *"oracle enrolled but idle — 0 queries
+in the last ~6h; no delivery to rate"*, distinct from the absent-log reason.
+⚠️ A **non-empty** window under `min_sample` stays `indeterminate` — an oracle
+answering only declines, or only reason-less RNS non-deliveries, IS being
+exercised, and the all-benign-RNS shape is precisely the row-2 blind spot;
+calling that "nothing to watch" would hide the failure the probe exists to
+size. Two tests pin that boundary from both sides.
+
+**And the class, not the instance** (the 08-05 lesson, applied the same day):
+grepping every `note_disposition(..., "inert")` whose reason names an
+unobservable condition found exactly one more — `claw_uplink_node_moved` said
+`inert`, *"operator home unresolvable; no uplink declaration here"*. That is a
+claim about the box made from a failure to look. Now `indeterminate`.
+
+**Open question left for the operator, not decided here**: even fixed, this
+probe cannot yield on today's traffic — it needs ≥8 confirmable queries inside
+6 h, and moc3's oracle has served 106 queries in its *lifetime*. That is a
+**tuning** question (a last-N-answers window with a staleness guard would let
+it say something), not a delete question, and changing when a detector fires
+is your call, not mine.
+
+**The prediction, written before the deploy** (so it can be wrong): after this
+lands and each box's watchdog restarts, `oracle_delivery_degraded` reads
+**`inert` with a reason containing "idle"** on moc3 and **`inert` with "never
+wrote a log"** on the other seven; `claw_uplink_node_moved` is **unchanged
+everywhere** (moc2 `clean`, the rest `inert`) because its altered branch is
+unreachable while the operator home resolves — which it does on all eight.
+
+**Result** — see "Verification status".
+
 ---
 
 ## The correction — I made the exact error this audit is about
@@ -293,10 +381,15 @@ the dark-corner section above. It now reports `clean` on the 5 boxes where
 nomadnet is enrolled and `inert` on the 3 where it isn't; previously all 8
 read `inert` and the probe could not prove it was watching anything.
 
-**Not yet done** (Tier 3 + the tuning list): `oracle_delivery_degraded`,
-`inherited_app_drift`, `claw_uplink_node_moved` demotions; `ntfy_loopback`'s
-threshold; `new_subject` suppression; the `unspecified` stat; and the
-half-wired post-commit hook (refreshes the map's enum, not the watchdog's).
+**Tier 3 — DECIDED, no demotions** (second session, 2026-08-08): all three
+stay on the tick; the oracle probe's collapsed quiet-answer was fixed and
+`claw_uplink_node_moved`'s sibling instance with it. Full reasoning + the live
+evidence in the Tier-3 DECIDED section above.
+
+**Not yet done** (the tuning list): `new_subject` suppression; the
+`unspecified` stat; the oracle probe's sample gate (an open operator question,
+above); `ntfy_loopback`'s threshold and the post-commit hook were fixed in
+`9193dd6a` / `e7201bdd`.
 
 Nothing removed coverage of any incident recorded in `persistent_issues.md`.
 
@@ -311,11 +404,14 @@ Nothing removed coverage of any incident recorded in `persistent_issues.md`.
 - `python3 scripts/parity_check.py` → **`exit 0`** after porting the twinned `fleet_truth.py` to MeshAnchor (it caught the drift; that is the gate working).
 - The `propagation_soak_degraded` diagnosis, on moc3 itself: operator-UID home → `gateway.json` → `3968a2ee…`, the same node the drill uses, and `/root/.config/meshforge/gateway.json` confirmed absent.
 
-**BELIEVED, not verified**: that the `propagation_soak_degraded` cell actually
-flips `inert` → `clean` in production. That requires the ROOT watchdog on moc3
-to run this code, and the fleet deploys manually. The check that would upgrade
-it: deploy, then read that box's coverage cell. Verifying the resolver from a
-non-root shell is a proxy, and this whole audit is a lesson about proxies.
+~~**BELIEVED, not verified**: that the `propagation_soak_degraded` cell actually
+flips `inert` → `clean` in production.~~ **UPGRADED TO VERIFIED 2026-08-08**
+(second session), by the check that was named: the fleet now runs `828daf42`
+(which carries the `dfb862fc` fix), and moc and moc3 — the two boxes whose soak
+timer is enabled — both read `propagation_soak_degraded: {"disp": "clean"}`
+from their own `/var/lib/meshforge/watchdog.json`, under the ROOT watchdog, on
+ticks 21 s and 5 s old. The other six read `inert`. Before the fix all eight
+read `inert`. Prediction held 8/8.
 
 **UNKNOWN**: per-probe CPU cost (see above). The 4m47s figure is for the soak
 *drill*, measured from systemd's own accounting on moc3 — not for a probe.

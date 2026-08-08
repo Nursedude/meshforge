@@ -611,7 +611,9 @@ def run_all_probes(
     # and surfaced, so the rate is the #74 confirmation view, not a false alarm
     # on a cooldowned/quiet channel. Reads the operator's ~/.local/share dir
     # directly (root-context safe); self-guards None (INERT) off a box where the
-    # oracle never wrote a log (disabled / never queried) — the common case.
+    # oracle never wrote a log (disabled / never queried) — the common case —
+    # and (2026-08-08) INERT on an EMPTY window where it DID write one:
+    # enrolled-but-idle is a successful observation, not a blind detector.
     # degraded only; min-sample guard (no silence leg — a reactive service
     # nobody queried isn't "broken"); 2-tick debounce.
     sig = probe_oracle_delivery_degraded()

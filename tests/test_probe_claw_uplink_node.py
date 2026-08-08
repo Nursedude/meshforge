@@ -102,6 +102,23 @@ class TestClawUplinkNodeMoved:
         assert sig is None
         assert collect_dispositions()["claw_uplink_node_moved"]["disp"] == "inert"
 
+    def test_unresolvable_operator_home_is_indeterminate_not_inert(self, monkeypatch):
+        """2026-08-08: this branch used to say inert, reason 'no uplink
+        declaration here' — a claim about the BOX made from a failure to
+        LOOK. With no home we never reach the declaration, so we cannot
+        know whether one exists (honest_failure_modes #2)."""
+        import utils.watchdog_probes_claw_uplink as mod
+        from utils.watchdog_probes import probe_claw_uplink_node_moved
+        monkeypatch.setattr(mod, "_operator_home", lambda: None)
+        self.arp.write_text(_arp([]))
+        sig = probe_claw_uplink_node_moved(
+            arp_path=str(self.arp), state_path=self.sp, now=1.0,
+            pinhole_path=str(self.arp.parent / "no-such-nftables.conf"))
+        assert sig is None
+        cell = collect_dispositions()["claw_uplink_node_moved"]
+        assert cell["disp"] == "indeterminate"
+        assert "cannot read" in cell["reason"]
+
     def test_unreadable_arp_is_indeterminate_not_clean(self):
         """Losing the observation channel is blindness, not health."""
         sig = self._run(cfg_path=self._write_cfg())  # arp file never written
