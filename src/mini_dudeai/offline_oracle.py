@@ -275,7 +275,31 @@ source_ids. If the excerpts do not contain the answer, say exactly that in \
 the answer and set confidence to "low" — an honest "not in the lore I \
 searched" beats a guess. Keep the answer under 200 words, operator-direct."""
 
-_EXCERPT_CHARS_BUDGET = 6000
+#: Characters of retrieved excerpt handed to the model. THE dominant cost
+#: knob for tier-L, measured 2026-08-07 on the Pi 5 manager box:
+#:
+#:   prompt tokens   prefill    rate       generation   wall
+#:      844           50.6s   16.7 tok/s      8.3s       59s
+#:    2,484          125.4s   19.8 tok/s     14.7s      141s
+#:    4,944          272.7s   18.1 tok/s     52.2s      325s
+#:
+#: Prefill is ~84% of wall time and its rate is flat at ~18 tok/s, so case
+#: latency is essentially prompt_tokens/18 — the excerpt budget IS the
+#: latency. (Context punishes twice: generation also falls 6.2 -> 0.7 tok/s
+#: from a tiny prompt to ~5k of context, as attention walks a longer KV
+#: cache.) The 480s LOCAL_BRAIN_TIMEOUT_S works out to ~8,600 tokens, which
+#: is how a saturated 2026-08-04 run produced three timeouts that
+#: probe_local_brain_regressed then reported as lost capability.
+#:
+#: 6000 -> 3000 on eval evidence, not a guess: all 33 oracle cases passed at
+#: 3000 (0 failures, 0 transport errors, 0 deferred; median 106s, p90 162s),
+#: against 1594s -> 703s (2.3x) on a 10-case A/B where the honest-refusal
+#: case also held. 1500 was measured too and rejected: it bought little over
+#: 3000 (703 -> 523s) while thinning the evidence the oracle answers from,
+#: and four of ten cases got SLOWER, i.e. prefill had stopped dominating.
+#: Raise this only with a fresh eval sweep behind it — the number is a
+#: quality/latency trade, and the ledger is the instrument for it.
+_EXCERPT_CHARS_BUDGET = 3000
 
 
 def _project_hits(hits: List[dict]) -> List[dict]:
