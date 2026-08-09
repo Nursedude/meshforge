@@ -2871,17 +2871,25 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         from utils import watchdog_probes_drift as wd
         monkeypatch.setattr(wd, "_SYSTEM_DIST_GLOBS", [str(d) for d in dirs])
 
+    def _fixed_dirs(self, monkeypatch, *dirs):
+        """Pin the resolved import path so the dist-info READ is under test."""
+        from utils import watchdog_probes_drift as wd
+        monkeypatch.setattr(wd, "_consumer_site_dirs",
+                            lambda user, **kw: ([str(d) for d in dirs],
+                                                "interpreter"))
+
     def test_reads_system_dist_when_user_site_absent(self, tmp_path, monkeypatch):
-        """THE moc4 regression. No user-site anywhere; packages live in
-        system dist-packages. Must be OBSERVED (and compliant), not blind."""
+        """THE moc4 regression, at the FALLBACK layer that models box shapes.
+        No user-site anywhere; packages in system dist-packages. Must be
+        OBSERVED (and compliant), not blind."""
         from utils import watchdog_probes_drift as wd
         sysdir = tmp_path / "usr/local/lib/python3.11/dist-packages"
         sysdir.mkdir(parents=True)
         self._install(sysdir, "rns", "1.2.5+mf.4")
         self._install(sysdir, "lxmf", "0.9.4+mf.0")
         self._patch_system_globs(monkeypatch, sysdir)
-        # Real _consumer_site_dirs, unmocked: the user has no resolvable home,
-        # so user-site contributes nothing and ONLY system-dist can save it.
+        self._fixed_dirs(monkeypatch, sysdir)
+
         found = wd._read_pkg_versions_for_user("nosuchuser-ever", {"rns", "lxmf"})
         assert found == {"rns": "1.2.5+mf.4", "lxmf": "0.9.4+mf.0"}
 
@@ -2889,6 +2897,15 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
             rnsd_user="nosuchuser-ever", pins=_PINS, installed=found)
         assert sig is None
         assert _disp("rns_version_drift") == "clean"
+
+    def test_glob_fallback_still_covers_system_dist(self, tmp_path, monkeypatch):
+        """The moc4 shape pinned on the fallback itself. It is only a GUESS
+        now, but a guess that omits dist-packages is the original bug."""
+        from utils import watchdog_probes_drift as wd
+        sysdir = tmp_path / "usr/local/lib/python3.11/dist-packages"
+        sysdir.mkdir(parents=True)
+        self._patch_system_globs(monkeypatch, sysdir)
+        assert str(sysdir) in wd._glob_consumer_site_dirs("nosuchuser-ever")
 
     def test_user_site_wins_over_system_dist(self, tmp_path, monkeypatch):
         """CPython import order: user-site shadows dist-packages. The version
@@ -2901,9 +2918,7 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         sysdir.mkdir(parents=True)
         self._install(usersite, "rns", "1.2.5+mf.4")   # what rnsd imports
         self._install(sysdir, "rns", "1.1.1")          # shadowed stale copy
-        self._patch_system_globs(monkeypatch, sysdir)
-        monkeypatch.setattr(wd, "_consumer_site_dirs",
-                            lambda user: [str(usersite), str(sysdir)])
+        self._fixed_dirs(monkeypatch, usersite, sysdir)
 
         found = wd._read_pkg_versions_for_user("svc", {"rns"})
         assert found["rns"] == "1.2.5+mf.4"
@@ -2911,7 +2926,8 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
     def test_no_location_at_all_is_none_and_says_so(self, tmp_path, monkeypatch):
         """Genuine blindness — nothing readable. Distinct from an empty read."""
         from utils import watchdog_probes_drift as wd
-        monkeypatch.setattr(wd, "_consumer_site_dirs", lambda user: [])
+        monkeypatch.setattr(wd, "_consumer_site_dirs",
+                            lambda user, **kw: ([], "interpreter"))
         assert wd._read_pkg_versions_for_user("svc", {"rns"}) is None
 
         sig = probe_rns_version_drift(rnsd_user="svc", pins=_PINS)
@@ -2926,7 +2942,7 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         from utils import watchdog_probes_drift as wd
         empty = tmp_path / "usr/lib/python3/dist-packages"
         empty.mkdir(parents=True)
-        monkeypatch.setattr(wd, "_consumer_site_dirs", lambda user: [str(empty)])
+        self._fixed_dirs(monkeypatch, empty)
 
         assert wd._read_pkg_versions_for_user("svc", {"rns", "lxmf"}) == {}
 
@@ -2937,15 +2953,161 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         assert "not visible" in reason
         assert "unreadable" not in reason  # the false explanation, gone
 
-    def test_consumer_site_dirs_includes_system_dist(self, tmp_path, monkeypatch):
-        """Pin the ORDER + coverage of the real (unmocked) path builder — this
-        is the function whose single-location glob caused the blindness."""
+
+class TestConsumerPathIsAskedNotGuessed:
+    """2026-08-09, second pass — the FIX for the fix.
+
+    Widening the glob list cured moc4 but left the same defect in kind: a
+    hand-built reconstruction of CPython's search path. It still omitted the
+    venv that `_DEP_INSTALL_SITE_GLOBS` and `_LIB_STRAY_SITE_GLOBS` both list,
+    so a venv-hosted rnsd would have made the probe compare a copy the service
+    never imports — a WRONG answer, which is worse than the blind one it
+    replaced.
+
+    MeshAnchor's `check_dep_version_floor` does not have this bug because it
+    reads its own interpreter from INSIDE the consumer. The MF watchdog runs as
+    root in another process, so the closest honest thing is to ask the service's
+    interpreter for `sys.path` — CPython computes venv, PYTHONPATH and .pth,
+    instead of me modelling them.
+
+    Cost gates the design: 0.56 s/spawn measured on a 905 MB box = 13% of a 30 s
+    tick. So the PATH (changes on provisioning) is cached and the VERSIONS
+    (change on install) are re-read every tick.
+    """
+
+    def setup_method(self):
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+
+    def test_interpreter_answer_is_preferred_and_labelled(self, tmp_path, monkeypatch):
         from utils import watchdog_probes_drift as wd
-        sysdir = tmp_path / "usr/local/lib/python3.11/dist-packages"
+        real = tmp_path / "venv/lib/python3.13/site-packages"
+        real.mkdir(parents=True)
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: [str(real)])
+        dirs, source = wd._consumer_site_dirs(
+            "svc", cache_path=str(tmp_path / "c.json"))
+        assert dirs == [str(real)]
+        assert source == "interpreter"
+
+    def test_venv_only_install_is_found(self, tmp_path, monkeypatch):
+        """THE gap the glob version still had: a venv is not in the glob list
+        at all, so the old reader would have reported some other copy."""
+        from utils import watchdog_probes_drift as wd
+        venv = tmp_path / "opt/meshforge/venv/lib/python3.13/site-packages"
+        venv.mkdir(parents=True)
+        d = venv / "rns-1.2.5+mf.4.dist-info"
+        d.mkdir()
+        (d / "METADATA").write_text(
+            "Metadata-Version: 2.1\nName: rns\nVersion: 1.2.5+mf.4\n")
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: [str(venv)])
+        monkeypatch.setattr(wd, "DEFAULT_CONSUMER_PATH_CACHE",
+                            str(tmp_path / "c.json"))
+        assert wd._read_pkg_versions_for_user("svc", {"rns"})["rns"] == "1.2.5+mf.4"
+
+    def test_second_call_uses_cache_and_does_not_respawn(self, tmp_path, monkeypatch):
+        """The footprint guard: one spawn, not one per tick."""
+        from utils import watchdog_probes_drift as wd
+        real = tmp_path / "site"
+        real.mkdir()
+        calls = []
+
+        def _ask(user, **kw):
+            calls.append(1)
+            return [str(real)]
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs", _ask)
+        cp = str(tmp_path / "c.json")
+        wd._consumer_site_dirs("svc", cache_path=cp)
+        _, source = wd._consumer_site_dirs("svc", cache_path=cp)
+        assert len(calls) == 1, "second tick must not respawn the interpreter"
+        assert source == "interpreter-cached"
+
+    def test_expired_cache_respawns(self, tmp_path, monkeypatch):
+        from utils import watchdog_probes_drift as wd
+        real = tmp_path / "site"
+        real.mkdir()
+        calls = []
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: (calls.append(1), [str(real)])[1])
+        cp = str(tmp_path / "c.json")
+        wd._consumer_site_dirs("svc", cache_path=cp, now=1000.0)
+        wd._consumer_site_dirs(
+            "svc", cache_path=cp, now=1000.0 + wd.CONSUMER_PATH_TTL_S + 1)
+        assert len(calls) == 2
+
+    def test_future_stamped_cache_is_not_trusted(self, tmp_path, monkeypatch):
+        """RTC-less Pis forge wall-clock (honest_failure_modes #6). A cache
+        stamped in the future must be treated as due, never as fresh."""
+        from utils import watchdog_probes_drift as wd
+        real = tmp_path / "site"
+        real.mkdir()
+        calls = []
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: (calls.append(1), [str(real)])[1])
+        cp = str(tmp_path / "c.json")
+        wd._consumer_site_dirs("svc", cache_path=cp, now=5000.0)
+        wd._consumer_site_dirs("svc", cache_path=cp, now=1000.0)  # clock went back
+        assert len(calls) == 2
+
+    def test_cache_keyed_on_user(self, tmp_path, monkeypatch):
+        """A different service user has a different user-site; reusing the
+        previous user's path would be a silently wrong answer."""
+        from utils import watchdog_probes_drift as wd
+        real = tmp_path / "site"
+        real.mkdir()
+        calls = []
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: (calls.append(user), [str(real)])[1])
+        cp = str(tmp_path / "c.json")
+        wd._consumer_site_dirs("svc", cache_path=cp)
+        wd._consumer_site_dirs("other", cache_path=cp)
+        assert calls == ["svc", "other"]
+
+    def test_fallback_is_disclosed_and_never_reads_clean(self, tmp_path, monkeypatch):
+        """THE honesty rule for this design: an on-pin verdict built on a
+        GUESSED path is not a measurement, so it must not wear `clean` —
+        otherwise a degraded reader is indistinguishable from a working one."""
+        from utils import watchdog_probes_drift as wd
+        sysdir = tmp_path / "usr/lib/python3/dist-packages"
         sysdir.mkdir(parents=True)
-        self._patch_system_globs(monkeypatch, sysdir)
-        dirs = wd._consumer_site_dirs("nosuchuser-ever")
-        assert str(sysdir) in dirs, "system dist-packages must be searched"
+        for pkg, ver in (("rns", "1.2.5+mf.4"), ("lxmf", "0.9.4+mf.0")):
+            d = sysdir / f"{pkg}-{ver}.dist-info"
+            d.mkdir()
+            (d / "METADATA").write_text(
+                f"Metadata-Version: 2.1\nName: {pkg}\nVersion: {ver}\n")
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: None)   # interpreter unaskable
+        monkeypatch.setattr(wd, "_SYSTEM_DIST_GLOBS", [str(sysdir)])
+        monkeypatch.setattr(wd, "DEFAULT_CONSUMER_PATH_CACHE",
+                            str(tmp_path / "c.json"))
+
+        sig = probe_rns_version_drift(rnsd_user="nosuchuser-ever", pins=_PINS)
+        assert sig is None                       # still no false alarm
+        assert _disp("rns_version_drift") == "indeterminate"
+        assert "GUESSED" in _reason("rns_version_drift")
+
+    def test_real_drift_still_fires_through_the_fallback(self, tmp_path, monkeypatch):
+        """Guard against over-correcting: a CONCRETE mismatch is a fact
+        regardless of how the path was resolved, so it must still page."""
+        from utils import watchdog_probes_drift as wd
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: None)
+        sig = probe_rns_version_drift(
+            rnsd_user="svc", pins=_PINS,
+            installed={"rns": "1.1.1", "lxmf": "0.9.4+mf.0"})
+        assert sig is not None
+        assert sig.cls == "rns_version_drift"
+
+    def test_interpreter_child_never_constructs_reticulum(self):
+        """#69 class guard, asserted on the CHILD PROGRAM itself — not on a
+        docstring about it (the first draft of this test passed/failed on my
+        own prose). A probe that claimed an @rns listener would BE the bug it
+        exists to help watch."""
+        from utils.watchdog_probes_drift import _CONSUMER_PATH_SCRIPT
+        assert "Reticulum" not in _CONSUMER_PATH_SCRIPT
+        assert "RNS" not in _CONSUMER_PATH_SCRIPT
+        assert _CONSUMER_PATH_SCRIPT.strip().splitlines()[0] == "import sys"
 
 
 def test_rns_version_drift_fires_only_for_visible_mismatch():

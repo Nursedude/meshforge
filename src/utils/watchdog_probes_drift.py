@@ -237,17 +237,24 @@ def probe_parity_drift(
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _consumer_site_dirs(user):
-    """Ordered site-packages dirs the rnsd service user's interpreter would
-    actually import from — user-site FIRST, then system dist-packages, which is
-    CPython's own resolution order. Returns [] when no location exists.
+DEFAULT_CONSUMER_PATH_CACHE = "/var/lib/meshforge/rns_consumer_path.json"
 
-    2026-08-09: this used to glob ONLY ``{home}/.local/lib/python3*/site-packages``,
-    so moc4 — the one fleet box that installs system-wide (no ~/.local at all;
-    rnsd's ``/usr/bin/python3.11`` imports from /usr/local/lib/python3.11/
-    dist-packages) — was structurally invisible and sat ``indeterminate`` for
-    12.3 days while sitting exactly ON the pin. A reader that models only one
-    box shape reports the other shapes as broken instrumentation.
+# How long a resolved import path stays good. It changes only when the service's
+# interpreter, venv, or home changes — a provisioning event, not a runtime one —
+# so this is deliberately long. Package VERSIONS are re-read every tick from the
+# cached dirs, so an install still surfaces immediately.
+CONSUMER_PATH_TTL_S = 6 * 3600
+
+
+def _glob_consumer_site_dirs(user):
+    """FALLBACK path guess: user-site then system dist-packages.
+
+    This is a RECONSTRUCTION of what CPython would do, and it is wrong wherever
+    the service's real path is not one of these shapes — a venv, a PYTHONPATH
+    from the unit's ``Environment=``, a ``.pth`` file. Kept only for when the
+    interpreter cannot be asked; the caller MUST say it fell back, because a
+    guess that silently stands in for a measurement is how this probe already
+    lost 12.3 days on moc4.
     """
     import glob
     dirs = []
@@ -261,6 +268,146 @@ def _consumer_site_dirs(user):
     for pat in _SYSTEM_DIST_GLOBS:
         dirs += sorted(glob.glob(pat))
     return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
+
+
+# The ENTIRE program handed to the service's interpreter. Deliberately a named
+# constant so a test can assert on what the child actually runs rather than on
+# prose about it: it prints sys.path and imports nothing of ours. Constructing
+# RNS.Reticulum() here would make this probe the #69 namespace-collision class
+# it exists to help watch.
+_CONSUMER_PATH_SCRIPT = "import sys\nprint('\\n'.join(p for p in sys.path if p))\n"
+
+
+def _service_interpreter(unit="rnsd"):
+    """The interpreter the SERVICE actually runs, from its unit's ExecStart.
+
+    ExecStart names a console script (``/usr/local/bin/rnsd``); its shebang
+    names the interpreter. Returns None when the unit, the binary, or the
+    shebang cannot be read — never a guess.
+    """
+    try:
+        out = subprocess.run(
+            ["systemctl", "show", unit, "-p", "ExecStart", "--value"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    m = re.search(r"path=(\S+)", out.stdout or "")
+    if not m:
+        return None
+    binary = m.group(1)
+    if os.path.basename(binary).startswith("python"):
+        return binary
+    try:
+        with open(binary, "rb") as fh:
+            first = fh.readline(256).decode("utf-8", "replace").strip()
+    except OSError:
+        return None
+    if not first.startswith("#!"):
+        return None
+    parts = first[2:].strip().split()
+    if not parts:
+        return None
+    # "#!/usr/bin/env python3" → the interpreter is the ARGUMENT
+    interp = parts[1] if parts[0].endswith("/env") and len(parts) > 1 else parts[0]
+    return interp if os.path.isfile(interp) else None
+
+
+def _ask_interpreter_site_dirs(user, *, unit="rnsd", timeout_s=20):
+    """Ask the service's OWN interpreter which dirs it imports from.
+
+    This is the cure for reconstructing a search path by hand. CPython computes
+    it — so a venv, a ``PYTHONPATH``, a ``.pth`` file, and the user-site/dist-
+    packages ordering are all handled by the authority instead of by my model of
+    it (the 2026-08-09 lesson, and MeshAnchor's ``check_dep_version_floor``
+    design applied to MeshForge's split-process reality: MA reads its own env
+    because it RUNS in the consumer; the MF watchdog runs as root in a different
+    process, so the closest honest thing is to ask the consumer's interpreter).
+
+    ``HOME`` is set to the service user's home so the interpreter computes THAT
+    user's site-packages — the watchdog sandbox (NoNewPrivileges +
+    RestrictSUIDSGID) blocks sudo/runuser, so we cannot become the user, but we
+    can hand its interpreter the input that decides user-site.
+
+    IMPORT-ONLY by construction: the child prints ``sys.path`` and never
+    constructs ``RNS.Reticulum()`` — a probe that claimed an ``@rns`` listener
+    would be the #69 class wearing a stethoscope.
+
+    Returns a list of existing dirs, or None if the interpreter can't be asked.
+    Costs ~0.56 s on the smallest fleet box, which is why the RESULT is cached
+    (``CONSUMER_PATH_TTL_S``) rather than paid every 30 s tick.
+    """
+    interp = _service_interpreter(unit)
+    if not interp:
+        return None
+    home = None
+    if user and user != "root":
+        try:
+            import pwd
+            home = pwd.getpwnam(user).pw_dir
+        except (KeyError, OSError):
+            home = f"/home/{user}"
+    env = {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}
+    if home:
+        env["HOME"] = home
+    try:
+        out = subprocess.run([interp, "-"], input=_CONSUMER_PATH_SCRIPT, env=env,
+                             capture_output=True, text=True, timeout=timeout_s)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    dirs = [d for d in (out.stdout or "").splitlines() if d.strip()]
+    return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)] or None
+
+
+def _consumer_site_dirs(user, *, cache_path=None, now=None, unit="rnsd"):
+    """Ordered dirs the rnsd service actually imports from, with the expensive
+    resolution cached.
+
+    Split by RATE OF CHANGE, which is the whole design: the PATH changes only on
+    a provisioning event, so it is resolved by the interpreter at most once per
+    ``CONSUMER_PATH_TTL_S`` and persisted; the VERSIONS in those dirs are re-read
+    in-process every tick, so a pip install still surfaces on the next tick. That
+    keeps per-tick cost where it was while removing the hand-built path guess
+    (measured: 0.56 s/spawn on a 905 MB box — 13% of a tick, unaffordable every
+    30 s, negligible 4×/day; [[feedback_my_footprint_is_the_constraint]]).
+
+    Returns ``(dirs, source)`` where source is ``"interpreter"`` (measured),
+    ``"interpreter-cached"``, or ``"glob-fallback"`` (a GUESS the caller must
+    disclose). A cache stamped in the future or with a backward clock is treated
+    as due — RTC-less Pis forge wall-clock (honest_failure_modes #6).
+    """
+    cp = cache_path or DEFAULT_CONSUMER_PATH_CACHE
+    ts = time.time() if now is None else now
+
+    cached = None
+    try:
+        with open(cp, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+        if (isinstance(doc, dict) and doc.get("user") == user
+                and isinstance(doc.get("dirs"), list)
+                and isinstance(doc.get("ts"), (int, float))):
+            age = ts - doc["ts"]
+            if 0 <= age <= CONSUMER_PATH_TTL_S:
+                cached = [d for d in doc["dirs"] if os.path.isdir(d)]
+    except (OSError, ValueError, TypeError):
+        cached = None
+    if cached:
+        return cached, "interpreter-cached"
+
+    dirs = _ask_interpreter_site_dirs(user, unit=unit)
+    if dirs:
+        try:
+            os.makedirs(os.path.dirname(cp), exist_ok=True)
+            tmp = f"{cp}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump({"user": user, "dirs": dirs, "ts": ts}, fh)
+            os.replace(tmp, cp)
+        except OSError:
+            pass  # cache is an optimisation; a fresh answer still stands
+        return dirs, "interpreter"
+
+    return _glob_consumer_site_dirs(user), "glob-fallback"
 
 
 def _read_pkg_versions_for_user(user, pkgs):
@@ -280,9 +427,10 @@ def _read_pkg_versions_for_user(user, pkgs):
     READ those trees directly and point importlib.metadata at them.
     """
     try:
-        site_dirs = _consumer_site_dirs(user)
+        site_dirs, source = _consumer_site_dirs(user)
         if not site_dirs:
             return None
+        _read_pkg_versions_for_user.last_source = source
         found = {}
         for pkg in pkgs:
             # One dir at a time so FIRST hit wins explicitly. Handing the whole
@@ -350,8 +498,11 @@ def probe_rns_version_drift(
                          reason="no fork pin parseable")
         return None  # no pin parseable (sub-arc A not applied) → indeterminate
 
+    path_source = None
     if installed is None:
+        _read_pkg_versions_for_user.last_source = None
         installed = _read_pkg_versions_for_user(rnsd_user, set(pins))
+        path_source = getattr(_read_pkg_versions_for_user, "last_source", None)
     if installed is None:
         # No readable location AT ALL — genuine blindness, not an observation.
         note_disposition("rns_version_drift", "indeterminate",
@@ -374,6 +525,17 @@ def probe_rns_version_drift(
         if have != want:
             drift.append(f"{pkg} installed={have} pinned={want}")
     if not drift:
+        # A clean verdict built on a GUESSED path is not the same claim as one
+        # built on the interpreter's own answer — say which, every tick, so a
+        # silently-degraded reader can never look identical to a measured one
+        # (honest_failure_modes #9: every fallback leaves a witness).
+        if path_source == "glob-fallback":
+            note_disposition(
+                "rns_version_drift", "indeterminate",
+                reason="on-pin per a GUESSED import path — the service "
+                       "interpreter could not be asked, so a venv/PYTHONPATH "
+                       "install would be invisible; this is not a measurement")
+            return None
         note_disposition("rns_version_drift", "clean")
         return None
 
