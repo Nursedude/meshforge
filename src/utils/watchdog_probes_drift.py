@@ -333,8 +333,11 @@ def _ask_interpreter_site_dirs(user, *, unit="rnsd", timeout_s=20):
     would be the #69 class wearing a stethoscope.
 
     Returns a list of existing dirs, or None if the interpreter can't be asked.
-    Costs ~0.56 s on the smallest fleet box, which is why the RESULT is cached
-    (``CONSUMER_PATH_TTL_S``) rather than paid every 30 s tick.
+    Measured in-probe: 0.154 s on the 905 MB box, 0.07 s elsewhere; cached reads
+    are 0.0002 s. (An earlier shell benchmark said 0.56 s — that number included
+    sudo + ``env -i`` + heredoc overhead per iteration and overstated it ~4x. The
+    caching below is still right: 0.15 s x 2,880 ticks/day is ~7 min/day of CPU
+    for a value that changes only on provisioning.)
     """
     interp = _service_interpreter(unit)
     if not interp:
@@ -369,8 +372,8 @@ def _consumer_site_dirs(user, *, cache_path=None, now=None, unit="rnsd"):
     ``CONSUMER_PATH_TTL_S`` and persisted; the VERSIONS in those dirs are re-read
     in-process every tick, so a pip install still surfaces on the next tick. That
     keeps per-tick cost where it was while removing the hand-built path guess
-    (measured: 0.56 s/spawn on a 905 MB box — 13% of a tick, unaffordable every
-    30 s, negligible 4×/day; [[feedback_my_footprint_is_the_constraint]]).
+    (measured in-probe: 0.154 s cold on the 905 MB box, 0.0002 s cached — so ~4
+    spawns/day instead of 2,880; [[feedback_my_footprint_is_the_constraint]]).
 
     Returns ``(dirs, source)`` where source is ``"interpreter"`` (measured),
     ``"interpreter-cached"``, or ``"glob-fallback"`` (a GUESS the caller must
