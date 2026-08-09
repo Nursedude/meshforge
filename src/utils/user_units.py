@@ -28,11 +28,21 @@ import os
 import re
 from typing import Dict, List, Optional
 
-# Where systemd records that a USER timer is ENABLED. The home dir is what
-# `systemctl --user enable` writes; the /etc path is the site-wide preset
-# equivalent. Neither requires root to stat.
+# Where systemd records that a USER timer is ENABLED: the symlink that
+# `systemctl --user enable` writes. Readable without root and without a bus.
 _HOME_WANTS = (".config", "systemd", "user", "timers.target.wants")
-_SITE_WANTS = os.path.join("/etc", "systemd", "user", "timers.target.wants")
+
+# DELIBERATELY NOT CONSULTED: /etc/systemd/user/timers.target.wants, the
+# site-wide preset equivalent. It was included for one commit on 2026-08-09
+# and reverted the same day — it is a GLOBAL path, so a function parameterised
+# by `user_home` stopped being determined by its own argument, and an existing
+# test that fully pinned a temp home started failing on CI (whose runner image
+# has that directory populated) while passing on every fleet box, which has
+# none. No box on this fleet enables user timers by site preset, so the
+# coverage was theoretical while the loss of hermeticity was real. If a box
+# ever needs it, pass the dir explicitly to a caller that takes dirs (see
+# watchdog_probes_gateway_flow._timer_enrolled) rather than reaching for a
+# global here.
 
 
 def resolve_operator_home() -> Optional[str]:
@@ -61,8 +71,13 @@ def resolve_operator_home() -> Optional[str]:
 
 
 def timer_wants_dirs(user_home: str) -> List[str]:
-    """The directories that record user-timer enablement, home first."""
-    return [os.path.join(user_home, *_HOME_WANTS), _SITE_WANTS]
+    """The directories that record user-timer enablement.
+
+    A list (not a single path) because callers inject it, and so a box that
+    genuinely needs an extra location can be given one WITHOUT this function
+    reaching for a global — see the note on the site-preset dir above.
+    """
+    return [os.path.join(user_home, *_HOME_WANTS)]
 
 
 def enabled_user_timers(user_home: str) -> Optional[Dict[str, str]]:
