@@ -729,8 +729,18 @@ def _dups_collector_wired_here() -> Optional[bool]:
     return operator_cron_wired(_DUPS_COLLECTOR_TOKEN)
 
 
-def _note_dups_rollup_unreachable(cls: str, *, suffix: str = "") -> None:
+def _classify_dups_unreachable(*, suffix: str = "") -> tuple:
     """Classify an UNREACHABLE ``/fleet/dups`` endpoint honestly (2026-08-09).
+
+    RETURNS ``(disposition, reason)`` — it does not note it. That split is
+    deliberate: the caller makes the literal ``note_disposition`` call inside
+    its own except-handler, so MF027 can SEE the witness while the decision
+    logic still lives in exactly one place. The first version of this helper
+    noted the disposition itself and I widened MF027 to accept the indirection;
+    attacking that widening took one fixture (a helper that notes on one branch
+    and is silent on the other passes it and still goes dark), so the gate was
+    restored and the helper reshaped instead. Change the code to fit the gate,
+    not the gate to fit the code.
 
     Sibling of ``_note_dups_rollup_not_ok`` — and the branch that fix forgot.
     2026-07-28 taught the *payload* path to read the box's role from the
@@ -759,25 +769,20 @@ def _note_dups_rollup_unreachable(cls: str, *, suffix: str = "") -> None:
     """
     wired = _dups_collector_wired_here()
     if wired is True:
-        note_disposition(
-            cls, "indeterminate",
-            reason="the dup collector cron IS wired on this box but its "
-                   "/fleet/dups endpoint is unreachable — the manager's map "
-                   "is down, so cross-gateway dups are unobservable "
-                   "fleet-wide" + suffix)
-        return
+        return ("indeterminate",
+                "the dup collector cron IS wired on this box but its "
+                "/fleet/dups endpoint is unreachable — the manager's map "
+                "is down, so cross-gateway dups are unobservable "
+                "fleet-wide" + suffix)
     if wired is None:
-        note_disposition(
-            cls, "indeterminate",
-            reason="/fleet/dups unreachable and the crontab is unreadable — "
-                   "cannot tell a box that never serves it from a manager "
-                   "whose map died" + suffix)
-        return
-    note_disposition(
-        cls, "inert",
-        reason="no /fleet/dups endpoint here and the collector cron is not "
-               "wired on this box — expected off the manager (a box may serve "
-               "no map at all by design)")
+        return ("indeterminate",
+                "/fleet/dups unreachable and the crontab is unreadable — "
+                "cannot tell a box that never serves it from a manager "
+                "whose map died" + suffix)
+    return ("inert",
+            "no /fleet/dups endpoint here and the collector cron is not "
+            "wired on this box — expected off the manager (a box may serve "
+            "no map at all by design)")
 
 
 def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
@@ -930,7 +935,8 @@ def probe_gateway_dup_degraded(
         # crashed map / 5xx lands here too — "unobservable ≠ clean / HOLD"
         # means this cannot read as benign inert. Off the manager it is the
         # opposite claim, so the DECLARATION decides (2026-08-09).
-        _note_dups_rollup_unreachable("gateway_dup_degraded")
+        _disp, _reason = _classify_dups_unreachable()
+        note_disposition("gateway_dup_degraded", _disp, reason=_reason)
         return None  # transport — HOLD streak (unobservable ≠ clean)
     if not isinstance(payload, dict):
         note_disposition("gateway_dup_degraded", "indeterminate",
@@ -1140,9 +1146,10 @@ def probe_gateway_dual_homed_exposure(
                 payload = json.loads(resp.read())
         except (URLError, socket.timeout, json.JSONDecodeError, OSError,
                 ValueError):
-            _note_dups_rollup_unreachable(
-                "gateway_dual_homed_exposure",
+            _disp, _reason = _classify_dups_unreachable(
                 suffix=" — dual-homing needs two vantages to observe")
+            note_disposition("gateway_dual_homed_exposure", _disp,
+                             reason=_reason)
             return None
     if not isinstance(payload, dict):
         note_disposition("gateway_dual_homed_exposure", "indeterminate",

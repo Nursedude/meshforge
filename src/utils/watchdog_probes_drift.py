@@ -401,12 +401,14 @@ def _consumer_site_dirs(user, *, cache_path=None, now=None, unit="rnsd"):
     dirs = _ask_interpreter_site_dirs(user, unit=unit)
     if dirs:
         try:
-            os.makedirs(os.path.dirname(cp), exist_ok=True)
-            tmp = f"{cp}.tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump({"user": user, "dirs": dirs, "ts": ts}, fh)
-            os.replace(tmp, cp)
-        except OSError:
+            # atomic_write_text, not a hand-rolled f"{cp}.tmp": a FIXED temp
+            # name is a collision, not a convention (honest_failure_modes #8) —
+            # the watchdog and any operator-run probe write this same path.
+            from utils.paths import atomic_write_text
+            atomic_write_text(
+                Path(cp),
+                json.dumps({"user": user, "dirs": dirs, "ts": ts}))
+        except (OSError, ImportError):
             pass  # cache is an optimisation; a fresh answer still stands
         return dirs, "interpreter"
 
@@ -417,10 +419,14 @@ def _read_pkg_versions_for_user(user, pkgs):
     """Read installed versions of ``pkgs`` as the rnsd service user's interpreter
     would resolve them — read-only, no privilege change.
 
-    Returns ``{pkg: version}`` for those found (possibly ``{}`` — searched fine,
-    none of ``pkgs`` present), or ``None`` ONLY when there was no readable
-    location to search at all. Those are different claims and the caller reports
-    them differently: ``{}`` is an observation, ``None`` is blindness.
+    Returns ``(versions, path_source)``. ``versions`` is ``{pkg: version}`` for
+    those found (possibly ``{}`` — searched fine, none of ``pkgs`` present), or
+    ``None`` ONLY when there was no readable location to search at all: those
+    are different claims and the caller reports them differently ({} is an
+    observation, None is blindness). ``path_source`` says HOW the import path
+    was resolved so the caller can disclose a guessed one — returned, never
+    stashed on a function attribute (that side channel went stale across calls
+    by construction and nothing tested it).
 
     Why not just ``importlib.metadata.version()``? That reads the *current*
     interpreter's env — the watchdog runs as root, whose env may carry a different
@@ -432,8 +438,7 @@ def _read_pkg_versions_for_user(user, pkgs):
     try:
         site_dirs, source = _consumer_site_dirs(user)
         if not site_dirs:
-            return None
-        _read_pkg_versions_for_user.last_source = source
+            return None, None
         found = {}
         for pkg in pkgs:
             # One dir at a time so FIRST hit wins explicitly. Handing the whole
@@ -446,9 +451,9 @@ def _read_pkg_versions_for_user(user, pkgs):
                 if ver is not None:
                     found[pkg.lower()] = ver
                     break
-        return found
+        return found, source
     except Exception:
-        return None
+        return None, None
 
 
 def probe_rns_version_drift(
@@ -503,9 +508,8 @@ def probe_rns_version_drift(
 
     path_source = None
     if installed is None:
-        _read_pkg_versions_for_user.last_source = None
-        installed = _read_pkg_versions_for_user(rnsd_user, set(pins))
-        path_source = getattr(_read_pkg_versions_for_user, "last_source", None)
+        installed, path_source = _read_pkg_versions_for_user(
+            rnsd_user, set(pins))
     if installed is None:
         # No readable location AT ALL — genuine blindness, not an observation.
         note_disposition("rns_version_drift", "indeterminate",

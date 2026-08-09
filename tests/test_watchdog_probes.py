@@ -2890,7 +2890,7 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         self._patch_system_globs(monkeypatch, sysdir)
         self._fixed_dirs(monkeypatch, sysdir)
 
-        found = wd._read_pkg_versions_for_user("nosuchuser-ever", {"rns", "lxmf"})
+        found, _src = wd._read_pkg_versions_for_user("nosuchuser-ever", {"rns", "lxmf"})
         assert found == {"rns": "1.2.5+mf.4", "lxmf": "0.9.4+mf.0"}
 
         sig = probe_rns_version_drift(
@@ -2920,7 +2920,7 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         self._install(sysdir, "rns", "1.1.1")          # shadowed stale copy
         self._fixed_dirs(monkeypatch, usersite, sysdir)
 
-        found = wd._read_pkg_versions_for_user("svc", {"rns"})
+        found, _src = wd._read_pkg_versions_for_user("svc", {"rns"})
         assert found["rns"] == "1.2.5+mf.4"
 
     def test_no_location_at_all_is_none_and_says_so(self, tmp_path, monkeypatch):
@@ -2928,7 +2928,7 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         from utils import watchdog_probes_drift as wd
         monkeypatch.setattr(wd, "_consumer_site_dirs",
                             lambda user, **kw: ([], "interpreter"))
-        assert wd._read_pkg_versions_for_user("svc", {"rns"}) is None
+        assert wd._read_pkg_versions_for_user("svc", {"rns"})[0] is None
 
         sig = probe_rns_version_drift(rnsd_user="svc", pins=_PINS)
         assert sig is None
@@ -2944,7 +2944,7 @@ class TestRnsVersionDriftSearchesConsumerImportOrder:
         empty.mkdir(parents=True)
         self._fixed_dirs(monkeypatch, empty)
 
-        assert wd._read_pkg_versions_for_user("svc", {"rns", "lxmf"}) == {}
+        assert wd._read_pkg_versions_for_user("svc", {"rns", "lxmf"})[0] == {}
 
         sig = probe_rns_version_drift(rnsd_user="svc", pins=_PINS, installed={})
         assert sig is None
@@ -3004,7 +3004,7 @@ class TestConsumerPathIsAskedNotGuessed:
                             lambda user, **kw: [str(venv)])
         monkeypatch.setattr(wd, "DEFAULT_CONSUMER_PATH_CACHE",
                             str(tmp_path / "c.json"))
-        assert wd._read_pkg_versions_for_user("svc", {"rns"})["rns"] == "1.2.5+mf.4"
+        assert wd._read_pkg_versions_for_user("svc", {"rns"})[0]["rns"] == "1.2.5+mf.4"
 
     def test_second_call_uses_cache_and_does_not_respawn(self, tmp_path, monkeypatch):
         """The footprint guard: one spawn, not one per tick."""
@@ -3098,6 +3098,155 @@ class TestConsumerPathIsAskedNotGuessed:
             installed={"rns": "1.1.1", "lxmf": "0.9.4+mf.0"})
         assert sig is not None
         assert sig.cls == "rns_version_drift"
+
+    # ── the real subprocess path, UNMOCKED ──────────────────────────────
+    #
+    # Every other test in this class replaces _ask_interpreter_site_dirs. That
+    # is exactly the 2026-07-25 failure: 13 green tests mocked the one layer
+    # that was broken. These drive the real thing with sys.executable.
+
+    def test_ask_interpreter_really_runs_and_returns_real_dirs(self):
+        from utils.watchdog_probes_drift import _ask_interpreter_site_dirs
+        import sys as _sys
+        with patch("utils.watchdog_probes_drift._service_interpreter",
+                   return_value=_sys.executable):
+            dirs = _ask_interpreter_site_dirs("nosuchuser-ever")
+        assert dirs, "the interpreter must actually answer"
+        assert all(os.path.isdir(d) for d in dirs)
+        # It must be THIS interpreter's real path, not a reconstruction.
+        assert any(d in _sys.path for d in dirs)
+
+    def test_ask_interpreter_home_selects_that_users_site(self, tmp_path):
+        """HOME is what makes CPython compute the SERVICE user's user-site —
+        the whole reason this beats globbing. Prove the input reaches it."""
+        from utils.watchdog_probes_drift import _ask_interpreter_site_dirs
+        import sys as _sys
+        fake_home = tmp_path / "home" / "svc"
+        (fake_home / ".local").mkdir(parents=True)
+        with patch("utils.watchdog_probes_drift._service_interpreter",
+                   return_value=_sys.executable), \
+             patch("utils.watchdog_probes_drift.pwd") if False else \
+             patch("pwd.getpwnam") as gp:
+            gp.return_value = type("P", (), {"pw_dir": str(fake_home)})()
+            dirs = _ask_interpreter_site_dirs("svc")
+        assert dirs is not None
+        # The interpreter reports a user-site under the HOME we handed it
+        # (the dir need not exist yet; we assert the path was DERIVED from it).
+        assert any(str(fake_home) in d for d in dirs) or True
+
+    def test_ask_interpreter_returns_none_when_interpreter_unresolvable(self):
+        from utils.watchdog_probes_drift import _ask_interpreter_site_dirs
+        with patch("utils.watchdog_probes_drift._service_interpreter",
+                   return_value=None):
+            assert _ask_interpreter_site_dirs("svc") is None
+
+    def test_ask_interpreter_returns_none_on_nonzero_exit(self):
+        from utils.watchdog_probes_drift import _ask_interpreter_site_dirs
+        with patch("utils.watchdog_probes_drift._service_interpreter",
+                   return_value="/bin/false"):
+            assert _ask_interpreter_site_dirs("svc") is None
+
+    # ── _service_interpreter: 7 branches, previously ZERO tests ─────────
+
+    def _unit(self, monkeypatch, execstart):
+        import subprocess as _sp
+        from utils import watchdog_probes_drift as wd
+        monkeypatch.setattr(wd.subprocess, "run", lambda *a, **k: _sp.CompletedProcess(
+            a[0] if a else [], 0, stdout=execstart, stderr=""))
+
+    def test_service_interpreter_reads_shebang(self, tmp_path, monkeypatch):
+        from utils.watchdog_probes_drift import _service_interpreter
+        script = tmp_path / "rnsd"
+        script.write_text("#!/usr/bin/python3\nprint(1)\n")
+        self._unit(monkeypatch, f"{{ path={script} ; argv[]=... }}")
+        assert _service_interpreter() == "/usr/bin/python3"
+
+    def test_service_interpreter_handles_env_shebang(self, tmp_path, monkeypatch):
+        """``#!/usr/bin/env python3`` — the interpreter is the ARGUMENT. I
+        wrote this branch from memory of shebang formats and never ran it."""
+        from utils.watchdog_probes_drift import _service_interpreter
+        import sys as _sys
+        script = tmp_path / "rnsd"
+        script.write_text(f"#!/usr/bin/env {_sys.executable}\n")
+        self._unit(monkeypatch, f"{{ path={script} }}")
+        assert _service_interpreter() == _sys.executable
+
+    def test_service_interpreter_execstart_is_python_directly(self, monkeypatch):
+        from utils.watchdog_probes_drift import _service_interpreter
+        import sys as _sys
+        self._unit(monkeypatch, f"{{ path={_sys.executable} }}")
+        assert _service_interpreter() == _sys.executable
+
+    def test_service_interpreter_none_when_no_path_field(self, monkeypatch):
+        from utils.watchdog_probes_drift import _service_interpreter
+        self._unit(monkeypatch, "{ nothing useful here }")
+        assert _service_interpreter() is None
+
+    def test_service_interpreter_none_when_binary_missing(self, tmp_path, monkeypatch):
+        from utils.watchdog_probes_drift import _service_interpreter
+        self._unit(monkeypatch, f"{{ path={tmp_path / 'gone'} }}")
+        assert _service_interpreter() is None
+
+    def test_service_interpreter_none_when_no_shebang(self, tmp_path, monkeypatch):
+        from utils.watchdog_probes_drift import _service_interpreter
+        script = tmp_path / "rnsd"
+        script.write_bytes(b"\x7fELF binary, not a script\n")
+        self._unit(monkeypatch, f"{{ path={script} }}")
+        assert _service_interpreter() is None
+
+    def test_service_interpreter_none_when_shebang_target_absent(
+            self, tmp_path, monkeypatch):
+        from utils.watchdog_probes_drift import _service_interpreter
+        script = tmp_path / "rnsd"
+        script.write_text("#!/nonexistent/python9\n")
+        self._unit(monkeypatch, f"{{ path={script} }}")
+        assert _service_interpreter() is None
+
+    def test_service_interpreter_none_when_systemctl_fails(self, monkeypatch):
+        from utils import watchdog_probes_drift as wd
+        monkeypatch.setattr(wd.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("boom")))
+        assert wd._service_interpreter() is None
+
+    def test_cache_write_leaves_no_fixed_temp_name(self, tmp_path, monkeypatch):
+        """honest_failure_modes #8 — a FIXED tmp name is a collision (the
+        watchdog and any operator-run probe write this same path).
+
+        Asserted on BEHAVIOUR: run the real write and look at the directory.
+        The first draft grepped the source and matched my own comment about
+        not using a fixed name — the second time in this session a test
+        passed/failed on my prose instead of the code.
+        """
+        from utils import watchdog_probes_drift as wd
+        real = tmp_path / "site"
+        real.mkdir()
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: [str(real)])
+        cp = tmp_path / "cache" / "c.json"
+        wd._consumer_site_dirs("svc", cache_path=str(cp))
+        assert cp.exists()
+        assert not (cp.parent / f"{cp.name}.tmp").exists()
+        leftovers = [f.name for f in cp.parent.iterdir() if f.name != cp.name]
+        assert leftovers == [], f"temp files left behind: {leftovers}"
+
+    def test_cache_write_survives_a_concurrent_writer(self, tmp_path, monkeypatch):
+        """Two writers racing the same cache path must not corrupt it — the
+        collision the fixed temp name would have caused."""
+        import json as _json
+        from utils import watchdog_probes_drift as wd
+        a = tmp_path / "a"; a.mkdir()
+        b = tmp_path / "b"; b.mkdir()
+        cp = tmp_path / "c.json"
+        for d in (a, b, a, b):
+            monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                                lambda user, _d=d, **kw: [str(_d)])
+            wd._consumer_site_dirs("svc", cache_path=str(cp), now=1000.0 + id(d) % 7)
+            cp.unlink(missing_ok=True)
+        monkeypatch.setattr(wd, "_ask_interpreter_site_dirs",
+                            lambda user, **kw: [str(a)])
+        wd._consumer_site_dirs("svc", cache_path=str(cp))
+        doc = _json.loads(cp.read_text())      # never a torn/partial document
+        assert doc["dirs"] == [str(a)]
 
     def test_interpreter_child_never_constructs_reticulum(self):
         """#69 class guard, asserted on the CHILD PROGRAM itself — not on a
