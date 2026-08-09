@@ -107,10 +107,18 @@ def _save_streak(state_path: str, streak: int) -> None:
         )
 
 
-# Promoted to utils.user_units (2026-08-09) so provision_role + the soak
-# probes read enrollment through ONE implementation (hfm #5). Same
-# semantics, plus the site-wide /etc preset dir this box family never
-# used but which is equally an enablement record.
+# Promoted to utils.user_units (2026-08-09) so provision_role + the soak probes
+# read enrollment through ONE implementation (hfm #5).
+#
+# ⚠️ This widened what THIS probe can see, and that was a bug fix, not a side
+# effect: enablement is a symlink under ANY ``*.target.wants``, so a timer
+# enabled into e.g. ``default.target.wants`` used to be invisible here — its
+# oneshot could have failed on every firing forever, which is precisely the
+# 2026-07-19 kiai hole this probe exists to close, one directory over. Found on
+# meshanchor-server: ``meshanchor-map-restart.timer`` declares
+# ``WantedBy=timers.target`` but is linked from ``default.target.wants``.
+# Fleet effect measured the same day: exactly one newly-visible timer, on one
+# box, and its job was already succeeding — coverage gained, no alarm uncorked.
 _enabled_user_timers = enabled_user_timers
 
 
@@ -182,7 +190,7 @@ def probe_user_timer_unit_failing(
         timers = _enabled_user_timers(user_home)
         if timers is None:
             note_disposition("user_timer_unit_failing", "indeterminate",
-                             reason="user timers.target.wants unreadable")
+                             reason="user-unit enrollment dirs unreadable")
             return None
         if not timers:
             _save_streak(sp, 0)

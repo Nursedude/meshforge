@@ -8005,15 +8005,94 @@ def test_delivery_canary_db_unobservable_is_indeterminate_not_clean():
 # ─────────────────────────────────────────────────────────────────────
 
 
-def _user_timer_fixture(tmp_path, timers):
-    """Build ~/.config/systemd/user/timers.target.wants/ with the given
-    {timer_name: body_or_None}. Returns user_home as str."""
+def _user_timer_fixture(tmp_path, timers, target="timers"):
+    """Build ~/.config/systemd/user/<target>.target.wants/ with the given
+    {timer_name: body_or_None}. Returns user_home as str.
+
+    ``target`` is parameterised because enablement is a symlink under ANY
+    target's wants dir, not only ``timers.target.wants`` — see
+    TestProbeSeesTimersUnderAnyTarget.
+    """
     home = tmp_path / "home"
-    wants = home / ".config" / "systemd" / "user" / "timers.target.wants"
-    wants.mkdir(parents=True)
+    wants = home / ".config" / "systemd" / "user" / f"{target}.target.wants"
+    wants.mkdir(parents=True, exist_ok=True)
     for name, body in timers.items():
         (wants / name).write_text(body or "[Timer]\nOnCalendar=*:00/10:00\n")
     return str(home)
+
+
+class TestProbeSeesTimersUnderAnyTarget:
+    """Pinned at the CONSUMER, not just the helper (hfm #4: a reader/writer
+    pair wires together or fails together).
+
+    utils.user_units already has tests for discovering every
+    ``*.target.wants``. Those would keep passing if this probe were rewired to
+    a narrower reader, so the blind spot could come back with a green suite —
+    the probe is what the operator relies on, so the probe is what gets pinned.
+
+    Live case (meshanchor-server, 2026-08-09): ``meshanchor-map-restart.timer``
+    declares ``WantedBy=timers.target`` but is linked from
+    ``default.target.wants``. Before the fix this probe could not see it at
+    all, so its weekly oneshot could have failed on every firing forever —
+    the 2026-07-19 kiai hole, one directory over.
+    """
+
+    def test_fires_for_a_timer_enrolled_under_default_target(self, tmp_path):
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        now = 1_000_000.0
+        home = _user_timer_fixture(
+            tmp_path, {"meshanchor-map-restart.timer": None}, target="default")
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=now, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({"meshanchor-map-restart.service": {
+                "Failed with result": [now - 1800, now - 1200, now - 600],
+                "Finished ": [],
+            }}))
+        assert sig is not None, (
+            "a timer enabled under default.target.wants is enabled — the probe "
+            "must judge its job like any other")
+        assert sig.subject == "meshanchor-map-restart.service"
+
+    def test_sees_timers_across_two_targets_at_once(self, tmp_path):
+        """A box with both dirs populated must judge every enrolled timer."""
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        now = 1_000_000.0
+        _user_timer_fixture(tmp_path, {"a.timer": None}, target="timers")
+        home = _user_timer_fixture(tmp_path, {"b.timer": None},
+                                   target="default")
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=now, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({
+                # >= min_failures each: a single failure is a blip the probe
+                # deliberately ignores, so both need real streaks for this to
+                # test SCOPE rather than the failure threshold.
+                "a.service": {"Failed with result": [now - 1500, now - 600],
+                              "Finished ": []},
+                "b.service": {"Failed with result": [now - 900, now - 300],
+                              "Finished ": []},
+            }))
+        assert sig is not None
+        judged = {f["service"] for f in sig.extra["failing"]}
+        assert judged == {"a.service", "b.service"}, judged
+
+    def test_a_healthy_timer_under_another_target_stays_silent(self, tmp_path):
+        """Widening scope must not manufacture alarms: newly-visible timers
+        whose jobs succeed stay quiet (measured true on the real box — the one
+        newly-seen timer was already succeeding)."""
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        now = 1_000_000.0
+        home = _user_timer_fixture(
+            tmp_path, {"meshanchor-map-restart.timer": None}, target="default")
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=now, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({"meshanchor-map-restart.service": {
+                "Failed with result": [],
+                "Finished ": [now - 600],
+            }}))
+        assert sig is None
 
 
 def _ts_fn(table):
