@@ -1051,3 +1051,78 @@ def test_state_set_newer_failed_send_supersedes_older_queued(tmp_path, monkeypat
     assert any(h["transition"] == "send_retry_superseded" for h in hist)
     assert any(h["transition"] == "send_retry_delivered"
                and "edge_down" in h["detail"] for h in hist)
+
+
+# --- durable first-sighting memory (2026-08-09) ------------------------------
+
+class TestSubjectsSeenSurvivesRetirement:
+    """The root cause behind 74 rejected new_subject proposals.
+
+    ``prune_24h`` retires a rule-state key after STALE_KEY_RETENTION_S and
+    ``get_or_init`` rebuilds it at fire_count 0 — correct for edge state,
+    fatal for any claim about history: a subject known for months returns
+    byte-identical to one never seen, so `detect_new_subject` announced
+    "first-ever sighting" of `ntfy` (live since 2026-06-18) on 2026-08-06.
+    Retired read as absent (honest_failure_modes #2). The durable stamp is
+    the fix; these pin that it actually outlives the prune.
+    """
+
+    def test_stamp_survives_the_prune_that_deletes_the_rule_state(self):
+        from mini_dudeai.state import StateStore
+        t0 = 1_000_000.0
+        state = {"rules": {}}
+        rs = StateStore.get_or_init(state, "r", "ntfy")
+        StateStore.record_fire(rs, t0)
+        StateStore.note_subject_seen(state, "r", "ntfy", t0)
+
+        # ...silence past the retention horizon: the key is retired.
+        later = t0 + StateStore.STALE_KEY_RETENTION_S + 3600
+        StateStore.prune_24h(state, now_ts=later)
+        assert "r::ntfy" not in state["rules"]           # edge state gone
+        assert state["subjects_seen"]["r::ntfy"] == t0   # memory is not
+
+        # ...it fires again. The rebuilt state looks first-ever; the map knows.
+        rs2 = StateStore.get_or_init(state, "r", "ntfy")
+        StateStore.record_fire(rs2, later)
+        assert rs2["fire_count"] == rs2["fire_count_24h"] == 1   # the old "proof"
+        assert StateStore.note_subject_seen(
+            state, "r", "ntfy", later) == t0                     # the truth
+
+    def test_stamp_is_idempotent_and_never_moves_forward(self):
+        from mini_dudeai.state import StateStore
+        state = {"rules": {}}
+        first = StateStore.note_subject_seen(state, "r", "s", 100.0)
+        again = StateStore.note_subject_seen(state, "r", "s", 999.0)
+        assert first == again == 100.0
+
+    def test_eviction_is_bounded_and_leaves_a_witness(self, monkeypatch):
+        """A memory that silently forgot is worse than one that says how much
+        it forgot: an eviction lets a subject look new again, so the count is
+        recorded (honest_failure_modes #9)."""
+        from mini_dudeai.state import StateStore
+        monkeypatch.setattr(StateStore, "SUBJECTS_SEEN_MAX", 3)
+        state = {"rules": {}}
+        for i in range(5):
+            StateStore.note_subject_seen(state, "r", f"s{i}", 100.0 + i)
+        seen = state["subjects_seen"]
+        assert len(seen) == 3
+        assert "r::s0" not in seen and "r::s4" in seen   # oldest evicted first
+        assert state["subjects_seen_evicted"] == 2
+
+    def test_engine_stamps_on_a_real_fire(self, tmp_path):
+        """The wiring, at the consumer of record: a fire through the engine
+        must leave the stamp, or the detector is reading a map nobody fills."""
+        import json
+        rec = RecordingAction()
+        src = StaticSource([Condition(kind="x", subject="foo", detail="d")])
+        eng = _engine(
+            tmp_path, [src],
+            [{"id": "r1", "match": {"kind": "x"}, "action": {"kind": "recorder"}}],
+            actions={"recorder": rec},
+        )
+        eng.tick()
+        assert rec.calls, "precondition: the rule must actually fire"
+        state = json.loads((tmp_path / "state.json").read_text())
+        keys = list((state.get("subjects_seen") or {}))
+        assert keys, "engine fired but left no durable first-sighting stamp"
+        assert any(k.startswith("r1::") for k in keys)

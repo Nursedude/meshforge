@@ -105,29 +105,124 @@ def test_chronic_flap_needs_paired_clears():
 
 
 # --- detect_new_subject -------------------------------------------------------
+#
+# v2 (2026-08-09): "new" comes from the DURABLE subjects_seen map, not from
+# fire_count == fire_count_24h. The old inference was invalid — prune_24h
+# retires a quiet key after STALE_KEY_RETENTION_S and get_or_init rebuilds it
+# at fire_count 0, so a subject known for months came back indistinguishable
+# from one never seen. Measured: 76 of 186 proposals in the live ledger, 74
+# rejected. These helpers inject both the map and the fleet registry, so no
+# verdict here depends on the box running the suite.
 
-def test_new_subject_when_all_fires_in_window():
-    rules = {"r::newbox": _rs("r", "newbox", fire_count=2, fire_count_24h=2,
-                              fires_window=[NOW - 1000, NOW - 500])}
-    out = detect_new_subject(_state(rules), [], NOW, HOST)
+NO_REGISTRY = (set(), False)
+
+
+def _seen(**pairs):
+    """subjects_seen map: keyword `rule__subject=ts` -> {"rule::subject": ts}."""
+    return {k.replace("__", "::"): v for k, v in pairs.items()}
+
+
+def _ns(rules, seen, *, now=NOW, known=NO_REGISTRY, **kw):
+    st = _state(rules)
+    st["subjects_seen"] = seen
+    return detect_new_subject(st, [], now, HOST, known_fn=lambda: known, **kw)
+
+
+def test_new_subject_when_durably_first_seen_in_window():
+    # The rule itself is old (a sibling subject from 30d back), so this is a
+    # statement about the SUBJECT — see the rule-birth test for the other case.
+    out = _ns({"r::newbox": _rs("r", "newbox", fire_count=2, fire_count_24h=2,
+                                fires_window=[NOW - 1000, NOW - 500])},
+              _seen(r__settled=NOW - 30 * 86400, r__newbox=NOW - 1000))
     assert len(out) == 1
     assert out[0]["kind"] == "new_subject"
     assert "newbox" in out[0]["summary"]
 
 
-def test_new_subject_skips_when_prior_history_exists():
-    # lifetime fires exceed 24h fires -> seen before the window -> not new
-    rules = {"r::oldbox": _rs("r", "oldbox", fire_count=10, fire_count_24h=2,
-                              fires_window=[NOW - 1000, NOW - 500])}
-    out = detect_new_subject(_state(rules), [], NOW, HOST)
+def test_new_subject_skips_when_durably_known_from_before_the_window():
+    """THE root fix. State says fire_count == fire_count_24h == 1 — the exact
+    shape a REBUILT key has after prune_24h retired it — but the durable map
+    remembers this subject from 40 days ago, so it is not new. Under v1 this
+    fired: it is `ntfy` on 2026-08-06, live since June, announced as a
+    first-ever sighting."""
+    out = _ns({"r::ntfy": _rs("r", "ntfy", fire_count=1, fire_count_24h=1,
+                              fires_window=[NOW - 500])},
+              _seen(r__ntfy=NOW - 40 * 86400))
     assert out == []
 
 
-def test_new_subject_skips_when_first_seen_before_window():
-    rules = {"r::s": _rs("r", "s", fire_count=1, fire_count_24h=1,
-                         fires_window=[NOW - 999999])}
-    out = detect_new_subject(_state(rules), [], NOW, HOST)
+def test_new_subject_needs_a_fire():
+    out = _ns({"r::s": _rs("r", "s", fire_count=0, fire_count_24h=0)},
+              _seen(r__s=NOW - 100))
     assert out == []
+
+
+def test_no_durable_memory_proposes_nothing():
+    """A fresh or pre-upgrade state cannot honestly claim first-ever about
+    anything. "I have no memory" must not be spoken as "everything is new"
+    (honest_failure_modes #2) — abstain, and self-heal as rules fire."""
+    rules = {"r::whoever": _rs("r", "whoever", fire_count=1, fire_count_24h=1,
+                               fires_window=[NOW - 100])}
+    assert _ns(rules, {}) == []
+    st = _state(rules)                      # key absent entirely, not just empty
+    assert detect_new_subject(st, [], NOW, HOST, known_fn=lambda: NO_REGISTRY) == []
+
+
+def test_known_fleet_member_is_suppressed():
+    out = _ns({"r::meshforge-boxa": _rs("r", "meshforge-boxa", fire_count=1,
+                                        fire_count_24h=1, fires_window=[NOW - 100])},
+              _seen(r__settled=NOW - 30 * 86400,
+                    **{"r__meshforge-boxa": NOW - 100}),
+              known=({"boxa", "meshforge-boxa"}, True))
+    assert out == []
+
+
+def test_unreadable_registry_FAILS_OPEN():
+    """An unreadable registry means we do not know what is expected — which
+    must never be spoken as "nothing is expected". Same subject as the test
+    above; with no registry it proposes, and says so in the evidence."""
+    out = _ns({"r::meshforge-boxa": _rs("r", "meshforge-boxa", fire_count=1,
+                                        fire_count_24h=1, fires_window=[NOW - 100])},
+              _seen(r__settled=NOW - 30 * 86400,
+                    **{"r__meshforge-boxa": NOW - 100}), known=NO_REGISTRY)
+    assert len(out) == 1
+    assert out[0]["evidence"]["fleet_registry_readable"] is False
+
+
+def test_per_event_subject_identity_is_suppressed():
+    """`host@boot_id` is minted per reboot: new by construction, forever. The
+    reboot it stands for has its own signal kind (unexpected_reboot), which is
+    what the one ratified delta of this kind was actually ratified on."""
+    subj = "boxa@bc8580f6"
+    out = _ns({f"r::{subj}": _rs("r", subj, fire_count=1, fire_count_24h=1,
+                                 fires_window=[NOW - 100])},
+              {"r::settled": NOW - 30 * 86400, f"r::{subj}": NOW - 100})
+    assert out == []
+
+
+def test_rule_birth_suppresses_every_subject_it_mints():
+    """detector_blind_any, merged 2026-07-25, minted FOUR first-ever sightings
+    on its first fire — four proposals, one event, four identical rejections.
+    The subjects arrived because the RULE did."""
+    rules, seen = {}, {}
+    for s in ("a", "b", "c", "d"):
+        rules[f"newrule::{s}"] = _rs("newrule", s, fire_count=1,
+                                     fire_count_24h=1, fires_window=[NOW - 100])
+        seen[f"newrule::{s}"] = NOW - 100
+    assert _ns(rules, seen) == []
+
+
+def test_a_settled_rule_still_reports_a_genuinely_new_subject():
+    """The other side of rule-birth: once the rule is older than the grace,
+    a subject that shows up now IS the topology change this exists to catch."""
+    seen = {"oldrule::longtime": NOW - 30 * 86400,
+            "oldrule::stranger": NOW - 300}
+    rules = {"oldrule::stranger": _rs("oldrule", "stranger", fire_count=1,
+                                      fire_count_24h=1, fires_window=[NOW - 300])}
+    out = _ns(rules, seen)
+    assert len(out) == 1
+    assert "stranger" in out[0]["summary"]
+    assert out[0]["evidence"]["rule_first_seen_iso"]
 
 
 # --- detect_persistent_active -------------------------------------------------
@@ -195,7 +290,12 @@ def test_build_dreams_aggregates_multiple_detectors():
                          fires_window=[NOW - 500]),
     }
     hist = _flap_history("flap", "s", 5, active=20)
-    narrative, deltas = build_dreams(_state(rules), hist, NOW)
+    st = _state(rules)
+    # v2 needs durable memory to make a first-ever claim, and a rule older
+    # than its birth grace for the claim to be about the SUBJECT.
+    st["subjects_seen"] = {"r::settled": NOW - 30 * 86400,
+                           "r::newbox": NOW - 500}
+    narrative, deltas = build_dreams(st, hist, NOW)
     kinds = {d["kind"] for d in deltas}
     assert {"chronic_flap", "persistent_active", "new_subject"} <= kinds
     assert "Proposed memory-deltas" in narrative

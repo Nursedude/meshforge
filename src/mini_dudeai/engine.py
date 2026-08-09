@@ -461,6 +461,10 @@ class RuleEngine:
                 rs["pending_since_ts"] = 0.0  # streak consumed by the fire
                 rs["pending_ticks"] = 0
                 StateStore.record_fire(rs, now_ts)
+                # Durable first-sighting stamp — outlives prune_24h's key
+                # retirement, so "first-ever" stays a claim about the SUBJECT
+                # and not about how long state happened to be kept.
+                StateStore.note_subject_seen(state, rule["id"], cond.subject, now_ts)
                 history_entries.append(self._history_entry(
                     now_ts, rule["id"], cond.subject, "edge_up", cond.detail, outcome,
                 ))

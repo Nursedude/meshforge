@@ -105,6 +105,51 @@ class StateStore:
                 continue  # recent enough to keep cooldown memory
             del rules[key]
 
+    # ── durable first-sighting memory (2026-08-09) ────────────────────────
+    # ``prune_24h`` DELETES a rule-state key after STALE_KEY_RETENTION_S of
+    # silence, and ``get_or_init`` then rebuilds it with fire_count = 0. That
+    # is correct for edge state and fatal for any claim about HISTORY: a
+    # subject quiet for a week comes back byte-identical to one never seen,
+    # which is how ``detect_new_subject`` announced "first-ever sighting" of
+    # `ntfy` — live since 2026-06-18 — on 2026-08-06. Retired state read as
+    # absent state (honest_failure_modes #2), one layer up.
+    #
+    # So first-sighting lives HERE, in a map the prune never touches: ts only,
+    # no windows, ~60 bytes an entry (53 distinct pairs in this box's whole
+    # recorded history, so ~3 KB at today's cardinality). ONE home for the
+    # fact — a copy in the rule state would drift the moment prune ran (#5).
+    SUBJECTS_SEEN_KEY = "subjects_seen"
+    SUBJECTS_SEEN_MAX = 4096          # ~80× today's cardinality; a runaway stop
+    SUBJECTS_EVICTED_KEY = "subjects_seen_evicted"
+
+    @staticmethod
+    def note_subject_seen(state: dict, rule_id: str, subject: str,
+                          now_ts: float) -> float:
+        """Stamp (and return) the first time this (rule, subject) ever fired.
+
+        Idempotent: an existing stamp is never overwritten, so the answer
+        survives every prune. At the cap the OLDEST stamps are evicted and the
+        count is kept in ``subjects_seen_evicted`` — an eviction means a
+        subject can look new again, and a memory that silently forgot is worse
+        than one that says how much it forgot (honest_failure_modes #9).
+        """
+        seen = state.get(StateStore.SUBJECTS_SEEN_KEY)
+        if not isinstance(seen, dict):
+            seen = {}
+            state[StateStore.SUBJECTS_SEEN_KEY] = seen
+        key = StateStore.rule_key(rule_id, subject)
+        prior = seen.get(key)
+        if isinstance(prior, (int, float)) and prior > 0:
+            return float(prior)
+        seen[key] = now_ts
+        if len(seen) > StateStore.SUBJECTS_SEEN_MAX:
+            drop = len(seen) - StateStore.SUBJECTS_SEEN_MAX
+            for k, _ in sorted(seen.items(), key=lambda kv: kv[1])[:drop]:
+                del seen[k]
+            state[StateStore.SUBJECTS_EVICTED_KEY] = int(
+                state.get(StateStore.SUBJECTS_EVICTED_KEY, 0) or 0) + drop
+        return now_ts
+
     @staticmethod
     def record_fire(rs: dict, now_ts: float) -> None:
         """The single derivation site for fire bookkeeping. fire_count_24h is

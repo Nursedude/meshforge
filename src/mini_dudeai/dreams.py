@@ -27,6 +27,7 @@ from __future__ import annotations
 import datetime
 import json
 import os
+import re
 import time
 
 from ._util import atomic_write_text, read_json, resolve_home
@@ -48,6 +49,13 @@ PERSISTENT_MIN_ACTIVE_S = 3600.0      # currently_active >= 1h = a persistent co
 # run until the 24h state window ages out the signal. After the window, if the
 # condition still detects, it re-surfaces (genuinely persistent → worth another look).
 DEFAULT_RESOLVE_SUPPRESS_S = 604800.0  # 7 days
+# new_subject: a rule seen for the first time this recently makes EVERY subject
+# it touches look new — the subject is minted by the rule's arrival, not by a
+# topology change. Measured: `detector_blind_any` merged 2026-07-25 and minted
+# FOUR "first-ever sightings" on its first fire, all four rejected with the
+# same note. One day covers a rule's own bring-up without hiding a genuinely
+# new peer that shows up later on a settled rule.
+RULE_BIRTH_GRACE_S = 86400.0
 # One name for the deltas file across every consumer (engine tick counter,
 # daemon, brief, cadence_fallback, audit) — independent hardcodes WILL drift.
 DELTAS_BASENAME = "mini_dudeai_memory_deltas.jsonl"
@@ -150,34 +158,155 @@ def detect_chronic_flap(state: dict, history: list[dict], now_ts: float,
     return out
 
 
+def _known_fleet_subjects() -> tuple[set, bool]:
+    """(known subject names, registry_readable).
+
+    Names as mini writes subjects: the bare host, and the ``meshforge-<host>``
+    form the fleet rules use. Self is included — ``fleet_hosts`` excludes the
+    local box by convention, and "first-ever sighting of the box I am running
+    on" is never a topology discovery.
+
+    ⚠️ FAILS OPEN. When no registry resolves, ``known`` is empty and every
+    subject stays proposable: an unreadable registry means we do not know what
+    is expected, which must never be spoken as "nothing is expected" (the whole
+    point of the second return value).
+    """
+    try:
+        import socket
+        from utils.fleet_hosts import resolve_fleet_hosts, resolve_fleet_hosts_file
+        readable = resolve_fleet_hosts_file() is not None
+        names = list(resolve_fleet_hosts() or [])
+    except Exception:
+        return set(), False
+    try:
+        names.append(socket.gethostname())
+    except OSError:
+        pass  # self unknown -> self stays proposable (fail open, never quiet)
+    known = set()
+    for n in names:
+        n = (n or "").strip().lower()
+        if n:
+            known.add(n)
+            known.add(f"meshforge-{n}")
+    # Fleet subjects also arrive as bare ADDRESSES (federation peers name
+    # themselves by IP), and the operator had to resolve those by hand every
+    # time — "verified .29 = meshanchor-server.lan, an EXPECTED host". The
+    # fleet's own /etc/hosts block already carries that mapping, so read it
+    # rather than resolve: no network, no AAAA round trip, and it is the same
+    # artifact `gen_fleet_hosts.py` writes. Unreadable → no addresses added
+    # (fail open again; a missing map must never widen what counts as known).
+    try:
+        with open("/etc/hosts", "r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.split("#", 1)[0].split()
+                if len(line) < 2:
+                    continue
+                addr, hostnames = line[0], [h.strip().lower() for h in line[1:]]
+                if any(h in known or h.split(".", 1)[0] in known for h in hostnames):
+                    known.add(addr.lower())
+    except OSError:
+        pass  # no address map -> fewer names known -> MORE proposals, not fewer
+    return known, readable
+
+
+# A subject minted per event — ``<host>@<boot_id-prefix>`` from the
+# unexpected_reboot source — is new BY CONSTRUCTION and can never be anything
+# else. Its "first-ever sighting" carries exactly zero information, and the
+# reboot it stands for already has its own signal kind.
+_PER_EVENT_SUBJECT_RE = re.compile(r"^(?P<base>.+)@[0-9a-f]{6,}$", re.IGNORECASE)
+
+
 def detect_new_subject(state: dict, history: list[dict], now_ts: float,
-                       host: str, *, lookback_s: float = DEFAULT_LOOKBACK_S) -> list[dict]:
-    """A subject whose entire fire history is inside the window = first seen
-    recently. Could be a new fleet member (benign) or an anomaly (worth a look).
-    Derived from state alone: fire_count == fire_count_24h means every fire ever
-    recorded for this subject happened in the last 24h.
+                       host: str, *, lookback_s: float = DEFAULT_LOOKBACK_S,
+                       rule_birth_grace_s: float = RULE_BIRTH_GRACE_S,
+                       known_fn=None) -> list[dict]:
+    """A subject this box has genuinely never seen before — i.e. a topology
+    change: a peer, box or node interacting with the fleet for the first time.
+
+    ⚠️ **v2 (2026-08-09): the old inference was invalid.** It read
+    ``fire_count == fire_count_24h`` as "every fire ever recorded happened
+    today". That is false the moment ``prune_24h`` retires a quiet key: after
+    ``STALE_KEY_RETENTION_S`` the entry is deleted and rebuilt at
+    ``fire_count = 0``, so a subject known for months returns byte-identical to
+    one never seen. Retired read as absent (honest_failure_modes #2), and the
+    detector announced "first-ever sighting" of ``ntfy`` — live since
+    2026-06-18 — on 2026-08-06. Measured cost: **76 of 186 proposals in this
+    box's whole ledger, 74 of them rejected**, the single largest block.
+
+    So "new" now comes from ``state["subjects_seen"]``, a durable stamp the
+    prune never touches, and three things that are new-but-uninformative are
+    suppressed at the source rather than by the operator, one note at a time:
+
+      - **no durable memory yet** → propose NOTHING. A fresh (or pre-upgrade)
+        state cannot honestly claim first-ever about anything; "I have no
+        memory" must not be spoken as "everything is new". Self-heals as rules
+        fire, and is announced once in the evidence of later deltas.
+      - **rule birth** — the rule itself was first seen within
+        ``rule_birth_grace_s``: the subject was minted by the rule arriving,
+        not by anything joining the fleet.
+      - **known fleet member** (registry + self, fail-open) and **per-event
+        subject identity** (``host@boot_id``): expected by construction. The
+        one such delta ever ratified (2026-06-24) was ratified on
+        `unexpected_reboot` evidence, which is its own signal kind — so the
+        finding survives this suppression; only the duplicate path goes.
     """
     out: list[dict] = []
     cutoff = now_ts - lookback_s
+    seen = state.get("subjects_seen")
+    if not isinstance(seen, dict) or not seen:
+        return out  # no durable memory — abstain rather than call everything new
+
+    # Injectable so a test's verdict cannot depend on the fleet registry of
+    # whichever box runs the suite (feedback_tests_must_pin_ambient_state).
+    known, registry_readable = (known_fn or _known_fleet_subjects)()
+
+    # Earliest sighting per rule, from the same durable map — one source for
+    # "when did this rule start", never a second bookkeeping copy to drift.
+    rule_first: dict = {}
+    for k, ts in seen.items():
+        if not isinstance(ts, (int, float)):
+            continue
+        rid = str(k).split("::", 1)[0]
+        if rid not in rule_first or ts < rule_first[rid]:
+            rule_first[rid] = float(ts)
+
     for rs in (state.get("rules") or {}).values():
         if not isinstance(rs, dict):
             continue
-        total = int(rs.get("fire_count", 0) or 0)
-        recent = int(rs.get("fire_count_24h", 0) or 0)
-        if total < 1 or total != recent:
-            continue  # has prior history before the window — not new
-        window = rs.get("fires_window") or []
-        first = min(window) if window else None
-        if first is None or first < cutoff:
+        if int(rs.get("fire_count", 0) or 0) < 1:
             continue
         rid, subj = rs.get("rule_id"), rs.get("subject")
+        first = seen.get(f"{rid}::{subj}")
+        if not isinstance(first, (int, float)) or first < cutoff:
+            continue  # known from before the window (or unstamped) — not new
+
+        base = subj or ""
+        m = _PER_EVENT_SUBJECT_RE.match(base)
+        per_event = bool(m)
+        if m:
+            base = m.group("base")
+        if per_event:
+            continue  # identity minted per event — "new" is its definition
+        if base.strip().lower() in known:
+            continue  # expected fleet member — the registry says so
+
+        born = rule_first.get(rid)
+        if born is not None and (now_ts - born) < rule_birth_grace_s:
+            continue  # rule birth: the rule minted this subject, not the fleet
+
         out.append(_delta(
             kind="new_subject",
             key=f"new_subject::{rid}::{subj}",
             summary=f"first-ever sighting of {subj} (rule {rid}) — appeared {_hms(now_ts - first)} ago",
             evidence={
-                "rule_id": rid, "subject": subj, "fire_count": total,
+                "rule_id": rid, "subject": subj,
+                "fire_count": int(rs.get("fire_count", 0) or 0),
                 "first_seen_iso": _iso(first),
+                # Why this one was NOT suppressed — so a reader can tell a real
+                # topology finding from a registry that could not be read.
+                "fleet_registry_readable": registry_readable,
+                "known_fleet_subjects": len(known),
+                "rule_first_seen_iso": _iso(born) if born else None,
             },
             proposed_action=("Confirm this subject is an expected fleet member. "
                              "If expected, no memory needed; if unexpected, this is "
