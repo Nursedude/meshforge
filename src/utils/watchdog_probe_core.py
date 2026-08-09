@@ -409,6 +409,46 @@ def signal_to_dict(sig: Signal, *, first_seen_ts: Optional[float] = None) -> dic
 
 
 # ─────────────────────────────────────────────────────────────────────
+# Installed-package reads — shared by every probe that compares a DECLARED
+# version (a pin, a floor) against what is actually on the box. Lives here for
+# the same reason the streak counter does: drift, rns_env, and dep probes all
+# need it, and independently-hardcoded copies WILL diverge (honest_failure_modes
+# #5). The 2026-08-09 moc4 blindness was exactly that divergence — one copy
+# listed system dist-packages, the other globbed only the user site.
+# ─────────────────────────────────────────────────────────────────────
+
+# Every root-readable location a SYSTEM-scope pip install can land.
+_SYSTEM_DIST_GLOBS = [
+    "/usr/local/lib/python3*/dist-packages",
+    "/usr/lib/python3*/dist-packages",
+    "/usr/lib/python3/dist-packages",
+]
+
+
+def _read_pkg_version_at_dirs(site_dirs, pkg):
+    """Version of ``pkg`` found in the given site-packages dirs, or None.
+
+    Reads in-process via ``importlib.metadata.distributions(path=...)`` — the
+    watchdog sandbox (NoNewPrivileges + RestrictSUIDSGID) blocks sudo/runuser,
+    but ProtectHome=no lets root READ any of these trees directly."""
+    dirs = [d for d in dict.fromkeys(site_dirs) if os.path.isdir(d)]
+    if not dirs:
+        return None
+    try:
+        import importlib.metadata as _im
+        for dist in _im.distributions(path=dirs):
+            try:
+                name = (dist.metadata["Name"] or "").lower()
+            except Exception:
+                continue
+            if name == pkg.lower():
+                return dist.version
+    except Exception:
+        return None
+    return None
+
+
+# ─────────────────────────────────────────────────────────────────────
 # Debounce-streak persistence — a consecutive-drift counter used by every
 # drift-family probe to suppress a first-seen transition. Historically named
 # "parity_streak" (born in the parity probe) but generic; lives here so the

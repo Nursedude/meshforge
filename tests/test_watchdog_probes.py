@@ -2836,17 +2836,116 @@ def test_rns_version_drift_none_when_no_pin():
     assert probe_rns_version_drift(rnsd_user="wh6gxz", pins={}, installed={"rns": "1.1.1"}) is None
 
 
-def test_rns_version_drift_none_when_env_unreadable():
-    # Couldn't read the service user's site-packages → indeterminate, no false alarm
-    # (this is the NoNewPrivileges/RestrictSUIDSGID reality — no user switch possible).
-    assert probe_rns_version_drift(rnsd_user="wh6gxz", pins=_PINS, installed={}) is None
-
-
 def test_rns_version_drift_none_when_pkg_not_visible():
-    # rns not found in the user site (venv elsewhere?) — don't guess drift on absence.
+    # rns not found in any searched env (isolated venv?) — don't guess drift on absence.
     sig = probe_rns_version_drift(
         rnsd_user="wh6gxz", pins=_PINS, installed={"lxmf": "0.9.4+mf.0"})
     assert sig is None
+
+
+class TestRnsVersionDriftSearchesConsumerImportOrder:
+    """2026-08-09 — moc4 sat ``indeterminate`` for 12.3 days, blaming
+    "service-user env unreadable", while its rnsd interpreter carried EXACTLY
+    the pinned rns 1.3.8+mf.0 / lxmf 1.0.1+mf.1. The reader globbed only
+    ``{home}/.local/lib/python3*/site-packages``; moc4 is the one fleet box
+    with no ~/.local, installing to /usr/local/lib/python3.11/dist-packages.
+
+    These build REAL dist-info trees and run the REAL reader — the layer that
+    was broken. Mocking ``_read_pkg_versions_for_user`` here would reproduce
+    the 2026-07-25 failure where 13 green tests mocked the exact broken layer.
+    """
+
+    def setup_method(self):
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+
+    @staticmethod
+    def _install(site_dir, pkg, version):
+        """Write metadata importlib.metadata will actually resolve."""
+        d = site_dir / f"{pkg}-{version}.dist-info"
+        d.mkdir(parents=True)
+        (d / "METADATA").write_text(
+            f"Metadata-Version: 2.1\nName: {pkg}\nVersion: {version}\n")
+
+    def _patch_system_globs(self, monkeypatch, *dirs):
+        from utils import watchdog_probes_drift as wd
+        monkeypatch.setattr(wd, "_SYSTEM_DIST_GLOBS", [str(d) for d in dirs])
+
+    def test_reads_system_dist_when_user_site_absent(self, tmp_path, monkeypatch):
+        """THE moc4 regression. No user-site anywhere; packages live in
+        system dist-packages. Must be OBSERVED (and compliant), not blind."""
+        from utils import watchdog_probes_drift as wd
+        sysdir = tmp_path / "usr/local/lib/python3.11/dist-packages"
+        sysdir.mkdir(parents=True)
+        self._install(sysdir, "rns", "1.2.5+mf.4")
+        self._install(sysdir, "lxmf", "0.9.4+mf.0")
+        self._patch_system_globs(monkeypatch, sysdir)
+        # Real _consumer_site_dirs, unmocked: the user has no resolvable home,
+        # so user-site contributes nothing and ONLY system-dist can save it.
+        found = wd._read_pkg_versions_for_user("nosuchuser-ever", {"rns", "lxmf"})
+        assert found == {"rns": "1.2.5+mf.4", "lxmf": "0.9.4+mf.0"}
+
+        sig = probe_rns_version_drift(
+            rnsd_user="nosuchuser-ever", pins=_PINS, installed=found)
+        assert sig is None
+        assert _disp("rns_version_drift") == "clean"
+
+    def test_user_site_wins_over_system_dist(self, tmp_path, monkeypatch):
+        """CPython import order: user-site shadows dist-packages. The version
+        we report must be the one the interpreter would actually import."""
+        from utils import watchdog_probes_drift as wd
+        home = tmp_path / "home/svc"
+        usersite = home / ".local/lib/python3.13/site-packages"
+        usersite.mkdir(parents=True)
+        sysdir = tmp_path / "usr/local/lib/python3.11/dist-packages"
+        sysdir.mkdir(parents=True)
+        self._install(usersite, "rns", "1.2.5+mf.4")   # what rnsd imports
+        self._install(sysdir, "rns", "1.1.1")          # shadowed stale copy
+        self._patch_system_globs(monkeypatch, sysdir)
+        monkeypatch.setattr(wd, "_consumer_site_dirs",
+                            lambda user: [str(usersite), str(sysdir)])
+
+        found = wd._read_pkg_versions_for_user("svc", {"rns"})
+        assert found["rns"] == "1.2.5+mf.4"
+
+    def test_no_location_at_all_is_none_and_says_so(self, tmp_path, monkeypatch):
+        """Genuine blindness — nothing readable. Distinct from an empty read."""
+        from utils import watchdog_probes_drift as wd
+        monkeypatch.setattr(wd, "_consumer_site_dirs", lambda user: [])
+        assert wd._read_pkg_versions_for_user("svc", {"rns"}) is None
+
+        sig = probe_rns_version_drift(rnsd_user="svc", pins=_PINS)
+        assert sig is None
+        assert _disp("rns_version_drift") == "indeterminate"
+        assert "no readable install location" in _reason("rns_version_drift")
+
+    def test_empty_read_is_an_observation_not_unreadable(self, tmp_path, monkeypatch):
+        """``{}`` used to collapse into "service-user env unreadable" — a probe
+        blaming a read that worked fine (honest_failure_modes #1). The dirs
+        exist and enumerate; the pinned packages simply are not in them."""
+        from utils import watchdog_probes_drift as wd
+        empty = tmp_path / "usr/lib/python3/dist-packages"
+        empty.mkdir(parents=True)
+        monkeypatch.setattr(wd, "_consumer_site_dirs", lambda user: [str(empty)])
+
+        assert wd._read_pkg_versions_for_user("svc", {"rns", "lxmf"}) == {}
+
+        sig = probe_rns_version_drift(rnsd_user="svc", pins=_PINS, installed={})
+        assert sig is None
+        assert _disp("rns_version_drift") == "indeterminate"
+        reason = _reason("rns_version_drift")
+        assert "not visible" in reason
+        assert "unreadable" not in reason  # the false explanation, gone
+
+    def test_consumer_site_dirs_includes_system_dist(self, tmp_path, monkeypatch):
+        """Pin the ORDER + coverage of the real (unmocked) path builder — this
+        is the function whose single-location glob caused the blindness."""
+        from utils import watchdog_probes_drift as wd
+        sysdir = tmp_path / "usr/local/lib/python3.11/dist-packages"
+        sysdir.mkdir(parents=True)
+        self._patch_system_globs(monkeypatch, sysdir)
+        dirs = wd._consumer_site_dirs("nosuchuser-ever")
+        assert str(sysdir) in dirs, "system dist-packages must be searched"
 
 
 def test_rns_version_drift_fires_only_for_visible_mismatch():

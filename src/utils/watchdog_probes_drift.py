@@ -7,7 +7,9 @@ Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 ``utils.watchdog_probes`` hub, not from here. The cron/fleet/host liveness
 probes (#78) and the environment probes (router/ntfy/kernel/aredn/inherited)
 were split into ``watchdog_probes_liveness`` + ``watchdog_probes_env``
-(2026-07-14, MF025 size cap); this module re-exports them for back-compat.
+(2026-07-14, MF025 size cap), and the RNS stray-env coherence probe into
+``watchdog_probes_rns_env`` (2026-08-09, same cap); this module re-exports
+them for back-compat.
 """
 from __future__ import annotations
 
@@ -21,10 +23,12 @@ from typing import Dict, List, Optional, Tuple
 
 from utils.watchdog_probe_core import (
     Signal,
+    _SYSTEM_DIST_GLOBS,
     _journal_newest_match_status,
     _load_parity_streak,
     _read_deployment_declaration,
     _read_deployment_declaration_status,
+    _read_pkg_version_at_dirs,
     _resolve_main_pid,
     _save_parity_streak,
     note_disposition,
@@ -233,35 +237,64 @@ def probe_parity_drift(
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _consumer_site_dirs(user):
+    """Ordered site-packages dirs the rnsd service user's interpreter would
+    actually import from — user-site FIRST, then system dist-packages, which is
+    CPython's own resolution order. Returns [] when no location exists.
+
+    2026-08-09: this used to glob ONLY ``{home}/.local/lib/python3*/site-packages``,
+    so moc4 — the one fleet box that installs system-wide (no ~/.local at all;
+    rnsd's ``/usr/bin/python3.11`` imports from /usr/local/lib/python3.11/
+    dist-packages) — was structurally invisible and sat ``indeterminate`` for
+    12.3 days while sitting exactly ON the pin. A reader that models only one
+    box shape reports the other shapes as broken instrumentation.
+    """
+    import glob
+    dirs = []
+    if user and user != "root":
+        try:
+            import pwd
+            home = pwd.getpwnam(user).pw_dir
+        except (KeyError, OSError):
+            home = f"/home/{user}"
+        dirs += sorted(glob.glob(f"{home}/.local/lib/python3*/site-packages"))
+    for pat in _SYSTEM_DIST_GLOBS:
+        dirs += sorted(glob.glob(pat))
+    return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
+
+
 def _read_pkg_versions_for_user(user, pkgs):
-    """Read installed versions of ``pkgs`` from the service user's site-packages —
-    read-only, no privilege change. Returns ``{pkg: version}`` for those found, or
-    None if the user's site dir can't be located/read.
+    """Read installed versions of ``pkgs`` as the rnsd service user's interpreter
+    would resolve them — read-only, no privilege change.
+
+    Returns ``{pkg: version}`` for those found (possibly ``{}`` — searched fine,
+    none of ``pkgs`` present), or ``None`` ONLY when there was no readable
+    location to search at all. Those are different claims and the caller reports
+    them differently: ``{}`` is an observation, ``None`` is blindness.
 
     Why not just ``importlib.metadata.version()``? That reads the *current*
     interpreter's env — the watchdog runs as root, whose env may carry a different
     rns (verified live: root had 1.1.1 while the wh6gxz service env had 1.2.5+mf.4).
     And we can't switch user: the watchdog unit sets NoNewPrivileges + RestrictSUIDSGID,
     which block sudo AND runuser (both need setuid). But ProtectHome=no, so root can
-    READ ``/home/<user>/.local/...`` directly and point importlib.metadata at it.
+    READ those trees directly and point importlib.metadata at them.
     """
-    if not user or user == "root":
-        return None
     try:
-        import importlib.metadata as _im
-        home = Path(f"/home/{user}")
-        site_dirs = [str(p) for p in sorted(home.glob(".local/lib/python3*/site-packages"))
-                     if p.is_dir()]
+        site_dirs = _consumer_site_dirs(user)
         if not site_dirs:
             return None
         found = {}
-        for dist in _im.distributions(path=site_dirs):
-            try:
-                name = (dist.metadata["Name"] or "").lower()
-            except Exception:
-                continue
-            if name in pkgs:
-                found[name] = dist.version
+        for pkg in pkgs:
+            # One dir at a time so FIRST hit wins explicitly. Handing the whole
+            # list to importlib.metadata.distributions() and assigning per dist
+            # takes the LAST match instead, so a stale system-dist copy would
+            # shadow the user-site one the interpreter actually imports —
+            # caught by test_user_site_wins_over_system_dist, not by review.
+            for d in site_dirs:
+                ver = _read_pkg_version_at_dirs([d], pkg)
+                if ver is not None:
+                    found[pkg.lower()] = ver
+                    break
         return found
     except Exception:
         return None
@@ -282,12 +315,14 @@ def probe_rns_version_drift(
     was stock 1.2.5 before the mf.4 roll) self-surfaces in /fleet + the mini rollup.
 
     The pin (``pins``) is env-independent (just reads requirements/rns.txt). The
-    INSTALLED versions are read from the rnsd **service user's** site-packages
-    (see ``_read_pkg_versions_for_user`` for why root's own env / sudo / runuser all
+    INSTALLED versions are read in the rnsd **service user's** import order —
+    user-site, then system dist-packages (see ``_consumer_site_dirs``; and
+    ``_read_pkg_versions_for_user`` for why root's own env / sudo / runuser all
     fail here). Fires ``degraded`` only on a concrete mismatch (installed != pinned
-    for a package we can actually see). Returns None when compliant, when the pin or
-    the user env can't be read (indeterminate — never false-alarm), or when a package
-    isn't visible in the user site (possible venv install elsewhere — don't guess).
+    for a package we can actually see). Returns None when compliant, when the pin
+    can't be read, when NO install location is readable (indeterminate — never
+    false-alarm), or when a package isn't visible in any searched env (possible
+    isolated venv — don't guess).
     """
     if rnsd_user is None and installed is None:
         try:
@@ -317,19 +352,25 @@ def probe_rns_version_drift(
 
     if installed is None:
         installed = _read_pkg_versions_for_user(rnsd_user, set(pins))
-    if not installed:
+    if installed is None:
+        # No readable location AT ALL — genuine blindness, not an observation.
         note_disposition("rns_version_drift", "indeterminate",
-                         reason="service-user env unreadable")
-        return None  # couldn't read the service env → indeterminate, no false alarm
+                         reason=f"no readable install location for user {rnsd_user!r}")
+        return None  # couldn't read any env → indeterminate, no false alarm
 
+    # NOTE: `installed == {}` is NOT this branch. An empty dict means the search
+    # ran and found none of the pinned packages — that falls through to the loop
+    # below, which notes it per-package. Collapsing the two (`if not installed`)
+    # is what made moc4 report "service-user env unreadable" about an env that
+    # read perfectly well (honest_failure_modes #1: empty != error).
     drift = []
     for pkg, want in pins.items():
         have = installed.get(pkg)
         if have is None:
             # Worst-wins: this note keeps a partial read from rendering clean.
             note_disposition("rns_version_drift", "indeterminate",
-                             reason="pinned pkg not visible in user site")
-            continue  # not visible in the user site (venv elsewhere?) — don't guess
+                             reason=f"pinned pkg {pkg!r} not visible in any searched env")
+            continue  # not visible anywhere we can read (isolated venv?) — don't guess
         if have != want:
             drift.append(f"{pkg} installed={have} pinned={want}")
     if not drift:
@@ -502,11 +543,7 @@ DEFAULT_DEP_FRAGMENT_DEBOUNCE_PATH = "/var/lib/meshforge/dep_fragment_debounce.j
 # call. Versioned-python dirs are globbed (the fleet runs mixed 3.12/3.13).
 _DEP_INSTALL_SITE_GLOBS = {
     "venv":        ["{root}/venv/lib/python3*/site-packages"],
-    "system-dist": [
-        "/usr/local/lib/python3*/dist-packages",
-        "/usr/lib/python3*/dist-packages",
-        "/usr/lib/python3/dist-packages",
-    ],
+    "system-dist": list(_SYSTEM_DIST_GLOBS),
     "root-pipx":   [
         "/root/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages",
         "/opt/pipx/venvs/{pkg}/lib/python3*/site-packages",
@@ -514,30 +551,6 @@ _DEP_INSTALL_SITE_GLOBS = {
     "user-site":   ["{home}/.local/lib/python3*/site-packages"],
     "user-pipx":   ["{home}/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages"],
 }
-
-
-def _read_pkg_version_at_dirs(site_dirs, pkg):
-    """Version of ``pkg`` found in the given site-packages dirs, or None.
-
-    Reads in-process via ``importlib.metadata.distributions(path=...)`` — the
-    watchdog sandbox (NoNewPrivileges + RestrictSUIDSGID) blocks sudo/runuser,
-    but ProtectHome=no lets root READ any of these trees directly (same
-    constraint and pattern as ``_read_pkg_versions_for_user``)."""
-    dirs = [d for d in dict.fromkeys(site_dirs) if os.path.isdir(d)]
-    if not dirs:
-        return None
-    try:
-        import importlib.metadata as _im
-        for dist in _im.distributions(path=dirs):
-            try:
-                name = (dist.metadata["Name"] or "").lower()
-            except Exception:
-                continue
-            if name == pkg.lower():
-                return dist.version
-    except Exception:
-        return None
-    return None
 
 
 def _enumerate_pkg_installs(pkg, service_user, *, meshforge_root="/opt/meshforge",
@@ -733,218 +746,6 @@ def probe_dep_install_fragmented(
                          reason="probe raised unexpectedly")
         return None
 
-
-# ─────────────────────────────────────────────────────────────────────
-# Probe: RNS/LXMF stray-env coherence (the missed-venv roll hazard,
-# 2026-07-19 — closes the rns/lxmf half of dep_version_drift_strays_blind)
-# ─────────────────────────────────────────────────────────────────────
-
-DEFAULT_RNS_STRAY_DEBOUNCE_PATH = "/var/lib/meshforge/rns_stray_debounce.json"
-
-# Operator-declared waivers: {"waived": {"<location-label>": "<reason>"}} —
-# for the ONE legitimate exception to intra-box coherence: an app running an
-# ISOLATED own-Reticulum instance (its RNS never speaks the shared rnsd's
-# RPC, so version agreement buys nothing and a forced downgrade can break
-# the app). A waiver is deliberate and VISIBLE: the clean disposition names
-# every waived label (honest_failure_modes #9 — every swallow leaves a
-# witness). A malformed/unreadable waiver file applies NO waivers — a broken
-# waiver must never suppress a real signal.
-DEFAULT_RNS_STRAY_WAIVERS_PATH = "/etc/meshforge/rns_stray_waivers.json"
-
-
-def _load_stray_waivers(path):
-    """Return the waived-label dict, or {} on absent/malformed (never raise)."""
-    try:
-        with open(path, encoding="utf-8") as fh:
-            doc = json.load(fh)
-        waived = doc.get("waived")
-        if isinstance(waived, dict):
-            return {str(k): str(v) for k, v in waived.items()}
-    except (OSError, ValueError, AttributeError):
-        pass
-    return {}
-
-# Every root-readable location an rns/lxmf library copy can live. Unlike
-# _DEP_INSTALL_SITE_GLOBS, the pipx globs are WILDCARDED across venv names:
-# a LIBRARY rides along inside every app venv that depends on it, not just a
-# venv named after it — the stray that proved this class lived inside the
-# NOMADNET pipx venv on moc3 (silently stock 1.1.4 while the box's consumer
-# ran the fork pin; invisible to every existing drift probe).
-_LIB_STRAY_SITE_GLOBS = {
-    "venv":        ["{root}/venv/lib/python3*/site-packages"],
-    "system-dist": [
-        "/usr/local/lib/python3*/dist-packages",
-        "/usr/lib/python3*/dist-packages",
-        "/usr/lib/python3/dist-packages",
-    ],
-    "root-pipx":   [
-        "/root/.local/share/pipx/venvs/*/lib/python3*/site-packages",
-        "/opt/pipx/venvs/*/lib/python3*/site-packages",
-    ],
-    "user-site":   ["{home}/.local/lib/python3*/site-packages"],
-    "user-pipx":   ["{home}/.local/share/pipx/venvs/*/lib/python3*/site-packages"],
-}
-
-
-def _enumerate_lib_installs(pkg, service_user, *, meshforge_root="/opt/meshforge",
-                            user_home=None):
-    """Return ``{location_label: version}`` for every root-readable copy of
-    ``pkg``, INCLUDING copies riding inside other apps' pipx venvs (labeled
-    per venv, e.g. ``user-pipx:nomadnet``).
-
-    Non-pipx label groups keep the sibling helper's semantics (first found in
-    path-priority order — the copy an interpreter would actually import).
-    Same sandbox constraints as ``_enumerate_pkg_installs``: root READS the
-    trees directly; user-scoped globs are skipped without a resolvable home."""
-    import glob
-    if user_home is None and service_user and service_user != "root":
-        try:
-            import pwd
-            user_home = pwd.getpwnam(service_user).pw_dir
-        except (KeyError, OSError):
-            user_home = f"/home/{service_user}"
-    found = {}
-    for label, patterns in _LIB_STRAY_SITE_GLOBS.items():
-        if ("{home}" in "".join(patterns)) and not user_home:
-            continue  # user-scoped location but no resolvable home — skip
-        for pat in patterns:
-            try:
-                expanded = pat.format(root=meshforge_root, home=user_home or "")
-            except (KeyError, IndexError):
-                continue
-            for d in sorted(glob.glob(expanded)):
-                if "pipx/venvs/" in d:
-                    venv_name = d.split("pipx/venvs/", 1)[1].split("/", 1)[0]
-                    key = f"{label}:{venv_name}"
-                else:
-                    key = label
-                if key in found:
-                    continue  # first found per label wins (path priority)
-                ver = _read_pkg_version_at_dirs([d], pkg)
-                if ver is not None:
-                    found[key] = ver
-    return found
-
-
-def probe_rns_env_coherence(
-    *,
-    service_user=None,
-    installs=None,
-    pkgs=("rns", "lxmf"),
-    state_path=None,
-    waivers_path=None,
-    debounce_ticks: int = 2,
-) -> Optional[Signal]:
-    """Fire when rns/lxmf copies across this box's root-readable envs DISAGREE.
-
-    Intra-box COHERENCE, deliberately NOT pin compliance:
-    ``probe_rns_version_drift`` owns the +mf.N fork pin (and moc3's deliberate
-    canary drift page rides there); this probe pages the MISSED-ENV half of
-    the class. The fleet runs ONE rnsd per box and every app connects to it,
-    so every env must carry the identical RNS substrate — the 1.3.8 roll gate
-    is "flip rnsd + ALL clients + every pipx venv TOGETHER" (pickle→msgpack
-    RPC framing: a stray env speaks the wrong RPC dialect at 8s-timeout cost).
-    A box mid-roll that missed one venv pages here within 2 ticks instead of
-    being operator-discovered. A deliberately-flipped canary box whose envs
-    were all moved together stays CLEAN (they agree with each other).
-
-    Waivers (2026-07-19): an app running an ISOLATED own-Reticulum instance
-    (e.g. meshchatx-isolated.service — its RNS never speaks the shared
-    rnsd's RPC) is the one legitimate coherence exception. The operator
-    declares it in DEFAULT_RNS_STRAY_WAIVERS_PATH; waived labels are
-    excluded BUT the clean disposition names them every tick, and a
-    malformed waiver file waives nothing.
-
-    Honest failure modes: 0/1 observed locations per pkg → not incoherent,
-    never false-alarm; user scope unobservable (no non-root rnsd user) →
-    indeterminate, never claims clean coverage it didn't have; 2-tick
-    debounce rides a mid-roll window. Never raises into the tick.
-    """
-    try:
-        sp = state_path or DEFAULT_RNS_STRAY_DEBOUNCE_PATH
-
-        user_scope_dark = False
-        if installs is None:
-            if service_user is None:
-                try:
-                    from utils.rns_tree_perms import _read_rnsd_user
-                    service_user = _read_rnsd_user()
-                except Exception:
-                    service_user = None
-            user_scope_dark = not service_user or service_user == "root"
-            installs = {p: _enumerate_lib_installs(p, service_user)
-                        for p in pkgs}
-
-        waivers = _load_stray_waivers(
-            waivers_path or DEFAULT_RNS_STRAY_WAIVERS_PATH)
-        waived_hit = sorted({lbl for locs in installs.values()
-                             for lbl in locs if lbl in waivers})
-        if waivers:
-            installs = {p: {lbl: v for lbl, v in locs.items()
-                            if lbl not in waivers}
-                        for p, locs in installs.items()}
-
-        observed_any = any(locs for locs in installs.values())
-        incoherent = {p: locs for p, locs in installs.items()
-                      if len(set(locs.values())) >= 2}
-
-        if not incoherent:
-            _save_parity_streak(sp, 0)
-            if not observed_any:
-                note_disposition("rns_stray_env_drift", "indeterminate",
-                                 reason="no readable rns/lxmf install found")
-            elif user_scope_dark:
-                note_disposition(
-                    "rns_stray_env_drift", "indeterminate",
-                    reason=("user-scope install locations unobservable "
-                            "(no non-root rnsd user)"))
-            elif waived_hit:
-                # Clean only BECAUSE of the waiver — say so, every tick.
-                note_disposition(
-                    "rns_stray_env_drift", "clean",
-                    reason=("coherent with %d waived location(s): %s"
-                            % (len(waived_hit), ", ".join(waived_hit))))
-            else:
-                note_disposition("rns_stray_env_drift", "clean")
-            return None
-
-        streak = _load_parity_streak(sp) + 1
-        _save_parity_streak(sp, streak)
-        if streak < debounce_ticks:
-            note_disposition("rns_stray_env_drift", "indeterminate",
-                             reason="incoherence candidate under debounce")
-            return None
-
-        parts = []
-        for p, locs in sorted(incoherent.items()):
-            loc_str = ", ".join(f"{k}={v}" for k, v in sorted(locs.items()))
-            parts.append(f"{p} at {len(set(locs.values()))} versions "
-                         f"({loc_str})")
-        detail = (
-            "rns/lxmf env incoherence — " + "; ".join(parts) + ". Every env "
-            "on a box must carry the identical RNS substrate (one shared "
-            "rnsd; RPC framing must match — a stray env costs 8s timeouts "
-            "or worse). Usual cause: a roll/install that missed a pipx venv "
-            "or user-site copy (the moc3 nomadnet-venv lesson, 2026-07-17). "
-            "Fix: reinstall the odd env(s) to the box's consumer version — "
-            "for pipx: pipx runpip <venv> install --force-reinstall "
-            "-r /opt/meshforge/requirements/rns.txt — then re-check."
-        )
-        return Signal(
-            cls="rns_stray_env_drift",
-            subject="+".join(sorted(incoherent)),
-            severity="degraded",
-            detail=detail,
-            extra={
-                "installs": {p: dict(sorted(locs.items()))
-                             for p, locs in sorted(incoherent.items())},
-                "streak": streak,
-            },
-        )
-    except Exception:
-        note_disposition("rns_stray_env_drift", "indeterminate",
-                         reason="probe raised unexpectedly")
-        return None
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1356,6 +1157,14 @@ def probe_mqtt_root_drift(
 # moved surface so `from utils.watchdog_probes_drift import <name>` keeps
 # working; the split is API-preserving.
 # ─────────────────────────────────────────────────────────────────────
+from utils.watchdog_probes_rns_env import (  # noqa: E402,F401 (back-compat re-export)
+    DEFAULT_RNS_STRAY_DEBOUNCE_PATH,
+    DEFAULT_RNS_STRAY_WAIVERS_PATH,
+    _LIB_STRAY_SITE_GLOBS,
+    _enumerate_lib_installs,
+    _load_stray_waivers,
+    probe_rns_env_coherence,
+)
 from utils.watchdog_probes_liveness import (  # noqa: E402,F401 (back-compat re-export)
     DEFAULT_CRON_VERDICT_DEBOUNCE_PATH,
     CRON_VERDICT_STALE_FLOOR_S,
