@@ -437,6 +437,72 @@ one heuristic accounts for the largest single block of rejected proposals.
 Suppress `new_subject` for subjects present in the fleet registry, and for the
 first N ticks after a rule is merged.
 
+### `new_subject` — FIXED 2026-08-09 (`fa7725fe`), and it was not a tuning problem
+
+The audit called this a noise source to filter. Reading the code found the
+premise underneath it was **false**, which is why no amount of filtering would
+have been enough.
+
+`detect_new_subject` inferred "first-ever sighting" from
+`fire_count == fire_count_24h`, and said so in its docstring: *"every fire ever
+recorded for this subject happened in the last 24h."* But `StateStore.prune_24h`
+**deletes** a rule-state key after `STALE_KEY_RETENTION_S` (7 days) of silence,
+and `get_or_init` rebuilds it at `fire_count = 0`. A subject known for months
+comes back **byte-identical to one never seen**. Retired read as absent —
+honest_failure_modes #2, one layer up from the code that has been finding this
+class all week, and exactly what the operator wrote on 2026-08-06: *"FALSE
+'first-ever sighting'. Subject `ntfy` is the long-lived alerting channel, live
+since 2026-06-18."*
+
+**Measured on this box's live ledger**: `new_subject` is **76 of 186 proposals,
+74 rejected** — the largest single block, 41% of everything mini ever proposed.
+
+**The fix is memory, not a filter.** `state["subjects_seen"]` stamps the first
+fire of each `(rule, subject)` and the prune never touches it. ONE home for the
+fact (a copy in the rule state would drift the moment prune ran, #5); ts-only,
+~60 bytes an entry, **53 distinct pairs in this box's entire recorded history**
+(~3 KB), capped at 4096 with an eviction counter — a memory that silently
+forgot is worse than one that says how much it forgot (#9).
+
+On top of that, the three suppressions, each with its measured share of the 76:
+
+| Leg | Share | Why it carries no information |
+|---|---|---|
+| already-known (the root fix) | 21 | the durable stamp says we have seen it for weeks |
+| rule birth (< 24 h since the rule's first sighting) | 27 | `detector_blind_any` merged 07-25 and minted **four** first-ever sightings on its first fire — one event, four identical rejections |
+| known fleet member | 20 | the registry says it is expected; also matches bare **addresses** via the `/etc/hosts` block the fleet already generates (read, not resolved — no network, no AAAA round trip) |
+| per-event identity `<host>@<boot_id>` | 6 | new by construction, forever; the reboot it stands for has its own signal kind |
+
+⚠️ **Fails open in three places.** An unreadable registry, an unknown self
+hostname, and an unreadable address map each make *fewer* names known, which
+means *more* proposals — never silence. Every emitted delta carries
+`fleet_registry_readable` so a reader can tell a real topology finding from a
+registry that could not be read. And with **no durable memory at all** (fresh
+or pre-upgrade state) the detector proposes **nothing**: *"I have no memory"*
+must not be spoken as *"everything is new."* It self-heals as rules fire.
+
+**Replayed against the real ledger: 74 of 76 suppressed by a positive reason.**
+Of the two survivors, one is **the only `new_subject` delta ever ratified** —
+the suppression keeps the yield and drops the noise — and the other is a
+non-fleet AREDN router, which is arguably the detector working. The ratified
+one is safe for a second reason: its finding was ratified on `unexpected_reboot`
+evidence, which is its own signal kind, so only the duplicate path goes.
+
+**Live drill, deployed code, isolated home** (`MINI_DUDEAI_HOME` pointed at a
+scratch dir so the real state was never touched — verified unchanged by mtime):
+one real tick, `rules=73 conds=4 fires=3`, and
+
+- 3 fires → **3 durable stamps written** (the wiring, at the consumer of record);
+- the detector run against that live state proposes **0**;
+- the v1 inference run against **the same state** proposes **3** — `meshforge-moc3`
+  (known member), `meshforge<->meshanchor` (a fixed pair subject) and
+  `local-brain`, which are precisely the three shapes the operator has been
+  rejecting by hand for two months.
+
+Six legs drilled by neutering each in turn; every one has a test that fails
+without it, including the root fix. Ported to MeshAnchor (`engine.py` +
+`state.py` are byte-locked twins, `dreams.py` was identical in practice).
+
 ---
 
 ## What I did NOT measure
