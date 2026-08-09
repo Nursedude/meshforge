@@ -416,6 +416,47 @@ rows, all host `VolcanoAI`. The rollup and its own source disagree by roughly
 half. UNKNOWN which is right — worth one look, since this ratio is quoted at
 every session start.
 
+### Both stats FIXED 2026-08-09 (`d2fc0c37`) — neither was a broken calculation
+
+Both were **true numbers wearing a wrong label**, which is why neither showed
+up as a bug: the arithmetic was right and the sentence was not.
+
+**1. `unspecified ×49` — measured, and the word was the whole defect.** Of 80
+rejected keys, 49 carry no structured `resolved_reason` — and **zero of those
+49 lack a written `resolved_note`**. Every rejection on this box had a stated
+reason; only the machine-readable field was missing, and the brief rendered
+that absence as negligence. They now bucket as **`note_only`**, with an inline
+line saying what it means, and `unspecified` is reserved for a rejection that
+recorded nothing at all — so the word is now earned when it appears, and it
+appears when it is earned.
+
+**2. The 17/97-vs-37/186 "discrepancy" was two correct measurements.**
+`proposal_track_record` collapses by delta **KEY** (latest status per finding);
+the file counts **ROWS** (every judgement ever made). Neither was wrong —
+they answer different questions: *how many distinct findings did I get right*
+vs *how many proposals did a human have to judge*. The brief now renders both,
+labelled, and names the gap for what it is: **38 keys re-proposed** after
+`DEFAULT_RESOLVE_SUPPRESS_S` expired and the condition still detected. Churn,
+not disagreement. The row line renders only when the two views differ.
+
+Live brief on the manager box after deploy — the consumer of record, not a
+fixture:
+
+    ## 🪞 dream-proposal track record — 17/97 distinct findings ratified
+    - Ratification ratio over distinct FINDINGS (one per delta key)…
+    - 37/186 PROPOSALS judged — 38 finding(s) re-proposed after their
+      suppression window expired. The gap is churn, not disagreement.
+    - rejected by reason: note_only ×49, known_benign ×13, noisy_detector ×8,
+      duplicate ×7, already_fixed ×2, not_actionable ×1
+      - `note_only` ×49 = reason WRITTEN in the delta's resolved_note, just
+        not in the structured field. Only `unspecified` means nothing was
+        recorded.
+
+Measured before and after against the real 186-row ledger, not fixtures. Three
+legs drilled (remove the `note_only` split, the row counts, or the brief's row
+line — a test goes red for each). Ported to MeshAnchor: `dreams.py` and
+`brief.py` are byte-locked twins.
+
 ---
 
 ## The noise ranking (yield's other half)
