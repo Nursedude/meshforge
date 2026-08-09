@@ -23,10 +23,19 @@ only by luck.
   (pure functions over an injected owner-lookup); only ``meshforge_data_roots()``
   is MeshForge-specific.
 
-## Topology
-``fleet`` (operator user + fleet parity) vs ``standalone`` (single box / single
-user — the degenerate case: one user owns everything, same ownership rules). Same
-spec, parameterized — standalone cannot drift from the fleet definition.
+## Topology — REMOVED 2026-08-09
+There was a ``fleet``/``standalone`` axis here. It never had a consumer: it was
+validated, held on the spec, printed by the CLI, and tested only for
+round-tripping — nothing ever branched on it. Its own docstring conceded the
+reason ("same spec, parameterized — standalone cannot drift from the fleet
+definition"), i.e. the two states were identical BY DESIGN.
+
+It was removed rather than persisted into deployment.json, which had been the
+plan: storing a value nothing reads would have made a second writer with no
+reader (honest_failure_modes #4) and put a false declaration on the install
+surface. The foundation applies one set of ownership rules to every box, which
+is what it always did. If a real standalone/fleet difference appears later, it
+should arrive WITH the code that consumes it.
 """
 
 from __future__ import annotations
@@ -43,7 +52,6 @@ from utils.paths import get_real_user_home, get_real_username
 
 logger = logging.getLogger(__name__)
 
-VALID_TOPOLOGIES = ("fleet", "standalone")
 CANONICAL_RNS_CONFIGDIR = Path("/etc/reticulum")
 
 
@@ -51,7 +59,6 @@ CANONICAL_RNS_CONFIGDIR = Path("/etc/reticulum")
 class FoundationSpec:
     """The canonical permission foundation for one box."""
     operator_user: str            # non-root user the services run as
-    topology: str                 # 'fleet' | 'standalone'
     data_roots: Tuple[Path, ...]  # app dirs that must be operator_user-owned
     rns_configdir: Path = CANONICAL_RNS_CONFIGDIR  # delegated to rns_tree_perms
 
@@ -84,16 +91,12 @@ def meshforge_data_roots(home: Optional[Path] = None) -> Tuple[Path, ...]:
 
 def canonical_foundation(
     operator_user: Optional[str] = None,
-    topology: str = "fleet",
     home: Optional[Path] = None,
 ) -> FoundationSpec:
     """Build the canonical foundation spec for this box."""
-    if topology not in VALID_TOPOLOGIES:
-        raise ValueError(f"unknown topology {topology!r} (want one of {VALID_TOPOLOGIES})")
     user = operator_user or get_real_username()
     return FoundationSpec(
         operator_user=user,
-        topology=topology,
         data_roots=meshforge_data_roots(home),
     )
 

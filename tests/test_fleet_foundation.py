@@ -1,7 +1,7 @@
 """Tests for utils/fleet_foundation.py — the permission-foundation SSOT.
 
 The audit/plan engine is pure (owner-lookup injected), so it's unit-tested with
-no real filesystem. Covers: spec construction + topology validation, data-root
+no real filesystem. Covers: spec construction, data-root
 drift detection (owned/root-owned/absent), idempotent plan, and the MeshForge
 data-root declaration.
 """
@@ -22,27 +22,31 @@ HOME = Path("/home/op")
 ROOTS = (HOME / ".config" / "meshforge", HOME / ".cache" / "meshforge")
 
 
-def _spec(user="op", topology="fleet", roots=ROOTS):
-    return FoundationSpec(operator_user=user, topology=topology, data_roots=roots)
+def _spec(user="op", roots=ROOTS):
+    return FoundationSpec(operator_user=user, data_roots=roots)
 
 
 # ---------- spec construction ----------
 
 
 class TestCanonicalFoundation:
-    def test_defaults_to_fleet_topology(self):
+    def test_spec_defaults(self):
         spec = canonical_foundation(operator_user="op", home=HOME)
-        assert spec.topology == "fleet"
         assert spec.operator_user == "op"
         assert spec.rns_configdir == Path("/etc/reticulum")
 
-    def test_standalone_topology_accepted(self):
-        spec = canonical_foundation(operator_user="op", topology="standalone", home=HOME)
-        assert spec.topology == "standalone"
+    def test_spec_carries_no_topology(self):
+        """2026-08-09 — the fleet/standalone axis was REMOVED, not persisted.
 
-    def test_unknown_topology_rejected(self):
-        with pytest.raises(ValueError):
-            canonical_foundation(operator_user="op", topology="galaxy", home=HOME)
+        It never had a consumer: validated, held on the spec, printed by the
+        CLI, tested only for round-tripping, and its own docstring conceded the
+        two states were identical by design. The plan had been to store it in
+        deployment.json; that would have made a second writer with no reader.
+        This pins that it stays gone — if a real difference appears, it should
+        arrive WITH the code that consumes it.
+        """
+        spec = canonical_foundation(operator_user="op", home=HOME)
+        assert not hasattr(spec, "topology")
 
     def test_data_roots_are_the_meshforge_dirs(self):
         spec = canonical_foundation(operator_user="op", home=HOME)
@@ -152,6 +156,8 @@ class TestCLIArgOrder:
         ns = _load_cli().build_parser().parse_args(["apply", "--user", "op", "--dry-run"])
         assert ns.dry_run is True
 
-    def test_audit_topology_after(self):
-        ns = _load_cli().build_parser().parse_args(["audit", "--topology", "standalone"])
-        assert ns.cmd == "audit" and ns.topology == "standalone"
+    def test_topology_flag_is_gone(self):
+        """The removed axis is removed from the operator surface too."""
+        parser = _load_cli().build_parser()
+        with pytest.raises(SystemExit):
+            parser.parse_args(["audit", "--topology", "standalone"])

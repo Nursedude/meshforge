@@ -9,7 +9,7 @@ in-app — never step outside the app to chase a perms drift.
     fleet_foundation.py audit                      # drift table; exit 1 if drift
     fleet_foundation.py apply --dry-run            # show actions, no changes
     fleet_foundation.py apply                      # converge THIS box (sudo)
-    # options go ON the subcommand: `apply --user U --topology fleet|standalone`
+    # options go ON the subcommand: `apply --user U`
 
 Read-only by default. ``apply`` requires explicit invocation (and sudo).
 """
@@ -34,13 +34,12 @@ from utils.fleet_foundation import (  # noqa: E402
 def _spec(args):
     return canonical_foundation(
         operator_user=args.user,
-        topology=args.topology,
     )
 
 
 def cmd_audit(args) -> int:
     spec = _spec(args)
-    print(f"Foundation audit @ user={spec.operator_user} topology={spec.topology}")
+    print(f"Foundation audit @ user={spec.operator_user}")
     drift = audit_foundation(spec)
     if not drift:
         print("  [OK] foundation is correct (data-roots + RNS tree)")
@@ -54,7 +53,7 @@ def cmd_audit(args) -> int:
 def cmd_apply(args) -> int:
     spec = _spec(args)
     mode = "DRY-RUN" if args.dry_run else "APPLY"
-    print(f"Foundation {mode} @ user={spec.operator_user} topology={spec.topology}")
+    print(f"Foundation {mode} @ user={spec.operator_user}")
     actions = apply_foundation(spec, dry_run=args.dry_run)
     if not actions:
         print("  nothing to do — already correct")
@@ -65,7 +64,7 @@ def cmd_apply(args) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # --user/--topology live on a parent parser added to EACH SUBCOMMAND (not the
+    # --user lives on a parent parser added to EACH SUBCOMMAND (not the
     # top level): the canonical form is `audit --user U` / `apply --user U`. Adding
     # them at both levels makes the subparser default (None) clobber a top-level
     # value, so options go on the subcommand only. (The original bug was the
@@ -74,7 +73,6 @@ def build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument('--user', default=None,
                         help="operator user (default: resolved real user)")
-    common.add_argument('--topology', default='fleet', choices=['fleet', 'standalone'])
 
     p = argparse.ArgumentParser(description="Audit/apply the permission foundation (SSOT)")
     sub = p.add_subparsers(dest='cmd', required=True)
