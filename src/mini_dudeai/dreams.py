@@ -657,14 +657,16 @@ _TRACK_RECORD_CACHE: dict = {}
 
 
 def proposal_track_record(deltas_path: str) -> dict:
-    """{proposed, ratified, rejected} over the latest status of every key —
+    """{proposed, ratified, rejected} over the latest status of every key,
+    PLUS {rows_ratified, rows_rejected, reproposed_keys} over the raw rows —
     the local tier's own precision mirror. The 2026-07-18 sweep measured
     0/164 proposals ratified over 7 weeks; mini itself had no idea. The
     brief renders this so the proposer sees its own track record, the same
     way the calibration ledger shows the session its broken VERIFIED
     claims. Missing/unreadable file = zeros (no data, and the brief omits
     the line — absence is absence). mtime-cached like count_pending_deltas."""
-    zeros = {"proposed": 0, "ratified": 0, "rejected": 0}
+    zeros = {"proposed": 0, "ratified": 0, "rejected": 0,
+             "rows_ratified": 0, "rows_rejected": 0, "reproposed_keys": 0}
     try:
         mtime_ns = os.stat(deltas_path).st_mtime_ns
     except OSError:
@@ -673,14 +675,30 @@ def proposal_track_record(deltas_path: str) -> dict:
     if hit and hit[0] == mtime_ns:
         return dict(hit[1])
     latest: dict = {}
+    seen_count: dict = {}
+    rec = dict(zeros)
     for d in _load_deltas(deltas_path):
         k = d.get("key")
-        if k:
-            latest[k] = d.get("status")
-    rec = dict(zeros)
+        if not k:
+            continue
+        latest[k] = d.get("status")
+        seen_count[k] = seen_count.get(k, 0) + 1
+        # ROW counts, alongside the key-collapsed ones. Both are true and they
+        # answer different questions: keys = "how many distinct FINDINGS did I
+        # get right", rows = "how many PROPOSALS did the operator have to
+        # judge". Reporting only the first made the brief's ratio disagree
+        # with its own source file by roughly half (17/97 vs 37/186), which
+        # read as a bug in a number quoted at every session start; it was two
+        # correct measurements wearing one label (2026-08-09).
+        if d.get("status") in ("ratified", "rejected"):
+            rec[f"rows_{d['status']}"] += 1
     for status in latest.values():
-        if status in rec:
+        if status in ("proposed", "ratified", "rejected"):
             rec[status] += 1
+    # The gap between the two is not noise — it is re-proposal churn: a key
+    # resurfaces once DEFAULT_RESOLVE_SUPPRESS_S expires and the condition
+    # still detects. Counting it makes the churn itself legible.
+    rec["reproposed_keys"] = sum(1 for n in seen_count.values() if n > 1)
     _TRACK_RECORD_CACHE[deltas_path] = (mtime_ns, rec)
     return dict(rec)
 
@@ -714,7 +732,18 @@ def rejection_reason_histogram(deltas_path: str) -> dict:
     for d in latest.values():
         if d.get("status") != "rejected":
             continue
-        reason = d.get("resolved_reason") or "unspecified"
+        reason = (d.get("resolved_reason") or "").strip()
+        if not reason:
+            # "unspecified" USED to cover both of these, and it read as
+            # "nobody thought about it". Measured 2026-08-09: of 80 rejected
+            # keys, 49 carried no structured reason — and ZERO of those 49
+            # lacked a written ``resolved_note``. Every rejection on this box
+            # had a stated reason; only the machine-readable field was
+            # missing, and the brief was rendering that absence as
+            # negligence. Split them, so `unspecified` means what it says and
+            # appears only when a rejection really recorded nothing.
+            reason = ("note_only" if (d.get("resolved_note") or "").strip()
+                      else "unspecified")
         hist[reason] = hist.get(reason, 0) + 1
     _REJECTION_HIST_CACHE[deltas_path] = (mtime_ns, hist)
     return dict(hist)

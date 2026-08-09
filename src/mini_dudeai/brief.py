@@ -198,14 +198,28 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     resolved = tr.get("ratified", 0) + tr.get("rejected", 0)
     if resolved:
         lines.append(f"\n## 🪞 dream-proposal track record — "
-                     f"{tr.get('ratified', 0)}/{resolved} ratified")
+                     f"{tr.get('ratified', 0)}/{resolved} distinct findings ratified")
         if tr.get("ratified", 0) == 0:
             lines.append("- Every reviewed proposal was judged not "
                          "memory-worthy. Be a skeptic of my next one — the "
                          "evidence bar for proposing should probably rise.")
         else:
-            lines.append("- Ratification ratio over all reviewed proposals; "
-                         "rejection notes in the deltas file say why.")
+            lines.append("- Ratification ratio over distinct FINDINGS (one per "
+                         "delta key); rejection notes in the deltas file say why.")
+        # The row view, when it differs. Two true numbers wearing one label is
+        # how the ratio came to look like it disagreed with its own source by
+        # half: keys answer "how many findings did I get right", rows answer
+        # "how many proposals did a human have to judge", and the gap between
+        # them IS the re-proposal churn (a key resurfaces once its suppression
+        # window expires and the condition still detects). Rendered only when
+        # the two differ — no churn, no line.
+        rows = tr.get("rows_ratified", 0) + tr.get("rows_rejected", 0)
+        if rows and rows != resolved:
+            lines.append(
+                f"- {tr.get('rows_ratified', 0)}/{rows} PROPOSALS judged — "
+                f"{tr.get('reproposed_keys', 0)} finding(s) re-proposed after "
+                f"their suppression window expired. The gap is churn, not "
+                f"disagreement.")
         # WHY proposals get rejected — turns "the loop is ignored" into a
         # retune target (e.g. one noisy detector dominating). Rendered only
         # when rejections carry recorded reasons; absence stays absence.
@@ -214,6 +228,14 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
             top = sorted(rr.items(), key=lambda kv: (-kv[1], kv[0]))
             breakdown = ", ".join(f"{reason} ×{n}" for reason, n in top)
             lines.append(f"- rejected by reason: {breakdown}")
+            # `note_only` = a written rejection note, no structured field. It
+            # is NOT "nobody said why" — printing those under `unspecified`
+            # made a fully-reasoned ledger read as a negligent one.
+            if rr.get("note_only"):
+                lines.append(
+                    f"  - `note_only` ×{rr['note_only']} = reason WRITTEN in the "
+                    f"delta's resolved_note, just not in the structured field. "
+                    f"Only `unspecified` means nothing was recorded.")
 
     # W1 — the local-tier triage witness. Two modes (both SUGGEST, never ratify):
     # "pre-score" = ran to orient the frontier pass that is about to consume it;

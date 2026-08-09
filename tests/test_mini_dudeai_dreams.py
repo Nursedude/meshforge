@@ -610,13 +610,18 @@ def test_track_record_counts_latest_status_per_key(tmp_path):
         {"key": "c", "status": "proposed"},
     )
     tr = proposal_track_record(str(dp))
-    assert tr == {"proposed": 1, "ratified": 1, "rejected": 1}
+    assert (tr["proposed"], tr["ratified"], tr["rejected"]) == (1, 1, 1)
+    # ROW counts ride alongside: key "a" was judged once, and both of its rows
+    # existed, so rows_rejected counts the row while rejected counts the key.
+    assert tr["rows_rejected"] == 1 and tr["rows_ratified"] == 1
+    assert tr["reproposed_keys"] == 1          # "a" appears twice
 
 
 def test_track_record_missing_file_is_all_zero(tmp_path):
     from mini_dudeai.dreams import proposal_track_record
     tr = proposal_track_record(str(tmp_path / "nope.jsonl"))
-    assert tr == {"proposed": 0, "ratified": 0, "rejected": 0}
+    assert tr == {"proposed": 0, "ratified": 0, "rejected": 0,
+                  "rows_ratified": 0, "rows_rejected": 0, "reproposed_keys": 0}
 
 
 # --- rejection-reason taxonomy (WS-C: make low ratification diagnosable) -------
@@ -676,3 +681,97 @@ def test_cli_resolve_reject_with_reason(tmp_path, capsys):
     assert rc == 0
     rows = [json.loads(l) for l in dp.read_text().splitlines() if l.strip()]
     assert rows[-1]["resolved_reason"] == "known_benign"
+
+
+class TestTrackRecordRowsVsKeys:
+    """2026-08-09: the brief's ratio looked like it disagreed with its own
+    source file by half — 17/97 rendered while the deltas file held 37
+    ratified + 149 rejected = 186 rows. Nothing was broken: keys answer "how
+    many distinct FINDINGS did I get right", rows answer "how many PROPOSALS
+    did a human have to judge", and both were correct under one label. The
+    gap between them is re-proposal churn — a key resurfaces once
+    DEFAULT_RESOLVE_SUPPRESS_S expires and the condition still detects.
+    """
+
+    def test_a_repeatedly_reproposed_key_counts_once_by_key_and_n_by_row(self, tmp_path):
+        from mini_dudeai.dreams import proposal_track_record
+        rows = []
+        for _ in range(5):                       # same finding, judged 5 times
+            rows.append({"key": "same", "status": "proposed"})
+            rows.append({"key": "same", "status": "rejected"})
+        rows.append({"key": "other", "status": "ratified"})
+        tr = proposal_track_record(str(_deltas_file(tmp_path, *rows)))
+        assert (tr["ratified"], tr["rejected"]) == (1, 1)        # findings
+        assert (tr["rows_ratified"], tr["rows_rejected"]) == (1, 5)  # proposals
+        assert tr["reproposed_keys"] == 1
+
+    def test_no_churn_means_the_two_views_agree(self, tmp_path):
+        from mini_dudeai.dreams import proposal_track_record
+        tr = proposal_track_record(str(_deltas_file(
+            tmp_path,
+            {"key": "a", "status": "rejected"},
+            {"key": "b", "status": "ratified"})))
+        assert tr["rejected"] == tr["rows_rejected"] == 1
+        assert tr["ratified"] == tr["rows_ratified"] == 1
+        assert tr["reproposed_keys"] == 0
+
+    def test_brief_renders_the_row_view_only_when_it_differs(self, tmp_path):
+        from mini_dudeai.brief import build_brief
+        churn = {"proposed": 0, "ratified": 1, "rejected": 1,
+                 "rows_ratified": 1, "rows_rejected": 5, "reproposed_keys": 1}
+        txt = build_brief({}, [], NOW, delta_track_record=churn)
+        assert "distinct findings ratified" in txt
+        assert "1/6 PROPOSALS judged" in txt and "churn, not disagreement" in txt
+
+        quiet = {"proposed": 0, "ratified": 1, "rejected": 1,
+                 "rows_ratified": 1, "rows_rejected": 1, "reproposed_keys": 0}
+        txt2 = build_brief({}, [], NOW, delta_track_record=quiet)
+        assert "PROPOSALS judged" not in txt2      # no churn, no second line
+
+
+class TestRejectionReasonNoteOnly:
+    """`unspecified` used to mean two different things, and the brief printed
+    the merged number as if it meant the worse one. Measured on the live
+    ledger: 49 rejected keys carried no structured reason and ZERO of those
+    lacked a written note — every rejection had a stated reason; only the
+    machine-readable field was missing.
+    """
+
+    def test_a_written_note_is_note_only_not_unspecified(self, tmp_path):
+        from mini_dudeai.dreams import rejection_reason_histogram
+        h = rejection_reason_histogram(str(_deltas_file(
+            tmp_path,
+            {"key": "a", "status": "rejected",
+             "resolved_note": "verified live: expected fleet member"})))
+        assert h == {"note_only": 1}
+
+    def test_nothing_recorded_at_all_is_still_unspecified(self, tmp_path):
+        """The word keeps its meaning — and now it means it."""
+        from mini_dudeai.dreams import rejection_reason_histogram
+        h = rejection_reason_histogram(str(_deltas_file(
+            tmp_path, {"key": "a", "status": "rejected"})))
+        assert h == {"unspecified": 1}
+
+    def test_whitespace_note_is_not_a_reason(self, tmp_path):
+        from mini_dudeai.dreams import rejection_reason_histogram
+        h = rejection_reason_histogram(str(_deltas_file(
+            tmp_path, {"key": "a", "status": "rejected",
+                       "resolved_note": "   ", "resolved_reason": "  "})))
+        assert h == {"unspecified": 1}
+
+    def test_structured_reason_still_wins(self, tmp_path):
+        from mini_dudeai.dreams import rejection_reason_histogram
+        h = rejection_reason_histogram(str(_deltas_file(
+            tmp_path, {"key": "a", "status": "rejected",
+                       "resolved_reason": "known_benign",
+                       "resolved_note": "also has a note"})))
+        assert h == {"known_benign": 1}
+
+    def test_brief_explains_note_only_inline(self, tmp_path):
+        from mini_dudeai.brief import build_brief
+        txt = build_brief({}, [], NOW,
+                          delta_track_record={"proposed": 0, "ratified": 1,
+                                              "rejected": 3},
+                          rejection_reasons={"note_only": 3})
+        assert "note_only" in txt
+        assert "WRITTEN in the delta's resolved_note" in txt
