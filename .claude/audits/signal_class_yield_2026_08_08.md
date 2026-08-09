@@ -763,8 +763,38 @@ holding: *only a declaration separates by-design from died-quietly — the
 artifact can't, both look like silence.* The right home for that declaration is
 `docs/fleet_roles.yaml` + `probe_role_drift`, which already owns
 declared-vs-live divergence; `fleet_roles.yaml` tracks no user timers today.
-**Follow-up, not built here** (footprint discipline — this is a new declaration
-surface, not a probe tweak).
+
+**CLOSED same day** (`1b8fbd19`, `cb800c97`, `d1388afe`, `723d31ba`; ported to
+MeshAnchor `ab102403`). `user_timers:` per role, declared from a fleet survey,
+with `role_drift` reading live enrollment. **Declare-and-observe only** — the
+plan emits `noop`/`warn`, never `enable`/`disable`, so `--apply` gains no power
+over user units (the 07-24 hazard); convergence stays a human decision. I had
+named `role_drift` as the home before checking, and half of that was wrong:
+`plan()`'s observe layer is system-scope (#82), so the declaration + a required
+warn is the safe half and teaching `--apply` to enable user timers was the
+dangerous half.
+
+⚠️ Two defects surfaced while building it, both mine, both fixed:
+- **A user timer is enabled under ANY `*.target.wants`**, not just
+  `timers.target.wants`. `meshanchor-map-restart.timer` declares
+  `WantedBy=timers.target` but is linked from `default.target.wants` — enabled
+  and firing for months. The single-directory reader called a live timer
+  disabled; one declaration later that is FALSE drift. Found by cross-checking
+  against `systemctl --user is-enabled` on a real box, **not** by the 13 unit
+  tests, every one of which built its fixture in the one directory and so tested
+  my model of systemd against itself. This also means
+  `probe_user_timer_unit_failing` had never judged such a timer at all — the
+  2026-07-19 kiai hole, one directory over. Now pinned AT THE PROBE, because
+  helper-level tests would keep passing if the probe were rewired narrower.
+- **A global path broke hermeticity**: the reader briefly consulted
+  `/etc/systemd/user/timers.target.wants`, which no fleet box has and CI's
+  runner does, so a test pinning a temp `user_home` went red on CI while passing
+  everywhere I looked. A function parameterised by `user_home` must be
+  *determined* by it.
+
+`src/utils/user_units.py` is now byte-locked in `parity_check` (drilled: a
+one-line edit → DRIFT, rc=1), because three call sites were about to grow three
+implementations.
 
 **No parity twin.** MeshAnchor has no synth-soak probe (`grep synth_soak
 /opt/meshanchor/src/` → empty), and `parity_check.py` does not track this file.
