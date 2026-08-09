@@ -41,6 +41,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
 
+
+def _doc_files() -> list:
+    """Every file that may CITE a volatile count — the README plus the docs it
+    was split into (2026-08-09).
+
+    A checker must follow its subject. When the README was split, all five
+    sentinels moved into ``docs/`` while this script still read only
+    ``README.md`` — so ``--check`` reported "no sentinels (nothing to check)"
+    and exited 0. No count had drifted yet; the point is that it could have,
+    silently and forever. A guard that passes by having nothing to look at is
+    the inert-guard class.
+    """
+    files = [README] if README.is_file() else []
+    d = ROOT / "docs"
+    if d.is_dir():
+        files += sorted(f for f in d.glob("*.md") if SENTINEL_RE.search(
+            f.read_text(encoding="utf-8", errors="ignore")))
+    return files
+
 SENTINEL_RE = re.compile(r"<!--STAT:(\w+)-->(.*?)<!--/STAT-->", re.DOTALL)
 
 
@@ -76,16 +95,21 @@ def _norm(text: str) -> int | None:
 def check() -> int:
     """Return 0 (all sentinels match), 1 (a sentinel drifted), 2 (a value could
     not be computed — unobservable is never treated as a pass)."""
-    if not README.is_file():
-        print(f"readme_stats: {README} not found", file=sys.stderr)
+    files = _doc_files()
+    if not files:
+        print("readme_stats: no README.md and no docs/*.md to check",
+              file=sys.stderr)
         return 2
-    text = README.read_text(encoding="utf-8")
-    found = SENTINEL_RE.findall(text)
+    found = []
+    for f in files:
+        for key, inner in SENTINEL_RE.findall(f.read_text(encoding="utf-8")):
+            found.append((key, inner, f))
     if not found:
-        print("readme_stats: no <!--STAT:*--> sentinels in README (nothing to check)")
+        print("readme_stats: no <!--STAT:*--> sentinels found in "
+              f"{len(files)} doc file(s) (nothing to check)")
         return 0
     rc = 0
-    for key, inner in found:
+    for key, inner, src in found:
         computer = COMPUTERS.get(key)
         if computer is None:
             print(f"  UNKNOWN  {key}: no computer registered for this sentinel")
@@ -100,17 +124,18 @@ def check() -> int:
         if stated == actual:
             print(f"  ok       {key}: {actual}")
         else:
-            print(f"  DRIFT    {key}: README says {inner!r}, tree has {actual} "
-                  f"— run `python3 scripts/readme_stats.py --update`")
+            print(f"  DRIFT    {key}: {src.name} says {inner!r}, tree has "
+                  f"{actual} — run `python3 scripts/readme_stats.py --update`")
             rc = max(rc, 1)
     return rc
 
 
 def update() -> int:
-    if not README.is_file():
-        print(f"readme_stats: {README} not found", file=sys.stderr)
+    files = _doc_files()
+    if not files:
+        print("readme_stats: no README.md and no docs/*.md to update",
+              file=sys.stderr)
         return 2
-    text = README.read_text(encoding="utf-8")
     changed = []
 
     def repl(m: re.Match) -> str:
@@ -125,9 +150,11 @@ def update() -> int:
             changed.append((key, inner, actual))
         return f"<!--STAT:{key}-->{actual}<!--/STAT-->"
 
-    new = SENTINEL_RE.sub(repl, text)
-    if new != text:
-        README.write_text(new, encoding="utf-8")
+    for f in files:
+        text = f.read_text(encoding="utf-8")
+        new = SENTINEL_RE.sub(repl, text)
+        if new != text:
+            f.write_text(new, encoding="utf-8")
     for key, old, actual in changed:
         print(f"  updated  {key}: {old!r} -> {actual}")
     if not changed:
