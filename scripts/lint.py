@@ -1465,6 +1465,18 @@ def check_probe_fail_dark(files: List[str],
     parse is skipped here (the syntax error fails the commit elsewhere).
     Compiled from prose (the checklist) into a gate per the doctrine's own
     rule 1: gated classes stop recurring, prose rules do not.
+
+    Sanctioned indirection (2026-08-09): a handler may satisfy the witness by
+    calling a same-module ``_note_*`` CLASSIFIER whose own body calls
+    ``note_disposition`` — the shape ``_note_dups_rollup_not_ok`` /
+    ``_note_dups_rollup_unreachable`` already use, where two probes must reach
+    the SAME verdict from the same evidence. Requiring the literal call inside
+    each handler would force that logic to be copy-pasted per probe, which is
+    the two-consumers-two-copies drift (honest_failure_modes #5) that produced
+    the moc3 blindness in the first place. The widening is deliberately narrow:
+    the callee must be defined in THIS file, be named ``_note_*``, and itself
+    contain a ``note_disposition`` call — an unresolved or silent helper still
+    fails.
     """
     issues: List[LintIssue] = []
     for path in files:
@@ -1476,6 +1488,15 @@ def check_probe_fail_dark(files: List[str],
                 tree = ast.parse(fh.read())
         except (OSError, SyntaxError):
             continue
+        # Same-module _note_* helpers that provably leave a witness.
+        witness_helpers = {
+            f.name for f in ast.walk(tree)
+            if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and f.name.startswith('_note_')
+            and any(getattr(c.func, 'id', getattr(c.func, 'attr', ''))
+                    == 'note_disposition'
+                    for c in ast.walk(f) if isinstance(c, ast.Call))
+        }
         for fn in ast.walk(tree):
             if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and fn.name.startswith('probe_')):
@@ -1495,7 +1516,7 @@ def check_probe_fail_dark(files: List[str],
                     getattr(c.func, 'id', getattr(c.func, 'attr', ''))
                     for c in ast.walk(node) if isinstance(c, ast.Call)
                 }
-                if 'note_disposition' not in called:
+                if not (called & ({'note_disposition'} | witness_helpers)):
                     issues.append(LintIssue(
                         path, node.lineno, Severity.ERROR, 'MF027',
                         f"{fn.name}: except-handler returns None with no "

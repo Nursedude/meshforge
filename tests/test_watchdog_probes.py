@@ -7684,6 +7684,92 @@ class TestDupsRollupUnavailableIsInertNotBlind:
         assert got["disp"] == "indeterminate"
 
 
+class TestDupsUnreachableRoleIsEvidenceNotInference:
+    """2026-08-09 — the branch the 2026-07-28 fix did not reach.
+
+    That fix taught the PAYLOAD path to read this box's role from the
+    collector-cron declaration. It cured every box that ANSWERS on :5000 —
+    which is every box that runs a map. The TRANSPORT path one branch above
+    it kept the collapsed reason, so the one shape that never answers stayed
+    permanently blind:
+
+        moc3 is role gateway-only with meshforge-map disabled BY DESIGN.
+        No map → urlopen raises → "dups rollup unreachable — manager-map
+        down or not the manager box" → `indeterminate` for 13.5 days, on a
+        box that could never observe a cross-gateway dup at all.
+
+    Measured 2026-08-09, the three-way contrast that localizes it: the
+    manager box (collector wired) `clean`; a non-manager that RUNS a map
+    (200 + unavailable) correctly `inert`; moc3 (not wired, NO map)
+    `indeterminate`. Same declaration, same verdict owed — different code
+    path.
+
+    A map listening is a PROXY that merely correlates with manager-ness
+    (2026-08-09 synth_soak lesson). The cron is the declaration.
+    """
+
+    def _dup(self, wired, tmp_path):
+        from urllib.error import URLError
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   side_effect=URLError("Connection refused")), \
+             patch("utils.watchdog_probes_gateway._dups_collector_wired_here",
+                   return_value=wired):
+            sig = probe_gateway_dup_degraded(
+                debounce_path=str(tmp_path / "d.json"))
+        assert sig is None
+        return collect()["gateway_dup_degraded"]
+
+    def _dual_homed(self, wired, tmp_path):
+        from urllib.error import URLError
+        from utils.watchdog_probes_gateway import (
+            probe_gateway_dual_homed_exposure,
+        )
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   side_effect=URLError("Connection refused")), \
+             patch("utils.watchdog_probes_gateway._dups_collector_wired_here",
+                   return_value=wired):
+            sig = probe_gateway_dual_homed_exposure(
+                state_path=str(tmp_path / "dh.json"))
+        assert sig is None
+        return collect()["gateway_dual_homed_exposure"]
+
+    # ── THE moc3 regression: no map at all, and not the manager ─────────
+    def test_no_map_off_the_manager_is_inert_not_indeterminate(self, tmp_path):
+        got = self._dup(False, tmp_path)
+        assert got["disp"] == "inert"
+
+    def test_no_map_reason_does_not_blame_a_down_manager_map(self, tmp_path):
+        """The old string named a culprit it could not see — moc3's manager
+        map was never down; moc3 simply serves no map. Distrusting that text
+        is the standing tell, so the fixed text must not repeat it."""
+        got = self._dup(False, tmp_path)
+        assert "manager-map down" not in got["reason"]
+        assert "by design" in got["reason"]
+
+    # ── on the manager, unreachable is STILL a real coverage loss ───────
+    def test_wired_here_unreachable_stays_indeterminate(self, tmp_path):
+        """The guard against over-correcting: silencing this everywhere would
+        hide the one failure that matters — the manager's map being down."""
+        got = self._dup(True, tmp_path)
+        assert got["disp"] == "indeterminate"
+        assert "unreachable" in got["reason"]
+
+    def test_unreadable_crontab_is_indeterminate_never_inert(self, tmp_path):
+        got = self._dup(None, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+    # ── the sibling probe shares the classifier, so it shares the fix ───
+    def test_dual_homed_no_map_off_manager_is_inert(self, tmp_path):
+        got = self._dual_homed(False, tmp_path)
+        assert got["disp"] == "inert"
+
+    def test_dual_homed_wired_here_stays_indeterminate(self, tmp_path):
+        got = self._dual_homed(True, tmp_path)
+        assert got["disp"] == "indeterminate"
+
+
 class TestDupsUnavailableRoleIsEvidenceNotInference:
     """2026-07-28 review — ``unavailable`` -> ``inert`` inferred this box's
     ROLE from the ABSENCE of the very artifact the probe audits.

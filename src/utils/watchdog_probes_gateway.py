@@ -729,6 +729,57 @@ def _dups_collector_wired_here() -> Optional[bool]:
     return operator_cron_wired(_DUPS_COLLECTOR_TOKEN)
 
 
+def _note_dups_rollup_unreachable(cls: str, *, suffix: str = "") -> None:
+    """Classify an UNREACHABLE ``/fleet/dups`` endpoint honestly (2026-08-09).
+
+    Sibling of ``_note_dups_rollup_not_ok`` — and the branch that fix forgot.
+    2026-07-28 taught the *payload* path to read the box's role from the
+    declaration instead of inferring it from the missing artifact, which cured
+    every box that ANSWERS on :5000. It left the transport path above it
+    collapsing the same two opposite states, so the one box shape that never
+    answers at all kept the old confidently-false reason:
+
+        moc3 is role gateway-only with meshforge-map disabled BY DESIGN
+        (the 07-24 deploy incident proved starting it there is itself a
+        defect). No map → urlopen raises → "manager-map down or not the
+        manager box" → permanent `indeterminate`. 13.5 days, on a box that
+        can never observe a cross-gateway dup in the first place.
+
+    The declaration answers this without the endpoint: the manager is the box
+    that runs the collector cron. Whether a map happens to be listening is a
+    PROXY that merely correlates — on moc3 it is absent by design, on the
+    manager it being down is a real coverage loss. Only the cron says which.
+
+      - collector NOT wired here → non-manager: ``inert``. It could never see
+        a cross-gateway dup, with or without a map.
+      - collector IS wired here → this IS the manager and its endpoint is
+        unreachable: ``indeterminate``, real fleet-wide coverage loss.
+      - crontab unreadable → indistinguishable: ``indeterminate``
+        (honest_failure_modes #2 — "I could not look" is not "it is not here").
+    """
+    wired = _dups_collector_wired_here()
+    if wired is True:
+        note_disposition(
+            cls, "indeterminate",
+            reason="the dup collector cron IS wired on this box but its "
+                   "/fleet/dups endpoint is unreachable — the manager's map "
+                   "is down, so cross-gateway dups are unobservable "
+                   "fleet-wide" + suffix)
+        return
+    if wired is None:
+        note_disposition(
+            cls, "indeterminate",
+            reason="/fleet/dups unreachable and the crontab is unreadable — "
+                   "cannot tell a box that never serves it from a manager "
+                   "whose map died" + suffix)
+        return
+    note_disposition(
+        cls, "inert",
+        reason="no /fleet/dups endpoint here and the collector cron is not "
+               "wired on this box — expected off the manager (a box may serve "
+               "no map at all by design)")
+
+
 def _note_dups_rollup_not_ok(cls: str, payload: dict, *,
                              suffix: str = "") -> None:
     """Classify a non-``ok`` ``/fleet/dups`` status honestly (2026-07-28).
@@ -835,8 +886,14 @@ def probe_gateway_dup_degraded(
     (delivery still happened). Honest self-guards (honest_failure_modes #2 —
     absence of evidence is NOT evidence of absence; the whole point of the 4c
     JOIN's indeterminate gate):
-      - endpoint unreachable / non-dict / shape error → None (other probes own
-        transport; the streak is HELD, not reset — unobservable ≠ healthy)
+      - endpoint unreachable → None, HOLD; the DECLARATION (collector cron)
+        decides the disposition, not the missing endpoint: off the manager
+        ``inert`` (a gateway-only box serves no map BY DESIGN — moc3), on the
+        manager ``indeterminate`` (its map is down = real coverage loss),
+        crontab unreadable ``indeterminate``. See
+        ``_note_dups_rollup_unreachable`` (2026-08-09)
+      - non-dict / shape error → None (other probes own transport; the streak
+        is HELD, not reset — unobservable ≠ healthy)
       - ``status == "unavailable"`` (no rollup file — every box runs a map, so
         a NON-manager answers 200 with this, it is not a transport error) →
         None, HOLD, disposition ``inert``: structurally unobservable here, and
@@ -871,10 +928,9 @@ def probe_gateway_dup_degraded(
     except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
         # G1 (2026-07-18): on the manager box (the only observable one) a
         # crashed map / 5xx lands here too — "unobservable ≠ clean / HOLD"
-        # means this cannot read as benign inert.
-        note_disposition("gateway_dup_degraded", "indeterminate",
-                         reason="dups rollup unreachable — manager-map down "
-                                "or not the manager box")
+        # means this cannot read as benign inert. Off the manager it is the
+        # opposite claim, so the DECLARATION decides (2026-08-09).
+        _note_dups_rollup_unreachable("gateway_dup_degraded")
         return None  # transport — HOLD streak (unobservable ≠ clean)
     if not isinstance(payload, dict):
         note_disposition("gateway_dup_degraded", "indeterminate",
@@ -1061,8 +1117,10 @@ def probe_gateway_dual_homed_exposure(
     cross-gateway duplicate, so this is the leading indicator for a residual
     the fleet has deliberately accepted rather than coordinated away.
 
-    Self-guards None: rollup unreachable/not-a-dict (indeterminate — HOLD,
-    this box may not be the manager), ``status == unavailable`` (no rollup
+    Self-guards None: rollup unreachable (the collector-cron DECLARATION
+    decides — ``inert`` off the manager even when no map runs here at all,
+    ``indeterminate`` on it; 2026-08-09), not-a-dict (indeterminate — HOLD),
+    ``status == unavailable`` (no rollup
     here at all — a non-manager box, so ``inert``, not blind), ``status``
     otherwise != ok (<2 gateways: you cannot observe dual-homing with one
     vantage — indeterminate, carrying the JOIN's own reason), stale rollup, the field
@@ -1082,9 +1140,9 @@ def probe_gateway_dual_homed_exposure(
                 payload = json.loads(resp.read())
         except (URLError, socket.timeout, json.JSONDecodeError, OSError,
                 ValueError):
-            note_disposition("gateway_dual_homed_exposure", "indeterminate",
-                             reason="dups rollup unreachable — manager-map "
-                                    "down or not the manager box")
+            _note_dups_rollup_unreachable(
+                "gateway_dual_homed_exposure",
+                suffix=" — dual-homing needs two vantages to observe")
             return None
     if not isinstance(payload, dict):
         note_disposition("gateway_dual_homed_exposure", "indeterminate",

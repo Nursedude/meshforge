@@ -67,6 +67,68 @@ def _load_example_state(path):
 '''
 
 
+# ── the 2026-08-09 sanctioned-indirection widening ──────────────────────
+# Two probes must reach the SAME verdict from the same evidence, so the
+# classifier is shared. Demanding the literal call inside each handler would
+# force a copy per probe — the two-consumers-two-copies drift that produced
+# the moc3 blindness this widening was cut for.
+
+WITNESS_HELPER = '''\
+def _note_example_unreachable(cls):
+    if wired():
+        note_disposition(cls, "indeterminate", reason="manager is down")
+        return
+    note_disposition(cls, "inert", reason="absent by design")
+
+
+def probe_example_via_helper(x=None):
+    try:
+        observe(x)
+    except OSError:
+        _note_example_unreachable("example")
+        return None
+    return None
+'''
+
+SILENT_HELPER = '''\
+def _note_example_silent(cls):
+    log("something went wrong")
+
+
+def probe_example_via_silent_helper(x=None):
+    try:
+        observe(x)
+    except OSError:
+        _note_example_silent("example")
+        return None
+    return None
+'''
+
+FOREIGN_HELPER = '''\
+def probe_example_via_foreign(x=None):
+    try:
+        observe(x)
+    except OSError:
+        _note_from_another_module("example")
+        return None
+    return None
+'''
+
+NON_NOTE_HELPER = '''\
+def _classify_example(cls):
+    note_disposition(cls, "inert", reason="absent by design")
+
+
+def probe_example_via_misnamed(x=None):
+    try:
+        observe(x)
+    except OSError:
+        _classify_example("example")
+        return None
+    return None
+'''
+
+
 def _issues(tmp_path, source, name="watchdog_probes_fixture.py"):
     p = tmp_path / name
     p.write_text(source, encoding="utf-8")
@@ -98,6 +160,31 @@ def test_helpers_are_exempt(tmp_path):
     """Non-probe_* functions own their own contracts (documented state
     loaders deliberately return defaults)."""
     assert _issues(tmp_path, HELPER_EXEMPT) == []
+
+
+def test_same_module_note_helper_satisfies_the_witness(tmp_path):
+    """A shared classifier that provably notes a disposition IS a witness."""
+    assert _issues(tmp_path, WITNESS_HELPER) == []
+
+
+def test_silent_note_helper_still_fails(tmp_path):
+    """The widening must not become a bypass: a helper NAMED _note_* that
+    never notes anything leaves the handler exactly as dark as before."""
+    got = _issues(tmp_path, SILENT_HELPER)
+    assert len(got) == 1
+    assert got[0].code == "MF027"
+
+
+def test_helper_from_another_module_is_not_trusted(tmp_path):
+    """Unresolvable here — the lint cannot prove it leaves a witness, so it
+    does not get the benefit of the doubt."""
+    assert len(_issues(tmp_path, FOREIGN_HELPER)) == 1
+
+
+def test_only_note_prefixed_helpers_are_trusted(tmp_path):
+    """Deliberately narrow: the _note_* name is the opt-in marker, so an
+    arbitrary same-module call cannot silently satisfy the gate."""
+    assert len(_issues(tmp_path, NON_NOTE_HELPER)) == 1
 
 
 def test_only_watchdog_probe_files_are_scanned(tmp_path):
