@@ -684,3 +684,88 @@ read `inert`. Prediction held 8/8.
 
 **UNKNOWN**: per-probe CPU cost (see above). The 4m47s figure is for the soak
 *drill*, measured from systemd's own accounting on moc3 — not for a probe.
+
+---
+
+## RESOLVED — `synth_soak_degraded` on meshanchor-server (2026-08-09)
+
+The handoff above named four first moves. All four ran; the answer overturns
+the handoff's own "likeliest read".
+
+**The handoff's boring read was wrong.** It concluded *"the exerciser genuinely
+stopped on that box on 2026-05-23"*. It never started. Observed on the box:
+
+| Evidence | Reading |
+|---|---|
+| `systemctl --user status meshforge-synth-soak.timer` → **`Unit could not be found`** | there is no timer, and never was |
+| `~/.config/systemd/user/` holds `meshforge-synth-soak.service` **only** (`static`, no `[Install]`) | the service can't self-enable; only a timer or a hand-run fires it |
+| `timers.target.wants/` on the box: **4 timers, none of them synth-soak** | not enrolled |
+| the 7 artifacts: `02:12, 02:14, 02:16, 02:26, 05:36, 06:53` (May 16) then `04:01` (May 23) | irregular — **hand-fired lab runs**, not an `OnCalendar=*:07:00` cadence |
+| the first one: `exit=1 (size=0)`, `ModuleNotFoundError: No module named 'lab'` | someone iterating at a terminal, not a scheduled organ |
+| `moc` for contrast: symlink present since **May 12**, timer `active (waiting)`, fires at `:07` | this is what enrolled looks like |
+
+So the probe spent 78 days telling the operator to *"Check
+meshforge-synth-soak.timer (systemd --user) + its fire log"* — a unit that has
+never existed on that box. Third instance of
+[[feedback_detector_blind_is_a_finding]]'s sharpest tell: **distrust a
+long-blind probe's explanatory text; it named a culprit it could not see.**
+
+**Handoff move 3 answered — the sibling's silence was CORRECT, not a gap.**
+`probe_user_timer_unit_failing` enumerates `timers.target.wants/` and judges
+what it finds there. synth-soak is not there, so it had nothing to judge. No
+fix needed on that side.
+
+**Root cause, in the class's own vocabulary.** The `inert` leg tested *"is the
+state dir absent"* — a **proxy** for *"does this box run the soak"*. A box that
+hand-ran the exerciser once fails that proxy forever. And the staleness bar is
+derived from the timer's cadence (`_SYNTH_SOAK_STALE_AFTER_S` = 2.5 ×
+`OnCalendar=*:07:00`), so where no timer is enrolled the number has no
+referent — the probe was measuring lateness against a schedule that does not
+exist.
+
+**The fix** (`watchdog_probes_gateway_flow.py`): the DARK leg now asks the
+*declaration* — the enable-symlink in `timers.target.wants/`, the same artifact
+the sibling probe already reads, and root-readable without touching the user
+bus (#82). Tri-state, per honest_failure_modes #1: enrolled → judge staleness
+exactly as before; **not** enrolled → `inert`, naming the leftovers; wants-dir
+**unreadable** → `indeterminate`, never "not scheduled". The ENVELOPE leg is
+deliberately **not** gated — a fresh failing envelope is a real delivery
+failure however it was produced. This does **not** widen the artifact test to
+swallow a stale-but-present dir: a box with the timer still fires on silence.
+
+**A second finding, from writing the tests.** `test_synth_soak_silence_fires_
+after_debounce` — the only cover the DARK leg had — was reading the **real
+wants-dir of whatever box ran the suite**. It passed on `moc` (timer enrolled)
+and would have failed anywhere else the moment the gate landed. Pure
+[[feedback_tests_must_pin_ambient_state]]; it now supplies its own wants-dir.
+
+**Guard drilled, not read** ([[feedback_a_guard_that_never_failed_is_not_evidence]]):
+removing the `enrolled is False` branch makes
+`test_dark_is_inert_when_the_timer_is_NOT_enrolled` fail with the *production
+signal reproduced exactly* — `age_s: 6740000.0`, `newest:
+synth-20260523T040140Z.json`.
+
+**The decision (handoff move 4): do NOT install the timer on meshanchor-server.**
+There is no organ to "restore" — installing one would be *adding* an organ to a
+box that never had it, which is the 2026-07-24 deploy incident in the costume
+the handoff warned about. moc runs the LXMF round-trip soak; that is the
+gateway, which is where the exerciser belongs. The May artifacts are lab
+leftovers and are left in place (harmless: if the timer is ever enabled there,
+a stale newest correctly fires DARK on the next tick). **Operator override
+welcome** — if the soak is wanted on MA, enabling the timer makes the probe
+correct under this fix too.
+
+**Known coverage trade, stated rather than hidden.** "Never enrolled" and "was
+enrolled, then disabled" are the same observation from the filesystem, so
+gating on enrollment means a *deliberately disabled* timer on moc would now
+read `inert` instead of firing DARK. That is the persistent_issues rule
+holding: *only a declaration separates by-design from died-quietly — the
+artifact can't, both look like silence.* The right home for that declaration is
+`docs/fleet_roles.yaml` + `probe_role_drift`, which already owns
+declared-vs-live divergence; `fleet_roles.yaml` tracks no user timers today.
+**Follow-up, not built here** (footprint discipline — this is a new declaration
+surface, not a probe tweak).
+
+**No parity twin.** MeshAnchor has no synth-soak probe (`grep synth_soak
+/opt/meshanchor/src/` → empty), and `parity_check.py` does not track this file.
+Nothing to port.

@@ -483,7 +483,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "MF synth-soak watch (2026-06-15): the hourly LXMF round-trip exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope (pass_envelope=false) or went DARK (no fresh result in ~2.5 cadences). The synth canary was previously unwatched \u2014 the fire script always exits 0 and nothing consumed pass_envelope. Check meshforge-synth-soak.timer (systemd --user) + ~/.local/state/meshforge/synth_soak/fire.log; for an envelope fail, the detail carries the worst pair \u2014 also check /api/gateway/delivery drop_reasons. Self-guards INERT on boxes that don't run the soak."
+      "annotation": "MF synth-soak watch (2026-06-15): the hourly LXMF round-trip exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope (pass_envelope=false) or went DARK (no fresh result in ~2.5 cadences). The synth canary was previously unwatched \u2014 the fire script always exits 0 and nothing consumed pass_envelope. Check meshforge-synth-soak.timer (systemd --user) + ~/.local/state/meshforge/synth_soak/fire.log; for an envelope fail, the detail carries the worst pair \u2014 also check /api/gateway/delivery drop_reasons. Self-guards INERT on boxes that don't run the soak — judged since 2026-08-09 by whether meshforge-synth-soak.timer is ENABLED here (the enable-symlink in timers.target.wants), not by whether the state dir exists. The DARK bar is derived from the timer's own cadence, so it means nothing without a timer: meshanchor-server read degraded for 78 days over seven hand-fired May lab runs, blaming a timer that box has never had. A wants-dir it cannot read is indeterminate, never 'not scheduled'."
     },
     {
       "id": "propagation_soak_degraded_any",

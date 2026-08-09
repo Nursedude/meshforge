@@ -56,6 +56,22 @@ _SYNTH_SOAK_CADENCE_S = 3600.0
 _SYNTH_SOAK_STALE_AFTER_S = 9000.0
 
 
+def _resolve_operator_home() -> Optional[str]:
+    """The operator's home dir, root-context safe. None when unresolvable."""
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:
+        op = None
+    if not op:
+        return None
+    try:
+        import pwd
+        return pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError):
+        return None
+
+
 def _resolve_operator_state_dir(leaf: str) -> Optional[str]:
     """``~<operator>/.local/state/meshforge/<leaf>``, root-context safe.
 
@@ -66,19 +82,58 @@ def _resolve_operator_state_dir(leaf: str) -> Optional[str]:
     None when no operator user is resolvable — indeterminate, never a false
     alarm.
     """
-    try:
-        from utils.fleet_test_runner import _find_operator_user
-        op = _find_operator_user()
-    except Exception:
-        op = None
-    if not op:
-        return None
-    try:
-        import pwd
-        home = pwd.getpwuid(op[0]).pw_dir
-    except (KeyError, OSError):
+    home = _resolve_operator_home()
+    if not home:
         return None
     return os.path.join(home, ".local", "state", "meshforge", leaf)
+
+
+# The unit whose existence IS the declaration that this box runs the soak on a
+# cadence (2026-08-09). See _timer_enrolled.
+SYNTH_SOAK_TIMER_UNIT = "meshforge-synth-soak.timer"
+
+
+def _timer_wants_dirs() -> Optional[List[str]]:
+    """Where systemd records that a USER timer is ENABLED.
+
+    ``systemctl --user enable X.timer`` on a ``WantedBy=timers.target`` unit
+    creates a symlink in ``~/.config/systemd/user/timers.target.wants/``; a
+    site-wide preset would put it in ``/etc/systemd/user/timers.target.wants/``.
+    Both are plain files the sandboxed-root watchdog can stat WITHOUT reaching
+    the operator's user bus — which it cannot do (#82: user units are
+    structurally invisible to system-level ``systemctl``). None when the
+    operator is unresolvable.
+    """
+    home = _resolve_operator_home()
+    if not home:
+        return None
+    return [
+        os.path.join(home, ".config", "systemd", "user", "timers.target.wants"),
+        os.path.join("/etc", "systemd", "user", "timers.target.wants"),
+    ]
+
+
+def _timer_enrolled(unit: str, wants_dirs: Optional[List[str]]) -> Optional[bool]:
+    """Tri-state: is ``unit`` enabled? True / False / None (unobservable).
+
+    Absent is a real observation (the enable-symlink is simply not there);
+    a stat that fails for any reason OTHER than "not found" is UNKNOWN and
+    must never be flattened into "not enabled" (honest_failure_modes #1).
+    """
+    if wants_dirs is None:
+        return None
+    unknown = False
+    for d in wants_dirs:
+        try:
+            os.lstat(os.path.join(d, unit))
+            return True
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError:
+            continue
+        except OSError:
+            unknown = True
+    return None if unknown else False
 
 
 def _resolve_synth_soak_dir() -> Optional[str]:
@@ -192,6 +247,7 @@ def probe_synth_soak_degraded(
     stale_after_s: float = _SYNTH_SOAK_STALE_AFTER_S,
     debounce_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    timer_wants_dirs: Optional[List[str]] = None,
 ) -> Optional[Signal]:
     """The synth soak's delivery envelope failed, or the soak went DARK.
 
@@ -210,12 +266,28 @@ def probe_synth_soak_degraded(
         hourly cadence) — the exerciser stopped (timer dead, fire script broken,
         box wedged). Here silence IS the failure mode (a fixed-cadence generator
         going quiet is unambiguous — the inverse of delivery_confirmation_stall).
+        **Gated on the timer actually being enabled here** (2026-08-09): the
+        staleness bar is DERIVED from ``OnCalendar=*:07:00``, so with no timer
+        enrolled there is no cadence for the output to have fallen behind, and
+        the age of a leftover artifact means nothing. See below.
       - ENVELOPE: newest result has ``pass_envelope`` false — round-trip delivery
         dropped below the run's ok-ratio threshold; the worst pair is surfaced.
 
     Honest-failure self-guards (favour silence on uncertainty):
       - state dir unresolvable / absent → None (INERT: this box doesn't run the
         synth soak — the common case; unobservable != degraded).
+      - state dir PRESENT but ``meshforge-synth-soak.timer`` not enabled here →
+        None (INERT). 2026-08-09: meshanchor-server sat ``degraded`` for 78 days
+        blaming a timer **that has never existed on that box** — the artifacts
+        were seven hand-fired lab runs from May (irregular clock times, the
+        first one a ``ModuleNotFoundError``), not a cadence that stopped. The
+        old inert test — "state dir absent" — is a PROXY for "does this box run
+        the soak", and a box that ran the exerciser by hand once fails the proxy
+        forever. The enable-symlink is the actual declaration, so ask it. This
+        deliberately does NOT widen the artifact test to swallow a
+        stale-but-present dir: a box WITH the timer still fires on silence.
+      - wants-dir unreadable → indeterminate (held). Cannot tell whether the
+        soak is scheduled here; unknown is never "not scheduled".
       - no ``synth-*.json`` present → None (never ran / freshly installed) — held,
         distinct from a stale present file which fires.
       - newest file unreadable/garbage → a degraded candidate, but RIDDEN OUT by
@@ -260,6 +332,26 @@ def probe_synth_soak_degraded(
     definitively_healthy = False
 
     if age > stale_after_s:
+        # The staleness bar is derived from the TIMER's cadence, so it only
+        # means anything where the timer is enabled. Ask the declaration
+        # (the enable-symlink), not the artifacts (2026-08-09).
+        enrolled = _timer_enrolled(
+            SYNTH_SOAK_TIMER_UNIT,
+            _timer_wants_dirs() if timer_wants_dirs is None else timer_wants_dirs)
+        if enrolled is False:
+            note_disposition(
+                "synth_soak_degraded", "inert",
+                reason=(f"{SYNTH_SOAK_TIMER_UNIT} not enabled here — no cadence "
+                        f"to fall behind; the synth-*.json present are leftovers "
+                        f"from manual runs, not a stopped organ"))
+            return None
+        if enrolled is None:
+            note_disposition(
+                "synth_soak_degraded", "indeterminate",
+                reason=(f"cannot read timers.target.wants — unable to tell "
+                        f"whether {SYNTH_SOAK_TIMER_UNIT} is scheduled here; "
+                        f"DARK leg held"))
+            return None
         candidate_detail = (
             f"synth soak went DARK: newest result is {age / 3600.0:.1f}h old "
             f"(cadence ~1h) — the LXMF round-trip exerciser stopped producing "

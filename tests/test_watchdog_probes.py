@@ -4224,12 +4224,21 @@ def test_synth_soak_silence_fires_after_debounce(tmp_path):
     now = 1_000_000.0
     sdir = str(tmp_path / "synth_soak")
     sp = str(tmp_path / "s.json")
+    # The DARK leg is gated on the timer being enabled (2026-08-09), so pin
+    # that here: without it this test's verdict came from the REAL wants-dir
+    # of whatever box ran the suite — green on moc, red everywhere else.
+    wants = tmp_path / "timers.target.wants"
+    wants.mkdir()
+    (wants / "meshforge-synth-soak.timer").write_text("[Timer]\n",
+                                                      encoding="utf-8")
     # 4h old (> 9000s stale threshold), but pass_envelope True — staleness
     # must win regardless of the (untrustworthy, old) envelope value.
     _write_synth(sdir, "20260615T120721Z", pass_envelope=True,
                  age_s=4 * 3600, now=now)
-    assert probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp) is None
-    sig = probe_synth_soak_degraded(state_dir=sdir, now=now, debounce_path=sp)
+    kw = {"state_dir": sdir, "now": now, "debounce_path": sp,
+          "timer_wants_dirs": [str(wants)]}
+    assert probe_synth_soak_degraded(**kw) is None
+    sig = probe_synth_soak_degraded(**kw)
     assert sig is not None
     assert sig.severity == "degraded"
     assert "DARK" in sig.detail
@@ -7805,6 +7814,163 @@ class TestFlowProbesOperatorUnresolvable:
             debounce_path=str(tmp_path / "d.json"))
         assert sig is None
         assert collect()["resource_canary_degraded"]["disp"] == "inert"
+
+
+class TestSynthSoakDarkLegNeedsATimer:
+    """2026-08-09 — meshanchor-server sat ``degraded`` for 78 days telling the
+    operator to "Check meshforge-synth-soak.timer", a unit that has never
+    existed on that box. Its seven ``synth-*.json`` were hand-fired lab runs
+    from May (irregular clock times; the first exited 1 with
+    ``ModuleNotFoundError: No module named 'lab'``), so nothing had a cadence
+    to fall behind. The DARK bar is 2.5x ``OnCalendar=*:07:00`` — meaningless
+    without the timer — so it is now gated on the enable-symlink, the actual
+    declaration that this box runs the soak.
+
+    Every test here passes ``timer_wants_dirs`` explicitly: the verdict must
+    not depend on the crontab/units of whatever box runs the suite.
+    """
+
+    UNIT = "meshforge-synth-soak.timer"
+
+    @staticmethod
+    def _wants(tmp_path, enrolled: bool):
+        d = tmp_path / "timers.target.wants"
+        d.mkdir()
+        if enrolled:
+            (d / TestSynthSoakDarkLegNeedsATimer.UNIT).write_text(
+                "[Timer]\n", encoding="utf-8")
+        return [str(d)]
+
+    def test_dark_fires_when_the_timer_IS_enrolled(self, tmp_path):
+        """The production case, at the real 78-day age: an enrolled timer
+        whose output stopped MUST still fire (this is the leg the gate must
+        not retire). test_synth_soak_silence_fires_after_debounce covers the
+        same leg at a 4h age."""
+        now = 9_000_000_000.0
+        sdir = str(tmp_path / "synth_soak")
+        sp = str(tmp_path / "s.json")
+        _write_synth(sdir, "20260523T040140Z", pass_envelope=True,
+                     age_s=6_740_000, now=now)
+        wants = self._wants(tmp_path, enrolled=True)
+        assert probe_synth_soak_degraded(
+            state_dir=sdir, now=now, debounce_path=sp,
+            timer_wants_dirs=wants) is None            # debounce tick 1
+        sig = probe_synth_soak_degraded(
+            state_dir=sdir, now=now, debounce_path=sp, timer_wants_dirs=wants)
+        assert sig is not None
+        assert sig.cls == "synth_soak_degraded"
+        assert "DARK" in sig.detail
+
+    def test_dark_is_inert_when_the_timer_is_NOT_enrolled(self, tmp_path):
+        """The meshanchor-server case: artifacts present, no timer, ever."""
+        now = 9_000_000_000.0
+        sdir = str(tmp_path / "synth_soak")
+        sp = str(tmp_path / "s.json")
+        _write_synth(sdir, "20260523T040140Z", pass_envelope=True,
+                     age_s=6_740_000, now=now)
+        wants = self._wants(tmp_path, enrolled=False)
+        collect = _fresh_dispositions()
+        for _ in range(3):  # would have fired on tick 2 under the old code
+            assert probe_synth_soak_degraded(
+                state_dir=sdir, now=now, debounce_path=sp,
+                timer_wants_dirs=wants) is None
+        got = collect()["synth_soak_degraded"]
+        assert got["disp"] == "inert"
+        assert "not enabled here" in got["reason"]
+
+    def test_dark_is_indeterminate_when_enrollment_unreadable(self, tmp_path):
+        """Unknown is never "not scheduled" (honest_failure_modes #1)."""
+        now = 9_000_000_000.0
+        sdir = str(tmp_path / "synth_soak")
+        _write_synth(sdir, "20260523T040140Z", pass_envelope=True,
+                     age_s=6_740_000, now=now)
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway_flow._timer_enrolled",
+                   return_value=None):
+            sig = probe_synth_soak_degraded(
+                state_dir=sdir, now=now, debounce_path=str(tmp_path / "s.json"),
+                timer_wants_dirs=["/whatever"])
+        assert sig is None
+        got = collect()["synth_soak_degraded"]
+        assert got["disp"] == "indeterminate"
+        assert "timers.target.wants" in got["reason"]
+
+    def test_envelope_leg_is_NOT_gated_on_the_timer(self, tmp_path):
+        """A FRESH failing envelope is a real delivery failure however it was
+        produced — only the staleness bar depends on a cadence. Guards against
+        curing the false alarm by muting the probe on unscheduled boxes."""
+        now = 1_000_000.0
+        sdir = str(tmp_path / "synth_soak")
+        sp = str(tmp_path / "s.json")
+        _write_synth(sdir, "20260615T170721Z", pass_envelope=False,
+                     ok_ratio=0.41, threshold=0.95, total_ok=246,
+                     total_samples=600, worst_fail=61.0, age_s=60, now=now)
+        wants = self._wants(tmp_path, enrolled=False)
+        assert probe_synth_soak_degraded(
+            state_dir=sdir, now=now, debounce_path=sp,
+            timer_wants_dirs=wants) is None
+        sig = probe_synth_soak_degraded(
+            state_dir=sdir, now=now, debounce_path=sp, timer_wants_dirs=wants)
+        assert sig is not None
+        assert "0.41" in sig.detail
+
+
+class TestTimerEnrolledTriState:
+    """``_timer_enrolled`` is the new instrument; drill its three answers."""
+
+    UNIT = "meshforge-synth-soak.timer"
+
+    def test_symlink_present_is_true(self, tmp_path):
+        from utils.watchdog_probes_gateway_flow import _timer_enrolled
+        d = tmp_path / "wants"
+        d.mkdir()
+        target = tmp_path / "meshforge-synth-soak.timer"
+        target.write_text("[Timer]\n", encoding="utf-8")
+        os.symlink(str(target), str(d / self.UNIT))  # how systemd enables it
+        assert _timer_enrolled(self.UNIT, [str(d)]) is True
+
+    def test_dir_present_unit_absent_is_false(self, tmp_path):
+        from utils.watchdog_probes_gateway_flow import _timer_enrolled
+        d = tmp_path / "wants"
+        d.mkdir()
+        assert _timer_enrolled(self.UNIT, [str(d)]) is False
+
+    def test_wants_dir_itself_absent_is_false_not_unknown(self, tmp_path):
+        """A box with no user timers at all has no wants dir — that is a real
+        observation of "not enabled", not a blind spot."""
+        from utils.watchdog_probes_gateway_flow import _timer_enrolled
+        assert _timer_enrolled(self.UNIT, [str(tmp_path / "nope")]) is False
+
+    def test_operator_unresolvable_is_unknown(self):
+        from utils.watchdog_probes_gateway_flow import _timer_enrolled
+        assert _timer_enrolled(self.UNIT, None) is None
+
+    def test_permission_error_is_unknown_never_false(self, tmp_path):
+        """The one that matters: a stat that fails for a reason OTHER than
+        "not found" must not be flattened into "not enabled" — that would
+        silently retire the DARK leg on a box that DOES run the soak."""
+        from utils.watchdog_probes_gateway_flow import _timer_enrolled
+        d = tmp_path / "wants"
+        d.mkdir()
+        real_lstat = os.lstat
+
+        def boom(path, *a, **kw):
+            if self.UNIT in str(path):
+                raise PermissionError(13, "Permission denied")
+            return real_lstat(path, *a, **kw)
+
+        with patch("os.lstat", side_effect=boom):
+            assert _timer_enrolled(self.UNIT, [str(d)]) is None
+
+    def test_second_dir_wins_when_first_is_absent(self, tmp_path):
+        """Home wants-dir empty + site-wide preset present → enrolled."""
+        from utils.watchdog_probes_gateway_flow import _timer_enrolled
+        empty = tmp_path / "home_wants"
+        empty.mkdir()
+        site = tmp_path / "site_wants"
+        site.mkdir()
+        (site / self.UNIT).write_text("[Timer]\n", encoding="utf-8")
+        assert _timer_enrolled(self.UNIT, [str(empty), str(site)]) is True
 
 
 def test_delivery_canary_db_unobservable_is_indeterminate_not_clean():
