@@ -101,7 +101,12 @@ def _timer_wants_dirs() -> Optional[List[str]]:
     ``timer_wants_dirs=``); the layout itself is owned by ``utils.user_units``.
     """
     home = _resolve_operator_home()
-    return None if not home else _shared_wants_dirs(home)
+    if not home:
+        return None
+    # Discovery is itself tri-state: None means the user-unit root exists but
+    # could not be listed. Passing that through as None keeps _timer_enrolled
+    # unobservable rather than letting it answer "not enabled".
+    return _shared_wants_dirs(home)
 
 
 def _timer_enrolled(unit: str, wants_dirs: Optional[List[str]]) -> Optional[bool]:

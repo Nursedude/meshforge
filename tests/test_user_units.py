@@ -22,9 +22,9 @@ from utils.user_units import (  # noqa: E402
 UNIT = "meshforge-synth-soak.timer"
 
 
-def _wants(home: Path) -> Path:
-    d = home / ".config" / "systemd" / "user" / "timers.target.wants"
-    d.mkdir(parents=True)
+def _wants(home: Path, target: str = "timers") -> Path:
+    d = home / ".config" / "systemd" / "user" / f"{target}.target.wants"
+    d.mkdir(parents=True, exist_ok=True)
     return d
 
 
@@ -57,6 +57,59 @@ class TestEnabledUserTimers:
         # verdict would depend on who ran it.
         with patch("os.listdir", side_effect=boom):
             assert enabled_user_timers(str(tmp_path)) is None
+
+
+class TestEnabledUnderAnyTarget:
+    """From a live finding on meshanchor-server (2026-08-09).
+
+    `meshanchor-map-restart.timer` declares `WantedBy=timers.target` but is
+    linked from `default.target.wants` — `systemctl --user is-enabled` says
+    `enabled` and it had been firing for months. A reader that opens only
+    `timers.target.wants` calls that live timer disabled, which for a
+    declared-`enabled` unit is FALSE drift. Enablement is a symlink under ANY
+    target's wants dir.
+    """
+
+    def test_timer_in_default_target_wants_counts_as_enabled(self, tmp_path):
+        (_wants(tmp_path, "default") / UNIT).write_text("[Timer]\n",
+                                                        encoding="utf-8")
+        assert user_timer_enrolled(UNIT, str(tmp_path)) is True
+        assert UNIT in enabled_user_timers(str(tmp_path))
+
+    def test_all_target_wants_dirs_are_discovered(self, tmp_path):
+        _wants(tmp_path, "timers")
+        _wants(tmp_path, "default")
+        _wants(tmp_path, "graphical-session")
+        found = {Path(d).name for d in timer_wants_dirs(str(tmp_path))}
+        assert found == {"timers.target.wants", "default.target.wants",
+                         "graphical-session.target.wants"}
+
+    def test_non_wants_subdirs_are_ignored(self, tmp_path):
+        root = tmp_path / ".config" / "systemd" / "user"
+        (root / "meshforge-x.service.d").mkdir(parents=True)   # a drop-in dir
+        _wants(tmp_path, "timers")
+        assert [Path(d).name for d in timer_wants_dirs(str(tmp_path))] == [
+            "timers.target.wants"]
+
+    def test_absent_root_is_observed_empty_not_unobservable(self, tmp_path):
+        assert timer_wants_dirs(str(tmp_path)) == []
+        assert enabled_user_timers(str(tmp_path)) == {}
+
+    def test_unlistable_root_is_unobservable(self, tmp_path):
+        """Root there but unreadable must NOT read as "nothing enabled"."""
+        root = tmp_path / ".config" / "systemd" / "user"
+        root.mkdir(parents=True)
+        real = os.listdir
+
+        def boom(path, *a, **kw):
+            if str(path) == str(root):
+                raise PermissionError(13, "Permission denied")
+            return real(path, *a, **kw)
+
+        with patch("os.listdir", side_effect=boom):
+            assert timer_wants_dirs(str(tmp_path)) is None
+            assert enabled_user_timers(str(tmp_path)) is None
+            assert user_timer_enrolled(UNIT, str(tmp_path)) is None
 
 
 class TestHermeticInUserHome:

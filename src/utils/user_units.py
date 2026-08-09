@@ -28,9 +28,9 @@ import os
 import re
 from typing import Dict, List, Optional
 
-# Where systemd records that a USER timer is ENABLED: the symlink that
-# `systemctl --user enable` writes. Readable without root and without a bus.
-_HOME_WANTS = (".config", "systemd", "user", "timers.target.wants")
+# The operator's user-unit root. Enablement is a symlink under one of its
+# `*.target.wants/` subdirectories — readable without root and without a bus.
+_USER_UNIT_ROOT = (".config", "systemd", "user")
 
 # DELIBERATELY NOT CONSULTED: /etc/systemd/user/timers.target.wants, the
 # site-wide preset equivalent. It was included for one commit on 2026-08-09
@@ -70,14 +70,31 @@ def resolve_operator_home() -> Optional[str]:
         return None
 
 
-def timer_wants_dirs(user_home: str) -> List[str]:
-    """The directories that record user-timer enablement.
+def timer_wants_dirs(user_home: str) -> Optional[List[str]]:
+    """EVERY ``*.target.wants`` dir under the operator's user-unit root.
 
-    A list (not a single path) because callers inject it, and so a box that
-    genuinely needs an extra location can be given one WITHOUT this function
-    reaching for a global — see the note on the site-preset dir above.
+    ⚠️ Not just ``timers.target.wants``. A unit is enabled if a symlink to it
+    exists under ANY target's wants dir, which is why ``systemctl --user
+    is-enabled`` can say ``enabled`` for a timer that is nowhere near
+    ``timers.target.wants``. Found on meshanchor-server 2026-08-09:
+    ``meshanchor-map-restart.timer`` declares ``WantedBy=timers.target`` but is
+    linked from ``default.target.wants`` — enabled and firing for months, and
+    invisible to a reader that opened only the one directory. Reading a single
+    target would have reported that live timer as disabled, which for a
+    declared-``enabled`` unit is FALSE drift.
+
+    Tri-state: ``None`` when the root exists but cannot be listed
+    (unobservable); ``[]`` when the root is simply absent (a real observation —
+    this box has no user units, so nothing is enabled).
     """
-    return [os.path.join(user_home, *_HOME_WANTS)]
+    root = os.path.join(user_home, *_USER_UNIT_ROOT)
+    if not os.path.isdir(root):
+        return []
+    try:
+        return sorted(os.path.join(root, n) for n in os.listdir(root)
+                      if n.endswith(".target.wants"))
+    except OSError:
+        return None
 
 
 def enabled_user_timers(user_home: str) -> Optional[Dict[str, str]]:
@@ -93,8 +110,11 @@ def enabled_user_timers(user_home: str) -> Optional[Dict[str, str]]:
     (honest_failure_modes #1). Directories that are simply absent are a real,
     observed empty enrollment; all-absent returns ``{}``.
     """
+    dirs = timer_wants_dirs(user_home)
+    if dirs is None:
+        return None  # root unreadable → unobservable, never "none enabled"
     out: Dict[str, str] = {}
-    for wants in timer_wants_dirs(user_home):
+    for wants in dirs:
         if not os.path.isdir(wants):
             continue  # absent is an observation, not a blind spot
         try:
