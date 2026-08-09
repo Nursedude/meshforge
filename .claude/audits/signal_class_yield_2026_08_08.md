@@ -459,6 +459,68 @@ line — a test goes red for each). Ported to MeshAnchor: `dreams.py` and
 
 ---
 
+## HANDOFF — `synth_soak_degraded` on the MeshAnchor box (written 2026-08-09)
+
+> Every item in this audit is now closed. This is the **next** thread: the last
+> standing fleet WARN, and the only `degraded` on the fleet that predates this
+> whole arc. **I have not investigated it** — what follows separates what was
+> OBSERVED from what is HYPOTHESIS, because the last handoff's recommendation
+> rested on unverified reason strings and cost this session a re-derivation.
+
+**OBSERVED** (read from the boxes' own `watchdog.json`, 2026-08-09 ~03:50 UTC):
+
+    meshanchor-server   degraded   "synth soak went DARK: newest result is
+                                    1872.2h old (cadence ~1h) — the LXMF
+                                    round-trip exerciser stopped producing
+                                    output. Check meshforge-synth-soak.timer
+                                    (systemd --user) + its fire log."
+                        extra: newest = synth-20260523T040140Z.json
+                               age_s  = 6,740,001.9   (~78 days)
+    moc                 clean      (the soak runs and passes there)
+    other 7 boxes       inert      "synth-soak state dir absent — box doesn't run it"
+
+**What that rules OUT.** My first instinct — *"probably a disposition bug, it
+should be `inert`"* — **does not survive the fleet view.** This probe already
+has a working `inert` leg and uses it on 7 boxes, and it has a live `clean` on
+moc proving it can see. meshanchor-server has the state dir *and* a real
+artifact; it is not absent-by-design in the probe's terms. So the likeliest
+read is the boring one: **the exerciser genuinely stopped on that box on
+2026-05-23**, and nothing has produced a soak envelope there since.
+
+**HYPOTHESIS, untested** — the timer is a **`systemd --user`** unit
+(`meshforge-synth-soak.timer`), and user units are structurally invisible to
+system-level checks (#82). I got caught by exactly that this session hunting
+mini-dudeai: `systemctl is-active` said `inactive` on all 8 boxes while the
+user units were `active` on all 8.
+
+**First moves, in order:**
+
+1. `XDG_RUNTIME_DIR=/run/user/$(id -u) systemctl --user status
+   meshforge-synth-soak.timer meshforge-synth-soak.service` on
+   meshanchor-server. Enabled? Last trigger? `NRestarts`?
+2. **What happened on 2026-05-23?** The artifact name dates the stop precisely
+   (`synth-20260523T040140Z.json`). Check that box's journal and git history
+   around then — a deploy, a role change, a deliberate retirement.
+3. **Ask why the sibling was silent.** `probe_user_timer_unit_failing` exists
+   and did NOT fire here. Either the timer is *disabled* (not failing — a
+   different, correct answer, and then the question becomes who disabled it and
+   whether the soak is meant to run on MA at all), or that probe has a gap of
+   its own. Both outcomes are worth the ten minutes.
+4. Only then decide: restore the organ, or declare it retired on that box and
+   make the probe say `inert` **from a declaration**, never by widening the
+   "state dir absent" test to swallow a stale-but-present dir.
+
+⚠️ **Do not start the soak just to clear the signal.** That is the 2026-07-24
+deploy incident in a new costume (a sweep that started a unit disabled by
+design). Decide what SHOULD run there first.
+
+⚠️ **Check the twin before editing either side.** The probe lives in
+`src/utils/watchdog_probes_gateway_flow.py`; run `scripts/parity_check.py`
+before touching it, and remember the 08-09 ordering rule — port to MeshAnchor
+**after** MeshForge's final commit, never before an amend.
+
+---
+
 ## The noise ranking (yield's other half)
 
 Not a delete list — a *tuning* list, ordered by fires-per-insight.
