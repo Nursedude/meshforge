@@ -71,6 +71,15 @@ BYTE_IDENTICAL = (
     # delegated to by both rns_alignment (MeshForge) and fleet_foundation (both
     # repos), so it MUST stay byte-identical.
     "src/utils/rns_tree_perms.py",
+    # Root-safe `systemd --user` enrollment reads (2026-08-09). Both repos'
+    # provisioners judge a declared `user_timers:` entry against live
+    # enablement, and BOTH must answer "is this enabled" identically — a
+    # divergence would make one repo's role_drift page for drift the other
+    # calls clean, on boxes that run both stacks. App-agnostic, stdlib-only.
+    # ⚠️ Its whole reason for existing is that three call sites were about to
+    # grow three implementations; a per-repo copy re-opens that. MeshForge is
+    # the lead repo. See the module docstring for the any-target lesson.
+    "src/utils/user_units.py",
     # LXMFace deterministic-avatar port (2026-06-14): the pure algorithm, the
     # vendored client-side JS, and the upstream parity vectors. These produce a
     # node's face from its LXMF/RNS hash and MUST agree across both apps (and
