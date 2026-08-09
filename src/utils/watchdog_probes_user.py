@@ -38,6 +38,7 @@ import os
 import re
 from typing import Dict, List, Optional
 
+from utils.user_units import enabled_user_timers
 from utils.watchdog_probe_core import Signal, note_disposition
 
 # Reused rather than duplicated: this helper is already the proven bus-free
@@ -106,46 +107,11 @@ def _save_streak(state_path: str, streak: int) -> None:
         )
 
 
-def _enabled_user_timers(user_home: str) -> Optional[Dict[str, str]]:
-    """Map ``timer unit name -> triggered service unit name`` for the timers
-    the operator has enabled (symlinks in
-    ``~/.config/systemd/user/timers.target.wants/``).
-
-    The triggered service is ``Unit=`` from the ``[Timer]`` section when the
-    author set one, else systemd's default of the same stem with a
-    ``.service`` suffix.
-
-    Returns ``None`` when the wants directory exists but cannot be read — that
-    is *unobservable*, which the caller must not collapse into "no timers"
-    (honest_failure_modes #1). An absent directory is a real, observed empty
-    enrollment and returns ``{}``.
-    """
-    wants = os.path.join(user_home, ".config", "systemd", "user",
-                         "timers.target.wants")
-    if not os.path.isdir(wants):
-        return {}
-    try:
-        names = [n for n in os.listdir(wants) if n.endswith(".timer")]
-    except OSError:
-        return None
-
-    out: Dict[str, str] = {}
-    for timer in names:
-        service = timer[: -len(".timer")] + ".service"
-        # Best-effort Unit= override. A unreadable timer file falls back to
-        # the stem default rather than dropping the timer from the map — the
-        # conservative choice is to keep WATCHING it under its likely name.
-        try:
-            with open(os.path.join(wants, timer), "r", encoding="utf-8",
-                      errors="replace") as fh:
-                body = fh.read()
-            m = re.search(r"(?mi)^\s*Unit\s*=\s*(\S+)\s*$", body)
-            if m and m.group(1).endswith(".service"):
-                service = m.group(1)
-        except OSError:
-            pass
-        out[timer] = service
-    return out
+# Promoted to utils.user_units (2026-08-09) so provision_role + the soak
+# probes read enrollment through ONE implementation (hfm #5). Same
+# semantics, plus the site-wide /etc preset dir this box family never
+# used but which is equally an enablement record.
+_enabled_user_timers = enabled_user_timers
 
 
 def probe_user_timer_unit_failing(

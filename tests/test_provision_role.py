@@ -549,3 +549,170 @@ class TestSetRoleCleanExit:
         rc = pr.main(["--set-role", "collector"])
         assert rc == 0
         assert _json.loads(p.read_text())["role"] == "collector"
+
+
+# --------------------------------------------------------------------------
+# user_timers — systemd --user timers, declare-and-observe (2026-08-09)
+#
+# WHY THIS EXISTS: before the declaration, "never enrolled here" and "enrolled,
+# then someone disabled it" were the SAME filesystem observation, so
+# synth_soak_degraded had to call both inert and a silently-retired exerciser
+# was indistinguishable from a box that never ran one.
+#
+# Every test injects enrollment. None of them may consult the real box's
+# ~/.config/systemd/user (feedback_tests_must_pin_ambient_state).
+# --------------------------------------------------------------------------
+
+_UT_CATALOG = {
+    "roles": {
+        "full-gateway": {
+            "services": {"rnsd": "enabled"},
+            "user_timers": {"meshforge-synth-soak.timer": "enabled",
+                            "meshforge-propagation-soak.timer": "enabled"},
+        },
+        "collector": {
+            "inherits": "full-gateway",
+            "user_timers": {"meshforge-synth-soak.timer": "absent",
+                            "meshforge-propagation-soak.timer": "absent"},
+        },
+        "no-timers": {"services": {"rnsd": "enabled"}},
+    }
+}
+
+
+def _enrolled(mapping):
+    """Patch the SSOT enrollment reader with an explicit per-unit answer."""
+    return patch.object(pr, "user_timer_enrolled",
+                        side_effect=lambda unit: mapping.get(unit))
+
+
+class TestUserTimerInheritance:
+    def test_user_timers_inherit_like_services(self):
+        """The whole point of merging them the same way: a key that inherited
+        for `services` but silently not for `user_timers` would hand the next
+        person a role with no coverage and no error."""
+        r = pr.resolve_role(_UT_CATALOG, "collector")
+        assert r["services"]["rnsd"] == "enabled"          # inherited
+        assert r["user_timers"]["meshforge-synth-soak.timer"] == "absent"  # child wins
+
+    def test_child_override_wins_over_parent(self):
+        parent = pr.resolve_role(_UT_CATALOG, "full-gateway")
+        child = pr.resolve_role(_UT_CATALOG, "collector")
+        assert parent["user_timers"]["meshforge-synth-soak.timer"] == "enabled"
+        assert child["user_timers"]["meshforge-synth-soak.timer"] == "absent"
+
+    def test_role_without_the_key_gets_an_empty_map(self):
+        r = pr.resolve_role(_UT_CATALOG, "no-timers")
+        assert r["user_timers"] == {}
+
+
+class TestUserTimerActions:
+    SYNTH = "meshforge-synth-soak.timer"
+
+    def test_declared_enabled_and_enrolled_is_noop(self):
+        with _enrolled({self.SYNTH: True}):
+            acts = pr._user_timer_actions({self.SYNTH: "enabled"})
+        assert [a.verb for a in acts] == ["noop"]
+
+    def test_declared_enabled_but_disabled_is_REQUIRED_warn(self):
+        """THE case this whole change exists for — the drill.
+
+        Someone disables the exerciser on a box whose role says it runs it.
+        Before: synth_soak_degraded went inert and nothing said a word."""
+        with _enrolled({self.SYNTH: False}):
+            acts = pr._user_timer_actions({self.SYNTH: "enabled"})
+        assert len(acts) == 1
+        a = acts[0]
+        assert a.verb == "warn" and a.required is True
+        assert a.current == "not-enabled" and a.desired == "enabled"
+
+    def test_declared_absent_but_enrolled_is_REQUIRED_warn(self):
+        """The other direction: an organ appears on a box that never declared
+        it. Silent extra load is drift too."""
+        with _enrolled({self.SYNTH: True}):
+            acts = pr._user_timer_actions({self.SYNTH: "absent"})
+        assert acts[0].verb == "warn" and acts[0].required is True
+
+    def test_declared_absent_and_not_enrolled_is_noop(self):
+        with _enrolled({self.SYNTH: False}):
+            acts = pr._user_timer_actions({self.SYNTH: "absent"})
+        assert [a.verb for a in acts] == ["noop"]
+
+    def test_unobservable_is_advisory_never_drift(self):
+        """Unknown is not drift. Flattening it to 'not enabled' would make an
+        unreadable dir look like a disabled organ (honest_failure_modes #1)."""
+        with _enrolled({self.SYNTH: None}):
+            acts = pr._user_timer_actions({self.SYNTH: "enabled"})
+        assert acts[0].verb == "warn" and acts[0].required is False
+        assert "unreadable" in acts[0].detail
+
+    def test_unknown_desired_state_is_advisory(self):
+        with _enrolled({self.SYNTH: True}):
+            acts = pr._user_timer_actions({self.SYNTH: "sometimes"})
+        assert acts[0].verb == "warn" and acts[0].required is False
+
+    def test_no_declarations_emits_nothing(self):
+        assert pr._user_timer_actions({}) == []
+
+
+class TestUserTimersNeverConverged:
+    """--apply must never enable/disable a user unit.
+
+    A converge sweep that can start units is exactly how the 2026-07-24
+    incident happened (a restart loop started a unit disabled by design), and
+    user units are a scope root cannot even reach (#82). Detection yes,
+    convergence by hand.
+    """
+    SYNTH = "meshforge-synth-soak.timer"
+
+    @pytest.mark.parametrize("declared,enrolled", [
+        ("enabled", False), ("absent", True), ("enabled", True),
+        ("disabled", False), ("enabled", None),
+    ])
+    def test_no_action_verb_is_ever_executable(self, declared, enrolled):
+        with _enrolled({self.SYNTH: enrolled}):
+            acts = pr._user_timer_actions({self.SYNTH: declared})
+        for a in acts:
+            assert a.verb in ("noop", "warn"), (
+                f"user timer produced executable verb {a.verb!r} — --apply "
+                f"would act on a systemd --user unit")
+
+    def test_apply_action_skips_the_required_warn(self):
+        """Belt and braces: even handed the drift action, apply does nothing."""
+        with _enrolled({self.SYNTH: False}):
+            acts = pr._user_timer_actions({self.SYNTH: "enabled"})
+        with patch.object(pr, "enable_service") as en, \
+                patch.object(pr, "stop_service") as st:
+            pr.apply_action(acts[0])
+        en.assert_not_called()
+        st.assert_not_called()
+        assert acts[0].result == "skipped"
+
+
+class TestShippedCatalogDeclaresUserTimers:
+    """The real docs/fleet_roles.yaml, not a fixture.
+
+    user_timers inherits, so a role that inherits full-gateway and does NOT
+    run the soaks must say `absent` out loud. Without this test, adding a new
+    inheriting role silently signs it up for two exercisers it does not run —
+    and the box would page for drift the author never declared.
+    """
+
+    def test_every_inheriting_role_declares_its_soak_timers(self):
+        catalog = pr.load_roles(pr.DEFAULT_ROLES_FILE)
+        parents_with_timers = {
+            name for name, node in catalog["roles"].items()
+            if node.get("user_timers")}
+        for name, node in catalog["roles"].items():
+            if node.get("inherits") in parents_with_timers:
+                assert node.get("user_timers"), (
+                    f"role '{name}' inherits '{node['inherits']}' which "
+                    f"declares user_timers, but declares none of its own — "
+                    f"it silently inherits them. Say `absent` explicitly.")
+
+    def test_declared_states_are_all_valid(self):
+        catalog = pr.load_roles(pr.DEFAULT_ROLES_FILE)
+        for name, node in catalog["roles"].items():
+            for unit, state in (node.get("user_timers") or {}).items():
+                assert state in pr.VALID_UNIT_STATES, (
+                    f"{name}.{unit} = {state!r}")

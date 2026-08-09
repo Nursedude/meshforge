@@ -47,6 +47,7 @@ except ImportError:
     sys.exit(2)
 
 from utils.paths import get_real_user_home  # noqa: E402
+from utils.user_units import user_timer_enrolled  # noqa: E402
 from utils.service_check import (  # noqa: E402
     check_systemd_service,
     is_service_unit_installed,
@@ -110,20 +111,31 @@ def load_roles(path: Path) -> dict:
 def resolve_role(catalog: dict, role: str) -> dict:
     """Flatten a role to its effective definition, applying `inherits`.
 
-    Returns the role dict with `services` merged parent→child. Raises KeyError
-    for an unknown role.
+    Returns the role dict with `services` AND `user_timers` merged
+    parent→child. Raises KeyError for an unknown role.
+
+    `user_timers` inherits by the same rule as `services` deliberately: a key
+    that merged for one and silently did not for the other would be a trap for
+    whoever adds the next role — they would declare a timer on a parent and
+    quietly get no coverage on its children. An inheriting role that does not
+    run a parent's timer says `absent` explicitly (see fleet_roles.yaml).
     """
     roles = catalog["roles"]
     if role not in roles:
         raise KeyError(role)
     node = roles[role]
     services: Dict[str, str] = {}
+    user_timers: Dict[str, str] = {}
     parent = node.get("inherits")
     if parent:
-        services.update(resolve_role(catalog, parent).get("services", {}))
+        resolved_parent = resolve_role(catalog, parent)
+        services.update(resolved_parent.get("services", {}))
+        user_timers.update(resolved_parent.get("user_timers", {}))
     services.update(node.get("services", {}) or {})
+    user_timers.update(node.get("user_timers", {}) or {})
     merged = dict(node)
     merged["services"] = services
+    merged["user_timers"] = user_timers
     return merged
 
 
@@ -139,6 +151,55 @@ def _unit_current(name: str) -> str:
     if not is_service_unit_installed(name) and not running and not enabled:
         return "absent"
     return f"{'active' if running else 'inactive'}/{'enabled' if enabled else 'disabled'}"
+
+
+def _user_timer_actions(declared: Dict[str, str]) -> List[Action]:
+    """Observe-only actions for declared ``systemd --user`` timers.
+
+    Emits ONLY ``noop`` and ``warn`` — never ``enable``/``disable`` — so
+    ``--apply`` cannot start or stop a user unit. That restriction is the whole
+    safety argument: converge is a sweep, and a sweep that can start units is
+    how the 2026-07-24 incident happened. A human decides whether the box or
+    the declaration is wrong; this only makes the disagreement visible.
+
+    A required ``warn`` is what ``probe_role_drift`` counts as drift, so
+    "declared enabled, actually disabled" now pages the same way a system-unit
+    divergence does — the case that was previously indistinguishable from
+    "this box never ran it".
+
+    Unobservable enrollment (no resolvable operator, or a wants dir that
+    exists but cannot be read) is a NON-required advisory: unknown is not
+    drift, and must never read as "not enabled" (honest_failure_modes #1).
+    """
+    out: List[Action] = []
+    for unit, desired in sorted(declared.items()):
+        if desired not in VALID_UNIT_STATES:
+            out.append(Action(unit, "?", str(desired), "warn", required=False,
+                              detail=f"unknown desired state '{desired}'"))
+            continue
+        enrolled = user_timer_enrolled(unit)
+        if enrolled is None:
+            out.append(Action(unit, "unobservable", str(desired), "warn",
+                              required=False,
+                              detail="user-timer enrollment unreadable "
+                                     "(no operator resolved, or wants dir "
+                                     "unreadable) — not judged"))
+            continue
+        cur = "enabled" if enrolled else "not-enabled"
+        # 'absent' and 'disabled' are both satisfied by "not enrolled": this
+        # layer reads the ENABLE symlink, which cannot distinguish an
+        # uninstalled unit from an installed-but-disabled one. Declaring the
+        # difference is still worth it — `absent` documents intent for the
+        # next reader even where the check cannot separate them.
+        want_enrolled = (desired == "enabled")
+        if enrolled == want_enrolled:
+            out.append(Action(unit, cur, str(desired), "noop"))
+        else:
+            out.append(Action(unit, cur, str(desired), "warn", required=True,
+                              detail="systemd --user timer diverges from the "
+                                     "role declaration — converge by hand "
+                                     "(--apply never touches user units)"))
+    return out
 
 
 def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Action]:
@@ -203,6 +264,8 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
                                       detail="present but role declares absent (not auto-removed)"))
             else:
                 actions.append(Action(unit, "absent", "absent", "noop"))
+
+    actions.extend(_user_timer_actions(role_def.get("user_timers", {})))
 
     # Masking invariant: this box owns rnsd → mask any installed rival RNS host.
     if services.get("rnsd") == "enabled":

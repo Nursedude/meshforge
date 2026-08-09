@@ -17,6 +17,7 @@ import subprocess
 import time
 from typing import List, Optional, Tuple
 
+from utils.user_units import timer_wants_dirs as _shared_wants_dirs
 from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
@@ -94,43 +95,36 @@ SYNTH_SOAK_TIMER_UNIT = "meshforge-synth-soak.timer"
 
 
 def _timer_wants_dirs() -> Optional[List[str]]:
-    """Where systemd records that a USER timer is ENABLED.
+    """The dirs that record user-timer enablement — None if no operator.
 
-    ``systemctl --user enable X.timer`` on a ``WantedBy=timers.target`` unit
-    creates a symlink in ``~/.config/systemd/user/timers.target.wants/``; a
-    site-wide preset would put it in ``/etc/systemd/user/timers.target.wants/``.
-    Both are plain files the sandboxed-root watchdog can stat WITHOUT reaching
-    the operator's user bus — which it cannot do (#82: user units are
-    structurally invisible to system-level ``systemctl``). None when the
-    operator is unresolvable.
+    Kept as an injectable seam for the tests (the probe takes
+    ``timer_wants_dirs=``); the layout itself is owned by ``utils.user_units``.
     """
     home = _resolve_operator_home()
-    if not home:
-        return None
-    return [
-        os.path.join(home, ".config", "systemd", "user", "timers.target.wants"),
-        os.path.join("/etc", "systemd", "user", "timers.target.wants"),
-    ]
+    return None if not home else _shared_wants_dirs(home)
 
 
 def _timer_enrolled(unit: str, wants_dirs: Optional[List[str]]) -> Optional[bool]:
     """Tri-state: is ``unit`` enabled? True / False / None (unobservable).
 
     Absent is a real observation (the enable-symlink is simply not there);
-    a stat that fails for any reason OTHER than "not found" is UNKNOWN and
+    a listing that fails for any reason OTHER than "not there" is UNKNOWN and
     must never be flattened into "not enabled" (honest_failure_modes #1).
+
+    Deliberately takes the dirs rather than a home, so a caller can inject
+    them; ``scripts/provision_role.py`` asks the same question through
+    ``utils.user_units.user_timer_enrolled``. Both resolve "enabled" from the
+    same place — two consumers, one definition (honest_failure_modes #5).
     """
     if wants_dirs is None:
         return None
     unknown = False
     for d in wants_dirs:
         try:
-            os.lstat(os.path.join(d, unit))
-            return True
-        except FileNotFoundError:
-            continue
-        except NotADirectoryError:
-            continue
+            if unit in os.listdir(d):
+                return True
+        except (FileNotFoundError, NotADirectoryError):
+            continue  # absent dir is an observation, not a blind spot
         except OSError:
             unknown = True
     return None if unknown else False

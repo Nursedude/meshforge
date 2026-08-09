@@ -7952,14 +7952,17 @@ class TestTimerEnrolledTriState:
         from utils.watchdog_probes_gateway_flow import _timer_enrolled
         d = tmp_path / "wants"
         d.mkdir()
-        real_lstat = os.lstat
+        real_listdir = os.listdir
 
         def boom(path, *a, **kw):
-            if self.UNIT in str(path):
+            if str(path) == str(d):
                 raise PermissionError(13, "Permission denied")
-            return real_lstat(path, *a, **kw)
+            return real_listdir(path, *a, **kw)
 
-        with patch("os.lstat", side_effect=boom):
+        # Patched rather than chmod 000: a suite run as root would still read
+        # a 000 dir, making the verdict depend on WHO ran it
+        # (feedback_tests_must_pin_ambient_state).
+        with patch("os.listdir", side_effect=boom):
             assert _timer_enrolled(self.UNIT, [str(d)]) is None
 
     def test_second_dir_wins_when_first_is_absent(self, tmp_path):

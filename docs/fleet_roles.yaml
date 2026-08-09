@@ -99,6 +99,9 @@ roles:
       meshforge-watchdog: enabled
       meshtasticd-mudp-guard.timer: enabled  # self-heal the MUDP leg (224.0.0.69:4403) boot-race
       meshforge-cloud-push.timer: disabled
+    user_timers:                      # see the user_timers note below the roles
+      meshforge-synth-soak.timer: absent        # LXMF round-trip exerciser — gateway organ
+      meshforge-propagation-soak.timer: absent  # ditto; primary does not bridge
     flags:
       canonical_memory_writer: true   # invariant: one_canonical_writer
       cloud_push_source: true         # cloud-publisher pulls snapshots from this node's API
@@ -119,6 +122,13 @@ roles:
       meshtasticd-mudp-guard.timer: enabled  # self-heal the MUDP leg (224.0.0.69:4403);
                                       # auto-learns per box, so it no-ops where MUDP is unused
       meshforge-cloud-push.timer: disabled
+    user_timers:
+      meshforge-synth-soak.timer: enabled       # hourly LXMF round-trip exerciser; the
+                                      # OUTCOME evidence that this node's bridge delivers.
+                                      # synth_soak_degraded watches its output; this line is
+                                      # what makes "someone disabled it" drift rather than
+                                      # silence (2026-08-09).
+      meshforge-propagation-soak.timer: enabled
 
   cloud-publisher:
     singleton: true                   # invariant: one_cloud_publisher
@@ -129,6 +139,9 @@ roles:
                                       # cloud snapshot, it does not bridge RF — unit
                                       # installed but deliberately off (not a fault)
       meshforge-cloud-push.timer: enabled
+    user_timers:                      # OVERRIDE full-gateway: no bridge here, no soak
+      meshforge-synth-soak.timer: absent
+      meshforge-propagation-soak.timer: absent
     flags:
       cloud_push_publisher: true
 
@@ -143,6 +156,10 @@ roles:
                                       # per-box override (ratified 2026-06-03; moc2 case).
                                       # Promote to full-gateway only if relocated to a
                                       # coverage gap.
+    user_timers:                      # OVERRIDE full-gateway: does not bridge, so the
+                                      # round-trip exercisers have nothing to exercise
+      meshforge-synth-soak.timer: absent
+      meshforge-propagation-soak.timer: absent
 
   gateway-only:
     board_tier: pi3b_1gb_ok           # constrained board
@@ -158,6 +175,11 @@ roles:
       meshforge-maps: absent
       meshforge-watchdog: enabled
       meshtasticd-mudp-guard.timer: enabled  # self-heal the MUDP leg (224.0.0.69:4403) boot-race
+    user_timers:
+      meshforge-synth-soak.timer: absent         # DELIBERATE: the synth soak fans out to
+                                      # multiple users and is too heavy for a ~1GB board —
+                                      # same reasoning as meshforge-map above
+      meshforge-propagation-soak.timer: enabled  # light enough, and this node bridges
 
   meshanchor-noc:
     board_tier: pi4_min_4gb
@@ -181,6 +203,28 @@ roles:
     board_tier: zero_class_zero2w_recommended
     repo: meshing-around
     services: {}                      # reaches the mesh via a companion radio, not systemd here
+
+# user_timers — `systemd --user` timers, declared separately from `services`
+# (added 2026-08-09). Same vocabulary: enabled | disabled | absent. Inherited
+# through `inherits` exactly like `services`, so an inheriting role that does
+# NOT run a parent's timer must say `absent` explicitly.
+#
+# WHY A SEPARATE BLOCK, and why the provisioner only ever WARNS about these:
+# `services` entries are converged by `provision_role.py --apply`, which
+# enables and disables units. User units are a different scope (#82 — they are
+# invisible to system `systemctl`, and root cannot reach the operator's bus),
+# and teaching `--apply` to start/stop them would hand the converge sweep
+# exactly the power that caused the 2026-07-24 incident, where a restart loop
+# started a unit that was off by design. So these are DECLARE-AND-OBSERVE:
+# live enrollment is read from the enable-symlink, a mismatch is reported as a
+# required warning (which `role_drift` counts as drift), and convergence is
+# left to a human who can decide whether the box or the declaration is wrong.
+#
+# WHAT THIS BUYS: before this block existed, "never enrolled here" and
+# "enrolled, then someone disabled it" were the same observation — the
+# filesystem cannot tell them apart, so synth_soak_degraded had to treat both
+# as inert and a silently-retired exerciser looked identical to a box that
+# never ran one. The declaration is what separates them.
 
 # Where a non-rnsd daemon could grab the RNS listener on a box, MASK the loser.
 # mask survives restart-timers and dependencies; disable does not.
