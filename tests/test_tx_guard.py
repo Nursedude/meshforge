@@ -576,14 +576,39 @@ class TestRnsEgress:
             b._safe_announce()
         b._router.announce.assert_not_called()
 
-    def test_attach_backstop_declines_live_reticulum(self):
+    def test_attach_backstop_declines_live_reticulum(self, monkeypatch):
         """open_reticulum must not hand a test a LIVE handle on the operator's
         Reticulum. Declining returns None — its own documented degraded
-        outcome, and exactly what a box with no rnsd (every CI runner) gets."""
+        outcome, and exactly what a box with no rnsd (every CI runner) gets.
+
+        ⚠️ ``_HAS_RNS`` is pinned because without it this test's verdict
+        depends on whether RNS is INSTALLED on the box running it: with RNS
+        absent, ``open_reticulum`` returns None from its module-availability
+        early-return BEFORE the guard is consulted, so the `is None` assert
+        passes for the wrong reason and the record is never written. It passed
+        on a dev box and failed in CI exactly that way (2026-08-09).
+        feedback_tests_must_pin_ambient_state: ask what you would change about
+        this BOX to make it fail — here, uninstall RNS.
+        """
         from utils import rns_init
+        monkeypatch.setattr(rns_init, "_HAS_RNS", True)
         assert not tx_guard.rns_attach_allowed()
         assert rns_init.open_reticulum("/etc/reticulum") is None
         assert any(r["kind"] == "rns_attach" for r in tx_guard.blocked_attempts())
+
+    def test_guard_does_not_claim_a_decline_it_did_not_make(self, monkeypatch):
+        """The other direction, pinned too.
+
+        With RNS absent, None comes from the module-availability check, NOT the
+        guard — and the guard must not record a decline it never made, or the
+        blocked-attempt ledger (the instrument half) would overcount.
+        """
+        from utils import rns_init
+        monkeypatch.setattr(rns_init, "_HAS_RNS", False)
+        tx_guard.clear_blocked_attempts()
+        assert rns_init.open_reticulum("/etc/reticulum") is None
+        assert not any(r["kind"] == "rns_attach"
+                       for r in tx_guard.blocked_attempts())
 
     def test_attach_backstop_is_off_in_production(self, monkeypatch):
         """A false ARM here would be a silent RNS outage on a gateway."""
