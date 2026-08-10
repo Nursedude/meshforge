@@ -58,6 +58,24 @@ class TestArming:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         assert tx_guard.is_armed()
 
+    def test_env_armed_drill_does_not_sever_rns_attach(self, monkeypatch):
+        """MESHFORGE_TX_GUARD=1 on a live gateway is the documented drill: the
+        SEND sites must refuse loudly, but the RNS attach backstop is test
+        isolation and must not turn the drill into a silent RNS outage
+        (open_reticulum returning None forever while the log blames pytest —
+        2026-08-09 review finding)."""
+        monkeypatch.setenv("MESHFORGE_TX_GUARD", "1")
+        monkeypatch.setattr(tx_guard, "_under_pytest", lambda: False)
+        assert tx_guard.is_armed()
+        assert tx_guard.rns_attach_allowed(), (
+            "an env-armed production process must keep its RNS attach"
+        )
+        # ... while under pytest the backstop still holds:
+        monkeypatch.setattr(tx_guard, "_under_pytest", lambda: True)
+        assert not tx_guard.rns_attach_allowed()
+        with tx_guard.allow_rns_egress():
+            assert tx_guard.rns_attach_allowed()
+
     @pytest.mark.parametrize("value", [
         "0", "false", "False", "FALSE", "no", "NO", "No",
         "off", "OFF", "Off", "disabled", "DISABLED", "none", "null", " off ",
@@ -275,8 +293,13 @@ class TestGuardedSendSitesRefuse:
         # only a multi-file run proves it did.
         with patch.object(DownlinkInjector, "usable",
                           new_callable=PropertyMock, return_value=True):
-            with pytest.raises(TransmitBlocked):
-                inj._publish("text", 0x1234, lambda: ("t", b"p", 1))
+            # _publish's contract is "never raises, callers fall back", so its
+            # guard catch is DELIBERATE (see tx_guard docstring): a refusal
+            # returns False — and MUST leave the recorded witness, or the
+            # catch would be the silent swallow the design bans.
+            assert inj._publish("text", 0x1234, lambda: ("t", b"p", 1)) is False
+        recs = tx_guard.blocked_attempts()
+        assert recs and recs[-1]["kind"] == "mqtt_downlink_inject"
 
 
 class TestRealFallbackChainIsBlocked:

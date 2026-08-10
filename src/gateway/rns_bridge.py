@@ -108,7 +108,7 @@ HAS_SERVICE_CHECK = True
 
 # Import event bus for RX message notifications (Issue #17 Phase 3)
 from utils.event_bus import emit_message, emit_tactical
-from utils.tx_guard import assert_rns_tx_allowed
+from utils.tx_guard import TransmitBlocked, assert_rns_tx_allowed
 HAS_EVENT_BUS = True
 
 # RNS sniffer is optional monitoring — not required for message bridging
@@ -1050,6 +1050,17 @@ class RNSMeshtasticBridge(
                             self._last_lxmf_announce = time.monotonic()
                             logger.info("LXMF re-announce sent (dest=%s)",
                                         self._lxmf_source.hash.hex())
+                        except TransmitBlocked as e:
+                            # Deliberate catch (see tx_guard docstring): the
+                            # refusal is already recorded+logged by the guard,
+                            # and letting it fly killed this loop with
+                            # _connected_rns still True (2026-08-09 review).
+                            # Stamp the clock so a standing refusal retries at
+                            # the announce interval, not every second.
+                            self._last_lxmf_announce = time.monotonic()
+                            logger.warning(
+                                "LXMF re-announce refused by tx_guard — "
+                                "skipping this cycle: %s", e)
                         except Exception as e:
                             logger.warning("LXMF re-announce failed: %s", e)
 

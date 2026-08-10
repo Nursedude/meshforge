@@ -44,7 +44,9 @@ from utils.safe_import import safe_import
 from utils.common import SettingsManager
 from utils.db_helpers import connect_tuned
 from utils.paths import get_real_user_home
-from utils.tx_guard import DEFAULT_MESH_TCP_PORT, assert_tx_allowed
+from utils.tx_guard import (
+    DEFAULT_MESH_TCP_PORT, TransmitBlocked, assert_tx_allowed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -643,7 +645,21 @@ class AutomationEngine:
                         return
                     continue
 
-                result = self._send_ping(node_id, timeout)
+                try:
+                    result = self._send_ping(node_id, timeout)
+                except TransmitBlocked as e:
+                    # Deliberate catch (see tx_guard docstring): the refusal
+                    # is already recorded+logged by the guard. Letting it fly
+                    # killed this thread permanently with stats never updated
+                    # (2026-08-09 review). Leave a witness and end this
+                    # cycle; the interval wait below retries later.
+                    with self._stats_lock:
+                        self._stats["pings_blocked"] = (
+                            self._stats.get("pings_blocked", 0) + 1)
+                    logger.warning(
+                        "auto-ping refused by tx_guard — skipping this "
+                        "cycle: %s", e)
+                    break
                 self._record_ping(result)
 
             with self._stats_lock:
@@ -653,11 +669,18 @@ class AutomationEngine:
                 return
 
     def _send_ping(self, node_id: str, timeout: int = 30) -> PingResult:
-        """Send a ping to a node via meshtastic CLI."""
+        """Send a ping to a node via meshtastic CLI.
+
+        Raises:
+            TransmitBlocked: tx_guard refused the send — handled by the
+                caller's deliberate catch in ``_ping_loop``.
+        """
+        # RF egress chokepoint — OUTSIDE the try (tx_guard doctrine), so the
+        # refusal cannot be tangled into the send-failure bookkeeping.
+        assert_tx_allowed(self._meshtastic_host, DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli", detail="automation_engine ping")
         start = time.monotonic()
         try:
-            assert_tx_allowed(self._meshtastic_host, DEFAULT_MESH_TCP_PORT,
-                              kind="meshtastic_cli", detail="automation_engine ping")
             result = subprocess.run(
                 [
                     "meshtastic",

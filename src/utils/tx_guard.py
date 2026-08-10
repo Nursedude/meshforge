@@ -38,6 +38,16 @@ Design notes worth keeping:
   swallow is not a guard — it would degrade silently back into a send. This
   is the same reason ``KeyboardInterrupt`` and ``SystemExit`` sit off the
   ``Exception`` branch.
+
+  The sanctioned exception: a DELIBERATE ``except TransmitBlocked`` at a
+  periodic or fallback send site, where a refusal means "skip this send" —
+  the guard has already recorded and logged the attempt, so skipping is loud
+  degradation, not a swallow, and the alternative is a daemon thread dying
+  mid-bookkeeping (2026-08-09 review finding: the re-announce loop, the
+  auto-ping thread and the MQTT downlink injector all died on a refusal,
+  leaving ``_connected_rns`` true and stats stale). What stays banned is
+  ACCIDENTAL absorption — ``except BaseException``/bare ``except`` around a
+  send, which lint MF003 already refuses.
 * Blocked attempts are RECORDED (:func:`blocked_attempts`). That makes the
   guard an instrument as well as a gate: a suite run enumerates exactly which
   hops would have keyed the radio, without keying it. A gate that has only
@@ -278,10 +288,15 @@ def rns_attach_allowed() -> bool:
     and ``TestRNSReticulumChokepoint`` already prove is the ONLY place a real
     ``RNS.Reticulum()`` is constructed, which is what makes one check enough.
 
-    Returns True outside pytest (production is never gated) and True when a
-    test has declared :class:`allow_rns_egress`.
+    Returns True outside pytest — production is never gated, and that has to
+    include the ARMED-BY-ENV drill: ``MESHFORGE_TX_GUARD=1`` on a live
+    gateway must make the SEND sites refuse loudly, not sever the RNS attach
+    — a reconnect loop getting None from open_reticulum forever is a silent
+    RNS outage with a log line blaming pytest in a process running no pytest
+    (2026-08-09 review finding). The attach backstop is test isolation, not
+    part of the drill surface.
     """
-    return (not is_armed()) or rns_egress_allowed()
+    return (not is_armed()) or (not _under_pytest()) or rns_egress_allowed()
 
 
 def note_rns_attach_blocked(configdir) -> None:
@@ -422,6 +437,17 @@ def _parse_allowlist_target(t) -> str:
     return target
 
 
+def _under_pytest() -> bool:
+    """Whether this process is actually running under pytest.
+
+    ``PYTEST_CURRENT_TEST`` is pytest's own per-item signal and is the
+    tightest tell, but it is unset during collection and module import —
+    ``pytest`` in ``sys.modules`` covers that window. Production daemons do
+    not import pytest.
+    """
+    return "PYTEST_CURRENT_TEST" in os.environ or "pytest" in sys.modules
+
+
 def is_armed() -> bool:
     """True when the guard should refuse un-allowlisted transmissions.
 
@@ -457,10 +483,7 @@ def is_armed() -> bool:
     """
     global _arm_logged, _disarm_logged
     raw = os.environ.get(_ENV_ARM)
-    under_pytest = (
-        "PYTEST_CURRENT_TEST" in os.environ
-        or "pytest" in sys.modules
-    )
+    under_pytest = _under_pytest()
     if raw is not None and raw.strip():
         armed = raw.strip().lower() not in _DISARM_VALUES
     else:

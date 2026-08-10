@@ -31,7 +31,7 @@ import time
 from typing import Optional, Tuple
 
 from utils.safe_import import safe_import
-from utils.tx_guard import assert_tx_allowed
+from utils.tx_guard import TransmitBlocked, assert_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -270,9 +270,16 @@ class DownlinkInjector:
         # RF egress chokepoint. This publish is not "just MQTT": meshtasticd
         # subscribes to this topic and TRANSMITS the envelope, so it keys the
         # radio as surely as /api/v1/toradio does. Guarded before connecting.
-        assert_tx_allowed(self._broker, self._port,
-                          kind="mqtt_downlink_inject",
-                          detail=f"downlink inject kind={kind}")
+        # The catch is DELIBERATE (see tx_guard docstring): this method's
+        # contract is "never raises, callers fall back", every fallback path
+        # carries its own guard, and the refusal is already recorded+logged
+        # by the guard — so False here is loud degradation, not a swallow.
+        try:
+            assert_tx_allowed(self._broker, self._port,
+                              kind="mqtt_downlink_inject",
+                              detail=f"downlink inject kind={kind}")
+        except TransmitBlocked:
+            return False
         with self._lock:
             if not self._ensure_connected():
                 return False
