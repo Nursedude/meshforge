@@ -413,6 +413,7 @@ class TestSingleton:
 # Transport tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestTransport:
     """Tests for HTTP transport layer."""
 
@@ -472,6 +473,7 @@ import urllib.error
 # Session tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestSession:
     """Tests for session establishment (connect/disconnect)."""
 
@@ -571,6 +573,7 @@ class TestSession:
 # Callback tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestCallbacks:
     """Tests for the event callback system."""
 
@@ -714,6 +717,7 @@ class TestPacketId:
 # Polling tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestPolling:
     """Tests for the background polling loop."""
 
@@ -826,6 +830,7 @@ class TestConfigRead:
 # Config write tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestConfigWrite:
     """Tests for config write operations."""
 
@@ -1026,6 +1031,7 @@ class TestIntegration:
         assert client._module_config.mqtt.enabled is True
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestBoundaryTimingKeyCardinality:
     """TX metrics keys must be bounded (2026-08-02 gateway memory arc).
 

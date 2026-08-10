@@ -285,6 +285,7 @@ class TestConfigCorrelation:
 
 # --- Radio Health Tests ---
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestRadioHealth:
     """Test get_radio_health() diagnostic function."""
 

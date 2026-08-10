@@ -11,6 +11,9 @@ except ImportError:
     from utils.rich_fallback import Console, Prompt, Confirm, Panel, Table
     HAS_RICH = False
 from utils.cli import find_meshtastic_cli, get_meshtastic_install_instructions
+from utils.tx_guard import (
+    DEFAULT_MESH_TCP_PORT, assert_cli_args_allowed, assert_tx_allowed,
+)
 
 console = Console()
 
@@ -61,6 +64,9 @@ class MeshtasticCLI:
             console.print("[red]Meshtastic CLI not installed![/red]")
             console.print(f"[cyan]Install with: {get_meshtastic_install_instructions()}[/cyan]")
             return None
+
+        assert_cli_args_allowed(args, getattr(self, 'host', None),
+                                detail="cli.meshtastic_cli._run_command")
 
         full_args = [self._cli_path] + self._get_connection_args() + args
 
@@ -369,6 +375,8 @@ class MeshtasticCLI:
         ch_index = Prompt.ask("Channel index", default="0")
         ack = Confirm.ask("Request acknowledgment?", default=False)
 
+        assert_tx_allowed(getattr(self, 'host', None), DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli", detail="cli.meshtastic_cli send")
         args = ["--ch-index", ch_index, "--sendtext", message]
         if dest:
             args.extend(["--dest", dest])

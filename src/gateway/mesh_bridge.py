@@ -40,6 +40,7 @@ from .config import GatewayConfig, MeshtasticBridgeConfig, MeshtasticConfig
 from .message_queue import PersistentMessageQueue, MessagePriority, RetryPolicy
 from utils.safe_import import safe_import
 from utils.paths import get_real_user_home
+from utils.tx_guard import assert_iface_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -1377,6 +1378,9 @@ class MeshtasticPresetBridge:
             # broadcast default — meshtastic's SerialInterface/TCPInterface
             # hard-exit the process (our_exit) on destinationId=None, while
             # their default is BROADCAST_ADDR ('^all').
+            assert_iface_tx_allowed(
+                interface, kind="tcp_sendtext",
+                detail=f"mesh_bridge cross-preset forward -> {dest_name}")
             if msg.is_broadcast:
                 interface.sendText(content, channelIndex=msg.channel)
             else:

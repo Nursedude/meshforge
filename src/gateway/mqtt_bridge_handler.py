@@ -50,6 +50,7 @@ from utils.meshtastic_se_crypto import (
     DEFAULT_KEY_B64, crypto_available, decode_service_envelope,
 )
 from utils.safe_import import safe_import
+from utils.tx_guard import DEFAULT_MESH_TCP_PORT, assert_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -1136,6 +1137,15 @@ class MQTTBridgeHandler(BaseMessageHandler):
         Spawns a transient CLI process that connects via TCP, sends, exits.
         Works but slower and uses the TCP slot briefly.
         """
+        # RF egress chokepoint — before _find_cli and outside the try. The CLI
+        # takes only --host and connects to the meshtastic TCP port, so this
+        # reaches the real radio on a loopback box no matter what port the
+        # caller's config named. An in-process socket tripwire cannot stop
+        # this hop: the send happens in a SUBPROCESS.
+        assert_tx_allowed(self.config.meshtastic.host, DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli",
+                          detail=f"mqtt_bridge_handler._send_via_cli text={message[:40]!r}")
+
         cli = self._find_cli()
         if not cli:
             logger.error("meshtastic CLI not found. Install with: pip install meshtastic")

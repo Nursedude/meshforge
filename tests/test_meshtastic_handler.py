@@ -264,6 +264,7 @@ class TestDisconnect:
 # Send tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestSendText:
     """Tests for text message sending."""
 
@@ -373,6 +374,7 @@ class TestSendText:
 # Queue send tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestQueueSend:
     """Tests for persistent queue send handler."""
 
@@ -812,6 +814,7 @@ class TestHandleConnectionLost:
 # CLI fallback tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestCLIFallback:
     """Tests for Meshtastic CLI fallback."""
 
@@ -991,6 +994,7 @@ class TestRunLoop:
         mock_health.record_error.assert_called()
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestDualPathDedupRegistration:
     """Broadcast TX through the handler registers in the process-wide
     RecentRfTxRegistry (dual-path dedup, 2026-06-04) — so mesh_bridge can
@@ -1037,6 +1041,7 @@ class TestDualPathDedupRegistration:
         assert not reg.seen_within("never sent", 60.0)
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestDispatchTimeDedupRecheck:
     """queue_send re-checks the registry at DISPATCH time (gated).
 
@@ -1120,6 +1125,7 @@ class TestDispatchTimeDedupRecheck:
 # Thread-2 step 4 — Meshtastic ROUTING_APP ACK consumption (#74)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestMeshAckConsumption:
     """The honest-delivery rung: a wantAck DM's ROUTING_APP ACK/NAK becomes
     a real CONFIRMED / DROPPED delivery_counters transition, so Meshtastic

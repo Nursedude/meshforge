@@ -25,6 +25,12 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 
+# Teardown callables registered by ``build_bridge_with_real_pipeline`` (RF
+# egress allowlist + fallback neutralization). Drained per-test by the
+# ``_e2e_pipeline_teardown`` autouse fixture in tests/e2e/conftest.py, so the
+# harness's process-wide patches never outlive the test that asked for them.
+_E2E_TEARDOWN: list = []
+
 
 def make_e2e_config(
     *,
@@ -74,8 +80,10 @@ def build_bridge_with_real_pipeline(*, config, mock_daemon):
     ``tests/e2e/conftest.py`` reverts this per-test.
     """
     from gateway import meshtastic_protobuf_client as _mpc
+    from gateway import mqtt_bridge_handler as _mqtt_handler_mod
     from gateway import rns_bridge as _bridge_mod
     from gateway.message_queue import PersistentMessageQueue
+    from utils import tx_guard
 
     _orig_send = _mpc.send_text_direct
     _orig_send_id = _mpc.send_text_direct_with_id
@@ -99,6 +107,42 @@ def build_bridge_with_real_pipeline(*, config, mock_daemon):
             "make_e2e_config must be called before build_bridge_with_real_pipeline — "
             "config is missing _test_queue_db_path"
         )
+
+    # Allowlist the mock daemon for the RF egress guard. Its port is ephemeral,
+    # so this has to happen in-process at runtime rather than via env.
+    #
+    # ⚠️ Only the MOCK is allowlisted. The handler's fallback chain
+    # (session protobuf client -> localhost:9443, then
+    # `meshtastic --host X --sendtext` -> TCP 4403) does NOT consult the
+    # mock's address, and on 2026-08-09 it keyed the operator's real radio
+    # onto a live statewide channel when a test stopped the mock to force
+    # failures. Those hops stay BLOCKED here on purpose.
+    #
+    # The fallbacks are additionally neutralized below, because what these
+    # tests simulate is "the daemon is down" — and a down daemon means every
+    # path fails, not that TX silently escalates to a different radio. The
+    # guard blocking them is proven separately and deliberately in
+    # tests/test_tx_guard.py::TestRealFallbackChainIsBlocked, which is the
+    # regression drill for this incident.
+    _tx_allow = tx_guard.allow_targets(
+        f"{config.meshtastic.host}:{config.meshtastic.http_port}"
+    )
+    _tx_allow.__enter__()
+
+    _orig_cli = _mqtt_handler_mod.MQTTBridgeHandler._send_via_cli
+    _mqtt_handler_mod.MQTTBridgeHandler._send_via_cli = (
+        lambda self, *a, **kw: False
+    )
+    _orig_has_pb_client = _mqtt_handler_mod._HAS_PROTOBUF_CLIENT
+    _mqtt_handler_mod._HAS_PROTOBUF_CLIENT = False
+
+    _E2E_TEARDOWN.append(
+        lambda: (
+            _tx_allow.__exit__(None, None, None),
+            setattr(_mqtt_handler_mod.MQTTBridgeHandler, "_send_via_cli", _orig_cli),
+            setattr(_mqtt_handler_mod, "_HAS_PROTOBUF_CLIENT", _orig_has_pb_client),
+        )
+    )
 
     _orig_pmq_init = PersistentMessageQueue.__init__
 

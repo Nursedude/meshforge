@@ -33,6 +33,9 @@ from pathlib import Path
 
 from utils.cli import find_meshtastic_cli
 from utils.timeouts import SUBPROCESS_DEFAULT as _CLI_DEFAULT_TIMEOUT
+from utils.tx_guard import (
+    DEFAULT_MESH_TCP_PORT, assert_cli_args_allowed, assert_tx_allowed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +123,9 @@ class MeshtasticCLI:
         Returns:
             CLIResult with success status and output
         """
+        assert_cli_args_allowed(args, getattr(self, 'host', None),
+                                detail="core.meshtastic_cli.run")
+
         if not self.cli_path:
             return CLIResult(
                 success=False,
@@ -249,6 +255,9 @@ class MeshtasticCLI:
         Returns:
             CLIResult
         """
+        assert_tx_allowed(getattr(self, 'host', None), DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli",
+                          detail=f"core.meshtastic_cli.send_text dest={destination}")
         args = [
             '--sendtext', message,
             '--dest', destination,

@@ -571,6 +571,7 @@ class TestMQTTTopicShapes:
         assert iface._connected is False
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestForwardBroadcastOmitsDestination:
     """meshtastic's SerialInterface/TCPInterface hard-exit the process
     (our_exit) when sendText gets destinationId=None — broadcasts must
@@ -620,6 +621,7 @@ class TestForwardBroadcastOmitsDestination:
         assert kwargs['destinationId'] == "!b03bb70c"
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestEchoLoopInvariant:
     """Cross-gateway echo amplification guard (cf. 1a34699; live on moc
     2026-06-03): bridge-tagged content NEVER crosses mesh_bridge, and our
@@ -711,6 +713,7 @@ class TestEchoLoopInvariant:
         assert is_already_bridged(sent_text)
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestDownlinkInjectionWiring:
     """mesh_bridge primary-leg true-origin downlink injection (default off)."""
 
@@ -947,6 +950,7 @@ class TestNodeInfoInjection:
         assert 0xDDFB8065 not in bridge._nodeinfo_sent
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestDualPathDedupRegistration:
     """Successful primary-leg broadcast forwards register their content in
     the process-wide RecentRfTxRegistry so the rns_bridge R→M path can
@@ -1040,6 +1044,7 @@ class TestDualPathDedupRegistration:
         assert reg.seen_content_id_within(cid, 60.0) is True
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestSymmetricDualPathSuppression:
     """mesh_bridge's primary forward suppresses when the rns_bridge relay
     copy already went out (it registered on TX) — closes the race direction
@@ -1183,6 +1188,7 @@ class TestSymmetricDualPathSuppression:
         assert bridge.stats['dual_path_suppressed_cid_only'] == 0
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestSeenOnRfSecondaryScope:
     """Seen-on-RF registration + the secondary-scope check (2026-06-04).
 

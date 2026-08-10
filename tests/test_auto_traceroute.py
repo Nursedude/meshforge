@@ -263,6 +263,7 @@ class TestNodeIdValidation:
 
 # --- AutomationEngine tests ---
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestAutomationEngineTraceroute:
     """Test AutomationEngine traceroute functionality."""
 

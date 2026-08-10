@@ -29,6 +29,7 @@ from utils.meshtastic_connection import (
     MESHTASTIC_CONNECTION_LOCK, wait_for_cooldown, safe_close_interface
 )
 from utils.safe_import import safe_import
+from utils.tx_guard import assert_iface_tx_allowed
 
 # Module-level safe imports for external dependencies
 _TCPInterface, _HAS_TCP_INTERFACE = safe_import(
@@ -632,6 +633,9 @@ class NodeMonitor:
                 else:
                     dest_num = int(destination)
 
+            assert_iface_tx_allowed(
+                self.interface, kind="tcp_sendtext",
+                detail=f"node_monitor.send_message dest={dest_num}")
             self.interface.sendText(text, destinationId=dest_num)
             logger.info(f"Sent message: {text[:50]}...")
             return True
@@ -651,6 +655,9 @@ class NodeMonitor:
             else:
                 dest_num = int(node_id)
 
+            assert_iface_tx_allowed(
+                self.interface, kind="tcp_sendposition",
+                detail=f"node_monitor.request_position dest={dest_num}")
             self.interface.sendPosition(destinationId=dest_num, wantResponse=True)
             return True
         except Exception as e:

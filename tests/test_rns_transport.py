@@ -819,6 +819,7 @@ class TestStartStop:
 # Send fragment tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestSendFragment:
     """Tests for _send_fragment."""
 

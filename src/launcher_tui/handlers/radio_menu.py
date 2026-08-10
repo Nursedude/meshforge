@@ -13,6 +13,7 @@ from pathlib import Path
 from backend import clear_screen
 from handler_protocol import BaseHandler
 from utils.paths import get_real_user_home
+from utils.tx_guard import DEFAULT_MESH_TCP_PORT, assert_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,8 @@ class RadioMenuHandler(BaseHandler):
             ""
         )
 
+        assert_tx_allowed('localhost', DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli", detail="radio_menu send message")
         cmd = [self.ctx.get_meshtastic_cli(), '--host', 'localhost', '--sendtext', msg]
         if dest and dest.strip():
             dest = dest.strip()

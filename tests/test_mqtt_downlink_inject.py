@@ -50,6 +50,17 @@ def _decrypt(packet_id, from_node, ciphertext):
     return dec.update(ciphertext) + dec.finalize()
 
 
+@pytest.fixture(autouse=True)
+def _allow_fake_brokers():
+    """Every broker in this file is a deliberately-unreachable local target
+    (port 1, or 1883 with no broker running) — the tests assert that inject()
+    returns False rather than raising. The RF egress guard cannot tell a fake
+    broker from the real one, so the intent is declared here."""
+    from utils import tx_guard
+    with tx_guard.allow_targets("127.0.0.1:1", "127.0.0.1:1883"):
+        yield
+
+
 class TestChannelHash:
     def test_meshforge_hash_is_pinned_value(self):
         # Step-0 accepted value — do not change without re-proving on a radio.

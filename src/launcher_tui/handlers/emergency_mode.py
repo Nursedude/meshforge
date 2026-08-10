@@ -16,6 +16,7 @@ import logging
 from backend import clear_screen
 from handler_protocol import BaseHandler
 from plugins.eas_alerts import EASAlertsPlugin
+from utils.tx_guard import DEFAULT_MESH_TCP_PORT, assert_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -122,6 +123,8 @@ class EmergencyModeHandler(BaseHandler):
         print(f"Broadcasting: {full_msg}\n")
         try:
             cli_path = self._get_emcomm_cli()
+            assert_tx_allowed(None, None, kind="meshtastic_cli",
+                              detail="emergency_mode broadcast")
             # Honest-signal: gate "sent" on the real CLI exit code. A non-zero
             # return (no radio, radio busy, TX rejected) must NOT read as sent in
             # an EMCOMM scenario. Mirrors _emcomm_sos_beacon's returncode check.
@@ -191,6 +194,8 @@ class EmergencyModeHandler(BaseHandler):
         print(f"Sending to {dest_clean}: {full_msg}\n")
         try:
             cli_path = self._get_emcomm_cli()
+            assert_tx_allowed(None, None, kind="meshtastic_cli",
+                              detail="emergency_mode directed")
             # Honest-signal: a directed emergency message must report the real
             # send result — a non-zero exit (unreachable dest, radio rejected,
             # TCP to meshtasticd failed) must NOT print "Message sent."
@@ -331,6 +336,8 @@ class EmergencyModeHandler(BaseHandler):
                 print(f"  [{count}] Sending beacon... ", end="", flush=True)
                 try:
                     cli_path = self._get_emcomm_cli()
+                    assert_tx_allowed(None, None, kind="meshtastic_cli",
+                                      detail="emergency_mode SOS beacon")
                     result = subprocess.run(
                         [cli_path, '--sendtext', beacon_msg],
                         capture_output=True, timeout=30

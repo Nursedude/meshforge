@@ -23,6 +23,7 @@ from collections import defaultdict
 
 from .config import RNSOverMeshtasticConfig
 from utils.safe_import import safe_import
+from utils.tx_guard import assert_iface_tx_allowed
 
 # Import Meshtastic and pubsub (optional - for transport layer)
 _meshtastic_mod, _HAS_MESHTASTIC = safe_import('meshtastic')
@@ -521,6 +522,9 @@ class RNSMeshtasticTransport:
             data = fragment.to_bytes()
 
             if self._interface:
+                assert_iface_tx_allowed(
+                    self._interface, kind="tcp_senddata",
+                    detail="rns_transport._send_fragment")
                 # Send as private data packet
                 self._interface.sendData(
                     data,

@@ -33,6 +33,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
+from utils.tx_guard import assert_tx_allowed
 
 from .meshtastic_protobuf_ops import (
     CONFIG_TYPE_NAMES,
@@ -141,6 +142,12 @@ def send_text_direct_with_id(
         (request_id == this id) for honest delivery confirmation. The legacy
         ``send_text_direct`` wraps this to a bool for accept/fail callers.
     """
+    # RF egress chokepoint. Deliberately the FIRST statement and OUTSIDE the
+    # try below: TransmitBlocked must not be absorbed into the "send failed"
+    # path, or the guard degrades into the very send it exists to stop.
+    assert_tx_allowed(host, port, kind="http_toradio",
+                      detail=f"send_text_direct_with_id text={text[:40]!r}")
+
     if not _pb2_available:
         logger.debug("send_text_direct: protobuf not available")
         return None
@@ -361,6 +368,16 @@ class MeshtasticProtobufClient(ProtobufAdminMixin):
         Returns:
             True on success, False on error
         """
+        # RF egress chokepoint — before the try, so the refusal cannot be
+        # absorbed into the "POST failed" path. This is the SESSION client,
+        # whose singleton is built from ProtobufTransportConfig() DEFAULTS
+        # (localhost:9443) and therefore ignores whatever host a caller's
+        # config named — the exact hop that reached the real radio on
+        # 2026-08-09 after the stateless send failed against a dead mock.
+        assert_tx_allowed(self._config.host, self._config.port,
+                          kind="http_toradio_session",
+                          detail="MeshtasticProtobufClient._post_toradio")
+
         url = f"{self._base_url}/api/v1/toradio"
         try:
             req = urllib.request.Request(

@@ -41,6 +41,9 @@ except ImportError:
     def broadcast_message(*args, **kwargs):
         pass
 from utils.boundary_timing import timed_boundary
+from utils.tx_guard import (
+    DEFAULT_MESH_TCP_PORT, assert_iface_tx_allowed, assert_tx_allowed,
+)
 from utils.safe_import import safe_import
 from utils.service_check import check_service
 
@@ -452,6 +455,10 @@ class MeshtasticHandler(BaseMessageHandler):
                 want_ack = self._ack_consumption_enabled() and bool(destination)
                 logger.debug(f"Sending to Meshtastic: dest={dest}, ch={channel}, "
                              f"wantAck={want_ack}, msg={message[:50]}")
+                assert_iface_tx_allowed(
+                    self._interface, kind="tcp_sendtext",
+                    detail=f"meshtastic_handler.send_text dest={dest}",
+                    default_host=self.config.meshtastic.host)
                 with timed_boundary("meshtasticd.send_text", target=str(dest)):
                     result = self._interface.sendText(
                         message,
@@ -534,6 +541,10 @@ class MeshtasticHandler(BaseMessageHandler):
                 dest = destination if destination else "^all"
                 # Thread-2 step 4: wantAck for DMs (see send_text).
                 want_ack = self._ack_consumption_enabled() and bool(destination)
+                assert_iface_tx_allowed(
+                    self._interface, kind="tcp_sendtext",
+                    detail=f"meshtastic_handler queue send dest={dest}",
+                    default_host=self.config.meshtastic.host)
                 with timed_boundary("meshtasticd.send_text", target=str(dest)):
                     result = self._interface.sendText(
                         message, destinationId=dest, channelIndex=channel,
@@ -931,6 +942,12 @@ class MeshtasticHandler(BaseMessageHandler):
 
     def _send_via_cli(self, message: str, destination: str = None, channel: int = 0) -> bool:
         """Send via Meshtastic CLI as fallback."""
+        # RF egress chokepoint — outside the try, so a refusal cannot be
+        # absorbed into the "CLI send failed" path. Subprocess egress is
+        # invisible to any in-process socket tripwire.
+        assert_tx_allowed(self.config.meshtastic.host, DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli",
+                          detail=f"meshtastic_handler._send_via_cli text={message[:40]!r}")
         try:
             from utils.cli import find_meshtastic_cli
             cli_path = find_meshtastic_cli() or 'meshtastic'

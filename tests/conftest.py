@@ -249,6 +249,88 @@ def _isolate_operator_data_stores(tmp_path_factory):
 
 
 @pytest.fixture(scope="session", autouse=True)
+def _block_radio_egress():
+    """FOURTH sibling of the isolation gates — and the first that fences the
+    ANTENNA rather than the disk.
+
+    2026-08-09: a full suite run on a fleet radio box transmitted the e2e fixture
+    ``[RNS:abc] retry with bytes`` onto a live statewide public channel. The
+    suite reported 10,535 passed while keying the air; the operator found out
+    by looking at his phone. Three session-scoped gates isolated databases and
+    NOTHING isolated egress — we fenced the disk and left the antenna open.
+
+    This is the backstop layer. The primary layer is ``utils.tx_guard``, wired
+    into each send site, which names the hop and is the ONLY thing that can
+    stop the CLI fallback (``meshtastic --host X --sendtext``) because that
+    egress happens in a SUBPROCESS this patch cannot see. What this fixture
+    adds is coverage of sites nobody guarded — including the meshtastic
+    library's own ``TCPInterface``, which opens its socket well below any code
+    we wrote.
+
+    Deliberately narrow: only the meshtasticd radio ports. A blanket
+    "block non-loopback" fixture would NOT have caught the 08-09 leak, because
+    the radio is ON loopback here — and a blanket block would break the
+    map-server and MQTT harnesses that legitimately bind sockets.
+    """
+    import socket as _socket
+
+    from utils import tx_guard
+
+    radio_ports = {4403, 9443}
+    orig_connect = _socket.socket.connect
+    orig_connect_ex = _socket.socket.connect_ex
+
+    def _check(address):
+        if isinstance(address, tuple) and len(address) >= 2:
+            host, port = address[0], address[1]
+            if port in radio_ports:
+                tx_guard.assert_tx_allowed(
+                    host, port, kind="socket_tripwire",
+                    detail="raw socket connect to a meshtasticd radio port",
+                )
+
+    def _connect(self, address):
+        _check(address)
+        return orig_connect(self, address)
+
+    def _connect_ex(self, address):
+        _check(address)
+        return orig_connect_ex(self, address)
+
+    _socket.socket.connect = _connect
+    _socket.socket.connect_ex = _connect_ex
+    try:
+        yield
+    finally:
+        _socket.socket.connect = orig_connect
+        _socket.socket.connect_ex = orig_connect_ex
+
+
+@pytest.fixture
+def allow_local_radio_tx():
+    """Allowlist the local radio for a test whose TRANSPORT IS MOCKED.
+
+    ⚠️ Opt-in, never autouse. Requesting this fixture is a test AUTHOR
+    asserting "my socket / subprocess / interface is a double, so permitting
+    this target cannot key anything." If that assertion is wrong, the test
+    transmits — which is precisely the 2026-08-09 failure.
+
+    Use it for tests that exercise send LOGIC (truncation, dedup registration,
+    ACK bookkeeping, return-value handling) where the I/O below is patched.
+    Do NOT use it to make a red test green: if a test fails with
+    ``TransmitBlocked`` and its transport is NOT mocked, the guard just found a
+    real leak.
+    """
+    from utils import tx_guard
+
+    # 4403/9443 = the radio; 1883 = the local broker meshtasticd relays
+    # to RF (a downlink inject keys the radio just as toradio does).
+    with tx_guard.allow_targets("127.0.0.1:4403", "127.0.0.1:9443",
+                                "127.0.0.1:1883"):
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
 def _isolate_delivery_counters_db(tmp_path_factory):
     """Keep delivery-counter writes out of the operator's live DB.
 

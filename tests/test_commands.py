@@ -325,6 +325,7 @@ class TestIntegration:
             assert isinstance(result.data, dict)
 
 
+@pytest.mark.usefixtures("allow_local_radio_tx")
 class TestDiagnosticsCommands:
     """Test diagnostics command module."""
 

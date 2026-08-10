@@ -27,6 +27,7 @@ from typing import Optional, List, Dict, Any
 from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
 from utils.service_check import restart_service, check_service, ServiceState
+from utils.tx_guard import assert_iface_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -770,6 +771,9 @@ class MeshtasticConnectionManager:
         """
         try:
             with self.with_connection(max_retries=max_retries) as iface:
+                assert_iface_tx_allowed(
+                    iface, kind="tcp_sendtext",
+                    detail=f"connection_manager.send_message dest={destination}")
                 if destination == '^all':
                     iface.sendText(text)
                 else:
