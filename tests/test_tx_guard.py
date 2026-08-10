@@ -58,6 +58,34 @@ class TestArming:
         monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
         assert tx_guard.is_armed()
 
+    @pytest.mark.parametrize("value", [
+        "0", "", " ", "false", "False", "FALSE", "no", "NO", "No",
+        "off", "OFF", "Off", "disabled", "DISABLED", "none", "null", " off ",
+    ])
+    def test_every_off_shaped_value_disarms(self, monkeypatch, value):
+        """On a LIVE box ARMED is the dangerous state — a blocked send is a
+        silent mesh outage — and this variable exists for the deliberate
+        disarm someone performs standing at a radio. Seven of these armed
+        before 2026-08-09 ('FALSE', 'NO', 'off', 'OFF', 'disabled', 'none',
+        'null'): the operator's intent read as unrecognised, and unrecognised
+        arms. Case and spelling must not decide whether the mesh goes quiet.
+        """
+        monkeypatch.setenv("MESHFORGE_TX_GUARD", value)
+        assert not tx_guard.is_armed(), f"{value!r} reads as OFF but ARMED"
+
+    @pytest.mark.parametrize("value", [
+        "1", "true", "yes", "on", "armed", "please", "0x0", "00", "-0",
+    ])
+    def test_unrecognised_value_still_arms(self, monkeypatch, value):
+        """The other direction, pinned so the disarm set cannot quietly widen:
+        anything NOT plainly meaning off must fail CLOSED. '00' and '-0' are
+        deliberate — they are not the documented '0', so they are unknown, and
+        an unknown must never be read as permission to transmit.
+        """
+        monkeypatch.setenv("MESHFORGE_TX_GUARD", value)
+        monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+        assert tx_guard.is_armed(), f"{value!r} is not 'off' but DISARMED"
+
 
 class TestAllowlist:
     def test_unlisted_target_raises(self):

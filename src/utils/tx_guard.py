@@ -114,6 +114,11 @@ __all__ = [
 DEFAULT_MESH_TCP_PORT = 4403
 
 _ENV_ARM = "MESHFORGE_TX_GUARD"
+#: Values of ``_ENV_ARM`` that DISARM the guard, compared lower-cased and
+#: stripped. Anything else arms (fail-closed on an unknown). See is_armed().
+_DISARM_VALUES = frozenset({
+    "0", "", "false", "no", "off", "disabled", "none", "null",
+})
 _ENV_ALLOW = "MESHFORGE_TX_ALLOW"
 
 _lock = threading.Lock()
@@ -349,11 +354,22 @@ def is_armed() -> bool:
     tell, but it is unset during collection and module import — where an
     import-time send would be just as loud on the air. ``pytest`` in
     ``sys.modules`` covers that window. Production daemons do not import pytest.
+
+    ⚠️ The disarm vocabulary is matched CASE-INSENSITIVELY and covers every
+    spelling an operator plausibly means by "off". It used to be the literal
+    tuple ``("0", "", "false", "False", "no")``, which armed on ``FALSE``,
+    ``NO``, ``off``, ``OFF``, ``disabled``, ``none`` and ``null`` (measured
+    2026-08-09, all seven). That asymmetry pointed the WRONG way: on a live box
+    ARMED is the dangerous state, because a blocked send is a silent mesh
+    outage, and this variable's whole purpose is the deliberate-disarm path
+    someone reaches for while standing at a radio. An unrecognised value still
+    ARMS — fail-closed is right for an unknown — but a value that plainly reads
+    as "off" must not be the unrecognised one.
     """
     global _arm_logged
     raw = os.environ.get(_ENV_ARM)
     if raw is not None:
-        armed = raw.strip() not in ("0", "", "false", "False", "no")
+        armed = raw.strip().lower() not in _DISARM_VALUES
     else:
         armed = (
             "PYTEST_CURRENT_TEST" in os.environ
