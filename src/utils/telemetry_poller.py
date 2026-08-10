@@ -360,6 +360,12 @@ class TelemetryPoller:
             record.last_poll_time = datetime.now()
             record.poll_count += 1
 
+        # RF egress chokepoint (on-air packet) — outside the try, so the
+        # refusal cannot be absorbed into the "request failed" bookkeeping.
+        from utils.tx_guard import assert_cli_args_allowed
+        assert_cli_args_allowed(["--request-telemetry"], self.meshtastic_host,
+                                detail=f"telemetry_poller poll dest={node_id}")
+
         try:
             # Find meshtastic CLI
             cli_path = self._find_meshtastic_cli()

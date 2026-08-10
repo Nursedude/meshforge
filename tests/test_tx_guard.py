@@ -59,7 +59,7 @@ class TestArming:
         assert tx_guard.is_armed()
 
     @pytest.mark.parametrize("value", [
-        "0", "", " ", "false", "False", "FALSE", "no", "NO", "No",
+        "0", "false", "False", "FALSE", "no", "NO", "No",
         "off", "OFF", "Off", "disabled", "DISABLED", "none", "null", " off ",
     ])
     def test_every_off_shaped_value_disarms(self, monkeypatch, value):
@@ -72,6 +72,21 @@ class TestArming:
         """
         monkeypatch.setenv("MESHFORGE_TX_GUARD", value)
         assert not tx_guard.is_armed(), f"{value!r} reads as OFF but ARMED"
+
+    @pytest.mark.parametrize("value", ["", " ", "\t"])
+    def test_empty_value_is_nobodys_decision(self, monkeypatch, value):
+        """An empty/whitespace value is what a shell typo
+        (``MESHFORGE_TX_GUARD= pytest``) or an undefined CI variable produces
+        — nobody DECIDED anything. It must fall through to pytest detection,
+        not disarm: '' in the disarm set silently switched the whole stack
+        off with no witness (2026-08-09 review finding). This test runs under
+        pytest, so falling through means ARMED right here.
+        """
+        monkeypatch.setenv("MESHFORGE_TX_GUARD", value)
+        assert tx_guard.is_armed(), (
+            f"{value!r} read as an explicit disarm — an empty env value must "
+            f"fall through to pytest detection"
+        )
 
     @pytest.mark.parametrize("value", [
         "1", "true", "yes", "on", "armed", "please", "0x0", "00", "-0",
@@ -112,15 +127,36 @@ class TestAllowlist:
         monkeypatch.setenv("MESHFORGE_TX_ALLOW", "127.0.0.1:8123")
         assert_tx_allowed("127.0.0.1", 8123, kind="drill")
 
-    def test_mock_shaped_target_collapses_to_the_local_radio(self):
-        """A config built from MagicMock must not mint an un-allowlistable
-        target. Found porting to MeshAnchor: the refusal named
-        ``<MagicMock name='...host.strip()' id='140735842580672'>:1``, unique
-        per run, so the message's own advice was impossible to follow."""
+    def test_mock_shaped_target_is_unresolved_and_never_allowlistable(self):
+        """A config built from MagicMock must not mint a unique-per-run
+        target (the refusal's own advice would be impossible to follow) — and
+        it must not collapse to the LOCAL RADIO either: 127.0.0.1:4403 is the
+        single most-allowlisted target in the tree, so collapsing meant an
+        e2e harness blessing its mock daemon also blessed every send whose
+        destination the guard could not even read (2026-08-09 review finding).
+        Unknown → UNRESOLVED_TARGET, refused no matter what is allowlisted."""
         from unittest.mock import MagicMock
-        assert tx_guard.normalize_target(MagicMock(), MagicMock()) == "127.0.0.1:4403"
+        assert tx_guard.normalize_target(MagicMock(), MagicMock()) == tx_guard.UNRESOLVED_TARGET
         with tx_guard.allow_targets("127.0.0.1:4403"):
-            assert_tx_allowed(MagicMock(), MagicMock(), kind="drill")
+            with pytest.raises(TransmitBlocked):
+                assert_tx_allowed(MagicMock(), MagicMock(), kind="drill")
+
+    def test_none_host_is_the_local_radio_not_unresolved(self):
+        """None stays distinct from garbage: it is the documented 'local
+        radio' default real call sites pass deliberately (meshtastic CLI with
+        no --host keys localhost), so it must remain allowlistable."""
+        assert tx_guard.normalize_target(None, None) == "127.0.0.1:4403"
+        with tx_guard.allow_targets("127.0.0.1:4403"):
+            assert_tx_allowed(None, None, kind="drill")
+
+    def test_typoed_allowlist_port_raises_instead_of_minting_4403(self):
+        """honest_failure_modes #3: the old parse resolved a non-numeric port
+        to the DEFAULT — 4403, the operator's real radio. A typo must never
+        allowlist the one target this guard exists to protect."""
+        with pytest.raises(ValueError):
+            tx_guard.allow_targets("127.0.0.1:9x43")
+        with pytest.raises(ValueError):
+            tx_guard.set_allowed_targets(["127.0.0.1:9x43"])
 
     def test_blocked_attempt_is_recorded(self):
         """The gate is also an instrument: a suite run must be able to name
@@ -431,9 +467,24 @@ class TestGuardIsWiredAtEverySendSite:
     SRC = Path(__file__).resolve().parents[1] / "src"
 
     # Methods on a meshtastic interface object that put bytes on the air.
-    EGRESS_METHODS = {"sendText", "sendData", "sendPosition"}
+    # sendTraceRoute/sendWaypoint/sendTelemetry/sendAlert are genuine on-air
+    # TX in meshtastic 2.7.9 and were missing until the 2026-08-09 review
+    # drilled the sweep with planted violations (closed-enum hazard,
+    # honest_failure_modes #7 — the sweep is itself a consumer of this enum).
+    EGRESS_METHODS = {
+        "sendText", "sendData", "sendPosition",
+        "sendTraceRoute", "sendWaypoint", "sendTelemetry", "sendAlert",
+    }
 
-    def test_every_interface_send_has_a_guard_within_10_lines(self):
+    @staticmethod
+    def _code_only(lines):
+        """Strip ``#`` comments so a COMMENT mentioning a guard or a shared
+        runner cannot exempt an unguarded transmit site (drilled 2026-08-09:
+        a nearby comment containing ``_run_command(`` silently exempted a
+        planted violation)."""
+        return [l.split("#", 1)[0] for l in lines]
+
+    def test_every_interface_send_has_a_guard_before_it(self):
         import ast
 
         offenders = []
@@ -445,7 +496,8 @@ class TestGuardIsWiredAtEverySendSite:
                 tree = ast.parse(src)
             except SyntaxError:
                 continue
-            lines = src.splitlines()
+            lines = self._code_only(src.splitlines())
+            raw = src.splitlines()
             for node in ast.walk(tree):
                 # AST, not grep: a docstring that MENTIONS sendText() is not a
                 # send, and a sweep that cannot tell the difference produces
@@ -456,11 +508,14 @@ class TestGuardIsWiredAtEverySendSite:
                 if not isinstance(fn, ast.Attribute) or fn.attr not in self.EGRESS_METHODS:
                     continue
                 i = node.lineno - 1
+                # BEFORE the send only: a guard placed after the transmit has
+                # already lost (drilled 2026-08-09 — the old ±window accepted
+                # transmit-then-refuse ordering).
                 window = "\n".join(lines[max(0, i - 10):i + 1])
                 if "assert_iface_tx_allowed" in window or "assert_tx_allowed" in window:
                     continue
                 offenders.append(
-                    f"{path.relative_to(self.SRC)}:{node.lineno}: {lines[i].strip()}"
+                    f"{path.relative_to(self.SRC)}:{node.lineno}: {raw[i].strip()}"
                 )
         assert not offenders, (
             "unguarded RF egress site(s) — every send must consult "
@@ -481,23 +536,37 @@ class TestGuardIsWiredAtEverySendSite:
         for path in self.SRC.rglob("*.py"):
             if path.name == "tx_guard.py":
                 continue
-            lines = path.read_text(errors="ignore").splitlines()
+            raw = path.read_text(errors="ignore").splitlines()
+            # Comments are stripped BEFORE matching, in both directions: a
+            # comment mentioning a flag must not create noise, and a comment
+            # mentioning a guard or shared runner must not exempt a real
+            # transmit site (drilled 2026-08-09).
+            lines = TestGuardIsWiredAtEverySendSite._code_only(raw)
             for i, line in enumerate(lines):
-                if not any(f"'{f}'" in line or f'"{f}"' in line
+                # Match the flag itself AND its ``=``-form f-string spelling
+                # (f"--sendtext={msg}") — the latter was invisible to the
+                # quote-flanked match while being a real transmit.
+                if not any(f"'{f}'" in line or f'"{f}"' in line or f"{f}=" in line
                            for f in tx_guard.TRANSMITTING_CLI_FLAGS):
                     continue
-                window = "\n".join(lines[max(0, i - 15):i + 16])
-                if "assert_tx_allowed" in window:
+                # Guard must come BEFORE the flag line — a refusal after the
+                # subprocess has spawned is a record of a transmission, not a
+                # prevention of one.
+                before = "\n".join(lines[max(0, i - 15):i + 1])
+                if "assert_tx_allowed" in before or "assert_cli_args_allowed" in before:
                     continue
                 # Covered transitively: the flag is handed to a shared runner
                 # that guards on TRANSMITTING_CLI_FLAGS. That indirection is
                 # the BETTER pattern (a new --traceroute caller is covered the
                 # day it is written), so the sweep must not punish it — and
                 # test_guarded_runners_still_guard below pins those runners so
-                # this allowance cannot be silently defeated.
+                # this allowance cannot be silently defeated. The runner CALL
+                # legitimately sits after the args build, so this check keeps
+                # the forward window.
+                window = "\n".join(lines[max(0, i - 15):i + 16])
                 if "_run_command(" in window or "self.run(" in window:
                     continue
-                offenders.append(f"{path.relative_to(self.SRC)}:{i + 1}: {line.strip()}")
+                offenders.append(f"{path.relative_to(self.SRC)}:{i + 1}: {raw[i].strip()}")
         assert not offenders, (
             "unguarded meshtastic CLI transmit site(s) — subprocess egress is "
             "invisible to the socket tripwire, so the call-site guard is the "
@@ -517,7 +586,7 @@ class TestTransmittingFlagSet:
     def test_known_transmitting_flags_are_pinned(self):
         assert tx_guard.TRANSMITTING_CLI_FLAGS == frozenset({
             "--sendtext", "--sendping", "--traceroute",
-            "--request-position", "--reply",
+            "--request-position", "--request-telemetry", "--reply",
         })
 
     def test_config_flags_are_not_guarded(self):
@@ -531,6 +600,35 @@ class TestTransmittingFlagSet:
         for flag in tx_guard.TRANSMITTING_CLI_FLAGS:
             with pytest.raises(TransmitBlocked):
                 tx_guard.assert_cli_args_allowed([flag, "x"], "localhost")
+
+    def test_equals_form_is_refused(self):
+        """Live-drilled 2026-08-09 against meshtastic 2.7.9:
+        ``--sendtext=hello`` parses and transmits, and the exact-token match
+        let it straight through the guard."""
+        for flag in tx_guard.TRANSMITTING_CLI_FLAGS:
+            with pytest.raises(TransmitBlocked):
+                tx_guard.assert_cli_args_allowed([f"{flag}=x"], "localhost")
+
+    def test_argparse_abbreviations_are_refused(self):
+        """argparse allow_abbrev accepts any unambiguous prefix of a long
+        option, so ``--sendt hello`` transmits too (drilled 2.7.9). Any
+        prefix of a transmitting flag is refused — an AMBIGUOUS prefix makes
+        argparse error without transmitting, so over-matching costs nothing,
+        while under-matching is an unguarded send."""
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_cli_args_allowed(["--sendt", "x"], "localhost")
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_cli_args_allowed(["--sendt=x"], "localhost")
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_cli_args_allowed(["--tracer", "!abcd"], "localhost")
+
+    def test_non_flag_prefixes_still_pass(self):
+        """Narrowness: values and unrelated flags must not trip the prefix
+        match, or the guard fires on config reads and gets switched off."""
+        tx_guard.assert_cli_args_allowed(["--set", "lora.region", "US"])
+        tx_guard.assert_cli_args_allowed(["--seturl", "https://x"])
+        tx_guard.assert_cli_args_allowed(["--reboot"])
+        tx_guard.assert_cli_args_allowed(["--export-config"])
 
 
 class TestGuardedRunnersStillGuard:

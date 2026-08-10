@@ -107,6 +107,7 @@ __all__ = [
     "in_probe",
     "normalize_target",
     "DEFAULT_MESH_TCP_PORT",
+    "UNRESOLVED_TARGET",
 ]
 
 # meshtastic CLI / TCPInterface default port. The CLI takes only ``--host``,
@@ -115,9 +116,14 @@ DEFAULT_MESH_TCP_PORT = 4403
 
 _ENV_ARM = "MESHFORGE_TX_GUARD"
 #: Values of ``_ENV_ARM`` that DISARM the guard, compared lower-cased and
-#: stripped. Anything else arms (fail-closed on an unknown). See is_armed().
+#: stripped. Anything else arms (fail-closed on an unknown). An EMPTY or
+#: whitespace value is NOT a disarm word: ``MESHFORGE_TX_GUARD= pytest`` (a
+#: shell typo) or a CI ``env:`` line whose variable is undefined sets the var
+#: to "" — treating that as an explicit operator decision would silently
+#: switch the whole stack off under pytest, re-opening the exact 2026-08-09
+#: leak. Empty falls through to pytest detection. See is_armed().
 _DISARM_VALUES = frozenset({
-    "0", "", "false", "no", "off", "disabled", "none", "null",
+    "0", "false", "no", "off", "disabled", "none", "null",
 })
 _ENV_ALLOW = "MESHFORGE_TX_ALLOW"
 
@@ -126,6 +132,7 @@ _allowed: set = set()
 _blocked: List[dict] = []
 _BLOCKED_CAP = 500
 _arm_logged = False
+_disarm_logged = False
 
 
 class TransmitBlocked(BaseException):
@@ -150,8 +157,32 @@ TRANSMITTING_CLI_FLAGS = frozenset({
     "--sendping",
     "--traceroute",
     "--request-position",
+    "--request-telemetry",
     "--reply",
 })
+
+
+def _transmitting_flag_hit(token: str) -> Optional[str]:
+    """The transmitting flag ``token`` invokes, or None.
+
+    Matches every spelling argparse accepts, not just the exact two-token
+    form (live-drilled 2026-08-09 against meshtastic 2.7.9 — both of these
+    parse and transmit):
+
+    * ``--sendtext=hello`` — the ``=`` form of any value-taking option.
+    * ``--sendt`` — argparse ``allow_abbrev`` accepts any unambiguous PREFIX
+      of a long option. We match ANY prefix: an ambiguous one makes argparse
+      error out without transmitting, so over-matching there costs nothing,
+      while under-matching is an unguarded send.
+    """
+    name = token.split("=", 1)[0]
+    if name in TRANSMITTING_CLI_FLAGS:
+        return name
+    if name.startswith("--") and len(name) > 2:
+        for flag in TRANSMITTING_CLI_FLAGS:
+            if flag.startswith(name):
+                return flag
+    return None
 
 
 def assert_cli_args_allowed(args, host: Optional[str] = None,
@@ -164,7 +195,9 @@ def assert_cli_args_allowed(args, host: Optional[str] = None,
     the day someone remembers to guard it.
     """
     argv = [str(a) for a in (args or [])]
-    hit = next((a for a in argv if a in TRANSMITTING_CLI_FLAGS), None)
+    hit = next(
+        (h for h in (_transmitting_flag_hit(a) for a in argv) if h), None
+    )
     if hit is None:
         return
     assert_tx_allowed(host, port or DEFAULT_MESH_TCP_PORT,
@@ -311,19 +344,34 @@ def in_probe() -> bool:
     return getattr(_probe_state, "depth", 0) > 0
 
 
+#: Target token minted when a send's destination cannot be determined
+#: (non-string host, unparseable port). It is refused UNCONDITIONALLY when
+#: armed — no allowlist entry can ever name it. The old behaviour collapsed
+#: unknowns to the local radio, which is the single most-allowlisted target in
+#: the tree: an e2e harness that allowlisted 127.0.0.1:4403 for its mock
+#: daemon thereby blessed every send whose destination the guard could not
+#: even read (2026-08-09 review finding, fail-open in the unknown direction).
+UNRESOLVED_TARGET = "<unresolved>"
+
+
 def normalize_target(host: Optional[str], port: Optional[int]) -> str:
     """Canonical ``host:port`` string used for allowlisting and records.
 
-    Non-string hosts and non-integer ports collapse to the LOCAL RADIO rather
-    than being rendered as-is. A test that builds its config from a
-    ``MagicMock`` otherwise mints a target like
+    A non-string host or an unparseable port yields :data:`UNRESOLVED_TARGET`,
+    which :func:`assert_tx_allowed` refuses unconditionally. A test that
+    builds its config from a ``MagicMock`` otherwise mints a target like
     ``<MagicMock name='...host.strip()' id='140735842580672'>:1`` — unique per
     run, so no allowlist could ever name it and the refusal message advised
-    something impossible. Collapsing is also the safe reading: if we cannot
-    tell where this send points, assume it points at the operator's radio.
+    something impossible. Refusing outright is the fail-closed reading: if we
+    cannot tell where this send points, it may point ANYWHERE — including at
+    the operator's radio — so no allowlist entry may cover it.
+
+    ``host=None`` stays distinct from garbage: it is the documented "local
+    radio" default that real call sites pass deliberately (the meshtastic CLI
+    with no ``--host`` keys localhost), so it normalizes to loopback.
     """
-    if not isinstance(host, str):
-        host = None
+    if host is not None and not isinstance(host, str):
+        return UNRESOLVED_TARGET
     h = (host or "").strip() or "localhost"
     # Treat the loopback spellings as one target so a harness that allowlists
     # 127.0.0.1 is not defeated by a caller that says "localhost".
@@ -332,13 +380,46 @@ def normalize_target(host: Optional[str], port: Optional[int]) -> str:
     # isinstance, NOT try/int(): a MagicMock defines __int__ and answers 1, so
     # a try/except around int() silently produced "127.0.0.1:1" — a plausible
     # target that was never asked for. Caught by the drill, not by review.
+    if port is None or (isinstance(port, str) and not port.strip()):
+        return f"{h}:{DEFAULT_MESH_TCP_PORT}"
     if isinstance(port, bool) or not isinstance(port, (int, str)):
-        port = None
+        return UNRESOLVED_TARGET
     try:
-        p = int(port) if port else DEFAULT_MESH_TCP_PORT
+        p = int(port)
     except (TypeError, ValueError):
-        p = DEFAULT_MESH_TCP_PORT
+        return UNRESOLVED_TARGET
     return f"{h}:{p}"
+
+
+def _parse_allowlist_target(t) -> str:
+    """Parse ONE allowlist entry, refusing to guess on a malformed port.
+
+    The old inline parse used ``int(port) if port.isdigit() else None``, so a
+    typo'd entry like ``'127.0.0.1:9x43'`` silently resolved to the DEFAULT
+    port — 4403, the operator's real radio. A typo must never mint permission
+    for the one target this guard exists to protect (honest_failure_modes #3:
+    validators reject what the author cannot have meant).
+
+    A bare host with no ``:`` keeps the documented convenience of defaulting
+    to the meshtastic TCP port — that is an omission, not a malformation.
+    """
+    entry = str(t).strip()
+    if not entry:
+        raise ValueError("tx_guard allowlist entry is empty")
+    host, sep, port = entry.rpartition(":")
+    if not sep:
+        target = normalize_target(entry, None)
+    elif not port.isdigit():
+        raise ValueError(
+            f"tx_guard allowlist entry {entry!r}: port {port!r} is not "
+            f"numeric — refusing to guess (a typo must not allowlist the "
+            f"default radio port)"
+        )
+    else:
+        target = normalize_target(host, int(port))
+    if target == UNRESOLVED_TARGET:
+        raise ValueError(f"tx_guard allowlist entry {entry!r} does not parse")
+    return target
 
 
 def is_armed() -> bool:
@@ -365,23 +446,42 @@ def is_armed() -> bool:
     someone reaches for while standing at a radio. An unrecognised value still
     ARMS — fail-closed is right for an unknown — but a value that plainly reads
     as "off" must not be the unrecognised one.
+
+    ⚠️ An EMPTY (or whitespace) value is nobody's decision — it is what a
+    shell typo (``MESHFORGE_TX_GUARD= pytest``) or an undefined CI variable
+    produces. It falls through to pytest detection instead of disarming
+    (2026-08-09 review finding: "" in the disarm set silently switched the
+    whole stack off with no witness). And because DISARMED-under-pytest is
+    the dangerous state on a radio box, an explicit disarm while pytest is
+    detected is logged loudly once — the state must leave a witness.
     """
-    global _arm_logged
+    global _arm_logged, _disarm_logged
     raw = os.environ.get(_ENV_ARM)
-    if raw is not None:
+    under_pytest = (
+        "PYTEST_CURRENT_TEST" in os.environ
+        or "pytest" in sys.modules
+    )
+    if raw is not None and raw.strip():
         armed = raw.strip().lower() not in _DISARM_VALUES
     else:
-        armed = (
-            "PYTEST_CURRENT_TEST" in os.environ
-            or "pytest" in sys.modules
-        )
+        armed = under_pytest
     if armed and not _arm_logged:
         _arm_logged = True
         logger.warning(
             "tx_guard ARMED — RF egress is fail-closed; only explicitly "
             "allowlisted targets may transmit (%s=%r)", _ENV_ARM, raw
         )
+    if not armed and under_pytest and not _disarm_logged:
+        _disarm_logged = True
+        logger.warning(
+            "tx_guard DISARMED under pytest by %s=%r — this process can key "
+            "the operator's radio. Only do this deliberately, standing at "
+            "the box (2026-08-09).", _ENV_ARM, raw
+        )
     return armed
+
+
+_env_malformed_warned: set = set()
 
 
 def _env_allowed() -> set:
@@ -391,24 +491,33 @@ def _env_allowed() -> set:
         chunk = chunk.strip()
         if not chunk:
             continue
-        if ":" in chunk:
-            host, _, port = chunk.rpartition(":")
-            try:
-                out.add(normalize_target(host, int(port)))
-            except ValueError:
-                continue
-        else:
-            out.add(normalize_target(chunk, DEFAULT_MESH_TCP_PORT))
+        try:
+            out.add(_parse_allowlist_target(chunk))
+        except ValueError:
+            # Fail CLOSED (the entry allowlists nothing) but leave a witness —
+            # the operator who typo'd MESHFORGE_TX_ALLOW otherwise sees only a
+            # confusing block on the target they thought they had allowed.
+            if chunk not in _env_malformed_warned:
+                _env_malformed_warned.add(chunk)
+                logger.warning(
+                    "tx_guard: ignoring malformed %s entry %r — it allowlists "
+                    "NOTHING (port must be numeric)", _ENV_ALLOW, chunk
+                )
+            continue
     return out
 
 
 def set_allowed_targets(targets: Iterable[str]) -> None:
-    """Replace the in-process allowlist with ``targets`` (``host:port``)."""
+    """Replace the in-process allowlist with ``targets`` (``host:port``).
+
+    Raises:
+        ValueError: on a malformed entry — a typo must not silently resolve
+            to the default (real radio) port.
+    """
+    parsed = [_parse_allowlist_target(t) for t in targets]
     with _lock:
         _allowed.clear()
-        for t in targets:
-            host, _, port = str(t).rpartition(":")
-            _allowed.add(normalize_target(host or t, int(port) if port.isdigit() else None))
+        _allowed.update(parsed)
 
 
 def clear_allowed_targets() -> None:
@@ -424,17 +533,15 @@ class allow_targets:
     """
 
     def __init__(self, *targets: str):
-        self._targets = [str(t) for t in targets]
+        # Parse at CONSTRUCTION so a typo'd entry raises where it was written,
+        # not when (or whether) the context is entered.
+        self._targets = [_parse_allowlist_target(t) for t in targets]
         self._previous: set = set()
 
     def __enter__(self) -> "allow_targets":
         with _lock:
             self._previous = set(_allowed)
-            for t in self._targets:
-                host, _, port = t.rpartition(":")
-                _allowed.add(
-                    normalize_target(host or t, int(port) if port.isdigit() else None)
-                )
+            _allowed.update(self._targets)
         return self
 
     def __exit__(self, *exc) -> bool:
@@ -486,12 +593,13 @@ def assert_tx_allowed(
         return
 
     target = normalize_target(host, port)
-    with _lock:
-        allowed = target in _allowed
-    if not allowed and target in _env_allowed():
-        allowed = True
-    if allowed:
-        return
+    if target != UNRESOLVED_TARGET:
+        with _lock:
+            allowed = target in _allowed
+        if not allowed and target in _env_allowed():
+            allowed = True
+        if allowed:
+            return
 
     record = {
         "target": target,
@@ -543,6 +651,16 @@ def _raise_blocked(record: dict) -> None:
         record["kind"], record["target"], record["test"], record["detail"],
     )
     kind, target, detail = record["kind"], record["target"], record["detail"]
+    if target == UNRESOLVED_TARGET:
+        raise TransmitBlocked(
+            f"RF egress refused by tx_guard: kind={kind} target={target}. "
+            f"The destination of this send could not be determined (non-string "
+            f"host or unparseable port — often a MagicMock leaking into config), "
+            f"and an unresolvable target is refused UNCONDITIONALLY: no "
+            f"allowlist entry can cover a send that may point anywhere. Fix the "
+            f"test to hand the code a real host:port "
+            f"(see src/utils/tx_guard.py). test={record['test']} {detail}"
+        )
     raise TransmitBlocked(
         f"RF egress refused by tx_guard: kind={kind} target={target}. "
         f"This process is running under pytest and {target} is not in the "

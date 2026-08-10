@@ -1244,6 +1244,14 @@ class MQTTHandler(BaseHandler):
             )
             return
 
+        # RF egress chokepoint — a telemetry request is an on-air packet.
+        # OUTSIDE the try, so the refusal cannot be absorbed below.
+        from utils.tx_guard import assert_cli_args_allowed
+        assert_cli_args_allowed(
+            ["--request-telemetry"], "localhost",
+            detail=f"handlers.mqtt fallback telemetry dest={node_id}",
+        )
+
         try:
             result = subprocess.run(
                 [cli, '--host', 'localhost', '--request-telemetry', '--dest', node_id],

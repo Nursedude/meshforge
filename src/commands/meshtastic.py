@@ -14,9 +14,7 @@ from pathlib import Path
 
 from .base import CommandResult
 from utils.paths import get_real_user_home
-from utils.tx_guard import (
-    DEFAULT_MESH_TCP_PORT, assert_cli_args_allowed, assert_tx_allowed,
-)
+from utils.tx_guard import assert_cli_args_allowed
 
 # utils.message_listener is imported where used: at module level it pulls the
 # meshtastic package (~200 ms) into every TUI handler importing this module.
@@ -94,8 +92,12 @@ def _run_command(args: List[str], timeout: int = 60, auto_detect: bool = True) -
 
     # RF egress chokepoint at the RUNNER, so a new transmitting call site is
     # covered the day it is written (--traceroute / --request-position key the
-    # radio exactly as --sendtext does).
-    assert_cli_args_allowed(args, detail="commands.meshtastic._run_command")
+    # radio exactly as --sendtext does). Pass the REAL connection target: with
+    # host=None the guard records every CLI send as the local radio, which
+    # both misnames a remote target in the blocked-attempts record and lets a
+    # local-radio allowlist entry cover a send actually aimed elsewhere.
+    host = _connection_value if _connection_type == "localhost" else None
+    assert_cli_args_allowed(args, host, detail="commands.meshtastic._run_command")
 
     full_args = [cli_path] + _get_connection_args() + args
     cmd_str = ' '.join(full_args)
@@ -506,12 +508,9 @@ def send_message(
     except Exception as e:
         logger.debug(f"HTTP protobuf TX unavailable, falling back to CLI: {e}")
 
-    # RF egress chokepoint — the CLI opens a TCP connection to the real
-    # radio, in a SUBPROCESS no in-process socket patch can see.
-    assert_tx_allowed(host, DEFAULT_MESH_TCP_PORT, kind="meshtastic_cli",
-                      detail=f"commands.meshtastic send text={text[:40]!r}")
-
-    # Fallback: meshtastic CLI (creates TCP connection to 4403)
+    # Fallback: meshtastic CLI (creates TCP connection to 4403). RF egress is
+    # guarded inside _run_command — the shared runner inspects the args for
+    # transmitting flags, so this site needs no guard of its own.
     # Add destination for DMs
     if dest:
         args.extend(["--dest", dest])
