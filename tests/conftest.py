@@ -68,6 +68,51 @@ def pytest_configure(config):
     )
 
 
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    """Report every RF/RNS transmission the egress guard refused this run.
+
+    ``utils.tx_guard`` records what it blocks so a suite run can ENUMERATE the
+    hops that would have keyed the radio without keying it. That claim was only
+    true if somebody called ``blocked_attempts()`` — the drills did, nothing
+    else did. A witness nobody reads is the writer-with-no-reader defect this
+    project keeps naming, so here is the reader.
+
+    It matters most in the case that started all this (2026-08-09): a send
+    attempted from a BACKGROUND thread. ``TransmitBlocked`` derives from
+    BaseException so it is never swallowed by the site's ``except Exception``,
+    but in a daemon thread it kills that thread and no test asserts on it —
+    the block would be correct, invisible, and the leak's twin would go
+    unnoticed. This prints it either way.
+
+    Informational only: it never changes ``exitstatus``. A blocked attempt is
+    the guard WORKING. What it buys is that you find out.
+    """
+    try:
+        from utils import tx_guard
+        blocked = tx_guard.blocked_attempts()
+    except Exception:
+        return
+    if not blocked:
+        return
+    by_target = {}
+    for rec in blocked:
+        key = (rec.get("kind", "?"), rec.get("target", "?"))
+        by_target.setdefault(key, []).append(rec.get("test") or "(no test)")
+    terminalreporter.write_sep(
+        "-", f"tx_guard: refused {len(blocked)} transmission(s)")
+    for (kind, target), tests in sorted(by_target.items()):
+        terminalreporter.write_line(f"  {kind:<24} -> {target}  x{len(tests)}")
+        seen = []
+        for t in tests:
+            short = t.split(" ")[0]
+            if short not in seen:
+                seen.append(short)
+        for t in seen[:3]:
+            terminalreporter.write_line(f"      {t}")
+        if len(seen) > 3:
+            terminalreporter.write_line(f"      ... and {len(seen) - 3} more")
+
+
 def pytest_collection_modifyitems(config, items):
     """Auto-skip certain tests in CI environment."""
     if not (CI or MESHFORGE_CI):
