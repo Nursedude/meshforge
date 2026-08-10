@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from gateway.bounded_rpc import bounded_call, default_on_wedge
+from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +188,8 @@ class BridgeSendMixin:
                 content_id=(fields or {}).get('meshforge_content_id', '') or '',
             )
 
+            assert_rns_tx_allowed(kind="lxmf_outbound",
+                                  detail=f"send_to_rns -> {hash_short}")
             bounded_call("rnsd.handle_outbound",
                          self._lxmf_router.handle_outbound, lxm,
                          target=hash_short,
@@ -310,6 +313,8 @@ class BridgeSendMixin:
                             or payload.get('meshforge_content_id') or ''),
             )
 
+            assert_rns_tx_allowed(kind="lxmf_outbound",
+                                  detail=f"_queue_send_rns -> {hash_short}")
             bounded_call("rnsd.handle_outbound",
                          self._lxmf_router.handle_outbound, lxm,
                          target=hash_short,

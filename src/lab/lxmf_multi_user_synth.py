@@ -70,6 +70,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger("lab.synth")
 
@@ -332,6 +333,7 @@ def _send_one_ping_with_router(
         pending[key] = ping
 
     try:
+        assert_rns_tx_allowed(kind="lxmf_outbound", detail="lab multi-user synth")
         router.handle_outbound(lxm)
     except Exception as exc:
         logger.warning(
@@ -598,6 +600,7 @@ def run_synth(
         router.register_delivery_callback(_on_receive)
 
         # Single announce — one source, one path back from peers.
+        assert_rns_tx_allowed(kind="rns_announce", detail="lab multi-user synth announce")
         router.announce(source.hash)
         # Let announce propagate before any sends — RNS Transport
         # batches with a small jitter; 0.5s is plenty for LAN-scale.

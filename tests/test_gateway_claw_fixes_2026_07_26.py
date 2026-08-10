@@ -133,6 +133,7 @@ def _grab_delivery_cb(fake):
     return lxmf.LXMessage.return_value.register_delivery_callback.call_args.args[0]
 
 
+@pytest.mark.usefixtures("allow_rns_tx")
 class TestSyntheticAckHonesty:
     """C1: [delivered] to a human requires a DELIVERED receipt, not a SENT
     (propagation hand-off) — the same event that records the subscriber

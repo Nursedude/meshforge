@@ -281,6 +281,7 @@ class TestPairResultMetrics:
 # ---------------------------------------------- send-path early-failure shape
 
 
+@pytest.mark.usefixtures("allow_rns_tx")
 class TestSendOnePingEarlyFailure:
     def _common(self):
         from lab.lxmf_multi_user_synth import _VirtualUser

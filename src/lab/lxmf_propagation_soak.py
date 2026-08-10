@@ -47,6 +47,7 @@ import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import List, Optional
+from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger(__name__)
 
@@ -520,6 +521,7 @@ def _phase_send(body: str, node_hash: str, identity_path: str,
                                RNS.Destination.SINGLE, "lxmf", "delivery")
         msg = LXMF.LXMessage(dest, source, body, MARKER,
                              desired_method=LXMF.LXMessage.PROPAGATED)
+        assert_rns_tx_allowed(kind="lxmf_outbound", detail="lab propagation soak")
         router.handle_outbound(msg)
 
         deadline = time.monotonic() + timeout_s

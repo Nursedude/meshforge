@@ -26,6 +26,17 @@ def _fake_message(content, source_hash=b"\xaa" * 16):
 # --------------------------------------------------- _on_receive: PING path
 
 
+@pytest.fixture(autouse=True)
+def _allow_rns_tx_in_this_file():
+    """This whole file exercises RNS/LXMF paths against MOCKED routers, so it
+    declares RNS egress once here rather than per test. The RNS egress guard
+    (utils.tx_guard) is fail-closed and cannot tell a mocked router from a real
+    one — declaring the intent is the point."""
+    from utils import tx_guard
+    with tx_guard.allow_rns_egress():
+        yield
+
+
 def test_on_receive_replies_ack_to_valid_ping():
     """Valid PING → state.rx_count incremented, _send_ack invoked."""
     from lab.lxmf_echo import _EchoState, make_on_receive

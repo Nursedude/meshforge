@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Iterator, Optional, Union
 
 from utils.safe_import import safe_import
+from utils import tx_guard
 
 _RNS, _HAS_RNS = safe_import('RNS')
 
@@ -498,6 +499,13 @@ def init_reticulum_with_watchdog(
     project code should prefer :func:`open_reticulum`, which adds the
     fail-open probe and singleton reuse on top of this.
     """
+    # RNS egress backstop — this entry point's contract permits raising, and
+    # its callers (lab echo/tracer daemons) exist to put traffic on the real
+    # Reticulum, so a refusal here must be LOUD rather than a silent None.
+    tx_guard.assert_rns_tx_allowed(
+        kind="rns_attach",
+        detail=f"init_reticulum_with_watchdog(configdir={configdir})")
+
     instance_name = _read_instance_name_from_config(configdir)
     if instance_name:
         check_rns_listener_owner(instance_name)
@@ -582,6 +590,18 @@ def open_reticulum(
     """
     if not _HAS_RNS:
         logger.debug("rns_init: RNS module not installed — RNS unavailable")
+        return None
+
+    # RNS egress backstop (2026-08-09). Under pytest, decline to hold a LIVE
+    # handle on the operator's Reticulum unless the test declared
+    # tx_guard.allow_rns_egress(). Returning None is this function's OWN
+    # documented degraded outcome and every caller already handles it — it is
+    # exactly what a box with no rnsd (and every CI runner) gets, so the local
+    # suite stops behaving differently from CI just because rnsd happens to be
+    # running here. With no live instance, an unguarded announce has nothing
+    # to transmit through.
+    if not tx_guard.rns_attach_allowed():
+        tx_guard.note_rns_attach_blocked(configdir)
         return None
 
     existing = _existing_instance()

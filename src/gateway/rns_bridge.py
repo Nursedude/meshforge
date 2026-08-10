@@ -108,6 +108,7 @@ HAS_SERVICE_CHECK = True
 
 # Import event bus for RX message notifications (Issue #17 Phase 3)
 from utils.event_bus import emit_message, emit_tactical
+from utils.tx_guard import assert_rns_tx_allowed
 HAS_EVENT_BUS = True
 
 # RNS sniffer is optional monitoring — not required for message bridging
@@ -1042,6 +1043,9 @@ class RNSMeshtasticBridge(
                     last = getattr(self, "_last_lxmf_announce", None)
                     if last is not None and (time.monotonic() - last) >= announce_interval:
                         try:
+                            assert_rns_tx_allowed(
+                                kind="rns_announce",
+                                detail="rns_bridge periodic LXMF re-announce")
                             self._lxmf_router.announce(self._lxmf_source.hash)
                             self._last_lxmf_announce = time.monotonic()
                             logger.info("LXMF re-announce sent (dest=%s)",

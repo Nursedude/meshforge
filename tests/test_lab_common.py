@@ -35,6 +35,17 @@ from lab._lab_common import (
 # ---------------------------------------------------------------- PING/ACK
 
 
+@pytest.fixture(autouse=True)
+def _allow_rns_tx_in_this_file():
+    """This whole file exercises RNS/LXMF paths against MOCKED routers, so it
+    declares RNS egress once here rather than per test. The RNS egress guard
+    (utils.tx_guard) is fail-closed and cannot tell a mocked router from a real
+    one — declaring the intent is the point."""
+    from utils import tx_guard
+    with tx_guard.allow_rns_egress():
+        yield
+
+
 def test_make_ping_body_round_trip():
     body = make_ping_body(42, "box-a")
     parsed = parse_ping(body)

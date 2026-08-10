@@ -341,6 +341,25 @@ def allow_local_radio_tx():
         yield
 
 
+@pytest.fixture
+def allow_rns_tx():
+    """Allowlist RNS/LXMF egress for a test whose ROUTER/RNS IS MOCKED.
+
+    Opt-in, never autouse. Coarse on/off, because an announce has no
+    per-destination target — it floods the whole Reticulum network the process
+    is attached to, which on this fleet reaches public transport nodes AND a
+    physical RNode on LoRa RF.
+
+    Requesting this is a test author asserting "my LXMRouter / RNS.Reticulum is
+    a double." Do NOT use it to turn a red test green: if a test fails with
+    TransmitBlocked and its router is real, the guard just found a live leak.
+    """
+    from utils import tx_guard
+
+    with tx_guard.allow_rns_egress():
+        yield
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _isolate_delivery_counters_db(tmp_path_factory):
     """Keep delivery-counter writes out of the operator's live DB.

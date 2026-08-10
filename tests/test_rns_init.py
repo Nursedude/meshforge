@@ -24,6 +24,17 @@ import utils.rns_init as ri  # noqa: E402
 # --------------------------------------------- _shared_instance_listener_present
 
 
+@pytest.fixture(autouse=True)
+def _allow_rns_tx_in_this_file():
+    """This whole file exercises RNS/LXMF paths against MOCKED routers, so it
+    declares RNS egress once here rather than per test. The RNS egress guard
+    (utils.tx_guard) is fail-closed and cannot tell a mocked router from a real
+    one — declaring the intent is the point."""
+    from utils import tx_guard
+    with tx_guard.allow_rns_egress():
+        yield
+
+
 class TestListenerPresent:
     """Passive /proc/net/unix presence scan."""
 

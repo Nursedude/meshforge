@@ -531,3 +531,115 @@ class TestGuardedRunnersStillGuard:
                 f"{rel} {sig} no longer guards on TRANSMITTING_CLI_FLAGS — "
                 "every caller that relies on this runner is now unguarded"
             )
+
+
+class TestRnsEgress:
+    """RNS/LXMF egress — added 2026-08-09 at the operator's direction.
+
+    Bigger blast radius than the Meshtastic leak, not smaller: an announce
+    floods the whole Reticulum network the process is attached to, which on
+    this fleet reaches public transport nodes AND a physical RNode on LoRa RF.
+    And the suite was measured attaching to the operator's LIVE rnsd already.
+
+    Coarse on/off by design — an announce has no per-destination target to
+    allowlist, so pretending to offer granularity would be a fiction.
+    """
+
+    def test_rns_egress_refused_by_default(self):
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_rns_tx_allowed(kind="rns_announce", detail="drill")
+
+    def test_rns_egress_allowed_when_declared(self):
+        with tx_guard.allow_rns_egress():
+            tx_guard.assert_rns_tx_allowed(kind="rns_announce", detail="drill")
+
+    def test_rns_declaration_does_not_leak(self):
+        with tx_guard.allow_rns_egress():
+            pass
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_rns_tx_allowed(kind="rns_announce", detail="drill")
+
+    def test_blocked_rns_attempt_is_recorded(self):
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_rns_tx_allowed(kind="lxmf_outbound", detail="drill")
+        recs = tx_guard.blocked_attempts()
+        assert recs and recs[-1]["target"] == tx_guard.RNS_TARGET
+        assert recs[-1]["kind"] == "lxmf_outbound"
+
+    def test_gateway_announce_site_refuses(self):
+        """Plant a real call at a real announce site."""
+        from gateway.meshtastic_broadcast_bridge import MeshtasticBroadcastBridge
+        b = MeshtasticBroadcastBridge.__new__(MeshtasticBroadcastBridge)
+        b._destination_hash = b"\x01" * 16
+        b._router = MagicMock()
+        with pytest.raises(TransmitBlocked):
+            b._safe_announce()
+        b._router.announce.assert_not_called()
+
+    def test_attach_backstop_declines_live_reticulum(self):
+        """open_reticulum must not hand a test a LIVE handle on the operator's
+        Reticulum. Declining returns None — its own documented degraded
+        outcome, and exactly what a box with no rnsd (every CI runner) gets."""
+        from utils import rns_init
+        assert not tx_guard.rns_attach_allowed()
+        assert rns_init.open_reticulum("/etc/reticulum") is None
+        assert any(r["kind"] == "rns_attach" for r in tx_guard.blocked_attempts())
+
+    def test_attach_backstop_is_off_in_production(self, monkeypatch):
+        """A false ARM here would be a silent RNS outage on a gateway."""
+        monkeypatch.setenv("MESHFORGE_TX_GUARD", "0")
+        assert tx_guard.rns_attach_allowed()
+
+    def test_low_level_init_raises_rather_than_returning_none(self):
+        """`init_reticulum_with_watchdog`'s contract permits raising, and its
+        callers (lab echo/tracer) exist to put traffic on the real network —
+        so a refusal there must be LOUD, not a silent None."""
+        from utils import rns_init
+        with pytest.raises(TransmitBlocked):
+            rns_init.init_reticulum_with_watchdog("/etc/reticulum")
+
+
+class TestRnsGuardIsWiredAtEverySendSite:
+    """Coverage net behind the RNS drills.
+
+    ⚠️ AST attribute nodes, not `handle_outbound(` — the gateway's real send
+    path passes the method BY REFERENCE into `bounded_call`/`call_boundary`,
+    so a paren-based grep reports those sites as absent. That is exactly how a
+    sweep can be green while the busiest egress path in the tree is unguarded.
+    """
+
+    SRC = Path(__file__).resolve().parents[1] / "src"
+    RNS_EGRESS_ATTRS = {"announce", "handle_outbound"}
+
+    def test_every_rns_egress_site_has_a_guard_within_12_lines(self):
+        import ast
+
+        offenders = []
+        for path in self.SRC.rglob("*.py"):
+            if path.name in ("tx_guard.py", "rns_init.py"):
+                continue
+            src = path.read_text(errors="ignore")
+            if not any(a in src for a in self.RNS_EGRESS_ATTRS):
+                continue
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            lines = src.splitlines()
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Attribute):
+                    continue
+                if node.attr not in self.RNS_EGRESS_ATTRS:
+                    continue
+                i = node.lineno - 1
+                window = "\n".join(lines[max(0, i - 12):i + 2])
+                if "assert_rns_tx_allowed" in window:
+                    continue
+                offenders.append(
+                    f"{path.relative_to(self.SRC)}:{node.lineno}: {lines[i].strip()}"
+                )
+        assert not offenders, (
+            "unguarded RNS/LXMF egress site(s) — an announce floods the whole "
+            "Reticulum network (public transport nodes + LoRa RNode):\n  "
+            + "\n  ".join(offenders)
+        )

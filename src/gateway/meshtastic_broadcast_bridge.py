@@ -62,6 +62,7 @@ from utils.paths import get_real_user_home
 from utils.safe_import import safe_import
 
 from .config import GatewayConfig, MeshtasticBroadcastConfig
+from utils.tx_guard import assert_rns_tx_allowed
 
 _RNS_mod, _HAS_RNS = safe_import("RNS")
 _LXMF_mod, _HAS_LXMF = safe_import("LXMF")
@@ -727,6 +728,9 @@ class MeshtasticBroadcastBridge:
         if self._destination_hash is None:
             return
         try:
+            assert_rns_tx_allowed(
+                kind="rns_announce",
+                detail="meshtastic_broadcast_bridge._safe_announce")
             self._router.announce(self._destination_hash)
             logger.debug(
                 "Meshtastic broadcast announce sent (%s)",
@@ -1030,6 +1034,9 @@ class MeshtasticBroadcastBridge:
                     hash_short,
                 )
 
+            assert_rns_tx_allowed(
+                kind="lxmf_outbound",
+                detail=f"broadcast fan-out -> {hash_short}")
             call_boundary("rnsd.handle_outbound",
                           self._router.handle_outbound, lxm,
                           target=hash_short)

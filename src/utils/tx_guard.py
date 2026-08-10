@@ -48,9 +48,31 @@ Design notes worth keeping:
   transmission — so arming keys off pytest's own signals, and the decision is
   logged once so it is observable rather than assumed.
 
-Scope, stated honestly: this guards **Meshtastic RF egress** — the paths that
-key the LoRa radio. It does NOT currently guard RNS/LXMF transmission or MQTT
-publishes. Those are separate egress surfaces; see the module TODO.
+Scope: **Meshtastic RF egress** (the paths that key the LoRa radio) **and
+RNS/LXMF egress** (announce + LXMF outbound), added 2026-08-09 at the
+operator's direction — this domain has put considerable development into
+RNS/LXMF and its blast radius is larger than Meshtastic's, not smaller.
+
+Why RNS needed its own treatment rather than the same host:port allowlist:
+
+* An RNS announce or LXMF send does not target a host — it targets **the
+  Reticulum network the process is attached to**. On this fleet that network
+  reaches public transport nodes AND a physical RNode on LoRa RF (moc3). One
+  stray announce propagates across the whole network, so the blast radius is
+  wider than a single channel on one radio.
+* Measured 2026-08-09: the suite ALREADY attaches to the operator's live
+  rnsd — `rns_init: listener preflight OK — @rns/<instance> owned by pid=...
+  rnsd` appears in an ordinary e2e run. Nothing in the suite announced, but
+  nothing prevented it either.
+* So RNS gets a coarse on/off gate (:func:`assert_rns_tx_allowed`) plus a
+  structural backstop at the init chokepoint — see :func:`rns_attach_allowed`.
+
+The RNS backstop is deliberately shaped as "behave like a box with no rnsd":
+``open_reticulum`` already returns None on a degraded/absent daemon and every
+caller handles it, because that is exactly what CI's radio-less runners get.
+Making the local suite take the same path removes an ambient-state dependency
+(a test must not behave differently on a box that happens to run rnsd) rather
+than inventing a new failure mode.
 """
 
 from __future__ import annotations
@@ -75,6 +97,12 @@ __all__ = [
     "blocked_attempts",
     "clear_blocked_attempts",
     "is_armed",
+    "assert_rns_tx_allowed",
+    "allow_rns_egress",
+    "rns_egress_allowed",
+    "rns_attach_allowed",
+    "note_rns_attach_blocked",
+    "RNS_TARGET",
     "probe_connect",
     "in_probe",
     "normalize_target",
@@ -137,6 +165,109 @@ def assert_cli_args_allowed(args, host: Optional[str] = None,
     assert_tx_allowed(host, port or DEFAULT_MESH_TCP_PORT,
                       kind="meshtastic_cli",
                       detail=f"{detail} flag={hit}".strip())
+
+
+# ---------------------------------------------------------------------------
+# RNS / LXMF egress
+# ---------------------------------------------------------------------------
+
+#: Coarse target token for RNS egress. There is no host:port here — an announce
+#: goes to the whole Reticulum network the process is attached to.
+RNS_TARGET = "rns"
+
+_rns_allowed = False
+
+
+class allow_rns_egress:
+    """Allowlist RNS/LXMF transmission for a test that means to exercise it.
+
+    Coarse on/off by design: an announce has no per-destination target to
+    allowlist — it floods the network the process is attached to. Granularity
+    would be a comforting fiction.
+    """
+
+    def __init__(self):
+        self._previous = False
+
+    def __enter__(self) -> "allow_rns_egress":
+        global _rns_allowed
+        with _lock:
+            self._previous = _rns_allowed
+            _rns_allowed = True
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        global _rns_allowed
+        with _lock:
+            _rns_allowed = self._previous
+        return False
+
+
+def rns_egress_allowed() -> bool:
+    with _lock:
+        return _rns_allowed
+
+
+def assert_rns_tx_allowed(*, kind: str, detail: str = "") -> None:
+    """Refuse an RNS/LXMF transmission when armed and not allowlisted.
+
+    Call at the TOP of every announce / LXMF-outbound site, before the router
+    is touched. ``kind`` is e.g. ``"rns_announce"`` or ``"lxmf_outbound"``.
+
+    Raises:
+        TransmitBlocked: when armed and RNS egress is not allowlisted.
+    """
+    if not is_armed() or rns_egress_allowed():
+        return
+    record = {
+        "target": RNS_TARGET,
+        "kind": kind,
+        "detail": detail,
+        "test": os.environ.get("PYTEST_CURRENT_TEST", ""),
+    }
+    with _lock:
+        if len(_blocked) < _BLOCKED_CAP:
+            _blocked.append(record)
+    _raise_blocked(record)
+
+
+def rns_attach_allowed() -> bool:
+    """Whether this process may hold a LIVE Reticulum handle right now.
+
+    The structural backstop under :func:`assert_rns_tx_allowed`: with no live
+    instance there is nothing for an unguarded announce to transmit through.
+    Consulted by ``utils.rns_init.open_reticulum`` — the chokepoint that MF019
+    and ``TestRNSReticulumChokepoint`` already prove is the ONLY place a real
+    ``RNS.Reticulum()`` is constructed, which is what makes one check enough.
+
+    Returns True outside pytest (production is never gated) and True when a
+    test has declared :class:`allow_rns_egress`.
+    """
+    return (not is_armed()) or rns_egress_allowed()
+
+
+def note_rns_attach_blocked(configdir) -> None:
+    """Record that a live RNS attach was declined under test.
+
+    A refusal that leaves no artifact never happened (honest_failure_modes #9),
+    and ``open_reticulum`` returning None is otherwise indistinguishable from
+    the ordinary "no rnsd here" path.
+    """
+    record = {
+        "target": RNS_TARGET,
+        "kind": "rns_attach",
+        "detail": f"open_reticulum declined under pytest (configdir={configdir})",
+        "test": os.environ.get("PYTEST_CURRENT_TEST", ""),
+    }
+    with _lock:
+        if len(_blocked) < _BLOCKED_CAP:
+            _blocked.append(record)
+    logger.warning(
+        "tx_guard: declined a LIVE RNS attach under pytest (configdir=%s) — "
+        "open_reticulum returns None, the same path a box with no rnsd takes. "
+        "Wrap in utils.tx_guard.allow_rns_egress() if this test means to use "
+        "a real Reticulum.", configdir,
+    )
 
 
 _probe_state = threading.local()

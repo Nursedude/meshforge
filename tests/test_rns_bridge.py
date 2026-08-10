@@ -2907,6 +2907,7 @@ class TestLXMFReceiveSnifferCapture:
 # — i.e., that the callback, when fired by LXMF, actually records the
 # CONFIRMED transition against the right msg_id.
 
+@pytest.mark.usefixtures("allow_rns_tx")
 class TestSynAckCallbackSymmetry:
     """Both RNS send paths must register the delivery-proof callbacks."""
 
@@ -5381,6 +5382,7 @@ class TestChunkForMeshPrefix:
 # Issue #74: circuit breaker actually wired into the send paths
 # ---------------------------------------------------------------------------
 
+@pytest.mark.usefixtures("allow_rns_tx")
 class TestCircuitBreakerWiringIssue74:
     """The breaker was write-only before #74: can_send_to /
     record_send_success / record_send_failure had ZERO callers, so a

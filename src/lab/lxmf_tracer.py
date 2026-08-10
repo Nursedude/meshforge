@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from utils.tx_guard import assert_rns_tx_allowed
 
 logger = logging.getLogger("lab.tracer")
 
@@ -371,6 +372,7 @@ def run_trace(
             router.register_delivery_callback(_on_receive)
 
             # Announce so peers can resolve us (for the ACK return path).
+            assert_rns_tx_allowed(kind="rns_announce", detail="lab tracer announce")
             router.announce(source.hash)
             time.sleep(0.2)  # let the announce hit the wire
 
@@ -431,6 +433,7 @@ def run_trace(
                 )
                 pending[seq] = ping
                 try:
+                    assert_rns_tx_allowed(kind="lxmf_outbound", detail="lab tracer PING")
                     router.handle_outbound(lxm)
                 except Exception as exc:
                     logger.warning(
