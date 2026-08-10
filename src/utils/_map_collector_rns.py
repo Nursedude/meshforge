@@ -363,7 +363,11 @@ class RNSDataCollectorMixin:
             # via init_rns_singleton(); main-thread prewarm in
             # MapServer._init_rns_main_thread() is the preferred
             # callsite — this is the lazy fallback for legacy callers.
-            init_rns_singleton()
+            # The bool is the DEGRADE SIGNAL (open_reticulum returned
+            # None: rnsd absent or #68-wedged) — it was discarded here
+            # for months, so a wedged rnsd's empty path_table read as
+            # the healthy 'no_data' (Pri-2 leg-c finding, 2026-08-10).
+            rns_up = init_rns_singleton()
 
             # Check for known destinations in path table
             if hasattr(_RNS.Transport, 'path_table') and _RNS.Transport.path_table:
@@ -429,14 +433,24 @@ class RNSDataCollectorMixin:
                     notes=f"{path_count} path_table entries, {len(rns_positions)} cached positions",
                 )
             else:
-                # Differentiate three distinct zero-yield states:
+                # Differentiate the zero-yield states:
+                #   - open_reticulum returned None -> unreachable (rnsd is
+                #     absent or #68-wedged; an empty path_table here is NOT
+                #     "no peers announced" — nothing was observing. The
+                #     passive /proc/net/unix precheck passes against a
+                #     wedged rnsd, so this leg is reachable in production.)
                 #   - path_table empty but rnsd reachable -> no_data (healthy,
                 #     just nothing announced yet; NOT a fault — the sidebar
                 #     badge logic treats 'unreachable' as a warn state and
                 #     this situation doesn't warrant that)
                 #   - destinations in path_table but none have GPS -> no_positions
                 #   - exception path (see except below) -> unreachable
-                if path_count == 0:
+                if not rns_up:
+                    reason = "unreachable"
+                    notes = ("open_reticulum returned None — rnsd absent or "
+                             "wedged (#68); empty path_table is unobservable, "
+                             "not 'no peers'")
+                elif path_count == 0:
                     reason = "no_data"
                     notes = "rnsd path_table empty — no RNS peers announced yet"
                 else:

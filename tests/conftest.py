@@ -339,6 +339,14 @@ def _block_radio_egress():
         # radio through create_connection -> sock.connect, which stays blocked.
         # A prober that must use plain connect declares tx_guard.probe_connect().
         if probe_idiom or tx_guard.in_probe():
+            # Permitted-but-RECORDED: the witness makes this branch auditable
+            # (a permission that leaves no artifact cannot be checked — the
+            # leg-b audit had to be done by static reading until this line).
+            tx_guard.note_probe_permitted(
+                host, port,
+                kind="connect_ex" if probe_idiom else "probe_connect",
+                detail="permitted probe-idiom touch of a radio port",
+            )
             return
         tx_guard.assert_tx_allowed(
             host, port, kind="socket_tripwire",

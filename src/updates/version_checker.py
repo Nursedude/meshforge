@@ -381,6 +381,14 @@ def get_node_firmware_version() -> Optional[str]:
         if not cli_path:
             return None
 
+        # RF egress chokepoint — --info is read-only today, but every CLI
+        # invocation goes through the guard so a transmitting flag added
+        # here later is covered the day it is written (leg-b audit
+        # 2026-08-10: this was the one CLI site in the tree without it).
+        from utils.tx_guard import assert_cli_args_allowed
+        assert_cli_args_allowed(['--info'], 'localhost',
+                                detail="version_checker firmware query")
+
         result = subprocess.run(
             [cli_path, '--host', 'localhost', '--info'],
             capture_output=True, text=True, timeout=30

@@ -235,6 +235,32 @@ class TestRNSReticulumChokepoint:
             f"Violations:\n" + "\n".join(sorted(violating))
         )
 
+    def test_reticulum_not_smuggled_as_a_callable_argument(self):
+        """The call-syntax regex above is evadable by passing the CLASS as a
+        callable — ``call_boundary("rnsd.attach", RNS.Reticulum, ...)``
+        constructs a raw Reticulum with no #68 probe, no #69 preflight, no
+        pytest attach backstop, and neither MF019 nor the regex sees it
+        because the construction site has no ``Reticulum(``. Found live in
+        MeshAnchor's node_tracker (Pri-2 leg-c audit, 2026-08-10) — this leg
+        closes the evasion in BOTH repos. A bare ``RNS.Reticulum`` followed
+        by ``,`` or ``)`` is a class smuggled into someone else's call;
+        attribute access (``RNS.Reticulum.get_instance``) does not match.
+        """
+        matches = _scan_python_files(
+            r'\bRNS\.Reticulum\s*[,)]',
+            exclude_files=list(self.ALLOWLISTED),
+        )
+        violating = sorted(
+            f"{filepath}:{lineno}: {line.strip()}"
+            for filepath, lineno, line in matches
+        )
+        assert not violating, (
+            "RNS.Reticulum passed as a bare callable — an indirect "
+            "construction the chokepoint guards cannot see. Route through "
+            "open_reticulum() from utils.rns_init.\n\nViolations:\n"
+            + "\n".join(violating)
+        )
+
     def test_chokepoint_exports_open_reticulum(self):
         """The chokepoint must exist and expose a callable open_reticulum()."""
         sys.path.insert(0, SRC_DIR)

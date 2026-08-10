@@ -34,12 +34,14 @@ from utils.tx_guard import TransmitBlocked, assert_tx_allowed
 
 @pytest.fixture(autouse=True)
 def _clean_guard_state():
-    """Each drill starts from a bare allowlist and an empty record."""
+    """Each drill starts from a bare allowlist and empty records."""
     tx_guard.clear_allowed_targets()
     tx_guard.clear_blocked_attempts()
+    tx_guard.clear_probe_attempts()
     yield
     tx_guard.clear_allowed_targets()
     tx_guard.clear_blocked_attempts()
+    tx_guard.clear_probe_attempts()
 
 
 class TestArming:
@@ -140,6 +142,63 @@ class TestAllowlist:
             pass
         with pytest.raises(TransmitBlocked):
             assert_tx_allowed("127.0.0.1", 8123, kind="drill")
+
+    def test_overlapping_windows_do_not_corrupt_each_other(self):
+        """Pri-2 leg (e), 2026-08-10. The allowlist is process-global and the
+        suite runs threads, so two grants' lifetimes can overlap WITHOUT
+        nesting. The old snapshot/restore semantics corrupted exactly there:
+        A-exit restored its pre-A snapshot, revoking still-active B; B-exit
+        then restored its pre-B snapshot, RESURRECTING closed A — a test's
+        permission leaking into another test's window, in both directions.
+        (No threads needed to pin it: the corruption is the non-LIFO
+        interleaving itself; threads only make it nondeterministic.)"""
+        a = tx_guard.allow_targets("127.0.0.1:8123")
+        b = tx_guard.allow_targets("127.0.0.1:9123")
+        a.__enter__()
+        b.__enter__()
+        a.__exit__(None, None, None)
+        # B is still open: its grant must survive A's exit...
+        assert_tx_allowed("127.0.0.1", 9123, kind="drill")
+        # ...and A's grant must be gone the moment A closed.
+        with pytest.raises(TransmitBlocked):
+            assert_tx_allowed("127.0.0.1", 8123, kind="drill")
+        b.__exit__(None, None, None)
+        # After B closes nothing may remain — A must not resurrect.
+        with pytest.raises(TransmitBlocked):
+            assert_tx_allowed("127.0.0.1", 9123, kind="drill")
+        with pytest.raises(TransmitBlocked):
+            assert_tx_allowed("127.0.0.1", 8123, kind="drill")
+
+    def test_overlapping_coarse_gate_windows_do_not_corrupt(self):
+        """Same leg-e class on the RNS/MeshCore coarse gates: their old
+        saved-boolean restore meant A's exit switched the gate OFF while B
+        was still open. Depth-counted now."""
+        a, b = tx_guard.allow_rns_egress(), tx_guard.allow_rns_egress()
+        a.__enter__()
+        b.__enter__()
+        a.__exit__(None, None, None)
+        assert tx_guard.rns_egress_allowed(), "B is still open"
+        b.__exit__(None, None, None)
+        assert not tx_guard.rns_egress_allowed()
+
+        a, b = tx_guard.allow_meshcore_egress(), tx_guard.allow_meshcore_egress()
+        a.__enter__()
+        b.__enter__()
+        a.__exit__(None, None, None)
+        assert tx_guard.meshcore_egress_allowed(), "B is still open"
+        b.__exit__(None, None, None)
+        assert not tx_guard.meshcore_egress_allowed()
+
+    def test_wipe_hatch_beats_a_leaked_grant(self):
+        """clear_allowed_targets is the suite-teardown wipe: it must revoke a
+        grant whose context never exited (or a leak is permanent), and the
+        stranded context must still exit harmlessly afterwards."""
+        leaked = tx_guard.allow_targets("127.0.0.1:8123")
+        leaked.__enter__()
+        tx_guard.clear_allowed_targets()
+        with pytest.raises(TransmitBlocked):
+            assert_tx_allowed("127.0.0.1", 8123, kind="drill")
+        leaked.__exit__(None, None, None)  # must not raise
 
     def test_env_allowlist_honored(self, monkeypatch):
         monkeypatch.setenv("MESHFORGE_TX_ALLOW", "127.0.0.1:8123")
@@ -396,13 +455,27 @@ class TestSocketTripwire:
         with pytest.raises(TransmitBlocked):
             socket.socket().connect(("127.0.0.1", 9443))
 
-    def test_connect_ex_probe_idiom_is_permitted(self):
+    def test_connect_ex_probe_idiom_is_permitted_and_recorded(self):
         """`connect_ex` returns an errno instead of raising — that IS the
         reachability-probe idiom, used by ~15 sites here to ask "is the radio
         port open?". Blocking it turned benign probes into failures (CI caught
         `fleet_snapshot._probe_radio`) while catching nothing: TCPInterface
-        reaches the radio via create_connection -> connect, still blocked."""
-        rc = socket.socket().connect_ex(("127.0.0.1", 4403))
+        reaches the radio via create_connection -> connect, still blocked.
+
+        Permitted-but-RECORDED (leg-b audit 2026-08-10): the permission must
+        leave a witness or it cannot be audited. And the probe socket is
+        CLOSED — this test's own earlier version left a connected PhoneAPI
+        socket dangling on a live box, the exact single-consumer contention
+        three production sites were refactored to stop causing."""
+        tx_guard.clear_probe_attempts()
+        s = socket.socket()
+        try:
+            rc = s.connect_ex(("127.0.0.1", 4403))
+        finally:
+            s.close()
+        probes = tx_guard.probe_attempts()
+        assert probes and probes[-1]["target"] == "127.0.0.1:4403"
+        assert probes[-1]["kind"] == "connect_ex"
         assert isinstance(rc, int)  # errno or 0; no raise either way
 
     def test_declared_probe_may_use_plain_connect(self):

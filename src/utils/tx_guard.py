@@ -106,6 +106,9 @@ __all__ = [
     "clear_allowed_targets",
     "blocked_attempts",
     "clear_blocked_attempts",
+    "note_probe_permitted",
+    "probe_attempts",
+    "clear_probe_attempts",
     "is_armed",
     "assert_rns_tx_allowed",
     "allow_rns_egress",
@@ -145,8 +148,24 @@ _ENV_ALLOW = "MESHFORGE_TX_ALLOW"
 
 _lock = threading.Lock()
 _allowed: set = set()
+#: Live context-manager grants, one frozenset of targets per OPEN
+#: allow_targets context. A target is allowed while ANY open grant (or the
+#: base ``_allowed`` set) names it. This replaces the old snapshot/restore
+#: scheme, which corrupted on overlapping non-nested lifetimes — the suite
+#: runs threads, so grant windows CAN overlap without nesting, and there
+#: A-exit restored its pre-A snapshot (revoking still-active B) and B-exit
+#: then resurrected closed A (Pri-2 leg e, drilled red-first 2026-08-10).
+_grants: List[frozenset] = []
 _blocked: List[dict] = []
 _BLOCKED_CAP = 500
+#: Witness ledger for PERMITTED probe-idiom touches of a radio port. The
+#: probe_connect docstring promised "permitted-but-recorded" from day one,
+#: but no recorder existed (Pri-2 leg-b audit, 2026-08-10) — so the permitted
+#: branch of the tripwire was unfalsifiable at runtime and an egress audit
+#: had to be done by static reading. Same principle as _blocked, in reverse:
+#: a permission that leaves no artifact cannot be audited.
+_probes: List[dict] = []
+_PROBES_CAP = 200
 _arm_logged = False
 _disarm_logged = False
 
@@ -229,7 +248,11 @@ def assert_cli_args_allowed(args, host: Optional[str] = None,
 #: goes to the whole Reticulum network the process is attached to.
 RNS_TARGET = "rns"
 
-_rns_allowed = False
+# Depth counter, NOT a snapshot/restored boolean: overlapping non-nested
+# grant windows (threads, fixtures of different scopes) corrupt a
+# save/restore scheme — A's exit restored pre-A False while B was still
+# open (the same Pri-2 leg-e class as allow_targets, fixed 2026-08-10).
+_rns_allowed_depth = 0
 
 
 class allow_rns_egress:
@@ -241,25 +264,28 @@ class allow_rns_egress:
     """
 
     def __init__(self):
-        self._previous = False
+        self._open = False
 
     def __enter__(self) -> "allow_rns_egress":
-        global _rns_allowed
+        global _rns_allowed_depth
         with _lock:
-            self._previous = _rns_allowed
-            _rns_allowed = True
+            if not self._open:
+                _rns_allowed_depth += 1
+                self._open = True
         return self
 
     def __exit__(self, *exc) -> bool:
-        global _rns_allowed
+        global _rns_allowed_depth
         with _lock:
-            _rns_allowed = self._previous
+            if self._open:
+                _rns_allowed_depth = max(0, _rns_allowed_depth - 1)
+                self._open = False
         return False
 
 
 def rns_egress_allowed() -> bool:
     with _lock:
-        return _rns_allowed
+        return _rns_allowed_depth > 0
 
 
 def assert_rns_tx_allowed(*, kind: str, detail: str = "") -> None:
@@ -341,7 +367,8 @@ def note_rns_attach_blocked(configdir) -> None:
 #: PRIMARY radio type — port this gate when landing there).
 MESHCORE_TARGET = "meshcore"
 
-_meshcore_allowed = False
+# Depth counter for the same reason as _rns_allowed_depth (leg-e class).
+_meshcore_allowed_depth = 0
 
 
 class allow_meshcore_egress:
@@ -352,25 +379,28 @@ class allow_meshcore_egress:
     """
 
     def __init__(self):
-        self._previous = False
+        self._open = False
 
     def __enter__(self) -> "allow_meshcore_egress":
-        global _meshcore_allowed
+        global _meshcore_allowed_depth
         with _lock:
-            self._previous = _meshcore_allowed
-            _meshcore_allowed = True
+            if not self._open:
+                _meshcore_allowed_depth += 1
+                self._open = True
         return self
 
     def __exit__(self, *exc) -> bool:
-        global _meshcore_allowed
+        global _meshcore_allowed_depth
         with _lock:
-            _meshcore_allowed = self._previous
+            if self._open:
+                _meshcore_allowed_depth = max(0, _meshcore_allowed_depth - 1)
+                self._open = False
         return False
 
 
 def meshcore_egress_allowed() -> bool:
     with _lock:
-        return _meshcore_allowed
+        return _meshcore_allowed_depth > 0
 
 
 def assert_meshcore_tx_allowed(*, kind: str, detail: str = "") -> None:
@@ -447,7 +477,10 @@ class probe_connect:
     ``socket.create_connection`` -> ``sock.connect``, and that is the unguarded
     path the tripwire exists to catch. ``connect_ex`` is the probe idiom (it
     returns an errno rather than raising, which is its whole purpose) and is
-    permitted-but-recorded; this context manager covers the probes that use
+    permitted-but-recorded — the record is :func:`probe_attempts`, written by
+    the tripwire via :func:`note_probe_permitted` (that recorder was MISSING
+    until the 2026-08-10 leg-b audit despite this docstring promising it).
+    This context manager covers the probes that use
     ``connect``/``create_connection`` instead.
 
     Thread-local: probes run on daemon threads, and one thread declaring a
@@ -653,8 +686,15 @@ def set_allowed_targets(targets: Iterable[str]) -> None:
 
 
 def clear_allowed_targets() -> None:
+    """Wipe the base allowlist AND any leaked context grants.
+
+    The wipe hatch (used by suite teardown fixtures) must win over a grant
+    whose context never exited — otherwise a leaked grant is permanent. An
+    open context whose grant was wiped out from under it exits harmlessly.
+    """
     with _lock:
         _allowed.clear()
+        _grants.clear()
 
 
 class allow_targets:
@@ -662,24 +702,40 @@ class allow_targets:
 
     Used by the e2e harness, whose mock daemon binds an ephemeral port known
     only at runtime — so the allowlist has to be set in-process, not via env.
+
+    Each open context registers its own GRANT rather than snapshotting and
+    restoring the global set: grants from different threads/fixtures can
+    close in any order without revoking or resurrecting each other's targets
+    (see the ``_grants`` comment). One instance = one grant; entering the
+    same instance twice without exiting is not supported.
     """
 
     def __init__(self, *targets: str):
         # Parse at CONSTRUCTION so a typo'd entry raises where it was written,
         # not when (or whether) the context is entered.
-        self._targets = [_parse_allowlist_target(t) for t in targets]
-        self._previous: set = set()
+        self._grant = frozenset(_parse_allowlist_target(t) for t in targets)
+        self._open = False
 
     def __enter__(self) -> "allow_targets":
         with _lock:
-            self._previous = set(_allowed)
-            _allowed.update(self._targets)
+            if not self._open:
+                _grants.append(self._grant)
+                self._open = True
         return self
 
     def __exit__(self, *exc) -> bool:
         with _lock:
-            _allowed.clear()
-            _allowed.update(self._previous)
+            if self._open:
+                try:
+                    # remove ONE occurrence — an equal grant from another
+                    # open context is interchangeable, so which instance
+                    # goes is moot.
+                    _grants.remove(self._grant)
+                except ValueError:
+                    # clear_allowed_targets() wiped grants out from under an
+                    # open context — the wipe hatch wins by design.
+                    pass
+                self._open = False
         return False
 
 
@@ -691,6 +747,38 @@ def blocked_attempts() -> List[dict]:
     """
     with _lock:
         return list(_blocked)
+
+
+def note_probe_permitted(host, port, *, kind: str = "connect_ex",
+                         detail: str = "") -> None:
+    """Record a PERMITTED probe-idiom touch of a radio port.
+
+    Called by the socket tripwire when it lets a ``connect_ex`` (or a
+    declared :class:`probe_connect`) through. Makes the permitted branch
+    auditable: after a suite run, :func:`probe_attempts` names every probe
+    that touched a radio port, so "no transmit path hides behind the probe
+    idiom" can be checked from the artifact instead of by static reading.
+    """
+    record = {
+        "target": normalize_target(host, port),
+        "kind": kind,
+        "detail": detail,
+        "test": os.environ.get("PYTEST_CURRENT_TEST", ""),
+    }
+    with _lock:
+        if len(_probes) < _PROBES_CAP:
+            _probes.append(record)
+
+
+def probe_attempts() -> List[dict]:
+    """Every permitted radio-port probe, newest last (cap ``_PROBES_CAP``)."""
+    with _lock:
+        return list(_probes)
+
+
+def clear_probe_attempts() -> None:
+    with _lock:
+        _probes.clear()
 
 
 def clear_blocked_attempts() -> None:
@@ -727,7 +815,10 @@ def assert_tx_allowed(
     target = normalize_target(host, port)
     if target != UNRESOLVED_TARGET:
         with _lock:
-            allowed = target in _allowed
+            allowed = (
+                target in _allowed
+                or any(target in g for g in _grants)
+            )
         if not allowed and target in _env_allowed():
             allowed = True
         if allowed:
