@@ -45,6 +45,7 @@ from .canonical_message import CanonicalMessage, Protocol
 from .config import GatewayConfig
 from .reconnect import ReconnectConfig, ReconnectStrategy
 from utils.safe_import import safe_import
+from utils.tx_guard import TransmitBlocked
 
 if TYPE_CHECKING:
     from .bridge_health import BridgeHealthMonitor
@@ -422,6 +423,19 @@ class MeshCoreHandler(BaseMessageHandler):
             conn_type = getattr(meshcore_config, 'connection_type', 'serial')
             device_path = getattr(meshcore_config, 'device_path', '/dev/ttyUSB1')
             baud_rate = getattr(meshcore_config, 'baud_rate', 115200)
+
+            # RF egress attach backstop (2026-08-09 review): the companion is
+            # a REAL LoRa radio on serial/TCP — the socket tripwire cannot see
+            # serial and the meshtastic sweeps do not cover these methods.
+            # Under pytest, refuse the live attach unless the test declared
+            # tx_guard.allow_meshcore_egress(); staying disconnected is the
+            # same path a box with no companion radio takes.
+            from utils.tx_guard import (
+                meshcore_attach_allowed, note_meshcore_attach_blocked,
+            )
+            if not meshcore_attach_allowed():
+                note_meshcore_attach_blocked(f"{conn_type}:{device_path}")
+                return
 
             if conn_type == 'serial':
                 logger.info(f"Connecting to MeshCore via serial: {device_path}")
@@ -863,6 +877,16 @@ class MeshCoreHandler(BaseMessageHandler):
                     self.stats.setdefault('errors', 0)
                     self.stats['errors'] += 1
 
+        except TransmitBlocked as e:
+            # Deliberate catch (see tx_guard docstring): the refusal is
+            # already recorded+logged by the guard; letting it fly would kill
+            # the outbound task mid-bookkeeping (the finding-5 class). The
+            # message is dropped, witnessed by the stat.
+            with self._stats_lock:
+                self.stats.setdefault('tx_blocked', 0)
+                self.stats['tx_blocked'] += 1
+            logger.warning(
+                f"MeshCore outbound refused by tx_guard — dropped: {e}")
         except Exception as e:
             logger.error(f"Error processing outbound MeshCore message: {e}")
 
@@ -880,6 +904,18 @@ class MeshCoreHandler(BaseMessageHandler):
         """
         if not self._meshcore or not self._connected:
             return False
+
+        # RF egress chokepoint — every MeshCore send funnels through here,
+        # and the companion is a real LoRa radio (2026-08-09 review: this
+        # second radio sat entirely outside the egress architecture). The
+        # in-process simulator is not egress. OUTSIDE the try, so the
+        # refusal cannot be absorbed into "send failed".
+        if not isinstance(self._meshcore, MeshCoreSimulator):
+            from utils.tx_guard import assert_meshcore_tx_allowed
+            assert_meshcore_tx_allowed(
+                kind="meshcore_tx",
+                detail=f"meshcore_handler send dest={destination!r} "
+                       f"text={text[:40]!r}")
 
         try:
             if destination:

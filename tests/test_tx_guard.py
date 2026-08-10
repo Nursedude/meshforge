@@ -597,6 +597,79 @@ class TestGuardIsWiredAtEverySendSite:
         )
 
 
+class TestMeshCoreEgress:
+    """The companion radio is a REAL LoRa radio (MeshAnchor's primary type),
+    found entirely outside the egress architecture on 2026-08-09: no refusal,
+    no record, no sweep coverage. Serial is invisible to the socket tripwire,
+    so the gate + this sweep are the only cover."""
+
+    MESHCORE_SEND_METHODS = {"send_msg", "send_channel_txt_msg"}
+
+    def test_refused_when_not_allowlisted(self):
+        with pytest.raises(TransmitBlocked):
+            tx_guard.assert_meshcore_tx_allowed(kind="meshcore_tx")
+        recs = tx_guard.blocked_attempts()
+        assert recs and recs[-1]["target"] == tx_guard.MESHCORE_TARGET
+
+    def test_allowlisted_send_passes(self):
+        with tx_guard.allow_meshcore_egress():
+            tx_guard.assert_meshcore_tx_allowed(kind="meshcore_tx")
+
+    def test_attach_blocked_under_pytest_only(self, monkeypatch):
+        """Same shape as the RNS attach backstop: test isolation, not part
+        of the env-armed drill surface — MESHFORGE_TX_GUARD=1 on a live
+        gateway must not sever the companion radio."""
+        assert not tx_guard.meshcore_attach_allowed()
+        with tx_guard.allow_meshcore_egress():
+            assert tx_guard.meshcore_attach_allowed()
+        monkeypatch.setenv("MESHFORGE_TX_GUARD", "1")
+        monkeypatch.setattr(tx_guard, "_under_pytest", lambda: False)
+        assert tx_guard.meshcore_attach_allowed()
+
+    def test_every_meshcore_send_site_is_guarded(self):
+        """Function-level sweep: any function calling a MeshCore send method
+        must contain assert_meshcore_tx_allowed. Function-level rather than
+        line-window because the handler funnels all sends through one
+        chokepoint whose branches span more than a window."""
+        import ast
+
+        src_root = Path(__file__).resolve().parents[1] / "src"
+        offenders = []
+        for path in src_root.rglob("*.py"):
+            if path.name == "tx_guard.py":
+                continue
+            src = path.read_text(errors="ignore")
+            if not any(m in src for m in self.MESHCORE_SEND_METHODS):
+                continue
+            try:
+                tree = ast.parse(src)
+            except SyntaxError:
+                continue
+            for fn in ast.walk(tree):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                calls = [
+                    n for n in ast.walk(fn)
+                    if isinstance(n, ast.Call)
+                    and isinstance(n.func, ast.Attribute)
+                    and n.func.attr in self.MESHCORE_SEND_METHODS
+                ]
+                if not calls:
+                    continue
+                segment = ast.get_source_segment(src, fn) or ""
+                if "assert_meshcore_tx_allowed" in segment:
+                    continue
+                offenders.append(
+                    f"{path.relative_to(src_root)}:{fn.lineno} {fn.name}()"
+                )
+        assert not offenders, (
+            "MeshCore send call(s) in function(s) with no "
+            "assert_meshcore_tx_allowed — the companion radio is real RF and "
+            "serial is invisible to the socket tripwire (2026-08-09):\n  "
+            + "\n  ".join(offenders)
+        )
+
+
 class TestTransmittingFlagSet:
     """The flag set is a CLOSED ENUM with an open consumer.
 

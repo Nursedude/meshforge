@@ -727,6 +727,7 @@ class TestOracleDmOnlySend:
             self.commands = cmds
 
     def test_dm_only_unknown_contact_drops_not_broadcasts(self, handler):
+        from utils import tx_guard
         cmds = self._Cmds()
         handler._meshcore = self._MC(cmds)
         handler._connected = True
@@ -735,11 +736,15 @@ class TestOracleDmOnlySend:
             return await handler._send_message(
                 "dude-AI@moc3: fleet:?", destination="!stranger",
                 broadcast_fallback=False)
-        ok = asyncio.run(_run())
+        # Declared: this test deliberately exercises the send path against a
+        # double (2026-08-09 egress guard).
+        with tx_guard.allow_meshcore_egress():
+            ok = asyncio.run(_run())
         assert ok is False               # dropped
         assert cmds.broadcasts == []     # NOT broadcast to the channel
 
     def test_default_still_broadcasts_for_bridge_paths(self, handler):
+        from utils import tx_guard
         cmds = self._Cmds()
         handler._meshcore = self._MC(cmds)
         handler._connected = True
@@ -747,9 +752,40 @@ class TestOracleDmOnlySend:
         async def _run():
             return await handler._send_message(
                 "bridged text", destination="!stranger")  # default fallback
-        ok = asyncio.run(_run())
+        with tx_guard.allow_meshcore_egress():
+            ok = asyncio.run(_run())
         assert ok is True
         assert cmds.broadcasts == ["bridged text"]  # legacy behavior intact
+
+    def test_undeclared_send_is_refused_and_sends_nothing(self, handler):
+        """THE drill for the 2026-08-09 finding: a test driving the MeshCore
+        send path without declaring egress must be refused BEFORE any send
+        method is touched — the companion is a real LoRa radio and serial is
+        invisible to the socket tripwire."""
+        from utils import tx_guard
+        from utils.tx_guard import TransmitBlocked
+        cmds = self._Cmds()
+        handler._meshcore = self._MC(cmds)
+        handler._connected = True
+
+        async def _run():
+            return await handler._send_message("leak", destination=None)
+        with pytest.raises(TransmitBlocked):
+            asyncio.run(_run())
+        assert cmds.broadcasts == [] and cmds.dm_sent == []
+        recs = tx_guard.blocked_attempts()
+        assert recs and recs[-1]["kind"] == "meshcore_tx"
+
+    def test_simulator_send_needs_no_declaration(self, handler):
+        """The in-process simulator is not egress; a guard that fires on it
+        gets switched off (narrowness drill)."""
+        from gateway.meshcore_handler import MeshCoreSimulator
+        handler._meshcore = MeshCoreSimulator()
+        handler._connected = True
+
+        async def _run():
+            return await handler._send_message("sim text", destination=None)
+        assert asyncio.run(_run()) is True
 
     def test_oracle_send_text_marks_dm_only(self, handler):
         handler._connected = True

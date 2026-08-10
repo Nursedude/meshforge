@@ -113,6 +113,12 @@ __all__ = [
     "rns_attach_allowed",
     "note_rns_attach_blocked",
     "RNS_TARGET",
+    "assert_meshcore_tx_allowed",
+    "allow_meshcore_egress",
+    "meshcore_egress_allowed",
+    "meshcore_attach_allowed",
+    "note_meshcore_attach_blocked",
+    "MESHCORE_TARGET",
     "probe_connect",
     "in_probe",
     "normalize_target",
@@ -320,6 +326,109 @@ def note_rns_attach_blocked(configdir) -> None:
         "open_reticulum returns None, the same path a box with no rnsd takes. "
         "Wrap in utils.tx_guard.allow_rns_egress() if this test means to use "
         "a real Reticulum.", configdir,
+    )
+
+
+# ---------------------------------------------------------------------------
+# MeshCore companion-radio egress
+# ---------------------------------------------------------------------------
+
+#: Coarse target token for MeshCore egress. Same shape as RNS: the companion
+#: radio hangs off serial (or TCP:4000) — there is no host:port the socket
+#: tripwire could watch on serial, and the send keys a REAL LoRa radio. The
+#: 2026-08-09 review found this second radio entirely outside the egress
+#: architecture: no refusal, no record, no sweep coverage (MeshAnchor's
+#: PRIMARY radio type — port this gate when landing there).
+MESHCORE_TARGET = "meshcore"
+
+_meshcore_allowed = False
+
+
+class allow_meshcore_egress:
+    """Allowlist MeshCore transmission for a test that means to exercise it.
+
+    Coarse on/off like :class:`allow_rns_egress`: a serial companion has no
+    per-destination target to allowlist.
+    """
+
+    def __init__(self):
+        self._previous = False
+
+    def __enter__(self) -> "allow_meshcore_egress":
+        global _meshcore_allowed
+        with _lock:
+            self._previous = _meshcore_allowed
+            _meshcore_allowed = True
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        global _meshcore_allowed
+        with _lock:
+            _meshcore_allowed = self._previous
+        return False
+
+
+def meshcore_egress_allowed() -> bool:
+    with _lock:
+        return _meshcore_allowed
+
+
+def assert_meshcore_tx_allowed(*, kind: str, detail: str = "") -> None:
+    """Refuse a MeshCore transmission when armed and not allowlisted.
+
+    Call at the TOP of every MeshCore send site, before the companion is
+    touched. In-process simulators are not egress and need no guard.
+
+    Raises:
+        TransmitBlocked: when armed and MeshCore egress is not allowlisted.
+    """
+    if not is_armed() or meshcore_egress_allowed():
+        return
+    record = {
+        "target": MESHCORE_TARGET,
+        "kind": kind,
+        "detail": detail,
+        "test": os.environ.get("PYTEST_CURRENT_TEST", ""),
+    }
+    with _lock:
+        if len(_blocked) < _BLOCKED_CAP:
+            _blocked.append(record)
+    _raise_blocked(record)
+
+
+def meshcore_attach_allowed() -> bool:
+    """Whether this process may open a LIVE MeshCore companion connection.
+
+    Structural backstop with the same shape (and the same pytest-only scope)
+    as :func:`rns_attach_allowed`: with no live companion handle there is
+    nothing for an unguarded send to key, and an env-armed production drill
+    must not sever the gateway's radio.
+    """
+    return (
+        (not is_armed())
+        or (not _under_pytest())
+        or meshcore_egress_allowed()
+    )
+
+
+def note_meshcore_attach_blocked(target: str) -> None:
+    """Record that a live MeshCore attach was declined under test
+    (honest_failure_modes #9 — a refusal that leaves no artifact never
+    happened)."""
+    record = {
+        "target": MESHCORE_TARGET,
+        "kind": "meshcore_attach",
+        "detail": f"MeshCore connect declined under pytest (target={target})",
+        "test": os.environ.get("PYTEST_CURRENT_TEST", ""),
+    }
+    with _lock:
+        if len(_blocked) < _BLOCKED_CAP:
+            _blocked.append(record)
+    logger.warning(
+        "tx_guard: declined a LIVE MeshCore attach under pytest (target=%s) "
+        "— the handler stays disconnected, the same path a box with no "
+        "companion radio takes. Wrap in utils.tx_guard.allow_meshcore_egress() "
+        "if this test means to use a real companion.", target,
     )
 
 
