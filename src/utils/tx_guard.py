@@ -75,6 +75,8 @@ __all__ = [
     "blocked_attempts",
     "clear_blocked_attempts",
     "is_armed",
+    "probe_connect",
+    "in_probe",
     "normalize_target",
     "DEFAULT_MESH_TCP_PORT",
 ]
@@ -137,14 +139,69 @@ def assert_cli_args_allowed(args, host: Optional[str] = None,
                       detail=f"{detail} flag={hit}".strip())
 
 
+_probe_state = threading.local()
+
+
+class probe_connect:
+    """Declare that a connection is a REACHABILITY PROBE, not a transmission.
+
+    A probe opens a socket to answer "is this port open?" and closes it
+    without writing. That is not egress, but an in-process socket patch cannot
+    tell the two apart — so the prober declares itself.
+
+    Needed because the tripwire has to keep blocking plain ``connect``:
+    meshtastic's ``TCPInterface`` reaches the radio through
+    ``socket.create_connection`` -> ``sock.connect``, and that is the unguarded
+    path the tripwire exists to catch. ``connect_ex`` is the probe idiom (it
+    returns an errno rather than raising, which is its whole purpose) and is
+    permitted-but-recorded; this context manager covers the probes that use
+    ``connect``/``create_connection`` instead.
+
+    Thread-local: probes run on daemon threads, and one thread declaring a
+    probe must not excuse another thread's transmission.
+    """
+
+    def __enter__(self) -> "probe_connect":
+        _probe_state.depth = getattr(_probe_state, "depth", 0) + 1
+        return self
+
+    def __exit__(self, *exc) -> bool:
+        _probe_state.depth = max(0, getattr(_probe_state, "depth", 0) - 1)
+        return False
+
+
+def in_probe() -> bool:
+    """True when this thread is inside a declared :class:`probe_connect`."""
+    return getattr(_probe_state, "depth", 0) > 0
+
+
 def normalize_target(host: Optional[str], port: Optional[int]) -> str:
-    """Canonical ``host:port`` string used for allowlisting and records."""
+    """Canonical ``host:port`` string used for allowlisting and records.
+
+    Non-string hosts and non-integer ports collapse to the LOCAL RADIO rather
+    than being rendered as-is. A test that builds its config from a
+    ``MagicMock`` otherwise mints a target like
+    ``<MagicMock name='...host.strip()' id='140735842580672'>:1`` — unique per
+    run, so no allowlist could ever name it and the refusal message advised
+    something impossible. Collapsing is also the safe reading: if we cannot
+    tell where this send points, assume it points at the operator's radio.
+    """
+    if not isinstance(host, str):
+        host = None
     h = (host or "").strip() or "localhost"
     # Treat the loopback spellings as one target so a harness that allowlists
     # 127.0.0.1 is not defeated by a caller that says "localhost".
     if h in ("localhost", "127.0.0.1", "::1", "[::1]"):
         h = "127.0.0.1"
-    p = int(port) if port else DEFAULT_MESH_TCP_PORT
+    # isinstance, NOT try/int(): a MagicMock defines __int__ and answers 1, so
+    # a try/except around int() silently produced "127.0.0.1:1" — a plausible
+    # target that was never asked for. Caught by the drill, not by review.
+    if isinstance(port, bool) or not isinstance(port, (int, str)):
+        port = None
+    try:
+        p = int(port) if port else DEFAULT_MESH_TCP_PORT
+    except (TypeError, ValueError):
+        p = DEFAULT_MESH_TCP_PORT
     return f"{h}:{p}"
 
 

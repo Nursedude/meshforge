@@ -97,6 +97,9 @@ class MeshtasticCLI:
             console.print(f"[cyan]Install with: {get_meshtastic_install_instructions()}[/cyan]")
             return None
 
+        assert_cli_args_allowed(args, getattr(self, 'host', None),
+                                detail="cli.meshtastic_cli._run_command_interactive")
+
         full_args = [self._cli_path] + self._get_connection_args() + args
         console.print(f"[dim]Running: {' '.join(full_args)}[/dim]\n")
 

@@ -280,21 +280,32 @@ def _block_radio_egress():
     orig_connect = _socket.socket.connect
     orig_connect_ex = _socket.socket.connect_ex
 
-    def _check(address):
-        if isinstance(address, tuple) and len(address) >= 2:
-            host, port = address[0], address[1]
-            if port in radio_ports:
-                tx_guard.assert_tx_allowed(
-                    host, port, kind="socket_tripwire",
-                    detail="raw socket connect to a meshtasticd radio port",
-                )
+    def _check(address, probe_idiom):
+        if not (isinstance(address, tuple) and len(address) >= 2):
+            return
+        host, port = address[0], address[1]
+        if port not in radio_ports:
+            return
+        # `connect_ex` returns an errno instead of raising — that IS the
+        # reachability-probe idiom, and ~15 sites in this tree use it to ask
+        # "is the radio port open?". Blocking those converts a benign probe
+        # into a failure (CI found exactly that in fleet_snapshot._probe_radio)
+        # without catching anything: meshtastic's TCPInterface reaches the
+        # radio through create_connection -> sock.connect, which stays blocked.
+        # A prober that must use plain connect declares tx_guard.probe_connect().
+        if probe_idiom or tx_guard.in_probe():
+            return
+        tx_guard.assert_tx_allowed(
+            host, port, kind="socket_tripwire",
+            detail="raw socket connect to a meshtasticd radio port",
+        )
 
     def _connect(self, address):
-        _check(address)
+        _check(address, probe_idiom=False)
         return orig_connect(self, address)
 
     def _connect_ex(self, address):
-        _check(address)
+        _check(address, probe_idiom=True)
         return orig_connect_ex(self, address)
 
     _socket.socket.connect = _connect

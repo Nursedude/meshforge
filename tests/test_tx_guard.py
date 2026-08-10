@@ -84,6 +84,16 @@ class TestAllowlist:
         monkeypatch.setenv("MESHFORGE_TX_ALLOW", "127.0.0.1:8123")
         assert_tx_allowed("127.0.0.1", 8123, kind="drill")
 
+    def test_mock_shaped_target_collapses_to_the_local_radio(self):
+        """A config built from MagicMock must not mint an un-allowlistable
+        target. Found porting to MeshAnchor: the refusal named
+        ``<MagicMock name='...host.strip()' id='140735842580672'>:1``, unique
+        per run, so the message's own advice was impossible to follow."""
+        from unittest.mock import MagicMock
+        assert tx_guard.normalize_target(MagicMock(), MagicMock()) == "127.0.0.1:4403"
+        with tx_guard.allow_targets("127.0.0.1:4403"):
+            assert_tx_allowed(MagicMock(), MagicMock(), kind="drill")
+
     def test_blocked_attempt_is_recorded(self):
         """The gate is also an instrument: a suite run must be able to name
         every hop that would have keyed the radio."""
@@ -299,6 +309,53 @@ class TestSocketTripwire:
         with pytest.raises(TransmitBlocked):
             socket.socket().connect(("127.0.0.1", 9443))
 
+    def test_connect_ex_probe_idiom_is_permitted(self):
+        """`connect_ex` returns an errno instead of raising — that IS the
+        reachability-probe idiom, used by ~15 sites here to ask "is the radio
+        port open?". Blocking it turned benign probes into failures (CI caught
+        `fleet_snapshot._probe_radio`) while catching nothing: TCPInterface
+        reaches the radio via create_connection -> connect, still blocked."""
+        rc = socket.socket().connect_ex(("127.0.0.1", 4403))
+        assert isinstance(rc, int)  # errno or 0; no raise either way
+
+    def test_declared_probe_may_use_plain_connect(self):
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            srv.bind(("127.0.0.1", 4403))
+        except OSError:
+            pytest.skip("port 4403 is in use on this box (real meshtasticd)")
+        srv.listen(1)
+        try:
+            with tx_guard.probe_connect():
+                c = socket.socket()
+                c.connect(("127.0.0.1", 4403))
+                c.close()
+        finally:
+            srv.close()
+
+    def test_probe_declaration_does_not_leak_past_the_context(self):
+        with tx_guard.probe_connect():
+            assert tx_guard.in_probe()
+        assert not tx_guard.in_probe()
+        with pytest.raises(TransmitBlocked):
+            socket.socket().connect(("127.0.0.1", 4403))
+
+    def test_probe_declaration_is_thread_local(self):
+        """One thread declaring a probe must not excuse another thread's
+        transmission — probes run on daemon threads here."""
+        import threading
+        seen = {}
+
+        def other():
+            seen["in_probe"] = tx_guard.in_probe()
+
+        with tx_guard.probe_connect():
+            t = threading.Thread(target=other)
+            t.start()
+            t.join()
+        assert seen["in_probe"] is False
+
     def test_non_radio_port_is_not_touched(self):
         """Narrowness drill. A blanket block would break the map-server and
         MQTT harnesses — and would NOT have caught the 08-09 leak anyway,
@@ -460,6 +517,7 @@ class TestGuardedRunnersStillGuard:
     RUNNERS = (
         ("commands/meshtastic.py", "def _run_command("),
         ("cli/meshtastic_cli.py", "def _run_command("),
+        ("cli/meshtastic_cli.py", "def _run_command_interactive("),
         ("core/meshtastic_cli.py", "def run("),
     )
 

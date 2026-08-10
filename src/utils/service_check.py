@@ -39,6 +39,7 @@ from typing import List, Optional, Tuple
 from enum import Enum
 
 from utils.ports import MESHTASTICD_PORT, MESHTASTICD_ALT_PORT, MQTT_PORT, RNS_SHARED_INSTANCE_PORT
+from utils import tx_guard
 
 logger = logging.getLogger(__name__)
 
@@ -635,7 +636,8 @@ def _wait_for_tcp_ready(port: int, host: str = 'localhost', max_wait: int = 15) 
     """
     for _attempt in range(max_wait):
         try:
-            with socket.create_connection((host, port), timeout=1):
+            with tx_guard.probe_connect(), \
+                    socket.create_connection((host, port), timeout=1):
                 logger.debug("TCP port %d ready", port)
                 return True
         except (ConnectionRefusedError, OSError):

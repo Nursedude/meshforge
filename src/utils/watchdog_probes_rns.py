@@ -18,6 +18,7 @@ from utils.watchdog_probe_core import (  # noqa: F401
     _resolve_main_pid,
     note_disposition,
 )
+from utils import tx_guard
 
 if TYPE_CHECKING:
     from utils.rns_status_parser import RNSStatus
@@ -691,7 +692,8 @@ def _tcp_reachable(host: str, port: int, timeout: float = 3.0) -> bool:
     tests can monkeypatch it and do zero real network I/O.
     """
     try:
-        with socket.create_connection((host, port), timeout=timeout):
+        with tx_guard.probe_connect(), \
+                socket.create_connection((host, port), timeout=timeout):
             return True
     except OSError:
         return False
