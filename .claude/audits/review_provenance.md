@@ -110,3 +110,23 @@
    taxonomy row invisible for 12 days), and a stray pipe truncates every
    cell after it. `review_provenance_check.py` now blocks a NEW malformed
    row at push and warns on pre-existing ones.
+6. **This file is PUBLIC and its history is permanent — record the RISK, not
+   the RECIPE.** It has lived in a public repo since 2026-07-05, and moving it
+   later would NOT unpublish it: `git rm` drops it from the tip while every
+   past version stays in the public history, in forks, and in the clone on
+   every fleet box. Un-publishing would mean rewriting history and breaking
+   those clones, so the only lever that actually exists is what gets written
+   NEXT. Keep what gives a reviewer their bearings: the entry points, why a
+   defect there would be costly, what has already been measured. Leave out
+   what mainly helps someone reach a degraded state on live hardware — named
+   hosts or interpreters that are exposed, enumerated bypass paths, a
+   step-by-step to a silent outage. The steer survives the redaction: on
+   2026-08-09 the row said "attack the arming predicate, a false ARM is a
+   silent mesh outage" AND enumerated the eight production interpreters where
+   `pytest` is importable; the first clause alone points a reviewer the same
+   way. ⚠️ This deliberately cuts against the project's habit of publishing
+   its own failure modes (`persistent_issues.md`, `honest_failure_modes.md`) —
+   those describe defects already CURED, while this file describes soft spots
+   still OPEN by design, which is the whole point of a queue. Companion to
+   MF014/MF015, which keep operator-specific values and LAN IPs out of
+   published docs for the same reason.
