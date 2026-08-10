@@ -310,18 +310,26 @@ class TestMetricsEndpoint:
         if not map_metrics.is_available():
             pytest.skip("prometheus_client not installed")
 
+        from utils import tx_guard
+
+        # This test's whole point is the WARMING window, so the collector is
+        # mid-collect during the assertions — allowlist its read-only local
+        # radio targets for this test's own harness lifetime (test-scoped;
+        # the module fixture's allowlist no longer covers standalone
+        # harnesses, by design — 2026-08-09 review finding 6).
         harness = MapServerHarness()
-        try:
-            harness.start(wait_ready=False)
-            # Hit /metrics during warming — must not 503
-            with urllib.request.urlopen(
-                f"{harness.url}/metrics", timeout=10
-            ) as resp:
-                assert resp.status == 200
-                body = resp.read().decode("utf-8")
-            assert "meshforge_map_service_up" in body
-        finally:
-            harness.stop()
+        with tx_guard.allow_targets("127.0.0.1:4403", "127.0.0.1:9443"):
+            try:
+                harness.start(wait_ready=False)
+                # Hit /metrics during warming — must not 503
+                with urllib.request.urlopen(
+                    f"{harness.url}/metrics", timeout=10
+                ) as resp:
+                    assert resp.status == 200
+                    body = resp.read().decode("utf-8")
+                assert "meshforge_map_service_up" in body
+            finally:
+                harness.stop()
 
 
 class TestWarmingState:
@@ -335,51 +343,60 @@ class TestWarmingState:
 
     def test_warming_returns_503_for_api_status(self, tmp_path):
         from tests.e2e.harness.map_server import MapServerHarness
+        from utils import tx_guard
 
+        # Warming = the collector is live mid-test; allowlist its read-only
+        # local radio targets for this harness's lifetime (see finding-6 note
+        # in test_metrics_during_warming_does_not_503).
         harness = MapServerHarness()
-        try:
-            # Don't wait — we want to catch the warming window.
-            harness.start(wait_ready=False)
-            # /healthz must be 200 immediately on bind.
-            with urllib.request.urlopen(
-                f"{harness.url}/healthz", timeout=5
-            ) as resp:
-                assert resp.status == 200
-                healthz_body = json.loads(resp.read().decode())
-            # If we caught warming, /api/status returns 503. If
-            # warming finished impossibly fast, that's also fine —
-            # check both branches.
+        with tx_guard.allow_targets("127.0.0.1:4403", "127.0.0.1:9443"):
             try:
-                resp = urllib.request.urlopen(
-                    f"{harness.url}/api/status", timeout=5
-                )
-                # Warmup completed before our request — accept ready state.
-                assert healthz_body.get("state") in ("warming", "ready")
-            except urllib.error.HTTPError as e:
-                if e.code == 503:
-                    body = json.loads(e.read().decode())
-                    assert body.get("state") == "warming"
-                    assert body.get("error") == "service_warming"
-                    assert "since" in body
-                    assert "retry_after_s" in body
-                else:
-                    raise
-        finally:
-            harness.stop()
+                # Don't wait — we want to catch the warming window.
+                harness.start(wait_ready=False)
+                # /healthz must be 200 immediately on bind.
+                with urllib.request.urlopen(
+                    f"{harness.url}/healthz", timeout=5
+                ) as resp:
+                    assert resp.status == 200
+                    healthz_body = json.loads(resp.read().decode())
+                # If we caught warming, /api/status returns 503. If
+                # warming finished impossibly fast, that's also fine —
+                # check both branches.
+                try:
+                    resp = urllib.request.urlopen(
+                        f"{harness.url}/api/status", timeout=5
+                    )
+                    # Warmup completed before our request — accept ready state.
+                    assert healthz_body.get("state") in ("warming", "ready")
+                except urllib.error.HTTPError as e:
+                    if e.code == 503:
+                        body = json.loads(e.read().decode())
+                        assert body.get("state") == "warming"
+                        assert body.get("error") == "service_warming"
+                        assert "since" in body
+                        assert "retry_after_s" in body
+                    else:
+                        raise
+            finally:
+                harness.stop()
 
     def test_warming_then_ready_via_wait_ready(self, tmp_path):
         from tests.e2e.harness.map_server import MapServerHarness
+        from utils import tx_guard
 
+        # Collect runs from start() until ready — allowlist its read-only
+        # local radio targets for this harness only (finding-6 note above).
         harness = MapServerHarness()
-        try:
-            harness.start(wait_ready=False)
-            # Block until ready (or fail with TimeoutError on a
-            # truly-stuck server).
-            harness.wait_ready(timeout_s=600.0)
-            # Now /api/status works.
-            with urllib.request.urlopen(
-                f"{harness.url}/api/status", timeout=10
-            ) as resp:
-                assert resp.status == 200
-        finally:
-            harness.stop()
+        with tx_guard.allow_targets("127.0.0.1:4403", "127.0.0.1:9443"):
+            try:
+                harness.start(wait_ready=False)
+                # Block until ready (or fail with TimeoutError on a
+                # truly-stuck server).
+                harness.wait_ready(timeout_s=600.0)
+                # Now /api/status works.
+                with urllib.request.urlopen(
+                    f"{harness.url}/api/status", timeout=10
+                ) as resp:
+                    assert resp.status == 200
+            finally:
+                harness.stop()

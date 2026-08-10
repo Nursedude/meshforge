@@ -26,9 +26,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 # Teardown callables registered by ``build_bridge_with_real_pipeline`` (RF
-# egress allowlist + fallback neutralization). Drained per-test by the
-# ``_e2e_pipeline_teardown`` autouse fixture in tests/e2e/conftest.py, so the
-# harness's process-wide patches never outlive the test that asked for them.
+# egress allowlist + fallback neutralization). Drained by the
+# ``_drain_e2e_pipeline_patches`` autouse fixture in tests/conftest.py (top
+# level, keyed on this module being imported — so ANY caller anywhere gets
+# drained, not only tests under tests/e2e/), plus a session-end sweep for
+# higher-scoped leftovers. Registration rules (2026-08-09 review finding):
+# each restore is a SEPARATE entry, appended IMMEDIATELY after its patch is
+# applied — a bundled multi-restore lambda aborts the rest on the first
+# failure, and any gap between patch and registration is a window where an
+# exception strands the patch process-wide with no registered undo.
 _E2E_TEARDOWN: list = []
 
 
@@ -98,8 +104,14 @@ def build_bridge_with_real_pipeline(*, config, mock_daemon):
 
     # The bridge's HTTP TX path now calls send_text_direct_with_id (returns the
     # packet_id for ACK correlation); patch both so the plain-HTTP mock is hit.
+    # Registered here as well as covered by the _restore_send_text_direct
+    # fixture in tests/e2e/conftest.py — that fixture only exists for tests
+    # under tests/e2e/, and this patch must not outlive any other caller.
     _mpc.send_text_direct = _http_send_text_direct
+    _E2E_TEARDOWN.append(lambda: setattr(_mpc, "send_text_direct", _orig_send))
     _mpc.send_text_direct_with_id = _http_send_text_direct_with_id
+    _E2E_TEARDOWN.append(
+        lambda: setattr(_mpc, "send_text_direct_with_id", _orig_send_id))
 
     db_path = getattr(config, "_test_queue_db_path", None)
     if db_path is None:
@@ -128,21 +140,19 @@ def build_bridge_with_real_pipeline(*, config, mock_daemon):
         f"{config.meshtastic.host}:{config.meshtastic.http_port}"
     )
     _tx_allow.__enter__()
+    _E2E_TEARDOWN.append(lambda: _tx_allow.__exit__(None, None, None))
 
     _orig_cli = _mqtt_handler_mod.MQTTBridgeHandler._send_via_cli
     _mqtt_handler_mod.MQTTBridgeHandler._send_via_cli = (
         lambda self, *a, **kw: False
     )
+    _E2E_TEARDOWN.append(lambda: setattr(
+        _mqtt_handler_mod.MQTTBridgeHandler, "_send_via_cli", _orig_cli))
+
     _orig_has_pb_client = _mqtt_handler_mod._HAS_PROTOBUF_CLIENT
     _mqtt_handler_mod._HAS_PROTOBUF_CLIENT = False
-
-    _E2E_TEARDOWN.append(
-        lambda: (
-            _tx_allow.__exit__(None, None, None),
-            setattr(_mqtt_handler_mod.MQTTBridgeHandler, "_send_via_cli", _orig_cli),
-            setattr(_mqtt_handler_mod, "_HAS_PROTOBUF_CLIENT", _orig_has_pb_client),
-        )
-    )
+    _E2E_TEARDOWN.append(lambda: setattr(
+        _mqtt_handler_mod, "_HAS_PROTOBUF_CLIENT", _orig_has_pb_client))
 
     _orig_pmq_init = PersistentMessageQueue.__init__
 

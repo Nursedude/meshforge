@@ -524,3 +524,75 @@ def no_network():
 # in this file was unused (no test imported it from conftest). Re-adding
 # definitions risks silent divergence the next time someone edits one
 # and not the other.
+
+
+# ---------------------------------------------------------------------------
+# e2e pipeline patch drain (2026-08-09 review finding 7)
+# ---------------------------------------------------------------------------
+
+def _drain_pipeline_teardowns(registry: list, down_to: int) -> list:
+    """Pop and run teardown callables until ``len(registry) == down_to``.
+
+    Returns the failures instead of swallowing them: a restore that fails
+    leaves a PROCESS-WIDE patch (widened RF allowlist, neutered CLI fallback)
+    live for the rest of the session, and the old ``except Exception: pass``
+    made that invisible while also discarding the popped callable
+    (honest_failure_modes #9 — every swallow leaves a witness).
+    """
+    failures = []
+    while len(registry) > down_to:
+        fn = registry.pop()
+        try:
+            fn()
+        except Exception as e:
+            failures.append(f"{fn!r}: {type(e).__name__}: {e}")
+    return failures
+
+
+@pytest.fixture(autouse=True)
+def _drain_e2e_pipeline_patches():
+    """Per-test drain of tests.e2e.harness.pipeline._E2E_TEARDOWN.
+
+    Lives HERE (top-level conftest), not in tests/e2e/conftest.py: the
+    pipeline helper's patches are process-wide, so any caller anywhere must
+    get drained. Keyed on the module being in sys.modules — zero cost for
+    the whole suite when no test imported it.
+
+    Depth-snapshot semantics, NOT clear(): the old fixture cleared the
+    registry at setup, which DISCARDED restores registered by module- or
+    session-scoped fixtures (their setup runs before this fixture's) instead
+    of running them — unrevertable, since allow_targets restores from the
+    discarded object. Higher-scoped registrations survive the per-test drain
+    and are swept at session end by _drain_e2e_pipeline_patches_session.
+    """
+    mod = sys.modules.get("tests.e2e.harness.pipeline")
+    depth = len(mod._E2E_TEARDOWN) if mod is not None else 0
+    yield
+    mod = sys.modules.get("tests.e2e.harness.pipeline")
+    if mod is None:
+        return
+    failures = _drain_pipeline_teardowns(mod._E2E_TEARDOWN, depth)
+    if failures:
+        pytest.fail(
+            "e2e pipeline teardown restore(s) FAILED — process-wide patches "
+            "(RF egress allowlist / fallback neutralization) may still be "
+            "live for the rest of this run:\n  " + "\n  ".join(failures)
+        )
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _drain_e2e_pipeline_patches_session():
+    """Session-end sweep for registrations the per-test drain must not touch
+    (made by module/session-scoped fixtures). A leftover here is legitimate
+    during the run and MUST still be restored before the process is reused
+    (pytest-xdist workers, IDE test runners keep the interpreter alive)."""
+    yield
+    mod = sys.modules.get("tests.e2e.harness.pipeline")
+    if mod is None:
+        return
+    failures = _drain_pipeline_teardowns(mod._E2E_TEARDOWN, 0)
+    if failures:
+        raise RuntimeError(
+            "e2e pipeline teardown restore(s) FAILED at session end:\n  "
+            + "\n  ".join(failures)
+        )

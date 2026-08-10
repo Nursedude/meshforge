@@ -38,18 +38,22 @@ def map_server():
     # The prewarm COLLECTS from the local radio (read-only), and the socket
     # tripwire in tests/conftest.py refuses connects to the meshtasticd ports
     # regardless of direction — it cannot tell a read from a write. So the
-    # collector's target is allowlisted for this fixture's lifetime.
-    #
-    # ⚠️ This widens the allowlist for the whole module, including the map's
-    # /api/v1/toradio proxy. No test here issues one, and the alternative
-    # (teaching the tripwire to distinguish reads) would mean trusting the
-    # thing under test to declare its own intent.
+    # collector's targets are allowlisted for the PREWARM WINDOW ONLY:
+    # start() returns once /healthz says ready, the hermetic settings pin
+    # periodic_refresh_seconds=0, so no collect runs after that. The old
+    # module-lifetime allowlist meant every test in the file could transmit
+    # on the operator's real meshtasticd — the exact fallback endpoints of
+    # the 2026-08-09 incident, protected only by a comment saying no test
+    # here sends (review finding 6). Now a test that reaches the map's
+    # /api/v1/toradio proxy is refused, which is the guard working.
     from utils import tx_guard
 
+    harness = MapServerHarness()
     with tx_guard.allow_targets("127.0.0.1:4403", "127.0.0.1:9443"):
-        harness = MapServerHarness()
         harness.start()
+    try:
         yield harness
+    finally:
         harness.stop()
 
 
@@ -86,27 +90,10 @@ def _restore_send_text_direct():
     _mpc.send_text_direct_with_id = original_id
 
 
-@pytest.fixture(autouse=True)
-def _e2e_pipeline_teardown():
-    """Drain the pipeline harness's process-wide patches after every test.
-
-    ``build_bridge_with_real_pipeline`` allowlists the mock daemon with the RF
-    egress guard and neutralizes the handler's real-radio fallbacks. Both are
-    PROCESS-WIDE, so leaking them past the test would silently widen the
-    allowlist for every later test in the run — the same shape as the
-    ``tls=False`` leak ``_restore_send_text_direct`` already exists to stop.
-    """
-    from tests.e2e.harness import pipeline as _pipeline
-    _pipeline._E2E_TEARDOWN.clear()
-    try:
-        yield
-    finally:
-        while _pipeline._E2E_TEARDOWN:
-            fn = _pipeline._E2E_TEARDOWN.pop()
-            try:
-                fn()
-            except Exception:
-                pass
+# NOTE: the per-test drain of tests.e2e.harness.pipeline._E2E_TEARDOWN lives
+# in the TOP-LEVEL tests/conftest.py (_drain_e2e_pipeline_patches), not here —
+# the pipeline helper's patches are process-wide, so the drain must cover any
+# caller anywhere, not only tests under tests/e2e/ (2026-08-09 review).
 
 
 @pytest.fixture(autouse=True)
