@@ -4808,6 +4808,23 @@ def test_confirmation_stall_below_min_terminal_is_none():
         assert probe_delivery_confirmation_stall(gateway_main_pid=_GW_RUNNING, min_terminal=20) is None
 
 
+def test_confirmation_stall_ring_sized_for_min_terminal():
+    """Cross-constant pin (honest_failure_modes #5): the producer's
+    snapshot ring and this probe's sample floor live in different modules
+    and WILL drift apart independently — which is exactly what happened
+    2026-07-26→08-10: ring 50 vs min_terminal 20 left moc (the fleet's
+    heaviest confirming gateway, ~30% confirmable-terminal ring density)
+    structurally unable to reach the floor, so the probe flapped
+    blind/clean for weeks. Require ring ≥ 5× floor: at the measured ~30%
+    density that yields ≥1.5× the floor in judgeable events, with margin
+    for mesh-heavier mixes."""
+    import inspect
+    from gateway.delivery_counters import SNAPSHOT_RECENT_LIMIT
+    floor = inspect.signature(
+        probe_delivery_confirmation_stall).parameters["min_terminal"].default
+    assert SNAPSHOT_RECENT_LIMIT >= 5 * floor
+
+
 def test_confirmation_stall_rns_healthy_is_quiet():
     payload = _delivery_payload(confirmed=24, failed=1)
     with patch("utils.watchdog_probes_gateway.urlopen",

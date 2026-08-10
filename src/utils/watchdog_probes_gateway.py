@@ -539,8 +539,11 @@ def probe_delivery_confirmation_stall(
 
     Closes the honest-signal gap where the bridge's own status reads HEALTHY
     while nothing confirms. Judges a WINDOWED rate from the snapshot's
-    recent-events ring (last 50, newest-last) — the lifetime-cumulative rate
-    would mask a recent collapse.
+    recent-events ring (``SNAPSHOT_RECENT_LIMIT`` events, newest-last; 200
+    since 2026-08-10 — at 50 a mesh-heavy gateway's ring held fewer
+    confirmable terminals than ``min_terminal`` and this probe flapped
+    blind on moc for weeks) — the lifetime-cumulative rate would mask a
+    recent collapse.
 
     CRUCIAL: judges ONLY protocols that actually have a confirmation mechanism
     (record `confirmed` events — RNS today; Meshtastic too once ROUTING_APP
@@ -563,9 +566,9 @@ def probe_delivery_confirmation_stall(
       - no confirmable protocol → None (nothing tracks confirmation; e.g. an
         RNS-less box — Meshtastic has no ACK)
       - confirmable terminal events < min_terminal → None (low-traffic /
-        small-sample box: one failure tanks a tiny denominator; on a
-        mesh-heavy box the 50-event ring holds few RNS events, so None is the
-        correct, honest answer over too small a sample)
+        small-sample box: one failure tanks a tiny denominator — honest
+        over too small a sample. The ring is sized so a busy gateway
+        clears this floor comfortably; see the cross-constant test)
 
     Severities: rate ≤ 10% → wedge, ≤ 50% → degraded.
     """

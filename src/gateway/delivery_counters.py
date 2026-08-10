@@ -373,6 +373,18 @@ Pruned on insert via ``DELETE FROM events WHERE rowid IN (oldest)``,
 so the cap is enforced even when the gateway runs for weeks."""
 
 
+SNAPSHOT_RECENT_LIMIT = 200
+"""Events served in the snapshot's ``recent`` ring (must stay ≤
+``RING_BUFFER_CAP``). Was 50 until 2026-08-10, which starved
+``probe_delivery_confirmation_stall`` on mesh-heavy gateways: moc's
+50-event ring (~100 min of traffic) held only ~15 RNS terminal events
+against the probe's ``min_terminal=20`` sample floor, so the probe sat
+indeterminate — flapping blind/clean since 07-26 on the busiest
+confirming box in the fleet. At 200 the same ~30% confirmable-terminal
+density yields ~60 judgeable events per window. A cross-constant test
+pins the ratio to the probe's floor (honest_failure_modes #5)."""
+
+
 def default_db_path() -> Path:
     """Resolve the counters DB path.
 
@@ -796,14 +808,17 @@ class DeliveryCounters:
 
     # ── operator surface ───────────────────────────────────────
 
-    def snapshot(self, recent_limit: int = 50) -> Dict[str, Any]:
+    def snapshot(
+        self, recent_limit: int = SNAPSHOT_RECENT_LIMIT,
+    ) -> Dict[str, Any]:
         """Operator-readable aggregate. Same shape as the in-memory
         predecessor — switching backends is invisible at the
         ``/api/gateway/delivery`` boundary.
 
         Reads happen via the same WAL DB the gateway is writing into;
         SQLite's snapshot isolation gives a consistent view. The
-        ``recent_limit`` argument caps the JSON size (default 50).
+        ``recent_limit`` argument caps the JSON size (default
+        ``SNAPSHOT_RECENT_LIMIT``).
         """
         try:
             with self._connect() as conn:
@@ -1097,7 +1112,7 @@ def record(
     )
 
 
-def snapshot(recent_limit: int = 50) -> Dict[str, Any]:
+def snapshot(recent_limit: int = SNAPSHOT_RECENT_LIMIT) -> Dict[str, Any]:
     """Module-level convenience for the HTTP handler."""
     return get_singleton().snapshot(recent_limit=recent_limit)
 
