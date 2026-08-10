@@ -270,35 +270,67 @@ else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 # judged at all — moc3 runs no map on purpose, and calling that "stale" would
 # be the same lie as alarming on an accepted blind spot.
 #
+# 2026-08-09 review corrections, all four measured live:
+#   * meshanchor-* units are judged against the MESHANCHOR repo's HEAD
+#     (/opt/meshanchor), never MeshForge's — the old single-HT compare read
+#     any MA unit restarted before the latest MF commit as falsely 'behind'.
+#   * BOTH systemd scopes are enumerated. User-scope units (the #82 nomadnet
+#     class) were invisible while the clean text claimed "every ACTIVE unit";
+#     a box whose user manager is unreachable now DISCLOSES that blindness
+#     instead of folding it into clean (honest_failure_modes #2).
+#   * A non-numeric ActiveEnterTimestamp used to error inside a suppressed
+#     `[ -lt ]` and silently count as CURRENT; it is now unknown.
+#   * The display keeps a repo prefix (mf:/ma:) — stripping it meant the
+#     operator could not tell which repo's unit was being judged.
+#
 # Three outcomes are kept DISTINCT, because collapsing them is this project's
 # signature defect: `behind` (measured), `unknown` (active but no start time /
-# no git / unreachable — NOT "current"), and units simply absent (not counted).
-skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0
+# no git — NOT "current"), and units simply absent (not counted).
+skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0; skew_udark=0
 for b in $BOXES; do
-  raw=$(run_on "$b" "echo HSUP; if [ -e $REPO/.git ]; then HT=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HT\" ] || HT=SKIP; for u in \$(systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | grep -E '^(meshforge|meshanchor)-' ); do T=\$(systemctl show \$u -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@'); if [ \"\$HT\" = SKIP ] || [ -z \"\$T\" ]; then echo \"U \$u\"; elif [ \"\$T\" -lt \"\$HT\" ]; then echo \"B \$u \$(( (\$HT - \$T) / 86400 ))\"; fi; done; else echo HSNOREPO; fi")
+  raw=$(run_on "$b" "echo HSUP
+if [ -e $REPO/.git ]; then
+  HTMF=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMF\" ] || HTMF=SKIP
+  HTMA=\$(git -C /opt/meshanchor show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMA\" ] || HTMA=SKIP
+  XRD=/run/user/\$(id -u)
+  if XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --no-pager >/dev/null 2>&1; then USOK=1; else USOK=0; echo USCOPEDARK; fi
+  { systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/sys /'
+    [ \"\$USOK\" = 1 ] && XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/usr /'
+  } | grep -E '^(sys|usr) (meshforge|meshanchor)-' | while read -r sc u; do
+    case \"\$u\" in meshanchor-*) H=\$HTMA;; *) H=\$HTMF;; esac
+    if [ \"\$sc\" = usr ]; then T=\$(XDG_RUNTIME_DIR=\$XRD systemctl --user show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@')
+    else T=\$(systemctl show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@'); fi
+    case \"\$T\" in ''|*[!0-9]*) echo \"U \$u\"; continue;; esac
+    if [ \"\$H\" = SKIP ]; then echo \"U \$u\"
+    elif [ \"\$T\" -lt \"\$H\" ]; then echo \"B \$u \$(( (\$H - \$T) / 86400 ))\"; fi
+  done
+else echo HSNOREPO; fi")
   [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || continue
   body=$(printf '%s\n' "$raw" | sed -n '2,$p')
   printf '%s\n' "$body" | grep -q HSNOREPO && continue
   skew_boxes=$((skew_boxes+1))
+  printf '%s\n' "$body" | grep -q '^USCOPEDARK' && skew_udark=$((skew_udark+1))
   nb=$(printf '%s\n' "$body" | grep -c '^B ' || true)
   nu=$(printf '%s\n' "$body" | grep -c '^U ' || true)
   skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
   if [ "$nb" -gt 0 ]; then
-    units=$(printf '%s\n' "$body" | awk '$1=="B"{sub(/\.service$/,"",$2); sub(/^mesh(forge|anchor)-/,"",$2); printf "%s(%sd),", $2, $3}' | sed 's/,$//')
+    units=$(printf '%s\n' "$body" | awk '$1=="B"{sub(/\.service$/,"",$2); sub(/^meshforge-/,"mf:",$2); sub(/^meshanchor-/,"ma:",$2); printf "%s(%sd),", $2, $3}' | sed 's/,$//')
     skew_desc="$skew_desc $b:$units"
   fi
 done
+udark_note=""
+[ "$skew_udark" -gt 0 ] && udark_note=" ; user scope unobservable on $skew_udark box(es) — those units are NOT covered"
 if [ "$skew_boxes" = 0 ]; then
   disc "running-code skew" "no box answered with a repo — not measured"
 elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then
-  disc "running-code skew" "$skew_boxes box(es): every ACTIVE unit started at/after HEAD $HEAD"
+  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's HEAD${udark_note}"
 else
   # ${var:+...} expands whenever the var is NON-EMPTY, and "0" is non-empty —
   # so the naive form printed "; 0 unknown(no start time)" on every clean run.
   # Caught by drilling the branches with synthetic counts, not by reading.
   unk_note=""
-  [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time — NOT 'current')"
-  disc "running-code skew" "$skew_behind unit(s) behind HEAD $HEAD across $skew_boxes box(es)${skew_desc}${unk_note} — disclosure, not a fault; they load it at next restart"
+  [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time / no repo for the unit — NOT 'current')"
+  disc "running-code skew" "$skew_behind unit(s) behind their repo's HEAD across $skew_boxes box(es)${skew_desc}${unk_note}${udark_note} — disclosure, not a fault; they load it at next restart"
 fi
 
 # 3. Full local suite — file-routed, never a streamed tail.
