@@ -603,7 +603,11 @@ class TestMeshCoreEgress:
     no record, no sweep coverage. Serial is invisible to the socket tripwire,
     so the gate + this sweep are the only cover."""
 
-    MESHCORE_SEND_METHODS = {"send_msg", "send_channel_txt_msg"}
+    # send_chan_msg is the meshcore_py channel-broadcast verb MeshAnchor's
+    # diverged handler actually calls (found during the MA port — a sweep
+    # that only knew MF's method names would have read MA's primary TX path
+    # as guard-free and said nothing).
+    MESHCORE_SEND_METHODS = {"send_msg", "send_channel_txt_msg", "send_chan_msg"}
 
     def test_refused_when_not_allowlisted(self):
         with pytest.raises(TransmitBlocked):
