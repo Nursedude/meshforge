@@ -164,6 +164,14 @@ ok()    { printf '  %-22s \033[32mPASS\033[0m    %s\n' "$1" "$2"; pass=$((pass+1
 bad()   { printf '  %-22s \033[31mFAIL\033[0m    %s\n' "$1" "$2"; fail=$((fail+1)); }
 unk()   { printf '  %-22s \033[33mUNKNOWN\033[0m %s\n' "$1" "$2"; unknown=$((unknown+1)); }
 warnf() { printf '  %-22s \033[33mWARN\033[0m    %s\n' "$1" "$2"; warns=$((warns+1)); }
+# DISCLOSURE — a fact worth seeing that is NOT a verdict. Touches no counter and
+# cannot move the exit code, on purpose: in a lab that exists to test/break/build,
+# running-behind is the NORMAL state, so alarming on it would cry wolf every
+# deploy and get tuned out. The failure mode is not HAVING drift, it is not being
+# able to SEE it. Same treatment `accepted_blind_spots` gets in fleet_truth:
+# surfaced as its own line, never averaged into a healthy-looking summary
+# (honest_failure_modes #5).
+disc()  { printf '  %-22s \033[36mNOTE\033[0m    %s\n' "$1" "$2"; }
 
 HEAD=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "?")
 HEADFULL=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || echo "?")
@@ -240,6 +248,58 @@ elif [ "$drifted" -gt 0 ]; then bad "fleet SHA drift" "$matched/$expect @ $HEAD;
 elif [ "$reached" -lt "$expect" ]; then unk "fleet SHA drift" "$matched/$reached reachable of $expect @ $HEAD;$desc"
 elif [ "$reached" = 0 ]; then unk "fleet SHA drift" "no box carried $REPO;$desc"
 else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
+
+# 2b. Running code vs DEPLOYED code — DISCLOSURE, never a verdict.
+#
+# The SHA-drift leg above compares each box's git HEAD ON DISK. That is not the
+# code any long-lived process is EXECUTING: `fleet_pull` is restart-free by
+# design, so a box can read "converged" while its map/watchdog still run code
+# from days ago. On 2026-08-09 the gate printed `fleet SHA drift PASS 8/8`
+# while three unit classes fleet-wide were behind — true, and not the question
+# anyone was actually asking.
+#
+# `server_class_skew` (fleet_truth) is the #79 detector for this class, but it
+# is a PROXY: it infers "my code is older" from a peer reporting a signal class
+# this server does not know, so it only fires when the newer code ADDS a class
+# name. Most deploys change behavior without adding one. This leg measures the
+# thing directly instead — unit start time vs the deployed HEAD's commit time.
+#
+# Units are ENUMERATED from what is installed and ACTIVE, never a hardcoded
+# list: a unit added tomorrow is covered the day it ships (closed-enum hazard,
+# honest_failure_modes #7), and a unit that is INACTIVE BY DESIGN is never
+# judged at all — moc3 runs no map on purpose, and calling that "stale" would
+# be the same lie as alarming on an accepted blind spot.
+#
+# Three outcomes are kept DISTINCT, because collapsing them is this project's
+# signature defect: `behind` (measured), `unknown` (active but no start time /
+# no git / unreachable — NOT "current"), and units simply absent (not counted).
+skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0
+for b in $BOXES; do
+  raw=$(run_on "$b" "echo HSUP; if [ -e $REPO/.git ]; then HT=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HT\" ] || HT=SKIP; for u in \$(systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | grep -E '^(meshforge|meshanchor)-' ); do T=\$(systemctl show \$u -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@'); if [ \"\$HT\" = SKIP ] || [ -z \"\$T\" ]; then echo \"U \$u\"; elif [ \"\$T\" -lt \"\$HT\" ]; then echo \"B \$u \$(( (\$HT - \$T) / 86400 ))\"; fi; done; else echo HSNOREPO; fi")
+  [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || continue
+  body=$(printf '%s\n' "$raw" | sed -n '2,$p')
+  printf '%s\n' "$body" | grep -q HSNOREPO && continue
+  skew_boxes=$((skew_boxes+1))
+  nb=$(printf '%s\n' "$body" | grep -c '^B ' || true)
+  nu=$(printf '%s\n' "$body" | grep -c '^U ' || true)
+  skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
+  if [ "$nb" -gt 0 ]; then
+    units=$(printf '%s\n' "$body" | awk '$1=="B"{sub(/\.service$/,"",$2); sub(/^mesh(forge|anchor)-/,"",$2); printf "%s(%sd),", $2, $3}' | sed 's/,$//')
+    skew_desc="$skew_desc $b:$units"
+  fi
+done
+if [ "$skew_boxes" = 0 ]; then
+  disc "running-code skew" "no box answered with a repo — not measured"
+elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then
+  disc "running-code skew" "$skew_boxes box(es): every ACTIVE unit started at/after HEAD $HEAD"
+else
+  # ${var:+...} expands whenever the var is NON-EMPTY, and "0" is non-empty —
+  # so the naive form printed "; 0 unknown(no start time)" on every clean run.
+  # Caught by drilling the branches with synthetic counts, not by reading.
+  unk_note=""
+  [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time — NOT 'current')"
+  disc "running-code skew" "$skew_behind unit(s) behind HEAD $HEAD across $skew_boxes box(es)${skew_desc}${unk_note} — disclosure, not a fault; they load it at next restart"
+fi
 
 # 3. Full local suite — file-routed, never a streamed tail.
 #
