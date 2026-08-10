@@ -444,7 +444,16 @@ plainly healthy = check the NAME first. **Quick check**:
 `instance_name resolved to` log line.
 
 ⚠️ mini escalated this the whole time (`detector_blind_any` + three
-`persistent_active` proposals at 70m/170h/170h), all rejected *unspecified*.
+`persistent_active` proposals at 70m/170h/170h), all rejected **`known_benign`**
+— ⚠️ *corrected 2026-08-10; this line said "unspecified" and that was wrong.*
+The rejections carried long, live-verified notes that proved **rnsd** healthy
+(true) and concluded the **blindness** was benign — one even NAMED the broken
+`~/.reticulum` probe path and filed it under "structural". Worse, the 08-02
+rejection cited the 07-26 one as its warrant, so a wrong benign call became
+memory and the memory re-justified the dismissal. **`known_benign` on a
+`detector_blind` subject asserts "this detector cannot see and that is fine" —
+which is only true if the organ is absent BY DESIGN, and then the probe must say
+`inert`. A rejection may not cite a prior rejection as its warrant.**
 The witness worked; the READ failed. A long-running `detector_blind` is a
 finding, not furniture.
 
