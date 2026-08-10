@@ -784,7 +784,20 @@ class AutomationEngine:
                         return
                     continue
 
-                result = self._send_traceroute(node_id, timeout)
+                try:
+                    result = self._send_traceroute(node_id, timeout)
+                except TransmitBlocked as e:
+                    # Deliberate catch (see tx_guard docstring): the refusal
+                    # is already recorded+logged by the guard; letting it fly
+                    # kills this thread permanently (the finding-5 class,
+                    # found on the PING sibling first — same day, same file).
+                    with self._stats_lock:
+                        self._stats["traceroutes_blocked"] = (
+                            self._stats.get("traceroutes_blocked", 0) + 1)
+                    logger.warning(
+                        "auto-traceroute refused by tx_guard — skipping this "
+                        "cycle: %s", e)
+                    break
                 self._record_traceroute(result)
 
             with self._stats_lock:
@@ -853,10 +866,17 @@ class AutomationEngine:
     def _send_traceroute_cli(
         self, node_id: str, timeout: int = 60
     ) -> TracerouteResult:
-        """Traceroute via meshtastic CLI (fallback)."""
+        """Traceroute via meshtastic CLI (fallback).
+
+        Raises:
+            TransmitBlocked: tx_guard refused the send — handled by the
+                caller's deliberate catch in ``_traceroute_loop``.
+        """
+        # RF egress chokepoint — OUTSIDE the try (tx_guard doctrine), so the
+        # refusal cannot be tangled into the send-failure bookkeeping.
+        assert_tx_allowed(self._meshtastic_host, DEFAULT_MESH_TCP_PORT,
+                          kind="meshtastic_cli", detail="automation_engine traceroute")
         try:
-            assert_tx_allowed(self._meshtastic_host, DEFAULT_MESH_TCP_PORT,
-                              kind="meshtastic_cli", detail="automation_engine traceroute")
             result = subprocess.run(
                 [
                     "meshtastic",
@@ -984,7 +1004,18 @@ class AutomationEngine:
                     return
                 continue
 
-            self._send_welcome(node_id, message)
+            try:
+                self._send_welcome(node_id, message)
+            except TransmitBlocked as e:
+                # Deliberate catch (see tx_guard docstring) — same class as
+                # the ping/traceroute loops; the guard already recorded it.
+                with self._stats_lock:
+                    self._stats["welcomes_blocked"] = (
+                        self._stats.get("welcomes_blocked", 0) + 1)
+                logger.warning(
+                    "auto-welcome refused by tx_guard — stopping this "
+                    "cycle: %s", e)
+                return
 
     def _send_welcome(self, node_id: str, message: str) -> None:
         """Send a welcome message to a new node."""
