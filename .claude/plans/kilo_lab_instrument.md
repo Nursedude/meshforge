@@ -64,11 +64,16 @@ verify → FAIL verdict):
 # claw-only box has no edges and would emit a permanently-vacuous OK —
 # unobservable must not read healthy). Hourly: matrix is a read-side view
 # over the */10 collect stream. Exit 1 = an edge SHIFTED beyond its own
-# baseline band (real page); exit 2 = could not verify (crash/registry —
+# baseline band — mapped to a CONCERN verdict naming the finding
+# (2026-08-10: a bare FAIL(1) read as "instrument broke" when the
+# instrument had WORKED — it found moc1's link down 15 dB; CONCERN still
+# trips probe_cron_verdict_stale by design, the change is log honesty,
+# not silence). Exit 2 = could not verify (crash/registry — stays FAIL,
 # never counted as pass; the 2026-07-05 error-boundary fix makes this
 # honest). First ~24h after edge capture starts, every cell is SPARSE by
 # construction — the matrix prints the baseline-horizon witness for that.
-7 * * * * cd /opt/meshforge && PYTHONPATH=src timeout 120 python3 -m kilo matrix --window-hours 24 >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh kilo_matrix $?
+# PYTHONPATH is absolute so the job is cwd-independent.
+7 * * * * PYTHONPATH=/opt/meshforge/src timeout 120 python3 -m kilo matrix --window-hours 24 >"$HOME/.local/state/meshforge/cron_out/kilo_matrix.out" 2>&1; rc=$?; if [ "$rc" -eq 1 ]; then /opt/meshforge/scripts/cron_verdict.sh kilo_matrix CONCERN "edge SHIFTED beyond baseline band - RF drift finding, instrument healthy"; else /opt/meshforge/scripts/cron_verdict.sh kilo_matrix $rc; fi
 ```
 
 Wired live: `kilo_matrix` on **moc only** (2026-07-05 QA session) — moc2's
