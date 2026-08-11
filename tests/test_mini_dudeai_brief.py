@@ -239,6 +239,36 @@ def test_mixed_active_and_resolved_partition():
     assert "done detail" in resolved and "live detail" not in resolved
 
 
+def test_resolved_line_is_past_tense_and_dated():
+    """The carried detail is the last ACTIVE text — on an edge_down the engine
+    reuses it so the clear event has context. Rendered bare it is a present-tense
+    claim about a live problem sitting under a ✅ heading. Measured 2026-08-11: a
+    warm-start session read "Fleet box(es) ... confirms DOWN: kiai (~54m, page
+    #1) — Check the box." off this section and reported the box as still down,
+    15 h after it had recovered. The 06-03 fix got these into the right SECTION;
+    this pins the right TENSE."""
+    rules = {"fleet_box_unreachable_any::fleet": {
+        "rule_id": "fleet_box_unreachable_any", "subject": "fleet",
+        "currently_active": False}}
+    hist = [_esc_row(NOW - 3600, "fleet_box_unreachable_any", "fleet",
+                     "offline-monitor confirms DOWN: kiai — Check the box.")]
+    resolved = _brief_section(build_brief(_state(rules=rules), hist, NOW),
+                              "✅ Recently resolved")
+    assert "was (last seen" in resolved, resolved
+    assert "60m ago" in resolved, "a resolved line must say WHEN, not just what"
+    # the context itself must survive — the fix is framing, not truncation
+    assert "kiai" in resolved
+
+
+def test_resolved_section_labels_its_text_as_history():
+    rules = {"done::b": {"rule_id": "done", "subject": "b",
+                         "currently_active": False}}
+    hist = [_esc_row(NOW - 600, "done", "b", "everything is on fire")]
+    resolved = _brief_section(build_brief(_state(rules=rules), hist, NOW),
+                              "✅ Recently resolved")
+    assert "history, not current state" in resolved
+
+
 def test_resolved_only_brief_is_not_quiet():
     # A brief with only resolved escalations still shows them (not "Quiet").
     rules = {"done::b": {"rule_id": "done", "subject": "b",

@@ -37,6 +37,7 @@ from .brief import (
     DEFAULT_STALE_S,
     ESCALATION_WINDOW_S,
     _age,
+    _split_escalations_by_activity,
     recent_escalations,
 )
 
@@ -505,8 +506,18 @@ def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
     brief never disagree on what's an escalation."""
     posture = parse_state_posture(host, state, now_ts, stale_s, self_box)
     stale = posture["status"] == "stale"
+    # Mark each escalation with whether its (rule, subject) is STILL active on
+    # that box, using the box's own rules state — the same SSOT the per-box
+    # brief splits on. Without this the deep feed listed cleared conditions
+    # under "look here first" forever, which is the 2026-06-03 parity_drift
+    # defect the brief was fixed for and this sibling was not (found
+    # 2026-08-11: a fix applied to one instance is not applied to the class).
+    # Conservative in the same direction: unknown pairs stay ACTIVE, so a live
+    # escalation is never hidden by state drift.
+    _rules = state.get("rules") or {}
     posture["escalations"] = [
-        {"ts": ts, "box": host, "stale": stale, "esc": esc}
+        {"ts": ts, "box": host, "stale": stale, "esc": esc,
+         "resolved": bool(_split_escalations_by_activity([esc], _rules)[1])}
         for ts, esc in recent_escalations(history, now_ts, window_s, with_ts=True)
     ]
     # Filter fires to the window: history.jsonl holds WEEKS (1MB rotation cap),
@@ -600,15 +611,34 @@ def build_deep_feed(results: list[dict], now_ts: float) -> str:
         "",
         "## 🔎 Fleet escalations (look here first)",
     ]
-    if all_esc:
-        for e in all_esc:
+    live_esc = [e for e in all_esc if not e.get("resolved")]
+    done_esc = [e for e in all_esc if e.get("resolved")]
+    if live_esc:
+        for e in live_esc:
             esc = e["esc"]
             tag = " ⚠️stale" if e.get("stale") else ""
             note = f" — _{esc['note']}_" if esc.get("note") else ""
             lines.append(f"- `[{e['box']}]`{tag} {esc.get('rule')} · "
                          f"{esc.get('subject')} · {str(esc.get('detail', ''))[:120]}{note}")
+    elif done_esc:
+        lines.append("_None still active — see resolved below._")
     else:
         lines.append("_None in the window — no box is proposing an escalation._")
+
+    # Cleared conditions get their own section and the past tense, for the same
+    # reason the brief does it: the carried detail is the last ACTIVE text, so
+    # rendered bare under "look here first" it reads as a live outage.
+    if done_esc:
+        lines.append("\n## ✅ Resolved in window (no longer active on that box)")
+        lines.append("_Text below is each condition's last ACTIVE detail — "
+                     "history, not current state._")
+        for e in done_esc:
+            esc = e["esc"]
+            tag = " ⚠️stale" if e.get("stale") else ""
+            lines.append(f"- `[{e['box']}]`{tag} {esc.get('rule')} · "
+                         f"{esc.get('subject')} · was (last seen "
+                         f"{_age(now_ts, e.get('ts'))} ago): "
+                         f"{str(esc.get('detail', ''))[:120]}")
 
     lines.append("\n## Recent fleet fires")
     if all_fires:

@@ -452,6 +452,62 @@ def test_build_box_deep_tags_escalations_and_fires():
     assert all(f["box"] == "moc" for f in rec["fires"])
 
 
+def test_build_box_deep_marks_resolved_escalation():
+    """The deep feed had NO active/resolved split at all, so a cleared condition
+    sat under the fleet-wide "look here first" forever — the 2026-06-03
+    parity_drift defect the per-box brief was fixed for, in the sibling nobody
+    grepped (found 2026-08-11). build_box_deep already receives the box's state;
+    it just wasn't asking it."""
+    history = [_hist_escalation(NOW - 10, "esc_rule", "moc3", "peer unhealthy")]
+    state = {"last_tick_ts": NOW, "rule_count": 8,
+             "rules": {"esc_rule::moc3": {"rule_id": "esc_rule",
+                                          "subject": "moc3",
+                                          "currently_active": False}}}
+    rec = build_box_deep("moc3", state, history, NOW)
+    assert rec["escalations"][0]["resolved"] is True
+
+
+def test_build_box_deep_keeps_active_and_unknown_escalations_live():
+    """Conservative in the SAME direction as the brief: a still-active pair stays
+    live, and an unknown pair (renamed rule / pruned state) is never demoted —
+    hiding a live escalation on state drift would be the worse failure."""
+    history = [_hist_escalation(NOW - 10, "live_rule", "moc3", "still bad"),
+               _hist_escalation(NOW - 11, "ghost_rule", "moc3", "who knows")]
+    state = {"last_tick_ts": NOW,
+             "rules": {"live_rule::moc3": {"rule_id": "live_rule",
+                                           "subject": "moc3",
+                                           "currently_active": True}}}
+    rec = build_box_deep("moc3", state, history, NOW)
+    assert all(e["resolved"] is False for e in rec["escalations"])
+
+
+def test_deep_feed_moves_resolved_out_of_look_here_first():
+    results = [{"host": "moc3", "status": "fresh", "fires": [], "escalations": [
+        {"ts": NOW - 5, "box": "moc3", "stale": False, "resolved": False,
+         "esc": {"rule": "live", "subject": "moc3", "detail": "rnsd wedged"}},
+        {"ts": NOW - 3600, "box": "moc3", "stale": False, "resolved": True,
+         "esc": {"rule": "done", "subject": "moc3", "detail": "box is DOWN"}},
+    ]}]
+    out = build_deep_feed(results, NOW)
+    head = out[out.index("Fleet escalations"):out.index("✅ Resolved in window")]
+    assert "rnsd wedged" in head
+    assert "box is DOWN" not in head, \
+        "a cleared condition stayed under the fleet-wide 'look here first'"
+    tail = out[out.index("✅ Resolved in window"):]
+    assert "was (last seen 60m ago)" in tail and "box is DOWN" in tail
+
+
+def test_deep_feed_without_resolved_key_treats_escalations_as_live():
+    """Back-compat: records built before the split carry no `resolved` key and
+    must not silently vanish from the headline section."""
+    results = [{"host": "moc", "status": "fresh", "fires": [], "escalations": [
+        {"ts": NOW - 5, "box": "moc", "stale": False,
+         "esc": {"rule": "r", "subject": "s", "detail": "legacy record"}}]}]
+    out = build_deep_feed(results, NOW)
+    assert "legacy record" in out[:out.index("Recent fleet fires")]
+    assert "✅ Resolved in window" not in out
+
+
 def test_build_box_deep_marks_stale_box():
     rec = build_box_deep("moc", {"last_tick_ts": NOW - 9999}, [
         _hist_escalation(NOW - 50, "r", "s", "d")], NOW)

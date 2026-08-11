@@ -336,7 +336,13 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
     # condition that escalated then CLEARED (edge_down) inside the window, so
     # the headline section is gated on the rule's currently_active state;
     # cleared ones move to "Recently resolved" below.
-    escalations = recent_escalations(history, now_ts, escalation_window_s)
+    esc_pairs = recent_escalations(history, now_ts, escalation_window_s,
+                                   with_ts=True)
+    escalations = [esc for _ts, esc in esc_pairs]
+    # Keyed on the SAME tuple recent_escalations dedups by, so the lookup is
+    # exact rather than positional — used to date the resolved lines below.
+    _last_seen = {(esc.get("rule"), esc.get("subject"),
+                   str(esc.get("detail", ""))): ts for ts, esc in esc_pairs}
     esc_active, esc_resolved = _split_escalations_by_activity(escalations, rules)
     if esc_active:
         lines.append("\n## 🔎 Look here first (escalations)")
@@ -345,9 +351,23 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
                          f"{str(esc.get('detail', ''))[:120]}"
                          + (f" — _{esc['note']}_" if esc.get("note") else ""))
     if esc_resolved:
+        # The detail carried here is the LAST ACTIVE text, verbatim — on an
+        # edge_down the engine reuses the most recent detail so the clear event
+        # has context. Rendered bare, that sentence is written in the present
+        # tense about a live problem ("...confirms DOWN: kiai — Check the box")
+        # sitting under a ✅ heading, and it reads as an ongoing outage. Measured
+        # 2026-08-11: a warm-start session (me) reported kiai as "still paging,
+        # ~54m" off this exact line, about a box that had recovered 15 h earlier.
+        # The 2026-06-03 parity_drift fix put these in the right SECTION; this
+        # puts them in the right TENSE. Same class both times.
         lines.append("\n## ✅ Recently resolved (escalated in window, no longer active)")
+        lines.append("_Text below is each condition's last ACTIVE detail — "
+                     "history, not current state._")
         for esc in esc_resolved[-4:]:
+            key = (esc.get("rule"), esc.get("subject"),
+                   str(esc.get("detail", "")))
             lines.append(f"- {esc.get('rule')} · {esc.get('subject')} · "
+                         f"was (last seen {_age(now_ts, _last_seen.get(key))} ago): "
                          f"{str(esc.get('detail', ''))[:100]}")
 
     # Recent transitions
