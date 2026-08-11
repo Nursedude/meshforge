@@ -206,5 +206,94 @@ of the following must hold before the restore is accepted:
 
 ---
 
+## 9. TRIAL 1 RESULTS — moc5, 2026-08-11 (application-layer flatten)
+
+**Scope run**: destroyed everything the capture claims to cover — `/etc/reticulum`,
+`/etc/meshtasticd`, `~/.config/meshforge`, `~/.config/systemd/user`, crontab; all
+services stopped. **NOT destroyed**: base OS, `/opt/meshforge` + venv (unknown #2
+made that unrecoverable remotely), `/root/.portduino` prefs. §1 and §2 remain
+UNTESTED. Rollback existed but was sealed and never opened.
+
+**Verdict: RESTORE FAILED TWICE before succeeding.** The box came back
+byte-identical to baseline only after two out-of-runbook repairs. A cold operator
+following this document alone would have been left with a dead rnsd and a
+permanently uninstrumented box.
+
+### The two failures
+
+1. **[V] Ownership/mode is NOT captured — rnsd would not start.**
+   `sudo cp` landed everything `root:root`; rnsd died with
+   `PermissionError: '/etc/reticulum/storage/cache'`. The real ownership:
+   `/etc/reticulum` `root:wh6gxz 1775` · `storage/` `wh6gxz:wh6gxz 777` ·
+   `transport_identity` `wh6gxz:wh6gxz 666` · `config` `root:root 644`.
+   ⚠️ **The capture script itself destroys this evidence** — it `chown`s the
+   staging tree to the invoking user before tarring. Fix the capture to record
+   `stat` ownership/mode per file, or tar with `--numeric-owner` as root.
+2. **[V] §3's "rnsd is a root service" is WRONG, and varies per box.**
+   moc5: `User=wh6gxz Group=wh6gxz`. moc1: `User=root`. Never assume; read
+   `systemctl cat rnsd`.
+3. **[V] The `*.json` capture filter missed required config.**
+   `mini_dudeai.env` (109 B) is REQUIRED — without it mini-dudeai crashloops
+   (`ValueError: fleet preset requires MINI_DUDEAI_NTFY_TOPIC`), so the box runs
+   with **no night watcher**. Also missed: `device_config.yaml`, `lab_peers`,
+   `message_queue.db`. **Capture all of `~/.config/meshforge` except `logs/` and
+   `*.bak-*`, not just `*.json`.**
+
+3b. **[V] Only part of `/etc/meshtasticd` was captured — the RADIO crashlooped.**
+   `config.yaml` + `config.d/` alone left `available.d/` behind; meshtasticd's
+   autoconf scans it and dies with
+   `*** Exception bad file: /etc/meshtasticd/available.d/<radio>.yaml`.
+   `ssl/` (web-client TLS) was missing too. **Capture the whole tree** minus
+   `*.dpkg-old`. ⚠️ This was found ~10 minutes AFTER the acceptance diff
+   reported IDENTICAL — see #4b.
+
+### The acceptance criteria were themselves wrong
+
+4. **[V] §7's "mini ticking" gave a FALSE PASS.** The fleet rollup reported moc5
+   `fresh · last tick 3m ago` while mini-dudeai was crashlooping — state-file
+   freshness LAGS the daemon's death by the stale window. **Acceptance must
+   assert the UNIT is `active`**, not that a state file looks recent. This is
+   the "trust the representation, not the thing" class landing inside the
+   acceptance test.
+
+4b. **[V] `systemctl is-active` PASSED a crashlooping daemon.** A unit in
+   `Restart=` backoff alternates `activating`/`active`, so a point-in-time
+   `is-active` — and therefore the whole before/after acceptance diff, which
+   reported **IDENTICAL** — read healthy while meshtasticd was dying every few
+   seconds. **Acceptance must assert `NRestarts=0` (or unchanged) and a
+   settled state, not `is-active` at one instant.** Two of the three failures
+   in this trial were invisible to the acceptance test that was supposed to
+   catch them; both were found by reading a daemon's journal instead.
+
+### Other findings
+
+5. **[V] Hostname does NOT match the fleet name** (moc5's is `wh6gxzser`). §1.2
+   is wrong — fleet naming does not come from hostname. Corrected above.
+6. **[V] `~/.config/systemd` is `root:root`** — the user cannot create/remove its
+   own `user/` unit dir. Restore needs `sudo mkdir` + `chown`.
+7. **[V] System-scope units are not captured** (confirmed §5.4's `[U]`). They
+   survived only because they were out of destruction scope; a bare-metal
+   restore has nothing to recreate them from.
+8. **[V] The crontab references `~/power_capture.sh`, which is not captured** —
+   a restored crontab fires into a missing command (T1 residual #1's shape).
+9. **[V] `instance_name` is absent from the RNS config** — RNS resolves the
+   omission to `default` itself. Do not "helpfully" add one.
+10. **[V] The instruments caught the operator's error.** `foundation_perms_drift`
+    fired on the bad ownership and CLEARED on the fix — the exact class it was
+    built for (mf.4/#73). `service_inactive`, `user_unit_inactive` and
+    `role_drift` all fired and cleared correctly. The watchdog was right about
+    the box the whole time.
+11. **[U] Time-to-restore**: ~7 min wall clock, but with 3 stop-and-diagnose
+    cycles. Not a clean measurement; re-time once the fixes above land.
+
+### Still unknown after trial 1
+
+§1 (base OS), §2 (repo + venv), the channel-key restore path, mid-restore
+rollback, and whether a **message arrives** — the domain's actual end was NOT
+tested (RF TX needs the tx_guard TEST-channel path, deferred).
+
+---
+
 *Written before the trial, warts and all. If the first drill does not produce
 edits to this file, be suspicious of the drill.*
+**Trial 1 produced 11.**
