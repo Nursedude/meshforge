@@ -387,6 +387,76 @@ class TestPathAwareVerdict:
         assert h.row("leaf")[6] == "down"
 
 
+class TestViaDeclarationSelfCheck:
+    """2026-08-11 frontier review (finding F2 on the 3eca3b5b range). A broken
+    `via` declaration — typo'd alias, ssh config missing on the manager — is
+    indistinguishable from "path down" at outage time, so every REAL outage of
+    that box would page the demoted UNOBSERVABLE claim forever, with no
+    witness (the 08-05 "detector keyed to the wrong name reads healthy"
+    class). The free cross-check: when the DIRECT check succeeds on a box
+    whose only route transits the hop, the path through the hop is proven
+    functional — a failing via probe on that same tick indicts the
+    declaration. Witness only; no page, no verdict change."""
+
+    BOXES = [{"name": "leaf", "host": "leaf", "services": ["svc-a"],
+              "tier": "critical", "via": "jump"}]
+
+    def test_broken_via_declaration_leaves_a_witness(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("jump")           # box fine, declared dependency is not
+        h.run()
+        alerts = h.alerts()
+        assert "VIACONF-SUSPECT [leaf]" in alerts, alerts
+        assert "misreported UNOBSERVABLE" in alerts
+        # witness, not verdict: healthy box stays healthy and pages nobody
+        assert h.row("leaf")[1] == "0"
+        assert h.pushes() == ""
+
+    def test_working_via_declaration_stays_silent(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.run()
+        assert "VIACONF-SUSPECT" not in h.alerts()
+        assert "SSH jump" in h.ssh_log(), \
+            "silence must come from a probe that ran, not one that was skipped"
+
+    def test_box_without_via_is_not_self_checked(self, h):
+        h.write_conf(boxes=[{"name": "plain", "host": "plain",
+                             "services": ["svc-a"], "tier": "critical"}])
+        h.run()
+        assert "SSH jump" not in h.ssh_log()
+        assert "VIACONF-SUSPECT" not in h.alerts()
+
+
+class TestSingleWriter:
+    """2026-08-11 frontier review (finding F4). A total-outage tick can outlast
+    the */5 cadence, and two overlapped runs interleave $STATE.tmp — a fixed
+    temp name both writers share (honest_failure_modes #8). The script now
+    takes an exclusive flock on $STATE.lock; a run that cannot get it within
+    the wait refuses LOUDLY (exit 75 → cron_verdict FAIL) instead of silently
+    corrupting state."""
+
+    def test_locked_out_run_refuses_loudly(self, h):
+        import fcntl
+        h.write_conf()
+        lockfile = open(str(h.state) + ".lock", "w")
+        fcntl.flock(lockfile, fcntl.LOCK_EX)
+        try:
+            r = h.run(env_extra={"MESHFORGE_OFFLINE_LOCK_WAIT": "1"})
+        finally:
+            fcntl.flock(lockfile, fcntl.LOCK_UN)
+            lockfile.close()
+        assert r.returncode == 75, (r.returncode, r.stderr)
+        assert "LOCKED-OUT" in h.alerts()
+        assert h.ssh_log() == "", "a locked-out run must not have swept anything"
+
+    def test_uncontended_run_proceeds(self, h):
+        h.write_conf()
+        r = h.run()
+        assert r.returncode == 0
+        assert "LOCKED-OUT" not in h.alerts()
+        assert h.row("alpha") is not None
+
+
 class TestNoOperatorValuesInSource:
     """MF014 in spirit: the reason this file could not simply be copied into the
     repo. Membership and identity belong in operator config, not in code."""

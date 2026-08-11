@@ -68,6 +68,21 @@ ALERT_THRESHOLD="${ALERT_THRESHOLD:-3}"            # ~15 min at a */5 cron caden
 REALERT_INTERVAL="${REALERT_INTERVAL:-3600}"       # re-page an ongoing outage every N s (1h)
 QUIET_REALERT_INTERVAL="${QUIET_REALERT_INTERVAL:-${BOT_REALERT_INTERVAL:-7200}}"  # tier=quiet: gentler q2hr re-page
 ESCALATE_AFTER="${ESCALATE_AFTER:-4}"              # bump priority to urgent at this alert #
+
+# ONE writer at a time (2026-08-11 frontier review). A total-outage tick —
+# every box's ssh timing out, ntfy retrying — can outlast the */5 cadence, and
+# two overlapped runs interleave $STATE.tmp, a fixed temp name two writers
+# share (honest_failure_modes #8: exclude or merge, never interleave). Wait
+# out the earlier run briefly; past that, refuse LOUDLY — exit 75 lands as a
+# FAIL in cron_verdict rather than this run silently corrupting state. The
+# lock precedes TS/NOW so a waited-out run stamps the time it actually ran.
+LOCK_WAIT="${MESHFORGE_OFFLINE_LOCK_WAIT:-240}"
+exec 9>>"$STATE.lock"
+if ! flock -w "$LOCK_WAIT" 9; then
+  echo "$(date '+%Y-%m-%d %H:%M:%S %Z')  FLEET: LOCKED-OUT — a previous run still holds $STATE.lock after ${LOCK_WAIT}s; skipping this tick rather than interleaving state" >> "$LOG"
+  exit 75
+fi
+
 TS=$(date '+%Y-%m-%d %H:%M:%S %Z')
 NOW=$(date +%s)
 touch "$LOG" "$STATE" "$HB" "$WITNESS"
@@ -155,7 +170,11 @@ read_state() {  # box
 
 set_state() {  # box fail alerted down_since last_alert alert_count verdict
   grep -vP "^$1\t" "$STATE" > "$STATE.tmp" 2>/dev/null || true
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "${7:-down}" >> "$STATE.tmp"
+  # ${7:?} not ${7:-down}: a caller that forgets the verdict is a BUG, and the
+  # old default silently wrote the STRONGER claim — the exact laundering the
+  # probe side refuses. Fail loud instead; the aborted run leaves $STATE
+  # unswapped and cron_verdict records the nonzero exit (2026-08-11 review).
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "${7:?BUG: set_state called without a verdict}" >> "$STATE.tmp"
   mv "$STATE.tmp" "$STATE"
 }
 
@@ -184,6 +203,20 @@ for entry in "${BOXES[@]}"; do
     bad=$(timeout 18 ssh -i "$FLEETKEY" -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
           "$SSH_USER@$host" "for s in ${svcs//,/ }; do [ \"\$(systemctl is-active \$s.service 2>/dev/null)\" = active ] || echo \$s; done" 2>/dev/null | tr '\n' ' ')
     [ -n "${bad// /}" ] && reason="service(s) inactive: $bad"
+    # VIA SELF-CHECK (2026-08-11 frontier review). A broken via DECLARATION —
+    # typo'd alias, ssh config missing on this box — is indistinguishable from
+    # "path down" at outage time, so every REAL outage of this box would page
+    # the demoted UNOBSERVABLE claim forever, unwitnessed (the 08-05 "detector
+    # keyed to the wrong name reads healthy" class). The one free cross-check:
+    # a box whose ONLY route transits the hop was just reached directly, so
+    # the path through the hop is PROVEN functional — a failing via probe on
+    # this same tick can only indict the declaration (or a flake; the line
+    # self-clears by not recurring). Witness, not verdict: nothing pages here.
+    if [ -n "$via" ]; then
+      if ! timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 "$via" true 2>/dev/null; then
+        echo "$TS  FLEET: VIACONF-SUSPECT [$name] direct ssh OK but declared dependency '$via' did not answer — if this recurs, the via entry in $BOXCONF (or this box's ssh config for '$via') is broken, and the NEXT real outage of $name will be misreported UNOBSERVABLE instead of DOWN" >> "$LOG"
+      fi
+    fi
   fi
 
   read_state "$name"

@@ -206,6 +206,29 @@ of the following must hold before the restore is accepted:
   PASS including this box, no new watchdog signals attributable to it.
 - [B] **The domain's actual end**: **a message arrives** — send on the TEST
   channel through `tx_guard` and confirm arrival at another box.
+  ⚠️ This is the check that answers "what still passes all of the above while
+  the box is dead" TODAY: it was deferred in BOTH trials, and until it runs
+  **through this box's own radio, on this box's RF segment** (two-preset
+  fleet — read the parsed `config.proto`, §4.4), a box with a deaf radio
+  (wrong region, wrong preset, dead PA, disconnected antenna) passes every
+  other line here — identity, SHA, fingerprint, NRestarts, timers, mini,
+  TLS 200, even `/fleet` — while dead at the one thing it exists to do.
+  A gateway relaying via RNS/MQTT does not count as this box's RF proof.
+- [U] **SURVIVES A REBOOT — the sixth check** (2026-08-11 frontier review of
+  this section; never yet drilled). Every line above interrogates a RUNNING
+  system whose state is partly inherited from before the drill or hand-started
+  by the restore script — trial 1 even noted system units "survived only
+  because they were out of destruction scope". The fleet already carries
+  boot-triggered destroyers that pass every check above until the first power
+  cycle: cloud-init's `/etc/hosts` wipe (§1.5, found only when moc5 rebooted),
+  missing `enable-linger` (§1.4 — every user unit dead at next boot while
+  today's box looks fully instrumented), enablement symlinks under the wrong
+  `*.target.wants`, units running-but-never-enabled. A Pi loses power
+  routinely; a restore that holds only until the first power blip is not a
+  restore. **Power-cycle the box and re-run this entire list from the top.**
+  After the reboot, ALSO verify the clock before trusting any freshness-based
+  line (`timedatectl` shows NTP synchronized): an RTC-less Pi with dead time
+  sync forges every staleness computation these checks lean on (hfm #6).
 
 ## 8. Known unknowns — the list this trial exists to shrink
 

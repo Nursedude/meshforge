@@ -19,7 +19,9 @@
 # uses it. Adding a fourth repo without wiring its arm fails here.
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
-SCRIPT="$HERE/../scripts/honest_status.sh"
+# Overridable so the pin itself can be DRILLED against a planted-violation
+# copy (feedback_a_guard_that_never_failed_is_not_evidence).
+SCRIPT="${HS_SKEW_SCRIPT:-$HERE/../scripts/honest_status.sh}"
 fails=0
 
 note() { printf '  %-58s %s\n' "$1" "$2"; }
@@ -60,11 +62,19 @@ else
   fail "maps units display an mm: repo prefix"
 fi
 
-# 5. THE CLASS PIN. Every repo HEAD the leg collects (HT<XX>=$(git -C ...))
-#    must be consumed by a dispatch arm (H=$HT<XX>). A new repo added without
-#    an arm is exactly how this bug happened twice.
-defined=$(printf '%s' "$src" | grep -oE 'HT[A-Z]{2}=\\\$\(git -C' | grep -oE 'HT[A-Z]{2}' | sort -u)
-used=$(printf '%s' "$src" | grep -oE 'H=\\\$HT[A-Z]{2}' | grep -oE 'HT[A-Z]{2}' | sort -u)
+# 5. THE CLASS PIN. Every repo HEAD the leg collects (HT<X..>=$(git -C ...))
+#    must be consumed by a CASE-ARM dispatch (`) H=$HT<X..>`). A new repo
+#    added without an arm is exactly how this bug happened twice.
+#    Tightened 2026-08-11 (frontier review): the old regexes pinned the var
+#    name to exactly two capitals, so a repo collected as e.g. HTMAPS escaped
+#    "defined" entirely while `H=\$HTMAPS` substring-matched into "used" as a
+#    false HTMA — the pin passed around a wholly unpinned repo. And "used"
+#    accepted ANY text containing `H=\$HTxx` (an alias assignment like
+#    `NEWH=\$HTMM`, or a comment), so consumption did not prove a dispatch
+#    arm. Now: var names are [A-Z]+ (maximal munch kills the substring hole),
+#    and "used" requires the `) H=\$HT...` case-arm shape.
+defined=$(printf '%s' "$src" | grep -oE 'HT[A-Z]+=\\\$\(git -C' | grep -oE 'HT[A-Z]+' | sort -u)
+used=$(printf '%s' "$src" | grep -oE '\) *H=\\\$HT[A-Z]+' | grep -oE 'HT[A-Z]+' | sort -u)
 if [ -n "$defined" ] && [ "$defined" = "$used" ]; then
   pass "every collected repo HEAD has a dispatch arm ($(printf '%s' "$defined" | tr '\n' ' '))"
 else

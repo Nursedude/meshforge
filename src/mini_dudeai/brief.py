@@ -83,12 +83,18 @@ def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
     the state positively shows its (rule, subject) with currently_active
     false. Unknown pairs (rule renamed/pruned, schema drift, missing state)
     stay in "active" — we never hide a live escalation on a state mismatch.
+
+    "Positively shows false" means the FIELD carries a value, not just that
+    the pair exists (2026-08-11 frontier review). ``bool(rs.get(...))`` mapped
+    a pair whose flag had been renamed/dropped/nulled by schema drift to
+    False — the hiding direction, for every escalation at once — while this
+    docstring promised the opposite. Absent-or-None is unknown, never False.
     """
     status = {}
     for rs in rules.values():
-        if isinstance(rs, dict):
+        if isinstance(rs, dict) and rs.get("currently_active") is not None:
             status[(rs.get("rule_id"), rs.get("subject"))] = bool(
-                rs.get("currently_active"))
+                rs["currently_active"])
     active, resolved = [], []
     for esc in escalations:
         if status.get((esc.get("rule"), esc.get("subject")), True):

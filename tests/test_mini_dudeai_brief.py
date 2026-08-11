@@ -225,6 +225,26 @@ def test_unknown_rule_pair_is_never_demoted():
     assert "Recently resolved" not in out
 
 
+def test_known_pair_with_missing_active_flag_is_never_demoted():
+    """2026-08-11 frontier review. The conservative default only covered a
+    missing PAIR; a pair present in state whose currently_active FIELD was
+    renamed/dropped/nulled by schema drift hit bool(None) == False and flipped
+    to "resolved" — the hiding direction, for every matched escalation at
+    once, while the docstring promised demotion only on a positive False."""
+    rules = {
+        "drifted::x": {"rule_id": "drifted", "subject": "x"},           # field gone
+        "nulled::y": {"rule_id": "nulled", "subject": "y",
+                      "currently_active": None},                        # field null
+    }
+    hist = [_esc_row(NOW - 700, "drifted", "x", "field went missing"),
+            _esc_row(NOW - 600, "nulled", "y", "field went null")]
+    out = build_brief(_state(rules=rules), hist, NOW)
+    look = _brief_section(out, "🔎 Look here first")
+    assert "field went missing" in look
+    assert "field went null" in look
+    assert "Recently resolved" not in out
+
+
 def test_mixed_active_and_resolved_partition():
     rules = {
         "live::a": {"rule_id": "live", "subject": "a", "currently_active": True},
