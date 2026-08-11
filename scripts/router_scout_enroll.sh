@@ -51,8 +51,11 @@ else
     echo "   scout.conf installed with SCOUT_DEVICE=$DEVICE"
 fi
 
-echo "== 2/5 persisting /etc/meshforge/ across sysupgrade"
+echo "== 2/5 persisting /etc/meshforge/ + the agent across sysupgrade"
 rsh "grep -q '^/etc/meshforge/' /etc/sysupgrade.conf 2>/dev/null || echo '/etc/meshforge/' >> /etc/sysupgrade.conf"
+# The agent itself must be preserved too — a flash restores squashfs /usr/bin
+# and orphans the crontab line (owrt1 went dark exactly this way, 2026-08-10).
+rsh "grep -qx '/usr/bin/meshforge-scout' /etc/sysupgrade.conf 2>/dev/null || echo '/usr/bin/meshforge-scout' >> /etc/sysupgrade.conf"
 
 echo "== 3/5 installing router crontab (*/15 check)"
 rsh "crontab -l 2>/dev/null | grep -q meshforge-scout || { (crontab -l 2>/dev/null; echo '*/15 * * * * /usr/bin/meshforge-scout check') | crontab -; /etc/init.d/cron restart 2>/dev/null || true; }"

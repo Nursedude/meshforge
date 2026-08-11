@@ -34,6 +34,7 @@ mkdir -p /etc/meshforge
 cp meshforge-scout /usr/bin/meshforge-scout && chmod 755 /usr/bin/meshforge-scout
 cp scout.conf.example /etc/meshforge/scout.conf   # then edit
 grep -q '^/etc/meshforge/' /etc/sysupgrade.conf || echo '/etc/meshforge/' >> /etc/sysupgrade.conf
+grep -qx '/usr/bin/meshforge-scout' /etc/sysupgrade.conf || echo '/usr/bin/meshforge-scout' >> /etc/sysupgrade.conf
 # crontab (crontab -e / /etc/crontabs/root):
 #   */15 * * * * /usr/bin/meshforge-scout check
 /usr/bin/meshforge-scout collect && /usr/bin/meshforge-scout show
