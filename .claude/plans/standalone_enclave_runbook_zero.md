@@ -65,18 +65,34 @@ required — and delivers the domain's end: **a message arrives**.
       `/etc/sysupgrade.conf`. Proof: after reboot `uci get
       system.@system[0].hostname` = `OpenWrt_Meshforge` (NOT the `/proc`
       kernel hostname, which reads stale until a reload — check uci).
-   3. [V] **Packages — NOT in a config backup.** `opkg update` then
-      `opkg install meshtasticd` (resolves to `meshtasticd-full`) plus any
-      others from `opkg-installed.txt`. The custom feed
+   3. [V] **Packages — NOT in a config backup.** `opkg update` then install
+      from `opkg-installed.txt`. ⚠️ **meshtasticd-full must come from the
+      PATCHED ipk, never the stock feed** — alaula's radio is a USB meshtoad
+      (CH341), and the stock feed build carries the #10468 stack leak
+      (proven 08-10: the T1 restore installed stock `2.7.26-r1`, which
+      leaked ~15 maps/min until re-patched 08-11). The patched ipk is
+      staged on-box in `/etc/meshforge/pkg/` (rides the sysupgrade backup):
+      `opkg install /etc/meshforge/pkg/meshtasticd-full_2.7.26-r2_*.ipk
+      && opkg flag hold meshtasticd-full` — verify the running binary
+      afterward (`sha256sum /usr/bin/meshtasticd` vs the ipk's, and
+      `strings /usr/bin/meshtasticd | grep -x pthread_detach` — present
+      only in the patched build). `meshtasticd-web` installs from the
+      stock feed (no leak surface). The custom feed
       (`openwrt.meshtastic.org/...`) + its signing keys must be present in
       `/etc/opkg/` first — they ride in the sysupgrade backup only if
       registered (they are now). Without this step the daemon binary and
       its init script are simply absent.
    4. [V] **Custom files** (`/etc/init.d/rtun`, `/root/rtun_watchdog.sh`,
-      `/root/failover_drill.sh`, `/root/.ssh/id_dropbear`, `/etc/meshtasticd`)
-      apply from `extras.tar.gz`; `chmod +x` the scripts, `chmod 600` the
-      key. **Then register them in `/etc/sysupgrade.conf`** so the NEXT
-      backup carries them (done on the live box 2026-08-10).
+      `/root/failover_drill.sh`, `/root/.ssh/id_dropbear`, `/etc/meshtasticd`,
+      `/usr/bin/meshforge-scout`) apply from `extras.tar.gz`; `chmod +x` the
+      scripts, `chmod 600` the key. **Then register them in
+      `/etc/sysupgrade.conf`** so the NEXT backup carries them (done on the
+      live box 2026-08-10; scout agent added 08-11 after the T1 restore
+      silently dropped it — the */15 scout cron survived in the crontab but
+      fired into a missing command for ~4 h until the fleet's
+      `router_scout_degraded` probe caught it. If the agent is missing,
+      re-enroll from the manager: `SCOUT_SSH="-p 2222 root@127.0.0.1"
+      scripts/router_scout_enroll.sh owrt1`).
    5. [V] Enable + start: `/etc/init.d/rtun enable && start` (tunnel dials
       home), `/etc/init.d/meshtasticd enable && start`.
    The wifi PSK IS in the uci snapshot (no hand entry). The tunnel's dropbear
@@ -219,6 +235,23 @@ Minor notes (non-blocking):
 node AND survives a reboot unaided — config, tunnel, failover, radio RX, and
 client API/web all verified against non-self-confirming tools, before and
 after a power cycle. H3 CLOSED.
+
+**Post-drill residuals (found by the fleet's own detectors, closed 08-11):**
+the restored state was *working but degraded* in three ways the drill's
+acceptance didn't check. (1) `meshforge-scout` was gone — not in extras, not
+in `sysupgrade.conf` — so its cron fired into a missing command;
+`router_scout_degraded` + `cron_verdict_stale` flagged it within hours
+(re-enrolled; agent now in sysupgrade.conf + the extras list above).
+(2) meshtasticd was the STOCK feed build — the #10468 leak came back at
+~15 maps/min (121-flat → 3,379 in 2.7 h); re-patched from the fork-CI ipk
+(hash-verified, `pthread_detach` fingerprint confirmed, maps 4,073 → 110 on
+restart), `opkg flag hold` re-set, and the patched ipk is now staged in
+`/etc/meshforge/pkg/` so the restore no longer depends on GitHub CI
+artifacts. (3) The hold flag itself had been wiped with the package DB.
+Lesson for T2 acceptance: **"restores to working" must include "restores to
+PATCHED + INSTRUMENTED"** — check `opkg status meshtasticd-full` says `r2`
++ `hold`, and that a fresh scout tick lands, before calling the restore
+complete.
 
 ## 6. Known gaps at write time (T2 will find more)
 
