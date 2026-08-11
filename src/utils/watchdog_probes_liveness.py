@@ -491,6 +491,7 @@ def probe_fleet_box_unreachable(
             return None
 
         down: List[Tuple[str, float, int]] = []
+        unobs: List[Tuple[str, float, int]] = []
         for line in state_text.splitlines():
             parts = line.rstrip("\n").split("\t")
             if len(parts) < 3 or not parts[0].strip():
@@ -509,9 +510,17 @@ def probe_fleet_box_unreachable(
                 alert_count = int(parts[5]) if len(parts) > 5 and parts[5] else 0
             except ValueError:
                 alert_count = 0
-            down.append((parts[0].strip(), down_since, alert_count))
+            # Field 7 is the monitor's VERDICT (script note 6): "down" = the box
+            # is implicated, "unobservable" = only the path to it was observed
+            # broken. Pre-2026-08-11 rows have no field 7 and meant "down".
+            # Anything unrecognised is treated as unobservable — an unknown
+            # verdict must not be laundered into the stronger claim.
+            verdict = (parts[6].strip().lower()
+                       if len(parts) > 6 and parts[6].strip() else "down")
+            (down if verdict == "down" else unobs).append(
+                (parts[0].strip(), down_since, alert_count))
 
-        if not down:
+        if not down and not unobs:
             note_disposition("fleet_box_unreachable", "clean")
             _save_parity_streak(sp, 0)
             return None
@@ -525,29 +534,48 @@ def probe_fleet_box_unreachable(
             )
             return None
 
-        descs: List[str] = []
         max_down_min = 0
         sustained = False
-        for name, ds, ac in sorted(down):
-            if ds and now >= ds:
-                mins = int((now - ds) // 60)
-                max_down_min = max(max_down_min, mins)
-                if (now - ds) > wedge_after_s:
-                    sustained = True
-                descs.append(f"{name} (~{mins}m, page #{ac})" if ac
-                             else f"{name} (~{mins}m)")
-            else:
-                descs.append(name)
+
+        def _describe(rows: List[Tuple[str, float, int]],
+                      escalates: bool) -> List[str]:
+            nonlocal max_down_min, sustained
+            out: List[str] = []
+            for name, ds, ac in sorted(rows):
+                if ds and now >= ds:
+                    mins = int((now - ds) // 60)
+                    max_down_min = max(max_down_min, mins)
+                    if escalates and (now - ds) > wedge_after_s:
+                        sustained = True
+                    out.append(f"{name} (~{mins}m, page #{ac})" if ac
+                               else f"{name} (~{mins}m)")
+                else:
+                    out.append(name)
+            return out
+
+        # Only a CONFIRMED-down box may drive the wedge severity. "This box has
+        # been wedged for hours" is an assertion about the box, and on the
+        # unobservable verdict we do not have one — the path is what broke.
+        # Paging is unaffected: the shell monitor pages on its own cadence
+        # either way, so honesty here costs no notification.
+        parts_out: List[str] = []
+        if down:
+            parts_out.append("the offline-monitor confirms DOWN: "
+                             + ", ".join(_describe(down, escalates=True)))
+        if unobs:
+            parts_out.append(
+                "UNOBSERVABLE — only path down, box state UNKNOWN (not observed "
+                "down): " + ", ".join(_describe(unobs, escalates=False)))
         return Signal(
             cls="fleet_box_unreachable",
             subject="fleet",
             severity="wedge" if sustained else "degraded",
-            detail=("Fleet box(es) the offline-monitor confirms DOWN: "
-                    + ", ".join(descs)
+            detail=("Fleet box(es) " + "; ".join(parts_out)
                     + " — surfaced here so a dark box can't sit silent (Leg D); "
                     "ntfy is re-paging on a cadence. Check the box."),
             issue_ref=None,
             extra={"down": [d[0] for d in sorted(down)],
+                   "unobservable": [d[0] for d in sorted(unobs)],
                    "max_down_min": max_down_min, "streak": streak},
         )
     except Exception:

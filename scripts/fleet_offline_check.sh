@@ -33,6 +33,26 @@
 #      ⚠️ That box list is a THIRD copy of fleet membership (fleet_hosts has its
 #      own, longer, list). Deliberately NOT unified here: unifying would silently
 #      widen who gets paged. Reconcile as its own decision.
+#   6. PATH-AWARE VERDICT (2026-08-11) — a box whose only route is a tunnel
+#      through ANOTHER box cannot be judged by that route alone. An ssh failure
+#      then observes THE PATH, not the box, and calling it "DOWN" is the same
+#      lie note 5 already caught once (bot: blindness reported as "confirms
+#      DOWN", 3.5 h of false pages). Proven again 2026-08-10: the T1 restore
+#      drill factory-reset the tunnel host, and this monitor paged a box DOWN
+#      for 54 min that was never down — it is up 17 days (honest_failure_modes
+#      #2, absence of evidence is not evidence of absence).
+#      A box may now declare `"via": "<ssh-destination>"` in BOXCONF. When the
+#      direct check fails we ask the dependency BEFORE naming a verdict:
+#        via UP   -> the box is implicated  -> verdict=down         "DOWN"
+#        via DOWN -> we observed the path   -> verdict=unobservable "UNOBSERVABLE"
+#      Both still page — suppression would hide a real outage — but the page,
+#      the log and the state file all say which claim is being made. The verdict
+#      is state field 7 so the mini/watchdog reader words it the same way
+#      (honest_failure_modes #5: two consumers, ONE artifact).
+#      ⚠️ The `via` probe deliberately does NOT pass -i "$FLEETKEY" or
+#      StrictHostKeyChecking=no: a tunnel hop is an ssh-config alias with its own
+#      port, user, key and HostKeyAlias. Overriding those would test a path
+#      nobody uses and fail-closed into a false "path down".
 # Terminal-independent (runs from cron on the manager box). HB -> ~/fleet_offline_hb.log
 # Every path is env-overridable so tests can drive the REAL script with fake
 # ssh/curl on PATH rather than re-implementing this logic (which was hardened by
@@ -42,7 +62,7 @@ FLEETKEY="${MESHFORGE_FLEETKEY:-$HOME/.claude/ssh/id_ed25519}"
 BOXCONF="${MESHFORGE_OFFLINE_BOXES:-$HOME/.config/meshforge/fleet_offline_boxes.json}"
 LOG="${MESHFORGE_OFFLINE_LOG:-$HOME/fleet_alerts.log}"
 WITNESS="${MESHFORGE_OFFLINE_WITNESS:-$HOME/fleet_push_witness.log}"             # delivery receipts / failures
-STATE="${MESHFORGE_OFFLINE_STATE:-$HOME/fleet_offline_state.tsv}"              # box \t fail \t alerted \t down_since \t last_alert \t alert_count
+STATE="${MESHFORGE_OFFLINE_STATE:-$HOME/fleet_offline_state.tsv}"              # box \t fail \t alerted \t down_since \t last_alert \t alert_count \t verdict
 HB="${MESHFORGE_OFFLINE_HB:-$HOME/fleet_offline_hb.log}"
 ALERT_THRESHOLD="${ALERT_THRESHOLD:-3}"            # ~15 min at a */5 cron cadence
 REALERT_INTERVAL="${REALERT_INTERVAL:-3600}"       # re-page an ongoing outage every N s (1h)
@@ -99,8 +119,12 @@ for b in doc.get("boxes") or []:
     host = str(b.get("host") or name).strip()
     svcs = ",".join(str(x) for x in (b.get("services") or []))
     tier = str(b.get("tier") or "critical").strip()
+    # Optional dependency path (note 6). An ssh DESTINATION, resolved by the
+    # operator's ssh config — not a fleet box name, because the hop may not be
+    # a fleet box at all.
+    via = str(b.get("via") or "").strip()
     if name and host:
-        print("%s;%s;%s;%s" % (name, host, svcs, tier))
+        print("%s;%s;%s;%s;%s" % (name, host, svcs, tier, via))
 PYEOF
 )
 if [ -z "$SSH_USER" ] || [ "${#BOXES[@]}" -eq 0 ]; then
@@ -117,25 +141,45 @@ read_state() {  # box
   g_down=$(printf '%s' "$line" | cut -f4)
   g_lastalert=$(printf '%s' "$line" | cut -f5)
   g_count=$(printf '%s' "$line" | cut -f6)
+  g_verdict=$(printf '%s' "$line" | cut -f7)
   [ -z "$g_fail" ] && g_fail=0
   [ -z "$g_alerted" ] && g_alerted=0
   [ -z "$g_down" ] && g_down=0
   [ -z "$g_lastalert" ] && g_lastalert=0
   [ -z "$g_count" ] && g_count=0
+  # Back-compat: rows written before note 6 have 6 fields. "down" is what those
+  # rows MEANT, so defaulting to it preserves their claim exactly — it does not
+  # invent an observation.
+  [ -z "$g_verdict" ] && g_verdict=down
 }
 
-set_state() {  # box fail alerted down_since last_alert alert_count
+set_state() {  # box fail alerted down_since last_alert alert_count verdict
   grep -vP "^$1\t" "$STATE" > "$STATE.tmp" 2>/dev/null || true
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" >> "$STATE.tmp"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$4" "$5" "$6" "${7:-down}" >> "$STATE.tmp"
   mv "$STATE.tmp" "$STATE"
 }
 
 for entry in "${BOXES[@]}"; do
-  IFS=';' read -r name host svcs tier <<< "$entry"
+  IFS=';' read -r name host svcs tier via <<< "$entry"
   reason=""
+  verdict="down"
   if ! timeout 15 ssh -i "$FLEETKEY" -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
         -o BatchMode=yes "$SSH_USER@$host" "true" 2>/dev/null; then
-    reason="UNREACHABLE (ssh failed)"
+    # An ssh failure observes ONE PATH, not a box state (note 6). Only a box
+    # that declares its dependency can have that distinction drawn for it;
+    # everyone else keeps the historical verdict, unchanged.
+    if [ -n "$via" ]; then
+      if timeout 15 ssh -o BatchMode=yes -o ConnectTimeout=8 "$via" true 2>/dev/null; then
+        reason="UNREACHABLE (ssh failed; dependency path via $via is UP, so the box itself is implicated)"
+      else
+        # We reached neither. The one thing actually OBSERVED is the broken
+        # path — so that is the only thing this page is allowed to claim.
+        reason="UNOBSERVABLE (dependency path via $via is DOWN; box not reached and NOT observed down — state UNKNOWN)"
+        verdict="unobservable"
+      fi
+    else
+      reason="UNREACHABLE (ssh failed)"
+    fi
   else
     bad=$(timeout 18 ssh -i "$FLEETKEY" -o StrictHostKeyChecking=no -o ConnectTimeout=8 \
           "$SSH_USER@$host" "for s in ${svcs//,/ }; do [ \"\$(systemctl is-active \$s.service 2>/dev/null)\" = active ] || echo \$s; done" 2>/dev/null | tr '\n' ' ')
@@ -154,16 +198,31 @@ for entry in "${BOXES[@]}"; do
   else
     box_realert="$REALERT_INTERVAL"; alert_prio="high"; alert_tag="rotating_light"; quiet_box=0
   fi
+  # The page must make the SAME claim the verdict does. An unobservable box is
+  # not asserted down anywhere the operator reads: title, log line, recovery.
+  if [ "$verdict" = unobservable ]; then
+    page_first="Fleet box UNOBSERVABLE"; page_still="Fleet box STILL UNOBSERVABLE"
+  else
+    page_first="Fleet box DOWN"; page_still="Fleet box STILL DOWN"
+  fi
   if [ -z "$reason" ]; then
     # healthy
     if [ "$g_alerted" = "1" ]; then
       downmin=$(( (NOW - g_down) / 60 ))
-      echo "$TS  FLEET: RECOVERED [$name] healthy again (was down ~${downmin}m)" >> "$LOG"
+      # Recovery describes what ENDED. A box we could never see did not "come
+      # back up" — its path came back; saying otherwise would retroactively
+      # assert the outage we just refused to claim.
+      if [ "$g_verdict" = unobservable ]; then
+        was="reachable again (path restored; was unobservable ~${downmin}m)"
+      else
+        was="healthy again (was down ~${downmin}m)"
+      fi
+      echo "$TS  FLEET: RECOVERED [$name] $was" >> "$LOG"
       ntfy_push "Fleet box RECOVERED: $name" "default" "white_check_mark" \
-        "$name healthy again after ~${downmin}m ($TS)" \
+        "$name $was ($TS)" \
         || echo "$TS  FLEET: PUSH-FAILED on RECOVERED [$name] — see witness log" >> "$LOG"
     fi
-    set_state "$name" 0 0 0 0 0
+    set_state "$name" 0 0 0 0 0 down
   else
     fail=$((g_fail + 1))
     if [ "$fail" -ge "$ALERT_THRESHOLD" ] && [ "$g_alerted" != "1" ]; then
@@ -178,14 +237,14 @@ for entry in "${BOXES[@]}"; do
       # #1 — "push failed" mapped to the valid-looking value "operator notified"
       # — inside the monitor whose 06-17 hardening promised a page can no longer
       # vanish unnoticed.
-      if ntfy_push "Fleet box DOWN: $name" "$alert_prio" "$alert_tag" \
+      if ntfy_push "$page_first: $name" "$alert_prio" "$alert_tag" \
            "$name: $reason (failed ${fail}x, ~$((ALERT_THRESHOLD*5))min)"; then
-        set_state "$name" "$fail" 1 "$NOW" "$NOW" 1
+        set_state "$name" "$fail" 1 "$NOW" "$NOW" 1 "$verdict"
       else
         echo "$TS  FLEET: PUSH-FAILED on ALERT [$name] — see witness log; keeping alerted=0 so the next run retries the FIRST page" >> "$LOG"
         # Keep alerted=0: the outage is still unannounced, so the next */5 tick
         # must re-enter THIS branch rather than fall into the hourly re-page.
-        set_state "$name" "$fail" 0 0 0 0
+        set_state "$name" "$fail" 0 0 0 0 "$verdict"
       fi
     elif [ "$g_alerted" = "1" ] && [ $(( NOW - g_lastalert )) -ge "$box_realert" ]; then
       # ongoing outage -> re-page (escalate), defeats fire-once + ntfy TTL age-off
@@ -197,16 +256,25 @@ for entry in "${BOXES[@]}"; do
       # buys the outage another full silent interval, and advancing $count would
       # inflate the page number past what was actually delivered (and could reach
       # ESCALATE_AFTER without a single page landing).
-      if ntfy_push "Fleet box STILL DOWN: $name (~${downmin}m)" "$prio" "$alert_tag" \
-           "$name still down ~${downmin}m: $reason (page #$count)"; then
-        set_state "$name" "$fail" 1 "$g_down" "$NOW" "$count"
+      # "still down" is a claim; on the unobservable verdict it is the WRONG one,
+      # and a re-page repeats it every interval for as long as the path is dark.
+      if [ "$verdict" = unobservable ]; then
+        still_body="$name still unobservable ~${downmin}m: $reason (page #$count)"
+      else
+        still_body="$name still down ~${downmin}m: $reason (page #$count)"
+      fi
+      if ntfy_push "$page_still: $name (~${downmin}m)" "$prio" "$alert_tag" \
+           "$still_body"; then
+        set_state "$name" "$fail" 1 "$g_down" "$NOW" "$count" "$verdict"
       else
         echo "$TS  FLEET: PUSH-FAILED on STILL-DOWN [$name] — see witness log; last_alert held so the next run retries" >> "$LOG"
-        set_state "$name" "$fail" 1 "$g_down" "$g_lastalert" "$g_count"
+        set_state "$name" "$fail" 1 "$g_down" "$g_lastalert" "$g_count" "$verdict"
       fi
     else
       # failing-but-below-threshold, OR down-and-already-paged-not-yet-re-alert-time
-      set_state "$name" "$fail" "$g_alerted" "$g_down" "$g_lastalert" "$g_count"
+      # $verdict, not $g_verdict: a path that came back mid-outage must promote
+      # the row to a real "down", and one that just broke must demote it.
+      set_state "$name" "$fail" "$g_alerted" "$g_down" "$g_lastalert" "$g_count" "$verdict"
     fi
   fi
 done

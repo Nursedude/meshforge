@@ -5401,6 +5401,66 @@ class TestFleetBoxUnreachable:
         assert sig is not None
         assert "bot" in sig.extra["down"]
 
+    # ── verdict field (state field 7, added 2026-08-11) ──────────────────
+    # The monitor now distinguishes "the box is down" from "only the path to it
+    # was observed broken" (fleet_offline_check.sh note 6). Both consumers read
+    # ONE artifact, so this reader must make the SAME claim the writer does —
+    # otherwise the honest page is re-lied about downstream, which is exactly
+    # how the 2026-08-10 kiai page (54 min DOWN about a box up 17 days) read.
+
+    def test_unobservable_verdict_is_not_reported_as_down(self, tmp_path):
+        text = f"kiwi\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t1\tunobservable\n"
+        sig = self._fire(tmp_path, text)
+        assert sig is not None
+        assert "kiwi" in sig.extra["unobservable"]
+        assert sig.extra["down"] == []
+        assert "UNOBSERVABLE" in sig.detail
+        assert "confirms DOWN" not in sig.detail, sig.detail
+
+    def test_unobservable_never_escalates_to_wedge(self, tmp_path):
+        """'Wedged for an hour' is an assertion about the BOX. On the
+        unobservable verdict we do not have one, however long the path stays
+        dark — and the shell monitor keeps paging regardless, so refusing to
+        escalate costs no notification."""
+        text = f"kiwi\t3\t1\t{self.NOW - 3600}\t{self.NOW - 60}\t6\tunobservable\n"
+        sig = self._fire(tmp_path, text)
+        assert sig is not None and sig.severity == "degraded"
+
+    def test_down_box_still_escalates_alongside_an_unobservable_one(self, tmp_path):
+        """The honest split must not blunt the real alarm: a genuinely down box
+        keeps its wedge severity even when an unobservable box shares the file."""
+        text = (f"bot\t3\t1\t{self.NOW - 3600}\t{self.NOW - 60}\t6\tdown\n"
+                f"kiwi\t3\t1\t{self.NOW - 3600}\t{self.NOW - 60}\t6\tunobservable\n")
+        sig = self._fire(tmp_path, text)
+        assert sig is not None and sig.severity == "wedge"
+        assert sig.extra["down"] == ["bot"]
+        assert sig.extra["unobservable"] == ["kiwi"]
+        assert "confirms DOWN" in sig.detail and "UNOBSERVABLE" in sig.detail
+
+    def test_unknown_verdict_is_not_laundered_into_down(self, tmp_path):
+        """An unrecognised verdict is not knowledge. Defaulting it to the
+        STRONGER claim is how a degraded value becomes a false assertion."""
+        text = f"kiwi\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t1\tgibberish\n"
+        sig = self._fire(tmp_path, text)
+        assert sig is not None
+        assert sig.extra["down"] == []
+        assert "kiwi" in sig.extra["unobservable"]
+
+    def test_legacy_six_field_row_still_means_down(self, tmp_path):
+        """Rows written before the verdict existed MEANT down — preserve their
+        claim exactly rather than inventing an observation either way."""
+        text = f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t2\n"
+        sig = self._fire(tmp_path, text)
+        assert sig is not None
+        assert sig.extra["down"] == ["bot"]
+        assert sig.extra["unobservable"] == []
+
+    def test_only_unobservable_rows_is_still_a_signal(self, tmp_path):
+        """A dark path must not fall through to 'clean' — that would be the
+        original sin (blindness read as health) in the mirror."""
+        text = f"kiwi\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t1\tunobservable\n"
+        assert self._fire(tmp_path, text) is not None
+
     def test_debounce_first_tick_silent(self, tmp_path):
         sp = str(tmp_path / "d.json")
         text = f"bot\t3\t1\t{self.NOW - 600}\t{self.NOW - 60}\t2\n"

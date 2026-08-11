@@ -33,8 +33,21 @@ SCRIPT = os.path.join(os.path.dirname(__file__), "..", "scripts",
 
 SSH_SHIM = """#!/usr/bin/env bash
 # Fake ssh. Behaviour driven by files in $SHIMDIR so each test picks an outcome.
+# Destination is parsed the way real ssh parses it — first non-flag token, after
+# skipping flags that take a value — so a bare config ALIAS (`ssh alaula true`,
+# how a `via` dependency hop is probed) resolves as well as `user@host`.
 host=""
-for a in "$@"; do case "$a" in *@*) host="${a#*@}";; esac; done
+skip=0
+for a in "$@"; do
+  if [ "$skip" = 1 ]; then skip=0; continue; fi
+  case "$a" in
+    -o|-i|-p|-l|-F|-E|-b|-c) skip=1; continue;;
+    -*) continue;;
+  esac
+  host="$a"; break
+done
+host="${host#*@}"
+echo "SSH $host" >> "$SHIMDIR/ssh.log"
 if [ -f "$SHIMDIR/unreachable_$host" ]; then exit 255; fi
 if [ -f "$SHIMDIR/badsvc_$host" ]; then cat "$SHIMDIR/badsvc_$host"; exit 0; fi
 exit 0
@@ -115,6 +128,10 @@ class Harness:
         p = self.shim / "pushes.log"
         return p.read_text() if p.exists() else ""
 
+    def ssh_log(self):
+        p = self.shim / "ssh.log"
+        return p.read_text() if p.exists() else ""
+
     def alerts(self):
         return self.log.read_text() if self.log.exists() else ""
 
@@ -153,7 +170,7 @@ class TestHealthyPath:
         h.write_conf()
         r = h.run()
         assert r.returncode == 0, r.stdout + r.stderr
-        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0"]
+        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0", "down"]
         assert not h.pushes()
 
     def test_inactive_service_counts_as_a_fault(self, h):
@@ -214,7 +231,7 @@ class TestThresholdAndPaging:
         h.reachable("alpha")
         h.run()
         assert "RECOVERED [alpha]" in h.alerts()
-        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0"]
+        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0", "down"]
 
 
 class TestTierComesFromConfigNotAName:
@@ -256,6 +273,118 @@ class TestTierComesFromConfigNotAName:
         for _ in range(3):
             h.run()
         assert "Priority: high" in h.pushes()
+
+
+class TestPathAwareVerdict:
+    """A box whose only route is a tunnel through another box cannot be judged by
+    that route alone. On 2026-08-10 the T1 restore drill factory-reset the tunnel
+    host and this monitor paged "Fleet box DOWN: kiai" for 54 min about a box that
+    was up 17 days and never rebooted — the same blindness-as-DOWN lie already
+    caught once on `bot` (see the module docstring), in a second skin.
+
+    The distinction is only drawn for a box that DECLARES its dependency, so these
+    tests pin both sides: the declaring box gets the honest verdict, and every
+    other box keeps the historical behaviour untouched."""
+
+    BOXES = [{"name": "leaf", "host": "leaf", "services": ["svc-a"],
+              "tier": "critical", "via": "jump"}]
+
+    def _page(self, h):
+        for _ in range(3):
+            h.run()
+
+    def test_path_down_pages_unobservable_not_down(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("leaf")
+        h.unreachable("jump")
+        self._page(h)
+        pushes = h.pushes()
+        assert "Fleet box UNOBSERVABLE" in pushes, pushes
+        # The subject of the claim is what matters: "the PATH is down" is true and
+        # must survive; "the BOX is down" is the 08-10 lie and must not appear.
+        assert "Fleet box DOWN" not in pushes, \
+            "claimed the BOX was down when only its path was observed"
+        assert h.row("leaf")[6] == "unobservable"
+
+    def test_path_up_still_says_down(self, h):
+        """The dependency answering is what makes DOWN honest — the box is then
+        the only thing left implicated. Without this leg the fix would be a
+        blanket excuse that silences real outages."""
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("leaf")
+        self._page(h)
+        pushes = h.pushes()
+        assert "Fleet box DOWN" in pushes, pushes
+        assert "UNOBSERVABLE" not in pushes
+        assert h.row("leaf")[6] == "down"
+
+    def test_dependency_is_actually_probed(self, h):
+        """Guard-drill doctrine: assert the probe HAPPENED, not just that the
+        wording changed. A verdict derived without asking the dependency would
+        be a guess wearing the right label."""
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("leaf")
+        h.run()
+        assert "SSH jump" in h.ssh_log(), h.ssh_log()
+
+    def test_box_without_via_is_unchanged(self, h):
+        h.write_conf(boxes=[{"name": "plain", "host": "plain",
+                             "services": ["svc-a"], "tier": "critical"}])
+        h.unreachable("plain")
+        self._page(h)
+        assert "Fleet box DOWN" in h.pushes()
+        assert h.row("plain")[6] == "down"
+        assert "SSH jump" not in h.ssh_log(), \
+            "probed a dependency for a box that declares none"
+
+    def test_service_failure_is_down_even_with_via(self, h):
+        """We REACHED the box — its path is proven good, so a dead service is a
+        real fault, never an observation problem."""
+        h.write_conf(boxes=self.BOXES)
+        h.bad_service("leaf", "svc-a")
+        self._page(h)
+        assert "Fleet box DOWN" in h.pushes()
+        assert h.row("leaf")[6] == "down"
+
+    def test_verdict_promotes_when_path_returns_mid_outage(self, h):
+        """The path coming back while the box stays dark turns an UNKNOWN into a
+        real DOWN. A verdict frozen at first observation would keep excusing an
+        outage that has since become the box's fault."""
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("leaf")
+        h.unreachable("jump")
+        self._page(h)
+        assert h.row("leaf")[6] == "unobservable"
+        h.reachable("jump")
+        h.run(env_extra={"REALERT_INTERVAL": "0"})
+        assert h.row("leaf")[6] == "down"
+        assert "STILL DOWN" in h.pushes()
+
+    def test_recovery_from_unobservable_does_not_claim_it_was_down(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("leaf")
+        h.unreachable("jump")
+        self._page(h)
+        h.reachable("leaf")
+        h.reachable("jump")
+        h.run()
+        alerts = h.alerts()
+        assert "RECOVERED [leaf]" in alerts
+        assert "was unobservable" in alerts, alerts
+        assert "was down" not in alerts, \
+            "recovery retroactively asserted the outage the page refused to claim"
+
+    def test_legacy_six_field_row_is_read_as_down(self, h):
+        """State rows written before this change have no verdict field and MEANT
+        down. Defaulting them to down preserves their claim; defaulting them the
+        other way would silently downgrade a real outage in flight."""
+        h.write_conf(boxes=self.BOXES)
+        h.state.write_text("leaf\t3\t1\t100\t100\t1\n")
+        h.unreachable("leaf")
+        h.reachable("jump")
+        h.run()
+        assert "RECOVERED" not in h.alerts()
+        assert h.row("leaf")[6] == "down"
 
 
 class TestNoOperatorValuesInSource:

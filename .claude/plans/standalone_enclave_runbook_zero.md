@@ -192,6 +192,13 @@ Destructive drill findings (the real value — each cost real time tonight):
 4. **Access chicken-and-egg**: a reset box has no inbound path until rtun
    redials; the familiar `ssh -p 2222` tunnel is the very thing being
    restored. Bundle delivery went manager-HTTP → box `uclient-fetch`.
+   ⚠️ **That tunnel is also kiai's ONLY path** — resetting this box makes the
+   fleet monitor blind to kiai, and until 2026-08-11 it paged that blindness
+   as "Fleet box DOWN: kiai" (54 min, about a box up 17 days). Fixed via the
+   monitor's `via` dependency declaration; recorded as T1 residual #4 in
+   `standalone_usability_study.md`. **Before any future destructive leg here,
+   enumerate who else loses their only path to what** — and explain every
+   page raised during the window rather than waiting it out.
 
 5. **Two required packages, not one** (finding #2, sharpened): the box needs
    BOTH `meshtasticd-full` AND `meshtasticd-web` (the latter provides

@@ -198,12 +198,25 @@ class TestOfflineCheckDeliveryGatesState:
 
     def test_state_advance_is_inside_the_delivery_branch(self):
         """Source-level pin: `set_state ... 1 "$NOW" "$NOW" 1` must not sit
-        unconditionally after an `ntfy_push || echo` compound."""
+        unconditionally after an `ntfy_push || echo` compound.
+
+        RE-ANCHORED 2026-08-11. The pin used to key on the literal title
+        `if ntfy_push "Fleet box DOWN`; the titles became variables when the
+        monitor learned to page UNOBSERVABLE (path down) separately from DOWN
+        (box down). The INVARIANT is unchanged — the push is still the `if`
+        condition — so the anchor follows the code rather than the code being
+        bent back to fit the anchor. It is pinned in two halves so neither can
+        rot silently: the gating SHAPE, and the literal wording at its
+        definition site (a title that quietly stopped saying DOWN would be a
+        real regression these pins must not sleep through)."""
         src = open(self.SCRIPT).read()
-        assert 'if ntfy_push "Fleet box DOWN' in src, (
+        assert 'if ntfy_push "$page_first' in src, (
             "the first-alert push must gate the state write (if ntfy_push ...; "
             "then set_state ...), not run beside it")
-        assert 'if ntfy_push "Fleet box STILL DOWN' in src
+        assert 'if ntfy_push "$page_still' in src
+        assert 'page_first="Fleet box DOWN"' in src, (
+            "a genuinely down box must still be paged as DOWN")
+        assert 'page_still="Fleet box STILL DOWN"' in src
 
 
 # ── bug_005 — the enum listed one class twice ───────────────────────────────
