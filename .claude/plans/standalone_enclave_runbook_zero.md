@@ -52,11 +52,22 @@ required — and delivers the domain's end: **a message arrives**.
 1. [V] Port roles — do not improvise these: **eth0 = UPLINK** (to an m1
    bridge port), **eth1 = CONFIG/LAN** (br-lan, its own 192.168.1.0/24,
    serves DHCP to a directly-attached laptop).
-2. [B] **Restore path**: flash stock OpenWrt for the One, install packages
-   from `opkg-installed.txt`, apply the snapshot's `uci-export.conf`
-   (paste into `uci import` or copy per-file into `/etc/config/`), restore
-   the crontab and `/etc/init.d/rtun` + `/root/rtun_watchdog.sh`, re-enter
-   the wifi PSK. Never drilled (T1 target).
+2. [B] **Restore path**: flash stock OpenWrt for the One, then **FIRST
+   restore `/etc/opkg/customfeeds.conf` + `/etc/opkg/keys/`** (T1 finding
+   2026-08-10: meshtasticd comes from the custom meshtastic feed — a
+   restore without the feed config + signing key cannot reinstall the radio
+   daemon; these were missing from the original snapshot and are now in
+   `opkg-feeds-keys-and-auth.txt`), `opkg update`, install packages from
+   `opkg-installed.txt`, apply the snapshot's `uci-export.conf` via
+   `uci import` (T1-verified: imports cleanly, round-trips byte-identical),
+   restore the crontab and `/etc/init.d/rtun` + `/root/rtun_watchdog.sh`,
+   restore `/etc/dropbear/authorized_keys` (in the snapshot). The wifi PSK
+   IS in the uci snapshot (restorable, no hand entry). The tunnel's
+   dropbear PRIVATE key is deliberately NOT snapshotted — regenerate
+   (`dropbearkey -t ed25519 -f /root/.ssh/id_dropbear`) and authorize the
+   new pubkey on the manager box; key rotation on restore is the feature.
+   Remote-safe legs drilled 2026-08-10 (see §T1 note below); the
+   destructive reset leg still requires physical presence.
 3. Invariants the 08-10 incident bought — check them explicitly:
    - [V] Default route rides **eth0 (wire)**; the wifi STA to `Meshforge 5`
      is the **metric-100 backup**, nothing else.
@@ -114,6 +125,21 @@ required — and delivers the domain's end: **a message arrives**.
 
 Record: wall-clock per section, every action this document did not tell you
 to take, every place it lied. Those three lists are the study's data.
+
+## T1 status (2026-08-10, remote-safe legs)
+
+Ran remotely: **LEG1** live-config-vs-snapshot diff = zero (no drift since
+capture). **LEG2** all 208 packages present in feed catalogs — checked
+against `opkg list` (the feed catalog), NOT `opkg info`, which answers for
+installed packages and self-confirms. **LEG3** `uci import` of the snapshot
+into a scratch config dir round-trips byte-identical (md5-verified; note
+BusyBox has no `diff` — a drill script that assumes it reports a false
+FAIL). **LEG4** wifi PSKs present in snapshot ×3; ssh pubkeys + feed
+signing keys captured. **Finding fixed**: opkg feed config/keys were absent
+from the snapshot (see §2.2). **NOT run**: the factory-reset leg — a remote
+reset provably severs the box's only remote path (stock firmware refuses
+ssh from the WAN side), so it runs only with an operator physically on the
+CONFIG port. H3 remains OPEN until that leg passes.
 
 ## 6. Known gaps at write time (T2 will find more)
 
