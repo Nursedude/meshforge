@@ -83,6 +83,42 @@ are the product), every doc gap, and the raw terminal transcript.
 Order: T1 → T5 → T4 → T3 → T2. (T2 is last: it consumes the runbook the
 earlier trials harden, and it is the most expensive to repeat.)
 
+## Results
+
+### T1 (H3) — run 2026-08-10, residuals closed 2026-08-11
+
+**H3 PASS by its own pre-registered metric — and the metric was found
+incomplete.** Config diff vs baseline: zero unexplained (uci byte-faithful,
+tunnel, failover, radio RX, API/web all verified; reboot-survival unaided
+~90 s). Full drill narrative + corrected restore procedure:
+`standalone_enclave_runbook_zero.md` §2.2 + §T1.
+
+**Three residuals the metric could not see** (all surfaced by the fleet's
+own detectors within hours, all closed 08-11, runbook commit `c1199370`):
+
+1. **meshforge-scout absent** — not in extras/`sysupgrade.conf`; its cron
+   fired into a missing command until `router_scout_degraded` +
+   `cron_verdict_stale` flagged it. Re-enrolled; agent now registered.
+2. **Stock meshtasticd restored** — `opkg install meshtasticd` pulled feed
+   `2.7.26-r1`, silently replacing the patched `-r2` fork build; the #10468
+   leak returned at ~15 maps/min on the USB meshtoad. Re-patched
+   (hash-verified fork-CI ipk, 30-min soak flat at 112 maps); ipk now
+   staged on-box in `/etc/meshforge/pkg/` so restore is self-contained.
+3. **opkg hold flag wiped** with the package DB — nothing pinned the stock
+   build out. Re-set; scout tick now witnesses `opkg_hold: true`.
+
+**The study-level finding (feeds H3's metric forward, not retroactively):**
+a config diff proves config, nothing else. The restored box was
+*working-but-degraded* — right uci, wrong binary, missing instrument — a
+state "zero config diff" reads as perfect. Future restore acceptance (T2
+onward) adds two checks beside the config diff: `opkg status
+meshtasticd-full` reports the patched release + `hold`, and a fresh scout
+tick lands with `ok=true` + `opkg_hold: true`. **Restore acceptance =
+PATCHED + INSTRUMENTED, not "working."** (H5's seeded-drift trial should
+include residual #2's shape: a right-version-wrong-provenance binary is
+drift that no config check catches — the scout tick's maps count is the
+detector that actually caught it.)
+
 ## Model routing (the "what model should do this" answer)
 
 | Work | Tier | Why |
