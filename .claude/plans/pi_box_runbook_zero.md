@@ -292,8 +292,44 @@ permanently uninstrumented box.
 rollback, and whether a **message arrives** — the domain's actual end was NOT
 tested (RF TX needs the tx_guard TEST-channel path, deferred).
 
+## 10. TRIAL 2 — moc5 re-drill with the fixed capture, 2026-08-11 (the double tap)
+
+**Why re-run**: trial 1's restore only succeeded after three out-of-runbook
+repairs, so the fixes were BELIEVED, not drilled. A fix is not proven by the
+failure that prompted it.
+
+**Bar**: restore from the capture ALONE — reaching outside it for any file is a
+failure, because fetching from the running box only proves the box still works.
+The restore was driven by a script (`remote_restore.sh`) whose hard rule is
+"read nothing outside the capture", including applying ownership from the new
+`system/OWNERSHIP.txt`.
+
+**Result: PASS on the first attempt. Zero out-of-runbook repairs.**
+
+| check | trial 1 | trial 2 |
+|---|---|---|
+| rnsd | PermissionError, dead | `active NRestarts=0` |
+| meshtasticd | crashloop (`available.d` missing) | `active NRestarts=0` |
+| mini-dudeai | crashloop (`mini_dudeai.env` missing) | `active NRestarts=0` |
+| map / watchdog / echo | started | `active NRestarts=0` |
+| RNS | "No shared RNS instance" | Shared Instance Up, serving 2 programs |
+| manual repairs needed | **3** | **0** |
+| baseline diff | IDENTICAL *(and lying — see 4b)* | IDENTICAL *(corroborated by NRestarts + T+7)* |
+
+**What this proves**: the three trial-1 defects are fixed at the source, and
+`OWNERSHIP.txt` — the artifact invented to fix defect #1 — works: it restored
+`root:wh6gxz 1775` on `/etc/reticulum`, `wh6gxz:wh6gxz 777` on `storage/`, and
+the rest, without any of it being guessed.
+
+**What it still does NOT prove**: §1 (base OS) and §2 (repo + venv) remain out
+of scope and untested; the channel-key path, mid-restore rollback, and "a
+message arrives" are all still open. **This is one box, one shape, twice.**
+A drill that passes is weaker evidence than one that fails — trial 2 says the
+known defects are gone, not that the procedure is complete.
+
 ---
 
 *Written before the trial, warts and all. If the first drill does not produce
 edits to this file, be suspicious of the drill.*
-**Trial 1 produced 11.**
+**Trial 1 produced 13 findings. Trial 2 produced a clean pass — which is only
+meaningful because trial 1 did not.**
