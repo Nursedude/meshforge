@@ -184,8 +184,19 @@ of the following must hold before the restore is accepted:
 - [B] **Binary provenance** (USB boxes): running meshtasticd matches the
   captured fingerprint; `wc -l /proc/<pid>/maps` flat over 30 min (climbing =
   the #10468 leak returned, i.e. a stock build got restored).
+- [V] **TIMERS, not just services** (trial 2 — the defect that got past
+  everything else). `systemctl --user list-timers` must show a scheduled
+  NEXT run for every restored timer; `is-enabled` alone is a lie, and a timer
+  left `failed / enabled` looks enabled while never firing. Check both scopes.
+  Recover with `systemctl --user reset-failed <t> && systemctl --user start <t>`.
 - [B] **Instrumented**: mini-dudeai ticking (`/warmstart` shows the box fresh
   in the rollup), watchdog signals clean, its crons landing verdicts.
+- [V] **The map's `/fleet` view must read `box_state: healthy` for the box**,
+  and its own `/fleet/slo` `overall_status: ready`. This is the surface a human
+  actually looks at, and in trial 2 it was the ONLY one that knew the box was
+  degraded — `fleet_offline_state.tsv`, `honest_status`, the mini rollup and
+  per-service `NRestarts` all read clean simultaneously. Check the human's
+  surface, not only the ones you wrote.
 - [B] **Fleet agrees**: `bash scripts/honest_status.sh` — `fleet SHA drift`
   PASS including this box, no new watchdog signals attributable to it.
 - [B] **The domain's actual end**: **a message arrives** — send on the TEST
@@ -304,7 +315,28 @@ The restore was driven by a script (`remote_restore.sh`) whose hard rule is
 "read nothing outside the capture", including applying ownership from the new
 `system/OWNERSHIP.txt`.
 
-**Result: PASS on the first attempt. Zero out-of-runbook repairs.**
+**Result: AMENDED 2026-08-11 — originally recorded as "PASS, zero repairs".
+That was WRONG, and wrong the same way trial 1 was.** The restore left BOTH
+user timers (`meshforge-tracer.timer`, `meshforge-mini-dudeai-dream.timer`)
+`failed / enabled` — their enablement symlinks restored correctly, but the
+units went to failed during the destruction-window `daemon-reload` and nothing
+restarted them (`systemctl --user daemon-reload` does NOT start a timer). The
+tracer therefore had not fired in ~38 min. The honest result is
+**PASS on services, FAIL on timers — one repair needed.**
+
+**How it was found**: not by me. Every surface I checked said clean —
+`fleet_offline_state.tsv` zeros, `honest_status` `9/9 clean, 0 signals`, the
+mini rollup `fresh`, all six services `NRestarts=0`. **The operator saw it on
+the map's `/fleet` view**, the one surface I had not looked at. The chain:
+`/fleet` `box_state=failed` → moc5's own `/fleet/slo` `overall_status=degraded`
+→ `cascade pre_fail=1` → fingerprint `tracer_stale_fire`.
+
+⚠️ **§7 was incomplete: it enumerated SERVICES and never TIMERS.** A whole
+class of scheduled work was dead while six of six services read `NRestarts=0`.
+Corrected in §7 below. This is the third distinct restore defect in one
+evening that the acceptance test could not see — after ownership and the
+crashlooping radio — and the pattern is consistent: **the acceptance kept
+asserting only what I had already thought to check.**
 
 | check | trial 1 | trial 2 |
 |---|---|---|
@@ -331,5 +363,5 @@ known defects are gone, not that the procedure is complete.
 
 *Written before the trial, warts and all. If the first drill does not produce
 edits to this file, be suspicious of the drill.*
-**Trial 1 produced 13 findings. Trial 2 produced a clean pass — which is only
-meaningful because trial 1 did not.**
+**Trial 1 produced 13 findings. Trial 2 was recorded as a clean pass and was
+NOT — the operator found a 14th defect the acceptance could not see.**
