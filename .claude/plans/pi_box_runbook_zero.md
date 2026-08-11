@@ -191,6 +191,11 @@ of the following must hold before the restore is accepted:
   Recover with `systemctl --user reset-failed <t> && systemctl --user start <t>`.
 - [B] **Instrumented**: mini-dudeai ticking (`/warmstart` shows the box fresh
   in the rollup), watchdog signals clean, its crons landing verdicts.
+- [V] **Web client actually serves**: `curl -sk https://<box>:9443/` → **200**.
+  A LISTENING port proves nothing — meshtasticd binds 9443 with or without
+  `/etc/meshtasticd/ssl/`, so after a restore that lost the cert the port was
+  open and every service check passed while the TLS handshake failed (finding
+  15). Same for `:4403`.
 - [V] **The map's `/fleet` view must read `box_state: healthy` for the box**,
   and its own `/fleet/slo` `overall_status: ready`. This is the surface a human
   actually looks at, and in trial 2 it was the ONLY one that knew the box was
@@ -302,6 +307,38 @@ permanently uninstrumented box.
 §1 (base OS), §2 (repo + venv), the channel-key restore path, mid-restore
 rollback, and whether a **message arrives** — the domain's actual end was NOT
 tested (RF TX needs the tx_guard TEST-channel path, deferred).
+
+## 9b. FINDING 15 — the drill DESTROYED the web client's TLS material, and I
+## then recorded the loss as normal
+
+Reported by the operator hours later: `https://<moc5>:9443/` was dead.
+
+**Mechanism, entirely self-inflicted:** `/etc/meshtasticd/ssl/`
+(`certificate.pem` + `private_key.pem`, owned `meshtasticd:meshtasticd`) held the
+web client's TLS material. Trial 1's restore copied only `config.yaml` +
+`config.d/`, so **ssl was destroyed with the rest of `/etc/meshtasticd` and never
+restored**. Port 9443 still LISTENED — meshtasticd binds it regardless — so every
+service-level check passed while the TLS handshake failed (`curl -> 000`). A
+listening port is not a working service.
+
+**The compounding error is the one worth remembering.** When I re-captured, moc5
+reported `ssl=no`, and I wrote in the commit message that *"moc5 legitimately has
+no ssl/"* — recording as a legitimate absence a thing I had deleted twenty
+minutes earlier. Every other box had it. **I had the comparison in front of me
+and did not make it.** An absence should be explained, never assumed benign
+(honest_failure_modes #2, in the operator's own words: unobservable ≠ absent-by-
+design).
+
+**What saved it**: the pre-drill safety bundle still existed *only because the
+permission guard refused my `rm`* — I had twice tried to delete it as
+"redundant". Had that guard not held, the cert and key were gone.
+
+**Runbook consequences:**
+- §4 must restore the WHOLE `/etc/meshtasticd` tree including `ssl/`, with
+  ownership `meshtasticd:meshtasticd`, dir `700`, files `644`.
+- §7 must check `curl -sk https://<box>:9443/ -> 200`, not that a port listens.
+- Do not delete a drill's rollback until the drilled box has been verified on
+  every surface — including the human's.
 
 ## 10. TRIAL 2 — moc5 re-drill with the fixed capture, 2026-08-11 (the double tap)
 
