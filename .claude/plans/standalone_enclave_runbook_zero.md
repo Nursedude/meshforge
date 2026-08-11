@@ -198,23 +198,27 @@ up; meshtasticd RXing LIVE mesh traffic on the E22 radio; **API 4403 + web
 9443 LISTENING (netstat), web serves 1132 B locally and HTTP 200 via the
 tunnel from the manager**; meshtasticd boot-enabled.
 
-⚠️ REMAINING (genuine, small):
-- **Reboot-survival UNVERIFIED.** All services are enabled + custom files
-  registered in `/etc/sysupgrade.conf`, so it SHOULD survive — but no
-  post-restore reboot was drilled (box left running). This is the one open
-  H3 leg → fold into a T4 reboot drill.
+**Reboot-survival DRILLED 2026-08-10 — PASS.** Rebooted the restored box;
+it came back UNAIDED in ~90 s with the FULL stack: rtun redialed on its own,
+both default routes (wire + wifi metric-100), meshtasticd running + RXing
+live mesh (nodeinfo from a real node at boot+48 s), API 4403 + web 9443
+LISTENING (netstat), web HTTP 200 via the tunnel from the manager. Nothing
+manual. This closes the last H3 leg.
+
+Minor notes (non-blocking):
 - meshtasticd logs non-fatal `Unknown module config type 14/15/16` — version
   skew between meshtasticd 2.7.26 and the restored `config.proto` module set;
-  daemon runs, radio + API + web all fine. Note, not blocker.
+  daemon + radio + API + web all fine.
 - `/etc/init.d/meshtasticd restart` needs ~20 s settle (USB E22
-  re-enumeration); a too-short wait reads DOWN mid-restart.
+  re-enumeration); a too-short wait reads DOWN mid-restart. (Boot start is
+  fine — the drill proved it.)
 - Kernel hostname reads stale `OpenWrt` until a reload/reboot (uci correct;
-  cosmetic).
+  cosmetic — and the reboot cleared it).
 
-**H3 verdict: PASS (functional).** The enclave restores to a fully working
-node — config, tunnel, failover, radio RX, and client API/web all verified
-against non-self-confirming tools. One leg (reboot-survival) is enabled but
-undrilled; close it in a T4 reboot drill.
+**H3 verdict: PASS (complete).** The enclave restores to a fully working
+node AND survives a reboot unaided — config, tunnel, failover, radio RX, and
+client API/web all verified against non-self-confirming tools, before and
+after a power cycle. H3 CLOSED.
 
 ## 6. Known gaps at write time (T2 will find more)
 
