@@ -133,3 +133,34 @@
    still OPEN by design, which is the whole point of a queue. Companion to
    MF014/MF015, which keep operator-specific values and LAN IPs out of
    published docs for the same reason.
+
+## 2026-08-11 — tonight's INSTRUMENT changes, queued for a frontier pass
+
+**Why queued rather than self-reviewed**: I shipped three defects in my own
+acceptance logic in one evening (ownership unrecorded, a crashlooping radio
+read as healthy, dead timers invisible), and a fourth — TLS material deleted
+then logged as "legitimately absent" — was found by the operator from a
+browser. A reviewer whose blind spots differ from mine is exactly what these
+ranges need; a self-review would re-apply the model that produced them.
+
+Ranges, most-suspect first:
+
+1. `scripts/fleet_offline_check.sh` + `src/utils/watchdog_probes_liveness.py`
+   (`3eca3b5b`) — the `via` dependency verdict. **Steer**: attack the
+   promotion/demotion path when a dependency flaps mid-outage, and the
+   back-compat read of a 6-field row while a 7th is being written. A wrong
+   demotion here silences a real box-down page.
+2. `src/mini_dudeai/brief.py` + `rollup.py` (`8d4c746e`, MA port `e72a9a03`) —
+   the active/resolved split. **Steer**: the conservative default (unknown
+   pair stays ACTIVE) is asserted in two places; confirm a state-schema drift
+   cannot flip it to the hiding direction.
+3. `scripts/honest_status.sh` skew leg (`6cd26cb9`) — three-repo dispatch.
+   **Steer**: the class pin compares DEFINED vs USED repo vars by regex; a
+   repo wired through an alias or an indirect var would satisfy the pin while
+   still being judged against the wrong HEAD.
+4. The capture/restore scripts are NOT in-repo (they live in the session
+   scratchpad, deliberately) — but `.claude/plans/pi_box_runbook_zero.md`
+   §4/§5/§7 encodes their contract. **Steer**: §7's acceptance list is now
+   five checks long because four defects walked past earlier versions; ask
+   what a SIXTH would be, i.e. what still passes all five while the box is
+   dead. That question is the one I could not answer for myself all evening.
