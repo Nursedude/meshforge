@@ -274,6 +274,19 @@ else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 #   * meshanchor-* units are judged against the MESHANCHOR repo's HEAD
 #     (/opt/meshanchor), never MeshForge's — the old single-HT compare read
 #     any MA unit restarted before the latest MF commit as falsely 'behind'.
+#
+# 2026-08-11: the SAME defect, in the THIRD repo the 08-09 pass did not look
+# for. `meshforge-maps` runs /opt/meshforge-maps/venv/bin/python -m src.main —
+# its own repo, which fleet_pull.sh does not even touch. But the dispatch knew
+# only two repos and matched on the unit-NAME prefix, so `meshforge-maps*` fell
+# through `*)` to MeshForge's HEAD and was judged against a repo it does not
+# run. MeshForge commits constantly, so those units read "behind" forever no
+# matter what their own repo did: on 2026-08-11 it reported maps(4d) for three
+# units whose repo had had ZERO commits since they started — the units began
+# FOUR MINUTES after their HEAD. A fix applied to one instance is not applied
+# to the class (the same lesson the mini rollup sibling taught the same day):
+# when a dispatch grows a special case, grep for every OTHER value that needs
+# one. Display prefix is mm: so the operator can see WHICH repo is judging it.
 #   * BOTH systemd scopes are enumerated. User-scope units (the #82 nomadnet
 #     class) were invisible while the clean text claimed "every ACTIVE unit";
 #     a box whose user manager is unreachable now DISCLOSES that blindness
@@ -292,12 +305,17 @@ for b in $BOXES; do
 if [ -e $REPO/.git ]; then
   HTMF=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMF\" ] || HTMF=SKIP
   HTMA=\$(git -C /opt/meshanchor show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMA\" ] || HTMA=SKIP
+  HTMM=\$(git -C /opt/meshforge-maps show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMM\" ] || HTMM=SKIP
   XRD=/run/user/\$(id -u)
   if XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --no-pager >/dev/null 2>&1; then USOK=1; else USOK=0; echo USCOPEDARK; fi
   { systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/sys /'
     [ \"\$USOK\" = 1 ] && XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/usr /'
   } | grep -E '^(sys|usr) (meshforge|meshanchor)-' | while read -r sc u; do
-    case \"\$u\" in meshanchor-*) H=\$HTMA;; *) H=\$HTMF;; esac
+    case \"\$u\" in
+      meshforge-maps.service|meshforge-maps@*) H=\$HTMM;;
+      meshanchor-*) H=\$HTMA;;
+      *) H=\$HTMF;;
+    esac
     if [ \"\$sc\" = usr ]; then T=\$(XDG_RUNTIME_DIR=\$XRD systemctl --user show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@')
     else T=\$(systemctl show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@'); fi
     case \"\$T\" in ''|*[!0-9]*) echo \"U \$u\"; continue;; esac
@@ -314,7 +332,7 @@ else echo HSNOREPO; fi")
   nu=$(printf '%s\n' "$body" | grep -c '^U ' || true)
   skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
   if [ "$nb" -gt 0 ]; then
-    units=$(printf '%s\n' "$body" | awk '$1=="B"{sub(/\.service$/,"",$2); sub(/^meshforge-/,"mf:",$2); sub(/^meshanchor-/,"ma:",$2); printf "%s(%sd),", $2, $3}' | sed 's/,$//')
+    units=$(printf '%s\n' "$body" | awk '$1=="B"{sub(/\.service$/,"",$2); if ($2 ~ /^meshforge-maps($|@)/) sub(/^meshforge-maps/,"mm:maps",$2); else { sub(/^meshforge-/,"mf:",$2); sub(/^meshanchor-/,"ma:",$2) } printf "%s(%sd),", $2, $3}' | sed 's/,$//')
     skew_desc="$skew_desc $b:$units"
   fi
 done
