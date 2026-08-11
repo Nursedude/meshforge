@@ -88,6 +88,34 @@ the claim.
    consumer, say so — that claim is BELIEVED, and name the observation that
    would upgrade it.
 
+## Coverage — the question the three tiers do not ask
+
+The tiers ask *how sure am I*. On 2026-08-11 fifteen defects got past me while
+my claims stayed **correctly calibrated and still wrong**: every VERIFIED tag
+was true *about the thing it measured*, and the measurement did not touch the
+feature. `NRestarts=0` was true while the web client served nothing —
+meshtasticd binds `:9443` with or without a certificate. A perfectly honest
+claim about the wrong quantity.
+
+1. **Ask at write time, 5 seconds: "what would still pass this check if the
+   feature were dead?"** If you can name something — a listening socket, an
+   enabled-but-failed timer, a fresh state file beside a crashlooped daemon —
+   the check measures PRESENCE, not FUNCTION. Terminate acceptance at the
+   domain's END (a message arrives; a browser gets 200), never at a proxy.
+2. **Rank evidence by AUTHORIAL DISTANCE.** A witness you did not write
+   outranks one you did, because a check you author encodes only the
+   narrowness you already thought of — the defect is by definition outside it.
+   That day four surfaces agreed a box was healthy and all four were mine; the
+   one that knew was the operator's browser. Verifying your OWN work, reach
+   first for the authority you did not build: systemd's `NRestarts`, a
+   daemon's journal, CI's conclusion, a guard that refuses you, the human's
+   screen. (The same day, a permission guard's refusal preserved a private key
+   my judgment was about to delete as redundant.)
+3. **An absence must be explained, never assumed benign.** Same day: one box
+   reported `ssl=no` beside six reporting `ssl=yes`, and I recorded it as
+   "legitimately has no ssl" — a thing I had deleted twenty minutes earlier,
+   with the comparison in the same output I was reading.
+
 ## How to apply — run this before saying a task is done
 
 Walk it over your closing message; each item is a 5-second question:
