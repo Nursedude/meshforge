@@ -187,3 +187,21 @@ def test_resolve_preset_auto_standalone_when_no_declaration(tmp_path, monkeypatc
     from mini_dudeai.daemon import _resolve_preset_name
     monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "absent"))
     assert _resolve_preset_name("auto") == "standalone"
+
+
+def test_fleet_preset_routes_artifact_paths_through_the_adapter():
+    """Source tripwire (limits known: a grep pin, not behavior — the behavior
+    pins live in test_mini_warmstart / test_mini_dudeai_rollup). The preset
+    must resolve brief/state/history via _util.app_artifact_paths, never
+    re-hardcode the basenames: independent hardcodes across writer and the
+    byte-locked readers are exactly how the MA twin's readers drifted onto
+    paths its writer never used (2026-08-11)."""
+    import inspect
+    from mini_dudeai.presets import meshforge_fleet
+    src = inspect.getsource(meshforge_fleet)
+    assert "app_artifact_paths" in src
+    for literal in ("mini_dudeai_state.json", "mini_dudeai_brief.md",
+                    "mini_dudeai_history.jsonl"):
+        assert literal not in src, (
+            "artifact basename %r re-hardcoded in the preset — route it "
+            "through _util.app_artifact_paths" % literal)

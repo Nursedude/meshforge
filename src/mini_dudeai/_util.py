@@ -30,6 +30,29 @@ APP_REPO_ENV = "MESHFORGE_REPO"              # env override for the repo root
 APP_REPO_DEFAULT = "/opt/meshforge"          # repo root (calibration HEAD)
 APP_VERDICT_SUBDIR = os.path.join(".cache", "meshforge")  # honest_verdict dir
 
+# Artifact PATHS joined this seam 2026-08-11. The 07-23 pass carried
+# unit/repo/preset NAMES through the adapter but not paths, so the byte-locked
+# readers (warmstart; the rollups' basename constants) kept MeshForge-
+# convention locations baked in — and MA's copies read paths its daemon never
+# writes. Measured on the MA replica: bare warmstart reported "mini has not
+# run here" beside a daemon ticking 30s away. Reader and writer both resolve
+# through these (honest_failure_modes #4: reader/writer pairs wire together).
+# All are RELATIVE to the mini home (resolve_home) so the rollup's remote
+# `cat` (cwd = the remote $HOME) and local joins agree on one value.
+APP_MINI_SUBDIR = ""                         # MF artifacts live in the mini home itself
+APP_BRIEF_RELPATH = "mini_dudeai_brief.md"
+APP_STATE_RELPATH = "mini_dudeai_state.json"
+APP_HISTORY_RELPATH = "mini_dudeai_history.jsonl"
+
+
+def app_artifact_paths(home=None):
+    """(brief, state, history) absolute paths THIS app's fleet-preset daemon
+    writes — the one place readers and the preset writer both resolve."""
+    home = home or resolve_home()
+    return (os.path.join(home, APP_BRIEF_RELPATH),
+            os.path.join(home, APP_STATE_RELPATH),
+            os.path.join(home, APP_HISTORY_RELPATH))
+
 
 def resolve_home():
     """The ONE home-dir resolution for mini artifacts: $MINI_DUDEAI_HOME → ~.

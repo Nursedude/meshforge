@@ -214,15 +214,20 @@ def build_engine(
         enable_boot_health = os.environ.get("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "1") != "0"
     if enable_watchdog is None:
         enable_watchdog = os.environ.get("MINI_DUDEAI_ENABLE_WATCHDOG", "1") != "0"
-    from .._util import resolve_home
+    from .._util import app_artifact_paths, resolve_home
     home = home or resolve_home()
+    # brief/state/history come from the _util adapter — the same function the
+    # readers (warmstart, rollup) resolve, so writer and reader cannot drift
+    # apart again (2026-08-11: the MA twin's readers were aimed at paths its
+    # preset never wrote; honest_failure_modes #4).
+    _default_brief, _default_state, _default_history = app_artifact_paths(home)
     rules_path = rules_path or os.path.join(home, "mini_dudeai_rules.json")
-    state_path = state_path or os.path.join(home, "mini_dudeai_state.json")
-    history_path = history_path or os.path.join(home, "mini_dudeai_history.jsonl")
+    state_path = state_path or _default_state
+    history_path = history_path or _default_history
     # Every fleet box writes its own brief each tick (continuity: SSH to any box
     # and mini's current posture is there, fresh). Stays in $HOME — NOT the
     # fleet_sync-mirrored memory dir — so it's per-box, not clobbered by --delete.
-    brief_path = brief_path or os.path.join(home, "mini_dudeai_brief.md")
+    brief_path = brief_path or _default_brief
     digest_path = digest_path or os.path.join(home, "situation_digest.md")
     annotate_path = annotate_path or os.path.join(home, "mini_dudeai_digest_annotations.md")
     watchdog_path = watchdog_path or DEFAULT_WATCHDOG_PATH

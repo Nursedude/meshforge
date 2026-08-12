@@ -202,3 +202,27 @@ def test_calibration_block_never_raises(monkeypatch):
     monkeypatch.setenv("CALIBRATION_LEDGER_PATH", "/nonexistent/dir/x.jsonl")
     monkeypatch.setenv("HONEST_VERDICT_PATH", "/nonexistent/dir/m.json")
     assert warmstart._calibration_block(NOW) == ""
+
+
+# ---------------------------------------------------------------------------
+# Reader/writer path wiring (2026-08-11)
+# ---------------------------------------------------------------------------
+
+
+def test_default_paths_come_from_the_app_adapter(tmp_path, monkeypatch):
+    """_default_paths() must equal the adapter's app_artifact_paths() — the
+    same function the fleet preset writes through. Hardcoded basenames here
+    are exactly how the MA twin's warmstart ended up reading paths its daemon
+    never writes and reported "mini has not run here" beside a ticking daemon
+    (2026-08-11). MF-side limit, stated honestly: on MeshForge the adapter's
+    values coincide with the old hardcodes, so a re-hardcode would still pass
+    HERE — the MA twin's test (test_mini_artifact_paths.py in that repo) is
+    the one that catches it. This pins the wiring and the MF values."""
+    import os
+    monkeypatch.setenv("MINI_DUDEAI_HOME", str(tmp_path))
+    from mini_dudeai import _util, warmstart
+    brief, state = warmstart._default_paths()
+    a_brief, a_state, _a_hist = _util.app_artifact_paths()
+    assert (brief, state) == (a_brief, a_state)
+    assert brief == os.path.join(str(tmp_path), "mini_dudeai_brief.md")
+    assert state == os.path.join(str(tmp_path), "mini_dudeai_state.json")

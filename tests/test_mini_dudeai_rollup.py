@@ -611,3 +611,34 @@ def test_collect_fleet_deep_local_plus_remotes(tmp_path):
     assert [r["host"] for r in results] == ["managerbox", "moc"]
     assert results[0]["self_box"] is True and len(results[0]["fires"]) == 1
     assert len(results[1]["escalations"]) == 1
+
+
+# === reader/writer path wiring (2026-08-11) ======================
+
+def test_collect_local_defaults_to_the_adapter_path(tmp_path, monkeypatch):
+    """collect_local's default state path must be the adapter's — the path the
+    fleet preset actually writes. The MA twin's copy hardcoded the MF basename
+    and would have rolled up a healthy MA fleet as no_state."""
+    monkeypatch.setenv("MINI_DUDEAI_HOME", str(tmp_path))
+    from mini_dudeai import _util
+    _b, state_path, _h = _util.app_artifact_paths()
+    os.makedirs(os.path.dirname(state_path) or str(tmp_path), exist_ok=True)
+    with open(state_path, "w") as f:
+        json.dump({"last_tick_ts": NOW - 5, "rule_count": 3,
+                   "host": "managerbox"}, f)
+    p = collect_local(NOW)
+    assert p is not None and p["host"] == "managerbox"
+
+
+def test_remote_cmds_embed_the_adapter_relpaths():
+    """The ssh legs must cat the SAME relative paths the preset writes (cwd of
+    the remote cat is the remote $HOME)."""
+    from mini_dudeai import _util
+    from mini_dudeai.rollup import _remote_breadth_cmd
+    import mini_dudeai.rollup as _r
+    cmd = _remote_breadth_cmd()
+    assert f"cat {_util.APP_STATE_RELPATH} " in cmd
+    # the deep leg builds its command from _HISTORY_RELPATH; pin it to the
+    # adapter so the two ssh legs and the writer stay on one value
+    assert _r._STATE_RELPATH == _util.APP_STATE_RELPATH
+    assert _r._HISTORY_RELPATH == _util.APP_HISTORY_RELPATH

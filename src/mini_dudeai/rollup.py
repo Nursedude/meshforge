@@ -1,7 +1,8 @@
 """Fleet mini-dudeai posture rollup — one pane, every box.
 
-Each box's mini daemon writes its own ``~/mini_dudeai_state.json`` (the brief is
-the human render; the state file is the SSOT). This module ssh-fans to the fleet
+Each box's mini daemon writes its own state file — at the app adapter's
+``APP_STATE_RELPATH``, relative to that box's home (the brief is the human
+render; the state file is the SSOT). This module ssh-fans to the fleet
 — resolving the host list the SAME way ``scripts/fleet_sync.sh`` does, so no
 operator hostnames live in the repo (MF014) — reads each box's state, and renders
 a single posture pane.
@@ -30,7 +31,8 @@ import subprocess
 import sys
 import time
 
-from ._util import read_json, resolve_home
+from ._util import (APP_HISTORY_RELPATH, APP_STATE_RELPATH, read_json,
+                    resolve_home)
 from .claw_telemetry import CLAW_TICK_BASENAME, SECONDARY_TICK_GLOB
 
 from .brief import (
@@ -44,8 +46,13 @@ from .brief import (
 #: ssh-cat the state file. BatchMode so a missing key fails fast instead of
 #: hanging on a password prompt; ConnectTimeout bounds an unreachable host.
 DEFAULT_SSH_TIMEOUT_S = 10.0
-_STATE_BASENAME = "mini_dudeai_state.json"
-_HISTORY_BASENAME = "mini_dudeai_history.jsonl"
+#: Paths RELATIVE to each box's home, from the _util adapter — this reader
+#: and the fleet preset's writer resolve ONE value (2026-08-11: hardcoded
+#: MF-convention basenames here aimed the MA twin at paths its daemon never
+#: writes, so a healthy MA fleet would have rolled up as no_state).
+#: Relative on purpose: the remote `cat` runs with cwd = the remote $HOME.
+_STATE_RELPATH = APP_STATE_RELPATH
+_HISTORY_RELPATH = APP_HISTORY_RELPATH
 #: separates state from history in the single deep-pull ssh round trip. MUST be
 #: free of shell metacharacters — it is echoed by the REMOTE shell, so '<<<'/'>>>'
 #: would be parsed as here-string/redirection and the command would emit nothing.
@@ -61,6 +68,12 @@ _CLAW_BASENAME = CLAW_TICK_BASENAME
 #: every ADDITIONAL claw on the same brain box (dudeclaw-02, …). Same
 #: writer-owned constant; the two-dot shape excludes the single-dot primary.
 _CLAW_GLOB = SECONDARY_TICK_GLOB
+#: remote-leg twins of the claw names: the breadth `cat` runs with cwd =
+#: the remote $HOME, and claw ticks live BESIDE the state file (the sibling
+#: rule collect_local pins) — so prefix with the state's dir. On MeshForge
+#: that dir is "" and these equal the basenames.
+_CLAW_REMOTE = os.path.join(os.path.dirname(_STATE_RELPATH), _CLAW_BASENAME)
+_CLAW_GLOB_REMOTE = os.path.join(os.path.dirname(_STATE_RELPATH), _CLAW_GLOB)
 _CLAW_SENTINEL = "__MINI_DUDEAI_CLAW_SENTINEL__"
 #: 3x the */5-min claw_metrics capture cadence (matches _read_claw_state_block).
 CLAW_STALE_S = 900.0
@@ -180,9 +193,9 @@ def _remote_breadth_cmd() -> str:
     literal and is skipped, so a claw-less box emits state + one sentinel
     exactly as before. Trailing ``true`` keeps the compound rc off the last
     ``[ -f ]`` test, which would otherwise report 1 on a claw-less box."""
-    return (f"cat {_STATE_BASENAME} 2>/dev/null; "
+    return (f"cat {_STATE_RELPATH} 2>/dev/null; "
             f"echo '{_CLAW_SENTINEL}'; "
-            f"for f in {_CLAW_BASENAME} {_CLAW_GLOB}; do "
+            f"for f in {_CLAW_REMOTE} {_CLAW_GLOB_REMOTE}; do "
             f"[ -f \"$f\" ] && {{ cat \"$f\" 2>/dev/null; echo; "
             f"echo '{_CLAW_SENTINEL}'; }}; done; true")
 
@@ -263,7 +276,7 @@ def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIME
     claw_cards = [c for c in (parse_claw_posture(d, now_ts) for d in claws) if c]
     if not state_text:
         return {"host": host, "self_box": False, "status": "no_mini",
-                "error": (err or "").strip()[:160] or "no mini_dudeai_state.json",
+                "error": (err or "").strip()[:160] or f"no {_STATE_RELPATH}",
                 "claw": claw_cards[0] if claw_cards else None,
                 "claws": claw_cards}
     try:
@@ -284,7 +297,7 @@ def collect_local(now_ts: float, state_path: str | None = None,
     Also folds in the local claw tick (sibling claw_last_tick.json) if present."""
     home = resolve_home()
     if state_path is None:
-        state_path = os.path.join(home, _STATE_BASENAME)
+        state_path = os.path.join(home, _STATE_RELPATH)
     claw_dir = os.path.dirname(state_path) or home
     if claw_path is None:
         claw_path = os.path.join(claw_dir, _CLAW_BASENAME)
@@ -469,9 +482,9 @@ def _default_ssh_runner_deep(host: str, timeout_s: float) -> tuple[int, str, str
     """ssh <host> 'cat state; echo SENTINEL; cat history' — one round trip. The
     remote `cat`s swallow their own errors so rc reflects only ssh transport
     (255 = unreachable); empty content means the box runs no mini."""
-    remote = (f"cat {_STATE_BASENAME} 2>/dev/null; "
+    remote = (f"cat {_STATE_RELPATH} 2>/dev/null; "
               f"echo '{_DEEP_SENTINEL}'; "
-              f"cat {_HISTORY_BASENAME} 2>/dev/null")
+              f"cat {_HISTORY_RELPATH} 2>/dev/null")
     cmd = ["ssh", "-o", "BatchMode=yes",
            "-o", f"ConnectTimeout={int(timeout_s)}", host, remote]
     try:
@@ -559,8 +572,8 @@ def collect_local_deep(now_ts: float, state_path: str | None = None,
                        window_s: float = ESCALATION_WINDOW_S) -> dict | None:
     """Read the manager box's own state + history directly. None if no state."""
     home = resolve_home()
-    state_path = state_path or os.path.join(home, _STATE_BASENAME)
-    history_path = history_path or os.path.join(home, _HISTORY_BASENAME)
+    state_path = state_path or os.path.join(home, _STATE_RELPATH)
+    history_path = history_path or os.path.join(home, _HISTORY_RELPATH)
     try:
         with open(state_path) as f:
             state = json.load(f)

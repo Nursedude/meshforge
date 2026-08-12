@@ -85,8 +85,8 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
         # State exists (mini ran) but no brief was generated yet.
         return (
             "## mini-dudeai warm start — no brief yet\n"
-            f"mini has ticked (last tick {age} ago) but no "
-            "`mini_dudeai_brief.md` exists. Generate one with "
+            f"mini has ticked (last tick {age} ago) but no brief exists at "
+            f"`{brief_path}`. Generate one with "
             f"`python3 -m mini_dudeai --preset {APP_FLEET_PRESET} --brief`.\n"
         )
 
@@ -118,20 +118,18 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
 
 
 def _default_paths() -> tuple[str, str]:
-    """Standard mini file locations in the mini home.
+    """THE paths this app's fleet-preset daemon writes, from the _util adapter.
 
-    Uses the shared resolver (``_util.resolve_home``: $MINI_DUDEAI_HOME → ~)
-    so every consumer agrees on the artifact dir — mini stays stdlib-only and
-    decoupled from the meshforge utils tree. The brief is written here by the
-    user-run daemon, so this resolves to the same place when the hook runs as
-    that user.
+    2026-08-11: artifact paths joined the adapter seam beside the unit/repo/
+    preset names. Hardcoding the MeshForge-convention basenames here meant the
+    byte-locked MA copy read locations its daemon never writes (the MA preset
+    namespaces artifacts into its own dir) and reported "mini has not run
+    here" beside a ticking daemon. Reader and writer now resolve through ONE
+    function (honest_failure_modes #4).
     """
-    from ._util import resolve_home
-    home = resolve_home()
-    return (
-        os.path.join(home, "mini_dudeai_brief.md"),
-        os.path.join(home, "mini_dudeai_state.json"),
-    )
+    from ._util import app_artifact_paths
+    brief_path, state_path, _history = app_artifact_paths()
+    return brief_path, state_path
 
 
 def _current_head() -> str | None:
