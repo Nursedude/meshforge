@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import time
 from dataclasses import dataclass, field
@@ -281,11 +282,76 @@ def _read_deployment_declaration(service_user) -> Tuple[Optional[str], dict]:
     status, role, ov = _read_deployment_declaration_status(service_user)
     return (role, ov if status != "unreadable" else {})
 
+# ── incremental journal scanning: the cursor memo ────────────────────
+# 2026-07-01 review finding 14, landed 2026-08-12. The moc5 pegged-core fix
+# bounded probe_channel_feed_dark's WINDOW (24h -> a derived 7h) but left the
+# CLASS untouched: the NO-MATCH case re-scanned that entire window every 30s
+# tick, forever, and mqtt_root_drift did the same over a fixed 6h — two
+# full-window scans per tick on a no-json-uplink box (the moc5 shape), and the
+# next probe to clone the recipe would have re-created the peg.
+#
+# The cure: scan only what the journal has GROWN since the last SUCCESSFUL
+# look, and carry the remembered newest match forward while it is still inside
+# the caller's window. Correctness argument for carrying it: a full scan
+# returns the NEWEST match in the window, so nothing exists between it and the
+# scan time; every later tick covers (last_scan, now]; the union is therefore
+# gapless, and the remembered match is the newest until it ages out of the
+# window on its own timestamp.
+#
+# In-process, keyed by (unit, pattern, journalctl_path) — deliberately NOT a
+# cursor FILE. The watchdog ticks every 30s; an SD-card write per probe per
+# tick is a worse bill on a Pi than the scan it would save, and a restart
+# simply costs one full scan, which is correct rather than merely cheap.
+#
+# ⚠️ The position NEVER advances on a scan that did not succeed. Advancing it
+# on an unobservable read would permanently skip a stretch of journal that
+# nothing ever looked at — a blind spot manufactured by the optimisation
+# itself (honest_failure_modes #2: unobservable is not "nothing there").
+_JOURNAL_MEMO: Dict[tuple, dict] = {}
+
+_LOOKBACK_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def reset_journal_memo() -> None:
+    """Forget every remembered scan position (next call per key full-scans).
+
+    Tests MUST call this between cases — it is module-global state, and a memo
+    leaking across cases is the ambient-state defect this repo has been bitten
+    by before. Do NOT call it per tick: that reinstates the full scan it exists
+    to remove (contrast ``reset_dispositions``, which is per-tick BY design).
+    """
+    _JOURNAL_MEMO.clear()
+
+
+def _lookback_seconds(lookback: str) -> Optional[float]:
+    """``'7h'`` -> 25200.0; None when the shape is not one we parse.
+
+    None deliberately costs a full scan and no memo: a window we cannot
+    measure must never be guessed at, because guessing SHORT would silently
+    narrow what every probe sharing this helper is able to see.
+    """
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smhd])\s*", lookback or "")
+    if not m:
+        return None
+    return float(m.group(1)) * _LOOKBACK_UNITS[m.group(2)]
+
+
+def _match_line_ts(line: Optional[str]) -> Optional[float]:
+    """Epoch seconds off a ``-o short-unix`` line (its first token), or None."""
+    if not line:
+        return None
+    try:
+        return float(line.split(None, 1)[0])
+    except (ValueError, IndexError):
+        return None
+
+
 def _journal_newest_match_status(
     unit: str,
     pattern: str,
     lookback: str,
     journalctl_path: str = "journalctl",
+    now: Optional[float] = None,
 ) -> Tuple[str, Optional[str]]:
     """Tri-state form of ``_journal_newest_match``.
 
@@ -303,22 +369,70 @@ def _journal_newest_match_status(
     (honest_failure_modes #2). Mirrors ``_journal_count_match``, which has
     always kept the distinction.
     """
+    now_ts = time.time() if now is None else now
+    key = (unit, pattern, journalctl_path)
+    window_s = _lookback_seconds(lookback)
+    horizon = None if window_s is None else (now_ts - window_s)
+
+    # Decide the scan floor. Default is the caller's full window; a usable memo
+    # narrows it to "since we last successfully looked".
+    memo = _JOURNAL_MEMO.get(key) if window_s is not None else None
+    if memo is not None and memo["scanned_through"] > now_ts:
+        # Clock went backwards (RTC-less Pi, NTP step). A remembered position
+        # in the future would suppress scanning of real journal — drop it and
+        # take the honest full scan.
+        _JOURNAL_MEMO.pop(key, None)
+        memo = None
+    since = f"-{lookback}"
+    if memo is not None and memo["scanned_through"] > horizon:
+        since = "@%d" % int(memo["scanned_through"])
+
     try:
         proc = subprocess.run(
             [
-                journalctl_path, "-u", unit, "--since", f"-{lookback}",
+                journalctl_path, "-u", unit, "--since", since,
                 "-g", pattern, "-r", "-n", "1", "-o", "short-unix",
                 "-q", "--no-pager",
             ],
             capture_output=True, text=True, timeout=10,
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return ("unobservable", None)
+        return ("unobservable", None)   # memo untouched — never skip unread journal
     # rc 1 = "no entries matched" on some systemd builds; only >1 is an error.
     if proc.returncode not in (0, 1):
         return ("unobservable", None)
+    # ⚠️ A MALFORMED --since also exits 1 with an empty stdout ("Failed to parse
+    # timestamp: …" on stderr) — measured 2026-08-12 — which the rc check above
+    # would otherwise read as an affirmative "nothing matched". That is the
+    # error-reads-as-empty shape, and it would make this optimisation fail
+    # silently and permanently: a probe would go dark and call it clean.
+    # getattr, not proc.stderr: an injected double (or a caller passing a
+    # lightweight stand-in) that omits the field must degrade to "no stderr",
+    # never raise — an AttributeError here would take down the whole tick.
+    if proc.returncode == 1 and (getattr(proc, "stderr", "") or "").strip():
+        return ("unobservable", None)
+
     lines = proc.stdout.strip().splitlines()
-    return ("ok", lines[0] if lines else None)
+    line = lines[0] if lines else None
+
+    if window_s is None:
+        return ("ok", line)         # unparseable window: answer, never memoize
+
+    if line is not None:
+        _JOURNAL_MEMO[key] = {"scanned_through": now_ts,
+                              "match_ts": _match_line_ts(line),
+                              "line": line}
+        return ("ok", line)
+
+    # Positively nothing NEW. The remembered match is still the newest in the
+    # window until its own timestamp ages out of it.
+    prev_ts = memo["match_ts"] if memo else None
+    prev_line = memo["line"] if memo else None
+    carried = prev_line if (prev_ts is not None and prev_ts >= horizon) else None
+    _JOURNAL_MEMO[key] = {"scanned_through": now_ts,
+                          "match_ts": prev_ts if carried else None,
+                          "line": carried}
+    return ("ok", carried)
 
 
 def _journal_newest_match(

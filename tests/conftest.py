@@ -137,6 +137,30 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture(autouse=True)
+def _reset_journal_scan_memo():
+    """Clear the watchdog's incremental journal-scan memo between tests.
+
+    ``_journal_newest_match_status`` remembers, per (unit, pattern), how far it
+    has successfully scanned and what the newest match was, so a 30s tick costs
+    30s of journal instead of the whole window. That memo is MODULE-GLOBAL, so
+    without this fixture a case that primes it changes the answer a later case
+    gets from its own patched ``subprocess.run`` — a verdict depending on
+    un-pinned ambient state, which is a defect this suite has paid for before.
+
+    Autouse rather than opt-in: the leak crosses FILES, so remembering to
+    request it is exactly the kind of discipline that fails silently.
+    """
+    try:
+        from utils.watchdog_probe_core import reset_journal_memo
+    except ImportError:      # minimal-deps CI profile — nothing to reset
+        yield
+        return
+    reset_journal_memo()
+    yield
+    reset_journal_memo()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_node_cache_files(tmp_path_factory):
     """Keep the node-cache writers out of the operator's live data directory.
 
