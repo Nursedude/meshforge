@@ -20,11 +20,12 @@ is harmless on boxes without mini.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 
 from ._util import (APP_FLEET_PRESET, APP_MINI_UNIT, APP_REPO_DEFAULT,
-                    APP_REPO_ENV, APP_VERDICT_SUBDIR, read_json)
+                    APP_REPO_ENV, APP_VERDICT_SUBDIR, operator_home, read_json)
 
 #: Past this age (s) since the last tick, the brief is treated as historical.
 #: Mirrors brief.DEFAULT_STALE_S (30s tick → >5m means the daemon likely died).
@@ -52,8 +53,70 @@ def _read_text(path: str) -> str | None:
         return None
 
 
+#: The operator's deferred-work gate ledger — APP-AGNOSTIC on purpose (it is
+#: keyed to the human's home, not to MeshForge or MeshAnchor), which is why
+#: this byte-locked file may name it directly.
+DEFERRED_LEDGER_BASENAME = "deferred_work.json"
+
+
+def deferred_backlog_line(ledger_path: str, today: str) -> str:
+    """One line naming deferred work whose review date has passed, or ``""``.
+
+    WHY THIS EXISTS (2026-08-12). The ledger's contract is "a gated task can
+    NEVER fall silent" — it pages ONCE when ``review_after`` passes, and then
+    it is done forever. There is no second look. Measured that day: TEN blocked
+    tasks were overdue, the oldest by ~7 weeks, on a fleet the operator and I
+    work daily. The witness fired exactly as designed; nothing ever surfaced it
+    again, and the only reader who could act had no reason to open the file.
+    Page-once + a reader who never re-reads = silence — the same shape as the
+    detectors this repo keeps finding blind, one layer up.
+
+    So the ledger joins the surface I actually read at session start. No new
+    cron, no new state, no new page: an existing artifact rendered where the
+    decision gets made.
+
+    Honesty rules, in order:
+      - ledger ABSENT  → "" (silent). It lives on the operator's manager box;
+        its absence elsewhere is by design, not a failure (inert, not blind).
+      - ledger UNREADABLE/malformed → say so. A gate ledger that cannot be
+        read is exactly when you must not assume an empty backlog.
+      - nothing overdue → "" (silent). A clean board earns no line.
+    ``today`` is passed in (ISO ``YYYY-MM-DD``) so this stays clock-free and
+    testable, like everything else in this module.
+    """
+    if not os.path.exists(ledger_path):
+        return ""
+    data, err = read_json(ledger_path)
+    if err or not isinstance(data, dict):
+        return (f"⚠️ **deferred-work ledger unreadable** (`{ledger_path}`: "
+                f"{err or 'not an object'}) — backlog UNKNOWN, not empty.\n")
+    tasks = data.get("tasks")
+    if not isinstance(tasks, list):
+        return (f"⚠️ **deferred-work ledger has no task list** "
+                f"(`{ledger_path}`) — backlog UNKNOWN, not empty.\n")
+    overdue = []
+    for t in tasks:
+        if not isinstance(t, dict) or t.get("status") != "blocked":
+            continue
+        ra = t.get("review_after")
+        # A blocked task with no/unparseable review date can never come due —
+        # it is MORE overdue than a dated one, never less. Surface it.
+        if not isinstance(ra, str) or not ra.strip():
+            overdue.append(t.get("id") or "<unnamed>")
+        elif ra < today:
+            overdue.append(t.get("id") or "<unnamed>")
+    if not overdue:
+        return ""
+    shown = ", ".join(f"`{i}`" for i in sorted(overdue)[:6])
+    more = f" (+{len(overdue) - 6} more)" if len(overdue) > 6 else ""
+    return (f"📋 **{len(overdue)} deferred task(s) past review** — {shown}{more}. "
+            f"The ledger pages ONCE and then stays quiet, so this line is the "
+            f"only thing that re-surfaces them: `{ledger_path}`.\n")
+
+
 def render_warmstart(brief_path: str, state_path: str, now_ts: float,
-                     stale_s: float = DEFAULT_STALE_S) -> str:
+                     stale_s: float = DEFAULT_STALE_S,
+                     ledger_path: str | None = None) -> str:
     """Return the warm-start text to inject, with an honest freshness banner.
 
     Returns ``""`` (silent) when mini has never run here — no brief AND no
@@ -63,6 +126,14 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
     against ``now_ts`` — NOT from the brief's own (possibly frozen) posture
     line, which is the whole point: a dead daemon leaves a brief that lies.
     """
+    # The operator's deferred-work backlog rides along: it is the surface that
+    # otherwise re-surfaces nothing (see deferred_backlog_line). Resolved from
+    # the HUMAN's home, not resolve_home() — the ledger is theirs, not mini's.
+    if ledger_path is None:
+        ledger_path = os.path.join(operator_home(), DEFERRED_LEDGER_BASENAME)
+    today = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
+    backlog = deferred_backlog_line(ledger_path, today)
+
     brief = _read_text(brief_path)
     state, _ = read_json(state_path)
     last_tick: float | None = None
@@ -74,9 +145,11 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             except (TypeError, ValueError):
                 last_tick = None
 
-    # Nothing here at all → stay silent (don't inject noise on a mini-less box).
+    # Nothing here at all → stay silent (don't inject noise on a mini-less box)
+    # — EXCEPT an overdue backlog, which is the operator's, not mini's, and must
+    # not be hidden just because this box runs no watcher.
     if brief is None and last_tick is None:
-        return ""
+        return backlog
 
     age = _age_str(now_ts, last_tick)
     stale = bool(last_tick and (now_ts - last_tick) > stale_s)
@@ -88,6 +161,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             f"mini has ticked (last tick {age} ago) but no brief exists at "
             f"`{brief_path}`. Generate one with "
             f"`python3 -m mini_dudeai --preset {APP_FLEET_PRESET} --brief`.\n"
+            + backlog
         )
 
     if last_tick is None:
@@ -109,7 +183,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             "A piece of me was already here; the brief below is current.\n"
         )
 
-    return banner + "\n" + brief
+    return banner + backlog + "\n" + brief
 
 
 # ---------------------------------------------------------------------------
