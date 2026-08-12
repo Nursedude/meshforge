@@ -3409,6 +3409,58 @@ day (`1899261`). Full body + cure inventory in `persistent_issues_archive.md`.
 
 ---
 
+## meshtasticd ABSENT read as INACTIVE — 4 classes blind by construction on meshanchor-server (2026-08-12) — RESOLVED `32a6998e`
+
+`channel_feed_dark`, `mqtt_root_drift`, `meshtasticd_phoneapi_wedge` and
+`meshtasticd_vsz_leak` all bailed with *"meshtasticd MainPID unresolved;
+`service_inactive` owns that"*. On meshanchor-server that handoff pointed at
+**nobody**: the box is MeshCore-primary with ZERO meshtasticd unit files
+(`systemctl is-enabled` → `not-found`, no binary on PATH), and
+`service_inactive` read `clean` the whole time — so all four sat
+`indeterminate` permanently, *by construction*, not by outage.
+
+**Collapse point**: `_resolve_main_pid` returned one `None` for absent,
+inactive, timeout and unparseable alike; nine consumers each turned it into
+the same wrong claim. **Discriminator** (measured live): `systemctl show`
+exits 0 in ALL cases — rc carries no signal, `LoadState` does, and it rides
+the SAME subprocess (no extra per-tick cost). Parse `KEY=value`, never
+`--value`: systemd emits properties in its own canonical order, not the
+requested one.
+
+**Cure**: `_resolve_main_pid_status() -> (status, pid)`, status in
+`absent|down|ok|unknown`; the flat form is now its shim. `absent` → `inert`;
+`down`/`unknown` stay `indeterminate` — a systemctl we could not RUN says
+nothing about whether the unit exists.
+
+**All nine call sites converted, each judged** — the seven observers get
+`absent → inert` (nothing hides: `systemctl is-active` answers `inactive`
+for a nonexistent unit, so an expected-active missing unit still pages via
+`service_inactive`); the three gateway-organ gates already said `inert` for
+a flat None, which quietly swallowed "systemctl errored" too, and only that
+`unknown` case moved, to `indeterminate`.
+
+⚠️ **Stopping at the four reported classes was caught by a GATE, not by
+memory.** `TestTriStateHelperContract` (written 08-07 for exactly this —
+"a fix applied to one instance is not applied to the class", mechanised)
+fired the moment the flat/status pair existed and named the four remaining
+modules. Prior art on the same box, same class: 08-07's
+`_read_deployment_declaration_status`, which tri-stated the deployment read
+and did not look for the MainPID sibling.
+
+**Verification**: pre/post PLANTING drill against a pre-fix worktree across
+all three shapes — ABSENT flips 7 classes `indeterminate`→`inert`, DOWN is
+unchanged everywhere, UNKNOWN unchanged except the two gateway gates it
+un-hides. Live after the fleet roll: meshanchor-server's four flipped and
+**zero** classes remain `indeterminate` there; every meshtasticd-enabled box
+unchanged. Eval: `evals/local_brain/meshtasticd_absent_not_inactive_2026_08_12.jsonl`.
+
+**Decision tell**: a probe's `indeterminate` reason names a systemd unit as
+the culprit → check that unit EXISTS on that box before believing the
+reason. `systemctl show -p MainPID -p LoadState <unit>` — `LoadState=not-found`
+means the detector, not the daemon, is the defect.
+
+---
+
 ## Resolved-issue INDEX (moved out of the hot file 2026-08-05, MF012)
 
 This is the chronological index of fully-resolved issues. It lived in
