@@ -299,28 +299,69 @@ else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 # Three outcomes are kept DISTINCT, because collapsing them is this project's
 # signature defect: `behind` (measured), `unknown` (active but no start time /
 # no git — NOT "current"), and units simply absent (not counted).
+#
+# 2026-08-12: behind-on-CODE is separated from behind-on-PROSE. The compare was
+# unit-start vs HEAD's commit time, unconditionally — so every documentation
+# commit marked every active unit "behind" until it was restarted. Measured
+# that day: three doc-only commits (.claude/, evals/, scripts/) put all nine
+# watchdogs on the list, they were restarted to clear it, and the next docs:
+# commit would have refilled it. A note that is near-permanently non-empty
+# carries no signal, which is this file's own standing-noise defect wearing a
+# NOTE's clothing.
+#
+# ⚠️ It LABELS, it does not FILTER. Nothing is dropped from the count, because
+# no path class is provably inert for every unit: mini-dudeai's offline_oracle
+# indexes `.claude/foundations|rules|research/*.md` AND `docs/*.md` as its
+# corpus (default_roots()), so a "docs-only" commit can genuinely make a
+# resident mini stale. Filtering those out would have been a real blindness
+# sold as noise reduction. Both buckets print; only the HEADLINE changes.
+#
+# CODE = src/ + requirements/ + templates/ — what a resident interpreter holds
+# (modules, the dep floor, unit files). scripts/ is deliberately NOT code here:
+# every scripts/ entry point is exec'd fresh per invocation, so no resident
+# unit can be stale on one (verified — the only src/ references to scripts/ are
+# docstrings and one documented mirror pair, utils/fleet_hosts.py).
+#
+# FAIL-SAFE, and this is the load-bearing line: if the code-head cannot be
+# resolved for a repo (git error, path never touched, unreadable), it falls
+# back to HEAD — i.e. exactly the pre-2026-08-12 behaviour, everything counted
+# as code-behind. An unresolvable code-head must NEVER quietly move units into
+# the benign bucket (honest_failure_modes #1: the degraded value must not
+# overlap the healthy domain).
 skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0; skew_udark=0
+skew_prose=0; skew_prose_desc=""
 for b in $BOXES; do
   raw=$(run_on "$b" "echo HSUP
+# Newest commit touching CODE the repo's resident units load. Empty (git
+# error / paths never touched) FALLS BACK to that repo's HEAD below, so an
+# unresolvable code-head can never demote a unit into the prose bucket.
+hs_codehead() { git -C \"\$1\" log -1 --format=%ct -- src requirements templates 2>/dev/null; }
 if [ -e $REPO/.git ]; then
   HTMF=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMF\" ] || HTMF=SKIP
   HTMA=\$(git -C /opt/meshanchor show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMA\" ] || HTMA=SKIP
   HTMM=\$(git -C /opt/meshforge-maps show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMM\" ] || HTMM=SKIP
+  HCMF=\$(hs_codehead $REPO); [ -n \"\$HCMF\" ] || HCMF=\$HTMF
+  HCMA=\$(hs_codehead /opt/meshanchor); [ -n \"\$HCMA\" ] || HCMA=\$HTMA
+  HCMM=\$(hs_codehead /opt/meshforge-maps); [ -n \"\$HCMM\" ] || HCMM=\$HTMM
   XRD=/run/user/\$(id -u)
   if XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --no-pager >/dev/null 2>&1; then USOK=1; else USOK=0; echo USCOPEDARK; fi
   { systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/sys /'
     [ \"\$USOK\" = 1 ] && XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/usr /'
   } | grep -E '^(sys|usr) (meshforge|meshanchor)-' | while read -r sc u; do
     case \"\$u\" in
-      meshforge-maps.service|meshforge-maps@*) H=\$HTMM;;
-      meshanchor-*) H=\$HTMA;;
-      *) H=\$HTMF;;
+      meshforge-maps.service|meshforge-maps@*) H=\$HTMM; HC=\$HCMM;;
+      meshanchor-*) H=\$HTMA; HC=\$HCMA;;
+      *) H=\$HTMF; HC=\$HCMF;;
     esac
+    # Belt and braces: a code-head that is empty or non-numeric for ANY reason
+    # collapses to this repo's HEAD, never to 'no code changes'.
+    case \"\$HC\" in ''|*[!0-9]*) HC=\$H;; esac
     if [ \"\$sc\" = usr ]; then T=\$(XDG_RUNTIME_DIR=\$XRD systemctl --user show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@')
     else T=\$(systemctl show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@'); fi
     case \"\$T\" in ''|*[!0-9]*) echo \"U \$u\"; continue;; esac
     if [ \"\$H\" = SKIP ]; then echo \"U \$u\"
-    elif [ \"\$T\" -lt \"\$H\" ]; then echo \"B \$u \$(( (\$H - \$T) / 86400 ))\"; fi
+    elif [ \"\$T\" -lt \"\$HC\" ]; then echo \"B \$u \$(( (\$HC - \$T) / 86400 ))\"
+    elif [ \"\$T\" -lt \"\$H\" ]; then echo \"P \$u \$(( (\$H - \$T) / 86400 ))\"; fi
   done
 else echo HSNOREPO; fi")
   [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || continue
@@ -330,25 +371,35 @@ else echo HSNOREPO; fi")
   printf '%s\n' "$body" | grep -q '^USCOPEDARK' && skew_udark=$((skew_udark+1))
   nb=$(printf '%s\n' "$body" | grep -c '^B ' || true)
   nu=$(printf '%s\n' "$body" | grep -c '^U ' || true)
+  np=$(printf '%s\n' "$body" | grep -c '^P ' || true)
   skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
-  if [ "$nb" -gt 0 ]; then
-    units=$(printf '%s\n' "$body" | awk '$1=="B"{sub(/\.service$/,"",$2); if ($2 ~ /^meshforge-maps($|@)/) sub(/^meshforge-maps/,"mm:maps",$2); else { sub(/^meshforge-/,"mf:",$2); sub(/^meshanchor-/,"ma:",$2) } printf "%s(%sd),", $2, $3}' | sed 's/,$//')
-    skew_desc="$skew_desc $b:$units"
-  fi
+  skew_prose=$((skew_prose+np))
+  # ONE formatter for both buckets — two awk copies would drift the display
+  # the first time a fourth repo prefix lands (honest_failure_modes #5).
+  _skew_units() {  # $1 = marker letter
+    printf '%s\n' "$body" | awk -v m="$1" '$1==m{sub(/\.service$/,"",$2); if ($2 ~ /^meshforge-maps($|@)/) sub(/^meshforge-maps/,"mm:maps",$2); else { sub(/^meshforge-/,"mf:",$2); sub(/^meshanchor-/,"ma:",$2) } printf "%s(%sd),", $2, $3}' | sed 's/,$//'
+  }
+  [ "$nb" -gt 0 ] && skew_desc="$skew_desc $b:$(_skew_units B)"
+  [ "$np" -gt 0 ] && skew_prose_desc="$skew_prose_desc $b:$(_skew_units P)"
 done
 udark_note=""
 [ "$skew_udark" -gt 0 ] && udark_note=" ; user scope unobservable on $skew_udark box(es) — those units are NOT covered"
+# The prose bucket rides on EVERY outcome line below, including the clean one:
+# "no unit is behind on code" while six are behind on a corpus mini indexes is
+# a true sentence that must not be printed alone.
+prose_note=""
+[ "$skew_prose" -gt 0 ] && prose_note=" ; $skew_prose behind on NON-code only (docs/.claude/scripts/evals — still real for mini's oracle corpus)${skew_prose_desc}"
 if [ "$skew_boxes" = 0 ]; then
   disc "running-code skew" "no box answered with a repo — not measured"
 elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then
-  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's HEAD${udark_note}"
+  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${prose_note}${udark_note}"
 else
   # ${var:+...} expands whenever the var is NON-EMPTY, and "0" is non-empty —
   # so the naive form printed "; 0 unknown(no start time)" on every clean run.
   # Caught by drilling the branches with synthetic counts, not by reading.
   unk_note=""
   [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time / no repo for the unit — NOT 'current')"
-  disc "running-code skew" "$skew_behind unit(s) behind their repo's HEAD across $skew_boxes box(es)${skew_desc}${unk_note}${udark_note} — disclosure, not a fault; they load it at next restart"
+  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${prose_note}${udark_note} — disclosure, not a fault; they load it at next restart"
 fi
 
 # 3. Full local suite — file-routed, never a streamed tail.

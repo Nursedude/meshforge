@@ -83,6 +83,68 @@ else
   printf '    used   : %s\n' "$(printf '%s' "$used" | tr '\n' ' ')"
 fi
 
+# 6. THE SAME CLASS PIN, for the code-heads added 2026-08-12. The leg now
+#    collects a SECOND timestamp per repo — the newest commit touching
+#    src/requirements/templates — so behind-on-CODE can be told from
+#    behind-on-prose. That doubles the number of per-repo values a fourth
+#    repo must wire, and an HC<X> collected without a dispatch arm would
+#    silently reuse another repo's code-head: the 08-09/08-11 bug exactly,
+#    one layer down. Same maximal-munch [A-Z]+ and case-arm shape as #5.
+hcdef=$(printf '%s' "$src" | grep -oE 'HC[A-Z]+=\\\$\(hs_codehead' | grep -oE 'HC[A-Z]+' | sort -u)
+hcuse=$(printf '%s' "$src" | grep -oE '; *HC=\\\$HC[A-Z]+' | grep -oE 'HC[A-Z]+$' | sort -u)
+if [ -n "$hcdef" ] && [ "$hcdef" = "$hcuse" ]; then
+  pass "every collected repo CODE-head has a dispatch arm ($(printf '%s' "$hcdef" | tr '\n' ' '))"
+else
+  fail "every collected repo CODE-head has a dispatch arm"
+  printf '    defined: %s\n' "$(printf '%s' "$hcdef" | tr '\n' ' ')"
+  printf '    used   : %s\n' "$(printf '%s' "$hcuse" | tr '\n' ' ')"
+fi
+
+# 7. Every repo with a HEAD must also have a code-head, and vice versa. #5 and
+#    #6 each check their own family is internally consistent; a repo present in
+#    one family and missing from the other passes BOTH and is still half-wired.
+htrepos=$(printf '%s' "$defined" | sed 's/^HT//' | sort -u)
+hcrepos=$(printf '%s' "$hcdef" | sed 's/^HC//' | sort -u)
+if [ "$htrepos" = "$hcrepos" ]; then
+  pass "HEAD and CODE-head cover the same repo set ($(printf '%s' "$htrepos" | tr '\n' ' '))"
+else
+  fail "HEAD and CODE-head cover the same repo set"
+  printf '    HEAD-only: %s\n' "$(comm -23 <(printf '%s\n' "$htrepos") <(printf '%s\n' "$hcrepos") | tr '\n' ' ')"
+  printf '    CODE-only: %s\n' "$(comm -13 <(printf '%s\n' "$htrepos") <(printf '%s\n' "$hcrepos") | tr '\n' ' ')"
+fi
+
+# 8. THE FAIL-SAFE. An unresolvable code-head must fall back to that repo's
+#    HEAD — never to "no code changes", which would silently demote every unit
+#    into the benign prose bucket and turn a real stale-code fleet green. Two
+#    independent guards are required: the per-repo `|| HC<X>=$HT<X>` at collect
+#    time, and the non-numeric catch at dispatch time.
+nfall=$(printf '%s' "$src" | grep -cE '\[ -n \\"\\\$HC[A-Z]+\\" \] \|\| HC[A-Z]+=\\\$HT[A-Z]+')
+if [ "$nfall" -ge 1 ] && printf '%s' "$src" | grep -qE "case \\\\\"\\\\\\\$HC\\\\\" in ''\|\*\[!0-9\]\*\) HC=\\\\\\\$H;;"; then
+  pass "unresolvable code-head falls back to HEAD, not to 'no code changes'"
+else
+  fail "unresolvable code-head falls back to HEAD, not to 'no code changes'"
+  printf '    per-repo fallbacks found: %s\n' "$nfall"
+fi
+
+# 9. It LABELS, it does not FILTER. The prose bucket must be COUNTED and
+#    PRINTED, not dropped: mini-dudeai's offline_oracle indexes .claude/**.md
+#    and docs/*.md as its corpus, so a "docs-only" commit can genuinely make a
+#    resident mini stale. Silently discarding those units would be a real
+#    blindness sold as noise reduction — and it must ride the CLEAN line too,
+#    or "0 behind on code" prints alone while six units are behind on corpus.
+if printf '%s' "$src" | grep -q 'skew_prose=$((skew_prose+np))' \
+   && printf '%s' "$src" | grep -q 'behind on NON-code only'; then
+  pass "prose-bucket units are counted and disclosed, never filtered out"
+else
+  fail "prose-bucket units are counted and disclosed, never filtered out"
+fi
+nclean=$(printf '%s' "$src" | grep -c 'started at/after its own repo.s newest CODE commit${prose_note}')
+if [ "$nclean" -ge 1 ]; then
+  pass "the CLEAN skew line still carries the prose bucket"
+else
+  fail "the CLEAN skew line still carries the prose bucket"
+fi
+
 # The wrapper (test_honest_status_shell.py) requires this exact line as well as
 # exit 0 — a harness that exits 0 without reaching its end asserts nothing, and
 # the line is what proves it got here.
