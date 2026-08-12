@@ -31,6 +31,25 @@
 #      run under core.orchestrator deployments, so a one-shot is the honest
 #      check host there).
 #
+# ⚠️ Leg 2 is NOT redundant with the on-box watchdog's dep_version_drift,
+# though both read "meshtastic" and both said clean on 2026-08-12. They
+# measure DIFFERENT INTERPRETERS, and today's agreement is coincidence, not
+# coverage. Measured on the box that day by running the probe's own internals
+# under the watchdog's interpreter:
+#     watchdog  floor /opt/meshforge/requirements/core.txt -> 2.7.9
+#               enumerates {root}/venv with root=/opt/meshforge, which does
+#               NOT EXIST here, so its consumer-of-record resolves to
+#               system-dist 2.7.9 — correct for ITSELF (its unit is
+#               ExecStart=/usr/bin/python3), and blind to everything else.
+#     uplink    floor MeshAnchor's own requirements, read under
+#               /opt/meshanchor/venv — the interpreter meshanchor-daemon
+#               actually runs. The watchdog cannot see this venv at all.
+# So if MA's venv drifted below MA's floor, the watchdog would still read
+# clean. That is not a bug in the watchdog: MF's floor is not MA's floor, and
+# teaching one repo's probe to judge the other's env would be the wrong fix.
+# Each repo checks its own floor under its own consumer; this uplink is the
+# bridge. Do not "consolidate" these two into one check.
+#
 # Alerting rides the PROVEN layers — no new mini rule, no new signal class:
 # wire the crontab line to cron_verdict (#78); a FAIL pages via mini's
 # existing cron_verdict_stale_any rule, and a silent/dead cron is caught by
