@@ -61,11 +61,26 @@ the brief, applied fleet-wide. Per-box banners:
 - **🟢 fresh** — daemon ticking; rule count + `src_errors` shown.
 - **🔴 stale** — last tick past the window; that box's daemon may be down
   (`ssh <box> systemctl --user status meshforge-mini-dudeai`).
-- **⚪ no_state / — no_mini** — box reachable but never ticked / runs no mini
-  (e.g. a MeshAnchor-only box) — not an error.
+- **🟢 fresh · 🔀 meshanchor mini** — ticking, but it's the *other* twin's
+  daemon answering on MeshAnchor's convention. Healthy and foreign, not ours.
+- **⚪ no_state** — box has a state file but has never ticked.
+- **— no_state_file** — no state file under **any** known convention. The line
+  names the paths tried; that list *is* the finding. It does **not** mean
+  "runs no mini" — this leg observes files, and whether a daemon is running is
+  a larger claim one `cat` cannot make.
 - **❌ unreachable** — ssh transport failed (box down or network).
 
 Problems sort to the top, so a clean pane means a clean fleet.
+
+⚠️ **`no_state_file` on a box you believe runs a mini is a finding, not
+furniture.** Until 2026-08-12 this status was called `no_mini` and its docs
+here said a MeshAnchor box legitimately reads that way — so the pane reported
+the MA replica as mini-less for **19 days** (since MA moved off the home-dir
+convention on 07-24) while its daemon ticked every 30s and its own warmstart
+read FRESH. Both twins' conventions are now tried. If a **new** convention
+appears, it must land in `_util.PEER_APPS` in the same commit or it is
+invisible here. Verify a box directly with
+`ssh <box> systemctl --user status '*mini-dudeai*'`.
 
 **Drill in (on-demand):** when a box in the pane warrants it, merge every box's
 escalations + recent fires into one box-tagged feed:

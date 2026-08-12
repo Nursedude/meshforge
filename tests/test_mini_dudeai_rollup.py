@@ -122,21 +122,21 @@ def test_collect_remote_unreachable_is_ssh_255_only():
     assert "Connection refused" in p["error"]
 
 
-def test_collect_remote_cat_failure_is_no_mini_not_unreachable():
-    # ssh OK, remote `cat` rc=1 (no state file) → no_mini, NOT unreachable
+def test_collect_remote_cat_failure_is_no_state_file_not_unreachable():
+    # ssh OK, remote `cat` rc=1 (no state file) → no_state_file, NOT unreachable
     p = collect_remote("host2", NOW,
                        runner=_runner(1, "", "cat: mini_dudeai_state.json: No such file"))
-    assert p["status"] == "no_mini"
+    assert p["status"] == "no_state_file"
 
 
-def test_collect_remote_no_mini_empty():
+def test_collect_remote_no_state_file_empty():
     p = collect_remote("host3", NOW, runner=_runner(0, "   "))
-    assert p["status"] == "no_mini"
+    assert p["status"] == "no_state_file"
 
 
-def test_collect_remote_no_mini_bad_json():
+def test_collect_remote_no_state_file_bad_json():
     p = collect_remote("moc", NOW, runner=_runner(0, "not json"))
-    assert p["status"] == "no_mini"
+    assert p["status"] == "no_state_file"
 
 
 def test_collect_remote_fresh():
@@ -167,7 +167,7 @@ def test_build_rollup_summary_and_ordering():
         {"host": "moc", "status": "unreachable", "error": "timeout"},
         {"host": "moc3", "status": "stale", "age": "2h", "rule_count": 8,
          "src_errors": 0, "active": []},
-        {"host": "meshanchor-server", "status": "no_mini", "error": "no state"},
+        {"host": "meshanchor-server", "status": "no_state_file", "error": "no state"},
     ]
     out = build_rollup(postures, NOW)
     assert "4 boxes" in out
@@ -305,12 +305,12 @@ def test_torn_second_tick_does_not_hide_the_other_claws():
     assert [c["device"] for c in p["claws"]] == ["dudeclaw-01"]
 
 
-def test_no_mini_box_still_reports_its_claw():
-    # build_rollup has always rendered a claw card on the no-mini branch; the
+def test_state_less_box_still_reports_its_claw():
+    # build_rollup has always rendered a claw card on that branch; the
     # collector never filled one in (a reader with no writer).
     payload = f"\n{_CLAW_SENTINEL}\n" + json.dumps(_CLAW_DOC)
     p = collect_remote("moc2", NOW, runner=_runner(0, payload))
-    assert p["status"] == "no_mini"
+    assert p["status"] == "no_state_file"
     assert p["claws"] and p["claws"][0]["device"] == "dudeclaw-01"
     assert "dudeclaw-01" in build_rollup([p], NOW)
 
@@ -340,10 +340,13 @@ def _run_breadth_cmd(cwd):
     record for that string) and feed its stdout back through the parser."""
     import subprocess
 
-    from mini_dudeai.rollup import _remote_breadth_cmd, _split_claw_payload
+    from mini_dudeai.rollup import (_remote_breadth_cmd, _split_claw_payload,
+                                    _split_src_tag)
     p = subprocess.run(["sh", "-c", _remote_breadth_cmd()], cwd=str(cwd),
                        capture_output=True, text=True, timeout=30)
-    return p.returncode, _split_claw_payload(p.stdout)
+    state_text, claws = _split_claw_payload(p.stdout)
+    src, state_text = _split_src_tag(state_text)
+    return p.returncode, (state_text, claws), src
 
 
 def test_remote_breadth_cmd_really_cats_every_claw_tick(tmp_path):
@@ -353,7 +356,7 @@ def test_remote_breadth_cmd_really_cats_every_claw_tick(tmp_path):
         json.dumps({"last_tick_ts": NOW, "rule_count": 4}))
     (tmp_path / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
     (tmp_path / "claw_last_tick.dudeclaw-02.json").write_text(json.dumps(_CLAW_DOC_2))
-    rc, (state_text, claws) = _run_breadth_cmd(tmp_path)
+    rc, (state_text, claws), _src = _run_breadth_cmd(tmp_path)
     assert rc == 0
     assert json.loads(state_text)["rule_count"] == 4
     assert [c["device"] for c in claws] == ["dudeclaw-01", "dudeclaw-02"]
@@ -364,14 +367,14 @@ def test_remote_breadth_cmd_on_a_claw_less_box_is_clean(tmp_path):
     # the payload must parse to state + NO claws (never a literal filename).
     (tmp_path / "mini_dudeai_state.json").write_text(
         json.dumps({"last_tick_ts": NOW, "rule_count": 4}))
-    rc, (state_text, claws) = _run_breadth_cmd(tmp_path)
+    rc, (state_text, claws), _src = _run_breadth_cmd(tmp_path)
     assert rc == 0 and claws == []
     assert json.loads(state_text)["rule_count"] == 4
 
 
 def test_remote_breadth_cmd_on_a_mini_less_box_still_finds_the_claw(tmp_path):
     (tmp_path / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
-    rc, (state_text, claws) = _run_breadth_cmd(tmp_path)
+    rc, (state_text, claws), _src = _run_breadth_cmd(tmp_path)
     assert rc == 0 and state_text == ""
     assert [c["device"] for c in claws] == ["dudeclaw-01"]
 
@@ -535,14 +538,14 @@ def test_collect_remote_deep_unreachable():
     assert rec["status"] == "unreachable" and rec["escalations"] == []
 
 
-def test_collect_remote_deep_no_mini_empty():
+def test_collect_remote_deep_no_state_file_empty():
     rec = collect_remote_deep("host1", NOW, runner=lambda h, t: (0, f"\n{_DEEP_SENTINEL}\n", ""))
-    assert rec["status"] == "no_mini"
+    assert rec["status"] == "no_state_file"
 
 
 def test_deep_sentinel_is_shell_safe():
     # the sentinel is echoed by the REMOTE shell — it must contain no shell
-    # metacharacters, else the command mangles and the box reads false no_mini.
+    # metacharacters, else the command mangles and the box reads false no_state_file.
     assert not (set(_DEEP_SENTINEL) & set("<>|&;$`()\"' \t*?[]{}#~!"))
 
 
@@ -579,7 +582,7 @@ def test_build_deep_feed_caps_fires_and_notes_overflow():
 def test_build_deep_feed_lists_skipped_boxes():
     results = [
         {"host": "moc", "status": "fresh", "escalations": [], "fires": []},
-        {"host": "meshanchor-server", "status": "no_mini", "error": "no state",
+        {"host": "meshanchor-server", "status": "no_state_file", "error": "no state",
          "escalations": [], "fires": []},
     ]
     out = build_deep_feed(results, NOW)
@@ -637,8 +640,173 @@ def test_remote_cmds_embed_the_adapter_relpaths():
     from mini_dudeai.rollup import _remote_breadth_cmd
     import mini_dudeai.rollup as _r
     cmd = _remote_breadth_cmd()
-    assert f"cat {_util.APP_STATE_RELPATH} " in cmd
+    assert f'cat "{_util.APP_STATE_RELPATH}"' in cmd
+    # …and EVERY peer convention, else a twin's healthy daemon reads as absent
+    for _app, state_rel, _h in _util.app_state_candidates():
+        assert f'[ -f "{state_rel}" ]' in cmd
     # the deep leg builds its command from _HISTORY_RELPATH; pin it to the
     # adapter so the two ssh legs and the writer stay on one value
     assert _r._STATE_RELPATH == _util.APP_STATE_RELPATH
     assert _r._HISTORY_RELPATH == _util.APP_HISTORY_RELPATH
+
+
+# === peer-app conventions on a shared fleet ======================
+# 2026-08-12: this pane called the MeshAnchor replica "no_mini" for 19 days —
+# from MA's 07-24 move to ~/.local/share/meshanchor/mini/ — while its daemon
+# ticked every 30s. The collector only ever proved "no file at MY path"; the
+# label claimed a fact about the BOX. These tests pin both halves of the cure:
+# the legs try every known convention, and a no-state verdict says what it
+# looked at.
+
+def _peer():
+    """The first peer convention from the adapter (app, state_rel, hist_rel)."""
+    from mini_dudeai import _util
+    return _util.PEER_APPS[0]
+
+
+def test_breadth_cmd_finds_a_peer_convention_state(tmp_path):
+    # The live-drill shape the file already uses: run the REAL command in a
+    # real shell against a box laid out the OTHER twin's way.
+    app, state_rel, _h = _peer()
+    (tmp_path / state_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / state_rel).write_text(
+        json.dumps({"last_tick_ts": NOW, "rule_count": 10, "host": "ma-box"}))
+    rc, (state_text, claws), src = _run_breadth_cmd(tmp_path)
+    assert rc == 0
+    assert json.loads(state_text)["rule_count"] == 10
+    assert src == state_rel
+
+
+def test_breadth_cmd_prefers_this_apps_own_convention(tmp_path):
+    # A dual-stack box carries BOTH. Ours wins — the pane is this app's.
+    from mini_dudeai import _util
+    _app, state_rel, _h = _peer()
+    (tmp_path / state_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / state_rel).write_text(json.dumps({"last_tick_ts": NOW, "rule_count": 10}))
+    (tmp_path / _util.APP_STATE_RELPATH).write_text(
+        json.dumps({"last_tick_ts": NOW, "rule_count": 73}))
+    rc, (state_text, _claws), src = _run_breadth_cmd(tmp_path)
+    assert rc == 0
+    assert json.loads(state_text)["rule_count"] == 73
+    assert src == _util.APP_STATE_RELPATH
+
+
+def test_breadth_cmd_on_a_box_with_no_convention_at_all(tmp_path):
+    rc, (state_text, claws), src = _run_breadth_cmd(tmp_path)
+    assert rc == 0 and state_text == "" and claws == [] and src is None
+
+
+def test_breadth_cmd_finds_a_claw_beside_a_peer_convention_state(tmp_path):
+    # Candidate-aware state read + this-app-only claw read = a box rendered
+    # healthy with its claws missing (the half-wired shape).
+    _app, state_rel, _h = _peer()
+    d = (tmp_path / state_rel).parent
+    d.mkdir(parents=True, exist_ok=True)
+    (tmp_path / state_rel).write_text(json.dumps({"last_tick_ts": NOW, "rule_count": 10}))
+    (d / "claw_last_tick.json").write_text(json.dumps(_CLAW_DOC))
+    rc, (_state_text, claws), _src = _run_breadth_cmd(tmp_path)
+    assert rc == 0
+    assert [c["device"] for c in claws] == ["dudeclaw-01"]
+
+
+def test_deep_cmd_pairs_state_and_history_of_the_SAME_app(tmp_path):
+    # Never one app's state beside the other's fires.
+    import subprocess
+
+    from mini_dudeai.rollup import _split_deep_payload, _state_probe_sh
+    from mini_dudeai import _util
+    _app, state_rel, hist_rel = _peer()
+    (tmp_path / state_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / state_rel).write_text(json.dumps({"last_tick_ts": NOW, "rule_count": 10}))
+    (tmp_path / hist_rel).write_text(
+        json.dumps({"ts": NOW - 5, "transition": "edge_up", "rule_id": "ma_frozen_any",
+                    "subject": "ma-box", "detail": "uptime_s missing"}) + "\n")
+    # a DECOY history at this app's path — pairing failure would surface it
+    (tmp_path / _util.APP_HISTORY_RELPATH).write_text(
+        json.dumps({"ts": NOW - 5, "transition": "edge_up", "rule_id": "DECOY",
+                    "subject": "x", "detail": "d"}) + "\n")
+    p = subprocess.run(["sh", "-c", _state_probe_sh(_DEEP_SENTINEL) + "; true"],
+                       cwd=str(tmp_path), capture_output=True, text=True, timeout=30)
+    state, history, src = _split_deep_payload(p.stdout)
+    assert p.returncode == 0 and src == state_rel
+    assert state["rule_count"] == 10
+    assert [h["rule_id"] for h in history] == ["ma_frozen_any"]
+
+
+def test_deep_cmd_emits_its_sentinel_even_with_no_state(tmp_path):
+    # else-branch: "no state anywhere" must stay a well-formed payload, not a
+    # torn one the splitter has to guess at.
+    import subprocess
+
+    from mini_dudeai.rollup import _split_deep_payload, _state_probe_sh
+    p = subprocess.run(["sh", "-c", _state_probe_sh(_DEEP_SENTINEL) + "; true"],
+                       cwd=str(tmp_path), capture_output=True, text=True, timeout=30)
+    assert p.returncode == 0 and _DEEP_SENTINEL in p.stdout
+    state, history, src = _split_deep_payload(p.stdout)
+    assert state == {} and history == [] and src is None
+
+
+def test_collect_remote_tags_a_peer_apps_mini(tmp_path):
+    from mini_dudeai.rollup import _SRC_TAG
+    app, state_rel, _h = _peer()
+    st = json.dumps({"last_tick_ts": NOW - 5, "rule_count": 10, "host": "ma-box"})
+    p = collect_remote("ma-box", NOW, runner=_runner(0, f"{_SRC_TAG}{state_rel}\n{st}"))
+    assert p["status"] == "fresh" and p["rule_count"] == 10
+    assert p["state_app"] == app and p["state_src"] == state_rel
+
+
+def test_collect_remote_does_not_tag_this_apps_own_mini():
+    from mini_dudeai import _util
+    from mini_dudeai.rollup import _SRC_TAG
+    st = json.dumps({"last_tick_ts": NOW - 5, "rule_count": 73, "host": "moc1"})
+    p = collect_remote("moc1", NOW,
+                       runner=_runner(0, f"{_SRC_TAG}{_util.APP_STATE_RELPATH}\n{st}"))
+    assert p["status"] == "fresh" and "state_app" not in p
+
+
+def test_untagged_payload_still_parses(tmp_path):
+    # Back-compat: a legacy remote (or an injected runner) hands back bare
+    # state. It must keep working rather than read as corrupt.
+    st = json.dumps({"last_tick_ts": NOW - 5, "rule_count": 12, "host": "moc1"})
+    p = collect_remote("moc1", NOW, runner=_runner(0, st))
+    assert p["status"] == "fresh" and "state_app" not in p
+
+
+def test_no_state_verdict_names_every_path_it_tried():
+    # A verdict that doesn't say what it looked at is an assertion, not an
+    # observation — and "no_mini" was a claim about the box, not the files.
+    from mini_dudeai import _util
+    p = collect_remote("host3", NOW, runner=_runner(0, "   "))
+    assert p["status"] == "no_state_file"
+    for cand in _util.app_state_candidate_paths():
+        assert cand in p["error"]
+    assert "no_mini" not in build_rollup([p], NOW)
+
+
+def test_build_rollup_names_the_peer_app_that_answered():
+    app, state_rel, _h = _peer()
+    posture = {"host": "ma-box", "status": "fresh", "age": "20s", "rule_count": 10,
+               "src_errors": 0, "active": [], "state_app": app, "state_src": state_rel}
+    out = build_rollup([posture], NOW)
+    assert "1 fresh" in out and f"{app} mini" in out
+
+
+def test_collect_local_falls_back_to_a_peer_convention(tmp_path, monkeypatch):
+    # A dual-stack MANAGER box whose own daemon is the peer app's must not be
+    # reported absent by the very pane it renders.
+    import mini_dudeai.rollup as _r
+    _app, state_rel, _h = _peer()
+    (tmp_path / state_rel).parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / state_rel).write_text(
+        json.dumps({"last_tick_ts": NOW, "rule_count": 10, "host": "ma-box"}))
+    monkeypatch.setattr(_r, "resolve_home", lambda: str(tmp_path))
+    p = collect_local(NOW)
+    assert p is not None and p["status"] == "fresh" and p["host"] == "ma-box"
+    assert p["state_app"] == _app
+
+
+def test_collect_local_still_returns_none_on_a_mini_less_box(tmp_path, monkeypatch):
+    # Absence stays absence — the fallback must not invent a posture.
+    import mini_dudeai.rollup as _r
+    monkeypatch.setattr(_r, "resolve_home", lambda: str(tmp_path))
+    assert collect_local(NOW) is None

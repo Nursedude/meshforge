@@ -17,8 +17,13 @@ Read-only and on-demand:
 
 The local/manager box is excluded from ``fleet_hosts`` (it can't ssh itself), so
 it is read directly from the local state file and folded into the same pane.
-A host that answers ssh but runs no mini (e.g. a MeshAnchor-only box) is reported
-``no mini``, not an error. A host that won't answer ssh is ``unreachable``.
+A host that answers ssh but has no state file under ANY known convention is
+reported ``no_state_file`` — naming the paths tried — not an error, and NOT
+"runs no mini": this module observes files, and whether a box runs a mini is a
+larger claim one `cat` cannot make. Both twins' conventions are tried, so the
+MeshAnchor replica's own daemon shows up here as a healthy foreign box (before
+2026-08-12 it read as absent for 19 days). A host that won't answer ssh is
+``unreachable``.
 """
 from __future__ import annotations
 
@@ -31,8 +36,9 @@ import subprocess
 import sys
 import time
 
-from ._util import (APP_HISTORY_RELPATH, APP_STATE_RELPATH, read_json,
-                    resolve_home)
+from ._util import (APP_HISTORY_RELPATH, APP_STATE_RELPATH,
+                    app_for_state_relpath, app_state_candidate_paths,
+                    app_state_candidates, read_json, resolve_home)
 from .claw_telemetry import CLAW_TICK_BASENAME, SECONDARY_TICK_GLOB
 
 from .brief import (
@@ -53,6 +59,14 @@ DEFAULT_SSH_TIMEOUT_S = 10.0
 #: Relative on purpose: the remote `cat` runs with cwd = the remote $HOME.
 _STATE_RELPATH = APP_STATE_RELPATH
 _HISTORY_RELPATH = APP_HISTORY_RELPATH
+#: EVERY convention the ssh legs try, this app's first — see _util.PEER_APPS.
+#: A shared fleet runs both twins' minis; asking only this app's path made a
+#: healthy foreign daemon indistinguishable from no daemon at all (2026-08-12).
+_STATE_CANDIDATES = app_state_candidates()
+#: the remote stamps this before the state it found, so the pane can name WHICH
+#: convention answered instead of silently implying it was this app's. Same
+#: shell-safe charset constraint as the sentinels below (it is echoed remotely).
+_SRC_TAG = "#mini-src:"
 #: separates state from history in the single deep-pull ssh round trip. MUST be
 #: free of shell metacharacters — it is echoed by the REMOTE shell, so '<<<'/'>>>'
 #: would be parsed as here-string/redirection and the command would emit nothing.
@@ -74,6 +88,15 @@ _CLAW_GLOB = SECONDARY_TICK_GLOB
 #: that dir is "" and these equal the basenames.
 _CLAW_REMOTE = os.path.join(os.path.dirname(_STATE_RELPATH), _CLAW_BASENAME)
 _CLAW_GLOB_REMOTE = os.path.join(os.path.dirname(_STATE_RELPATH), _CLAW_GLOB)
+#: …and the same pair under EVERY candidate convention's dir — a box answering
+#: on a peer app's path keeps its claws beside THAT state file, so a
+#: candidate-aware state read with a this-app-only claw read would render the
+#: box healthy and its claws absent (the half-wired shape, #4).
+_CLAW_REMOTE_ALL = [
+    os.path.join(os.path.dirname(s), b)
+    for _app, s, _h in _STATE_CANDIDATES
+    for b in (_CLAW_BASENAME, _CLAW_GLOB)
+]
 _CLAW_SENTINEL = "__MINI_DUDEAI_CLAW_SENTINEL__"
 #: 3x the */5-min claw_metrics capture cadence (matches _read_claw_state_block).
 CLAW_STALE_S = 900.0
@@ -184,6 +207,32 @@ def parse_state_posture(host: str, state: dict | None, now_ts: float,
     }
 
 
+def _state_probe_sh(sentinel: str | None = None) -> str:
+    """POSIX-sh ``if/elif`` chain that emits a ``#mini-src:<relpath>`` tag plus
+    the FIRST state file present among the known conventions (this app's
+    first). Pure + module level so a test can run it through a real shell.
+
+    ``sentinel`` (deep leg only) makes each branch emit the separator and then
+    the history file PAIRED WITH THAT SAME STATE — never one app's state beside
+    another's history. The ``else`` branch still emits the sentinel, so "no
+    state anywhere" stays a well-formed payload rather than a torn one; the
+    breadth leg passes None and emits its own sentinel unconditionally after.
+
+    Nothing matched → nothing emitted → the caller reads empty state and says
+    so, naming the paths it tried. The chain's own rc is the last failed
+    ``[ -f ]``; both callers append ``true`` so a normal no-state box can never
+    be mistaken for ssh's 255."""
+    branches = []
+    for i, (_app, state_rel, hist_rel) in enumerate(_STATE_CANDIDATES):
+        kw = "if" if i == 0 else "elif"
+        body = f"echo '{_SRC_TAG}{state_rel}'; cat \"{state_rel}\" 2>/dev/null; "
+        if sentinel:
+            body += f"echo '{sentinel}'; cat \"{hist_rel}\" 2>/dev/null; "
+        branches.append(f'{kw} [ -f "{state_rel}" ]; then {body}')
+    tail = f"else echo '{sentinel}'; fi" if sentinel else "fi"
+    return " ".join(branches) + " " + tail
+
+
 def _remote_breadth_cmd() -> str:
     """The remote shell one-liner for the breadth round trip. Pure + module
     level so a test can run it through a real shell instead of asserting on a
@@ -193,11 +242,65 @@ def _remote_breadth_cmd() -> str:
     literal and is skipped, so a claw-less box emits state + one sentinel
     exactly as before. Trailing ``true`` keeps the compound rc off the last
     ``[ -f ]`` test, which would otherwise report 1 on a claw-less box."""
-    return (f"cat {_STATE_RELPATH} 2>/dev/null; "
+    return (f"{_state_probe_sh()}; "
             f"echo '{_CLAW_SENTINEL}'; "
-            f"for f in {_CLAW_REMOTE} {_CLAW_GLOB_REMOTE}; do "
+            f"for f in {' '.join(_CLAW_REMOTE_ALL)}; do "
             f"[ -f \"$f\" ] && {{ cat \"$f\" 2>/dev/null; echo; "
             f"echo '{_CLAW_SENTINEL}'; }}; done; true")
+
+
+def _split_src_tag(state_text: str) -> tuple[str | None, str]:
+    """Peel the remote's ``#mini-src:<relpath>`` stamp off the state payload →
+    (relpath | None, remaining text).
+
+    No tag → (None, text) unchanged: a legacy remote or an injected test runner
+    hands back bare state, and an untagged answer must keep working rather than
+    be read as a corrupt one."""
+    txt = (state_text or "").strip()
+    if not txt.startswith(_SRC_TAG):
+        return None, txt
+    line, _, rest = txt.partition("\n")
+    return (line[len(_SRC_TAG):].strip() or None), rest.strip()
+
+
+def _no_state_error() -> str:
+    """The no-state verdict's evidence line. It names the paths that were
+    actually looked at, because "this box runs no mini" is a claim about the
+    BOX that a one-path `cat` never earned (2026-08-12)."""
+    return ("no mini state file (tried: "
+            + ", ".join(app_state_candidate_paths()) + ")")
+
+
+def _tag_foreign_app(posture: dict, src: str | None) -> dict:
+    """Annotate a posture read from a PEER app's convention, so the pane says
+    whose daemon it is. This app's own path is the unremarkable case and gets
+    no annotation."""
+    app = app_for_state_relpath(src) if src else None
+    if app:
+        posture["state_app"] = app
+        posture["state_src"] = src
+    return posture
+
+
+def _local_state_path(home: str) -> tuple[str, str | None]:
+    """(absolute state path, matched relpath) for THIS box, walking the same
+    candidate order as the ssh legs. Nothing exists → this app's own path and
+    None, so the caller's read yields the honest 'not found' it always did."""
+    for _app, state_rel, _h in _STATE_CANDIDATES:
+        cand = os.path.join(home, state_rel)
+        if os.path.isfile(cand):
+            return cand, state_rel
+    return os.path.join(home, _STATE_RELPATH), None
+
+
+def _local_history_path(home: str, state_rel: str | None) -> str:
+    """The history file PAIRED with a matched local state relpath — never this
+    app's history beside a peer app's state (the same pairing the deep ssh
+    chain enforces remotely)."""
+    for _app, s, h in _STATE_CANDIDATES:
+        if s == state_rel:
+            return os.path.join(home, h)
+    return os.path.join(home, _HISTORY_RELPATH)
 
 
 def _default_ssh_runner(host: str, timeout_s: float) -> tuple[int, str, str]:
@@ -257,8 +360,13 @@ def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIME
     """ssh-cat a remote box's mini state (+ claw tick) and distil its posture.
 
     runner(host, timeout_s) -> (rc, stdout, stderr) is injectable for tests.
-    ssh transport failure (rc 255) → 'unreachable'. ssh OK but empty/invalid
-    state → 'no_mini'. A claw tick after the sentinel rides into the posture.
+    ssh transport failure (rc 255) → 'unreachable'. ssh OK but no state file
+    under ANY known convention → 'no_state_file', carrying the list of paths
+    tried. A claw tick after the sentinel rides into the posture.
+
+    The status is deliberately NOT called 'no_mini' any more: this leg observes
+    files, and "the box runs no mini" is a different, larger claim it cannot
+    make — the one that hid a healthy MeshAnchor daemon for 19 days.
     """
     runner = runner or _default_ssh_runner
     rc, out, err = runner(host, timeout_s)
@@ -270,23 +378,27 @@ def collect_remote(host: str, now_ts: float, timeout_s: float = DEFAULT_SSH_TIME
         return {"host": host, "self_box": False, "status": "unreachable",
                 "error": (err or "").strip()[:160] or "ssh failed"}
     state_text, claws = _split_claw_payload(out)
-    # A no-mini box MAY still host a claw — build_rollup has always rendered a
-    # claw card on this branch, but the collector never filled one in (a reader
-    # with no writer, honest_failure_modes #4). Carry the ticks through.
+    src, state_text = _split_src_tag(state_text)
+    # A state-less box MAY still host a claw — build_rollup has always rendered
+    # a claw card on this branch, but the collector never filled one in (a
+    # reader with no writer, honest_failure_modes #4). Carry the ticks through.
     claw_cards = [c for c in (parse_claw_posture(d, now_ts) for d in claws) if c]
     if not state_text:
-        return {"host": host, "self_box": False, "status": "no_mini",
-                "error": (err or "").strip()[:160] or f"no {_STATE_RELPATH}",
+        return {"host": host, "self_box": False, "status": "no_state_file",
+                "error": (err or "").strip()[:160] or _no_state_error(),
                 "claw": claw_cards[0] if claw_cards else None,
                 "claws": claw_cards}
     try:
         state = json.loads(state_text)
     except ValueError:
-        return {"host": host, "self_box": False, "status": "no_mini",
-                "error": "state unparseable",
+        # CORRUPT is not ABSENT (the collect_local rule, applied on this leg):
+        # name the file that failed to parse, never fold it into "no state".
+        return {"host": host, "self_box": False, "status": "no_state_file",
+                "error": f"state unparseable at {src or _STATE_RELPATH}",
                 "claw": claw_cards[0] if claw_cards else None,
                 "claws": claw_cards}
-    return parse_state_posture(host, state, now_ts, stale_s, claws=claws)
+    return _tag_foreign_app(
+        parse_state_posture(host, state, now_ts, stale_s, claws=claws), src)
 
 
 def collect_local(now_ts: float, state_path: str | None = None,
@@ -294,10 +406,15 @@ def collect_local(now_ts: float, state_path: str | None = None,
                   claw_path: str | None = None) -> dict | None:
     """Read the manager box's own state file directly (it's excluded from
     fleet_hosts). Returns None if there is no local mini state at all.
-    Also folds in the local claw tick (sibling claw_last_tick.json) if present."""
+    Also folds in the local claw tick (sibling claw_last_tick.json) if present.
+
+    Resolves the SAME candidate order as the ssh legs, so a dual-stack manager
+    box whose own daemon is the peer app's is not reported absent by the very
+    pane it is rendering."""
     home = resolve_home()
+    src = None
     if state_path is None:
-        state_path = os.path.join(home, _STATE_RELPATH)
+        state_path, src = _local_state_path(home)
     claw_dir = os.path.dirname(state_path) or home
     if claw_path is None:
         claw_path = os.path.join(claw_dir, _CLAW_BASENAME)
@@ -325,19 +442,21 @@ def collect_local(now_ts: float, state_path: str | None = None,
         posture["error"] = f"state unreadable: {err}"
         return posture
     label = (state.get("host") if isinstance(state, dict) else None) or "self"
-    return parse_state_posture(label, state, now_ts, stale_s,
-                               self_box=True, claws=claw_docs)
+    return _tag_foreign_app(
+        parse_state_posture(label, state, now_ts, stale_s,
+                            self_box=True, claws=claw_docs), src)
 
 
 _BANNER = {
     "fresh": "🟢",
     "stale": "🔴",
     "no_state": "⚪",
-    "no_mini": "—",
+    "no_state_file": "—",
     "unreachable": "❌",
 }
 #: problems first, healthy last; then alpha by host within a bucket.
-_ORDER = {"unreachable": 0, "stale": 1, "no_state": 2, "no_mini": 3, "fresh": 4}
+_ORDER = {"unreachable": 0, "stale": 1, "no_state": 2, "no_state_file": 3,
+          "fresh": 4}
 
 _CLAW_BANNER = {"fresh": "🟢", "stale": "🔴", "unreachable": "❌", "unknown": "⚪"}
 
@@ -396,7 +515,7 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         counts[p["status"]] = counts.get(p["status"], 0) + 1
     summary = " · ".join(
         f"{_BANNER.get(s, '?')} {counts[s]} {s}"
-        for s in ("fresh", "stale", "no_state", "no_mini", "unreachable")
+        for s in ("fresh", "stale", "no_state", "no_state_file", "unreachable")
         if counts.get(s)
     ) or "no boxes"
 
@@ -414,10 +533,13 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
             lines.append(f"{banner} **{p['host']}**{tag} — {p['status']}"
                          + (f": {p['error']}" if p.get("error") else ""))
             continue
-        if p["status"] == "no_mini":
-            lines.append(f"{banner} **{p['host']}**{tag} — {p['status']}"
-                         + (f": {p['error']}" if p.get("error") else ""))
-            _append_claw(lines, p)  # a no-mini box may still run a claw
+        if p["status"] == "no_state_file":
+            # The error text names the paths tried — that IS the finding. The
+            # old line said "no_mini", a claim about the box this leg never
+            # measured; it read as expected furniture for 19 days.
+            lines.append(f"{banner} **{p['host']}**{tag} — "
+                         + (p.get("error") or _no_state_error()))
+            _append_claw(lines, p)  # a state-less box may still run a claw
             continue
         if p["status"] == "no_state":
             lines.append(f"{banner} **{p['host']}**{tag} — never ticked (no state)")
@@ -426,6 +548,11 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         head = (f"{banner} **{p['host']}**{tag} — {p['status']} · "
                 f"last tick {p['age']} ago · {p['rule_count']} rules · "
                 f"src_errors={p['src_errors']}")
+        # Whose daemon answered. Absent = this app's own; a peer app's mini is
+        # named, so a healthy foreign box reads as healthy-and-foreign rather
+        # than as one of ours (or, before today, as absent).
+        if p.get("state_app"):
+            head += f" · 🔀 {p['state_app']} mini"
         if p["src_errors"] and p.get("source_errors"):
             head += f" ({'; '.join(p['source_errors'])})"
         pd = p.get("pending_deltas")
@@ -479,12 +606,15 @@ def _parse_history_lines(text: str) -> list[dict]:
 
 
 def _default_ssh_runner_deep(host: str, timeout_s: float) -> tuple[int, str, str]:
-    """ssh <host> 'cat state; echo SENTINEL; cat history' — one round trip. The
-    remote `cat`s swallow their own errors so rc reflects only ssh transport
-    (255 = unreachable); empty content means the box runs no mini."""
-    remote = (f"cat {_STATE_RELPATH} 2>/dev/null; "
-              f"echo '{_DEEP_SENTINEL}'; "
-              f"cat {_HISTORY_RELPATH} 2>/dev/null")
+    """ssh <host> '<state chain>; SENTINEL; <paired history>' — one round trip.
+    The remote `cat`s swallow their own errors and the chain ends in `true`, so
+    rc reflects only ssh transport (255 = unreachable); empty content means no
+    state file under any known convention, NOT that the box runs no mini.
+
+    The chain pairs state and history from the SAME app, so a box answering on
+    a peer convention can never be rendered from one app's state beside the
+    other's fires."""
+    remote = _state_probe_sh(_DEEP_SENTINEL) + "; true"
     cmd = ["ssh", "-o", "BatchMode=yes",
            "-o", f"ConnectTimeout={int(timeout_s)}", host, remote]
     try:
@@ -496,9 +626,13 @@ def _default_ssh_runner_deep(host: str, timeout_s: float) -> tuple[int, str, str
         return 255, "", f"ssh exec failed: {e}"
 
 
-def _split_deep_payload(stdout: str) -> tuple[dict, list[dict]]:
-    """Split the deep ssh payload (state + SENTINEL + history) into (state, history)."""
+def _split_deep_payload(stdout: str) -> tuple[dict, list[dict], str | None]:
+    """Split the deep ssh payload (``#mini-src:`` tag + state + SENTINEL +
+    history) into (state, history, matched relpath). An untagged payload —
+    legacy remote or injected test runner — yields relpath None and is
+    otherwise unchanged."""
     state_part, _, hist_part = (stdout or "").partition(_DEEP_SENTINEL)
+    src, state_part = _split_src_tag(state_part)
     state: dict = {}
     sp = state_part.strip()
     if sp:
@@ -507,7 +641,7 @@ def _split_deep_payload(stdout: str) -> tuple[dict, list[dict]]:
             state = loaded if isinstance(loaded, dict) else {}
         except ValueError:
             state = {}
-    return state, _parse_history_lines(hist_part)
+    return state, _parse_history_lines(hist_part), src
 
 
 def build_box_deep(host: str, state: dict, history: list[dict], now_ts: float,
@@ -559,21 +693,25 @@ def collect_remote_deep(host: str, now_ts: float,
         return {"host": host, "self_box": False, "status": "unreachable",
                 "error": (err or "").strip()[:160] or "ssh failed",
                 "escalations": [], "fires": []}
-    state, history = _split_deep_payload(out)
+    state, history, src = _split_deep_payload(out)
     if not state and not history:
-        return {"host": host, "self_box": False, "status": "no_mini",
-                "error": "no mini state/history", "escalations": [], "fires": []}
-    return build_box_deep(host, state, history, now_ts, stale_s, window_s)
+        return {"host": host, "self_box": False, "status": "no_state_file",
+                "error": _no_state_error(), "escalations": [], "fires": []}
+    return _tag_foreign_app(
+        build_box_deep(host, state, history, now_ts, stale_s, window_s), src)
 
 
 def collect_local_deep(now_ts: float, state_path: str | None = None,
                        history_path: str | None = None,
                        stale_s: float = DEFAULT_STALE_S,
                        window_s: float = ESCALATION_WINDOW_S) -> dict | None:
-    """Read the manager box's own state + history directly. None if no state."""
+    """Read the manager box's own state + history directly. None if no state.
+    Same candidate order (and state/history pairing) as the ssh legs."""
     home = resolve_home()
-    state_path = state_path or os.path.join(home, _STATE_RELPATH)
-    history_path = history_path or os.path.join(home, _HISTORY_RELPATH)
+    src = None
+    if state_path is None:
+        state_path, src = _local_state_path(home)
+    history_path = history_path or _local_history_path(home, src)
     try:
         with open(state_path) as f:
             state = json.load(f)
@@ -585,7 +723,9 @@ def collect_local_deep(now_ts: float, state_path: str | None = None,
     except OSError:
         history = []
     label = (state.get("host") if isinstance(state, dict) else None) or "self"
-    return build_box_deep(label, state, history, now_ts, stale_s, window_s, self_box=True)
+    return _tag_foreign_app(
+        build_box_deep(label, state, history, now_ts, stale_s, window_s,
+                       self_box=True), src)
 
 
 def collect_fleet_deep(now_ts: float | None = None,
