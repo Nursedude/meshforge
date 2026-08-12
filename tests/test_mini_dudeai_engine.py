@@ -1126,3 +1126,34 @@ class TestSubjectsSeenSurvivesRetirement:
         keys = list((state.get("subjects_seen") or {}))
         assert keys, "engine fired but left no durable first-sighting stamp"
         assert any(k.startswith("r1::") for k in keys)
+
+
+# === --brief output path (2026-08-11, artifact-path adapter arc) =============
+
+
+class TestBriefOutPath:
+    """The CLI --brief default must be the ENGINE's brief path — the file the
+    daemon writes each tick and warmstart reads. The old sibling-of-state
+    default was a third independent path convention: invisible on MeshForge
+    (values coincide), an orphan writer on MeshAnchor."""
+
+    def _engine(self, brief_path):
+        import types
+        return types.SimpleNamespace(
+            brief_path=brief_path,
+            state_store=types.SimpleNamespace(path="/x/state.json"),
+        )
+
+    def test_explicit_path_wins(self):
+        from mini_dudeai.daemon import _brief_out_path
+        assert _brief_out_path(self._engine("/x/brief.md"), "/tmp/out.md") \
+            == "/tmp/out.md"
+
+    def test_defaults_to_the_engines_brief_path(self):
+        from mini_dudeai.daemon import _brief_out_path
+        assert _brief_out_path(self._engine("/x/brief.md"), "") == "/x/brief.md"
+
+    def test_sibling_fallback_only_when_no_brief_wired(self):
+        from mini_dudeai.daemon import _brief_out_path
+        assert _brief_out_path(self._engine(None), "") \
+            == "/x/mini_dudeai_brief.md"

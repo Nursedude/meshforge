@@ -75,6 +75,24 @@ def _import_preset(name: str):
     return mod.build_engine
 
 
+
+def _brief_out_path(engine, requested):
+    """Where --brief writes. An explicit path wins; else THE engine's own
+    brief_path — the file the daemon writes each tick and warmstart reads.
+    The old default invented a THIRD path convention (sibling-of-state
+    ``mini_dudeai_brief.md``): invisible on MeshForge where the values
+    coincide, but on MeshAnchor it wrote an orphan brief beside the state
+    that no reader ever read (2026-08-11, the artifact-path adapter arc).
+    Sibling fallback kept only for engines with no brief wired."""
+    if requested:
+        return requested
+    bp = getattr(engine, "brief_path", None)
+    if bp:
+        return bp
+    state_path = engine.state_store.path
+    return os.path.join(os.path.dirname(state_path) or ".",
+                        "mini_dudeai_brief.md")
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="mini-dudeai",
@@ -88,8 +106,9 @@ def main(argv: list[str] | None = None) -> int:
                    help="Run one tick and exit. Useful for cron and smoke tests.")
     p.add_argument("--brief", metavar="OUT_PATH", nargs="?", const="",
                    help="Write a warm-start brief from current state+history and exit "
-                        "(no tick). Optional path; defaults next to the state file as "
-                        "mini_dudeai_brief.md.")
+                        "(no tick). Optional path; defaults to the engine's own "
+                        "brief path (the file the daemon writes and "
+                        "warmstart reads).")
     p.add_argument("--dream", action="store_true",
                    help="Run the low-frequency synthesis pass (B3): distill "
                         "state+history into a dream log + candidate memory-deltas, "
@@ -110,10 +129,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.brief is not None:
         from .brief import write_brief
-        state_path = engine.state_store.path
-        out = args.brief or os.path.join(
-            os.path.dirname(state_path) or ".", "mini_dudeai_brief.md")
-        write_brief(state_path, engine.history.path, out)
+        out = _brief_out_path(engine, args.brief)
+        write_brief(engine.state_store.path, engine.history.path, out)
         print(f"mini-dudeai brief: wrote {out}")
         return 0
 
