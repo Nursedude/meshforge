@@ -1,11 +1,26 @@
 #!/usr/bin/env bash
 # ma_health_uplink.sh — mini uplink for the MeshAnchor-only box (2026-07-03).
 #
-# meshanchor-server runs NO MeshForge (no watchdog, no mini), so its health
-# was operator-invisible: a meshtastic dep-floor drift sat silent at 2.7.8
-# while the fleet pin was 2.7.9, and a dead meshanchor unit pages no one
-# (fleet_box_unreachable watches the BOX, federation watches :5000 — neither
-# watches the units or the dep floor).
+# meshanchor-server's health was operator-invisible: a meshtastic dep-floor
+# drift sat silent at 2.7.8 while the fleet pin was 2.7.9, and a dead
+# meshanchor unit pages no one (fleet_box_unreachable watches the BOX,
+# federation watches :5000 — neither watches the units or the dep floor).
+#
+# ⚠️ Corrected 2026-08-12: this said "runs NO MeshForge (no watchdog, no
+# mini)". Both halves are now false, and the conclusion survives anyway —
+# measured on the box that day:
+#   * ONE MeshForge unit runs there, meshforge-watchdog.service (the only
+#     meshforge-* unit file present, enabled + active). But its per-box
+#     override narrows services_expected_active to ["rnsd.service"], so it
+#     judges rnsd and NOTHING meshanchor-shaped. "A dead meshanchor unit
+#     pages no one" still holds — via a narrowed scope, not an absent probe.
+#   * A mini runs there too: MeshAnchor's OWN meshanchor-mini-dudeai.service,
+#     as a USER unit. Its journal is a black hole (`journalctl --user` →
+#     "No journal files were found", still true 2026-08-12), so user-unit
+#     warnings there vanish rather than page.
+# The load-bearing reason for an OFF-box probe was never "nothing watches
+# this box" — it is that a watchdog cannot report its own death, and neither
+# can a mini whose journal is dark. Keep the uplink.
 #
 # This is the manager-box half of the uplink, same pattern as the fleet
 # tracer / ntfy loopback: an ACTIVE probe run on cron cadence. It ssh-checks:
