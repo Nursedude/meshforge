@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from utils.watchdog_probe_core import (  # noqa: F401
     Signal,
-    _resolve_main_pid,
+    _resolve_main_pid_status,
     note_disposition,
 )
 from utils import tx_guard
@@ -310,12 +310,27 @@ def probe_main_thread_wedge(
     (a different probe catches that).
     """
     if pid is None:
-        pid = _resolve_main_pid(service_name, systemctl_path=systemctl_path)
+        pid_status, pid = _resolve_main_pid_status(
+            service_name, systemctl_path=systemctl_path
+        )
         if pid is None or pid <= 1:
-            note_disposition(
-                "main_thread_wedge", "indeterminate",
-                reason="MainPID unresolved; service inactive or systemctl error",
-            )
+            if pid_status == "absent":
+                # No such unit on this box: there are no task stacks to scan.
+                # "Should be running but isn't" belongs to service_inactive,
+                # which answers for a nonexistent unit too (verified
+                # 2026-08-12) — so inert here hides nothing.
+                note_disposition(
+                    "main_thread_wedge", "inert",
+                    reason=(
+                        f"no {service_name} unit on this box; no threads "
+                        f"to scan"
+                    ),
+                )
+            else:
+                note_disposition(
+                    "main_thread_wedge", "indeterminate",
+                    reason="MainPID unresolved; service inactive or systemctl error",
+                )
             return None
 
     found = _scan_pid_task_stacks(pid, proc_root)

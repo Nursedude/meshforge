@@ -7036,8 +7036,8 @@ class TestGatewayDeliveryDegraded:
         sp = str(tmp_path / "g.json")
         # probe_gateway_delivery_degraded moved to watchdog_probes_gateway_flow
         # (2026-07-14 gateway split) — patch the source seam, not the re-export.
-        with patch("utils.watchdog_probes_gateway_flow._resolve_main_pid",
-                   return_value=None):
+        with patch("utils.watchdog_probes_gateway_flow._resolve_main_pid_status",
+                   return_value=("absent", None)):
             assert probe_gateway_delivery_degraded(state_path=sp) is None
 
     def test_error_spike_two_ticks_fire_degraded(self, tmp_path):
@@ -7675,8 +7675,8 @@ class TestMeshtasticdVszLeak:
 
     def test_none_when_service_not_running(self):
         from utils.watchdog_probes import probe_meshtasticd_vsz_leak
-        with patch("utils.watchdog_probes_service._resolve_main_pid",
-                   return_value=None):
+        with patch("utils.watchdog_probes_service._resolve_main_pid_status",
+                   return_value=("down", None)):
             assert probe_meshtasticd_vsz_leak() is None
 
     def test_healthy_pi4_box_is_silent(self, tmp_path):

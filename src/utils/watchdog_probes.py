@@ -69,6 +69,7 @@ from utils.watchdog_probe_core import (
     _read_deployment_declaration,
     _read_deployment_declaration_status,
     _resolve_main_pid,
+    _resolve_main_pid_status,
     _short_unix_ts,
 )
 from utils.watchdog_probes_rns import (

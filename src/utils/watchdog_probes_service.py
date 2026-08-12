@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
-    _resolve_main_pid,
+    _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
 )
@@ -193,14 +193,28 @@ def probe_fd_exhaustion(
     a different probe owns "not running", and a healthy process must be
     silent.
     """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        service_name, systemctl_path=systemctl_path
-    )
-    if pid is None:
-        note_disposition(
-            "fd_exhaustion", "indeterminate",
-            reason="MainPID unresolved; service inactive or systemctl error",
+    if main_pid is not None:
+        pid_status, pid = "ok", main_pid
+    else:
+        pid_status, pid = _resolve_main_pid_status(
+            service_name, systemctl_path=systemctl_path
         )
+    if pid is None:
+        if pid_status == "absent":
+            # No such unit on this box: there is no fd table to count against
+            # a limit. Nothing is hidden by saying so — a unit that is
+            # EXPECTED active and does not exist still pages via
+            # `service_inactive` (`systemctl is-active` answers "inactive"
+            # for a nonexistent unit, verified 2026-08-12).
+            note_disposition(
+                "fd_exhaustion", "inert",
+                reason=f"no {service_name} unit on this box; no fds to count",
+            )
+        else:
+            note_disposition(
+                "fd_exhaustion", "indeterminate",
+                reason="MainPID unresolved; service inactive or systemctl error",
+            )
         return None
 
     usage = _read_fd_usage(pid, proc_root=proc_root)
@@ -435,19 +449,34 @@ def probe_meshtasticd_vsz_leak(
     Read-only, no sudo (``/proc/<pid>/status`` is world-readable). None when
     the service is not running (another probe owns that) or /proc is
     unreadable — unobservable is silent here, never "healthy-shaped" data.
+    A box with NO meshtasticd unit at all notes ``inert`` instead: there is
+    no portduino process that could strand stacks (2026-08-12).
     Severity ``degraded``: the daemon still serves; the pin is remediation
     lead time. Fix: ``systemctl restart meshtasticd`` then verify
     ``systemctl list-timers meshtasticd-restart.timer``. Documented inline
     (persistent_issues MF012 cap precedent); upstream ref in detail.
     """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        service_name, systemctl_path=systemctl_path
-    )
-    if pid is None:
-        note_disposition(
-            "meshtasticd_vsz_leak", "indeterminate",
-            reason="meshtasticd MainPID unresolved; service_inactive owns that",
+    if main_pid is not None:
+        pid_status, pid = "ok", main_pid
+    else:
+        pid_status, pid = _resolve_main_pid_status(
+            service_name, systemctl_path=systemctl_path
         )
+    if pid is None:
+        if pid_status == "absent":
+            # No meshtasticd unit on this box (meshanchor-server, MeshCore-
+            # primary): there is no portduino process that COULD strand
+            # pthread stacks, and `service_inactive` cannot own a unit that
+            # does not exist. Absent by design is `inert`, not a failed look.
+            note_disposition(
+                "meshtasticd_vsz_leak", "inert",
+                reason=f"no {service_name} unit on this box; no VSZ to watch",
+            )
+        else:
+            note_disposition(
+                "meshtasticd_vsz_leak", "indeterminate",
+                reason="meshtasticd MainPID unresolved; service_inactive owns that",
+            )
         return None
 
     reading = _read_vm_size_gb(pid, proc_root=proc_root)
@@ -532,14 +561,29 @@ def probe_phoneapi_tcp_leak(
     Recovery: ``sudo systemctl restart <service>`` releases the stolen
     stream instantly; the web client recovers on its next poll.
     """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        service_name, systemctl_path=systemctl_path
-    )
-    if pid is None:
-        note_disposition(
-            "phoneapi_tcp_leak", "indeterminate",
-            reason="MainPID unresolved; service inactive or systemctl error",
+    if main_pid is not None:
+        pid_status, pid = "ok", main_pid
+    else:
+        pid_status, pid = _resolve_main_pid_status(
+            service_name, systemctl_path=systemctl_path
         )
+    if pid is None:
+        if pid_status == "absent":
+            # No such unit here, so no process of its that could hold a
+            # leaked TCPInterface. `service_inactive` still owns "expected
+            # active but missing" (same argument as fd_exhaustion above).
+            note_disposition(
+                "phoneapi_tcp_leak", "inert",
+                reason=(
+                    f"no {service_name} unit on this box; no owner process "
+                    f"that could leak a PhoneAPI stream"
+                ),
+            )
+        else:
+            note_disposition(
+                "phoneapi_tcp_leak", "indeterminate",
+                reason="MainPID unresolved; service inactive or systemctl error",
+            )
         return None
 
     sp = state_path or DEFAULT_PHONEAPI_LEAK_STATE_PATH
@@ -735,8 +779,9 @@ def probe_meshtasticd_phoneapi_wedge(
 
     Self-guards (return None — never read unobservable as healthy):
 
-    - meshtasticd inactive (``_resolve_main_pid`` → None; ``service_inactive``
-      owns that), or
+    - meshtasticd inactive (``_resolve_main_pid_status`` → ``down``;
+      ``service_inactive`` owns that) — or ABSENT, no such unit on this box,
+      which is ``inert`` rather than indeterminate (2026-08-12), or
     - the journal count is None (journalctl timeout/unavailable —
       *unobservable* ≠ 0; absorbing it as 0 would mask the wedge,
       honest_failure_modes #1/#2). The streak is reset on this path so an
@@ -746,14 +791,26 @@ def probe_meshtasticd_phoneapi_wedge(
     immediately; then stop the 2nd consumer so it can't recur — typically
     the map's ``_collect_meshtasticd`` :4403 source.
     """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        unit, systemctl_path=systemctl_path
-    )
-    if pid is None:
-        note_disposition(
-            "meshtasticd_phoneapi_wedge", "indeterminate",
-            reason="meshtasticd MainPID unresolved; service_inactive owns that",
+    if main_pid is not None:
+        pid_status, pid = "ok", main_pid
+    else:
+        pid_status, pid = _resolve_main_pid_status(
+            unit, systemctl_path=systemctl_path
         )
+    if pid is None:
+        if pid_status == "absent":
+            # No meshtasticd unit on this box (meshanchor-server): nothing can
+            # contend for a PhoneAPI that isn't served here, and
+            # `service_inactive` cannot own a unit that does not exist.
+            note_disposition(
+                "meshtasticd_phoneapi_wedge", "inert",
+                reason=f"no {unit} unit on this box; no PhoneAPI to contend for",
+            )
+        else:
+            note_disposition(
+                "meshtasticd_phoneapi_wedge", "indeterminate",
+                reason="meshtasticd MainPID unresolved; service_inactive owns that",
+            )
         return None
 
     # Gate: the wedge only threatens a GATEWAY's mesh-TX. On a box with no
@@ -761,20 +818,36 @@ def probe_meshtasticd_phoneapi_wedge(
     # collector) — NOT bot-dark — and firing the "gateway mesh-TX wedged" class
     # there mislabels it (honest_failure_modes: a signal that says the wrong
     # thing). Only meaningful where meshforge-gateway runs.
-    gw_pid = gateway_main_pid if gateway_main_pid is not None else _resolve_main_pid(
-        gateway_unit, systemctl_path=systemctl_path
-    )
+    if gateway_main_pid is not None:
+        gw_status, gw_pid = "ok", gateway_main_pid
+    else:
+        gw_status, gw_pid = _resolve_main_pid_status(
+            gateway_unit, systemctl_path=systemctl_path
+        )
     if gw_pid is None:
-        # NOTE: a None gw_pid conflates "no gateway unit on this box" (the
-        # overwhelmingly common, legitimate case — inert) with "systemctl
-        # errored" (unit state unobservable). A genuinely dead gateway
-        # pages via service_inactive, so inert is kept; the reason stays
-        # honest about the conflation.
+        # 2026-08-12: this used to be a flat None, and the comment here
+        # spelled the conflation out loud — "no gateway unit on this box"
+        # (inert, the common legitimate case) shared one value with
+        # "systemctl errored" (genuinely unobservable), and BOTH were filed
+        # as inert. The status form separates them: absent/stopped stay
+        # inert (a dead-but-installed gateway pages via service_inactive),
+        # while a systemctl we could not RUN is unobservable and must not
+        # masquerade as a box that simply has no gateway.
+        if gw_status == "unknown":
+            note_disposition(
+                "meshtasticd_phoneapi_wedge", "indeterminate",
+                reason=(
+                    f"{gateway_unit} state unobservable (systemctl "
+                    f"unavailable/unparseable); cannot tell whether this "
+                    f"class applies here"
+                ),
+            )
+            return None
         note_disposition(
             "meshtasticd_phoneapi_wedge", "inert",
             reason=(
-                "no running gateway (or unit state unobservable); "
-                "class gated to gateway boxes"
+                f"no running gateway ({gw_status}); "
+                f"class gated to gateway boxes"
             ),
         )
         return None

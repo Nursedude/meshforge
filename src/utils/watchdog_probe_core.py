@@ -193,26 +193,132 @@ class Signal:
         """Stable identity for edge-transition tracking."""
         return (self.cls, self.subject)
 
+def _resolve_main_pid_status(
+    service_name: str, *, systemctl_path: str = "systemctl",
+) -> Tuple[str, Optional[int]]:
+    """Tri-state (four-state) MainPID resolution: ``(status, pid)``.
+
+    ``status`` is one of:
+
+    ==============  ================================================
+    ``"ok"``        unit is loaded and running; ``pid`` > 1
+    ``"down"``      unit EXISTS on this box but has no MainPID
+                    (inactive/failed) — ``service_inactive`` owns it
+    ``"absent"``    no such unit here at all (``LoadState=not-found``)
+                    — the organ is missing BY DESIGN on this box
+    ``"unknown"``   systemctl could not be run or its answer could not
+                    be parsed — unobservable, never "absent"
+    ==============  ================================================
+
+    ⚠️ Why this exists (2026-08-12). The flat ``_resolve_main_pid`` below
+    collapsed all four into a single ``None``, and ~8 consumers each turned
+    that None into the same claim: "MainPID unresolved; ``service_inactive``
+    owns that". On meshanchor-server — the fleet's MeshCore-primary box,
+    which has **zero** meshtasticd unit files and no binary on PATH — that
+    handoff points at a probe that cannot own a unit which does not exist,
+    so ``channel_feed_dark``, ``mqtt_root_drift``,
+    ``meshtasticd_phoneapi_wedge`` and ``meshtasticd_vsz_leak`` sat
+    ``indeterminate`` permanently, by construction. An organ absent by
+    design must read ``inert``, or real failures have nowhere to stand out
+    (persistent_issues, 2026-08-05).
+
+    Exactly the same defect, on the same box, was already cured once for
+    deployment.json — see ``_read_deployment_declaration_status`` above
+    (2026-08-07). A fix applied to one instance is not applied to the class.
+
+    ⚠️ ``absent`` is NOT universally benign. It is a correct ``inert`` only
+    for probes that OBSERVE a service; for a probe whose job is to notice
+    that a unit which SHOULD be running is not, ``absent`` may be the
+    finding itself. Each call site needs its own semantic judgement — never
+    sweep this.
+
+    Measured discriminator (live, 2026-08-12): ``systemctl show`` exits 0 in
+    ALL of these cases, so the return code carries no signal; ``LoadState``
+    does. Both facts come from ONE subprocess, so the status form costs
+    nothing extra per tick. Properties are parsed as ``KEY=value`` rather
+    than with ``--value``: systemd emits them in its own canonical order,
+    not the order they were requested, so positional parsing would be a
+    latent mis-pairing.
+    """
+    try:
+        proc = subprocess.run(
+            [systemctl_path, "show", "-p", "MainPID", "-p", "LoadState",
+             service_name],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return ("unknown", None)
+    if proc.returncode != 0:
+        return ("unknown", None)
+
+    props = {}
+    for line in (proc.stdout or "").splitlines():
+        key, sep, val = line.partition("=")
+        if sep:
+            props[key.strip()] = val.strip()
+
+    load_state = props.get("LoadState")
+    raw_pid = props.get("MainPID")
+    if raw_pid is None:
+        return ("unknown", None)
+    try:
+        pid = int(raw_pid)
+    except (ValueError, TypeError):
+        return ("unknown", None)
+
+    if pid > 1:
+        return ("ok", pid)
+    # No MainPID. Only an explicit not-found proves the unit is absent; a
+    # missing/odd LoadState (older systemd, unexpected output) falls back to
+    # the pre-2026-08-12 meaning, which is the conservative one.
+    if load_state == "not-found":
+        return ("absent", None)
+    return ("down", None)
+
+
 def _resolve_main_pid(
     service_name: str, *, systemctl_path: str = "systemctl",
 ) -> Optional[int]:
     """``systemctl show -p MainPID <service>`` parser. Returns None
     on any failure (including inactive service which reports
-    ``MainPID=0``)."""
-    try:
-        proc = subprocess.run(
-            [systemctl_path, "show", "-p", "MainPID", "--value", service_name],
-            capture_output=True, text=True, timeout=3,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        pid = int(proc.stdout.strip())
-    except (ValueError, TypeError):
-        return None
-    return pid if pid > 1 else None
+    ``MainPID=0``).
+
+    Back-compat shim over ``_resolve_main_pid_status`` (ONE implementation —
+    honest_failure_modes #5). Callers that must tell "no such unit on this
+    box" from "the unit is down" or "I could not look" need the status form;
+    collapsing them is what this shim cannot avoid.
+
+    As of 2026-08-12 NO probe module is left on this shim — the guard
+    ``TestTriStateHelperContract`` enforces that, and it is what stopped the
+    first cut of this fix at four of the eight call sites (the class-not-
+    instance rule, mechanised). Every site was judged individually:
+
+    * The four meshtasticd OBSERVERS (``channel_feed_dark``,
+      ``mqtt_root_drift``, ``meshtasticd_phoneapi_wedge``,
+      ``meshtasticd_vsz_leak``) — absent → ``inert``; this is the defect
+      that prompted the split.
+    * ``fd_exhaustion`` / ``phoneapi_tcp_leak`` / ``main_thread_wedge`` —
+      observers of an arbitrary unit; with no unit there is no fd table, no
+      owner process and no thread stack to read, so absent → ``inert``.
+      Nothing is hidden: ``systemctl is-active`` answers ``inactive`` for a
+      nonexistent unit (verified 2026-08-12), so a unit that is EXPECTED
+      active and missing still pages via ``service_inactive``.
+    * The two gateway-organ gates (``delivery_confirmation_stall``,
+      ``gateway_delivery_degraded``) and the wedge probe's gateway leg —
+      these already answered ``inert`` for a flat None, which quietly
+      included "systemctl errored". Absent/stopped stay ``inert``; only the
+      ``unknown`` case moved, to ``indeterminate``, because a state we could
+      not READ is not an observation that this box has no gateway.
+
+    Converting a site is always a per-site semantic call: for a probe whose
+    job is to notice that a unit which SHOULD be running is not, ``absent``
+    is the FINDING, and turning it into ``inert`` would silence a real
+    detector. ``probe_service_inactive`` is that probe, and it deliberately
+    does not resolve a MainPID at all.
+    """
+    return _resolve_main_pid_status(
+        service_name, systemctl_path=systemctl_path
+    )[1]
 
 
 def _read_deployment_declaration_status(

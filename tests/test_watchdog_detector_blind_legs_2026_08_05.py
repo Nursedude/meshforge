@@ -112,8 +112,8 @@ class TestMqttRootDriftInertWithoutAConsumer:
         # here, RED in CI. The seam is part of the probe's contract and
         # cannot go stale under it (feedback_tests_must_pin_ambient_state:
         # when a fix changes what code READS, re-audit that function's tests).
-        with patch("utils.watchdog_probes_drift._resolve_main_pid",
-                   return_value=1234), \
+        with patch("utils.watchdog_probes_drift._resolve_main_pid_status",
+                   return_value=("ok", 1234)), \
              patch("utils.watchdog_probes_drift._declared_root_status",
                    return_value=status):
             return probe_mqtt_root_drift(
@@ -146,8 +146,8 @@ class TestMqttRootDriftInertWithoutAConsumer:
 class TestStallProbeInertWithoutAGateway:
 
     def test_no_gateway_process_is_inert(self, dispositions):
-        with patch("utils.watchdog_probes_gateway._resolve_main_pid",
-                   return_value=None):
+        with patch("utils.watchdog_probes_gateway._resolve_main_pid_status",
+                   return_value=("absent", None)):
             sig = probe_delivery_confirmation_stall()
         assert sig is None
         got = dispositions()["delivery_confirmation_stall"]
@@ -157,8 +157,8 @@ class TestStallProbeInertWithoutAGateway:
     def test_no_gateway_does_not_even_fetch_the_payload(self):
         """Organ presence is checked FIRST — a non-gateway box must not
         spend an HTTP round trip per tick to conclude it has no gateway."""
-        with patch("utils.watchdog_probes_gateway._resolve_main_pid",
-                   return_value=None), \
+        with patch("utils.watchdog_probes_gateway._resolve_main_pid_status",
+                   return_value=("absent", None)), \
              patch("utils.watchdog_probes_gateway._fetch_delivery_payload") as fetch:
             probe_delivery_confirmation_stall()
         fetch.assert_not_called()
@@ -225,8 +225,8 @@ class TestTotalConfirmationCollapseIsVisible:
         assert _never_confirmed_signal(by_proto) is None
 
     def test_probe_surfaces_it_end_to_end(self, dispositions):
-        with patch("utils.watchdog_probes_gateway._resolve_main_pid",
-                   return_value=999), \
+        with patch("utils.watchdog_probes_gateway._resolve_main_pid_status",
+                   return_value=("ok", 999)), \
              patch("utils.watchdog_probes_gateway._fetch_delivery_payload",
                    return_value=({"state_by_protocol": self.REAL_FEDERATOR}, None)):
             sig = probe_delivery_confirmation_stall()
@@ -235,8 +235,8 @@ class TestTotalConfirmationCollapseIsVisible:
     def test_quiet_gateway_still_reports_indeterminate(self, dispositions):
         """Nothing confirmable and nothing to go on stays honest — the fix
         must not turn every quiet gateway into a page."""
-        with patch("utils.watchdog_probes_gateway._resolve_main_pid",
-                   return_value=999), \
+        with patch("utils.watchdog_probes_gateway._resolve_main_pid_status",
+                   return_value=("ok", 999)), \
              patch("utils.watchdog_probes_gateway._fetch_delivery_payload",
                    return_value=({"state_by_protocol": {
                        "confirmed": {}, "sent": {"meshtastic": 5},
@@ -311,8 +311,8 @@ class TestJournalSilenceIsNotUnobservable:
 class TestMqttRootDriftSilenceDisposition:
 
     def _run(self, run_mock, dispositions):
-        with patch("utils.watchdog_probes_drift._resolve_main_pid",
-                   return_value=1234), \
+        with patch("utils.watchdog_probes_drift._resolve_main_pid_status",
+                   return_value=("ok", 1234)), \
              patch("utils.watchdog_probe_core.subprocess.run", run_mock):
             return probe_mqtt_root_drift()
 
@@ -349,8 +349,8 @@ class TestMqttRootDriftSilenceDisposition:
     def test_injected_seam_defaults_to_observed(self, dispositions):
         """A test seam that returns None answered positively; it must not be
         treated as a broken channel."""
-        with patch("utils.watchdog_probes_drift._resolve_main_pid",
-                   return_value=1234):
+        with patch("utils.watchdog_probes_drift._resolve_main_pid_status",
+                   return_value=("ok", 1234)):
             probe_mqtt_root_drift(newest_line_fn=lambda p: None)
         assert dispositions()["mqtt_root_drift"]["disp"] == "inert"
 
@@ -367,8 +367,8 @@ class TestMqttRootDriftSilenceDisposition:
             r = _R()
             r.stdout, r.returncode = "", 1
             return r
-        with patch("utils.watchdog_probes_drift._resolve_main_pid",
-                   return_value=1234), \
+        with patch("utils.watchdog_probes_drift._resolve_main_pid_status",
+                   return_value=("ok", 1234)), \
              patch("utils.watchdog_probe_core.subprocess.run", _runner):
             probe_mqtt_root_drift()
         assert len(calls) == 1, f"expected 1 journalctl call, made {len(calls)}"

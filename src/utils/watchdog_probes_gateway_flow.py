@@ -21,7 +21,7 @@ from utils.user_units import timer_wants_dirs as _shared_wants_dirs
 from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
-    _resolve_main_pid,
+    _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
 )
@@ -663,8 +663,10 @@ def probe_gateway_delivery_degraded(
 
     Self-guards (honest_failure_modes):
 
-    * gateway not running on this box (``_resolve_main_pid`` → None) → None
-      (INERT — the "does this box run the gateway" gate; moc/moc3 only).
+    * gateway absent or stopped on this box (``_resolve_main_pid_status`` →
+      ``absent``/``down``) → None (INERT — the "does this box run the
+      gateway" gate; moc/moc3 only). A unit state we could not READ is
+      ``indeterminate`` instead (2026-08-12): unobservable ≠ "no gateway".
     * BOTH legs unobservable (journalctl wedged/absent for the block fetch AND
       the error count) → None, HOLDING the debounce streak — unobservable ≠
       healthy, and a journalctl hiccup must not erase a real in-progress
@@ -681,11 +683,23 @@ def probe_gateway_delivery_degraded(
     try:
         sp = state_path or DEFAULT_GATEWAY_DELIVERY_STATE_PATH
 
-        gw_pid = main_pid if main_pid is not None else _resolve_main_pid(
-            unit, systemctl_path=systemctl_path)
+        if main_pid is not None:
+            gw_status, gw_pid = "ok", main_pid
+        else:
+            gw_status, gw_pid = _resolve_main_pid_status(
+                unit, systemctl_path=systemctl_path)
         if gw_pid is None:
+            # 2026-08-12, same split as its sibling in watchdog_probes_gateway:
+            # absent/stopped are inert (service_inactive owns a dead unit); a
+            # systemctl we could not run is unobservable, not "no gateway".
+            if gw_status == "unknown":
+                note_disposition(
+                    "gateway_delivery_degraded", "indeterminate",
+                    reason=(f"{unit} state unobservable; cannot tell whether "
+                            f"a gateway organ exists here"))
+                return None
             note_disposition("gateway_delivery_degraded", "inert",
-                             reason="gateway not running on this box")
+                             reason=f"gateway not running on this box ({gw_status})")
             return None  # INERT: this box doesn't run the gateway
 
         if blocks_fn is None:

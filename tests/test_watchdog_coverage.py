@@ -336,11 +336,20 @@ class TestPhoneapiWedgeTablesUnreadable:
 
 
 class TestPhoneapiWedgeGatewayGateReason:
-    """S3: the missing-gateway gate stays inert (legitimate common case;
-    a dead gateway pages via service_inactive) but the reason admits the
-    conflation with an unobservable unit state."""
+    """S3: the missing-gateway gate stays inert (legitimate common case; a
+    dead gateway pages via service_inactive).
 
-    def test_inert_reason_names_unobservable_conflation(self, tmp_path):
+    ⚠️ This test used to assert the OPPOSITE for the case below. Until
+    2026-08-12 the gate collapsed "no gateway unit here" and "systemctl could
+    not be run" into one flat None and filed BOTH as inert, and this test
+    pinned the honest-but-resigned reason string that admitted it. The
+    tri-state ``_resolve_main_pid_status`` removed the conflation, so a
+    nonexistent systemctl — which is what this test plants — is now
+    ``indeterminate``: unobservable is not an observation that this box has
+    no gateway.
+    """
+
+    def test_unobservable_unit_state_is_no_longer_filed_as_inert(self, tmp_path):
         sig = probe_meshtasticd_phoneapi_wedge(
             main_pid=1234, gateway_main_pid=None,
             systemctl_path="/nonexistent/systemctl-xyz",
@@ -349,8 +358,8 @@ class TestPhoneapiWedgeGatewayGateReason:
         )
         assert sig is None
         got = collect_dispositions()["meshtasticd_phoneapi_wedge"]
-        assert got["disp"] == "inert"
-        assert "unit state unobservable" in got["reason"]
+        assert got["disp"] == "indeterminate"
+        assert "unobservable" in got["reason"]
 
 
 class TestHttpLocalHttpErrorIsAlive:

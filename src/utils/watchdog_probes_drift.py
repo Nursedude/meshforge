@@ -29,7 +29,7 @@ from utils.watchdog_probe_core import (
     _read_deployment_declaration,
     _read_deployment_declaration_status,
     _read_pkg_version_at_dirs,
-    _resolve_main_pid,
+    _resolve_main_pid_status,
     _save_parity_streak,
     note_disposition,
 )
@@ -1194,7 +1194,9 @@ def probe_mqtt_root_drift(
     the #17 contention class this probe family exists to police).
 
     Self-guards (returns None):
-    - meshtasticd inactive (``service_inactive`` owns that)
+    - meshtasticd inactive (``service_inactive`` owns that) — but a box with
+      NO meshtasticd unit at all is ``inert``, not indeterminate: there is no
+      radio here whose root could drift (2026-08-12, meshanchor-server)
     - no json publish lines in the lookback (unobservable ≠ drift — the
       RX-only collector case, same gate as ``channel_feed_dark``)
     - gateway.json unreadable / service user unresolvable (indeterminate)
@@ -1205,12 +1207,24 @@ def probe_mqtt_root_drift(
     (or fix root_topic in gateway.json if the radio is the intended truth),
     then verify the next journal publish line carries the declared root.
     """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        unit, systemctl_path=systemctl_path
-    )
+    if main_pid is not None:
+        pid_status, pid = "ok", main_pid
+    else:
+        pid_status, pid = _resolve_main_pid_status(
+            unit, systemctl_path=systemctl_path
+        )
     if pid is None:
-        note_disposition("mqtt_root_drift", "indeterminate",
-                         reason="meshtasticd inactive or MainPID unresolvable")
+        if pid_status == "absent":
+            # No meshtasticd unit here at all (meshanchor-server): there is no
+            # radio whose publish root COULD drift from gateway.json, and
+            # `service_inactive` cannot own a unit that does not exist.
+            note_disposition(
+                "mqtt_root_drift", "inert",
+                reason=f"no {unit} unit on this box; no radio root to compare",
+            )
+        else:
+            note_disposition("mqtt_root_drift", "indeterminate",
+                             reason="meshtasticd inactive or MainPID unresolvable")
         return None
 
     # The default reader records WHETHER the journal answered, alongside the

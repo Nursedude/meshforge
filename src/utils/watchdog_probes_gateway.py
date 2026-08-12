@@ -24,7 +24,7 @@ from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
     _load_parity_streak,
-    _resolve_main_pid,
+    _resolve_main_pid_status,
     _save_parity_streak,
     _short_unix_ts,
     note_disposition,
@@ -578,11 +578,23 @@ def probe_delivery_confirmation_stall(
     # this probe instead fell through to "no confirmable protocol recorded"
     # and sat INDETERMINATE forever on every non-gateway box, which both
     # buried a real blindness and made the disposition meaningless.
-    gw_pid = gateway_main_pid if gateway_main_pid is not None else \
-        _resolve_main_pid(gateway_unit)
+    if gateway_main_pid is not None:
+        gw_status, gw_pid = "ok", gateway_main_pid
+    else:
+        gw_status, gw_pid = _resolve_main_pid_status(gateway_unit)
     if gw_pid is None:
+        # 2026-08-12: absent/stopped are both honestly INERT here (a
+        # stopped-but-installed gateway is service_inactive's to page), but
+        # a systemctl we could not RUN is not an observation that this box
+        # has no gateway — that one is unobservable and says so.
+        if gw_status == "unknown":
+            note_disposition(
+                "delivery_confirmation_stall", "indeterminate",
+                reason=(f"{gateway_unit} state unobservable; cannot tell "
+                        f"whether a gateway organ exists here"))
+            return None
         note_disposition("delivery_confirmation_stall", "inert",
-                         reason="gateway not running on this box")
+                         reason=f"gateway not running on this box ({gw_status})")
         return None
 
     payload, blind = _fetch_delivery_payload(

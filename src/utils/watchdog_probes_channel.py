@@ -53,7 +53,7 @@ from typing import Optional, Tuple
 from utils.watchdog_probe_core import (
     Signal,
     _journal_newest_match_status,
-    _resolve_main_pid,
+    _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
 )
@@ -186,7 +186,9 @@ def probe_channel_feed_dark(
     **Four states** (see the module docstring for why):
 
     ===================  ==========================================
-    ``indeterminate``    meshtasticd MainPID unresolved; journalctl
+    ``indeterminate``    meshtasticd unit EXISTS but has no MainPID
+                         (``service_inactive`` owns that), or its
+                         state could not be read at all; journalctl
                          unobservable; declaration unreadable;
                          journal too short to cover the window;
                          unparseable timestamp; or the box DECLARES
@@ -196,7 +198,10 @@ def probe_channel_feed_dark(
                          carries the diagnosis
     ``inert``            journal ran, ZERO json-uplink lines, box
                          declares no json uplink — there is no
-                         channel instrument here, by design
+                         channel instrument here, by design; OR
+                         (2026-08-12) no meshtasticd unit EXISTS on
+                         this box at all, the meshanchor-server
+                         shape — no radio, so no feed to be dark
     ``clean``            json alive and channel text is fresh
     ``channel_feed_dark``json alive, channel text stale/absent —
                          degraded, the original finding
@@ -207,14 +212,28 @@ def probe_channel_feed_dark(
     channel-specific dark is genuinely unobservable, and without a
     declaration there is nothing that says it should still be running.
     """
-    pid = main_pid if main_pid is not None else _resolve_main_pid(
-        unit, systemctl_path=systemctl_path
-    )
-    if pid is None:
-        note_disposition(
-            "channel_feed_dark", "indeterminate",
-            reason="meshtasticd MainPID unresolved; service_inactive owns that",
+    if main_pid is not None:
+        pid_status, pid = "ok", main_pid
+    else:
+        pid_status, pid = _resolve_main_pid_status(
+            unit, systemctl_path=systemctl_path
         )
+    if pid is None:
+        if pid_status == "absent":
+            # No meshtasticd unit on this box AT ALL (the meshanchor-server
+            # shape: MeshCore-primary, never had one). There is no channel
+            # instrument here to be dark, and `service_inactive` cannot own a
+            # unit that does not exist — so the handoff below would leave this
+            # class indeterminate forever. Absent by design is `inert`.
+            note_disposition(
+                "channel_feed_dark", "inert",
+                reason=f"no {unit} unit on this box; no channel feed to watch",
+            )
+        else:
+            note_disposition(
+                "channel_feed_dark", "indeterminate",
+                reason="meshtasticd MainPID unresolved; service_inactive owns that",
+            )
         return None
 
     # Bound the journal scan to the darkness threshold. journalctl -g -r -n 1
