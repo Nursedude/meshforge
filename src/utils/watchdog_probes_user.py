@@ -1,13 +1,25 @@
 """Watchdog probes — TIMER-triggered user-unit failure shapes.
 
-Narrows the user-unit blindness class: covers timers whose cadence fits
-inside the lookback window. ⚠️ KNOWN RESIDUAL (2026-07-21 review, W4): with
-``min_failures=2`` inside a 3h lookback plus a 1h recency gate, a timer with
-cadence ≳90 min (daily/weekly jobs) can fail EVERY firing and never trip
-this probe — the 10-min kiai class is covered, slow-cadence timers are not.
-A cadence-aware window (derive lookback from OnCalendar, the #78 pattern) is
-the durable cure; until then, wire slow user timers to ``cron_verdict`` so
-Issue #78 owns them. The existing detectors cover everything else:
+Narrows the user-unit blindness class. The window is **cadence-aware since
+2026-08-13**: each timer's lookback and recency gate are sized from its own
+schedule (``utils.timer_cadence``, which asks ``systemd-analyze``), so a daily
+or weekly job is judged over enough of its own firings instead of against a
+flat 3h window it could never fill.
+
+⚠️ RESIDUAL, NARROWED, NOT GONE — it moved from the window to the JOURNAL.
+The old residual (2026-07-21 review, W4) was that a timer with cadence ≳90 min
+could fail every firing inside a 3h window and never trip ``min_failures=2``;
+that is closed. What remains is that a cadence-sized window can outrun the
+journal that has to fill it: measured 2026-08-13, fleet journal horizons run
+28h–102h (and ~10 min on meshanchor-server, whose map service was writing a
+full traceback per client disconnect). A daily timer needs ~60h. So the probe
+now judges a timer ONLY when it actually witnessed ``min_failures`` firing
+OUTCOMES in the window, and reports the rest as unjudged with the count — an
+honest "I could not see enough" instead of the affirmative ``clean`` that
+counting un-witnessed units used to produce. Where a journal is too short for
+a slow timer, ``cron_verdict`` (Issue #78) is still the durable owner.
+
+The existing detectors cover everything else:
 
 - ``probe_service_inactive`` — structurally blind to user units entirely
   (root/system-context ``systemctl`` cannot see them).
@@ -38,7 +50,8 @@ import os
 import re
 from typing import Dict, List, Optional
 
-from utils.user_units import enabled_user_timers
+from utils.timer_cadence import timer_cadences
+from utils.user_units import enabled_user_timers, timer_wants_dirs
 from utils.watchdog_probe_core import (
     Signal,
     _journal_user_unit_has_lines,
@@ -60,10 +73,24 @@ logger = logging.getLogger("watchdog")
 DEFAULT_USER_TIMER_FAILING_STATE = \
     "/var/lib/meshforge/user_timer_failing_debounce.json"
 
-# Window we read the journal over. Must comfortably span several firings of a
-# typical timer so "every recent firing failed" is a real judgement and not a
-# single sample.
+# FLOOR for the window we read the journal over, and the whole window for a
+# timer whose cadence cannot be determined. Must comfortably span several
+# firings of a fast timer so "every recent firing failed" is a real judgement
+# and not a single sample.
 USER_TIMER_FAILING_LOOKBACK = "3h"
+USER_TIMER_FAILING_LOOKBACK_S = 3 * 3600.0
+# A timer's own window is this many of its cadences. 2.5 guarantees room for
+# 2–3 firings, so ``min_failures=2`` is reachable for ANY cadence — which is
+# precisely what the flat 3h floor could not do for a daily job (it allowed
+# zero). Sized from the schedule, never from the state dir a single manual run
+# creates forever (the synth_soak proxy defect, 2026-08-12).
+USER_TIMER_FAILING_LOOKBACK_CADENCE_MULT = 2.5
+# Ceiling, so a monthly/yearly timer cannot ask journalctl for a window no
+# journal on this fleet could hold. Measured 2026-08-13: query cost is FLAT in
+# window width (~10 ms at 3h and at 30d — the ``USER_UNIT=`` field match is
+# indexed), so this bounds absurdity, not cost. Beyond it the outcome gate
+# below reports the timer unjudged rather than clean.
+USER_TIMER_FAILING_MAX_LOOKBACK_S = 30 * 86400.0
 # Consecutive-ish failures required inside the window. 2 keeps a one-off blip
 # (a transient RNS wedge during a deploy) from paging, while a genuinely
 # broken timer job clears it within two cadences.
@@ -71,10 +98,38 @@ USER_TIMER_FAILING_MIN_FAILURES = 2
 # The newest failure must be at least this fresh. Without it, a job fixed an
 # hour ago would keep paging off its own history until the window rolled — the
 # same post-fix false-page trap nomadnet_crashloop's recency gate exists for.
+# FLOOR only; like the lookback it scales with cadence, because "fresh" for a
+# daily job is not one hour. Un-scaled, this gate ALONE re-created the old
+# blindness: meshanchor-map-restart.timer's daily job had last fired 19h
+# earlier, so even a correctly widened window would have discarded its newest
+# failure as stale history.
 USER_TIMER_FAILING_RECENCY_S = 3600.0
+# 1.5 cadences: the failure must be on (or one jittered firing after) the most
+# recent scheduled run. Deliberately under the 2.5 lookback — the window is for
+# COUNTING failures, this gate is for asserting the job is still broken NOW.
+USER_TIMER_FAILING_RECENCY_CADENCE_MULT = 1.5
 
 _FAIL_PATTERN = "Failed with result"
 _OK_PATTERN = "Finished "
+
+
+_LOOKBACK_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
+
+
+def _lookback_seconds(spec: str) -> float:
+    """The flat ``lookback`` string in seconds — the FLOOR the cadence math
+    raises from.
+
+    Deliberately tiny: this parses only the ``<int><s|m|h|d>`` form this
+    module's own constant and its callers use, and anything else falls back to
+    the module default rather than inventing a number. A wrong floor here
+    would silently resize every timer's window, so the failure mode is "the
+    documented default", never "whatever the regex happened to match".
+    """
+    m = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", spec or "")
+    if not m:
+        return USER_TIMER_FAILING_LOOKBACK_S
+    return int(m.group(1)) * _LOOKBACK_UNITS[m.group(2)]
 
 
 def _load_streak(state_path: str) -> int:
@@ -138,6 +193,7 @@ def probe_user_timer_unit_failing(
     journalctl_path: str = "journalctl",
     ts_fn=None,
     coverage_fn=None,
+    cadences: Optional[Dict[str, Optional[float]]] = None,
     now: Optional[float] = None,
 ) -> Optional[Signal]:
     """Fire when an enabled USER **timer's** job keeps failing every firing.
@@ -149,11 +205,21 @@ def probe_user_timer_unit_failing(
     ``nomadnet_crashloop`` cannot either.
 
     Judgement per timer, from the root-readable ``USER_UNIT=`` journal:
-    at least ``min_failures`` ``Failed with result`` events inside
-    ``lookback``, the newest of them fresher than ``recency_s``, and **no
-    successful run since that newest failure**. The last clause is what makes
-    this an outcome detector rather than an error counter: a job that fails
-    twice and then succeeds is a blip, not an outage, and stays silent.
+    at least ``min_failures`` ``Failed with result`` events inside that
+    timer's own window, the newest of them fresher than its own recency gate,
+    and **no successful run since that newest failure**. The last clause is
+    what makes this an outcome detector rather than an error counter: a job
+    that fails twice and then succeeds is a blip, not an outage, and stays
+    silent.
+
+    **Each timer gets its OWN window** (2026-08-13), sized
+    ``LOOKBACK_CADENCE_MULT × cadence`` with the flat ``lookback`` as a floor
+    and ``MAX_LOOKBACK_S`` as a ceiling; ``recency_s`` scales the same way.
+    ``cadences`` maps timer unit name → seconds between firings (``None`` for
+    a timer with no derivable schedule, which keeps the flat floor — exactly
+    the pre-2026-08-13 behaviour, so a box without ``systemd-analyze`` loses
+    the new coverage rather than gaining a wrong window). Injectable because a
+    test must not depend on the ambient box's systemd.
 
     Honest self-guards — every one of these returns None rather than a
     healthy-looking answer:
@@ -164,7 +230,13 @@ def probe_user_timer_unit_failing(
       → that unit is skipped as indeterminate and, if NOTHING was observable,
       the whole tick is indeterminate and the streak is held, never reset —
       a journalctl wedge must not read as "all timers healthy";
-    - newest failure older than ``recency_s`` (already remediated) → INERT.
+    - **fewer than ``min_failures`` firing OUTCOMES witnessed in the window**
+      → that timer is unjudged, and says so. A window is a REQUEST; the
+      journal decides what it returns. Claiming "no failing job" about a
+      daily timer whose journal only reaches back 10 minutes is the
+      affirmative-clean-over-nothing defect that produced this leg
+      (calibrated_claims: a label may claim only what its evidence covers);
+    - newest failure older than the recency gate (already remediated) → INERT.
 
     2-tick debounce rides out a tick that lands mid-firing. Never raises into
     the tick.
@@ -204,38 +276,76 @@ def probe_user_timer_unit_failing(
             return None
 
         if ts_fn is None:
-            def ts_fn(unit, pattern):
+            def ts_fn(unit, pattern, window=lookback):
                 return _journal_user_unit_ts(
-                    unit, pattern, lookback, journalctl_path=journalctl_path)
+                    unit, pattern, window, journalctl_path=journalctl_path)
         if coverage_fn is None:
-            def coverage_fn(unit):
+            def coverage_fn(unit, window=lookback):
                 return _journal_user_unit_has_lines(
-                    unit, lookback, journalctl_path=journalctl_path)
+                    unit, window, journalctl_path=journalctl_path)
+
+        base_lookback_s = _lookback_seconds(lookback)
+        if cadences is None:
+            dirs = timer_wants_dirs(user_home)
+            # None here is unobservable, but enabled_user_timers already
+            # returned above in that case; an empty list just means no
+            # cadence is derivable and every timer keeps the flat floor.
+            cadences = timer_cadences(dirs or [])
 
         failing: List[dict] = []
+        unjudged: List[str] = []
         observed_any = False
         observed_count = 0
         for timer, service in sorted(timers.items()):
-            fails = ts_fn(service, _FAIL_PATTERN)
-            oks = ts_fn(service, _OK_PATTERN)
+            cadence = cadences.get(timer)
+            # A window is a REQUEST, sized from the schedule. What the journal
+            # actually returns is checked below — never assumed from this.
+            if cadence and cadence > 0:
+                window_s = min(
+                    USER_TIMER_FAILING_MAX_LOOKBACK_S,
+                    max(base_lookback_s,
+                        USER_TIMER_FAILING_LOOKBACK_CADENCE_MULT * cadence))
+                unit_recency_s = max(
+                    recency_s,
+                    USER_TIMER_FAILING_RECENCY_CADENCE_MULT * cadence)
+            else:
+                window_s = base_lookback_s
+                unit_recency_s = recency_s
+            window = (lookback if window_s == base_lookback_s
+                      else f"{int(window_s)}s")
+
+            fails = ts_fn(service, _FAIL_PATTERN, window)
+            oks = ts_fn(service, _OK_PATTERN, window)
             if fails is None or oks is None:
                 # Unobservable for THIS unit — say nothing about it.
                 continue
-            if not fails and not oks:
-                # AMBIGUOUS (2026-08-13): "ran and logged nothing matching"
-                # and "nothing about this unit is visible in the window" are
-                # the same empty result. Measured on meshanchor-server: 2 of 4
-                # enrolled timers were empty for both patterns and were folded
-                # into an affirmative `clean` — one a DAILY timer that fired
-                # 19h ago, outside the 3h lookback entirely.
-                if coverage_fn(service) is not True:
-                    continue           # dead/unreadable channel — say nothing
+
+            # THE COVERAGE GATE. `fails` and `oks` are the only firing
+            # outcomes systemd records, so their count IS how many firings
+            # this window actually witnessed. Fewer than the failure
+            # threshold and no verdict is reachable: "0 failures" would be a
+            # statement about an empty observation, which is how a DAILY
+            # timer got folded into an affirmative `clean` on
+            # meshanchor-server (2026-08-13) — and, once windows are
+            # cadence-sized, how a journal too short to fill one would do it
+            # again on every slow timer at once.
+            outcomes = len(fails) + len(oks)
+            if outcomes < min_failures:
+                why = f"{outcomes} firing outcome(s) in {window}"
+                if outcomes == 0 and coverage_fn(service, window) is not True:
+                    # Cheap only because we are already in the rare path:
+                    # separates a DEAD channel from a live one that simply
+                    # has not completed enough firings yet.
+                    why = f"no journal lines at all in {window}"
+                unjudged.append(f"{service} ({why})")
+                continue
+
             observed_any = True
             observed_count += 1
             if len(fails) < min_failures:
                 continue
             newest_fail = max(fails)
-            if (now - newest_fail) > recency_s:
+            if (now - newest_fail) > unit_recency_s:
                 continue                      # already fixed / stale history
             if oks and max(oks) > newest_fail:
                 continue                      # recovered after the failures
@@ -244,25 +354,37 @@ def probe_user_timer_unit_failing(
                 "service": service,
                 "failures": len(fails),
                 "newest_age_s": round(now - newest_fail, 1),
+                "window": window,
+                "cadence_s": round(cadence, 1) if cadence else None,
             })
 
         if not observed_any:
-            # Journal was unreadable for every enrolled timer. Hold the streak
-            # — resetting here would let a journalctl wedge quietly clear a
-            # real, ongoing outage.
-            note_disposition("user_timer_unit_failing", "indeterminate",
-                             reason="journal unobservable for all user timers")
+            # Nothing was judgeable: the journal was unreadable for every
+            # enrolled timer, or it could not cover any of their cadences.
+            # Hold the streak — resetting here would let a journalctl wedge,
+            # or a journal too short for the fleet's slow timers, quietly
+            # clear a real ongoing outage.
+            note_disposition(
+                "user_timer_unit_failing", "indeterminate",
+                reason=("no user timer judgeable: "
+                        + (", ".join(sorted(unjudged)[:3])
+                           if unjudged
+                           else "journal unobservable for all user timers")))
             return None
 
         if not failing:
             _save_streak(sp, 0)
-            # Say how many were actually JUDGED, not how many are enrolled — a
-            # label may claim only what its evidence covers (2026-08-13).
+            # Say how many were actually JUDGED, not how many are enrolled,
+            # and NAME the ones that were not — a label may claim only what
+            # its evidence covers (2026-08-13). Without the names this reads
+            # as a tidy fraction and the operator cannot tell a box that is
+            # fine from a box whose journal is too short to say so.
             note_disposition(
                 "user_timer_unit_failing", "clean",
                 reason=(f"{observed_count} of {len(timers)} enrolled timer(s) "
-                        f"judged; no failing job")
-                if observed_count != len(timers) else None)
+                        f"judged; no failing job. Unjudged: "
+                        + "; ".join(sorted(unjudged)[:3]))
+                if unjudged else None)
             return None
 
         streak = min(_load_streak(sp) + 1, debounce_ticks)
@@ -276,7 +398,8 @@ def probe_user_timer_unit_failing(
         subj = (failing[0]["service"] if len(failing) == 1
                 else f"{len(failing)} units")
         listed = ", ".join(
-            f"{d['service']} ({d['failures']}x in {lookback})" for d in failing
+            f"{d['service']} ({d['failures']}x in {d['window']})"
+            for d in failing
         )
         return Signal(
             cls="user_timer_unit_failing",
@@ -296,7 +419,8 @@ def probe_user_timer_unit_failing(
                 f"(The 2026-07-12→19 kiai lab_peers class: a week of silence.)"
             ),
             extra={"failing": failing, "lookback": lookback,
-                   "min_failures": min_failures, "streak": streak},
+                   "min_failures": min_failures, "streak": streak,
+                   "unjudged": unjudged},
         )
     except Exception:
         note_disposition("user_timer_unit_failing", "indeterminate",

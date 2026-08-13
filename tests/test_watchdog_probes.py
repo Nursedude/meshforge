@@ -9247,10 +9247,17 @@ class TestProbeSeesTimersUnderAnyTarget:
         assert sig is None
 
 
-def _ts_fn(table):
-    """(unit, pattern) -> timestamps, from a {unit: {pattern: value}} table.
-    A value of None models an unobservable journal."""
-    def fn(unit, pattern):
+def _ts_fn(table, windows=None):
+    """(unit, pattern, window) -> timestamps, from a {unit: {pattern: value}}
+    table. A value of None models an unobservable journal.
+
+    ``window`` is accepted (and optionally recorded into the ``windows`` list)
+    because the probe sizes it PER TIMER from that timer's cadence — a fixture
+    that ignored it would let a window regression pass green.
+    """
+    def fn(unit, pattern, window=None):
+        if windows is not None:
+            windows.append((unit, pattern, window))
         return table.get(unit, {}).get(pattern)
     return fn
 
@@ -10827,7 +10834,7 @@ class TestUserTimerSilenceNeedsAWorkingJournal:
             state_path=str(tmp_path / "s.json"),
             ts_fn=_ts_fn({service: {"Failed with result": fails,
                                     "Finished ": oks}}),
-            coverage_fn=lambda unit: coverage)
+            coverage_fn=lambda unit, window=None: coverage)
         return sig, collect().get("user_timer_unit_failing", {})
 
     def test_dead_journal_is_indeterminate_not_clean(self, tmp_path):
@@ -10835,7 +10842,11 @@ class TestUserTimerSilenceNeedsAWorkingJournal:
         sig, got = self._probe(tmp_path, fails=[], oks=[], coverage=False)
         assert sig is None
         assert got.get("disp") == "indeterminate", got
-        assert "unobservable" in got.get("reason", "")
+        # The reason must NAME the unit and the window it was dark over —
+        # "unobservable" alone left the operator to guess which of N timers
+        # and over how long (2026-08-13 legibility pass).
+        assert "t.service" in got.get("reason", ""), got
+        assert "no journal lines at all" in got.get("reason", ""), got
 
     def test_unreadable_coverage_is_also_indeterminate(self, tmp_path):
         """Coverage itself unobservable must not fall back to the healthy read."""
@@ -10843,10 +10854,26 @@ class TestUserTimerSilenceNeedsAWorkingJournal:
         assert sig is None
         assert got.get("disp") == "indeterminate", got
 
-    def test_working_journal_with_no_failures_is_clean(self, tmp_path):
-        """The true-negative must survive: a live channel that logged lines,
-        just none matching either pattern, is a real healthy observation."""
+    def test_live_channel_with_no_firing_outcomes_is_not_clean(self, tmp_path):
+        """TIGHTENED 2026-08-13. This case used to read ``clean`` on the
+        theory that a live channel which logged *something* is a healthy
+        observation. It is not: with zero ``Finished``/``Failed`` lines the
+        window witnessed zero FIRINGS, so "no failing job" is a statement
+        about an empty sample. For the 10-min fixture timer, zero outcomes in
+        3h means ~18 missing firings — the opposite of healthy."""
         sig, got = self._probe(tmp_path, fails=[], oks=[], coverage=True)
+        assert sig is None
+        assert got.get("disp") == "indeterminate", got
+        assert "0 firing outcome" in got.get("reason", ""), got
+
+    def test_the_true_negative_still_survives(self, tmp_path):
+        """What the flipped test above was protecting — a genuinely healthy
+        timer — must still read ``clean``. It now has to show its work:
+        completed firings, not merely a live logging channel."""
+        sig, got = self._probe(
+            tmp_path, fails=[],
+            oks=[self.NOW - 1800, self.NOW - 1200, self.NOW - 600],
+            coverage=True)
         assert sig is None
         assert got.get("disp") == "clean", got
 
@@ -10878,6 +10905,146 @@ class TestUserTimerSilenceNeedsAWorkingJournal:
             oks=[], coverage=False)   # coverage would say dead; irrelevant
         assert sig is not None
         assert sig.subject == "t.service"
+
+
+class TestUserTimerCadenceAwareWindow:
+    """The 2026-07-21 W4 residual, closed 2026-08-13.
+
+    A flat 3h window with ``min_failures=2`` and a 1h recency gate CANNOT
+    convict a daily timer: it fires once per day, so the window holds at most
+    one firing and the newest failure is hours past the recency gate. Measured
+    the same day, that was not theoretical — 13 of 28 enrolled user timers
+    across the 9-box fleet had a cadence over 90 minutes, including every
+    box's ``meshforge-mini-dudeai-dream.timer``.
+
+    Every test here plants the violation and checks the probe's answer; none
+    reads the implementation. Cadences are INJECTED so no test depends on the
+    ambient box having ``systemd-analyze`` (a verdict that changes with the
+    machine pins nothing).
+    """
+
+    NOW = 1_000_000.0
+    DAY = 86400.0
+
+    def _probe(self, tmp_path, *, fails, oks, cadence, windows=None,
+               timer="meshforge-mini-dudeai-dream.timer"):
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        home = _user_timer_fixture(tmp_path, {timer: None})
+        service = timer[: -len(".timer")] + ".service"
+        collect = _fresh_dispositions()
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({service: {"Failed with result": fails,
+                                    "Finished ": oks}}, windows=windows),
+            coverage_fn=lambda unit, window=None: True,
+            cadences={timer: cadence})
+        return sig, collect().get("user_timer_unit_failing", {})
+
+    def test_daily_timer_failing_every_firing_now_fires(self, tmp_path):
+        """THE case the residual named. Two consecutive daily firings failed,
+        nothing succeeded since, and the newest is 19h old — the exact age of
+        meshanchor-server's map-restart job on 2026-08-13."""
+        sig, _ = self._probe(
+            tmp_path,
+            fails=[self.NOW - 43 * 3600, self.NOW - 19 * 3600],
+            oks=[], cadence=self.DAY)
+        assert sig is not None, "a daily job failing every firing must page"
+        assert sig.cls == "user_timer_unit_failing"
+        assert sig.subject == "meshforge-mini-dudeai-dream.service"
+
+    def test_same_data_stays_silent_without_a_cadence(self, tmp_path):
+        """The other half of the pin: the new coverage comes from the CADENCE,
+        and losing it degrades to exactly the old behaviour rather than to a
+        wrong window. This is what a box with no ``systemd-analyze`` gets."""
+        sig, _ = self._probe(
+            tmp_path,
+            fails=[self.NOW - 43 * 3600, self.NOW - 19 * 3600],
+            oks=[], cadence=None)
+        assert sig is None
+
+    def test_window_is_sized_from_the_cadence(self, tmp_path):
+        """journalctl must actually be ASKED for the wider window — sizing it
+        and then querying 3h would look identical in every other assertion."""
+        windows = []
+        self._probe(tmp_path, fails=[], oks=[self.NOW - 3600],
+                    cadence=self.DAY, windows=windows)
+        asked = {w for _, _, w in windows}
+        assert asked == {"216000s"}, asked          # 2.5 × 24h
+
+    def test_a_fast_timer_keeps_the_flat_floor(self, tmp_path):
+        """Blast-radius pin: this change must not widen the window for the
+        10-minute timers the probe already covered (2.5 × 10 min is far under
+        the 3h floor), or its cost and its false-positive surface both move
+        for units that were never the problem."""
+        windows = []
+        self._probe(tmp_path, fails=[], oks=[self.NOW - 600, self.NOW - 1200],
+                    cadence=600.0, windows=windows, timer="fast.timer")
+        assert {w for _, _, w in windows} == {"3h"}
+
+    def test_absurd_cadence_is_clamped(self, tmp_path):
+        """A yearly timer must not ask journalctl for a 2.5-year window."""
+        from utils.watchdog_probes_user import USER_TIMER_FAILING_MAX_LOOKBACK_S
+        windows = []
+        self._probe(tmp_path, fails=[], oks=[self.NOW - 3600],
+                    cadence=365 * self.DAY, windows=windows)
+        assert {w for _, _, w in windows} == {
+            f"{int(USER_TIMER_FAILING_MAX_LOOKBACK_S)}s"}
+
+    def test_recovered_daily_job_stays_silent(self, tmp_path):
+        """The outcome-detector contract has to hold at the new scale too: a
+        success AFTER the newest failure is a recovery, not an outage."""
+        sig, _ = self._probe(
+            tmp_path,
+            fails=[self.NOW - 43 * 3600, self.NOW - 19 * 3600],
+            oks=[self.NOW - 2 * 3600], cadence=self.DAY)
+        assert sig is None
+
+    def test_long_fixed_daily_job_stays_silent(self, tmp_path):
+        """The recency gate scales but does not vanish: failures from five
+        days ago, with the job since gone quiet, are history — not a page."""
+        sig, _ = self._probe(
+            tmp_path,
+            fails=[self.NOW - 6 * self.DAY, self.NOW - 5 * self.DAY],
+            oks=[], cadence=self.DAY)
+        assert sig is None
+
+    def test_widened_window_with_a_short_journal_is_unjudged(self, tmp_path):
+        """The trap the widening creates, and the gate that closes it. A
+        cadence-sized window is a REQUEST; on a box whose journal reaches back
+        10 minutes (meshanchor-server, 2026-08-13) it comes back nearly empty.
+        One outcome is not two, so the timer is unjudged and SAID SO — the
+        alternative is an affirmative ``clean`` about a job never seen."""
+        sig, got = self._probe(tmp_path, fails=[], oks=[self.NOW - 3600],
+                               cadence=self.DAY)
+        assert sig is None
+        assert got.get("disp") == "indeterminate", got
+        assert "1 firing outcome" in got.get("reason", ""), got
+        assert "meshforge-mini-dudeai-dream.service" in got.get("reason", "")
+
+    def test_clean_names_the_timers_it_could_not_judge(self, tmp_path):
+        """A mixed box: one timer judged healthy, one unseeable. The verdict
+        may not launder the second into the first's fraction."""
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        home = _user_timer_fixture(
+            tmp_path, {"fast.timer": None, "slow.timer": None})
+        collect = _fresh_dispositions()
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({
+                "fast.service": {"Failed with result": [],
+                                 "Finished ": [self.NOW - 600,
+                                               self.NOW - 1200]},
+                "slow.service": {"Failed with result": [], "Finished ": []},
+            }),
+            coverage_fn=lambda unit, window=None: True,
+            cadences={"fast.timer": 600.0, "slow.timer": self.DAY})
+        got = collect().get("user_timer_unit_failing", {})
+        assert sig is None
+        assert got.get("disp") == "clean", got
+        assert "1 of 2 enrolled timer(s) judged" in got.get("reason", ""), got
+        assert "slow.service" in got.get("reason", ""), got
 
 
 class TestJournalUserUnitHasLines:
