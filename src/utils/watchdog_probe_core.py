@@ -16,7 +16,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 # First-party, imported DIRECTLY (never a swallowed try/except — a rename
 # would silently turn every role-evidence answer into permanent "crontab
@@ -658,6 +658,36 @@ def _journal_count_match(
         return 0
     # Count non-empty lines; trailing newline must not inflate by one.
     return sum(1 for ln in out.splitlines() if ln)
+
+
+def _journal_match_lines(
+    unit: str,
+    pattern: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Optional[List[str]]:
+    """The matching journal LINES (not just their count) — sibling of
+    ``_journal_count_match`` for callers that must sub-classify a match.
+
+    Same honest contract: ``[]`` = observed, nothing matched; **None** =
+    unobservable (journalctl absent / timed out / rc > 1). A caller must
+    never read None as ``[]`` — for a counter used to EXCLUDE benign events
+    from a ratio, that collapse would silently restore the false signal the
+    exclusion exists to prevent (honest_failure_modes #1).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-u", unit, "--since", f"-{lookback}",
+                "-g", pattern, "-o", "cat", "-q", "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    return [ln for ln in proc.stdout.splitlines() if ln]
 
 
 def _short_unix_ts(line: str) -> Optional[float]:

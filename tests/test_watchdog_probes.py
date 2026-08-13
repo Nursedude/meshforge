@@ -99,10 +99,12 @@ from utils.watchdog_probes_gateway import (  # noqa: E402
     _parse_delivery_block,
     _window_delivery_gap,
     _gateway_delivery_blocks,
+    _gateway_r2m_suppressed,
     _save_gateway_delivery_streak,
     _load_gateway_delivery_streak,
     GATEWAY_DELIVERY_BLOCK_GREP,
     GATEWAY_RNS_ERROR_GREP,
+    GATEWAY_R2M_SUPPRESSED_GREP,
 )
 
 
@@ -7094,7 +7096,7 @@ class TestGatewayDeliveryParse:
     def test_window_gap_needs_two_blocks(self):
         assert _window_delivery_gap(
             [_blk(1, 100, 100, 0, 100, 100, 0)],
-            min_volume=20, ratio_floor=0.5) == []
+            min_volume=20, ratio_floor=0.5, r2m_suppressed=0) == ([], [])
 
     def test_window_gap_fires_on_r2m_collapse(self):
         """R->M attempted +30 / delivered +10 over the window (33% < 50% floor,
@@ -7102,33 +7104,106 @@ class TestGatewayDeliveryParse:
         is below the volume gate → no finding there."""
         blocks = [_blk(1, 100, 100, 0, 100, 100, 0),
                   _blk(2, 110, 110, 0, 130, 110, 20)]
-        gaps = _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5)
+        gaps, unjudged = _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5, r2m_suppressed=0)
+        assert unjudged == []
         assert len(gaps) == 1
-        label, d_att, d_del, ratio = gaps[0]
+        label, d_att, d_del, ratio, excluded = gaps[0]
         assert label == "RNS->Mesh"
-        assert (d_att, d_del) == (30, 10)
+        assert (d_att, d_del, excluded) == (30, 10, 0)
         assert ratio == pytest.approx(10 / 30)
 
     def test_window_gap_silent_when_above_floor(self):
         blocks = [_blk(1, 100, 100, 0, 100, 100, 0),
                   _blk(2, 200, 200, 0, 200, 195, 5)]  # 95% delivered
-        assert _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5) == []
+        assert _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5,
+            r2m_suppressed=0) == ([], [])
 
     def test_window_gap_silent_below_min_volume(self):
         """A quiet box (small windowed delta) never fires even at a low ratio."""
         blocks = [_blk(1, 100, 100, 0, 100, 100, 0),
                   _blk(2, 105, 100, 5, 110, 102, 8)]  # only +10 R->M attempts
-        assert _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5) == []
+        assert _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5,
+            r2m_suppressed=0) == ([], [])
 
     def test_window_gap_handles_counter_reset(self):
         """A gateway restart mid-window resets the in-memory counters (latest <
         earliest); the baseline is taken as zero so we measure since-restart,
-        never a bogus negative delta."""
+        never a bogus negative delta. M->R still judges; R->M refuses (its
+        suppression exclusion spans a different window — see below)."""
         blocks = [_blk(1, 500, 490, 10, 500, 480, 20),
                   _blk(2, 30, 10, 20, 40, 10, 30)]  # restarted → small counters
-        gaps = _window_delivery_gap(blocks, min_volume=20, ratio_floor=0.5)
-        labels = {g[0] for g in gaps}
-        assert labels == {"Mesh->RNS", "RNS->Mesh"}  # both collapsed since reset
+        gaps, unjudged = _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5, r2m_suppressed=0)
+        assert {g[0] for g in gaps} == {"Mesh->RNS"}
+        assert unjudged == ["RNS->Mesh"]
+
+    # ── dual-path dedup exclusion (2026-08-12 false page) ──────────────
+    # moc pages R->M 8/22 (36%) while every one of the 14 missing messages
+    # was a dual-path dedup suppression — the local mesh_bridge had already
+    # put that content on RF. True delivery was 8/8. The suppressed counter
+    # is documented in rns_bridge.stats as "attempted counts them;
+    # delivered/dropped do not" and had NO reader until this exclusion.
+
+    _LIVE_MOC = [_blk(1, 1, 1, 0, 0, 0, 0), _blk(2, 4, 4, 0, 22, 8, 0)]
+
+    def test_live_false_page_reproduces_without_the_exclusion(self):
+        """Pin the DEFECT: with suppressions unaccounted (0), the real 2026-08-12
+        moc window fires at exactly the 36% the operator was paged with."""
+        gaps, _ = _window_delivery_gap(
+            self._LIVE_MOC, min_volume=20, ratio_floor=0.5, r2m_suppressed=0)
+        assert len(gaps) == 1
+        assert gaps[0][0] == "RNS->Mesh"
+        assert gaps[0][3] == pytest.approx(8 / 22)
+
+    def test_live_false_page_silent_once_suppressions_excluded(self):
+        """Same window, the 14 real suppressions excluded → nothing to report."""
+        assert _window_delivery_gap(
+            self._LIVE_MOC, min_volume=20, ratio_floor=0.5,
+            r2m_suppressed=14) == ([], [])
+
+    def test_real_collapse_still_fires_despite_some_suppression(self):
+        """The exclusion must not blind the probe: a genuine collapse (40
+        attempted / 5 delivered) with 2 benign suppressions still fires."""
+        blocks = [_blk(1, 0, 0, 0, 0, 0, 0), _blk(2, 0, 0, 0, 40, 5, 0)]
+        gaps, unjudged = _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5, r2m_suppressed=2)
+        assert unjudged == []
+        assert len(gaps) == 1
+        label, d_att, d_del, ratio, excluded = gaps[0]
+        assert (label, d_att, d_del, excluded) == ("RNS->Mesh", 38, 5, 2)
+        assert ratio == pytest.approx(5 / 38)
+
+    def test_suppressed_count_cannot_exceed_the_gap(self):
+        """An inflated suppression count can never invent delivery — it is
+        clamped to the unexplained gap, so the ratio can't be forged upward."""
+        blocks = [_blk(1, 0, 0, 0, 0, 0, 0), _blk(2, 0, 0, 0, 40, 5, 0)]
+        gaps, _ = _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5, r2m_suppressed=10_000)
+        # 35-message gap fully absorbed → 5 real attempts, under the volume
+        # gate. Never a >100% ratio, never a negative attempted count.
+        assert gaps == []
+
+    def test_unobservable_suppression_is_unjudged_not_clean(self):
+        """journalctl blind for the suppression count + a real gap = we cannot
+        tell dedup from collapse. That must surface as unjudged (the caller
+        reports indeterminate), NEVER as a silent clean (honest_failure_modes
+        #1/#2) and never as the false page (r2m_suppressed treated as 0)."""
+        gaps, unjudged = _window_delivery_gap(
+            self._LIVE_MOC, min_volume=20, ratio_floor=0.5,
+            r2m_suppressed=None)
+        assert gaps == []
+        assert unjudged == ["RNS->Mesh"]
+
+    def test_unobservable_suppression_with_no_gap_is_still_clean(self):
+        """No gap to attribute → the blind suppression count doesn't matter;
+        a fully-delivering box must not go indeterminate for lack of it."""
+        blocks = [_blk(1, 0, 0, 0, 0, 0, 0), _blk(2, 0, 0, 0, 30, 30, 0)]
+        assert _window_delivery_gap(
+            blocks, min_volume=20, ratio_floor=0.5,
+            r2m_suppressed=None) == ([], [])
 
 
 class TestGatewayDeliveryDegraded:
@@ -7142,9 +7217,14 @@ class TestGatewayDeliveryDegraded:
     _HEALTHY = [_blk(1, 100, 100, 0, 100, 100, 0),
                 _blk(2, 200, 200, 0, 200, 198, 2)]
 
-    def _kw(self, sp, *, blocks, err):
+    def _kw(self, sp, *, blocks, err, sup=(0, 0)):
+        """``sup`` is ALWAYS injected — the dual-path suppression count reads
+        the real journal by default, so an un-injected test would judge on
+        whatever box happened to run the suite (a gateway box and a dev box
+        would disagree). Default (0, 0) = observed, none."""
         return dict(main_pid=1234, blocks_fn=lambda: blocks,
-                    error_count_fn=lambda: err, state_path=sp)
+                    error_count_fn=lambda: err, suppressed_fn=lambda: sup,
+                    state_path=sp)
 
     def test_signal_class_registered(self):
         assert "gateway_delivery_degraded" in SIGNAL_CLASSES
@@ -7254,7 +7334,60 @@ class TestGatewayDeliveryDegraded:
             raise RuntimeError("journalctl exploded")
         assert probe_gateway_delivery_degraded(
             main_pid=1234, blocks_fn=boom, error_count_fn=lambda: 0,
-            state_path=sp) is None
+            suppressed_fn=lambda: (0, 0), state_path=sp) is None
+
+    # ── dual-path dedup exclusion at probe level (2026-08-12) ──────────
+    # The live moc window that paged: R->M 0/0 → 22/8 with 14 suppressions.
+    _LIVE_MOC = [_blk(1, 1, 1, 0, 0, 0, 0), _blk(2, 4, 4, 0, 22, 8, 0)]
+
+    def test_live_false_page_no_longer_fires(self, tmp_path):
+        """The 2026-08-12 moc page, replayed: 14 of the 22 R->M attempts were
+        dual-path dedup suppressions (already on RF via mesh_bridge), so true
+        delivery was 8/8. Two ticks must produce NO signal."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=self._LIVE_MOC, err=0, sup=(14, 0))
+        assert probe_gateway_delivery_degraded(**kw) is None
+        assert probe_gateway_delivery_degraded(**kw) is None
+        # ...and it is an observed-clean tick, so the streak stays reset.
+        assert _load_gateway_delivery_streak(sp) == 0
+
+    def test_live_window_would_have_fired_without_the_exclusion(self, tmp_path):
+        """Guard the guard: the SAME window with the suppressions unaccounted
+        still fires at 36% — proving this test pins the exclusion, not some
+        other reason for silence."""
+        sp = str(tmp_path / "g.json")
+        kw = self._kw(sp, blocks=self._LIVE_MOC, err=0, sup=(0, 0))
+        assert probe_gateway_delivery_degraded(**kw) is None
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None
+        assert "RNS->Mesh delivered 8/22 (36%)" in sig.detail
+
+    def test_unobservable_suppression_holds_streak_and_never_fires(self, tmp_path):
+        """Suppression count unobservable + a real gap: the probe must neither
+        fire (that's the false page) nor reset the streak to healthy (that's
+        unobservable-read-as-clean, honest_failure_modes #2)."""
+        sp = str(tmp_path / "g.json")
+        _save_gateway_delivery_streak(sp, 1)
+        kw = self._kw(sp, blocks=self._LIVE_MOC, err=0, sup=None)
+        assert probe_gateway_delivery_degraded(**kw) is None
+        assert _load_gateway_delivery_streak(sp) == 1   # HELD, not reset to 0
+
+    def test_firing_signal_names_the_exclusion_and_exposure(self, tmp_path):
+        """A real collapse alongside some benign dedup still fires, and the
+        signal shows BOTH the exclusion (so the operator can reconcile the
+        number against the journal) and the cid-only loss-exposure subset
+        rather than averaging it away."""
+        sp = str(tmp_path / "g.json")
+        blocks = [_blk(1, 0, 0, 0, 0, 0, 0), _blk(2, 0, 0, 0, 40, 5, 0)]
+        kw = self._kw(sp, blocks=blocks, err=0, sup=(2, 1))
+        assert probe_gateway_delivery_degraded(**kw) is None
+        sig = probe_gateway_delivery_degraded(**kw)
+        assert sig is not None
+        assert "RNS->Mesh delivered 5/38" in sig.detail
+        assert "excludes 2 dual-path dedup suppression(s)" in sig.detail
+        assert sig.extra["r2m_dual_path_suppressed"] == 2
+        assert sig.extra["r2m_dual_path_suppressed_cid_only"] == 1
+        assert sig.extra["gap_RNS_Mesh"]["suppressed_excluded"] == 2
 
     def test_streak_clamped_at_debounce_floor(self, tmp_path):
         """A sustained collapse keeps firing but the persisted streak never
@@ -7309,8 +7442,10 @@ class TestGatewayDeliveryRealQuery:
                 raise exc
             return _Result()
 
-        # source seam is the flow sibling after the 2026-07-14 gateway split.
-        return patch("utils.watchdog_probes_gateway_flow.subprocess.run",
+        # Source seam moved again 2026-08-12 (MF025 split): the journal
+        # readers now live in watchdog_gateway_delivery_report and are
+        # re-exported by the flow module. Patch where the code RUNS.
+        return patch("utils.watchdog_gateway_delivery_report.subprocess.run",
                      side_effect=_runner), captured
 
     def test_selects_unit_and_block_grep(self):
@@ -7355,6 +7490,80 @@ class TestGatewayDeliveryRealQuery:
         with ctx:
             blocks = _gateway_delivery_blocks("u", "30min")
         assert blocks == [(1781943622.0, 5, 5, 0, 5, 4, 1)]
+
+
+class TestGatewayR2MSuppressedRealQuery:
+    """Exercise the REAL _gateway_r2m_suppressed journal reader (2026-08-12).
+
+    The probe tests all inject suppressed_fn, so without this the grep could
+    stop matching the live log line and the false page would silently return
+    — the exclusion would read "0 suppressions" forever while the journal was
+    full of them. Verbatim live lines from moc 2026-08-12.
+    """
+
+    # The rns_bridge line — this one inflates rns_to_mesh_attempted.
+    _R2M = ("2026-08-12 21:14:12,979 | gateway._rns_bridge_xform | INFO | "
+            "Bridge RNS→Mesh suppressed (dual-path dedup [text] — already on "
+            "RF via mesh_bridge): [MC:p3] @[KH7BR] I got you...")
+    _R2M_CID = _R2M.replace("[text]", "[cid]")
+    # mesh_bridge's MIRROR line — a DIFFERENT counter that never touches
+    # rns_to_mesh_attempted. Counting it would over-subtract.
+    _MESH = ("2026-08-12 21:23:10,749 | gateway.mesh_bridge | INFO | "
+             "mesh_bridge forward suppressed (dual-path dedup [cid] — already "
+             "on RF via rns_bridge): @moc3 ✋Ack to you!")
+
+    def _patched(self, *, stdout="", returncode=0, exc=None):
+        captured = {}
+
+        class _Result:
+            def __init__(self):
+                self.stdout = stdout
+                self.returncode = returncode
+
+        def _runner(*args, **kwargs):
+            captured["argv"] = args[0]
+            if exc is not None:
+                raise exc
+            return _Result()
+
+        # The reader delegates to _journal_match_lines in the probe core.
+        return patch("utils.watchdog_probe_core.subprocess.run",
+                     side_effect=_runner), captured
+
+    def test_counts_total_and_cid_only_subset(self):
+        ctx, captured = self._patched(
+            stdout="\n".join([self._R2M, self._R2M_CID, self._R2M]) + "\n")
+        with ctx:
+            got = _gateway_r2m_suppressed("meshforge-gateway.service", "30min")
+        assert got == (3, 1)
+        argv = captured["argv"]
+        assert "-u" in argv and "meshforge-gateway.service" in argv
+        assert GATEWAY_R2M_SUPPRESSED_GREP in argv
+
+    def test_grep_excludes_the_mesh_bridge_mirror_line(self):
+        """The two suppression logs are near-identical; keying the wrong one
+        would subtract a counter that never inflated attempted. The grep must
+        match only the 'via mesh_bridge' tail."""
+        import re as _re
+        assert _re.search(GATEWAY_R2M_SUPPRESSED_GREP, self._R2M)
+        assert not _re.search(GATEWAY_R2M_SUPPRESSED_GREP, self._MESH)
+
+    def test_no_matches_is_zero_not_none(self):
+        ctx, _ = self._patched(stdout="", returncode=1)
+        with ctx:
+            assert _gateway_r2m_suppressed("u", "30min") == (0, 0)
+
+    def test_journalctl_failure_is_unobservable_none(self):
+        """rc>1 → None, so the caller refuses to judge rather than reading a
+        blind channel as 'no suppressions' (which restores the false page)."""
+        ctx, _ = self._patched(stdout="", returncode=2)
+        with ctx:
+            assert _gateway_r2m_suppressed("u", "30min") is None
+
+    def test_timeout_is_unobservable_none(self):
+        ctx, _ = self._patched(exc=subprocess.TimeoutExpired("journalctl", 15))
+        with ctx:
+            assert _gateway_r2m_suppressed("u", "30min") is None
 
 
 # ─────────────────────────────────────────────────────────────────────

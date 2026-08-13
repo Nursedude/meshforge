@@ -3461,6 +3461,49 @@ means the detector, not the daemon, is the defect.
 
 ---
 
+## gateway_delivery_degraded counted CORRECT dedup as lost messages (2026-08-12) — RESOLVED
+
+First fire in 14 days, and it was false. moc paged AMBER `RNS->Mesh delivered
+8/22 (36%)` while the gateway was entirely healthy: `dropped=0`, no EROFS,
+both legs `connected`. All 14 of the missing messages were **dual-path dedup
+suppressions** — content the box's own `mesh_bridge` had already put on RF,
+which `rns_bridge` then correctly refused to transmit a second time. True
+delivery was **8/8**. Verified by counting the suppression witness in the
+probe's exact window: exactly 14, all `[text]` hits (the strong evidence
+form, not the weaker `cid`-only loss-exposure subset).
+
+The counter knew. `rns_bridge.stats` has documented it since the dual-path
+arc — *"attempted counts them; delivered/dropped do not — this counter
+explains the gap"* — but `rns_to_mesh_dual_path_suppressed` had **no reader**:
+the att/del/drop block `bridge_cli` prints (the probe's only input) omits it.
+So on any box running BOTH bridges, every correct suppression looked like an
+undelivered message and drove the ratio down without bound. honest_failure_modes
+#9 inverted — the witness existed, nothing consumed it.
+
+Cure (`watchdog_gateway_delivery_report.py`, split out under MF025): the probe
+counts the suppression log line in the same window and excludes it from
+RNS→Mesh *attempted*, with three guards — the count is **clamped to the
+unexplained gap** (can never invent delivery), the volume gate re-applies to
+the ADJUSTED count, and an **unobservable** suppression count beside a real
+gap is `indeterminate` with the streak HELD, never a silent clean (reading
+that blindness as 0 restores the exact false page). A mid-window gateway
+restart makes the block's since-restart delta and the whole-window line count
+non-comparable, so that direction is unjudgeable for one tick. Mutation-drilled:
+disabling the exclusion kills 5 tests.
+
+**Decision tell**: `gateway_delivery_degraded` on a **dual-bridge** box
+(`Gateway Status: RUNNING (2 bridges)`) with `dropped=0` and no EROFS = suspect
+dedup accounting, not loss. **Quick check** — the gap must equal the
+suppressions:
+`journalctl -u meshforge-gateway --since -30min | grep -c 'already on RF via mesh_bridge'`
+(mesh_bridge's mirror line says "via **rns_bridge**" and is a different counter
+— do not count it). ⚠️ The right response to a false page is to fix the
+DETECTOR; dismissing the class as `known_benign` is how blindness gets
+memorialised. Eval:
+`evals/local_brain/gateway_delivery_dedup_false_page_2026_08_12.jsonl`.
+
+---
+
 ## Resolved-issue INDEX (moved out of the hot file 2026-08-05, MF012)
 
 This is the chronological index of fully-resolved issues. It lived in

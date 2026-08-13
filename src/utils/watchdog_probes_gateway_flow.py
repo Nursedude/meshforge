@@ -12,17 +12,27 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-import subprocess
 import time
 from typing import List, Optional, Tuple
 
 from utils.user_units import timer_wants_dirs as _shared_wants_dirs
+# Delivery self-report parsing lives in its own module since 2026-08-12
+# (MF025). Re-exported here so watchdog_probes_gateway and the tests keep
+# importing these names from where they have always lived.
+from utils.watchdog_gateway_delivery_report import (  # noqa: F401
+    GATEWAY_DELIVERY_BLOCK_GREP,
+    GATEWAY_R2M_SUPPRESSED_GREP,
+    GATEWAY_RNS_ERROR_GREP,
+    _GATEWAY_DELIVERY_BLOCK_RE,
+    _gateway_delivery_blocks,
+    _gateway_r2m_suppressed,
+    _parse_delivery_block,
+    _window_delivery_gap,
+)
 from utils.watchdog_probe_core import (
     Signal,
     _journal_count_match,
     _resolve_main_pid_status,
-    _short_unix_ts,
     note_disposition,
     note_unit_presence_gate,
 )
@@ -455,141 +465,8 @@ def probe_synth_soak_degraded(
 # A2 watches the GROSS journal self-report (both directions, Meshtastic
 # included) + the RNS error channel none of those see.
 
-# Matches the att/del/drop line in BOTH bridge_cli formats — single-bridge
-# ("  attempted/delivered/dropped — M->R: a/d/x  R->M: a/d/x") and
-# multi-bridge ("      att/del/drop — M->R: a/d/x  R->M: a/d/x"). The
-# slash triplet after "M->R:" is the discriminator: the "Messages bridged:
-# N (M->R: a, R->M: b)" line uses a COMMA, so it never matches. ERE for
-# journalctl -g.
-GATEWAY_DELIVERY_BLOCK_GREP = r"M->R: [0-9]+/[0-9]+/[0-9]+"
-_GATEWAY_DELIVERY_BLOCK_RE = re.compile(
-    r"M->R:\s*(\d+)/(\d+)/(\d+)\s+R->M:\s*(\d+)/(\d+)/(\d+)")
-
-# The RNS error-channel witnesses (ERE for journalctl -g). EROFS is the
-# 2026-06-20 wx class; the other two are the adjacent resource/forward
-# failure shapes. Deliberately concrete strings — NOT a bare "Resource"
-# match, which would false-fire on benign "Resource" log lines.
-GATEWAY_RNS_ERROR_GREP = (
-    r"EROFS|Error while assembling received resource|"
-    r"Failed to forward to secondary")
-
 DEFAULT_GATEWAY_DELIVERY_STATE_PATH = (
     "/var/lib/meshforge/gateway_delivery_debounce.json")
-
-
-def _parse_delivery_block(
-    line: str,
-) -> Optional[Tuple[float, int, int, int, int, int, int]]:
-    """Parse one ``-o short-unix`` att/del/drop journal line.
-
-    Returns ``(ts, m2r_att, m2r_del, m2r_drop, r2m_att, r2m_del, r2m_drop)``
-    or None when the epoch or the six counters don't parse (a torn line, a
-    format that doesn't match) — None is dropped by the caller, never read as
-    a zeroed block.
-    """
-    ts = _short_unix_ts(line)
-    if ts is None:
-        return None
-    m = _GATEWAY_DELIVERY_BLOCK_RE.search(line)
-    if m is None:
-        return None
-    try:
-        n = [int(x) for x in m.groups()]
-    except (ValueError, TypeError):
-        return None
-    return (ts, n[0], n[1], n[2], n[3], n[4], n[5])
-
-
-def _gateway_delivery_blocks(
-    unit: str,
-    lookback: str,
-    journalctl_path: str = "journalctl",
-) -> Optional[List[Tuple[float, int, int, int, int, int, int]]]:
-    """All att/del/drop counter blocks for ``unit`` within ``lookback``.
-
-    Returns the parsed block list (``[]`` = the gateway printed no att/del
-    block in the window — idle / just-started, a genuine *observed* state),
-    or **None** on journalctl unavailable / timeout / rc∉(0,1) — the honest
-    *unobservable* answer. The caller must never read None as ``[]`` (empty ≠
-    error — honest_failure_modes #1), or a journalctl wedge would mask the
-    very delivery collapse this measures.
-    """
-    try:
-        proc = subprocess.run(
-            [
-                journalctl_path, "-u", unit, "--since", f"-{lookback}",
-                "-g", GATEWAY_DELIVERY_BLOCK_GREP, "-o", "short-unix",
-                "-q", "--no-pager",
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    if proc.returncode not in (0, 1):
-        return None
-    out = proc.stdout
-    if not out:
-        return []
-    blocks: List[Tuple[float, int, int, int, int, int, int]] = []
-    for ln in out.splitlines():
-        if not ln:
-            continue
-        parsed = _parse_delivery_block(ln)
-        if parsed is not None:
-            blocks.append(parsed)
-    return blocks
-
-
-def _window_delivery_gap(
-    blocks: List[Tuple[float, int, int, int, int, int, int]],
-    *,
-    min_volume: int,
-    ratio_floor: float,
-) -> List[Tuple[str, int, int, float]]:
-    """Per-direction windowed delivered/attempted gap.
-
-    Returns ``[(label, d_att, d_del, ratio), ...]`` for each direction whose
-    WINDOWED delivery (newest counter minus oldest in the window) fell below
-    ``ratio_floor`` with at least ``min_volume`` attempts — the recent-drop
-    lens, not the lifetime-cumulative one (which would mask a fresh collapse
-    on a long-uptime box). A counter going BACKWARD across the window means
-    the gateway restarted mid-window (counters are in-memory); the earliest
-    baseline is then taken as zero so we measure since-the-restart rather than
-    reading a bogus negative delta.
-
-    Needs ≥2 blocks to form a delta; fewer → ``[]`` (can't judge — the caller
-    treats that as *no finding*, not *healthy*, and the volume gate keeps a
-    quiet box silent regardless).
-
-    NOTE (calibrated): the journal exposes only the TOTAL dropped count, which
-    on the Mesh→RNS direction folds in benign best-effort broadcast-to-no-peer
-    misses alongside real failures (RNS→Mesh dropped is clean — failures only).
-    That is why the floor is conservative (a true majority-failure collapse,
-    far below any benign-broadcast steady state) and why the precise,
-    reason-split moderate-gap detection is delivery_confirmation_stall's job,
-    not this leg's. Leg 1 is the gross-collapse backstop.
-    """
-    if len(blocks) < 2:
-        return []
-    ordered = sorted(blocks, key=lambda b: b[0])
-    earliest, latest = ordered[0], ordered[-1]
-    findings: List[Tuple[str, int, int, float]] = []
-    # tuple indices: ts=0; M->R att/del/drop = 1/2/3; R->M att/del/drop = 4/5/6
-    for label, att_i, del_i in (("Mesh->RNS", 1, 2), ("RNS->Mesh", 4, 5)):
-        att_l, del_l = latest[att_i], latest[del_i]
-        att_e, del_e = earliest[att_i], earliest[del_i]
-        if att_l < att_e:                 # counter reset → measure since reset
-            base_att, base_del = 0, 0
-        else:
-            base_att, base_del = att_e, del_e
-        d_att = att_l - base_att
-        d_del = del_l - base_del
-        if d_att < min_volume:
-            continue
-        ratio = max(0.0, min(1.0, d_del / d_att))
-        if ratio < ratio_floor:
-            findings.append((label, d_att, d_del, ratio))
-    return findings
 
 
 def _load_gateway_delivery_streak(state_path: str) -> int:
@@ -635,6 +512,7 @@ def probe_gateway_delivery_degraded(
     main_pid: Optional[int] = None,
     blocks_fn=None,
     error_count_fn=None,
+    suppressed_fn=None,
     min_volume: int = 20,
     ratio_floor: float = 0.50,
     error_degraded_n: int = 3,
@@ -711,9 +589,14 @@ def probe_gateway_delivery_degraded(
                 return _journal_count_match(
                     unit, GATEWAY_RNS_ERROR_GREP, lookback,
                     journalctl_path=journalctl_path)
+        if suppressed_fn is None:
+            def suppressed_fn():
+                return _gateway_r2m_suppressed(
+                    unit, lookback, journalctl_path=journalctl_path)
 
         blocks = blocks_fn()           # Optional[List]: None=unobservable
         err = error_count_fn()         # Optional[int]: None=unobservable
+        sup = suppressed_fn()          # Optional[(total, cid_only)]: None=unobs
 
         if blocks is None and err is None:
             # Fully unobservable — hold the streak (do NOT reset to a healthy
@@ -731,19 +614,30 @@ def probe_gateway_delivery_degraded(
         }
 
         # Leg 1 — windowed delivery gap (needs ≥2 blocks; observed = blocks
-        # is not None, i.e. journalctl worked).
+        # is not None, i.e. journalctl worked). RNS→Mesh attempts exclude
+        # dual-path suppressions: correct dedup is not a delivery failure.
+        leg1_blind = False
         if blocks is not None:
-            for label, d_att, d_del, ratio in _window_delivery_gap(
-                blocks, min_volume=min_volume, ratio_floor=ratio_floor
-            ):
+            if sup is not None:
+                extra["r2m_dual_path_suppressed"] = sup[0]
+                extra["r2m_dual_path_suppressed_cid_only"] = sup[1]
+            gaps, unjudged = _window_delivery_gap(
+                blocks, min_volume=min_volume, ratio_floor=ratio_floor,
+                r2m_suppressed=None if sup is None else sup[0])
+            leg1_blind = bool(unjudged)
+            if leg1_blind:
+                extra["gap_unjudged"] = unjudged
+            for label, d_att, d_del, ratio, excluded in gaps:
                 findings.append((
                     "degraded",
                     f"{label} delivered {d_del}/{d_att} ({ratio:.0%}) over the "
-                    f"last {lookback}",
+                    f"last {lookback}"
+                    + (f" (excludes {excluded} dual-path dedup suppression(s))"
+                       if excluded else ""),
                 ))
                 extra[f"gap_{label.replace('->', '_')}"] = {
                     "attempted": d_att, "delivered": d_del,
-                    "ratio": round(ratio, 3),
+                    "ratio": round(ratio, 3), "suppressed_excluded": excluded,
                 }
 
         # Leg 2 — RNS error-channel spike (the EROFS catcher).
@@ -759,6 +653,15 @@ def probe_gateway_delivery_degraded(
                 ))
 
         if not findings:
+            if leg1_blind:
+                # A real R→M gap we could not attribute (suppression count
+                # unobservable). HOLD the streak — silence here is ignorance,
+                # not health (honest_failure_modes #2).
+                note_disposition(
+                    "gateway_delivery_degraded", "indeterminate",
+                    reason=("RNS->Mesh gap unattributable: dual-path "
+                            "suppression count unobservable this tick"))
+                return None
             # Observed at least one leg and nothing crossed a threshold →
             # reset the debounce streak (explicit healthy observation).
             _save_gateway_delivery_streak(sp, 0)
