@@ -698,19 +698,28 @@ def _journal_user_unit_has_lines(
     """Does ``USER_UNIT=<user_unit>`` have ANY journal line in ``lookback``?
 
     The COVERAGE question for the reader above (2026-08-13). That reader
-    honestly returns ``[]`` for "journalctl ran and nothing matched" — but on a
-    box with **no user journal at all** every pattern query also returns ``[]``,
-    so a caller cannot tell "the job logged no failures" from "this channel is
-    dead". Measured on meshanchor-server, whose user journal is empty
-    (``journalctl --user`` → *No journal files were found*): the user-timer
-    probe read zero failures AND zero successes for a timer that had
-    demonstrably fired 19h earlier, and reported an affirmative healthy verdict
-    about four units it could not see.
+    honestly returns ``[]`` for "journalctl ran and nothing matched" — but
+    ``[]`` also comes back when the unit has NO lines in the window at all, so
+    a caller cannot tell "the job ran and logged no failures" from "nothing
+    about this unit is visible here".
 
-    A unit that RAN must have logged something, so an unfiltered zero is the
-    discriminator. Returns True (channel works for this unit), False (nothing
-    at all — cannot judge), or **None** unobservable. Callers must treat both
-    False and None as "say nothing about this unit", never as healthy
+    **Measured on meshanchor-server**: of four enrolled timers, two returned
+    empty for BOTH patterns and were folded into an affirmative healthy
+    verdict. One, ``meshanchor-map-restart.service``, is a DAILY timer that
+    had fired 19h earlier — outside the 3h lookback entirely, so "no failures"
+    was never an observation about it (the slow-cadence residual documented in
+    watchdog_probes_user's header). The other two had lines and were judged.
+
+    ⚠️ Do NOT justify this by "the user journal is dark on that box".
+    ``journalctl --user`` there reports *No journal files were found*, but that
+    is the per-user client path; the root ``USER_UNIT=`` selector this helper
+    uses works fine. Two different access routes — checked 2026-08-13 after an
+    earlier read of mine conflated them.
+
+    A unit that logged in the window is judgeable; one that logged nothing is
+    not. Returns True (lines present), False (none at all — cannot judge), or
+    **None** unobservable. Callers must treat both False and None as "say
+    nothing about this unit", never as healthy
     (honest_failure_modes #2: absence of evidence is not evidence of absence).
 
     Cost note: intended to be asked ONLY when both pattern queries came back

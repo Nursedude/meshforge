@@ -214,6 +214,7 @@ def probe_user_timer_unit_failing(
 
         failing: List[dict] = []
         observed_any = False
+        observed_count = 0
         for timer, service in sorted(timers.items()):
             fails = ts_fn(service, _FAIL_PATTERN)
             oks = ts_fn(service, _OK_PATTERN)
@@ -221,15 +222,16 @@ def probe_user_timer_unit_failing(
                 # Unobservable for THIS unit — say nothing about it.
                 continue
             if not fails and not oks:
-                # AMBIGUOUS (2026-08-13): "ran and logged nothing matching" and
-                # "this box has no user journal" are the same empty result. A
-                # unit that fired must have logged SOMETHING, so ask the
-                # unfiltered coverage question before reading silence as data.
-                # Measured on meshanchor-server (user journal empty): this leg
-                # reported `clean` about four units it could not see.
+                # AMBIGUOUS (2026-08-13): "ran and logged nothing matching"
+                # and "nothing about this unit is visible in the window" are
+                # the same empty result. Measured on meshanchor-server: 2 of 4
+                # enrolled timers were empty for both patterns and were folded
+                # into an affirmative `clean` — one a DAILY timer that fired
+                # 19h ago, outside the 3h lookback entirely.
                 if coverage_fn(service) is not True:
                     continue           # dead/unreadable channel — say nothing
             observed_any = True
+            observed_count += 1
             if len(fails) < min_failures:
                 continue
             newest_fail = max(fails)
@@ -254,7 +256,13 @@ def probe_user_timer_unit_failing(
 
         if not failing:
             _save_streak(sp, 0)
-            note_disposition("user_timer_unit_failing", "clean")
+            # Say how many were actually JUDGED, not how many are enrolled — a
+            # label may claim only what its evidence covers (2026-08-13).
+            note_disposition(
+                "user_timer_unit_failing", "clean",
+                reason=(f"{observed_count} of {len(timers)} enrolled timer(s) "
+                        f"judged; no failing job")
+                if observed_count != len(timers) else None)
             return None
 
         streak = min(_load_streak(sp) + 1, debounce_ticks)
