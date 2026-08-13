@@ -14,9 +14,12 @@ The load-bearing properties:
     2-tick debounce, and treats an absent verdict as indeterminate (held).
 """
 
+import functools
 import json
 import os
+import pathlib
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -316,6 +319,23 @@ def _write_verdict(state_dir, *, verdict="OK", reason="ok", seq=1,
 class TestProbeResourceCanary:
     NOW = 1_000_000.0
 
+    @staticmethod
+    @functools.lru_cache(maxsize=1)
+    def _enrolled_wants():
+        """An ENROLLED wants dir for the DARK leg (2026-08-12).
+
+        That leg is now gated on the timer enable-symlink, so without pinning
+        this the test would read the REAL user units of whatever box ran the
+        suite — enrolled on moc, absent everywhere else, i.e. a verdict that
+        flips with the host ([[feedback_tests_must_pin_ambient_state]]).
+        """
+        d = (pathlib.Path(tempfile.mkdtemp(prefix="canary-wants-"))
+             / "timers.target.wants")
+        d.mkdir(parents=True)
+        (d / "meshforge-gateway-resource-canary.timer").write_text(
+            "[Timer]\n", encoding="utf-8")
+        return [str(d)]
+
     def test_inert_when_dir_absent(self, tmp_path):
         sig = probe_resource_canary_degraded(
             state_dir=str(tmp_path / "nope"),
@@ -376,10 +396,13 @@ class TestProbeResourceCanary:
         sdir = str(tmp_path / "grc")
         sp = str(tmp_path / "s.json")
         _write_verdict(sdir, verdict="OK", age_s=4 * 3600, now=self.NOW)
+        wants = self._enrolled_wants()
         assert probe_resource_canary_degraded(
-            state_dir=sdir, now=self.NOW, debounce_path=sp) is None
+            state_dir=sdir, now=self.NOW, debounce_path=sp,
+            timer_wants_dirs=wants) is None
         sig = probe_resource_canary_degraded(
-            state_dir=sdir, now=self.NOW, debounce_path=sp)
+            state_dir=sdir, now=self.NOW, debounce_path=sp,
+            timer_wants_dirs=wants)
         assert sig is not None and "DARK" in sig.detail
 
     def test_unparseable_fresh_rides_debounce(self, tmp_path):

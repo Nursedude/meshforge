@@ -100,9 +100,18 @@ def _resolve_operator_state_dir(leaf: str) -> Optional[str]:
     return os.path.join(home, ".local", "state", "meshforge", leaf)
 
 
-# The unit whose existence IS the declaration that this box runs the soak on a
-# cadence (2026-08-09). See _timer_enrolled.
+# The units whose enablement IS the declaration that this box runs the thing on
+# a cadence (2026-08-09; siblings ported 2026-08-12). See _timer_enrolled.
+#
+# ⚠️ Every probe here that derives a staleness bar from a cadence MUST consult
+# one of these before firing a DARK/SILENCE leg — a bar of "2.5x the timer's
+# cadence" is meaningless where the timer was never scheduled, and the state
+# dir is a PROXY that one hand-run of the exerciser defeats forever. That gap
+# cost synth_soak_degraded 78 days of confidently blaming a unit the box had
+# never had. Pinned by TestCadenceProbesConsultEnrollment.
 SYNTH_SOAK_TIMER_UNIT = "meshforge-synth-soak.timer"
+RESOURCE_CANARY_TIMER_UNIT = "meshforge-gateway-resource-canary.timer"
+PROPAGATION_SOAK_TIMER_UNIT = "meshforge-propagation-soak.timer"
 
 
 def _timer_wants_dirs() -> Optional[List[str]]:
@@ -791,6 +800,7 @@ def probe_resource_canary_degraded(
     stale_after_s: float = _RESOURCE_CANARY_STALE_AFTER_S,
     debounce_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    timer_wants_dirs: Optional[List[str]] = None,
 ) -> Optional[Signal]:
     """The gateway resource round-trip canary FAILED, or went DARK.
 
@@ -856,11 +866,34 @@ def probe_resource_canary_degraded(
     definitively_healthy = False
 
     if age > stale_after_s:
+        # The staleness bar is 2.5x the TIMER's cadence, so it only means
+        # anything where the timer is enabled. Ask the declaration (the
+        # enable-symlink), not the artifacts — the state dir above is a PROXY
+        # that a single hand-run of the exerciser defeats forever. Ported from
+        # the synth-soak leg 2026-08-12 (it was the un-cured sibling, ~500
+        # lines from its own fix).
+        enrolled = _timer_enrolled(
+            RESOURCE_CANARY_TIMER_UNIT,
+            _timer_wants_dirs() if timer_wants_dirs is None else timer_wants_dirs)
+        if enrolled is False:
+            note_disposition(
+                "resource_canary_degraded", "inert",
+                reason=(f"{RESOURCE_CANARY_TIMER_UNIT} not enabled here — no "
+                        f"cadence to fall behind; the last.json present is a "
+                        f"leftover from a manual run, not a stopped organ"))
+            return None
+        if enrolled is None:
+            note_disposition(
+                "resource_canary_degraded", "indeterminate",
+                reason=(f"cannot read the user-unit wants dirs — unable to tell "
+                        f"whether {RESOURCE_CANARY_TIMER_UNIT} is scheduled "
+                        f"here; DARK leg held"))
+            return None
         candidate_detail = (
             f"resource canary went DARK: last.json is {age / 3600.0:.1f}h old "
             f"(cadence ~1h) — the gateway resource round-trip exerciser stopped "
             f"producing a verdict. Check "
-            f"meshforge-gateway-resource-canary.timer (systemd --user) + its "
+            f"{RESOURCE_CANARY_TIMER_UNIT} (systemd --user) + its "
             f"fire log."
         )
     else:

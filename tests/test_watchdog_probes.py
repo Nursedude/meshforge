@@ -17,11 +17,13 @@ Plus exercise the edge-transition tracker and atomic-rename writer.
 """
 from __future__ import annotations
 
+import functools
 import json
 import os
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -8816,7 +8818,256 @@ class TestSynthSoakDarkLegNeedsATimer:
         assert "0.41" in sig.detail
 
 
-class TestTimerEnrolledTriState:
+class TestCanaryDarkLegNeedsATimer:
+    """2026-08-12 — the UN-CURED SIBLING of the class above, found by asking
+    "are there other probes keyed to a single box's shape?".
+
+    ``probe_resource_canary_degraded`` sat ~500 lines from its own fix in the
+    same file: state-dir presence as the applicability PROXY, a staleness bar
+    derived from a timer cadence, no enrollment check, and a DARK message
+    telling the operator to check a timer it had never verified exists. Latent
+    on 2026-08-12 (all 9 boxes agreed proxy==declaration) — but one hand-run of
+    the exerciser from reproducing the 78-day synth-soak failure exactly, which
+    is precisely how that instance was born.
+    """
+
+    UNIT = "meshforge-gateway-resource-canary.timer"
+
+    @staticmethod
+    def _wants(tmp_path, enrolled: bool):
+        d = tmp_path / "timers.target.wants"
+        d.mkdir(exist_ok=True)
+        if enrolled:
+            (d / TestCanaryDarkLegNeedsATimer.UNIT).write_text(
+                "[Timer]\n", encoding="utf-8")
+        return [str(d)]
+
+    @staticmethod
+    def _stale_envelope(tmp_path, now, age_s):
+        sdir = tmp_path / "gateway_resource_canary"
+        sdir.mkdir(exist_ok=True)
+        env = sdir / "last.json"
+        env.write_text(json.dumps({"verdict": "OK"}), encoding="utf-8")
+        os.utime(env, (now - age_s, now - age_s))
+        return str(sdir)
+
+    def test_dark_fires_when_the_timer_IS_enrolled(self, tmp_path):
+        """The leg the gate must not retire: an enrolled canary that stopped
+        producing verdicts is a REAL finding and must still fire."""
+        from utils.watchdog_probes import probe_resource_canary_degraded
+        now = 9_000_000_000.0
+        sdir = self._stale_envelope(tmp_path, now, 40_000.0)
+        sp = str(tmp_path / "c.json")
+        wants = self._wants(tmp_path, enrolled=True)
+        assert probe_resource_canary_degraded(
+            state_dir=sdir, now=now, debounce_path=sp,
+            timer_wants_dirs=wants) is None
+        sig = probe_resource_canary_degraded(
+            state_dir=sdir, now=now, debounce_path=sp, timer_wants_dirs=wants)
+        assert sig is not None
+        assert "DARK" in sig.detail
+
+    def test_dark_is_inert_when_the_timer_is_NOT_enrolled(self, tmp_path):
+        """The 78-day shape: leftover artifacts from a manual run, no cadence
+        to fall behind. Must read INERT with an accurate reason — never
+        degraded, and never blaming a timer this box does not have."""
+        from utils.watchdog_probes import probe_resource_canary_degraded
+        now = 9_000_000_000.0
+        sdir = self._stale_envelope(tmp_path, now, 6_740_000.0)
+        sp = str(tmp_path / "c.json")
+        wants = self._wants(tmp_path, enrolled=False)
+        collect = _fresh_dispositions()
+        for _ in range(3):
+            assert probe_resource_canary_degraded(
+                state_dir=sdir, now=now, debounce_path=sp,
+                timer_wants_dirs=wants) is None
+        got = collect()["resource_canary_degraded"]
+        assert got["disp"] == "inert"
+        assert "not enabled here" in got["reason"]
+
+    def test_unreadable_wants_is_indeterminate_not_inert(self, tmp_path):
+        """Unobservable enrollment must HOLD, not silently excuse the box —
+        otherwise a listing failure mutes a real dark canary forever."""
+        from utils.watchdog_probes import probe_resource_canary_degraded
+        now = 9_000_000_000.0
+        sdir = self._stale_envelope(tmp_path, now, 40_000.0)
+        sp = str(tmp_path / "c.json")
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_gateway_flow._timer_enrolled",
+                   return_value=None):
+            assert probe_resource_canary_degraded(
+                state_dir=sdir, now=now, debounce_path=sp,
+                timer_wants_dirs=["/whatever"]) is None
+        got = collect()["resource_canary_degraded"]
+        assert got["disp"] == "indeterminate"
+        assert "DARK leg held" in got["reason"]
+
+    def test_verdict_leg_is_NOT_gated_on_the_timer(self, tmp_path):
+        """A FRESH FAIL envelope is a real failure however it was produced —
+        only the staleness bar depends on a cadence. Guards against curing the
+        false alarm by muting the probe on unscheduled boxes."""
+        from utils.watchdog_probes import probe_resource_canary_degraded
+        now = 9_000_000_000.0
+        sdir = tmp_path / "gateway_resource_canary"
+        sdir.mkdir()
+        env = sdir / "last.json"
+        env.write_text(json.dumps({"verdict": "FAIL",
+                                   "reason": "EROFS signature"}),
+                       encoding="utf-8")
+        os.utime(env, (now - 60, now - 60))
+        sp = str(tmp_path / "c.json")
+        wants = self._wants(tmp_path, enrolled=False)
+        assert probe_resource_canary_degraded(
+            state_dir=str(sdir), now=now, debounce_path=sp,
+            timer_wants_dirs=wants) is None
+        sig = probe_resource_canary_degraded(
+            state_dir=str(sdir), now=now, debounce_path=sp,
+            timer_wants_dirs=wants)
+        assert sig is not None
+        assert "FAIL" in sig.detail
+
+
+class TestPropagationSoakDarkLegNeedsATimer:
+    """The second un-cured sibling (2026-08-12), same sweep, same shape."""
+
+    def test_dark_fires_when_the_timer_IS_enrolled(self, tmp_path):
+        now = 100000.0
+        sdir = str(tmp_path / "propagation_soak")
+        sp = str(tmp_path / "d.json")
+        _write_prop_envelope(sdir, passed=True, age_s=40000.0, now=now)
+        wants = _prop_wants(tmp_path, enrolled=True)
+        assert _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                           timer_wants_dirs=wants) is None
+        sig = _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                          timer_wants_dirs=wants)
+        assert sig is not None
+        assert "DARK" in sig.detail
+
+    def test_dark_is_inert_when_the_timer_is_NOT_enrolled(self, tmp_path):
+        now = 100000.0
+        sdir = str(tmp_path / "propagation_soak")
+        sp = str(tmp_path / "d.json")
+        _write_prop_envelope(sdir, passed=True, age_s=99999.0, now=now)
+        wants = _prop_wants(tmp_path, enrolled=False)
+        collect = _fresh_dispositions()
+        for _ in range(3):
+            assert _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                               timer_wants_dirs=wants) is None
+        got = collect()["propagation_soak_degraded"]
+        assert got["disp"] == "inert"
+        assert "not enabled here" in got["reason"]
+
+    def test_unreadable_wants_is_indeterminate_not_inert(self, tmp_path):
+        now = 100000.0
+        sdir = str(tmp_path / "propagation_soak")
+        sp = str(tmp_path / "d.json")
+        _write_prop_envelope(sdir, passed=True, age_s=99999.0, now=now)
+        collect = _fresh_dispositions()
+        with patch("utils.watchdog_probes_propagation._timer_enrolled",
+                   return_value=None):
+            assert _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                               timer_wants_dirs=["/whatever"]) is None
+        got = collect()["propagation_soak_degraded"]
+        assert got["disp"] == "indeterminate"
+        assert "DARK leg held" in got["reason"]
+
+    def test_envelope_leg_is_NOT_gated_on_the_timer(self, tmp_path):
+        """A FRESH failing envelope still fires with no timer enrolled."""
+        now = 100000.0
+        sdir = str(tmp_path / "propagation_soak")
+        sp = str(tmp_path / "d.json")
+        _write_prop_envelope(sdir, passed=False, age_s=60.0, now=now)
+        wants = _prop_wants(tmp_path, enrolled=False)
+        assert _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                           timer_wants_dirs=wants) is None
+        sig = _prop_probe(state_dir=sdir, now=now, debounce_path=sp,
+                          timer_wants_dirs=wants)
+        assert sig is not None
+
+
+class TestCadenceProbesConsultEnrollment:
+    """THE CLASS-LEVEL GUARD (2026-08-12) — pin the class, not the instance.
+
+    Three times now a cadence-derived staleness bar has been fixed on ONE
+    probe and left on its siblings (synth_soak cured 08-09; canary and
+    propagation found un-cured 08-12, one of them in the same file, ~500 lines
+    from the fix). "Grep the siblings next time" has never survived a handoff;
+    a test does.
+
+    The invariant: every probe whose DARK/SILENCE bar is derived from a timer
+    cadence must consult the enrollment DECLARATION before firing. Drilled by
+    adding an unwired fourth constant — see test_an_unwired_new_bar_fails.
+    """
+
+    # (staleness constant, timer unit constant, module, PROBE FUNCTION)
+    #
+    # ⚠️ The probe FUNCTION, not just the module. A module-level "does this
+    # file mention _timer_enrolled" check would have passed on
+    # watchdog_probes_gateway_flow the whole time the canary was broken —
+    # synth_soak's cured call sat 500 lines above it. Caught while drilling
+    # this guard on 2026-08-12; the first draft of it was inert for exactly
+    # the defect it was written for.
+    CADENCE_BARS = {
+        "_SYNTH_SOAK_STALE_AFTER_S": (
+            "SYNTH_SOAK_TIMER_UNIT", "utils.watchdog_probes_gateway_flow",
+            "probe_synth_soak_degraded"),
+        "_RESOURCE_CANARY_STALE_AFTER_S": (
+            "RESOURCE_CANARY_TIMER_UNIT", "utils.watchdog_probes_gateway_flow",
+            "probe_resource_canary_degraded"),
+        "_PROPAGATION_SOAK_STALE_AFTER_S": (
+            "PROPAGATION_SOAK_TIMER_UNIT", "utils.watchdog_probes_propagation",
+            "probe_propagation_soak_degraded"),
+    }
+
+    def _bars_in_source(self):
+        """Every ``*_STALE_AFTER_S`` constant defined in the probe tree."""
+        import glob as _glob
+        import re as _re
+        found = set()
+        for path in _glob.glob("src/utils/watchdog_probes*.py"):
+            for m in _re.finditer(r"^(_[A-Z0-9_]*_STALE_AFTER_S)\s*=",
+                                  open(path).read(), _re.M):
+                found.add(m.group(1))
+        return found
+
+    def test_every_cadence_bar_is_registered_here(self):
+        """A NEW cadence-derived bar must be added to CADENCE_BARS (and thus
+        wired to a declaration) — it cannot slip in unnoticed."""
+        assert self._bars_in_source() == set(self.CADENCE_BARS), (
+            "a *_STALE_AFTER_S constant was added or removed without updating "
+            "CADENCE_BARS — every cadence-derived staleness bar must consult a "
+            "timer-enrollment declaration before firing DARK")
+
+    def test_every_bar_has_a_timer_unit_constant(self):
+        import importlib
+        for bar, (unit_const, modname, _fn) in self.CADENCE_BARS.items():
+            mod = importlib.import_module(modname)
+            assert hasattr(mod, unit_const), (
+                f"{bar} has no {unit_const} in {modname}")
+            assert getattr(mod, unit_const).endswith(".timer"), unit_const
+
+    def test_every_consuming_probe_calls_timer_enrolled(self):
+        """The wiring itself, checked on the PROBE FUNCTION's own source —
+        this is what the two 08-12 siblings failed, and what a module-level
+        check would have missed."""
+        import importlib
+        import inspect
+        for bar, (unit_const, modname, fnname) in self.CADENCE_BARS.items():
+            fn = getattr(importlib.import_module(modname), fnname)
+            src = inspect.getsource(fn)
+            assert "_timer_enrolled(" in src, (
+                f"{fnname} consumes {bar} but never calls _timer_enrolled — "
+                f"it will fire DARK against a cadence it has not established "
+                f"applies to this box")
+            assert unit_const in src, f"{fnname} never references {unit_const}"
+
+    def test_an_unwired_new_bar_fails(self):
+        """THE DRILL. Plant an unregistered bar and prove the guard bites —
+        otherwise this class is decoration
+        ([[feedback_a_guard_that_never_failed_is_not_evidence]])."""
+        planted = self._bars_in_source() | {"_NEWLY_ADDED_STALE_AFTER_S"}
+        assert planted != set(self.CADENCE_BARS), (
+            "the registry check cannot distinguish a new bar — it is inert")
     """``_timer_enrolled`` is the new instrument; drill its three answers."""
 
     UNIT = "meshforge-synth-soak.timer"
@@ -9499,11 +9750,41 @@ def _write_prop_envelope(sdir, *, passed, age_s=60.0, now=None, rounds=None):
     return path
 
 
+_PROP_TIMER_UNIT = "meshforge-propagation-soak.timer"
+
+
+def _prop_wants(tmp_path, enrolled: bool):
+    """A user-unit wants dir that declares (or doesn't) the soak timer."""
+    d = tmp_path / "timers.target.wants"
+    d.mkdir(exist_ok=True)
+    if enrolled:
+        (d / _PROP_TIMER_UNIT).write_text("[Timer]\n", encoding="utf-8")
+    return [str(d)]
+
+
+@functools.lru_cache(maxsize=1)
+def _prop_enrolled_wants():
+    """A cached ENROLLED wants dir, used as the default for these tests.
+
+    2026-08-12: the DARK leg is now gated on the enable-symlink, so without
+    this the two SILENCE tests would read the REAL wants dir of whatever box
+    ran the suite — enrolled on moc/moc3, absent everywhere else, i.e. a
+    verdict that flips with the host ([[feedback_tests_must_pin_ambient_state]],
+    the exact trap the synth-soak port hit on 2026-08-09).
+    """
+    d = Path(tempfile.mkdtemp(prefix="prop-wants-")) / "timers.target.wants"
+    d.mkdir(parents=True)
+    (d / _PROP_TIMER_UNIT).write_text("[Timer]\n", encoding="utf-8")
+    return [str(d)]
+
+
 def _prop_probe(**kw):
     """Hermetic call: stub the intent gate (2026-07-21 F3) so these tests
-    never read the real box's gateway.json."""
+    never read the real box's gateway.json, and pin timer enrollment so they
+    never read its user units either."""
     kw.setdefault("configured_fn",
                   lambda: ("3968a2eeac25e2e7a7961f25842d3d85", "ok"))
+    kw.setdefault("timer_wants_dirs", _prop_enrolled_wants())
     return probe_propagation_soak_degraded(**kw)
 
 

@@ -11,17 +11,20 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Optional
+from typing import List, Optional
 
 from utils.watchdog_probe_core import Signal, note_disposition
 from utils.watchdog_probes_gateway_flow import (
     DEFAULT_PROPAGATION_SOAK_DEBOUNCE_PATH,
     DEFAULT_PROPAGATION_SOAK_INDET_PATH,
+    PROPAGATION_SOAK_TIMER_UNIT,
     _PROPAGATION_SOAK_STALE_AFTER_S,
     _load_synth_streak,
     _newest_synth_file,
     _resolve_propagation_soak_dir,
     _save_synth_streak,
+    _timer_enrolled,
+    _timer_wants_dirs,
 )
 
 logger = logging.getLogger("watchdog")
@@ -109,6 +112,7 @@ def probe_propagation_soak_degraded(
     indeterminate_after: int = 6,
     indet_state_path: Optional[str] = None,
     never_published_after_s: float = 3 * 3600.0,
+    timer_wants_dirs: Optional[List[str]] = None,
 ) -> Optional[Signal]:
     """The configured propagation node stopped STORING AND FORWARDING.
 
@@ -271,12 +275,34 @@ def probe_propagation_soak_degraded(
     held_reason: Optional[str] = None
 
     if age > stale_after_s:
+        # The staleness bar is 2.5x the TIMER's cadence, so it only means
+        # anything where the timer is enabled. Ask the declaration (the
+        # enable-symlink), not the artifacts — the state dir gate above is a
+        # PROXY that a single hand-run of the exerciser defeats forever. Ported
+        # from the synth-soak leg 2026-08-12 (un-cured sibling of that fix).
+        enrolled = _timer_enrolled(
+            PROPAGATION_SOAK_TIMER_UNIT,
+            _timer_wants_dirs() if timer_wants_dirs is None else timer_wants_dirs)
+        if enrolled is False:
+            note_disposition(
+                "propagation_soak_degraded", "inert",
+                reason=(f"{PROPAGATION_SOAK_TIMER_UNIT} not enabled here — no "
+                        f"cadence to fall behind; the prop-*.json present are "
+                        f"leftovers from manual runs, not a stopped organ"))
+            return None
+        if enrolled is None:
+            note_disposition(
+                "propagation_soak_degraded", "indeterminate",
+                reason=(f"cannot read the user-unit wants dirs — unable to tell "
+                        f"whether {PROPAGATION_SOAK_TIMER_UNIT} is scheduled "
+                        f"here; DARK leg held"))
+            return None
         candidate_detail = (
             f"LXMF store-and-forward drill went DARK: newest result is "
             f"{age / 3600.0:.1f}h old (cadence ~1h) - the exerciser stopped "
             f"producing output, so nothing is proving the propagation node "
             f"still stores and forwards. Check "
-            f"meshforge-propagation-soak.timer (systemd --user; needs linger) "
+            f"{PROPAGATION_SOAK_TIMER_UNIT} (systemd --user; needs linger) "
             f"and its fire.log."
         )
     else:
