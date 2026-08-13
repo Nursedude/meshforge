@@ -182,3 +182,65 @@ def test_no_mini_and_no_backlog_stays_completely_silent(tmp_path):
     out = render_warmstart(str(tmp_path / "none.md"), str(tmp_path / "none.json"),
                            1_780_000_010.0, ledger_path=str(tmp_path / "no.json"))
     assert out == ""
+
+
+def test_whitespace_padded_date_is_surfaced_like_the_watcher(tmp_path):
+    """The watcher parses review_after RAW (`strptime(ra, ...)`), so a padded
+    "2026-12-01 " is a paged ledger error there. The first cut here stripped
+    before parsing — the padded date read as a clean future date, and the two
+    consumers disagreed in the quiet direction (2026-08-12 re-review)."""
+    p = _ledger(tmp_path, [{"id": "padded", "status": "blocked",
+                            "review_after": "2026-12-01 "}])
+    assert "padded" in deferred_backlog_line(p, TODAY)
+
+
+def test_empty_ledger_path_is_loud_UNKNOWN_not_absent(tmp_path):
+    """An empty path is a MISCONFIGURATION (e.g. `Environment=
+    DEFERRED_WORK_LEDGER=` in a unit file), not an absent ledger. The watcher
+    opens '' and pages LEDGER UNREADABLE; silence here would be the
+    quiet-direction divergence again."""
+    out = deferred_backlog_line("", TODAY)
+    assert "UNKNOWN" in out and "empty" in out
+
+
+def test_empty_env_override_reaches_the_loud_branch(tmp_path, monkeypatch):
+    """render_warmstart must bind the env var the way the watcher does
+    (`environ.get(key, default)`): a set-but-empty override must NOT fall
+    through to the real production ledger."""
+    monkeypatch.setenv("DEFERRED_WORK_LEDGER", "")
+    out = render_warmstart(str(tmp_path / "none.md"), str(tmp_path / "none.json"),
+                           1_780_000_010.0)
+    assert "ledger path is empty" in out
+
+
+_WATCHER = os.path.join(os.path.dirname(__file__), "..", "scripts",
+                        "deferred_work_watch.py")
+
+
+def test_watcher_predicate_still_says_what_these_tests_pin():
+    """MECHANIZED cross-file pin (2026-08-12 re-review). warmstart duplicates
+    the watcher's overdue predicate DELIBERATELY (scripts/ is not a package,
+    and warmstart.py is parity-byte-locked into MeshAnchor, which carries no
+    watcher) — so nothing but this test notices when the watcher's predicate
+    evolves. If any assertion here reddens: re-sync deferred_backlog_line's
+    predicate to the watcher's new semantics, update the sibling tests, THEN
+    update the pinned strings. Skipped where the watcher does not exist
+    (MeshAnchor): absent by design, not blind.
+
+    Same shape as the hs_codehead pathspec pin (check #10 in
+    test_honest_status_skew_repos.sh): two hardcodes of one semantic must
+    fail a test when they can drift, not stay green."""
+    import pytest
+    if not os.path.exists(_WATCHER):
+        pytest.skip("no scripts/deferred_work_watch.py here — the ledger's "
+                    "owning consumer lives in MeshForge only (skipped is "
+                    "not passed: this pin runs only in the lead repo)")
+    with open(_WATCHER, encoding="utf-8") as fh:
+        src = fh.read()
+    # Axis 1: missing status defaults to blocked.
+    assert 't.get("status", "blocked")' in src
+    # Axis 2 + 3: raw strptime parse (no strip), due when today >= ra.
+    assert 'datetime.strptime(ra, "%Y-%m-%d")' in src
+    assert "if today < ra_date" in src
+    # Env binding: two-arg get, so a set-but-empty override propagates.
+    assert 'os.environ.get("DEFERRED_WORK_LEDGER", os.path.join(' in src

@@ -168,16 +168,37 @@ class TestRNSApiSurfaceResolves:
             "provably tolerates absence.")
 
     def test_the_original_defect_stays_fixed(self, rns_mods):
-        """Named pin for the bug that motivated the gate."""
+        """Named pin for the bug that motivated the gate — BOTH halves.
+
+        Half 1 (2026-08-12): the misspelled ``exithandler()`` raised on every
+        shutdown, unseen. Half 2 (same day's re-review): "fixing" the spelling
+        armed teardown that had never run — ``exit_handler()`` voids the
+        process-global Transport while ``open_reticulum()`` reuses a singleton,
+        so every in-process bridge restart would reconnect a dead Transport.
+        The cure is calling NEITHER: RNS's own atexit handler (registered in
+        ``Reticulum.__init__``) owns process-exit teardown. This pin asserts
+        the call stays absent under either spelling; if you are here to add it
+        back, read the comment in ``_disconnect_rns`` first."""
         assert not hasattr(rns_mods["RNS"].Transport, "exithandler"), (
             "upstream grew an `exithandler` — re-read this gate's premise")
-        assert hasattr(rns_mods["RNS"].Transport, "exit_handler")
-        with open(os.path.join(SRC_DIR, "gateway",
-                               "_rns_bridge_connection.py"),
-                  encoding="utf-8") as fh:
-            src = fh.read()
-        assert "RNS.Transport.exit_handler()" in src
-        assert "RNS.Transport.exithandler()" not in src
+        assert hasattr(rns_mods["RNS"].Transport, "exit_handler"), (
+            "fork renamed exit_handler — re-read _disconnect_rns's comment")
+        # AST, not text: the file's comment legitimately NAMES the banned
+        # call while explaining why it must not exist, and a substring grep
+        # would assert on prose rather than code (the trap this repo has
+        # already hit twice — a pin must look at the THING).
+        teardown_calls = [
+            s for m, p, s in _rns_attr_paths()
+            if m == "RNS" and p in ("Transport.exit_handler",
+                                    "Transport.exithandler")
+            and "_rns_bridge_connection.py" in s
+        ]
+        assert not teardown_calls, (
+            f"_rns_bridge_connection.py references Transport teardown again "
+            f"({teardown_calls}) — exit_handler() voids the process-global "
+            f"Transport under a singleton Reticulum and kills every "
+            f"in-process bridge restart (2026-08-12 re-review of a5d5c377); "
+            f"RNS's own atexit handler owns process-exit teardown")
 
     def test_allowlist_has_no_stale_entries(self):
         """An exemption that outlives its call site reads as sanctioned."""

@@ -4,6 +4,12 @@ The contract under test: warmstart re-derives freshness from state.json's
 last_tick_ts at READ time, so a brief frozen by a dead daemon is flagged STALE
 rather than presented as current. Uses tmp_path exclusively — never the live
 store or the operator's ~/mini_dudeai_* files.
+
+Every render_warmstart call pins ledger_path to a nonexistent tmp file: with
+it unset, the function reads the operator's REAL ~/deferred_work.json (plus
+any stray DEFERRED_WORK_LEDGER env), and the two `out == ""` assertions then
+pass or fail by luck of the live ledger's contents on whatever box runs the
+suite — the tests-must-pin-ambient-state class (2026-08-12 re-review).
 """
 
 from __future__ import annotations
@@ -40,7 +46,8 @@ def test_fresh_when_tick_is_recent(tmp_path):
     state = tmp_path / "state.json"
     _write_state(state, NOW - 40)  # 40s ago — well within the stale window
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
 
     assert "FRESH" in out
     assert "🟢" in out
@@ -60,7 +67,8 @@ def test_stale_when_tick_is_old(tmp_path):
     state = tmp_path / "state.json"
     _write_state(state, NOW - 6 * 3600)  # 6h ago — daemon likely dead
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
 
     assert "STALE" in out
     assert "🔴" in out
@@ -75,7 +83,8 @@ def test_stale_boundary_just_past_threshold(tmp_path):
     state = tmp_path / "state.json"
     _write_state(state, NOW - (DEFAULT_STALE_S + 1))
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     assert "STALE" in out
 
 
@@ -85,7 +94,8 @@ def test_fresh_boundary_just_under_threshold(tmp_path):
     state = tmp_path / "state.json"
     _write_state(state, NOW - (DEFAULT_STALE_S - 1))
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     assert "FRESH" in out
     assert "STALE" not in out
 
@@ -101,7 +111,8 @@ def test_unknown_freshness_when_no_last_tick(tmp_path):
     state = tmp_path / "state.json"
     _write_state(state, None)  # state exists but carries no tick timestamp
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     assert "UNKNOWN" in out
     # Never claims the green FRESH verdict when it cannot prove freshness.
     # (The brief body itself may contain 🟢 from its own generation-time
@@ -120,7 +131,8 @@ def test_no_brief_but_state_present(tmp_path):
     _write_state(state, NOW - 30)
     brief = tmp_path / "brief.md"  # never created
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     assert "no brief yet" in out
     assert "--brief" in out  # tells the reader how to generate one
 
@@ -134,7 +146,8 @@ def test_silent_when_no_brief_and_no_state(tmp_path):
     brief = tmp_path / "brief.md"      # absent
     state = tmp_path / "state.json"    # absent
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     assert out == ""  # harmless on a mini-less box — inject nothing
 
 
@@ -143,7 +156,8 @@ def test_silent_when_state_unreadable_and_no_brief(tmp_path):
     state = tmp_path / "state.json"
     state.write_text("{ this is not json", encoding="utf-8")  # corrupt
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     # No usable tick and no brief → stay silent rather than emit a half-truth.
     assert out == ""
 
@@ -162,7 +176,8 @@ def test_non_numeric_last_tick_is_treated_as_unknown(tmp_path):
         encoding="utf-8",
     )
 
-    out = render_warmstart(str(brief), str(state), NOW)
+    out = render_warmstart(str(brief), str(state), NOW,
+                           ledger_path=str(tmp_path / "no-ledger.json"))
     assert "UNKNOWN" in out
 
 

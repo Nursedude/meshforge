@@ -38,11 +38,6 @@ class RNSConnectionMixin:
         self._rns_via_rnsd   — bool
         self._rns_init_failed_permanently — bool
         self._rns_pre_initialized — bool
-        self._transport_voided   — bool, set by _disconnect_rns once
-                                   exit_handler() has (possibly) run; a
-                                   voided Transport is process-global and
-                                   irreversible, so _connect_rns refuses
-                                   to reuse it (2026-08-12)
         self._notify_status(event) — status callback
         self._on_lxmf_receive(message) — LXMF delivery callback
         self._on_rns_announce(dest_hash, identity, app_data) — announce callback
@@ -183,30 +178,6 @@ class RNSConnectionMixin:
 
         POLICY: Diagnose, don't fix. Never restart services or modify configs.
         """
-        # 2026-08-12 review. _disconnect_rns() now really calls
-        # RNS.Transport.exit_handler() (the old exithandler() misspelling
-        # raised on every shutdown, so this path had never actually run):
-        # that sets the process-global Transport._should_run = False and
-        # void_queues() irreversibly, while open_reticulum() reuses a
-        # singleton Reticulum. Reconnecting in the SAME process would
-        # therefore log "RNS connection established" against a Transport
-        # whose job thread is permanently dead — a bridge that looks
-        # connected and receives nothing, forever. Refuse LOUDLY instead
-        # (honest_failure_modes #1: the degraded state must not wear the
-        # healthy shape); a stop()ed bridge needs a fresh PROCESS, which is
-        # how systemd restarts it anyway.
-        if getattr(self, "_transport_voided", False):
-            logger.error(
-                "RNS Transport was voided by a prior shutdown in this "
-                "process (exit_handler() is irreversible and the Reticulum "
-                "singleton would be reused); refusing to reconnect — a "
-                "reconnected bridge here would look healthy while receiving "
-                "nothing. Restart the process for a live Transport."
-            )
-            self._connected_rns = False
-            self._rns_init_failed_permanently = True
-            return
-
         if not (_HAS_RNS and _HAS_LXMF):
             missing = []
             if not _HAS_RNS:
@@ -368,43 +339,34 @@ class RNSConnectionMixin:
         self._notify_status("rns_connected")
 
     def _disconnect_rns(self):
-        """Disconnect from RNS and release ports"""
-        # Properly shut down RNS to release ports
-        if self._reticulum:
-            try:
-                import RNS
-                # ``exit_handler()`` — NOT ``exithandler()``. The old spelling
-                # does not exist on any RNS we have ever pinned, so this call
-                # raised AttributeError on EVERY gateway shutdown and the
-                # except below swallowed it at DEBUG. Found 2026-08-12 by
-                # reading the journal of a gateway I had just restarted:
-                # "Error shutting down RNS Transport: type object 'Transport'
-                # has no attribute 'exithandler'", on both gateway boxes.
-                #
-                # The old comment here also over-promised: exit_handler sets
-                # Transport._should_run = False and voids the queues, and
-                # persists data ONLY when this process is not a shared-instance
-                # client. It does NOT close interfaces or release ports —
-                # that is detach_interfaces(), which is deliberately NOT called
-                # here: on this fleet the gateway is a CLIENT of the shared
-                # rnsd, it does not own the interfaces, and tearing them down
-                # from a client is how the #69/#82 @rns-ownership incidents
-                # start. Fixing the name is the whole fix; adding teardown
-                # behaviour would be a different, riskier change.
-                # Marked voided BEFORE the call (fail-safe: a half-run
-                # exit_handler may already have voided the queues), so
-                # _connect_rns refuses to reuse this process's dead
-                # Transport — see the guard at the top of _connect_rns
-                # (2026-08-12 review).
-                self._transport_voided = True
-                RNS.Transport.exit_handler()
-                logger.debug("RNS Transport shut down")
-            except Exception as e:
-                # Kept broad + swallowed (shutdown must not raise), but the
-                # spelling above is now pinned by TestRNSApiSurfaceResolves so
-                # a fork-merge rename fails a TEST instead of hiding here.
-                logger.debug(f"Error shutting down RNS Transport: {e}")
-
+        """Drop this bridge's RNS/LXMF references. DELIBERATELY does not
+        touch the process-global Transport — see the comment below."""
+        # NO RNS.Transport.exit_handler() here — deliberate (2026-08-12
+        # re-review of a5d5c377; do not "fix" the missing call again).
+        # History: from inception this method called the misspelled
+        # ``exithandler()``, which exists on no RNS we have ever pinned —
+        # it raised AttributeError on EVERY shutdown, the except swallowed
+        # it at DEBUG, and the call therefore NEVER actually ran. Fixing
+        # the spelling (4bb20f1f) silently armed brand-new teardown:
+        # exit_handler() voids the PROCESS-GLOBAL Transport irreversibly
+        # (_should_run = False + void_queues()), while open_reticulum()
+        # reuses a singleton Reticulum — so every in-process stop→start
+        # path (commands/gateway.py restart(), daemon.py restart_service
+        # and its ThreadWatchdog auto-restart, gateway_cli) would
+        # "reconnect" against a permanently dead Transport: a bridge that
+        # logs connected and receives nothing forever. And the call buys
+        # nothing here: Reticulum.__init__ registers
+        # atexit(Reticulum.exit_handler), which calls
+        # Transport.exit_handler() at process exit, and a shared-instance
+        # client — this fleet's only shape — skips persist_data() anyway.
+        # The de facto proven behaviour (months in production, precisely
+        # BECAUSE the call never ran) is "bridge stop leaves Transport
+        # alive"; this keeps it, now on purpose. Interfaces are likewise
+        # NOT detached: the gateway is a CLIENT of the shared rnsd, and
+        # tearing down interfaces from a client is how the #69/#82
+        # @rns-ownership incidents start. Pinned by
+        # test_the_original_defect_stays_fixed (no Transport teardown
+        # call, either spelling, in this file).
         self._lxmf_router = None
         self._lxmf_source = None
         self._identity = None

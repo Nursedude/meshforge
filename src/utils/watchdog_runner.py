@@ -1121,39 +1121,59 @@ def resolve_probe_targets(
         # behaviour rather than widening or narrowing on a guess (#2).
         sea = role_units or _DEFAULT_SERVICES_EXPECTED_ACTIVE
 
+    # Membership below compares NORMALIZED names (same rule as
+    # role_expected_active): a suffixless "meshforge-map" beside
+    # "meshforge-map.service" is the same unit to systemctl and must be the
+    # same unit here, or the check both warns about owned units and stays
+    # silent about unowned ones depending on which list carried the suffix
+    # (2026-08-12 re-review).
+    def _svc(u: str) -> str:
+        return u if u.endswith(".service") else f"{u}.service"
+
+    sea_norm = {_svc(u) for u in sea}
     services_wedge = config.get("services_wedge_check")
     if isinstance(services_wedge, list) and all(
         isinstance(s, str) for s in services_wedge
     ):
         swc: Tuple[str, ...] = tuple(services_wedge)
+        # 2026-08-12 review (the absent→inert conversions), scoped to
+        # EXPLICIT overrides by the same day's re-review. main_thread_wedge
+        # files an ABSENT unit as `inert` on the argument that
+        # `service_inactive` pages any unit that is EXPECTED active and
+        # missing — which only holds for units in services_expected_active.
+        # An operator-listed wedge unit outside that list, with its unit
+        # file gone, would be owned by NOBODY: main_thread_wedge reads
+        # inert, service_inactive never judges it. Not an error (the
+        # operator may deliberately wedge-check a unit this box does not
+        # require active) — but never silent.
+        unowned = [u for u in swc if _svc(u) not in sea_norm]
+        if unowned:
+            logger.warning(
+                "watchdog: services_wedge_check unit(s) %s are not in "
+                "services_expected_active — if such a unit's file is ABSENT "
+                "on this box, main_thread_wedge reads `inert` and "
+                "service_inactive never judges it: nothing owns that "
+                "failure. If this box should require the unit, add it to "
+                "services_expected_active; if not, drop it from "
+                "services_wedge_check.",
+                ", ".join(sorted(unowned)),
+            )
     else:
         if services_wedge is not None:
             logger.warning(
                 "watchdog: services_wedge_check override is not a list "
                 "of strings — ignoring",
             )
-        swc = _DEFAULT_SERVICES_WEDGE_CHECK
-
-    # 2026-08-12 review (the absent→inert conversions). main_thread_wedge
-    # now files an ABSENT unit as `inert` on the argument that
-    # `service_inactive` still pages any unit that is EXPECTED active and
-    # missing. That argument only holds for units in services_expected_active
-    # — and services_wedge_check is an independent full-replacement list. A
-    # wedge-checked unit that is NOT expected-active and whose unit file
-    # disappears would be owned by NOBODY: main_thread_wedge reads inert,
-    # service_inactive never judges it, and the misconfiguration that
-    # pre-08-12 left a standing indeterminate witness would have no witness
-    # at all. Not an error (the operator may deliberately wedge-check a unit
-    # this box does not require active) — but never silent.
-    unowned = [u for u in swc if u not in sea]
-    if unowned:
-        logger.warning(
-            "watchdog: services_wedge_check unit(s) %s are not in "
-            "services_expected_active — if such a unit's file is ABSENT on "
-            "this box, main_thread_wedge reads `inert` and service_inactive "
-            "never judges it: nothing owns that failure. Add the unit(s) to "
-            "services_expected_active or drop them from the wedge list.",
-            ", ".join(sorted(unowned)),
+        # The DEFAULT wedge list is an intent template ("wedge-check the
+        # map where this box runs the map"), not an operator declaration —
+        # intersect it with expected-active instead of warning. On a
+        # gateway-only role box (meshforge-map deliberately disabled,
+        # fleet_roles.yaml) the un-intersected default fired the unowned
+        # warning on EVERY watchdog start, and its remediation invited
+        # re-arming the exact moc3 map-inactive false positive the role
+        # declaration exists to suppress (2026-08-12 re-review).
+        swc = tuple(
+            u for u in _DEFAULT_SERVICES_WEDGE_CHECK if _svc(u) in sea_norm
         )
 
     port_raw = config.get("http_port")

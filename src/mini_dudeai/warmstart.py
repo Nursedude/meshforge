@@ -103,6 +103,13 @@ def deferred_backlog_line(ledger_path: str, today: str) -> str:
     and a lexicographic compare let a hand-typed ``"2026-9-1"`` never come
     due, where the watcher pages it as a ledger error.
     """
+    if not ledger_path:
+        # An EMPTY path is a misconfiguration (e.g. `Environment=
+        # DEFERRED_WORK_LEDGER=` in a unit file), not an absent ledger —
+        # the watcher opens '' and pages LEDGER UNREADABLE, so silence
+        # here would be the quiet-direction divergence again.
+        return ("⚠️ **deferred-work ledger path is empty** (blank "
+                "`DEFERRED_WORK_LEDGER`?) — backlog UNKNOWN, not empty.\n")
     data, err = read_json(ledger_path)
     if err == READ_JSON_NOT_FOUND:
         return ""
@@ -137,7 +144,10 @@ def deferred_backlog_line(ledger_path: str, today: str) -> str:
             overdue.append(tid)
             continue
         try:
-            ra_date = datetime.datetime.strptime(ra.strip(), "%Y-%m-%d").date()
+            # RAW string, no strip() — the watcher parses raw, and a padded
+            # "2026-12-01 " must not be a paged ledger error THERE and a
+            # clean not-due-yet HERE (2026-08-12 re-review).
+            ra_date = datetime.datetime.strptime(ra, "%Y-%m-%d").date()
         except ValueError:
             # The watcher pages "bad date in ledger" for these; the honest
             # analogue here is to surface the task — a malformed date must
@@ -176,8 +186,15 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
     # honors it for drills); honoring it here keeps the two consumers pointed
     # at the SAME ledger under a drill instead of silently diverging.
     if ledger_path is None:
-        ledger_path = os.environ.get("DEFERRED_WORK_LEDGER") or os.path.join(
-            operator_home(), DEFERRED_LEDGER_BASENAME)
+        # Same form as the watcher's binding (`os.environ.get(key, default)`)
+        # ON PURPOSE: `get(key) or default` would silently fall through to
+        # the REAL ledger on an empty-string override while the watcher
+        # pages LEDGER UNREADABLE on it — the two consumers must read the
+        # same env var the same way (2026-08-12 re-review; the empty path
+        # is then deferred_backlog_line's loud-UNKNOWN case).
+        ledger_path = os.environ.get(
+            "DEFERRED_WORK_LEDGER",
+            os.path.join(operator_home(), DEFERRED_LEDGER_BASENAME))
     today = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
     backlog = deferred_backlog_line(ledger_path, today)
 

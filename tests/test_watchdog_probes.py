@@ -4347,6 +4347,86 @@ def test_resolve_probe_targets_no_warning_when_wedge_is_owned(caplog):
                    for r in caplog.records)
 
 
+def test_resolve_probe_targets_default_wedge_follows_the_role(caplog):
+    """2026-08-12 re-review: the DEFAULT wedge list is an intent template
+    ("wedge-check the map where this box runs the map"), not an operator
+    declaration. On a gateway-only role box (meshforge-map deliberately
+    disabled in fleet_roles.yaml) the un-intersected default fired the
+    unowned warning on EVERY watchdog start — standing noise for a by-design
+    configuration, whose remediation invited re-arming the exact moc3
+    map-inactive false positive the role declaration suppresses. The default
+    intersects expected-active instead, silently."""
+    import logging
+    with patch("utils.watchdog_runner._role_expected_active",
+               return_value=("rnsd.service", "meshforge-gateway.service")), \
+         caplog.at_level(logging.WARNING, logger="watchdog"):
+        sea, swc, _port = resolve_probe_targets({})
+    assert "meshforge-gateway.service" in sea
+    assert swc == ()  # map not expected here -> not wedge-checked, no noise
+    assert not any("services_wedge_check unit(s)" in r.message
+                   for r in caplog.records)
+
+
+def test_resolve_probe_targets_wedge_membership_ignores_service_suffix(caplog):
+    """'meshforge-map' and 'meshforge-map.service' are the same unit to
+    systemctl, so they must be the same unit to the ownership check — raw
+    string membership warned about owned units (or stayed silent about
+    unowned ones) depending on which list happened to carry the suffix
+    (2026-08-12 re-review)."""
+    import logging
+    with patch("utils.watchdog_runner._role_expected_active",
+               return_value=None), \
+         caplog.at_level(logging.WARNING, logger="watchdog"):
+        _sea, swc, _port = resolve_probe_targets({
+            "services_expected_active": ["meshforge-map.service"],
+            "services_wedge_check": ["meshforge-map"],
+        })
+    assert swc == ("meshforge-map",)
+    assert not any("services_wedge_check unit(s)" in r.message
+                   for r in caplog.records)
+
+
+class TestPresenceGateClosedConsumer:
+    """note_unit_presence_gate is an open consumer of the resolver's status
+    enum; its defaults must point AWAY from quiet (2026-08-12 re-review —
+    honest_failure_modes #7). `inert` may only follow a POSITIVE observation
+    of absence, so an unrecognized/future status lands indeterminate in BOTH
+    families."""
+
+    def setup_method(self):
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+
+    @staticmethod
+    def _gate(status, stopped_is_inert):
+        from utils.watchdog_probe_core import (collect_dispositions,
+                                               note_unit_presence_gate)
+        note_unit_presence_gate(
+            "gateway_delivery_degraded", status,
+            absent_reason="absent by design",
+            unresolved_reason="could not resolve the unit",
+            stopped_is_inert=stopped_is_inert,
+            unknown_reason="systemctl did not answer")
+        return collect_dispositions()["gateway_delivery_degraded"]["disp"]
+
+    def test_true_family_absent_and_down_are_inert(self):
+        assert self._gate("absent", True) == "inert"
+        assert self._gate("down", True) == "inert"
+
+    def test_true_family_unknown_is_indeterminate(self):
+        assert self._gate("unknown", True) == "indeterminate"
+
+    def test_true_family_unrecognized_status_is_indeterminate_not_inert(self):
+        """THE pin: before this, the True family's bare else filed any
+        status that was not 'unknown' — including one the resolver grows
+        next year — as inert (absent by design), the 08-05 collapse
+        re-created by enum growth."""
+        assert self._gate("surprise-new-status", True) == "indeterminate"
+
+    def test_false_family_unrecognized_status_is_indeterminate(self):
+        assert self._gate("surprise-new-status", False) == "indeterminate"
+
+
 def test_resolve_probe_targets_partial_override_keeps_other_defaults():
     """Only overriding one key shouldn't touch the others."""
     with patch("utils.watchdog_runner._role_expected_active",

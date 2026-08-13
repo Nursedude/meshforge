@@ -162,6 +162,27 @@ else
   printf '    real: %s\n    copy: %s\n' "${spec_real:-<none>}" "${spec_copy:-<none>}"
 fi
 
+# 11. The prose_note sentence's parenthetical names the CODE pathspec's
+#     COMPLEMENT — a third, human-facing hardcode of the same constant, and
+#     the one with no test to redden (only the operator's eyes; a misread of
+#     an instrument is a bug report against the instrument). The 08-12
+#     commit-pair is the proof it drifts: the sentence had to drop 'scripts'
+#     when scripts/ joined the pathspec. Assert no pathspec member appears in
+#     the parenthetical, so the NEXT widening reddens HERE and forces the
+#     sentence to be rewritten alongside (2026-08-12 re-review).
+prose_paren=$(printf '%s' "$src" | grep -o 'behind on NON-code only ([^)]*)' | head -1)
+overlap=""
+for p in $spec_real; do
+  base=${p%%.*}   # requirements.txt -> requirements
+  case "$prose_paren" in *"$base"*) overlap="$overlap $p";; esac
+done
+if [ -n "$prose_paren" ] && [ -z "$overlap" ]; then
+  pass "prose bucket sentence names no CODE-pathspec member"
+else
+  fail "prose bucket sentence names no CODE-pathspec member"
+  printf '    paren: %s\n    overlap:%s\n' "${prose_paren:-<none>}" "${overlap:-<none>}"
+fi
+
 # The wrapper (test_honest_status_shell.py) requires this exact line as well as
 # exit 0 — a harness that exits 0 without reaching its end asserts nothing, and
 # the line is what proves it got here.

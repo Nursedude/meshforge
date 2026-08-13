@@ -363,12 +363,18 @@ def note_unit_presence_gate(
     (``probe_service_inactive`` resolves no MainPID).
     """
     if stopped_is_inert:
-        if pid_status == "unknown":
+        if pid_status in ("absent", "down"):
+            note_disposition(cls, "inert", reason=absent_reason)
+        else:
+            # "unknown" — or any FUTURE resolver status. `inert` may only
+            # follow a POSITIVE observation of absence; an unrecognized
+            # status defaulting to the quiet value would be the 08-05
+            # collapse re-created by enum growth (honest_failure_modes #7:
+            # closed enums need closed consumers — this else is the closed
+            # consumer, and it points AWAY from quiet).
             note_disposition(
                 cls, "indeterminate",
                 reason=unknown_reason or unresolved_reason)
-        else:
-            note_disposition(cls, "inert", reason=absent_reason)
     else:
         if pid_status == "absent":
             note_disposition(cls, "inert", reason=absent_reason)
