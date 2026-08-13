@@ -173,3 +173,83 @@ Ranges, most-suspect first:
    five checks long because four defects walked past earlier versions; ask
    what a SIXTH would be, i.e. what still passes all five while the box is
    dead. That question is the one I could not answer for myself all evening.
+
+---
+
+## 2026-08-12 — the inert/indeterminate arc + 4 spin-off fixes (queued for a frontier adversarial pass)
+
+Author: Opus 5 session, ~9h. Range: MeshForge `1f30cc8e..9840d006` (8 commits),
+MeshAnchor `de4bf822..decf2c9c` (2). All gates green (`honest_status.sh` exit 0
+at 9840d006, CI green both repos, MF 10,760 tests / MA 6,382). Green gates are
+the START of this review, not its conclusion — every check that passed is one I
+wrote or one whose narrowness I chose.
+
+**Where I am least confident, in descending order. These are steers, not a
+verdict — each is a place my own reasoning is the only thing holding the claim
+up.**
+
+1. **`32a6998e` — the seven `absent -> inert` conversions.** The load-bearing
+   argument is "nothing is hidden, because `service_inactive` owns
+   expected-active-but-missing; `systemctl is-active` answers `inactive` for a
+   nonexistent unit (verified)." I verified the systemctl half. I did NOT
+   verify the other half per box: that each converted unit actually appears in
+   some box's `services_expected_active`. **Steer**: find a box+unit pair where
+   the unit is ABSENT and NOT expected-active. On that pair, my change moves a
+   class from `indeterminate` to `inert` and, if `service_inactive` never
+   judges it either, NOBODY owns it — which is the exact defect this arc was
+   fixing, re-created one layer over. `fd_exhaustion` / `phoneapi_tcp_leak`
+   are runner-gated on the map being expected-active; `main_thread_wedge` is
+   driven by `services_wedge_check`, which is `[]` on meshanchor-server.
+
+2. **`4bb20f1f` — CODE = `src/ requirements/ templates/`, and `scripts/` is
+   deliberately excluded.** My justification: scripts are exec'd fresh per
+   invocation, so no resident unit can be stale on one, and no `src/` module
+   imports `scripts/` (checked). **Steer**: a long-lived unit whose ExecStart
+   IS a `scripts/` entry point would be stale on that script while my leg calls
+   it "behind on prose only" — a strictly quieter answer than before. Enumerate
+   ExecStart lines fleet-wide and look for a `scripts/` path on a `Type=simple`
+   daemon. If one exists, the path class is wrong, and the fail-safe does not
+   help because the code-head resolves fine.
+
+3. **`fcbd4cc0` — `tests/test_rns_api_surface.py` SKIPS when RNS is
+   unimportable, which is CI.** I said so out loud in the file, but say it
+   again adversarially: this gate is inert in the one place that runs on every
+   push. It enforces only on the fleet and on dev boxes. **Steer**: is a gate
+   that never runs in CI worth its maintenance, or should the fork be in the
+   CI dep set so the class it guards (a fork-merge rename hiding in a swallowed
+   except) is actually caught before deploy rather than after?
+
+4. **`fcbd4cc0` — `exit_handler()` is shared-instance-safe.** I concluded that
+   from reading five lines of the fork (`_should_run = False`, `void_queues()`,
+   `persist_data()` guarded by `is_connected_to_shared_instance`). **Steer**:
+   `void_queues()` on a client of a SHARED rnsd — whose queues, and can a
+   gateway shutdown discard anything the shared instance still owns? I did not
+   read `void_queues`.
+
+5. **`05847b94` — I DECLINED to make the propagation probe live** (duplicate
+   owner, per-tick RNS traffic, weaker evidence than the hourly soak that
+   already exists). That is a judgement call made by the same session that had
+   just misread the probe. **Steer**: attack the decision, not the f-string.
+   Is 18h (3 announce periods) genuinely the floor, or is there a cheap
+   escalation — active probe ONLY when passive evidence crosses some fraction
+   of the window — that gets faster detection without a 30s-loop cost?
+
+6. **The RNS API audit's 5 "false positives."** I triaged them by eye
+   (docstring, hasattr-guarded, cmdline string literal, `Protocol.RNS.value`,
+   docstring). **Steer**: re-derive independently; if any is real, it is a live
+   AttributeError sitting in a swallowed except right now.
+
+7. **Everything I verified with a throwaway one-liner.** Seven of my own
+   measurement commands were WRONG tonight (unused awk cutoff, lines counted as
+   events, unsorted `find | head`, `pgrep` self-match x2, a verdict grepping
+   "passed" inside "2 failed, 3 passed", an `until` loop satisfied by the
+   OUTGOING process's write). All were caught by re-reading my own command, not
+   by any tool — so assume the ones I did NOT re-read are the survivors.
+   **Steer**: re-run the live claims from the commit messages rather than
+   trusting the quoted output.
+
+Fleet context the review will want: ~30 units restarted and verified by
+function this session; `meshanchor-server` has NO meshtasticd (that box is the
+whole reason the arc exists) and its USER journal is dark; `meshforge-echo`,
+`meshforge-lxmd`, `meshanchor-echo`, `meshanchor-mini-dudeai` are USER units
+while map/gateway/fleet-collector/fleet-watchdog are SYSTEM on the same boxes.
