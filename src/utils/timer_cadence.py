@@ -61,11 +61,24 @@ _MONOTONIC_REPEAT_RE = re.compile(
 _RANDOM_DELAY_RE = re.compile(
     r"(?mi)^\s*RandomizedDelaySec\s*=\s*(\S.*?)\s*$")
 
-# `(in UTC): Thu 2026-08-13 16:30:00 UTC` — the weekday token is skipped rather
-# than parsed with %a, which is locale-dependent and would break under a
-# non-English LC_TIME while looking like a schedule the unit does not have.
+# Any elapse line ending in a UTC stamp: `(in UTC): Thu 2026-08-13 16:30:00
+# UTC`, and — because ``_run_analyze`` forces ``TZ=UTC`` — `Next elapse:` /
+# `Iteration #N:` lines too. The weekday token is skipped rather than parsed
+# with %a, which is locale-dependent and would break under a non-English
+# LC_TIME while looking like a schedule the unit does not have.
+#
+# ⚠️ Why TZ is forced (2026-08-13 review): when the SYSTEM timezone is already
+# UTC, ``systemd-analyze calendar`` prints NO ``(in UTC):`` line at all — the
+# elapse lines are the UTC form. A regex requiring that prefix parsed nothing,
+# so every OnCalendar timer on a UTC-configured box silently lost its cadence
+# (rc 0, no warning, memoised). All nine fleet boxes are HST so this was
+# latent here, but the standalone offering runs on other people's boxes.
+# Forcing TZ=UTC makes the output shape TZ-independent; matching on the
+# trailing ``UTC`` (not the line prefix) parses both shapes and cannot
+# double-count — under a non-UTC leak the local lines end in the local zone
+# abbreviation and do not match.
 _UTC_LINE_RE = re.compile(
-    r"\(in UTC\):\s+\S+\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+UTC")
+    r"(?m):\s+\S+\s+(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+UTC\s*$")
 
 # Memo keyed on the SPEC TEXT, so an edited unit file yields a new key and can
 # never be answered from a stale entry. Process-lifetime; the watchdog daemon
@@ -79,18 +92,35 @@ _CADENCE_MEMO: Dict[str, Optional[float]] = {}
 _analyze_missing_warned = False
 
 
-def _run_analyze(args: List[str]) -> Optional[str]:
-    """``systemd-analyze <args>`` stdout, or None if it cannot be trusted.
+class _AnalyzeUnavailable(Exception):
+    """``systemd-analyze`` could not run AT ALL — binary absent, timeout, OS
+    error. A TRANSIENT condition of the box, not a property of the spec, so it
+    must never be memoised as the spec's answer (2026-08-13 review: a single
+    timeout used to pin that spec to ``None`` for the process lifetime, while
+    the memo's docstring promised staleness was impossible). Internal to this
+    module; every public entry point converts it to an un-memoised ``None``.
+    """
 
-    None on: binary absent, timeout, OS error, or a nonzero exit (which is how
-    ``systemd-analyze`` rejects a spec it cannot parse — rc 1, verified
-    2026-08-13). Never raises into a probe tick.
+
+def _run_analyze(args: List[str]) -> Optional[str]:
+    """``systemd-analyze <args>`` stdout, or None if the SPEC is rejected.
+
+    None only on a nonzero exit — how ``systemd-analyze`` rejects a spec it
+    cannot parse (rc 1, verified 2026-08-13), a deterministic answer safe to
+    memoise. Binary absent / timeout / OS error raises ``_AnalyzeUnavailable``
+    instead: transient, must not be cached (callers convert it to an
+    un-memoised None and never let it out of the module).
+
+    ``TZ=UTC`` is forced so the elapse output always carries UTC stamps — on a
+    box whose system timezone IS UTC there is no ``(in UTC):`` line to parse
+    (see ``_UTC_LINE_RE``). Harmless for ``timespan``.
     """
     global _analyze_missing_warned
     try:
         proc = subprocess.run(
             ["systemd-analyze"] + args,
             capture_output=True, text=True, timeout=_ANALYZE_TIMEOUT_S,
+            env={**os.environ, "TZ": "UTC"},
         )
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
         if not _analyze_missing_warned:
@@ -102,7 +132,7 @@ def _run_analyze(args: List[str]) -> Optional[str]:
                 "unjudgeable. Install the systemd package or check the "
                 "service sandbox's exec permissions.",
                 type(exc).__name__, exc)
-        return None
+        raise _AnalyzeUnavailable(f"{type(exc).__name__}: {exc}") from exc
     if proc.returncode != 0:
         return None
     return proc.stdout
@@ -156,7 +186,17 @@ def cadence_from_spec_text(text: str) -> Optional[float]:
     """
     if text in _CADENCE_MEMO:
         return _CADENCE_MEMO[text]
-    result = _cadence_from_spec_text_uncached(text)
+    try:
+        result = _cadence_from_spec_text_uncached(text)
+    except _AnalyzeUnavailable:
+        # Transient — the BOX could not answer, which says nothing about the
+        # spec. Do NOT memoise: the next tick retries, so a passing wobble
+        # (analyze timeout under load) costs one tick of flat-floor fallback
+        # instead of pinning this spec to the floor for the process lifetime.
+        # Trade accepted: a PERSISTENTLY wedged systemd-analyze now costs its
+        # timeout per distinct spec per tick rather than being silently
+        # absorbed — that state should be loud (see _analyze_missing_warned).
+        return None
     _CADENCE_MEMO[text] = result
     return result
 
@@ -178,7 +218,9 @@ def _cadence_from_spec_text_uncached(text: str) -> Optional[float]:
             base = max(spans)
     if base is None:
         return None
-    for jitter in _RANDOM_DELAY_RE.findall(text):
+    # Reversed: RandomizedDelaySec is a single-value option, so systemd takes
+    # the LAST assignment — matching first would honour a line systemd ignores.
+    for jitter in reversed(_RANDOM_DELAY_RE.findall(text)):
         j = _timespan_s(jitter)
         if j is not None:
             base += j                     # a firing can land this much later

@@ -376,15 +376,18 @@ def probe_user_timer_unit_failing(
             _save_streak(sp, 0)
             # Say how many were actually JUDGED, not how many are enrolled,
             # and NAME the ones that were not — a label may claim only what
-            # its evidence covers (2026-08-13). Without the names this reads
-            # as a tidy fraction and the operator cannot tell a box that is
-            # fine from a box whose journal is too short to say so.
+            # its evidence covers (2026-08-13). The counts also ride the
+            # STRUCTURED coverage field: the prose is for the operator, but
+            # mini's blind extractor reads judged < enrolled, which is what
+            # keeps a permanently half-blind box from escalating identically
+            # to a fully-observed healthy one (the Pri-1 laundering).
             note_disposition(
                 "user_timer_unit_failing", "clean",
                 reason=(f"{observed_count} of {len(timers)} enrolled timer(s) "
                         f"judged; no failing job. Unjudged: "
                         + "; ".join(sorted(unjudged)[:3]))
-                if unjudged else None)
+                if unjudged else None,
+                coverage={"judged": observed_count, "enrolled": len(timers)})
             return None
 
         streak = min(_load_streak(sp) + 1, debounce_ticks)

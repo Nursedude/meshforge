@@ -75,6 +75,47 @@ class TestDispositionRecorder:
         reset_dispositions()
         assert collect_dispositions() == {}
 
+    # ----- structured coverage (2026-08-13 Pri-1: partial blindness) -----
+
+    def test_coverage_carried_in_structure(self):
+        """The judged/enrolled counts must survive as DATA, not only inside
+        the reason prose — mini's blind extractor keys on them."""
+        note_disposition("user_timer_unit_failing", "clean",
+                         reason="2 of 4 judged",
+                         coverage={"judged": 2, "enrolled": 4})
+        got = collect_dispositions()["user_timer_unit_failing"]
+        assert got["coverage"] == {"judged": 2, "enrolled": 4}
+        assert got["disp"] == "clean"
+
+    def test_malformed_coverage_dropped_never_raises(self):
+        """A writer bug must not crash the tick or invent a shortfall.
+        bool is an int subclass — True/False counts are a bug, not data."""
+        for cov in ({"judged": "2", "enrolled": 4},
+                    {"judged": 5, "enrolled": 4},
+                    {"judged": -1, "enrolled": 4},
+                    {"judged": True, "enrolled": 4},
+                    {"enrolled": 4},
+                    "not-a-dict",
+                    42):
+            reset_dispositions()
+            note_disposition("x", "clean", coverage=cov)
+            assert "coverage" not in collect_dispositions()["x"], cov
+
+    def test_full_coverage_is_valid_and_kept(self):
+        note_disposition("x", "clean", coverage={"judged": 3, "enrolled": 3})
+        assert collect_dispositions()["x"]["coverage"] == {
+            "judged": 3, "enrolled": 3}
+
+    def test_worst_wins_keeps_the_winning_entry_wholesale(self):
+        """When indeterminate outranks clean, the clean note's coverage must
+        not bleed into the surviving entry — the entry is replaced or kept
+        as a unit, never merged field-by-field."""
+        note_disposition("x", "indeterminate", reason="wedge")
+        note_disposition("x", "clean", coverage={"judged": 2, "enrolled": 4})
+        got = collect_dispositions()["x"]
+        assert got["disp"] == "indeterminate"
+        assert "coverage" not in got
+
 
 class TestBuildCoverage:
     def test_every_signal_class_present(self):

@@ -82,6 +82,70 @@ class TestBlindDetectorProjection:
         assert [c["subject"] for c in out] == ["a", "m", "z"]
 
 
+class TestPartialBlindnessProjection:
+    """2026-08-13 Pri-1: a probe that judged only n of its m enrolled subjects
+    notes `clean` about the judged subset, with the shortfall in the
+    STRUCTURED coverage field. Before this leg the shortfall survived only as
+    prose inside the reason string, so a box permanently 50% blind escalated
+    identically to a fully-observed healthy one — the same laundering one
+    level up (a long-running detector_blind is a finding, not furniture)."""
+
+    def test_clean_with_shortfall_is_emitted(self):
+        out = _coverage_blind_extractor(_cov(
+            user_timer_unit_failing={
+                "disp": "clean",
+                "reason": ("2 of 4 enrolled timer(s) judged; no failing job. "
+                           "Unjudged: meshanchor-map-restart.service"),
+                "coverage": {"judged": 2, "enrolled": 4},
+            },
+        ))
+        assert len(out) == 1
+        assert out[0]["subject"] == "user_timer_unit_failing"
+        assert "judged 2 of 4" in out[0]["detail"]
+        assert "meshanchor-map-restart" in out[0]["detail"], \
+            "the unjudged names must survive into the condition"
+
+    def test_full_coverage_clean_is_not_blind(self):
+        out = _coverage_blind_extractor(_cov(
+            a={"disp": "clean", "coverage": {"judged": 4, "enrolled": 4}},
+        ))
+        assert out == []
+
+    def test_indeterminate_with_coverage_emits_exactly_one(self):
+        """Full blindness owns the class — the partial leg must not add a
+        second condition for the same subject."""
+        out = _coverage_blind_extractor(_cov(
+            a={"disp": "indeterminate", "reason": "r",
+               "coverage": {"judged": 0, "enrolled": 4}},
+        ))
+        assert len(out) == 1
+        assert out[0]["disp"] == "indeterminate"
+
+    def test_inert_with_shortfall_is_not_blind(self):
+        """An organ absent by design is not a half-blind detector."""
+        out = _coverage_blind_extractor(_cov(
+            a={"disp": "inert", "coverage": {"judged": 0, "enrolled": 2}},
+        ))
+        assert out == []
+
+    def test_malformed_coverage_never_fabricates(self):
+        """honest_failure_modes #1 at the reader: a writer bug must not
+        become a confident blindness claim. Note bool IS an int subclass."""
+        for cov in (
+            {"judged": "2", "enrolled": 4},
+            {"judged": 2, "enrolled": "4"},
+            {"judged": -1, "enrolled": 4},
+            {"judged": 5, "enrolled": 4},      # over-full is a writer bug
+            {"judged": False, "enrolled": True},
+            {"judged": 2},
+            "not-a-dict",
+            None,
+        ):
+            out = _coverage_blind_extractor(_cov(
+                a={"disp": "clean", "coverage": cov}))
+            assert out == [], f"fabricated a condition from {cov!r}"
+
+
 class TestDegradedInputNeverFabricates:
     """honest_failure_modes #1 — a degraded input must not become a confident
     claim. A torn or legacy writer must not read as "all 57 detectors blind"."""

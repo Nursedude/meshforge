@@ -188,6 +188,106 @@ class TestMemo:
         assert len(fake.calls) == 2
 
 
+class TestUtcTimezoneBox:
+    """2026-08-13 review: when the SYSTEM timezone is UTC, ``systemd-analyze
+    calendar`` prints NO ``(in UTC):`` line — the elapse lines ARE the UTC
+    form (verified live: ``TZ=UTC0 systemd-analyze calendar daily``). The
+    original regex required that prefix, so a UTC-configured box silently
+    lost every OnCalendar cadence: rc 0, nothing parsed, None memoised, no
+    warning. Latent on this all-HST fleet; real for the standalone offering.
+    """
+
+    def test_utc_shaped_output_without_in_utc_lines_still_parses(self):
+        out = ("  Original form: daily\n"
+               "Normalized form: *-*-* 00:00:00\n"
+               "    Next elapse: Fri 2026-08-14 00:00:00 UTC\n"
+               "       From now: 2h 16min left\n"
+               "   Iteration #2: Sat 2026-08-15 00:00:00 UTC\n"
+               "       From now: 1 day 2h left\n")
+        fake = _Fake(calendar=out)
+        assert _cadence("[Timer]\nOnCalendar=daily\n", fake) == 86400.0
+
+    def test_analyze_is_forced_to_utc(self):
+        """The parse depends on UTC-stamped output, so the subprocess must
+        not inherit the box's timezone — otherwise the fix only works where
+        it isn't needed."""
+        envs = []
+
+        def spy(argv, **kw):
+            envs.append(kw.get("env"))
+            return _Fake(calendar=_calendar_out(
+                "2026-08-13 16:30:00", "2026-08-13 16:40:00"))(argv, **kw)
+
+        from utils.timer_cadence import cadence_from_spec_text
+        with patch("utils.timer_cadence.subprocess.run", side_effect=spy):
+            assert cadence_from_spec_text(TRACER) == 600.0
+        assert envs and all(e is not None and e.get("TZ") == "UTC"
+                            for e in envs)
+
+    def test_mixed_shape_output_does_not_double_count(self):
+        """Local-TZ output carries BOTH a local elapse line and an (in UTC)
+        line per elapse; only the UTC one may be counted, or the gap list
+        grows zero-width entries from the duplicates."""
+        fake = _Fake(calendar=_calendar_out(
+            "2026-08-13 16:30:00", "2026-08-13 16:40:00"))
+        assert _cadence(TRACER, fake) == 600.0
+
+
+class TestTransientFailureIsNotMemoised:
+    """2026-08-13 review: the memo's contract is "an edited unit cannot be
+    answered from a stale entry" — but a TRANSIENT analyze failure (timeout,
+    OSError, missing binary) used to be memoised as the spec's answer, pinning
+    that spec to the flat floor for the process lifetime. Transient means the
+    BOX could not answer; that says nothing about the spec."""
+
+    def test_timeout_then_recovery_re_asks_and_heals(self):
+        from utils.timer_cadence import cadence_from_spec_text
+        good = _Fake(calendar=_calendar_out(
+            "2026-08-13 16:30:00", "2026-08-13 16:40:00"))
+        calls = []
+
+        def flaky(argv, **kw):
+            calls.append(argv)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired("systemd-analyze", 10)
+            return good(argv, **kw)
+
+        with patch("utils.timer_cadence.subprocess.run", side_effect=flaky):
+            assert cadence_from_spec_text(TRACER) is None   # honest fallback
+            assert cadence_from_spec_text(TRACER) == 600.0  # healed next ask
+
+    def test_deterministic_rejection_IS_memoised(self):
+        """rc != 0 is systemd rejecting the spec — the same text gets the
+        same answer forever, so re-shelling per tick would be pure cost."""
+        from utils.timer_cadence import cadence_from_spec_text
+        fake = _Fake(calendar="", rc=1)
+        bad = "[Timer]\nOnCalendar=not-a-spec\n"
+        with patch("utils.timer_cadence.subprocess.run", side_effect=fake):
+            assert cadence_from_spec_text(bad) is None
+            assert cadence_from_spec_text(bad) is None
+        assert len(fake.calls) == 1
+
+
+class TestRandomizedDelayLastAssignmentWins:
+
+    def test_last_randomized_delay_line_is_the_one_systemd_honours(self):
+        """RandomizedDelaySec is single-valued: systemd takes the LAST
+        assignment. Honouring the first would add a jitter systemd ignores."""
+        text = ("[Timer]\nOnCalendar=daily\n"
+                "RandomizedDelaySec=300\nRandomizedDelaySec=600\n")
+
+        def by_spec(argv, **kw):
+            if argv[1] == "calendar":
+                return _Fake(calendar=_calendar_out(
+                    "2026-08-14 13:17:00", "2026-08-15 13:17:00"))(argv, **kw)
+            micros = {"300": 300_000_000, "600": 600_000_000}[argv[-1]]
+            return _Fake(timespan=_timespan_out(micros))(argv, **kw)
+
+        from utils.timer_cadence import cadence_from_spec_text
+        with patch("utils.timer_cadence.subprocess.run", side_effect=by_spec):
+            assert cadence_from_spec_text(text) == 86400.0 + 600.0
+
+
 class TestFileReaders:
 
     def test_unreadable_timer_file_is_none(self, tmp_path):

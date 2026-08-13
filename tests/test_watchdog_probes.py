@@ -5447,6 +5447,44 @@ class TestCronVerdictStale:
         assert sig is None
         assert self._disp()["disp"] == "clean"
 
+    def test_judged_crons_beside_an_unjudged_reboot_are_clean_with_coverage(
+            self, tmp_path):
+        """2026-08-13 Pri-1: one @reboot cron with no verdict used to flip
+        the WHOLE class indeterminate, discarding the true negative on every
+        cron that WAS judged — the opposite wrong collapse from the
+        user_timer partial→clean. The honest shape: clean about the judged
+        subset, shortfall in the structured coverage field (mini's blind
+        extractor seeds the partial-blind condition from it), reboot crons
+        named in the reason."""
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        mixed = self.WIRED + self.WIRED_REBOOT
+        sig = probe_cron_verdict_stale(
+            crontab_text=mixed,
+            verdicts_text=self._v("myjob", "OK", 60),
+            now=self.NOW, state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = self._disp()
+        assert got["disp"] == "clean", got
+        assert got["coverage"] == {"judged": 1, "enrolled": 2}, got
+        assert "bootjob" in got["reason"], got
+
+    def test_only_unjudged_reboots_stay_indeterminate(self, tmp_path):
+        """The judged subset is EMPTY here — `clean` would be an affirmative
+        claim over no observation at all, so the 07-19 indeterminate stands
+        (this is the trap steer 1 warned the naive ratio-flip would trade
+        into, from the other side)."""
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+        sig = probe_cron_verdict_stale(
+            crontab_text=self.WIRED_REBOOT, verdicts_text="",
+            now=self.NOW, state_path=str(tmp_path / "d.json"))
+        assert sig is None
+        got = self._disp()
+        assert got["disp"] == "indeterminate"
+        assert "bootjob" in got["reason"], \
+            "the unjudged cron must be NAMED, not summarized"
+
     def test_cron_max_interval(self):
         assert _cron_max_interval("*/5 * * * *") == 300.0
         assert _cron_max_interval("7 */2 * * *") == 7200.0
@@ -11045,6 +11083,32 @@ class TestUserTimerCadenceAwareWindow:
         assert got.get("disp") == "clean", got
         assert "1 of 2 enrolled timer(s) judged" in got.get("reason", ""), got
         assert "slow.service" in got.get("reason", ""), got
+        # 2026-08-13 Pri-1: the shortfall must ALSO be structured data —
+        # prose is for the operator; mini's blind extractor keys on the
+        # counts, which is what stops a permanently half-blind box from
+        # escalating identically to a fully-observed healthy one.
+        assert got.get("coverage") == {"judged": 1, "enrolled": 2}, got
+
+    def test_fully_judged_clean_reports_full_coverage(self, tmp_path):
+        """judged == enrolled must read as full coverage, not a shortfall —
+        the partial-blind consumer keys on judged < enrolled."""
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        home = _user_timer_fixture(tmp_path, {"fast.timer": None})
+        collect = _fresh_dispositions()
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({
+                "fast.service": {"Failed with result": [],
+                                 "Finished ": [self.NOW - 600,
+                                               self.NOW - 1200]},
+            }),
+            coverage_fn=lambda unit, window=None: True,
+            cadences={"fast.timer": 600.0})
+        got = collect().get("user_timer_unit_failing", {})
+        assert sig is None
+        assert got.get("disp") == "clean", got
+        assert got.get("coverage") == {"judged": 1, "enrolled": 1}, got
 
 
 class TestJournalUserUnitHasLines:

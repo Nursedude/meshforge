@@ -318,10 +318,33 @@ def probe_cron_verdict_stale(
 
         if not failed and not stale:
             if reboot_unjudged:
-                note_disposition(
-                    "cron_verdict_stale", "indeterminate",
-                    reason="@reboot cron(s) with no verdict observed",
-                )
+                # PARTIAL coverage, not whole-class blindness (2026-08-13
+                # Pri-1 review). This used to note `indeterminate` for the
+                # whole class, which discarded the true negatives on every
+                # cron that WAS judged — the opposite wrong collapse from the
+                # user_timer probe's partial→clean. The honest claim is
+                # `clean` about the judged subset with the shortfall in the
+                # structured coverage field; mini's blind extractor seeds a
+                # partial-blind condition from judged < enrolled, so the
+                # @reboot crons' unobservability stays visible (the 07-19
+                # concern that made this indeterminate) without painting the
+                # judged crons' health as blindness. With NOTHING judged the
+                # subset is empty and `clean` would be an affirmative claim
+                # over no observation at all — that case keeps the 07-19
+                # indeterminate.
+                judged = len(wired) - len(reboot_unjudged)
+                names = ", ".join(sorted(reboot_unjudged)[:3])
+                if judged > 0:
+                    note_disposition(
+                        "cron_verdict_stale", "clean",
+                        reason=("@reboot cron(s) with no verdict observed: "
+                                + names),
+                        coverage={"judged": judged, "enrolled": len(wired)})
+                else:
+                    note_disposition(
+                        "cron_verdict_stale", "indeterminate",
+                        reason=("@reboot cron(s) with no verdict observed: "
+                                + names))
             elif unconfirmed:
                 # A failure WAS observed; it is simply not confirmed yet. This
                 # is emphatically NOT clean — mapping "seen once, awaiting the

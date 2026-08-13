@@ -81,6 +81,14 @@ def _coverage_blind_extractor(data):
     disjoint case — blind and QUIET — e.g. `kernel_reboot_pending`, which has
     never fired and currently cannot read the modules dir.
 
+    Since 2026-08-13 this also surfaces PARTIAL blindness: a `clean` entry
+    whose structured coverage field says `judged < enrolled` seeds the same
+    `detector_blind` kind, because a probe that could see only half its
+    subjects is half a detector, however honest its label. The disposition
+    stays `clean` (the judged subset's true negative is kept); the CONDITION
+    is what changes, so mini can tell a half-blind box from a fully-observed
+    healthy one.
+
     A missing/!dict `coverage` block yields NOTHING rather than a fabricated
     all-blind sweep: a legacy or torn writer is itself unobservable, and
     inventing 57 blind conditions from it would be the same defect one layer up
@@ -96,15 +104,42 @@ def _coverage_blind_extractor(data):
         if not isinstance(entry, dict):
             continue
         disp = entry.get("disp")
-        if disp not in _BLIND_DISPOSITIONS:
-            continue
         reason = entry.get("reason") or "no reason reported"
-        out.append({
-            "subject": cls,
-            "detail": f"detector cannot observe ({disp}): {reason}",
-            "class": cls,
-            "disp": disp,
-        })
+        if disp in _BLIND_DISPOSITIONS:
+            out.append({
+                "subject": cls,
+                "detail": f"detector cannot observe ({disp}): {reason}",
+                "class": cls,
+                "disp": disp,
+            })
+            continue
+        # PARTIAL blindness (2026-08-13 Pri-1): a probe that judged only n of
+        # its m enrolled subjects notes `clean` about the judged subset and
+        # records the shortfall in the structured coverage field. Before this
+        # leg the shortfall survived only as prose inside the reason string,
+        # so a box permanently 50% blind escalated identically to a fully
+        # observed healthy one. Keyed on the counts, not a ratio threshold —
+        # ANY shortfall is a condition; persistence/paging damping belongs to
+        # the detector_blind_any rule (annotate-only, 24h grace), not here.
+        # `clean` only: an inert organ is absent by design, and full blindness
+        # took the branch above.
+        cov = entry.get("coverage")
+        if (disp == "clean" and isinstance(cov, dict)
+                and isinstance(cov.get("judged"), int)
+                and isinstance(cov.get("enrolled"), int)
+                # bool is an int subclass; True/False here is a writer bug and
+                # must not fabricate a "judged False of True" condition.
+                and not isinstance(cov["judged"], bool)
+                and not isinstance(cov["enrolled"], bool)
+                and 0 <= cov["judged"] < cov["enrolled"]):
+            out.append({
+                "subject": cls,
+                "detail": (f"detector partially blind: judged "
+                           f"{cov['judged']} of {cov['enrolled']} enrolled "
+                           f"subject(s) — {reason}"),
+                "class": cls,
+                "disp": disp,
+            })
     return out
 
 

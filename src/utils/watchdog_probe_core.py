@@ -155,12 +155,28 @@ def reset_dispositions() -> None:
     _tick_dispositions.clear()
 
 
-def note_disposition(cls: str, disp: str, *, reason: Optional[str] = None) -> None:
+def note_disposition(cls: str, disp: str, *, reason: Optional[str] = None,
+                     coverage: Optional[dict] = None) -> None:
     """Record a probe's per-class disposition for this tick. Never raises.
 
     An invalid ``disp`` is recorded as ``indeterminate`` (a programming
     error must not silently become a healthy-looking value). Worst-wins:
     a later, worse note overrides; a later, better note does not.
+
+    ``coverage`` (2026-08-13, the partial-blindness review): for a probe that
+    judges N enrolled subjects, ``{"judged": n, "enrolled": m}`` records HOW
+    MUCH of the class the disposition's evidence actually covers — in
+    structure, not only in the reason prose. The disposition stays the claim
+    about the JUDGED subset (a label may claim only what its evidence covers);
+    ``judged < enrolled`` is what lets a consumer (mini's blind extractor)
+    surface a half-blind detector instead of reading a tidy ``clean`` — the
+    laundering this field exists to end: before it, a box permanently 50%
+    blind escalated identically to a fully-observed healthy one, and the
+    sibling probes had solved the same collapse in OPPOSITE wrong directions
+    (user_timer partial→clean hid blindness; cron_verdict partial→
+    indeterminate discarded true negatives). Malformed coverage is dropped,
+    never raised, and never invents a shortfall: both counts must be
+    non-negative ints with ``judged <= enrolled``.
     """
     if disp not in _DISP_RANK:
         reason = f"invalid disposition {disp!r} noted (probe bug)"
@@ -171,6 +187,12 @@ def note_disposition(cls: str, disp: str, *, reason: Optional[str] = None) -> No
     entry = {"disp": disp}
     if reason:
         entry["reason"] = reason
+    if isinstance(coverage, dict):
+        j, m = coverage.get("judged"), coverage.get("enrolled")
+        if (isinstance(j, int) and isinstance(m, int)
+                and not isinstance(j, bool) and not isinstance(m, bool)
+                and 0 <= j <= m):
+            entry["coverage"] = {"judged": j, "enrolled": m}
     _tick_dispositions[cls] = entry
 
 
