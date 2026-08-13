@@ -321,6 +321,61 @@ def _resolve_main_pid(
     )[1]
 
 
+def note_unit_presence_gate(
+    cls: str,
+    pid_status: str,
+    *,
+    absent_reason: str,
+    unresolved_reason: str,
+    stopped_is_inert: bool = False,
+    unknown_reason: Optional[str] = None,
+) -> None:
+    """ONE implementation of the absent→``inert`` / unknown→``indeterminate``
+    disposition policy for a no-PID resolution (2026-08-12 review).
+
+    The 08-12 conversion applied this policy as a hand-copied ``if/else`` at
+    ten call sites across six modules — and the arc's own lesson ("a fix
+    applied to one instance is not applied to the class") predicts the next
+    probe author copies a pre-08-12 shape, destructures the status tuple,
+    branches only on the pid, and quietly re-creates the collapse.
+    ``TestTriStateHelperContract`` now requires every module that CALLS
+    ``_resolve_main_pid_status`` to also call this gate, so the policy has a
+    single implementation and a mechanised consumer.
+
+    Two families, chosen by ``stopped_is_inert``:
+
+    * ``False`` (service OBSERVERS — channel_feed_dark, mqtt_root_drift,
+      fd_exhaustion, phoneapi_tcp_leak, meshtasticd_vsz_leak,
+      main_thread_wedge, the wedge probe's meshtasticd leg):
+      ``absent`` → ``inert`` (``absent_reason``); ``down``/``unknown`` →
+      ``indeterminate`` (``unresolved_reason``). A unit that exists and is
+      stopped is ``service_inactive``'s to page.
+    * ``True`` (ORGAN-PRESENCE gates — delivery_confirmation_stall,
+      gateway_delivery_degraded, the wedge probe's gateway leg):
+      ``unknown`` → ``indeterminate`` (``unknown_reason``), because a
+      systemctl we could not RUN is not an observation that this box has no
+      organ; ``absent``/``down`` → ``inert`` (``absent_reason``).
+
+    The SEMANTIC judgement stays at the call site (which family, and the
+    exact reason strings); only the mechanism lives here. For a probe whose
+    job is to notice that a unit which SHOULD be running is not, ``absent``
+    is the FINDING — such a probe must not use this gate at all
+    (``probe_service_inactive`` resolves no MainPID).
+    """
+    if stopped_is_inert:
+        if pid_status == "unknown":
+            note_disposition(
+                cls, "indeterminate",
+                reason=unknown_reason or unresolved_reason)
+        else:
+            note_disposition(cls, "inert", reason=absent_reason)
+    else:
+        if pid_status == "absent":
+            note_disposition(cls, "inert", reason=absent_reason)
+        else:
+            note_disposition(cls, "indeterminate", reason=unresolved_reason)
+
+
 def _read_deployment_declaration_status(
     service_user,
 ) -> Tuple[str, Optional[str], dict]:

@@ -71,6 +71,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid,
     _resolve_main_pid_status,
     _short_unix_ts,
+    note_unit_presence_gate,
 )
 from utils.watchdog_probes_rns import (
     probe_lxmf_process_wedge,

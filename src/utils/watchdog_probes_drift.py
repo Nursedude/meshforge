@@ -32,6 +32,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     _save_parity_streak,
     note_disposition,
+    note_unit_presence_gate,
 )
 
 # ─────────────────────────────────────────────────────────────────────
@@ -1214,17 +1215,14 @@ def probe_mqtt_root_drift(
             unit, systemctl_path=systemctl_path
         )
     if pid is None:
-        if pid_status == "absent":
-            # No meshtasticd unit here at all (meshanchor-server): there is no
-            # radio whose publish root COULD drift from gateway.json, and
-            # `service_inactive` cannot own a unit that does not exist.
-            note_disposition(
-                "mqtt_root_drift", "inert",
-                reason=f"no {unit} unit on this box; no radio root to compare",
-            )
-        else:
-            note_disposition("mqtt_root_drift", "indeterminate",
-                             reason="meshtasticd inactive or MainPID unresolvable")
+        # No meshtasticd unit here at all (meshanchor-server) → inert: no
+        # radio whose publish root COULD drift, and `service_inactive` cannot
+        # own a unit that does not exist. Policy in ONE place (2026-08-12).
+        note_unit_presence_gate(
+            "mqtt_root_drift", pid_status,
+            absent_reason=f"no {unit} unit on this box; no radio root to compare",
+            unresolved_reason="meshtasticd inactive or MainPID unresolvable",
+        )
         return None
 
     # The default reader records WHETHER the journal answered, alongside the

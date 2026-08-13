@@ -31,6 +31,29 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+
+def _systemd_manager_reachable() -> bool:
+    """True when `systemctl show` can actually ask a systemd manager.
+
+    2026-08-12 review: the live-drill test below plants a GHOST UNIT NAME
+    through the real systemctl and asserts the resolver answers `absent` —
+    which requires a reachable manager (PID 1 systemd + DBus). In a
+    container/chroot the systemctl binary may exist while the manager does
+    not; `systemctl show` then exits non-zero and the resolver honestly
+    answers `unknown`, so the assertion would fail for the ENVIRONMENT, not
+    the code. Green on fleet boxes and VM runners, red in docker — the
+    un-pinned ambient-state class this repo already names
+    (feedback_tests_must_pin_ambient_state)."""
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["systemctl", "show", "-p", "Version", "--no-pager"],
+            capture_output=True, text=True, timeout=3,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
 from utils.watchdog_probe_core import (  # noqa: E402
     collect_dispositions,
     reset_dispositions,
@@ -191,6 +214,18 @@ class TestStallProbeUnknownIsDrillableAgainstRealSystemd:
             f"has no gateway organ — got {got}")
         assert "unobservable" in got["reason"]
 
+    @pytest.mark.skipif(
+        not _systemd_manager_reachable(),
+        reason=(
+            "the ABSENT plant needs a real, reachable systemd manager: "
+            "`systemctl show` answers LoadState=not-found for a ghost unit "
+            "only when it can ask PID 1. In a container/chroot (systemctl "
+            "binary present, no manager) it exits non-zero, the resolver "
+            "honestly answers 'unknown', and this test would fail for the "
+            "environment, not the code (feedback_tests_must_pin_ambient_"
+            "state). SKIPPED IS NOT PASSED — the drill still runs on every "
+            "fleet box and on VM-based CI runners."),
+    )
     def test_absent_and_unknown_are_reached_by_DIFFERENT_plants(
             self, dispositions):
         """Guards the mistake itself: a ghost unit NAME must land in inert

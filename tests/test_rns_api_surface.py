@@ -33,6 +33,7 @@ someone to discover from a green tick.
 from __future__ import annotations
 
 import ast
+import functools
 import os
 import sys
 
@@ -65,9 +66,16 @@ def _annotate_parents(tree):
             child.parent = parent
 
 
+@functools.cache
 def _rns_attr_paths():
     """(module, dotted_path, 'file:line') for every real attribute access
-    rooted at the NAME ``RNS`` or ``LXMF``."""
+    rooted at the NAME ``RNS`` or ``LXMF``.
+
+    Cached: four test methods consume this walk and src/ does not change
+    mid-run — uncached it re-parsed the full tree (~540 files, ~6.5s on a
+    Pi) per method, ~20s of pure recomputation on every suite invocation
+    (2026-08-12 review). Callers must not mutate the returned list.
+    """
     out = []
     for dirpath, dirnames, files in os.walk(SRC_DIR):
         dirnames[:] = [d for d in dirnames if d != "__pycache__"]
@@ -76,7 +84,8 @@ def _rns_attr_paths():
                 continue
             path = os.path.join(dirpath, fn)
             try:
-                tree = ast.parse(open(path, encoding="utf-8").read())
+                with open(path, encoding="utf-8") as fh:
+                    tree = ast.parse(fh.read())
             except (OSError, SyntaxError):
                 continue
             _annotate_parents(tree)   # the longest-chain skip below needs this
@@ -163,9 +172,10 @@ class TestRNSApiSurfaceResolves:
         assert not hasattr(rns_mods["RNS"].Transport, "exithandler"), (
             "upstream grew an `exithandler` — re-read this gate's premise")
         assert hasattr(rns_mods["RNS"].Transport, "exit_handler")
-        src = open(os.path.join(SRC_DIR, "gateway",
-                                "_rns_bridge_connection.py"),
-                   encoding="utf-8").read()
+        with open(os.path.join(SRC_DIR, "gateway",
+                               "_rns_bridge_connection.py"),
+                  encoding="utf-8") as fh:
+            src = fh.read()
         assert "RNS.Transport.exit_handler()" in src
         assert "RNS.Transport.exithandler()" not in src
 

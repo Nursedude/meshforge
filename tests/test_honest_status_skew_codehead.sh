@@ -27,7 +27,9 @@ ok()   { printf '  %-56s ok\n' "$1"; }
 bad()  { printf '  %-56s FAIL — %s\n' "$1" "$2"; fails=$((fails+1)); }
 
 # THE function under test, copied verbatim from honest_status.sh.
-hs_codehead() { git -C "$1" log -1 --format=%ct -- src requirements templates 2>/dev/null; }
+# (test_honest_status_skew_repos.sh #10 pins that this copy matches the real
+# one, so the two hardcodes cannot drift apart silently.)
+hs_codehead() { git -C "$1" log -1 --format=%ct -- src requirements requirements.txt templates scripts 2>/dev/null; }
 
 mk() {  # $1=repo  $2=path  $3=epoch
   mkdir -p "$(dirname "$1/$2")"; echo x >> "$1/$2"
@@ -97,20 +99,37 @@ r=$(classify $((T_DOCS - 100)) "$HEAD_B" "garbage")
 [ "$r" = B ] && ok "non-numeric code-head falls back to HEAD" \
   || bad "non-numeric code-head falls back to HEAD" "got $r"
 
-# ── scripts/ is deliberately NOT code: a scripts-only commit is prose ─
+# ── scripts/ IS code (2026-08-12 review): resident daemons live there ─
+# nomadnet-silence-watch-user.service is Type=simple with
+# ExecStart=scripts/nomadnet_silence_watch.py, and MeshAnchor keeps its
+# systemd unit files under scripts/ — the original "exec'd fresh per
+# invocation" exclusion premise was false on both repos, and a code-stale
+# resident watcher read "behind on prose only" (the demotion the FAIL-SAFE
+# above exists to forbid).
 mk "$D/a" scripts/thing.sh $((T_DOCS + 1000))
 HEAD_A2=$(git -C "$D/a" show -s --format=%ct HEAD)
 CODE_A2=$(hs_codehead "$D/a")
-[ "$CODE_A2" = "$T_CODE" ] && ok "a scripts/-only commit does not move the code-head" \
-  || bad "a scripts/-only commit does not move the code-head" "got $CODE_A2"
+[ "$CODE_A2" = $((T_DOCS + 1000)) ] && ok "a scripts/ commit DOES move the code-head (resident daemons live there)" \
+  || bad "a scripts/ commit DOES move the code-head" "got $CODE_A2"
 r=$(classify $((T_CODE + 100)) "$HEAD_A2" "$CODE_A2")
-[ "$r" = P ] && ok "scripts/-only commit lands a unit in PROSE, not CODE" \
-  || bad "scripts/-only commit lands a unit in PROSE" "got $r"
+[ "$r" = B ] && ok "scripts/ commit lands a stale unit in CODE, not PROSE" \
+  || bad "scripts/ commit lands a stale unit in CODE" "got $r"
 
 # ── templates/ IS code: a unit-file change must move the code-head ───
 mk "$D/a" templates/systemd/u.service $((T_DOCS + 2000))
 CODE_A3=$(hs_codehead "$D/a")
 [ "$CODE_A3" = $((T_DOCS + 2000)) ] && ok "a templates/ commit DOES move the code-head" \
   || bad "a templates/ commit DOES move the code-head" "got $CODE_A3"
+
+# ── top-level requirements.txt IS code: the meshforge-maps shape ─────
+# git pathspec `requirements` matches only the DIRECTORY; meshforge-maps
+# pins its deps in a top-level requirements.txt and has no requirements/
+# dir, so before 2026-08-12 its dep-floor bumps never moved the code-head.
+newrepo "$D/c"
+mk "$D/c" src/app.py "$T_CODE"
+mk "$D/c" requirements.txt $((T_DOCS + 3000))
+CODE_C=$(hs_codehead "$D/c")
+[ "$CODE_C" = $((T_DOCS + 3000)) ] && ok "a top-level requirements.txt commit DOES move the code-head" \
+  || bad "a top-level requirements.txt commit DOES move the code-head" "got $CODE_C — a maps dep bump would demote to prose"
 
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED: $fails"; exit 1; fi

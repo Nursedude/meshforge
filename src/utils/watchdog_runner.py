@@ -1134,6 +1134,28 @@ def resolve_probe_targets(
             )
         swc = _DEFAULT_SERVICES_WEDGE_CHECK
 
+    # 2026-08-12 review (the absent→inert conversions). main_thread_wedge
+    # now files an ABSENT unit as `inert` on the argument that
+    # `service_inactive` still pages any unit that is EXPECTED active and
+    # missing. That argument only holds for units in services_expected_active
+    # — and services_wedge_check is an independent full-replacement list. A
+    # wedge-checked unit that is NOT expected-active and whose unit file
+    # disappears would be owned by NOBODY: main_thread_wedge reads inert,
+    # service_inactive never judges it, and the misconfiguration that
+    # pre-08-12 left a standing indeterminate witness would have no witness
+    # at all. Not an error (the operator may deliberately wedge-check a unit
+    # this box does not require active) — but never silent.
+    unowned = [u for u in swc if u not in sea]
+    if unowned:
+        logger.warning(
+            "watchdog: services_wedge_check unit(s) %s are not in "
+            "services_expected_active — if such a unit's file is ABSENT on "
+            "this box, main_thread_wedge reads `inert` and service_inactive "
+            "never judges it: nothing owns that failure. Add the unit(s) to "
+            "services_expected_active or drop them from the wedge list.",
+            ", ".join(sorted(unowned)),
+        )
+
     port_raw = config.get("http_port")
     if isinstance(port_raw, int) and 1 <= port_raw <= 65535:
         port = port_raw

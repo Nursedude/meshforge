@@ -25,7 +25,8 @@ import json
 import os
 
 from ._util import (APP_FLEET_PRESET, APP_MINI_UNIT, APP_REPO_DEFAULT,
-                    APP_REPO_ENV, APP_VERDICT_SUBDIR, operator_home, read_json)
+                    APP_REPO_ENV, APP_VERDICT_SUBDIR, READ_JSON_NOT_FOUND,
+                    operator_home, read_json)
 
 #: Past this age (s) since the last tick, the brief is treated as historical.
 #: Mirrors brief.DEFAULT_STALE_S (30s tick → >5m means the daemon likely died).
@@ -78,15 +79,33 @@ def deferred_backlog_line(ledger_path: str, today: str) -> str:
     Honesty rules, in order:
       - ledger ABSENT  → "" (silent). It lives on the operator's manager box;
         its absence elsewhere is by design, not a failure (inert, not blind).
+        Absence is judged by ``read_json``'s FileNotFoundError leg — NOT by an
+        ``os.path.exists`` pre-check, which also answers False on EACCES /
+        an untraversable parent and would file an unreadable ledger under
+        "absent by design" (2026-08-12 review; honest_failure_modes #1).
       - ledger UNREADABLE/malformed → say so. A gate ledger that cannot be
         read is exactly when you must not assume an empty backlog.
       - nothing overdue → "" (silent). A clean board earns no line.
     ``today`` is passed in (ISO ``YYYY-MM-DD``) so this stays clock-free and
     testable, like everything else in this module.
+
+    ⚠️ SHARED SEMANTICS: ``scripts/deferred_work_watch.py`` is the ledger's
+    OWNING consumer (it writes, pages, and auto-closes); this line only
+    re-surfaces what that watcher would page, so the two predicates must
+    agree (honest_failure_modes #5 — two consumers of one artifact). The
+    watcher cannot be imported from here (``scripts/`` is not a package, and
+    this file is parity-byte-locked into MeshAnchor, which does not carry
+    MeshForge's scripts/), so the semantics are duplicated DELIBERATELY and
+    pinned by tests. The first cut drifted from it three ways — a task with
+    no ``status`` field (the watcher defaults it to "blocked") was skipped
+    here; ``ra < today`` hid a task due TODAY that the watcher pages
+    (``today < ra_date → continue``, i.e. due when today >= review_after);
+    and a lexicographic compare let a hand-typed ``"2026-9-1"`` never come
+    due, where the watcher pages it as a ledger error.
     """
-    if not os.path.exists(ledger_path):
-        return ""
     data, err = read_json(ledger_path)
+    if err == READ_JSON_NOT_FOUND:
+        return ""
     if err or not isinstance(data, dict):
         return (f"⚠️ **deferred-work ledger unreadable** (`{ledger_path}`: "
                 f"{err or 'not an object'}) — backlog UNKNOWN, not empty.\n")
@@ -94,17 +113,41 @@ def deferred_backlog_line(ledger_path: str, today: str) -> str:
     if not isinstance(tasks, list):
         return (f"⚠️ **deferred-work ledger has no task list** "
                 f"(`{ledger_path}`) — backlog UNKNOWN, not empty.\n")
+    try:
+        today_date = datetime.datetime.strptime(today, "%Y-%m-%d").date()
+    except ValueError:
+        # A broken caller must not silently empty the board.
+        return (f"⚠️ **deferred-work backlog unknown** (bad `today` argument "
+                f"{today!r}, want YYYY-MM-DD) — backlog UNKNOWN, not empty.\n")
     overdue = []
     for t in tasks:
-        if not isinstance(t, dict) or t.get("status") != "blocked":
+        if not isinstance(t, dict):
             continue
+        # No status field = "blocked" — the watcher's default (its line
+        # `t.get("status", "blocked")`), so it must be the default here too.
+        if t.get("status", "blocked") != "blocked":
+            continue
+        # str(): a numeric id must not make sorted() below raise TypeError
+        # and take the whole warm-start brief down with it.
+        tid = str(t.get("id") or "<unnamed>")
         ra = t.get("review_after")
         # A blocked task with no/unparseable review date can never come due —
         # it is MORE overdue than a dated one, never less. Surface it.
         if not isinstance(ra, str) or not ra.strip():
-            overdue.append(t.get("id") or "<unnamed>")
-        elif ra < today:
-            overdue.append(t.get("id") or "<unnamed>")
+            overdue.append(tid)
+            continue
+        try:
+            ra_date = datetime.datetime.strptime(ra.strip(), "%Y-%m-%d").date()
+        except ValueError:
+            # The watcher pages "bad date in ledger" for these; the honest
+            # analogue here is to surface the task — a malformed date must
+            # never read as "not due yet" forever.
+            overdue.append(tid)
+            continue
+        # Due when today >= review_after — the watcher's boundary, so a task
+        # paged this morning is also listed here this morning.
+        if ra_date <= today_date:
+            overdue.append(tid)
     if not overdue:
         return ""
     shown = ", ".join(f"`{i}`" for i in sorted(overdue)[:6])
@@ -129,8 +172,12 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
     # The operator's deferred-work backlog rides along: it is the surface that
     # otherwise re-surfaces nothing (see deferred_backlog_line). Resolved from
     # the HUMAN's home, not resolve_home() — the ledger is theirs, not mini's.
+    # DEFERRED_WORK_LEDGER is the watcher's own override (deferred_work_watch
+    # honors it for drills); honoring it here keeps the two consumers pointed
+    # at the SAME ledger under a drill instead of silently diverging.
     if ledger_path is None:
-        ledger_path = os.path.join(operator_home(), DEFERRED_LEDGER_BASENAME)
+        ledger_path = os.environ.get("DEFERRED_WORK_LEDGER") or os.path.join(
+            operator_home(), DEFERRED_LEDGER_BASENAME)
     today = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
     backlog = deferred_backlog_line(ledger_path, today)
 

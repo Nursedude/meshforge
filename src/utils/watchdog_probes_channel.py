@@ -56,6 +56,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
+    note_unit_presence_gate,
 )
 
 #: Journal marker meshtasticd logs for every MQTT-json publish. Its presence
@@ -219,21 +220,16 @@ def probe_channel_feed_dark(
             unit, systemctl_path=systemctl_path
         )
     if pid is None:
-        if pid_status == "absent":
-            # No meshtasticd unit on this box AT ALL (the meshanchor-server
-            # shape: MeshCore-primary, never had one). There is no channel
-            # instrument here to be dark, and `service_inactive` cannot own a
-            # unit that does not exist — so the handoff below would leave this
-            # class indeterminate forever. Absent by design is `inert`.
-            note_disposition(
-                "channel_feed_dark", "inert",
-                reason=f"no {unit} unit on this box; no channel feed to watch",
-            )
-        else:
-            note_disposition(
-                "channel_feed_dark", "indeterminate",
-                reason="meshtasticd MainPID unresolved; service_inactive owns that",
-            )
+        # No meshtasticd unit on this box AT ALL (the meshanchor-server
+        # shape: MeshCore-primary, never had one) → inert: there is no
+        # channel instrument here to be dark, and `service_inactive` cannot
+        # own a unit that does not exist. Everything else stays
+        # indeterminate. Policy lives in ONE place (2026-08-12 review).
+        note_unit_presence_gate(
+            "channel_feed_dark", pid_status,
+            absent_reason=f"no {unit} unit on this box; no channel feed to watch",
+            unresolved_reason="meshtasticd MainPID unresolved; service_inactive owns that",
+        )
         return None
 
     # Bound the journal scan to the darkness threshold. journalctl -g -r -n 1

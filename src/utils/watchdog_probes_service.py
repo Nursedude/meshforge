@@ -27,6 +27,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
+    note_unit_presence_gate,
 )
 
 # Same logger name the runner uses (watchdog_runner.py) so a swallowed
@@ -200,21 +201,15 @@ def probe_fd_exhaustion(
             service_name, systemctl_path=systemctl_path
         )
     if pid is None:
-        if pid_status == "absent":
-            # No such unit on this box: there is no fd table to count against
-            # a limit. Nothing is hidden by saying so — a unit that is
-            # EXPECTED active and does not exist still pages via
-            # `service_inactive` (`systemctl is-active` answers "inactive"
-            # for a nonexistent unit, verified 2026-08-12).
-            note_disposition(
-                "fd_exhaustion", "inert",
-                reason=f"no {service_name} unit on this box; no fds to count",
-            )
-        else:
-            note_disposition(
-                "fd_exhaustion", "indeterminate",
-                reason="MainPID unresolved; service inactive or systemctl error",
-            )
+        # ABSENT unit → inert: no fd table to count. Nothing hidden — an
+        # EXPECTED-active missing unit still pages via `service_inactive`
+        # (`systemctl is-active` answers "inactive" for a nonexistent unit,
+        # verified 2026-08-12). Policy in ONE place (2026-08-12 review).
+        note_unit_presence_gate(
+            "fd_exhaustion", pid_status,
+            absent_reason=f"no {service_name} unit on this box; no fds to count",
+            unresolved_reason="MainPID unresolved; service inactive or systemctl error",
+        )
         return None
 
     usage = _read_fd_usage(pid, proc_root=proc_root)
@@ -463,20 +458,15 @@ def probe_meshtasticd_vsz_leak(
             service_name, systemctl_path=systemctl_path
         )
     if pid is None:
-        if pid_status == "absent":
-            # No meshtasticd unit on this box (meshanchor-server, MeshCore-
-            # primary): there is no portduino process that COULD strand
-            # pthread stacks, and `service_inactive` cannot own a unit that
-            # does not exist. Absent by design is `inert`, not a failed look.
-            note_disposition(
-                "meshtasticd_vsz_leak", "inert",
-                reason=f"no {service_name} unit on this box; no VSZ to watch",
-            )
-        else:
-            note_disposition(
-                "meshtasticd_vsz_leak", "indeterminate",
-                reason="meshtasticd MainPID unresolved; service_inactive owns that",
-            )
+        # ABSENT unit (meshanchor-server, MeshCore-primary) → inert: no
+        # portduino process that COULD strand pthread stacks, and
+        # `service_inactive` cannot own a unit that does not exist. Policy in
+        # ONE place (2026-08-12 review).
+        note_unit_presence_gate(
+            "meshtasticd_vsz_leak", pid_status,
+            absent_reason=f"no {service_name} unit on this box; no VSZ to watch",
+            unresolved_reason="meshtasticd MainPID unresolved; service_inactive owns that",
+        )
         return None
 
     reading = _read_vm_size_gb(pid, proc_root=proc_root)
@@ -568,22 +558,18 @@ def probe_phoneapi_tcp_leak(
             service_name, systemctl_path=systemctl_path
         )
     if pid is None:
-        if pid_status == "absent":
-            # No such unit here, so no process of its that could hold a
-            # leaked TCPInterface. `service_inactive` still owns "expected
-            # active but missing" (same argument as fd_exhaustion above).
-            note_disposition(
-                "phoneapi_tcp_leak", "inert",
-                reason=(
-                    f"no {service_name} unit on this box; no owner process "
-                    f"that could leak a PhoneAPI stream"
-                ),
-            )
-        else:
-            note_disposition(
-                "phoneapi_tcp_leak", "indeterminate",
-                reason="MainPID unresolved; service inactive or systemctl error",
-            )
+        # ABSENT unit → inert: no owner process that could hold a leaked
+        # TCPInterface; `service_inactive` still owns "expected active but
+        # missing" (same argument as fd_exhaustion above). Policy in ONE
+        # place (2026-08-12 review).
+        note_unit_presence_gate(
+            "phoneapi_tcp_leak", pid_status,
+            absent_reason=(
+                f"no {service_name} unit on this box; no owner process "
+                f"that could leak a PhoneAPI stream"
+            ),
+            unresolved_reason="MainPID unresolved; service inactive or systemctl error",
+        )
         return None
 
     sp = state_path or DEFAULT_PHONEAPI_LEAK_STATE_PATH
@@ -798,19 +784,14 @@ def probe_meshtasticd_phoneapi_wedge(
             unit, systemctl_path=systemctl_path
         )
     if pid is None:
-        if pid_status == "absent":
-            # No meshtasticd unit on this box (meshanchor-server): nothing can
-            # contend for a PhoneAPI that isn't served here, and
-            # `service_inactive` cannot own a unit that does not exist.
-            note_disposition(
-                "meshtasticd_phoneapi_wedge", "inert",
-                reason=f"no {unit} unit on this box; no PhoneAPI to contend for",
-            )
-        else:
-            note_disposition(
-                "meshtasticd_phoneapi_wedge", "indeterminate",
-                reason="meshtasticd MainPID unresolved; service_inactive owns that",
-            )
+        # ABSENT unit (meshanchor-server) → inert: nothing can contend for a
+        # PhoneAPI that isn't served here, and `service_inactive` cannot own
+        # a unit that does not exist. Policy in ONE place (2026-08-12).
+        note_unit_presence_gate(
+            "meshtasticd_phoneapi_wedge", pid_status,
+            absent_reason=f"no {unit} unit on this box; no PhoneAPI to contend for",
+            unresolved_reason="meshtasticd MainPID unresolved; service_inactive owns that",
+        )
         return None
 
     # Gate: the wedge only threatens a GATEWAY's mesh-TX. On a box with no
@@ -829,25 +810,21 @@ def probe_meshtasticd_phoneapi_wedge(
         # spelled the conflation out loud — "no gateway unit on this box"
         # (inert, the common legitimate case) shared one value with
         # "systemctl errored" (genuinely unobservable), and BOTH were filed
-        # as inert. The status form separates them: absent/stopped stay
-        # inert (a dead-but-installed gateway pages via service_inactive),
-        # while a systemctl we could not RUN is unobservable and must not
-        # masquerade as a box that simply has no gateway.
-        if gw_status == "unknown":
-            note_disposition(
-                "meshtasticd_phoneapi_wedge", "indeterminate",
-                reason=(
-                    f"{gateway_unit} state unobservable (systemctl "
-                    f"unavailable/unparseable); cannot tell whether this "
-                    f"class applies here"
-                ),
-            )
-            return None
-        note_disposition(
-            "meshtasticd_phoneapi_wedge", "inert",
-            reason=(
+        # as inert. The gate separates them: absent/stopped stay inert (a
+        # dead-but-installed gateway pages via service_inactive), while a
+        # systemctl we could not RUN is unobservable and must not masquerade
+        # as a box that simply has no gateway.
+        note_unit_presence_gate(
+            "meshtasticd_phoneapi_wedge", gw_status,
+            stopped_is_inert=True,
+            absent_reason=(
                 f"no running gateway ({gw_status}); "
                 f"class gated to gateway boxes"
+            ),
+            unresolved_reason=(
+                f"{gateway_unit} state unobservable (systemctl "
+                f"unavailable/unparseable); cannot tell whether this "
+                f"class applies here"
             ),
         )
         return None

@@ -316,11 +316,23 @@ else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 # resident mini stale. Filtering those out would have been a real blindness
 # sold as noise reduction. Both buckets print; only the HEADLINE changes.
 #
-# CODE = src/ + requirements/ + templates/ — what a resident interpreter holds
-# (modules, the dep floor, unit files). scripts/ is deliberately NOT code here:
-# every scripts/ entry point is exec'd fresh per invocation, so no resident
-# unit can be stale on one (verified — the only src/ references to scripts/ are
-# docstrings and one documented mirror pair, utils/fleet_hosts.py).
+# CODE = src/ + requirements/ + requirements.txt + templates/ + scripts/ —
+# what a resident unit can load (modules, the dep floor, unit files, and
+# script-hosted daemons). Two corrections from the same-day review
+# (2026-08-12), both in the QUIETER direction the fail-safe below exists to
+# forbid:
+#   * scripts/ was excluded on the premise "exec'd fresh per invocation, no
+#     resident unit can be stale on one" — false on both repos:
+#     nomadnet-silence-watch-user.service is a Type=simple resident daemon
+#     whose ExecStart IS scripts/nomadnet_silence_watch.py, and MeshAnchor
+#     keeps its systemd unit files under scripts/ (meshanchor-daemon.service
+#     et al). A code-stale resident watcher read "behind on prose only".
+#   * git pathspec `requirements` matches only the DIRECTORY;
+#     meshforge-maps pins its deps in a top-level requirements.txt (it has
+#     no requirements/ dir), so its dep-floor bumps never moved the
+#     code-head. `requirements.txt` is listed explicitly.
+# The prose bucket is therefore docs/, .claude/, evals/ — the corpora only
+# mini's oracle loads, never a resident interpreter.
 #
 # FAIL-SAFE, and this is the load-bearing line: if the code-head cannot be
 # resolved for a repo (git error, path never touched, unreadable), it falls
@@ -335,7 +347,7 @@ for b in $BOXES; do
 # Newest commit touching CODE the repo's resident units load. Empty (git
 # error / paths never touched) FALLS BACK to that repo's HEAD below, so an
 # unresolvable code-head can never demote a unit into the prose bucket.
-hs_codehead() { git -C \"\$1\" log -1 --format=%ct -- src requirements templates 2>/dev/null; }
+hs_codehead() { git -C \"\$1\" log -1 --format=%ct -- src requirements requirements.txt templates scripts 2>/dev/null; }
 if [ -e $REPO/.git ]; then
   HTMF=\$(git -C $REPO show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMF\" ] || HTMF=SKIP
   HTMA=\$(git -C /opt/meshanchor show -s --format=%ct HEAD 2>/dev/null); [ -n \"\$HTMA\" ] || HTMA=SKIP
@@ -388,7 +400,7 @@ udark_note=""
 # "no unit is behind on code" while six are behind on a corpus mini indexes is
 # a true sentence that must not be printed alone.
 prose_note=""
-[ "$skew_prose" -gt 0 ] && prose_note=" ; $skew_prose behind on NON-code only (docs/.claude/scripts/evals — still real for mini's oracle corpus)${skew_prose_desc}"
+[ "$skew_prose" -gt 0 ] && prose_note=" ; $skew_prose behind on NON-code only (docs/.claude/evals — still real for mini's oracle corpus)${skew_prose_desc}"
 if [ "$skew_boxes" = 0 ]; then
   disc "running-code skew" "no box answered with a repo — not measured"
 elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then

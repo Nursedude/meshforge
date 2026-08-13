@@ -24,6 +24,7 @@ from utils.watchdog_probe_core import (
     _resolve_main_pid_status,
     _short_unix_ts,
     note_disposition,
+    note_unit_presence_gate,
 )
 
 logger = logging.getLogger("watchdog")
@@ -692,15 +693,14 @@ def probe_gateway_delivery_degraded(
             # 2026-08-12, same split as its sibling in watchdog_probes_gateway:
             # absent/stopped are inert (service_inactive owns a dead unit); a
             # systemctl we could not run is unobservable, not "no gateway".
-            if gw_status == "unknown":
-                note_disposition(
-                    "gateway_delivery_degraded", "indeterminate",
-                    reason=(f"{unit} state unobservable; cannot tell whether "
-                            f"a gateway organ exists here"))
-                return None
-            note_disposition("gateway_delivery_degraded", "inert",
-                             reason=f"gateway not running on this box ({gw_status})")
-            return None  # INERT: this box doesn't run the gateway
+            # Policy in ONE place (2026-08-12 review).
+            note_unit_presence_gate(
+                "gateway_delivery_degraded", gw_status,
+                stopped_is_inert=True,
+                absent_reason=f"gateway not running on this box ({gw_status})",
+                unresolved_reason=(f"{unit} state unobservable; cannot tell "
+                                   f"whether a gateway organ exists here"))
+            return None  # INERT (or indeterminate on unknown): see gate
 
         if blocks_fn is None:
             def blocks_fn():

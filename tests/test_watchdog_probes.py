@@ -4308,6 +4308,45 @@ def test_resolve_probe_targets_moc3_override_drops_meshforge_map():
     assert port == 5000
 
 
+def test_resolve_probe_targets_warns_on_unowned_wedge_units(caplog):
+    """2026-08-12 review: main_thread_wedge files an ABSENT unit as `inert`
+    on the argument that service_inactive pages an expected-active-but-missing
+    unit — which only holds for units IN services_expected_active. A
+    wedge-checked unit outside that list, with its unit file gone, would be
+    owned by NOBODY, so the misconfiguration must warn at config time."""
+    import logging
+    with patch("utils.watchdog_runner._role_expected_active",
+               return_value=None), \
+         caplog.at_level(logging.WARNING, logger="watchdog"):
+        sea, swc, _port = resolve_probe_targets({
+            "services_expected_active": ["rnsd.service"],
+            "services_wedge_check": ["meshanchor-daemon.service"],
+        })
+    assert "meshanchor-daemon.service" in swc
+    assert any(
+        "services_wedge_check" in r.message
+        and "meshanchor-daemon.service" in r.message
+        and "nothing owns" in r.message
+        for r in caplog.records
+    ), f"expected the unowned-wedge warning, got: {[r.message for r in caplog.records]}"
+
+
+def test_resolve_probe_targets_no_warning_when_wedge_is_owned(caplog):
+    """The warning must not fire when every wedge unit is expected-active —
+    a warning that fires on every healthy box is standing noise."""
+    import logging
+    with patch("utils.watchdog_runner._role_expected_active",
+               return_value=None), \
+         caplog.at_level(logging.WARNING, logger="watchdog"):
+        resolve_probe_targets({
+            "services_expected_active": ["rnsd.service",
+                                         "meshforge-map.service"],
+            "services_wedge_check": ["meshforge-map.service"],
+        })
+    assert not any("services_wedge_check unit(s)" in r.message
+                   for r in caplog.records)
+
+
 def test_resolve_probe_targets_partial_override_keeps_other_defaults():
     """Only overriding one key shouldn't touch the others."""
     with patch("utils.watchdog_runner._role_expected_active",

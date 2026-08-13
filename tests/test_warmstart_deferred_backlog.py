@@ -40,6 +40,68 @@ def test_future_review_date_is_silent(tmp_path):
     assert deferred_backlog_line(p, TODAY) == ""
 
 
+def test_due_TODAY_is_surfaced_like_the_watcher_pages_it(tmp_path):
+    """Boundary pin against scripts/deferred_work_watch.py: the watcher pages
+    when today >= review_after (`today < ra_date -> continue`). The first cut
+    here used `ra < today`, so the task the operator was paged about this
+    morning was invisible in the same morning's warm-start brief."""
+    p = _ledger(tmp_path, [{"id": "due-today", "status": "blocked",
+                            "review_after": TODAY}])
+    assert "due-today" in deferred_backlog_line(p, TODAY)
+
+
+def test_missing_status_field_defaults_to_blocked_like_the_watcher(tmp_path):
+    """The watcher's predicate is `t.get(\"status\", \"blocked\")` — a task
+    written without a status key IS blocked to the mechanism this line
+    mirrors. Skipping it here recreated the page-once-then-silence gap for
+    exactly those tasks."""
+    p = _ledger(tmp_path, [{"id": "no-status", "review_after": "2026-01-01"}])
+    assert "no-status" in deferred_backlog_line(p, TODAY)
+
+
+def test_unpadded_past_date_is_parsed_not_lexicographically_lost(tmp_path):
+    """Lexicographic `ra < today` read \"2026-1-5\" (unpadded, PAST) as later
+    than \"2026-08-12\" forever ('1' > '0' at position 5) — overdue since
+    January, silent for good. strptime parses it the way the watcher does."""
+    p = _ledger(tmp_path, [{"id": "old-unpadded", "status": "blocked",
+                            "review_after": "2026-1-5"}])
+    assert "old-unpadded" in deferred_backlog_line(p, TODAY)
+
+
+def test_malformed_date_is_surfaced_not_silently_never_due(tmp_path):
+    """A truly unparseable review date can never come due. The watcher pages
+    these as ledger errors; the honest analogue here is surfacing the task."""
+    for ra in ("08/12/2026", "yesterday"):
+        p = _ledger(tmp_path, [{"id": "bad-date", "status": "blocked",
+                                "review_after": ra}])
+        assert "bad-date" in deferred_backlog_line(p, TODAY), ra
+
+
+def test_mixed_type_ids_do_not_crash_the_hook(tmp_path):
+    """sorted() over [123, \"abc\"] raises TypeError; a hand-edited numeric id
+    must not take down the whole warm-start injection (the hook swallows the
+    exception, so the failure mode was silence, not a traceback)."""
+    p = _ledger(tmp_path, [
+        {"id": 123, "status": "blocked", "review_after": "2026-01-01"},
+        {"id": "abc", "status": "blocked", "review_after": "2026-01-01"},
+    ])
+    out = deferred_backlog_line(p, TODAY)
+    assert "123" in out and "abc" in out
+
+
+def test_unreadable_present_ledger_is_UNKNOWN_not_absent(tmp_path):
+    """A ledger that EXISTS but cannot be read must never be filed under
+    'absent by design'. An os.path.exists() pre-check answered False on
+    EACCES/untraversable-parent too; absence is now judged only by
+    read_json's FileNotFoundError leg. A directory at the path is the
+    portable stand-in for 'present but unreadable' (chmod tricks are
+    invisible to root, which is how the suite often runs)."""
+    d = tmp_path / "deferred_work.json"
+    d.mkdir()
+    out = deferred_backlog_line(str(d), TODAY)
+    assert "UNKNOWN, not empty" in out
+
+
 def test_done_and_other_statuses_are_ignored(tmp_path):
     """Only 'blocked' pages in the watcher, so only 'blocked' is overdue here —
     the line must agree with the mechanism it re-surfaces, not invent its own."""

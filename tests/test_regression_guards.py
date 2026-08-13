@@ -1765,6 +1765,53 @@ class TestTriStateHelperContract:
             'the call-walker cannot see the allowlisted CALL in '
             'watchdog_probes_drift.py — the stale-entry check is inert')
 
+    def test_status_resolver_callers_also_call_the_presence_gate(self):
+        """A module that CALLS ``_resolve_main_pid_status`` must also call
+        ``note_unit_presence_gate`` — the ONE implementation of the
+        absent→inert / unknown→indeterminate policy (2026-08-12 review).
+
+        Why: the first conversion applied that policy as a hand-copied
+        ``if/else`` at ten call sites. The contract above only forbids the
+        FLAT helper, so a new probe could destructure the status tuple,
+        branch on the pid alone, and re-create the inert/indeterminate
+        collapse with every gate green. Requiring the gate call makes the
+        policy's consumer mechanised, not remembered. A future probe with a
+        genuinely different policy (where ``absent`` IS the finding) should
+        not resolve a MainPID at all (``probe_service_inactive`` doesn't) —
+        or must earn an allowlist entry here stating why."""
+        ALLOWED_WITHOUT_GATE: dict = {}
+        violations = []
+        for path in self._probe_modules():
+            base = os.path.basename(path)
+            if base in ALLOWED_WITHOUT_GATE:
+                continue
+            called = _names_called(path)
+            if ('_resolve_main_pid_status' in called
+                    and 'note_unit_presence_gate' not in called):
+                violations.append(base)
+        assert not violations, (
+            'probe module(s) resolving a unit MainPID status without the '
+            'shared presence gate:\n  ' + '\n  '.join(violations) + '\n\n'
+            'Branching on the pid alone re-collapses absent into '
+            'indeterminate (or worse, into inert for the unknown case). '
+            'Call note_unit_presence_gate(cls, pid_status, ...) — the '
+            'per-site judgement (which family, which reasons) stays yours; '
+            'the mechanism must not be a tenth hand copy.')
+
+    def test_presence_gate_contract_is_not_vacuous(self):
+        """Non-vacuity for the check above: the walker must SEE at least one
+        real caller pair, or the contract enforces nothing."""
+        seen = 0
+        for path in self._probe_modules():
+            called = _names_called(path)
+            if ('_resolve_main_pid_status' in called
+                    and 'note_unit_presence_gate' in called):
+                seen += 1
+        assert seen >= 4, (
+            f'only {seen} probe module(s) call both _resolve_main_pid_status '
+            f'and note_unit_presence_gate — the 2026-08-12 conversion touched '
+            f'six modules, so the walker (or the conversion) broke')
+
     def test_no_probe_module_uses_a_flat_helper(self):
         pairs = _core_flat_status_pairs()
         violations = []

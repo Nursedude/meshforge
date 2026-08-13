@@ -28,6 +28,7 @@ from utils.watchdog_probe_core import (
     _save_parity_streak,
     _short_unix_ts,
     note_disposition,
+    note_unit_presence_gate,
     operator_cron_wired,
 )
 
@@ -595,15 +596,14 @@ def probe_delivery_confirmation_stall(
         # 2026-08-12: absent/stopped are both honestly INERT here (a
         # stopped-but-installed gateway is service_inactive's to page), but
         # a systemctl we could not RUN is not an observation that this box
-        # has no gateway — that one is unobservable and says so.
-        if gw_status == "unknown":
-            note_disposition(
-                "delivery_confirmation_stall", "indeterminate",
-                reason=(f"{gateway_unit} state unobservable; cannot tell "
-                        f"whether a gateway organ exists here"))
-            return None
-        note_disposition("delivery_confirmation_stall", "inert",
-                         reason=f"gateway not running on this box ({gw_status})")
+        # has no gateway — that one is unobservable and says so. Policy in
+        # ONE place (2026-08-12 review).
+        note_unit_presence_gate(
+            "delivery_confirmation_stall", gw_status,
+            stopped_is_inert=True,
+            absent_reason=f"gateway not running on this box ({gw_status})",
+            unresolved_reason=(f"{gateway_unit} state unobservable; cannot tell "
+                               f"whether a gateway organ exists here"))
         return None
 
     payload, blind = _fetch_delivery_payload(

@@ -17,6 +17,7 @@ from utils.watchdog_probe_core import (  # noqa: F401
     Signal,
     _resolve_main_pid_status,
     note_disposition,
+    note_unit_presence_gate,
 )
 from utils import tx_guard
 
@@ -313,24 +314,20 @@ def probe_main_thread_wedge(
         pid_status, pid = _resolve_main_pid_status(
             service_name, systemctl_path=systemctl_path
         )
-        if pid is None or pid <= 1:
-            if pid_status == "absent":
-                # No such unit on this box: there are no task stacks to scan.
-                # "Should be running but isn't" belongs to service_inactive,
-                # which answers for a nonexistent unit too (verified
-                # 2026-08-12) — so inert here hides nothing.
-                note_disposition(
-                    "main_thread_wedge", "inert",
-                    reason=(
-                        f"no {service_name} unit on this box; no threads "
-                        f"to scan"
-                    ),
-                )
-            else:
-                note_disposition(
-                    "main_thread_wedge", "indeterminate",
-                    reason="MainPID unresolved; service inactive or systemctl error",
-                )
+        if pid is None:
+            # ABSENT unit → inert: no task stacks to scan. "Should be running
+            # but isn't" belongs to service_inactive, which answers for a
+            # nonexistent unit too (verified 2026-08-12) — BUT only for units
+            # in services_expected_active; watchdog_runner warns when a
+            # wedge-checked unit is outside that list, or nobody would own
+            # its absence. Policy in ONE place (2026-08-12 review).
+            note_unit_presence_gate(
+                "main_thread_wedge", pid_status,
+                absent_reason=(
+                    f"no {service_name} unit on this box; no threads to scan"
+                ),
+                unresolved_reason="MainPID unresolved; service inactive or systemctl error",
+            )
             return None
 
     found = _scan_pid_task_stacks(pid, proc_root)

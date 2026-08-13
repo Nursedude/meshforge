@@ -38,6 +38,11 @@ class RNSConnectionMixin:
         self._rns_via_rnsd   — bool
         self._rns_init_failed_permanently — bool
         self._rns_pre_initialized — bool
+        self._transport_voided   — bool, set by _disconnect_rns once
+                                   exit_handler() has (possibly) run; a
+                                   voided Transport is process-global and
+                                   irreversible, so _connect_rns refuses
+                                   to reuse it (2026-08-12)
         self._notify_status(event) — status callback
         self._on_lxmf_receive(message) — LXMF delivery callback
         self._on_rns_announce(dest_hash, identity, app_data) — announce callback
@@ -178,6 +183,30 @@ class RNSConnectionMixin:
 
         POLICY: Diagnose, don't fix. Never restart services or modify configs.
         """
+        # 2026-08-12 review. _disconnect_rns() now really calls
+        # RNS.Transport.exit_handler() (the old exithandler() misspelling
+        # raised on every shutdown, so this path had never actually run):
+        # that sets the process-global Transport._should_run = False and
+        # void_queues() irreversibly, while open_reticulum() reuses a
+        # singleton Reticulum. Reconnecting in the SAME process would
+        # therefore log "RNS connection established" against a Transport
+        # whose job thread is permanently dead — a bridge that looks
+        # connected and receives nothing, forever. Refuse LOUDLY instead
+        # (honest_failure_modes #1: the degraded state must not wear the
+        # healthy shape); a stop()ed bridge needs a fresh PROCESS, which is
+        # how systemd restarts it anyway.
+        if getattr(self, "_transport_voided", False):
+            logger.error(
+                "RNS Transport was voided by a prior shutdown in this "
+                "process (exit_handler() is irreversible and the Reticulum "
+                "singleton would be reused); refusing to reconnect — a "
+                "reconnected bridge here would look healthy while receiving "
+                "nothing. Restart the process for a live Transport."
+            )
+            self._connected_rns = False
+            self._rns_init_failed_permanently = True
+            return
+
         if not (_HAS_RNS and _HAS_LXMF):
             missing = []
             if not _HAS_RNS:
@@ -362,6 +391,12 @@ class RNSConnectionMixin:
                 # from a client is how the #69/#82 @rns-ownership incidents
                 # start. Fixing the name is the whole fix; adding teardown
                 # behaviour would be a different, riskier change.
+                # Marked voided BEFORE the call (fail-safe: a half-run
+                # exit_handler may already have voided the queues), so
+                # _connect_rns refuses to reuse this process's dead
+                # Transport — see the guard at the top of _connect_rns
+                # (2026-08-12 review).
+                self._transport_voided = True
                 RNS.Transport.exit_handler()
                 logger.debug("RNS Transport shut down")
             except Exception as e:
