@@ -8,7 +8,7 @@ up a real HTTP server.
 """
 
 from io import BytesIO
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import gzip
 import json
@@ -2059,3 +2059,90 @@ class TestClientHangupIsNotAnError:
         h.wfile.write.side_effect = OSError("disk on fire")
         with pytest.raises(OSError):
             h._serve_json({"ok": True})
+
+
+class _EgressAttempted(BaseException):
+    """Raised by the patched HTTP primitives when `/fleet/slo` reaches out.
+
+    ⚠️ Derives from **BaseException**, not Exception, and that is the whole
+    reason this test works. Drilled 2026-08-13: with `AssertionError` the test
+    passed against BOTH planted violations, because a passthrough is written
+    DEFENSIVELY by nature — MeshAnchor's real one is documented "Never raises"
+    and wraps its fetch in `except Exception: pass`. That swallowed the
+    sentinel, and the guard silently detected nothing while reading green.
+
+    A detector whose signal the defect can absorb is not a detector. Sitting
+    outside `Exception` is what makes the egress escape any best-effort
+    handler between here and the call site.
+    """
+
+
+class TestFleetSloHandlerMakesNoOutboundHttp:
+    """`/fleet/slo` must answer from LOCAL state only — no outbound HTTP.
+
+    This is the lesson carried across the twin boundary from MeshAnchor's
+    2026-08-13 incident rather than the mechanism, which does not apply here.
+
+    What happened there: MA's `/fleet/slo` handler called
+    `_merge_mesh_forge_blocks`, which fetched a co-installed MeshForge's
+    `/fleet/slo` from `localhost:5000`. On meshanchor-server that URL was MA
+    itself, so serving the endpoint re-entered it — recursion bounded only by
+    a 0.5 s timeout, ~4.5 self-fetches/s, 13,133 BrokenPipeErrors in ten
+    minutes, and a volatile journal that rotated every ~10 minutes. It ran ~30
+    days because the guard tested that `/opt/meshforge` EXISTS, a proxy for
+    "somebody else serves :5000" that went false when the box was enrolled as
+    a MeshForge fleet member.
+
+    Why MeshForge needs a test and not that guard: MF has no `fleet_rollup`,
+    no `slo_view`, and no passthrough — the guard would be inert here, and an
+    inert mechanism is the profile of something to cut, not add. But MF is NOT
+    immune by luck of never calling itself: `fleet_truth_collector._fetch_peer`
+    with `is_self=True` already fetches `http://localhost:<port>/fleet/slo`.
+    The ONLY thing keeping that one level deep is that this handler does no
+    outbound work. Add a symmetric "MeshAnchor passthrough" here — the obvious
+    dashboard-parity feature — and MeshForge inherits the identical storm.
+
+    So the invariant is pinned at the handler, where a future passthrough
+    would land, and through the builder it delegates to.
+    """
+
+    def _egress_patches(self):
+        def boom(*a, **kw):
+            raise _EgressAttempted(
+                "/fleet/slo attempted an outbound HTTP call. This endpoint is "
+                "fetched BY peers (and by this box's own fan-out via "
+                "_fetch_peer(is_self=True)), so any fetch from inside it can "
+                "re-enter the server. See MeshAnchor 0f8419bb.")
+        # http.client is the chokepoint under urllib, requests and urllib3, so
+        # one patch covers the libraries a future passthrough might reach for;
+        # urlopen is patched too because it is the idiom already used in this
+        # tree. Socket-level patching is deliberately NOT used — this endpoint
+        # legitimately opens local TCP sockets for port checks, and failing on
+        # those would make the test about something else.
+        return (
+            patch("http.client.HTTPConnection.request", side_effect=boom),
+            patch("urllib.request.urlopen", side_effect=boom),
+        )
+
+    def _run(self, call):
+        p1, p2 = self._egress_patches()
+        with p1, p2:
+            try:
+                call()
+            except _EgressAttempted:
+                raise
+            except Exception:
+                # Ambient variation (no systemd, missing units, unreadable
+                # state) is not what this test judges — only egress is. A
+                # verdict that changed with the box would pin nothing.
+                pass
+
+    def test_the_handler_makes_no_outbound_http(self):
+        h = _make_handler()
+        h._serve_json = MagicMock()
+        h.collector = None
+        self._run(h._serve_fleet_slo)
+
+    def test_the_builder_makes_no_outbound_http(self):
+        from utils.fleet_snapshot import build_slo_snapshot
+        self._run(lambda: build_slo_snapshot(collector=None))
