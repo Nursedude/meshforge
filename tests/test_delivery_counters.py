@@ -479,6 +479,21 @@ class TestBadInput:
 
 
 class TestThreadSafety:
+    # CI runs the whole suite under a flat `--timeout=30`, which is sized for
+    # CPU-bound unit tests. This one is not: every `record()` is a real SQLite
+    # transaction against a tmp-path file, so 20x100 threads means 2,000
+    # fsync-bound commits and the runtime is a property of the RUNNER'S DISK,
+    # not of the code under test. It takes ~1.4 s on a Pi 5 and has still gone
+    # over 30 s on a shared CI runner — a >20x spread, which is exactly the
+    # "verdict depends on un-pinned machine state" shape.
+    #
+    # The budget is what was wrong, so the budget is what changed. Cutting
+    # PER_THREAD would have made the flake rarer while ALSO making the race
+    # this test exists to catch rarer, which is the worse trade: a green from
+    # a weakened concurrency test reads identically to a green from a fixed
+    # one. A per-test marker overrides the CLI default (drilled 2026-08-13,
+    # not assumed).
+    @pytest.mark.timeout(180)
     def test_concurrent_record_no_lost_events(self):
         """Many threads simultaneously bumping counters must produce
         the exact expected totals."""

@@ -2021,3 +2021,41 @@ class TestMiniBlockTimestampHonesty:
         block = mini_block_from_payload({"last_tick_ts": "recent", "rules": {}})
         assert block["ok"] is False
         assert "no_tick_timestamp" in block["reason"]
+
+
+class TestClientHangupIsNotAnError:
+    """A client that closes mid-response must not produce a traceback.
+
+    Unpinned until 2026-08-13, and the cost of that showed up in the sister
+    repo: MeshAnchor's twin never got these guards, so socketserver's default
+    ``handle_error`` printed a ~22-line traceback per hang-up —
+    **13,133 of them in ten minutes** on meshanchor-server, from ``/fleet/slo``
+    alone. That burned the box's entire (volatile) journal every ~10 minutes
+    and took every other unit's history down with it, which is what left four
+    enrolled user timers unjudgeable there.
+
+    MeshForge had the guards and measured 0 handler broken pipes in 24h — but
+    "it works" and "it is protected" are different claims, and nothing here
+    would have failed if someone deleted the ``try``. These plant the
+    violation instead of reading the code.
+    """
+
+    @pytest.mark.parametrize("exc", [
+        BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+    ])
+    def test_serve_json_swallows_client_teardown(self, exc):
+        h = _make_handler()
+        h.wfile = MagicMock()
+        h.wfile.write.side_effect = exc("client went away")
+        h._serve_json({"ok": True})          # must not raise
+        assert h.wfile.write.called
+
+    def test_a_real_write_error_is_still_raised(self):
+        """The guard must stay narrow. Swallowing every OSError would hide a
+        genuinely broken response path behind the same silence — the
+        degraded-state-reads-as-normal class this tree keeps paying for."""
+        h = _make_handler()
+        h.wfile = MagicMock()
+        h.wfile.write.side_effect = OSError("disk on fire")
+        with pytest.raises(OSError):
+            h._serve_json({"ok": True})
