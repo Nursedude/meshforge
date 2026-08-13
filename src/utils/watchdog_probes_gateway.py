@@ -533,6 +533,14 @@ def probe_delivery_confirmation_stall(
     snapshot_state_path: Optional[str] = None,
     gateway_unit: str = "meshforge-gateway.service",
     gateway_main_pid: Optional[int] = None,
+    # Present so the organ gate's UNKNOWN branch can be drilled against real
+    # systemd, exactly as its twin probe_gateway_delivery_degraded already
+    # allows. Added 2026-08-12 after the end-of-session double tap: trying to
+    # live-drill that branch here, I had to plant a nonexistent UNIT NAME
+    # instead — which is the ABSENT branch — and very nearly filed the result
+    # under UNKNOWN. Two probes that mirror each other must be equally
+    # testable, or the drill silently exercises the wrong path.
+    systemctl_path: str = "systemctl",
 ) -> Optional[Signal]:
     """A confirmable protocol's deliveries are failing instead of confirming
     (Issue #74).
@@ -581,7 +589,8 @@ def probe_delivery_confirmation_stall(
     if gateway_main_pid is not None:
         gw_status, gw_pid = "ok", gateway_main_pid
     else:
-        gw_status, gw_pid = _resolve_main_pid_status(gateway_unit)
+        gw_status, gw_pid = _resolve_main_pid_status(
+            gateway_unit, systemctl_path=systemctl_path)
     if gw_pid is None:
         # 2026-08-12: absent/stopped are both honestly INERT here (a
         # stopped-but-installed gateway is service_inactive's to page), but

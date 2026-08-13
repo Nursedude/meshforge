@@ -164,6 +164,60 @@ class TestStallProbeInertWithoutAGateway:
         fetch.assert_not_called()
 
 
+class TestStallProbeUnknownIsDrillableAgainstRealSystemd:
+    """The organ gate's UNKNOWN branch, planted through the REAL resolver.
+
+    2026-08-12, from the end-of-session double tap. Every other branch of this
+    gate had been exercised on a live box; UNKNOWN had not, because this probe
+    took no ``systemctl_path`` while its twin
+    ``probe_gateway_delivery_degraded`` did. Reaching for a live drill I
+    planted a nonexistent UNIT NAME instead — which is the ABSENT branch — and
+    nearly recorded the result as UNKNOWN. A pair of probes that mirror each
+    other must be equally testable, or the drill quietly proves the wrong path.
+
+    No mock of ``_resolve_main_pid_status`` here on purpose: the point is to
+    run the real resolver against a systemctl that cannot be executed, which
+    is the shape a wedged/absent systemctl actually takes.
+    """
+
+    def test_unrunnable_systemctl_is_indeterminate_not_no_gateway(
+            self, dispositions):
+        sig = probe_delivery_confirmation_stall(
+            systemctl_path="/nonexistent/systemctl-xyz")
+        assert sig is None
+        got = dispositions()["delivery_confirmation_stall"]
+        assert got["disp"] == "indeterminate", (
+            "a systemctl we could not RUN is not an observation that this box "
+            f"has no gateway organ — got {got}")
+        assert "unobservable" in got["reason"]
+
+    def test_absent_and_unknown_are_reached_by_DIFFERENT_plants(
+            self, dispositions):
+        """Guards the mistake itself: a ghost unit NAME must land in inert
+        (absent), and only an unrunnable systemctl in indeterminate. If these
+        ever collapse, the live drill stops distinguishing them."""
+        probe_delivery_confirmation_stall(
+            gateway_unit="definitely-not-a-real-unit-xyz.service")
+        assert dispositions()["delivery_confirmation_stall"]["disp"] == "inert"
+
+        reset_dispositions()
+        probe_delivery_confirmation_stall(
+            systemctl_path="/nonexistent/systemctl-xyz")
+        assert (collect_dispositions()["delivery_confirmation_stall"]["disp"]
+                == "indeterminate")
+
+    def test_the_two_twin_probes_take_the_same_seam(self):
+        """Contract pin: the asymmetry that caused this must not come back."""
+        import inspect
+        from utils.watchdog_probes_gateway_flow import (
+            probe_gateway_delivery_degraded)
+        for fn in (probe_delivery_confirmation_stall,
+                   probe_gateway_delivery_degraded):
+            assert "systemctl_path" in inspect.signature(fn).parameters, (
+                f"{fn.__name__} lost its systemctl_path seam — its organ-gate "
+                f"UNKNOWN branch is no longer drillable against real systemd")
+
+
 class TestTotalConfirmationCollapseIsVisible:
     """`if not confirmable: return None` made a permanent, total collapse
     the ONE case this probe could never report."""
