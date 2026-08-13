@@ -3491,10 +3491,18 @@ restart makes the block's since-restart delta and the whole-window line count
 non-comparable, so that direction is unjudgeable for one tick. Mutation-drilled:
 disabling the exclusion kills 5 tests.
 
-**Decision tell**: `gateway_delivery_degraded` on a **dual-bridge** box
-(`Gateway Status: RUNNING (2 bridges)`) with `dropped=0` and no EROFS = suspect
-dedup accounting, not loss. **Quick check** — the gap must equal the
-suppressions:
+**Decision tell**: `gateway_delivery_degraded` with `dropped=0` and no EROFS =
+suspect dedup accounting, not loss. ⚠️ **Not just the dual-bridge box** — the
+first write-up of this said "2 bridges", and moc3 (single-bridge, `Gateway
+Status: RUNNING` with no cross-preset leg) disproved it the same night: 3
+suppressions in 24h. `RecentRfTxRegistry` registers on **RX as well as TX**, so
+ANY gateway that hears content on RF and then receives a peer's RNS relay of it
+suppresses the duplicate. moc is only the loudest — the shape is fleet-wide for
+peered gateways, and moc3 sits below the volume gate rather than outside the
+class. ⚠️ The log line says "already on RF via **mesh_bridge**" even where no
+cross-preset mesh_bridge exists (the wording names a subsystem the box may not
+run) — trust the registry hit, not the noun. **Quick check** — the gap must
+equal the suppressions:
 `journalctl -u meshforge-gateway --since -30min | grep -c 'already on RF via mesh_bridge'`
 (mesh_bridge's mirror line says "via **rns_bridge**" and is a different counter
 — do not count it). ⚠️ The right response to a false page is to fix the
