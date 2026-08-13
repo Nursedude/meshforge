@@ -344,10 +344,30 @@ class RNSConnectionMixin:
         if self._reticulum:
             try:
                 import RNS
-                # RNS.Transport.exithandler() closes all interfaces and releases ports
-                RNS.Transport.exithandler()
+                # ``exit_handler()`` — NOT ``exithandler()``. The old spelling
+                # does not exist on any RNS we have ever pinned, so this call
+                # raised AttributeError on EVERY gateway shutdown and the
+                # except below swallowed it at DEBUG. Found 2026-08-12 by
+                # reading the journal of a gateway I had just restarted:
+                # "Error shutting down RNS Transport: type object 'Transport'
+                # has no attribute 'exithandler'", on both gateway boxes.
+                #
+                # The old comment here also over-promised: exit_handler sets
+                # Transport._should_run = False and voids the queues, and
+                # persists data ONLY when this process is not a shared-instance
+                # client. It does NOT close interfaces or release ports —
+                # that is detach_interfaces(), which is deliberately NOT called
+                # here: on this fleet the gateway is a CLIENT of the shared
+                # rnsd, it does not own the interfaces, and tearing them down
+                # from a client is how the #69/#82 @rns-ownership incidents
+                # start. Fixing the name is the whole fix; adding teardown
+                # behaviour would be a different, riskier change.
+                RNS.Transport.exit_handler()
                 logger.debug("RNS Transport shut down")
             except Exception as e:
+                # Kept broad + swallowed (shutdown must not raise), but the
+                # spelling above is now pinned by TestRNSApiSurfaceResolves so
+                # a fork-merge rename fails a TEST instead of hiding here.
                 logger.debug(f"Error shutting down RNS Transport: {e}")
 
         self._lxmf_router = None
