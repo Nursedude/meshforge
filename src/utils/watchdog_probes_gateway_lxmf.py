@@ -378,9 +378,22 @@ def probe_lxmf_propagation_node_dark(
         age = ages.get(want[:16])
 
     if age is not None and age <= _PROPAGATION_DARK_AFTER_S:
+        # The window belongs in the CLEAN reason, not only in the fire text.
+        # 2026-08-12: "configured node answered 178 min ago" was read — by me,
+        # out loud, mid-session — as evidence gone stale, and it prompted a
+        # request to make this probe do a live check. It is 3h into an 18h
+        # window that is deliberately 3 announce periods wide (see
+        # _PROPAGATION_DARK_AFTER_S). A disposition that states its evidence
+        # without its budget invites exactly that misread, and the cure is one
+        # f-string, not an architecture change: the ACTIVE leg already exists
+        # as propagation_soak_degraded, which proves store-and-forward rather
+        # than mere reachability, and duplicating it here would give one fault
+        # two owners and put RNS traffic on a 30s loop.
         note_disposition(
             "lxmf_propagation_node_dark", "clean",
-            reason=f"configured node answered {age / 60:.0f} min ago")
+            reason=(f"configured node answered {age / 60:.0f} min ago "
+                    f"(window {_PROPAGATION_DARK_AFTER_S / 3600:.0f}h; "
+                    f"store-and-forward is propagation_soak_degraded's leg)"))
         _save_parity_streak(sp, 0)
         return None
 

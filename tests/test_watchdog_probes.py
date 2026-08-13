@@ -8946,6 +8946,33 @@ def test_lxmf_propagation_dark_clean_when_the_node_answers(tmp_path):
     assert json.loads((tmp_path / "lpd.json").read_text())["streak"] == 0
 
 
+def test_lxmf_propagation_dark_clean_reason_states_its_window(tmp_path):
+    """A disposition must carry its evidence BUDGET, not just its evidence.
+
+    2026-08-12: the clean reason read "configured node answered 178 min ago"
+    with no window, and it was misread mid-session as evidence gone stale —
+    prompting a request to rebuild this probe as a live check. It is 3h into
+    an 18h window that is deliberately three announce periods wide, and the
+    ACTIVE leg already exists as propagation_soak_degraded (which proves
+    store-and-forward, not mere reachability). The cure was one f-string; this
+    pins it so the next reader is not sent down the same path.
+    """
+    from utils.watchdog_probe_core import (collect_dispositions,
+                                           reset_dispositions)
+    from utils.watchdog_probes_gateway_lxmf import _PROPAGATION_DARK_AFTER_S
+    reset_dispositions()
+    assert _lpd(tmp_path, ages={_NODE: 900.0, "aed1f551": 600.0}) is None
+    got = collect_dispositions()["lxmf_propagation_node_dark"]
+    assert got["disp"] == "clean"
+    want_h = f"window {_PROPAGATION_DARK_AFTER_S / 3600:.0f}h"
+    assert want_h in got["reason"], (
+        f"clean reason must name its window ({want_h}) or it reads as stale "
+        f"evidence — got {got['reason']!r}")
+    assert "propagation_soak_degraded" in got["reason"], (
+        "the clean reason must point at the leg that owns store-and-forward, "
+        "so nobody concludes THIS probe should have proven it")
+
+
 def test_lxmf_propagation_dark_matches_a_short_form_hash(tmp_path):
     """The cache carries both the 32-hex rns_hash and the 16-hex id form;
     a configured full hash must match either without reading as unheard."""
