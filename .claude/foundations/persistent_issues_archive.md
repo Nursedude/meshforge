@@ -3512,6 +3512,56 @@ memorialised. Eval:
 
 ---
 
+## The synth-soak timer gate had TWO un-ported siblings (2026-08-12) — RESOLVED
+
+Found by asking, after the dedup false page above, *"are there other probes
+keyed to a single box's shape?"* Box **names** were clean (0 executable
+hardcodes across 21 watchdog modules) and the two previously-burned shapes are
+cured at class level — `user_units.timer_wants_dirs` reads EVERY
+`*.target.wants`, and the drift probes enumerate all five install layouts. But
+the proxy-instead-of-declaration defect that cost `synth_soak_degraded` 78 days
+(cured `2f426a62`, 08-09) had never been ported to the other two probes that
+derive a staleness bar from a timer cadence:
+
+| probe | applicability gate | consulted enrollment |
+|---|---|---|
+| `synth_soak_degraded` | state dir | yes (08-09) |
+| `resource_canary_degraded` | state dir | **no** — same file, ~500 lines from the cure |
+| `propagation_soak_degraded` | state dir | **no** |
+
+Both fired a DARK/SILENCE verdict against a cadence they never established
+applies here, and both told the operator to check a timer they had not verified
+exists — the "names a culprit it cannot see" tell, in the same file as its own
+fix. **Latent, not live**: verified on all 9 boxes that proxy and declaration
+agreed (canary — moc both, 8 neither; propagation — moc+moc3 both, 7 neither).
+One hand-run of either exerciser creates the state dir forever, which is
+exactly how the synth_soak instance was born.
+
+Cure (`3ebd6172`): both DARK legs consult `_timer_enrolled` — `False` → inert
+with an accurate reason, `None` → indeterminate (held). The VERDICT/ENVELOPE
+legs are deliberately NOT gated: a fresh failure is real however it was
+produced, and gating it would cure a false alarm by muting a true one.
+
+**The durable artifact is the class-level guard**, not the two fixes:
+`TestCadenceProbesConsultEnrollment` asserts every `*_STALE_AFTER_S` constant in
+the probe tree is registered AND that its consuming **probe function** calls
+`_timer_enrolled`. ⚠️ Per-function on purpose — the first draft checked the
+MODULE and would have passed on `watchdog_probes_gateway_flow` the entire time
+the canary was broken, because synth_soak's cured call sat in the same file.
+That was caught by drilling the guard, not by reading it.
+
+**Decision tell**: when a probe's threshold is derived from a schedule
+(`2.5 × cadence`), the leg that uses it must FIRST establish the schedule
+applies to this box — and the establishing evidence must be the declaration
+(the enable-symlink under any `*.target.wants`), never a state dir or artifact
+that one manual run defeats forever. **Quick check**:
+`ls ~/.config/systemd/user/*.target.wants/ | grep <timer>` beside
+`ls ~/.local/state/meshforge/<organ>/` — if the artifacts exist and the symlink
+does not, any staleness verdict about that organ is meaningless. Eval:
+`evals/local_brain/cadence_bar_needs_enrollment_2026_08_12.jsonl`.
+
+---
+
 ## Resolved-issue INDEX (moved out of the hot file 2026-08-05, MF012)
 
 This is the chronological index of fully-resolved issues. It lived in
