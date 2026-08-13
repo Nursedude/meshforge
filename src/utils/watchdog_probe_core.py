@@ -690,6 +690,49 @@ def _journal_match_lines(
     return [ln for ln in proc.stdout.splitlines() if ln]
 
 
+def _journal_user_unit_has_lines(
+    user_unit: str,
+    lookback: str,
+    journalctl_path: str = "journalctl",
+) -> Optional[bool]:
+    """Does ``USER_UNIT=<user_unit>`` have ANY journal line in ``lookback``?
+
+    The COVERAGE question for the reader above (2026-08-13). That reader
+    honestly returns ``[]`` for "journalctl ran and nothing matched" — but on a
+    box with **no user journal at all** every pattern query also returns ``[]``,
+    so a caller cannot tell "the job logged no failures" from "this channel is
+    dead". Measured on meshanchor-server, whose user journal is empty
+    (``journalctl --user`` → *No journal files were found*): the user-timer
+    probe read zero failures AND zero successes for a timer that had
+    demonstrably fired 19h earlier, and reported an affirmative healthy verdict
+    about four units it could not see.
+
+    A unit that RAN must have logged something, so an unfiltered zero is the
+    discriminator. Returns True (channel works for this unit), False (nothing
+    at all — cannot judge), or **None** unobservable. Callers must treat both
+    False and None as "say nothing about this unit", never as healthy
+    (honest_failure_modes #2: absence of evidence is not evidence of absence).
+
+    Cost note: intended to be asked ONLY when both pattern queries came back
+    empty — the ambiguous case — so a busy, healthy box pays nothing extra
+    ([[feedback_my_footprint_is_the_constraint]]).
+    """
+    try:
+        proc = subprocess.run(
+            [
+                journalctl_path, "-q", f"USER_UNIT={user_unit}",
+                "--since", f"-{lookback}", "-n", "1", "-o", "cat",
+                "--no-pager",
+            ],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    if proc.returncode not in (0, 1):
+        return None
+    return bool(proc.stdout.strip())
+
+
 def _short_unix_ts(line: str) -> Optional[float]:
     """Parse the epoch timestamp from a ``-o short-unix`` journal line."""
     try:

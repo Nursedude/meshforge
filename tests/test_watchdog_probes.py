@@ -10797,3 +10797,142 @@ class TestLocalBrainTransportFailures:
                 _eval_rec_r(2, [("o1", "oracle", True, [])])]
         assert probe_local_brain_regressed(records=recs) is None
         assert collect_dispositions()["local_brain_regressed"]["disp"] == "clean"
+
+
+class TestUserTimerSilenceNeedsAWorkingJournal:
+    """2026-08-13 — an empty pattern result means two different things.
+
+    ``_journal_user_unit_ts`` honestly returns ``[]`` for "journalctl ran and
+    nothing matched". But on a box with **no user journal at all** every query
+    returns ``[]`` too, so the probe could not tell "the job logged no
+    failures" from "this channel is dead" — and chose the healthy reading.
+
+    Measured on meshanchor-server (``journalctl --user`` → *No journal files
+    were found*): the probe noted an affirmative ``clean`` about four enrolled
+    timers it could not see, one of which had demonstrably fired 19h earlier.
+    A unit that RAN must have logged something, so an unfiltered zero is the
+    discriminator — asked ONLY in the ambiguous both-empty case, so a busy box
+    pays nothing.
+    """
+
+    NOW = 1_000_000.0
+
+    def _probe(self, tmp_path, *, fails, oks, coverage, timer="t.timer"):
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        home = _user_timer_fixture(tmp_path, {timer: None})
+        service = timer[: -len(".timer")] + ".service"
+        collect = _fresh_dispositions()
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({service: {"Failed with result": fails,
+                                    "Finished ": oks}}),
+            coverage_fn=lambda unit: coverage)
+        return sig, collect().get("user_timer_unit_failing", {})
+
+    def test_dead_journal_is_indeterminate_not_clean(self, tmp_path):
+        """THE meshanchor-server case: zero of both + no lines at all."""
+        sig, got = self._probe(tmp_path, fails=[], oks=[], coverage=False)
+        assert sig is None
+        assert got.get("disp") == "indeterminate", got
+        assert "unobservable" in got.get("reason", "")
+
+    def test_unreadable_coverage_is_also_indeterminate(self, tmp_path):
+        """Coverage itself unobservable must not fall back to the healthy read."""
+        sig, got = self._probe(tmp_path, fails=[], oks=[], coverage=None)
+        assert sig is None
+        assert got.get("disp") == "indeterminate", got
+
+    def test_working_journal_with_no_failures_is_clean(self, tmp_path):
+        """The true-negative must survive: a live channel that logged lines,
+        just none matching either pattern, is a real healthy observation."""
+        sig, got = self._probe(tmp_path, fails=[], oks=[], coverage=True)
+        assert sig is None
+        assert got.get("disp") == "clean", got
+
+    def test_coverage_not_consulted_when_lines_exist(self, tmp_path):
+        """Cost guard: the extra query is only for the ambiguous case. A unit
+        with successes must never trigger it (a fleet of busy boxes would pay
+        one extra journalctl per timer per tick otherwise)."""
+        from utils.watchdog_probes_user import probe_user_timer_unit_failing
+        home = _user_timer_fixture(tmp_path, {"t.timer": None})
+        calls = []
+
+        def boom(unit):
+            calls.append(unit)
+            raise AssertionError("coverage must not be consulted here")
+
+        sig = probe_user_timer_unit_failing(
+            user_home=home, now=self.NOW, debounce_ticks=1,
+            state_path=str(tmp_path / "s.json"),
+            ts_fn=_ts_fn({"t.service": {"Failed with result": [],
+                                        "Finished ": [self.NOW - 600]}}),
+            coverage_fn=boom)
+        assert sig is None and calls == []
+
+    def test_a_real_failure_still_fires_unaffected(self, tmp_path):
+        """The alarm leg is untouched — failures are non-empty, so the
+        coverage question never arises and the kiai class still pages."""
+        sig, _ = self._probe(
+            tmp_path, fails=[self.NOW - 1800, self.NOW - 1200, self.NOW - 600],
+            oks=[], coverage=False)   # coverage would say dead; irrelevant
+        assert sig is not None
+        assert sig.subject == "t.service"
+
+
+class TestJournalUserUnitHasLines:
+    """The real coverage query — the behavioral tests all inject it."""
+
+    def _patched(self, *, stdout="", returncode=0, exc=None):
+        captured = {}
+
+        class _R:
+            def __init__(self):
+                self.stdout = stdout
+                self.returncode = returncode
+
+        def _runner(*a, **kw):
+            captured["argv"] = a[0]
+            if exc is not None:
+                raise exc
+            return _R()
+
+        return patch("utils.watchdog_probe_core.subprocess.run",
+                     side_effect=_runner), captured
+
+    def test_selects_the_user_unit_field_not_dash_u(self):
+        """``-u`` is the SYSTEM namespace and is structurally blind to user
+        units — the whole reason this family exists."""
+        from utils.watchdog_probe_core import _journal_user_unit_has_lines
+        ctx, cap = self._patched(stdout="some line\n")
+        with ctx:
+            assert _journal_user_unit_has_lines("x.service", "3h") is True
+        argv = cap["argv"]
+        assert "USER_UNIT=x.service" in argv
+        assert "-u" not in argv
+
+    def test_no_lines_is_false(self):
+        from utils.watchdog_probe_core import _journal_user_unit_has_lines
+        ctx, _ = self._patched(stdout="", returncode=1)
+        with ctx:
+            assert _journal_user_unit_has_lines("x.service", "3h") is False
+
+    def test_whitespace_only_is_false(self):
+        from utils.watchdog_probe_core import _journal_user_unit_has_lines
+        ctx, _ = self._patched(stdout="   \n")
+        with ctx:
+            assert _journal_user_unit_has_lines("x.service", "3h") is False
+
+    def test_rc2_is_none_not_false(self):
+        """Unobservable must be distinguishable from observed-empty, or the
+        caller's tri-state collapses right back."""
+        from utils.watchdog_probe_core import _journal_user_unit_has_lines
+        ctx, _ = self._patched(stdout="", returncode=2)
+        with ctx:
+            assert _journal_user_unit_has_lines("x.service", "3h") is None
+
+    def test_timeout_is_none(self):
+        from utils.watchdog_probe_core import _journal_user_unit_has_lines
+        ctx, _ = self._patched(exc=subprocess.TimeoutExpired("journalctl", 15))
+        with ctx:
+            assert _journal_user_unit_has_lines("x.service", "3h") is None

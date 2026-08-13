@@ -39,7 +39,11 @@ import re
 from typing import Dict, List, Optional
 
 from utils.user_units import enabled_user_timers
-from utils.watchdog_probe_core import Signal, note_disposition
+from utils.watchdog_probe_core import (
+    Signal,
+    _journal_user_unit_has_lines,
+    note_disposition,
+)
 
 # Reused rather than duplicated: this helper is already the proven bus-free
 # way for root to read a USER unit's journal (``USER_UNIT=`` field selector,
@@ -133,6 +137,7 @@ def probe_user_timer_unit_failing(
     debounce_ticks: int = 2,
     journalctl_path: str = "journalctl",
     ts_fn=None,
+    coverage_fn=None,
     now: Optional[float] = None,
 ) -> Optional[Signal]:
     """Fire when an enabled USER **timer's** job keeps failing every firing.
@@ -202,6 +207,10 @@ def probe_user_timer_unit_failing(
             def ts_fn(unit, pattern):
                 return _journal_user_unit_ts(
                     unit, pattern, lookback, journalctl_path=journalctl_path)
+        if coverage_fn is None:
+            def coverage_fn(unit):
+                return _journal_user_unit_has_lines(
+                    unit, lookback, journalctl_path=journalctl_path)
 
         failing: List[dict] = []
         observed_any = False
@@ -211,6 +220,15 @@ def probe_user_timer_unit_failing(
             if fails is None or oks is None:
                 # Unobservable for THIS unit — say nothing about it.
                 continue
+            if not fails and not oks:
+                # AMBIGUOUS (2026-08-13): "ran and logged nothing matching" and
+                # "this box has no user journal" are the same empty result. A
+                # unit that fired must have logged SOMETHING, so ask the
+                # unfiltered coverage question before reading silence as data.
+                # Measured on meshanchor-server (user journal empty): this leg
+                # reported `clean` about four units it could not see.
+                if coverage_fn(service) is not True:
+                    continue           # dead/unreadable channel — say nothing
             observed_any = True
             if len(fails) < min_failures:
                 continue
