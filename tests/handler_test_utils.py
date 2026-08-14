@@ -26,8 +26,8 @@ class FakeDialog:
         self._menu_returns = []
         self._inputbox_returns = []
         self._yesno_returns = []
-        self._radiolist_returns = []
         self._checklist_returns = []
+        self._editbox_returns = []
         self.last_msgbox_title = None
         self.last_msgbox_text = None
 
@@ -54,12 +54,6 @@ class FakeDialog:
             return self._inputbox_returns.pop(0)
         return init
 
-    def radiolist(self, title, text, choices, **kwargs):
-        self.calls.append(('radiolist', (title, text, choices), kwargs))
-        if self._radiolist_returns:
-            return self._radiolist_returns.pop(0)
-        return None
-
     def checklist(self, title, text, choices, **kwargs):
         self.calls.append(('checklist', (title, text, choices), kwargs))
         if self._checklist_returns:
@@ -72,8 +66,20 @@ class FakeDialog:
         self.last_msgbox_title = title
         self.last_msgbox_text = text
 
-    def gauge(self, text, percent, **kwargs):
-        self.calls.append(('gauge', (text, percent), kwargs))
+    def editbox(self, title, file_path, **kwargs):
+        """Mirror backend.editbox(title, file_path): edit a file in-app.
+
+        Returns the next programmed value, or the file's current content
+        (unchanged edit), or None on unreadable file — like the backend.
+        """
+        self.calls.append(('editbox', (title, file_path), kwargs))
+        if self._editbox_returns:
+            return self._editbox_returns.pop(0)
+        try:
+            with open(file_path, 'r', encoding='utf-8') as fh:
+                return fh.read()
+        except OSError:
+            return None
 
     def infobox(self, title_or_text, text=None, **kwargs):
         self.calls.append(('infobox', (title_or_text, text), kwargs))

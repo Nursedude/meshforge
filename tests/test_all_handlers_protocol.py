@@ -30,41 +30,12 @@ from handler_registry import HandlerRegistry
 # Fixtures
 # ---------------------------------------------------------------------------
 
-class FakeDialog:
-    """Minimal dialog stub for testing handler dispatch."""
-
-    def __init__(self):
-        self.last_msgbox_title = None
-        self.last_msgbox_text = None
-        self._menu_return = None
-
-    def msgbox(self, title, text, **kwargs):
-        self.last_msgbox_title = title
-        self.last_msgbox_text = text
-
-    def menu(self, title, text, choices):
-        return self._menu_return
-
-    def yesno(self, title, text):
-        return False
-
-    def inputbox(self, title, text, default=""):
-        return default
-
-    def radiolist(self, title, text, choices):
-        return None
-
-    def checklist(self, title, text, choices):
-        return []
-
-    def textbox(self, path, **kwargs):
-        pass
-
-    def gauge(self, text, percent, **kwargs):
-        pass
-
-    def set_status_bar(self, bar):
-        pass
+# Single source of truth for the dialog stub — a duplicate copy used to
+# live here and drifted (it grew a radiolist() the real backend never had,
+# so tests certified a phantom API). tests/test_fake_dialog_parity.py now
+# pins FakeDialog's surface to DialogBackend's.
+sys.path.insert(0, os.path.dirname(__file__))
+from handler_test_utils import FakeDialog
 
 
 def _make_context(**overrides) -> TUIContext:
