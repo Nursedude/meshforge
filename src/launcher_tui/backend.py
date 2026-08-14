@@ -81,6 +81,20 @@ class DialogBackend:
     def available(self) -> bool:
         return self.backend is not None
 
+    @staticmethod
+    def _fit_width(w: int) -> int:
+        """Clamp a requested width to the live terminal (Q5 consistency arc).
+
+        Every primitive used a fixed 78-column default; on a narrower
+        terminal (phone SSH, split pane) whiptail overflowed or failed.
+        Floor of 40 keeps dialogs legible; no-op when size is unknowable.
+        """
+        try:
+            cols = os.get_terminal_size().columns
+        except (ValueError, OSError):
+            return w
+        return max(40, min(w, cols - 2))
+
     def _run(self, args: List[str], timeout: Optional[int] = None) -> Tuple[int, str]:
         """
         Run dialog/whiptail command and return (returncode, output).
@@ -109,6 +123,12 @@ class DialogBackend:
             if self._status_bar is not None:
                 try:
                     backtitle = self._status_bar.get_status_line()
+                    try:
+                        _cols = os.get_terminal_size().columns
+                        if backtitle and len(backtitle) > _cols - 2:
+                            backtitle = backtitle[:_cols - 5] + '...'
+                    except (ValueError, OSError):
+                        pass
                     if backtitle:
                         full_args = ['--backtitle', backtitle] + full_args
                 except Exception as e:
@@ -192,7 +212,7 @@ class DialogBackend:
         log witness — msgboxes carry failure reports (e.g. the RNS-repair
         half-state dialog) and must not vanish untraced (review F7)."""
         h = height if height is not None else self.height
-        w = width if width is not None else self.width
+        w = self._fit_width(width if width is not None else self.width)
         code, _ = self._run([
             '--title', title,
             '--msgbox', text,
@@ -206,7 +226,7 @@ class DialogBackend:
               height: int = None, width: int = None) -> bool:
         """Display yes/no dialog. Returns True for yes."""
         h = height if height is not None else self.height
-        w = width if width is not None else self.width
+        w = self._fit_width(width if width is not None else self.width)
         args = ['--title', title]
         if default_no:
             args.append('--defaultno')
@@ -236,7 +256,7 @@ class DialogBackend:
             Selected tag or None if cancelled
         """
         h = height if height is not None else self.height
-        w = width if width is not None else self.width
+        w = self._fit_width(width if width is not None else self.width)
         lh = list_height if list_height is not None else self.list_height
 
         # Auto-fit: shrink list_height/height to fit within terminal.
@@ -302,7 +322,7 @@ class DialogBackend:
                  height: int = None, width: int = None) -> Optional[str]:
         """Display input box and return text."""
         h = height if height is not None else self.height
-        w = width if width is not None else self.width
+        w = self._fit_width(width if width is not None else self.width)
         args = [
             '--title', title,
             '--inputbox', text,
@@ -327,7 +347,7 @@ class DialogBackend:
         it controls permissions / atomic write / validation.
         """
         h = height if height is not None else max(self.height, 20)
-        w = width if width is not None else max(self.width, 72)
+        w = self._fit_width(width if width is not None else max(self.width, 72))
         code, output = self._run([
             '--title', title,
             '--editbox', str(file_path),
@@ -351,7 +371,7 @@ class DialogBackend:
         """
         import tempfile
         h = height if height is not None else max(self.height, 22)
-        w = width if width is not None else max(self.width, 78)
+        w = self._fit_width(width if width is not None else max(self.width, 78))
         fd, tmp = tempfile.mkstemp(suffix='.txt', prefix='meshforge_log_')
         try:
             with os.fdopen(fd, 'w') as f:
@@ -372,7 +392,7 @@ class DialogBackend:
         self._run([
             '--title', title,
             '--infobox', text,
-            str(8), str(self.width)
+            str(8), str(self._fit_width(self.width))
         ])
 
     def checklist(self, title: str, text: str,
@@ -391,7 +411,7 @@ class DialogBackend:
             List of selected tags or None if cancelled
         """
         h = height if height is not None else self.height
-        w = width if width is not None else self.width
+        w = self._fit_width(width if width is not None else self.width)
         lh = list_height if list_height is not None else self.list_height
 
         args = [

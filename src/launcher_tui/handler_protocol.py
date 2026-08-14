@@ -131,6 +131,16 @@ class TUIContext:
 
         Returns ``bool(ok)`` so callers can branch on it.
         """
+        # report_action fires exactly after a state-changing attempt, so it
+        # is the chokepoint for refreshing the backtitle (Q5, audit W15:
+        # only quick_actions ever invalidated — every other mutation left
+        # the status bar stale for up to the cache TTL + probe cycle).
+        bar = self.status_bar
+        if bar is not None:
+            try:
+                bar.invalidate()
+            except Exception:
+                pass
         if ok:
             self.dialog.msgbox(success_title, success_body)
         else:

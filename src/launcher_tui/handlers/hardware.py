@@ -62,10 +62,13 @@ class HardwareHandler(BaseHandler):
                 self.ctx.safe_call(*entry)
 
     def _rnode_submenu(self):
-        """Delegate to RNodeHandler."""
-        from handlers.rnode import RNodeHandler
-        handler = RNodeHandler()
-        handler.set_context(self.ctx)
+        """Delegate to the registered RNodeHandler (Q5, audit W16)."""
+        _reg = getattr(self.ctx, 'registry', None)
+        handler = _reg.get_handler('rnode') if _reg else None
+        if handler is None:
+            from handlers.rnode import RNodeHandler
+            handler = RNodeHandler()
+            handler.set_context(self.ctx)
         handler._rnode_menu()
 
     def _detect_hardware(self):

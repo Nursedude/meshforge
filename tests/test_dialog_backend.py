@@ -133,7 +133,7 @@ class TestMenuBoxGrowsForContent:
         tall_text = "\n".join(f"line {i}" for i in range(10))
         import unittest.mock as um
         with um.patch('backend.os.get_terminal_size',
-                      return_value=um.Mock(lines=40)):
+                      return_value=um.Mock(lines=40, columns=100)):
             be.menu("T", tall_text, [("a", "A")])
         args = be._run_calls[0]
         h = int(args[args.index('--menu') + 2])

@@ -426,8 +426,12 @@ class GatewayWizardHandler(BaseHandler):
         """Render GatewayPreflightHandler.collect_results() (the SSOT check
         inventory — core + template drift); return (fails, warns, text)."""
         from handlers.gateway_preflight import GatewayPreflightHandler, _FAIL, _WARN
-        pf = GatewayPreflightHandler()
-        pf.set_context(ctx)
+        # Registered instance when available (Q5, audit W16)
+        _reg = getattr(ctx, 'registry', None)
+        pf = _reg.get_handler('gateway_preflight') if _reg else None
+        if pf is None:
+            pf = GatewayPreflightHandler()
+            pf.set_context(ctx)
         try:
             core, template = pf.collect_results()
             results = list(core) + list(template)

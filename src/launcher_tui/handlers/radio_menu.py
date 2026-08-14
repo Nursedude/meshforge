@@ -194,10 +194,13 @@ class RadioMenuHandler(BaseHandler):
         )
 
     def _favorites_submenu(self):
-        """Delegate to FavoritesHandler."""
-        from handlers.favorites import FavoritesHandler
-        handler = FavoritesHandler()
-        handler.set_context(self.ctx)
+        """Delegate to the registered FavoritesHandler (Q5, audit W16)."""
+        _reg = getattr(self.ctx, 'registry', None)
+        handler = _reg.get_handler('favorites') if _reg else None
+        if handler is None:
+            from handlers.favorites import FavoritesHandler
+            handler = FavoritesHandler()
+            handler.set_context(self.ctx)
         handler._favorites_menu()
 
     def _radio_run(self, cmd: list, title: str):

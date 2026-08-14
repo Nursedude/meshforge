@@ -367,7 +367,17 @@ class HandlerRegistry:
                     )
 
     def shutdown_all(self) -> None:
-        """Call ``on_shutdown()`` on all handlers that implement LifecycleHandler."""
+        """Call ``on_shutdown()`` on all handlers that implement LifecycleHandler.
+
+        DELIBERATELY unconditional (Q5 re-decide of audit W11): in daemon
+        mode ``startup_all()`` is skipped, but menu actions can still
+        create resources (e.g. the in-process map server on a unit-less
+        box), and this sweep at exit is what reclaims them. The contract
+        this relies on — every ``on_shutdown()`` must be SAFE TO CALL
+        WITHOUT its ``on_startup()`` having run — is pinned by
+        tests/test_handler_registry.py::TestShutdownWithoutStartupIsSafe,
+        so a hook that assumes started-state fails a test, not a shutdown.
+        """
         for handler in self._handlers.values():
             if isinstance(handler, LifecycleHandler):
                 try:

@@ -114,6 +114,13 @@ def propose_remediation(
         return None
 
     ok, msg = _safe_apply(action)
+    # A remediation just mutated service state — refresh the backtitle
+    # instead of serving the pre-fix snapshot for another TTL (Q5, W15).
+    if getattr(ctx, 'status_bar', None) is not None:
+        try:
+            ctx.status_bar.invalidate()
+        except Exception:
+            pass
     ctx.dialog.msgbox(
         title,
         ("✓ " if ok else "✗ ")

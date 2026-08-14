@@ -527,3 +527,56 @@ class TestIntraHandlerDuplicateTag:
         # one snapshot serves validate + index + log — a dynamic
         # menu_items() can never validate one set and index another
         assert calls["n"] == 1
+
+
+class TestShutdownWithoutStartupIsSafe:
+    """Q5 (audit W11 re-decide): shutdown_all is DELIBERATELY unconditional
+    — in daemon mode startup_all never runs, yet menu actions can still
+    create resources that the exit sweep must reclaim. The contract that
+    makes this safe: every LifecycleHandler's on_shutdown must tolerate
+    being called with on_startup never having run. This test calls
+    on_shutdown on a FRESH instance of every registered handler; a hook
+    that assumes started-state fails here instead of at a live exit.
+    """
+
+    def test_every_lifecycle_shutdown_tolerates_cold_call(self):
+        import sys as _sys
+        import os as _os
+        _sys.path.insert(0, _os.path.dirname(__file__))
+        from handler_test_utils import make_handler_context
+        from handlers import get_all_handlers
+        from handler_protocol import LifecycleHandler
+
+        failures = []
+        for cls in get_all_handlers():
+            h = cls()
+            if not isinstance(h, LifecycleHandler):
+                continue
+            h.set_context(make_handler_context())
+            try:
+                h.on_shutdown()
+            except Exception as e:
+                failures.append(f"{h.handler_id}: {type(e).__name__}: {e}")
+        assert not failures, (
+            "on_shutdown must be safe without on_startup (daemon-mode exit "
+            f"sweep): {failures}"
+        )
+
+
+class TestReportActionInvalidatesStatusBar:
+    """Q5 (audit W15): report_action is the mutation chokepoint — it must
+    refresh the backtitle so a just-fixed service never shows its pre-fix
+    state for another cache TTL."""
+
+    def test_invalidate_called_on_success_and_failure(self):
+        from unittest.mock import MagicMock
+        for ok in (True, False):
+            bar = MagicMock()
+            ctx = TUIContext(dialog=MagicMock(), status_bar=bar)
+            ctx.report_action(ok, "t", "b")
+            bar.invalidate.assert_called_once()
+
+    def test_no_status_bar_is_fine(self):
+        from unittest.mock import MagicMock
+        ctx = TUIContext(dialog=MagicMock(), status_bar=None)
+        assert ctx.report_action(True, "t", "b") is True

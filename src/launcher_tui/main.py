@@ -63,6 +63,47 @@ from handler_registry import HandlerRegistry
 from handlers import get_all_handlers
 
 
+# Menu display order per section (Q5, audit W8). One place, drift-tested:
+# tests/test_menu_orderings.py fails when a registry tag is missing here or
+# an entry goes stale — before this dict, 23 tags across 5 sections had
+# drifted out of the inline lists and rendered as an unordered tail.
+# Cross-section legacy survivors (dashboard/network, configuration/
+# rns-config, extensions/mfmaps) are ordered here too.
+SECTION_ORDERINGS = {
+    "dashboard": [
+        "status", "weather", "network", "nodes", "health", "score",
+        "datapath", "stack_health", "fleet_posture", "traffic_pulse",
+        "metrics", "analytics", "latency", "reports", "alerts",
+        "mini_dudeai", "mini_dudeai_chat", "mini_dudeai_rules",
+        "offline_oracle", "moc_analysis", "demo",
+    ],
+    "mesh_networks": [
+        "meshtastic", "meshcore", "rns", "gateway", "wizard", "check",
+        "export", "test_gateway_rx", "aredn", "messaging", "meshchatx",
+        "nomadnet", "traffic", "mqtt", "broker-menu", "mesh_alerts",
+        "automation", "dual_failover", "load_balancer", "favorites",
+        "ham", "services",
+    ],
+    "rf_sdr": ["link", "site", "freq", "antenna", "weather", "sdr"],
+    "maps_viz": [
+        "livemap", "mfmaps", "coverage", "heatmap", "tiles", "topology",
+        "traffic", "quality", "export", "ai",
+    ],
+    "configuration": [
+        "meshtasticd", "channels", "rns-config", "rnode", "backup",
+        "fleet_backup", "updates", "webhooks", "meshforge", "config-api",
+        "wizard",
+    ],
+    "system": [
+        "hardware", "logs", "network", "discover", "diagnose", "db_health",
+        "run", "details", "daemon", "fleet_membership", "fleet_provision",
+        "review", "status", "shell", "reboot",
+    ],
+    "extensions": ["mfmaps", "meshing"],
+    "about": ["version", "changelog", "sysinfo", "deps", "web", "help"],
+}
+
+
 class MeshForgeLauncher:
     """MeshForge launcher with raspi-config style interface."""
 
@@ -103,6 +144,21 @@ class MeshForgeLauncher:
     # menu filtering is ever wanted, wire it through TUIContext.feature_flags
     # (the handler-level flag field + registry filter still exist and are
     # tested — that is the seam to feed).
+
+    def _notify_unwired(self, choice) -> None:
+        """Honest feedback for a menu tag no handler owns (Q5, audit W17).
+
+        Should never fire — menu entries come from the registry — so this
+        is a tripwire: a silent re-render used to hide exactly the class
+        of wiring bug where a menu names an action nothing implements.
+        """
+        logger.error("Menu tag %r reached dispatch with no owner", choice)
+        self.dialog.msgbox(
+            "Not wired",
+            f"No handler owns the action '{choice}'.\n\n"
+            "This is a MeshForge wiring bug — please report it\n"
+            "(About > Version has the issue link).",
+        )
 
     def _build_section_menu(self, section, legacy_items, ordering=None):
         """Build menu choices by merging registry + legacy items.
@@ -715,8 +771,7 @@ class MeshForgeLauncher:
 
     def _dashboard_menu(self):
         """Dashboard - Status, health, alerts, propagation."""
-        _ORDERING = ["status", "weather", "network", "nodes", "health", "score",
-                      "datapath", "stack_health", "metrics", "analytics", "latency", "reports", "alerts"]
+        _ORDERING = SECTION_ORDERINGS["dashboard"]
         while True:
             # 'network' is the one cross-section entry (handler lives in
             # "system"); every other legacy item is registry-owned now
@@ -743,14 +798,14 @@ class MeshForgeLauncher:
             # Cross-section dispatch (network handler is in "system" section)
             if choice == "network":
                 self._registry.dispatch("system", "network")
+                continue
+            self._notify_unwired(choice)
 
     # --- Submenu: Mesh Networks (2) ---
 
     def _mesh_networks_menu(self):
         """Mesh Networks - Meshtastic, RNS, AREDN."""
-        _ORDERING = ["meshtastic", "meshcore", "rns", "gateway", "aredn",
-                      "messaging", "traffic", "mqtt", "favorites", "ham", "services",
-                      "nomadnet"]
+        _ORDERING = SECTION_ORDERINGS["mesh_networks"]
         while True:
             # All 7 legacy entries were shadowed by registry tags and
             # filtered out on every render (Q1 purge 2026-08-14, audit W7).
@@ -768,14 +823,13 @@ class MeshForgeLauncher:
             # Try registry-based dispatch first (converted handlers)
             if self._registry.dispatch("mesh_networks", choice):
                 continue
-
-            # All mesh_networks items handled by registry (Batch 3-9)
+            self._notify_unwired(choice)
 
     # --- NEW Submenu: RF & SDR (3) ---
 
     def _rf_sdr_menu(self):
         """RF & SDR - Calculators, SDR monitoring."""
-        _ORDERING = ["link", "site", "freq", "antenna", "weather", "sdr"]
+        _ORDERING = SECTION_ORDERINGS["rf_sdr"]
         while True:
             # All RF & SDR tags handled by registry — empty legacy list
             legacy = []
@@ -793,15 +847,13 @@ class MeshForgeLauncher:
             # Try registry-based dispatch first (converted handlers)
             if self._registry.dispatch("rf_sdr", choice):
                 continue
-
-            # RF & SDR section fully converted — no legacy dispatch remaining
+            self._notify_unwired(choice)
 
     # --- NEW Submenu: Maps & Viz (4) ---
 
     def _maps_viz_menu(self):
         """Maps & Visualization - Coverage maps, topology."""
-        _ORDERING = ["livemap", "coverage", "heatmap", "tiles", "topology",
-                      "traffic", "quality", "export", "ai"]
+        _ORDERING = SECTION_ORDERINGS["maps_viz"]
         while True:
             # 'quality' is registry-owned (Q1 purge 2026-08-14, audit W7)
             choices = self._build_section_menu("maps_viz", [], _ORDERING)
@@ -818,15 +870,13 @@ class MeshForgeLauncher:
             # Try registry-based dispatch first (converted handlers)
             if self._registry.dispatch("maps_viz", choice):
                 continue
-
-            # All maps_viz items handled by registry
+            self._notify_unwired(choice)
 
     # --- NEW Submenu: Configuration (5) ---
 
     def _configuration_menu(self):
         """Configuration - Radio, services, settings."""
-        _ORDERING = ["meshtasticd", "channels", "rns-config", "rnode",
-                      "backup", "updates", "webhooks", "meshforge", "config-api", "wizard"]
+        _ORDERING = SECTION_ORDERINGS["configuration"]
         while True:
             # 'rns-config' is the one cross-section entry (dispatches to
             # "rns"/"edit" below); the other 7 were registry-shadowed
@@ -852,14 +902,14 @@ class MeshForgeLauncher:
             # Cross-section dispatch: RNS config is in the "rns" section
             if choice == "rns-config":
                 self._registry.dispatch("rns", "edit")
+                continue
+            self._notify_unwired(choice)
 
     # --- NEW Submenu: System (6) ---
 
     def _system_menu(self):
         """System - Hardware, logs, Linux tools."""
-        _ORDERING = ["hardware", "logs", "network", "discover", "diagnose",
-                      "run", "details", "daemon",
-                      "review", "status", "shell", "reboot"]
+        _ORDERING = SECTION_ORDERINGS["system"]
         while True:
             # All 7 legacy entries were registry-shadowed (Q1 purge
             # 2026-08-14, audit W7).
@@ -875,13 +925,14 @@ class MeshForgeLauncher:
                 break
 
             # Registry-based dispatch (all system items converted)
-            self._registry.dispatch("system", choice)
+            if not self._registry.dispatch("system", choice):
+                self._notify_unwired(choice)
 
     # --- Submenu: Extensions (7) ---
 
     def _extensions_menu(self):
         """Extensions - Maps, bots, add-ons."""
-        _ORDERING = ["mfmaps", "meshing"]
+        _ORDERING = SECTION_ORDERINGS["extensions"]
         while True:
             # 'mfmaps' is the one cross-section entry (handler lives in
             # "maps_viz", dispatched below); 'meshing' was registry-shadowed
@@ -903,13 +954,14 @@ class MeshForgeLauncher:
 
             # Try extensions section first, then maps_viz for mfmaps
             if not self._registry.dispatch("extensions", choice):
-                self._registry.dispatch("maps_viz", choice)
+                if not self._registry.dispatch("maps_viz", choice):
+                    self._notify_unwired(choice)
 
     # --- Submenu: About (a) ---
 
     def _about_menu(self):
         """About - Version, help, web client, system info, changelog."""
-        _ORDERING = ["version", "changelog", "sysinfo", "deps", "web", "help"]
+        _ORDERING = SECTION_ORDERINGS["about"]
         while True:
             # All 5 legacy entries were registry-shadowed (Q1 purge
             # 2026-08-14, audit W7).
@@ -925,7 +977,8 @@ class MeshForgeLauncher:
                 break
 
             # Registry-based dispatch (all about items converted)
-            self._registry.dispatch("about", choice)
+            if not self._registry.dispatch("about", choice):
+                self._notify_unwired(choice)
 
 def main():
     """Main entry point."""
