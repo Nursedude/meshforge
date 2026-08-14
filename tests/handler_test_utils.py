@@ -70,6 +70,7 @@ class FakeDialog:
         return init
 
     def checklist(self, title, text, choices, **kwargs):
+        self._reject_ansi(title, text, *(c for tup in choices for c in tup))
         self.calls.append(('checklist', (title, text, choices), kwargs))
         if self._checklist_returns:
             return self._checklist_returns.pop(0)
@@ -77,6 +78,7 @@ class FakeDialog:
 
     def textbox(self, title, text, **kwargs):
         """Mirror backend.textbox(title, text): show read-only scrollable text."""
+        self._reject_ansi(title, text)
         self.calls.append(('textbox', (title, text), kwargs))
         self.last_msgbox_title = title
         self.last_msgbox_text = text
@@ -87,6 +89,7 @@ class FakeDialog:
         Returns the next programmed value, or the file's current content
         (unchanged edit), or None on unreadable file — like the backend.
         """
+        self._reject_ansi(title)
         self.calls.append(('editbox', (title, file_path), kwargs))
         if self._editbox_returns:
             return self._editbox_returns.pop(0)
@@ -97,6 +100,7 @@ class FakeDialog:
             return None
 
     def infobox(self, title_or_text, text=None, **kwargs):
+        self._reject_ansi(title_or_text, text if text is not None else "")
         self.calls.append(('infobox', (title_or_text, text), kwargs))
 
     def set_status_bar(self, bar):

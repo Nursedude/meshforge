@@ -49,7 +49,7 @@ from utils.paths import get_real_user_home
 # Service check utilities moved to handlers/startup_health.py
 
 # Import dialog backend directly (not through package namespace)
-from backend import DialogBackend, clear_screen
+from backend import DialogBackend, DialogError, clear_screen
 
 # Import startup checks and conflict resolution (v0.4.8)
 from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
@@ -632,29 +632,43 @@ class MeshForgeLauncher:
                 ("x", "Exit"),
             ])
 
-            choice = self.dialog.menu(
-                f"MeshForge NOC v{__version__}",
-                status_hint,
-                choices
-            )
+            try:
+                choice = self.dialog.menu(
+                    f"MeshForge NOC v{__version__}",
+                    status_hint,
+                    choices
+                )
+            except DialogError as e:
+                # Genuine dialog-subsystem failure — the only thing the
+                # retry budget is for. Escape/Cancel never lands here
+                # (menu() returns None for those; review F4).
+                consecutive_failures += 1
+                if consecutive_failures >= self._MAX_DIALOG_RETRIES:
+                    logger.error(
+                        "Main menu dialog failed %d consecutive times (%s), exiting",
+                        consecutive_failures, e,
+                    )
+                    break
+                logger.warning(
+                    "Main menu dialog failed (attempt %d/%d): %s",
+                    consecutive_failures, self._MAX_DIALOG_RETRIES, e,
+                )
+                continue
 
             if choice == "x":
                 break
 
             if choice is None:
-                # Dialog returned None — could be user pressing Escape
-                # or the dialog subprocess dying unexpectedly.
-                consecutive_failures += 1
-                if consecutive_failures >= self._MAX_DIALOG_RETRIES:
-                    logger.error(
-                        "Main menu dialog failed %d consecutive times, exiting",
-                        consecutive_failures,
-                    )
-                    break
-                logger.warning(
-                    "Main menu returned None (attempt %d/%d), retrying",
-                    consecutive_failures, self._MAX_DIALOG_RETRIES,
-                )
+                # Escape/Cancel at the top level is a deliberate user answer
+                # — offer the exit it is asking for instead of logging a
+                # false dialog-failure ERROR (review F4).
+                try:
+                    if self.dialog.yesno("Exit MeshForge?",
+                                         "Leave the NOC and return to the shell?"):
+                        break
+                except DialogError:
+                    break  # dialog layer died mid-confirm — exit cleanly
+                consecutive_failures = 0
                 continue
 
             # Successful interaction resets the failure counter

@@ -99,7 +99,12 @@ def check_first_run() -> bool:
     root's home is impossible — attempting it crash-looped meshforge.service
     on moc for 26k restarts (2026-06-03 diagnosis; Issue #60 sibling).
     """
-    if not sys.stdin.isatty():
+    try:
+        if sys.stdin is None or not sys.stdin.isatty():
+            return False
+    except (ValueError, OSError):
+        # closed/absent stdin — same non-interactive context; raising here
+        # would be the crash-loop reintroduced by its own guard (review F8)
         return False
     marker = get_real_user_home() / ".meshforge" / ".setup_complete"
     return not marker.exists()

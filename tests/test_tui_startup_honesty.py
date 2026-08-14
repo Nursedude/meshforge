@@ -133,3 +133,54 @@ class TestCliFlags:
             "--debug returned; it was deleted 2026-08-14 because it was "
             "parsed and never read"
         )
+
+
+class TestMainMenuEscapeSemantics:
+    """Review F4: Escape at the main menu is a user answer — it offers exit,
+    never counts toward the dialog-failure budget or logs a false ERROR."""
+
+    def _fake_self(self, tui_main, menu_behavior, yesno_returns):
+        calls = {'menu': 0, 'yesno': 0, 'handled': []}
+
+        def fake_menu(*a, **k):
+            calls['menu'] += 1
+            r = menu_behavior[min(calls['menu'] - 1, len(menu_behavior) - 1)]
+            if isinstance(r, Exception):
+                raise r
+            return r
+
+        def fake_yesno(*a, **k):
+            calls['yesno'] += 1
+            return yesno_returns[min(calls['yesno'] - 1, len(yesno_returns) - 1)]
+
+        fake = SimpleNamespace(
+            _get_menu_status_hint=lambda: "",
+            _feature_enabled=lambda f: True,
+            _MAX_DIALOG_RETRIES=3,
+            _handle_main_choice=lambda c: calls['handled'].append(c),
+            dialog=SimpleNamespace(menu=fake_menu, yesno=fake_yesno),
+        )
+        return fake, calls
+
+    def test_escape_offers_exit_confirm(self):
+        tui_main = _import_main()
+        fake, calls = self._fake_self(tui_main, [None], [True])
+        tui_main.MeshForgeLauncher._run_main_menu(fake)
+        assert calls['yesno'] == 1, "Escape must offer an Exit confirm"
+        assert calls['menu'] == 1, "confirmed exit must not re-render"
+
+    def test_escape_then_decline_returns_to_menu(self):
+        tui_main = _import_main()
+        fake, calls = self._fake_self(tui_main, [None, "x"], [False])
+        tui_main.MeshForgeLauncher._run_main_menu(fake)
+        assert calls['yesno'] == 1
+        assert calls['menu'] == 2, "declined exit must re-render the menu"
+
+    def test_dialog_error_exhausts_retry_budget(self):
+        tui_main = _import_main()
+        from backend import DialogError
+        fake, calls = self._fake_self(
+            tui_main, [DialogError("dead")], [True])
+        tui_main.MeshForgeLauncher._run_main_menu(fake)
+        assert calls['menu'] == 3, "3 genuine failures then exit"
+        assert calls['yesno'] == 0, "failures must not ask Exit?"

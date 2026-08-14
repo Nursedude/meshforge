@@ -7,6 +7,7 @@ Works over SSH, without X display, on any terminal.
 
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -16,6 +17,22 @@ from pathlib import Path
 from typing import Tuple, Optional, List
 
 logger = logging.getLogger(__name__)
+
+# whiptail/dialog never interpret ANSI escapes — they render as literal
+# bytes. Central sanitizer so no caller can leak them (2026-08-14 review F9).
+_ANSI_RE = re.compile(r'\x1b\[[0-9;?]*[A-Za-z]')
+
+
+class DialogError(Exception):
+    """The dialog subprocess died or produced an unusable answer.
+
+    Raised by INPUT-collecting primitives (menu/yesno/inputbox/editbox/
+    checklist) so a dead dialog layer can never fabricate a user answer —
+    returning False/None there would record a choice the operator never
+    made (honest_failure_modes #1: the degraded value must not overlap the
+    healthy domain). Display-only primitives (msgbox/infobox/textbox) stay
+    best-effort and log instead.
+    """
 
 
 def clear_screen() -> None:
@@ -97,8 +114,19 @@ class DialogBackend:
                 except Exception as e:
                     logger.debug("Status bar update failed: %s", e)
 
+            # Strip ANSI escapes — whiptail/dialog render them as literal
+            # bytes on screen. Central enforcement so no handler can leak
+            # them through ANY primitive (review F9); the warning is the
+            # witness that a caller needs fixing.
+            str_args = [str(a) for a in full_args]
+            if any('\x1b' in a for a in str_args):
+                logger.warning(
+                    "ANSI escapes stripped from dialog args — fix the caller "
+                    "(whiptail shows escapes as literal bytes)")
+                str_args = [_ANSI_RE.sub('', a) for a in str_args]
+
             # Build command as list args (safe, no shell needed)
-            cmd_parts = [self.backend] + [str(a) for a in full_args]
+            cmd_parts = [self.backend] + str_args
 
             # Flush stale input from terminal before launching dialog.
             # Without this, leftover keystrokes (Enter, ESC sequences) from
@@ -160,14 +188,19 @@ class DialogBackend:
                 pass
 
     def msgbox(self, title: str, text: str, height: int = None, width: int = None) -> None:
-        """Display a message box."""
+        """Display a message box. Best-effort, but a failed display leaves a
+        log witness — msgboxes carry failure reports (e.g. the RNS-repair
+        half-state dialog) and must not vanish untraced (review F7)."""
         h = height if height is not None else self.height
         w = width if width is not None else self.width
-        self._run([
+        code, _ = self._run([
             '--title', title,
             '--msgbox', text,
             str(h), str(w)
         ])
+        if code == -1:
+            logger.warning("msgbox '%s' could not be displayed; its text was: %s",
+                           title, text[:400])
 
     def yesno(self, title: str, text: str, default_no: bool = False,
               height: int = None, width: int = None) -> bool:
@@ -179,6 +212,11 @@ class DialogBackend:
             args.append('--defaultno')
         args += ['--yesno', text, str(h), str(w)]
         code, _ = self._run(args)
+        if code == -1:
+            # A dead dialog must not answer "No" on the operator's behalf —
+            # for a confirm-to-keep flow that fabricated answer is
+            # destructive (review F7).
+            raise DialogError(f"yesno '{title}' failed (subprocess died)")
         return code == 0
 
     def menu(self, title: str, text: str, choices: List[Tuple[str, str]],
@@ -218,7 +256,13 @@ class DialogBackend:
         )
         # Chrome: border(2) + title(1) + padding(2) + button(1) = 6
         chrome = 6
-        if chrome + text_lines + lh > max_h or h > max_h:
+        # GROW the box to fit its content up to the terminal, then shrink
+        # the list if it still doesn't fit. The old fit only shrank on
+        # small terminals: a multi-line panel (NOC Home) inside the fixed
+        # 22-row box was clipped even on a 40-row terminal (review F3).
+        needed = chrome + text_lines + lh
+        h = max(h, min(needed, max_h))
+        if needed > max_h or h > max_h:
             lh = max(4, max_h - chrome - text_lines)
             h = min(h, max_h)
 
@@ -247,7 +291,12 @@ class DialogBackend:
         code, output = self._run(args)
         if code == 0:
             return output
-        return None
+        if code in (1, 255):
+            return None
+        # Still dead after the retry: raise, never return None — None means
+        # "the user cancelled", and a dead dialog must not impersonate a
+        # user answer (review F4/F7).
+        raise DialogError(f"menu '{title}' failed (code={code})")
 
     def inputbox(self, title: str, text: str, init: str = "",
                  height: int = None, width: int = None) -> Optional[str]:
@@ -263,6 +312,8 @@ class DialogBackend:
         code, output = self._run(args)
         if code == 0:
             return output
+        if code == -1:
+            raise DialogError(f"inputbox '{title}' failed (subprocess died)")
         return None
 
     def editbox(self, title: str, file_path: str, height: int = None,
@@ -284,6 +335,8 @@ class DialogBackend:
         ])
         if code == 0:
             return output
+        if code == -1:
+            raise DialogError(f"editbox '{title}' failed (subprocess died)")
         return None
 
     def textbox(self, title: str, text: str, height: int = None,
@@ -303,8 +356,11 @@ class DialogBackend:
         try:
             with os.fdopen(fd, 'w') as f:
                 f.write(text if text else "(no output)")
-            self._run(['--title', title, '--scrolltext',
-                       '--textbox', tmp, str(h), str(w)])
+            code, _ = self._run(['--title', title, '--scrolltext',
+                                 '--textbox', tmp, str(h), str(w)])
+            if code == -1:
+                logger.warning("textbox '%s' could not be displayed "
+                               "(%d chars of output unseen)", title, len(text or ""))
         finally:
             try:
                 os.unlink(tmp)
@@ -355,8 +411,13 @@ class DialogBackend:
             try:
                 return shlex.split(output)
             except ValueError:
-                logger.warning("Unparseable checklist output: %r", output[:80])
-                return None
+                # An OK press whose selections we cannot read is an ERROR,
+                # not a cancel — None here would silently drop the user's
+                # choices (review F7).
+                raise DialogError(
+                    f"checklist '{title}' output unparseable: {output[:80]!r}")
+        if code == -1:
+            raise DialogError(f"checklist '{title}' failed (subprocess died)")
         return None
 
 

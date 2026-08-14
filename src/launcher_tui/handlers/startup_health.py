@@ -41,7 +41,17 @@ class StartupHealthHandler(BaseHandler):
     # -- Lifecycle: called explicitly from main.py --
 
     def on_startup(self):
-        """Run pre-main-menu health checks."""
+        """Run pre-main-menu health checks.
+
+        Idempotent per process. Today startup_all() skips this handler
+        (no on_shutdown → fails the LifecycleHandler isinstance), so only
+        main.py's explicit call fires — but adding an on_shutdown would
+        silently create the first_run double-call shape (audit W10). The
+        guard makes that a non-event instead of a re-prompt.
+        """
+        if getattr(self, '_startup_ran', False):
+            return
+        self._startup_ran = True
         self._patch_rns_transport_race()
         self._check_service_misconfig()
 

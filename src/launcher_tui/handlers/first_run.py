@@ -241,7 +241,13 @@ class FirstRunHandler(BaseHandler):
         crash-looped meshforge.service on moc for 26k restarts (2026-06-03,
         fixed in launcher.py; this is the handler-path mirror of that guard).
         """
-        if not sys.stdin.isatty():
+        try:
+            if sys.stdin is None or not sys.stdin.isatty():
+                return False
+        except (ValueError, OSError):
+            # closed/absent stdin (hardened unit, fd 0 missing) — the exact
+            # context this guard defends; raising here would reintroduce
+            # the crash-loop through its own mirror (review F8)
             return False
         config_dir = get_real_user_home() / ".config" / "meshforge"
         flag_file = config_dir / self.FIRST_RUN_FLAG

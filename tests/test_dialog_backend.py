@@ -18,7 +18,9 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src', 'launcher_tui'))
 
-from backend import DialogBackend
+import pytest
+
+from backend import DialogBackend, DialogError, _ANSI_RE
 
 
 def _make_backend(run_results):
@@ -50,9 +52,12 @@ class TestMenuCancelSemantics:
         assert be.menu("T", "text", [("a", "A")]) is None
         assert len(be._run_calls) == 1
 
-    def test_subprocess_failure_retries_once(self):
+    def test_subprocess_failure_retries_once_then_raises(self):
+        # Review F4/F7: a dead dialog must not impersonate a user cancel —
+        # after the one retry, menu() raises instead of returning None.
         be = _make_backend([(-1, ""), (-1, "")])
-        assert be.menu("T", "text", [("a", "A")]) is None
+        with pytest.raises(DialogError):
+            be.menu("T", "text", [("a", "A")])
         assert len(be._run_calls) == 2
 
     def test_subprocess_failure_then_success_returns_selection(self):
@@ -87,9 +92,59 @@ class TestChecklistParsing:
         be = _make_backend([(1, "")])
         assert be.checklist("T", "t", [("a", "d", False)]) is None
 
-    def test_unparseable_output_returns_none(self):
+    def test_unparseable_output_raises(self):
+        # An OK press whose selections can't be read is an ERROR, not a
+        # cancel — None would silently drop the user's choices (review F7).
         be = _make_backend([(0, '"unterminated')])
-        assert be.checklist("T", "t", [("a", "d", False)]) is None
+        with pytest.raises(DialogError):
+            be.checklist("T", "t", [("a", "d", False)])
+
+
+class TestDeadDialogNeverAnswers:
+    """Review F7: input primitives raise on subprocess death instead of
+    fabricating an answer (yesno=False / inputbox=None used to read as a
+    choice the operator never made)."""
+
+    def test_yesno_raises_on_dead_subprocess(self):
+        be = _make_backend([(-1, "")])
+        with pytest.raises(DialogError):
+            be.yesno("Confirm?", "keep going?")
+
+    def test_yesno_escape_is_no(self):
+        be = _make_backend([(255, "")])
+        assert be.yesno("Confirm?", "keep going?") is False
+
+    def test_inputbox_raises_on_dead_subprocess(self):
+        be = _make_backend([(-1, "")])
+        with pytest.raises(DialogError):
+            be.inputbox("T", "value?")
+
+    def test_checklist_raises_on_dead_subprocess(self):
+        be = _make_backend([(-1, "")])
+        with pytest.raises(DialogError):
+            be.checklist("T", "t", [("a", "d", False)])
+
+
+class TestMenuBoxGrowsForContent:
+    def test_tall_panel_grows_box_height(self):
+        # Review F3: a ~10-line panel inside the fixed 22-row box was
+        # clipped even on a 40-row terminal — the fit only ever shrank.
+        be = _make_backend([(0, "a")])
+        tall_text = "\n".join(f"line {i}" for i in range(10))
+        import unittest.mock as um
+        with um.patch('backend.os.get_terminal_size',
+                      return_value=um.Mock(lines=40)):
+            be.menu("T", tall_text, [("a", "A")])
+        args = be._run_calls[0]
+        h = int(args[args.index('--menu') + 2])
+        # chrome(6) + text(10) + list(14) = 30 needed; must have grown past 22
+        assert h >= 30, f"box height {h} still clips a 10-line panel"
+
+
+class TestAnsiRegex:
+    def test_strips_color_and_cursor_sequences(self):
+        s = "\033[0;32mLOCKED\033[0m and \033[2Kplain"
+        assert _ANSI_RE.sub('', s) == "LOCKED and plain"
 
 
 class TestDeadCodeStaysDead:

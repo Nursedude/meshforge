@@ -56,9 +56,16 @@ sudo python3 src/main.py --configure
 sudo python3 src/main.py --check
 ```
 
-#### Debug Mode
+#### Debug Logging
+
+The TUI always logs at DEBUG level to
+`~/.config/meshforge/logs/meshforge_YYYYMMDD.log` (crashes additionally to
+`~/.cache/meshforge/logs/tui_errors.log`). There is no `--debug` flag —
+read the log files. To skip the startup environment sweep and update
+check:
+
 ```bash
-sudo python3 src/main.py --debug
+sudo python3 src/launcher_tui/main.py --no-startup-checks
 ```
 
 ## Configuration

@@ -343,24 +343,22 @@ def repair_rns_shared_instance(handler) -> bool:
 
         iface_names = [b[0] for b in blocking]
         names_str = ", ".join(iface_names)
-        if ctx.dialog.yesno(
-            "Disable Blocking Interfaces?",
+        confirmed, disabled = _confirm_disable_interfaces(
+            ctx, iface_names,
             f"These interfaces will prevent rnsd from starting:\n"
             f"  {names_str}\n\n"
             f"Temporarily disable them in the RNS config?\n"
             f"(You can re-enable them later from the RNS menu)\n\n"
             f"If you choose No, rnsd may hang on startup.",
-        ):
-            disabled = disable_interfaces_in_config(iface_names)
-            if disabled:
-                print(f"  Disabled {len(disabled)} blocking interface(s):")
-                for name in disabled:
-                    print(f"    [{name}] set enabled = no")
-            else:
-                print("  Could not disable interfaces — rnsd may hang")
-        else:
+        )
+        if not confirmed:
             user_declined_disable = True
             print("  Proceeding without disabling (rnsd may hang)...\n")
+        elif disabled:
+            print(f"  Disabled {len(disabled)} blocking interface(s):")
+            for name in disabled:
+                print(f"    [{name}] set enabled = no")
+        # confirmed-but-failed already showed its own dialog witness
 
     # Clear systemd start limit
     try:
@@ -625,6 +623,40 @@ def _handle_rnsd_crash(ctx) -> bool:
     return False
 
 
+def _confirm_disable_interfaces(ctx, iface_names, prompt_text):
+    """yesno-confirmed interface disable with a DIALOG witness on failure.
+
+    Shared by the pre-flight and second-chance paths (review F2: the C1 fix
+    covered only the second-chance branch; the pre-flight sibling ran the
+    same confirmed destructive write with only print() as witness — which
+    the next dialog's clear_screen erases).
+
+    Returns (user_confirmed, disabled_names). A confirmed-but-failed write
+    returns (True, []) after showing an honest "nothing was changed" dialog.
+    """
+    if not ctx.dialog.yesno("Disable Blocking Interfaces?", prompt_text):
+        return False, []
+    try:
+        disabled = disable_interfaces_in_config(iface_names)
+    except Exception as e:
+        logger.error("disable_interfaces_in_config failed: %s", e)
+        ctx.dialog.msgbox(
+            "Disable FAILED — nothing was changed",
+            f"Could not modify the Reticulum config:\n\n"
+            f"  {type(e).__name__}: {e}\n\n"
+            f"Your interfaces are untouched."
+        )
+        return True, []
+    if not disabled:
+        ctx.dialog.msgbox(
+            "Disable FAILED — nothing was changed",
+            "No interfaces could be disabled (none matched in the config).\n"
+            "Your Reticulum config is untouched."
+        )
+        return True, []
+    return True, disabled
+
+
 def _offer_disable_blocking(handler, post_blocking) -> bool:
     """Offer to disable blocking interfaces and restart rnsd — with a witness.
 
@@ -639,33 +671,16 @@ def _offer_disable_blocking(handler, post_blocking) -> bool:
     ctx = handler.ctx
     iface_names = [b[0] for b in post_blocking]
     names_str = ", ".join(iface_names)
-    if not ctx.dialog.yesno(
-        "Disable Blocking Interfaces?",
+    # Pre-write phase (yesno + config write) is shared with the pre-flight
+    # path; its failure dialogs say "nothing was changed".
+    confirmed, disabled = _confirm_disable_interfaces(
+        ctx, iface_names,
         f"Blocking interfaces are preventing rnsd\n"
         f"from initializing:\n"
         f"  {names_str}\n\n"
-        f"Disable them and restart rnsd?"
-    ):
-        return False
-
-    # --- pre-write phase: nothing on disk has changed yet ---------------
-    try:
-        disabled = disable_interfaces_in_config(iface_names)
-    except Exception as e:
-        logger.error("disable_interfaces_in_config failed: %s", e)
-        ctx.dialog.msgbox(
-            "Repair FAILED — nothing was changed",
-            f"Could not modify the Reticulum config:\n\n"
-            f"  {type(e).__name__}: {e}\n\n"
-            f"Your interfaces are untouched and rnsd was not restarted."
-        )
-        return False
-    if not disabled:
-        ctx.dialog.msgbox(
-            "Repair FAILED — nothing was changed",
-            "No interfaces could be disabled (none matched in the config).\n"
-            "Your Reticulum config is untouched."
-        )
+        f"Disable them and restart rnsd?",
+    )
+    if not confirmed or not disabled:
         return False
 
     # --- post-write phase: the config IS modified from here on ----------

@@ -69,7 +69,17 @@ def _git(repo_dir: Path, args: List[str], timeout: int = 30,
         owner_uid, owner_name = _repo_owner(repo_dir)
         if owner_uid not in (None, 0):
             cmd = ['sudo', '-u', owner_name, '-H'] + cmd
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+    # Never prompt: git/ssh ask for credentials or host-key confirmation on
+    # /dev/tty directly (capture_output does NOT cover that path). The TUI
+    # now runs this check in a background thread, so a prompt would draw
+    # over the live whiptail screen and steal keystrokes (2026-08-14 review
+    # F5). A repo that needs interactive auth should fail fast and read as
+    # "could not fetch" — the honest state.
+    env = dict(os.environ,
+               GIT_TERMINAL_PROMPT='0',
+               GIT_SSH_COMMAND='ssh -oBatchMode=yes')
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          stdin=subprocess.DEVNULL, env=env)
 
 
 def get_meshforge_git_state(fetch: bool = True,

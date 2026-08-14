@@ -208,8 +208,13 @@ class ServiceDiscoveryHandler(BaseHandler):
         from concurrent.futures import ThreadPoolExecutor
         base = '.'.join(network.split('.')[:3])
         ips = [f"{base}.{i}" for i in range(1, 255)]
+        # check_port's real signature is (port, host=..., timeout=...) —
+        # keyword args on purpose. The old serial loop called it as
+        # (ip, port) and could never find anything; review F1.
         with ThreadPoolExecutor(max_workers=32) as pool:
-            hits = pool.map(lambda ip: ip if check_port(ip, port, timeout=timeout) else None, ips)
+            hits = pool.map(
+                lambda ip: ip if check_port(port, host=ip, timeout=timeout) else None,
+                ips)
         found = [ip for ip in hits if ip]
         # pool.map preserves input order, but sort numerically for a stable,
         # readable result regardless of completion order.

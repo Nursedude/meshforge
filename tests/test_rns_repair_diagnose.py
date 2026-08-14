@@ -117,3 +117,36 @@ class TestDiagnoseStepsLeaveWitness:
             assert 'except Exception:\n        pass' not in src, (
                 f"{fn.__name__} regained a silent except-pass"
             )
+
+
+class TestPreflightSharesTheWitness:
+    """Review F2: the pre-flight yesno->disable path must run through the
+    same witnessed helper as the second-chance path — a confirmed write
+    failure gets a dialog, not a print the next clear_screen erases."""
+
+    def test_confirm_helper_pre_write_failure_dialogs(self):
+        h = _Handler()
+        h.ctx.dialog._yesno_returns = [True]
+        with patch.object(_rns_repair, 'disable_interfaces_in_config',
+                          side_effect=OSError("read-only fs")):
+            confirmed, disabled = _rns_repair._confirm_disable_interfaces(
+                h.ctx, ["iface_a"], "disable?")
+        assert confirmed is True and disabled == []
+        texts = _dialog_texts(h.ctx.dialog)
+        assert "FAILED" in texts and "nothing was changed" in texts.lower()
+
+    def test_both_paths_use_the_helper(self):
+        import inspect
+        src = inspect.getsource(_rns_repair)
+        # No raw yesno->disable flow may exist outside the helper: every
+        # call to disable_interfaces_in_config lives in _confirm_disable_interfaces.
+        callers = [
+            line for line in src.splitlines()
+            if 'disable_interfaces_in_config(' in line
+            and 'import' not in line
+        ]
+        assert len(callers) == 1, (
+            f"disable_interfaces_in_config called from {len(callers)} sites — "
+            "a confirmed destructive write escaped the witnessed helper: "
+            f"{callers}"
+        )
