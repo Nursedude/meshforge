@@ -462,28 +462,8 @@ class NomadNetServiceOpsMixin:
             return
 
         # Phase 3: invoke the CLI with sudo so the script writes /etc/reticulum
-        repo_root = Path(__file__).resolve().parents[3]
-        cli = repo_root / 'scripts' / 'rns_alignment.py'
-        if not cli.is_file():
-            self.ctx.dialog.msgbox(
-                "Script missing",
-                f"{cli} not found. Update MeshForge and try again.",
-            )
-            return
-        proc = subprocess.run(
-            ['sudo', 'python3', str(cli), 'normalize', '--yes'],
-            capture_output=True, text=True, timeout=120,
-        )
-        out = (proc.stdout or '') + (
-            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
-        )
-        title = (
-            "Repair OK" if proc.returncode == 0 else
-            f"Repair returned {proc.returncode}"
-        )
-        # Truncate for the dialog if it's huge
-        body_out = out[-2400:] if len(out) > 2400 else out
-        self.ctx.dialog.msgbox(title, body_out or "(no output)")
+        from ._service_ops_common import repair_rns_alignment
+        repair_rns_alignment(self.ctx, Path(__file__).resolve().parents[3])
 
     def _reinstall_nomadnet(self) -> None:
         """Run the canonical pipx-first installer (idempotent).
@@ -540,24 +520,13 @@ class NomadNetServiceOpsMixin:
             )
             return
 
-        proc = subprocess.run(
-            ['bash', str(installer)],
-            capture_output=True, text=True, timeout=600,
-        )
-        out = (proc.stdout or '') + (
-            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
-        )
-        title = (
-            "NomadNet reinstall: OK"
-            if proc.returncode == 0
-            else f"NomadNet reinstall returned {proc.returncode}"
-        )
-        body_out = out[-2400:] if len(out) > 2400 else out
-        self.ctx.dialog.msgbox(title, body_out or "(no output)")
+        from ._service_ops_common import run_command_report
+        rc = run_command_report(self.ctx, ['bash', str(installer)],
+                                "NomadNet reinstall")
 
         # On success, surface a follow-up offer to restart so the new
         # unit definition replaces any prior tmux session cleanly.
-        if proc.returncode == 0:
+        if rc == 0:
             if self.ctx.dialog.yesno(
                 "Restart service?",
                 "Installer succeeded. Restart the nomadnet user service\n"

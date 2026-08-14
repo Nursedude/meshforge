@@ -50,29 +50,9 @@ class WebClientHandler(BaseHandler):
         web_url = f"http://{local_ip}:{meshforge_port}/mesh/"
         localhost_url = f"http://localhost:{meshforge_port}/mesh/"
 
-        meshforge_ok = False
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", meshforge_port)) == 0:
-                    meshforge_ok = True
-            finally:
-                sock.close()
-        except Exception as e:
-            logger.debug("Socket check for MeshForge web server: %s", e)
-
-        meshtasticd_ok = False
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                sock.settimeout(2)
-                if sock.connect_ex(("localhost", 9443)) == 0:
-                    meshtasticd_ok = True
-            finally:
-                sock.close()
-        except Exception as e:
-            logger.debug("Socket check for meshtasticd: %s", e)
+        from utils.service_check import check_port
+        meshforge_ok = check_port(meshforge_port, timeout=2)
+        meshtasticd_ok = check_port(9443, timeout=2)
 
         if not meshforge_ok:
             self.ctx.dialog.msgbox(

@@ -103,14 +103,8 @@ class MeshForgeMapsExtensionMixin:
 
     def _mfmaps_is_running(self) -> bool:
         """Check if meshforge-maps is listening on its port."""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
-            result = sock.connect_ex(('127.0.0.1', self._MFMAPS_PORT))
-            sock.close()
-            return result == 0
-        except OSError:
-            return False
+        from utils.service_check import check_port
+        return check_port(self._MFMAPS_PORT, host='127.0.0.1', timeout=2)
 
     def _mfmaps_diagnose_service(self):
         """Diagnose why the meshforge-maps service is failing.
@@ -208,19 +202,12 @@ class MeshForgeMapsExtensionMixin:
 
     def _mfmaps_show_logs(self):
         """Show recent meshforge-maps logs."""
-        try:
-            result = subprocess.run(
-                ["journalctl", "-u", self._MFMAPS_SERVICE,
-                 "-n", "50", "--no-pager"],
-                capture_output=True, text=True, timeout=10)
-            if result.stdout:
-                self.ctx.dialog.msgbox(
-                    "MeshForge Maps Logs (last 50 lines)",
-                    result.stdout, width=78)
-            else:
-                self.ctx.dialog.msgbox("No Logs", "No log entries found.")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            self.ctx.dialog.msgbox("Error", "Could not retrieve logs.")
+        from ._service_ops_common import journal_tail_text
+        self.ctx.dialog.msgbox(
+            "MeshForge Maps Logs (last 50 lines)",
+            journal_tail_text(self._MFMAPS_SERVICE, lines=50,
+                              empty_text="No log entries found."),
+            width=78)
 
     def _mfmaps_health_check(self):
         """Query the meshforge-maps health endpoint."""

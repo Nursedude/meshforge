@@ -123,25 +123,15 @@ class NomadNetInstallUtilsMixin:
                 f"Canonical installer not found at {installer}.\n"
                 "Update MeshForge and try again.",
             )
-        try:
-            proc = subprocess.run(
-                ['bash', str(installer)],
-                capture_output=True, text=True, timeout=600,
-            )
-        except subprocess.TimeoutExpired:
-            return (False, "Installer timed out (600s). Check your internet "
-                           "connection and retry.")
-        except (subprocess.SubprocessError, OSError) as e:
-            return (False, f"Installer could not run: {e}")
-
-        out = (proc.stdout or '') + (
-            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
-        )
-        tail = out[-1800:] if len(out) > 1800 else out
-        if proc.returncode != 0:
+        from ._service_ops_common import run_script_captured
+        rc, tail = run_script_captured(['bash', str(installer)],
+                                       timeout=600, tail=1800)
+        if rc == -1:
+            return (False, f"Installer failed: {tail}")
+        if rc != 0:
             return (
                 False,
-                f"Installer exited {proc.returncode}.\n\n{tail or '(no output)'}",
+                f"Installer exited {rc}.\n\n{tail or '(no output)'}",
             )
         # A zero exit is necessary but not sufficient — verify the consumer can
         # actually see the binary (the #24 success-but-broken guard).

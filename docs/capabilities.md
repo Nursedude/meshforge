@@ -19,7 +19,7 @@ These features have been used in actual mesh deployments with physical radios an
 
 | Category | Capabilities |
 |----------|-------------|
-| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->102<!--/STAT--> handler modules via registry pattern |
+| **TUI Interface** | Installer, service control, device config wizard, gateway config, diagnostics — <!--STAT:handlers-->103<!--/STAT--> handler modules via registry pattern |
 | **Radio Management** | Install/configure meshtasticd, LoRa presets, channels, SPI/USB auto-detect |
 | **RF Engineering** | Link budget, Fresnel zone, path loss, site planning, space weather (NOAA), Cython-optimized |
 | **AI Diagnostics** | Offline knowledge base (20+ topics), rule-based troubleshooting, confidence scoring |
@@ -176,7 +176,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 ### Testing Reality Check
 
 MeshForge has **~9,300 automated tests** (run `python3 -m pytest tests/ --co -q`
-for the live count) across <!--STAT:testfiles-->330<!--/STAT--> test files. However, automated tests
+for the live count) across <!--STAT:testfiles-->331<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:

@@ -381,16 +381,12 @@ class DashboardHandler(BaseHandler):
         # Test 1: meshtasticd TCP connection
         print("[1/6] Testing meshtasticd TCP (port 4403)...")
         try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
-            result = sock.connect_ex(('localhost', 4403))
-            sock.close()
-            if result == 0:
+            from utils.service_check import check_port
+            if check_port(4403, timeout=3):
                 results.append(("meshtasticd TCP", "OK", "Port 4403 accepting connections"))
                 print("      \033[0;32mOK\033[0m - Port 4403 reachable")
             else:
-                results.append(("meshtasticd TCP", "FAIL", f"Connection refused (code {result})"))
+                results.append(("meshtasticd TCP", "FAIL", "Connection refused"))
                 print("      \033[0;31mFAIL\033[0m - Connection refused")
         except Exception as e:
             results.append(("meshtasticd TCP", "FAIL", str(e)))

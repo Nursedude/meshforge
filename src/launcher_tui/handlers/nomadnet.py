@@ -179,18 +179,11 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
         diag = self._get_rns_diagnostics_handler()
         if diag:
             return diag._wait_for_rns_port(max_wait=max_wait)
-        # Fallback: simple socket check
-        import socket
+        # Fallback: simple port check (Q2/E4: via the shared probe)
+        from utils.service_check import check_port
         for _ in range(max_wait):
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(1)
-                result = s.connect_ex(('127.0.0.1', 37428))
-                s.close()
-                if result == 0:
-                    return True
-            except OSError:
-                pass
+            if check_port(37428, host='127.0.0.1', timeout=1):
+                return True
             time.sleep(1)
         return False
 

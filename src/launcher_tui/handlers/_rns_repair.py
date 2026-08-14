@@ -794,14 +794,12 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
     # Journal output
     print()
     try:
-        r = subprocess.run(
-            ['journalctl', '-u', 'rnsd', '-n', '15', '--no-pager',
-             '-q', '--no-hostname'],
-            capture_output=True, text=True, timeout=10
-        )
-        if r.stdout and r.stdout.strip():
+        from ._service_ops_common import journal_tail_text
+        text = journal_tail_text('rnsd', lines=15, quiet=True,
+                                 no_hostname=True, empty_text="")
+        if text:
             print("  Recent rnsd log:")
-            for line in r.stdout.strip().splitlines()[-10:]:
+            for line in text.splitlines()[-10:]:
                 print(f"    {line.strip()[:100]}")
         else:
             print("  No journal entries for rnsd")

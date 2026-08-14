@@ -382,20 +382,9 @@ class MeshChatXServiceOpsMixin:
         ):
             return
 
-        proc = subprocess.run(
-            ['bash', str(_INSTALLER)],
-            capture_output=True, text=True, timeout=600,
-        )
-        out = (proc.stdout or '') + (
-            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
-        )
-        title = (
-            "MeshChatX install: OK"
-            if proc.returncode == 0
-            else f"MeshChatX install returned {proc.returncode}"
-        )
-        body_out = out[-2400:] if len(out) > 2400 else out
-        self.ctx.dialog.msgbox(title, body_out or "(no output)")
+        from ._service_ops_common import run_command_report
+        run_command_report(self.ctx, ['bash', str(_INSTALLER)],
+                           "MeshChatX install")
 
     def _repair_rns_alignment(self) -> None:
         """Run the shared RNS alignment audit (same SSOT as NomadNet).
@@ -443,26 +432,8 @@ class MeshChatXServiceOpsMixin:
         if not self.ctx.dialog.yesno("Repair RNS alignment", body):
             return
 
-        cli = Path(__file__).resolve().parents[3] / 'scripts' / 'rns_alignment.py'
-        if not cli.is_file():
-            self.ctx.dialog.msgbox(
-                "Script missing",
-                f"{cli} not found. Update MeshForge and try again.",
-            )
-            return
-        proc = subprocess.run(
-            ['sudo', 'python3', str(cli), 'normalize', '--yes'],
-            capture_output=True, text=True, timeout=120,
-        )
-        out = (proc.stdout or '') + (
-            f"\n[stderr]\n{proc.stderr}" if proc.stderr else ''
-        )
-        title = (
-            "Repair OK" if proc.returncode == 0 else
-            f"Repair returned {proc.returncode}"
-        )
-        body_out = out[-2400:] if len(out) > 2400 else out
-        self.ctx.dialog.msgbox(title, body_out or "(no output)")
+        from ._service_ops_common import repair_rns_alignment
+        repair_rns_alignment(self.ctx, Path(__file__).resolve().parents[3])
 
     def _enable_linger(self) -> None:
         sudo_user = os.environ.get('SUDO_USER') or get_real_username()

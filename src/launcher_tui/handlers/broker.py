@@ -630,18 +630,12 @@ class BrokerHandler(BaseHandler):
 
     def _show_mosquitto_logs(self):
         """Show recent mosquitto logs."""
-        try:
-            result = subprocess.run(
-                ["journalctl", "-u", "mosquitto", "-n", "30", "--no-pager"],
-                capture_output=True, text=True, timeout=10
-            )
-            if result.stdout:
-                self.ctx.dialog.msgbox(
-                    "Mosquitto Logs (last 30 lines)", result.stdout, width=76)
-            else:
-                self.ctx.dialog.msgbox("No Logs", "No mosquitto log entries found.")
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            self.ctx.dialog.msgbox("Error", "Could not retrieve logs.")
+        from ._service_ops_common import journal_tail_text
+        self.ctx.dialog.msgbox(
+            "Mosquitto Logs (last 30 lines)",
+            journal_tail_text('mosquitto', lines=30,
+                              empty_text="No mosquitto log entries found."),
+            width=76)
 
     def _test_mosquitto_connection(self):
         """Test MQTT connection to the active broker."""

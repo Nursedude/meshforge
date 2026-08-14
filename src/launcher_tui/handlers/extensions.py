@@ -408,14 +408,13 @@ class ExtensionsHandler(BaseHandler):
     def _ma_show_logs(self):
         """Show recent mesh_bot logs."""
         try:
-            result = subprocess.run(
-                ["journalctl", "-u", self._MA_SERVICE,
-                 "-n", "50", "--no-pager"],
-                capture_output=True, text=True, timeout=10)
-            if result.stdout:
+            from ._service_ops_common import journal_tail_text
+            text = journal_tail_text(self._MA_SERVICE, lines=50,
+                                     empty_text="")
+            if text:
                 self.ctx.dialog.msgbox(
                     "Meshing Around Logs (last 50 lines)",
-                    result.stdout, width=78)
+                    text, width=78)
             else:
                 # Fall back to log file
                 log_file = Path(

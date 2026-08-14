@@ -657,6 +657,8 @@ class MeshtasticdConfigHandler(BaseHandler):
                 print(f"         Hint: {status.fix_hint}")
 
         # 2. TCP port 4403
+        # Intentional raw socket (not check_port): the OSError TEXT is part
+        # of the diagnostic output below — a bool would erase the reason.
         tcp_ok = False
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:

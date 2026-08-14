@@ -67,20 +67,10 @@ class AREDNHandler(BaseHandler):
                 self.ctx.safe_call(*entry)
 
     def _aredn_get_node_ip(self) -> str:
-        import socket
+        from utils.service_check import check_port
         for host in ['localnode.local.mesh', '10.0.0.1', 'localnode']:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(2)
-                try:
-                    result = sock.connect_ex((host, 8080))
-                    if result == 0:
-                        return host
-                finally:
-                    sock.close()
-            except OSError as e:
-                logger.debug("AREDN probe %s failed: %s", host, e)
-                continue
+            if check_port(8080, host=host, timeout=2):
+                return host
         return ""
 
     def _aredn_node_status(self):
@@ -313,15 +303,9 @@ class AREDNHandler(BaseHandler):
             print("  1. Main Menu > Maps & Viz > Coverage Map")
             print("  2. Or start the map server and open in browser")
 
-            import socket
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(1)
-                if sock.connect_ex(('localhost', 5000)) == 0:
-                    print("\n  Map server is running: http://localhost:5000")
-                sock.close()
-            except OSError as e:
-                logger.debug("AREDN map server check failed: %s", e)
+            from utils.service_check import check_port
+            if check_port(5000, timeout=1):
+                print("\n  Map server is running: http://localhost:5000")
 
         except Exception as e:
             print(f"Error: {e}")

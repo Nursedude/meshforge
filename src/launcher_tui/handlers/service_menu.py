@@ -169,14 +169,11 @@ class ServiceMenuHandler(BaseHandler):
         for svc in failed_services:
             try:
                 print(f"\033[0;31m{svc} failure:\033[0m")
-                # Capture rather than let journalctl stream raw to the terminal
-                # (In-Domain Class 3); it is shown as part of this status report.
-                r = subprocess.run(
-                    ['journalctl', '-u', svc, '-n', '5', '--no-pager'],
-                    capture_output=True, text=True, timeout=10
-                )
-                tail = (r.stdout or "").strip()
-                print(tail if tail else "  (no recent journal entries)")
+                # Captured (In-Domain Class 3), shown as part of this report.
+                from ._service_ops_common import journal_tail_text
+                print(journal_tail_text(
+                    svc, lines=5,
+                    empty_text="  (no recent journal entries)"))
                 print()
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("Failure log check for %s failed: %s", svc, e)

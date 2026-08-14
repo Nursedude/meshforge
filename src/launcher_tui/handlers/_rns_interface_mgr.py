@@ -111,13 +111,8 @@ def _check_meshtastic_interface(name: str, body: str, blocking: list):
                         tcp_port_num = int(parts[1])
                     except ValueError:
                         pass
-                try:
-                    sock = socket.socket(
-                        socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(2)
-                    sock.connect((tcp_host, tcp_port_num))
-                    sock.close()
-                except (socket.timeout, ConnectionRefusedError, OSError):
+                from utils.service_check import check_port
+                if not check_port(tcp_port_num, host=tcp_host, timeout=2):
                     blocking.append((
                         name,
                         f"meshtasticd running but TCP port "
@@ -154,13 +149,8 @@ def _check_tcp_client_interface(name: str, body: str, blocking: list):
     if host_match and port_match:
         host = host_match.group(1)
         port = port_match.group(1)
-        import socket
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            sock.connect((host, int(port)))
-            sock.close()
-        except (socket.timeout, ConnectionRefusedError, OSError):
+        from utils.service_check import check_port
+        if not check_port(int(port), host=host, timeout=1):
             blocking.append((
                 name,
                 f"target {host}:{port} is unreachable",

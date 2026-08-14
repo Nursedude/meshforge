@@ -253,18 +253,13 @@ class RNSInterfacesHandler(BaseHandler):
             # Degraded state: show journal tail for immediate visibility
             print(f"\n  rnsd is running but shared instance is NOT responding.")
             print(f"  Common causes: stale auth tokens, config drift, hung interface.")
-            try:
-                r = subprocess.run(
-                    ['journalctl', '-u', 'rnsd', '-n', '5',
-                     '--no-pager', '-q', '--no-hostname'],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if r.stdout and r.stdout.strip():
-                    print(f"\n  Recent rnsd log:")
-                    for line in r.stdout.strip().splitlines():
-                        print(f"    {line.strip()[:90]}")
-            except (subprocess.SubprocessError, OSError):
-                pass
+            from ._service_ops_common import journal_tail_text
+            text = journal_tail_text('rnsd', lines=5, quiet=True,
+                                     no_hostname=True, empty_text="")
+            if text:
+                print(f"\n  Recent rnsd log:")
+                for line in text.splitlines():
+                    print(f"    {line.strip()[:90]}")
 
             # Offer repair wizard via cross-handler dispatch
             diag = (self.ctx.registry.get_handler("rns_diagnostics")

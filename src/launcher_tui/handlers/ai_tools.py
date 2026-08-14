@@ -172,15 +172,9 @@ class AIToolsHandler(
             return
 
         # Check if server already running (port 5000)
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('localhost', 5000))
-            sock.close()
-            if result == 0:
-                return  # Already running
-        except OSError as e:
-            logger.debug("Port check failed: %s", e)
+        from utils.service_check import check_port
+        if check_port(5000, timeout=1):
+            return  # Already running
 
         # If the systemd unit is installed, IT owns :5000. Do not fall back
         # to an in-process server even if systemd fails to start — an
@@ -189,7 +183,7 @@ class AIToolsHandler(
         # keeps failing (2026-04-22 service-supervision incident). If systemd
         # is broken, the operator needs to see it — not be quietly papered over.
         if is_service_unit_installed(MAP_SERVER_SERVICE):
-            self._try_start_map_service_quiet()
+            self._try_start_map_service(polls=5)
             return
 
         # No systemd unit installed on this box — in-process fallback only.
@@ -218,36 +212,27 @@ class AIToolsHandler(
         except Exception as e:
             logger.warning("Map server auto-start failed: %s", e)
 
-    def _try_start_map_service_quiet(self) -> bool:
-        """Try to start map server via systemd (quiet, no TUI output).
+    def _try_start_map_service(self, polls: int = 6) -> bool:
+        """Start the map server via systemd and wait for :5000 to answer.
 
-        Returns True if service started successfully.
+        Single implementation (Q2 dedup 2026-08-14): this method existed
+        twice in this file differing only in the poll count, each with its
+        own inline `systemctl is-enabled` + raw socket probe. Enablement
+        goes through service_enabled_here (never start an intentionally-off
+        unit — the moc3 doctrine) and the probe through check_port.
         """
         try:
-            # Check if systemd is available
-            result = subprocess.run(
-                ['systemctl', 'is-enabled', 'meshforge-map'],
-                capture_output=True, timeout=5
-            )
-            if result.returncode != 0:
-                return False  # Service not installed
+            from service_remediation import service_enabled_here
+            from utils.service_check import check_port
+            if not service_enabled_here('meshforge-map'):
+                return False  # absent or intentionally disabled on this box
 
-            # Start the service
             start_service('meshforge-map')
 
-            # Wait briefly for service to start
-            for _ in range(5):
+            for _ in range(polls):
                 time.sleep(0.5)
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    result = sock.connect_ex(('localhost', 5000))
-                    sock.close()
-                    if result == 0:
-                        return True
-                except OSError as e:
-                    logger.debug("Service port check failed: %s", e)
-
+                if check_port(5000, timeout=1):
+                    return True
             return False
         except (subprocess.SubprocessError, OSError) as e:
             logger.debug("Map systemd service start failed: %s", e)
@@ -399,25 +384,19 @@ class AIToolsHandler(
         all_ips = get_all_ips()
 
         # Check if port is already in use
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', port))
-            sock.close()
-            if result == 0:
-                urls = "\n".join(f"  http://{ip}:{port}" for ip in all_ips)
-                service_status = self._get_map_service_status()
-                self.ctx.dialog.msgbox(
-                    "Map Server",
-                    f"Map server already running!\n\n"
-                    f"Access via:\n{urls}\n\n"
-                    f"Service: {service_status}\n\n"
-                    "Open any URL in your browser.\n"
-                    "The map auto-refreshes every 30 seconds."
-                )
-                return
-        except OSError as e:
-            logger.debug("Port availability check failed: %s", e)
+        from utils.service_check import check_port
+        if check_port(port, host='127.0.0.1', timeout=1):
+            urls = "\n".join(f"  http://{ip}:{port}" for ip in all_ips)
+            service_status = self._get_map_service_status()
+            self.ctx.dialog.msgbox(
+                "Map Server",
+                f"Map server already running!\n\n"
+                f"Access via:\n{urls}\n\n"
+                f"Service: {service_status}\n\n"
+                "Open any URL in your browser.\n"
+                "The map auto-refreshes every 30 seconds."
+            )
+            return
 
         # If the systemd unit is installed, IT owns :5000 — try systemd and
         # do NOT fall back to in-process. An in-process bind would collide
@@ -495,40 +474,8 @@ class AIToolsHandler(
         except Exception as e:
             self.ctx.dialog.msgbox("Error", f"Failed to start map server: {e}")
 
-    def _try_start_map_service(self) -> bool:
-        """Try to start map server via systemd service.
-
-        Returns True if service started successfully.
-        """
-        try:
-            # Check if systemd service is available
-            result = subprocess.run(
-                ['systemctl', 'is-enabled', 'meshforge-map'],
-                capture_output=True, timeout=5
-            )
-            if result.returncode != 0:
-                return False  # Service not installed
-
-            # Start the service
-            start_service('meshforge-map')
-
-            # Wait for service to start (up to 3 seconds)
-            for _ in range(6):
-                time.sleep(0.5)
-                try:
-                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(1)
-                    result = sock.connect_ex(('localhost', 5000))
-                    sock.close()
-                    if result == 0:
-                        return True
-                except OSError as e:
-                    logger.debug("Service check failed: %s", e)
-
-            return False
-        except (subprocess.SubprocessError, OSError) as e:
-            logger.debug("Map service restart failed: %s", e)
-            return False
+    # (second _try_start_map_service copy deleted 2026-08-14 — Q2/E5; the
+    # single implementation lives above)
 
     def _get_map_service_status(self) -> str:
         """Get map server service status for display (read-only)."""
@@ -545,14 +492,8 @@ class AIToolsHandler(
 
     def _is_map_server_running(self) -> bool:
         """Check if map server is listening on port 5000."""
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', 5000))
-            sock.close()
-            return result == 0
-        except OSError:
-            return False
+        from utils.service_check import check_port
+        return check_port(5000, host='127.0.0.1', timeout=1)
 
     def _stop_map_server(self):
         """Stop the running map server."""

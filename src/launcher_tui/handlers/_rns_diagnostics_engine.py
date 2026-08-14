@@ -274,18 +274,13 @@ def run_rns_diagnostics(handler):
                     except Exception as e:
                         logger.debug("Config drift check failed: %s", e)
                     # Surface recent journal errors (unfiltered)
-                    try:
-                        r = subprocess.run(
-                            ['journalctl', '-u', 'rnsd', '-n', '10',
-                             '--no-pager', '-q', '--no-hostname'],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        if r.stdout and r.stdout.strip():
-                            print("    Recent rnsd log:")
-                            for line in r.stdout.strip().splitlines()[-5:]:
-                                print(f"      {line.strip()[:100]}")
-                    except (subprocess.SubprocessError, OSError):
-                        pass
+                    from ._service_ops_common import journal_tail_text
+                    text = journal_tail_text('rnsd', lines=10, quiet=True,
+                                             no_hostname=True, empty_text="")
+                    if text:
+                        print("    Recent rnsd log:")
+                        for line in text.splitlines()[-5:]:
+                            print(f"      {line.strip()[:100]}")
                     warnings.append(
                         "rnsd active but shared instance "
                         "not available")
@@ -494,18 +489,10 @@ def diagnose_rns_connectivity(handler, error_output: str):
 
     # No specific cause detected — show actual rnsd log
     print("Showing recent rnsd log:\n")
-    try:
-        r = subprocess.run(
-            ['journalctl', '-u', 'rnsd', '-n', '15', '--no-pager'],
-            capture_output=True, text=True, timeout=10
-        )
-        if r.stdout and r.stdout.strip():
-            for line in r.stdout.strip().split('\n'):
-                print(f"  {line}")
-        else:
-            print("  (no log output)")
-    except (subprocess.SubprocessError, OSError):
-        print("  (could not read journal)")
+    from ._service_ops_common import journal_tail_text
+    for line in journal_tail_text('rnsd', lines=15,
+                                  empty_text="(no log output)").splitlines():
+        print(f"  {line}")
     print("\nRestart rnsd from Service Control to clear this.")
 
 

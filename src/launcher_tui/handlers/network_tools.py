@@ -512,17 +512,9 @@ class NetworkToolsHandler(BaseHandler):
             "Discovery", "Scanning for Meshtastic devices..."
         )
         devices = []
-        import socket
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            try:
-                s.settimeout(2)
-                if s.connect_ex(('localhost', 4403)) == 0:
-                    devices.append("TCP: localhost:4403 (meshtasticd)")
-            finally:
-                s.close()
-        except Exception as e:
-            logger.debug(f"Socket check for meshtasticd failed: {e}")
+        from utils.service_check import check_port
+        if check_port(4403, timeout=2):
+            devices.append("TCP: localhost:4403 (meshtasticd)")
         serial_ports = (
             list(Path('/dev').glob('ttyUSB*'))
             + list(Path('/dev').glob('ttyACM*'))
