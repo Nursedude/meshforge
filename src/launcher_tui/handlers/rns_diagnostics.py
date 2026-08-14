@@ -590,11 +590,10 @@ class RNSDiagnosticsHandler(BaseHandler):
         with 1-second intervals. Returns True if shared instance becomes
         reachable, False if timeout expires.
         """
-        for i in range(max_wait):
-            if check_rns_shared_instance():
-                return True
-            time.sleep(1)
-        return False
+        from ._service_ops_common import wait_for_condition
+        return wait_for_condition(
+            check_rns_shared_instance, max_wait,
+            label="waiting for rnsd shared instance")
 
     # Keep old name as alias for any callers during transition
     _wait_for_rns_port = _wait_for_rns_shared_instance

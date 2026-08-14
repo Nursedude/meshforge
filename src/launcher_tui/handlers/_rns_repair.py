@@ -37,11 +37,9 @@ def restart_rnsd() -> bool:
     if not success:
         logger.warning("rnsd start failed: %s", msg)
         return False
-    # Wait up to 5s for shared instance
-    for _ in range(5):
-        time.sleep(1)
-        if check_rns_shared_instance():
-            return True
+    from ._service_ops_common import wait_for_condition
+    if wait_for_condition(check_rns_shared_instance, 5):
+        return True
     logger.warning("rnsd restarted but shared instance not available after 5s")
     return False
 
@@ -689,16 +687,15 @@ def _offer_disable_blocking(handler, post_blocking) -> bool:
         stop_service('rnsd')
         time.sleep(1)
         start_service('rnsd')
-        print("  Waiting for shared instance...")
-        for _ in range(15):
-            time.sleep(1)
-            if check_rns_shared_instance():
-                si = get_rns_shared_instance_info()
-                return ctx.report_action(
-                    True,
-                    "RNS Shared Instance Restored",
-                    f"Disabled: {', '.join(disabled)}\n\n{si['detail']}",
-                )
+        from ._service_ops_common import wait_for_condition
+        if wait_for_condition(check_rns_shared_instance, 15,
+                              label="Waiting for shared instance"):
+            si = get_rns_shared_instance_info()
+            return ctx.report_action(
+                True,
+                "RNS Shared Instance Restored",
+                f"Disabled: {', '.join(disabled)}\n\n{si['detail']}",
+            )
         ctx.report_action(
             False,
             "", "",

@@ -122,3 +122,54 @@ class TestJournalTailText:
         with patch('subprocess.run', return_value=_Proc(0, "  \n")):
             out = soc.journal_tail_text('rnsd', empty_text="NOTHING")
         assert out == "NOTHING"
+
+
+class TestWaitForCondition:
+    """Q4 (audit B8): bounded waits show progress and honor the predicate."""
+
+    def test_immediate_true_returns_fast(self):
+        import time
+        start = time.monotonic()
+        assert soc.wait_for_condition(lambda: True, 15) is True
+        assert time.monotonic() - start < 0.5, "must not sleep when already up"
+
+    def test_timeout_returns_false(self):
+        import time
+        start = time.monotonic()
+        assert soc.wait_for_condition(lambda: False, 1, tick=0.05) is False
+        elapsed = time.monotonic() - start
+        assert 0.8 < elapsed < 3, f"1s timeout took {elapsed:.2f}s"
+
+    def test_becomes_true_mid_wait(self):
+        state = {'n': 0}
+
+        def pred():
+            state['n'] += 1
+            return state['n'] >= 3
+
+        assert soc.wait_for_condition(pred, 5, tick=0.01) is True
+
+    def test_label_prints_dots_and_outcome(self, capsys):
+        soc.wait_for_condition(lambda: False, 1, label="waiting", tick=0.2)
+        out = capsys.readouterr().out
+        assert "waiting" in out and "." in out and "timeout" in out
+
+    def test_silent_without_label(self, capsys):
+        soc.wait_for_condition(lambda: True, 1)
+        assert capsys.readouterr().out == ""
+
+
+class TestRepairAlignmentNeverPromptsForPassword:
+    def test_sudo_runs_noninteractive(self):
+        # Q4 (audit B5): output is captured, so an interactive sudo password
+        # prompt would hang invisibly under a cleared screen for 120s.
+        ctx = make_handler_context()
+        seen = {}
+        from pathlib import Path
+        with patch('subprocess.run',
+                   side_effect=lambda cmd, **kw: seen.update(cmd=cmd) or _Proc(0, "ok")), \
+             patch.object(Path, 'is_file', return_value=True):
+            soc.repair_rns_alignment(ctx, Path('/opt/meshforge'))
+        assert seen['cmd'][0] == 'sudo' and seen['cmd'][1] == '-n', (
+            f"sudo must run non-interactive (-n); got {seen['cmd'][:3]}"
+        )

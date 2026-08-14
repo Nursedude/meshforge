@@ -805,6 +805,18 @@ class TopologyHandler(BaseHandler):
                     choices
                 )
                 if choice == "lynx":
+                    # Honest failure when lynx is absent — previously a
+                    # FileNotFoundError escaped to the generic error dialog
+                    # after the screen was already cleared (audit B6).
+                    import shutil as _shutil
+                    if not _shutil.which('lynx'):
+                        self.ctx.dialog.msgbox(
+                            "lynx not installed",
+                            "The text browser 'lynx' is not on this box.\n\n"
+                            "Use 'Show file path only' instead, or open the\n"
+                            "file from any machine with a browser.",
+                        )
+                        return
                     # Open with lynx in foreground
                     clear_screen()
                     subprocess.run(['lynx', output_path], timeout=300)

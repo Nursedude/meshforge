@@ -101,11 +101,44 @@ def journal_tail_text(unit=None, lines=50, user=False, since=None,
     return proc.stdout.strip() if proc.stdout.strip() else empty_text
 
 
+def wait_for_condition(predicate, seconds, label=None, tick=1.0):
+    """Poll ``predicate`` for up to ``seconds``, with visible progress.
+
+    Q4 (audit B8): the old inline sleep-loops froze the screen silently
+    for 5-15s after a service restart. With ``label`` set, one dot prints
+    per tick and the outcome ("up"/"timeout") closes the line, so the
+    operator watches the wait instead of wondering if the TUI died.
+    Returns True as soon as the predicate is truthy.
+    """
+    import time as _time
+    if label:
+        print(f"  {label} ", end="", flush=True)
+    ok = False
+    for _ in range(max(1, int(seconds / tick))):
+        if predicate():
+            ok = True
+            break
+        if label:
+            print(".", end="", flush=True)
+        _time.sleep(tick)
+    if not ok:
+        ok = bool(predicate())  # final check after the last sleep
+    if label:
+        print(" up" if ok else " timeout", flush=True)
+    return ok
+
+
 def repair_rns_alignment(ctx, repo_root):
     """Run ``scripts/rns_alignment.py normalize --yes`` via sudo + report.
 
     Callers own their preamble (drift probe / confirm dialog); this is the
     shared execute-and-report half. Returns the exit code (-1 = never ran).
+
+    ``sudo -n`` on purpose (Q4, audit B5): the output is CAPTURED, so an
+    interactive sudo password prompt would hang invisibly under a cleared
+    screen until the 120s timeout. The TUI normally runs as root (sudo
+    meshforge) where -n is a no-op; when it doesn't, -n fails fast and
+    the honest failure text lands in the report dialog.
     """
     cli = repo_root / 'scripts' / 'rns_alignment.py'
     if not cli.is_file():
@@ -115,5 +148,5 @@ def repair_rns_alignment(ctx, repo_root):
         )
         return -1
     return run_command_report(
-        ctx, ['sudo', 'python3', str(cli), 'normalize', '--yes'],
+        ctx, ['sudo', '-n', 'python3', str(cli), 'normalize', '--yes'],
         "Repair", timeout=120)
