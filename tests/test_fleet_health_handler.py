@@ -478,7 +478,8 @@ def test_probe_map_service_enabled_but_stopped(monkeypatch):
     r = _handler()._probe_map_service()
     assert r.status == "fail"
     assert "not running" in r.headline
-    assert r.hint and "systemctl restart meshforge-map" in r.hint
+    # MF018 Q3 sweep: hints point in-app now, never at a shell.
+    assert r.hint and "in-app" in r.hint
 
 
 # ----------------------------------------------------------------- Map DB

@@ -215,7 +215,7 @@ class GatewayPreflightHandler(BaseHandler):
         return (
             _WARN,
             "rnsd running but shared instance not reachable",
-            "sudo systemctl restart rnsd",
+            "restart rnsd (in-app: NOC Home > Repair RNS)",
         )
 
     def _check_channel_uplink(self) -> Tuple[Tuple[str, str, Optional[str]], List[str]]:

@@ -174,7 +174,8 @@ class TestCheckRnsdReachable:
                                   "unix_socket": False}):
             r = checks.check_rnsd_reachable()
         assert r.status == FAIL
-        assert "systemctl start rnsd" in r.fix_hint
+        # MF018 Q3 sweep: fix_hints point in-app now, never at a shell.
+        assert "rnsd" in r.fix_hint and "in-app" in r.fix_hint
 
 
 class TestCheckRnsdConfigDrift:
@@ -377,7 +378,8 @@ class TestCheckNomadnetUnitTmux:
         with self._with_home(tmp_path):
             r = checks.check_nomadnet_unit_tmux()
         assert r.status == FAIL
-        assert "apt install" in r.fix_hint
+        # MF018 Q3 sweep: fix_hints point in-app now, never at a shell.
+        assert "tmux" in r.fix_hint and "in-app" in r.fix_hint
 
     def test_ok_when_tmux_binary_exists(self, tmp_path):
         """Unit references a tmux path that DOES exist on disk."""

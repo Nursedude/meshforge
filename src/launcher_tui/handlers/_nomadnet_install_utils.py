@@ -183,10 +183,8 @@ class NomadNetInstallUtilsMixin:
             self.ctx.dialog.msgbox(
                 "pipx Not Found",
                 "Cannot find pipx to upgrade NomadNet.\n\n"
-                "Install pipx first:\n"
-                "  sudo apt install pipx\n\n"
-                "Then upgrade:\n"
-                "  pipx upgrade nomadnet",
+                "Fix in-app: Service Control > Reinstall NomadNet — the\n"
+                "canonical installer sets up pipx itself, idempotently.",
             )
             return False
 
@@ -600,8 +598,7 @@ class NomadNetInstallUtilsMixin:
                         rnsd_user = self._get_rnsd_user()
                         if rnsd_user == 'root':
                             error_hints.append("rnsd is running as root - identities don't match")
-                            error_hints.append("Fix: sudo systemctl stop rnsd")
-                            error_hints.append("     Then run rnsd as your user, or reconfigure")
+                            error_hints.append("Fix in-app: RNS > Diagnostics reconfigures the rnsd user")
                         elif rnsd_user and rnsd_user != sudo_user:
                             error_hints.append(f"rnsd runs as '{rnsd_user}', you are '{sudo_user}'")
                         else:
@@ -628,10 +625,8 @@ class NomadNetInstallUtilsMixin:
                         error_hints.append("rnsd cannot load the meshtastic module")
                         error_hints.append("The Meshtastic_Interface.py plugin requires meshtastic")
                         error_hints.append(
-                            "Fix: sudo pip3 install --break-system-packages "
-                            "--ignore-installed meshtastic"
-                        )
-                        error_hints.append("Then restart rnsd from Service Control")
+                            "Fix in-app: NOC Home > Repair RNS installs "
+                            "meshtastic where rnsd needs it, then restarts")
                         break
                     elif 'TypeError' in line and 'list indices' in line:
                         error_hints.append(
@@ -667,10 +662,8 @@ class NomadNetInstallUtilsMixin:
                     error_hints.append("rnsd crashed because the meshtastic module is missing")
                     error_hints.append("NomadNet depends on rnsd for network access")
                     error_hints.append(
-                        "Fix: sudo pip3 install --break-system-packages "
-                        "--ignore-installed meshtastic"
-                    )
-                    error_hints.append("Then restart rnsd from Service Control")
+                        "Fix in-app: NOC Home > Repair RNS installs "
+                        "meshtastic where rnsd needs it, then restarts")
                 elif 'status=255' in journal_text or 'exception' in journal_text:
                     error_hints.append("rnsd is crashing (exit code 255)")
                     error_hints.append("View rnsd logs in-app (RNS > Diagnostics)")

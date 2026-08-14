@@ -21,7 +21,7 @@ Usage:
         "rnsd must restart to load the new loglevel.",
         [RemediationAction(
             label="Restart rnsd now",
-            description="systemctl restart rnsd",
+            description="systemctl restart rnsd",  # in-domain-ok: names what the IN-APP action does
             apply=lambda: restart_service("rnsd"),
             requires_admin=True,
         )],

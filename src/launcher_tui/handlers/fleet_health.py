@@ -211,7 +211,7 @@ class FleetHealthHandler(BaseHandler):
                 status="fail",
                 headline="rnsd is not running",
                 hint="No RNS transport — nothing routes. "
-                     "Start with: sudo systemctl start rnsd",
+                     "Start it in-app: NOC Home > Repair RNS.",
             )
         uptime_s = self._service_uptime_seconds("rnsd")
         uptime_label = self._humanize_duration(uptime_s) if uptime_s else "uptime unknown"
@@ -235,7 +235,8 @@ class FleetHealthHandler(BaseHandler):
                 label="RNS path table",
                 status="warn",
                 headline="rnpath query timed out",
-                hint="rnsd may be unresponsive to RPC — check 'systemctl status rnsd'",
+                hint="rnsd may be unresponsive to RPC — check it "
+                     "in-app: RNS > Diagnostics",
             )
         lines = [ln for ln in out.splitlines() if " is " in ln and " away via " in ln]
         if not lines:
@@ -409,7 +410,8 @@ class FleetHealthHandler(BaseHandler):
                 label="Gateway bridge",
                 status="warn",
                 headline="active but no recent journal output",
-                hint="Service running silently — check 'systemctl status meshforge-gateway'",
+                hint="Service running silently — check it in-app: "
+                     "System > Services > meshforge-gateway",
             )
         # Parse the last "Messages bridged" line if present.
         stats_line = ""
@@ -477,8 +479,8 @@ class FleetHealthHandler(BaseHandler):
                 label="Peer gateways",
                 status="warn",
                 headline="no gateway journal output in last hour",
-                hint="Gateway may have gone silent — check 'journalctl -u "
-                     "meshforge-gateway --since \"1 hour ago\"'",
+                hint="Gateway may have gone silent — read its journal "
+                     "in-app: System > Logs",
             )
 
         peers_seen: dict = {}
@@ -600,7 +602,7 @@ class FleetHealthHandler(BaseHandler):
             label="Map server (:5000)",
             status="fail",
             headline="enabled but not running",
-            hint="Restart with: sudo systemctl restart meshforge-map",
+            hint="Restart it in-app: NOC Home > Fix a degraded service.",
         )
 
     def _probe_map_db(self) -> ProbeResult:

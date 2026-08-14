@@ -316,7 +316,7 @@ def _check_one(
             _OK if actual == expected else fail_glyph,
             f"{label}: {actual or '(unknown)'}"
             + ("" if actual == expected else f" — expected {expected}"),
-            None if actual == expected else f"sudo systemctl start {field}",
+            None if actual == expected else f"start {field} (in-app: Service Control)",
         )
 
     # Meshtastic bridge channel-name check picks the first uplinked channel
@@ -352,7 +352,7 @@ def _check_one(
             _OK if actual_val == expected else fail_glyph,
             f"{label}: {actual_val}"
             + (f" ({live['rns_shared_instance'].get('detail')})" if actual_val else ""),
-            None if actual_val == expected else "sudo systemctl restart rnsd",
+            None if actual_val == expected else "restart rnsd (in-app: NOC Home > Repair RNS)",
         )
 
     if category == "nomadnet" and field == "identity_matches_default_lxmf_destination":

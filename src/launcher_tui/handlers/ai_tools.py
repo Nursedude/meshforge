@@ -513,7 +513,7 @@ class AIToolsHandler(
                     return
                 logger.debug("stop_service(%s) failed: %s", MAP_SERVER_SERVICE, msg)
         except (subprocess.SubprocessError, OSError) as e:
-            logger.debug("systemctl stop failed: %s", e)
+            logger.debug("service stop failed: %s", e)
 
         # Stop in-process server
         if hasattr(self, '_map_server') and self._map_server:

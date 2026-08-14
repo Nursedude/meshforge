@@ -178,7 +178,7 @@ class TrafficInspectorHandler(BaseHandler):
                     _pub, has_pubsub = safe_import('pubsub', 'pub')
                     if not has_pubsub:
                         diag_lines.append("  [FAIL] pubsub module not installed")
-                        diag_lines.append("    Fix: pip install pypubsub")
+                        diag_lines.append("    Fix: pip install pypubsub")  # in-domain-ok: environment-level python dep; the TUI must not self-install from a diagnostics view
                     else:
                         diag_lines.append("  [OK] pubsub module available")
                 except Exception:

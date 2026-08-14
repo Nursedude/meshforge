@@ -164,7 +164,7 @@ class ServiceMenuHandler(BaseHandler):
 
         if warnings:
             print(f"  \033[0;33mWarning:\033[0m {', '.join(warnings)} won't start on reboot.")
-            print(f"  Fix: sudo systemctl enable {' '.join(warnings)}\n")
+            print("  (You'll be offered the fix after this report.)\n")
 
         for svc in failed_services:
             try:
@@ -178,6 +178,26 @@ class ServiceMenuHandler(BaseHandler):
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("Failure log check for %s failed: %s", svc, e)
         self.ctx.wait_for_enter()
+
+        # In-app fix for the won't-start-on-reboot warning (MF018 Q3 sweep:
+        # this used to print a bare enable-command instruction).
+        if warnings and self.ctx.dialog.yesno(
+            "Enable at boot?",
+            f"{', '.join(warnings)} running but not enabled at boot.\n\n"
+            f"Enable {'them' if len(warnings) > 1 else 'it'} now?"
+        ):
+            failed = []
+            for svc in warnings:
+                ok, msg = enable_service(svc)
+                if not ok:
+                    failed.append(f"{svc}: {msg}")
+            self.ctx.report_action(
+                not failed,
+                "Enabled at boot",
+                f"Enabled: {', '.join(warnings)}",
+                fail_title="Enable failed",
+                fail_body="\n".join(failed),
+            )
 
     def _manage_port_lockdown(self):
         """Lock/unlock external access to meshtasticd port 9443."""
@@ -327,7 +347,7 @@ class ServiceMenuHandler(BaseHandler):
                         "Config Fixed",
                         "Wrong USB config removed.\n\n"
                         "To complete setup, install native meshtasticd:\n"
-                        "  sudo apt install meshtasticd\n\n"
+                        "  sudo apt install meshtasticd\n\n"  # in-domain-ok: fallback shown only after the operator DECLINED the in-app installer above
                         "Or run: sudo bash scripts/install_noc.sh --force-native"
                     )
             else:

@@ -953,6 +953,18 @@ MF018_PATTERNS = [
     re.compile(r"\[\s*editor\b"),
     re.compile(r"(?i)\bpipx reinstall\b"),
     re.compile(r"(?i)(try|find it|run)[: ]\s*(sudo )?(lsof|pkill)\b"),
+    # 2026-08-14 (Q3 sweep): the patterns above are prose-shaped ("...
+    # manually", "install: apt") — a user-facing string that just PRINTS a
+    # command matched none of them, so 39 bare shell instructions sat
+    # lint-green for months. These catch the command text itself. Code that
+    # BUILDS argv lists (['sudo', 'systemctl', ...]) never contains these
+    # substrings, so the patterns only fire on prose/f-strings.
+    re.compile(r"(?i)\bsudo\s+(systemctl|apt(-get)?\s+install|"
+               r"pip3?\s+install|pipx\b)"),
+    re.compile(r"(?i)\b(try|fix|run)\s*:\s*(sudo\s+)?pip3?\s+install"),
+    re.compile(r"(?i)\bsystemctl\s+(status|start|stop|restart|enable|"
+               r"disable|edit)\s+\S"),
+    re.compile(r"(?i)\bjournalctl\s+-[a-z]"),
 ]
 
 # Frozen 2026-05-29 (the foundation arc), RETIRED 2026-06-16 (the In-Domain arc).

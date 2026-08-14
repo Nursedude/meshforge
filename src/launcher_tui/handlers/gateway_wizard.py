@@ -388,7 +388,7 @@ class GatewayWizardHandler(BaseHandler):
                     "root_topic / channel before running.")
         return (
             "Active RX probe (run on the gateway box, watch "
-            "`journalctl -u meshforge-gateway -f`):\n\n"
+            "System > Logs in-app):\n\n"
             f"  mosquitto_pub -h 127.0.0.1 -t '{root}/2/json/{chan_name}/!deadbeef' \\\n"
             "    -m '{\"payload\":{\"text\":\"rx-probe\"},\"sender\":\"!deadbeef\","
             f"\"type\":\"text\",\"channel\":{chan_idx},\"to\":4294967295,\"from\":3735928559}}'"

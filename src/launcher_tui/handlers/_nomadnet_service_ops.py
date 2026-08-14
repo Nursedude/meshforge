@@ -595,7 +595,7 @@ class NomadNetServiceOpsMixin:
     def _apt_install(
         self, package: str, timeout: int = 180,
     ) -> Tuple[bool, str]:
-        """sudo apt-get install -y <package>; returns (ok, combined_output).
+        """Install an apt package IN-APP; returns (ok, combined_output).
 
         Mirrors the apt-install pattern used by ``scripts/install_noc.sh``.
         When MeshForge is already root (`sudo python3 …`), we skip the
@@ -657,7 +657,7 @@ class NomadNetServiceOpsMixin:
                 "Install tmux?",
                 "tmux is required by the NomadNet user unit but is not\n"
                 "installed on this box.\n\n"
-                "Run: sudo apt-get install -y tmux ?",
+                "Run: sudo apt-get install -y tmux ?",  # in-domain-ok: consent dialog OF the in-app installer
             ):
                 return
             tmux_ok, tmux_out = self._apt_install('tmux')

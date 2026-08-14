@@ -310,7 +310,7 @@ class GatewayHandler(BaseHandler):
                 self.ctx.dialog.msgbox(
                     "MQTT Setup Guide",
                     "Step 1: Install mosquitto\n"
-                    "  sudo apt install mosquitto mosquitto-clients\n\n"
+                    "  In-app: Mesh Networks > MQTT Broker offers the install\n\n"
                     "Step 2: Configure meshtasticd MQTT\n"
                     "  meshtastic --set mqtt.enabled true\n"
                     "  meshtastic --set mqtt.address 127.0.0.1\n"

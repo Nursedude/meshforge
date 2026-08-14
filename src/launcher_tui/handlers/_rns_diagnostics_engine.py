@@ -255,8 +255,8 @@ def run_rns_diagnostics(handler):
                           "enabled in [reticulum] config")
                     print("    Fix: Add 'share_instance = Yes' "
                           "to [reticulum] section,")
-                    print("         then restart: sudo systemctl "
-                          "restart rnsd")
+                    print("         then restart rnsd in-app: "
+                          "RNS > Diagnostics > Repair")
                     issues.append(
                         "share_instance not enabled — gateway "
                         "cannot connect to rnsd")

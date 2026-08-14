@@ -157,8 +157,9 @@ class TUIContext:
             self.dialog.msgbox(
                 "Module Not Available",
                 f"Required module not installed: {module}\n\n"
-                f"This feature requires additional dependencies.\n"
-                f"Try: pip3 install {module}\n\n"
+                f"In-app: Configuration > Software Updates repairs\n"
+                f"MeshForge dependencies.\n"
+                f"Manual fallback: pip3 install {module}\n\n"
                 f"Details logged to:\n"
                 f"  {self.get_error_log_path()}"
             )

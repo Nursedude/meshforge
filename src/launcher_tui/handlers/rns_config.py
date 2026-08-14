@@ -539,7 +539,7 @@ class RNSConfigHandler(BaseHandler):
         level_name = dict(levels).get(choice, choice)
         # Offer to apply the change in-app via the remediation surface — no
         # shell-escape, and the restart goes through service_check (the SSOT)
-        # instead of a raw `sudo systemctl` call. (In-Domain Principle.)
+        # instead of a raw shell restart instruction. (In-Domain Principle.)
         from remediation import RemediationAction, propose_remediation
         from utils.service_check import restart_service
         propose_remediation(
@@ -549,7 +549,7 @@ class RNSConfigHandler(BaseHandler):
             f"rnsd must restart to load the new loglevel.",
             [RemediationAction(
                 label="Restart rnsd now",
-                description=f"apply loglevel {choice} (systemctl restart rnsd)",
+                description=f"apply loglevel {choice} (systemctl restart rnsd)",  # in-domain-ok: names what the IN-APP action does
                 apply=lambda: restart_service("rnsd"),
                 requires_admin=True,
             )],

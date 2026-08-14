@@ -93,7 +93,8 @@ def test_drift_service_inactive():
     live = {"services": {"rnsd": "inactive"}}
     results = tmpl.check_template_drift(template, live)
     assert results[0][0] == tmpl._FAIL
-    assert "systemctl start rnsd" in results[0][2]
+    # MF018 Q3 sweep: fix strings point in-app now, never at a shell.
+    assert "start rnsd" in results[0][2] and "in-app" in results[0][2]
 
 
 def test_drift_bridge_channel_name():

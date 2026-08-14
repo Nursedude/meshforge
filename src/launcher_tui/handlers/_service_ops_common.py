@@ -67,7 +67,7 @@ def journal_tail_text(unit=None, lines=50, user=False, since=None,
     """Tail a systemd journal as display TEXT — never raises.
 
     Q2 dedup (audit E2): ~20 handler sites each hand-rolled the same
-    ``journalctl -u X -n N --no-pager`` subprocess with their own
+    unit-tail journal subprocess with their own
     truncation and error handling. NOT this helper's job (stay native at
     their sites): follow mode (``-f``), boot logs (``-b``), and the two
     Class-3 sites already routed through ``_show_command_output``.

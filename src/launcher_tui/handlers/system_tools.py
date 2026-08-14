@@ -47,8 +47,8 @@ class SystemToolsHandler(BaseHandler):
             "Useful commands:\n"
             "  meshtastic --info\n"
             "  rnstatus\n"
-            "  journalctl -f\n"
-            "  systemctl status meshtasticd"
+            "  journalctl -f\n"  # in-domain-ok: usage examples FOR the sanctioned shell escape-hatch
+            "  systemctl status meshtasticd"  # in-domain-ok: usage examples FOR the sanctioned shell escape-hatch
         )
 
         clear_screen()

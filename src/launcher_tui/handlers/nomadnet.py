@@ -579,11 +579,10 @@ class NomadNetHandler(NomadNetSubmenusMixin, NomadNetIOOpsMixin,
                     try:
                         _, is_enabled = check_systemd_service_fn('rnsd')
                         if not is_enabled:
-                            print("  Fix:       sudo systemctl "
-                                  "enable --now rnsd")
+                            print("  Fix in-app: NOC Home > Repair RNS "
+                                  "(starts + enables rnsd)")
                         else:
-                            print("  Fix:       sudo systemctl "
-                                  "start rnsd")
+                            print("  Fix in-app: NOC Home > Repair RNS")
                     except Exception as e:
                         logger.debug(
                             "systemd check for rnsd failed: %s", e

@@ -310,7 +310,7 @@ class ServiceDiscoveryHandler(BaseHandler):
 
         if warnings:
             lines.append("\n" + "-" * 40)
-            lines.append(f"Fix: sudo systemctl enable {' '.join(warnings)}")
+            lines.append("Fix in-app: Mesh Networks > Service Control offers enable-at-boot.")
         else:
             lines.append("\n" + "-" * 40)
 

@@ -151,7 +151,7 @@ class QuickActionsHandler(BaseHandler):
 
         if warnings:
             print(f"\n  Warning: {', '.join(warnings)} running but won't start on reboot.")
-            print(f"  Fix: sudo systemctl enable {' '.join(warnings)}")
+            print("  Fix in-app: Mesh Networks > Service Control offers enable-at-boot.")
 
         print()
         self.ctx.wait_for_enter("Press Enter to continue...")

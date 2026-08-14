@@ -479,32 +479,32 @@ class MetricsHandler(BaseHandler):
         self.ctx.dialog.msgbox("Dashboard Files", "\n".join(lines))
 
     def _grafana_install(self):
-        instructions = """GRAFANA INSTALLATION (Raspberry Pi / Debian)
-==================================================
-
-Step 1: Add Grafana GPG key
-  curl -fsSL https://apt.grafana.com/gpg.key | \\
-    sudo gpg --dearmor -o /usr/share/keyrings/grafana.gpg
-
-Step 2: Add Grafana repository
-  echo "deb [signed-by=/usr/share/keyrings/grafana.gpg] \\
-    https://apt.grafana.com stable main" | \\
-    sudo tee /etc/apt/sources.list.d/grafana.list
-
-Step 3: Install Grafana
-  sudo apt update
-  sudo apt install grafana
-
-Step 4: Enable and start service
-  sudo systemctl enable grafana-server
-  sudo systemctl start grafana-server
-
-After install:
-  - Access at http://localhost:3000
-  - Default login: admin / admin
-  - Add Prometheus data source (http://localhost:9090)
-  - Import MeshForge dashboards from dashboards/ folder
-"""
+        # Grafana is an EXTERNAL optional product: installing third-party
+        # apt repos/keys is genuinely outside MeshForge's remit, so this
+        # guide is a sanctioned MF018 exception (in_domain_principle.md,
+        # "genuinely external prerequisites").
+        instructions = (
+            "GRAFANA INSTALLATION (Raspberry Pi / Debian)\n"
+            "==================================================\n\n"
+            "Step 1: Add Grafana GPG key\n"
+            "  curl -fsSL https://apt.grafana.com/gpg.key | \\\n"
+            "    sudo gpg --dearmor -o /usr/share/keyrings/grafana.gpg\n\n"
+            "Step 2: Add Grafana repository\n"
+            "  echo \"deb [signed-by=/usr/share/keyrings/grafana.gpg] \\\n"
+            "    https://apt.grafana.com stable main\" | \\\n"
+            "    sudo tee /etc/apt/sources.list.d/grafana.list\n\n"
+            "Step 3: Install Grafana\n"
+            "  sudo apt update\n"
+            "  sudo apt install grafana\n\n"  # in-domain-ok: external product install guide
+            "Step 4: Enable and start service\n"
+            "  sudo systemctl enable grafana-server\n"  # in-domain-ok: external product install guide
+            "  sudo systemctl start grafana-server\n\n"  # in-domain-ok: external product install guide
+            "After install:\n"
+            "  - Access at http://localhost:3000\n"
+            "  - Default login: admin / admin\n"
+            "  - Add Prometheus data source (http://localhost:9090)\n"
+            "  - Import MeshForge dashboards from dashboards/ folder\n"
+        )
         self.ctx.dialog.msgbox("Install Grafana", instructions)
 
     def _grafana_import_instructions(self, dashboard_files):

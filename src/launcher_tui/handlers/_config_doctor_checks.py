@@ -171,10 +171,11 @@ def check_rpc_key_client_match() -> CheckResult:
             status=FAIL,
             message=f"{len(mismatched)} client config(s) disagree with rnsd",
             fix_hint=(
-                "Restart MeshForge services so client configs rewrite:\n"
-                "  sudo systemctl restart meshforge-map meshforge-gateway\n"
-                "Each writer calls ReticulumPaths.get_shared_rpc_key() at "
-                "config-write time (Issue #41)."
+                "Restart meshforge-map and meshforge-gateway so client "
+                "configs rewrite (in-app: NOC Home > Fix a degraded "
+                "service, or System > Daemons). Each writer calls "
+                "ReticulumPaths.get_shared_rpc_key() at config-write time "
+                "(Issue #41)."
             ),
             route_hint="System > Daemons",
             details=mismatched,
@@ -242,7 +243,8 @@ def check_rnsd_reachable() -> CheckResult:
         status=FAIL,
         message="RNS shared instance not detected",
         fix_hint=(
-            "Start rnsd:  sudo systemctl start rnsd\n"
+            "Start rnsd in-app: NOC Home > Repair RNS (or RNS > "
+            "Diagnostics > Repair).\n"
             "If rnsd is active but not listening, a blocking interface is "
             "likely holding it in init — see rns_interface_devices check."
         ),
@@ -460,11 +462,9 @@ def check_nomadnet_unit_tmux() -> CheckResult:
             status=FAIL,
             message=f"nomadnet unit references missing tmux: {missing[0]}",
             fix_hint=(
-                "Install tmux:\n"
-                "  sudo apt install -y tmux\n"
-                "Then restart the unit:\n"
-                "  systemctl --user daemon-reload && "
-                "systemctl --user restart nomadnet"
+                "Install tmux in-app: NomadNet Client > Service Control "
+                "offers the tmux install, then restart the unit from the "
+                "same menu."
             ),
             route_hint="NomadNet Client > Service Control",
             details=[str(unit_path)] + missing,
@@ -477,7 +477,7 @@ def check_nomadnet_unit_tmux() -> CheckResult:
             name="nomadnet_unit_tmux",
             status=FAIL,
             message="tmux not on PATH (nomadnet unit expects it)",
-            fix_hint="sudo apt install -y tmux",
+            fix_hint="Install tmux in-app: NomadNet Client > Service Control",
             route_hint="NomadNet Client > Service Control",
             details=[str(unit_path)] + tmux_refs,
         )

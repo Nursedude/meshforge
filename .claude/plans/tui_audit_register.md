@@ -32,6 +32,10 @@ Keep the main context lean. Re-read this file after any compaction.
   (76→0)** in `scripts/lint.py` as escapes close; ship → test → lint →
   `scripts/fleet_sync.sh` → verify on moc (`git -C /opt/meshforge`). Close one
   arc fully before opening the next.
+  *(Rollup note, 2026-08-14: the 76→0 baseline retired 2026-06-16; a SECOND
+  generation of 39 escapes invisible to the original prose-shaped regexes was
+  swept 2026-08-14 — patterns extended to catch printed commands, all sites
+  cured or marked, drill-pinned by `tests/test_mf018_patterns.py`.)*
 
 ## Verification honesty (non-negotiable)
 

@@ -711,7 +711,7 @@ class RNSDiagnosticsHandler(BaseHandler):
                 "Configuration Failed",
                 f"Could not configure rnsd: {e}\n\n"
                 "Manual fix:\n"
-                f"  sudo systemctl edit rnsd\n"
+                f"  sudo systemctl edit rnsd\n"  # in-domain-ok: last-resort recovery shown only after the IN-APP fix raised
                 f"  Add: [Service]\n"
                 f"       User={target_user}",
             )

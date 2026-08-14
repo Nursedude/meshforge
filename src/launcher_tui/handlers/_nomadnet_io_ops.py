@@ -440,9 +440,9 @@ class NomadNetIOOpsMixin:
         )
 
     def _show_rnsd_journal_quick(self) -> None:
-        """Show ``journalctl -u rnsd -n 50`` in-pane (In-Domain Class 3)."""
+        """Show the rnsd journal tail in-pane (In-Domain Class 3)."""
         self._show_command_output(
-            "journalctl -u rnsd (last 50)",
+            "journalctl -u rnsd (last 50)",  # in-domain-ok: title of the IN-APP viewer
             ['journalctl', '-u', 'rnsd', '-n', '50', '--no-pager'],
         )
 
