@@ -186,7 +186,9 @@ class ServiceMenuHandler(BaseHandler):
         """Lock/unlock external access to meshtasticd port 9443."""
         while True:
             locked = check_port_locked(9443)
-            status_str = "\033[0;32mLOCKED\033[0m (localhost only)" if locked else "\033[0;31mOPEN\033[0m (external access allowed)"
+            # Plain text: this renders inside the whiptail menu body, which
+            # never interprets ANSI — the escapes showed as literal bytes.
+            status_str = "LOCKED (localhost only)" if locked else "OPEN (external access allowed)"
 
             choices = [
                 ("lock", "Lock Port 9443       Block external access"),

@@ -31,24 +31,39 @@ class FakeDialog:
         self.last_msgbox_title = None
         self.last_msgbox_text = None
 
+    @staticmethod
+    def _reject_ansi(*parts):
+        """whiptail/dialog never interpret ANSI escapes — they render as
+        literal bytes on screen (audit W13). Asserting here makes every
+        handler test a regression net for free."""
+        for p in parts:
+            assert '\033' not in str(p), (
+                f"ANSI escape in dialog text — whiptail shows it as literal "
+                f"garbage: {p!r}"
+            )
+
     def msgbox(self, title, text, **kwargs):
+        self._reject_ansi(title, text)
         self.calls.append(('msgbox', (title, text), kwargs))
         self.last_msgbox_title = title
         self.last_msgbox_text = text
 
     def menu(self, title, text, choices, **kwargs):
+        self._reject_ansi(title, text, *(c for pair in choices for c in pair))
         self.calls.append(('menu', (title, text, choices), kwargs))
         if self._menu_returns:
             return self._menu_returns.pop(0)
         return None
 
     def yesno(self, title, text, **kwargs):
+        self._reject_ansi(title, text)
         self.calls.append(('yesno', (title, text), kwargs))
         if self._yesno_returns:
             return self._yesno_returns.pop(0)
         return False
 
     def inputbox(self, title, text, init="", **kwargs):
+        self._reject_ansi(title, text)
         self.calls.append(('inputbox', (title, text), {'init': init, **kwargs}))
         if self._inputbox_returns:
             return self._inputbox_returns.pop(0)

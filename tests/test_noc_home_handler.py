@@ -99,3 +99,50 @@ class TestViewLoopRoutes:
         h.ctx.dialog.menu.side_effect = ["rns_repair", "back"]
         h._noc_home()
         m_offer.assert_called_once_with(h.ctx, "rnsd", True)
+
+
+class TestPanelVisibleInMenuBody:
+    """Audit W12 (2026-08-14): the TRANSPORTS/HEALTH panel used to be
+    print()ed and then erased by the backend's clear_screen before the
+    menu appeared — the operator never saw it. It must now live in the
+    menu body, and must be ANSI-free (whiptail renders escapes literally).
+    """
+
+    def _fake_dialog_handler(self):
+        import os as _os
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(__file__))
+        from handler_test_utils import FakeDialog
+        h = _make()
+        dialog = FakeDialog()
+        h.ctx.dialog = dialog
+        h.ctx.safe_call = lambda _name, fn, *a, **k: fn()
+        h._svc_state = MagicMock(return_value=("up", "running"))
+        h._probe_meshcore = MagicMock(return_value="off")
+        h._probe_rns = MagicMock(return_value=("degraded", True))
+        return h, dialog
+
+    @patch('service_remediation.collect_degraded_services', return_value=[])
+    def test_panel_text_is_in_the_menu_body(self, _m_deg):
+        h, dialog = self._fake_dialog_handler()
+        dialog._menu_returns = ["back"]
+        h._noc_home()
+        menu_calls = [c for c in dialog.calls if c[0] == 'menu']
+        assert menu_calls, "NOC Home never opened its menu"
+        text = menu_calls[0][1][1]
+        assert "TRANSPORTS" in text and "HEALTH" in text, (
+            "the NOC panel must render inside the menu body, "
+            f"got: {text!r}"
+        )
+        assert "RNS / rnsd" in text and "DEGRADED" in text
+
+    @patch('service_remediation.collect_degraded_services', return_value=[])
+    def test_no_ansi_anywhere(self, _m_deg):
+        # FakeDialog itself asserts no ANSI reaches any dialog primitive;
+        # running the view through it IS the check.
+        h, dialog = self._fake_dialog_handler()
+        dialog._menu_returns = ["back"]
+        h._noc_home()
+        for _name, args, _kw in dialog.calls:
+            for part in args:
+                assert '\033' not in str(part)

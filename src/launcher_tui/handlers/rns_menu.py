@@ -180,9 +180,8 @@ class RNSMenuHandler(BaseHandler):
 
     def _rns_identity_info(self):
         """Show RNS identity information."""
-        clear_screen()
-        print("=== RNS Identity Info ===\n")
-
+        # No printed header: the dialog backend clears the screen before
+        # drawing, so it was never seen (audit W12); the menu title carries it.
         while True:
             # Check identity status for menu hints
             config_dir = ReticulumPaths.get_config_dir()

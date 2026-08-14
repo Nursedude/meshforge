@@ -17,26 +17,26 @@ not a red alarm.
 """
 import logging
 
-from backend import clear_screen
 from handler_protocol import BaseHandler
 
 logger = logging.getLogger(__name__)
 
-_GREEN = "\033[0;32m"
-_YELLOW = "\033[0;33m"
-_RED = "\033[0;31m"
-_DIM = "\033[2m"
-_RST = "\033[0m"
-
 
 def _dot(state: str) -> str:
-    """Colored status glyph for a transport/service state."""
+    """Plain-text status marker for a transport/service state.
+
+    Plain text on purpose: this panel renders INSIDE the whiptail menu
+    body, and whiptail never interprets ANSI color escapes. The previous
+    ANSI-colored version was print()ed to the terminal and then erased by
+    the backend's clear_screen before the menu appeared — the operator
+    never saw the panel at all (2026-08-14 audit W12).
+    """
     return {
-        "up": f"{_GREEN}●{_RST}",
-        "degraded": f"{_YELLOW}◐{_RST}",
-        "down": f"{_RED}○{_RST}",
-        "off": f"{_DIM}○{_RST}",
-    }.get(state, "?")
+        "up": "[ UP ]",
+        "degraded": "[DEGR]",
+        "down": "[DOWN]",
+        "off": "[ -- ]",
+    }.get(state, "[ ?? ]")
 
 
 class NocHomeHandler(BaseHandler):
@@ -112,25 +112,24 @@ class NocHomeHandler(BaseHandler):
             mc_state = self._probe_meshcore()
             rns_state, rns_running = self._probe_rns()
 
-            clear_screen()
-            print("=== MeshForge NOC Home ===\n")
-            print("TRANSPORTS")
-            print(f"  {_dot(mesh_state)} Meshtastic   {mesh_state.upper()}")
+            # The panel goes INTO the menu body (whiptail clears the screen
+            # before drawing, so anything print()ed here is never seen).
+            panel = ["TRANSPORTS"]
+            panel.append(f"  {_dot(mesh_state)} Meshtastic   {mesh_state.upper()}")
             mc_label = "ON (config)" if mc_state == "on" else "off / not configured"
-            print(f"  {_dot('up' if mc_state == 'on' else 'off')} MeshCore     {mc_label}")
+            panel.append(f"  {_dot('up' if mc_state == 'on' else 'off')} MeshCore     {mc_label}")
             rns_tail = "   -> Repair below" if rns_state in ("degraded", "down") else ""
-            print(f"  {_dot(rns_state)} RNS / rnsd   {rns_state.upper()}{rns_tail}")
+            panel.append(f"  {_dot(rns_state)} RNS / rnsd   {rns_state.upper()}{rns_tail}")
             # Degrade-not-down: RNS leg down but another transport still carrying.
             if rns_state in ("degraded", "down") and (mesh_state == "up" or mc_state == "on"):
-                print(f"  {_DIM}  bridge still routing on the other transport(s) "
-                      f"— RNS leg only{_RST}")
-            print()
+                panel.append("       bridge still routing on the other "
+                             "transport(s) — RNS leg only")
+            panel.append("")
 
-            print("HEALTH")
+            panel.append("HEALTH")
             for svc in ("meshtasticd", "rnsd", "meshforge-gateway"):
                 state, label = self._svc_state(svc)
-                print(f"  {_dot(state)} {svc:<18} {label}")
-            print()
+                panel.append(f"  {_dot(state)} {svc:<18} {label}")
 
             degraded = collect_degraded_services(
                 ["meshtasticd", "rnsd", "meshforge-gateway", "meshforge-map"]
@@ -154,7 +153,7 @@ class NocHomeHandler(BaseHandler):
 
             sel = self.ctx.dialog.menu(
                 "NOC Home",
-                "Transports + health at a glance. Fix what's degraded, right here.",
+                "\n".join(panel),
                 choices,
             )
             if not sel or sel in ("back", "more"):
