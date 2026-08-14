@@ -13,7 +13,6 @@ Usage:
     # Returns: "MeshForge v0.4.7 | meshtasticd: ● | rnsd: ○ | mqtt: ○"
 
 Enhanced in v0.4.8:
-    - Integration with StartupChecker for conflict detection
     - Shows hardware status (SPI/USB)
     - Root/non-root indicator
 """
@@ -39,8 +38,10 @@ from utils.paths import ReticulumPaths
 from utils.ports import MESHTASTICD_WEB_PORT
 
 # Import startup checker for enhanced status
-from startup_checks import StartupChecker, EnvironmentState, ServiceRunState
-HAS_STARTUP_CHECKER = True
+# 2026-08-14 Q1 purge: the "enhanced" half (get_enhanced_status_line,
+# get_environment/get_alerts/has_conflicts, its own StartupChecker) had no
+# production caller — the launcher's checker is the only one — and was
+# deleted with its tests (audit W14).
 
 # Space weather API
 from utils.space_weather import SpaceWeatherAPI
@@ -105,11 +106,6 @@ class StatusBar:
         self._weather_executor = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="statusbar-weather",
         )
-        # Enhanced startup checker (v0.4.8)
-        self._startup_checker: Optional[StartupChecker] = None
-        self._env_state: Optional[EnvironmentState] = None
-        if HAS_STARTUP_CHECKER:
-            self._startup_checker = StartupChecker()
         # Event-driven status updates from ActiveHealthProbe
         self._event_subscribed = False
         # Track which services have received at least one event push
@@ -321,38 +317,9 @@ class StatusBar:
 
         return f"bridge:DEGRADED({down[0]})"
 
-    def set_subsystem_states(self, states: Dict[str, str]) -> None:
-        """Update subsystem states from bridge health data.
-
-        Args:
-            states: Dict of subsystem name → state value string.
-                   e.g. {"meshtastic": "healthy", "rns": "disconnected"}
-        """
-        self._subsystem_states = states
-
-    def set_node_count(self, count: int) -> None:
-        """Update the displayed node count.
-
-        Args:
-            count: Number of known mesh nodes.
-        """
-        self._node_count = count
-
     def invalidate(self) -> None:
         """Force refresh on next access."""
         self._cache_time = 0.0
-
-    def get_service_status(self, service_name: str) -> str:
-        """Get cached status symbol for a service.
-
-        Args:
-            service_name: Systemd service name.
-
-        Returns:
-            Status symbol character.
-        """
-        self._refresh_if_stale()
-        return self._cache.get(service_name, SYM_UNKNOWN)
 
     # =========================================================================
     # Event Bus Integration (Phase 1 — reliability engineering)
@@ -477,104 +444,3 @@ class StatusBar:
         except Exception:
             pass
 
-    # =========================================================================
-    # Enhanced Status Methods (v0.4.8)
-    # =========================================================================
-
-    def get_environment(self, use_cache: bool = True) -> Optional[EnvironmentState]:
-        """Get full environment state from startup checker.
-
-        Args:
-            use_cache: Use cached result if available
-
-        Returns:
-            EnvironmentState or None if startup checker unavailable
-        """
-        if not self._startup_checker:
-            return None
-
-        if use_cache and self._env_state:
-            return self._env_state
-
-        self._env_state = self._startup_checker.check_all(use_cache=use_cache)
-        return self._env_state
-
-    def get_alerts(self) -> List[str]:
-        """Get list of current alerts (conflicts, failures, etc.).
-
-        Returns:
-            List of alert message strings
-        """
-        env = self.get_environment()
-        if env:
-            return env.get_alerts()
-        return []
-
-    def has_conflicts(self) -> bool:
-        """Check if there are any port conflicts.
-
-        Returns:
-            True if conflicts detected
-        """
-        env = self.get_environment()
-        if env:
-            return env.has_conflicts
-        return False
-
-    def get_enhanced_status_line(self) -> str:
-        """Get enhanced status line with hardware and conflict info.
-
-        Returns:
-            Status string with additional context
-        """
-        env = self.get_environment()
-        if not env:
-            return self.get_status_line()
-
-        parts = []
-
-        # Version
-        if self.version:
-            parts.append(f"MeshForge v{self.version}")
-        else:
-            parts.append("MeshForge")
-
-        # Root indicator
-        if not env.is_root:
-            parts.append("[user]")
-
-        # Service statuses from enhanced checker
-        for name, info in env.services.items():
-            if info.state == ServiceRunState.RUNNING:
-                parts.append(f"{name[:4]}:{SYM_RUNNING}")
-            elif info.state == ServiceRunState.FAILED:
-                parts.append(f"{name[:4]}:!")
-            else:
-                parts.append(f"{name[:4]}:{SYM_STOPPED}")
-
-        # Hardware indicator
-        hw = env.hardware
-        if hw.usb_serial_devices:
-            parts.append("USB:*")
-        elif hw.spi_available:
-            parts.append("SPI:*")
-
-        # Conflict warning
-        if env.conflicts:
-            parts.append(f"WARN:{len(env.conflicts)}")
-
-        # Node count if available
-        if self._node_count is not None:
-            parts.append(f"nodes:{self._node_count}")
-
-        # Space weather (compact)
-        if self._space_weather:
-            parts.append(self._space_weather)
-
-        return " | ".join(parts)
-
-    def refresh_environment(self) -> None:
-        """Force refresh of environment state."""
-        if self._startup_checker:
-            self._startup_checker.invalidate_cache()
-            self._env_state = None

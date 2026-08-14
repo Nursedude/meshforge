@@ -66,7 +66,7 @@ from handlers import get_all_handlers
 class MeshForgeLauncher:
     """MeshForge launcher with raspi-config style interface."""
 
-    def __init__(self, profile=None):
+    def __init__(self):
         self.dialog = DialogBackend()
         self.src_dir = Path(__file__).parent.parent  # src/ directory
         self.env = self._detect_environment()
@@ -78,9 +78,6 @@ class MeshForgeLauncher:
         # Enhanced startup checker (v0.4.8)
         self._startup_checker = StartupChecker()
         self._env_state: Optional[EnvironmentState] = None
-        # Deployment profile for menu filtering
-        self._profile = profile
-        self._feature_flags = getattr(profile, 'feature_flags', {}) if profile else {}
 
         # Handler registry (Phase 1 of mixin-to-registry migration).
         # Handlers are registered here and dispatched via _registry.dispatch()
@@ -90,8 +87,6 @@ class MeshForgeLauncher:
             env_state=self._env_state,
             startup_checker=self._startup_checker,
             status_bar=getattr(self, '_status_bar', None),
-            feature_flags=self._feature_flags,
-            profile=self._profile,
             src_dir=self.src_dir,
             env=self.env,
         )
@@ -100,14 +95,14 @@ class MeshForgeLauncher:
         for handler_cls in get_all_handlers():
             self._registry.register(handler_cls())
 
-    def _feature_enabled(self, feature: str) -> bool:
-        """Check if a feature is enabled in the current deployment profile.
-
-        When no profile is set, all features are enabled (backward compatible).
-        """
-        if not self._feature_flags:
-            return True
-        return self._feature_flags.get(feature, True)
+    # Q1 purge 2026-08-14 (audit W4): the launcher-side profile plumbing
+    # (_profile/_feature_flags/_feature_enabled + the maps/tactical menu
+    # gates) is gone — no construction site ever passed a profile, so the
+    # flags were provably always {} and every gate always True. Deployment
+    # profiles remain a launcher.py/setup_wizard/daemon feature; if TUI
+    # menu filtering is ever wanted, wire it through TUIContext.feature_flags
+    # (the handler-level flag field + registry filter still exist and are
+    # tested — that is the seam to feed).
 
     def _build_section_menu(self, section, legacy_items, ordering=None):
         """Build menu choices by merging registry + legacy items.
@@ -496,10 +491,6 @@ class MeshForgeLauncher:
         # Get environment state
         self._env_state = self._startup_checker.check_all()
 
-        # Update status bar with environment info
-        if self._status_bar and hasattr(self._status_bar, '_env_state'):
-            self._status_bar._env_state = self._env_state
-
         # Sync env_state to handler registry context
         if hasattr(self, '_tui_context'):
             self._tui_context.env_state = self._env_state
@@ -616,14 +607,12 @@ class MeshForgeLauncher:
                 ("2", "Mesh Networks       Meshtastic, RNS, AREDN"),
                 ("3", "RF & SDR            Calculators, SDR monitoring"),
             ]
-            if self._feature_enabled("maps"):
-                choices.append(("4", "Maps & Viz          Coverage maps, topology"))
+            choices.append(("4", "Maps & Viz          Coverage maps, topology"))
             choices.append(("5", "Configuration       Radio, services, settings"))
             choices.append(("6", "System              Hardware, logs, Linux tools"))
             choices.append(("7", "Extensions          Maps, bots, add-ons"))
             # Quick Access
-            if self._feature_enabled("tactical"):
-                choices.append(("t", "Tactical Ops        SITREP, zones, QR, ATAK"))
+            choices.append(("t", "Tactical Ops        SITREP, zones, QR, ATAK"))
             choices.extend([
                 ("q", "Quick Actions       Common shortcuts"),
                 ("e", "Emergency Mode      Field operations"),
@@ -728,11 +717,12 @@ class MeshForgeLauncher:
         _ORDERING = ["status", "weather", "network", "nodes", "health", "score",
                       "datapath", "stack_health", "metrics", "analytics", "latency", "reports", "alerts"]
         while True:
-            # Legacy items — most now handled by DashboardHandler (Batch 4)
+            # 'network' is the one cross-section entry (handler lives in
+            # "system"); every other legacy item is registry-owned now
+            # (Q1 purge 2026-08-14, audit W7 — verified against the live
+            # registry before deletion).
             legacy = [
                 ("network", "Network Status      Ports, interfaces, conflicts"),
-                ("health", "Node Health         Battery, signal, latency"),
-                ("metrics", "Historical Trends   Metrics over time"),
             ]
             choices = self._build_section_menu("dashboard", legacy, _ORDERING)
 
@@ -761,20 +751,9 @@ class MeshForgeLauncher:
                       "messaging", "traffic", "mqtt", "favorites", "ham", "services",
                       "nomadnet"]
         while True:
-            # Legacy items — feature-gated items built conditionally
-            legacy = []
-            if self._feature_enabled("meshtastic"):
-                legacy.append(("meshtastic", "Meshtastic          Radio, channels, CLI"))
-            if self._feature_enabled("meshcore"):
-                legacy.append(("meshcore", "MeshCore            Companion radio, config"))
-            if self._feature_enabled("rns"):
-                legacy.append(("rns", "RNS / Reticulum     Status, gateway, messaging"))
-            if self._feature_enabled("gateway"):
-                legacy.append(("gateway", "Gateway Bridge      RNS-Meshtastic-MeshCore"))
-            legacy.append(("aredn", "AREDN Mesh          AREDN integration"))
-            legacy.append(("messaging", "Messaging           Send/receive messages"))
-            legacy.append(("favorites", "Favorites           Manage favorite nodes"))
-            choices = self._build_section_menu("mesh_networks", legacy, _ORDERING)
+            # All 7 legacy entries were shadowed by registry tags and
+            # filtered out on every render (Q1 purge 2026-08-14, audit W7).
+            choices = self._build_section_menu("mesh_networks", [], _ORDERING)
 
             choice = self.dialog.menu(
                 "Mesh Networks",
@@ -823,11 +802,8 @@ class MeshForgeLauncher:
         _ORDERING = ["livemap", "coverage", "heatmap", "tiles", "topology",
                       "traffic", "quality", "export", "ai"]
         while True:
-            # Legacy items — removed automatically as handlers take over their tags
-            legacy = [
-                ("quality", "Link Quality        Quality analysis"),
-            ]
-            choices = self._build_section_menu("maps_viz", legacy, _ORDERING)
+            # 'quality' is registry-owned (Q1 purge 2026-08-14, audit W7)
+            choices = self._build_section_menu("maps_viz", [], _ORDERING)
 
             choice = self.dialog.menu(
                 "Maps & Visualization",
@@ -851,16 +827,11 @@ class MeshForgeLauncher:
         _ORDERING = ["meshtasticd", "channels", "rns-config", "rnode",
                       "backup", "updates", "webhooks", "meshforge", "config-api", "wizard"]
         while True:
-            # Legacy items — removed automatically as handlers take over their tags
+            # 'rns-config' is the one cross-section entry (dispatches to
+            # "rns"/"edit" below); the other 7 were registry-shadowed
+            # (Q1 purge 2026-08-14, audit W7).
             legacy = [
-                ("meshtasticd", "meshtasticd          Radio, service, config"),
-                ("channels", "Channel Config      Meshtastic channels"),
                 ("rns-config", "RNS Config          Reticulum settings"),
-                ("backup", "Device Backup       Backup/restore configs"),
-                ("updates", "Software Updates    One-click updates"),
-                ("webhooks", "Webhooks            External notifications"),
-                ("meshforge", "MeshForge Settings  App preferences"),
-                ("config-api", "Config API Server   REST config endpoint"),
             ]
             choices = self._build_section_menu("configuration", legacy, _ORDERING)
 
@@ -889,17 +860,9 @@ class MeshForgeLauncher:
                       "run", "details", "daemon",
                       "review", "status", "shell", "reboot"]
         while True:
-            # Legacy items — removed automatically as handlers take over their tags
-            legacy = [
-                ("hardware", "Hardware            Detect SPI/I2C/USB"),
-                ("logs", "Logs                View/follow logs"),
-                ("network", "Network Tools       Ping, ports, interfaces"),
-                ("diagnose", "Diagnostics         System health check"),
-                ("daemon", "MeshForge Daemon    Headless NOC (maps, RNS, chat)"),
-                ("status", "Quick Status        One-shot status display"),
-                ("reboot", "Reboot/Shutdown     Safe system control"),
-            ]
-            choices = self._build_section_menu("system", legacy, _ORDERING)
+            # All 7 legacy entries were registry-shadowed (Q1 purge
+            # 2026-08-14, audit W7).
+            choices = self._build_section_menu("system", [], _ORDERING)
 
             choice = self.dialog.menu(
                 "System Tools",
@@ -919,9 +882,11 @@ class MeshForgeLauncher:
         """Extensions - Maps, bots, add-ons."""
         _ORDERING = ["mfmaps", "meshing"]
         while True:
+            # 'mfmaps' is the one cross-section entry (handler lives in
+            # "maps_viz", dispatched below); 'meshing' was registry-shadowed
+            # (Q1 purge 2026-08-14, audit W7).
             legacy = [
                 ("mfmaps", "MeshForge Maps      Multi-source map extension"),
-                ("meshing", "Meshing Around      Mesh bot framework"),
             ]
             choices = self._build_section_menu("extensions", legacy, _ORDERING)
 
@@ -945,14 +910,9 @@ class MeshForgeLauncher:
         """About - Version, help, web client, system info, changelog."""
         _ORDERING = ["version", "changelog", "sysinfo", "deps", "web", "help"]
         while True:
-            legacy = [
-                ("version", "Version Info        MeshForge version"),
-                ("changelog", "Changelog           Release history"),
-                ("sysinfo", "System Info         OS, Python, disk, uptime"),
-                ("deps", "Dependencies        Package status"),
-                ("help", "Help                Documentation"),
-            ]
-            choices = self._build_section_menu("about", legacy, _ORDERING)
+            # All 5 legacy entries were registry-shadowed (Q1 purge
+            # 2026-08-14, audit W7).
+            choices = self._build_section_menu("about", [], _ORDERING)
 
             choice = self.dialog.menu(
                 "About MeshForge",
@@ -1099,28 +1059,12 @@ def main():
         print(f"  https://github.com/Nursedude/meshforge/issues\n")
         exit_code = 1
     finally:
-        # Stop background services (prevents hang on exit)
+        # Q1 purge 2026-08-14 (audit W6): the old per-attribute cleanup loop
+        # here getattr'd _mqtt_subscriber/_mqtt_ws_bridge/_telemetry_poller/
+        # _map_server_process — attributes that moved onto their handlers
+        # long ago and are never set on the launcher. Real service shutdown
+        # is registry.shutdown_all() inside run()'s own finally.
         if launcher is not None:
-            _cleanup_items = [
-                ('_mqtt_subscriber', 'stop', 'MQTT subscriber'),
-                ('_mqtt_ws_bridge', 'stop', 'MQTT WebSocket bridge'),
-                ('_telemetry_poller', 'stop', 'Telemetry poller'),
-            ]
-            for attr, method, name in _cleanup_items:
-                try:
-                    obj = getattr(launcher, attr, None)
-                    if obj:
-                        getattr(obj, method)()
-                        setattr(launcher, attr, None)
-                except Exception as e:
-                    logger.warning(f"Cleanup failed for {name}: {e}")
-            # Stop map server if running (uses terminate, not stop)
-            try:
-                if hasattr(launcher, '_map_server_process') and launcher._map_server_process:
-                    launcher._map_server_process.terminate()
-                    launcher._map_server_process = None
-            except Exception as e:
-                logger.warning(f"Cleanup failed for map server: {e}")
             # Unsubscribe status bar before shutting down EventBus
             try:
                 if hasattr(launcher, '_status_bar') and launcher._status_bar:

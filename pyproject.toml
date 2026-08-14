@@ -94,7 +94,10 @@ branch = true
 omit = [
     "*/tests/*",
     "*/__pycache__/*",
-    "*/tui/*",     # TUI code is hard to test
+    # "*/tui/*" was a NO-OP for years — the package is launcher_tui/, so
+    # the glob never matched and TUI code always counted toward fail_under.
+    # Deleted (not fixed) 2026-08-14: the TUI has real tests now and its
+    # coverage should stay measured.
 ]
 
 [tool.coverage.report]

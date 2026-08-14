@@ -41,8 +41,8 @@ def _isolate_status_bar_from_fleet(request):
     real node count leaking into the status line. CI passed because
     no fleet, no nodes. The asymmetry was the smell.
 
-    Tests that explicitly call `bar.set_node_count(N)` after init still
-    work — that's the post-init setter, untouched by this isolation.
+    Tests set `bar._node_count` directly (the public setter was deleted
+    in the 2026-08-14 Q1 purge — it had no production caller).
     Tests in TestSeedNodeCount intentionally exercise _seed_node_count
     and are exempted by class name.
     """
@@ -316,11 +316,11 @@ class TestBridgeCheck:
 class TestNodeCount:
     """Test node count display."""
 
-    def test_set_node_count(self):
+    def test_node_count_displayed(self):
         bar = StatusBar(version="1.0")
         bar._cache_time = time.time()
         bar._cache = {s: SYM_STOPPED for s, _ in MONITORED_SERVICES}
-        bar.set_node_count(7)
+        bar._node_count = 7
         line = bar.get_status_line()
         assert "nodes:7" in line
 
@@ -335,7 +335,7 @@ class TestNodeCount:
         bar = StatusBar(version="1.0")
         bar._cache_time = time.time()
         bar._cache = {s: SYM_STOPPED for s, _ in MONITORED_SERVICES}
-        bar.set_node_count(0)
+        bar._node_count = 0
         line = bar.get_status_line()
         assert "nodes:0" in line
 
@@ -374,15 +374,6 @@ class TestCaching:
             with patch.object(bar, '_check_bridge'):
                 bar._refresh_if_stale()
                 mock_services.assert_called_once()
-
-    def test_get_service_status_triggers_refresh(self):
-        bar = StatusBar(version="1.0")
-        bar._cache_time = 0.0  # Force stale
-
-        with patch.object(bar, '_check_systemd_active', return_value=SYM_RUNNING):
-            with patch.object(bar, '_check_bridge'):
-                result = bar.get_service_status('meshtasticd')
-        assert result == SYM_RUNNING
 
 
 class TestDialogBackendIntegration:
@@ -476,7 +467,7 @@ class TestStatusBarSymbols:
         bar._cache_time = time.time()
         bar._cache = {s: SYM_RUNNING for s, _ in MONITORED_SERVICES}
         bar._bridge_running = True
-        bar.set_node_count(5)
+        bar._node_count = 5
         line = bar.get_status_line()
         assert line.isascii()
 
@@ -593,7 +584,7 @@ class TestStatusBarEdgeCases:
         bar = StatusBar(version="1.0")
         bar._cache_time = time.time()
         bar._cache = {s: SYM_STOPPED for s, _ in MONITORED_SERVICES}
-        bar.set_node_count(9999)
+        bar._node_count = 9999
         line = bar.get_status_line()
         assert "nodes:9999" in line
 
@@ -614,7 +605,7 @@ class TestSubsystemStatusDisplay:
         """Both subsystems healthy shows running symbol."""
         bar = StatusBar(version="1.0")
         bar._bridge_running = True
-        bar.set_subsystem_states({"meshtastic": "healthy", "rns": "healthy"})
+        bar._subsystem_states = {"meshtastic": "healthy", "rns": "healthy"}
         result = bar._format_bridge_status()
         assert result == "bridge:*"
 
@@ -622,7 +613,7 @@ class TestSubsystemStatusDisplay:
         """RNS subsystem down shows DEGRADED(rns)."""
         bar = StatusBar(version="1.0")
         bar._bridge_running = True
-        bar.set_subsystem_states({"meshtastic": "healthy", "rns": "disconnected"})
+        bar._subsystem_states = {"meshtastic": "healthy", "rns": "disconnected"}
         result = bar._format_bridge_status()
         assert result == "bridge:DEGRADED(rns)"
 
@@ -630,7 +621,7 @@ class TestSubsystemStatusDisplay:
         """Meshtastic subsystem down shows DEGRADED(mesh)."""
         bar = StatusBar(version="1.0")
         bar._bridge_running = True
-        bar.set_subsystem_states({"meshtastic": "disconnected", "rns": "healthy"})
+        bar._subsystem_states = {"meshtastic": "disconnected", "rns": "healthy"}
         result = bar._format_bridge_status()
         assert result == "bridge:DEGRADED(mesh)"
 
@@ -638,7 +629,7 @@ class TestSubsystemStatusDisplay:
         """Both subsystems down shows OFFLINE."""
         bar = StatusBar(version="1.0")
         bar._bridge_running = True
-        bar.set_subsystem_states({"meshtastic": "disconnected", "rns": "disconnected"})
+        bar._subsystem_states = {"meshtastic": "disconnected", "rns": "disconnected"}
         result = bar._format_bridge_status()
         assert result == "bridge:OFFLINE"
 
@@ -660,7 +651,7 @@ class TestSubsystemStatusDisplay:
         """DISABLED subsystem treated as not healthy."""
         bar = StatusBar(version="1.0")
         bar._bridge_running = True
-        bar.set_subsystem_states({"meshtastic": "healthy", "rns": "disabled"})
+        bar._subsystem_states = {"meshtastic": "healthy", "rns": "disabled"}
         result = bar._format_bridge_status()
         assert result == "bridge:DEGRADED(rns)"
 
@@ -668,7 +659,7 @@ class TestSubsystemStatusDisplay:
         """Subsystem state appears in full status line."""
         bar = StatusBar(version="1.0")
         bar._bridge_running = True
-        bar.set_subsystem_states({"meshtastic": "healthy", "rns": "disconnected"})
+        bar._subsystem_states = {"meshtastic": "healthy", "rns": "disconnected"}
         with patch.object(bar, '_refresh_if_stale'):
             line = bar.get_status_line()
             assert "DEGRADED(rns)" in line
@@ -822,32 +813,6 @@ class TestStartupChecksZombieDetection:
         line = env.get_status_line(plain=False)
         assert '\033[32m' in line  # green for running
         assert '\033[33m' not in line  # NOT yellow
-
-
-class TestEnhancedStatusLineZombie:
-    """Test zombie detection in enhanced status line."""
-
-    def test_enhanced_zombie_rnsd_shows_running(self):
-        """Enhanced status line shows running for rnsd (zombie display removed)."""
-        from startup_checks import EnvironmentState, ServiceInfo, ServiceRunState
-
-        bar = StatusBar(version="1.0")
-        env = EnvironmentState()
-        env.is_root = True
-        env.services = {
-            'meshtasticd': ServiceInfo(name='meshtasticd', state=ServiceRunState.RUNNING,
-                                       port=4403, port_open=True),
-            'rnsd': ServiceInfo(name='rnsd', state=ServiceRunState.RUNNING,
-                                port=37428, port_open=False),
-        }
-        env.conflicts = []
-
-        with patch.object(bar, 'get_environment', return_value=env):
-            with patch('status_bar.ServiceRunState', ServiceRunState):
-                line = bar.get_enhanced_status_line()
-
-        assert f"mesh:{SYM_RUNNING}" in line
-        assert f"rnsd:{SYM_RUNNING}" in line
 
 
 class TestEventDrivenServiceSkip:

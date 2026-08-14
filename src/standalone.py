@@ -11,10 +11,10 @@ This module provides a completely standalone entry point for MeshForge that:
 
 Usage:
     python3 src/standalone.py              # Interactive menu
-    python3 src/standalone.py --tools      # List available tools
-    python3 src/standalone.py rf           # Run RF calculator
-    python3 src/standalone.py sim          # Run network simulator
-    python3 src/standalone.py monitor      # Run node monitor
+    python3 src/standalone.py rf           # RF calculator
+    python3 src/standalone.py freq         # Frequency calculator
+    python3 src/standalone.py sim          # Network simulator
+    python3 src/standalone.py scan         # Device scanner
     python3 src/standalone.py --check      # Check dependencies
 """
 
@@ -52,6 +52,26 @@ _serial_list_ports, _HAS_SERIAL = safe_import('serial.tools.list_ports')
     'link_budget', 'detailed_link_budget',
     'is_fast_available', 'CABLE_LOSS_DB_PER_M',
 )
+
+
+def _haversine_m(lat1, lon1, lat2, lon2):
+    """Great-circle distance in METERS.
+
+    Delegates to the canonical utils.rf.haversine_distance when available;
+    the pure-python fallback keeps the zero-dependency promise. This file
+    used to carry TWO independent inline copies — with different Earth
+    radii (meters vs km) — collapsed in the 2026-08-14 Q1 purge.
+    """
+    if _HAS_RF_UTILS:
+        return haversine_distance(lat1, lon1, lat2, lon2)
+    import math
+    R = 6371000.0
+    lat1_rad, lat2_rad = math.radians(lat1), math.radians(lat2)
+    delta_lat = math.radians(lat2 - lat1)
+    delta_lon = math.radians(lon2 - lon1)
+    a = (math.sin(delta_lat / 2) ** 2 +
+         math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -112,7 +132,6 @@ class StandaloneTools:
 
         if _HAS_RF_UTILS:
             _has_detailed = True
-            _haversine = haversine_distance
             _fspl_fn = free_space_path_loss
             _fresnel = fresnel_radius
             _bulge = earth_bulge
@@ -120,16 +139,8 @@ class StandaloneTools:
             print(f"RF calculations ready{fast_mode}\n")
         else:
             # Inline implementation if utils not available
+            # (haversine lives at module level: _haversine_m)
             import math
-
-            def _haversine(lat1, lon1, lat2, lon2):
-                R = 6371000
-                lat1_rad, lat2_rad = math.radians(lat1), math.radians(lat2)
-                delta_lat = math.radians(lat2 - lat1)
-                delta_lon = math.radians(lon2 - lon1)
-                a = (math.sin(delta_lat / 2) ** 2 +
-                     math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2)
-                return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
 
             def _fspl_fn(distance_m, freq_mhz):
                 return 20 * math.log10(distance_m) + 20 * math.log10(freq_mhz) - 27.55
@@ -166,7 +177,7 @@ class StandaloneTools:
                     lon1 = float(input("  Lon1: "))
                     lat2 = float(input("  Lat2: "))
                     lon2 = float(input("  Lon2: "))
-                    dist = _haversine(lat1, lon1, lat2, lon2)
+                    dist = _haversine_m(lat1, lon1, lat2, lon2)
                     print(f"\n  Distance: {dist/1000:.2f} km ({dist:.0f} m)\n")
                 except ValueError:
                     print("Invalid input\n")
@@ -374,26 +385,16 @@ class StandaloneTools:
                 print("  Need at least 2 nodes")
                 return
 
-            import math
-            def haversine(lat1, lon1, lat2, lon2):
-                R = 6371
-                lat1_rad, lat2_rad = math.radians(lat1), math.radians(lat2)
-                delta_lat = math.radians(lat2 - lat1)
-                delta_lon = math.radians(lon2 - lon1)
-                a = (math.sin(delta_lat / 2) ** 2 +
-                     math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(delta_lon / 2) ** 2)
-                return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-
             print(f"\n  {'Link':<25} {'Distance':<12} {'Est. Quality':<12}")
             print("  " + "-" * 50)
 
             node_names = list(nodes.keys())
             for i, n1 in enumerate(node_names):
                 for n2 in node_names[i+1:]:
-                    dist = haversine(
+                    dist = _haversine_m(
                         nodes[n1]['lat'], nodes[n1]['lon'],
                         nodes[n2]['lat'], nodes[n2]['lon']
-                    )
+                    ) / 1000.0  # km for display
                     # Simple quality estimation
                     quality = max(0, min(100, 100 - dist * 2))
                     print(f"  {n1} <-> {n2:<15} {dist:>8.2f} km  {quality:>8.0f}%")
