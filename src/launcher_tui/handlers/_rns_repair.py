@@ -625,6 +625,92 @@ def _handle_rnsd_crash(ctx) -> bool:
     return False
 
 
+def _offer_disable_blocking(handler, post_blocking) -> bool:
+    """Offer to disable blocking interfaces and restart rnsd — with a witness.
+
+    This is a USER-CONFIRMED DESTRUCTIVE flow (it rewrites the Reticulum
+    config), so every failure must reach the operator's screen, and the
+    failure dialog must say which side of the write it happened on:
+    before the config write, nothing was changed; after it, the config is
+    already modified and pretending otherwise would be its own lie.
+
+    Returns True only when the shared instance came back up.
+    """
+    ctx = handler.ctx
+    iface_names = [b[0] for b in post_blocking]
+    names_str = ", ".join(iface_names)
+    if not ctx.dialog.yesno(
+        "Disable Blocking Interfaces?",
+        f"Blocking interfaces are preventing rnsd\n"
+        f"from initializing:\n"
+        f"  {names_str}\n\n"
+        f"Disable them and restart rnsd?"
+    ):
+        return False
+
+    # --- pre-write phase: nothing on disk has changed yet ---------------
+    try:
+        disabled = disable_interfaces_in_config(iface_names)
+    except Exception as e:
+        logger.error("disable_interfaces_in_config failed: %s", e)
+        ctx.dialog.msgbox(
+            "Repair FAILED — nothing was changed",
+            f"Could not modify the Reticulum config:\n\n"
+            f"  {type(e).__name__}: {e}\n\n"
+            f"Your interfaces are untouched and rnsd was not restarted."
+        )
+        return False
+    if not disabled:
+        ctx.dialog.msgbox(
+            "Repair FAILED — nothing was changed",
+            "No interfaces could be disabled (none matched in the config).\n"
+            "Your Reticulum config is untouched."
+        )
+        return False
+
+    # --- post-write phase: the config IS modified from here on ----------
+    try:
+        print(f"  Disabled {len(disabled)} interface(s)")
+        stop_service('rnsd')
+        time.sleep(1)
+        start_service('rnsd')
+        print("  Waiting for shared instance...")
+        for _ in range(15):
+            time.sleep(1)
+            if check_rns_shared_instance():
+                si = get_rns_shared_instance_info()
+                return ctx.report_action(
+                    True,
+                    "RNS Shared Instance Restored",
+                    f"Disabled: {', '.join(disabled)}\n\n{si['detail']}",
+                )
+        ctx.report_action(
+            False,
+            "", "",
+            fail_title="Interfaces disabled — rnsd still not up",
+            fail_body=(
+                f"The config change WAS applied "
+                f"(disabled: {', '.join(disabled)}), but the shared "
+                f"instance did not come up within 15s.\n\n"
+                f"Check RNS > Diagnostics; re-enable the interfaces from "
+                f"RNS > Interfaces if this was not the cause."
+            ),
+        )
+        return False
+    except Exception as e:
+        logger.error("post-write repair step failed: %s", e)
+        ctx.dialog.msgbox(
+            "Repair FAILED after config change",
+            f"Interfaces WERE disabled ({', '.join(disabled)}) but the "
+            f"rnsd restart did not complete cleanly:\n\n"
+            f"  {type(e).__name__}: {e}\n\n"
+            f"Your config is in the modified state. Check RNS > "
+            f"Diagnostics, or re-enable the interfaces from RNS > "
+            f"Interfaces."
+        )
+        return False
+
+
 def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
     """Diagnose why shared instance isn't available after 30s."""
     ctx = handler.ctx
@@ -641,8 +727,8 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
             print(f"  Port 37428 owner: {owner[0]} (PID {owner[1]})")
             if owner[0] in ('nomadnet', 'python', 'python3'):
                 print("  Likely cause: NomadNet is holding the port")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("diagnosis step skipped (port owner): %s", e)
 
     try:
         from commands.rns import _parse_share_instance
@@ -652,8 +738,8 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
             if not _parse_share_instance(config_content):
                 print("  Cause: share_instance not enabled in config")
                 print("  (pre-flight fix may not have applied due to config drift)")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("diagnosis step skipped (share_instance): %s", e)
 
     try:
         drift = detect_rnsd_config_drift()
@@ -661,52 +747,34 @@ def _diagnose_timeout(handler, user_declined_disable: bool) -> bool:
             print(f"  Config drift: gateway reads {drift.gateway_config_dir}")
             print(f"                rnsd reads    {drift.rnsd_config_dir}")
             print(f"  Fix: {drift.fix_hint}")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("diagnosis step skipped (config drift): %s", e)
 
     try:
         if handler._check_nomadnet_conflict():
             print("  NomadNet is running (may hold the shared instance)")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("diagnosis step skipped (nomadnet conflict): %s", e)
 
-    # Blocking interfaces — offer second chance
+    # Blocking interfaces — offer second chance. Only the DETECTION is
+    # allowed to fail quietly; the confirmed destructive flow inside
+    # _offer_disable_blocking reports its own failures to the user
+    # (2026-08-14 audit C1: an except-pass around the whole block meant a
+    # user could confirm "disable my interfaces", have the write or the
+    # restart throw, and see nothing at all).
     try:
         post_blocking = find_blocking_interfaces()
-        if post_blocking:
-            print("\n  Blocking interfaces detected:")
-            for iface_name, reason, fix in post_blocking:
-                print(f"    [{iface_name}] {reason}")
-            if user_declined_disable:
-                print("\n  These are likely why rnsd is stuck.")
-                iface_names = [b[0] for b in post_blocking]
-                names_str = ", ".join(iface_names)
-                if ctx.dialog.yesno(
-                    "Disable Blocking Interfaces?",
-                    f"Blocking interfaces are preventing rnsd\n"
-                    f"from initializing:\n"
-                    f"  {names_str}\n\n"
-                    f"Disable them and restart rnsd?"
-                ):
-                    disabled = disable_interfaces_in_config(iface_names)
-                    if disabled:
-                        print(f"  Disabled {len(disabled)} interface(s)")
-                        stop_service('rnsd')
-                        time.sleep(1)
-                        start_service('rnsd')
-                        print("  Waiting for shared instance...")
-                        for _ in range(15):
-                            time.sleep(1)
-                            if check_rns_shared_instance():
-                                si = get_rns_shared_instance_info()
-                                print(f"  SUCCESS: {si['detail']}")
-                                print("\n" + "=" * 50)
-                                print("RNS shared instance is now available!")
-                                print("=" * 50 + "\n")
-                                return True
-                        print("  Still not available after disabling interfaces")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("diagnosis step skipped (blocking interfaces): %s", e)
+        post_blocking = None
+    if post_blocking:
+        print("\n  Blocking interfaces detected:")
+        for iface_name, reason, fix in post_blocking:
+            print(f"    [{iface_name}] {reason}")
+        if user_declined_disable:
+            print("\n  These are likely why rnsd is stuck.")
+            if _offer_disable_blocking(handler, post_blocking):
+                return True
 
     # Journal output
     print()
