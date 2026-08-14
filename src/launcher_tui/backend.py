@@ -7,6 +7,7 @@ Works over SSH, without X display, on any terminal.
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -145,10 +146,13 @@ class DialogBackend:
 
         except subprocess.TimeoutExpired:
             logger.warning("Dialog subprocess timed out after %ss", timeout)
-            return 1, ""
+            # -1: subprocess-level failure, distinguishable from whiptail's
+            # Cancel (1) / Escape (255) so callers never treat a dead dialog
+            # as a user cancel (or retry a user cancel as a failure).
+            return -1, ""
         except OSError as e:
             logger.error("Dialog subprocess failed: %s", e)
-            return 1, ""
+            return -1, ""
         finally:
             try:
                 os.unlink(tmp_path)
@@ -230,11 +234,15 @@ class DialogBackend:
         code, output = self._run(args)
         if code == 0:
             return output
+        if code in (1, 255):
+            # User pressed Cancel (1) or Escape (255) — an answer, not a
+            # failure. Never retry it: retrying made every Escape need two
+            # presses. The stale-input problem the old blanket retry papered
+            # over is fixed at the source by tcflush in _run.
+            return None
 
-        # Retry once on failure — the main menu already has retry logic for
-        # transient dialog failures, but submenus silently return None.
-        # A single retry with a fresh input flush (in _run) catches cases
-        # where stale terminal input caused whiptail to exit immediately.
+        # Retry once on genuine dialog failure (subprocess death/timeout,
+        # exotic exit codes) — the case the original retry was added for.
         logger.debug("Menu '%s' failed (code=%d), retrying once", title, code)
         code, output = self._run(args)
         if code == 0:
@@ -311,25 +319,6 @@ class DialogBackend:
             str(8), str(self.width)
         ])
 
-    def gauge(self, title: str, text: str, percent: int) -> None:
-        """Display progress gauge."""
-        args = [
-            '--title', title,
-            '--gauge', text,
-            str(8), str(self.width), str(percent)
-        ]
-        # Gauge needs stdin for progress updates
-        try:
-            proc = subprocess.Popen(
-                [self.backend] + args,
-                stdin=subprocess.PIPE,
-                text=True
-            )
-            proc.communicate(input=str(percent), timeout=1)
-        except (subprocess.TimeoutExpired, OSError):
-            # Gauge timeout or display issue - non-critical
-            pass
-
     def checklist(self, title: str, text: str,
                   choices: List[Tuple[str, str, bool]],
                   height: int = None, width: int = None, list_height: int = None) -> Optional[List[str]]:
@@ -361,9 +350,13 @@ class DialogBackend:
 
         code, output = self._run(args)
         if code == 0:
-            # Parse quoted output (whiptail uses quotes)
-            selected = output.replace('"', '').split()
-            return selected
+            # whiptail emits selections as quoted, space-separated tokens;
+            # shlex honors the quoting so a tag containing a space survives.
+            try:
+                return shlex.split(output)
+            except ValueError:
+                logger.warning("Unparseable checklist output: %r", output[:80])
+                return None
         return None
 
 
