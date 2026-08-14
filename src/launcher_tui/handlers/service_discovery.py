@@ -154,8 +154,6 @@ class ServiceDiscoveryHandler(BaseHandler):
             self.ctx.dialog.msgbox("Error", "Invalid network range.")
             return
 
-        self.ctx.dialog.infobox("Scanning", f"Scanning {network} for Meshtastic devices...\nThis may take a minute...")
-
         nmap_available = subprocess.run(
             ['which', 'nmap'],
             capture_output=True, timeout=5
@@ -164,6 +162,10 @@ class ServiceDiscoveryHandler(BaseHandler):
         found_devices = []
 
         if nmap_available:
+            self.ctx.dialog.infobox(
+                "Scanning",
+                f"Scanning {network} for Meshtastic devices (nmap)...\n"
+                f"This may take a minute...")
             try:
                 result = subprocess.run(
                     ['nmap', '-p', '4403', '--open', '-oG', '-', network],
@@ -177,11 +179,14 @@ class ServiceDiscoveryHandler(BaseHandler):
             except (subprocess.SubprocessError, OSError) as e:
                 logger.debug("nmap scan failed: %s", e)
         else:
-            base = '.'.join(network.split('.')[:3])
-            for i in range(1, 255):
-                ip = f"{base}.{i}"
-                if check_port(ip, 4403, timeout=0.3):
-                    found_devices.append(ip)
+            # Parallel probe: the serial version held the screen frozen for
+            # up to ~76s (254 hosts x 0.3s). 32 I/O-bound connect threads
+            # finish the sweep in a few seconds on a Pi (audit B1).
+            self.ctx.dialog.infobox(
+                "Scanning",
+                f"Scanning {network} for Meshtastic devices "
+                f"(254 hosts, ~5s)...")
+            found_devices.extend(self._parallel_port_scan(network))
 
         if found_devices:
             lines = [f"Found {len(found_devices)} Meshtastic device(s):\n"]
@@ -190,6 +195,25 @@ class ServiceDiscoveryHandler(BaseHandler):
             self.ctx.dialog.msgbox("Network Scan Results", "\n".join(lines))
         else:
             self.ctx.dialog.msgbox("Network Scan", "No Meshtastic devices found on port 4403")
+
+    @staticmethod
+    def _parallel_port_scan(network: str, port: int = 4403,
+                            timeout: float = 0.3) -> list:
+        """Probe .1-.254 of the /24 concurrently; return responding IPs sorted.
+
+        max_workers=32, not 254: connects are I/O-bound so 32 threads sweep
+        the range in ~254/32 x timeout ~= 2.4s worst case without spawning a
+        thread per host on a Pi.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        base = '.'.join(network.split('.')[:3])
+        ips = [f"{base}.{i}" for i in range(1, 255)]
+        with ThreadPoolExecutor(max_workers=32) as pool:
+            hits = pool.map(lambda ip: ip if check_port(ip, port, timeout=timeout) else None, ips)
+        found = [ip for ip in hits if ip]
+        # pool.map preserves input order, but sort numerically for a stable,
+        # readable result regardless of completion order.
+        return sorted(found, key=lambda ip: int(ip.rsplit('.', 1)[1]))
 
     def _detect_network_range(self) -> str:
         try:
