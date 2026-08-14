@@ -16,6 +16,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Optional, List, Dict, Tuple
 
@@ -127,7 +128,17 @@ class FirstRunHandler(BaseHandler):
     # -- LifecycleHandler --------------------------------------------------
 
     def on_startup(self):
-        """Check for first run and offer setup wizard."""
+        """Check for first run and offer setup wizard.
+
+        Idempotent per process: main.py calls this explicitly (so the wizard
+        fires even in daemon mode, where startup_all() is skipped) AND
+        registry.startup_all() calls it again on non-daemon boxes — without
+        the guard a user who declined the wizard was re-prompted immediately
+        in the same launch (2026-08-14 audit W10).
+        """
+        if getattr(self, '_startup_ran', False):
+            return
+        self._startup_ran = True
         if self._check_first_run():
             self._run_first_run_wizard()
 
@@ -222,7 +233,16 @@ class FirstRunHandler(BaseHandler):
     # -- First-run state ---------------------------------------------------
 
     def _check_first_run(self) -> bool:
-        """Check if this is a first run (no setup flag exists)."""
+        """Check if this is a first run (no setup flag exists).
+
+        Non-interactive contexts (systemd unit, cron, piped stdin) must
+        never get the wizard: nobody can answer the prompt, and under a
+        hardened unit the marker write can be impossible — that exact shape
+        crash-looped meshforge.service on moc for 26k restarts (2026-06-03,
+        fixed in launcher.py; this is the handler-path mirror of that guard).
+        """
+        if not sys.stdin.isatty():
+            return False
         config_dir = get_real_user_home() / ".config" / "meshforge"
         flag_file = config_dir / self.FIRST_RUN_FLAG
         return not flag_file.exists()

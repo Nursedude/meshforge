@@ -12,9 +12,11 @@ Falls back to basic terminal menu if neither available.
 
 import os
 import re
+import shutil
 import sys
 import subprocess
 import logging
+import threading
 import traceback
 from pathlib import Path
 from typing import Optional
@@ -70,6 +72,9 @@ class MeshForgeLauncher:
         self.env = self._detect_environment()
         self._setup_status_bar()
         self._bridge_log_path = None  # Path to active bridge log file
+        # --no-startup-checks: set by main() before run(); skips the
+        # startup environment sweep AND the background update check.
+        self.skip_startup_checks = False
         # Enhanced startup checker (v0.4.8)
         self._startup_checker = StartupChecker()
         self._env_state: Optional[EnvironmentState] = None
@@ -317,20 +322,71 @@ class MeshForgeLauncher:
             # Process exists but owned by different user — daemon is running
             return True
 
+    def _run_basic_launcher(self) -> bool:
+        """Degraded path when neither whiptail nor dialog is installed.
+
+        Returns True only if the dialog backend was recovered (whiptail
+        installed in-app) — the caller then continues normal startup.
+        Returns False after printing an honest explanation; it never
+        pretends a TUI ran (the old code called a method that did not
+        exist and crashed — 2026-08-14 audit W1).
+
+        The raw input() here is a documented exception to the no-raw-input
+        rule: the dialog layer is precisely what is missing.
+        """
+        print("MeshForge TUI needs 'whiptail' (or 'dialog') to draw its "
+              "menus, and neither is installed.")
+        if sys.stdin.isatty() and shutil.which('apt-get'):
+            if os.geteuid() != 0:
+                # Dialog layer absent AND not root — the in-app installer
+                # below cannot run, so naming the command is the only honest
+                # help left.
+                print("Re-run with sudo to install it from here, or run: "  # in-domain-ok: no dialog layer + no root, in-app install impossible
+                      "apt-get install whiptail")
+            else:
+                try:
+                    answer = input("Install whiptail now via apt? [y/N] ")
+                except (EOFError, KeyboardInterrupt):
+                    answer = ''
+                if answer.strip().lower() == 'y':
+                    try:
+                        rc = subprocess.run(
+                            ['apt-get', 'install', '-y', 'whiptail'],
+                            timeout=300,
+                        ).returncode
+                    except (subprocess.SubprocessError, OSError) as e:
+                        print(f"Install failed: {e}")
+                        rc = 1
+                    if rc == 0:
+                        self.dialog = DialogBackend()
+                        if self.dialog.available:
+                            self._tui_context.dialog = self.dialog
+                            bar = getattr(self, '_status_bar', None)
+                            if bar:
+                                self.dialog.set_status_bar(bar)
+                            print("whiptail installed — starting the TUI...")
+                            return True
+                    print("Install did not produce a usable whiptail "
+                          f"(apt exit code {rc}).")
+        print("Zero-dependency RF tools still work without dialogs: "
+              "python3 src/standalone.py")
+        return False
+
     def run(self):
         """Run the launcher."""
         if not self.dialog.available:
-            # Fallback to basic launcher
-            print("whiptail/dialog not available, using basic launcher...")
-            self._run_basic_launcher()
-            return
+            if not self._run_basic_launcher():
+                # Honest failure: the message was printed, nothing was drawn.
+                raise SystemExit(1)
+            # Recovered — whiptail was installed in-app; continue normally.
 
         # Check for root without SUDO_USER (causes RNS auth issues)
         self._check_root_without_sudo_user()
 
-        # Run startup environment checks (v0.4.8)
-        if not self._run_startup_checks():
-            return  # User aborted due to conflicts
+        # Run startup environment checks (v0.4.8) unless --no-startup-checks
+        if not self.skip_startup_checks:
+            if not self._run_startup_checks():
+                return  # User aborted due to conflicts
 
         # Check for first run and offer setup wizard (Batch 8: via handler)
         first_run_handler = self._registry.get_handler("first_run")
@@ -355,7 +411,10 @@ class MeshForgeLauncher:
             self._start_health_monitor()
 
         # Non-blocking update check — sets _updates_available for status hint
-        self._check_startup_updates()
+        if not self.skip_startup_checks:
+            self._check_startup_updates()
+        else:
+            self._updates_available = 0
 
         try:
             self._run_main_menu()
@@ -387,14 +446,23 @@ class MeshForgeLauncher:
             logger.info("Health monitor stopped")
 
     def _check_startup_updates(self) -> None:
-        """Non-blocking startup update check.
+        """Start the update check in the background — never blocks first paint.
 
-        Queries the version checker for available updates and stores
-        the count in self._updates_available. This is displayed in the
-        main menu status hint. Completely best-effort — failures are
-        silently ignored so the TUI always starts.
+        The check runs git fetch / apt / GitHub queries that can take up to
+        ~2 minutes on a flaky network; running it inline blanked the screen
+        for that long before the first menu (2026-08-14 audit S1). The only
+        shared state is the int ``self._updates_available``, which the main
+        menu re-reads on every render — the badge simply appears once the
+        thread finishes.
         """
         self._updates_available = 0
+        t = threading.Thread(target=self._check_updates_now,
+                             name='startup-update-check', daemon=True)
+        t.start()
+        self._update_check_thread = t  # joinable by tests
+
+    def _check_updates_now(self) -> None:
+        """The actual update query — best-effort, failures are silent."""
         try:
             from utils.safe_import import safe_import
             check_fn, _, has_checker = safe_import(
@@ -903,11 +971,12 @@ def main():
                             version=f'MeshForge TUI {__version__}')
     except ImportError:
         pass
-    parser.add_argument('--debug', action='store_true',
-                        help='Enable debug logging to console')
+    # --debug was deleted 2026-08-14: it was parsed and never read, and file
+    # logging already runs at DEBUG level (audit W3).
     parser.add_argument('--no-startup-checks', action='store_true',
                         dest='no_startup_checks',
-                        help='Skip startup service health checks')
+                        help='Skip startup service health checks and the '
+                             'background update check')
     args, _ = parser.parse_known_args()
 
     # Initialize the MeshForge logging framework FIRST.
@@ -978,7 +1047,13 @@ def main():
     exit_code = 0
     try:
         launcher = MeshForgeLauncher()
+        launcher.skip_startup_checks = args.no_startup_checks
         launcher.run()
+    except SystemExit as e:
+        # Deliberate exit (e.g. no dialog backend and no recovery). The
+        # finally block below re-raises via sys.exit(exit_code), so the
+        # requested code must be preserved here or it would read as 0.
+        exit_code = e.code if isinstance(e.code, int) else 1
     except KeyboardInterrupt:
         print("\n\nExiting MeshForge...")
     except Exception as e:
