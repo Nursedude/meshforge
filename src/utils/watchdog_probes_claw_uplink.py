@@ -268,9 +268,12 @@ def probe_claw_uplink_node_moved(
                 f"port-{pinhole_port} pinhole does NOT admit "
                 f"(allows: {', '.join(allow_at_fire or []) or 'nobody'})."
                 + common +
-                f" Fix: add {seen[0]} to the pinhole in {pinhole_path} (reload "
-                f"nftables), then pin that address with a DHCP reservation so the "
-                f"firewall's hardcoded copy cannot drift from the lease again."
+                f" Fix: sudo python3 scripts/gen_claw_pinhole.py --apply — it "
+                f"re-derives the allowlist in {pinhole_path} from the uplink's "
+                f"MAC via the neighbour table. Never a DHCP reservation: the "
+                f"lease belongs to a router outside this domain, so the fleet "
+                f"re-derives the address; it does not pin it (see that script's "
+                f"header)."
             )
         else:
             detail = (
