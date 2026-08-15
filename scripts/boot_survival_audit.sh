@@ -104,7 +104,7 @@ scan() {  # $1 = "" for system, "--user" for user manager
             typ=$(systemctl $scope show "$u" -p Type --value 2>/dev/null)
             # oneshot: enabled+inactive is the healthy resting state after a
             # successful run. dbus: activation-on-demand, idle is healthy.
-            [ "$typ" = "oneshot" ] || [ "$typ" = "dbus" ] && continue
+            case "$typ" in oneshot|dbus|idle) continue;; esac
             # A unit whose start was skipped by its own Condition* is not a
             # casualty — the box told it not to run here.
             [ "$(systemctl $scope show "$u" -p ConditionResult --value 2>/dev/null)" = "no" ] && continue
@@ -117,6 +117,9 @@ scan() {  # $1 = "" for system, "--user" for user manager
                 casualties+=("${scope:+usr:}$u enabled-but-$act")
             fi;;
         *.timer)
+            # Timers carry Condition* too (smartmon without smartctl, snapd
+            # repair without snapd...) — a condition-refused timer is not dead.
+            [ "$(systemctl $scope show "$u" -p ConditionResult --value 2>/dev/null)" = "no" ] && continue
             act=$(systemctl $scope is-active "$u" 2>/dev/null)
             if [ "$act" = "active" ]; then
                 ok_count=$((ok_count+1))
