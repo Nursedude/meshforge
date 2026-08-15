@@ -10,7 +10,12 @@
 # bad reset meant reconstructing forwards from memory.
 #
 # Node list: ~/.config/meshforge/aredn_nodes.txt (operator values, MF014):
-#   <dirname> <ssh-host> [port]     # default port 2222, root login
+#   <dirname> <ssh-host> [port] [type]   # port default 2222; type default
+#                                        # aredn (root, `uci export`).
+#                                        # type=routeros: admin login,
+#                                        # `/export` -> rsc-export.txt
+#                                        # (added 2026-08-15 for m1, the last
+#                                        # uncaptured config in the domain)
 #
 # Each capture OVERWRITES uci-export.txt only after a successful fetch into
 # a temp file (a failed ssh must never truncate the last good snapshot), and
@@ -45,16 +50,22 @@ while IFS= read -r line <&3; do
     line="${line%%#*}"
     set -- $line
     [ $# -eq 0 ] && continue
-    name="$1" host="$2" port="${3:-2222}"
+    name="$1" host="$2" port="${3:-2222}" kind="${4:-aredn}"
+    if [ "$kind" = "routeros" ]; then
+        ruser=admin outfile=rsc-export.txt
+        rcmd='/export'   # RouterOS stamps its own date/version/model header
+    else
+        ruser=root outfile=uci-export.txt
+        rcmd='echo "# captured $(date -u +%Y-%m-%dT%H:%M:%SZ) from $(cat /etc/hostname)"; grep DISTRIB_DESCRIPTION /etc/openwrt_release; echo; uci export'
+    fi
     dest="$DEST_ROOT/$name"
     mkdir -p "$dest"
-    tmp="$dest/.uci-export.fetch.$$"
-    if ssh -o ConnectTimeout=10 -o BatchMode=yes -p "$port" "root@$host" \
-         'echo "# captured $(date -u +%Y-%m-%dT%H:%M:%SZ) from $(cat /etc/hostname)"; grep DISTRIB_DESCRIPTION /etc/openwrt_release; echo; uci export' \
-         > "$tmp" 2>/dev/null && [ "$(wc -l < "$tmp")" -gt 10 ]; then
-        [ -f "$dest/uci-export.txt" ] && cp "$dest/uci-export.txt" "$dest/uci-export.prev.txt"
-        mv "$tmp" "$dest/uci-export.txt"
-        captured+=("$name($(wc -l < "$dest/uci-export.txt")l)")
+    tmp="$dest/.$outfile.fetch.$$"
+    if ssh -o ConnectTimeout=10 -o BatchMode=yes -p "$port" "$ruser@$host" \
+         "$rcmd" > "$tmp" 2>/dev/null && [ "$(wc -l < "$tmp")" -gt 10 ]; then
+        [ -f "$dest/$outfile" ] && cp "$dest/$outfile" "$dest/${outfile%.txt}.prev.txt"
+        mv "$tmp" "$dest/$outfile"
+        captured+=("$name($(wc -l < "$dest/$outfile")l)")
     else
         rm -f "$tmp"
         failed+=("$name")
