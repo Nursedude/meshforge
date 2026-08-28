@@ -128,3 +128,69 @@ reports itself.
 | configs unrestorable | fleet-vault + AREDN/RouterOS capture (08-15) |
 | retry-loop thread leak (silent 4 days) | fixed + pinned both repos |
 | PSU/thermal health unknown | measured; 1 thermal finding (meshanchor-server cooling) |
+
+## Post-storm triage: "the watchdog failed first" — overturned (2026-08-27)
+
+Forensics across all 9 boxes: **every watchdog daemon survived the entire
+storm** — NRestarts=0 fleet-wide, most processes ran continuously from
+Aug 15-16 onward, and the journals show them working hard: 31 NEW signals
+on the manager and 19 on moc during Aug 14-21 (tracer_peer_unreachable
+everywhere, an rns_rpc_unresponsive wedge caught on meshanchor-server
+Aug 18, moc's synth soak measuring delivery decay at 0.93/0.94 as the
+outage bit). The sensors never failed.
+
+What failed first was the **delivery of their findings**: ntfy (WAN-
+dependent), the manager box itself (down through parts of the window —
+taking /fleet aggregation and paging with it), and clock-skewed
+freshness that made surviving verdicts look dead. From the operator's
+chair that is indistinguishable from "the watchdog died" — the fleet
+degraded loudly into local journals nobody could read. Caveat: moc3's
+storm-window journal is gone (retention churned by its 806-thread
+thrash), so that one box's watchdog behavior is UNOBSERVABLE, not known-
+good.
+
+Lesson for the roadmap (already on it as #3): the observability spine's
+last WAN coupling is the PAGING path. A LAN/mesh-side page route (LXMF to
+the operator's node) is what turns "sensors survived" into "operator saw".
+
+## Domain assessment: portable / scalable / reproducible (2026-08-27)
+
+**Portable** — app layer yes, fleet layer by-design-with-config.
+MF014 lint + TestOperatorValueContract force operator values out of the
+repo (it rejected this very session's first ntp_island commit); MeshAnchor
+proves the port path (twin tiers + parity_check); standalone.py is the
+zero-dependency offering. The hard dependency is the FORKED RNS/LXMF pips
+(SHA-pinned, MF-owned) — portable only with the forks installed. Fleet
+organs assume the operator's naming/topology (fleet_hosts, .mf.internal,
+a manager box) supplied as config — portable in the "new site, new
+config" sense, not the "unzip anywhere" sense. mini: engine+presets are
+repo-clean (MF014), operator env external — portable; its 73-rule
+canonical JSON is per-box EVOLVED state (see reproducible). claw:
+templated instanced units (mini-dudeai-claw@) — portable pattern, bound
+to its ESP32 bench hardware by nature.
+
+**Scalable** — to tens of boxes, with two real constraints, neither CPU.
+Fleet organs are O(N) serial ssh loops (fleet_pull, offline_check,
+honest_status legs): fine at 9, parallelize before ~30. RNS/LXMF scale by
+protocol; the map federates per-vantage. The measured constraints: (1)
+footprint on the SMALLEST box (watchdog = 7.1% RAM + 4.3s/tick on the
+Pi 3; the subtraction arc exists because probe count compounds), (2)
+frontier/operator attention for mini's ratification loop — rules scale
+per-box, JUDGMENT does not (the Max-x5 downshift makes this the explicit
+budget). Manager visibility is the SPOF-shaped piece (deadman cron on
+moc1 mitigates; both page via WAN — same roadmap #3).
+
+**Reproducible** — code fully; state mostly; the RESTORE PATH is the
+untested guard. Strong: repos+CI, SHA-pinned forks, templates/systemd,
+db_inventory, guard drills, 3-tier fleet-vault (body/mind/fingerprints)
+with LAB-ZERO.md restore order, monthly captures. This storm was a
+partial live test: the fleet recovered on git pull + state-file
+quarantine, zero reimages. Measured gaps: pw2lab had NO captured config
+(found during its revival attempt); /etc drift added this session
+(chrony, timesyncd drop-ins, fake-hwclock) awaits the next capture cycle
+— refresh fleet-vault after storm-prep changes land, not monthly;
+hostname inconsistency (wh6gxzmesh, wh6gxzser vs meshforge-*) is
+reproducibility friction; mini's rules rebuild-from-seeds is unproven.
+**LAB-ZERO has never been drilled — and pw2lab is the perfect drill**: if
+its SD is storm-corrupt anyway, rebuild it from the restore path and the
+reproducibility claim gets its first VERIFIED leg.
