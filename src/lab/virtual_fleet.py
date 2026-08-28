@@ -39,7 +39,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +387,62 @@ def start_gateway(workdir: Path, base_port: int, repo_src: Path) -> int:
     return 1
 
 
+def _start_echo(workdir: Path, repo_src: Path):
+    """Start the sandbox echo responder; returns (echo_hash, popen) or (None, None)."""
+    echo_nd = _node_dir(workdir, "echo")
+    proc = subprocess.run(
+        [sys.executable, "-m", "lab.lxmf_echo", "--init"],
+        capture_output=True, text=True, timeout=30,
+        cwd=str(repo_src), env=_lab_env(echo_nd),
+    )
+    if proc.returncode != 0:
+        logger.error("echo --init failed: %s", proc.stderr.strip())
+        return None, None
+    echo_hash = proc.stdout.strip().splitlines()[-1].split("=")[-1].strip()
+    logger.info("echo destination: %s", echo_hash)
+
+    echo_log = open(echo_nd / "echo.log", "ab")
+    echo_proc = subprocess.Popen(  # managed daemon; caller kills
+        [sys.executable, "-m", "lab.lxmf_echo", "--announce-interval", "20"],
+        stdout=echo_log, stderr=subprocess.STDOUT,
+        cwd=str(repo_src), env=_lab_env(echo_nd),
+        start_new_session=True,
+    )
+    (echo_nd / "echo.pid").write_text(str(echo_proc.pid))
+    return echo_hash, echo_proc
+
+
+def _check_breach(workdir: Path) -> List[str]:
+    """Runtime breach detector (caught a real one on 2026-08-27): every RNS
+    listener preflight the gateway process logged must name a vfleet
+    instance. A non-vfleet name means some component attached to the box's
+    REAL mesh."""
+    gw_log = (_node_dir(workdir, "gw") / "gateway.log").read_text(
+        errors="replace")
+    return [l for l in gw_log.splitlines()
+            if "@rns/" in l and "@rns/vfleet-" not in l]
+
+
+def _run_canary_once(workdir: Path, base_port: int, repo_src: Path,
+                     *, leg1_timeout: int = 90,
+                     leg2_timeout: int = 90) -> Tuple[int, str]:
+    """One gateway_rt_canary fire in the sandbox env; (rc, verdict tail)."""
+    peers = workdir / "lab_peers"
+    env = _gateway_env(workdir, base_port)
+    proc = subprocess.run(
+        [sys.executable, "-m", "lab.gateway_rt_canary",
+         "--peer", "vecho", "--peers-file", str(peers),
+         "--leg1-timeout", str(leg1_timeout),
+         "--leg2-timeout", str(leg2_timeout),
+         "--skip-service-check"],  # sandbox gateway is a managed process, not a unit
+        capture_output=True, text=True,
+        timeout=leg1_timeout + leg2_timeout + 120,
+        cwd=str(repo_src), env=env,
+    )
+    tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-3:])
+    return proc.returncode, tail
+
+
 def canary(workdir: Path, base_port: int, repo_src: Path) -> int:
     """gateway_rt_canary green in the sandbox: enqueue -> LXMF CONFIRMED ->
     echo ACK bridged back to a mesh queue row. The canary runs in the SAME
@@ -397,64 +453,150 @@ def canary(workdir: Path, base_port: int, repo_src: Path) -> int:
         logger.error("canary refused: fleet not clean (see status above)")
         return 1
 
-    echo_nd = _node_dir(workdir, "echo")
-
-    proc = subprocess.run(
-        [sys.executable, "-m", "lab.lxmf_echo", "--init"],
-        capture_output=True, text=True, timeout=30,
-        cwd=str(repo_src), env=_lab_env(echo_nd),
-    )
-    if proc.returncode != 0:
-        logger.error("echo --init failed: %s", proc.stderr.strip())
+    echo_hash, echo_proc = _start_echo(workdir, repo_src)
+    if echo_hash is None:
         return 1
-    echo_hash = proc.stdout.strip().splitlines()[-1].split("=")[-1].strip()
-    logger.info("echo destination: %s", echo_hash)
-
-    echo_log = open(echo_nd / "echo.log", "ab")
-    echo_proc = subprocess.Popen(  # managed daemon; killed in finally
-        [sys.executable, "-m", "lab.lxmf_echo", "--announce-interval", "20"],
-        stdout=echo_log, stderr=subprocess.STDOUT,
-        cwd=str(repo_src), env=_lab_env(echo_nd),
-        start_new_session=True,
-    )
-    (echo_nd / "echo.pid").write_text(str(echo_proc.pid))
-
     try:
         if start_gateway(workdir, base_port, repo_src) != 0:
             return 1
-
-        # Runtime breach detector (caught a real one on 2026-08-27): every
-        # RNS listener preflight the gateway process logged must name a
-        # vfleet instance. A non-vfleet name means some component attached
-        # to the box's REAL mesh — abort before any traffic is generated.
-        gw_log = (_node_dir(workdir, "gw") / "gateway.log").read_text(
-            errors="replace")
-        breaches = [l for l in gw_log.splitlines()
-                    if "@rns/" in l and "@rns/vfleet-" not in l]
+        breaches = _check_breach(workdir)
         if breaches:
             logger.error("ISOLATION BREACH — gateway touched a non-vfleet "
                          "RNS instance:\n%s", "\n".join(breaches[:4]))
             return 1
 
-        peers = workdir / "lab_peers"
-        peers.write_text(f"vecho={echo_hash}\n")
+        (workdir / "lab_peers").write_text(f"vecho={echo_hash}\n")
         time.sleep(5)  # one announce cycle so the gateway has the echo's path
 
-        env = _gateway_env(workdir, base_port)
-        proc = subprocess.run(
-            [sys.executable, "-m", "lab.gateway_rt_canary",
-             "--peer", "vecho", "--peers-file", str(peers),
-             "--leg1-timeout", "90", "--leg2-timeout", "90",
-             "--skip-service-check"],  # sandbox gateway is a managed process, not a unit
-            capture_output=True, text=True, timeout=SMOKE_TIMEOUT_S + 120,
-            cwd=str(repo_src), env=env,
-        )
-        tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-6:])
-        if proc.returncode == 0:
+        rc, tail = _run_canary_once(workdir, base_port, repo_src)
+        if rc == 0:
             print(f"CANARY OK — full gateway round trip in the sandbox\n{tail}")
             return 0
-        print(f"CANARY rc={proc.returncode}\n{tail}")
-        return proc.returncode
+        print(f"CANARY rc={rc}\n{tail}")
+        return rc
+    finally:
+        if _pid_alive(echo_proc.pid):
+            os.kill(echo_proc.pid, signal.SIGTERM)
+
+
+# ------------------------------------------------------------ chaos layer
+
+def _truncate_sandbox_ratchets(workdir: Path) -> int:
+    """Plant the exact power-loss corpse shape (0-byte ratchets) in the
+    SANDBOX gateway's LXMF storage. Returns how many files were truncated.
+
+    CONTAINMENT INVARIANT: refuses any path that does not resolve inside
+    the workdir — a fault injector that can reach outside its sandbox is
+    itself the incident (honest_failure_modes #8; tx-guard 2026-08-09).
+    """
+    ratchet_dir = (_gw_home(workdir) / ".config" / "meshforge"
+                   / "lxmf_storage" / "lxmf" / "ratchets")
+    count = 0
+    work_root = workdir.resolve()
+    if not ratchet_dir.is_dir():
+        return 0
+    for p in ratchet_dir.glob("*.ratchets"):
+        resolved = p.resolve()
+        if work_root not in resolved.parents:
+            raise RuntimeError(
+                f"chaos containment violation: {resolved} is outside the "
+                f"sandbox workdir {work_root} — refusing to touch it")
+        p.write_bytes(b"")
+        count += 1
+    return count
+
+
+def chaos(workdir: Path, base_port: int, repo_src: Path) -> int:
+    """Chaos drills: replay paid-for failure classes against the LIVE
+    sandbox pipeline. Each drill asserts BOTH halves — the honest failure
+    behavior under fault AND the recovery after it. A canary that stays
+    green through a partition would itself be the defect.
+
+      baseline     canary OK on a healthy fleet
+      corrupt      SIGKILL gateway (unclean stop), 0-byte its ratchets
+                   (the Lala class) -> restart must log the quarantine
+                   guard firing AND canary returns OK
+      partition    SIGSTOP the transport rnsd (wedged/unreachable relay)
+                   -> canary MUST fail; SIGCONT -> canary OK again
+    """
+    results = []
+
+    def record(name: str, ok: bool, evidence: str):
+        results.append((name, ok, evidence))
+        print(f"DRILL {name:10s} {'OK  ' if ok else 'FAIL'} — {evidence}")
+
+    if up(workdir, base_port) != 0:
+        return 1
+    if status(workdir, base_port) != 0:
+        logger.error("chaos refused: fleet not clean (see status above)")
+        return 1
+    echo_hash, echo_proc = _start_echo(workdir, repo_src)
+    if echo_hash is None:
+        return 1
+
+    try:
+        if start_gateway(workdir, base_port, repo_src) != 0:
+            return 1
+        if _check_breach(workdir):
+            logger.error("chaos refused: isolation breach at baseline")
+            return 1
+        (workdir / "lab_peers").write_text(f"vecho={echo_hash}\n")
+        time.sleep(5)
+
+        # --- drill 0: baseline -------------------------------------------
+        rc, tail = _run_canary_once(workdir, base_port, repo_src)
+        record("baseline", rc == 0, tail.splitlines()[-1] if tail else f"rc={rc}")
+        if rc != 0:
+            return 1  # no point drilling faults on a broken baseline
+
+        # --- drill 1: power-loss ratchet corpse --------------------------
+        gw_pid = _read_pid(_node_dir(workdir, "gw") / "gateway.pid")
+        if gw_pid and _pid_alive(gw_pid):
+            os.kill(gw_pid, signal.SIGKILL)   # unclean stop, like the mains
+            time.sleep(1)
+        n = _truncate_sandbox_ratchets(workdir)
+        if n == 0:
+            record("corrupt", False,
+                   "no ratchet files existed to corrupt — vacuous drill "
+                   "(an audit of zero things is not a pass)")
+        else:
+            ok_start = start_gateway(workdir, base_port, repo_src) == 0
+            gw_log = (_node_dir(workdir, "gw") / "gateway.log").read_text(
+                errors="replace")
+            quarantined = "Quarantined corrupt ratchet" in gw_log
+            rc, tail = _run_canary_once(workdir, base_port, repo_src)
+            record("corrupt",
+                   ok_start and quarantined and rc == 0,
+                   f"truncated={n} guard_fired={quarantined} "
+                   f"restart_ok={ok_start} canary_rc={rc}")
+
+        # --- drill 2: transport partition --------------------------------
+        tr_pid = _read_pid(_pidfile(workdir, "transport"))
+        if not (tr_pid and _pid_alive(tr_pid)):
+            record("partition", False, "transport rnsd not running")
+        else:
+            os.kill(tr_pid, signal.SIGSTOP)   # wedged relay: up but silent
+            try:
+                rc_fail, _ = _run_canary_once(
+                    workdir, base_port, repo_src,
+                    leg1_timeout=20, leg2_timeout=5)
+            finally:
+                os.kill(tr_pid, signal.SIGCONT)
+            time.sleep(5)                      # let links settle
+            rc_ok, tail = _run_canary_once(workdir, base_port, repo_src)
+            record("partition",
+                   rc_fail != 0 and rc_ok == 0,
+                   f"during_partition_rc={rc_fail} (must be nonzero — a "
+                   f"green canary through a partition is the lie), "
+                   f"after_heal_rc={rc_ok}")
+
+        failed = [n for n, ok, _ in results if not ok]
+        if failed:
+            print(f"CHAOS FAIL — drills not green: {failed}")
+            return 1
+        print(f"CHAOS OK — {len(results)} drills green "
+              "(fault behavior AND recovery both asserted)")
+        return 0
     finally:
         if _pid_alive(echo_proc.pid):
             os.kill(echo_proc.pid, signal.SIGTERM)
@@ -527,7 +669,8 @@ def smoke(workdir: Path, base_port: int, repo_src: Path) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("command",
-                        choices=("up", "down", "status", "smoke", "canary"))
+                        choices=("up", "down", "status", "smoke", "canary",
+                                 "chaos"))
     from utils.paths import get_real_user_home
     parser.add_argument(
         "--workdir", type=Path,
@@ -550,6 +693,8 @@ def main(argv=None) -> int:
         return status(args.workdir, args.base_port)
     if args.command == "canary":
         return canary(args.workdir, args.base_port, repo_src)
+    if args.command == "chaos":
+        return chaos(args.workdir, args.base_port, repo_src)
     return smoke(args.workdir, args.base_port, repo_src)
 
 

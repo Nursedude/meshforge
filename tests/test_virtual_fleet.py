@@ -98,5 +98,53 @@ class TestCheckerCatchesPlantedViolations(unittest.TestCase):
                             for v in config_violations(cfg)))
 
 
+class TestChaosContainment(unittest.TestCase):
+    """The fault injector must be UNABLE to reach outside its sandbox — a
+    chaos tool that can corrupt real state is itself the incident (hfm #8).
+    Planted-escape style: build the escape, require the refusal."""
+
+    def _ratchet_dir(self, work: Path) -> Path:
+        d = (work / "gw" / "home" / ".config" / "meshforge"
+             / "lxmf_storage" / "lxmf" / "ratchets")
+        d.mkdir(parents=True)
+        return d
+
+    def test_truncates_only_inside_the_sandbox(self):
+        import tempfile
+
+        from lab.virtual_fleet import _truncate_sandbox_ratchets
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "vfleet"
+            d = self._ratchet_dir(work)
+            inside = d / ("a" * 32 + ".ratchets")
+            inside.write_bytes(b"real-ratchet-bytes")
+            n = _truncate_sandbox_ratchets(work)
+            self.assertEqual(n, 1)
+            self.assertEqual(inside.read_bytes(), b"")
+
+    def test_symlink_escape_is_refused_and_target_untouched(self):
+        import tempfile
+
+        from lab.virtual_fleet import _truncate_sandbox_ratchets
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp) / "vfleet"
+            d = self._ratchet_dir(work)
+            outside = Path(tmp) / "victim.ratchets"   # OUTSIDE the workdir
+            outside.write_bytes(b"the real fleet's ratchet")
+            (d / ("b" * 32 + ".ratchets")).symlink_to(outside)
+            with self.assertRaises(RuntimeError):
+                _truncate_sandbox_ratchets(work)
+            self.assertEqual(outside.read_bytes(),
+                             b"the real fleet's ratchet",
+                             "escape target must be untouched")
+
+    def test_missing_dir_is_zero_not_error(self):
+        import tempfile
+
+        from lab.virtual_fleet import _truncate_sandbox_ratchets
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(_truncate_sandbox_ratchets(Path(tmp) / "vf"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

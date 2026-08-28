@@ -84,5 +84,12 @@ NEW build; Tiers 1 and 3 are formalizations of pipes that already run.
    in the canary flow + the process-wide MESHFORGE_RNS_CONFIGDIR
    resolution root), and flushed two hardcoded-path drifts (rpc-key
    alignment check vs the ReticulumPaths SSOT; fixed /tmp client-config
-   collision). Next: chaos layer, CI wiring.
+   collision). CHAOS LAYER SHIPPED same day (`chaos` command, 3 drills,
+   reproduced 2x): baseline canary; the Lala zero-byte class end-to-end
+   (SIGKILL gateway + real 0-byte ratchet corpse -> quarantine guard
+   observed firing -> canary green); transport partition via SIGSTOP
+   (canary MUST fail during the fault — a green canary through a
+   partition is the lie — and heal after SIGCONT). Fault injector is
+   containment-tested (planted symlink escape refused). Next: clock-skew
+   drill (libfaketime), CI wiring.
 4. Public map staleness banner check (item 1 above).
