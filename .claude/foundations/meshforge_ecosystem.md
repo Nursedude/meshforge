@@ -80,10 +80,11 @@ MeshForge is not a single repository — it's a **domain** spanning five repos t
 Quadrant rule: an app that is *deployed but unmaintained* either gets stopped
 or earns a probe — no third option. Dependabot vulnerability alerts enabled on
 all 8 Nursedude repos (incl. the reticulum/lxmf forks) 2026-08-28. First scan:
-7 repos 0 open; **RNS-Meshtastic-Gateway-Tool 5 high + 2 medium** — all stale
-pins in its hash-locked `requirements-lock.txt` (cryptography→50.0.0,
-urllib3→2.7.0, idna→3.15). Undeployed, so no live exposure; regenerate the
-lock (pip-tools, not hand-edit) + run its CI when the repo next gets touched.
+7 repos 0 open; RNS-Meshtastic-Gateway-Tool 5 high + 2 medium (stale lock
+pins) — **FIXED same day** (`f850762`): lock regenerated with pip-compile
+--generate-hashes on py3.11 (cryptography 50.0.1, urllib3 2.7.0, idna 3.19),
+suite 534 passed on the new versions. Regen recipe: needs a py3.11 host
+(moc4 is the fleet's only one), never hand-edit hash pins.
 
 | App | Lifecycle | Deployed (fleet sweep 2026-08-28) |
 |-----|-----------|-----------------------------------|
@@ -91,7 +92,7 @@ lock (pip-tools, not hand-edit) + run its CI when the repo next gets touched.
 | meshing_around_meshforge (+ meshing-around fork) | **dormant** (last upstream merge 2026-08-06) | NOT deployed — checkouts on VolcanoAI only, no units/procs anywhere |
 | RNS-Management-Tool | **dormant** (2026-06-20) | NOT deployed — checkout only |
 | RNS-Meshtastic-Gateway-Tool | **dormant/absorbing** (2026-06-01) | NOT deployed — checkout only; logic migrating into `src/gateway/` |
-| reticulum-meshchat (3rd-party, liamcottle) | external | **RUNNING on moc5** — `0.0.0.0:8000`, unauthenticated UI, checkout 2026-03-13 (VolcanoAI copy is at 2026-08-06); RNS env on the fork pin (1.3.8+mf.0) |
+| reticulum-meshchat (3rd-party, liamcottle via Nursedude fork) | external | **RUNNING on moc5** — `0.0.0.0:8000`, unauthenticated UI (open item); updated 2026-08-28 to `4d57d6a` (08-06 upstream merge), aiohttp 3.14.3 / websockets 17.1, RNS env on the fork pin (1.3.8+mf.0). MeshChatX (Quad4 fork) evaluated 08-28: not a drop-in — data-incompatible, untested vs the fork pin; canary in the lab first if wanted |
 
 ---
 
