@@ -617,6 +617,12 @@ class MeshtasticBroadcastBridge:
             self._storage_path.mkdir(parents=True, exist_ok=True)
             self._identity = self._load_or_create_identity()
 
+            # Power-loss-truncated ratchets crash register_delivery_identity()
+            # AFTER Transport registration, wedging retries on 'already
+            # registered' — validate and quarantine first (2026-08-27).
+            from gateway._rns_bridge_connection import quarantine_corrupt_ratchets
+            quarantine_corrupt_ratchets(self._storage_path)
+
             with _suppress_signal_in_thread():
                 self._router = self._lxmf.LXMRouter(
                     storagepath=str(self._storage_path)

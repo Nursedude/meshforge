@@ -25,6 +25,63 @@ _RNS_mod, _HAS_RNS = safe_import('RNS')
 _LXMF_mod, _HAS_LXMF = safe_import('LXMF')
 
 
+def quarantine_corrupt_ratchets(storage_path):
+    """Move unreadable LXMF ratchet files aside before router setup.
+
+    Power loss truncates in-flight ratchet writes to 0 bytes (2026-08-27:
+    12 such corpses fleet-wide after the Hurricane Lala outage). A corrupt
+    ratchet makes register_delivery_identity() raise AFTER the destination
+    is registered with Transport, so every reconnect retry then fails with
+    'Attempt to register an already registered destination.' — the gateway
+    wedges forever behind an error that names the wrong cause. RNS's own
+    Critical-log guidance is to remove the file and re-announce promptly;
+    the announce already happens in _setup_lxmf, so doing the removal here
+    makes the wedge self-healing while keeping the corpse for forensics.
+
+    Returns the list of quarantined paths (empty when nothing was wrong,
+    or when validation could not run — the caller proceeds either way; a
+    missing validator must not become a new way to refuse setup).
+    """
+    quarantined = []
+    ratchet_dir = os.path.join(str(storage_path), "lxmf", "ratchets")
+    if not os.path.isdir(ratchet_dir):
+        return quarantined
+    try:
+        from RNS.vendor import umsgpack
+    except ImportError:
+        logger.debug("ratchet pre-validation skipped: RNS not importable")
+        return quarantined
+    for name in sorted(os.listdir(ratchet_dir)):
+        if not name.endswith(".ratchets"):
+            continue
+        path = os.path.join(ratchet_dir, name)
+        try:
+            with open(path, "rb") as fh:
+                persisted = umsgpack.unpackb(fh.read())
+            # Mirror RNS.Destination._reload_ratchets exactly: it proceeds
+            # via `"signature" in persisted and "ratchets" in persisted`,
+            # so a payload where that membership test RAISES (e.g. the
+            # NUL-fill corpse unpacks to int 0) wedges setup just like an
+            # unpackb failure does. Signature validity needs the identity
+            # and is not this guard's class — truncation is.
+            ("signature" in persisted and "ratchets" in persisted)
+        except Exception as exc:
+            corpse = f"{path}.corrupt-{time.strftime('%Y%m%d')}"
+            try:
+                os.rename(path, corpse)
+            except OSError as mv_err:
+                logger.error(
+                    "Corrupt ratchet %s could NOT be quarantined (%s) — "
+                    "LXMF setup will likely wedge on it", path, mv_err)
+                continue
+            quarantined.append(path)
+            logger.error(
+                "Quarantined corrupt ratchet %s -> %s (%s: %s) — ratchet "
+                "regenerates on next use; peers re-sync via the announce",
+                path, corpse, type(exc).__name__, exc)
+    return quarantined
+
+
 class RNSConnectionMixin:
     """Mixin providing RNS/LXMF connection lifecycle methods.
 
@@ -285,6 +342,10 @@ class RNSConnectionMixin:
         # Create LXMF router
         storage_path = get_real_user_home() / ".config" / "meshforge" / "lxmf_storage"
         storage_path.mkdir(parents=True, exist_ok=True)
+        # Power-loss-truncated ratchets crash register_delivery_identity()
+        # AFTER Transport registration, wedging every retry on 'already
+        # registered' — validate and quarantine them first (2026-08-27).
+        quarantine_corrupt_ratchets(storage_path)
         self._lxmf_router = LXMF.LXMRouter(storagepath=str(storage_path))
 
         # Register delivery callback

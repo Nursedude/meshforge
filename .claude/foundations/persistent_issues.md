@@ -115,6 +115,8 @@ Symptom you can see at a terminal → which class it is. Full bodies in the arch
 | service `active` but its writes vanish | systemd sandbox path drift (#60) — check `ReadWritePaths=` vs where the code writes |
 | meshtasticd moved off `:9443` after a HAT change | upstream overlay smuggled `Webserver: Port:` (#58) |
 | a probe reports `indeterminate` for DAYS | it is a FINDING, not weather — and `inert` (absent by design) is a different claim (2026-08-05) |
+| service crashloops after power loss with `OSError`/`InsufficientDataException` on a state file | zero-byte power-loss truncation (2026-08-27: 13 corpses fleet-wide post-Lala — 12 LXMF `*.ratchets`, 2 NUL jsonl lines). Quarantine the corpse, restart, announce. ⚠️ the gateway's steady-state error is `already registered destination` — scroll the journal to the FIRST failure after start; `quarantine_corrupt_ratchets()` self-heals the LXMF leg since `_rns_bridge_connection.py` 2026-08-27 |
+| `uptime` disagrees with wtmp/`who -b`, or crons barely fire while cron is `active` | the clock ran days-stale through a WAN outage (RTC-less Pi: fake-hwclock restores stale time, NTP unreachable can't step it; moc4 ran ~8 days behind, 5 cron fires in 4 days). Wall-clock instruments (cron, verdict freshness, wtmp) all lie together; trust monotonic `uptime`. Fix class = LAN-internal NTP (see Starlink-resilience notes 2026-08-27) |
 
 ⚠️ **Growth rule (this is the structural fix, 2026-08-05).** This file is
 bounded by VALUE-PER-TURN, not chronology. A newly-resolved issue goes
