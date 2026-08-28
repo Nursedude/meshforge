@@ -19,8 +19,13 @@ import unittest
 import tempfile
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+# CI's minimal-deps profile has no RNS; the guard itself no-ops without it
+# (guarded import), so without RNS there is nothing real to pin here.
+pytest.importorskip("RNS", reason="RNS not installed (CI minimal profile)")
 from RNS.vendor import umsgpack  # noqa: E402
 
 from gateway._rns_bridge_connection import quarantine_corrupt_ratchets  # noqa: E402
