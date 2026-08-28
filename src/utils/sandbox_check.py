@@ -59,7 +59,14 @@ def meshforge_writable_paths(*, rns_client: bool = False) -> List[Path]:
         home / ".cache" / "meshforge",
     ]
     if rns_client:
-        paths.append(ReticulumPaths.ETC_STORAGE)
+        # Derive from the RESOLVED config root, not the ETC constant: with
+        # MESHFORGE_RNS_CONFIGDIR set (lab.virtual_fleet sandbox) the RNS
+        # write target is <override>/storage, and probing the hardcoded
+        # /etc/reticulum/storage is the D2 lesson inverted — the guard
+        # watching a path the code doesn't write (caught 2026-08-27 on a
+        # CI runner with no /etc/reticulum at all). On fleet boxes the
+        # resolution IS /etc/reticulum, so behavior there is unchanged.
+        paths.append(ReticulumPaths.get_config_dir() / "storage")
     return paths
 
 
@@ -126,7 +133,9 @@ def assert_writable_or_exit(
         return
 
     home = get_real_user_home()
-    rns_storage_failed = any(p == ReticulumPaths.ETC_STORAGE for p, _ in failures)
+    rns_storage_failed = any(
+        p == ReticulumPaths.ETC_STORAGE or p.name == "storage"
+        for p, _ in failures)
     logger.error(
         "%s: sandbox writable-path check FAILED (%d/%d paths). "
         "Service cannot persist state. Most likely the systemd unit's "

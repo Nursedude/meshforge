@@ -163,6 +163,9 @@ def up(workdir: Path, base_port: int) -> int:
         nd = _node_dir(workdir, name)
         nd.mkdir(parents=True, exist_ok=True)
         (nd / "ids").mkdir(exist_ok=True)
+        # RNS creates <configdir>/storage lazily, but the gateway's sandbox
+        # preflight probes it for existence+writability at startup.
+        (nd / "storage").mkdir(exist_ok=True)
         cfg = nd / "config"
         cfg.write_text(render_node_config(name, base_port))
 
@@ -295,21 +298,29 @@ def _write_gateway_config(workdir: Path, base_port: int) -> Path:
     (home / ".local" / "share" / "meshforge").mkdir(parents=True, exist_ok=True)
     (home / ".cache" / "meshforge").mkdir(parents=True, exist_ok=True)
     cfg = cfg_dir / "gateway.json"
-    if not cfg.exists():
-        import json
-        cfg.write_text(json.dumps({
-            "enabled": True,
-            "rns_bridge_enabled": True,
-            "rns": {
-                "config_dir": str(_node_dir(workdir, "gw")),
-                "gateway_name": "vfleet-gw",
-                "announce_interval": 60,
-            },
-            "meshtastic": {
-                "host": "127.0.0.1",
-                "port": base_port + MESHTASTIC_BLACKHOLE_PORT_OFFSET,
-            },
-        }, indent=2))
+    # Always (re)write: the sandbox config is generated, and a stale copy
+    # from an older orchestrator version is exactly how config drift hides.
+    import json
+    cfg.write_text(json.dumps({
+        "enabled": True,
+        "rns_bridge_enabled": True,
+        "rns": {
+            "config_dir": str(_node_dir(workdir, "gw")),
+            "gateway_name": "vfleet-gw",
+            "announce_interval": 60,
+        },
+        "meshtastic": {
+            "host": "127.0.0.1",
+            "port": base_port + MESHTASTIC_BLACKHOLE_PORT_OFFSET,
+        },
+        # Empty channel NAME: the TX channel resolver otherwise queries
+        # meshtasticd's channel list to map the name to an index — and that
+        # query goes to a meshtastic CLI default, which on a radio box is
+        # the REAL daemon (read-leak caught 2026-08-27 when the real
+        # PhoneAPI was busy and the query's failure unmasked it). Numeric
+        # channel 0 needs no resolution and no query.
+        "mqtt_bridge": {"channel": ""},
+    }, indent=2))
     return cfg
 
 
