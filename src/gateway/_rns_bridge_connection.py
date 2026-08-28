@@ -346,7 +346,13 @@ class RNSConnectionMixin:
         # AFTER Transport registration, wedging every retry on 'already
         # registered' — validate and quarantine them first (2026-08-27).
         quarantine_corrupt_ratchets(storage_path)
-        self._lxmf_router = LXMF.LXMRouter(storagepath=str(storage_path))
+        # REUSE a router constructed by an earlier failed attempt:
+        # LXMRouter() starts its job threads at construction, so a retry
+        # loop that builds a fresh one each pass leaks threads until
+        # 'can't start new thread' (moc3 2026-08-27: 806 threads, load
+        # 182, 4 days of hourly retries on a Pi 3).
+        if self._lxmf_router is None:
+            self._lxmf_router = LXMF.LXMRouter(storagepath=str(storage_path))
 
         # Register delivery callback
         self._lxmf_router.register_delivery_callback(self._on_lxmf_receive)
@@ -358,10 +364,11 @@ class RNSConnectionMixin:
         configured = self.config.rns.gateway_name.strip()
         display_name = configured or f"MeshForge Gateway ({socket.gethostname()})"
 
-        self._lxmf_source = self._lxmf_router.register_delivery_identity(
-            self._identity,
-            display_name=display_name
-        )
+        if self._lxmf_source is None:
+            self._lxmf_source = self._lxmf_router.register_delivery_identity(
+                self._identity,
+                display_name=display_name
+            )
 
         # Configure outbound propagation node for store-and-forward
         prop_node = self.config.rns.propagation_node.strip()
@@ -384,7 +391,10 @@ class RNSConnectionMixin:
             self._lxmf_source.hash.hex(), display_name,
         )
 
-        # Register announce handler for node discovery
+        # Register announce handler for node discovery — ONCE per process:
+        # Transport keeps every registered handler, so re-registering on a
+        # setup retry accumulates duplicates that each re-process every
+        # announce (same retry-loop leak family as the router threads).
         class AnnounceHandler:
             def __init__(self, bridge):
                 self.aspect_filter = "lxmf.delivery"
@@ -393,7 +403,9 @@ class RNSConnectionMixin:
             def received_announce(self, destination_hash, announced_identity, app_data):
                 self.bridge._on_rns_announce(destination_hash, announced_identity, app_data)
 
-        RNS.Transport.register_announce_handler(AnnounceHandler(self))
+        if not getattr(self, "_announce_handler_registered", False):
+            RNS.Transport.register_announce_handler(AnnounceHandler(self))
+            self._announce_handler_registered = True
 
         self._connected_rns = True
         logger.info("Connected to RNS (LXMF ready)")
