@@ -316,6 +316,12 @@ def _router_storage(role: str) -> str:
         os.chmod(root, 0o700)
     except OSError:
         pass
+    # Persistent storage collects power-loss-truncated ratchets like any
+    # other (0-byte corpses found HERE on moc+moc3 after Lala, 2026-08-27)
+    # — a corrupt one crashes register_delivery_identity() after partial
+    # Transport registration, the same wedge the gateway had.
+    from gateway._rns_bridge_connection import quarantine_corrupt_ratchets
+    quarantine_corrupt_ratchets(root)
     return str(root)
 
 
