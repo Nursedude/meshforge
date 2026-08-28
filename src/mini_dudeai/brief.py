@@ -60,6 +60,12 @@ def recent_escalations(history: list[dict], now_ts: float,
         ts = h.get("ts")
         if ts is not None and float(ts) < cutoff:
             continue
+        # Carry the row's transition on a copy (never mutate history): the
+        # engine replays the escalation payload on the CLEAR row too, and an
+        # edge_down is positive evidence the condition resolved — evidence the
+        # activity split needs when the rule has aged out of the state file.
+        esc = dict(esc)
+        esc["_transition"] = h.get("transition")
         key = (esc.get("rule"), esc.get("subject"), str(esc.get("detail", "")))
         prev = fresh.get(key)
         if prev is None or float(ts or 0) >= float(prev[0] or 0):
@@ -79,16 +85,26 @@ def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
     read as a live 22-tick escalation. The state's per-rule
     ``currently_active`` flag is the truth; gate the headline section on it.
 
-    Conservative by design: an escalation is demoted to "resolved" ONLY when
-    the state positively shows its (rule, subject) with currently_active
-    false. Unknown pairs (rule renamed/pruned, schema drift, missing state)
-    stay in "active" — we never hide a live escalation on a state mismatch.
+    Conservative by design: an escalation is demoted to "resolved" ONLY on
+    positive evidence — the state shows its (rule, subject) with
+    currently_active false, OR the escalation's newest history row was the
+    edge_down (clear) transition itself. Unknown pairs on a fire row (rule
+    renamed/pruned, schema drift, missing state) stay in "active" — we never
+    hide a live escalation on a state mismatch.
 
     "Positively shows false" means the FIELD carries a value, not just that
     the pair exists (2026-08-11 frontier review). ``bool(rs.get(...))`` mapped
     a pair whose flag had been renamed/dropped/nulled by schema drift to
     False — the hiding direction, for every escalation at once — while this
     docstring promised the opposite. Absent-or-None is unknown, never False.
+
+    The edge_down leg (2026-08-28): the engine replays the escalation payload
+    on the clear row, and a long-running condition that resolves has usually
+    been pruned from the state's rules dict by then (its last FIRE is outside
+    the retention window). The state lookup then can't demote it, and a
+    condition that cleared 18h ago sat under "Look here first" in the present
+    tense (moc-drain-snapshot / nomadnet after the Lala recovery). The clear
+    row is the engine's own observation — as strong as currently_active=False.
     """
     status = {}
     for rs in rules.values():
@@ -97,7 +113,9 @@ def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
                 rs["currently_active"])
     active, resolved = [], []
     for esc in escalations:
-        if status.get((esc.get("rule"), esc.get("subject")), True):
+        if esc.get("_transition") == "edge_down":
+            resolved.append(esc)
+        elif status.get((esc.get("rule"), esc.get("subject")), True):
             active.append(esc)
         else:
             resolved.append(esc)

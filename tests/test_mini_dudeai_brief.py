@@ -76,17 +76,20 @@ def test_escalations_surface_look_here_first():
     assert "chase this" in out
 
 
-def _esc_row(ts, rule, subject, detail, note="", legacy=False):
+def _esc_row(ts, rule, subject, detail, note="", legacy=False,
+             transition="edge_up"):
     esc = {"rule": rule, "subject": subject, "detail": detail, "note": note}
     outcome = {"action": "propose_escalation", "ok": True}
     if legacy:
         outcome["escalation"] = esc            # older top-level schema
     else:
         outcome["extras"] = {"escalation": esc}  # current schema
-    # escalation rows are typically edge_down in practice; that keeps them out
-    # of the "Recent fires" (edge_up only) section so we assert on "Look here
-    # first" in isolation.
-    return {"ts": ts, "transition": "edge_down", "rule_id": rule,
+    # The engine attaches the escalation payload to BOTH transitions — the
+    # edge_up fire and the edge_down clear (measured ~1:1 in live history,
+    # 2026-08-28). Default to edge_up, the "live escalation" shape; pass
+    # transition="edge_down" to model a clear row (which the activity split
+    # treats as positive resolved evidence).
+    return {"ts": ts, "transition": transition, "rule_id": rule,
             "subject": subject, "detail": detail, "outcome": outcome}
 
 
@@ -97,7 +100,9 @@ def test_stale_escalation_filtered_by_window():
                      "moc3", "FORCED stuck-active for daemon self-correction test")
     out = build_brief(_state(), [stale], NOW)
     assert "Look here first" not in out
-    assert "FORCED stuck-active" not in out
+    # scope to the escalation section — an edge_up row legitimately shows in
+    # "Recent fires", which lists the whole history file
+    assert "FORCED stuck-active" not in _brief_section(out, "🔎 Look here first")
 
 
 def test_fresh_escalation_within_window_surfaces():
@@ -114,7 +119,8 @@ def test_escalations_deduped_keeping_latest():
             _esc_row(NOW - 4000, "r", "moc3", "same detail"),
             _esc_row(NOW - 3000, "r", "moc3", "same detail")]
     out = build_brief(_state(), rows, NOW)
-    assert out.count("r · moc3 · same detail") == 1
+    look = _brief_section(out, "🔎 Look here first")
+    assert look.count("r · moc3 · same detail") == 1
 
 
 def test_legacy_top_level_escalation_schema_read():
@@ -257,6 +263,38 @@ def test_mixed_active_and_resolved_partition():
     resolved = _brief_section(out, "✅ Recently resolved")
     assert "live detail" in look and "done detail" not in look
     assert "done detail" in resolved and "live detail" not in resolved
+
+
+def test_edge_down_escalation_demotes_even_when_rule_pruned_from_state():
+    """2026-08-28 (moc-drain-snapshot / nomadnet, post-Lala recovery). The
+    engine replays the escalation payload on the CLEAR row. A long-running
+    condition that finally resolves has usually aged out of the state's rules
+    dict (its last FIRE is outside retention), so the currently_active lookup
+    can't demote it — and a condition that cleared 18h earlier sat under
+    "Look here first" in the present tense. The edge_down row is the engine's
+    own observation of the clear: positive evidence, no state needed."""
+    hist = [_esc_row(NOW - 600, "user_timer_unit_failing_any",
+                     "moc-drain-snapshot.service",
+                     "failing every firing (7x)", transition="edge_down")]
+    out = build_brief(_state(rules={}), hist, NOW)  # rule pruned from state
+    look = _brief_section(out, "🔎 Look here first")
+    resolved = _brief_section(out, "✅ Recently resolved")
+    assert "failing every firing" not in look
+    assert "failing every firing" in resolved
+
+
+def test_refire_after_clear_stays_in_look_here_first():
+    """The not-hiding direction: fire → clear → RE-fire with the same detail.
+    Dedup keeps the newest row per (rule, subject, detail); the newest here is
+    the edge_up re-fire, so the escalation must stay in the headline section —
+    the earlier clear row must not bury a live condition."""
+    hist = [_esc_row(NOW - 3000, "flap", "svc", "same detail"),
+            _esc_row(NOW - 2000, "flap", "svc", "same detail",
+                     transition="edge_down"),
+            _esc_row(NOW - 1000, "flap", "svc", "same detail")]
+    out = build_brief(_state(rules={}), hist, NOW)
+    assert "same detail" in _brief_section(out, "🔎 Look here first")
+    assert "Recently resolved" not in out
 
 
 def test_resolved_line_is_past_tense_and_dated():
