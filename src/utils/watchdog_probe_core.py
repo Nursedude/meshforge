@@ -404,6 +404,22 @@ def note_unit_presence_gate(
             note_disposition(cls, "indeterminate", reason=unresolved_reason)
 
 
+def deployment_declaration_path(service_user) -> Optional[str]:
+    """Path of this box's deployment.json, derived from the service user's
+    home (the watchdog runs as sandboxed root, so ``get_real_user_home()``
+    would say /root — the rns_version_drift lesson). ONE derivation, shared
+    by the declaration reader and the runner's mtime-gated re-read
+    (honest_failure_modes #5: two copies of a path WILL drift)."""
+    if not service_user:
+        return None
+    try:
+        import pwd
+        home = pwd.getpwnam(service_user).pw_dir
+        return os.path.join(home, ".config", "meshforge", "deployment.json")
+    except (KeyError, OSError, TypeError):
+        return None
+
+
 def _read_deployment_declaration_status(
     service_user,
 ) -> Tuple[str, Optional[str], dict]:
@@ -435,14 +451,9 @@ def _read_deployment_declaration_status(
     here, so the home is derived from the service user and READ directly —
     never escalate/switch user (the rns_version_drift lesson).
     """
-    if not service_user:
+    path = deployment_declaration_path(service_user)
+    if path is None:
         return ("unreadable", None, {})  # can't resolve user → can't observe
-    try:
-        import pwd
-        home = pwd.getpwnam(service_user).pw_dir
-        path = os.path.join(home, ".config", "meshforge", "deployment.json")
-    except (KeyError, OSError, TypeError):
-        return ("unreadable", None, {})
     try:
         with open(path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
