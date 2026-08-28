@@ -75,6 +75,21 @@ MeshForge is not a single repository — it's a **domain** spanning five repos t
 - **Contains**: `MESHFORGE_ANALYSIS.md`, `TO_MESHFORGE.md` (migration plan docs)
 - **Future**: Core driver logic absorbing into `src/gateway/` in MeshForge NOC
 
+### Security posture — declared, not remembered (audited 2026-08-28)
+
+Quadrant rule: an app that is *deployed but unmaintained* either gets stopped
+or earns a probe — no third option. Dependabot vulnerability alerts enabled on
+all 8 Nursedude repos (incl. the reticulum/lxmf forks) 2026-08-28; re-audit
+open alerts when GitHub's first scan lands.
+
+| App | Lifecycle | Deployed (fleet sweep 2026-08-28) |
+|-----|-----------|-----------------------------------|
+| meshforge, meshanchor, meshforge-maps | **active** | fleet-wide / meshanchor-server / moc:8808 + cloud |
+| meshing_around_meshforge (+ meshing-around fork) | **dormant** (last upstream merge 2026-08-06) | NOT deployed — checkouts on VolcanoAI only, no units/procs anywhere |
+| RNS-Management-Tool | **dormant** (2026-06-20) | NOT deployed — checkout only |
+| RNS-Meshtastic-Gateway-Tool | **dormant/absorbing** (2026-06-01) | NOT deployed — checkout only; logic migrating into `src/gateway/` |
+| reticulum-meshchat (3rd-party, liamcottle) | external | **RUNNING on moc5** — `0.0.0.0:8000`, unauthenticated UI, checkout 2026-03-13 (VolcanoAI copy is at 2026-08-06); RNS env on the fork pin (1.3.8+mf.0) |
+
 ---
 
 ## 3. Boundary Rules (What Lives Where)
