@@ -72,6 +72,31 @@ fourth state:
   DESIGNED for intermittent peers — messages must survive a sleeping
   gateway (the propagation-soak drill already proves the mechanism;
   extend it to a deliberately-sleeping peer).
+- **Battery/solar voltage metrics — findings + design (2026-08-28, moc4).**
+  moc4's RAK6421 pHAT carries an ADS1115 ADC @0x48, live on i2c-1 since the
+  08-28 sensor wiring (BME680 env telemetry VERIFIED on-mesh same day). Two
+  measured blockers before it can carry power metrics:
+  1. **Inputs are floating** — all 4 channels read ~0.12 V (leakage), nothing
+     connected. Hands-on wiring needed: battery+ → A0 via 100k:10k divider
+     (11:1 → 14.6 V max reads 1.33 V; use PGA 2.048 FSR for resolution),
+     solar panel V → A1 via 100k:4.7k (~22:1 for panels to ~40 Voc),
+     divider grounds common with Pi GND.
+  2. **Stock meshtasticd has NO ADS1115 telemetry consumer** — ScanI2C
+     detects it and the protobuf enum exists, but modules/Telemetry/Sensor/
+     implements only INA219/INA260/MAX17048 for power (verified in the
+     2.7.26 source tree). Wired channels would still publish nothing.
+  Paths, in preference order:
+  * **INA219/INA226 module (e.g. RAK16000 class) instead** — stock firmware
+    consumes it natively via PowerTelemetry: voltage+current on the mesh
+    with ZERO custom software. Best fit if buying hardware anyway; current
+    sensing (a shunt) is what the duty-cycle decisions actually need.
+  * **Host-side reader for the existing ADS1115** — small MeshForge
+    collector reads i2c (the 08-28 channel-read recipe), publishes a
+    state file the watchdog/DORMANT machinery consumes (same file-fallback
+    pattern as delivery_snapshot). No firmware fork growth. Build only
+    after wires exist — an instrument on floating inputs publishes lies.
+  * Firmware fork addition of an ADS1x15Sensor: rejected for now — grows
+    the fork maintenance surface for something the host can read directly.
 - Research items (hardware truths to establish, not design):
   * Pi 5 RTC **wake alarm** — with the battery, Pi5s may self-wake on
     schedule (duty-cycle without external hardware). Pi4s cannot; they
