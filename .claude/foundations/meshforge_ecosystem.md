@@ -79,8 +79,11 @@ MeshForge is not a single repository — it's a **domain** spanning five repos t
 
 Quadrant rule: an app that is *deployed but unmaintained* either gets stopped
 or earns a probe — no third option. Dependabot vulnerability alerts enabled on
-all 8 Nursedude repos (incl. the reticulum/lxmf forks) 2026-08-28; re-audit
-open alerts when GitHub's first scan lands.
+all 8 Nursedude repos (incl. the reticulum/lxmf forks) 2026-08-28. First scan:
+7 repos 0 open; **RNS-Meshtastic-Gateway-Tool 5 high + 2 medium** — all stale
+pins in its hash-locked `requirements-lock.txt` (cryptography→50.0.0,
+urllib3→2.7.0, idna→3.15). Undeployed, so no live exposure; regenerate the
+lock (pip-tools, not hand-edit) + run its CI when the repo next gets touched.
 
 | App | Lifecycle | Deployed (fleet sweep 2026-08-28) |
 |-----|-----------|-----------------------------------|
