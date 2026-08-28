@@ -57,11 +57,27 @@ class TestRnsClientDerivation:
         from utils.paths import ReticulumPaths
         assert ReticulumPaths.ETC_STORAGE not in paths
 
-    def test_rns_client_appends_etc_storage(self):
+    def test_rns_client_appends_etc_storage(self, monkeypatch):
+        # PIN the ambient resolution (tests-must-pin-ambient-state, 07-28):
+        # the rns_client path now derives from the RESOLVED config root, so
+        # on a box WITHOUT /etc/reticulum this would silently assert against
+        # ~/.reticulum instead (bit on the 2026-08-28 CI runner).
         from utils.paths import ReticulumPaths
+        monkeypatch.setattr(ReticulumPaths, "get_config_dir",
+                            classmethod(lambda cls: Path("/etc/reticulum")))
         paths = meshforge_writable_paths(rns_client=True)
         assert len(paths) == 4
         assert paths[-1] == ReticulumPaths.ETC_STORAGE
+
+    def test_rns_client_path_honors_sandbox_override(self, tmp_path,
+                                                     monkeypatch):
+        """With MESHFORGE_RNS_CONFIGDIR set (lab.virtual_fleet), the probed
+        RNS write target is <override>/storage — probing the hardcoded /etc
+        path was the D2 lesson inverted (guard watching a path the code
+        doesn't write; caught on the first CI run, 2026-08-28)."""
+        monkeypatch.setenv("MESHFORGE_RNS_CONFIGDIR", str(tmp_path))
+        paths = meshforge_writable_paths(rns_client=True)
+        assert paths[-1] == tmp_path / "storage"
 
     def test_rns_storage_path_is_the_ssot_value(self):
         """Pins the SSOT value the lint literal MF017_RNS_STORAGE_PATH mirrors —
@@ -74,14 +90,24 @@ class TestRnsClientDerivation:
         assert the DEPLOYED gateway unit (.in) grants every path. Removing
         /etc/reticulum/storage from the unit — the 2026-06-20 regression — fails
         HERE, at commit, instead of after a 12h outage."""
-        from utils.paths import get_real_user_home
+        from utils.paths import ReticulumPaths, get_real_user_home
         in_path = (Path(__file__).parent.parent / "contrib" / "systemd"
                    / "meshforge-gateway.service.in")
         rwp_line = next(
             l for l in in_path.read_text().splitlines()
             if l.strip().startswith("ReadWritePaths="))
         home = get_real_user_home()
-        for p in meshforge_writable_paths(rns_client=True):
+        # Pin the fleet deployment reality this unit serves: fleet boxes
+        # resolve RNS config to /etc/reticulum (tests-must-pin-ambient-state
+        # — an /etc-less dev box or CI runner resolves elsewhere).
+        real_gcd = ReticulumPaths.get_config_dir
+        ReticulumPaths.get_config_dir = classmethod(
+            lambda cls: Path("/etc/reticulum"))
+        try:
+            derived = meshforge_writable_paths(rns_client=True)
+        finally:
+            ReticulumPaths.get_config_dir = real_gcd
+        for p in derived:
             try:
                 needle = str(p.relative_to(home))   # ".config/meshforge"
             except ValueError:
