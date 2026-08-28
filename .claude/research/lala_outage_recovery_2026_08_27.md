@@ -133,12 +133,25 @@ Already decoupled (held up during Lala):
 - **Deploy**: manual `fleet_pull` meant no auto-pull storms on restore.
 
 Still WAN-coupled — the roadmap, in priority order:
-1. **Time (NEW, this session's biggest lesson)**: run a LAN NTP island —
-   chrony on the manager (+ m1 as second source) with `local stratum 10`
-   + `allow`, every box adding it as a preferred/fallback source. Fleet
-   clocks then converge to EACH OTHER when the WAN is down; cron, verdict
-   freshness, and dedup windows stay truthful. Without this, every future
-   outage re-forges every wall-clock instrument on the fleet.
+1. **Time — SHIPPED 2026-08-27 (`scripts/ntp_island.sh`, commit ffeef3de)**:
+   LAN NTP island live. Two chrony servers (manager + the central gateway
+   box) follow WAN pools normally and keep serving at `local stratum 10
+   orphan` when the WAN dies; 9 clients prefer them — 7 fleet boxes via
+   the script's timesyncd drop-in, the bench-bot box via a hand drop-in +
+   2 island /etc/hosts entries (it is outside the fleet-hosts heal loop —
+   if the island IPs drift, that file must be updated by hand), and the
+   OpenWrt tunnel router via `uci system.ntp.server` (island first, its
+   pools as fallback). VERIFIED: `chronyc clients` on the island server
+   shows NTP from every applied client (the NAT'd ones arriving as their
+   fronts); cross-island peering measured at stratum 10/µs offsets;
+   cc_ntp non-interference drilled with the real consumer (`cloud-init
+   single --name ntp --frequency always`, drop-in byte-identical).
+   BELIEVED (config quoted, not outage-drilled): orphan takeover under
+   real WAN loss — drill at the next planned WAN maintenance by pulling
+   the uplink and expecting island `Stratum: 10` with clients still
+   syncing. The dark bench Pi gets `client-apply` at revival. Fleet
+   clocks now converge to each other with the uplink down; cron, verdict
+   freshness, and dedup windows stay truthful.
 2. **Inbound reachability**: CGNAT kills port-forward fronts. Everything
    inbound must become outbound-initiated — the alaula/kiai reverse-tunnel
    pattern generalizes (or WireGuard to a small anchor host). The AREDN
