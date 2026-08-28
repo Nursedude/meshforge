@@ -90,6 +90,10 @@ NEW build; Tiers 1 and 3 are formalizations of pipes that already run.
    observed firing -> canary green); transport partition via SIGSTOP
    (canary MUST fail during the fault — a green canary through a
    partition is the lie — and heal after SIGCONT). Fault injector is
-   containment-tested (planted symlink escape refused). Next: clock-skew
-   drill (libfaketime), CI wiring.
+   containment-tested (planted symlink escape refused). CI WIRED 2026-08-27: the 'Virtual Fleet (smoke + chaos)'
+   job runs both on every push/PR (green in 1m43s, run 33147645481) —
+   its first two runs each caught a real SSOT drift (sandbox_check's
+   hardcoded /etc storage probe; the channel resolver's read-leak to the
+   real meshtasticd). Not a required context until it soaks. Next:
+   clock-skew drill (libfaketime).
 4. Public map staleness banner check (item 1 above).
