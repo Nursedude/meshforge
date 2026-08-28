@@ -92,7 +92,7 @@ suite 534 passed on the new versions. Regen recipe: needs a py3.11 host
 | meshing_around_meshforge (+ meshing-around fork) | **dormant** (last upstream merge 2026-08-06) | NOT deployed — checkouts on VolcanoAI only, no units/procs anywhere |
 | RNS-Management-Tool | **dormant** (2026-06-20) | NOT deployed — checkout only |
 | RNS-Meshtastic-Gateway-Tool | **dormant/absorbing** (2026-06-01) | NOT deployed — checkout only; logic migrating into `src/gateway/` |
-| reticulum-meshchat (3rd-party, liamcottle via Nursedude fork) | external | **RUNNING on moc5** — `0.0.0.0:8000`, unauthenticated UI (open item); updated 2026-08-28 to `4d57d6a` (08-06 upstream merge), aiohttp 3.14.3 / websockets 17.1, RNS env on the fork pin (1.3.8+mf.0). MeshChatX (Quad4 fork) evaluated 08-28: not a drop-in — data-incompatible, untested vs the fork pin; canary in the lab first if wanted |
+| reticulum-meshchat (3rd-party, liamcottle via Nursedude fork) | external | **RUNNING on moc5** — updated 2026-08-28 to `4d57d6a`, RNS env on the fork pin (1.3.8+mf.0). **Auth added 08-28**: nginx-light basic-auth owns LAN `:8000` (`sites-available/meshchat-auth`, WS-aware, 101 verified), meshchat itself loopback-only `127.0.0.1:8001` via systemd drop-in `localhost-behind-nginx.conf`; credential in `/etc/nginx/.htpasswd-meshchat`. MeshChatX (Quad4 fork) evaluated 08-28: not a drop-in — data-incompatible, untested vs the fork pin; canary in the lab first if wanted |
 
 ---
 
