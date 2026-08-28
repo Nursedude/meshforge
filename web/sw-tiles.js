@@ -5,14 +5,17 @@
  * Uses network-first strategy: try network, fall back to cache.
  */
 
-const CACHE_NAME = 'meshforge-tiles-v1';
+// v2: purge Carto "API KEY REQUIRED" watermarked tiles cached under v1
+// (Carto revoked anonymous basemap access 2026-08; dark basemap moved to Esri)
+const CACHE_NAME = 'meshforge-tiles-v2';
 const TILE_CACHE_LIMIT = 2000; // Max cached tiles (~100MB at 50KB/tile)
 
 // Tile URL patterns to cache
 const TILE_PATTERNS = [
     /basemaps\.cartocdn\.com/,
     /tile\.openstreetmap\.org/,
-    /tiles\.stadiamaps\.com/
+    /tiles\.stadiamaps\.com/,
+    /server\.arcgisonline\.com/
 ];
 
 // Check if URL is a map tile
@@ -161,7 +164,7 @@ async function downloadTilesForArea({ bounds, minZoom, maxZoom }) {
     const tiles = getTilesInBounds(bounds, minZoom, maxZoom);
 
     for (const { x, y, z } of tiles) {
-        const url = `https://a.basemaps.cartocdn.com/dark_all/${z}/${x}/${y}.png`;
+        const url = `https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/${z}/${y}/${x}`;
         try {
             const response = await fetch(url);
             if (response.ok) {

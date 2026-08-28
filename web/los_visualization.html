@@ -739,10 +739,10 @@
                 zoom: 10
             });
 
-            // Dark theme tiles
-            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-                attribution: '© OpenStreetMap, © CARTO',
-                maxZoom: 19
+            // Dark theme tiles — Esri Dark Gray (Carto requires an API key since 2026-08)
+            L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {
+                attribution: '© Esri — Esri, HERE, Garmin, © OpenStreetMap contributors',
+                maxZoom: 16
             }).addTo(rfMap);
 
             // Point A marker (green)

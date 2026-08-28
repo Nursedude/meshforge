@@ -274,22 +274,24 @@
   const map = L.map("map", { preferCanvas: true, zoomControl: true })
     .setView([20.5, -157.0], 7);
 
-  // CartoDB Dark Matter — designed dark basemap. Allowed by CSP
+  // Esri Dark Gray — designed dark basemap. Was CartoDB Dark Matter until
+  // Carto revoked anonymous access (2026-08): Carto returned HTTP 200 tiles
+  // with "API KEY REQUIRED" baked into the image, so the tileerror fallback
+  // below never fired — a lying-200 an error path cannot see. Allowed by CSP
   // img-src in templates/cloud/Caddyfile.j2 (re-render needed on VPS
   // when this changed: `sudo bash setup_vps.sh <domain>`).
-  // If CSP blocks CartoDB (e.g. before the Caddyfile reload lands),
+  // If CSP blocks Esri (e.g. before the Caddyfile reload lands),
   // fall back to OSM with a CSS dark filter so the page never goes
   // map-less. One-shot swap on the first tile error.
-  const carto = L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-    subdomains: "abcd",
-    maxZoom: 19,
-    attribution: "© OpenStreetMap contributors © CARTO"
+  const darkBase = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 16,
+    attribution: "© Esri — Esri, HERE, Garmin, © OpenStreetMap contributors"
   });
   let fellBack = false;
-  carto.on("tileerror", () => {
+  darkBase.on("tileerror", () => {
     if (fellBack) return;
     fellBack = true;
-    map.removeLayer(carto);
+    map.removeLayer(darkBase);
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 18,
       attribution: "© OpenStreetMap contributors"
@@ -297,7 +299,7 @@
     const pane = document.querySelector(".leaflet-tile-pane");
     if (pane) pane.style.filter = "hue-rotate(180deg) invert(0.92) brightness(0.95) contrast(0.88)";
   });
-  carto.addTo(map);
+  darkBase.addTo(map);
 
   const layer = L.layerGroup().addTo(map);
 

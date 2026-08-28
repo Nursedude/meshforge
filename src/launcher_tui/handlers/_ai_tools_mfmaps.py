@@ -292,7 +292,7 @@ class MeshForgeMapsExtensionMixin:
                 self._mfmaps_toggle_layers(current, config_path)
             elif choice == "tile":
                 tiles = [
-                    ("carto_dark", "Carto Dark"),
+                    ("carto_dark", "Dark (Esri Dark Gray)"),
                     ("osm_standard", "OpenStreetMap"),
                     ("osm_topo", "OpenTopo"),
                     ("esri_satellite", "ESRI Satellite"),

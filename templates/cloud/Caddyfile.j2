@@ -34,7 +34,7 @@
         X-Content-Type-Options "nosniff"
         Referrer-Policy "no-referrer-when-downgrade"
         # Permissive CSP — Leaflet from CDN, OSM tile fetches, inline svg.
-        Content-Security-Policy "default-src 'self'; script-src 'self' https://unpkg.com 'unsafe-inline'; style-src 'self' https://unpkg.com 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org https://*.basemaps.cartocdn.com https://unpkg.com; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'"
+        Content-Security-Policy "default-src 'self'; script-src 'self' https://unpkg.com 'unsafe-inline'; style-src 'self' https://unpkg.com 'unsafe-inline'; img-src 'self' data: https://*.tile.openstreetmap.org https://server.arcgisonline.com https://unpkg.com; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'"
         -Server
     }
 
