@@ -43,8 +43,14 @@ from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-RNSD_BIN = "/usr/local/bin/rnsd"
-RNSTATUS_BIN = "/usr/local/bin/rnstatus"
+# Binary resolution: env override -> PATH (CI installs the forks via pip,
+# entry points land on PATH) -> the fleet's fork install location.
+import shutil as _shutil
+
+RNSD_BIN = (os.environ.get("MESHFORGE_RNSD_BIN")
+            or _shutil.which("rnsd") or "/usr/local/bin/rnsd")
+RNSTATUS_BIN = (os.environ.get("MESHFORGE_RNSTATUS_BIN")
+                or _shutil.which("rnstatus") or "/usr/local/bin/rnstatus")
 
 NODES = ("transport", "gw", "echo")
 

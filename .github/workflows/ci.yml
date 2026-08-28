@@ -181,6 +181,70 @@ jobs:
           echo "DEBUG: posting comment…"
           gh pr comment "$PR_NUMBER" --body-file /tmp/comment.md --repo "$REPO" && echo "DEBUG: gh exit=$?" || echo "DEBUG: gh exit=$?"
 
+  # Virtual fleet (lab.virtual_fleet, 2026-08-27): a REAL 3-node RNS fabric
+  # + the REAL gateway + the REAL rt-canary, isolated by construction
+  # (loopback-only TCP, vfleet-* instance names, sandbox HOME, throwaway
+  # identities — inert on a public runner). smoke proves "message arrives"
+  # across the fabric; chaos replays paid-for failure classes (the Lala
+  # zero-byte ratchet corpse; a wedged-relay partition) asserting BOTH the
+  # honest failure behavior and the recovery. This is the live-ish tier
+  # between the mocked unit suite and the physical fleet — every PR gets a
+  # fleet drill with no lab hardware in the loop.
+  # NOT in the branch-protection required contexts yet: let it soak on main
+  # first (a required job must earn required-ness; see the syntax-check
+  # lesson below before ever renaming this job).
+  virtual-fleet:
+    name: Virtual Fleet (smoke + chaos)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements/*.txt
+
+      - name: Install RNS/LXMF forks + gateway deps
+        run: |
+          python -m pip install --upgrade pip
+          # The MF-owned forks, pinned by SHA (requirements/rns.txt is the
+          # SSOT) — this job is the one CI leg that runs the REAL stack.
+          pip install -r requirements/rns.txt
+          pip install meshtastic rich textual flask pyyaml requests psutil distro
+
+      - name: Smoke — message arrives across the virtual fabric
+        run: |
+          cd src
+          python -m lab.virtual_fleet smoke --workdir "$RUNNER_TEMP/vfleet"
+
+      - name: Chaos — fault and recovery drills
+        run: |
+          cd src
+          python -m lab.virtual_fleet chaos --workdir "$RUNNER_TEMP/vfleet"
+
+      - name: Teardown
+        if: always()
+        run: |
+          cd src
+          python -m lab.virtual_fleet down --workdir "$RUNNER_TEMP/vfleet" || true
+
+      - name: Upload sandbox logs on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: virtual-fleet-logs
+          path: |
+            ${{ runner.temp }}/vfleet/*/rnsd.log
+            ${{ runner.temp }}/vfleet/*/gateway.log
+            ${{ runner.temp }}/vfleet/*/echo.log
+          if-no-files-found: ignore
+          retention-days: 7
+
 # NOTE: the old standalone `security` job was consolidated into `lint`
 # (2026-06-09): its shell=True grep was a strict subset of lint rule MF002
 # and its secrets step could never fail (now an advisory step in lint).
