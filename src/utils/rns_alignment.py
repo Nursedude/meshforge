@@ -496,8 +496,8 @@ def _read_rpc_key_value(path: Path, sudo: bool = False) -> Optional[str]:
 
 
 def check_gateway_rpc_key_alignment(
-    etc_path: Path = Path('/etc/reticulum/config'),
-    client_path: Path = Path('/tmp/meshforge_rns_client/config'),
+    etc_path: Optional[Path] = None,
+    client_path: Optional[Path] = None,
 ) -> Optional[str]:
     """Hardening F: gateway preflight — refuse-loud on rpc_key drift.
 
@@ -525,6 +525,21 @@ def check_gateway_rpc_key_alignment(
     The full 64-hex key value is never returned in any field. The
     reason string only mentions presence/absence and divergence.
     """
+    # Defaults derive from the ReticulumPaths SSOT rather than hardcoding
+    # /etc/reticulum + /tmp/meshforge_rns_client — two independent copies
+    # of paths the SSOT owns WILL drift (honest_failure_modes #5; bit on
+    # 2026-08-27 when the sandbox override moved the root and this check
+    # kept comparing the box paths, refusing a correctly-aligned sandbox).
+    if etc_path is None or client_path is None:
+        from utils.paths import ReticulumPaths
+        if etc_path is None:
+            etc_path = ReticulumPaths.get_config_file()
+        if client_path is None:
+            client_path = Path(
+                ReticulumPaths.ensure_rns_client_configdir()) / 'config'
+    if etc_path == client_path:
+        return None  # one shared configdir (sandbox / same-dir clients): aligned by identity
+
     # Sudo is needed to read /etc/reticulum/config when the gateway
     # service runs as a non-root user; harmless if already root.
     rnsd_key = _read_rpc_key_value(etc_path, sudo=True)

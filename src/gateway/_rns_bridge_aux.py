@@ -123,8 +123,12 @@ class BridgeAuxMixin:
             return
         try:
             if is_websocket_available():
-                if start_websocket_server(port=5001):
-                    logger.info("WebSocket server started on port 5001")
+                # MESHFORGE_WS_PORT: sandbox override (lab.virtual_fleet) so
+                # an isolated gateway never binds the box's real UI port.
+                # Unset = 5001, production behavior unchanged.
+                ws_port = int(os.environ.get("MESHFORGE_WS_PORT", "5001"))
+                if start_websocket_server(port=ws_port):
+                    logger.info("WebSocket server started on port %d", ws_port)
                     self._websocket_started = True
                 else:
                     logger.debug("WebSocket server failed to start")

@@ -73,7 +73,16 @@ NEW build; Tiers 1 and 3 are formalizations of pipes that already run.
 ## First concrete steps (ranked)
 1. pw2lab rebuild = the LAB-ZERO restore drill (in progress, operator).
 2. Fixture-per-incident rule added to the hfm #10 artifact list.
-3. Prototype the virtual fleet: 3 containers (gateway, echo peer,
-   transport) + rnsd TCP links + gateway_rt_canary green in a container —
-   one session of work; everything after is chaos-layer increments.
+3. ~~Prototype the virtual fleet~~ DONE 2026-08-27 (process-orchestrated,
+   `lab/virtual_fleet.py`): smoke green (tracer PING/ACK), and `canary`
+   runs the REAL gateway (bridge_cli) in a sandbox HOME against the
+   vfleet-gw node — gateway_rt_canary VERDICT OK confirmed=4.0s,
+   reproduced. The build itself earned its keep: it live-caught an
+   in-process RNS singleton race (node_tracker attaches first and pins
+   the instance for the whole process — the sandbox gateway briefly
+   attached to the REAL mesh, now guarded by a runtime breach detector
+   in the canary flow + the process-wide MESHFORGE_RNS_CONFIGDIR
+   resolution root), and flushed two hardcoded-path drifts (rpc-key
+   alignment check vs the ReticulumPaths SSOT; fixed /tmp client-config
+   collision). Next: chaos layer, CI wiring.
 4. Public map staleness banner check (item 1 above).

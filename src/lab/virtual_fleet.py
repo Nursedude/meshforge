@@ -193,7 +193,7 @@ def up(workdir: Path, base_port: int) -> int:
 def down(workdir: Path) -> int:
     rc = 0
     for name in NODES:
-        for extra in ("echo.pid",):
+        for extra in ("echo.pid", "gateway.pid", "mesh_stub.pid"):
             p = _read_pid(_node_dir(workdir, name) / extra)
             if p and _pid_alive(p):
                 os.kill(p, signal.SIGTERM)
@@ -239,6 +239,225 @@ def _lab_env(node_dir: Path) -> Dict[str, str]:
     env["MESHFORGE_LAB_RNS_CONFIGDIR"] = str(node_dir)
     env["MESHFORGE_LAB_IDENTITY_DIR"] = str(node_dir / "ids")
     return env
+
+
+# ------------------------------------------------------------ gateway node
+
+# A loopback port nothing listens on: the sandbox gateway's Meshtastic leg
+# must fail fast and stay down — pointing it at the box's REAL meshtasticd
+# would let the sandbox key a real radio (the 2026-08-09 class). The RNS
+# leg is independent (proven by moc3 running 12 days radio-dead).
+MESHTASTIC_BLACKHOLE_PORT_OFFSET = 199
+
+
+def _gw_home(workdir: Path) -> Path:
+    return _node_dir(workdir, "gw") / "home"
+
+
+def _gateway_env(workdir: Path, base_port: int) -> Dict[str, str]:
+    """Sandbox HOME so every get_real_user_home()-derived path (config,
+    identity, lxmf storage, queue + counters DBs) lands under the workdir.
+    SUDO_USER/LOGNAME are stripped — they outrank HOME in the resolver."""
+    env = dict(os.environ)
+    env["HOME"] = str(_gw_home(workdir))
+    env.pop("SUDO_USER", None)
+    env.pop("LOGNAME", None)
+    env.pop("XDG_STATE_HOME", None)
+    # Process-wide RNS resolution root (utils.paths.ReticulumPaths): RNS is
+    # a per-process singleton and the gateway has MULTIPLE RNS clients
+    # (bridge, node_tracker, boundary RPC) — without this, whichever inits
+    # first attaches the whole process to the BOX's real instance (caught
+    # live 2026-08-27: the sandbox gateway discovered the real fleet).
+    env["MESHFORGE_RNS_CONFIGDIR"] = str(_node_dir(workdir, "gw"))
+    # Sandbox websocket port — never the box's real UI port 5001.
+    env["MESHFORGE_WS_PORT"] = str(base_port + 198)
+    # HOME changed => python's user-site (where RNS/LXMF are pip --user
+    # installed) would vanish from sys.path. Carry the REAL user's site dir.
+    import site
+    user_site = site.getusersitepackages()
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (env.get("PYTHONPATH", ""), user_site) if p)
+    return env
+
+
+def _write_gateway_config(workdir: Path, base_port: int) -> Path:
+    home = _gw_home(workdir)
+    cfg_dir = home / ".config" / "meshforge"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    # The gateway's startup sandbox preflight (#58/#60 class) requires all
+    # three data buckets to EXIST, not just be creatable.
+    (home / ".local" / "share" / "meshforge").mkdir(parents=True, exist_ok=True)
+    (home / ".cache" / "meshforge").mkdir(parents=True, exist_ok=True)
+    cfg = cfg_dir / "gateway.json"
+    if not cfg.exists():
+        import json
+        cfg.write_text(json.dumps({
+            "enabled": True,
+            "rns_bridge_enabled": True,
+            "rns": {
+                "config_dir": str(_node_dir(workdir, "gw")),
+                "gateway_name": "vfleet-gw",
+                "announce_interval": 60,
+            },
+            "meshtastic": {
+                "host": "127.0.0.1",
+                "port": base_port + MESHTASTIC_BLACKHOLE_PORT_OFFSET,
+            },
+        }, indent=2))
+    return cfg
+
+
+# Accept-and-stay-silent TCP stub standing in for meshtasticd: passes the
+# gateway's startup port preflight, then behaves like the known
+# present-but-deaf PhoneAPI wedge state (#17/#75) — a real fleet condition
+# the gateway is proven to run degraded under. Never speaks protobuf,
+# never touches a radio.
+_MESH_STUB_CODE = (
+    "import socket,sys\n"
+    "s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"
+    "s.bind(('127.0.0.1',int(sys.argv[1]))); s.listen(4)\n"
+    "held=[]\n"
+    "while True:\n"
+    "    c,_=s.accept(); held.append(c)\n"
+)
+
+
+def _start_mesh_stub(workdir: Path, base_port: int) -> None:
+    gw_nd = _node_dir(workdir, "gw")
+    pidfile = gw_nd / "mesh_stub.pid"
+    pid = _read_pid(pidfile)
+    if pid and _pid_alive(pid):
+        return
+    port = base_port + MESHTASTIC_BLACKHOLE_PORT_OFFSET
+    proc = subprocess.Popen(  # managed daemon; reaped by down()
+        [sys.executable, "-c", _MESH_STUB_CODE, str(port)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    pidfile.write_text(str(proc.pid))
+    logger.info("meshtasticd stub listening on 127.0.0.1:%d (pid %d) — "
+                "accepts, never answers", port, proc.pid)
+
+
+def start_gateway(workdir: Path, base_port: int, repo_src: Path) -> int:
+    """Run the REAL gateway (bridge_cli) as a client of the vfleet-gw node."""
+    gw_nd = _node_dir(workdir, "gw")
+    pidfile = gw_nd / "gateway.pid"
+    pid = _read_pid(pidfile)
+    if pid and _pid_alive(pid):
+        # Always respawn: a sandbox gateway is cattle. Reusing a survivor
+        # means reusing ITS env/config — canary runs 4-6 on 2026-08-27 all
+        # silently reused one broken pre-fix process this way.
+        logger.info("killing previous sandbox gateway (pid %d)", pid)
+        os.kill(pid, signal.SIGTERM)
+        for _ in range(20):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.25)
+        if _pid_alive(pid):
+            os.kill(pid, signal.SIGKILL)
+    _write_gateway_config(workdir, base_port)
+    _start_mesh_stub(workdir, base_port)
+    # Truncate: the breach detector reads this file and must judge THIS
+    # process's attachments, not a previous run's.
+    log = open(gw_nd / "gateway.log", "wb")
+    proc = subprocess.Popen(  # managed daemon; reaped by down()
+        [sys.executable, str(repo_src / "gateway" / "bridge_cli.py")],
+        stdout=log, stderr=subprocess.STDOUT,
+        cwd=str(repo_src), env=_gateway_env(workdir, base_port),
+        start_new_session=True,
+    )
+    pidfile.write_text(str(proc.pid))
+    logger.info("gateway spawned (pid %d) HOME=%s", proc.pid, _gw_home(workdir))
+
+    deadline = time.monotonic() + 60
+    logpath = gw_nd / "gateway.log"
+    while time.monotonic() < deadline:
+        text = logpath.read_text(errors="replace")
+        if "Connected to RNS (LXMF ready)" in text:
+            logger.info("gateway LXMF ready")
+            return 0
+        if not _pid_alive(proc.pid):
+            logger.error("gateway exited during startup — tail of log:\n%s",
+                         "\n".join(text.splitlines()[-15:]))
+            return 1
+        time.sleep(2)
+    logger.error("gateway never reached 'LXMF ready' in 60s — tail:\n%s",
+                 "\n".join(logpath.read_text(errors="replace").splitlines()[-15:]))
+    return 1
+
+
+def canary(workdir: Path, base_port: int, repo_src: Path) -> int:
+    """gateway_rt_canary green in the sandbox: enqueue -> LXMF CONFIRMED ->
+    echo ACK bridged back to a mesh queue row. The canary runs in the SAME
+    sandbox env, so its default DB paths resolve to the gateway's DBs."""
+    if up(workdir, base_port) != 0:
+        return 1
+    if status(workdir, base_port) != 0:
+        logger.error("canary refused: fleet not clean (see status above)")
+        return 1
+
+    echo_nd = _node_dir(workdir, "echo")
+
+    proc = subprocess.run(
+        [sys.executable, "-m", "lab.lxmf_echo", "--init"],
+        capture_output=True, text=True, timeout=30,
+        cwd=str(repo_src), env=_lab_env(echo_nd),
+    )
+    if proc.returncode != 0:
+        logger.error("echo --init failed: %s", proc.stderr.strip())
+        return 1
+    echo_hash = proc.stdout.strip().splitlines()[-1].split("=")[-1].strip()
+    logger.info("echo destination: %s", echo_hash)
+
+    echo_log = open(echo_nd / "echo.log", "ab")
+    echo_proc = subprocess.Popen(  # managed daemon; killed in finally
+        [sys.executable, "-m", "lab.lxmf_echo", "--announce-interval", "20"],
+        stdout=echo_log, stderr=subprocess.STDOUT,
+        cwd=str(repo_src), env=_lab_env(echo_nd),
+        start_new_session=True,
+    )
+    (echo_nd / "echo.pid").write_text(str(echo_proc.pid))
+
+    try:
+        if start_gateway(workdir, base_port, repo_src) != 0:
+            return 1
+
+        # Runtime breach detector (caught a real one on 2026-08-27): every
+        # RNS listener preflight the gateway process logged must name a
+        # vfleet instance. A non-vfleet name means some component attached
+        # to the box's REAL mesh — abort before any traffic is generated.
+        gw_log = (_node_dir(workdir, "gw") / "gateway.log").read_text(
+            errors="replace")
+        breaches = [l for l in gw_log.splitlines()
+                    if "@rns/" in l and "@rns/vfleet-" not in l]
+        if breaches:
+            logger.error("ISOLATION BREACH — gateway touched a non-vfleet "
+                         "RNS instance:\n%s", "\n".join(breaches[:4]))
+            return 1
+
+        peers = workdir / "lab_peers"
+        peers.write_text(f"vecho={echo_hash}\n")
+        time.sleep(5)  # one announce cycle so the gateway has the echo's path
+
+        env = _gateway_env(workdir, base_port)
+        proc = subprocess.run(
+            [sys.executable, "-m", "lab.gateway_rt_canary",
+             "--peer", "vecho", "--peers-file", str(peers),
+             "--leg1-timeout", "90", "--leg2-timeout", "90",
+             "--skip-service-check"],  # sandbox gateway is a managed process, not a unit
+            capture_output=True, text=True, timeout=SMOKE_TIMEOUT_S + 120,
+            cwd=str(repo_src), env=env,
+        )
+        tail = "\n".join((proc.stdout + proc.stderr).splitlines()[-6:])
+        if proc.returncode == 0:
+            print(f"CANARY OK — full gateway round trip in the sandbox\n{tail}")
+            return 0
+        print(f"CANARY rc={proc.returncode}\n{tail}")
+        return proc.returncode
+    finally:
+        if _pid_alive(echo_proc.pid):
+            os.kill(echo_proc.pid, signal.SIGTERM)
 
 
 def smoke(workdir: Path, base_port: int, repo_src: Path) -> int:
@@ -307,7 +526,8 @@ def smoke(workdir: Path, base_port: int, repo_src: Path) -> int:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("command", choices=("up", "down", "status", "smoke"))
+    parser.add_argument("command",
+                        choices=("up", "down", "status", "smoke", "canary"))
     from utils.paths import get_real_user_home
     parser.add_argument(
         "--workdir", type=Path,
@@ -328,6 +548,8 @@ def main(argv=None) -> int:
         return down(args.workdir)
     if args.command == "status":
         return status(args.workdir, args.base_port)
+    if args.command == "canary":
+        return canary(args.workdir, args.base_port, repo_src)
     return smoke(args.workdir, args.base_port, repo_src)
 
 

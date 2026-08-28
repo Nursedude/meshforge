@@ -261,10 +261,23 @@ class ReticulumPaths:
         """Get Reticulum config directory.
 
         Checks locations in the same order as RNS.Reticulum.__init__:
-          1. /etc/reticulum/ (system-wide)
-          2. ~/.config/reticulum/ (XDG-style)
-          3. ~/.reticulum/ (traditional, default)
+          1. MESHFORGE_RNS_CONFIGDIR env override (sandbox/virtual-fleet)
+          2. /etc/reticulum/ (system-wide)
+          3. ~/.config/reticulum/ (XDG-style)
+          4. ~/.reticulum/ (traditional, default)
+
+        The env override exists for lab.virtual_fleet: RNS is a per-process
+        singleton, so whichever component inits first pins the instance for
+        everyone (the 2026-06-27 resourcepath race, rediscovered 2026-08-27
+        when a sandboxed gateway's node_tracker attached to the BOX's real
+        instance before the bridge's explicit configdir was consulted). One
+        process-wide resolution root is the only coherent lever. Unset =
+        production behavior, unchanged.
         """
+        override = os.environ.get('MESHFORGE_RNS_CONFIGDIR')
+        if override:
+            return Path(override)
+
         # System-wide config
         if Path('/etc/reticulum').is_dir() and Path('/etc/reticulum/config').is_file():
             return Path('/etc/reticulum')
@@ -422,6 +435,15 @@ class ReticulumPaths:
         """
         import stat
         import tempfile
+
+        # Sandbox override (lab.virtual_fleet): the override dir IS a valid
+        # shared-instance client configdir (rnsd + clients sharing one
+        # configdir is the fleet's own pattern), and using it directly keeps
+        # a sandbox gateway from writing into the FIXED /tmp path a real
+        # gateway on the same box may own (honest_failure_modes #8).
+        override = os.environ.get('MESHFORGE_RNS_CONFIGDIR')
+        if override:
+            return override
 
         d = Path(tempfile.gettempdir()) / cls.RNS_CLIENT_DIRNAME
         # The config holds rnsd's rpc_key (Issue #41) — a shared-instance
