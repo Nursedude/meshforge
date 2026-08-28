@@ -263,9 +263,20 @@ def short_name() -> str:
 
 
 def _identity_path_for(name: str) -> Path:
-    """``~/.config/meshforge/<name>_identity`` (sudo-safe via paths util)."""
+    """``~/.config/meshforge/<name>_identity`` (sudo-safe via paths util).
+
+    ``MESHFORGE_LAB_IDENTITY_DIR`` overrides the directory — the virtual
+    fleet (lab.virtual_fleet) gives each virtual node its OWN identity dir
+    so a sandboxed echo/tracer never shares (or clobbers) the box's real
+    lab identities. Unset = production behavior, unchanged.
+    """
+    import os
+
     from utils.paths import get_real_user_home
 
+    override = os.environ.get("MESHFORGE_LAB_IDENTITY_DIR")
+    if override:
+        return Path(override) / f"{name}_identity"
     return get_real_user_home() / ".config" / "meshforge" / f"{name}_identity"
 
 

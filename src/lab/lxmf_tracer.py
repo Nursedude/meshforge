@@ -310,10 +310,17 @@ def run_trace(
 
     with tempfile.TemporaryDirectory(prefix="meshforge_lab_tracer_") as tmp:
         tmpdir = Path(tmp)
-        _build_client_config(tmpdir)
+        # Virtual-fleet hook (lab.virtual_fleet): attach to a SANDBOX rnsd
+        # instance by using ITS configdir directly — the same rnsd+clients-
+        # share-one-configdir pattern the real fleet uses, so shared-instance
+        # auth just works. Unset = production behavior, unchanged.
+        configdir = os.environ.get("MESHFORGE_LAB_RNS_CONFIGDIR")
+        if not configdir:
+            _build_client_config(tmpdir)
+            configdir = str(tmpdir)
 
         try:
-            reticulum = init_reticulum_with_watchdog(str(tmpdir))
+            reticulum = init_reticulum_with_watchdog(configdir)
         except Exception as exc:
             logger.error("tracer: RNS init failed: %s", exc)
             return [
