@@ -260,6 +260,108 @@ class TestCeilingLeg:
         assert len(sigs) == 1 and sigs[0].severity == "wedge"
 
 
+# ── the ceiling benignity gate (2026-08-28) ──
+
+def _psi(cg, avg10):
+    (cg / "memory.pressure").write_text(
+        f"some avg10={avg10} avg60=0.00 avg300=0.00 total=100\n"
+        f"full avg10=0.00 avg60=0.00 avg300=0.00 total=100\n")
+
+
+def _stat(cg, *, anon_mb, shmem_mb=0, file_mb=0):
+    (cg / "memory.stat").write_text(
+        f"anon {anon_mb << 20}\nfile {file_mb << 20}\nshmem {shmem_mb << 20}\n")
+
+
+class TestCeilingBenignityGate:
+    """A slice riding its cap on clean page cache is the cap WORKING (live
+    case 2026-08-28: 18k max_hits, PSI 0.00, 5.2 GB file cache, zero kills). The
+    leg must page only on the costly/dangerous shapes — and an unreadable
+    discriminator must page, never silence (the benign claim needs positive
+    evidence, honest_failure_modes #2)."""
+
+    def _ride_to_streak(self, tmp_path, root, cg):
+        """Two quiet baseline-building ticks; returns the third tick's result.
+
+        Dispositions are reset before the third tick: the recorder is
+        worst-wins within one collection window, so an equal-severity later
+        note does not override — without the reset, assertions on the reason
+        would read tick 1's note, not the tick under test."""
+        (cg / "memory.events").write_text("max 0\noom_kill 0\noom_group_kill 0\n")
+        assert _run(tmp_path, root) == []
+        (cg / "memory.events").write_text("max 40\noom_kill 0\noom_group_kill 0\n")
+        assert _run(tmp_path, root) == []                    # streak 1
+        (cg / "memory.events").write_text("max 90\noom_kill 0\noom_group_kill 0\n")
+        reset_dispositions()
+        return _run(tmp_path, root)                          # streak 2
+
+    def test_cache_riding_with_low_psi_is_suppressed_with_a_witness(self, tmp_path):
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        _psi(cg, "0.00")
+        _stat(cg, anon_mb=200, shmem_mb=50, file_mb=1700)    # cache-dominated
+        assert self._ride_to_streak(tmp_path, root, cg) == []
+        d = collect_dispositions()["memory_cap_engaged"]
+        assert d["disp"] == "clean"
+        # The suppression must NOT be a silent swallow (#9).
+        assert "benign" in d["reason"]
+        assert "user.slice/user-1000.slice" in d["reason"]
+
+    def test_high_psi_fires_and_names_the_pressure(self, tmp_path):
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        _psi(cg, "23.70")
+        _stat(cg, anon_mb=200, file_mb=1700)
+        sigs = self._ride_to_streak(tmp_path, root, cg)
+        assert len(sigs) == 1 and sigs[0].severity == "degraded"
+        assert "COSTING" in sigs[0].detail
+        assert sigs[0].extra["psi_some_avg10"] == pytest.approx(23.70)
+
+    def test_anon_dominated_fires_even_with_zero_psi(self, tmp_path):
+        """Unreclaimable memory over half the cap is one burst from kills —
+        PSI can momentarily read 0.00 there and it is still not benign."""
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        _psi(cg, "0.00")
+        _stat(cg, anon_mb=1100, shmem_mb=100, file_mb=300)   # >50% of 2048 MB
+        sigs = self._ride_to_streak(tmp_path, root, cg)
+        assert len(sigs) == 1
+        assert "UNRECLAIMABLE" in sigs[0].detail
+
+    def test_unreadable_discriminators_page_never_silence(self, tmp_path):
+        """The pre-existing fixtures have no memory.pressure/memory.stat at all
+        — that shape must keep paging, with the blindness named."""
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        sigs = self._ride_to_streak(tmp_path, root, cg)
+        assert len(sigs) == 1
+        assert "cannot rule" in sigs[0].detail
+
+    def test_benign_turn_dangerous_pages_without_reserving_the_debounce(self, tmp_path):
+        """The streak keeps counting through suppressed benign ticks, so the
+        first dangerous tick pages immediately."""
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        _psi(cg, "0.00")
+        _stat(cg, anon_mb=200, file_mb=1700)
+        assert self._ride_to_streak(tmp_path, root, cg) == []   # benign, streak 2
+        _psi(cg, "31.00")                                        # reclaim now stalls
+        (cg / "memory.events").write_text("max 150\noom_kill 0\noom_group_kill 0\n")
+        sigs = _run(tmp_path, root)
+        assert len(sigs) == 1
+        assert sigs[0].extra["streak"] >= 3
+
+    def test_a_kill_bypasses_the_benignity_gate_entirely(self, tmp_path):
+        """The gate refines the CEILING leg only — a kill is a kill."""
+        root = tmp_path / "cg"
+        cg = _cgroup(root, "user.slice/user-1000.slice", cap=2 << 30)
+        _psi(cg, "0.00")
+        _stat(cg, anon_mb=100, file_mb=1800)
+        (cg / "memory.events").write_text("max 5\noom_kill 1\noom_group_kill 0\n")
+        sigs = _run(tmp_path, root)
+        assert len(sigs) == 1 and sigs[0].severity == "wedge"
+
+
 # ── multi-cap boxes: one subject per cap, stable identity ──
 
 class TestMultipleCaps:

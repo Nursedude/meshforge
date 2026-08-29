@@ -982,6 +982,21 @@ _CAP_CEILING_DEBOUNCE_TICKS = 2
 # itself surfaced rather than silently truncated (no_silent_caps).
 _CAP_MAX_SUBJECTS = 12
 
+# Ceiling-leg benignity gate (2026-08-28). One box's user slice rode its 8 GB
+# cap through 18k+ max_hits with PSI 0.00 and zero kills: 5.2 GB of the charge
+# was clean page cache, which ALWAYS fills to a cap during I/O-heavy work and
+# reclaims for free — that is the cap working as designed, not a finding, and
+# paging on it would make the ceiling leg chronically re-fire on every busy
+# session. The dangerous shape is different on two axes this gate reads:
+# reclaim that COSTS time (PSI), or a charge the kernel CANNOT reclaim
+# (anon+shmem). Below both thresholds the ceiling-riding is suppressed WITH a
+# witness in the clean disposition (honest_failure_modes #9); at-or-above
+# either, or when PSI/memory.stat cannot be read, the leg pages exactly as
+# before — an unreadable discriminator fails TOWARD the page, never toward
+# silence (#2: the benign claim needs positive evidence).
+_CAP_PSI_BENIGN_SOME_AVG10 = 5.0     # % — below this, reclaim is effectively free
+_CAP_BENIGN_UNRECLAIMABLE_SHARE = 0.5  # anon+shmem over cap — above, one burst from kills
+
 # In-process last-written cap baselines + consecutive-write-error count, per
 # state path — the same pair `_MEM_FALLBACK`/`_WRITE_ERRORS` carries for the
 # pressure probe, and for the same reason: the disk copy is the RESTART-
@@ -1015,6 +1030,55 @@ def _read_memory_events(path: str) -> Optional[Dict[str, int]]:
         except (ValueError, TypeError):
             continue
     return out or None
+
+
+def _read_psi_some_avg10(path: str) -> Optional[float]:
+    """The ``some avg10`` value from a cgroup ``memory.pressure`` file.
+
+    None when unreadable or unparseable (CONFIG_PSI off, cgroup gone) — the
+    ceiling leg maps that to "cannot rule benign", never to "no pressure".
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    for line in raw.splitlines():
+        parts = line.split()
+        if not parts or parts[0] != "some":
+            continue
+        for tok in parts[1:]:
+            if tok.startswith("avg10="):
+                try:
+                    return float(tok[len("avg10="):])
+                except (ValueError, TypeError):
+                    return None
+    return None
+
+
+def _read_unreclaimable_kb(path: str) -> Optional[int]:
+    """``anon + shmem`` from a cgroup ``memory.stat``, in KB.
+
+    The unreclaimable part of the charge: file cache drops for free under
+    reclaim, anon and shmem do not. None when the file is unreadable or the
+    ``anon`` key is absent — a stat we could not read supports no claim.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    fields: Dict[str, int] = {}
+    for line in raw.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[0] in ("anon", "shmem"):
+            try:
+                fields[parts[0]] = int(parts[1])
+            except (ValueError, TypeError):
+                return None
+    if "anon" not in fields:
+        return None
+    return (fields["anon"] + fields.get("shmem", 0)) // 1024
 
 
 def _capped_cgroups(*, cgroup_root: str = "/sys/fs/cgroup") -> Optional[List[Dict[str, Any]]]:
@@ -1189,6 +1253,16 @@ def _probe_memory_cap_engaged_impl(
         hits its hard limit and reclaim is absorbing it. This is the honest,
         evidence-based trigger to revisit the number — it replaces the
         "re-read memory.peak in a week" calendar plan that this probe retires.
+        Gated on benignity (2026-08-28): page cache ALWAYS fills to a cap
+        during I/O-heavy work and reclaims for free, so ceiling-riding alone
+        re-fires chronically on every busy session while meaning nothing. The
+        leg now pages only when the riding is costly or dangerous — PSI ``some
+        avg10`` at/above ``_CAP_PSI_BENIGN_SOME_AVG10``, unreclaimable charge
+        (anon+shmem) above ``_CAP_BENIGN_UNRECLAIMABLE_SHARE`` of the cap, or
+        either discriminator unreadable (an unverifiable "benign" pages, never
+        stays silent). The suppressed benign shape leaves its witness in the
+        clean disposition. The streak keeps counting through benign ticks, so
+        a turn dangerous pages immediately, without re-serving the debounce.
 
     Self-guards, each a distinct honest answer rather than a shared silence:
     the tree unwalkable → ``indeterminate``; no capped cgroup anywhere →
@@ -1215,6 +1289,7 @@ def _probe_memory_cap_engaged_impl(
     new_state: Dict[str, Any] = {}
     signals: List[Signal] = []
     unreadable: List[str] = []
+    benign_riders: List[str] = []
 
     for row in sorted(rows, key=lambda r: r["cgroup"])[:max_subjects]:
         name = row["cgroup"]
@@ -1272,19 +1347,45 @@ def _probe_memory_cap_engaged_impl(
                        "first_look_this_boot": fresh_boot},
             ))
         elif streak >= ceiling_debounce_ticks:
+            # Benignity gate: a slice riding its cap on clean page cache with
+            # PSI ~0 is the cap WORKING (cache always fills to a ceiling during
+            # I/O). Page only when reclaim costs time, unreclaimable memory
+            # dominates, or the discriminators cannot be read.
+            cg_dir = cgroup_root if name == "/" else os.path.join(cgroup_root, name)
+            psi = _read_psi_some_avg10(os.path.join(cg_dir, "memory.pressure"))
+            unrecl_kb = _read_unreclaimable_kb(os.path.join(cg_dir, "memory.stat"))
+            unrecl_mb = unrecl_kb // 1024 if unrecl_kb is not None else None
+            if psi is None or unrecl_kb is None:
+                why = ("memory.pressure/memory.stat unreadable — cannot rule "
+                       "the ceiling-riding benign, so it pages")
+            elif psi >= _CAP_PSI_BENIGN_SOME_AVG10:
+                why = (f"reclaim is COSTING time: PSI some avg10 {psi:.1f}% >= "
+                       f"{_CAP_PSI_BENIGN_SOME_AVG10:.0f}%")
+            elif row["cap_kb"] and unrecl_kb > row["cap_kb"] * _CAP_BENIGN_UNRECLAIMABLE_SHARE:
+                why = (f"UNRECLAIMABLE memory dominates: anon+shmem {unrecl_mb} MB "
+                       f"is over {_CAP_BENIGN_UNRECLAIMABLE_SHARE:.0%} of the "
+                       f"{cap_mb} MB cap — one allocation burst from kills")
+            else:
+                benign_riders.append(
+                    f"{name} (psi {psi:.2f}%, anon+shmem {unrecl_mb} MB of "
+                    f"{cap_mb} MB cap)")
+                continue
             signals.append(Signal(
                 cls="memory_cap_engaged", subject=name, severity="degraded",
                 detail=(
                     f"{where} is living AT its MemoryMax ceiling: max_hits rose "
-                    f"{d_hits} this tick, {streak} ticks running, and reclaim is "
-                    f"still absorbing it (no kills). This is the evidence-based "
-                    f"trigger to revisit the number — read memory.peak now that "
-                    f"it means something: cat /sys/fs/cgroup/{name}/memory.peak. "
+                    f"{d_hits} this tick, {streak} ticks running, no kills — and "
+                    f"it is NOT the benign cache-riding shape: {why}. This is "
+                    f"the evidence-based trigger to revisit the number — read "
+                    f"memory.peak now that it means something: "
+                    f"cat /sys/fs/cgroup/{name}/memory.peak. "
                     f"Raise the cap if the workload is legitimate; find the "
                     f"allocator if not. Not urgent — nothing has died."),
                 extra={"cgroup": name, "cap_kb": row["cap_kb"],
                        "max_hits": hits, "delta_hits": d_hits,
-                       "streak": streak, "events": ev},
+                       "streak": streak, "events": ev,
+                       "psi_some_avg10": psi,
+                       "unreclaimable_kb": unrecl_kb},
             ))
 
     _save_cap_state(state_path, {"boot_id": boot, "cgroups": new_state})
@@ -1307,7 +1408,17 @@ def _probe_memory_cap_engaged_impl(
                                 f"{max_subjects}-subject bound; the remainder "
                                 f"were NOT judged this tick")
     else:
+        # A suppressed benign rider is still an observation — it must appear
+        # here or the suppression is a silent swallow (#9). Bounded to two
+        # entries so the reason stays legible.
+        benign_note = ""
+        if benign_riders:
+            shown = "; ".join(benign_riders[:2])
+            more = len(benign_riders) - 2
+            benign_note = (f"; {len(benign_riders)} riding the ceiling on "
+                           f"reclaimable cache, suppressed as benign: {shown}"
+                           + (f" (+{more} more)" if more > 0 else ""))
         note_disposition("memory_cap_engaged", "clean",
                          reason=f"{len(rows)} capped cgroup(s) judged; "
-                                f"{len(signals)} engaged")
+                                f"{len(signals)} engaged{benign_note}")
     return signals
