@@ -35,7 +35,14 @@ class ExtensionsHandler(BaseHandler):
     _MA_EXT_DIR = "/opt/meshing_around_meshforge"
     _MA_SERVICE = "mesh_bot"
     _MA_SERVICE_TEMPLATE = "/opt/meshing_around_meshforge/templates/mesh_bot.service"
-    _MA_REPO_UPSTREAM = "https://github.com/SpudGunMan/meshing-around.git"
+    # The bot clones from the MeshForge T2 fork's deployed branch, not
+    # upstream SpudGunMan/meshing-around: the fork carries the bridge-compat
+    # customizations (e.g. trailing @mentions, 34fdb4c — a leading '@name '
+    # is the gateway DM-reply trigger and made every bot ack collide with
+    # the bridge, 2026-08-29). The fork's `main` mirrors upstream; the
+    # `meshforge` branch is base + our edits (see its FORK.md).
+    _MA_REPO_UPSTREAM = "https://github.com/Nursedude/meshing-around.git"
+    _MA_BOT_BRANCH = "meshforge"
     _MA_REPO_EXT = "https://github.com/Nursedude/meshing_around_meshforge.git"
 
     def menu_items(self):
@@ -194,7 +201,7 @@ class ExtensionsHandler(BaseHandler):
             "Install Meshing Around",
             "Install the Meshing Around mesh bot framework?\n\n"
             "This will:\n"
-            "  1. Clone meshing-around (upstream) to /opt/meshing-around\n"
+            "  1. Clone meshing-around (MeshForge fork) to /opt/meshing-around\n"
             "  2. Clone meshforge extension to /opt/meshing_around_meshforge\n"
             "  3. Create virtual environment + install dependencies\n"
             "  4. Install and start the systemd service\n\n"
@@ -210,10 +217,10 @@ class ExtensionsHandler(BaseHandler):
             # Step 1: Clone upstream (if not present)
             if not Path(self._MA_UPSTREAM_DIR).exists():
                 self.ctx.dialog.infobox(
-                    "Installing", "Cloning meshing-around (upstream)...")
+                    "Installing", "Cloning meshing-around (MeshForge fork)...")
                 result = subprocess.run(
-                    ["git", "clone", "-q", self._MA_REPO_UPSTREAM,
-                     self._MA_UPSTREAM_DIR],
+                    ["git", "clone", "-q", "-b", self._MA_BOT_BRANCH,
+                     self._MA_REPO_UPSTREAM, self._MA_UPSTREAM_DIR],
                     capture_output=True, text=True, timeout=120)
                 if result.returncode != 0:
                     self.ctx.dialog.msgbox(
