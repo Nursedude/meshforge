@@ -56,6 +56,10 @@ else:
     ident = RNS.Identity()
     ident_path.parent.mkdir(parents=True, exist_ok=True)
     ident.to_file(str(ident_path))
+    # RNS.Identity.to_file writes with the default umask (644) — this is a
+    # PRIVATE KEY. 2026-08-29 sweep found 33 identity files fleet-wide left
+    # world-readable by their creation sites; every new site tightens.
+    ident_path.chmod(0o600)
 
 src_hash = RNS.Destination.hash(ident, "lxmf", "delivery")
 print(f"drill source hash: {src_hash.hex()}")
