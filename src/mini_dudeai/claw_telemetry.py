@@ -117,6 +117,62 @@ _RE_LORA_SNR = re.compile(r"snr=(-?[\d.]+)", re.IGNORECASE)
 # watch=!32962f10:12/45@-104,!ddfb8065:never  (firmware >= the 2026-07-29 build)
 _RE_LORA_WATCH = re.compile(r"watch=([^\s]+)", re.IGNORECASE)
 _RE_LORA_WATCH_DROPPED = re.compile(r"watch_dropped=(\d+)", re.IGNORECASE)
+# direct=!32962f10:12@-104,!ddfb8065:never   (firmware >= the 2026-08-30 build)
+_RE_LORA_DIRECT = re.compile(r"direct=([^\s]+)", re.IGNORECASE)
+# hops=N on the last-packet line; -1 means the header was malformed.
+_RE_LORA_HOPS = re.compile(r"\bhops=(-?\d+)", re.IGNORECASE)
+
+
+def _parse_direct(result: str) -> Optional[Dict[str, Any]]:
+    """Per-id DIRECT reception (hops == 0), or None when the field is absent.
+
+    The same three-state discipline as ``_parse_watch``, for the same reason:
+
+      * field ABSENT      -> None. Firmware predates it. We do not know whether
+                             a direct link exists — which is NOT the same as
+                             knowing there isn't one.
+      * id present, never -> ``direct: False`` with age None. The id IS tracked
+                             and has never been heard at hops == 0. If it is
+                             simultaneously watch-heard, something else is
+                             REPEATING it, and that is the finding.
+      * id present, aged  -> age + the RSSI of that direct packet, which is the
+                             only RSSI in this module that describes a LINK to
+                             that node rather than to whoever last repeated it.
+    """
+    m = _RE_LORA_DIRECT.search(result)
+    if not m:
+        return None
+    out: Dict[str, Any] = {}
+    for tok in m.group(1).split(","):
+        tok = tok.strip()
+        if not tok or ":" not in tok:
+            continue
+        node, _, rest = tok.partition(":")
+        node = node.strip()
+        if not node:
+            continue
+        rest = rest.strip()
+        if rest.lower().startswith("never"):
+            out[node] = {"age_s": None, "rssi_dbm": None, "direct": False,
+                         "parse_error": False}
+            continue
+        age_part, _, rssi_part = rest.partition("@")
+        try:
+            age = int(age_part)
+        except ValueError:
+            # Garbled is kept with parse_error, never dropped: an absent key
+            # is indistinguishable from "not tracked" to a consumer doing
+            # .get(id) (honest_failure_modes #9).
+            out[node] = {"age_s": None, "rssi_dbm": None, "direct": None,
+                         "parse_error": True}
+            continue
+        try:
+            rssi = int(float(rssi_part))
+        except ValueError:
+            rssi = None
+        out[node] = {"age_s": age, "rssi_dbm": rssi, "direct": True,
+                     "parse_error": False}
+    return out or None
 
 
 def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
@@ -211,6 +267,18 @@ def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
         # "our transmitter is fine".
         "watched": _parse_watch(result),
         "watch_dropped": _int(_RE_LORA_WATCH_DROPPED, result),
+        # DIRECT-only reception (firmware 2026-08-30). `watched` says traffic
+        # bearing an id reached this claw by ANY path — in a flood mesh that
+        # may be a nearer node rebroadcasting, so its RSSI is the RELAY's
+        # signal. `direct` is the originator's own transmission (hops == 0),
+        # which is the only reading that characterises a LINK. A node that is
+        # watch-heard strong and direct-never is being repeated, and siting a
+        # digipeater off the first number puts it in the wrong place.
+        # None on firmware predating the field — unknown, never "no direct link".
+        "direct": _parse_direct(result),
+        # Hop distance of the LAST packet: 0 = direct, -1 = malformed header
+        # (never treated as direct), None = firmware predates the field.
+        "last_hops": _int(_RE_LORA_HOPS, result),
     }
 
 

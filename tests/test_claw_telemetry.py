@@ -603,3 +603,69 @@ class TestLoraWatchList:
                              "watch=!32962f10:never")
         assert d["heard_age_s"] == 900
         assert d["watched"]["!32962f10"]["never"] is True
+
+
+class TestDirectVsRelayedReception:
+    """`watch=` and `direct=` answer DIFFERENT questions, and conflating them
+    puts a digipeater in the wrong place.
+
+    In a flood mesh the `from=` field survives rebroadcast, so a watch hit may
+    be a NEARER node repeating the tracked node — its RSSI is the relay's
+    signal. Only hops == 0 characterises a link to the node itself. Firmware
+    exposes both as separate fields (2026-08-30) precisely so the difference
+    survives to the host.
+    """
+
+    BASE = ("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, runts 0, "
+            "last from=!16cd7438 to=!ffffffff rssi=-104 snr=4.2 hops=0)")
+
+    def test_strong_watch_hit_with_no_direct_is_a_RELAYED_node(self):
+        """THE case this field exists for. -62 dBm looks like a great link and
+        is not one: nothing has ever reached us from that node directly."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE +
+                             " watch=!0daee001:14/5@-62"
+                             " direct=!0daee001:never")
+        assert d["watched"]["!0daee001"]["rssi_dbm"] == -62      # any path
+        assert d["direct"]["!0daee001"]["direct"] is False       # but repeated
+        assert d["direct"]["!0daee001"]["age_s"] is None
+
+    def test_direct_hit_carries_the_link_rssi(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE +
+                             " watch=!0daee001:14/5@-62"
+                             " direct=!0daee001:20@-103")
+        assert d["direct"]["!0daee001"]["direct"] is True
+        assert d["direct"]["!0daee001"]["age_s"] == 20
+        # The LINK is -103. The -62 in `watched` was somebody else's radio.
+        assert d["direct"]["!0daee001"]["rssi_dbm"] == -103
+        assert d["watched"]["!0daee001"]["rssi_dbm"] == -62
+
+    def test_absent_direct_field_is_none_not_no_link(self):
+        """Firmware predating the field knows nothing about hop distance.
+        That is UNKNOWN, and must not read as 'no direct link exists'."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE + " watch=!0daee001:14/5@-62")
+        assert d["direct"] is None
+
+    def test_malformed_header_hops_is_minus_one_never_direct(self):
+        """hop_start < hop_limit cannot happen on a well-formed packet. The
+        firmware reports -1; claiming a direct link we cannot substantiate is
+        the failure that matters, so -1 must never be read as 0."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE.replace("hops=0", "hops=-1"))
+        assert d["last_hops"] == -1
+        assert d["last_hops"] != 0
+
+    def test_last_hops_absent_on_old_firmware_is_none(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE.replace(" hops=0", ""))
+        assert d["last_hops"] is None
+
+    def test_garbled_direct_entry_is_kept_with_parse_error(self):
+        """Dropping the key would make it indistinguishable from 'not tracked'
+        to a consumer doing .get(id) (honest_failure_modes #9)."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE + " direct=!0daee001:xx@-103")
+        assert d["direct"]["!0daee001"]["parse_error"] is True
+        assert d["direct"]["!0daee001"]["direct"] is None
