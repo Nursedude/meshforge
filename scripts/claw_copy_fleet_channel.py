@@ -60,6 +60,41 @@ _spec.loader.exec_module(_mps)
 
 _RE_HASH = re.compile(r"hash 0x([0-9a-fA-F]{2})")
 
+# Extracted so the two security-relevant properties can be PINNED by tests
+# rather than asserted in a docstring: (1) the key is never an argv element,
+# (2) persist is always stated explicitly. Both are invisible to any test that
+# can only call main().
+REMOTE_SCRIPT = "/opt/meshforge/scripts/claw_set_fleet_channel.py"
+
+
+def build_ssh_cmd(host: str, device: str, name: str, server: str,
+                  persist: bool) -> list:
+    """argv for the remote write leg. The PSK is NOT here and must never be:
+    it goes to the child's stdin. argv is world-readable via /proc and is
+    exactly the exposure `mesh_psk_safe`'s setpsk caveat warns about."""
+    return [
+        "ssh", "-o", "BatchMode=yes", host,
+        # PYTHONPATH belt-and-braces: the remote script self-inserts its
+        # sys.path since 2026-08-30, but a box on an older checkout would
+        # otherwise fail with ModuleNotFoundError AFTER the key was already
+        # on its stdin. This leg must not depend on how recently a box pulled.
+        "env", "PYTHONPATH=/opt/meshforge/src",
+        "python3", REMOTE_SCRIPT,
+        "--device", device, "--name", name,
+        "--server", server, "--psk-stdin",
+        # ALWAYS explicit: the remote defaults --persist ON while this tool
+        # defaults OFF. Omitting the flag would let one tool silently change
+        # the other's security posture (honest_failure_modes #5).
+        "--persist" if persist else "--no-persist",
+    ]
+
+
+def parse_channel_hash(text: str):
+    """The claw's echoed channel hash as '0xNN', or None if it reported none.
+    None is UNKNOWN — never treat a missing hash as a match."""
+    m = _RE_HASH.search(text or "")
+    return f"0x{m.group(1).lower()}" if m else None
+
 
 def main() -> int:
     ap = argparse.ArgumentParser(
@@ -116,19 +151,7 @@ def main() -> int:
         # meet in the middle is how one tool silently changes the other's
         # security posture (honest_failure_modes #5 — two consumers of one
         # setting must not each carry their own default).
-        cmd = [
-            "ssh", "-o", "BatchMode=yes", a.via_ssh,
-            # PYTHONPATH belt-and-braces: the remote script self-inserts its
-            # sys.path since 2026-08-30, but a box on an older checkout would
-            # otherwise fail with ModuleNotFoundError AFTER the key was already
-            # on its stdin. Cheap here, and this leg must not depend on how
-            # recently a given box pulled.
-            "env", "PYTHONPATH=/opt/meshforge/src",
-            "python3", "/opt/meshforge/scripts/claw_set_fleet_channel.py",
-            "--device", a.device, "--name", a.name,
-            "--server", a.server, "--psk-stdin",
-            "--persist" if a.persist else "--no-persist",
-        ]
+        cmd = build_ssh_cmd(a.via_ssh, a.device, a.name, a.server, a.persist)
         try:
             r = subprocess.run(cmd, input=psk + "\n", capture_output=True,
                                text=True, timeout=max(a.timeout * 6, 90))
@@ -167,8 +190,7 @@ def main() -> int:
         print(f"{a.device}: set FAILED — {text[:200]}", file=sys.stderr)
         return 1
 
-    m = _RE_HASH.search(text)
-    got = f"0x{m.group(1).lower()}" if m else None
+    got = parse_channel_hash(text)
     persisted = "persisted" in text.lower()
     print(f"{a.device}: channel '{a.name}' set, hash {got or 'UNREPORTED'}"
           f" ({'persisted to flash' if persisted else 'RAM-only'})")
