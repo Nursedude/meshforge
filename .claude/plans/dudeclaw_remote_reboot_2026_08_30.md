@@ -271,7 +271,30 @@ Second-order: OTA is what makes it cheap to ship the small, honest firmware
 fixes this domain generates constantly. A fix that costs a trip does not get
 shipped; it gets deferred, and the deferral is invisible.
 
-## ⚠️ Gate 1 — MEASURE THE FLASH CHIP BEFORE CHOOSING A LAYOUT
+## ✅ Gate 1 — MEASURED 2026-08-30: **16 MB on all three claws**
+
+`esptool flash_id` on every board (moc1/moc5/moc2), manufacturer `ef` device
+`4018`: **`Detected flash size: 16MB`** — three for three.
+
+**So OTA is FREE, and better: the fleet has been running on a quarter of its
+flash.** `platformio.ini` declares `board_upload.flash_size = 4MB` and
+`partitions.csv` addresses 4 MB, so **12 of 16 MB is unused today**. The
+cramped-vs-comfortable trade below is MOOT — neither branch applies. A dual-OTA
+layout at 2 x 2.5 MB (current image 1.4 MB = 56% of a slot) plus a spiffs
+several times today's still leaves over half the part free.
+
+⚠️ Do NOT copy the 4 MB tables below into the new `partitions.csv`; they were
+costed against a declared size that turned out to be wrong. Re-derive against
+16 MB, and raise `board_upload.flash_size` in the same change or the bootloader
+keeps addressing 4 MB regardless of the part.
+
+⚠️ This is exactly why the gate said MEASURE. Both branches I costed (4 MB
+cramped, 8 MB comfortable) were wrong, and the declared value in the build file
+was the least accurate number available. The original text is kept below for
+provenance.
+
+### (superseded) the pre-measurement trade
+
 
 `platformio.ini` declares `board_upload.flash_size = 4MB` and
 `board = esp32-s3-devkitc-1`, but the claws are **Heltec WiFi LoRa 32 V4**
