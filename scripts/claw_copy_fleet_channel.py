@@ -44,6 +44,7 @@ import argparse
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 
 sys.path.insert(0, "/opt/meshforge/src")
@@ -68,7 +69,11 @@ def main() -> int:
                     help="meshtasticd host holding the channel (e.g. localhost)")
     ap.add_argument("--name", required=True, help="channel name, e.g. meshforge")
     ap.add_argument("--device", required=True, help="claw device name on the bus")
-    ap.add_argument("--server", default="localhost:4222", help="NATS server")
+    ap.add_argument("--server", default="localhost:4222",
+                    help="NATS server holding the claw bus. ⚠️ With --via-ssh "
+                         "this is resolved ON THE REMOTE HOST, so the default "
+                         "'localhost:4222' means the bus local to that box — "
+                         "which is usually what you want.")
     ap.add_argument("--timeout", type=float, default=10.0)
     ap.add_argument("--expect-hash",
                     help="assert the claw reports this channel hash, e.g. 0xa2")
@@ -76,6 +81,13 @@ def main() -> int:
                     help="ALSO write the key to the claw's flash so it survives "
                          "reboots. Default RAM-only. This puts the fleet key on "
                          "the device permanently — opt in knowingly.")
+    ap.add_argument("--via-ssh", metavar="HOST",
+                    help="run the WRITE leg on HOST over ssh, feeding the key on "
+                         "that process's STDIN. Use when no single box has both "
+                         "the meshtastic CLI (to read) and reach to the claw's "
+                         "NATS bus (to write) — which is the fleet's actual "
+                         "shape. The key crosses an encrypted ssh channel on "
+                         "stdin: never in argv, never on disk, never echoed.")
     ap.add_argument("--dry-run", action="store_true",
                     help="read the source key and report its hash; write nothing")
     a = ap.parse_args()
@@ -92,26 +104,63 @@ def main() -> int:
 
     print(f"source {a.source} '{a.name}': sha256:{_mps._hash16(psk)}")
     if a.dry_run:
-        print(f"DRY-RUN: would set {a.device} channel '{a.name}' "
+        where = f"via ssh {a.via_ssh}" if a.via_ssh else f"direct to {a.server}"
+        print(f"DRY-RUN: would set {a.device} channel '{a.name}' {where} "
               f"({'persisted to flash' if a.persist else 'RAM-only'})")
         return 0
 
-    payload = {"tool": "mesh_set_channel", "name": a.name, "psk": psk}
-    if a.persist:
-        payload["persist"] = 1
-    try:
-        resp = request(a.server, f"{a.device}.tool_exec",
-                       json.dumps(payload), timeout_s=a.timeout)
-    finally:
-        # Drop the key from this process's reachable state as soon as the call
-        # returns, success or not.
-        del psk, payload
-    if resp is None:
-        print(f"no reply from {a.device} (claw dark, or wrong bus?) — "
-              f"channel state UNKNOWN", file=sys.stderr)
-        return 2
-
-    text = str(resp)
+    if a.via_ssh:
+        # Hand the key to claw_set_fleet_channel.py --psk-stdin on the far side.
+        # ⚠️ persist is passed EXPLICITLY in both directions: that tool defaults
+        # --persist ON while this one defaults OFF, and letting the two defaults
+        # meet in the middle is how one tool silently changes the other's
+        # security posture (honest_failure_modes #5 — two consumers of one
+        # setting must not each carry their own default).
+        cmd = [
+            "ssh", "-o", "BatchMode=yes", a.via_ssh,
+            # PYTHONPATH belt-and-braces: the remote script self-inserts its
+            # sys.path since 2026-08-30, but a box on an older checkout would
+            # otherwise fail with ModuleNotFoundError AFTER the key was already
+            # on its stdin. Cheap here, and this leg must not depend on how
+            # recently a given box pulled.
+            "env", "PYTHONPATH=/opt/meshforge/src",
+            "python3", "/opt/meshforge/scripts/claw_set_fleet_channel.py",
+            "--device", a.device, "--name", a.name,
+            "--server", a.server, "--psk-stdin",
+            "--persist" if a.persist else "--no-persist",
+        ]
+        try:
+            r = subprocess.run(cmd, input=psk + "\n", capture_output=True,
+                               text=True, timeout=max(a.timeout * 6, 90))
+        finally:
+            del psk
+        # NEVER print r.stderr raw on the failure path without thinking: the
+        # remote tool is written not to echo the key, but this is the boundary
+        # where a future change there would leak through here.
+        if r.returncode != 0:
+            print(f"{a.device}: remote set FAILED on {a.via_ssh} "
+                  f"(rc={r.returncode})", file=sys.stderr)
+            for line in (r.stdout or "").splitlines()[-4:]:
+                print(f"  {line}", file=sys.stderr)
+            return 1
+        text = r.stdout or ""
+        print(f"(write ran on {a.via_ssh}; key sent on stdin, never argv)")
+    else:
+        payload = {"tool": "mesh_set_channel", "name": a.name, "psk": psk}
+        if a.persist:
+            payload["persist"] = 1
+        try:
+            resp = request(a.server, f"{a.device}.tool_exec",
+                           json.dumps(payload), timeout_s=a.timeout)
+        finally:
+            # Drop the key from this process's reachable state as soon as the
+            # call returns, success or not.
+            del psk, payload
+        if resp is None:
+            print(f"no reply from {a.device} (claw dark, or wrong bus?) — "
+                  f"channel state UNKNOWN", file=sys.stderr)
+            return 2
+        text = str(resp)
     if "Channel set" not in text:
         # The firmware reports key-length / format problems WITHOUT echoing the
         # key; surface its reason verbatim, it is safe and it is the finding.

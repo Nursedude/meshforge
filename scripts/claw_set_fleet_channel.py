@@ -32,7 +32,15 @@ import json
 import os
 import sys
 
-from mini_dudeai.nats_client import request
+# Self-sufficient like its siblings (claw_set_watch_ids.py,
+# claw_copy_fleet_channel.py). Without this the import below needs
+# PYTHONPATH=/opt/meshforge/src from the caller — which the FIRST usage example
+# above omits, so following the docs exactly produced ModuleNotFoundError. Found
+# 2026-08-30 when claw_copy_fleet_channel drove this over ssh, where there is no
+# ambient PYTHONPATH to inherit.
+sys.path.insert(0, "/opt/meshforge/src")
+
+from mini_dudeai.nats_client import request  # noqa: E402
 
 
 def main() -> int:
