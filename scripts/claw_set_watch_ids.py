@@ -43,6 +43,7 @@ import argparse
 import json
 import re
 import sys
+import time
 
 sys.path.insert(0, "/opt/meshforge/src")
 from mini_dudeai.nats_client import request  # noqa: E402
@@ -87,6 +88,86 @@ def _read_config(server: str, device: str, timeout: float) -> dict:
                        "REFUSING to write (a config without it strands the claw)")
 
 
+_RE_UPTIME = re.compile(r"Uptime:\s*(\d+)\s*seconds", re.IGNORECASE)
+_RE_RESET = re.compile(r"Reset reason:\s*([^,]+)", re.IGNORECASE)
+
+
+def _device_state(server: str, device: str, timeout: float):
+    """``(uptime_s, reset_reason)`` from the claw's own ``device_info``.
+
+    Parsed from the firmware's plain-text reply (``src/tools.cpp ::
+    tool_device_info``), not JSON — that IS its wire format. Either field
+    coming back None means the reply did not carry it; the caller must treat
+    that as UNKNOWN, never as a healthy default.
+    """
+    try:
+        text = str(_tool(server, device, {"tool": "device_info"}, timeout))
+    except RuntimeError:
+        return None, None          # dark right now — not an answer, and not a failure
+    mu, mr = _RE_UPTIME.search(text), _RE_RESET.search(text)
+    return (int(mu.group(1)) if mu else None,
+            mr.group(1).strip() if mr else None)
+
+
+def _reboot_and_verify(server: str, device: str, timeout: float,
+                       wait_s: float) -> int:
+    """Restart the claw and PROVE it came back. 0 verified / 1 refused / 2 unknown.
+
+    The proof is ``uptime went DOWN``, not ``uptime is small``. The firmware
+    defers the restart ~2 s so its reply can flush, so the first device_info
+    after the call is answered by the OUTGOING process and reports the OLD
+    uptime — accepting it would ratify a reboot that never happened. So a
+    baseline is captured BEFORE the call and the poll waits for an uptime
+    strictly below it (the restart-verification trap: require the artifact to
+    be newer than a t0 captured beforehand, never merely 'recent').
+
+    A device that does not return inside the window is UNKNOWN (exit 2), never
+    failure and never success: the config change is already committed on-device,
+    so 'did not come back yet' and 'is bricked' are different claims and this
+    cannot tell them apart. Unobservable is not unhealthy — and is not healthy.
+    """
+    before_uptime, before_reason = _device_state(server, device, timeout)
+    if before_uptime is None:
+        print("REFUSING to reboot: no device_info baseline — without it a "
+              "restart cannot be distinguished from a claw that never went "
+              "down (the outgoing process answers for ~2s)")
+        return 1
+    print("baseline: uptime=%ss reset_reason=%s" % (before_uptime, before_reason))
+
+    resp = str(_tool(server, device, {"tool": "reboot"}, timeout))
+    print("device says: %s" % resp[:200])
+    if "reboot armed" not in resp:
+        # The firmware refuses rather than strands (unreadable config, or a
+        # missing/empty wifi_ssid). That refusal is the tool working.
+        print("REFUSED by device — not rebooted; the reason above is the finding")
+        return 1
+
+    deadline = time.time() + wait_s
+    while time.time() < deadline:
+        time.sleep(3)
+        up, reason = _device_state(server, device, timeout)
+        if up is None:
+            continue                       # still down, or bus not answering yet
+        if up >= before_uptime:
+            continue                       # the OUTGOING process, pre-restart
+        print("VERIFIED restart: uptime %ss -> %ss, reset_reason=%s"
+              % (before_uptime, up, reason))
+        if reason != "sw-restart":
+            print("⚠️  came back, but reset_reason is %r, not 'sw-restart' — it "
+                  "restarted for some OTHER cause (power? crash?); treat this "
+                  "as a finding, not a clean apply" % reason)
+            return 2
+        print("watch list is now ARMED on %s" % device)
+        return 0
+
+    print("UNKNOWN: %s did not report a lower uptime within %.0fs. The config "
+          "change is COMMITTED on-device; whether it rebooted and is still "
+          "coming up, or is off the bus, is not observable from here. Check "
+          "the next capture's reset_reason/uptime before assuming either."
+          % (device, wait_s))
+    return 2
+
+
 def _normalise(raw: str):
     out = []
     for tok in raw.split(","):
@@ -113,6 +194,14 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=8.0)
     ap.add_argument("--dry-run", action="store_true",
                     help="read + show what WOULD change; writes nothing")
+    ap.add_argument("--reboot", action="store_true",
+                    help="after a VERIFIED write, restart the claw over the bus "
+                         "so the list actually arms, and prove it came back "
+                         "(uptime went down + reset_reason=sw-restart). Default "
+                         "OFF: a write and a restart are different blast radii. "
+                         "Exit 2 = write committed but reboot UNOBSERVABLE.")
+    ap.add_argument("--reboot-wait", type=float, default=90.0,
+                    help="seconds to wait for the claw to come back (default 90)")
     a = ap.parse_args()
 
     ids = _normalise(a.ids)
@@ -140,6 +229,8 @@ def main() -> int:
               "portal before rebooting it")
         return 1
     print("VERIFIED on-device: lora_watch_ids set, wifi_ssid intact")
+    if a.reboot:
+        return _reboot_and_verify(a.server, a.device, a.timeout, a.reboot_wait)
     print("reboot the claw (or wait for its next restart) to arm the watch list")
     return 0
 
