@@ -13,7 +13,12 @@
 
 Lora:
   Module: sx1262
-  CS: 8
+  # CS: 8  — do NOT declare: spidev0.0's CS0 IS GPIO8 and the kernel spi0
+  # driver already owns the line. On Debian 13/libgpiod2 a second gpiod
+  # claim fails and meshtasticd crashloops on
+  # `gpiod_line_request_reconfigure_lines: Assertion 'request' failed`
+  # (lehua bring-up 2026-08-29). Kernel-managed CS works on bookworm too
+  # (moc4's RAK overlay runs CS-commented).
   IRQ: 16
   Busy: 20
   Reset: 24
