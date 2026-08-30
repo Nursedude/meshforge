@@ -46,9 +46,9 @@ REPO_DIR="${1:-${REPO_DIR:-/opt/meshforge}}"
 # shallow clone abbreviated to 7 vs the fleet's 8, faking MISMATCH 2026-08-29).
 if ! TARGET_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null); then
     echo "fleet_pull: '$REPO_DIR' is not a git repo on this box — nothing to target." >&2
-TARGET_SHORT=${TARGET_SHA:0:8}   # display only — comparisons use the full sha
     exit 2
 fi
+TARGET_SHORT=${TARGET_SHA:0:8}   # display only — comparisons use the full sha
 BRANCH=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "?")
 
 # --- resolve the host list (per-repo list wins over the generic one) ----------
