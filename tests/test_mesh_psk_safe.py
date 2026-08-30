@@ -157,3 +157,59 @@ class TestSetpskRefusesBadKey:
         rc = mps.cmd_setpsk("h", "1", str(kf))
         assert rc == 2
         assert "not a 32-byte base64 key" in capsys.readouterr().err
+
+
+# ── copypsk: radio-to-radio, no keyfile, write is never trusted unverified ──
+
+class TestCopypsk:
+    def test_dry_run_prints_hash_never_key(self, capsys):
+        with mock.patch.object(mps, "_channel_psk",
+                               return_value=(mps.CH_OK, KEY_32)):
+            rc = mps.cmd_copypsk("src", "Fleet", "dst", "1", dry_run=True)
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "DRY-RUN" in out and KEY_32 not in out
+
+    def test_default_key_source_refused(self, capsys):
+        with mock.patch.object(mps, "_channel_psk",
+                               return_value=(mps.CH_OK, KEY_DEFAULT)):
+            rc = mps.cmd_copypsk("src", "LongFast", "dst", "1")
+        assert rc == 2
+        assert "use setpsk" in capsys.readouterr().err
+
+    def test_verified_match_returns_0_and_never_prints_key(self, capsys):
+        with mock.patch.object(mps, "_channel_psk",
+                               side_effect=[(mps.CH_OK, KEY_32), (mps.CH_OK, KEY_32)]), \
+             mock.patch.object(mps.subprocess, "run", return_value=_cp()):
+            rc = mps.cmd_copypsk("src", "Fleet", "dst", "1")
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "VERIFIED" in out and KEY_32 not in out
+
+    def test_dst_readback_differs_returns_1(self, capsys):
+        with mock.patch.object(mps, "_channel_psk",
+                               side_effect=[(mps.CH_OK, KEY_32),
+                                            (mps.CH_OK, "C" * 43 + "=")]), \
+             mock.patch.object(mps.subprocess, "run", return_value=_cp()):
+            rc = mps.cmd_copypsk("src", "Fleet", "dst", "1")
+        assert rc == 1
+        assert "DIFFER" in capsys.readouterr().out
+
+    def test_write_ok_but_verify_unreadable_is_unknown_4(self, capsys):
+        with mock.patch.object(mps, "_channel_psk",
+                               side_effect=[(mps.CH_OK, KEY_32),
+                                            (mps.CH_ERROR, None)]), \
+             mock.patch.object(mps.subprocess, "run", return_value=_cp()):
+            rc = mps.cmd_copypsk("src", "Fleet", "dst", "1")
+        assert rc == 4
+        assert "UNKNOWN" in capsys.readouterr().err
+
+    def test_write_failure_never_echoes_cli_output(self, capsys):
+        leaky = _cp(returncode=1, stdout=KEY_32, stderr=KEY_32)
+        with mock.patch.object(mps, "_channel_psk",
+                               return_value=(mps.CH_OK, KEY_32)), \
+             mock.patch.object(mps.subprocess, "run", return_value=leaky):
+            rc = mps.cmd_copypsk("src", "Fleet", "dst", "1")
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert KEY_32 not in captured.out + captured.err

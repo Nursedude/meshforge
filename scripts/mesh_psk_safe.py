@@ -27,6 +27,16 @@ Subcommands:
   setpsk  <host[:port]> <index> <keyfile|default|none|random>
                                         set slot <index>'s psk from a FILE (or a named default);
                                         never echoes the key
+  copypsk <srchost[:port]> <channelName> <dsthost[:port]> <dstindex> [--dry-run]
+                                        read <channelName>'s key from the source radio and set it
+                                        on the destination slot IN ONE PROCESS — no keyfile, no
+                                        transcript. The destination channel must already exist
+                                        with the same name (create with `meshtastic --ch-add`;
+                                        its random initial key gets overwritten). After the write
+                                        the destination is read BACK and hash-compared (never
+                                        trust the write). --dry-run stops before the write and
+                                        prints only the source key's hash. setpsk's argv-visibility
+                                        caveat applies to the destination box.
 """
 import hashlib
 import re
@@ -167,6 +177,41 @@ def cmd_setpsk(host, index, keyspec):
     return 1
 
 
+def cmd_copypsk(srchost, name, dsthost, index, dry_run=False):
+    status, psk = _channel_psk(srchost, name)
+    if status != CH_OK:
+        return _report_lookup_failure(name, status)
+    if not B64_32.match(psk):
+        # default (AQ==) / simple keys are public knowledge — use `setpsk <host> <i> default`
+        print(f"refusing: source '{name}' key is not a 32-byte base64 key "
+              f"(sha256:{_hash16(psk)}); for default/simple keys use setpsk", file=sys.stderr)
+        return 2
+    if dry_run:
+        print(f"DRY-RUN {name}: would set {dsthost} slot {index} "
+              f"to src key sha256:{_hash16(psk)}")
+        return 0
+    r = subprocess.run(
+        ["meshtastic", "--host", dsthost, "--ch-index", str(index), "--ch-set", "psk", f"base64:{psk}"],
+        capture_output=True, text=True, timeout=90,
+    )
+    # NEVER print r.stdout/stderr raw — it may echo the key
+    if r.returncode != 0:
+        print(f"{dsthost} slot {index}: set FAILED (rc={r.returncode}); stderr redacted",
+              file=sys.stderr)
+        return 1
+    # Re-derive: read the destination back and compare hashes — the write alone
+    # is not evidence the key landed (wrong slot, settle race, CLI drift).
+    dstatus, dpsk = _channel_psk(dsthost, name)
+    if dstatus != CH_OK:
+        print(f"{dsthost} slot {index}: psk set but verify read failed — state UNKNOWN; "
+              f"re-check with: keyhash {dsthost} {name}", file=sys.stderr)
+        return 4
+    same = dpsk == psk
+    print(f"{name}: copy {'VERIFIED (src==dst)' if same else 'DIFFER — dst does not match src'} "
+          f"(src=sha256:{_hash16(psk)} dst=sha256:{_hash16(dpsk)})")
+    return 0 if same else 1
+
+
 def main(argv):
     if len(argv) < 2:
         print(__doc__)
@@ -181,6 +226,11 @@ def main(argv):
             return cmd_verify(*rest)
         if cmd == "setpsk" and len(rest) == 3:
             return cmd_setpsk(*rest)
+        if cmd == "copypsk" and len(rest) in (4, 5):
+            dry = "--dry-run" in rest
+            args = [a for a in rest if a != "--dry-run"]
+            if len(args) == 4:
+                return cmd_copypsk(*args, dry_run=dry)
     except subprocess.TimeoutExpired:
         print(f"{cmd}: meshtastic timed out", file=sys.stderr)
         return 4
