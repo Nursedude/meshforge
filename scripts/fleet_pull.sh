@@ -42,8 +42,11 @@ set -uo pipefail
 REPO_DIR="${1:-${REPO_DIR:-/opt/meshforge}}"
 
 # --- resolve the target sha from the local repo -------------------------------
-if ! TARGET_SHORT=$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null); then
+# Full SHAs for comparison — `--short` auto-length varies per clone (lehua's
+# shallow clone abbreviated to 7 vs the fleet's 8, faking MISMATCH 2026-08-29).
+if ! TARGET_SHA=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null); then
     echo "fleet_pull: '$REPO_DIR' is not a git repo on this box — nothing to target." >&2
+TARGET_SHORT=${TARGET_SHA:0:8}   # display only — comparisons use the full sha
     exit 2
 fi
 BRANCH=$(git -C "$REPO_DIR" branch --show-current 2>/dev/null || echo "?")
@@ -103,9 +106,9 @@ case "\${heal_out%% *}" in
     *)         echo "HEALFAIL \$heal_out"; exit 0 ;;
 esac
 if git pull --ff-only origin main >/dev/null 2>&1; then
-    echo "PULLED \$(git rev-parse --short HEAD)\$heal_note"
+    echo "PULLED \$(git rev-parse HEAD)\$heal_note"
 else
-    echo "PULLFAIL \$(git rev-parse --short HEAD 2>/dev/null || echo '?')\$heal_note"
+    echo "PULLFAIL \$(git rev-parse HEAD 2>/dev/null || echo ?)\$heal_note"
 fi
 REMOTE
 )
@@ -120,10 +123,10 @@ for h in "${HOSTS[@]}"; do
     heal_note=${heal_note:+ $heal_note}
     case "$status" in
         PULLED)
-            if [ "$sha" = "$TARGET_SHORT" ]; then
-                printf '  %-20s OK        %s%s\n' "$h" "$sha" "$heal_note"
+            if [ "$sha" = "$TARGET_SHA" ]; then
+                printf '  %-20s OK        %s%s\n' "$h" "${sha:0:8}" "$heal_note"
             else
-                printf '  %-20s MISMATCH  %s (target %s)%s\n' "$h" "$sha" "$TARGET_SHORT" "$heal_note"
+                printf '  %-20s MISMATCH  %s (target %s)%s\n' "$h" "${sha:0:8}" "$TARGET_SHORT" "$heal_note"
                 failures=$((failures + 1))
             fi
             ;;
@@ -176,7 +179,7 @@ fi
 # line (caught 2026-07-20, minutes after the advisory shipped — the sister repo
 # has its own NOC service and its own restart story).
 if [ "$failures" -eq 0 ] && [ "$(basename "$REPO_DIR")" = "meshforge" ] \
-   && [ "$(git -C "$REPO_DIR" rev-parse --short HEAD 2>/dev/null)" = "$TARGET_SHORT" ]; then
+   && [ "$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null)" = "$TARGET_SHA" ]; then
     if systemctl is-active --quiet meshforge-map 2>/dev/null; then
         # Both sides in WALL-CLOCK epoch seconds. (First cut used
         # ActiveEnterTimestampMonotonic, which is time-since-BOOT, not service
