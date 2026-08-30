@@ -37,6 +37,14 @@ DI = ("Free heap: 17764 bytes, Total heap: 210492 bytes, Uptime: 109368 "
       "ESP32-S3 rev 2, 2 cores, 240 MHz")
 BS = ("ble_adv_age_s: 0 (advs 767422, uniq 32+, last rssi -59 dBm, "
       "restarts 0/0, window 48/320ms)")
+# device_info from firmware carrying the running version (added 2026-08-30).
+# Version leads because snprintf truncates the TAIL and this is the field an
+# OTA push must read back — shape copied from the firmware's format string.
+DI_VERSIONED = ("Version: 0.4.0+dudeclaw.19, Free heap: 17764 bytes, "
+                "Total heap: 210492 bytes, Min free heap: 9012 bytes, "
+                "Max alloc block: 6144 bytes, Reset reason: poweron, "
+                "Uptime: 109368 seconds, WiFi: connected (rssi -37 dBm), "
+                "IP: 10.0.0.5, Chip: ESP32-S3 rev 2, 2 cores, 240 MHz")
 # device_info from firmware carrying the heap-pressure + reset-reason fields.
 DI_PRESSURE = ("Free heap: 17764 bytes, Total heap: 210492 bytes, "
                "Min free heap: 9012 bytes, Max alloc block: 6144 bytes, "
@@ -101,6 +109,30 @@ class TestParseDeviceInfo:
         assert d["heap_max_alloc_bytes"] is None
         assert d["reset_reason"] is None
         assert d["heap_free_bytes"] == 17764     # old fields still parse
+
+    def test_version_is_parsed_when_the_firmware_reports_it(self):
+        """The running image must be POLLABLE: before 2026-08-30 the version
+        was only announced at boot, so an OTA push had no way to ask which
+        image it was talking to. Firmware emits it FIRST so a truncated reply
+        keeps the field the push reads back."""
+        d = parse_device_info(DI_VERSIONED)
+        assert d["version"] == "0.4.0+dudeclaw.19"
+
+    def test_leading_version_does_not_break_the_other_fields(self):
+        """Prepending a field shifts every other one off start-of-string. The
+        readers are anchored on '(?:^|,)\\s*' so they still match after a
+        comma — this pins that, because a silent regression here would blank
+        heap/uptime/reset fleet-wide the moment the new firmware shipped."""
+        d = parse_device_info(DI_VERSIONED)
+        assert d["heap_free_bytes"] == 17764
+        assert d["uptime_s"] == 109368
+        assert d["reset_reason"] == "poweron"
+        assert d["chip"] == "ESP32-S3 rev 2"
+
+    def test_firmware_without_version_is_unknown_not_assumed_current(self):
+        """A claw whose image cannot be named is a claw an OTA cannot verify.
+        None says so; a blank or an assumed-current string would not."""
+        assert parse_device_info(DI)["version"] is None
 
 
 class TestParseBleStats:

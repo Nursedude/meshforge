@@ -58,6 +58,10 @@ _RE_WIFI = re.compile(r"WiFi:\s*(connected|disconnected)", re.IGNORECASE)
 _RE_RSSI = re.compile(r"rssi\s*(-?\d+)\s*dBm", re.IGNORECASE)
 _RE_IP = re.compile(r"IP:\s*([0-9.]+)")
 _RE_CHIP = re.compile(r"Chip:\s*([^,]+)")
+# Field-anchored like the rest: the firmware puts Version FIRST (so a truncated
+# reply keeps the field an OTA push must read back), but this must not depend
+# on that — anchor, don't assume position.
+_RE_VERSION = re.compile(_FIELD + r"Version:\s*([^,]+)", re.IGNORECASE)
 
 # ble_stats: "ble_adv_age_s: 0 (advs 767422, uniq 32+, last rssi -59 dBm,
 #   restarts 0/0, window 48/320ms)"
@@ -237,6 +241,12 @@ def parse_device_info(result: Any) -> Optional[Dict[str, Any]]:
         "wifi_rssi_dbm": rssi,
         "chip": _str(_RE_CHIP, result),
         "ip": _str(_RE_IP, result),
+        # None on firmware predating the field (added 2026-08-30) — which is
+        # itself the finding, not a blank: a claw whose running image cannot be
+        # named is a claw an OTA push cannot verify, and firmware drift across
+        # the claws has been unobservable until now. Unknown, never assumed
+        # current (honest_failure_modes #2).
+        "version": _str(_RE_VERSION, result),
     }
 
 
