@@ -101,7 +101,7 @@ Gateways deployed before 2026-04-24 that used the single-enum pattern (e.g. `bri
 
 ### Test Coverage
 
-**~9,300 tests** across <!--STAT:testfiles-->339<!--/STAT--> test files. Selected high-volume files
+**~11,000 tests** across <!--STAT:testfiles-->339<!--/STAT--> test files. Selected high-volume files
 (per-file counts are a 2026-07 snapshot — run `python3 -m pytest tests/<file> --co -q` for the live number):
 
 | Test File | Tests | Covers |
@@ -123,7 +123,7 @@ Gateways deployed before 2026-04-24 that used the single-enum pattern (e.g. `bri
 | `test_startup_health.py` | ~20 | Startup health checks, service verification |
 | `test_compliance.py` | ~13 | HAM compliance validation, encryption modes |
 
-*Note: the suite was trimmed from ~4,000 to ~1,400 in v0.5.4 to focus on gateway-essential coverage, then grew back to ~9,300 as new features and the Issues #58–#80 reliability arc shipped with regression-pinning tests. The exact file count above is kept honest by `scripts/readme_stats.py` (enforced in CI via `tests/test_readme_stats.py`); the total is deliberately approximate because it depends on which optional deps are installed. All tests use mocked external services — field validation with real hardware is a separate QA track.*
+*Note: the suite was trimmed from ~4,000 to ~1,400 in v0.5.4 to focus on gateway-essential coverage, then grew back past 11,000 as new features and the Issues #58–#80 reliability arc shipped with regression-pinning tests. The exact file count above is kept honest by `scripts/readme_stats.py` (enforced in CI via `tests/test_readme_stats.py`); the total is deliberately approximate because it depends on which optional deps are installed. All tests use mocked external services — field validation with real hardware is a separate QA track.*
 
 ```bash
 python3 -m pytest tests/ -v            # Run all tests
@@ -131,18 +131,50 @@ python3 -m pytest tests/ -v -x         # Stop on first failure
 python3 -m pytest tests/test_rns_bridge.py -v  # Gateway bridge tests only
 ```
 
-### Auto-Review
+### What CI runs
 
-Auto-review system scans the `src/` tree (~470 Python files) for security, reliability, and performance issues:
+Every push and PR runs five jobs (`.github/workflows/ci.yml`). All five must be
+green before a change is considered landed — and the check of record for a claim
+is CI's conclusion **for that exact HEAD**, not a local run:
+
+| Job | What it gates |
+|-----|---------------|
+| **Lint & Security Check** | `scripts/lint.py --all` (the blocking gate) + an advisory secret scan |
+| **Syntax Check** | every file compiles |
+| **Test Suite (3.9)** / **(3.11)** | the full suite on both supported interpreters, minimal-deps profile |
+| **Virtual Fleet (smoke + chaos)** | see below |
+
+#### Virtual fleet — a real RNS fabric in CI
+
+`lab.virtual_fleet` stands up an **isolated 3-node RNS fabric** inside the CI
+runner (own configdir, no host rnsd, no radios) and runs two drills:
 
 ```bash
-cd src && python3 -c "
-from utils.auto_review import ReviewOrchestrator
-r = ReviewOrchestrator()
-report = r.run_full_review()
-print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanned}')
-"
+python3 -m lab.virtual_fleet smoke --workdir /tmp/vfleet   # a message arrives
+python3 -m lab.virtual_fleet chaos --workdir /tmp/vfleet   # fault AND recovery
 ```
+
+It exists because mocks pin our *model* of the fabric, not the fabric. The
+chaos drill asserts **both** the fault and the recovery — a drill that only
+proves a thing breaks has not shown it heals. Sandbox logs are uploaded as a CI
+artifact on failure.
+
+Run either drill locally with the same commands; it needs the pinned RNS/LXMF
+forks (`requirements/rns.txt`).
+
+---
+
+### Auto-Review
+
+Auto-review system scans the `src/` tree (~550 Python files) for security, reliability, and performance issues:
+
+```bash
+python3 src/utils/auto_review.py
+```
+
+The runner lives in `auto_review.py`'s `__main__`, not in a `python3 -c`
+snippet — that form is deny-listed in this repo. Auto-review is **advisory** and
+always exits 0; the blocking gate is `scripts/lint.py --all`.
 
 **Tracked issues** (see `.claude/foundations/persistent_issues.md`):
 
@@ -163,13 +195,24 @@ print(f'Issues: {report.total_issues}, Files scanned: {report.total_files_scanne
 | MF017 | systemd `ReadWritePaths=` must cover every dir the service writes | Active monitoring |
 | MF019 | `RNS.Reticulum()` only via the `open_reticulum()` chokepoint | Active monitoring |
 | MF021 | mini-dudeai engine stays observation-only (no subprocess/systemctl) | Active monitoring |
+| MF011 | Repair logic stays out of `_nomadnet_rns_checks.py` (belongs in `_rns_repair.py`) | Active monitoring |
+| MF012 | Context-loaded doc size — `persistent_issues.md` under 40k chars (it loads every conversation turn) | Active monitoring |
+| MF016 | No `@patch('src.utils.paths.…')` in tests — production imports bare `utils.paths`, so that patch silently no-ops | Active monitoring |
+| MF018 | No TUI shell-escapes ("run this manually") — the In-Domain Principle ratchet | Active monitoring |
+| MF020 | `apply_config_and_restart()` return value must not be discarded in TUI handlers (hardcoded-success-after-unchecked-action) | Active monitoring |
+| MF022 | pip/apt hygiene in shell installers — route through `scripts/lib/install_common.sh` (PEP 668 + checked rc) | Active monitoring |
+| MF023 | Map collector must not create a blocking meshtastic interface outside the bounded helper — serving never blocks on collection | Active monitoring |
+| MF024 | Version SSOT (`src/__version__.py`) must agree with pyproject + README badge/heading (4-way drift guard) | Active monitoring |
+| MF025 | File-size ratchet — `src/` files over 1,500 lines; the frozen baseline may only shrink, never raise the cap | Active monitoring |
+| MF026 | Config/state writes must be atomic — `os.O_TRUNC` banned, non-atomic `open("w")` ratcheted | Active monitoring |
+| MF027 | Probe fail-dark guard — a `probe_*` except-handler may not return None without a `note_disposition` witness | Active monitoring |
 
 **Reliability patterns** (inspired by [Raspberry Pi systemd best practices](https://www.thedigitalpictureframe.com/ultimate-guide-systemd-autostart-scripts-raspberry-pi/)):
 - Services use `Restart=on-failure` with `RestartSec=5` for auto-recovery
 - Crash-loop protection: `StartLimitBurst=5` / `StartLimitIntervalSec=60` on rnsd
 - Startup ordering: meshforge.service `After=rnsd.service` ensures identity exists
 - Advisory pre-flight `check_service()` on all TCPInterface and MQTT connections (9 files hardened)
-- RNS shared instance detection via abstract Unix domain socket (`@rns/default`), with TCP/UDP fallback
+- RNS shared-instance detection via abstract Unix domain socket (`@rns/<instance_name>`), with TCP/UDP fallback. ⚠️ **Never hardcode `@rns/default`** — resolve the instance name. That literal caused Issue #82 (a unit's `ExecStartPre` crashlooped every box whose rnsd used a different name, undetected 10 days) and again on 2026-08-05 left an RNS probe blind for 8.8 days while reporting `clean`.
 - RNS repair wizard pre-flight: validates `share_instance = Yes`, detects config drift, checks NomadNet conflicts
 - RNS identity pre-flight: startup checks verify `~/.reticulum/storage/identities` exists
 - Shared connection manager prevents TCP:4403 client contention
