@@ -286,9 +286,61 @@ from zero, and their watch nodes have `required_window_s` ≈ 32400 s (9 h). A
 short window would read as "everything went `never`", which is the reset, not
 the fix.
 
-No new machinery is needed — moc2's claw capture already writes `direct=` to
-`claw_last_tick*.json` every ~40-60 s. After a comparable window (≥9 h, ideally
-~21 h to match the baseline):
+### The window is now WATCHED, not remembered (2026-08-31)
+
+"No new machinery is needed" was wrong in one respect, and the gap was silence,
+not capability: `claw_last_tick*.json` is **overwritten every ~40–60 s** by the
+`*/5` metrics cron, so the post-flash window existed only for as long as someone
+was at a terminal at the right hour. Two ways to lose it without a word being
+said — nobody runs the comparison at ~21 h, or any claw reboots and resets its
+counters — each costing another ~21 h to re-earn.
+
+`scripts/claw_direct_snapshot.py` now runs on moc2 every 30 min and captures
+**exactly once**, when every claw has met **its own** baseline window. It runs
+on moc2 rather than the manager box on purpose: the ticks are local there, so
+the capture has no ssh leg to fail, and moc2 being down already means the data
+is not being produced.
+
+Five outcomes, deliberately not collapsible into one another — `waiting` is
+exit 0 (it persists ~21 h and must not page), the two loud ones are exit 1:
+
+| outcome | meaning | exit |
+|---|---|---|
+| `waiting` | a claw has not reached its baseline window | 0 |
+| `captured` | all claws met their window; written ONCE | 0 |
+| `already_captured` | snapshot exists; idempotent no-op | 0 |
+| `window_lost` | a claw REBOOTED — counters reset, window restarts | 1 |
+| `unobservable` | a tick or the baseline is missing/stale/garbled | 1 |
+
+Design points worth keeping:
+
+* **Reboot detection reads `uptime_s` going DOWN**, never timestamps — device
+  monotonic, so it survives this fleet's forgeable wall clocks (#6). It fires
+  **once** and then reverts to `waiting`; an alarm that never clears is one
+  people learn to ignore.
+* **A missing claw is `unobservable`, not `waiting`.** A snapshot assembled
+  from a partial fleet would record an unobserved claw as one with no direct
+  links — the degraded-value-in-the-healthy-domain class F2 itself is about.
+* **Identity comes from each tick's own `device` field, never the filename** —
+  the host↔claw map is counterintuitive by measurement (step 0), and guessing
+  it is the exact error that cycle exists to prevent.
+* **`O_CREAT|O_EXCL`, and no `--force`.** Re-capturing means moving the file
+  aside deliberately. A flag that clobbers the only copy of an irreplaceable
+  21 h window is the defect the script exists to prevent.
+* The capture **prints the F2 delta by node id** into the verdict record, so
+  the headline survives even if nobody looks for days.
+
+Drilled by planting each condition (`tests/test_claw_direct_snapshot.py`, 19
+tests) — not by reading the source and believing it.
+
+⚠️ **Retire the cron once the comparison is recorded.** It is a measurement
+scaffold, not a permanent organ; leaving it running is footprint we did not
+earn.
+
+The manual comparison below still works and is the thing to run once the
+snapshot lands — moc2's claw capture writes `direct=` to `claw_last_tick*.json`
+every ~40-60 s. After a comparable window (≥9 h, ideally ~21 h to match the
+baseline):
 
 ```bash
 # on moc2 — current state
