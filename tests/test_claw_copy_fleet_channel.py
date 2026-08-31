@@ -17,12 +17,20 @@ evidence was a one-shot drill, which proves it worked once and pins nothing.
 """
 import base64
 import importlib.util
+import os
 
 import pytest
 
+# Resolve the script from THIS FILE, never from a hardcoded /opt/meshforge. The
+# first version of this test hardcoded it and took CI red on 2026-08-30 (green
+# at 978883ea, red at cd984bc5 which added this file) — a runner checks out
+# somewhere else entirely, so the import raised at collection time and BOTH
+# suites failed. Known class in this repo: a /opt/meshforge default killed
+# runners once before.
+_REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _spec = importlib.util.spec_from_file_location(
     "claw_copy_fleet_channel",
-    "/opt/meshforge/scripts/claw_copy_fleet_channel.py")
+    os.path.join(_REPO, "scripts", "claw_copy_fleet_channel.py"))
 ccfc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ccfc)
 

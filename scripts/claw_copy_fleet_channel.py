@@ -43,18 +43,26 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import subprocess
 import sys
 
-sys.path.insert(0, "/opt/meshforge/src")
+# Paths derived from THIS FILE, never assumed to be /opt/meshforge. A hardcoded
+# repo root works on every fleet box and fails on a CI runner (and any other
+# checkout), which is how this module's tests took the suite red on 2026-08-30
+# — the same class that killed runners once before via a /opt/meshforge default.
+_HERE = os.path.dirname(os.path.abspath(__file__))
+_REPO = os.path.dirname(_HERE)
+
+sys.path.insert(0, os.path.join(_REPO, "src"))
 from mini_dudeai.nats_client import request  # noqa: E402
 
 # Import the psk-safe helpers rather than re-deriving them: two implementations
 # of "read this channel's key" WILL drift, and the copy here would be the one
 # nobody audits (honest_failure_modes #5 — two consumers, one constant).
 _spec = importlib.util.spec_from_file_location(
-    "mesh_psk_safe", "/opt/meshforge/scripts/mesh_psk_safe.py")
+    "mesh_psk_safe", os.path.join(_HERE, "mesh_psk_safe.py"))
 _mps = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mps)
 
@@ -64,6 +72,9 @@ _RE_HASH = re.compile(r"hash 0x([0-9a-fA-F]{2})")
 # rather than asserted in a docstring: (1) the key is never an argv element,
 # (2) persist is always stated explicitly. Both are invisible to any test that
 # can only call main().
+# Deliberately absolute and NOT derived from _HERE: this is the path on the
+# REMOTE fleet box, where the repo always lives at /opt/meshforge. Deriving it
+# from this checkout would break the moment the tool is run from anywhere else.
 REMOTE_SCRIPT = "/opt/meshforge/scripts/claw_set_fleet_channel.py"
 
 
