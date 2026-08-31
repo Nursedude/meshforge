@@ -68,6 +68,49 @@ that claw** — stop, do not flash it.
 
 ---
 
+## ⚠️ BEFORE THE FLASH: restart moc2's claw units, or F1 stays broken
+
+Found 2026-08-31 by exercising the deployed reader on moc2 rather than
+trusting the deploy. **`fleet_pull` deploys files and restarts nothing**, so:
+
+* the FILE on moc2 is current (`c10f2d81`, parses ` cut=1` correctly —
+  verified live: `stats_truncated: True`, verdict `unobservable`);
+* the RUNNING processes are not. All three claw units started
+  **2026-08-15** and have carried 16-day-old code ever since.
+
+```
+meshforge-mini-dudeai-claw.service          (USER units, not system)
+meshforge-mini-dudeai-claw@claw02.service
+meshforge-mini-dudeai-claw@claw03.service
+```
+
+**Why this is not cosmetic.** Flash a claw to `.20` and it starts emitting
+` cut=1`. moc2's *running* parser predates that token, so it ignores it and
+reads the clipped `@-104` → `@-1` as a clean −1 dBm — **the exact forged
+reading F1 exists to prevent**. The fix would be shipped on both sides and
+still fully defeated, with every surface reporting healthy.
+
+This is honest_failure_modes #4 (reader/writer pairs wire together or fail
+together) applied to the DEPLOY step rather than the code: the two halves are
+correct, and the deployment leaves only one of them running.
+
+```bash
+# on moc2 — USER scope, no sudo (verify scope before acting)
+systemctl --user restart meshforge-mini-dudeai-claw.service \
+                         meshforge-mini-dudeai-claw@claw02.service \
+                         meshforge-mini-dudeai-claw@claw03.service
+```
+
+Then confirm the running process actually took it — `ActiveEnterTimestamp`
+must be NEW, and a restart's proof is the artifact, not `active`:
+
+```bash
+systemctl --user show meshforge-mini-dudeai-claw -p ActiveEnterTimestamp --value
+```
+
+Do this **before** flashing, not after: until it is done, a `.20` claw is
+strictly worse observed than a `.19` one.
+
 ## The flash
 
 App-only reflash — LittleFS config survives, so no reprovisioning:
@@ -165,6 +208,8 @@ to reject, and it is what a link budget would be computed from.
 ## Order of operations (why this order)
 
 1. **Step 0 identity** — before any write, on every board.
+1b. **Restart moc2's three claw units** (see the section above) — a `.20` claw
+   observed by a pre-`.20` reader is worse than no fix at all.
 2. **Snapshot `direct=` for all three claws BEFORE flashing.** F2 changes
    what counts as direct, so this snapshot is the only chance to measure its
    real-world effect: any entry that flips from `direct:true` to absent was a
