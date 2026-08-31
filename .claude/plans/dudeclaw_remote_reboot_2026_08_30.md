@@ -257,6 +257,15 @@ watch verdict is currently answered from one vantage only.
 > OTA needs a restart path anyway, so the reboot tool becomes a component of
 > this rather than a separate feature.
 
+> ⚠️ **The next flash cycle — OTA or manual — carries the F1–F3 fix queue**
+> from the 2026-08-30 adversarial pass: truncation witness + reply buffer,
+> (0,0) false-direct (operator ratifies the hop_start>0 trade), `wifi_pass`
+> presence in the reboot guard. Specs + drills live in the fork's
+> `FORK.md` §"Queued for the NEXT flash cycle"; F1's MF-side reader half
+> (`stats_truncated`) lands in the same arc. The F3 bench drill doubles as
+> the reboot tool's still-owed refusal-path drill — one bench session closes
+> both.
+
 ## Why — the use case is real, and it is the field arc
 
 Today every firmware change costs one physical visit per claw. That is
