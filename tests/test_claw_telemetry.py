@@ -669,3 +669,86 @@ class TestDirectVsRelayedReception:
         d = parse_lora_stats(self.BASE + " direct=!0daee001:xx@-103")
         assert d["direct"]["!0daee001"]["parse_error"] is True
         assert d["direct"]["!0daee001"]["direct"] is None
+
+
+class TestStatsTruncationWitness:
+    """F1 (+dudeclaw.20): the claw now WITNESSES its own truncated stats tail.
+
+    The defect this closes is a confident wrong reading, not a crash. Two
+    stacked caps clipped the reply silently, and a clipped `direct=` token
+    parses as a VALID number — `@-104` loses its tail and becomes `@-1`, a
+    perfectly plausible -1 dBm that no parser can distinguish from a real one.
+    Siting a digipeater off that number puts it in the wrong place.
+
+    The marker is deliberately ASYMMETRIC: presence proves truncation, absence
+    proves nothing, because every build before +dudeclaw.20 truncates in
+    silence. So the field is True/None and never True/False.
+    """
+
+    BASE = ("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, runts 0, "
+            "last from=!16cd7438 to=!ffffffff rssi=-104 snr=4.2 hops=0)")
+
+    def test_marker_present_sets_stats_truncated_true(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE + " watch=!0daee001:14/5@-62 cut=1")
+        assert d["stats_truncated"] is True
+
+    def test_marker_absent_is_none_never_false(self):
+        """Old firmware truncates silently, so 'no marker' is UNKNOWN. False
+        would assert a complete reply we cannot substantiate — the exact
+        overlap between the degraded and healthy domains (honest_failure_modes
+        #1) that F1 exists to remove."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE + " watch=!0daee001:14/5@-62")
+        assert d["stats_truncated"] is None
+        assert d["stats_truncated"] is not False
+
+    def test_truncated_reply_flags_every_direct_entry(self):
+        """Nothing says WHICH token lost bytes, so no entry may read clean."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(
+            self.BASE + " direct=!0daee001:12@-103,!16cd7438:8@-1 cut=1")
+        for node in ("!0daee001", "!16cd7438"):
+            assert d["direct"][node]["parse_error"] is True
+            assert d["direct"][node]["direct"] is None
+            assert d["direct"][node]["rssi_dbm"] is None
+
+    def test_truncated_reply_flags_every_watch_entry(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(
+            self.BASE + " watch=!0daee001:14/5@-62,!16cd7438:3/9@-70 cut=1")
+        for node in ("!0daee001", "!16cd7438"):
+            assert d["watched"][node]["parse_error"] is True
+            assert d["watched"][node]["rssi_dbm"] is None
+            assert d["watched"][node]["age_s"] is None
+
+    def test_the_forged_reading_does_not_survive_as_clean(self):
+        """THE regression. `@-1` is what `@-104` decays into under truncation.
+        Without the marker it is indistinguishable from a real -1 dBm; with it,
+        the entry must refuse to present as a usable link reading."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        forged = parse_lora_stats(self.BASE + " direct=!0daee001:12@-1 cut=1")
+        assert forged["direct"]["!0daee001"]["rssi_dbm"] is None
+        assert forged["direct"]["!0daee001"]["parse_error"] is True
+        # ...while the SAME text without the witness still reads as a value,
+        # which is precisely why the firmware half had to ship with it.
+        legacy = parse_lora_stats(self.BASE + " direct=!0daee001:12@-1")
+        assert legacy["direct"]["!0daee001"]["rssi_dbm"] == -1
+        assert legacy["stats_truncated"] is None
+
+    def test_untruncated_entries_are_untouched(self):
+        """The flag must not degrade a clean reply — it is the presence of the
+        marker that matters, not the presence of the field."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.BASE + " direct=!0daee001:12@-103")
+        assert d["direct"]["!0daee001"]["rssi_dbm"] == -103
+        assert d["direct"]["!0daee001"]["parse_error"] is False
+        assert d["stats_truncated"] is None
+
+    def test_watch_dropped_is_not_mistaken_for_the_cut_marker(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(
+            self.BASE + " watch=!0daee001:14/5@-62 watch_dropped=1")
+        assert d["stats_truncated"] is None
+        assert d["watch_dropped"] == 1
+        assert d["watched"]["!0daee001"]["rssi_dbm"] == -62

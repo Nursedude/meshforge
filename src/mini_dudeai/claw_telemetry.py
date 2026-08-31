@@ -121,6 +121,17 @@ _RE_LORA_WATCH_DROPPED = re.compile(r"watch_dropped=(\d+)", re.IGNORECASE)
 _RE_LORA_DIRECT = re.compile(r"direct=([^\s]+)", re.IGNORECASE)
 # hops=N on the last-packet line; -1 means the header was malformed.
 _RE_LORA_HOPS = re.compile(r"\bhops=(-?\d+)", re.IGNORECASE)
+# ` cut=1` — the firmware's POSITIVE truncation witness (F1, +dudeclaw.20 and
+# later). Its PRESENCE proves the stats tail was clipped; its ABSENCE is
+# ambiguous, because every earlier build stays silent when it truncates. So
+# this maps to True/None, never True/False: "no marker" is not "complete"
+# (honest_failure_modes #2 — unobservable is never healthy).
+_RE_LORA_CUT = re.compile(r"\bcut=1\b", re.IGNORECASE)
+
+
+def _stats_truncated(result: str) -> Optional[bool]:
+    """True when the reply carries the truncation witness, else None (unknown)."""
+    return True if _RE_LORA_CUT.search(result) else None
 
 
 def _parse_direct(result: str) -> Optional[Dict[str, Any]]:
@@ -172,6 +183,14 @@ def _parse_direct(result: str) -> Optional[Dict[str, Any]]:
             rssi = None
         out[node] = {"age_s": age, "rssi_dbm": rssi, "direct": True,
                      "parse_error": False}
+    if out and _stats_truncated(result):
+        # F1 reader half — see the note in _parse_watch. `direct` is the field
+        # the truncation actually forged (it is emitted LAST, so it is the one
+        # that loses bytes), and its RSSI is the number a digipeater gets sited
+        # from. `direct` becomes None, not False: we do not know.
+        for node in out:
+            out[node] = {"age_s": None, "rssi_dbm": None, "direct": None,
+                         "parse_error": True}
     return out or None
 
 
@@ -233,6 +252,18 @@ def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
             rssi = None
         out[node] = {"age_s": age, "pkts": pkts, "rssi_dbm": rssi,
                      "never": False, "parse_error": False}
+    if out and _stats_truncated(result):
+        # F1 reader half. The reply was clipped and nothing tells us WHICH
+        # token lost bytes — a clipped `@-104` becomes `@-1`, a perfectly
+        # valid -1 dBm that no parser can distinguish from a real reading. So
+        # NO entry in a truncated reply may present as clean. Values are
+        # dropped rather than kept beside the flag, matching the garbled-token
+        # branch above: pessimistic when blind. With the reply buffer grown to
+        # 1408 this should not fire at all, which is what makes the trade cheap
+        # — losing 11 good readings to refuse 1 forged one.
+        for node in out:
+            out[node] = {"age_s": None, "pkts": None, "rssi_dbm": None,
+                         "never": False, "parse_error": True}
     return out or None
 
 
@@ -279,6 +310,12 @@ def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
         # Hop distance of the LAST packet: 0 = direct, -1 = malformed header
         # (never treated as direct), None = firmware predates the field.
         "last_hops": _int(_RE_LORA_HOPS, result),
+        # True when the firmware witnessed its own truncation (F1,
+        # +dudeclaw.20+); None on every earlier build, which truncates
+        # silently. Never False — absence of the marker is not proof of a
+        # complete reply, and a consumer that treats it as one recreates
+        # exactly the confident-wrong-dB defect F1 was raised against.
+        "stats_truncated": _stats_truncated(result),
     }
 
 
