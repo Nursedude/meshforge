@@ -52,12 +52,27 @@ def _doc_files() -> list:
     and exited 0. No count had drifted yet; the point is that it could have,
     silently and forever. A guard that passes by having nothing to look at is
     the inert-guard class.
+
+    Scope widened again 2026-08-31 for the same reason: ``CLAUDE.md`` and
+    ``.claude/research/README.md`` also cite filesystem-derived counts, and all
+    three of the-lab.md / research README / CLAUDE.md had drifted to DIFFERENT
+    wrong values for the same quantity (22 / 26 / 22 against 53 real files).
+    CLAUDE.md is the worst place for a stale number — it is ``@``-included into
+    every conversation turn, so a wrong count there is paid by every session.
+    A file joins this list only if it actually carries a sentinel.
     """
-    files = [README] if README.is_file() else []
+    candidates = [README, ROOT / "CLAUDE.md",
+                  ROOT / ".claude" / "research" / "README.md"]
     d = ROOT / "docs"
     if d.is_dir():
-        files += sorted(f for f in d.glob("*.md") if SENTINEL_RE.search(
-            f.read_text(encoding="utf-8", errors="ignore")))
+        candidates += sorted(d.glob("*.md"))
+    files = []
+    for f in candidates:
+        if not f.is_file():
+            continue
+        if f == README or SENTINEL_RE.search(
+                f.read_text(encoding="utf-8", errors="ignore")):
+            files.append(f)
     return files
 
 SENTINEL_RE = re.compile(r"<!--STAT:(\w+)-->(.*?)<!--/STAT-->", re.DOTALL)
@@ -79,9 +94,25 @@ def _count_handler_modules() -> int | None:
 
 # key -> zero-arg computation returning the ground-truth int, or None when the
 # stat does not apply to this repo (a repo with no such sentinel is unaffected).
+def _count_research_docs() -> int | None:
+    d = ROOT / ".claude" / "research"
+    if not d.is_dir():
+        return None
+    return len([p for p in d.glob("*.md") if p.name != "README.md"])
+
+
+def _count_claude_docs() -> int | None:
+    d = ROOT / ".claude"
+    if not d.is_dir():
+        return None
+    return len(list(d.rglob("*.md")))
+
+
 COMPUTERS = {
     "testfiles": _count_test_files,
     "handlers": _count_handler_modules,
+    "researchdocs": _count_research_docs,
+    "claudedocs": _count_claude_docs,
 }
 
 

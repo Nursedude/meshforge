@@ -8,8 +8,31 @@ The reference fleet (multiple Pis across home-LAN and AREDN-linked remote sites,
 
 - **The watchdog** — one probe per failure class learned in the field (wedged RPC, fd leaks, permission drift, role drift, channel silence…). Every real incident becomes a probe; nothing is diagnosed twice.
 - **mini-dudeai** — a tiny on-box rule engine that turns watchdog signals into per-box briefs, fleet-wide rollups, and pages. The next session warm-starts from what mini saw.
+- **Fleet time** — `scripts/ntp_island.sh` makes the fleet its own NTP island (chrony, orphan stratum), so clocks survive a WAN outage. On RTC-less Pis a stale clock silently forges every wall-clock instrument at once — cron cadence, verdict freshness, uptime records — so time is infrastructure here, not a detail.
 
 The loop compounds: incidents → probes → signals → briefs → faster sessions. A recent data point — a brand-new Pi at a remote AREDN site went from bare SSH to fully-federated, lab-measured fleet member *in one evening*, surfacing (and fixing) two latent cross-repo bugs along the way. The collaboration record lives in [`docs/substack/`](substack/) and the development blog.
+
+### The virtual fleet — a lab that needs no hardware
+
+The physical fleet finds failures the tests cannot. The inverse problem is that
+you cannot run a hurricane on demand — so `lab.virtual_fleet` stands up an
+**isolated 3-node RNS fabric** in software (its own configdir, no host rnsd, no
+radios) and runs fault-and-recovery drills against it:
+
+```bash
+python3 -m lab.virtual_fleet smoke --workdir /tmp/vfleet   # a message arrives
+python3 -m lab.virtual_fleet chaos --workdir /tmp/vfleet   # fault AND recovery
+```
+
+It runs on **every push in CI**, which means a contributor with no radios and no
+Pi still exercises a real RNS fabric. Mocks pin our *model* of the fabric; this
+pins the fabric. The chaos drill asserts recovery as well as failure — proving a
+thing breaks is not proving it heals.
+
+It came directly out of a real outage: a hurricane-driven power event in August
+2026 took boxes down, and the failure class it exposed (zero-byte state files
+from power loss) became drills that now run forever. The write-up is in
+[`docs/substack/`](substack/).
 
 ---
 
@@ -25,7 +48,7 @@ To stand up your own VPS demo, see `scripts/cloud/README.md` — one-shot setup 
 
 ## Research & Technical Foundation
 
-MeshForge development is backed by 22 technical research documents covering
+MeshForge development is backed by <!--STAT:researchdocs-->53<!--/STAT--> technical research documents covering
 protocol analysis, integration architecture, and RF engineering. These inform
 every major design decision in the codebase.
 

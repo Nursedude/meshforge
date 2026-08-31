@@ -219,7 +219,7 @@ pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
 
 ---
 
-## Research Docs (`.claude/` — 93 files)
+## Research Docs (`.claude/` — <!--STAT:claudedocs-->189<!--/STAT--> files)
 
 | File | Contents |
 |------|----------|
@@ -233,7 +233,7 @@ pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
 | `plans/qa_field_testing_plan.md` | Gateway, maps, MeshCore field-test protocol |
 | `plans/standalone_wireclaw_variant.md` | mini-dudeai standalone (Pi-brain + ESP32-edge, chat-compiler) design |
 | `INDEX.md` | Full doc index with quick lookups |
-| `research/README.md` | 22 technical deep dives (RNS, AREDN, RF, etc.) |
+| `research/README.md` | <!--STAT:researchdocs-->53<!--/STAT--> technical deep dives (RNS, AREDN, RF, etc.) |
 
 ---
 
