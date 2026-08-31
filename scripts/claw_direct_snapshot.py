@@ -87,7 +87,9 @@ def load_state(home: str) -> Dict[str, Any]:
         with open(_state_path(home), "r", encoding="utf-8") as fh:
             data = json.load(fh)
     except FileNotFoundError:
-        return {"claws": {}, "state_readable": True, "first_run": True}
+        # No "first_run" marker: it would be written back into the state file
+        # and read true forever after, which is a field that lies from run 2 on.
+        return {"claws": {}, "state_readable": True}
     except (OSError, ValueError) as exc:
         return {"claws": {}, "state_readable": False, "state_error": str(exc)}
     if not isinstance(data, dict) or not isinstance(data.get("claws"), dict):
