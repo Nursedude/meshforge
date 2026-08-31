@@ -12,7 +12,12 @@ nothing in the fleet would have said so.
 Runs on the claw-brain box from the operator crontab, wired to the cron-verdict
 regime so every run leaves a line whether or not it captured anything:
 
-    */30 * * * * cd /opt/meshforge && PYTHONPATH=src python3 scripts/claw_direct_snapshot.py >"$HOME/.local/state/meshforge/cron_out/claw_direct_snapshot.out" 2>&1; /opt/meshforge/scripts/cron_verdict.sh claw_direct_snapshot $?
+    */30 * * * * PYTHONPATH=/opt/meshforge/src python3 /opt/meshforge/scripts/claw_direct_snapshot.py --notify >"$HOME/.local/state/meshforge/cron_out/claw_direct_snapshot.out" 2>&1; /opt/meshforge/scripts/cron_verdict.sh claw_direct_snapshot $?
+
+``--notify`` pages the fleet ntfy channel on a TRANSITION into captured /
+window_lost / unobservable -- never on ``waiting`` (it persists ~21 h). The
+page carries the F2 delta in its body, so the headline arrives on the phone
+rather than only in the verdict log.
 
 HONESTY CONTRACT — five outcomes, never collapsed into one another
 (honest_failure_modes #1/#2: a degraded read must not land inside the healthy
@@ -43,6 +48,7 @@ import argparse
 import glob
 import json
 import os
+import subprocess
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -73,9 +79,50 @@ OUT_CAPTURED = "captured"
 
 _LOUD = (OUT_UNOBSERVABLE, OUT_WINDOW_LOST)
 
+#: Outcomes worth a page, with (priority, tags). `waiting` never pages — it
+#: persists ~21 h — and `already_captured` never pages because the thing it
+#: reports already paged once. Paging is keyed to the TRANSITION, not the run,
+#: so a state that persists for a day does not send 48 notifications.
+_NOTIFY = {
+    OUT_CAPTURED: ("default", "chart_with_upwards_trend"),
+    OUT_WINDOW_LOST: ("high", "warning"),
+    OUT_UNOBSERVABLE: ("high", "warning"),
+}
+
 
 def _state_path(home: str) -> str:
     return os.path.join(home, ".local", "state", "meshforge", STATE_BASENAME)
+
+
+def notify(outcome: str, lines: List[str]) -> Optional[str]:
+    """Page the fleet ntfy channel through the SSOT helper.
+
+    Returns a witness line to print, or None when nothing was sent. Best-effort
+    by contract: a paging failure never changes the outcome, because the outcome
+    is the truth and the page is only its delivery. But every swallow leaves a
+    line in the cron output (honest_failure_modes #9) — a page that silently
+    failed to send is exactly the silence this whole script exists to prevent.
+
+    ⚠️ fleet_ntfy_push.sh is best-effort and always exits 0, so a successful
+    call here is NOT proof of delivery. The device leg is proven only by the
+    operator seeing the notification (harness_map: tap-to-ack is the only
+    device-leg proof).
+    """
+    spec = _NOTIFY.get(outcome)
+    if spec is None:
+        return None
+    priority, tags = spec
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "fleet_ntfy_push.sh")
+    if not os.path.exists(helper):
+        return "NOT PAGED: %s missing — this run is unannounced" % helper
+    body = "\n".join(lines)[:1400]
+    try:
+        subprocess.run([helper, "claw F2 window: %s" % outcome, priority,
+                        tags, body], timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return "NOT PAGED: %s — this run is unannounced" % exc
+    return "paged ntfy (%s/%s) — delivery unproven until seen" % (priority, tags)
 
 
 def load_state(home: str) -> Dict[str, Any]:
@@ -316,6 +363,43 @@ def render_delta(delta: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def maybe_notify(home: str, outcome: str, lines: List[str],
+                 enabled: bool) -> Optional[str]:
+    """Page on a TRANSITION into a notifiable outcome, never on every run.
+
+    `waiting` clears the marker, so a later slide back into `unobservable` is a
+    NEW episode and pages again — a second blindness after a recovery is not
+    the same event as the first, and swallowing it would be the very
+    absence-read-as-continuity the checklist warns about (#2).
+    """
+    if not enabled:
+        return None
+    state = load_state(home)
+    last = state.get("last_notified_outcome")
+
+    if outcome == OUT_WAITING:
+        new_marker = None
+    elif outcome == OUT_ALREADY:
+        new_marker = last  # carry it; the capture already paged
+    else:
+        new_marker = outcome
+
+    witness = None
+    if outcome in _NOTIFY and outcome != last:
+        witness = notify(outcome, lines)
+
+    if new_marker != last:
+        state["last_notified_outcome"] = new_marker
+        try:
+            os.makedirs(os.path.dirname(_state_path(home)), exist_ok=True)
+            atomic_write_json(_state_path(home), state)
+        except OSError as exc:
+            return ((witness or "") +
+                    " | could not persist the paging marker: %s "
+                    "(a repeat page is possible)" % exc).strip(" |")
+    return witness
+
+
 def run(home: str, now: float) -> Tuple[str, List[str]]:
     """Return (outcome, report lines). Pure enough to test: everything that
     varies is passed in.
@@ -410,15 +494,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="operator home to read/write (default: real user home)")
     parser.add_argument("--now", type=float, default=None,
                         help="epoch override (tests)")
+    parser.add_argument("--notify", action="store_true",
+                        help="page the fleet ntfy channel on a transition into "
+                             "captured / window_lost / unobservable")
     args = parser.parse_args(argv)
 
     home = args.home or str(get_real_user_home())
     now = args.now if args.now is not None else time.time()
 
     outcome, lines = run(home, now)
+    witness = maybe_notify(home, outcome, lines, args.notify)
+
     print("claw_direct_snapshot: %s" % outcome)
     for line in lines:
         print(line)
+    if witness:
+        print(witness)
     return 1 if outcome in _LOUD else 0
 
 

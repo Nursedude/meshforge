@@ -278,3 +278,72 @@ class TestIdentity:
         assert problems == []
         assert set(ticks) == {"dudeclaw-01", "dudeclaw-02", "dudeclaw-03"}
         assert ticks["dudeclaw-01"]["device"] == "dudeclaw-01"
+
+
+class TestPaging:
+    """Paging is keyed to the TRANSITION, not the run — a state that persists
+    for a day must not send 48 notifications, and a recovery-then-relapse must
+    not be swallowed as continuity.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch):
+        sent = []
+        monkeypatch.setattr(cds, "notify",
+                            lambda outcome, lines: sent.append(outcome) or "sent")
+        return sent
+
+    def test_waiting_never_pages(self, home, monkeypatch):
+        sent = self._spy(monkeypatch)
+        assert cds.maybe_notify(home, cds.OUT_WAITING, [], True) is None
+        assert sent == []
+
+    def test_captured_pages_once_then_stays_quiet(self, home, monkeypatch):
+        sent = self._spy(monkeypatch)
+        cds.maybe_notify(home, cds.OUT_CAPTURED, ["delta"], True)
+        for _ in range(5):
+            cds.maybe_notify(home, cds.OUT_ALREADY, [], True)
+        assert sent == [cds.OUT_CAPTURED]
+
+    def test_persistent_unobservable_pages_once(self, home, monkeypatch):
+        sent = self._spy(monkeypatch)
+        for _ in range(48):
+            cds.maybe_notify(home, cds.OUT_UNOBSERVABLE, ["blind"], True)
+        assert sent == [cds.OUT_UNOBSERVABLE]
+
+    def test_relapse_after_recovery_pages_again(self, home, monkeypatch):
+        sent = self._spy(monkeypatch)
+        cds.maybe_notify(home, cds.OUT_UNOBSERVABLE, ["blind"], True)
+        cds.maybe_notify(home, cds.OUT_WAITING, [], True)      # recovered
+        cds.maybe_notify(home, cds.OUT_UNOBSERVABLE, ["blind again"], True)
+        assert sent == [cds.OUT_UNOBSERVABLE, cds.OUT_UNOBSERVABLE]
+
+    def test_window_lost_then_waiting_then_lost_pages_twice(self, home,
+                                                            monkeypatch):
+        sent = self._spy(monkeypatch)
+        cds.maybe_notify(home, cds.OUT_WINDOW_LOST, ["reboot"], True)
+        cds.maybe_notify(home, cds.OUT_WAITING, [], True)
+        cds.maybe_notify(home, cds.OUT_WINDOW_LOST, ["reboot 2"], True)
+        assert sent == [cds.OUT_WINDOW_LOST, cds.OUT_WINDOW_LOST]
+
+    def test_disabled_sends_nothing(self, home, monkeypatch):
+        sent = self._spy(monkeypatch)
+        cds.maybe_notify(home, cds.OUT_CAPTURED, ["delta"], False)
+        assert sent == []
+
+    def test_notify_leaves_a_witness_when_helper_is_missing(self, monkeypatch):
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        out = cds.notify(cds.OUT_CAPTURED, ["x"])
+        assert out is not None and "NOT PAGED" in out
+
+    def test_notify_survives_a_failing_helper(self, monkeypatch):
+        def boom(*a, **k):
+            raise OSError("helper exploded")
+        monkeypatch.setattr(cds.subprocess, "run", boom)
+        monkeypatch.setattr(os.path, "exists", lambda p: True)
+        out = cds.notify(cds.OUT_WINDOW_LOST, ["x"])
+        assert out is not None and "NOT PAGED" in out
+
+    def test_non_notifiable_outcome_sends_nothing(self, monkeypatch):
+        monkeypatch.setattr(os.path, "exists", lambda p: True)
+        assert cds.notify(cds.OUT_WAITING, ["x"]) is None

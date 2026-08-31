@@ -333,6 +333,30 @@ Design points worth keeping:
 Drilled by planting each condition (`tests/test_claw_direct_snapshot.py`, 19
 tests) — not by reading the source and believing it.
 
+### It pages on STATE, not on a clock (2026-08-31)
+
+The obvious wiring was an ntfy alarm at the estimated ready-time. Rejected: a
+clock alarm fires whether or not the thing is true. If a claw reboots tonight,
+`window_lost` restarts that claw's window — and the alarm would still summon
+someone at 06:15 to run a comparison that is not ready. The estimated hour is
+also just that: an estimate off boot times, at 30-min cron granularity.
+
+`--notify` pages on the **transition** into `captured` / `window_lost` /
+`unobservable`, and never on `waiting`. So the notification means the state it
+names, and the `captured` page carries the **F2 delta in its body** — the
+headline lands on the phone, not only in the verdict log.
+
+Nothing extra watches for the job's own silence: it is wired through
+`cron_verdict.sh`, so #78 `cron_verdict_stale` already owns that. No machinery
+to watch machinery.
+
+⚠️ **A page is not a delivery.** `fleet_ntfy_push.sh` is best-effort and always
+exits 0, so the witness line says `delivery unproven until seen`. The push leg
+is proven (drilled on a throwaway topic 2026-08-31, message polled back from
+ntfy.sh with title/body/priority/tags intact); the **device** leg is proven
+only by the operator seeing it — harness_map's tap-to-ack remains the only
+device-leg proof.
+
 ⚠️ **Retire the cron once the comparison is recorded.** It is a measurement
 scaffold, not a permanent organ; leaving it running is footprint we did not
 earn.
