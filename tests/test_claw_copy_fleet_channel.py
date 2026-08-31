@@ -18,6 +18,8 @@ evidence was a one-shot drill, which proves it worked once and pins nothing.
 import base64
 import importlib.util
 import os
+import re
+import sys
 
 import pytest
 
@@ -40,6 +42,12 @@ _spec.loader.exec_module(ccfc)
 # need) without putting a key-looking constant in the tree.
 FAKE_KEY = base64.b64encode(b"not-a-real-key--32-bytes-long!!!").decode()
 
+# The firmware accepts HEX keys too ("16/32-byte key, hex or base64"), so a
+# hex-shaped argv leak is exactly as fatal as a base64-shaped one. The first
+# version of this file checked only B64_32: the 2026-08-30 adversarial pass
+# planted a 64-hex key in the ssh argv and every test passed.
+_HEX_KEY = re.compile(r"^(?:[0-9a-fA-F]{32}|[0-9a-fA-F]{64})$")
+
 
 class TestKeyNeverInArgv:
     def test_psk_is_absent_from_the_ssh_argv(self):
@@ -48,10 +56,16 @@ class TestKeyNeverInArgv:
                                  "localhost:4222", persist=True)
         joined = " ".join(cmd)
         assert FAKE_KEY not in joined
-        assert "--psk" not in joined or "--psk-stdin" in joined
-        # No argv element should even look like a 32-byte base64 key.
+        # The ONLY psk-related flag allowed is the stdin selector itself.
+        # (An earlier assertion here — `"--psk" not in joined or "--psk-stdin"
+        # in joined` — was a tautology: "--psk-stdin" both contains "--psk"
+        # and satisfies the second disjunct, so it could never fail while the
+        # stdin flag was present. Found by drill 2026-08-30.)
+        assert [c for c in cmd if c.startswith("--psk")] == ["--psk-stdin"]
+        # No argv element may look like a key in EITHER accepted format.
         for part in cmd:
             assert not ccfc._mps.B64_32.match(part), f"key-shaped argv: {part!r}"
+            assert not _HEX_KEY.match(part), f"hex-key-shaped argv: {part!r}"
 
     def test_stdin_transport_is_requested(self):
         """--psk-stdin must be passed, or the remote would prompt and hang."""
@@ -81,10 +95,13 @@ class TestPersistIsAlwaysExplicit:
 
 class TestParseChannelHash:
     def test_parses_the_firmware_reply_verbatim(self):
-        """Shape copied from a REAL claw reply captured 2026-08-30, not
-        invented: the firmware emits "Channel set: '<name>' (hash 0x%02x)"."""
+        """The firmware emits "Channel set: '<name>' (hash 0x%02x)" with an
+        optional " [persisted]" / " [persist FAILED]" suffix — BRACKETS, per
+        the fork's tools.cpp (eaa7489). The first version of this test wrote
+        "(persisted)" and claimed it was captured verbatim; the hash parse it
+        pins was, the suffix was not (2026-08-30 adversarial pass)."""
         text = ("{'ok': True, 'result': \"Channel set: 'meshforge' "
-                "(hash 0xa2) (persisted)\"}")
+                "(hash 0xa2) [persisted]\"}")
         assert ccfc.parse_channel_hash(text) == "0xa2"
 
     def test_missing_hash_is_none_not_a_match(self):
@@ -96,6 +113,67 @@ class TestParseChannelHash:
 
     def test_case_is_normalised_so_expect_hash_compares(self):
         assert ccfc.parse_channel_hash("hash 0xA2") == "0xa2"
+
+
+class TestMainHonestFailurePaths:
+    """main()-level pins for the paths the 2026-08-30 adversarial pass found
+    lying: a persist that silently failed (rc 0, printed "(RAM-only)") and a
+    dark claw (the `resp is None` UNKNOWN branch was dead code — request()
+    raises, never returns None — so it exited 1 via a bare ERROR)."""
+
+    BASE_ARGV = ["ccfc", "--source", "h", "--name", "meshforge",
+                 "--device", "dudeclaw-01"]
+
+    def _run(self, extra_argv, monkeypatch, reply=None, exc=None):
+        monkeypatch.setattr(ccfc._mps, "_channel_psk",
+                            lambda host, name: (ccfc._mps.CH_OK, FAKE_KEY))
+
+        def fake_request(server, subject, payload, timeout_s=None):
+            if exc is not None:
+                raise exc
+            return reply
+
+        monkeypatch.setattr(ccfc, "request", fake_request)
+        monkeypatch.setattr(sys, "argv", self.BASE_ARGV + extra_argv)
+        return ccfc.main()
+
+    def test_persist_failed_is_rc1_not_ram_only_success(self, monkeypatch,
+                                                        capsys):
+        rc = self._run(["--persist"], monkeypatch, reply=(
+            "{'ok': True, 'result': \"Channel set: 'meshforge' "
+            "(hash 0xa2) [persist FAILED]\"}"))
+        out = capsys.readouterr()
+        assert rc == 1
+        assert "NOT in flash" in out.err
+
+    def test_persist_unconfirmed_by_old_firmware_is_rc1(self, monkeypatch,
+                                                        capsys):
+        """A pre-persist build ignores the arg and omits any suffix. Absence
+        of confirmation must not read as success."""
+        rc = self._run(["--persist"], monkeypatch, reply=(
+            "{'ok': True, 'result': \"Channel set: 'meshforge' "
+            "(hash 0xa2)\"}"))
+        assert rc == 1
+
+    def test_persist_confirmed_stays_rc0(self, monkeypatch, capsys):
+        rc = self._run(["--persist"], monkeypatch, reply=(
+            "{'ok': True, 'result': \"Channel set: 'meshforge' "
+            "(hash 0xa2) [persisted]\"}"))
+        assert rc == 0
+
+    def test_ram_only_request_needs_no_confirmation(self, monkeypatch, capsys):
+        rc = self._run([], monkeypatch, reply=(
+            "{'ok': True, 'result': \"Channel set: 'meshforge' "
+            "(hash 0xa2)\"}"))
+        assert rc == 0
+
+    def test_dark_claw_is_rc2_unknown_not_rc1_failure(self, monkeypatch,
+                                                      capsys):
+        from mini_dudeai.nats_client import NatsError
+        rc = self._run([], monkeypatch, exc=NatsError("timed out after 10.0s"))
+        out = capsys.readouterr()
+        assert rc == 2
+        assert "UNKNOWN" in out.err
 
 
 class TestReusesMeshPskSafe:

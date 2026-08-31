@@ -86,12 +86,29 @@ def main() -> int:
         try:
             resp = json.loads(resp)
         except ValueError:
+            # The firmware always wraps tool replies in JSON; a non-JSON
+            # reply means something between us and the claw is wrong. Show
+            # it, but never exit 0 on a reply we could not judge
+            # (was `return 0` until the 2026-08-30 adversarial pass).
             print(resp)
-            return 0
+            return 1
     # The claw echoes name + hash only (never the key). That hash is the
     # on-air header byte — confirm it equals the fleet channel's hash.
     print(resp.get("result", resp))
     ok = isinstance(resp, dict) and resp.get("ok") is not False
+
+    if ok and args.persist:
+        # persist defaults ON here, so an unconfirmed persist is the default
+        # user's silent failure mode: the firmware says "[persisted]" when the
+        # flash write landed and "[persist FAILED]" (or, pre-persist builds,
+        # nothing) when it did not. Absence of the confirmation is never
+        # success (honest_failure_modes #2).
+        rtext = str(resp.get("result", "")) if isinstance(resp, dict) else ""
+        if "persisted" not in rtext.lower():
+            print("persist requested but NOT confirmed by the claw (persist "
+                  "FAILED, or firmware predating it) — the channel is "
+                  "RAM-only and lost on reboot", file=sys.stderr)
+            ok = False
 
     if args.verify and ok:
         # Fire a test broadcast in the SAME process, immediately after the set,

@@ -56,7 +56,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 _REPO = os.path.dirname(_HERE)
 
 sys.path.insert(0, os.path.join(_REPO, "src"))
-from mini_dudeai.nats_client import request  # noqa: E402
+from mini_dudeai.nats_client import NatsError, request  # noqa: E402
 
 # Import the psk-safe helpers rather than re-deriving them: two implementations
 # of "read this channel's key" WILL drift, and the copy here would be the one
@@ -166,6 +166,14 @@ def main() -> int:
         try:
             r = subprocess.run(cmd, input=psk + "\n", capture_output=True,
                                text=True, timeout=max(a.timeout * 6, 90))
+        except subprocess.TimeoutExpired:
+            # The remote leg may or may not have applied the set before the
+            # clock ran out — that is UNKNOWN, not a proven failure. Same
+            # rc 2 contract as the dark-claw path below.
+            print(f"{a.device}: no verdict from {a.via_ssh} within "
+                  f"{max(a.timeout * 6, 90):.0f}s — channel state UNKNOWN",
+                  file=sys.stderr)
+            return 2
         finally:
             del psk
         # NEVER print r.stderr raw on the failure path without thinking: the
@@ -186,14 +194,19 @@ def main() -> int:
         try:
             resp = request(a.server, f"{a.device}.tool_exec",
                            json.dumps(payload), timeout_s=a.timeout)
+        except NatsError as e:
+            # request() RAISES on no-reply/transport failure — it never
+            # returns None. The first version of this tool guarded
+            # `resp is None` instead: dead code, drilled 2026-08-30 — a dark
+            # claw fell through to a bare "ERROR: timed out" exit 1,
+            # conflating UNKNOWN with a proven failure.
+            print(f"no reply from {a.device} (claw dark, or wrong bus?) — "
+                  f"channel state UNKNOWN: {e}", file=sys.stderr)
+            return 2
         finally:
             # Drop the key from this process's reachable state as soon as the
             # call returns, success or not.
             del psk, payload
-        if resp is None:
-            print(f"no reply from {a.device} (claw dark, or wrong bus?) — "
-                  f"channel state UNKNOWN", file=sys.stderr)
-            return 2
         text = str(resp)
     if "Channel set" not in text:
         # The firmware reports key-length / format problems WITHOUT echoing the
@@ -219,6 +232,20 @@ def main() -> int:
                   f"channel identity is not what you asked for", file=sys.stderr)
             return 1
         print(f"hash matches {want}")
+
+    if a.persist and not persisted:
+        # The reply is the only witness. An explicit "[persist FAILED]" and a
+        # silent omission (firmware predating the persist arg ignores it) both
+        # mean the same thing: the key is NOT in flash, whatever was asked.
+        # Absence of confirmation is never success (honest_failure_modes #2) —
+        # before 2026-08-30 this path printed "(RAM-only)" and exited 0,
+        # discarding the firmware's own "[persist FAILED]" witness.
+        reason = ("the claw reports persist FAILED (flash write failed)"
+                  if "persist failed" in text.lower()
+                  else "the claw did not confirm persistence (older firmware?)")
+        print(f"{a.device}: channel is LIVE in RAM but NOT in flash — "
+              f"{reason}. It is lost on the next reboot.", file=sys.stderr)
+        return 1
 
     if not a.persist:
         print("⚠️ RAM-only: this is lost on the claw's next reboot "
