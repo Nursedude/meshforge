@@ -171,6 +171,16 @@ measured worst case is 830 chars at 12 ids against the old ~743 budget, so
 the old firmware truncates somewhere around **11 ids**. The defect was closer
 to arming than anyone thought.
 
+⚠️ **B3 CONFLICTS WITH THE F2 MEASUREMENT — do B3 only AFTER the snapshot
+lands (2026-08-31).** B3 changes the watch list; F2's comparison is keyed to
+watched node ids. Change the list first and nodes leave the direct set for a
+reason that has nothing to do with F2, silently. **`window_lost` cannot catch
+this** — it detects `uptime_s` going DOWN, and a watch-list change does not
+reboot the claw. The snapshot now records `watch_set_changed` / `watch_added` /
+`watch_removed` per claw and buckets those nodes as `dropped_from_watch`
+(explicitly *not* evidence), so the corruption is at least VISIBLE — but
+visible-after-the-fact still costs the window. Order: capture, then B3.
+
 - Temporarily set a 12-id watch list (`claw_set_watch_ids` accepts 12).
 - On `.20`, confirm the reply is COMPLETE and carries **no** ` cut=1`
   (1384 usable now clears 830).
@@ -356,6 +366,33 @@ is proven (drilled on a throwaway topic 2026-08-31, message polled back from
 ntfy.sh with title/body/priority/tags intact); the **device** leg is proven
 only by the operator seeing it — harness_map's tap-to-ack remains the only
 device-leg proof.
+
+### The delta separates SIGNAL from NOISE (2026-08-31, found on re-reading)
+
+The first version computed `lost_direct = was - now` over the direct-true sets
+and captioned the result "F2's candidate forgeries". That was wrong, and it
+would have put the wrong claim on the operator's phone. A node leaves that set
+for **three unrelated reasons**, and only one is about F2:
+
+| bucket | meaning | evidence? |
+|---|---|---|
+| `lost_direct_heard` | still watched, still heard, no longer direct | **YES — the signal** |
+| `lost_direct_unheard` | the node went quiet this window | no |
+| `lost_direct_unknown` | heard-state not determinable | no |
+| `dropped_from_watch` | it left the watch list | no — not comparable |
+
+Plus `watch_set_changed` / `watch_added` / `watch_removed` per claw. The
+renderer leads with `F2-LOST` and prints the others labelled `not evidence`,
+rather than folding them into a healthier-looking count (#5, surface the blind
+spot rather than averaging it away).
+
+This is the script's own stated defect class turned on the script: a degraded
+reading (a node that went quiet) landing inside the healthy domain (an F2
+catch). It passed 28 tests, lint, CI and a `6/6 PASS honest_status` while
+carrying it — because every one of those checks measured whether the capture
+happened, not whether the number it captured meant what the caption said.
+Verified today: all three claws read `watch_set_changed=False`, so the
+comparison is currently clean.
 
 ⚠️ **Retire the cron once the comparison is recorded.** It is a measurement
 scaffold, not a permanent organ; leaving it running is footprint we did not

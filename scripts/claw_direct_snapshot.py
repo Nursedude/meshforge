@@ -277,25 +277,80 @@ def _direct_true(block: Any) -> set:
             if isinstance(val, dict) and val.get("direct") is True}
 
 
+def _heard(watched: Any, node: str) -> Optional[bool]:
+    """Did this claw hear `node` in this window? None = cannot tell.
+
+    Tri-state on purpose. "Not heard" and "heard but no longer direct" are
+    different claims about F2, and an unknown must not be rounded to either.
+    """
+    entry = (watched or {}).get(node) if isinstance(watched, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    if entry.get("never") is True:
+        return False
+    pkts = entry.get("pkts")
+    if entry.get("never") is False and isinstance(pkts, (int, float)):
+        return pkts > 0
+    return None
+
+
 def build_delta(baseline: Dict[str, Any],
                 claws: Dict[str, Any]) -> Dict[str, Any]:
     """Which watched nodes stopped earning direct= — F2's whole question.
 
-    Reported as node ids, never a bare count: the plan's own caveat is that the
-    three claws hear different traffic on different segments, so this is
-    evidence, not proof, and the reader needs to see WHICH nodes moved.
+    ⚠️ A node can leave the direct-true set for THREE unrelated reasons, and
+    only one of them is about F2:
+
+      * F2 refused to call it direct       -> the signal
+      * the claw never heard it this window -> says NOTHING about F2
+      * it left the watch list entirely     -> not comparable at all
+
+    Collapsing those into one "lost_direct" bucket would put a claim on the
+    operator's phone that the data does not support — the degraded-value-
+    inside-the-healthy-domain class this whole script exists to guard (#1/#2).
+    So they are separate fields, and only `lost_direct_heard` is evidence.
+
+    Reported as node ids, never a bare count: the three claws hear different
+    traffic on different segments, so even the signal bucket is evidence, not
+    proof, and the reader needs to see WHICH nodes moved.
     """
     delta: Dict[str, Any] = {}
     for device, cur in sorted(claws.items()):
         base = (baseline.get("claws") or {}).get(device) or {}
         was = _direct_true(base.get("direct"))
         now = _direct_true(cur.get("direct"))
+        cur_watched = cur.get("watched") or {}
+        base_watch = set((base.get("watched") or {}).keys())
+        cur_watch = set(cur_watched.keys())
+
+        signal, unheard, unknown, dropped = [], [], [], []
+        for node in sorted(was - now):
+            if node not in cur_watch:
+                dropped.append(node)
+                continue
+            state = _heard(cur_watched, node)
+            if state is True:
+                signal.append(node)
+            elif state is False:
+                unheard.append(node)
+            else:
+                unknown.append(node)
+
         delta[device] = {
             "version_before": base.get("version"),
             "version_after": cur.get("version"),
-            "lost_direct": sorted(was - now),
+            # The F2 signal: still watched, still heard, no longer direct.
+            "lost_direct_heard": signal,
+            # Not evidence — the node went quiet, or we cannot tell.
+            "lost_direct_unheard": unheard,
+            "lost_direct_unknown": unknown,
+            # Not comparable — the watch list itself moved.
+            "dropped_from_watch": dropped,
             "kept_direct": sorted(was & now),
             "gained_direct": sorted(now - was),
+            "watch_set_changed": sorted(base_watch) != sorted(cur_watch),
+            "watch_added": sorted(cur_watch - base_watch),
+            "watch_removed": sorted(base_watch - cur_watch),
             "window_before_s": base.get("accumulation_window_s"),
             "window_after_s": cur.get("accumulation_window_s"),
         }
@@ -349,17 +404,29 @@ def write_once(path: str, payload: Dict[str, Any]) -> bool:
 
 
 def render_delta(delta: Dict[str, Any]) -> List[str]:
+    """Lead with the F2 signal; keep the non-evidence buckets visible and
+    clearly labelled rather than folded into a healthier-looking summary (#5).
+    """
     lines = []
     for device, d in sorted(delta.items()):
-        lost = d.get("lost_direct") or []
-        kept = d.get("kept_direct") or []
-        gained = d.get("gained_direct") or []
-        lines.append("  %-14s %s -> %s | kept %d, LOST %d%s, gained %d%s"
+        sig = d.get("lost_direct_heard") or []
+        lines.append("  %-14s %s -> %s | kept %d, gained %d, F2-LOST %d%s"
                      % (device, d.get("version_before"), d.get("version_after"),
-                        len(kept), len(lost),
-                        (" " + ",".join(lost)) if lost else "",
-                        len(gained),
-                        (" " + ",".join(gained)) if gained else ""))
+                        len(d.get("kept_direct") or []),
+                        len(d.get("gained_direct") or []),
+                        len(sig), (" " + ",".join(sig)) if sig else ""))
+        for field, label in (("lost_direct_unheard", "not heard this window"),
+                             ("lost_direct_unknown", "heard-state unknown"),
+                             ("dropped_from_watch", "left the watch list")):
+            vals = d.get(field) or []
+            if vals:
+                lines.append("      not evidence (%s): %s"
+                             % (label, ",".join(vals)))
+        if d.get("watch_set_changed"):
+            lines.append("      WATCH SET MOVED since baseline (+%s / -%s) — "
+                         "this claw is no longer a clean comparison"
+                         % (",".join(d.get("watch_added") or []) or "none",
+                            ",".join(d.get("watch_removed") or []) or "none"))
     return lines
 
 
@@ -482,9 +549,11 @@ def run(home: str, now: float) -> Tuple[str, List[str]]:
                  % (out_path, len(payload["claws"])))
     lines.append("F2 delta vs baseline %s:" % payload.get("baseline_path"))
     lines.extend(render_delta(payload["delta_vs_baseline"]))
-    lines.append("a node in LOST was direct on .19 and did not re-earn it on "
-                 ".20 — F2's candidate forgeries. Claws hear different segments; "
-                 "this is evidence, not proof.")
+    lines.append("F2-LOST = was direct on .19, STILL watched and STILL heard, "
+                 "and not direct on .20 — F2's candidate forgeries. The other "
+                 "buckets are NOT evidence: a node that went quiet, or left the "
+                 "watch list, says nothing about F2. Claws hear different "
+                 "segments; even F2-LOST is evidence, not proof.")
     return OUT_CAPTURED, lines
 
 

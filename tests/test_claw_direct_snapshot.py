@@ -54,9 +54,16 @@ def _write_baseline(home, windows=None, direct=None):
 
 
 def _write_tick(home, device, uptime, direct_nodes, primary=False, ok=True,
-                captured_at=None, version="0.4.0+dudeclaw.20"):
+                captured_at=None, version="0.4.0+dudeclaw.20",
+                watched_nodes=None):
+    # Real claws watch a SUPERSET of what they call direct, so `watched`
+    # defaults to the full baseline set for this device rather than to
+    # direct_nodes -- a fixture where watched == direct cannot express the
+    # difference between "no longer direct" and "left the watch list".
     name = ("claw_last_tick.json" if primary
             else "claw_last_tick.%s.json" % device)
+    if watched_nodes is None:
+        watched_nodes = BASE_DIRECT.get(device, direct_nodes)
     tick = {
         "captured_at": NOW - 30 if captured_at is None else captured_at,
         "device": device, "ok": ok, "reachable": ok,
@@ -64,7 +71,7 @@ def _write_tick(home, device, uptime, direct_nodes, primary=False, ok=True,
         "lora": {
             "direct": {n: {"direct": True, "rssi_dbm": -50, "age_s": 5,
                            "parse_error": False} for n in direct_nodes},
-            "watched": {n: {"pkts": 5, "never": False} for n in direct_nodes},
+            "watched": {n: {"pkts": 5, "never": False} for n in watched_nodes},
             "heard_pkts": 200, "last_hops": 1, "stats_truncated": None,
         },
     }
@@ -128,7 +135,10 @@ class TestCaptured:
         snap = json.load(open(os.path.join(home, cds.SNAPSHOT_BASENAME),
                               encoding="utf-8"))
         d = snap["delta_vs_baseline"]
-        assert d["dudeclaw-01"]["lost_direct"] == ["!bbb", "!ccc"]
+        # Still watched and still heard, no longer direct -> the F2 signal.
+        assert d["dudeclaw-01"]["lost_direct_heard"] == ["!bbb", "!ccc"]
+        assert d["dudeclaw-01"]["lost_direct_unheard"] == []
+        assert d["dudeclaw-01"]["dropped_from_watch"] == []
         assert d["dudeclaw-01"]["kept_direct"] == ["!aaa"]
         assert d["dudeclaw-03"]["gained_direct"] == ["!zzz"]
         # The control stayed on .19 and must be visible as such.
@@ -347,3 +357,84 @@ class TestPaging:
     def test_non_notifiable_outcome_sends_nothing(self, monkeypatch):
         monkeypatch.setattr(os.path, "exists", lambda p: True)
         assert cds.notify(cds.OUT_WAITING, ["x"]) is None
+
+
+class TestDeltaSeparatesSignalFromNoise:
+    """A node can leave the direct-true set for three unrelated reasons and only
+    ONE is about F2. The first version of build_delta called all three
+    "F2's candidate forgeries" and would have put that on the operator's phone.
+    """
+
+    @staticmethod
+    def _delta(base_direct, base_watched, cur_direct, cur_watched):
+        baseline = {"claws": {"c": {
+            "version": "0.4.0+dudeclaw.19",
+            "accumulation_window_s": 100,
+            "direct": {n: {"direct": True} for n in base_direct},
+            "watched": {n: {"pkts": 5, "never": False} for n in base_watched},
+        }}}
+        claws = {"c": {
+            "version": "0.4.0+dudeclaw.20",
+            "accumulation_window_s": 100,
+            "direct": {n: {"direct": True} for n in cur_direct},
+            "watched": cur_watched,
+        }}
+        return cds.build_delta(baseline, claws)["c"]
+
+    def test_heard_but_no_longer_direct_is_the_signal(self):
+        d = self._delta(["!a"], ["!a"], [], {"!a": {"pkts": 9, "never": False}})
+        assert d["lost_direct_heard"] == ["!a"]
+        assert d["lost_direct_unheard"] == []
+
+    def test_node_that_went_quiet_is_not_evidence(self):
+        d = self._delta(["!a"], ["!a"], [], {"!a": {"pkts": 0, "never": True}})
+        assert d["lost_direct_heard"] == []
+        assert d["lost_direct_unheard"] == ["!a"]
+
+    def test_zero_packets_is_not_evidence(self):
+        d = self._delta(["!a"], ["!a"], [], {"!a": {"pkts": 0, "never": False}})
+        assert d["lost_direct_heard"] == []
+        assert d["lost_direct_unheard"] == ["!a"]
+
+    def test_unknown_heard_state_is_its_own_bucket(self):
+        d = self._delta(["!a"], ["!a"], [], {"!a": {"never": None}})
+        assert d["lost_direct_heard"] == []
+        assert d["lost_direct_unknown"] == ["!a"]
+
+    def test_node_removed_from_watch_list_is_not_comparable(self):
+        d = self._delta(["!a", "!b"], ["!a", "!b"], ["!b"],
+                        {"!b": {"pkts": 5, "never": False}})
+        assert d["lost_direct_heard"] == []
+        assert d["dropped_from_watch"] == ["!a"]
+        assert d["watch_set_changed"] is True
+        assert d["watch_removed"] == ["!a"]
+
+    def test_watch_set_change_is_flagged_even_when_nothing_was_lost(self):
+        d = self._delta(["!a"], ["!a"], ["!a", "!z"],
+                        {"!a": {"pkts": 5, "never": False},
+                         "!z": {"pkts": 5, "never": False}})
+        assert d["lost_direct_heard"] == []
+        assert d["watch_set_changed"] is True
+        assert d["watch_added"] == ["!z"]
+
+    def test_stable_watch_set_is_not_flagged(self):
+        d = self._delta(["!a"], ["!a"], ["!a"],
+                        {"!a": {"pkts": 5, "never": False}})
+        assert d["watch_set_changed"] is False
+
+    def test_all_three_causes_at_once_stay_separated(self):
+        d = self._delta(["!sig", "!quiet", "!gone"],
+                        ["!sig", "!quiet", "!gone"], [],
+                        {"!sig": {"pkts": 9, "never": False},
+                         "!quiet": {"pkts": 0, "never": True}})
+        assert d["lost_direct_heard"] == ["!sig"]
+        assert d["lost_direct_unheard"] == ["!quiet"]
+        assert d["dropped_from_watch"] == ["!gone"]
+
+    def test_render_labels_non_evidence_and_does_not_call_it_f2(self):
+        d = self._delta(["!sig", "!quiet"], ["!sig", "!quiet"], [],
+                        {"!sig": {"pkts": 9, "never": False},
+                         "!quiet": {"pkts": 0, "never": True}})
+        out = "\n".join(cds.render_delta({"c": d}))
+        assert "F2-LOST 1 !sig" in out
+        assert "not evidence (not heard this window): !quiet" in out
