@@ -62,30 +62,57 @@ class TestWiderSentinelScope:
         paths = {str(f) for f in mod._doc_files()}
         assert any(p.endswith(".claude/research/README.md") for p in paths)
 
-    def test_new_counters_are_registered(self):
+    def test_new_counter_is_registered(self):
         mod = _load()
         assert "researchdocs" in mod.COMPUTERS
-        assert "claudedocs" in mod.COMPUTERS
 
-    def test_counters_return_positive_ints_on_this_tree(self):
+    def test_counter_returns_a_positive_int_on_this_tree(self):
         mod = _load()
-        for key in ("researchdocs", "claudedocs"):
-            val = mod.COMPUTERS[key]()
-            assert isinstance(val, int) and val > 0, key
+        val = mod.COMPUTERS["researchdocs"]()
+        assert isinstance(val, int) and val > 0
 
     def test_research_count_excludes_its_own_readme(self):
         mod = _load()
         d = mod.ROOT / ".claude" / "research"
         assert mod.COMPUTERS["researchdocs"]() == len(list(d.glob("*.md"))) - 1
 
-    def test_claude_count_is_recursive(self):
-        """.claude/ is nested (foundations/, rules/, plans/, research/) — a
-        non-recursive glob would silently under-report the number every
-        session pays for."""
+    def test_no_claudedocs_counter(self):
+        """`.claude/` mixes tracked docs with untracked local scratch, so its
+        count differs between a working box and a clone — 189 vs 188 in CI on
+        2026-08-31. It has no environment-stable count and must not be
+        sentinelled again."""
         mod = _load()
-        d = mod.ROOT / ".claude"
-        assert mod.COMPUTERS["claudedocs"]() == len(list(d.rglob("*.md")))
-        assert mod.COMPUTERS["claudedocs"]() > len(list(d.glob("*.md")))
+        assert "claudedocs" not in mod.COMPUTERS
+
+    def test_every_sentinelled_count_is_stable_under_git(self):
+        """A sentinel may only cite a quantity a fresh clone reproduces.
+        This is the test that would have caught the claudedocs mistake."""
+        import subprocess
+        mod = _load()
+        globs = {"researchdocs": ".claude/research/*.md",
+                 "testfiles": "tests/test_*.py",
+                 "handlers": "src/launcher_tui/handlers/*.py"}
+        # Closed-enum gate (honest_failure_modes #7): a NEW computer must fail
+        # this test until someone declares what git glob reproduces it. Without
+        # this line the test skips unknown keys and a future unstable counter
+        # slips through exactly as claudedocs did.
+        assert set(mod.COMPUTERS) <= set(globs), (
+            "new sentinel computer(s) %s have no declared git-stable basis"
+            % sorted(set(mod.COMPUTERS) - set(globs)))
+        for key, pattern in globs.items():
+            if key not in mod.COMPUTERS:
+                continue
+            out = subprocess.run(["git", "ls-files", pattern], cwd=mod.ROOT,
+                                 capture_output=True, text=True, timeout=30)
+            tracked = [ln for ln in out.stdout.splitlines() if ln.strip()]
+            if key == "researchdocs":
+                tracked = [f for f in tracked if not f.endswith("README.md")]
+            if key == "handlers":
+                tracked = [f for f in tracked
+                           if not f.endswith("__init__.py")]
+            assert mod.COMPUTERS[key]() == len(tracked), (
+                "%s counts files git does not track — it will differ in CI"
+                % key)
 
     def test_only_the_root_readme_is_unconditional(self):
         """Every other file opts in by carrying a sentinel, so adding a doc
@@ -107,4 +134,3 @@ class TestWiderSentinelScope:
         monkeypatch.setattr(mod, "README", tmp_path / "README.md")
         assert mod._doc_files() == []
         assert mod.COMPUTERS["researchdocs"]() is None
-        assert mod.COMPUTERS["claudedocs"]() is None

@@ -101,18 +101,21 @@ def _count_research_docs() -> int | None:
     return len([p for p in d.glob("*.md") if p.name != "README.md"])
 
 
-def _count_claude_docs() -> int | None:
-    d = ROOT / ".claude"
-    if not d.is_dir():
-        return None
-    return len(list(d.rglob("*.md")))
-
+# A `claudedocs` computer (recursive .md count under .claude/) was added and
+# REMOVED the same day, 2026-08-31. It counted 189 locally and 188 in CI,
+# because `.claude/` deliberately holds untracked local working files
+# (`CURRENT.md`, session notes) that never reach a clone. That is precisely the
+# instability this module's header rules out — "only environment-STABLE,
+# filesystem-derived counts belong in a sentinel" — and the author quoted that
+# line while breaking it. Local gates all passed; CI is what caught it.
+# `.claude/` has no stable count, so CLAUDE.md now cites no number at all.
+# Do not re-add it: a directory that mixes tracked docs with local scratch
+# cannot be sentinelled, only counted at the moment you look.
 
 COMPUTERS = {
     "testfiles": _count_test_files,
     "handlers": _count_handler_modules,
     "researchdocs": _count_research_docs,
-    "claudedocs": _count_claude_docs,
 }
 
 

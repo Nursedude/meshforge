@@ -219,7 +219,7 @@ pass. `--quick` skips the local suite; `--strict` fails on fleet warnings.
 
 ---
 
-## Research Docs (`.claude/` — <!--STAT:claudedocs-->189<!--/STAT--> files)
+## Research Docs (`.claude/`)
 
 | File | Contents |
 |------|----------|
