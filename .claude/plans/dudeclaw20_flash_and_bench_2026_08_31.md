@@ -229,3 +229,88 @@ to reject, and it is what a link budget would be computed from.
   `fleet SHA drift FAIL 0/9 @ 74154aa6` — expected, deploy is manual. Use
   `scripts/fleet_pull.sh` (ff-only, no restarts). The reader half is inert
   until claws run `.20`, so there is no rush and no risk in either order.
+
+---
+
+# STATUS 2026-08-31 — 2 of 3 flashed, claw-02 HELD
+
+| claw | host | env | version | notes |
+|---|---|---|---|---|
+| dudeclaw-01 | moc1 | `esp32-s3-heltec-v4` | **`.20`** | 906.875 MHz confirms base env |
+| dudeclaw-03 | moc2 | `esp32-s3-heltec-v4-st` | **`.20`** | 905.750 MHz confirms ST env |
+| dudeclaw-02 | moc5 | `esp32-s3-heltec-v4-agent` | `.19` | **HELD** by decision |
+
+Both flashes: md5 matched end-to-end, `Hash of data verified`, WiFi rejoined
+(no strand), watch lists preserved across the app-only write.
+
+**Identity map lives OFF-REPO** at `~/claw_board_identity_map.txt` (this repo is
+public). It is counterintuitive and must not be guessed: moc2 hosts claw-01's
+DEFAULT tick file but has **claw-03** attached; moc5 runs ZERO claw units yet
+holds **claw-02**. Every claw runs a DIFFERENT env.
+
+## ✅ Step 0 is SOLVED — and remote flashing needs no bench visit
+
+`esptool --no-stub read_mac` resets the board; **whichever claw's uptime drops
+on the bus is the one on that port.** Zero flash writes, definitive, remote.
+Three records written weeks ago independently corroborate the result.
+(The `44:1B:F6` "foreign OUI" suspicion was WRONG — Espressif holds several
+blocks. All three boards are claws.)
+
+⚠️ A **software reboot does NOT work** for this — an ESP32-S3's USB-Serial-JTAG
+does not re-enumerate on `sw-restart`. Tried it; no port dropped on any host,
+and the null could not discriminate "not attached" from "does not re-enumerate."
+Use the esptool reset, or a physical power-cycle.
+
+## ⭐ ENV VERIFICATION — the firmware tells you, don't trust your `scp`
+
+Right after a flash the claw has heard 0 packets, so `lora_stats` takes its
+**never-heard branch and prints the compiled-in frequency**:
+
+    base env  -> 906.875 MHz
+    -st  env  -> 905.750 MHz
+
+That is a self-report from the running firmware — an authority you did not
+author — proving which env is live. Check it on EVERY flash, before believing
+you copied the right file. Do it within the first minutes; once packets arrive
+the reply switches to the heard branch and the MHz is gone.
+
+## ⏳ THE PENDING MEASUREMENT — F2 before/after (needs hours)
+
+Baseline: `~/claw_direct_snapshot_pre_dudeclaw20_20260831T180729Z.json`
+(pointer: `~/.claw_direct_snapshot_latest`). Captured on `.19` over a ~21 h
+window, and it recorded **12 of 12 watched nodes as `direct=true`** — implausible
+in a flood mesh, and exactly F2's predicted forgery signature.
+
+**Do NOT compare yet.** Counters reset at boot, so both flashed claws restarted
+from zero, and their watch nodes have `required_window_s` ≈ 32400 s (9 h). A
+short window would read as "everything went `never`", which is the reset, not
+the fix.
+
+No new machinery is needed — moc2's claw capture already writes `direct=` to
+`claw_last_tick*.json` every ~40-60 s. After a comparable window (≥9 h, ideally
+~21 h to match the baseline):
+
+```bash
+# on moc2 — current state
+python3 - <<'EOF'
+import json
+for f in ('claw_last_tick.json','claw_last_tick.dudeclaw-02.json',
+          'claw_last_tick.dudeclaw-03.json'):
+    d=json.load(open(f)); lo=d.get('lora') or {}
+    dr=lo.get('direct') or {}
+    t=sum(1 for v in dr.values() if v.get('direct') is True)
+    print(d.get('device'), d.get('device_info',{}).get('version'),
+          'uptime', d.get('device_info',{}).get('uptime_s'),
+          'direct_true=%d/%d' % (t, len(dr)))
+EOF
+```
+
+**Reading the result.** A node that was `direct:true` on `.19` and does NOT
+re-earn it on `.20` over a comparable window was a **forged** direct link that
+F2 caught. claw-02 stays on `.19` on purpose — it is the CONTROL: if it still
+reads 5/5 direct while the two flashed claws drop, that is the cleanest
+evidence F2 will ever produce, and flashing it early would destroy it.
+
+⚠️ Honest limit: the three claws hear different traffic on different segments,
+so this is suggestive, not a controlled experiment. Treat a drop as evidence,
+not proof, and say which nodes changed rather than quoting a bare count.
