@@ -36,6 +36,10 @@ set -euo pipefail
 export LC_ALL=C   # length() must count BYTES, not UTF-8 characters
 
 KEEP=4
+# Retention for the backup directory. Every --apply writes a full copy of the
+# notes (and the archive), and nothing pruned them — unbounded growth on an
+# SD-card fleet. 0 disables pruning entirely.
+KEEP_BACKUPS="${SESSION_NOTES_KEEP_BACKUPS:-10}"
 APPLY=0
 # must track harness_audit.sh:156. Overridable as a TEST hook only —
 # the gate-FAIL branch is otherwise undrillable while the real file is
@@ -54,6 +58,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --apply)   APPLY=1; shift ;;
         --keep)    KEEP="${2:?--keep needs a number}"; shift 2 ;;
+        --keep-backups) KEEP_BACKUPS="${2:?--keep-backups needs a number}"; shift 2 ;;
         --notes)   NOTES="${2:?--notes needs a path}"; shift 2 ;;
         --archive) ARCHIVE="${2:?--archive needs a path}"; shift 2 ;;
         -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
@@ -62,6 +67,7 @@ while [ $# -gt 0 ]; do
 done
 
 case "$KEEP" in ''|*[!0-9]*) die "--keep must be a non-negative integer, got '$KEEP'" ;; esac
+case "$KEEP_BACKUPS" in ''|*[!0-9]*) die "--keep-backups must be a non-negative integer, got '$KEEP_BACKUPS'" ;; esac
 [ -r "$NOTES" ] || die "notes not readable: $NOTES"
 [ -w "$NOTES" ] || die "notes not writable: $NOTES"
 # A symlink would be REPLACED by the atomic mv, silently converting the link
@@ -277,7 +283,50 @@ while IFS=$'\t' read -r _idx verdict _b _r _range heading; do
     grep -qxF "$heading" "$NOTES" || { printf '    ❌ KEPT section vanished: %s\n' "$heading"; vfail=1; }
 done <<< "$plan"
 
+# ── prune old backups — DELETION, so the guards are the point ────────────────
+# Only ever runs after a CLEAN verification: if anything about this rotation
+# looked wrong, every backup is evidence and none of it is touched.
+#
+# Retention is PER NOTES-BASENAME and keyed on the ISO-8601 timestamp EMBEDDED
+# IN THE FILENAME, sorted lexically — never mtime, which a restore, a copy or a
+# stray touch silently reorders (the same weak-key hazard flagged for archive
+# selection). Candidates must match the exact naming shape; anything else in
+# this directory is not ours and can never be selected.
+#
+# Best-effort by design: the rotation is already committed to disk, so a prune
+# failure must not turn a successful rotation into a reported failure — it
+# reports and moves on (feedback_review_your_own_fixes: irreversible publish
+# followed by a fail-raising post-step misreports a half state).
+prune_backups() {
+    local stem="$1" seen=0 pruned=0 f
+    [ "$KEEP_BACKUPS" -gt 0 ] || return 0
+    while IFS= read -r f; do
+        # NEVER prune the backup this run just wrote, whatever its sort rank.
+        # Filenames carry wall-clock time, and wall clock is forgeable on this
+        # fleet — RTC-less Pis, fake-hwclock, NTP steps; moc4 once ran ~8 days
+        # behind. A stale clock names today's backup with an OLD timestamp, so
+        # a pure rank-based prune would delete this rotation's own recovery
+        # point while keeping ten stale ones. Identity beats ordering.
+        seen=$((seen + 1))
+        if [ "$f" = "$bk_notes" ] || [ "$f" = "$bk_arch" ]; then continue; fi
+        [ "$seen" -le "$KEEP_BACKUPS" ] && continue
+        if rm -f -- "$f"; then
+            pruned=$((pruned + 1))
+            printf '    pruned %s\n' "$(basename "$f")"
+        else
+            printf '    ⚠️  could not prune %s (kept)\n' "$(basename "$f")"
+        fi
+    done < <(find "$bkdir" -maxdepth 1 -type f \
+                  -name "${stem}.????-??-??T??:??:??Z.md.bak" 2>/dev/null | sort -r)
+    if [ "$pruned" -gt 0 ]; then
+        printf '    backups for %s: kept newest %s of %s\n' "$stem" "$KEEP_BACKUPS" "$seen"
+    fi
+    return 0
+}
+
 if [ "$vfail" -eq 0 ]; then
+    prune_backups "$(basename "$NOTES" .md)"
+    prune_backups "$(basename "$ARCHIVE" .md)"
     printf '    ✅ all %s rotated section(s) appended once and gone from notes\n' "$n_rotate"
     printf '\n  Reminder: the "## Rotated to the archive" pointer section is hand-written —\n'
     printf '  update it yourself if these sections deserve a breadcrumb.\n'

@@ -281,6 +281,137 @@ class TestRefusals:
             assert f.read_text(encoding="utf-8") == "SENTINEL", "clobbered a backup"
 
 
+class TestBackupPruning:
+    """Retention on the backup dir. This feature DELETES, inside the one
+    directory whose entire job is recovery, so the tests that matter are the
+    ones proving what it must NOT touch."""
+
+    @staticmethod
+    def _bkdir(home: Path) -> Path:
+        return home / ".local/state/meshforge/session_notes_backup"
+
+    @staticmethod
+    def _seed(bkdir: Path, stem: str, n: int) -> list:
+        """n old backups with valid, lexically-ordered timestamps."""
+        bkdir.mkdir(parents=True, exist_ok=True)
+        made = []
+        for i in range(n):
+            f = bkdir / f"{stem}.2020-01-{i+1:02d}T00:00:00Z.md.bak"
+            f.write_text(f"old backup {i}", encoding="utf-8")
+            made.append(f)
+        return made
+
+    def test_keeps_newest_n(self, notes, home):
+        bk = self._bkdir(home)
+        self._seed(bk, notes.stem, 15)
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "5")
+        assert r.returncode == 0, r.stdout + r.stderr
+        remaining = sorted(f.name for f in bk.glob(f"{notes.stem}.*.md.bak"))
+        assert len(remaining) == 5
+        # the run's OWN backup is the newest and must survive
+        assert any("2026" in n or "202" in n for n in remaining)
+        newest_old = f"{notes.stem}.2020-01-15T00:00:00Z.md.bak"
+        assert newest_old in remaining, "pruned newest-first instead of oldest-first"
+        assert f"{notes.stem}.2020-01-01T00:00:00Z.md.bak" not in remaining
+
+    def test_never_prunes_the_backup_it_just_wrote(self, notes, home):
+        bk = self._bkdir(home)
+        self._seed(bk, notes.stem, 20)
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "1")
+        assert r.returncode == 0
+        remaining = list(bk.glob(f"{notes.stem}.*.md.bak"))
+        assert len(remaining) == 1
+        # the survivor must be THIS run's backup: a copy of the pre-apply notes
+        assert "## Newest close" in remaining[0].read_text(encoding="utf-8")
+        assert "old backup" not in remaining[0].read_text(encoding="utf-8")
+
+    def test_own_backup_survives_a_backward_clock(self, notes, home):
+        """Wall clock is forgeable here (RTC-less Pis; moc4 once ran ~8 days
+        behind). If the box clock is stale, THIS run's backup gets an OLD
+        filename and a rank-based prune would delete the very recovery point
+        it just made. Seed FUTURE-dated backups to force that ordering."""
+        bk = self._bkdir(home)
+        bk.mkdir(parents=True, exist_ok=True)
+        for i in range(12):
+            (bk / f"{notes.stem}.2099-01-{i+1:02d}T00:00:00Z.md.bak").write_text(
+                "future-dated", encoding="utf-8")
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "3")
+        assert r.returncode == 0, r.stdout + r.stderr
+        survivors = [f.read_text(encoding="utf-8") for f in bk.glob(f"{notes.stem}.*.md.bak")]
+        assert any("## Newest close" in body for body in survivors), \
+            "pruned this run's own backup because the clock made it sort old"
+
+    def test_foreign_files_are_never_candidates(self, notes, home):
+        """Anything not matching the exact naming shape is not ours."""
+        bk = self._bkdir(home)
+        self._seed(bk, notes.stem, 12)
+        foreign = {
+            "important-operator-file.md": "DO NOT DELETE",
+            f"{notes.stem}.md.bak": "no timestamp",
+            f"{notes.stem}.notatimestamp.md.bak": "bad stamp",
+            f"{notes.stem}.2020-01-01T00:00:00Z.md": "not a .bak",
+            "other-notes.2020-01-01T00:00:00Z.md.bak": "different stem",
+        }
+        bk.mkdir(parents=True, exist_ok=True)
+        for name, body in foreign.items():
+            (bk / name).write_text(body, encoding="utf-8")
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "2")
+        assert r.returncode == 0
+        for name, body in foreign.items():
+            assert (bk / name).exists(), f"deleted a non-candidate: {name}"
+            assert (bk / name).read_text(encoding="utf-8") == body
+
+    def test_no_pruning_when_verification_fails(self, notes, home):
+        """A bad rotation makes every backup evidence — touch none of it."""
+        bk = self._bkdir(home)
+        seeded = self._seed(bk, notes.stem, 12)
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "1",
+                env={"SESSION_NOTES_GATE_BYTES": "10"})
+        assert r.returncode == 1, "fixture must fail verification"
+        for f in seeded:
+            assert f.exists(), "pruned backups after a FAILED verification"
+
+    def test_dry_run_prunes_nothing(self, notes, home):
+        bk = self._bkdir(home)
+        seeded = self._seed(bk, notes.stem, 12)
+        r = run(home, "--notes", str(notes), "--keep", "2", "--keep-backups", "1")
+        assert r.returncode == 0
+        for f in seeded:
+            assert f.exists(), "a dry run deleted files"
+
+    def test_zero_disables_pruning(self, notes, home):
+        bk = self._bkdir(home)
+        seeded = self._seed(bk, notes.stem, 12)
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "0")
+        assert r.returncode == 0
+        for f in seeded:
+            assert f.exists(), "--keep-backups 0 must disable pruning"
+
+    def test_archive_backups_pruned_independently(self, notes, home, tmp_path):
+        """The notes stem is a PREFIX of the archive stem — retention must not
+        let one bucket evict the other."""
+        arch = tmp_path / f"{notes.stem}-archive-2026H1.md"
+        arch.write_text("# Archive\n", encoding="utf-8")
+        bk = self._bkdir(home)
+        self._seed(bk, notes.stem, 8)
+        self._seed(bk, arch.stem, 8)
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                "--keep-backups", "3")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert len(list(bk.glob(f"{notes.stem}.20*.md.bak"))) == 3
+        assert len(list(bk.glob(f"{arch.stem}.20*.md.bak"))) == 3
+
+    def test_bad_keep_backups_refused(self, notes, home):
+        r = run(home, "--notes", str(notes), "--keep-backups", "abc")
+        assert r.returncode == 1 and "--keep-backups must be" in r.stderr
+
+
 class TestSingleWriterExclusion:
     """honest_failure_modes #8 — two --apply runs must not interleave."""
 

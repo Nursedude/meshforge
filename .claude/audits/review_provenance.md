@@ -352,9 +352,20 @@ Stated bare, no reasoning, so they don't anchor you:
    injection, but a malformed regex from the environment — what does it do?
    And a too-broad regex silently makes everything sticky, i.e. the tool
    quietly stops working while reporting success.
-6. **Backups are never pruned.** Every `--apply` writes a full copy under
-   `~/.local/state/meshforge/session_notes_backup/`. No retention policy on an
-   SD-card fleet. I did not think about this until writing this brief.
+6. **Backup pruning — FIXED after this brief was written, and now the highest
+   risk surface in the file.** Retention was absent; `--keep-backups N`
+   (default 10) now prunes per notes-basename, keyed on the ISO timestamp in
+   the FILENAME sorted lexically (never mtime), only after a clean
+   verification, matching an exact `<stem>.????-??-??T??:??:??Z.md.bak` shape,
+   best-effort so a prune failure cannot misreport a good rotation.
+   **This turned a write-only tool into one that DELETES, inside the directory
+   whose only job is recovery — review it harder than the rotation itself.**
+   Ask specifically: can any input make the glob select a file it did not
+   write? Can the notes stem and the archive stem (one is a PREFIX of the
+   other) evict each other? Does a clock that went backwards — RTC-less Pis,
+   this fleet's standing hazard — produce a filename that sorts as OLD and
+   gets pruned while being the newest real backup? I believe not, and I have
+   not constructed that input.
 7. **Review the TESTS as code, not as evidence.** A test that cannot fail is a
    defect (Issue #29 Layer 2 was inert for 891 commits). I mutation-drilled
    eight guards — fence awareness, fence imbalance, flock, symlink, count-delta,
