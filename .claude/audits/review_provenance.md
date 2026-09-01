@@ -269,3 +269,108 @@ function this session; `meshanchor-server` has NO meshtasticd (that box is the
 whole reason the arc exists) and its USER journal is dark; `meshforge-echo`,
 `meshforge-lxmd`, `meshanchor-echo`, `meshanchor-mini-dudeai` are USER units
 while map/gateway/fleet-collector/fleet-watchdog are SYSTEM on the same boxes.
+
+---
+
+## QUEUED 2026-08-31 (Opus 5) — `scripts/rotate_session_notes.sh` adversarial pass
+
+**Target**: `scripts/rotate_session_notes.sh` @ `d5d78277` (287 lines, bash)
+and `tests/test_rotate_session_notes.py` @ `19a8fdc2` (24 tests). Both pushed,
+CI 5/5 green. NOT yet deployed to the fleet (drift held deliberately until the
+moc2 F2 capture lands ~2026-09-01 16:15Z).
+
+**What it does**: splits a markdown session-notes handoff doc on `^## `
+headings and moves older sections into a half-year archive file, to keep the
+file under the 80KB gate at `harness_audit.sh:156`. Human-invoked, dry-run by
+default, `--apply` mutates.
+
+### ⚠️ Before you run anything
+
+`~/.claude/plans/gateway-session-notes-<host>.md` is **live operator data** —
+years of handoff context, not a fixture. Never run `--apply` against the
+default path. Every experiment goes through `--notes` pointed at a copy, with
+`HOME` redirected to a sandbox (the script writes backups and lock files under
+`$HOME/.local/state/meshforge/`). The test file shows the pattern.
+
+### Task frame — deliberately NOT a doctrine check
+
+Review this as **bash, parser and filesystem correctness on a file-mutating
+tool**. Do *not* frame it as "does this comply with CLAUDE.md / the rules
+files." That frame is the correlated half: I wrote the code with those same
+`@`-included rules in context, so we would both be checking the same list, and
+the defect is by definition outside it. Evidence that the frame matters — both
+real defects I found on my own came from asking "what does a line-range
+splitter get wrong?", and the one rule I *violated* (`honest_failure_modes` #8,
+concurrent writers) was loaded in my context every single turn and I still
+shipped a file-mutating tool without a lock until a second pass caught it.
+
+**Deliverable**: concrete failure scenarios — *input → wrong output or data
+loss* — not verdicts. "This looks fine" and "this is well structured" are both
+worthless here. If you cannot construct the input, say the concern is
+unverified rather than upgrading it.
+
+### The invariants (what "correct" means — check the property, not my story)
+
+1. No byte of the original file is ever lost: content ends up in the new notes
+   or in the archive, never neither.
+2. A section marked live is never rotated, regardless of its position.
+3. A failed or refused run leaves both files exactly as they were.
+4. A backup is never overwritten.
+5. Two concurrent `--apply` runs never interleave.
+6. Post-apply verification cannot report success when content was lost.
+
+### Already found and fixed — do not spend the pass rediscovering these
+
+Stated bare, no reasoning, so they don't anchor you:
+- `## ` inside a ``` fence was parsed as a section boundary.
+- Unbalanced fence silently mis-split; now refused by line number.
+- Post-apply check asked "is this heading in the archive?", which passes
+  vacuously when the heading was already there.
+- No `flock`; two `--apply` runs could interleave.
+- Symlinked notes/archive would be replaced by a regular file.
+
+### Steers — where I think I am most likely still wrong
+
+1. **Untested input shapes.** I never exercised: CRLF line endings; a file with
+   no trailing newline; a file whose *first* line is `## ` (`pre_lines=0`); a
+   heading as the final line with no body; headings containing tabs (the index
+   is TSV — a tab in a heading would corrupt the field split). Any of these
+   could mis-slice line ranges.
+2. **`ls -1t` picks the archive by MTIME.** "Newest existing archive" is keyed
+   on modification time, so `touch`ing an old archive silently redirects where
+   content lands. mtime is a weak key for "which archive is current" — is there
+   an input where this appends to the wrong half-year file?
+3. **Pipeline subshells.** The kept/rotated section extraction runs
+   `... | while IFS='-' read -r a b; do sed -n "${a},${b}p"; done`. `set -e`
+   does not reliably propagate out of that subshell. If `sed` fails mid-loop,
+   does anything catch it before `mv`? I believe the byte assertion does —
+   verify rather than accept that.
+4. **`LC_ALL=C` is exported process-wide** so `awk length()` counts bytes. It
+   also affects every `grep -cxF` against headings that contain emoji. Confirm
+   byte-mode matching is actually what happens there.
+5. **`SESSION_NOTES_STICKY_RE` is interpolated into awk via `-v`.** Not code
+   injection, but a malformed regex from the environment — what does it do?
+   And a too-broad regex silently makes everything sticky, i.e. the tool
+   quietly stops working while reporting success.
+6. **Backups are never pruned.** Every `--apply` writes a full copy under
+   `~/.local/state/meshforge/session_notes_backup/`. No retention policy on an
+   SD-card fleet. I did not think about this until writing this brief.
+7. **Review the TESTS as code, not as evidence.** A test that cannot fail is a
+   defect (Issue #29 Layer 2 was inert for 891 commits). I mutation-drilled
+   eight guards — fence awareness, fence imbalance, flock, symlink, count-delta,
+   byte assertions, backup `O_EXCL`, sticky rule — and all eight turn the suite
+   red when removed. That leaves every *other* assertion in the file unpinned.
+   The count-delta check was green under mutation until I added fault injection,
+   so assume siblings of that shape remain.
+8. **Challenge the design, not just the code.** Fair game: whether size-based
+   rotation is the right trigger at all; whether "newest N by position" is a
+   sane staleness proxy for a file that is not strictly chronological; whether
+   this should exist rather than the audit leg simply warning earlier.
+
+### Provenance caveat
+
+This file has already been through one self-review pass that found and fixed
+four defects. That means the cheap findings are gone and the survivors are
+specifically the ones that a careful read *by me* does not surface — so a pass
+that returns "looks good" is more likely to be a correlated miss than a clean
+bill.
