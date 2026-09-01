@@ -427,3 +427,33 @@ four defects. That means the cheap findings are gone and the survivors are
 specifically the ones that a careful read *by me* does not surface — so a pass
 that returns "looks good" is more likely to be a correlated miss than a clean
 bill.
+
+---
+
+## QUEUED 2026-09-01 (Fable 5) — field-eComm + duty-cycle DESIGN pass (not a code review)
+
+**Target**: the ⚖️ design decisions batched in
+`.claude/plans/field_ecomm_and_dutycycle_fleet.md` (the seed is Opus-ready for
+build work; ONLY the ⚖️ items are frontier-shaped). Queued at the 2026-09-01
+session close by the Fable session that closed the rotate_session_notes pass —
+per the model_advisor rule, so the next rationed frontier pass lands here
+instead of being burned on ops.
+
+**The three batched decisions** (seed lines ~36/41/57):
+1. **Detached = ZERO fleet dependencies** — what the kit must self-derive
+   (time via chrony orphan, identity, DNS) and what it must refuse to need.
+2. **REJOIN semantics** — when Starlink returns, artifacts flow OUT only;
+   design the one-way valve and what "caught up" means observably.
+3. **DORMANT as a DECLARED power posture** — a fleet-level state, not a
+   per-box hack; how it is declared, observed, and distinguished from a
+   fault (unobservable ≠ dark ≠ dormant — the #74 creed extended to power).
+
+**Frame**: adversarial DESIGN review — attack each decision with concrete
+failure scenarios (storm timeline, clock-forgeable Pis, tunnel-only boxes,
+the two-preset RF split), not compliance prose. Deliverables: decided
+positions written into the seed + the drills that would prove each one in
+the virtual fleet BEFORE hardware. Context that must be loaded: storm-prep
+notes (`.claude/research/storm_prep_power_starlink_2026_08_27.md`), Lala
+forensics (zero-byte state-file class), NTP-island work, and the Starlink
+cutover ~2-week window flagged 2026-08-27 — the cutover clock makes decision
+1 and 3 time-sensitive.
