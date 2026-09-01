@@ -437,3 +437,25 @@ def test_decline_reasons_vocabulary_is_closed_and_named():
     from oracle.responder import ORACLE_DECLINE_REASONS
     assert set(ORACLE_DECLINE_REASONS) == {"cooldown", "not_allowlisted",
                                            "peer_gateway_relay"}
+
+
+def test_describe_states_the_built_access_posture():
+    r, _, _ = _make(allowlist={"!a", "!b"}, allowed_channels={"meshforge"},
+                    cooldown_s=10.0)
+    d = r.describe()
+    assert "answer_all=False" in d and "allowlist=2" in d
+    assert "channels=meshforge" in d and "cooldown=10s" in d and "consume=True" in d
+    r2, _, _ = _make(answer_all=True)
+    assert "answer_all=True" in r2.describe() and "channels=-" in r2.describe()
+
+
+def test_from_env_logs_one_built_line_per_leg(caplog):
+    import logging
+    with caplog.at_level(logging.INFO, logger="oracle.responder"):
+        r = MeshOracleResponder.from_env(
+            snapshot_fn=_snap, send_fn=lambda t, d, c: True, log_fn=None,
+            env={"MESHFORGE_ORACLE_ENABLED": "1", "MESHFORGE_ORACLE_ALLOWLIST": "!a"},
+            leg="mqtt")
+    assert r is not None
+    lines = [m for m in caplog.messages if "responder built" in m]
+    assert len(lines) == 1 and "(mqtt)" in lines[0] and "allowlist=1" in lines[0]

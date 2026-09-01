@@ -6016,3 +6016,33 @@ class TestStopJoinIsVerified20260803:
              patch.object(bridge, '_stop_websocket_server'):
             bridge.stop()   # must not raise
         assert bridge._stop_survivors == []
+
+
+class TestLxmfHistoryStoresText:
+    """2026-09-01: LXMF hands title/content as BYTES and the store path
+    f-string'd them raw — moc's messages.db rows 16239/16250 read
+    "[b'MeshForge Gateway'] b'dude-AI…'". History must hold text."""
+
+    def test_bytes_title_and_content_are_decoded_before_store(self, bridge):
+        from types import SimpleNamespace
+        bridge._oracle_rns = None
+        h = bytes.fromhex("aabbccddeeff00112233445566778899")
+        msg = SimpleNamespace(source_hash=h, content=b"dude-AI@moc3: wd:0 all clear",
+                              title=b"MeshForge Gateway", stamp=None, fields=None)
+        with patch("commands.messaging.store_incoming") as store, \
+             patch.object(bridge, "_notify_message"):
+            bridge._on_lxmf_receive(msg)
+        assert store.called
+        assert store.call_args.kwargs["content"] == \
+            "[MeshForge Gateway] dude-AI@moc3: wd:0 all clear"
+
+    def test_str_content_without_title_is_unchanged(self, bridge):
+        from types import SimpleNamespace
+        bridge._oracle_rns = None
+        h = bytes.fromhex("aabbccddeeff00112233445566778899")
+        msg = SimpleNamespace(source_hash=h, content="hello", title=None,
+                              stamp=None, fields=None)
+        with patch("commands.messaging.store_incoming") as store, \
+             patch.object(bridge, "_notify_message"):
+            bridge._on_lxmf_receive(msg)
+        assert store.call_args.kwargs["content"] == "hello"

@@ -185,7 +185,7 @@ class MeshtasticHandler(BaseMessageHandler):
             os.environ.get("MESHFORGE_ORACLE_CHANNELS", ""))
         return MeshOracleResponder.from_env(
             snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
-            allowed_channels=allowed_channels)
+            allowed_channels=allowed_channels, leg="phoneapi")
 
     def _resolve_oracle_channels(self, names_csv: str):
         """Resolve a comma-separated channel-NAME list to local slot indices.

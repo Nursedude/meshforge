@@ -137,3 +137,39 @@ def test_on_receive_swallows_malformed_packet(monkeypatch):
     tap._on_receive({})                    # no decoded
     tap._on_receive({'decoded': None})     # decoded None
     tap._oracle.handle.assert_not_called()
+
+
+
+class TestTapSenderDerivation:
+    """2026-09-01: two moc3 audit records carried from='' — the tap passed
+    packet['fromId'] which the library fills only for nodes already in its
+    nodedb. The numeric `from` is always present; the responder canonicalizes
+    it. A packet with neither is skipped, never answered under key '!'."""
+
+    def _tap(self):
+        from gateway.oracle_phoneapi_tap import OraclePhoneAPITap
+        from unittest.mock import MagicMock
+        tap = OraclePhoneAPITap.__new__(OraclePhoneAPITap)
+        tap._oracle = MagicMock()
+        return tap
+
+    def _packet(self, **kw):
+        p = {"decoded": {"portnum": "TEXT_MESSAGE_APP", "payload": b"status"},
+             "channel": 2, "hopStart": 3, "hopLimit": 1}
+        p.update(kw)
+        return p
+
+    def test_numeric_from_is_used_when_fromid_is_absent(self):
+        tap = self._tap()
+        tap._on_receive(self._packet(fromId=None, **{"from": 3062965521}))
+        tap._oracle.handle.assert_called_once_with(3062965521, "status", 2)
+
+    def test_fromid_wins_when_present(self):
+        tap = self._tap()
+        tap._on_receive(self._packet(fromId="!b6903d11", **{"from": 3062965521}))
+        tap._oracle.handle.assert_called_once_with("!b6903d11", "status", 2)
+
+    def test_senderless_packet_is_not_answered(self):
+        tap = self._tap()
+        tap._on_receive(self._packet(fromId=None))
+        tap._oracle.handle.assert_not_called()

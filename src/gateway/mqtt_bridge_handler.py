@@ -247,7 +247,7 @@ class MQTTBridgeHandler(BaseMessageHandler):
 
         return MeshOracleResponder.from_env(
             snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
-            allowed_channels=names)
+            allowed_channels=names, leg="mqtt")
 
     # --- Thread-2 step 4: ACK consumption via /e/ ------------------------
 

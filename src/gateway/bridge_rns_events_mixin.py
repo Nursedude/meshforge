@@ -23,6 +23,16 @@ from .node_tracker import UnifiedNode
 logger = logging.getLogger(__name__)
 
 
+def _lxmf_text(value) -> str:
+    """LXMF ``content``/``title`` as text: bytes decoded (utf-8, replace),
+    None → '', anything else str()'d. Never a repr."""
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return str(value)
+
+
 class BridgeRnsEventsMixin:
     """RNS inbound event handlers (oracle responder, LXMF receive, announce) for
     RNSMeshtasticBridge, the sole host class."""
@@ -79,7 +89,7 @@ class BridgeRnsEventsMixin:
         return MeshOracleResponder.from_env(
             snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
             transport="rns", allowlist_env="MESHFORGE_ORACLE_RNS_ALLOWLIST",
-            consume_env="MESHFORGE_ORACLE_RNS_CONSUME")
+            consume_env="MESHFORGE_ORACLE_RNS_CONSUME", leg="rns")
 
     def _on_lxmf_receive(self, message):
         """Handle incoming LXMF message"""
@@ -197,10 +207,15 @@ class BridgeRnsEventsMixin:
             # Store incoming message for UI/history
             try:
                 from commands import messaging
-                # Combine title and content for RNS messages
-                content = message.content
-                if message.title:
-                    content = f"[{message.title}] {content}"
+                # Combine title and content for RNS messages. LXMF hands
+                # both as BYTES; formatting them raw stored reprs like
+                # "[b'MeshForge Gateway'] b'dude-AI…'" in messages.db (moc
+                # rows 16239/16250, read 2026-09-01) — a legibility lie the
+                # TUI history then repeats. Decode first.
+                content = _lxmf_text(message.content)
+                title = _lxmf_text(message.title)
+                if title:
+                    content = f"[{title}] {content}"
                 messaging.store_incoming(
                     from_id=source_hash.hex(),
                     content=content,

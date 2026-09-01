@@ -107,7 +107,7 @@ class OraclePhoneAPITap:
             os.environ.get("MESHFORGE_ORACLE_CHANNELS", ""))
         return MeshOracleResponder.from_env(
             snapshot_fn=_snapshot, send_fn=_send, log_fn=_log,
-            allowed_channels=allowed_channels)
+            allowed_channels=allowed_channels, leg="phoneapi-tap")
 
     def _resolve_channels(self, names_csv: str):
         """Resolve channel NAMES -> THIS box's local slot indices.
@@ -235,7 +235,19 @@ class OraclePhoneAPITap:
             payload = decoded.get('payload', b'')
             text = (payload.decode('utf-8', errors='ignore')
                     if isinstance(payload, bytes) else str(payload or ""))
-            from_id = packet.get('fromId') or ""
+            # `fromId` is filled by the library only for nodes already in
+            # its nodedb; a first-heard node arrives with fromId=None and a
+            # numeric `from` — the responder's _norm canonicalizes the
+            # number to !hex. Two June-2026 audit records on moc3 carried
+            # from='' (answered via the channel gate, keyed under '!'),
+            # which is the sender being DROPPED, not missing. A packet with
+            # neither is un-attributable: skip with a witness rather than
+            # answer an anonymous key.
+            from_id = packet.get('fromId') or packet.get('from') or ""
+            if not from_id:
+                logger.debug("oracle tap: text packet without fromId/from — "
+                             "not answered (un-attributable sender)")
+                return
             channel = packet.get('channel', 0)
             self._oracle.handle(from_id, text, channel)
         except Exception as e:
