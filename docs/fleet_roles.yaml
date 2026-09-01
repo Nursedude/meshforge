@@ -197,6 +197,46 @@ roles:
     config:
       meshtastic_egress.want_ack: true  # retransmit over lossy LongFast; false to save airtime
 
+  field-node:
+    # A CONSTRAINED node that carries its OWN radio and nothing else.
+    # Added 2026-08-31 for the zero-class field boxes: it is not `bot` (that
+    # role is fleet_member:false and reaches the mesh through a COMPANION
+    # radio, `services: {}`), and it is not `gateway-only` (that bridges, and
+    # needs the ~1GB the bridge + rnsd + watchdog cost). This role owns a
+    # meshtasticd of its own and hosts no MeshForge daemon at all.
+    #
+    # It IS a full fleet member: enrolled in the naming registry, the hosts
+    # block, the RF watch lists, and mini-dudeai. What it gives up is the
+    # OBSERVABILITY stack, on purpose, because the board cannot carry it —
+    # so the NOC reaches it over the ssh truth-spool, not over HTTP.
+    board_tier: zero_class_zero2w_recommended
+    repo: meshforge
+    services:
+      meshtasticd: enabled            # its own SPI/USB radio — the whole point
+      rnsd: absent                    # hosts no RNS; not a bridge, joins nothing
+      mosquitto: absent
+      meshforge-gateway: absent
+      meshforge-map: absent           # DELIBERATE: removes /api/status + /fleet/slo,
+                                      # so the NOC must reach this box via the ssh
+                                      # truth-spool. Declaring it is what turns those
+                                      # cells into ACCEPTED blind spots instead of
+                                      # alarms (utils/fleet_truth.py).
+      meshforge-maps: absent
+      meshforge-watchdog: absent      # ⚠️ TENSION with invariants.fail_loud_restart_clean
+                                      # ("watchdog on every node"). ~46 MB RSS does not
+                                      # fit a 512 MB-class board already running
+                                      # meshtasticd + a bot. Recorded as a KNOWN gap,
+                                      # not a silent exception: this box's liveness is
+                                      # witnessed externally instead (RF watch lists on
+                                      # the claws + the ssh spool), which is weaker than
+                                      # a local watchdog and is the price of the tier.
+      meshtasticd-mudp-guard.timer: absent
+    # NOT declared here on purpose: the meshing-around `mesh_bot.service`. It is
+    # owned by that repo (see the `bot` role's provisioned_by), and declaring it
+    # `enabled` would let a converge sweep re-enable a unit the operator has
+    # already deliberately turned off once — the 2026-07-24 shape. A box that
+    # wants it converged can say so in deployment.json `service_overrides`.
+
   bot:
     fleet_member: false               # not a MeshForge node
     provisioned_by: meshing-around    # EXTERNAL: upstream SpudGunMan/meshing-around; provisioner skips
