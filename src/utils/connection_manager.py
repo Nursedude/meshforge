@@ -98,7 +98,7 @@ if _HAS_PUBSUB:
         _HAS_PUBSUB = False
 
 
-def _await_first_heartbeat(interface, timeout: float) -> bool:
+def await_first_heartbeat(interface, timeout: float) -> bool:
     """Block until the library has delivered `connection.established` for
     ``interface`` (= its first heartbeat write returned), or ``timeout``.
 
@@ -312,7 +312,7 @@ class _ConnectionManager:
         try:
             # Let the library's first heartbeat write return before we shut
             # the socket under it (see FIRST_HEARTBEAT_GRACE_S above).
-            _await_first_heartbeat(interface, FIRST_HEARTBEAT_GRACE_S)
+            await_first_heartbeat(interface, FIRST_HEARTBEAT_GRACE_S)
             with timed_boundary("meshtasticd.close",
                                 target=f"{self._host}:{self._port}"):
                 interface.close()

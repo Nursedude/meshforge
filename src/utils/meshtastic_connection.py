@@ -26,6 +26,7 @@ from typing import Optional, List, Dict, Any
 
 from utils.boundary_timing import timed_boundary
 from utils.safe_import import safe_import
+from utils.connection_manager import FIRST_HEARTBEAT_GRACE_S, await_first_heartbeat
 from utils.service_check import restart_service, check_service, ServiceState
 from utils.tx_guard import assert_iface_tx_allowed
 
@@ -229,6 +230,11 @@ def safe_close_interface(interface) -> None:
         return
 
     try:
+        # Let the library's first heartbeat write return before we shut the
+        # socket under it — the same grace as connection_manager._safe_close
+        # (2026-09-01: the map's every collect closed 2 ms after connect and
+        # logged a Broken-pipe traceback, 166/day; see FIRST_HEARTBEAT_GRACE_S).
+        await_first_heartbeat(interface, FIRST_HEARTBEAT_GRACE_S)
         # Try to close normally
         with timed_boundary("meshtasticd.close"):
             interface.close()

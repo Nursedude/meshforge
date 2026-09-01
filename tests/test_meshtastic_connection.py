@@ -393,3 +393,45 @@ class TestGetChannels:
             channels = mgr.get_channels()
 
             assert channels == []
+
+
+class TestSafeCloseFirstHeartbeatGrace:
+    """2026-09-01: the map's collector closes ~2 ms after connect through THIS
+    chokepoint (not connection_manager), and kept logging the library's
+    Broken-pipe traceback after item 3 landed on the other one — 2 events in
+    the first 7 min after the map restart. Same grace, same signal, here."""
+
+    class _Iface:
+        def __init__(self):
+            self.isConnected = threading.Event()
+            self.isConnected.set()
+            self.closed_at = None
+            self.socket = None
+
+        def close(self):
+            self.closed_at = time.monotonic()
+
+    def test_safe_close_waits_for_the_established_message(self):
+        from pubsub import pub
+        from utils.meshtastic_connection import safe_close_interface
+        iface = self._Iface()
+        delivered = {}
+
+        def deliver():
+            delivered["at"] = time.monotonic()
+            pub.sendMessage("meshtastic.connection.established", interface=iface)
+
+        threading.Timer(0.3, deliver).start()
+        t0 = time.monotonic()
+        safe_close_interface(iface)
+        assert iface.closed_at is not None and iface.closed_at >= delivered["at"]
+        assert iface.closed_at - t0 < 1.5
+
+    def test_safe_close_is_immediate_when_already_established(self):
+        from pubsub import pub
+        from utils.meshtastic_connection import safe_close_interface
+        iface = self._Iface()
+        pub.sendMessage("meshtastic.connection.established", interface=iface)
+        t0 = time.monotonic()
+        safe_close_interface(iface)
+        assert iface.closed_at - t0 < 0.2
