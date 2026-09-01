@@ -634,3 +634,14 @@ class TestCountWindowAndStalenessGuard:
         assert out is None
         assert cell["disp"] == "inert"
         assert "stale" in cell["reason"]
+
+
+def test_bucket_learns_every_responder_decline_reason():
+    """2026-09-01: the responder's ORACLE_DECLINE_REASONS and the probe's
+    decline bucket are two consumers of one vocabulary (hfm #5). A reason the
+    responder can write that the probe does not know would silently land in
+    'benign' — excluded from the rate, but mislabeled and invisible."""
+    from oracle.responder import ORACLE_DECLINE_REASONS
+    for reason in ORACLE_DECLINE_REASONS:
+        assert _classify_oracle_record(
+            {"delivered": False, "reason": reason}) == "decline", reason

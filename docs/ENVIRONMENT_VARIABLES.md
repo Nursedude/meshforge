@@ -39,7 +39,7 @@ set via a unit drop-in and restart the gateway to apply; gateway-profile boxes o
 | `MESHFORGE_ORACLE_CHANNELS` | `oracle_phoneapi_tap.py`, `meshtastic_handler.py`, `mqtt_bridge_handler.py` | Meshtastic/PhoneAPI channel NAMES (CSV) the oracle answers on. |
 | `MESHFORGE_ORACLE_PHONEAPI_TAP` | `oracle_phoneapi_tap.py` | Enables the multi-hop PhoneAPI tap ingest path. |
 | `MESHFORGE_ORACLE_ALLOWLIST` | `oracle/responder.py` (Meshtastic/MQTT leg) | CSV of sender node-ids allowed to query, or `*` (anywhere in the list) for answer-all. Empty + no channel = answers no one. |
-| `MESHFORGE_ORACLE_RNS_ALLOWLIST` | `gateway/rns_bridge.py` | Allowlist for the RNS→Mesh oracle leg (LXMF source hashes). |
+| `MESHFORGE_ORACLE_RNS_ALLOWLIST` | `gateway/rns_bridge.py` | Allowlist for the RNS→Mesh oracle leg (LXMF source hashes), or `*` for every announced identity. A sender in this box's `rns.peer_gateway_destinations` is NEVER answered, wildcard or not — a peer gateway relays its whole RF segment as one identity, so answering it is cross-mesh answering (declined as `peer_gateway_relay`, the text bridges on as chat). |
 | `MESHFORGE_ORACLE_MESHCORE_ALLOWLIST` | `gateway/meshcore_handler.py` | Allowlist for the MeshCore oracle leg (source_address/pubkey-prefix/adv_name). |
 | `MESHFORGE_ORACLE_MESHCORE_CHANNELS` | `gateway/meshcore_handler.py` | MeshCore channel INDICES (CSV, numeric) the oracle answers on. |
 | `MESHFORGE_ORACLE_CONSUME` | `oracle/responder.py` (inbound-Mesh legs) | `1` (default) consume a handled query; `0` = bridge-through so the far mesh's NOC sees it. |

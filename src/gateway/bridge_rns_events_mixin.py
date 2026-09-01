@@ -168,9 +168,29 @@ class BridgeRnsEventsMixin:
                     q = message.content
                     if isinstance(q, bytes):
                         q = q.decode('utf-8', errors='ignore')
-                    reply = self._oracle_rns.handle(source_hash.hex(), q, 0)
-                    if reply is not None and self._oracle_rns.consume:
-                        return
+                    src_hex = source_hash.hex().lower()
+                    if src_hex in self._peer_gateway_hash_set():
+                        # A PEER GATEWAY is never an oracle principal. It
+                        # relays its whole RF segment as this one LXMF
+                        # identity (raw text, attribution only in fields),
+                        # so answering it = answering every node on the
+                        # sibling's mesh, bypassing THAT box's allowlist and
+                        # cooldown, collapsing all its askers into one
+                        # cooldown bucket, and re-broadcasting our reply on
+                        # its RF via its R->M leg — cross-mesh answering,
+                        # which the operator excluded 2026-06-22. Live
+                        # before this guard: 74 of moc3's 118 audit records
+                        # were moc's hash, incl. a `help` moc had declined
+                        # (cooldown) answered here 2 s later. The relayed
+                        # text bridges on as ordinary chat ("cmd crosses,
+                        # ack doesn't"); the decline leaves the witness.
+                        self._oracle_rns.decline(
+                            source_hash.hex(), q, reason="peer_gateway_relay",
+                            channel=0)
+                    else:
+                        reply = self._oracle_rns.handle(source_hash.hex(), q, 0)
+                        if reply is not None and self._oracle_rns.consume:
+                            return
                 except Exception as e:
                     logger.debug(f"mesh oracle (rns) handle error: {e}")
 

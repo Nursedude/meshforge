@@ -5629,6 +5629,73 @@ class TestMeshOracleRnsWiring:
         bridge._oracle_rns.handle.assert_called_once_with(h.hex(), "status", 0)
         assert bridge._rns_to_mesh_queue.empty()  # consumed, not bridged onward
 
+    def test_lxmf_query_from_peer_gateway_is_declined_and_bridged_as_chat(
+            self, bridge, monkeypatch):
+        """2026-09-01 frontier pass: a PEER GATEWAY is never an oracle
+        principal. moc relays its whole RF segment to moc3 as ONE LXMF
+        identity with raw text; under RNS_ALLOWLIST=* moc3 answered 74 such
+        relays (incl. a `help` moc had just declined for cooldown) and the
+        reply re-broadcast on moc's RF — cross-mesh answering the operator
+        excluded 2026-06-22. The relay is declined with a witness and the
+        text bridges on as ordinary chat."""
+        from types import SimpleNamespace
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")   # the live moc3 shape
+        records = []
+        sends = []
+        monkeypatch.setattr(bridge, "send_to_rns",
+                            lambda *a, **k: sends.append(a) or True, raising=False)
+        bridge._oracle_rns = bridge._build_rns_oracle_responder()
+        monkeypatch.setattr(bridge._oracle_rns, "_log_fn", records.append)
+        peer = bytes.fromhex("3dfbdb5d24c6de195ae4f3c0f56b5ea5")
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [peer.hex()]
+        bridge._router.should_bridge = lambda m: True
+        msg = SimpleNamespace(source_hash=peer, content="status", title="x via Meshtastic",
+                              stamp=None, fields={"meshforge_from_id": "!deadbeef"})
+        with patch("commands.messaging.store_incoming"):
+            bridge._on_lxmf_receive(msg)
+        assert sends == []                                   # no answer sent to the gateway
+        assert records[-1]["reason"] == "peer_gateway_relay"
+        assert records[-1]["delivered"] is False
+        assert records[-1]["from"] == peer.hex()
+        assert not bridge._rns_to_mesh_queue.empty()         # bridged on as chat
+
+    def test_lxmf_non_query_from_peer_gateway_leaves_no_oracle_record(
+            self, bridge, monkeypatch):
+        from types import SimpleNamespace
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")
+        records = []
+        bridge._oracle_rns = bridge._build_rns_oracle_responder()
+        monkeypatch.setattr(bridge._oracle_rns, "_log_fn", records.append)
+        peer = bytes.fromhex("3dfbdb5d24c6de195ae4f3c0f56b5ea5")
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [peer.hex()]
+        msg = SimpleNamespace(source_hash=peer, content="good morning", title=None,
+                              stamp=None, fields=None)
+        with patch("commands.messaging.store_incoming"):
+            bridge._on_lxmf_receive(msg)
+        assert records == []
+
+    def test_lxmf_query_from_non_peer_still_answered_under_wildcard(
+            self, bridge, monkeypatch):
+        # the guard is keyed on peer_gateway_destinations ONLY — an announced
+        # client identity under `*` is unchanged (the 08-29 drill shape)
+        from types import SimpleNamespace
+        monkeypatch.setenv("MESHFORGE_ORACLE_ENABLED", "1")
+        monkeypatch.setenv("MESHFORGE_ORACLE_RNS_ALLOWLIST", "*")
+        records = []
+        monkeypatch.setattr(bridge, "send_to_rns", lambda *a, **k: True, raising=False)
+        bridge._oracle_rns = bridge._build_rns_oracle_responder()
+        monkeypatch.setattr(bridge._oracle_rns, "_log_fn", records.append)
+        bridge.config.rns.get_peer_gateway_destinations.return_value = [
+            "3dfbdb5d24c6de195ae4f3c0f56b5ea5"]
+        client = bytes.fromhex("5f1e34a77eb2b8e879a00fdc63dc53c3")
+        msg = SimpleNamespace(source_hash=client, content="status", title=None,
+                              stamp=None, fields=None)
+        bridge._on_lxmf_receive(msg)
+        assert records[-1]["delivered"] is True and records[-1]["channel"] == 0
+        assert bridge._rns_to_mesh_queue.empty()             # consumed
+
 
 class TestContentIdCarryRnsLeg:
     """STEP 2b-i (dedup/identity arc, measure-only): the logical content_id

@@ -31,6 +31,13 @@ _DEFAULT_COOLDOWN_S = 30.0
 # 1-2GB Pis, the #73 class in memory). Once past the cap we prune entries
 # already older than the cooldown — they can no longer gate any decision.
 _LAST_ANSWER_CAP = 4096
+# The closed vocabulary of POLICY declines this responder can record — a
+# query the oracle correctly chose not to answer. The oracle-delivery probe
+# (`watchdog_probes_gateway_flow._oracle_bucket`) excludes exactly these from
+# the delivery rate; a reason added here without the probe learning it would
+# be silently counted as a benign non-delivery (honest_failure_modes #5/#7 —
+# the test pins the two sets together).
+ORACLE_DECLINE_REASONS = ("cooldown", "not_allowlisted", "peer_gateway_relay")
 
 
 def _norm(node_id) -> str:
@@ -161,7 +168,8 @@ class MeshOracleResponder:
         node = _norm(from_id)
         if not self._allowed(node, channel):
             self._record(from_id, text, intent=None, reply=None,
-                         delivered=False, reason="not_allowlisted")
+                         delivered=False, reason="not_allowlisted",
+                         channel=channel)
             return None
         mono = self._mono()
         last = self._last_answer.get(node)
@@ -170,7 +178,7 @@ class MeshOracleResponder:
             # a step, not a fresh answer — treat it as expired, don't strand
             # the sender.
             self._record(from_id, text, intent=None, reply=None,
-                         delivered=False, reason="cooldown")
+                         delivered=False, reason="cooldown", channel=channel)
             return None
 
         snap = self._snapshot_fn()
@@ -184,12 +192,35 @@ class MeshOracleResponder:
         except Exception as exc:  # a send must never raise into the bridge
             self._record(from_id, text, intent=_intent_of(text), reply=reply,
                          delivered=False, reason=f"send_error: {exc}",
-                         facts_stale=_facts_stale(snap))
+                         facts_stale=_facts_stale(snap), channel=channel)
             return reply
         self._record(from_id, text, intent=_intent_of(text), reply=reply,
                      delivered=delivered, reason=_send_reason(result, delivered),
-                     facts_stale=_facts_stale(snap))
+                     facts_stale=_facts_stale(snap), channel=channel)
         return reply
+
+    def decline(self, from_id: str, text: str, *, reason: str,
+                channel: Optional[int] = None) -> bool:
+        """Refuse a query BEFORE the allow logic runs, leaving the audit witness.
+
+        For principal classes a LEG must exclude regardless of allowlist or
+        wildcard — the RNS leg's peer-gateway relay (2026-09-01 frontier
+        pass): a sibling gateway forwarding its whole RF segment as ONE LXMF
+        identity is never an oracle principal, or ``*`` composes with the
+        bridge into cross-mesh answering that bypasses the sibling's own
+        allowlist and cooldown. The responder stays gateway-ignorant (it does
+        not know what a peer is); the leg decides, this method records.
+
+        Returns True when ``text`` was a query and a decline record was
+        written (the caller lets the text bridge on as ordinary chat); False
+        when it was not a query (nothing recorded — non-queries never
+        touch the audit log).
+        """
+        if not is_query(text):
+            return False
+        self._record(from_id, text, intent=None, reply=None,
+                     delivered=False, reason=reason, channel=channel)
+        return True
 
     def _prune_cooldowns(self, mono: float) -> None:
         """Bound the cooldown map (spoofable-key RAM-leak guard). Only runs
@@ -202,7 +233,7 @@ class MeshOracleResponder:
                              if v > cutoff}
 
     def _record(self, from_id, text, *, intent, reply, delivered,
-                reason=None, facts_stale=None) -> None:
+                reason=None, facts_stale=None, channel=None) -> None:
         """Append one audit record (best-effort; never breaks answering)."""
         if self._log_fn is None:
             return
@@ -217,6 +248,12 @@ class MeshOracleResponder:
         }
         if reason is not None:
             rec["reason"] = reason
+        # The inbound channel token (leg-native: slot index or topic name).
+        # Without it the log cannot say WHICH leg of the additive allow
+        # (node allowlist vs channel gate) authorized an answer — the
+        # 2026-09-01 pass had to guess (instruments-fail-at-legibility).
+        if channel is not None:
+            rec["channel"] = channel
         if facts_stale is not None:
             rec["facts_stale"] = facts_stale
         try:

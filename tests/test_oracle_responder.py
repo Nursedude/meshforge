@@ -393,3 +393,47 @@ def test_successful_result_records_no_reason():
     r, logs = _make_res(_Res(True))
     assert r.handle("!n", "status")
     assert logs[-1]["delivered"] is True and "reason" not in logs[-1]
+
+
+# --------------------------------------------------------------------------- #
+# 2026-09-01 frontier pass: decline() for leg-excluded principals + channel
+# witness in the audit record
+# --------------------------------------------------------------------------- #
+def test_decline_records_a_query_without_consulting_the_allow_logic():
+    # answer_all=True would have answered — decline() must refuse anyway and
+    # leave the witness; nothing is sent.
+    r, sent, logs = _make(answer_all=True)
+    assert r.decline("aa" * 16, "status", reason="peer_gateway_relay") is True
+    assert sent == []
+    assert logs[-1]["delivered"] is False
+    assert logs[-1]["reason"] == "peer_gateway_relay"
+    assert logs[-1]["from"] == "aa" * 16 and logs[-1]["intent"] is None
+
+
+def test_decline_ignores_non_queries_and_writes_nothing():
+    r, sent, logs = _make(answer_all=True)
+    assert r.decline("aa" * 16, "hello fleet", reason="peer_gateway_relay") is False
+    assert logs == [] and sent == []
+
+
+def test_decline_does_not_touch_the_cooldown_map():
+    # a declined relay must not strand the same key for a later legitimate ask
+    r, sent, logs = _make(answer_all=True, cooldown_s=30.0)
+    r.decline("!abc", "status", reason="peer_gateway_relay")
+    assert r.handle("!abc", "status")            # answered, not cooldown-declined
+    assert logs[-1]["delivered"] is True
+
+
+def test_audit_record_carries_the_inbound_channel_token():
+    r, _, logs = _make(allowed_channels={"meshforge"})
+    assert r.handle("!nobody", "status", channel="meshforge")
+    assert logs[-1]["channel"] == "meshforge"
+    r2, _, logs2 = _make(allowlist={"!a"})
+    r2.handle("!zz", "status", channel=3)
+    assert logs2[-1]["reason"] == "not_allowlisted" and logs2[-1]["channel"] == 3
+
+
+def test_decline_reasons_vocabulary_is_closed_and_named():
+    from oracle.responder import ORACLE_DECLINE_REASONS
+    assert set(ORACLE_DECLINE_REASONS) == {"cooldown", "not_allowlisted",
+                                           "peer_gateway_relay"}

@@ -1093,7 +1093,10 @@ def _classify_oracle_record(rec: dict) -> Optional[str]:
         return "send_error"
     if reason in ("circuit_open", "not_connected", "no_lxmf_source"):
         return "send_error"  # named infrastructure faults, never benign
-    if reason in ("cooldown", "not_allowlisted", "broadcast_unsupported"):
+    # policy declines: the responder's ORACLE_DECLINE_REASONS (test-pinned
+    # equal) + the send mixin's structural broadcast_unsupported
+    if reason in ("cooldown", "not_allowlisted", "peer_gateway_relay",
+                  "broadcast_unsupported"):
         return "decline"
     if delivered is False:
         return "benign"
