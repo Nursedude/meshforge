@@ -274,10 +274,22 @@ while map/gateway/fleet-collector/fleet-watchdog are SYSTEM on the same boxes.
 
 ## QUEUED 2026-08-31 (Opus 5) — `scripts/rotate_session_notes.sh` adversarial pass
 
-**Target**: `scripts/rotate_session_notes.sh` @ `d5d78277` (287 lines, bash)
-and `tests/test_rotate_session_notes.py` @ `19a8fdc2` (24 tests). Both pushed,
-CI 5/5 green. NOT yet deployed to the fleet (drift held deliberately until the
-moc2 F2 capture lands ~2026-09-01 16:15Z).
+**Target**: `scripts/rotate_session_notes.sh` and
+`tests/test_rotate_session_notes.py`, both @ **`5d83306f`** — review THAT sha,
+not the `d5d78277` where the script first landed; it gained a whole delete
+path afterward. 33 tests. Pushed; NOT deployed to the fleet (drift held
+deliberately until the moc2 F2 capture lands ~2026-09-01 16:15Z), so every
+box is still running code without this file.
+
+**Run it**:
+```bash
+git -C /opt/meshforge show 5d83306f:scripts/rotate_session_notes.sh
+python3 -m pytest tests/test_rotate_session_notes.py -q     # 33, ~2s
+shellcheck scripts/rotate_session_notes.sh                  # clean at this sha
+```
+The tests show the sandbox pattern: a fixture notes file under `tmp_path`,
+`HOME` redirected so backups and lock files land in the sandbox. Copy it —
+do not improvise a harness against real paths.
 
 **What it does**: splits a markdown session-notes handoff doc on `^## `
 headings and moves older sections into a half-year archive file, to keep the
@@ -377,6 +389,33 @@ Stated bare, no reasoning, so they don't anchor you:
    rotation is the right trigger at all; whether "newest N by position" is a
    sane staleness proxy for a file that is not strictly chronological; whether
    this should exist rather than the audit leg simply warning earlier.
+
+### What is already mutation-pinned (so you know what is NOT)
+
+13 guards have been proven to turn the suite red when removed: fence
+awareness, fence imbalance, flock, symlink guard, count-delta check, byte
+assertions, backup `O_EXCL`, sticky rule, prune-pattern narrowness, prune sort
+order, `--keep-backups 0`, prune-only-after-clean-verification, and
+own-backup-undeletable. **Every OTHER assertion in that test file is
+unpinned** — treat those as unverified scaffolding, not as evidence.
+
+⚠️ **Two of those drills first reported a false pass.** The mutation never
+applied — `||` in the matched text collided with the `sed s|...|` delimiter —
+and the harness happily printed "0 failed", which reads exactly like a guard
+holding. The drill now fails loud on an unchanged script ("ANCHOR MISS"). If
+you run your own mutation drills here, assert the file CHANGED before
+believing the result: a drill that cannot miss is the same defect class as a
+guard that cannot fail.
+
+### Three questions I posed and did not answer
+
+Recorded as unverified rather than dressed up as cleared:
+1. Can any input make the prune glob select a file the tool did not write?
+2. Can the notes bucket and the archive bucket evict each other, given one
+   stem is a strict prefix of the other?
+3. Can a backward clock still produce a prunable filename for a backup that
+   is actually current? (The run's own backup is now excluded by identity,
+   but every OTHER recent backup is still ordered by a forgeable clock.)
 
 ### Provenance caveat
 
