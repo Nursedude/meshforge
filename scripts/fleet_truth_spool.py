@@ -98,22 +98,30 @@ _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
 #: Service whose absence removes a box's whole HTTP truth surface
 #: (/api/status + /fleet/slo are both served by it).
 _HTTP_SURFACE_SERVICE = "meshforge-map"
+#: Service whose absence removes the box's LOCAL probe coverage. Judged
+#: separately from the HTTP surface: the spool reads watchdog.json as a raw
+#: FILE, so a map-less box that still runs a watchdog keeps owing us that
+#: signal (moc3). Only a role that declares the unit absent/disabled is
+#: exempt — and then the cell is `absent` (the organ is not here), never
+#: `accepted_blind` (which claims it may be running unseen).
+_WATCHDOG_SERVICE = "meshforge-watchdog"
 #: Role-catalog service states that mean "this box is not supposed to run it".
 _NOT_EXPECTED = ("disabled", "absent")
 
 
-def http_surface_expected(deployment_raw) -> "Optional[bool]":
-    """Does this box's DECLARED role expect the HTTP truth surface to exist?
+def _unit_expected(deployment_raw, unit: str) -> "Optional[bool]":
+    """Does this box's DECLARED role expect ``unit`` to be running?
 
     ``True`` / ``False`` when the box's own ``deployment.json`` names a role
-    the catalog knows; ``None`` when we cannot tell — no declaration, unknown
-    role, or an unloadable catalog.
+    the catalog knows AND that role says something about ``unit``; ``None``
+    when we cannot tell — no declaration, unknown role, unloadable catalog,
+    or a role that is simply silent about this unit.
 
     ``None`` is load-bearing and must never collapse to ``False``: the NOC
-    treats "not expected" as an ACCEPTED blind spot that stops tainting the
-    fleet verdict, so guessing it would silence a genuinely broken box. An
-    undeclared box keeps darkening the verdict, which is the honest default
-    (honest_failure_modes #2 — unobservable is not permission to look away).
+    treats "not expected" as a gap that stops tainting the fleet verdict, so
+    guessing it would silence a genuinely broken box. An undeclared box keeps
+    darkening the verdict, which is the honest default (honest_failure_modes
+    #2 — unobservable is not permission to look away).
     """
     if not isinstance(deployment_raw, dict):
         return None
@@ -141,12 +149,40 @@ def http_surface_expected(deployment_raw) -> "Optional[bool]":
     services = role_def.get("services")
     if not isinstance(services, dict):
         return None
-    state = services.get(_HTTP_SURFACE_SERVICE)
+    state = services.get(unit)
     if not isinstance(state, str):
-        # The role catalog says nothing about the map for this role. Silence
+        # The role catalog says nothing about this unit for this role. Silence
         # is not a declaration — stay indeterminate rather than inventing one.
         return None
     return state.strip().lower() not in _NOT_EXPECTED
+
+
+def http_surface_expected(deployment_raw) -> "Optional[bool]":
+    """Does the declared role expect /api/status + /fleet/slo to exist?"""
+    return _unit_expected(deployment_raw, _HTTP_SURFACE_SERVICE)
+
+
+def watchdog_expected(deployment_raw) -> "Optional[bool]":
+    """Does the declared role expect a LOCAL watchdog on this box?
+
+    2026-08-31. Without this, a box whose role legitimately runs no watchdog
+    (the zero-class `field-node` tier — ~46 MB RSS does not fit a 512MB-class
+    board) darkened the fleet verdict FOREVER, because `watchdog` is a
+    core-observability subsystem and is deliberately NOT part of the
+    HTTP-surface exemption. A permanently-dark verdict is not a safe default:
+    it trains the reader to ignore `dark`, which costs more than the gap it
+    was flagging.
+
+    The distinction this restores is the domain's oldest one — `inert` (the
+    organ is not here, by declaration) is not `indeterminate` (we should be
+    able to see it and cannot). Only the second is a finding.
+
+    ⚠️ This does NOT make such a box unwatched: reachability always taints,
+    and `mini`, `services` and `radio` are still observed through the ssh
+    spool and still taint when they fail. What is given up is the box's LOCAL
+    probe coverage, which is exactly what the role declaration says it gave up.
+    """
+    return _unit_expected(deployment_raw, _WATCHDOG_SERVICE)
 
 
 def targets_path() -> Path:
@@ -258,6 +294,7 @@ def main() -> int:
         # None (undecidable) is written through as null, never as False.
         doc["http_surface_expected"] = http_surface_expected(
             sections.get("deployment"))
+        doc["watchdog_expected"] = watchdog_expected(sections.get("deployment"))
         got = [k for k, v in sections.items() if v is not None]
         try:
             atomic_write_text(spool_dir / f"{alias}.json",

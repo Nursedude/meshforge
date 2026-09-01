@@ -769,6 +769,28 @@ def build_box_truth(
                     "box's declared role runs no map server, so it has no "
                     "HTTP truth surface")
 
+    # A role that declares NO watchdog makes its dark watchdog cell `absent`
+    # (the organ is not here) rather than an unobserved blind spot. Deliberately
+    # `absent`, not `accepted_blind`: accepted_blind claims "it may well be
+    # running, we gave up SEEING it", which would be a lie here — the unit is
+    # not installed. Both stop tainting; only this one is true.
+    #
+    # Never inferred from silence: set ONLY when the box's own declared role
+    # says so (watchdog_expected is False, never None) AND no watchdog block
+    # arrived at all. Gating on the BLOCK, not on `spool_observed`, is
+    # load-bearing: spool_observed only ever carries mini/radio/services, so a
+    # `"watchdog" not in spool_observed` guard is vacuously true and would also
+    # swallow the case that matters — a box that HAS a watchdog whose file went
+    # STALE produces a present-but-dark block, and that must keep tainting.
+    if snap.get("watchdog_expected") is False and watchdog_block is None:
+        _w = subsystems.get("watchdog")
+        if isinstance(_w, dict) and _w.get("state") == DARK:
+            _w["absent"] = True
+            _w["reason"] = (
+                f"{_w.get('reason') or 'no data'} — this box's declared role "
+                "runs no watchdog (local probe coverage given up by design; "
+                "reachability, mini, services and radio still taint)")
+
     coverage = merge_coverage(watchdog_block, signal_classes)
 
     # Per-box roll-up (2026-07-19 adversarial review): the box tile / counts

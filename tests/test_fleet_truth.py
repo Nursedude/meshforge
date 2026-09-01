@@ -780,3 +780,91 @@ class TestSpoolServicesTransientTolerance:
         c = ft._services_cell_from_spool({
             "a.service": {"active": "active", "enabled": "enabled"}})
         assert c["state"] == ft.HEALTHY
+
+
+class TestRoleDeclaredNoWatchdog:
+    """2026-08-31. `watchdog` is core-observability and is deliberately NOT
+    part of the HTTP-surface exemption — a map-less gateway still writes
+    watchdog.json, which the spool reads as a raw file, so it still owes us
+    that signal.
+
+    But a `field-node` (zero-class board carrying only a radio) runs no
+    watchdog at all: ~46 MB RSS does not fit a 512MB-class board already
+    running meshtasticd and a bot. Before this, such a box darkened the
+    FLEET verdict forever. A permanently-dark verdict is not a safe default
+    — it trains the reader to ignore `dark`, which costs more than the gap
+    it was flagging.
+
+    The distinction restored is the domain's oldest: `inert` (the organ is
+    not here, by declaration) is not `indeterminate` (we should see it and
+    cannot). Only the second is a finding.
+    """
+
+    def _field_snap(self, alias="lehua", *, watchdog_expected=False,
+                    watchdog_block=None):
+        """A field-node as the spool actually reports it: mini + radio +
+        services from raw non-HTTP reads, and NO watchdog block at all."""
+        status = {"app": {"name": "meshforge", "role": "field-node"},
+                  "mini_dudeai": {"installed": True, "ok": True}}
+        if watchdog_block is not None:
+            status["watchdog"] = watchdog_block
+        return {"alias": alias, "resolution_method": "ssh_spool",
+                "answered_at": NOW, "error": None,
+                "http_surface_expected": False,
+                "watchdog_expected": watchdog_expected,
+                "spool_services": {"meshtasticd": {"active": "active",
+                                                   "enabled": "enabled"}},
+                "status": status,
+                "slo": {"radio": {"connected": True, "mode": "tcp"}}}
+
+    def test_declared_no_watchdog_does_not_darken_the_fleet(self):
+        t = ft.build_fleet_truth([self._field_snap()], now=NOW,
+                                 signal_classes=[], noc_host="moc")
+        assert t["boxes"][0]["box_state"] == ft.HEALTHY
+        assert t["fleet_state"] == ft.HEALTHY
+
+    def test_the_cell_is_absent_not_accepted_blind(self):
+        """`accepted_blind` claims "it may well be running, we gave up SEEING
+        it". Here the unit is not installed, so that would be a lie. Both stop
+        tainting; only `absent` is true."""
+        t = ft.build_fleet_truth([self._field_snap()], now=NOW,
+                                 signal_classes=[], noc_host="moc")
+        wd = t["boxes"][0]["subsystems"]["watchdog"]
+        assert wd["state"] == ft.DARK, "must still render dark for the human"
+        assert wd["absent"] is True
+        assert not wd.get("accepted_blind")
+        assert "declared role runs no watchdog" in wd["reason"]
+
+    def test_undeclared_box_still_taints(self):
+        """THE anti-silence guard, same as the map exemption's. None must
+        never collapse to False."""
+        t = ft.build_fleet_truth([self._field_snap(watchdog_expected=None)],
+                                 now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.DARK
+        assert not t["boxes"][0]["subsystems"]["watchdog"].get("absent")
+
+    def test_a_stale_watchdog_still_taints_even_when_declared_absent(self):
+        """The case the first draft of this guard would have swallowed. A box
+        that HAS a watchdog whose file went STALE produces a present-but-dark
+        block. Declaring the unit absent must not suppress that — a stale
+        watchdog is a real wedge signal, not a role-appropriate gap."""
+        stale = {"installed": True, "ok": False,
+                 "reason": "stale: last write 9000s ago"}
+        t = ft.build_fleet_truth(
+            [self._field_snap(watchdog_block=stale)],
+            now=NOW, signal_classes=[], noc_host="moc")
+        wd = t["boxes"][0]["subsystems"]["watchdog"]
+        assert wd["state"] == ft.DARK
+        assert not wd.get("absent"), (
+            "a STALE watchdog was marked absent — the guard keyed on the role "
+            "instead of on whether a block actually arrived")
+        assert t["fleet_state"] == ft.DARK
+
+    def test_a_healthy_watchdog_is_untouched(self):
+        """If the box runs one anyway, it reports normally."""
+        ok = {"installed": True, "ok": True, "signals": []}
+        t = ft.build_fleet_truth([self._field_snap(watchdog_block=ok)],
+                                 now=NOW, signal_classes=[], noc_host="moc")
+        wd = t["boxes"][0]["subsystems"]["watchdog"]
+        assert wd["state"] == ft.HEALTHY
+        assert not wd.get("absent")

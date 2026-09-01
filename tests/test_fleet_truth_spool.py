@@ -289,3 +289,33 @@ class TestSpoolCarriesTheDeclaration:
              patch.object(c, "_http_get_json", return_value=None):
             snap = c._fetch_peer("moc3", is_self=False, port=5000)
         assert snap["http_surface_expected"] is None
+
+
+class TestWatchdogExpected:
+    """The watchdog exemption is judged from the box's DECLARED role, exactly
+    like the HTTP surface — and shares one helper with it so the two cannot
+    drift apart in what counts as "not expected"."""
+
+    def test_field_node_expects_no_watchdog(self):
+        mod = _load_spool_script()
+        assert mod.watchdog_expected({"role": "field-node"}) is False
+
+    def test_a_role_that_runs_one_expects_it(self):
+        mod = _load_spool_script()
+        assert mod.watchdog_expected({"role": "gateway-only"}) is True
+        assert mod.watchdog_expected({"role": "primary"}) is True
+
+    def test_map_and_watchdog_are_judged_INDEPENDENTLY(self):
+        """gateway-only runs no map but DOES run a watchdog. Collapsing the
+        two would silence the one core signal a map-less gateway still owes
+        us (moc3's watchdog arrives as a raw file over the spool)."""
+        mod = _load_spool_script()
+        assert mod.http_surface_expected({"role": "gateway-only"}) is False
+        assert mod.watchdog_expected({"role": "gateway-only"}) is True
+
+    def test_undecidable_stays_none_and_never_false(self):
+        """None is load-bearing: False stops the box tainting the verdict, so
+        guessing it would quiet a genuinely broken box."""
+        mod = _load_spool_script()
+        for raw in ({}, {"role": ""}, {"role": "no-such-role"}, None, "nope"):
+            assert mod.watchdog_expected(raw) is None, raw

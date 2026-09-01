@@ -173,6 +173,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     # None = undecided. A box that ANSWERED over HTTP obviously has the
     # surface, so this only ever matters for the spool path below.
     http_surface_expected: Optional[bool] = None
+    # Same tri-state contract as http_surface_expected: True / False /
+    # None-if-undecidable, and None must NEVER become False.
+    watchdog_expected: Optional[bool] = None
     spool_services: Optional[Dict[str, Any]] = None
 
     if slo is None and status is None:
@@ -192,6 +195,9 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             hse = spool.get("http_surface_expected")
             if isinstance(hse, bool):
                 http_surface_expected = hse
+            wde = spool.get("watchdog_expected")
+            if isinstance(wde, bool):
+                watchdog_expected = wde
             if status is None and (isinstance(raw_wd, dict) or isinstance(raw_mini, dict)):
                 # Map-less box (moc3): synthesize the blocks we DO have from the
                 # raw non-HTTP reads, each through the SAME transform + staleness
@@ -238,6 +244,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "error": error,
         "answered_at": answered_at,
         "http_surface_expected": http_surface_expected,
+        "watchdog_expected": watchdog_expected,
         "spool_services": spool_services,
     }
 
