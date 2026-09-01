@@ -241,3 +241,72 @@ class TestErrorHandling:
             get_connection(timeout=0.1, blocking=True)
 
         release_connection()
+
+
+class TestFirstHeartbeatGrace:
+    """2026-09-01: the library sets isConnected BEFORE it sends the first
+    heartbeat, so a short-lived connection that closes on the wake-up shuts
+    the socket under that write ('Socket send error ... Broken pipe' + a
+    traceback, 166/day on the manager's map). _safe_close now waits, bounded,
+    for the library's own `meshtastic.connection.established` message for
+    THAT interface — the honest signal the heartbeat write has returned."""
+
+    class _Iface:
+        def __init__(self, connected=True):
+            self.isConnected = threading.Event()
+            if connected:
+                self.isConnected.set()
+            self.closed_at = None
+
+        def close(self):
+            self.closed_at = time.monotonic()
+
+    def test_close_waits_for_the_established_message(self):
+        from pubsub import pub
+        from utils.connection_manager import _manager
+        iface = self._Iface()
+        delivered = {}
+
+        def deliver():
+            delivered["at"] = time.monotonic()
+            pub.sendMessage("meshtastic.connection.established", interface=iface)
+
+        threading.Timer(0.3, deliver).start()
+        t0 = time.monotonic()
+        _manager._safe_close(iface)
+        assert iface.closed_at is not None
+        assert iface.closed_at >= delivered["at"]           # closed AFTER delivery
+        assert iface.closed_at - t0 < 1.5                    # and not on the timeout
+
+    def test_close_is_immediate_when_already_established(self):
+        from pubsub import pub
+        from utils.connection_manager import _manager
+        iface = self._Iface()
+        pub.sendMessage("meshtastic.connection.established", interface=iface)
+        t0 = time.monotonic()
+        _manager._safe_close(iface)
+        assert iface.closed_at - t0 < 0.2
+
+    def test_close_is_immediate_when_never_connected(self):
+        from utils.connection_manager import _manager
+        iface = self._Iface(connected=False)
+        t0 = time.monotonic()
+        _manager._safe_close(iface)
+        assert iface.closed_at - t0 < 0.2
+
+    def test_grace_is_bounded_when_the_message_never_comes(self, monkeypatch):
+        import utils.connection_manager as cm
+        monkeypatch.setattr(cm, "FIRST_HEARTBEAT_GRACE_S", 0.25)
+        iface = self._Iface()
+        t0 = time.monotonic()
+        cm._manager._safe_close(iface)
+        assert 0.2 <= iface.closed_at - t0 < 1.0             # waited the grace, then closed
+
+    def test_mocks_never_wait(self):
+        # a MagicMock has every attribute; the isinstance(Event) guard keeps
+        # the whole mocked suite from paying the grace on every close
+        from utils.connection_manager import _manager
+        m = MagicMock()
+        t0 = time.monotonic()
+        _manager._safe_close(m)
+        assert time.monotonic() - t0 < 0.2 and m.close.called

@@ -54,6 +54,76 @@ _get_http_client, _HAS_MESHTASTIC_HTTP = safe_import(
 # Optional: meshtastic TCP interface
 _tcp_interface_mod, _HAS_MESHTASTIC_TCP = safe_import('meshtastic.tcp_interface')
 
+# Optional: pubsub, for the first-heartbeat grace below.
+_pub, _HAS_PUBSUB = safe_import('pubsub', 'pub')
+
+# ---------------------------------------------------------------------------
+# First-heartbeat grace (2026-09-01). The meshtastic library's reader thread
+# runs `_handleConfigComplete -> _connected()`, which sets `isConnected`
+# FIRST and only then sends the first heartbeat on the socket. Every
+# short-lived connection here (channel resolution at gateway start, map
+# collects) wakes on `isConnected`, reads what it came for, and closes — and
+# TCPInterface.close() shuts the socket down while that heartbeat write is
+# still in flight. The library then logs `Socket send error, reconnecting:
+# [Errno 32] Broken pipe` plus a full traceback from `__reader`, every time:
+# 166 events/24 h on the manager's map, one per gateway restart on moc/moc3
+# (journals read 2026-09-01). Thread counts are flat, so it is noise, not a
+# leak — but a traceback in every journal is noise a future reader chases.
+#
+# The honest signal that the heartbeat write has RETURNED is the library's
+# own `meshtastic.connection.established` message: `_connected()` queues it
+# after `_startHeartbeat()` completes. So we record which interfaces have had
+# that message delivered and, on close, wait (bounded) for it when the
+# interface reports connected but the message has not arrived yet. No pubsub
+# → old behaviour, unchanged. Mocks are excluded by the isinstance check on
+# `isConnected` so the test suite never waits.
+# ---------------------------------------------------------------------------
+FIRST_HEARTBEAT_GRACE_S = 2.0
+_ESTABLISHED_COND = threading.Condition()
+_ESTABLISHED_IDS: set = set()
+
+
+def _on_connection_established(interface=None, **_kwargs) -> None:
+    with _ESTABLISHED_COND:
+        _ESTABLISHED_IDS.add(id(interface))
+        _ESTABLISHED_COND.notify_all()
+
+
+if _HAS_PUBSUB:
+    try:
+        _pub.subscribe(_on_connection_established,
+                       "meshtastic.connection.established")
+    except Exception as _exc:  # pragma: no cover - pubsub topic-spec mismatch
+        logger.debug(f"first-heartbeat grace disabled (subscribe failed: {_exc})")
+        _HAS_PUBSUB = False
+
+
+def _await_first_heartbeat(interface, timeout: float) -> bool:
+    """Block until the library has delivered `connection.established` for
+    ``interface`` (= its first heartbeat write returned), or ``timeout``.
+
+    Returns True when the event was seen, False when there was nothing to
+    wait for (no pubsub, never connected, not a real Event) or the grace
+    expired — the caller closes either way; the return is for tests and
+    debug logs, never a gate."""
+    if not _HAS_PUBSUB:
+        return False
+    ev = getattr(interface, "isConnected", None)
+    if not isinstance(ev, threading.Event) or not ev.is_set():
+        return False                      # never reached config-complete
+    key = id(interface)
+    deadline = time.monotonic() + max(0.0, timeout)
+    with _ESTABLISHED_COND:
+        while key not in _ESTABLISHED_IDS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                logger.debug("first-heartbeat grace expired before "
+                             "connection.established; closing anyway")
+                return False
+            _ESTABLISHED_COND.wait(remaining)
+        _ESTABLISHED_IDS.discard(key)     # consumed; ids recycle after GC
+        return True
+
 
 class ConnectionBusy(Exception):
     """Raised when connection is busy and non-blocking mode requested."""
@@ -240,6 +310,9 @@ class _ConnectionManager:
         if interface is None:
             return
         try:
+            # Let the library's first heartbeat write return before we shut
+            # the socket under it (see FIRST_HEARTBEAT_GRACE_S above).
+            _await_first_heartbeat(interface, FIRST_HEARTBEAT_GRACE_S)
             with timed_boundary("meshtasticd.close",
                                 target=f"{self._host}:{self._port}"):
                 interface.close()
