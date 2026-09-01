@@ -1288,7 +1288,7 @@ class TestMeshOracleWiring:
 
     def test_query_routed_to_oracle_and_consumed(self, handler):
         handler._oracle = MagicMock()
-        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        handler._oracle.handle.return_value = "dude-AI@x: nodes:?"
         packet = {"toId": "!ffffffff", "channel": 0, "rxSnr": -5, "rxRssi": -90}
         handler._handle_text_message(packet, {"payload": b"status"}, "!a1b2c3d4")
         handler._oracle.handle.assert_called_once_with("!a1b2c3d4", "status", 0)

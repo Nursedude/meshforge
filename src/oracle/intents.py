@@ -113,9 +113,14 @@ def answer(query: str, snap: NocSnapshot) -> str:
 # --------------------------------------------------------------------------- #
 def _status(snap: NocSnapshot) -> str:
     parts: List[str] = []
+    # `nodes:` not `fleet:` — this is directory_total, EVERY cataloged node
+    # the NOC knows about, not the count of fleet boxes. It read as a box
+    # count to the operator on 2026-08-12 (a reply saying "fleet:15000" for a
+    # 9-box fleet), which is the instruments-fail-at-legibility class: the
+    # number was right and the label made it a lie.
     parts.append(
-        f"fleet:{snap.directory_total}" if snap.directory_total is not None
-        else "fleet:?"
+        f"nodes:{snap.directory_total}" if snap.directory_total is not None
+        else "nodes:?"
     )
     if snap.federation_peers is not None:
         ok = snap.federation_ok if snap.federation_ok is not None else "?"

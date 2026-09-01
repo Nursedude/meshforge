@@ -1204,7 +1204,7 @@ class TestMeshOracleMqttWiring:
     def test_query_on_channel_routed_and_consumed(self):
         h = _make_bridge_handler()
         h._oracle = MagicMock()
-        h._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        h._oracle.handle.return_value = "dude-AI@x: nodes:?"
         h._bridge_text_message(
             {"from": 0xa1b2c3d4, "sender": "!a1b2c3d4", "to": 0xFFFFFFFF,
              "payload": {"text": "status"}, "channel": 2},

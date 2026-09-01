@@ -634,7 +634,7 @@ class TestMeshOracleMeshcoreWiring:
 
     def test_dm_query_routed_directed_and_consumed(self, handler):
         handler._oracle = MagicMock()
-        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        handler._oracle.handle.return_value = "dude-AI@x: nodes:?"
         event = SimpleNamespace(type='CONTACT_MSG_RECV', payload={
             'text': 'status', 'sender': 'abc123', 'destination': 'gw',
             'is_channel': False, 'channel': 0})
@@ -649,7 +649,7 @@ class TestMeshOracleMeshcoreWiring:
 
     def test_channel_query_routed_with_channel_index_and_consumed(self, handler):
         handler._oracle = MagicMock()
-        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        handler._oracle.handle.return_value = "dude-AI@x: nodes:?"
         event = SimpleNamespace(type='CHANNEL_MSG_RECV', payload={
             'text': 'status', 'sender': 'node789', 'destination': None,
             'is_channel': True, 'channel': 2})
@@ -665,7 +665,7 @@ class TestMeshOracleMeshcoreWiring:
         # consume=False (bridge-through): the oracle still answers the query
         # locally, but the command keeps bridging so the far mesh's NOC sees it.
         handler._oracle = MagicMock()
-        handler._oracle.handle.return_value = "dude-AI@x: fleet:?"
+        handler._oracle.handle.return_value = "dude-AI@x: nodes:?"
         handler._oracle.consume = False
         event = SimpleNamespace(type='CHANNEL_MSG_RECV', payload={
             'text': 'status', 'sender': 'node789', 'destination': None,
@@ -734,7 +734,7 @@ class TestOracleDmOnlySend:
 
         async def _run():
             return await handler._send_message(
-                "dude-AI@moc3: fleet:?", destination="!stranger",
+                "dude-AI@moc3: nodes:?", destination="!stranger",
                 broadcast_fallback=False)
         # Declared: this test deliberately exercises the send path against a
         # double (2026-08-09 egress guard).

@@ -156,8 +156,9 @@ class MeshtasticHandler(BaseMessageHandler):
 
         def _snapshot():
             # Enrich with the local /api/status summary (directory + federation)
-            # so `status` reports real fleet numbers; degrades to fleet:? on any
-            # fetch failure (read-only, never perturbs the radio).
+            # so `status` reports the real directory + federation counts;
+            # degrades to nodes:? on any fetch failure (read-only, never
+            # perturbs the radio).
             return read_snapshot(status=fetch_api_status())
 
         def _send(text: str, dest: str, channel: int) -> bool:

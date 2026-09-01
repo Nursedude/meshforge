@@ -60,7 +60,7 @@ def fetch_api_status(url: str = DEFAULT_STATUS_URL, timeout: float = 3.0,
     failure.
 
     A short, bounded localhost GET that degrades to ``None`` on timeout / non-200
-    / bad JSON — so the snapshot stays honestly *unknown* (``fleet:?``) rather
+    / bad JSON — so the snapshot stays honestly *unknown* (``nodes:?``) rather
     than fabricating fleet numbers. This is read-only (the same data the map
     serves) and never perturbs the radio. Cached for ``_STATUS_CACHE_TTL_S`` so
     a burst of queries on the RX thread costs at most one GET. ``_get``/``_now``

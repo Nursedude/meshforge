@@ -57,7 +57,7 @@ def test_status_full():
                  mini_active=[{"rule_id": "x", "subject": "y"}])
     out = answer("status", snap)
     assert out.startswith("dude-AI@testbox: ")
-    assert "fleet:2731" in out
+    assert "nodes:2731" in out
     assert "fed:5/6" in out
     assert "wd:1 SIG" in out
     assert "mini:1act" in out
@@ -66,7 +66,7 @@ def test_status_full():
 def test_status_unknown_fleet_is_not_faked():
     # No directory/federation injected -> honest "?", and fed omitted entirely.
     out = answer("status", _snap())
-    assert "fleet:?" in out
+    assert "nodes:?" in out
     assert "fed:" not in out
     assert "wd:0 OK" in out
 
@@ -214,7 +214,7 @@ def test_help():
 
 
 def test_bare_question_mark_is_status():
-    assert "fleet:" in answer("?", _snap())
+    assert "nodes:" in answer("?", _snap())
 
 
 def test_unknown_intent_when_forced():
@@ -372,7 +372,7 @@ def test_read_snapshot_uses_fetched_status(tmp_path):
                          status=fetched, now=10_000.0)
     assert snap.directory_total == 9
     assert snap.federation_peers == 2 and snap.federation_ok == 1
-    assert "fleet:9" in answer("status", snap) and "fed:1/2" in answer("status", snap)
+    assert "nodes:9" in answer("status", snap) and "fed:1/2" in answer("status", snap)
 
 
 # --------------------------------------------------------------------------- #

@@ -509,9 +509,18 @@ does not re-derive it from two disagreeing drop-ins.
 
 ### Do not spend the pass on
 
-- **(a) LEGIBILITY** — `intents.py:117` emits `f"fleet:{snap.directory_total}"`,
-  which reads as a box count but is all cataloged nodes. Still true today,
-  still a one-line rename + test. Opus/day-work, not frontier.
+- **(a) LEGIBILITY — DONE 2026-09-01**, as day-work, not frontier. `fleet:` ->
+  `nodes:` at the producer (`intents.py`), both branches (count and `?`), plus
+  the two prose references (`snapshot.py`, `meshtastic_handler.py`) and the
+  test assertions. Drilled by planting the old label: 4 test_oracle failures,
+  so the assertions are load-bearing rather than vacuous. Historical records
+  were deliberately NOT rewritten — the 2026-06-22 substack post and the
+  2026-06-21 arc plan quote real output from those dates, and editing a
+  transcript to match today's code falsifies the record.
+  ⚠️ **MeshAnchor carries the identical defect** at its `oracle/intents.py`
+  lines 103-104. The file is a DIVERGED twin (differing md5, absent from
+  `parity_check.py`'s set), so this is a port to make in MA's own tree, not a
+  byte-locked edit — see [[reference_repo_twin_map]] tier 3.
 - **(c) WITNESS — ALREADY CLOSED, verified live 2026-09-01.** The task text
   says the audit log "was never built". That is STALE. `log_fn=_log` is wired
   at all five call sites (rns_events, meshtastic, phoneapi_tap, mqtt, meshcore)

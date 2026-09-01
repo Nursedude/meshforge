@@ -5621,7 +5621,7 @@ class TestMeshOracleRnsWiring:
         from types import SimpleNamespace
         from unittest.mock import MagicMock
         bridge._oracle_rns = MagicMock()
-        bridge._oracle_rns.handle.return_value = "dude-AI@x: fleet:?"
+        bridge._oracle_rns.handle.return_value = "dude-AI@x: nodes:?"
         h = bytes.fromhex("aabbccddeeff00112233445566778899")
         msg = SimpleNamespace(source_hash=h, content="status", title=None,
                               stamp=None, fields=None)
