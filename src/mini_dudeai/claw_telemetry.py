@@ -117,11 +117,31 @@ def parse_battery(result: Any) -> Optional[Dict[str, Any]]:
 
 
 # lora_stats: "mesh_heard_age_s: 4 (heard 158224 pkts, crc_err 1461, runts 1,
+#   hop_start0 0, hop_malformed 12,
 #   last from=!79be01d3 to=!ffffffff ch=0x08 rssi=-41 snr=6.5)"
 _RE_LORA_AGE = re.compile(r"mesh_heard_age_s:\s*(\d+)", re.IGNORECASE)
 _RE_LORA_HEARD = re.compile(r"heard\s*(\d+)\s*pkts", re.IGNORECASE)
 _RE_LORA_CRC = re.compile(r"crc_err\s*(\d+)", re.IGNORECASE)
 _RE_LORA_RUNTS = re.compile(r"runts\s*(\d+)", re.IGNORECASE)
+# F2 rejection counters, added firmware-side in +dudeclaw.21.
+#
+# `hop_start0` counts headers the OLD (pre-F2) arithmetic would have scored as
+# a DIRECT link and F2 now scores UNKNOWN — so it is the only thing that can
+# tell "F2 protected nothing here" apart from "F2 never fired here". The
+# 2026-09-01 before/after measured F2-LOST 0 on every claw and could not
+# distinguish those two; a correct fix and a wholly inert one read identically.
+#
+# `hop_malformed` is a DIFFERENT rejection — start < limit, a foreign or
+# corrupt stack — and is deliberately NOT summed with the first. The old
+# arithmetic rejected these too, so counting them as F2 catches would overstate
+# what F2 does, which is the same collapse-two-degraded-states-into-one defect
+# F2 itself exists to remove.
+#
+# None on pre-.21 firmware: UNKNOWN, never 0. Zero is a real and meaningful
+# reading here ("the encoding does not occur on this segment") and must not be
+# forged by a claw that simply cannot report it (honest_failure_modes #2).
+_RE_LORA_HOP_START0 = re.compile(r"\bhop_start0\s*(\d+)", re.IGNORECASE)
+_RE_LORA_HOP_MALFORMED = re.compile(r"\bhop_malformed\s*(\d+)", re.IGNORECASE)
 _RE_LORA_FROM = re.compile(r"last from=(![0-9a-f]+)", re.IGNORECASE)
 _RE_LORA_RSSI = re.compile(r"rssi=(-?\d+)", re.IGNORECASE)
 _RE_LORA_SNR = re.compile(r"snr=(-?[\d.]+)", re.IGNORECASE)
@@ -301,6 +321,8 @@ def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
         "heard_pkts": _int(_RE_LORA_HEARD, result),
         "crc_err": _int(_RE_LORA_CRC, result),
         "runts": _int(_RE_LORA_RUNTS, result),
+        "hop_start0": _int(_RE_LORA_HOP_START0, result),
+        "hop_malformed": _int(_RE_LORA_HOP_MALFORMED, result),
         "last_from": _str(_RE_LORA_FROM, result),
         "last_rssi_dbm": _int(_RE_LORA_RSSI, result),
         "last_snr": float(snr_m.group(1)) if snr_m else None,

@@ -432,6 +432,54 @@ LORA = ("mesh_heard_age_s: 3, heard 225114 pkts, crc_err 1996, runts 1, "
         "from !58835c1f, rssi -100 dBm, snr 4.5")
 
 
+class TestF2RejectionCounters:
+    """`hop_start0` is the only thing that distinguishes "F2 protected nothing
+    here" from "F2 never fired here" — the 2026-09-01 before/after measured
+    F2-LOST 0 on every claw and could not tell those two apart."""
+
+    LS21 = ("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, runts 0, "
+            "hop_start0 0, hop_malformed 12, last from=!16cd7438 "
+            "to=!ffffffff ch=0x08 rssi=-104 snr=4.2 hops=3)")
+    LS_PRE21 = ("mesh_heard_age_s: 5 (heard 1300 pkts, crc_err 8, runts 0, "
+                "last from=!16cd7438 to=!ffffffff ch=0x08 rssi=-104 snr=4.2)")
+
+    def test_counters_parse(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.LS21)
+        assert d["hop_start0"] == 0
+        assert d["hop_malformed"] == 12
+
+    def test_zero_and_absent_are_DIFFERENT_readings(self):
+        """THE point of the counter. A reported 0 means "the (0,0) encoding
+        does not occur on this segment" — a real, load-bearing finding. An
+        absent field means the firmware cannot say. Collapsing them would let
+        a pre-.21 claw forge the very evidence the counter exists to supply."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        assert parse_lora_stats(self.LS21)["hop_start0"] == 0
+        assert parse_lora_stats(self.LS_PRE21)["hop_start0"] is None
+        assert parse_lora_stats(self.LS_PRE21)["hop_malformed"] is None
+
+    def test_the_two_buckets_do_not_bleed_into_each_other(self):
+        """hop_malformed is a DIFFERENT rejection (start < limit, a foreign or
+        corrupt header) and was rejected by the OLD arithmetic too. Reading it
+        as an F2 catch would overstate what F2 does."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.LS21)
+        assert d["hop_start0"] != d["hop_malformed"]
+        only_malformed = ("mesh_heard_age_s: 5 (heard 9 pkts, crc_err 0, "
+                          "runts 0, hop_malformed 7, hops=2)")
+        d2 = parse_lora_stats(only_malformed)
+        assert d2["hop_malformed"] == 7
+        assert d2["hop_start0"] is None   # absent, not borrowed from its sibling
+
+    def test_counters_do_not_capture_the_last_hops_field(self):
+        """`hops=` sits in the same reply; neither counter may match it."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.LS21)
+        assert d["last_hops"] == 3
+        assert d["hop_start0"] == 0 and d["hop_malformed"] == 12
+
+
 class TestReachableMeansTheDeviceAnswered:
     """``reachable`` must mean "the DEVICE answered", not "my one request
     succeeded" (2026-07-26).
