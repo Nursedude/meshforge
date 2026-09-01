@@ -457,3 +457,106 @@ notes (`.claude/research/storm_prep_power_starlink_2026_08_27.md`), Lala
 forensics (zero-byte state-file class), NTP-island work, and the Starlink
 cutover ~2-week window flagged 2026-08-27 — the cutover clock makes decision
 1 and 3 time-sensitive.
+
+---
+
+## QUEUED 2026-09-01 (Opus 5) — mesh-oracle policy split: WHO may query a gateway
+
+**Target**: item (b) of deferred task `mesh-oracle-followups` — and ONLY (b).
+Queued per the model_advisor rule: it is a trust-boundary DESIGN decision with
+a transitivity question, which is frontier-shaped. The other two items in that
+task are explicitly NOT for the rationed pass — see "Do not spend the pass on"
+below.
+
+### The split, read live 2026-09-01 (not from the task text)
+
+    moc   ORACLE_ALLOWLIST=!dd8d894b,!b29fa244,!896b1917   (3 nodes)
+          ORACLE_RNS_ALLOWLIST=f0a6899b...,3ac3d1e3...     (2 explicit hashes)
+          no channel gate, no explicit cooldown
+
+    moc3  ORACLE_CHANNELS=meshforge                        (channel gate only)
+          ORACLE_RNS_ALLOWLIST=*                           (ANSWER ALL over RNS)
+          ORACLE_PHONEAPI_TAP=1 · ORACLE_COOLDOWN_S=10
+          no node allowlist at all
+
+Both are drop-ins under `meshforge-gateway.service.d/`. Note `from_env` is
+fail-closed on an empty allowlist (`responder.py:246`), so neither box is
+accidentally open — moc3's `*` is a deliberate, written wildcard.
+
+### The question to decide
+
+Is the split INTENDED — moc3 as the open channel-gated responder, moc as the
+strict one — or is it drift that should be aligned? Two sub-questions the
+decision has to survive:
+
+1. **Transitivity.** A relayed query reaches moc3 with the RELAYING GATEWAY as
+   the RNS sender, not the originator. moc's RNS allowlist already trusts two
+   specific hashes; moc3 trusts `*`. So gateway-to-gateway trust plus a
+   wildcard composes into "anything that can reach any gateway can query moc3",
+   which is not a property either box's config states on its own. Attack it
+   with a concrete two-hop path, not prose.
+2. **What the channel gate is actually worth.** `responder.py:139-146` answers
+   when the node is allowlisted OR the inbound channel is whitelisted — the
+   legs are ADDITIVE, not intersected. On moc3 the node leg is empty, so
+   `meshforge`-channel membership is the entire Meshtastic-side authorization.
+   Decide whether channel membership is an authorization primitive or just a
+   routing label.
+
+**Deliverable**: an operator-ratified position recorded in the task's `check`
+field, plus whichever drop-in edits it implies. A decision that says "the split
+is intended" is a fine outcome — but it should be WRITTEN, so the next reader
+does not re-derive it from two disagreeing drop-ins.
+
+### Do not spend the pass on
+
+- **(a) LEGIBILITY** — `intents.py:117` emits `f"fleet:{snap.directory_total}"`,
+  which reads as a box count but is all cataloged nodes. Still true today,
+  still a one-line rename + test. Opus/day-work, not frontier.
+- **(c) WITNESS — ALREADY CLOSED, verified live 2026-09-01.** The task text
+  says the audit log "was never built". That is STALE. `log_fn=_log` is wired
+  at all five call sites (rns_events, meshtastic, phoneapi_tap, mqtt, meshcore)
+  and the log is WRITING: moc 10 records (last 2026-08-29T17:19:04Z, the RNS
+  drill), moc3 108 records (last 2026-08-13T07:05:36Z). The runbook's
+  `~/mesh_oracle_log.jsonl` was wrong, not missing — the bare home is
+  `ProtectHome=read-only` under the gateway sandbox and `append_jsonl` swallowed
+  the OSError (#60), so `oracle_log_path()` was moved to
+  `~/.local/share/meshforge/mesh_oracle_log.jsonl` (`snapshot.py:237-248`).
+  Checking the path the runbook NAMED would have confirmed the gap that no
+  longer exists; the consumer-of-record is the data dir.
+
+### ⚡ LIVE EVIDENCE for (b) — the wildcard demonstrated, 2026-09-01
+
+Not a hypothetical. Drilled on moc3 the same day this entry was queued, via
+`scripts/oracle_rns_drill.py` (the sender-side drill, run ON the box):
+
+    T0                2026-09-01T16:55:08Z — drill identity DID NOT EXIST
+                      (`~/.config/meshforge/oracle_drill_identity`: No such file)
+    drill source      5f1e34a77eb2b8e879a00fdc63dc53c3  (minted after T0)
+    oracle dest       f68c2f56cb61527b6c9ad603b9a5009a
+    RESULT            sent=5 replies=5, exit 0
+    audit log         108 -> 113 records, all `delivered: true`,
+                      mtime 2026-09-01T16:58:07Z (> T0)
+
+**A keypair created seconds earlier, allowlisted nowhere, on no channel, asked
+moc3 for fleet status and got authoritative answers** — including
+`whatsup` -> `active: detector_blind_any`, i.e. the box volunteering its own
+degraded-detector state to an unknown sender. That is `MESHFORGE_ORACLE_RNS_ALLOWLIST=*`
+working exactly as written (`responder.py:146`: `if self._answer_all or
+node_key in self._allowlist` — the wildcard short-circuits before the
+allowlist is ever consulted).
+
+So sub-question 1 no longer needs a constructed two-hop path to motivate it:
+the ONE-hop case is already open to anyone who can reach moc3 over RNS. The
+transitivity question is what that composes to when a relaying gateway is the
+apparent sender — strictly worse than this, not better.
+
+**Frame this for the pass as a decision, not a defect.** The wildcard is
+deliberate and written, the gateway is a public-facing responder by intent,
+and every answer it gave is arguably public fleet-health data. The pass should
+decide whether that intent still holds now that it is demonstrated rather than
+theoretical — and if it does, say so in writing so this evidence stops reading
+as an unreviewed finding.
+
+**Bonus data point for (a)**: moc3's reply renders `fleet:?`, not a number —
+its `directory_total` is None, so the mislabeled field degrades to `?` there
+while moc shows a count. The rename should be checked against BOTH shapes.
