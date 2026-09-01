@@ -68,7 +68,17 @@ jobs:
     # "Test Suite (3.11)". Pin the context to python-version only.
     name: Test Suite (${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10  # Kill job if tests hang
+    # 15, not 10 (raised 2026-09-01). The cap exists to kill a HANG, and a
+    # hang blows past 15 as readily as 10 — but 10 sat inside the suite's
+    # NORMAL range and started firing on healthy runs. 813776b8 was marked
+    # `cancelled` at 18:34:31 with its own "Run tests" step already reporting
+    # SUCCESS at 18:33:40: a red REQUIRED check that meant "slow", not
+    # "broken" — the worst kind, because it sends the next reader hunting a
+    # bug that does not exist.
+    # Measured 3.9 durations that day: 8m19s, 8m47s, [cancelled], 9m04s
+    # against the 10m cap; 3.11 runs ~7m30s, so 3.9 is the axis at risk. The
+    # suite only grows, so the margin only shrinks.
+    timeout-minutes: 15  # Kill job if tests hang (measurements above)
     permissions:
       contents: read
       pull-requests: write   # for the PR-comment failure diagnostic below
