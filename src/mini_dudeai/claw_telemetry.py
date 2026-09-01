@@ -27,7 +27,8 @@ from typing import Any, Dict, Optional
 
 from ._util import iso_or_none, log_warning
 
-# device_info: "Free heap: 17764 bytes, Total heap: 210492 bytes,
+# device_info: "Version: 0.4.0+dudeclaw.21, MAC: AA:BB:CC:DD:EE:FF,
+#   Free heap: 17764 bytes, Total heap: 210492 bytes,
 #   Min free heap: 9012 bytes, Max alloc block: 6144 bytes,
 #   Reset reason: PANIC, Uptime: 109368 seconds,
 #   WiFi: connected (rssi -37 dBm), IP: <ip>,
@@ -62,6 +63,16 @@ _RE_CHIP = re.compile(r"Chip:\s*([^,]+)")
 # reply keeps the field an OTA push must read back), but this must not depend
 # on that — anchor, don't assume position.
 _RE_VERSION = re.compile(_FIELD + r"Version:\s*([^,]+)", re.IGNORECASE)
+# Board identity, added firmware-side in +dudeclaw.21. Kept as the firmware
+# emits it (uppercase, colon-separated) because the whole point is a BYTE-FOR
+# -BYTE comparison against the host's `/dev/serial/by-id/..._<MAC>-if00` name:
+# normalizing here would hide a real mismatch behind a helpful-looking fixup.
+# Anchored and shape-checked — a MAC is exactly six hex pairs, and a partial
+# match (a truncated reply clipping the tail) must read as absent, never as a
+# short address that would compare unequal and look like the WRONG BOARD.
+_RE_MAC = re.compile(
+    _FIELD + r"MAC:\s*((?:[0-9A-F]{2}:){5}[0-9A-F]{2})(?![0-9A-F:])",
+    re.IGNORECASE)
 
 # ble_stats: "ble_adv_age_s: 0 (advs 767422, uniq 32+, last rssi -59 dBm,
 #   restarts 0/0, window 48/320ms)"
@@ -352,6 +363,11 @@ def parse_device_info(result: Any) -> Optional[Dict[str, Any]]:
         # the claws has been unobservable until now. Unknown, never assumed
         # current (honest_failure_modes #2).
         "version": _str(_RE_VERSION, result),
+        # None on firmware predating +dudeclaw.21. That is UNKNOWN identity,
+        # never "matches" — a claw whose MAC cannot be read is a claw whose
+        # port assignment is still one-sided, which is the whole reason the
+        # field exists (honest_failure_modes #2).
+        "mac": _str(_RE_MAC, result),
     }
 
 

@@ -45,6 +45,15 @@ DI_VERSIONED = ("Version: 0.4.0+dudeclaw.19, Free heap: 17764 bytes, "
                 "Max alloc block: 6144 bytes, Reset reason: poweron, "
                 "Uptime: 109368 seconds, WiFi: connected (rssi -37 dBm), "
                 "IP: 10.0.0.5, Chip: ESP32-S3 rev 2, 2 cores, 240 MHz")
+# device_info from firmware carrying the board MAC (added +dudeclaw.21).
+# MAC sits SECOND, behind Version, because both are identity fields and
+# snprintf truncates the tail — shape copied from the firmware format string.
+DI_MAC = ("Version: 0.4.0+dudeclaw.21, MAC: AA:BB:CC:DD:EE:FF, "
+          "Free heap: 17764 bytes, Total heap: 210492 bytes, "
+          "Min free heap: 9012 bytes, Max alloc block: 6144 bytes, "
+          "Reset reason: poweron, Uptime: 109368 seconds, "
+          "WiFi: connected (rssi -37 dBm), IP: 10.0.0.5, Chip: "
+          "ESP32-S3 rev 2, 2 cores, 240 MHz")
 # device_info from firmware carrying the heap-pressure + reset-reason fields.
 DI_PRESSURE = ("Free heap: 17764 bytes, Total heap: 210492 bytes, "
                "Min free heap: 9012 bytes, Max alloc block: 6144 bytes, "
@@ -75,6 +84,32 @@ class TestParseDeviceInfo:
         assert d["uptime_s"] == 5
         assert d["heap_free_bytes"] is None      # absent -> unknown, never 0
         assert d["heap_total_bytes"] is None
+
+    def test_mac_parses_and_keeps_the_firmware_casing(self):
+        # NOT normalized: the value is compared byte-for-byte against the
+        # host's /dev/serial/by-id/..._<MAC>-if00 name, so a helpful lowercase
+        # fixup here would hide a real mismatch.
+        d = parse_device_info(DI_MAC)
+        assert d["mac"] == "AA:BB:CC:DD:EE:FF"
+        assert d["version"] == "0.4.0+dudeclaw.21"
+
+    def test_mac_absent_on_older_firmware_is_none(self):
+        # UNKNOWN identity, never "matches" — a pre-.21 claw's port assignment
+        # is still one-sided, which is exactly what the field exists to fix.
+        assert parse_device_info(DI_VERSIONED)["mac"] is None
+        assert parse_device_info(DI)["mac"] is None
+
+    def test_truncated_mac_reads_as_absent_not_as_a_short_address(self):
+        # A clipped reply must not yield a partial MAC: that would compare
+        # unequal against the by-id name and read as the WRONG BOARD — a
+        # degraded value landing inside the healthy domain.
+        clipped = "Version: 0.4.0+dudeclaw.21, MAC: AA:BB:CC:DD"
+        assert parse_device_info(clipped)["mac"] is None
+
+    def test_mac_is_field_anchored_not_matched_mid_token(self):
+        # "MAC:" must anchor at a field boundary like every other reader here.
+        d = parse_device_info("Chip: ESP32-S3 rev 2, MAC: 11:22:33:44:55:66")
+        assert d["mac"] == "11:22:33:44:55:66"
 
     def test_empty_or_none_returns_none(self):
         assert parse_device_info("") is None
