@@ -154,6 +154,99 @@ class TestByteExactConservation:
         assert [ln for ln in original if ln not in union] == []
 
 
+class TestInputShapes:
+    """Shapes found unhandled in the 2026-08-31 frontier pass — each one
+    previously made verification FALSELY FAIL a correct rotation (rc 1,
+    restore instructions printed, prune skipped)."""
+
+    def test_no_trailing_final_newline_rotates_cleanly(self, tmp_path, home):
+        """awk indexes every line as length+1, so a file whose last byte is
+        not a newline was counted one byte large; when the LAST section
+        rotated, the byte check failed a correct rotation by exactly 1 B."""
+        p = tmp_path / "gateway-session-notes-nonl.md"
+        p.write_bytes(b"# T\n\n## One\na\n\n## Two\nb\n\n## Three\nc\n\n## Four\nd")
+        r = run(home, "--notes", str(p), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        archive = next(tmp_path.glob("*-archive-*.md"))
+        body = archive.read_text(encoding="utf-8")
+        assert "## Four\nd" in body and "## Three\nc" in body
+        assert "## Four" not in p.read_text(encoding="utf-8")
+
+    def test_no_trailing_final_newline_sticky_last(self, tmp_path, home):
+        p = tmp_path / "gateway-session-notes-nonl2.md"
+        p.write_bytes(b"# T\n\n## One\na\n\n## Two\nb\n\n## Three\nc\n\n## QUEUED live\nz")
+        r = run(home, "--notes", str(p), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert p.read_bytes().endswith(b"## QUEUED live\nz")
+
+    def test_duplicate_headings_both_rotate(self, tmp_path, home):
+        """Two rotated sections sharing one heading: the archive count must
+        grow by TWO; the old per-row +1 check falsely failed this."""
+        p = tmp_path / "gateway-session-notes-dup2.md"
+        p.write_text(
+            "# T\n\n## Keep1\na\n\n## Keep2\nb\n\n## What happened\nold1\n\n"
+            "## What happened\nold2\n\n## QUEUED live\nz\n", encoding="utf-8")
+        r = run(home, "--notes", str(p), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        archive = next(tmp_path.glob("*-archive-*.md"))
+        body = archive.read_text(encoding="utf-8")
+        assert body.count("## What happened") == 2
+        assert "old1" in body and "old2" in body
+
+    def test_duplicate_heading_kept_and_rotated(self, tmp_path, home):
+        """A KEPT section sharing a rotated one's heading is correct, not
+        'still in notes' — the old presence check falsely failed this."""
+        p = tmp_path / "gateway-session-notes-dup3.md"
+        p.write_text(
+            "# T\n\n## What happened\nnew\n\n## Keep2\nb\n\n"
+            "## What happened\nold\n\n## QUEUED live\nz\n", encoding="utf-8")
+        r = run(home, "--notes", str(p), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        notes_body = p.read_text(encoding="utf-8")
+        assert notes_body.count("## What happened") == 1 and "new" in notes_body
+        archive = next(tmp_path.glob("*-archive-*.md"))
+        assert "old" in archive.read_text(encoding="utf-8")
+
+    def test_tab_inside_heading_verifies(self, tmp_path, home):
+        """The index TSV is tab-delimited; a tab INSIDE a heading truncated
+        the plan's heading field, so every verification grep missed."""
+        p = tmp_path / "gateway-session-notes-tab.md"
+        p.write_text(
+            "# T\n\n## Keep1\na\n\n## Keep2\nb\n\n## Tab\there heading\nold\n\n"
+            "## QUEUED live\nz\n", encoding="utf-8")
+        r = run(home, "--notes", str(p), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        archive = next(tmp_path.glob("*-archive-*.md"))
+        assert "## Tab\there heading\nold" in archive.read_text(encoding="utf-8")
+
+    def test_clean_apply_leaves_no_temp_files(self, notes, home, tmp_path):
+        """Until 2026-08-31 a `trap - EXIT` after the mv's leaked the .add
+        temp beside the archive and the pre-counts file in TMPDIR on EVERY
+        clean apply — SD-card litter that grew forever."""
+        tmpdir = tmp_path / "tmpdir"
+        tmpdir.mkdir()
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply",
+                env={"TMPDIR": str(tmpdir)})
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert list(tmpdir.iterdir()) == [], "leaked mktemp files in TMPDIR"
+        stray = [f.name for f in tmp_path.iterdir()
+                 if ".rotate." in f.name or ".add." in f.name]
+        assert stray == [], f"leaked temp files beside the notes: {stray}"
+
+    def test_archive_chosen_by_name_not_mtime(self, notes, home, tmp_path):
+        """A restore/copy/touch reorders mtime; the newest NAME is the real
+        'current' archive. A touched 2026H1 must not capture 2026H2 content."""
+        h1 = tmp_path / f"{notes.stem}-archive-2026H1.md"
+        h2 = tmp_path / f"{notes.stem}-archive-2026H2.md"
+        h1.write_text("# H1\n", encoding="utf-8")
+        h2.write_text("# H2\n", encoding="utf-8")
+        os.utime(h2, (1577836800, 1577836800))  # 2020: H2 mtime far older
+        r = run(home, "--notes", str(notes), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "## Third close" in h2.read_text(encoding="utf-8")
+        assert "## Third close" not in h1.read_text(encoding="utf-8")
+
+
 class TestVerificationCannotPassVacuously:
     """The archive may ALREADY contain a rotated heading (generic ones like
     '## What happened' repeat). A presence check would pass without the
@@ -227,6 +320,16 @@ class TestVerificationHasTeeth:
         r = self._run_mutant(m, notes, home)
         assert r.returncode == 1
         assert "notes size" in r.stdout or "KEPT section vanished" in r.stdout
+
+    def test_rotated_section_left_in_notes_is_caught(self, notes, home, tmp_path):
+        """Pins the notes-side count check: make the kept-extraction keep
+        EVERY section, so rotated content lands in both files. The notes
+        count must fire (before - k expected, before observed)."""
+        m = self._mutant(tmp_path, r's|$2!="ROTATE"{print $5}|1{print $5}|')
+        r = self._run_mutant(m, notes, home)
+        assert r.returncode == 1
+        assert "notes count for" in r.stdout, \
+            "rotated sections stayed in the notes and the count check missed it"
 
 
 class TestRefusals:

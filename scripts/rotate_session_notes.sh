@@ -19,6 +19,9 @@
 #   - The archive is the NEWEST EXISTING one, not a date-derived name. On
 #     2026-08-31 the live archive was still ...-archive-2026H1.md; deriving
 #     "2026H2" would have split one body of content across two homes.
+#     "Newest" is keyed on the NAME (YYYYHh sorts chronologically in LC_ALL=C),
+#     never mtime — a restore, a copy or a stray touch silently reorders mtime
+#     (found in review 2026-08-31: a touched old archive captured new content).
 #   - Backups reserve their path atomically (set -C == O_CREAT|O_EXCL) and are
 #     namespaced by the notes basename, which carries the hostname. Never
 #     overwrite a backup (feedback_backup_destinations_must_be_namespaced).
@@ -80,8 +83,11 @@ fi
 # ── resolve the archive: newest EXISTING sibling wins over a derived name ────
 stem="${NOTES%.md}"
 if [ -z "$ARCHIVE" ]; then
-    # shellcheck disable=SC2012  # -t ordering is the point; names are ours
-    ARCHIVE="$(ls -1t "${stem}"-archive-*.md 2>/dev/null | head -1 || true)"
+    # Lexically-last NAME = chronologically newest (2026H1 < 2026H2 < 2027H1
+    # in LC_ALL=C). NEVER `ls -t`: mtime is a weak key a restore/copy/touch
+    # silently reorders, redirecting content into the wrong half-year file.
+    # shellcheck disable=SC2012  # name ordering is the point; names are ours
+    ARCHIVE="$(ls -1 "${stem}"-archive-*.md 2>/dev/null | tail -1 || true)"
     if [ -z "$ARCHIVE" ]; then
         half=1; [ "$(date +%m)" -gt 6 ] && half=2
         ARCHIVE="${stem}-archive-$(date +%Y)H${half}.md"
@@ -128,12 +134,17 @@ n_sections="$(printf '%s' "$sections" | grep -c . || true)"
 [ "$n_sections" -gt 0 ] || die "no '## ' sections found in $NOTES — nothing this tool understands"
 
 # ── decide: keep the newest KEEP by position, plus every sticky section ──────
+# The heading is the LAST field and may itself contain tabs ($6 alone would
+# truncate it there, and every verification grep downstream would then miss —
+# found in review 2026-08-31). Strip the five known fields instead. mawk has
+# no {n} regex intervals, hence the spelled-out prefix.
 plan="$(printf '%s\n' "$sections" | awk -F'\t' -v keep="$KEEP" '
     { idx=$1; sticky=$5
+      h=$0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t/, "", h)
       if (idx <= keep)      { verdict="KEEP";        reason="newest " keep }
       else if (sticky == 1) { verdict="KEEP-STICKY"; reason="live marker" }
       else                  { verdict="ROTATE";      reason="older than newest " keep }
-      printf "%s\t%s\t%s\t%s\t%s\t%s\n", $1, verdict, $4, reason, $2 "-" $3, $6 }')"
+      printf "%s\t%s\t%s\t%s\t%s\t%s\n", $1, verdict, $4, reason, $2 "-" $3, h }')"
 
 rot_bytes="$(printf '%s\n' "$plan" | awk -F'\t' '$2=="ROTATE"{s+=$3} END{print s+0}')"
 n_rotate="$(printf '%s\n' "$plan" | awk -F'\t' '$2=="ROTATE"' | grep -c . || true)"
@@ -149,7 +160,8 @@ printf '  preamble %s line(s) kept · %s section(s) · keep newest %s + sticky\n
 
 printf '  %-4s %-12s %9s  %s\n' '#' 'VERDICT' 'BYTES' 'HEADING'
 printf '%s\n' "$plan" | awk -F'\t' '{
-    h=$6; if (length(h) > 62) h = substr(h,1,59) "..."
+    h=$0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t/, "", h)
+    if (length(h) > 62) h = substr(h,1,59) "..."
     printf "  %-4s %-12s %9s  %s\n", $1, $2, $3, h }'
 
 printf '\n  rotating %s section(s), %s B\n' "$n_rotate" "$rot_bytes"
@@ -202,17 +214,35 @@ tmp_notes="$(mktemp "${NOTES}.rotate.XXXXXX")"
 tmp_arch="$(mktemp "${ARCHIVE}.rotate.XXXXXX")"
 tmp_add="$(mktemp "${ARCHIVE}.add.XXXXXX")"
 pre_counts="$(mktemp)"
+# The trap stays armed for the WHOLE run: after the mv's, tmp_notes/tmp_arch
+# no longer exist at these paths, so the rm is a no-op there — but tmp_add and
+# pre_counts still need cleaning (until 2026-08-31 a `trap - EXIT` after the
+# mv's leaked both on every clean apply, one of them into the notes dir).
 trap 'rm -f "$tmp_notes" "$tmp_arch" "$tmp_add" "$pre_counts"' EXIT
 
-# Occurrence counts BEFORE the append. A bare "is this heading in the archive?"
-# check passes vacuously when the heading already appears there — the archive
-# already carries duplicate generic headings ("## What happened"). Assert the
-# count grew by exactly one instead (review 2026-08-31: self-confirming check).
-while IFS=$'\t' read -r _i verdict _b _r _rg heading; do
-    [ "$verdict" = "ROTATE" ] || continue
-    c=0; [ -f "$ARCHIVE" ] && c="$(grep -cxF "$heading" "$ARCHIVE" || true)"
-    printf '%s\t%s\n' "$c" "$heading" >> "$pre_counts"
-done <<< "$plan"
+# Occurrence counts BEFORE the append, aggregated PER UNIQUE HEADING. A bare
+# "is this heading in the archive?" check passes vacuously when the heading
+# already appears there — the archive already carries duplicate generic
+# headings ("## What happened"). And the NOTES can carry duplicates too: two
+# rotated sections may share a heading (archive must grow by k, not 1), and a
+# kept section may share a rotated one's heading (it must NOT be reported as
+# "still in notes"). So the ledger is: heading -> (k rotated, count in
+# archive before, count in notes before), and verification asserts the exact
+# deltas on both files (review 2026-08-31: per-row +1 falsely failed both
+# duplicate shapes).
+printf '%s\n' "$plan" | awk -F'\t' '
+    $2=="ROTATE" { h=$0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t/, "", h); c[h]++ }
+    END { for (h in c) printf "%d\t%s\n", c[h], h }' \
+| while IFS=$'\t' read -r k heading; do
+    a=0; [ -f "$ARCHIVE" ] && a="$(grep -cxF "$heading" "$ARCHIVE" || true)"
+    n="$(grep -cxF "$heading" "$NOTES" || true)"
+    # grep -c prints 0 on no-match; EMPTY means grep itself failed. An empty
+    # count fed to `-ne` errors the test and reads as "no mismatch" — a
+    # degraded read mapped to a pass (honest_failure_modes #1). -1 can never
+    # satisfy the exact-delta checks, so a failed read fails CLOSED.
+    : "${a:=-1}" "${n:=-1}"
+    printf '%s\t%s\t%s\t%s\n' "$k" "$a" "$n" "$heading" >> "$pre_counts"
+done
 
 # new notes = preamble + kept sections, ORIGINAL order preserved
 [ "$pre_lines" -gt 0 ] && sed -n "1,${pre_lines}p" "$NOTES" > "$tmp_notes"
@@ -222,22 +252,26 @@ done >> "$tmp_notes"
 
 # archive = existing + banner + rotated sections, appended in original order.
 # Built into its own file first so the exact appended byte count is KNOWN and
-# can be asserted afterward, rather than inferred.
-{
-    printf '\n<!-- rotated %s by rotate_session_notes.sh from %s -->\n\n' "$ts" "$(basename "$NOTES")"
-    printf '%s\n' "$plan" | awk -F'\t' '$2=="ROTATE"{print $5}' | while IFS='-' read -r a b; do
-        sed -n "${a},${b}p" "$NOTES"
-    done
-} > "$tmp_add"
+# can be asserted afterward, rather than inferred. The banner is measured
+# separately: verification needs the pure CONTENT byte count, and it must be
+# MEASURED, not taken from the index — awk counts every line as length+1, so a
+# file with no trailing final newline is indexed one byte large, and a
+# verification keyed on that number fails a perfectly correct rotation
+# (review 2026-08-31, drilled: 25 B vs expected 24 B).
+printf '\n<!-- rotated %s by rotate_session_notes.sh from %s -->\n\n' "$ts" "$(basename "$NOTES")" > "$tmp_add"
+banner_bytes="$(wc -c < "$tmp_add")"
+printf '%s\n' "$plan" | awk -F'\t' '$2=="ROTATE"{print $5}' | while IFS='-' read -r a b; do
+    sed -n "${a},${b}p" "$NOTES"
+done >> "$tmp_add"
 add_bytes="$(wc -c < "$tmp_add")"
+content_bytes=$(( add_bytes - banner_bytes ))
 [ -f "$ARCHIVE" ] && cat "$ARCHIVE" > "$tmp_arch"
 cat "$tmp_add" >> "$tmp_arch"
-expected_notes=$(( notes_size - rot_bytes ))
+expected_notes=$(( notes_size - content_bytes ))
 expected_arch=$(( arch_size + add_bytes ))
 
 mv "$tmp_arch" "$ARCHIVE"
 mv "$tmp_notes" "$NOTES"
-trap - EXIT
 
 # ── verify from the FILES, not from what we intended ─────────────────────────
 new_notes="$(wc -c < "$NOTES")"
@@ -253,28 +287,38 @@ else
     printf '    ❌ notes STILL over the gate\n'; vfail=1
 fi
 
-# Byte-exact conservation: proves EXACTLY rot_bytes left the notes and EXACTLY
-# add_bytes arrived in the archive. Independent of heading text, so it cannot
-# pass vacuously the way a presence check can.
+# Byte-exact conservation: what STAYED in the notes plus what ARRIVED in the
+# archive must equal the original, measured from disk on both sides — a byte
+# that reached neither (lost) or both (duplicated) breaks the equation.
+# Independent of heading text, so it cannot pass vacuously the way a presence
+# check can.
 if [ "$new_notes" -eq "$expected_notes" ]; then
-    printf '    ✅ notes lost exactly %s B (the rotated sections)\n' "$rot_bytes"
+    printf '    ✅ notes lost exactly %s B (the rotated sections)\n' "$content_bytes"
 else
     printf '    ❌ notes size %s B, expected %s B\n' "$new_notes" "$expected_notes"; vfail=1
 fi
 if [ "$new_arch" -eq "$expected_arch" ]; then
     printf '    ✅ archive gained exactly %s B (%s B content + %s B banner)\n' \
-        "$add_bytes" "$rot_bytes" "$((add_bytes - rot_bytes))"
+        "$add_bytes" "$content_bytes" "$banner_bytes"
 else
     printf '    ❌ archive size %s B, expected %s B\n' "$new_arch" "$expected_arch"; vfail=1
 fi
 
-while IFS=$'\t' read -r before heading; do
-    after="$(grep -cxF "$heading" "$ARCHIVE" || true)"
-    if [ "$after" -ne "$((before + 1))" ]; then
+# Per-heading exact deltas: k copies rotated => archive count +k, notes
+# count -k. A kept section sharing a rotated one's heading keeps the notes
+# count above zero — that is correct, not "still in notes".
+while IFS=$'\t' read -r k before_a before_n heading; do
+    after_a="$(grep -cxF "$heading" "$ARCHIVE" || true)"
+    after_n="$(grep -cxF "$heading" "$NOTES" || true)"
+    : "${after_a:=-1}" "${after_n:=-1}"   # failed read fails CLOSED, see above
+    if [ "$after_a" -ne "$((before_a + k))" ]; then
         printf '    ❌ archive count for %s: %s -> %s (expected %s)\n' \
-            "$heading" "$before" "$after" "$((before + 1))"; vfail=1
+            "$heading" "$before_a" "$after_a" "$((before_a + k))"; vfail=1
     fi
-    grep -qxF "$heading" "$NOTES" && { printf '    ❌ still in notes: %s\n' "$heading"; vfail=1; }
+    if [ "$after_n" -ne "$((before_n - k))" ]; then
+        printf '    ❌ notes count for %s: %s -> %s (expected %s)\n' \
+            "$heading" "$before_n" "$after_n" "$((before_n - k))"; vfail=1
+    fi
 done < "$pre_counts"
 
 # every KEPT heading must have survived — the half nobody checks
