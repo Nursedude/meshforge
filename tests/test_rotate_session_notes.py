@@ -413,7 +413,10 @@ class TestBackupPruning:
         remaining = sorted(f.name for f in bk.glob(f"{notes.stem}.*.md.bak"))
         assert len(remaining) == 5
         # the run's OWN backup is the newest and must survive
-        assert any("2026" in n or "202" in n for n in remaining)
+        # must be a name OUTSIDE the seeded 2020 set — `"202" in n` matched
+        # the seeds themselves and could never fail (found in the 2026-08-31
+        # frontier pass; a guard with only one outcome is not evidence)
+        assert any(not n.startswith(f"{notes.stem}.2020-") for n in remaining)
         newest_old = f"{notes.stem}.2020-01-15T00:00:00Z.md.bak"
         assert newest_old in remaining, "pruned newest-first instead of oldest-first"
         assert f"{notes.stem}.2020-01-01T00:00:00Z.md.bak" not in remaining
