@@ -335,4 +335,29 @@ check "mixed box: the held signal stays visible in the class list" \
   "$(echo "$out" | grep -q 'held-blind' && echo ok)"
 
 echo "---"
+# ── 12. declared posture (2026-09-01 DORMANT arc): a box switched OFF on
+# purpose is `:dormant`, out of the denominators, never `unreach`, and the
+# SHA leg still PASSES on the boxes that are up. Absent file = untouched.
+printf 'box-good\nbox-down\n' > "$hosts"
+POSTURE="$TMP/posture.json"
+"$REAL_PYTHON3" - "$POSTURE" <<'PYEOF'
+import json, sys, time
+from datetime import datetime, timezone
+ts = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"boxes": {"box-down": {"state": "dormant", "since": ts(time.time()),
+                                  "until": ts(time.time() + 3600), "reason": "drill"}}},
+          open(sys.argv[1], "w"))
+PYEOF
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_BOXES="box-good box-down" MESHFORGE_FLEET_POSTURE="$POSTURE" run)"
+check "dormant box reported as :dormant on the SHA leg" \
+  "$(echo "$out" | grep 'fleet SHA drift' | grep -q 'box-down:dormant' && echo ok)"
+check "dormant box is not counted unreach on the SHA leg" \
+  "$(echo "$out" | grep 'fleet SHA drift' | grep -q 'box-down:unreach' && echo '' || echo ok)"
+check "SHA leg PASSES 1/1 with the dormant box out of the denominator" \
+  "$(echo "$out" | grep 'fleet SHA drift' | grep -q 'PASS' && echo ok)"
+check "watchdog leg reports the dormant box as :dormant, not unreach" \
+  "$(echo "$out" | grep 'watchdog signals' | grep -q 'box-down:dormant' && echo ok)"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_BOXES="box-good box-down" MESHFORGE_FLEET_POSTURE="$TMP/absent.json" run)"
+check "without a declaration the same box is unreach (today's behaviour)" \
+  "$(echo "$out" | grep 'fleet SHA drift' | grep -q 'box-down:unreach' && echo ok)"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

@@ -79,7 +79,15 @@ fi
 local_hash=$(md5sum "$REG" | awk '{print $1}')
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 
-ok_boxes=() healed=() skipped=() unreachable=() failed=()
+ok_boxes=() healed=() skipped=() unreachable=() failed=() dormant=()
+# Declared posture (2026-09-01, DORMANT arc): a box switched OFF on purpose
+# is reported as dormant, never as UNREACHABLE — an expected absence must
+# not drive this organ to CONCERN for a whole storm. Absent/broken
+# declaration = every box is checked, as before.
+if [ -f "$HERE/lib/fleet_posture.sh" ]; then
+    . "$HERE/lib/fleet_posture.sh"
+    fleet_posture_read "$(dirname "$HERE")"
+fi
 
 # Loop input rides fd 3: ssh/scp inside the loop read stdin and would
 # otherwise swallow the rest of the host list (first live run processed
@@ -87,6 +95,11 @@ ok_boxes=() healed=() skipped=() unreachable=() failed=()
 while IFS= read -r host <&3; do
     host="${host%%#*}"; host="$(echo "$host" | tr -d '[:space:]')"
     [ -z "$host" ] && continue
+    if fleet_posture_is_silent "$host" 2>/dev/null; then
+        dormant+=("$host")
+        echo "$host: declared $(fleet_posture_state "$host") — skipped (an expected absence, not unreachable)"
+        continue
+    fi
 
     remote=$(ssh "${SSH_OPTS[@]}" "$host" "md5sum $REG_REL 2>/dev/null" 2>/dev/null)
     rc=$?
@@ -134,6 +147,7 @@ summary="ok=${#ok_boxes[@]}"
 [ ${#skipped[@]} -gt 0 ]     && summary+=" no_registry=$(join "${skipped[@]}")"
 [ ${#unreachable[@]} -gt 0 ] && summary+=" UNOBSERVABLE=$(join "${unreachable[@]}")"
 [ ${#failed[@]} -gt 0 ]      && summary+=" FAILED=$(join "${failed[@]}")"
+[ ${#dormant[@]} -gt 0 ]     && summary+=" dormant=$(join "${dormant[@]}")"
 
 if [ ${#failed[@]} -gt 0 ]; then
     say FAIL "$summary"

@@ -105,6 +105,18 @@ fi
 # listed twice in the SSOT is also one box: a count the gate prints as coverage
 # must never be inflatable by a duplicate line.
 BOXES="$(printf '%s\n' $BOXES | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ *$//')"
+# Declared posture (2026-09-01, DORMANT arc): a box the operator switched OFF
+# on purpose is neither drifted nor unreachable — it is reported as
+# `<box>:dormant`, taken out of the fleet legs' denominators, and never lets
+# a leg read PASS about it. Absent/broken declaration = every box checked.
+_HP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/fleet_posture.sh"
+if [ -f "$_HP_LIB" ]; then . "$_HP_LIB"; fleet_posture_read "$REPO"; fi
+_hp_note=""
+case "${FLEET_POSTURE_STATUS:-undeclared}" in
+  declared*) _hp_note="; declared posture in effect" ;;
+  undeclared) ;;
+  *) _hp_note="; POSTURE FILE NOT USABLE (${FLEET_POSTURE_STATUS}) — every box checked" ;;
+esac
 
 # Peers = every box that is NOT this one. The SHA-drift leg must use this, not
 # BOXES: it compares a box's `rev-parse HEAD` against $HEADFULL, which this
@@ -208,7 +220,7 @@ else
 fi
 
 # 2. Fleet SHA drift — each box's HEAD vs this repo's HEAD (external).
-matched=0; reached=0; total=0; norepo=0; desc=""
+matched=0; reached=0; total=0; norepo=0; dormant=0; desc="$_hp_note"
 for b in $PEERS; do
   total=$((total+1))
   # Compare FULL 40-char SHAs — abbreviation length varies per box (a 7-char
@@ -230,6 +242,7 @@ for b in $PEERS; do
   raw=$(run_on "$b" "echo HSUP; if [ -e $REPO/.git ]; then git -C $REPO rev-parse HEAD 2>/dev/null || echo HSGITERR; else echo HSNOREPO; fi")
   up=$(printf '%s\n' "$raw" | sed -n '1p')
   s=$(printf '%s\n' "$raw" | sed -n '2p')
+  if fleet_posture_is_silent "$b" 2>/dev/null; then dormant=$((dormant+1)); desc="$desc $b:dormant"; continue; fi
   if [ "$up" != "HSUP" ]; then desc="$desc $b:unreach"; continue; fi
   case "$s" in
     HSNOREPO) norepo=$((norepo+1)); desc="$desc $b:no-repo"; continue ;;
@@ -239,7 +252,7 @@ for b in $PEERS; do
   if [ "$s" = "$HEADFULL" ]; then matched=$((matched+1)); else desc="$desc $b:${s:0:7}"; fi
 done
 drifted=$((reached - matched))
-expect=$((total - norepo))
+expect=$((total - norepo - dormant))
 if [ -z "$PEERS" ]; then
   # Nothing external to compare against. Self is excluded by construction, so
   # there is no evidence here at all — not "converged", UNKNOWN.
@@ -531,7 +544,7 @@ if [ -n "${HONEST_WD_STALE_S:-}" ]; then WD_STALE_S="$HONEST_WD_STALE_S"
 elif [ -n "${HONEST_WD_PATH:-}" ]; then WD_STALE_S=0
 else WD_STALE_S=300; fi
 
-wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; nowd=0; wdfault=0; sigdesc=""
+wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; nowd=0; wdfault=0; wddormant=0; sigdesc=""
 btotal=$(echo $BOXES | wc -w)
 for b in $BOXES; do
   # Fetch the box's OWN clock alongside its watchdog.json in ONE round-trip, so
@@ -556,6 +569,7 @@ for b in $BOXES; do
   # no state, which stays UNKNOWN-loud (honest_failure_modes #2). Only
   # LoadState distinguishes absent from broken — is-active prints "inactive"
   # for both a missing unit and a dead one.
+  if fleet_posture_is_silent "$b" 2>/dev/null; then wddormant=$((wddormant+1)); sigdesc="$sigdesc $b:dormant"; continue; fi
   if [ -z "$rnow" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
   if [ "$wload" = "loaded" ] && [ "$wunit" != "active" ]; then
     wdfault=$((wdfault+1)); sigdesc="$sigdesc $b:WATCHDOG-UNIT-$wunit"; continue
@@ -619,7 +633,7 @@ done
 # A held signal NEVER reaches the WARN/FAIL tiers on its own — it is
 # last-known evidence from a blind observer, which is UNKNOWN by this
 # project's tiering, and UNKNOWN is never a pass either.
-wdtotal=$((btotal - nowd))   # boxes that actually carry a watchdog unit
+wdtotal=$((btotal - nowd - wddormant))   # boxes that actually carry a watchdog unit (declared-dormant excluded)
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
 elif [ "$wdfault" -gt 0 ]; then bad "watchdog (unit down)" "$wdfault box(es) with the watchdog unit installed but not running — a dead watchdog is a fault, not an absent organ:$sigdesc"
 elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$wdtotal clean, $unreach unreachable/stale:$sigdesc"

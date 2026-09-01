@@ -113,8 +113,28 @@ fi
 REMOTE
 )
 
+# Declared posture (2026-09-01, DORMANT arc): a box the operator switched
+# OFF on purpose is not a deploy failure — it is skipped with a row that says
+# so, and it pulls when it comes back (fleet SHA drift will name it then).
+# Absent/broken declaration = every box is pulled, as before.
+POSTURE_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/fleet_posture.sh"
+dormant=0
+if [ -f "$POSTURE_LIB" ]; then
+    . "$POSTURE_LIB"
+    fleet_posture_read "$REPO_DIR"
+    case "$FLEET_POSTURE_STATUS" in
+        declared*|undeclared) ;;
+        *) echo "fleet_pull: posture file not usable ($FLEET_POSTURE_STATUS) — pulling every box" ;;
+    esac
+fi
 failures=0
 for h in "${HOSTS[@]}"; do
+    if fleet_posture_is_silent "$h" 2>/dev/null; then
+        printf '  %-20s DORMANT   declared %s — skipped, not a failure (%s)\n' \
+            "$h" "$(fleet_posture_state "$h")" "$(fleet_posture_note "$h" | cut -c1-70)"
+        dormant=$((dormant + 1))
+        continue
+    fi
     out=$(ssh -o ConnectTimeout=15 -o BatchMode=yes "$h" "$remote_cmd" 2>/dev/null)
     # Fields, not suffix-strip: the sha may now carry a trailing HEALED(n)
     # note, and `${out#* }` would fold it into the sha and fail every
@@ -153,7 +173,9 @@ for h in "${HOSTS[@]}"; do
     esac
 done
 
-if [ "$failures" -eq 0 ]; then
+if [ "$failures" -eq 0 ] && [ "$dormant" -gt 0 ]; then
+    echo "fleet_pull: $(( ${#HOSTS[@]} - dormant )) of ${#HOSTS[@]} host(s) converged on ${TARGET_SHORT}; ${dormant} declared dormant/detached and skipped."
+elif [ "$failures" -eq 0 ]; then
     echo "fleet_pull: all ${#HOSTS[@]} host(s) converged on ${TARGET_SHORT}."
 else
     echo "fleet_pull: ${failures} host(s) NOT converged — see above."

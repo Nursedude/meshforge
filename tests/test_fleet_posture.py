@@ -219,6 +219,10 @@ class TestClosedConsumers:
         "src/utils/fleet_truth_collector.py": ("fleet_posture", "read_posture"),
         "src/utils/fleet_truth.py": ("posture", "dormant"),
         "web/fleet.html": ("declared_posture", "posture_drift"),
+        "scripts/lib/fleet_posture.sh": ("fleet_posture", "fleet_posture_is_silent"),
+        "scripts/honest_status.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
+        "scripts/fleet_pull.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
+        "scripts/fleet_registry_sync.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
     }
 
     @pytest.mark.parametrize("rel,needles", sorted(CONSUMERS.items()))

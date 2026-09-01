@@ -384,10 +384,24 @@ records the refusal in the file) + consumer #1 `scripts/fleet_offline_check.sh`
 (DORMANT witness / POSTURE-DRIFT gentle page / POSTURE-LIFTED / no-file
 invariance pinned by the 29 pre-existing tests). 62 tests; the monitor drilled
 by making it ignore posture (5 of 8 new tests fail). No posture is declared
-live — declaring is the operator's first act. Remaining consumers, in the
-priority order below: fleet_truth cell, the fleet crons, honest_status SHA
-leg, peer-facing probes, claw watch lists, `shed` overlay, validator with
-roles, V4–V8 in the virtual fleet.
+live — declaring is the operator's first act.
+
+**Batches 2–3 (same day):** consumer #2 the `/fleet` truth (collector stamps,
+builder renders a dormant box as a fourth state, disclosed under
+`declared_posture`, out of the fan-out denominator, non-tainting; a declared
+box that answers is `posture_drift`; page badges + count chip;
+`fleet_truth.py` byte-locked → ported to MeshAnchor) and consumers #3–#5 the
+manager-side shell organs via `scripts/lib/fleet_posture.sh` (ONE reader over
+the Python SSOT): `honest_status.sh` (`<box>:dormant`, out of both fleet
+denominators), `fleet_pull.sh` (DORMANT row, not a failure),
+`fleet_registry_sync.sh` (`dormant=` in the summary, never UNOBSERVABLE).
+Closed-consumer test pins all nine consumers. Remaining, in priority order:
+peer-facing watchdog probes (`tracer_peer_unreachable`, federation, delivery
+fan-out) + `probe_fleet_box_unreachable` reading the new verdicts, claw RF
+watch lists, the posture MIRROR to every box (registry-sync pattern — needed
+BEFORE the probes can read it off-manager), `shed` overlay on the role plan,
+validator with roles, `posture_drift` as a watchdog class, V4–V8 in the
+virtual fleet.
 
 ### Priority against the Starlink cutover clock (~2 weeks from 08-27)
 
