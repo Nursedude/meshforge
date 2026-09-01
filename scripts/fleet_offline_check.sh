@@ -60,6 +60,25 @@
 export PATH="${MESHFORGE_OFFLINE_PATH:-/usr/local/bin:/usr/bin:/bin}"
 FLEETKEY="${MESHFORGE_FLEETKEY:-$HOME/.claude/ssh/id_ed25519}"
 BOXCONF="${MESHFORGE_OFFLINE_BOXES:-$HOME/.config/meshforge/fleet_offline_boxes.json}"
+#   7. DECLARED POSTURE (2026-09-01, DORMANT arc batch 1) — a box that is OFF
+#      ON PURPOSE is a fourth state, not a DOWN. Hurricane Lala replayed
+#      against this monitor = DOWN x8 hourly for the whole storm, all true,
+#      all expected, all noise. The operator now declares dormant/detached
+#      boxes in ~/.config/meshforge/fleet_posture.json (SSOT + rules:
+#      src/utils/fleet_posture.py — mandatory capped `until`, expiry is the
+#      honest default). Effect here, per box:
+#        silent (dormant/detached) + unreachable -> "DORMANT [box]" witness
+#            line, verdict=<state>, alerted=0, NO page (an open outage is
+#            closed by the declaration, logged, never "RECOVERED")
+#        silent + REACHABLE  -> POSTURE-DRIFT: declared off but answering —
+#            logged + one gentle page per re-alert interval (posture is
+#            stale or a battery is being burned); verdict=drift, never DOWN
+#        expired / absent file -> exactly today's behaviour
+#        UNREADABLE / INVALID file -> loud line, then today's behaviour:
+#            a broken declaration must never silence pages (hfm #1)
+#      Paths are env-overridable like everything else so tests drive the
+#      REAL script (MESHFORGE_FLEET_POSTURE).
+POSTURE="${MESHFORGE_FLEET_POSTURE:-$HOME/.config/meshforge/fleet_posture.json}"
 LOG="${MESHFORGE_OFFLINE_LOG:-$HOME/fleet_alerts.log}"
 WITNESS="${MESHFORGE_OFFLINE_WITNESS:-$HOME/fleet_push_witness.log}"             # delivery receipts / failures
 STATE="${MESHFORGE_OFFLINE_STATE:-$HOME/fleet_offline_state.tsv}"              # box \t fail \t alerted \t down_since \t last_alert \t alert_count \t verdict
@@ -147,6 +166,35 @@ if [ -z "$SSH_USER" ] || [ "${#BOXES[@]}" -eq 0 ]; then
   exit 78
 fi
 
+# Declared posture (note 7). ONE reader — the Python SSOT — so this script and
+# every other consumer agree on expiry, cap and clock rules by construction.
+# Output: "<status>" on line 1, then "name;state;note" per declared box.
+# Any failure of the reader itself degrades to a LOUD line + watch everything.
+declare -A POSTURE_STATE POSTURE_NOTE
+posture_out=$(MESHFORGE_FLEET_POSTURE="$POSTURE" PYTHONPATH="$(dirname "$0")/../src" python3 - <<'PYPOSTURE'
+import sys
+try:
+    from utils import fleet_posture as fp
+    p = fp.read_posture()
+    print(p.status + (" " + p.detail if p.detail else ""))
+    for name, b in sorted(p.boxes.items()):
+        print("%s;%s;%s" % (name, b.state, b.note.replace(";", ",")))
+except Exception as exc:
+    print("reader-error %s: %s" % (type(exc).__name__, exc))
+PYPOSTURE
+) || posture_out="reader-error rc=$?"
+posture_status=$(printf '%s\n' "$posture_out" | sed -n '1p')
+case "$posture_status" in
+  declared|undeclared) ;;
+  *) echo "$TS  FLEET: POSTURE-UNREADABLE $POSTURE — $posture_status; watching EVERY box (a broken declaration must not silence pages)" >> "$LOG" ;;
+esac
+if [ "$posture_status" = declared ]; then
+  while IFS=';' read -r pname pstate pnote; do
+    [ -z "$pname" ] && continue
+    POSTURE_STATE["$pname"]="$pstate"; POSTURE_NOTE["$pname"]="$pnote"
+  done < <(printf '%s\n' "$posture_out" | sed '1d')
+fi
+
 # read all state fields for a box into globals (back-compat: old 3-field rows -> 0)
 read_state() {  # box
   local line
@@ -220,6 +268,37 @@ for entry in "${BOXES[@]}"; do
   fi
 
   read_state "$name"
+  # DECLARED POSTURE (note 7) — evaluated AFTER the probe, never instead of it:
+  # a silent box that ANSWERS is the finding (posture drift), so we must look.
+  pstate="${POSTURE_STATE[$name]:-active}"
+  if [ "$pstate" = dormant ] || [ "$pstate" = detached ]; then
+    pnote="${POSTURE_NOTE[$name]:-declared $pstate}"
+    if [ -z "$reason" ]; then
+      echo "$TS  FLEET: POSTURE-DRIFT [$name] $pnote — but it ANSWERED (ssh ok, services up): the declaration is stale or the box is burning power it was meant to save" >> "$LOG"
+      if [ "$g_verdict" != drift ] || [ $(( NOW - g_lastalert )) -ge "$REALERT_INTERVAL" ]; then
+        ntfy_push "Fleet posture DRIFT: $name" "default" "warning" \
+          "$name answered while $pnote — clear or renew the declaration ($TS)" \
+          || echo "$TS  FLEET: PUSH-FAILED on POSTURE-DRIFT [$name] — see witness log" >> "$LOG"
+        set_state "$name" 0 0 0 "$NOW" 0 drift
+      else
+        set_state "$name" 0 0 0 "$g_lastalert" 0 drift
+      fi
+    else
+      if [ "$g_alerted" = "1" ]; then
+        echo "$TS  FLEET: DORMANT [$name] $pnote — supersedes the open outage (was paged as $g_verdict); no RECOVERED page, nothing recovered" >> "$LOG"
+      else
+        echo "$TS  FLEET: DORMANT [$name] $pnote — not paged" >> "$LOG"
+      fi
+      set_state "$name" 0 0 0 0 0 "$pstate"
+    fi
+    continue
+  fi
+  # A box coming OUT of a declared-silent verdict is watched again from a
+  # clean row: its old fail/alert counters belonged to a different claim.
+  if [ "$g_verdict" = dormant ] || [ "$g_verdict" = detached ] || [ "$g_verdict" = drift ]; then
+    echo "$TS  FLEET: POSTURE-LIFTED [$name] was $g_verdict; watching again" >> "$LOG"
+    g_fail=0; g_alerted=0; g_down=0; g_lastalert=0; g_count=0
+  fi
   # Per-box alerting tier (header note 4): the bot pages gently — "default"
   # priority, no urgent escalation, q2hr re-alert. Everyone else keeps full
   # high/urgent + 1h. Detection (reachability + 3x threshold) is identical.

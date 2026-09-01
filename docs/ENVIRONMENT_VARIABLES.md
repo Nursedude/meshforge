@@ -35,6 +35,7 @@ set via a unit drop-in and restart the gateway to apply; gateway-profile boxes o
 
 | Variable | Read by | Purpose |
 |----------|---------|---------|
+| `MESHFORGE_FLEET_POSTURE` | `utils/fleet_posture.py`, `scripts/fleet_offline_check.sh` | Path override for the declared fleet power posture (default `~/.config/meshforge/fleet_posture.json`, operator values). Declare with `scripts/fleet_posture.py declare <box> dormant\|detached\|shed --until +3d`; absent file = every box watched as before. |
 | `MESHFORGE_ORACLE_ENABLED` | gateway handlers + `oracle/responder.py` | Master switch for the mesh oracle (default OFF; fail-closed). |
 | `MESHFORGE_ORACLE_CHANNELS` | `oracle_phoneapi_tap.py`, `meshtastic_handler.py`, `mqtt_bridge_handler.py` | Meshtastic/PhoneAPI channel NAMES (CSV) the oracle answers on. |
 | `MESHFORGE_ORACLE_PHONEAPI_TAP` | `oracle_phoneapi_tap.py` | Enables the multi-hop PhoneAPI tap ingest path. |

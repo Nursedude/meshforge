@@ -375,6 +375,20 @@ gate). Field side: Mini is the kit's WAN; note CGNAT + IPv6-preference
   pages; power on → converge; measure power-on → `caught_up` and record
   it as the fleet's first duty-cycle number.
 
+### Shipped — batch 1 (2026-09-01, same session as the design pass)
+
+`src/utils/fleet_posture.py` (SSOT: four states, mandatory capped `until`,
+expiry-as-default, clock-gated HOLD, loud unreadable/invalid, mesh-less
+refusal) + `scripts/fleet_posture.py` (show/check/declare/clear, `--force`
+records the refusal in the file) + consumer #1 `scripts/fleet_offline_check.sh`
+(DORMANT witness / POSTURE-DRIFT gentle page / POSTURE-LIFTED / no-file
+invariance pinned by the 29 pre-existing tests). 62 tests; the monitor drilled
+by making it ignore posture (5 of 8 new tests fail). No posture is declared
+live — declaring is the operator's first act. Remaining consumers, in the
+priority order below: fleet_truth cell, the fleet crons, honest_status SHA
+leg, peer-facing probes, claw watch lists, `shed` overlay, validator with
+roles, V4–V8 in the virtual fleet.
+
 ### Priority against the Starlink cutover clock (~2 weeks from 08-27)
 
 1. **DORMANT declaration file + its four manager-side consumers**

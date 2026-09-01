@@ -473,3 +473,110 @@ class TestNoOperatorValuesInSource:
         src = open(SCRIPT).read()
         assert "MESHFORGE_OFFLINE_BOXES" in src
         assert "fleet_offline_boxes.json" in src
+
+
+class TestDeclaredPosture:
+    """2026-09-01 DORMANT arc batch 1 (design Decision 3): a box that is OFF ON
+    PURPOSE is a fourth state. Declared in fleet_posture.json (SSOT
+    src/utils/fleet_posture.py). The invariant every other test in this file
+    already pins: with NO posture file the monitor behaves exactly as before."""
+
+    BOXES = [{"name": "alpha", "host": "alpha", "services": ["svc-a"], "tier": "critical"}]
+
+    def _posture(self, h, state="dormant", until_offset=3600, raw=None):
+        import time as _t
+        from utils import fleet_posture as fp
+        path = h.tmp / "fleet_posture.json"
+        if raw is not None:
+            path.write_text(raw)
+        else:
+            path.write_text(json.dumps({
+                "posture": "t", "declared_by": "op",
+                "declared_at": fp.fmt_ts(_t.time()),
+                "boxes": {"alpha": {"state": state, "since": fp.fmt_ts(_t.time()),
+                                    "until": fp.fmt_ts(_t.time() + until_offset),
+                                    "reason": "storm tier-2"}}}))
+        return {"MESHFORGE_FLEET_POSTURE": str(path)}
+
+    def test_dormant_unreachable_box_is_witnessed_not_paged(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        env = self._posture(h)
+        for _ in range(4):
+            h.run(env_extra=env)
+        assert "Fleet box DOWN" not in h.pushes(), h.pushes()
+        assert "DORMANT [alpha]" in h.alerts() and "not paged" in h.alerts()
+        assert "storm tier-2" in h.alerts()              # the reason rides the witness
+        assert h.row("alpha")[6] == "dormant" and h.row("alpha")[2] == "0"
+
+    def test_dormant_box_that_answers_is_posture_drift(self, h):
+        h.write_conf(boxes=self.BOXES)
+        env = self._posture(h)
+        h.run(env_extra=env)
+        assert "POSTURE-DRIFT [alpha]" in h.alerts(), h.alerts()
+        assert "Fleet posture DRIFT" in h.pushes()
+        assert "Fleet box DOWN" not in h.pushes()
+        assert h.row("alpha")[6] == "drift"
+        # a second tick inside the re-alert interval does not page again
+        before = h.pushes().count("Fleet posture DRIFT")
+        h.run(env_extra=env)
+        assert h.pushes().count("Fleet posture DRIFT") == before
+
+    def test_declaration_closes_an_open_outage_without_recovered_page(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        for _ in range(3):
+            h.run()                                        # paged DOWN the old way
+        assert "Fleet box DOWN" in h.pushes()
+        env = self._posture(h)
+        h.run(env_extra=env)
+        assert "supersedes the open outage" in h.alerts()
+        assert "RECOVERED" not in h.pushes()
+        assert h.row("alpha")[6] == "dormant"
+
+    def test_expired_declaration_pages_down_again(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        env = self._posture(h, until_offset=-5)             # window already over
+        for _ in range(3):
+            h.run(env_extra=env)
+        assert "Fleet box DOWN" in h.pushes(), h.pushes()
+        assert "DORMANT [alpha]" not in h.alerts()
+
+    def test_lifted_posture_watches_from_a_clean_row(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        env = self._posture(h)
+        h.run(env_extra=env)
+        assert h.row("alpha")[6] == "dormant"
+        (h.tmp / "fleet_posture.json").unlink()            # declaration removed
+        h.run()
+        assert "POSTURE-LIFTED [alpha]" in h.alerts()
+        assert h.row("alpha")[1] == "1"                     # fail count restarted at 1
+
+    def test_invalid_posture_file_is_loud_and_never_silences(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        env = self._posture(h, raw="{not json")
+        for _ in range(3):
+            h.run(env_extra=env)
+        assert "POSTURE-UNREADABLE" in h.alerts(), h.alerts()
+        assert "Fleet box DOWN" in h.pushes()                # paging is the safe default
+
+    def test_open_ended_declaration_is_invalid_not_silent(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        env = self._posture(h, raw=json.dumps({"boxes": {"alpha": {"state": "dormant"}}}))
+        for _ in range(3):
+            h.run(env_extra=env)
+        assert "POSTURE-UNREADABLE" in h.alerts() and "MANDATORY" in h.alerts()
+        assert "Fleet box DOWN" in h.pushes()
+
+    def test_detached_is_silent_like_dormant(self, h):
+        h.write_conf(boxes=self.BOXES)
+        h.unreachable("alpha")
+        env = self._posture(h, state="detached")
+        for _ in range(3):
+            h.run(env_extra=env)
+        assert "Fleet box" not in h.pushes()
+        assert h.row("alpha")[6] == "detached"
