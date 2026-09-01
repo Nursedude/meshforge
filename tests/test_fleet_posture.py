@@ -216,6 +216,9 @@ class TestClosedConsumers:
 
     CONSUMERS = {
         "scripts/fleet_offline_check.sh": ("fleet_posture", "MESHFORGE_FLEET_POSTURE"),
+        "src/utils/fleet_truth_collector.py": ("fleet_posture", "read_posture"),
+        "src/utils/fleet_truth.py": ("posture", "dormant"),
+        "web/fleet.html": ("declared_posture", "posture_drift"),
     }
 
     @pytest.mark.parametrize("rel,needles", sorted(CONSUMERS.items()))
@@ -227,3 +230,15 @@ class TestClosedConsumers:
     def test_states_enum_is_closed(self):
         assert set(fp.STATES) == {"active", "shed", "dormant", "detached"}
         assert set(fp.SILENT_STATES) == {"dormant", "detached"}
+
+
+def test_hand_written_entry_without_since_reads_declared(tmp_path):
+    # 2026-09-01: caught by the collector test — read_posture validated with a
+    # zero clock, so an entry with neither `since` nor `declared_at` anchored
+    # at 1970 and tripped the 14-day cap. A reader must not refuse a file the
+    # declare-time validator would have accepted.
+    path = tmp_path / "p.json"
+    path.write_text(json.dumps({"boxes": {"moc4": {"state": "dormant",
+                                                    "until": fp.fmt_ts(NOW + 3600)}}}))
+    p = fp.read_posture(str(path), now=NOW)
+    assert p.status == fp.DECLARED and p.box("moc4").silent

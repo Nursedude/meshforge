@@ -868,3 +868,67 @@ class TestRoleDeclaredNoWatchdog:
         wd = t["boxes"][0]["subsystems"]["watchdog"]
         assert wd["state"] == ft.HEALTHY
         assert not wd.get("absent")
+
+
+class TestDeclaredPosture:
+    """2026-09-01 DORMANT arc batch 2: a box declared dormant/detached (the
+    collector stamps snap['posture'] from utils.fleet_posture) is a FOURTH
+    state — dark for the human, disclosed under `declared_posture`, counted
+    apart, and NOT tainting the fleet verdict. A declared box that answers is
+    posture drift: healthy reach + posture_drift flag + disclosure. Never
+    inferred from silence: no stamp = exactly the old document."""
+
+    def _dark(self, alias, posture=None):
+        s = {"alias": alias, "resolution_method": "dns", "status": None, "slo": None,
+             "error": "no response", "answered_at": None}
+        if posture:
+            s["posture"] = posture
+        return s
+
+    def _healthy(self, alias, posture=None):
+        s = TestFleetTruth()._healthy_snap(alias)
+        if posture:
+            s["posture"] = posture
+        return s
+
+    def test_dark_without_declaration_still_taints(self):
+        t = ft.build_fleet_truth([self._healthy("moc"), self._dark("moc4")],
+                                 now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.DARK
+        assert t["counts"]["dark"] == 1 and t["counts"]["dormant"] == 0
+        assert t["declared_posture"] == {}
+
+    def test_declared_dormant_dark_box_does_not_taint_and_is_disclosed(self):
+        t = ft.build_fleet_truth(
+            [self._healthy("moc"),
+             self._dark("moc4", {"state": "dormant", "note": "declared dormant until X (storm)"})],
+            now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.HEALTHY
+        assert t["counts"] == {"healthy": 1, "failed": 0, "dark": 0, "dormant": 1}
+        assert list(t["declared_posture"]) == ["moc4"]
+        assert "storm" in t["declared_posture"]["moc4"]
+        by = {b["alias"]: b for b in t["boxes"]}
+        r = by["moc4"]["reachable"]
+        assert r["state"] == ft.DARK and r["dormant"] is True     # still dark for the human
+        assert "declared dormant" in r["reason"]
+
+    def test_declared_box_that_answers_is_posture_drift(self):
+        t = ft.build_fleet_truth(
+            [self._healthy("moc4", {"state": "dormant", "note": "declared dormant until X"})],
+            now=NOW, signal_classes=[], noc_host="moc")
+        r = t["boxes"][0]["reachable"]
+        assert r["state"] == ft.HEALTHY and r.get("posture_drift") is True
+        assert "moc4" in t["posture_drift"] and "ANSWERED" in t["posture_drift"]["moc4"]
+        assert t["declared_posture"] == {}
+        assert t["counts"]["healthy"] == 1
+
+    def test_detached_is_treated_like_dormant(self):
+        t = ft.build_fleet_truth(
+            [self._healthy("moc"), self._dark("kit", {"state": "detached", "note": "field"})],
+            now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.HEALTHY and t["counts"]["dormant"] == 1
+
+    def test_active_stamp_changes_nothing(self):
+        t = ft.build_fleet_truth([self._dark("moc4", {"state": "active", "note": "x"})],
+                                 now=NOW, signal_classes=[], noc_host="moc")
+        assert t["fleet_state"] == ft.DARK and t["counts"]["dark"] == 1

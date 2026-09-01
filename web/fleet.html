@@ -500,13 +500,31 @@
                        esc(blindBoxes.join(', ')) + ' — subsystems their declared role ' +
                        'cannot serve (no map server). Not faults; not observed either.</span>');
         }
+        // Declared posture (2026-09-01, DORMANT arc). Boxes the operator
+        // switched OFF on purpose stop tainting the verdict — and, exactly
+        // like blind spots, they do not get to stop being DISCLOSED. A
+        // declared box that ANSWERED is posture drift and is named too.
+        const dp = doc.declared_posture || {};
+        const dpBoxes = Object.keys(dp);
+        if (dpBoxes.length) {
+            parts.push('<span class="note">⏻ ' + esc(dpBoxes.length) + ' box(es) declared off: ' +
+                       dpBoxes.map(b => esc(b) + ' (' + esc(dp[b]) + ')').join('; ') +
+                       ' — dormant by declaration, not faults, not observed either.</span>');
+        }
+        const drift = doc.posture_drift || {};
+        const driftBoxes = Object.keys(drift);
+        if (driftBoxes.length) {
+            parts.push('<span class="note">⚠ posture DRIFT on ' + esc(driftBoxes.join(', ')) +
+                       ' — declared off but answering: clear or renew the declaration.</span>');
+        }
         document.getElementById('verdict-detail').innerHTML = parts.join(' ');
 
         const c = doc.counts || {};
         document.getElementById('verdict-counts').innerHTML =
             '<span class="count-chip healthy">' + esc(c.healthy ?? '?') + ' healthy</span>' +
             '<span class="count-chip failed">' + esc(c.failed ?? '?') + ' failed</span>' +
-            '<span class="count-chip dark">' + esc(c.dark ?? '?') + ' dark</span>';
+            '<span class="count-chip dark">' + esc(c.dark ?? '?') + ' dark</span>' +
+            (c.dormant ? '<span class="count-chip dark">' + esc(c.dormant) + ' dormant</span>' : '');
     }
 
     function renderTopbar(doc, fetchState) {
@@ -558,8 +576,10 @@
                 (w.failover ? ' (failover)' : '') +
                 ' — witness on ' + esc(w.source_box || '?') + '</div>'
             ).join('');
+            const posture = r.dormant ? '<div class="app">⏻ DORMANT — declared off</div>'
+                          : (r.posture_drift ? '<div class="reason">⚠ posture DRIFT — declared off, but answering</div>' : '');
             return '<div class="box-tile ' + st + '" title="' + esc(cellTitle('reachable', r)) + '">' +
-                '<div class="alias">' + esc(b.alias) + '</div>' +
+                '<div class="alias">' + esc(b.alias) + '</div>' + posture +
                 (appLine ? '<div class="app">' + appLine + '</div>' : '') +
                 (st !== 'healthy' && r.reason ? '<div class="reason">' + esc(r.reason) + '</div>' : '') +
                 witnessed +

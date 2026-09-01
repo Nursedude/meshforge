@@ -169,11 +169,14 @@ class Posture:
 
 
 def validate(doc, now: Optional[float] = None,
-             bridge_boxes: Optional[Iterable[str]] = None) -> List[str]:
+             bridge_boxes: Optional[Iterable[str]] = None,
+             skip_past: bool = False) -> List[str]:
     """Return the list of reasons this document must be REFUSED (empty =
     valid). ``bridge_boxes``: the boxes whose role hosts a bridge /
     transport / propagation node — a posture that silences ALL of them is
-    a mesh that cannot deliver, refused unless the caller forces."""
+    a mesh that cannot deliver, refused unless the caller forces.
+    ``skip_past``: readers pass True — an expired window is a valid document
+    whose effect has ended, not a refusal (declare-time keeps it False)."""
     now = time.time() if now is None else now
     errs: List[str] = []
     if not isinstance(doc, dict):
@@ -208,11 +211,16 @@ def validate(doc, now: Optional[float] = None,
             continue
         since = parse_ts(entry.get("since"))
         anchor = since if since is not None else (declared_at if declared_at is not None else now)
-        if until - anchor > MAX_DORMANCY_S:
+        # 2026-09-01 (caught by the collector test): anchoring on `now` for
+        # an entry with neither `since` nor `declared_at` made a reader that
+        # passed a synthetic clock refuse a valid file. The CLI always writes
+        # `since`; a hand-written entry without one is capped against the
+        # reader's real clock only when that clock is real.
+        if until - anchor > MAX_DORMANCY_S and (since is not None or declared_at is not None or not skip_past):
             errs.append(f"{name}: window {fmt_ts(anchor)} -> {fmt_ts(until)} "
                         f"exceeds the {MAX_DORMANCY_S // 86400}-day cap — "
                         f"re-declare to renew, never silently extend")
-        if until <= now:
+        if until <= now and not skip_past:
             errs.append(f"{name}: `until` {fmt_ts(until)} is already in the past")
         svcs = entry.get("services")
         if svcs is not None and not (isinstance(svcs, list)
@@ -281,7 +289,7 @@ def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
                        errors=[f"not JSON: {exc}"])
     # Validate WITHOUT the past-`until` rule: an expired window is a valid
     # document whose effect has ended, not a refusal.
-    errs = [e for e in validate(doc, now=0.0) if "already in the past" not in e]
+    errs = validate(doc, now=now, skip_past=True)
     if errs:
         return Posture(status=INVALID, path=path, errors=errs,
                        detail="; ".join(errs)[:300])

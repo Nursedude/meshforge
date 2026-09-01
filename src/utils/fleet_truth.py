@@ -713,6 +713,27 @@ def build_box_truth(
         reach = cell(HEALTHY, age_s=age_s, source="fanout", observed_at=answered_at)
         app = (status or {}).get("app") if status else None
 
+    # DECLARED POSTURE (2026-09-01, DORMANT arc batch 2). The collector stamps
+    # ``snap["posture"] = {state, note}`` from the operator's fleet_posture.json
+    # (SSOT utils.fleet_posture) for boxes declared dormant/detached. A dark
+    # box that is dark BECAUSE it was declared off is a fourth state: it
+    # renders dark for the human, carries ``dormant=True`` + the declaration
+    # as its reason, is listed in ``declared_posture`` (disclosed, never
+    # averaged away), and does NOT taint the fleet verdict — the way
+    # accepted_blind works, and for the same reason: we chose this. A declared
+    # box that ANSWERS is posture drift: healthy reach + ``posture_drift=True``
+    # so the tile says so (the offline monitor owns the page for it). Never
+    # inferred from silence — only ever set from the declaration file.
+    posture = snap.get("posture") if isinstance(snap.get("posture"), dict) else None
+    if posture and posture.get("state") in ("dormant", "detached"):
+        if reach["state"] == DARK:
+            reach["dormant"] = True
+            reach["reason"] = f"declared {posture['state']}: {posture.get('note') or ''}".strip()
+        else:
+            reach["posture_drift"] = True
+            reach["reason"] = (f"ANSWERED while declared {posture['state']} "
+                               f"({posture.get('note') or ''}) — posture drift")
+
     watchdog_block = (status or {}).get("watchdog") if status else None
     mini_block = (status or {}).get("mini_dudeai") if status else None
     claw_block = (status or {}).get("claw") if status else None
@@ -969,17 +990,32 @@ def build_fleet_truth(
 
     answered = sum(1 for b in boxes if b["reachable"]["state"] != DARK)
     declared = hosts_declared if hosts_declared is not None else len(boxes)
-    fanout_stale = answered < declared
+    # A box declared dormant/detached (and dark) is an EXPECTED non-answer:
+    # it comes out of the completeness denominator, or a fleet with one box
+    # switched off on purpose would read "fan-out incomplete" all storm.
+    dormant_n = sum(1 for b in boxes if b["reachable"].get("dormant"))
+    fanout_stale = answered < (declared - dormant_n)
 
     # Worst-of across every reachability + subsystem cell. counts{} uses the
     # per-box roll-up (box_state), not bare reachability — a reachable box
     # with an observed fault counts failed, not healthy (2026-07-19 review).
     all_states: List[str] = []
     counts = {HEALTHY: 0, FAILED: 0, DARK: 0}
+    dormant_boxes: Dict[str, str] = {}
+    drift_boxes: Dict[str, str] = {}
     for b in boxes:
         bs = b.get("box_state") or b["reachable"]["state"]
+        reach = b["reachable"]
+        if reach.get("dormant"):
+            # Declared off and dark: counted apart, disclosed, never tainting —
+            # a box we switched off on purpose is not a blind spot we suffer.
+            counts["dormant"] = counts.get("dormant", 0) + 1
+            dormant_boxes[b.get("alias") or "?"] = reach.get("reason") or "declared off"
+            continue
+        if reach.get("posture_drift"):
+            drift_boxes[b.get("alias") or "?"] = reach.get("reason") or "posture drift"
         counts[bs] = counts.get(bs, 0) + 1
-        all_states.append(b["reachable"]["state"])  # unreachable = blind spot
+        all_states.append(reach["state"])  # unreachable = blind spot
         for name, c in b["subsystems"].items():
             if _subsystem_taints_verdict(name, c):
                 all_states.append(c["state"])
@@ -1060,13 +1096,20 @@ def build_fleet_truth(
         "fanout": {
             "hosts_declared": declared,
             "hosts_answered": answered,
+            "hosts_dormant": dormant_n,
             "ttl_s": ttl_s,
             "stale": fanout_stale,
         },
         "fleet_state": fleet_state,
         "counts": {"healthy": counts.get(HEALTHY, 0),
                    "failed": counts.get(FAILED, 0),
-                   "dark": counts.get(DARK, 0)},
+                   "dark": counts.get(DARK, 0),
+                   "dormant": counts.get("dormant", 0)},
+        # {box: declaration} for boxes declared dormant/detached AND dark —
+        # disclosed beside the verdict they no longer taint. Empty = nothing
+        # is declared off. {box: reason} for declared boxes that ANSWERED.
+        "declared_posture": dormant_boxes,
+        "posture_drift": drift_boxes,
         "boxes": boxes,
         "structural_dark": STRUCTURAL_DARK,
         # {box: [subsystems]} unobservable because that box's DECLARED role

@@ -274,7 +274,31 @@ def collect_snapshots(*, port: int = DEFAULT_PORT) -> "tuple[List[Dict[str, Any]
                 snapshots.append({"alias": display, "resolution_method": "error",
                                   "status": None, "slo": None,
                                   "error": f"fetch worker error: {e}", "answered_at": None})
+    _stamp_declared_posture(snapshots)
     return snapshots, declared
+
+
+def _stamp_declared_posture(snapshots: List[Dict[str, Any]]) -> None:
+    """Attach the operator's declared posture (utils.fleet_posture, read ONCE
+    per fan-out) to the snapshots of boxes declared dormant/detached, so the
+    truth builder can render them as a fourth state instead of an alarm.
+    Absent file = nothing stamped = today's document. A broken file is logged
+    and stamps nothing (a broken declaration must never silence a box)."""
+    try:
+        from utils import fleet_posture as fp
+        p = fp.read_posture()
+        if p.status in (fp.UNREADABLE, fp.INVALID):
+            logger.warning("fleet_posture %s: %s — treating every box as active",
+                           p.status, p.detail)
+            return
+        if p.status != fp.DECLARED:
+            return
+        for snap in snapshots:
+            b = p.boxes.get(str(snap.get("alias")))
+            if b is not None and b.silent:
+                snap["posture"] = {"state": b.state, "note": b.note}
+    except Exception as e:  # never sink a fan-out over a posture read
+        logger.warning("fleet_posture read failed: %s — treating every box as active", e)
 
 
 # ── TTL-cached singleton ────────────────────────────────────────────────

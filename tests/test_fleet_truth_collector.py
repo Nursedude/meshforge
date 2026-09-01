@@ -94,3 +94,49 @@ class TestCache:
         assert t["fanout"]["stale"] is True
         assert "boom" in t["fanout"].get("error", "")
         assert t["schema"] == "fleet_truth/v1"
+
+
+class TestDeclaredPostureStamp:
+    """2026-09-01 DORMANT arc batch 2: the collector reads the operator's
+    fleet_posture.json ONCE per fan-out and stamps only boxes declared
+    dormant/detached. No file → nothing stamped (today's document); a broken
+    file → warning + nothing stamped (a broken declaration must never silence
+    a box)."""
+
+    def _snaps(self):
+        return [{"alias": "moc", "status": None, "slo": None},
+                {"alias": "moc4", "status": None, "slo": None}]
+
+    def test_no_file_stamps_nothing(self, tmp_path, monkeypatch):
+        from utils import fleet_truth_collector as c
+        monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(tmp_path / "none.json"))
+        snaps = self._snaps()
+        c._stamp_declared_posture(snaps)
+        assert all("posture" not in s for s in snaps)
+
+    def test_declared_silent_box_is_stamped(self, tmp_path, monkeypatch):
+        import json, time
+        from utils import fleet_posture as fp
+        from utils import fleet_truth_collector as c
+        p = tmp_path / "fleet_posture.json"
+        p.write_text(json.dumps({"boxes": {"moc4": {"state": "dormant",
+                                                    "until": fp.fmt_ts(time.time() + 3600),
+                                                    "reason": "storm"}}}))
+        monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(p))
+        snaps = self._snaps()
+        c._stamp_declared_posture(snaps)
+        by = {s["alias"]: s for s in snaps}
+        assert by["moc4"]["posture"]["state"] == "dormant" and "storm" in by["moc4"]["posture"]["note"]
+        assert "posture" not in by["moc"]
+
+    def test_broken_file_warns_and_stamps_nothing(self, tmp_path, monkeypatch, caplog):
+        import logging
+        from utils import fleet_truth_collector as c
+        p = tmp_path / "fleet_posture.json"
+        p.write_text("{nope")
+        monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(p))
+        snaps = self._snaps()
+        with caplog.at_level(logging.WARNING):
+            c._stamp_declared_posture(snaps)
+        assert all("posture" not in s for s in snaps)
+        assert any("fleet_posture" in m for m in caplog.messages)
