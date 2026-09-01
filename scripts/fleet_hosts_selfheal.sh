@@ -86,15 +86,22 @@ case "$rc" in
 esac
 
 # --- drift: repair, then verify the repair against the artifact -------------
+# TWO repairable shapes, counted separately because they mean different things
+# to a human (2026-08-31): DRIFT = the address moved (a box changed IP);
+# PROVENANCE = the address is right but its source marker is stale (e.g. a name
+# that used to fall back to the registry now has a real DNS record). Collapsing
+# them would report "a box moved" when nothing moved.
 drifted=$(printf '%s\n' "$out" | awk '/^DRIFT /{print $2}' | tr -d ':' | paste -sd, -)
 n=$(printf '%s\n' "$out" | grep -c '^DRIFT ')
+provenance=$(printf '%s\n' "$out" | awk '/^PROVENANCE /{print $2}' | tr -d ':' | paste -sd, -)
+np=$(printf '%s\n' "$out" | grep -c '^PROVENANCE ')
 
 if [ "$(id -u)" -eq 0 ]; then
     apply_out=$("$GEN" --apply 2>&1); apply_rc=$?
 else
     apply_out=$(sudo -n "$GEN" --apply 2>&1); apply_rc=$?
     if [ "$apply_rc" -ne 0 ] && printf '%s' "$apply_out" | grep -qi "sudo\|password"; then
-        say FAIL "drift in $n name(s) [$drifted] — cannot heal, sudo -n refused"
+        say FAIL "drift in $n name(s) [$drifted] / $np stale marker(s) [$provenance] — cannot heal, sudo -n refused"
         exit 0
     fi
 fi
@@ -102,8 +109,18 @@ fi
 verify_out=$("$GEN" --check 2>&1); verify_rc=$?
 
 if [ "$verify_rc" -eq "$RC_OK" ]; then
-    say CONCERN "healed $n drifted name(s): $drifted (a box moved — durable cure is a DHCP reservation)"
+    if [ "$n" -gt 0 ] && [ "$np" -gt 0 ]; then
+        say CONCERN "healed $n drifted name(s): $drifted (a box moved); refreshed $np stale provenance marker(s): $provenance"
+    elif [ "$n" -gt 0 ]; then
+        say CONCERN "healed $n drifted name(s): $drifted (a box moved — durable cure is a DHCP reservation)"
+    else
+        # Deliberately NOT worded as a box moving: addresses were already
+        # correct. This is the block catching up to a change in where an
+        # address CAME FROM — normally a name gaining (or losing) a real DNS
+        # record. One-shot; it self-clears on the next run.
+        say CONCERN "refreshed $np stale provenance marker(s): $provenance (addresses unchanged — no box moved)"
+    fi
 else
-    say FAIL "drift in $n name(s) [$drifted] PERSISTS after --apply (apply rc=$apply_rc, recheck rc=$verify_rc): $(printf '%s' "$apply_out" | tr '\n' ' ' | cut -c1-120)"
+    say FAIL "drift in $n name(s) [$drifted] / $np stale marker(s) [$provenance] PERSISTS after --apply (apply rc=$apply_rc, recheck rc=$verify_rc): $(printf '%s' "$apply_out" | tr '\n' ' ' | cut -c1-120)"
 fi
 exit 0

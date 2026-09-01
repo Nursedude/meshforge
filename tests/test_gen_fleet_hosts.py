@@ -630,3 +630,225 @@ class TestWriteDurabilityAndTornRepair:
         assert "nas.lan" in text, "torn repair deleted an operator line"
         assert "old.mf.internal" not in text
         assert text.count(gfh.BEGIN) == 1 and text.count(gfh.END) == 1
+
+
+# ── 2026-08-31: the provenance marker is compared, not just the address ──────
+
+def _zone_without_moc(fqdn, timeout=3.0):
+    """m1 holds every fleet name EXCEPT `moc` — the lehua shape. An
+    all-negative zone cannot be used to seed this state: the generator
+    refuses to write when nothing resolved (blindness is not an empty
+    fleet), which is itself a pinned behaviour above."""
+    if fqdn.startswith("moc."):
+        return (gfh.NEGATIVE, None)
+    return (gfh.ANSWERED, "192.0.2.249")
+
+
+def _zone_with_moc(fqdn, timeout=3.0):
+    """The record has been added — at the address the ip_fallback already
+    held, so the address map is byte-identical to _zone_without_moc's."""
+    if fqdn.startswith("moc."):
+        return (gfh.ANSWERED, "192.0.2.38")
+    return (gfh.ANSWERED, "192.0.2.249")
+
+
+class TestProvenanceComparison:
+    """The marker outlived the condition that produced it, forever.
+
+    Live case: `lehua` was written `# via ip_fallback` on 2026-08-30 because
+    m1 held no A record. The record was added 08-31 — but the ADDRESS was
+    already the fallback value, so nothing changed in the address map:
+    `--check` said "in sync", `--apply` said "already current" and declined
+    to write, and the block kept asserting that DNS could not answer a name
+    DNS answers. On all 9 boxes, with no code path able to repair it.
+
+    In a file that SHADOWS DNS, that marker is the only thing separating an
+    authoritative record from a registry decision, so a stale one is a lie
+    about provenance — the exact distinction an operator reads this block for.
+    """
+
+    def _block(self, registry, monkeypatch, resolver):
+        monkeypatch.setattr(gfh, "resolve_a", resolver)
+        entries, _w = gfh.build_entries(registry)
+        return gfh.render_block(entries, local="")
+
+    def test_writer_and_reader_share_one_marker_table(self):
+        """render_block writes it, parse_provenance reads it. Two independent
+        hardcodes would drift silently (honest_failure_modes #5) — the reader
+        would classify every line `unknown` and the file would churn."""
+        for source in ("dns", "ip_fallback", "held"):
+            entries = [("192.0.2.1", "moc.mf.internal", source)]
+            got = gfh.parse_provenance(gfh.render_block(entries, local=""))
+            assert got["moc.mf.internal"] == source, (
+                f"marker for {source!r} does not survive a write/read round "
+                f"trip — SOURCE_SUFFIX and _MARKER_TO_SOURCE have drifted")
+
+    def test_stale_fallback_marker_is_drift_when_dns_starts_answering(
+            self, registry, monkeypatch, tmp_path):
+        """THE regression. Same address before and after; only the source
+        changed. This reported `in sync` before 2026-08-31."""
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        monkeypatch.setattr(gfh, "load_registry", lambda: (registry, []))
+
+        # ONE name missing from the zone (an all-negative zone is blindness
+        # and is refused a write, by design) — it lands on its ip_fallback.
+        monkeypatch.setattr(gfh, "resolve_a", _zone_without_moc)
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--apply", "--hosts-file", str(hosts)])
+        assert gfh.main() == gfh.EXIT_OK
+        assert "# via ip_fallback" in hosts.read_text()
+
+        # The record is added, pointing at the SAME address the fallback held,
+        # so the address map does not move by so much as one byte.
+        monkeypatch.setattr(gfh, "resolve_a", _zone_with_moc)
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--check", "--hosts-file", str(hosts)])
+        assert gfh.main() == gfh.EXIT_DRIFT, (
+            "a marker claiming DNS could not answer, for a name DNS answers, "
+            "must be repairable drift — not 'in sync'")
+
+    def test_apply_repairs_the_stale_marker(self, registry, monkeypatch,
+                                            tmp_path):
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        monkeypatch.setattr(gfh, "load_registry", lambda: (registry, []))
+        monkeypatch.setattr(gfh, "resolve_a", _zone_without_moc)
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--apply", "--hosts-file", str(hosts)])
+        gfh.main()
+
+        monkeypatch.setattr(gfh, "resolve_a", _zone_with_moc)
+        assert gfh.main() == gfh.EXIT_OK
+        text = hosts.read_text()
+        assert "# via ip_fallback" not in text, (
+            "--apply said 'already current' and left the stale marker")
+        assert gfh.parse_provenance(gfh.current_block(hosts))[
+            "moc.mf.internal"] == "dns"
+
+    def test_zone_dropping_a_name_is_visible_even_when_the_address_matches(
+            self, registry, monkeypatch, tmp_path):
+        """The mirror image, and the more dangerous one: a name silently
+        leaves the zone but its ip_fallback happens to equal the old A. The
+        address map cannot see it; the operator loses the signal entirely."""
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        monkeypatch.setattr(gfh, "load_registry", lambda: (registry, []))
+        monkeypatch.setattr(gfh, "resolve_a", _dns("192.0.2.38"))
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--apply", "--hosts-file", str(hosts)])
+        gfh.main()
+
+        def dropped(fqdn, timeout=3.0):
+            if fqdn.startswith("moc."):
+                return (gfh.NEGATIVE, None)      # gone from the zone
+            return (gfh.ANSWERED, "192.0.2.38")
+
+        monkeypatch.setattr(gfh, "resolve_a", dropped)
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--check", "--hosts-file", str(hosts)])
+        assert gfh.main() == gfh.EXIT_DRIFT
+
+    def test_unrecognised_marker_never_reads_as_healthy(self):
+        """A hand-edit is not evidence of a `dns` entry. Unknown must drift
+        toward regeneration, never be absorbed into the healthy value
+        (honest_failure_modes #1)."""
+        block = (gfh.BEGIN + "\n192.0.2.38  moc.mf.internal moc   # hand note\n"
+                 + gfh.END + "\n")
+        assert gfh.parse_provenance(block)["moc.mf.internal"] == (
+            gfh.UNKNOWN_SOURCE)
+        assert gfh.provenance_drift(gfh.parse_provenance(block),
+                                    {"moc.mf.internal": "dns"})
+
+    def test_header_prose_is_not_mistaken_for_an_entry(self, registry,
+                                                       monkeypatch):
+        """The block's own header comments must contribute no provenance
+        keys, or a reworded header would churn the fleet."""
+        block = self._block(registry, monkeypatch, _dns("192.0.2.38"))
+        assert set(gfh.parse_provenance(block)) == {
+            "moc.mf.internal", "moc1.mf.internal"}
+
+    # ── the anti-churn half: `held` stays OUT ────────────────────────────
+
+    def test_one_lost_datagram_does_not_become_provenance_drift(
+            self, registry, monkeypatch, tmp_path):
+        """`held` is transient BY CONSTRUCTION — one dropped packet. Comparing
+        it would rewrite /etc/hosts fleet-wide and page CONCERN, then rewrite
+        back next run: churn manufactured out of an unobservable."""
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        monkeypatch.setattr(gfh, "load_registry", lambda: (registry, []))
+        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--apply", "--hosts-file", str(hosts)])
+        gfh.main()
+
+        def flaky(fqdn, timeout=3.0):
+            if fqdn.startswith("moc1."):
+                return (gfh.UNOBSERVABLE, None)
+            return (gfh.ANSWERED, "10.0.0.9")
+
+        monkeypatch.setattr(gfh, "resolve_a", flaky)
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--check", "--hosts-file", str(hosts)])
+        assert gfh.main() == gfh.EXIT_OK, (
+            "a per-name lost datagram must not manufacture provenance drift")
+
+    def test_a_flap_alone_never_writes_a_held_marker(self, registry,
+                                                     monkeypatch, tmp_path):
+        """Consequence of excluding `held`, pinned so it stays deliberate: a
+        flap on a name whose address does not move writes NOTHING at all. The
+        block keeps its `dns` marker and its (still correct) address, so there
+        is no rewrite to churn and no CONCERN to page."""
+        hosts = tmp_path / "hosts"
+        hosts.write_text("127.0.0.1 localhost\n")
+        monkeypatch.setattr(gfh, "load_registry", lambda: (registry, []))
+        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--apply", "--hosts-file", str(hosts)])
+        gfh.main()
+        before = hosts.read_text()
+
+        def flaky(fqdn, timeout=3.0):
+            if fqdn.startswith("moc1."):
+                return (gfh.UNOBSERVABLE, None)
+            return (gfh.ANSWERED, "10.0.0.9")
+
+        monkeypatch.setattr(gfh, "resolve_a", flaky)
+        assert gfh.main() == gfh.EXIT_OK
+        assert hosts.read_text() == before, (
+            "a lost datagram rewrote /etc/hosts — on 9 boxes, hourly")
+
+    def test_a_held_marker_already_on_disk_is_repaired(self, registry,
+                                                       monkeypatch, tmp_path):
+        """Excluding `held` from the comparison must not STRAND one that a
+        real write already put on disk (it lands when some OTHER name is
+        drifting in the same run). Once DNS answers, it is repaired like any
+        other stale marker."""
+        hosts = tmp_path / "hosts"
+        held_block = gfh.render_block(
+            [("10.0.0.9", "moc.mf.internal", "dns"),
+             ("10.0.0.9", "moc1.mf.internal", "held")], local="")
+        hosts.write_text("127.0.0.1 localhost\n" + held_block)
+        assert gfh.parse_provenance(gfh.current_block(hosts))[
+            "moc1.mf.internal"] == "held"
+
+        monkeypatch.setattr(gfh, "load_registry", lambda: (registry, []))
+        monkeypatch.setattr(gfh, "resolve_a", _dns("10.0.0.9"))
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--check", "--hosts-file", str(hosts)])
+        assert gfh.main() == gfh.EXIT_DRIFT
+        monkeypatch.setattr(sys, "argv",
+                            ["gen", "--apply", "--hosts-file", str(hosts)])
+        assert gfh.main() == gfh.EXIT_OK
+        assert gfh.parse_provenance(gfh.current_block(hosts))[
+            "moc1.mf.internal"] == "dns", "a held marker outlived its condition"
+
+    def test_a_source_with_no_marker_fails_loudly_not_silently(self):
+        """A new source added to build_entries without a SOURCE_SUFFIX entry
+        must break the render, not quietly emit the healthy no-marker line.
+        Silently rendering it as `dns` would make the block CLAIM a DNS answer
+        it never had — the #80 shape (degraded value in the healthy domain)."""
+        with pytest.raises(KeyError):
+            gfh.render_block([("192.0.2.1", "moc.mf.internal", "brand_new")],
+                             local="")

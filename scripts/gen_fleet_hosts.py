@@ -51,6 +51,12 @@ Honest-failure-mode rules enforced here:
     mistaken for an empty fleet.
   * Only the delimited managed block is ever touched; the rest of /etc/hosts
     is preserved byte-for-byte.
+  * The per-entry PROVENANCE marker is part of the comparison, not decoration
+    (2026-08-31). An address-only comparison let `# via ip_fallback` outlive
+    the condition that produced it -- `--apply` reported "already current"
+    and declined to repair a marker claiming DNS could not answer a name DNS
+    answers. In a file that SHADOWS DNS, that marker is the only thing
+    separating an authoritative record from a registry decision.
   * Each entry is `<ip>  <fqdn> <bare-alias>`, EXCEPT that the bare alias
     matching this box's own hostname is never emitted (2026-08-08). It was
     FQDN-only until then, to avoid shadowing the box's own hostname entry and
@@ -102,6 +108,26 @@ EXIT_UNKNOWN = 2
 ANSWERED = "answered"
 NEGATIVE = "negative"
 UNOBSERVABLE = "unobservable"
+
+# The per-entry PROVENANCE marker, in ONE place because two consumers read it:
+# render_block writes it and parse_provenance reads it back. Independent
+# hardcodes WILL drift (honest_failure_modes #5), and here a drift would be
+# SILENT rather than loud -- the reader would simply classify every line as
+# `unknown` and the file would churn on every run. Empty string = the healthy
+# `dns` case, which carries no marker at all.
+SOURCE_SUFFIX = {
+    "dns": "",
+    "ip_fallback": "    # via ip_fallback",
+    "held": "    # held (DNS unobservable)",
+}
+#: comment-text -> source, derived from the writer's table (never re-typed).
+_MARKER_TO_SOURCE = {v.split("#", 1)[1].strip(): k
+                     for k, v in SOURCE_SUFFIX.items() if v}
+#: A marker we did not write (hand-edit, or an older/newer format). Never
+#: folded into "dns": an unrecognised marker is not evidence of a healthy
+#: entry, and the block says DO NOT EDIT BY HAND -- so it drifts and gets
+#: regenerated, which is the safe direction.
+UNKNOWN_SOURCE = "unknown"
 
 
 def _is_loopback(addr: str) -> bool:
@@ -357,12 +383,13 @@ def render_block(entries: List[Tuple[str, str, str]],
              "127.0.1.1 entry."]
     width = max((len(ip) for ip, _f, _s in entries), default=15)
     for ip, fqdn, source in entries:
-        if source == "ip_fallback":
-            suffix = "    # via ip_fallback"
-        elif source == "held":
-            suffix = "    # held (DNS unobservable)"
-        else:
-            suffix = ""
+        # Indexed, NOT .get(source, "") — an unknown source must not render
+        # as the healthy no-marker case. That is the #80 shape exactly: a
+        # degraded value mapped into the healthy domain, here producing an
+        # entry that CLAIMS a DNS answer it never had. A new source added to
+        # build_entries without a marker fails loudly on the first render
+        # (honest_failure_modes #7 — a closed enum needs closed consumers).
+        suffix = SOURCE_SUFFIX[source]
         alias = fqdn.split(".", 1)[0]
         names = fqdn if alias.lower() == local else f"{fqdn} {alias}"
         lines.append(f"{ip:<{width}}  {names}{suffix}")
@@ -417,9 +444,14 @@ def parse_block(block: Optional[str]) -> Dict[str, str]:
     the thing you changed is not a comparison (the 2026-07-25 self-confirming
     -checker lesson, one layer over).
 
-    Formatting and comments stay OUT of the comparison deliberately: the
+    Formatting and prose comments stay OUT of this map deliberately: the
     block's MEANING is "these names resolve to these addresses", and a
-    reworded comment must not trigger a fleet-wide /etc/hosts rewrite.
+    reworded header comment must not trigger a fleet-wide /etc/hosts rewrite.
+
+    The one comment that is NOT prose is the per-entry provenance marker --
+    it is a claim about where the address came from. It lives in
+    ``parse_provenance`` and is compared separately; see that docstring for
+    why an address-only comparison stranded a stale marker forever.
     """
     out: Dict[str, str] = {}
     if not block:
@@ -433,6 +465,69 @@ def parse_block(block: Optional[str]) -> Dict[str, str]:
             for name in parts[1:]:
                 out[name] = parts[0]
     return out
+
+
+def parse_provenance(block: Optional[str]) -> Dict[str, str]:
+    """fqdn -> where its address came from: 'dns' | 'ip_fallback' | 'held' |
+    UNKNOWN_SOURCE. Read back from the marker ``render_block`` wrote.
+
+    WHY THIS EXISTS (2026-08-31). ``parse_block`` compares ADDRESSES only, so
+    a marker could be stale forever with nothing able to notice. Live case:
+    ``lehua`` carried ``# via ip_fallback`` ("DNS could not answer") from
+    2026-08-30. When the A record was added to m1 the next day the address did
+    not change -- it was already the fallback value -- so ``--check`` said
+    ``in sync`` and ``--apply`` said ``already current`` and declined to write.
+    The block went on asserting that DNS could not answer a name DNS answers,
+    on all 9 boxes, with no code path able to repair it.
+
+    That marker is the ONLY thing distinguishing an authoritative record from
+    a registry decision in a file that SHADOWS DNS, which is precisely the
+    distinction an operator reads this block to make. Comparing it makes the
+    ``ip_fallback -> dns`` transition (and the reverse: the zone quietly
+    dropping a name whose fallback happens to match) a repairable drift.
+
+    ``held`` is deliberately EXCLUDED from the comparison by the caller -- see
+    ``provenance_drift``.
+    """
+    out: Dict[str, str] = {}
+    if not block:
+        return out
+    for line in block.splitlines():
+        code, _hash, comment = line.partition("#")
+        parts = code.split()
+        if len(parts) < 2:
+            continue          # header/prose comment, or a malformed line
+        fqdn = parts[1]
+        marker = comment.strip()
+        out[fqdn] = ("dns" if not marker
+                     else _MARKER_TO_SOURCE.get(marker, UNKNOWN_SOURCE))
+    return out
+
+
+def provenance_drift(have: Dict[str, str], want: Dict[str, str],
+                     ) -> List[Tuple[str, str, str]]:
+    """-> [(fqdn, have_source, want_source)] for markers needing repair.
+
+    A desired source of ``held`` is SKIPPED. ``held`` means "no server
+    answered for this ONE name this run" -- a lost datagram, transient by
+    construction. Comparing it would make a single dropped packet rewrite
+    /etc/hosts on every box and page CONCERN, then rewrite it back on the
+    next run: churn manufactured out of an unobservable, which is the
+    moc5-reshuffle reflex (honest_failure_modes #2 -- unobservable is not a
+    finding about the artifact). The address is held unchanged in that case,
+    so the block stays TRUE about what it mainly claims; only the marker
+    lags, and it is corrected by the next run that can actually see DNS.
+    ``tests.TestProvenanceComparison`` pins both halves.
+    """
+    drift: List[Tuple[str, str, str]] = []
+    for fqdn in sorted(set(have) | set(want)):
+        w = want.get(fqdn)
+        if w is None or w == "held":
+            continue
+        h = have.get(fqdn)
+        if h is not None and h != w:
+            drift.append((fqdn, h, w))
+    return drift
 
 
 def write_block(path: Path, block: str) -> Path:
@@ -481,7 +576,9 @@ def main() -> int:
     path = Path(args.hosts_file)
     # The existing managed block is the HOLD source for per-name unobservable
     # results — parsed BEFORE resolution (07-26 review D3).
-    have = parse_block(current_block(path))
+    have_block = current_block(path)
+    have = parse_block(have_block)
+    have_src = parse_provenance(have_block)
 
     entries, warnings = build_entries(registry, have)
     for warn in warnings:
@@ -502,24 +599,37 @@ def main() -> int:
         return EXIT_OK
 
     want = parse_block(block)
+    want_src = parse_provenance(block)
+    stale_markers = provenance_drift(have_src, want_src)
 
     if args.check:
-        if have == want:
+        if have == want and not stale_markers:
             print(f"in sync: {len(want)} fleet names")
             return EXIT_OK
         for fqdn in sorted(set(have) | set(want)):
             if have.get(fqdn) != want.get(fqdn):
                 print(f"DRIFT {fqdn}: hosts={have.get(fqdn, '-')} "
                       f"dns={want.get(fqdn, '-')}")
+        # Distinct prefix, not a second DRIFT line: the address did NOT move,
+        # so a consumer that says "a box moved" would be telling the operator
+        # something false. scripts/fleet_hosts_selfheal.sh counts the two
+        # separately and words its verdict accordingly.
+        for fqdn, was, now in stale_markers:
+            print(f"PROVENANCE {fqdn}: marker={was} actual={now} "
+                  f"(address unchanged)")
         return EXIT_DRIFT
 
-    if have == want:
+    if have == want and not stale_markers:
         print(f"already current: {len(want)} fleet names")
         return EXIT_OK
 
     backup = write_block(path, block)
-    verify = parse_block(current_block(path))
-    if verify != want:
+    verify_block = current_block(path)
+    verify = parse_block(verify_block)
+    # Verify BOTH claims the block makes — addresses and provenance. Checking
+    # only what we used to compare would let a write land half-applied and
+    # still report success (calibrated_claims #7: observe the artifact).
+    if verify != want or parse_provenance(verify_block) != want_src:
         print("ERROR: post-write verification failed", file=sys.stderr)
         return EXIT_UNKNOWN
     print(f"applied: {len(want)} fleet names (backup {backup})")
