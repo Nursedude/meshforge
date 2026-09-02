@@ -431,3 +431,47 @@ same window.
    push replace it fleet-wide so there is one evidence path?
 3. **Automatic posture entry** from a real battery-current sensor: wanted
    in a later arc, or never (operator-declared only, by doctrine)?
+
+---
+
+## ⚖️ Swappable-WAN invariant (2026-09-02, Fable 5.1 + operator, at session close)
+
+**Context**: Starlink (router mode) lands at the QTH this week; the current ISP
+network is phased out once Starlink is proven; the field kit is Starlink Mini
+behind the OpenWrt box. The public-IP question cannot be answered until
+Starlink is up — so the design must not need the answer.
+
+**Invariant**: the fleet never knows what its WAN is. Everything upstream of
+the fleet's own edge router is replaceable; names, DHCP, `mf.internal` DNS,
+NTP island, firewall and every fleet address are authored BEHIND the edge.
+m1 is that edge at the QTH; the OpenWrt box is the same edge in the field.
+Same class, two scales — QTH and kit differ only in WAN and box count. That is
+the recursion: each cutover is the template the next one re-runs.
+
+**Assumption adopted**: there is NO inbound, anywhere (CGNAT is Starlink's
+general case and the field's always). Every cross-site path dials OUT to a
+rendezvous the operator owns (the cloud host). Consequence: the alaula/kiai
+reverse tunnels — the fleet's only inbound dependency — must be re-homed from
+the QTH to the cloud host, and this is the one thing that breaks on install
+day if not done first.
+
+**What learns**: every cutover yields the same four artifacts — baseline
+captured BEFORE, measured delta AFTER, runbook entry, eval case. Requires a
+**WAN leg in fleet truth** (per site, observed at the edge: which uplink,
+CGNAT y/n, latency, last-changed) so a swap is visible rather than inferred.
+
+**Pre-truck batch (Opus, in order; displaces other queued items this week)**:
+1. Re-home alaula/kiai tunnels to the cloud rendezvous while BOTH WANs are
+   alive — prove the swap-safe shape, don't discover it in the outage.
+2. WAN leg in fleet truth (+ honest_status disclosure), so install day has a
+   before.
+3. Virtual-fleet cutover drill: edge loses WAN → new WAN, new address →
+   tunnels reconnect via rendezvous → a page arrives. Then run it for real.
+
+**Install-day**: router mode, m1 as a client on a Starlink LAN port, fleet
+unchanged behind it (double NAT is harmless for a push-only fleet). Bypass
+mode stays a later option (single NAT + delegated IPv6, but kills Starlink
+WiFi → household onto m1 VLANs). IPv6: keep firewalled at the edge; a v6
+inbound path is a deliberate arc, never an install side effect. Expect
+`fleet_offline_check` to page kiai/alaula as PATH-down during the re-home —
+the instrument being right. Watch the clock leg (NTP island stays inside).
