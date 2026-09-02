@@ -427,3 +427,72 @@ evidence F2 will ever produce, and flashing it early would destroy it.
 ⚠️ Honest limit: the three claws hear different traffic on different segments,
 so this is suggestive, not a controlled experiment. Treat a drop as evidence,
 not proof, and say which nodes changed rather than quoting a bare count.
+
+---
+
+## ✅ THE F2 MEASUREMENT — READ 2026-09-01. NULL RESULT.
+
+Capture fired on schedule (`claw_direct_snapshot_post_dudeclaw20.json`,
+`taken_utc 2026-09-01T16:30:01Z`) and the comparison is now recorded.
+
+**F2's predicted signature did not appear. 12/12 direct before → 12/12 after.**
+
+| claw | firmware after | direct before | direct after | `lost_direct_heard` |
+|---|---|---|---|---|
+| dudeclaw-01 | `.20` (flashed) | 5/5 | 5/5 | *(none)* |
+| dudeclaw-02 | `.19` **control** | 5/5 | 5/5 | *(none)* |
+| dudeclaw-03 | `.20` (flashed) | 2/2 | 2/2 | *(none)* |
+
+Not one node changed state — on either flashed claw or the control. Every
+`lost_direct_*` bucket is empty on all three.
+
+**The measurement itself is sound; this is a real negative, not a botched run:**
+
+* windows MATCHED and exceeded baseline — 21.9 h / 22.0 h / 21.9 h after vs
+  21.8 h / 21.4 h / 21.4 h before, all past the 9 h `required_window_s`;
+* `uptime_s` equals `accumulation_window_s` on all three, so **no reboot**
+  reset the counters inside the window (the confound the task warned about);
+* `watch_set_changed = false` on all three — the comparison is like-for-like;
+* versions confirm the treatment actually landed: `-01`/`-03` on
+  `0.4.0+dudeclaw.20`, `-02` held at `.19`.
+
+**So the (0,0)-forgery hypothesis does not explain the 12/12 reading.** Either
+these are genuinely direct links and the "implausible in a flood mesh" prior
+was wrong, or the `direct` flag is set somewhere F2's flag-byte change never
+reaches. F2 remains correct as a decoder fix (exhaustively drilled over all 256
+flag bytes) — it simply is not what produces this number.
+
+### The incidental finding — worth more than the null
+
+The `direct` block's `rssi_dbm` carries a **0 dBm sentinel**, which is not a
+physical LoRa RSSI. Its before/after pattern tracks the flash:
+
+| claw | firmware | 0-dBm in `direct` before | after |
+|---|---|---|---|
+| dudeclaw-03 | `.19` → `.20` | **2/2** | **0/2** |
+| dudeclaw-02 | `.19` → `.19` (control) | 3/5 | 3/5 |
+| dudeclaw-01 | `.19` → `.20` | 0/5 | 0/5 |
+
+The one flashed device that HAD the sentinel lost it; the unflashed control
+kept it. Same hardware, before and after, with a control holding still — the
+right direction, but **n = 1 treated device with the condition**, so this is
+SUGGESTIVE, not established. It is the honest_failure_modes #1 class in the
+telemetry itself: an unset value landing inside the healthy domain, where
+"0 dBm" reads as a measurement rather than as "no measurement".
+
+### One open question, not a finding
+
+On dudeclaw-01 (`.20`) the two blocks disagree about the same node's RSSI —
+`!851a9fe7` reads **-119 dBm** in `direct` and **-95 dBm** in `watched`;
+`!32962f10` reads -109 vs -96. That may be entirely legitimate (different
+packets: last direct-flagged reception vs last reception by any path), so it is
+recorded as a question, not a defect. **The check**: read what populates each
+block; if both claim "last packet from this node" they cannot both be right.
+
+### Consequences
+
+* **Do NOT flash dudeclaw-02 yet.** It is the only `.19` control, and the RSSI
+  sentinel finding above is the one live hypothesis that still needs it.
+* The capture cron is now a no-op (`O_CREAT|O_EXCL`, `already_captured`) and
+  per this plan should be retired — **but not before** the sentinel question is
+  settled, since re-earning a matched window costs another ~22 h.
