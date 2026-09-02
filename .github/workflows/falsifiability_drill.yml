@@ -1,0 +1,68 @@
+name: Falsifiability Drill
+
+# The standing gate for "would the suite notice this probe dying?"
+# (falsifiability audit phase 2, 2026-09-02). scripts/falsifiability_drill.py
+# replaces every signal class's runner-called entry probe with a dead stub and
+# a stuck-loud stub in a throwaway worktree and re-runs the referencing tests;
+# a class the suite would let die silently fails the job. Weekly + on demand:
+# it is a full mutation sweep (58 classes x 3 pytest runs), far too heavy for
+# every push, and the number it produces must be RE-DERIVED, never carried.
+# Baseline 2026-09-02 @ 44b76e86: 58/58 caught-both.
+
+on:
+  schedule:
+    - cron: '17 11 * * 1'   # Mondays 11:17 UTC (01:17 HST)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    name: Kill each probe, see who notices
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0   # the drill adds a git worktree at HEAD
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+          cache-dependency-path: |
+            requirements.txt
+            requirements/*.txt
+            .github/workflows/ci.yml
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-cov pytest-timeout rich textual flask pyyaml requests psutil distro
+          pip install meshtastic || echo "meshtastic optional - continuing"
+          pip install folium || echo "folium optional - continuing"
+
+      - name: Run the drill
+        env:
+          CI: true
+          MESHFORGE_CI: true
+          PYTHONUNBUFFERED: "1"
+        run: |
+          git config user.email "ci@meshforge.invalid"
+          git config user.name "meshforge-ci"
+          python3 scripts/falsifiability_drill.py \
+            --worktree "$RUNNER_TEMP/fdrill" \
+            --json fdrill.json --md fdrill.md --fail-on-survivor
+
+      - name: Upload the per-class report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: falsifiability-drill
+          path: |
+            fdrill.json
+            fdrill.md
+          if-no-files-found: ignore
