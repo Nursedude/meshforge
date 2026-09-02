@@ -101,7 +101,7 @@ Gateways deployed before 2026-04-24 that used the single-enum pattern (e.g. `bri
 
 ### Test Coverage
 
-**~11,000 tests** across <!--STAT:testfiles-->343<!--/STAT--> test files. Selected high-volume files
+**~11,000 tests** across <!--STAT:testfiles-->344<!--/STAT--> test files. Selected high-volume files
 (per-file counts are a 2026-07 snapshot — run `python3 -m pytest tests/<file> --co -q` for the live number):
 
 | Test File | Tests | Covers |
