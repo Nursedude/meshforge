@@ -104,6 +104,7 @@
 | — | ~~**RF + RNS/LXMF EGRESS GUARD ARC** (Pri-1)~~ **DONE 2026-08-09 same day** — ran as the completed-table row above (Fable 5 /code-review background fork, not the cloud ultra recipe — ultra quota was exhausted; 10 confirmed findings fixed, full suite green). Judgment calls (b) connect_ex split, (c) open_reticulum None-readers and (e) allowlist concurrency were NOT attacked — re-queued as the Pri-2 row below. | Removed by running the pass, per convention. |
 | — | ~~**EGRESS-GUARD residual legs (b, c, e)** (Pri-2)~~ **DONE 2026-08-10 next day** — ran as the completed-table row above: leg b refuted with evidence (plus 3 secondary fixes incl. the missing probe witness), leg c 3 confirmed fixed (incl. an MF019 chokepoint EVASION in MeshAnchor, guard leg added both repos), leg e confirmed and fixed red-first (grant registry + depth counters). | Removed by running the pass, per convention. |
 | Pri-3 | **RNS-fork `known_destinations` / announce-retention root-cause** (queued 2026-08-12 by the overdue-ledger triage; durable twin = deferred_work `rns-known-destinations-retention`, re-gated to 2026-11-15). The 2026-06-29 moc1 incident: hourly re-announce refreshes peers' PATH table but NOT their identity store, so a ~12h identity TTL evicts a re-announcing peer → `Identity.recall` None → echo tx skipped → false `tracer_peer_unreachable` wedge, asymmetric. Full recipe + tells in memory `tracer_peer_unreachable_identity_eviction_2026_06_29`. **Verified quiet 2026-08-12**: 0 `Identity.recall returned None` in 30d of echo journals on moc1 AND VolcanoAI; recent tracer wedges are all the <1h cold-start class. Stopgap (restart the lost peer's echo) works; watchdog re-flags recurrence independently. | Fork-internals judgment on the announce/identity-retention contract — changing retention semantics in a hard fork that must stay wire-compatible is exactly the ambiguous-evidence, high-blast-radius work the rationed tier exists for, and with no live recurrence there is no urgency to spend a smaller session guessing at it. |
+| Pri-1 | **FALSIFIABILITY AUDIT — phase 2 verdicts** (queued 2026-09-02 by the operator: *"silent failures are not acceptable with a NOC"*). Phase 1 shipped as `scripts/falsifiability_audit.py`; its inventory is appended at the END of this file. 58 signal classes, **16 never shown in BOTH polarities** (6 fire-only, 1 none-only, 9 unknown). Phase 1 emits NO falsifiability verdict by design. ⚠️ Read the two "wrong about itself" notes in that section FIRST — its weakest-ranked class was an artifact of its own heuristic, and its polarity axis first read 58/58 `both` before being keyed to `probe_<cls>(`; both calibrate how much its numbers are worth. | `model_router --task-kind adversarial_review --running-tier opus` returns `frontier (upshift)`: "never fake it on the smaller model". The per-class verdict is *would this test still pass if the probe were dead?* — a judgement where a wrong PASS manufactures a false coverage number. A blessed-blind detector is worse than a known-blind one, because the known one stays on this list. |
 | — | _(add new upshift rows here as sessions surface review-shaped work)_ | |
 
 ## Conventions for future passes
@@ -575,3 +576,164 @@ as an unreviewed finding.
 **Bonus data point for (a)**: moc3's reply renders `fleet:?`, not a number —
 its `directory_total` is None, so the mislabeled field degrades to `?` there
 while moc shows a count. The rename should be checked against BOTH shapes.
+
+
+---
+
+## Phase-1 inventory — falsifiability audit (2026-09-02, appended by the Pri-1 row above)
+
+**Why this exists.** Operator, 2026-09-02: *"silent failures are not acceptable
+with a NOC."* This fleet's failure mode is not code crashing — it is an
+instrument lying or going quiet. Three did in the session that produced this
+entry, all of them mine. So the maturity marker is not how many detectors exist
+but **what fraction has ever been OBSERVED failing**. That number was unknown.
+
+**What phase 1 claims, and what it refuses to.** Reference evidence only; it
+never prints the word "falsifiable". The real question is a judgement about what
+a test exercises, and a script answering it by pattern-match would manufacture
+exactly the false coverage number this audit exists to expose.
+
+**⚠️ Two places the audit was WRONG ABOUT ITSELF. Read before trusting any row.**
+
+1. **Its weakest finding was an artifact of its own heuristic.** First run ranked
+   `service_inactive` lowest — the most load-bearing probe on the fleet, the one
+   CLAUDE.md mandates for all service state. It IS drilled in BOTH polarities
+   (`sig.severity == "wedge"` / `sig is None`); it simply never asserts `.cls`,
+   which is all the tier heuristic can see.
+2. **The polarity axis first read 58/58 `both` — saturated.** It looped over
+   EVERY `probe_*()` call in a file, so any class merely mentioned in the big
+   shared test module inherited both-polarity credit from unrelated probes.
+   Keyed to `probe_<cls>(` it became 42/6/1/9 and began discriminating. A metric
+   everything scores the same on is a label, not a measurement — the operator
+   made this exact point about `0d` in the running-code-skew leg hours earlier.
+
+**What `unknown` means (9 classes), characterised rather than guessed.** SEVEN
+have no `probe_<cls>()` function at all — the class is emitted by a differently
+named probe, so the audit honestly cannot trace them: `foundation_perms_drift`
+(watchdog_probes_drift), `history_write_stalled` (watchdog_probes_mini),
+`http_local_unresponsive` (watchdog_probes_service), `rns_instance_name_mismatch`,
+`rns_rpc_unresponsive`, `rns_shared_instance_unresponsive` (watchdog_probes_rns),
+`rns_stray_env_drift` (watchdog_probes_rns_env). The other TWO are the
+interesting ones — the conventionally-named probe EXISTS and the assertions
+still could not be traced: `lxmf_propagation_node_dark`, `memory_cap_engaged`.
+**Start there.**
+
+**The three questions phase 2 owes each row**, in descending value:
+
+1. **Does the drill resemble the REAL condition?** A test encodes only the
+   narrowness its author already thought of; the defect is by definition outside
+   it (the 2026-08-11 rule).
+2. **Is the probe hosted by a RUNNING consumer?** calibrated_claims rule 7 — a
+   registered check is not a running check. `core.orchestrator` never hosted the
+   probe `daemon.py` registered, and that broke two ledger claims.
+3. **Can it go FROZEN-GREEN?** The dangerous polarity produces silence, not a
+   complaint. `propagation_soak_degraded` is the only `none-only` row.
+
+**Do not treat a `both` row as settled.** Polarity is mechanical evidence that
+two outcomes were exercised in a unit test. It says nothing about questions 1 or
+2, which is where this fleet's real blindness has lived — 8.8 days, 12 days, 78
+days (see the memory `feedback_detector_blind_is_a_finding`, now at 11 instances
+after a hand recount corrected a 9-vs-10 drift the same day).
+
+Re-run anytime: `PYTHONPATH=src python3 scripts/falsifiability_audit.py --worklist`.
+Designed to become a standing gate once phase 2 sets a baseline, so the number is
+RE-DERIVED rather than carried — carrying is what produced the 9-vs-10 drift.
+
+### Falsifiability audit — phase 1 inventory (58 signal classes)
+
+Generated by `scripts/falsifiability_audit.py`. This is REFERENCE evidence only — phase 1 makes no falsifiability claim.
+
+**Polarity is the axis that matters** — a probe shown only firing has never been shown to stay correctly silent, and vice versa.
+
+Polarity counts: `both` 42; `fire-only` 6; `none-only` 1; `unknown` 9.
+
+#### Phase-2 worklist — 16 classes not shown in BOTH polarities
+
+- `claw_watched_node_silent` — polarity `fire-only`; `test_claw_watched_node_silent.py`
+- `dep_version_drift` — polarity `fire-only`; `test_watchdog_probes.py`
+- `foundation_perms_drift` — polarity `unknown`; `test_watchdog_probes.py`
+- `gateway_delivery_degraded` — polarity `fire-only`; `test_watchdog_probes.py`
+- `history_write_stalled` — polarity `unknown`; `test_watchdog_probes.py`
+- `http_local_unresponsive` — polarity `unknown`; `test_watchdog_probes.py`
+- `lxmf_propagation_node_dark` — polarity `unknown`; `test_watchdog_probes.py`
+- `memory_cap_engaged` — polarity `unknown`; `test_watchdog_memory_cap_engaged.py`
+- `nomadnet_crashloop` — polarity `fire-only`; `test_watchdog_probes.py`
+- `propagation_soak_degraded` — polarity `none-only`; `test_watchdog_probes.py`
+- `rns_instance_name_mismatch` — polarity `unknown`; `test_watchdog_rns_instance_name_mismatch.py`
+- `rns_rpc_unresponsive` — polarity `unknown`; `test_watchdog_probes.py`
+- `rns_shared_instance_unresponsive` — polarity `unknown`; `test_watchdog_probes.py`
+- `rns_stray_env_drift` — polarity `unknown`; `test_watchdog_probes.py`
+- `tracer_peer_unreachable` — polarity `fire-only`; `test_watchdog_probes.py`
+- `user_unit_inactive` — polarity `fire-only`; `test_watchdog_probes.py`
+
+Reference tiers, and what phase 2 owes each:
+
+- `no-reference` (0) — nothing to judge — needs a drill WRITTEN (phase 3)
+- `enum-only` (0) — confirm the enum gate is the only cover, then drill
+- `referenced` (1) — **the real judgement** — does the test drill it, or only import it?
+- `fire-asserted` (57) — adversarial read: would the assertion survive the probe being gutted?
+
+
+#### referenced (1)
+
+- `service_inactive` — named in `test_cascade_detector.py`, `test_fleet_truth.py`, `test_fleet_truth_spool.py`…; enum gate only; eval: `meshtasticd_absent_not_inactive_2026_08_12.jsonl`
+
+#### fire-asserted (57)
+
+- `aredn_source_dark` — fires in `test_watchdog_probes.py`; named in `test_map_data_collector_diagnostics.py`; enum gate only
+- `calibration_drift` — fires in `test_watchdog_probes.py`
+- `channel_feed_dark` — fires in `test_watchdog_probes.py`; named in `test_mf5_soak_watch.py`, `test_regression_guards.py`, `test_traffic_pulse.py`…; enum gate only; eval: `meshtasticd_absent_not_inactive_2026_08_12.jsonl`
+- `claw_battery_low` — fires in `test_gateway_claw_fixes_2026_07_26.py`, `test_watchdog_coverage.py`; named in `test_fleet_truth.py`, `test_map_http_handler.py`, `test_watchdog_probes.py`; eval: `seed.jsonl`
+- `claw_device_dark` — fires in `test_watchdog_coverage.py`; named in `test_claw_telemetry.py`, `test_claw_watched_node_silent.py`, `test_probe_claw_uplink_node.py`…; eval: `seed.jsonl`
+- `claw_rf_silent` — fires in `test_watchdog_coverage.py`; named in `test_watchdog_probes.py`; eval: `seed.jsonl`
+- `claw_uplink_node_moved` — fires in `test_probe_claw_uplink_node.py`; named in `test_review_fixes_2026_07_29.py`, `test_watchdog_probes.py`
+- `claw_watched_node_silent` — fires in `test_claw_watched_node_silent.py`; named in `test_watchdog_probes.py`
+- `cron_verdict_stale` — fires in `test_watchdog_probes.py`; named in `test_cron_verdict_retention.py`, `test_fleet_snapshot.py`, `test_gateway_claw_fixes_2026_07_26.py`…; enum gate only; eval: `seed.jsonl`
+- `delivery_confirmation_stall` — fires in `test_watchdog_detector_blind_legs_2026_08_05.py`, `test_watchdog_probes.py`; named in `test_honesty_invariants.py`, `test_watchdog_meshtasticd_absent_2026_08_12.py`; eval: `detector_blind_gateway_only_2026_07_31.jsonl`, `detector_blind_inert_vs_indeterminate_2026_08_05.jsonl`
+- `delivery_write_canary` — fires in `test_watchdog_probes.py`; named in `test_delivery_counters.py`, `test_honesty_invariants.py`
+- `dep_install_fragmented` — fires in `test_watchdog_probes.py`; enum gate only
+- `dep_version_drift` — fires in `test_watchdog_probes.py`; named in `test_requirements_floor.py`; enum gate only
+- `fd_exhaustion` — fires in `test_watchdog_probes.py`; named in `test_mini_dudeai_honest_failure_modes.py`, `test_watchdog_meshtasticd_absent_2026_08_12.py`; enum gate only; eval: `ratifiable_direction_2026_07_25.jsonl`, `ws_d3_skew.jsonl`
+- `fleet_box_unreachable` — fires in `test_watchdog_probes.py`; named in `test_mini_dudeai_brief.py`; eval: `path_down_is_not_box_down_2026_08_11.jsonl`
+- `foundation_perms_drift` — fires in `test_watchdog_probes.py`; named in `test_rns_tree_perms.py`; enum gate only
+- `gateway_delivery_degraded` — fires in `test_watchdog_probes.py`; named in `test_watchdog_detector_blind_legs_2026_08_05.py`, `test_watchdog_meshtasticd_absent_2026_08_12.py`; eval: `gateway_delivery_dedup_false_page_2026_08_12.jsonl`
+- `gateway_dual_homed_exposure` — fires in `test_watchdog_coverage.py`; named in `test_watchdog_probes.py`; eval: `dups_probe_transport_branch_2026_08_09.jsonl`
+- `gateway_dup_degraded` — fires in `test_watchdog_probes.py`; eval: `dups_probe_transport_branch_2026_08_09.jsonl`
+- `history_write_stalled` — fires in `test_watchdog_probes.py`
+- `host_frozen` — fires in `test_watchdog_probes.py`; named in `test_fleet_truth.py`, `test_oracle.py`; enum gate only
+- `host_memory_pressure` — fires in `test_watchdog_host_memory.py`; named in `test_host_memory_threshold_override.py`, `test_watchdog_probes.py`, `test_watchdog_state_fallback_2026_07_26.py`
+- `http_local_unresponsive` — fires in `test_watchdog_probes.py`; named in `test_offline_oracle.py`, `test_watchdog_actions.py`; enum gate only; eval: `ws_d3_skew.jsonl`
+- `inherited_app_drift` — fires in `test_watchdog_probes.py`
+- `kernel_reboot_pending` — fires in `test_watchdog_probes.py`; named in `test_honest_status_boxes.sh`, `test_kernel_probe_sandbox_blindness.py`, `test_mini_coverage_blind.py`; eval: `ws_d3_skew.jsonl`
+- `local_brain_regressed` — fires in `test_watchdog_probes.py`; named in `test_watchdog_lifecycle_fixes_2026_07_26.py`
+- `lxmf_propagation_node_dark` — fires in `test_watchdog_probes.py`; named in `test_node_tracker.py`; eval: `seed.jsonl`
+- `main_thread_wedge` — fires in `test_mini_dudeai_preset.py`, `test_watchdog_probes.py`; named in `test_watchdog_lifecycle_fixes_2026_07_26.py`, `test_watchdog_meshtasticd_absent_2026_08_12.py`, `test_watchdog_unobserved_hold.py`
+- `memory_cap_engaged` — fires in `test_watchdog_memory_cap_engaged.py`; named in `test_watchdog_probes.py`, `test_watchdog_state_fallback_2026_07_26.py`; enum gate only; eval: `reset8_caps_2026_07_24.jsonl`
+- `memory_index_oversize` — fires in `test_watchdog_probes.py`; named in `test_mini_dudeai_honest_failure_modes.py`
+- `meshtasticd_phoneapi_wedge` — fires in `test_watchdog_probes.py`; named in `test_fleet_snapshot.py`, `test_phoneapi_defer.py`, `test_watchdog_meshtasticd_absent_2026_08_12.py`; enum gate only; eval: `meshtasticd_absent_not_inactive_2026_08_12.jsonl`
+- `meshtasticd_vsz_leak` — fires in `test_watchdog_probes.py`; named in `test_watchdog_meshtasticd_absent_2026_08_12.py`; eval: `meshtasticd_absent_not_inactive_2026_08_12.jsonl`, `seed.jsonl`
+- `mqtt_root_drift` — fires in `test_watchdog_probes.py`; named in `test_regression_guards.py`, `test_traffic_pulse.py`, `test_watchdog_detector_blind_legs_2026_08_05.py`…; enum gate only; eval: `meshtasticd_absent_not_inactive_2026_08_12.jsonl`
+- `nomadnet_crashloop` — fires in `test_watchdog_probes.py`; named in `test_oracle_delivery_probe.py`, `test_watchdog_lifecycle_fixes_2026_07_26.py`
+- `ntfy_ack_stale` — fires in `test_watchdog_probes.py`
+- `ntfy_loopback` — fires in `test_watchdog_probes.py`; named in `test_cron_verdict_capture.py`
+- `oracle_delivery_degraded` — fires in `test_oracle_delivery_probe.py`; named in `test_watchdog_probes.py`; eval: `seed.jsonl`
+- `parity_drift` — fires in `test_watchdog_probes.py`; named in `test_mini_dudeai_brief.py`, `test_mini_dudeai_rollup.py`, `test_parity_check.py`; enum gate only; eval: `parity_drift_working_tree_vs_committed_2026_09_01.jsonl`
+- `phoneapi_tcp_leak` — fires in `test_watchdog_probes.py`; named in `test_watchdog_meshtasticd_absent_2026_08_12.py`; enum gate only; eval: `seed.jsonl`
+- `propagation_soak_degraded` — fires in `test_watchdog_probes.py`; eval: `cadence_bar_needs_enrollment_2026_08_12.jsonl`, `seed.jsonl`
+- `queue_backlog` — fires in `test_watchdog_probes.py`; named in `test_honesty_invariants.py`
+- `resource_canary_degraded` — fires in `test_gateway_resource_canary.py`; named in `test_watchdog_probes.py`; eval: `cadence_bar_needs_enrollment_2026_08_12.jsonl`
+- `rns_instance_name_mismatch` — fires in `test_watchdog_rns_instance_name_mismatch.py`; named in `test_watchdog_probes.py`
+- `rns_interface_down_peer_reachable` — fires in `test_watchdog_probes.py`
+- `rns_namespace_collision` — fires in `test_watchdog_probes.py`; named in `test_watchdog_rns_instance_name_mismatch.py`; enum gate only; eval: `rns_instance_name_mismatch_2026_08_05.jsonl`
+- `rns_rpc_unresponsive` — fires in `test_watchdog_probes.py`; eval: `seed.jsonl`, `ws_d3_skew.jsonl`
+- `rns_shared_instance_unresponsive` — fires in `test_watchdog_probes.py`; named in `test_fleet_snapshot.py`, `test_watchdog_actions.py`, `test_watchdog_rns_instance_name_mismatch.py`; enum gate only; eval: `rns_instance_name_mismatch_2026_08_05.jsonl`
+- `rns_stray_env_drift` — fires in `test_watchdog_probes.py`; eval: `rns_version_drift_one_box_shape_2026_08_09.jsonl`, `ws_d3_skew.jsonl`
+- `rns_version_drift` — fires in `test_watchdog_probes.py`; enum gate only; eval: `rns_version_drift_one_box_shape_2026_08_09.jsonl`
+- `role_drift` — fires in `test_watchdog_probes.py`; named in `test_fleet_truth.py`, `test_gateway_wizard.py`, `test_mf5_soak_watch.py`…; enum gate only
+- `router_scout_degraded` — fires in `test_watchdog_probes.py`; eval: `restore_residual_provenance_2026_08_10.jsonl`
+- `rules_seed_drift` — fires in `test_watchdog_probes.py`; named in `test_mini_dudeai_deploy.py`, `test_mini_dudeai_honest_failure_modes.py`, `test_oracle.py`…; eval: `ws_d3_skew.jsonl`
+- `segment_peer_silent` — fires in `test_segment_peer_silent.py`; named in `test_watchdog_probes.py`
+- `synth_soak_degraded` — fires in `test_watchdog_probes.py`; named in `test_honesty_invariants.py`, `test_provision_role.py`; eval: `cadence_bar_needs_enrollment_2026_08_12.jsonl`
+- `tracer_peer_unreachable` — fires in `test_watchdog_probes.py`; named in `test_honesty_invariants.py`, `test_mini_dudeai_preset.py`, `test_watchdog_lifecycle_fixes_2026_07_26.py`; enum gate only
+- `user_timer_unit_failing` — fires in `test_watchdog_probes.py`; named in `test_lab_propagation_soak.py`, `test_mini_coverage_blind.py`, `test_mini_dudeai_brief.py`; enum gate only
+- `user_unit_inactive` — fires in `test_watchdog_probes.py`
