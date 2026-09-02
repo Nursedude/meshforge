@@ -1,8 +1,14 @@
 """Persistent per-rule edge-state for the engine.
 
 A rule's state tracks: last_fired_ts, currently_active (the edge memory),
-fire_count, fire_count_24h with a rolling window, and last_detail (so
-edge_down can reference the most recent detail seen).
+active_since_ts + announced (see _empty_rule_state), fire_count,
+fire_count_24h with a rolling window, and last_detail (so edge_down can
+reference the most recent detail seen).
+
+``currently_active`` answers "is this condition live NOW?" and is the flag
+every read-only consumer (brief, rollup, dreams) gates on. It is deliberately
+NOT "is this rule currently paging" — cooldown rate-limits the action, never
+the observation.
 
 State is keyed by (rule_id, condition_subject) — one rule firing on multiple
 distinct subjects keeps separate edge states. Persisted as one JSON file,
@@ -28,6 +34,21 @@ def _empty_rule_state(rule_id: str, subject: str) -> dict:
         "rule_id": rule_id,
         "subject": subject,
         "currently_active": False,
+        # ts this activation began (0.0 = not active). Distinct from
+        # last_fired_ts, which stamps the last time an ACTION ran: an
+        # activation recorded under cooldown suppression never fires, so
+        # last_fired_ts would date the PREVIOUS cycle and overstate "active
+        # for" by the whole gap (the forgeable-duration class,
+        # honest_failure_modes #6).
+        "active_since_ts": 0.0,
+        # whether an edge_up ACTION ran for the current activation. False =
+        # the condition is live and recorded, but its rule was inside
+        # cooldown when it returned, so nothing was sent. Gates the edge_down
+        # action: never emit a CLEAR for an alarm that was never raised.
+        # Absent on pre-2026-09-02 state files — readers must default it to
+        # True (assume announced), the direction that preserves the old
+        # behaviour for edges already in flight.
+        "announced": False,
         "last_fired_ts": 0.0,
         "fire_count": 0,
         "fire_count_24h": 0,

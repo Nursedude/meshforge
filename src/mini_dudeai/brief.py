@@ -98,6 +98,18 @@ def _split_escalations_by_activity(escalations: list, rules: dict) -> tuple:
     False — the hiding direction, for every escalation at once — while this
     docstring promised the opposite. Absent-or-None is unknown, never False.
 
+    The cooldown leg (2026-09-02): this docstring called the flag "the truth"
+    twice while a third hiding path went unpatched for as long as the flag has
+    existed. The engine's cooldown check `continue`d BEFORE setting
+    currently_active, so a live condition returning inside its own cooldown
+    window was flagged inactive — and this function then demoted its
+    escalation to "resolved" on that false positive evidence. Found on the
+    federator, where moc3's federation backoff read resolved for 14h under a
+    24h cooldown while three peer boxes showed it active. Fixed in the engine,
+    where the conflation was: cooldown now rate-limits the ACTION only. The
+    lesson for this file is that "positive evidence" is only as good as the
+    writer of the evidence — see calibrated_claims #7.
+
     The edge_down leg (2026-08-28): the engine replays the escalation payload
     on the clear row, and a long-running condition that resolves has usually
     been pruned from the state's rules dict by then (its last FIRE is outside

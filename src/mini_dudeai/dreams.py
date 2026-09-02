@@ -327,7 +327,14 @@ def detect_persistent_active(state: dict, history: list[dict], now_ts: float,
     for rs in (state.get("rules") or {}).values():
         if not isinstance(rs, dict) or not rs.get("currently_active"):
             continue
-        since = float(rs.get("last_fired_ts", 0) or 0)
+        # Anchor on when the ACTIVATION began, not on the last time an action
+        # ran. They diverge for an activation recorded under cooldown
+        # suppression (engine edge-up loop): last_fired_ts then dates the
+        # PREVIOUS cycle, so "active for" would include the whole quiet gap
+        # between them. Fall back to last_fired_ts for state written before
+        # 2026-09-02, which has no active_since_ts.
+        since = float(rs.get("active_since_ts", 0) or 0) or float(
+            rs.get("last_fired_ts", 0) or 0)
         if not since:
             continue
         active_for = now_ts - since

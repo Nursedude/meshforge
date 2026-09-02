@@ -424,7 +424,12 @@ class RuleEngine:
                 matched_keys.add(key)
                 rs = StateStore.get_or_init(state, rule["id"], cond.subject)
                 rs["last_detail"] = cond.detail
-                if rs.get("currently_active"):
+                # Only an ANNOUNCED activation is finished work. An activation
+                # recorded for visibility while the rule was inside its
+                # cooldown (below) must keep falling through, or it would
+                # never fire once the cooldown expires — the flag would
+                # short-circuit its own alarm forever.
+                if rs.get("currently_active") and rs.get("announced", True):
                     continue  # still firing — no transition
                 since_fire = now_ts - rs.get("last_fired_ts", 0.0)
                 if since_fire < 0:
@@ -435,6 +440,34 @@ class RuleEngine:
                     rs["last_fired_ts"] = now_ts
                     since_fire = 0.0
                 if cooldown and since_fire < cooldown:
+                    # Cooldown rate-limits the ACTION. Until 2026-09-02 this
+                    # `continue` also skipped the currently_active assignment
+                    # below, while the key was already in matched_keys — so a
+                    # live condition returning inside its own cooldown window
+                    # sat in an unnamed fourth state: matched (the edge_down
+                    # loop skips it) yet flagged inactive. Every read-only
+                    # consumer that treats the flag as "is this live NOW?"
+                    # (brief.py, rollup.py, dreams.detect_persistent_active)
+                    # therefore reported it RESOLVED for up to a full
+                    # cooldown. Measured on the federator: moc3's federation
+                    # backoff live and invisible for 14h under
+                    # cooldown_s=86400 while three peer boxes showed it
+                    # active. Suppressed is not resolved
+                    # (honest_failure_modes #2). 88 of 144 seeded rules carry
+                    # cooldown >= 1h, detector_blind_any among the four at 24h.
+                    #
+                    # Record the truth; withhold only the send. The activation
+                    # is marked UNANNOUNCED so its eventual edge_down does not
+                    # page a CLEAR for an alarm that was never raised.
+                    if not rs.get("currently_active"):
+                        rs["currently_active"] = True
+                        rs["active_since_ts"] = now_ts
+                        rs["announced"] = False
+                        history_entries.append(self._history_entry(
+                            now_ts, rule["id"], cond.subject,
+                            "edge_up_suppressed", cond.detail,
+                            Outcome(action="none", ok=True),
+                        ))
                     continue
                 # Grace/debounce: the condition must persist continuously for
                 # >= grace_s before this rule fires. The match streak starts the
@@ -457,7 +490,14 @@ class RuleEngine:
                             or rs["pending_ticks"] < self._grace_min_ticks(grace)):
                         continue  # not persisted long enough — hold, no fire
                 outcome = self._execute(rule, cond, "edge_up")
+                if not rs.get("currently_active"):
+                    # Fresh activation. An unannounced one (recorded under
+                    # cooldown, now firing) keeps its original start ts —
+                    # re-stamping here would reset the measured duration at
+                    # the moment the condition finally got announced.
+                    rs["active_since_ts"] = now_ts
                 rs["currently_active"] = True
+                rs["announced"] = True
                 rs["pending_since_ts"] = 0.0  # streak consumed by the fire
                 rs["pending_ticks"] = 0
                 StateStore.record_fire(rs, now_ts)
@@ -501,12 +541,36 @@ class RuleEngine:
                     # lived in the rule), but the deactivation must be LOUD and
                     # on the record — this used to be a silent state flip.
                     rs["currently_active"] = False
+                    rs["active_since_ts"] = 0.0
                     detail = ("rule removed from ruleset while active; "
                               "deactivated without running its action")
                     log_warning(f"rules: {rs.get('rule_id')!r} ({key}): {detail}")
                     history_entries.append(self._history_entry(
                         now_ts, rs.get("rule_id", "?"), rs.get("subject", "?"),
                         "edge_down", detail, Outcome(action="none", ok=True),
+                    ))
+                    continue
+                if not rs.get("announced", True):
+                    # This activation was recorded for VISIBILITY only — its
+                    # rule was inside cooldown when the condition returned, so
+                    # no edge_up action ever ran. Running the edge_down action
+                    # now would send a CLEAR for an alarm nobody was told
+                    # about, which reads on a phone as "it recovered" for
+                    # something that never announced a problem.
+                    #
+                    # Deactivate quietly, but never silently: the row is the
+                    # witness (honest_failure_modes #9), action="none" says
+                    # the transition happened and nothing was sent. The
+                    # _suppressed transition labels are deliberately distinct
+                    # from edge_up/edge_down so the fire counters in brief.py,
+                    # rollup.py and dreams.py keep counting only real fires.
+                    rs["currently_active"] = False
+                    rs["announced"] = False
+                    rs["active_since_ts"] = 0.0
+                    history_entries.append(self._history_entry(
+                        now_ts, rule["id"], rs.get("subject", "?"),
+                        "edge_down_suppressed", rs.get("last_detail", ""),
+                        Outcome(action="none", ok=True),
                     ))
                     continue
                 synth_cond = Condition(
@@ -516,6 +580,7 @@ class RuleEngine:
                 )
                 outcome = self._execute(rule, synth_cond, "edge_down")
                 rs["currently_active"] = False
+                rs["active_since_ts"] = 0.0
                 history_entries.append(self._history_entry(
                     now_ts, rule["id"], rs.get("subject", "?"), "edge_down",
                     rs.get("last_detail", ""), outcome,

@@ -1157,3 +1157,141 @@ class TestBriefOutPath:
         from mini_dudeai.daemon import _brief_out_path
         assert _brief_out_path(self._engine(None), "") \
             == "/x/mini_dudeai_brief.md"
+
+
+# === cooldown suppresses the ACTION, never the observation (2026-09-02) =====
+#
+# The defect: the engine's cooldown check `continue`d before setting
+# currently_active, while the key was already in matched_keys — so a live
+# condition returning inside its own cooldown window sat in an unnamed fourth
+# state (matched, so no edge_down; flagged inactive, so invisible). brief.py,
+# rollup.py and dreams.detect_persistent_active all gate on that flag, so the
+# condition read RESOLVED for up to a full cooldown. Found on the federator:
+# moc3's federation backoff live and invisible for 14h under cooldown_s=86400
+# while three peer boxes showed it active.
+#
+# test_cooldown_suppresses_immediate_refire above pins the ACTION half and
+# passed throughout — it never asked what the state said. These pin the
+# observation half, both polarities (honest_failure_modes #2).
+
+def _state_of(tmp_path):
+    return json.loads((tmp_path / "state.json").read_text())
+
+
+def _rule_state(tmp_path, key="r1::foo"):
+    return _state_of(tmp_path)["rules"][key]
+
+
+def _history(tmp_path):
+    lines = (tmp_path / "history.jsonl").read_text().splitlines()
+    return [json.loads(ln) for ln in lines if ln.strip()]
+
+
+def _cooldown_engine(tmp_path, rec, src, cooldown_s=3600, **rule_extra):
+    rule = {"id": "r1", "match": {"kind": "x"},
+            "action": {"kind": "recorder"}, "cooldown_s": cooldown_s}
+    rule.update(rule_extra)
+    return _engine(tmp_path, [src], [rule], actions={"recorder": rec})
+
+
+def _flap_into_cooldown(tmp_path, cooldown_s=3600, **rule_extra):
+    """up -> clear -> back, with the return landing inside the cooldown."""
+    rec = RecordingAction()
+    cond = Condition(kind="x", subject="foo", detail="d")
+    src = StaticSource([cond])
+    engine = _cooldown_engine(tmp_path, rec, src, cooldown_s, **rule_extra)
+    engine.tick()                      # edge_up (fires)
+    src.conditions = []
+    engine.tick()                      # edge_down (fires)
+    src.conditions = [cond]
+    engine.tick()                      # returns INSIDE cooldown
+    return engine, rec, src
+
+
+def test_cooldown_suppressed_condition_still_reads_live(tmp_path):
+    """THE regression. The condition is present; the flag must say so."""
+    _engine_, rec, _src = _flap_into_cooldown(tmp_path)
+    rs = _rule_state(tmp_path)
+    assert rs["currently_active"] is True, (
+        "a live condition inside its rule's cooldown was flagged inactive — "
+        "brief/rollup/dreams would report it resolved")
+    assert rs["announced"] is False, "no action ran, so it is not announced"
+    # the action half is unchanged: cooldown still rate-limits the send
+    assert [c[2] for c in rec.calls] == ["edge_up", "edge_down"]
+
+
+def test_cooldown_suppressed_activation_emits_no_clear(tmp_path):
+    """An alarm nobody was told about must not send a CLEAR when it ends."""
+    engine, rec, src = _flap_into_cooldown(tmp_path)
+    src.conditions = []
+    engine.tick()                      # unannounced activation ends
+    assert [c[2] for c in rec.calls] == ["edge_up", "edge_down"], (
+        "edge_down action ran for an activation that never announced")
+    rs = _rule_state(tmp_path)
+    assert rs["currently_active"] is False
+    assert rs["active_since_ts"] == 0.0
+
+
+def test_cooldown_suppressed_activation_fires_once_cooldown_expires(tmp_path):
+    """The flag must not short-circuit its own alarm forever."""
+    engine, rec, _src = _flap_into_cooldown(tmp_path)
+    # rewind the last fire past the cooldown window
+    state = _state_of(tmp_path)
+    state["rules"]["r1::foo"]["last_fired_ts"] -= 7200
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    engine.tick()
+    assert [c[2] for c in rec.calls] == ["edge_up", "edge_down", "edge_up"], (
+        "a condition held live through its cooldown never announced when the "
+        "cooldown expired — the visibility fix must not swallow the alarm")
+    assert _rule_state(tmp_path)["announced"] is True
+
+
+def test_suppressed_transitions_are_not_counted_as_fires(tmp_path):
+    """Distinct labels keep brief/rollup/dreams fire counters honest."""
+    engine, _rec, src = _flap_into_cooldown(tmp_path)
+    src.conditions = []
+    engine.tick()
+    transitions = [h["transition"] for h in _history(tmp_path)]
+    assert transitions == [
+        "edge_up", "edge_down", "edge_up_suppressed", "edge_down_suppressed"]
+    # the witness is present but records that nothing was sent (hfm #9)
+    suppressed = [h for h in _history(tmp_path)
+                  if h["transition"].endswith("_suppressed")]
+    assert all(h["outcome"]["action"] == "none" for h in suppressed)
+    assert all(h["outcome"]["ok"] is True for h in suppressed)
+    # fire bookkeeping counts real fires only
+    assert _rule_state(tmp_path)["fire_count"] == 1
+
+
+def test_active_since_survives_the_announcement(tmp_path):
+    """Duration is anchored on when the condition arrived, not when it paged."""
+    engine, _rec, _src = _flap_into_cooldown(tmp_path)
+    arrived = _rule_state(tmp_path)["active_since_ts"]
+    assert arrived > 0
+    state = _state_of(tmp_path)
+    state["rules"]["r1::foo"]["last_fired_ts"] -= 7200
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    engine.tick()                      # cooldown expired — now it announces
+    assert _rule_state(tmp_path)["active_since_ts"] == arrived, (
+        "re-stamping active_since_ts at announcement time would reset the "
+        "measured duration and understate a long-running condition")
+
+
+def test_legacy_state_without_announced_still_clears(tmp_path):
+    """Pre-2026-09-02 state has no `announced`; default True keeps old edges
+    behaving exactly as before (an in-flight alarm still sends its CLEAR)."""
+    rec = RecordingAction()
+    cond = Condition(kind="x", subject="foo", detail="d")
+    src = StaticSource([cond])
+    engine = _cooldown_engine(tmp_path, rec, src)
+    engine.tick()                      # edge_up
+    state = _state_of(tmp_path)
+    # pop, not del: on a pre-fix tree these keys are simply absent, and a
+    # KeyError there would make this test "fail" for a reason that has
+    # nothing to do with what it pins.
+    state["rules"]["r1::foo"].pop("announced", None)
+    state["rules"]["r1::foo"].pop("active_since_ts", None)
+    (tmp_path / "state.json").write_text(json.dumps(state))
+    src.conditions = []
+    engine.tick()
+    assert [c[2] for c in rec.calls] == ["edge_up", "edge_down"]
