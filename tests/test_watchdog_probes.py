@@ -11491,3 +11491,179 @@ class TestJournalUserUnitHasLines:
         ctx, _ = self._patched(exc=subprocess.TimeoutExpired("journalctl", 15))
         with ctx:
             assert _journal_user_unit_has_lines("x.service", "3h") is None
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Falsifiability audit, phase 2 (2026-09-02) — the drills the reading pass
+# found missing. Each test below was RED against the probe as shipped; the
+# fix commit that made it green is the witness that the class is falsifiable
+# in the shape named. Measured half: scripts/falsifiability_drill.py.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestFalsifiabilityPhase2:
+
+    def setup_method(self):
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+
+    # -- rns_shared_instance_unresponsive: the ONLY fire assertion in this
+    #    file lived inside `if sig is not None:` (the backlog test), so a
+    #    dead probe passed it. This one reaches the wedge branch on purpose.
+    def test_rns_shared_instance_wedge_fires_unconditionally_on_connect_hang(self):
+        class _Hang:
+            def settimeout(self, _t):
+                pass
+
+            def connect(self, _addr):
+                raise socket.timeout("timed out")
+
+            def close(self):
+                pass
+
+        with patch("utils.watchdog_probes_rns.socket.socket",
+                   return_value=_Hang()):
+            sig = probe_rns_shared_instance_responsive(
+                "fdrill", timeout_s=0.1, ss_output="")
+        assert sig is not None
+        assert sig.cls == "rns_shared_instance_unresponsive"
+        assert sig.severity == "wedge"
+        assert sig.issue_ref == 68
+        assert _disp("rns_instance_name_mismatch") == "clean"
+
+    # -- http_local_unresponsive: urllib wraps a CONNECT-phase timeout in
+    #    URLError(reason=TimeoutError) (verified live 2026-09-02 against a
+    #    non-routable address). The probe read that as "endpoint
+    #    unobservable" — a full accept backlog (the fd-exhaustion sibling)
+    #    could never page as a wedge.
+    def test_http_local_fires_on_urlerror_wrapped_timeout(self):
+        from urllib.error import URLError
+
+        def _raise(*args, **kwargs):
+            raise URLError(TimeoutError("timed out"))
+        with patch("utils.watchdog_probes_service.urlopen", side_effect=_raise):
+            sig = probe_http_local("meshforge-map.service")
+        assert sig is not None
+        assert sig.cls == "http_local_unresponsive"
+        assert sig.severity == "wedge"
+
+    def test_http_local_other_urlerror_stays_indeterminate(self):
+        from urllib.error import URLError
+
+        def _raise(*args, **kwargs):
+            raise URLError(OSError("Name or service not known"))
+        with patch("utils.watchdog_probes_service.urlopen", side_effect=_raise):
+            assert probe_http_local("meshforge-map.service") is None
+        assert _disp("http_local_unresponsive") == "indeterminate"
+
+    # -- dep_version_drift: the D1 fix (user-scope locations are SKIPPED when
+    #    there is no non-root service user) reached its sibling
+    #    dep_install_fragmented on 2026-08-12 and not this probe, which kept
+    #    noting `clean` over the system-dist copy while the import-priority
+    #    user-site was never looked at.
+    def test_dep_version_drift_root_service_user_notes_indeterminate(self, monkeypatch):
+        import utils.watchdog_probes_drift as d
+        monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                            lambda pkg, user, **kw: {"system-dist": "2.7.9"})
+        assert probe_dep_version_drift(service_user="root", floors=_DEP_FLOORS) is None
+        assert _disp("dep_version_drift") == "indeterminate"
+        assert "user-scope" in _reason("dep_version_drift")
+
+    def test_dep_version_drift_no_service_user_notes_indeterminate(self, monkeypatch):
+        import utils.watchdog_probes_drift as d
+        monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                            lambda pkg, user, **kw: {"system-dist": "2.7.9"})
+        with patch("utils.rns_tree_perms._read_rnsd_user", return_value=None):
+            assert probe_dep_version_drift(floors=_DEP_FLOORS) is None
+        assert _disp("dep_version_drift") == "indeterminate"
+        assert "user-scope" in _reason("dep_version_drift")
+
+    def test_dep_version_drift_nonroot_user_at_floor_stays_clean(self, monkeypatch):
+        import utils.watchdog_probes_drift as d
+        monkeypatch.setattr(d, "_enumerate_pkg_installs",
+                            lambda pkg, user, **kw: {"venv": "2.7.9", "user-site": "2.7.9"})
+        assert probe_dep_version_drift(service_user="svc", floors=_DEP_FLOORS) is None
+        assert _disp("dep_version_drift") == "clean"
+
+    def test_dep_version_drift_injected_installs_are_trusted_as_observed(self):
+        # A caller that hands the probe its own `installed` map has observed
+        # what it chose to; the user-scope gate applies only to the probe's
+        # OWN enumeration.
+        assert probe_dep_version_drift(
+            service_user="root", floors=_DEP_FLOORS,
+            installed={"meshtastic": "2.7.9"}) is None
+        assert _disp("dep_version_drift") == "clean"
+
+    # -- foundation_perms_drift: `_read_rnsd_user()` returns None both when
+    #    the unit was READ and declares no User= (root, inert is right) and
+    #    when NO unit file could be read at all — and the probe filed both
+    #    under "rnsd runs as root". The recurrence path (a non-root rnsd
+    #    whose unit moved) would be blind, wearing `inert`.
+    def test_foundation_drift_unreadable_unit_is_indeterminate_not_inert(self):
+        sig = probe_foundation_drift(
+            perms=_perms(rnsd_user=None, configdir_owner="root:root",
+                         configdir_mode="755", logfile_owner="root:root"),
+            rnsd_unit_readable=False)
+        assert sig is None
+        assert _disp("foundation_perms_drift") == "indeterminate"
+        assert "unreadable" in _reason("foundation_perms_drift")
+
+    def test_foundation_drift_readable_unit_without_user_is_inert(self):
+        sig = probe_foundation_drift(
+            perms=_perms(rnsd_user=None, configdir_owner="root:root",
+                         configdir_mode="755", logfile_owner="root:root"),
+            rnsd_unit_readable=True)
+        assert sig is None
+        assert _disp("foundation_perms_drift") == "inert"
+
+    # -- propagation_soak_degraded / synth_soak_degraded: their streak
+    #    saver was an INDEPENDENT copy of the parity streak mechanism, and it
+    #    still had the defect the parity copy was cured of on 2026-07-26 —
+    #    an unwritable state path froze the streak at 1 below a debounce of
+    #    2, so neither class could ever fire, each tick reading
+    #    "held by debounce". honest_failure_modes #5: one mechanism, one
+    #    implementation.
+    def test_synth_streak_accumulates_when_state_cannot_be_written(self, tmp_path):
+        from utils.watchdog_probes_gateway_flow import (
+            _load_synth_streak, _save_synth_streak,
+        )
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x")
+        path = str(blocker / "streak.json")
+        seen = []
+        for _ in range(4):
+            streak = _load_synth_streak(path) + 1
+            _save_synth_streak(path, streak)
+            seen.append(streak)
+        assert seen == [1, 2, 3, 4]
+
+    def test_synth_streak_is_the_parity_streak_mechanism(self):
+        import utils.watchdog_probes_gateway_flow as gf
+        from utils import watchdog_probe_core as core
+        assert gf._load_synth_streak is core._load_parity_streak
+        assert gf._save_synth_streak is core._save_parity_streak
+
+    # -- history_write_stalled: same defect, third costume. An unwritable
+    #    baseline path made every tick a "first sighting" (indeterminate,
+    #    with a reason that hid the cause), so the class could never fire.
+    def test_history_stall_fires_when_baseline_path_is_unwritable(self, tmp_path):
+        blocker = tmp_path / "blocker"
+        blocker.write_text("x")
+        sp = str(blocker / "hist_stall.json")
+        now = time.time()
+
+        def _state(fires):
+            return {"last_tick_ts": now - 5.0, "history_appends_total": fires}
+        out = []
+        for fires in (1, 2, 3, 4):
+            out.append(probe_history_write_failure(
+                state_doc=_state(fires), history_mtime=100.0, now=now,
+                state_path=sp))
+        assert out[-1] is not None
+        assert out[-1].cls == "history_write_stalled"
+
+    def test_history_stall_file_names_pinned_to_the_engine(self):
+        from utils import watchdog_probes_mini as m
+        from mini_dudeai import _util
+        assert m._MINI_STATE_NAME == _util.APP_STATE_RELPATH
+        assert m._MINI_HISTORY_NAME == _util.APP_HISTORY_RELPATH

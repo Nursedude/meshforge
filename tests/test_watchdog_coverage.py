@@ -1095,3 +1095,25 @@ class TestGatewayDualHomedExposure:
         p["freshness"] = {"stale": True}
         assert probe_gateway_dual_homed_exposure(payload=p,
                                                  state_path=self.sp) is None
+
+
+class TestTracerNoPeersEnumerated:
+    """Falsifiability phase 2 (2026-09-02): a well-formed fire whose
+    ``results`` list is EMPTY (the tracer ran and enumerated zero peers) has
+    observed no peer — it must not read as every peer healthy
+    (honest_failure_modes #1). The all-rows-unparseable guard above left this
+    sibling shape falling through to `clean`."""
+
+    def _write_fire(self, tracer_dir, fire_at_unix, results):
+        p = Path(tracer_dir) / f"tracer-{int(fire_at_unix)}.json"
+        p.write_text(json.dumps({"fire_at_unix": fire_at_unix, "results": results}))
+
+    def test_empty_results_is_indeterminate_not_clean(self, tmp_path):
+        reset_dispositions()
+        now = time.time()
+        self._write_fire(tmp_path, now - 60, [])
+        signals = probe_tracer_peer_unreachable(tracer_dir=tmp_path, now=now)
+        assert signals == []
+        got = collect_dispositions()["tracer_peer_unreachable"]
+        assert got["disp"] == "indeterminate"
+        assert "no peer" in got["reason"]

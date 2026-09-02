@@ -81,21 +81,28 @@ def probe_http_local(
     except socket.timeout:
         pass
     except URLError as exc:
+        # urllib wraps a CONNECT-phase timeout (accept backlog full — the
+        # fd-exhaustion sibling, #73) in URLError(reason=TimeoutError);
+        # only a READ-phase timeout surfaces bare. Verified live 2026-09-02.
+        # Both are "no response at all" — the wedge this class exists for.
+        if isinstance(getattr(exc, "reason", None), (socket.timeout, TimeoutError)):
+            pass
         # ConnectionRefused means port isn't bound — usually that's
         # "service is inactive" not "wedged". Don't double-alarm here.
-        if "Connection refused" in str(exc):
+        elif "Connection refused" in str(exc):
             note_disposition(
                 "http_local_unresponsive", "indeterminate",
                 reason="connection refused; port unbound — service_inactive owns that",
             )
             return None
-        # DNS/other URLErrors — return None; this probe doesn't
-        # speculate on network configuration.
-        note_disposition(
-            "http_local_unresponsive", "indeterminate",
-            reason="URLError; endpoint unobservable",
-        )
-        return None
+        else:
+            # DNS/other URLErrors — return None; this probe doesn't
+            # speculate on network configuration.
+            note_disposition(
+                "http_local_unresponsive", "indeterminate",
+                reason="URLError; endpoint unobservable",
+            )
+            return None
     except (OSError, ValueError):
         note_disposition(
             "http_local_unresponsive", "indeterminate",

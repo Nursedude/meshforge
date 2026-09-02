@@ -168,8 +168,7 @@ def _parse_user_from_unit_files(paths: list) -> Optional[str]:
     return user
 
 
-def _read_rnsd_user() -> Optional[str]:
-    """Parse User= from the rnsd unit + drop-ins (last wins, drop-in semantics)."""
+def _rnsd_unit_paths() -> list:
     paths = [
         '/etc/systemd/system/rnsd.service',
         '/lib/systemd/system/rnsd.service',
@@ -177,7 +176,29 @@ def _read_rnsd_user() -> Optional[str]:
     dropin_dir = Path('/etc/systemd/system/rnsd.service.d')
     if dropin_dir.is_dir():
         paths.extend(str(p) for p in sorted(dropin_dir.glob('*.conf')))
-    return _parse_user_from_unit_files(paths)
+    return paths
+
+
+def _read_rnsd_user() -> Optional[str]:
+    """Parse User= from the rnsd unit + drop-ins (last wins, drop-in semantics).
+
+    None means EITHER "a unit was read and declares no User= (root)" OR "no
+    unit file could be read at all". Consumers that must tell those apart
+    (an unreadable unit is unobserved, not root) pair this with
+    ``rnsd_unit_readable()``.
+    """
+    return _parse_user_from_unit_files(_rnsd_unit_paths())
+
+
+def rnsd_unit_readable() -> bool:
+    """True when at least one rnsd unit/drop-in file could be opened."""
+    for p in _rnsd_unit_paths():
+        try:
+            with open(p):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def _stat_owner(path: Path, sudo: bool = False) -> Optional[str]:

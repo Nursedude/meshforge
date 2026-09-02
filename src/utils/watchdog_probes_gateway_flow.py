@@ -165,29 +165,19 @@ def _resolve_propagation_soak_dir() -> Optional[str]:
     return _resolve_operator_state_dir("propagation_soak")
 
 
-def _load_synth_streak(state_path: str) -> int:
-    """Read the consecutive-degraded streak. Any error → 0 (favour silence on
-    uncertainty — a missing/garbage state suppresses a first-seen fire)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_synth_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises)."""
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError:
-        pass
+# The consecutive-degraded streak used by synth_soak_degraded and
+# propagation_soak_degraded. This USED to be an independent copy of the
+# parity streak load/save pair — and it still carried the defect the parity
+# copy was cured of on 2026-07-26: an unwritable state path (the #60
+# sandbox-drift class) mapped every read to 0, so the streak froze at 1
+# below a debounce of 2 and NEITHER class could ever fire, each tick reading
+# "held by debounce" (falsifiability audit phase 2, 2026-09-02). One
+# mechanism, one implementation (honest_failure_modes #5): the parity pair
+# records the value in-process first and witnesses a failed write once.
+from utils.watchdog_probe_core import (  # noqa: E402
+    _load_parity_streak as _load_synth_streak,
+    _save_parity_streak as _save_synth_streak,
+)
 
 
 def _newest_synth_file(state_dir: str,

@@ -348,7 +348,19 @@ def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
             timeout=timeout_s,
         )
         combined = (proc.stdout or "") + (proc.stderr or "")
-        return parse_rnstatus(combined)
+        status = parse_rnstatus(combined)
+        # A bare RNSStatus (no parse_error) used to come back for EMPTY output
+        # and for a non-zero exit whose text matched no _ERROR_PATTERNS —
+        # and the watchdog's rns_rpc_unresponsive probe noted `clean` on it.
+        # A fast, silent, or failing rnstatus has observed nothing
+        # (falsifiability audit phase 2, 2026-09-02).
+        rc = proc.returncode if isinstance(proc.returncode, int) else 0
+        if not combined.strip():
+            status.parse_error = f"rnstatus produced no output (exit {rc})"
+        elif rc != 0 and not status.parse_error:
+            first = combined.strip().splitlines()[0][:120]
+            status.parse_error = f"rnstatus exited {rc}: {first}"
+        return status
     except subprocess.TimeoutExpired:
         logger.warning("rnstatus timed out — rnsd may be unresponsive")
         return RNSStatus(

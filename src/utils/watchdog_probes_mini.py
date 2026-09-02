@@ -103,8 +103,19 @@ def _resolve_mini_home() -> Optional[str]:
         return None
 
 
+# In-process copy of the baseline, written FIRST by the saver: on an
+# unwritable state path (the #60 sandbox-drift class) every tick used to read
+# an empty baseline, record a "first sighting", and return indeterminate —
+# forever, with a reason that hid the cause. Third costume of the streak
+# defect cured for parity (07-26) and synth (09-02). Disk is consulted only
+# when this process holds no entry, i.e. at start.
+_history_stall_mem: dict = {}
+
+
 def _load_history_stall_state(state_path: str) -> dict:
     """Read the prior (fires, history mtime, streak) baseline. Any error → empty."""
+    if state_path in _history_stall_mem:
+        return dict(_history_stall_mem[state_path])
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -116,16 +127,21 @@ def _load_history_stall_state(state_path: str) -> dict:
 def _save_history_stall_state(state_path: str, *, fires: int,
                               hist_mtime: float, streak: int) -> None:
     """Persist the baseline (atomic-rename, never raises)."""
+    doc = {"fires": int(fires), "hist_mtime": float(hist_mtime),
+           "streak": int(streak)}
+    _history_stall_mem[state_path] = dict(doc)
     try:
         parent = os.path.dirname(state_path)
         if parent:
             os.makedirs(parent, exist_ok=True)
         tmp = state_path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"fires": int(fires), "hist_mtime": float(hist_mtime),
-                       "streak": int(streak)}, fh, separators=(",", ":"))
+            json.dump(doc, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
     except OSError:
+        # Never raises (bookkeeping must not crash a probe); the baseline is
+        # held in-process above, so the detector keeps working — only restart
+        # survival is lost while the path stays broken (#60).
         pass
 
 

@@ -110,6 +110,17 @@ def probe_tracer_peer_unreachable(
             reason="tracer result rows unparseable — peers unobservable",
         )
         return []
+    if not by_peer:
+        # Well-formed fires whose ``results`` are EMPTY: the tracer ran and
+        # enumerated zero peers (an empty peer list, a fire script that lost
+        # its targets). Sibling of the guard above — it fell through to the
+        # final `clean` note, reading "no peer unreachable" for "no peer
+        # observed" (falsifiability audit phase 2, 2026-09-02).
+        note_disposition(
+            "tracer_peer_unreachable", "indeterminate",
+            reason="tracer fires carry no peer rows — no peer observed",
+        )
+        return []
 
     signals: List[Signal] = []
     for peer, history in by_peer.items():

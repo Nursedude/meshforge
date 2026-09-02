@@ -41,9 +41,20 @@ from utils.watchdog_probe_core import (
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _rnsd_unit_was_readable(injected) -> bool:
+    if injected is not None:
+        return bool(injected)
+    try:
+        from utils.rns_tree_perms import rnsd_unit_readable
+        return rnsd_unit_readable()
+    except Exception:
+        return False
+
+
 def probe_foundation_drift(
     *,
     perms=None,
+    rnsd_unit_readable=None,
 ) -> Optional[Signal]:
     """Surface a born-correct permission-foundation drift in the RNS config tree.
 
@@ -92,7 +103,15 @@ def probe_foundation_drift(
     if not reason:
         # Disambiguate the helper's three None meanings (mirrors its guards).
         user = perms.rnsd_user
-        if not user or user == "root":
+        if not user and not _rnsd_unit_was_readable(rnsd_unit_readable):
+            # `_read_rnsd_user()` is None for BOTH "unit read, no User=" (root,
+            # inert is right) and "no unit file readable" — and this branch
+            # filed both under root. A non-root rnsd whose unit moved would be
+            # blind here wearing `inert` (falsifiability audit phase 2,
+            # 2026-09-02). Unobserved is indeterminate, never absent-by-design.
+            note_disposition("foundation_perms_drift", "indeterminate",
+                             reason="rnsd unit file unreadable — service user unresolved")
+        elif not user or user == "root":
             note_disposition("foundation_perms_drift", "inert",
                              reason="rnsd runs as root (no perms constraint)")
         elif not _USERNAME_RE.match(user):
@@ -538,7 +557,14 @@ def probe_dep_version_drift(
         except Exception:
             service_user = None
 
+    user_scope_dark = False
     if installed is None:
+        # D1 (ported from dep_install_fragmented 2026-08-12 → here 2026-09-02,
+        # falsifiability audit phase 2): _enumerate_pkg_installs SKIPS the
+        # user-site/user-pipx globs whenever there is no resolvable non-root
+        # service user, so a would-be-clean verdict over the system-dist copy
+        # never looked at the import-priority user scope.
+        user_scope_dark = not service_user or service_user == "root"
         # Read the CONSUMER-OF-RECORD, not just ~/.local. On this fleet
         # meshtastic lives in the venv (the services' interpreter) / system-dist
         # / pipx and is frequently ABSENT from ~/.local — the old user-site-only
@@ -567,7 +593,13 @@ def probe_dep_version_drift(
         if _version_below(have, floor):
             stale.append(f"{pkg} installed={have} floor>={floor}")
     if not stale:
-        note_disposition("dep_version_drift", "clean")
+        if user_scope_dark:
+            note_disposition(
+                "dep_version_drift", "indeterminate",
+                reason=("user-scope install locations unobservable "
+                        "(no non-root rnsd user)"))
+        else:
+            note_disposition("dep_version_drift", "clean")
         return None
 
     detail = (

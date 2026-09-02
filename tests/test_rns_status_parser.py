@@ -433,3 +433,29 @@ class TestRunRnstatus:
         result = run_rnstatus()
         assert result.parse_error is not None
         assert "Failed" in result.parse_error
+
+
+class TestRunRnstatusEmptyOrFailedIsNotClean:
+    """Falsifiability phase 2 (2026-09-02): ``rnstatus`` that prints NOTHING,
+    or exits non-zero with text matching no known error pattern, came back as
+    a bare RNSStatus with no parse_error — and the watchdog's
+    rns_rpc_unresponsive probe noted `clean` on it. Silence is not health."""
+
+    @patch('utils.rns_status_parser._find_rnstatus_binary', return_value='/usr/bin/rnstatus')
+    @patch('subprocess.run')
+    def test_empty_output_sets_parse_error(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="", stderr="", returncode=0)
+        result = run_rnstatus()
+        assert result.timed_out is False
+        assert result.parse_error is not None
+        assert "no output" in result.parse_error
+
+    @patch('utils.rns_status_parser._find_rnstatus_binary', return_value='/usr/bin/rnstatus')
+    @patch('subprocess.run')
+    def test_nonzero_exit_with_unrecognised_text_sets_parse_error(self, mock_run, mock_find):
+        mock_run.return_value = MagicMock(stdout="Traceback (most recent call last):\n  boom\n",
+                                          stderr="", returncode=1)
+        result = run_rnstatus()
+        assert result.timed_out is False
+        assert result.parse_error is not None
+        assert "exited 1" in result.parse_error
