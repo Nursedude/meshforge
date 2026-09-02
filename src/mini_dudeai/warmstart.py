@@ -279,7 +279,15 @@ def _current_head() -> str | None:
     import subprocess
     repo = os.environ.get(APP_REPO_ENV, APP_REPO_DEFAULT)
     try:
-        out = subprocess.run(["git", "-C", repo, "rev-parse", "HEAD"],
+        # -c safe.directory: this returns None on ANY git failure, and None
+        # means "mint no verdict" — so a git refusal stops calibration
+        # re-derivation SILENTLY. Today both twins' mini units run as the repo
+        # owner, but a root/service-account host would hit git's dubious-
+        # ownership check and the ledger would just quietly stop re-deriving.
+        # Scoped to the repo the adapter handed us (2026-09-01, ported from the
+        # parity probe's root-blindness defect).
+        out = subprocess.run(["git", "-c", f"safe.directory={repo}",
+                              "-C", repo, "rev-parse", "HEAD"],
                              capture_output=True, text=True, timeout=5)
     except (OSError, subprocess.SubprocessError):
         return None

@@ -2782,7 +2782,11 @@ def test_git_dirty_paths_passes_safe_directory_for_queried_root(monkeypatch):
     assert "-c" in argv, argv
     assert argv[argv.index("-c") + 1] == "safe.directory=/opt/meshanchor", argv
     assert argv[argv.index("-C") + 1] == "/opt/meshanchor", argv
-    # ...and it must follow the root it was handed, not a hardcoded path.
+    # A perms-bit diff must not read as an edit: this probe treats dirty as
+    # "authoring window" and SUPPRESSES, so a chmod sweep could silence it
+    # rather than merely noise it — the blind direction.
+    assert "core.fileMode=false" in argv, argv
+    # ...and safe.directory must follow the root it was handed, not a hardcode.
     _git_dirty_paths("/somewhere/else", ["x.py"])
     argv = seen["argv"]
     assert argv[argv.index("-c") + 1] == "safe.directory=/somewhere/else", argv

@@ -87,12 +87,21 @@ def _git_dirty_paths(root: str, rels, *, timeout_s: int = 15) -> Tuple[set, str]
     the exemption to the exact root being queried keeps this a read-only query
     on a path the probe was configured with, and needs no per-box operator
     setup — a new box is correct on arrival rather than silently blind.
+
+    ``-c core.fileMode=false`` because a mere permission-bit diff would show as
+    ``M`` and this probe reads dirty as "authoring window" — i.e. it SUPPRESSES.
+    A chmod sweep (the 2026-08-29 identity-key tightening was one) could
+    therefore silence the probe rather than merely noise it, which is the blind
+    direction this whole retarget exists to avoid. Mirrors the same two flags
+    ``_git_tracked_modifications`` in ``watchdog_probes_env`` has carried all
+    along — that file had the cure while this one shipped the bug.
     """
     if not rels:
         return set(), "ok"
     try:
         proc = subprocess.run(
-            ["git", "-c", f"safe.directory={root}", "-C", root,
+            ["git", "-c", f"safe.directory={root}",
+             "-c", "core.fileMode=false", "-C", root,
              "status", "--porcelain", "-z", "--"] + list(rels),
             capture_output=True, timeout=timeout_s,
         )
