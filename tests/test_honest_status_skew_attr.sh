@@ -121,5 +121,38 @@ out=$(printf 'Id=meshforge-watchdog.service\nExecStart={ argv[]=/usr/bin/python3
 expect "WorkingDirectory alone resolves the repo" "B /opt/meshforge meshforge-watchdog.service 0" "$out"
 
 # The wrapper (test_honest_status_shell.py) requires this exact line as well as
+
+# N. THE BLIND-SPOT WITNESS (2026-09-02). A repo `pip install -e`'d into a venv
+#    outside /opt loads repo code through a .pth in site-packages — invisible in
+#    ExecStart/Environment/WorkingDirectory, and a `-m module` ExecStart has no
+#    .py to scan. Dropping it silently makes "blind" and "correctly untracked"
+#    the SAME output, which is the class this whole file exists to end.
+out=$(run "$(rec someapp.service '/home/x/venvs/app/bin/python -m someapp.daemon')")
+expect "venv interpreter, no repo resolved -> N disclosure" \
+       "N someapp.service /home/x/venvs/app/bin/python" "$out"
+
+out=$(run "$(rec someapp.service '/home/x/venvs/app/bin/python3.11 -m someapp.daemon')")
+expect "versioned venv interpreter also discloses" \
+       "N someapp.service /home/x/venvs/app/bin/python3.11" "$out"
+
+# A SYSTEM interpreter that resolves to no repo is genuinely untracked, not
+# blind — it has no venv that could hide an editable install. Must stay silent,
+# or the disclosure becomes noise on every box.
+out=$(run "$(rec sys-thing.service '/usr/bin/python3 /usr/share/foo/run.py')")
+expect "system interpreter, no repo -> still silent" "" "$out"
+
+out=$(run "$(rec sys-thing.service '/usr/local/bin/python3 /usr/share/foo/run.py')")
+expect "/usr/local interpreter, no repo -> still silent" "" "$out"
+
+# A packaged non-python binary must stay silent (guards test 1 from regressing
+# into a disclosure).
+out=$(run "$(rec meshforge-lxmd.service '/usr/local/bin/lxmd -p --config /home/x/c')")
+expect "packaged binary emits no disclosure" "" "$out"
+
+# A venv INSIDE a repo already resolves by path and must be JUDGED, never
+# disclosed — this is the live MeshAnchor orchestrator's exact shape.
+out=$(run "$(rec meshanchor.service '/opt/meshanchor/venv/bin/python -m core.orchestrator --start')")
+expect "in-repo venv is judged, not disclosed" "B /opt/meshanchor meshanchor.service 0" "$out"
+
 # exit 0 — a harness that exits 0 without reaching its end asserts nothing.
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED: $fails assertion(s)"; exit 1; fi

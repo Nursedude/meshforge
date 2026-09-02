@@ -355,6 +355,7 @@ else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 # overlap the healthy domain).
 skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0; skew_udark=0
 skew_prose=0; skew_prose_desc=""
+skew_noattr=0; skew_noattr_desc=""
 # The attribution program is a real file so it can be unit-tested directly
 # (tests/test_honest_status_skew_attr.sh); ship it base64 so no quoting of an
 # awk program has to survive this remote command string.
@@ -399,6 +400,8 @@ else echo HSNOREPO; fi")
   nb=$(printf '%s\n' "$body" | grep -c '^B ' || true)
   nu=$(printf '%s\n' "$body" | grep -c '^U ' || true)
   np=$(printf '%s\n' "$body" | grep -c '^P ' || true)
+  nn=$(printf '%s\n' "$body" | grep -c '^N ' || true)
+  skew_noattr=$((skew_noattr+nn))
   skew_behind=$((skew_behind+nb)); skew_unknown=$((skew_unknown+nu))
   skew_prose=$((skew_prose+np))
   # ONE formatter for both buckets — two awk copies would drift the display
@@ -412,6 +415,13 @@ else echo HSNOREPO; fi")
   }
   [ "$nb" -gt 0 ] && skew_desc="$skew_desc $b:$(_skew_units B)"
   [ "$np" -gt 0 ] && skew_prose_desc="$skew_prose_desc $b:$(_skew_units P)"
+  # N records are shaped "N <unit> <interp>", not "<marker> <repo> <unit> <days>"
+  # — there IS no repo, which is the whole point — so they need their own
+  # formatter rather than a fourth branch inside _skew_units.
+  _noattr_units() {
+    printf '%s\n' "$body" | awk '$1=="N"{sub(/\.service$/,"",$2); printf "%s,", $2}' | sed 's/,$//'
+  }
+  [ "$nn" -gt 0 ] && skew_noattr_desc="$skew_noattr_desc $b:$(_noattr_units)"
 done
 udark_note=""
 [ "$skew_udark" -gt 0 ] && udark_note=" ; user scope unobservable on $skew_udark box(es) — those units are NOT covered"
@@ -420,17 +430,25 @@ udark_note=""
 # a true sentence that must not be printed alone.
 prose_note=""
 [ "$skew_prose" -gt 0 ] && prose_note=" ; $skew_prose behind on NON-code only (docs/.claude/evals — still real for mini's oracle corpus)${skew_prose_desc}"
+# Coverage disclosure, and it rides every outcome line for the same reason the
+# prose bucket does: "every active unit is current" is only true of the units
+# the leg can SEE. A venv interpreter that resolved to no repo may have that
+# repo editable-installed into it, in which case the unit loads repo code the
+# leg cannot attribute. Expected to be 0 on this fleet — it exists so the class
+# announces itself rather than silently shrinking coverage.
+noattr_note=""
+[ "$skew_noattr" -gt 0 ] && noattr_note=" ; $skew_noattr unit(s) run a venv interpreter resolving to NO repo — an editable install there would be INVISIBLE to this leg${skew_noattr_desc}"
 if [ "$skew_boxes" = 0 ]; then
   disc "running-code skew" "no box answered with a repo — not measured"
 elif [ "$skew_behind" = 0 ] && [ "$skew_unknown" = 0 ]; then
-  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${prose_note}${udark_note}"
+  disc "running-code skew" "$skew_boxes box(es): every ACTIVE mf/ma unit (system+user scope) started at/after its own repo's newest CODE commit${prose_note}${noattr_note}${udark_note}"
 else
   # ${var:+...} expands whenever the var is NON-EMPTY, and "0" is non-empty —
   # so the naive form printed "; 0 unknown(no start time)" on every clean run.
   # Caught by drilling the branches with synthetic counts, not by reading.
   unk_note=""
   [ "$skew_unknown" -gt 0 ] && unk_note=" ; $skew_unknown unknown(no start time / no repo for the unit — NOT 'current')"
-  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${prose_note}${udark_note} — disclosure, not a fault; they load it at next restart"
+  disc "running-code skew" "$skew_behind unit(s) behind their repo's newest CODE commit across $skew_boxes box(es)${skew_desc}${unk_note}${prose_note}${noattr_note}${udark_note} — disclosure, not a fault; they load it at next restart"
 fi
 
 # 3. Full local suite — file-routed, never a streamed tail.

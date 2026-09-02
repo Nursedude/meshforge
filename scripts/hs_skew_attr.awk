@@ -6,6 +6,10 @@
 # Output: "B <repo> <unit> <days>"  behind on CODE
 #         "P <repo> <unit> <days>"  behind on prose only (docs/.claude/evals)
 #         "U <repo> <unit>"         unknown (no start time / no repo HEAD)
+#         "N <unit> <interp>"       DISCLOSURE: no repo resolved, but the unit
+#                                   runs a venv interpreter — if that venv has
+#                                   a repo `pip install -e`'d into it, this
+#                                   unit's skew is INVISIBLE to the leg
 #         nothing                   the unit loads no repo code — untracked
 # Vars  : HTMF/HTMA/HTMM (repo HEADs), HCMF/HCMA/HCMM (repo CODE-heads).
 #
@@ -30,9 +34,27 @@
 # heredoc: it is the part with real logic, so it must be directly unit-testable
 # against synthetic records (tests/test_honest_status_skew_attr.sh) rather than
 # only grep-able as source text.
+# Return the venv-ish python interpreter in an ExecStart, or "" if the unit
+# runs a system interpreter / no python at all. `systemctl show` emits tokens
+# as path=/x and argv[]=/x, so strip any key= prefix before matching.
+function venv_interp(s,   n, parts, i, p) {
+  n = split(s, parts, /[ \t]+/)
+  for (i = 1; i <= n; i++) {
+    p = parts[i]
+    sub(/^[^=]*=/, "", p)
+    if (p !~ /\/bin\/python[0-9.]*$/) continue
+    if (p ~ /^\/usr\/bin\//)       continue
+    if (p ~ /^\/usr\/local\/bin\//) continue
+    if (p ~ /^\/bin\//)            continue
+    return p
+  }
+  return ""
+}
+
+
 # Resolve, per `systemctl show` record, the repo whose code the unit's process
 # actually LOADS — never the unit's NAME.
-function decide(   hay, rp, i, n, parts, s, line, H, HC) {
+function decide(   hay, rp, i, n, parts, s, line, H, HC, iv) {
   if (id == "") return
   hay = ex " " env " " wd
   # maps FIRST: /opt/meshforge is a prefix of /opt/meshforge-maps.
@@ -62,7 +84,26 @@ function decide(   hay, rp, i, n, parts, s, line, H, HC) {
   if      (rp == "/opt/meshforge-maps") { H = HTMM; HC = HCMM }
   else if (rp == "/opt/meshanchor")     { H = HTMA; HC = HCMA }
   else if (rp == "/opt/meshforge")      { H = HTMF; HC = HCMF }
-  else return        # loads no repo code: not judgeable, correctly untracked
+  else {
+    # BLIND-SPOT WITNESS (2026-09-02, queued by the audit that produced this
+    # file). No repo resolved. For almost every unit that is CORRECT and stays
+    # silent — a packaged binary, a system service, an external app. But a repo
+    # `pip install -e`'d into a venv OUTSIDE /opt loads repo code through a
+    # .pth in site-packages: nothing lands in ExecStart/Environment/
+    # WorkingDirectory, and a `-m module` ExecStart has no .py file to scan.
+    # Such a unit is dropped here — output byte-identical to "correctly not
+    # repo code". That is how a detector loses coverage without anyone seeing
+    # it, and it is the same shape as the name-dispatch bug this file replaced:
+    # untracked-by-design and blind must not be the same answer.
+    #
+    # Nothing on this fleet has that shape today, so this is expected to emit
+    # NOTHING — it exists so the class announces itself the first time it
+    # appears (honest_failure_modes #9: every swallow leaves a witness). It is
+    # a disclosure, never a fault: we cannot tell from `systemctl show` alone
+    # whether such a unit loads repo code, and "cannot tell" is the claim.
+    if ((iv = venv_interp(ex)) != "") print "N " id " " iv
+    return
+  }
   # FAIL-SAFE: an unresolvable code-head collapses to HEAD, never to "no code
   # changes" (honest_failure_modes #1 — the degraded value must not overlap
   # the healthy domain).
