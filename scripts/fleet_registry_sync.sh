@@ -76,6 +76,27 @@ if [ ! -f "$REG" ]; then
     exit 0
 fi
 
+# Re-derive each box's declared role INTO the manager's registry before the
+# fan-out (2026-09-02). The federation collector reads `serves_map` from the
+# registry to skip peers whose role runs no map, so the stamp must be refreshed
+# by the organ that distributes it — a one-time manual stamp would silently go
+# stale the first time a box changes role, and a stale FALSE is the dangerous
+# direction (a box that GAINED a map would stay unpolled).
+#
+# Best-effort by design: this organ's job is distribution, and a stamp failure
+# must not stop the fan-out. fleet_role_stamp holds a prior stamp for an
+# unreachable box and never invents one, so the worst case here is a registry
+# that is merely older than today — not a wrong one. Its own output lands in
+# the run log either way (#9).
+if [ -x "$HERE/fleet_role_stamp.py" ] || [ -f "$HERE/fleet_role_stamp.py" ]; then
+    role_out=$(PYTHONPATH="$(dirname "$HERE")/src" timeout 300 \
+        python3 "$HERE/fleet_role_stamp.py" --apply 2>&1) || true
+    echo "$role_out"
+    role_line=$(printf '%s\n' "$role_out" | tail -1)
+else
+    role_line="role stamp: script absent"
+fi
+
 local_hash=$(md5sum "$REG" | awk '{print $1}')
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
 
@@ -143,6 +164,11 @@ done 3< "$HOSTS_FILE"
 join() { local IFS=,; echo "$*"; }
 
 summary="ok=${#ok_boxes[@]}"
+# Carry the role-stamp result into the verdict. It never CHANGES the verdict
+# (distribution is this organ's job, not stamping), but a stamp that quietly
+# stopped working must not be invisible — the whole federation role filter
+# reads what it writes.
+[ -n "${role_line:-}" ] && summary+=" | roles: $role_line"
 [ ${#healed[@]} -gt 0 ]      && summary+=" healed=$(join "${healed[@]}")"
 [ ${#skipped[@]} -gt 0 ]     && summary+=" no_registry=$(join "${skipped[@]}")"
 [ ${#unreachable[@]} -gt 0 ] && summary+=" UNOBSERVABLE=$(join "${unreachable[@]}")"
