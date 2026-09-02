@@ -692,3 +692,90 @@ class TestNamesFirstPeerWiring:
         s = fc.get_snapshot().peer_status["192.0.2.44"]
         assert s.peer_name == "peerbox"
         assert s.resolution_method == "ip_literal"
+
+
+# === role filter: a map-less peer is INERT, not unhealthy (2026-09-02) ======
+#
+# _bootstrap_federation_peers derives peers from fleet.json with no notion of
+# which boxes serve a map, so a gateway-only / field-node box was polled on
+# :5000 forever, refused forever, and produced a permanent
+# federation_peer_unhealthy that every box hand-suppressed with a known-normal
+# rule. These pin the filter AND the direction of its failure mode: only an
+# explicit False drops a peer.
+
+IP_OF = {"mapbox": "10.0.0.2", "gwonly": "10.0.0.3", "mystery": "10.0.0.4",
+         "gw1": "10.0.0.5", "gw2": "10.0.0.6"}
+
+
+def _collector_with_peers(tmp_path, names, serves_map_fn):
+    """Collector whose fleet.json lists `names`, with serves_map stubbed.
+
+    Peers are IP-shaped and self is filtered by hostname, matching the
+    existing bootstrap tests above — an unresolvable bare name is dropped by
+    filter_self_from_peers before the role filter ever sees it.
+    """
+    fake_home = tmp_path / "home"
+    cfg_dir = fake_home / ".config" / "meshforge"
+    cfg_dir.mkdir(parents=True)
+    peers = {"host-self": {"ip": "10.0.0.1"}}
+    peers.update({n: {"ip": IP_OF[n]} for n in names})
+    (cfg_dir / "fleet.json").write_text(json.dumps({
+        "this_host": "host-self", "peers": peers}))
+    with patch("utils.map_data_collector.get_real_user_home",
+               return_value=fake_home), \
+         patch("utils.map_federation.get_local_hostnames",
+               return_value=["host-self"]), \
+         patch("utils.fleet_naming.serves_map", side_effect=serves_map_fn):
+        return MapDataCollector(cache_dir=tmp_path / "cache",
+                                enable_history=False, config_dir=cfg_dir)
+
+
+def _polled(c):
+    return list(c._federation.peers) if c._federation else []
+
+
+class TestFederationRoleFilter:
+    def test_explicit_false_peer_is_dropped_and_named(self, tmp_path):
+        c = _collector_with_peers(
+            tmp_path, ["mapbox", "gwonly"],
+            lambda e, *a, **k: False if e == IP_OF["gwonly"] else True)
+        polled = _polled(c)
+        assert IP_OF["gwonly"] not in polled, polled
+        assert IP_OF["mapbox"] in polled, polled
+        # dropped is not the same as forgotten
+        assert IP_OF["gwonly"] in c._non_federating
+
+    def test_unknown_peer_is_still_polled(self, tmp_path):
+        """THE direction that matters. A box whose role we cannot determine
+        must keep being watched — collapsing UNKNOWN to False would trade a
+        noisy false alarm for a silent real one (hfm #2)."""
+        c = _collector_with_peers(tmp_path, ["mystery"],
+                                  lambda *_a, **_k: None)
+        assert IP_OF["mystery"] in _polled(c)
+        assert c._non_federating == {}
+
+    def test_registry_failure_polls_everything(self, tmp_path):
+        """A broken registry must degrade to the noisy-but-safe side, never
+        silently shrink the peer list."""
+        def boom(*_a, **_k):
+            raise RuntimeError("registry on fire")
+        c = _collector_with_peers(tmp_path, ["mapbox", "gwonly"], boom)
+        assert sorted(_polled(c)) == sorted([IP_OF["mapbox"], IP_OF["gwonly"]])
+        assert c._non_federating == {}
+
+    def test_all_peers_map_less_disables_federation_cleanly(self, tmp_path):
+        c = _collector_with_peers(tmp_path, ["gw1", "gw2"],
+                                  lambda *_a, **_k: False)
+        assert c._federation is None
+        # and the block still REPORTS them, so "not watched" never reads as
+        # "watched and fine" (hfm #9)
+        block = c._merge_federation({}, [])
+        assert block["enabled"] is False
+        assert set(block["non_federating"]) == {IP_OF["gw1"], IP_OF["gw2"]}
+
+    def test_non_federating_key_always_present_when_enabled(self, tmp_path):
+        c = _collector_with_peers(tmp_path, ["mapbox"],
+                                  lambda *_a, **_k: True)
+        block = c._merge_federation({}, [])
+        assert "non_federating" in block
+        assert block["non_federating"] == {}

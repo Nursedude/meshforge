@@ -158,7 +158,7 @@
         "kind": "annotate_digest"
       },
       "cooldown_s": 86400,
-      "annotation": "moc3 is gateway-only; permanent federation backoff is EXPECTED. Annotates digest only \u2014 no ntfy. Catch-all unexpected-peer rule deferred to post-soak (needs subject_exclude_globs support to not re-fire moc3)."
+      "annotation": "moc3 is gateway-only; permanent federation backoff is EXPECTED. Annotates digest only \u2014 no ntfy. Catch-all unexpected-peer rule deferred to post-soak (needs subject_exclude_globs support to not re-fire moc3). SUPERSEDED 2026-09-02: the peer list now drops boxes whose DECLARED role serves no map (fleet_naming serves_map, stamped by scripts/fleet_role_stamp.py), so moc3 is no longer polled and this rule matches nothing. RETIRE IT -- together with the *moc3* entry in federation_peer_unhealthy_unexpected's subject_exclude_globs -- once every box has rolled BOTH the code and a re-seeded ruleset. Deleting it from the seed before then only makes every box drift (rules_path is the per-box ~/mini_dudeai_rules.json, not this file). The PREVIOUS trigger ('when the RNS roll ends and moc3 rejoins federation') could never fire: the roll ended 2026-07-19 and a gateway-only box cannot rejoin -- its map is disabled BY DESIGN and starting it re-runs the 07-24 deploy incident."
     },
     {
       "id": "federation_peer_unhealthy_unexpected",

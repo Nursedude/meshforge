@@ -88,6 +88,26 @@ class FleetHost:
     # a duplicate ip_fallback stays a registry ERROR — two boxes silently
     # claiming one address is the misconfig the validator exists to catch.
     shares_front_with: Optional[str] = None
+    # --- derived organ posture (2026-09-02) ------------------------------
+    # role: this box's DECLARED role, copied from its own deployment.json by
+    # scripts/fleet_role_stamp.py. It is a re-derived CACHE, never a second
+    # place to author the fact — the box's deployment.json stays the one
+    # declaration (honest_failure_modes #5).
+    role: Optional[str] = None
+    # serves_map: TRI-STATE, and the distinction is the whole point.
+    #   True  — the role catalog says meshforge-map is `enabled` here
+    #   False — the catalog says `disabled`/`absent`: this box CANNOT serve
+    #           /api/status, so a federation poll to it is refused BY DESIGN
+    #   None  — UNKNOWN (no stamp yet, box unreachable at stamp time, role
+    #           absent from the catalog). Unknown must never collapse to
+    #           False: that would silently stop polling a box whose map is
+    #           genuinely broken (honest_failure_modes #2). Consumers act
+    #           only on an explicit False.
+    serves_map: Optional[bool] = None
+    # When the stamp was derived. A stale stamp is still usable — roles change
+    # rarely — but it lets a reader say HOW old the claim is instead of
+    # implying it was checked now.
+    role_derived_at: Optional[float] = None
 
 
 @dataclass
@@ -159,9 +179,27 @@ def _validate_host(alias: str, raw, errors: List[str]) -> Optional[FleetHost]:
     if sfw is not None and not isinstance(sfw, str):
         errors.append(f"{where}: shares_front_with must be a string alias")
         return None
+    role = raw.get("role")
+    if role is not None and not isinstance(role, str):
+        errors.append(f"{where}: role must be a string (a role NAME from "
+                      f"docs/fleet_roles.yaml)")
+        return None
+    sm = raw.get("serves_map")
+    if sm is not None and not isinstance(sm, bool):
+        # A string "false", or 0, would be TRUTHY/falsy by accident and decide
+        # whether a peer gets polled. Reject what the author cannot have meant
+        # (honest_failure_modes #3) rather than coerce it.
+        errors.append(f"{where}: serves_map {sm!r} must be a JSON boolean or "
+                      f"absent — absent means UNKNOWN, which is not False")
+        return None
+    rda = raw.get("role_derived_at")
+    if rda is not None and not isinstance(rda, (int, float)):
+        errors.append(f"{where}: role_derived_at must be a unix timestamp")
+        return None
     return FleetHost(alias=alias, ip_fallback=fb, mac=mac,
                      expect_hostkey=key, notes=str(raw.get("notes", "")),
-                     shares_front_with=sfw)
+                     shares_front_with=sfw, role=role, serves_map=sm,
+                     role_derived_at=float(rda) if rda is not None else None)
 
 
 def load_registry(path: Optional[str] = None
@@ -285,6 +323,43 @@ def connect_target(entry: str, registry: Optional[Registry] = None, *,
 
 
 _QUIET_WARNED = False
+
+
+def serves_map(entry: str, registry: Optional[Registry] = None
+               ) -> Optional[bool]:
+    """Does this fleet entry serve a MeshForge map (i.e. /api/status on :5000)?
+
+    TRI-STATE, and callers must honour all three:
+      True  — declared role runs meshforge-map
+      False — declared role has it `disabled`/`absent`; a federation poll here
+              is refused BY DESIGN and must be reported inert, never unhealthy
+      None  — UNKNOWN. No stamp yet, the box was unreachable when the registry
+              was last stamped, or its role is not in the catalog.
+
+    ``None`` must never be treated as False. Doing so would silently stop
+    polling a box whose map is genuinely broken — trading a noisy false alarm
+    for a silent real one (honest_failure_modes #2). The only safe reading of
+    unknown is "keep watching".
+
+    ``entry`` may be an alias, a resolved name, or an IP literal; lookup is by
+    alias first, then by ip_fallback, mirroring ``connect_target``.
+    """
+    if registry is None:
+        registry = load_registry_quiet()
+    if registry is None or not entry:
+        return None
+    e = str(entry).strip()
+    host = registry.hosts.get(e)
+    if host is None:
+        # tolerate a resolved fqdn ("moc3.mf.internal") or an ip_fallback
+        stem = e.split(".")[0]
+        host = registry.hosts.get(stem)
+    if host is None:
+        for h in registry.hosts.values():
+            if h.ip_fallback and h.ip_fallback == e:
+                host = h
+                break
+    return None if host is None else host.serves_map
 
 
 def load_registry_quiet(path: Optional[str] = None) -> Optional[Registry]:

@@ -128,6 +128,44 @@ class FederationDataCollectorMixin:
         # by target too, or peer_name silently reverts to None on exactly
         # the names-first happy path (#54 regression — review-caught).
         peer_names = self._load_fleet_peer_names()
+        # Peers whose DECLARED role cannot serve a map are dropped BEFORE the
+        # collector ever sees them (2026-09-02). A gateway-only or field-node
+        # box has meshforge-map `disabled`/`absent` in docs/fleet_roles.yaml
+        # BY DESIGN, so :5000 refuses forever; polling it manufactured a
+        # permanent `federation_peer_unhealthy` that each box then had to
+        # suppress with a hand-written known-normal rule. That is a
+        # known_benign factory: every new map-less box inherits a false
+        # alarm someone must hand-silence, and the silencer is
+        # indistinguishable from silencing a real fault.
+        #
+        # fleet_truth.py's rule, applied here: set this ONLY from the box's
+        # own declared role, never inferred from silence. serves_map is
+        # TRI-STATE — only an explicit False drops a peer; UNKNOWN keeps
+        # polling, because unknown is not absent (honest_failure_modes #2).
+        self._non_federating: dict = {}
+        try:
+            from utils.fleet_naming import serves_map as _serves_map
+            keep = []
+            for entry in peers:
+                if _serves_map(str(entry)) is False:
+                    self._non_federating[str(entry)] = "declared role serves no map"
+                else:
+                    keep.append(entry)
+            if self._non_federating:
+                # Named, never silent: a peer we deliberately stopped watching
+                # must be visible, or "not polled" and "healthy" look alike.
+                logger.info(
+                    "Federation: %d peer(s) excluded by declared role (no "
+                    "map served): %s", len(self._non_federating),
+                    ", ".join(sorted(self._non_federating)))
+            peers = keep
+        except Exception as e:
+            # Never let a naming/registry problem silently shrink the peer
+            # list — degrade to polling EVERYTHING, the noisy-but-safe side.
+            logger.debug(f"Federation role filter skipped: {e}")
+        if not peers:
+            logger.info("Federation: no map-serving peers after role filter")
+            return
         try:
             from utils.fleet_naming import connect_target, load_registry_quiet
             naming_registry = load_registry_quiet()
@@ -206,6 +244,10 @@ class FederationDataCollectorMixin:
           - last_attempt (most recent attempt ts)
           - by_network (dict: network -> count of federated-only entries)
           - total / with_position / without_position (federated-only counts)
+          - non_federating (dict: peer -> why it is NOT polled). A peer whose
+            declared role serves no map is INERT, not unhealthy — but it must
+            still appear, or "deliberately not watched" and "watched and fine"
+            become the same empty space (honest_failure_modes #9).
 
         Disabled (no federation collector configured) returns
         `{"enabled": False, ...}` with empty fields so the frontend can
@@ -215,6 +257,7 @@ class FederationDataCollectorMixin:
             "enabled": False, "peers": [], "peer_status": [],
             "last_sync": None, "last_attempt": None, "by_network": {},
             "total": 0, "with_position": 0, "without_position": 0,
+            "non_federating": dict(getattr(self, "_non_federating", {}) or {}),
         }
         if not self._federation:
             return empty_block
@@ -365,4 +408,5 @@ class FederationDataCollectorMixin:
             "total": with_pos + without_pos,
             "with_position": with_pos,
             "without_position": without_pos,
+            "non_federating": dict(getattr(self, "_non_federating", {}) or {}),
         }

@@ -409,6 +409,16 @@ class StatusEndpointsMixin:
         # status so monitoring can alert on stale federation: a peer
         # in `consecutive_failures > 3` for >5min means we're missing
         # whatever directory entries that box was contributing.
+        # `non_federating` rides EVERY branch (2026-09-02). A peer whose
+        # declared role serves no map is dropped from the poll list before the
+        # collector is built, so it vanishes from `peers` and `peer_status`
+        # entirely — and a peer we deliberately stopped watching must never
+        # occupy the same silence as one that is watched and fine
+        # (honest_failure_modes #9). This block is built INDEPENDENTLY of
+        # _merge_federation's; both are consumers of the same fact, so both
+        # carry the key or the operator's view and the geojson disagree.
+        non_fed = dict(getattr(self.collector, "_non_federating", {}) or {}) \
+            if self.collector else {}
         if self.collector and getattr(self.collector, "_federation", None):
             try:
                 snap = self.collector._federation.get_snapshot()
@@ -418,6 +428,7 @@ class StatusEndpointsMixin:
                     "last_sync": snap.last_sync,
                     "last_attempt": snap.last_attempt,
                     "federated_node_count": len(snap.by_node),
+                    "non_federating": non_fed,
                     "peer_status": [
                         _serialize_peer_status(s)
                         for s in snap.peer_status.values()
@@ -425,9 +436,12 @@ class StatusEndpointsMixin:
                 }
             except Exception as e:
                 logger.debug(f"federation status lookup failed: {e}")
-                status["federation"] = {"enabled": True, "error": str(e)[:200]}
+                status["federation"] = {"enabled": True, "error": str(e)[:200],
+                                        "non_federating": non_fed}
         else:
-            status["federation"] = {"enabled": False, "peers": [], "peer_status": []}
+            status["federation"] = {"enabled": False, "peers": [],
+                                    "peer_status": [],
+                                    "non_federating": non_fed}
 
         # Include radio connection status + LOCAL radio config
         # (helps operators diff heterogeneous fleet boxes — e.g. LongFast vs SHORT_TURBO)
