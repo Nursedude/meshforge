@@ -15,6 +15,7 @@ import time
 from typing import Dict, Optional, Tuple
 
 from utils.watchdog_probe_core import (
+    note_state_write_failure,
     Signal,
     _load_parity_streak,
     _save_parity_streak,
@@ -152,8 +153,8 @@ def _save_parity_dirty_window(state_path: str, payload: dict) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
-        return
+    except OSError as e:
+        note_state_write_failure(state_path, e)
 
 
 def probe_parity_drift(

@@ -1818,7 +1818,7 @@ class TestNomadnetCrashloop:
         doomed = str(blocker / "sub" / "nn.json")
         with caplog.at_level(_logging.WARNING, logger="watchdog"):
             _save_nomadnet_crashloop_streak(doomed, 1)   # must not raise
-        assert any("could not persist debounce streak" in r.message
+        assert any("state write FAILED" in r.message
                    for r in caplog.records)
 
 
@@ -7776,7 +7776,7 @@ class TestGatewayDeliveryDegraded:
         doomed = str(blocker / "sub" / "g.json")
         with caplog.at_level(_logging.WARNING, logger="watchdog"):
             _save_gateway_delivery_streak(doomed, 1)   # must not raise
-        assert any("could not persist debounce streak" in r.message
+        assert any("state write FAILED" in r.message
                    for r in caplog.records)
 
 

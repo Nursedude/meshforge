@@ -468,38 +468,22 @@ DEFAULT_GATEWAY_DELIVERY_STATE_PATH = (
     "/var/lib/meshforge/gateway_delivery_debounce.json")
 
 
-def _load_gateway_delivery_streak(state_path: str) -> int:
-    """Consecutive-candidate streak; any error → 0 (favour silence)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_gateway_delivery_streak(state_path: str, streak: int) -> None:
-    """Persist the debounce streak (atomic-rename, never raises).
-
-    A persistent write failure pins the streak below the debounce floor → the
-    probe would silently never fire during a real collapse, so a swallowed
-    OSError leaves a WITNESS in the watchdog journal (honest_failure_modes #9).
-    """
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError as exc:
-        logger.warning(
-            "gateway_delivery_degraded: could not persist debounce streak to "
-            "%s (%s) — the probe may not advance past its debounce floor; "
-            "check %s is writable.",
-            state_path, exc, os.path.dirname(state_path) or state_path,
-        )
+# _load_gateway_delivery_streak, _save_gateway_delivery_streak, _load_resource_canary_streak, _save_resource_canary_streak, _load_oracle_streak, _save_oracle_streak: byte-identical {"streak": n} pair(s) aliased onto the
+# probe_core parity implementation (in-process fallback + write witness).
+# The 2026-09-02 falsifiability audit found EIGHT independent copies of this
+# mechanism, all still carrying the defect the parity copy was cured of on
+# 2026-07-26: an unwritable state path (the #60 sandbox-drift class) froze
+# every streak at 1 below its debounce, so none of these classes could ever
+# fire. One mechanism, one implementation (honest_failure_modes #5); a lint
+# guard (MF028) and TestStreakSaversAreOne keep it that way.
+from utils.watchdog_probe_core import (  # noqa: E402
+    _load_parity_streak as _load_gateway_delivery_streak,
+    _save_parity_streak as _save_gateway_delivery_streak,
+    _load_parity_streak as _load_resource_canary_streak,
+    _save_parity_streak as _save_resource_canary_streak,
+    _load_parity_streak as _load_oracle_streak,
+    _save_parity_streak as _save_oracle_streak,
+)
 
 
 def probe_gateway_delivery_degraded(
@@ -759,30 +743,6 @@ def _resolve_resource_canary_dir() -> Optional[str]:
                         RESOURCE_CANARY_STATE_LEAF)
 
 
-def _load_resource_canary_streak(state_path: str) -> int:
-    """Read the consecutive-candidate streak. Any error → 0 (favour silence)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_resource_canary_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises)."""
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError:
-        pass
-
-
 def probe_resource_canary_degraded(
     *,
     state_dir: Optional[str] = None,
@@ -1028,31 +988,6 @@ def _resolve_oracle_log_path() -> Optional[str]:
     except (KeyError, OSError):
         return None
     return os.path.join(home, ".local", "share", "meshforge", "mesh_oracle_log.jsonl")
-
-
-def _load_oracle_streak(state_path: str) -> int:
-    """Read the consecutive-degraded streak. Any error → 0 (favour silence on
-    uncertainty — a missing/garbage state suppresses a first-seen fire)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_oracle_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises)."""
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError:
-        pass
 
 
 def _classify_oracle_record(rec: dict) -> Optional[str]:

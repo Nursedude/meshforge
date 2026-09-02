@@ -276,6 +276,8 @@ def main() -> int:
     ap.add_argument("--json")
     ap.add_argument("--md")
     ap.add_argument("--keep", action="store_true", help="keep the worktree")
+    ap.add_argument("--fail-on-survivor", action="store_true",
+                    help="exit 1 if any class is not caught-both (the standing gate)")
     a = ap.parse_args()
 
     classes = signal_classes()
@@ -347,6 +349,13 @@ def main() -> int:
         Path(a.json).write_text(json.dumps(summary, indent=2))
     if a.md:
         Path(a.md).write_text(render_md(summary))
+    if a.fail_on_survivor:
+        bad = [r["cls"] for r in results if r["verdict"] != "caught-both"]
+        if bad:
+            print(f"FAIL — {len(bad)} class(es) not caught in both polarities: "
+                  + ", ".join(bad), file=sys.stderr)
+            return 1
+        print(f"PASS — all {len(results)} classes caught in both polarities")
     return 0
 
 

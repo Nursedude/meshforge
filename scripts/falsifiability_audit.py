@@ -22,6 +22,15 @@ because the known one stays on the worklist. So:
     frontier pass -> the verdict per class (phase 2, adversarial_review)
     opus         -> write the missing drills (phase 3, probe_authoring)
 
+PHASE 2 RAN 2026-09-02 and the polarity axis below was wrong about itself
+THREE more ways than the worked example records: it misses `assert x == []`
+(list-returning probes), multi-line `assert probe(...) is None`, and tests
+that reach the probe through a wrapper helper (`_prop_probe`, `_lpd`), so
+five of its sixteen "not both" rows were drilled both ways all along. The
+MEASUREMENT of falsifiability is `scripts/falsifiability_drill.py` (it kills
+each probe and runs the tests); this inventory stays a cheap first look and
+its polarity column is advisory. Its numbers are never carried into a claim.
+
 Evidence tiers, weakest first — the ORDER is the worklist:
 
   no-reference    the class name appears in no test and no eval. It cannot be
@@ -122,7 +131,7 @@ def polarity(txt: str, cls: str) -> str:
             continue
         win = "\n".join(lines[i:i + 10])
         seen = True
-        if re.search(r"assert\s+\w+\s+is\s+None", win):
+        if re.search(r"assert\s+\w+\s+is\s+None|==\s*\[\]", win):
             quiet = True
         if re.search(r"assert\s+\w+\s+is\s+not\s+None|\.cls\s*==|\.severity\s*==", win):
             fired = True

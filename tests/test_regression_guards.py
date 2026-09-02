@@ -1921,3 +1921,37 @@ class TestPostCommitRefreshesBothEnumHolders:
         is the swallow this whole class of bug is made of."""
         text = self._hook_text()
         assert 'ENUM HOLDERS LEFT STALE' in text
+
+
+class TestStreakSaversAreOne:
+    """Enforce: the debounce-streak load/save pair is DEFINED once, in
+    ``utils/watchdog_probe_core.py`` (``_load_parity_streak`` /
+    ``_save_parity_streak``), and every probe module ALIASES it.
+
+    The 2026-09-02 falsifiability audit found EIGHT byte-identical copies of
+    this pair across the probe modules. The parity copy had been cured on
+    2026-07-26 of the defect that let an unwritable state dir freeze a streak
+    at 1 below its debounce forever; the seven copies had not, so seven
+    detector classes could never fire on that box shape and nothing said so.
+    One mechanism, one implementation (honest_failure_modes #5). A module
+    that needs a streak imports the core pair under its own name.
+    """
+
+    _DEF = re.compile(r"^\s*def\s+_(load|save)_\w*streak\w*\s*\(", re.M)
+
+    def test_no_streak_pair_defined_outside_probe_core(self):
+        violations = []
+        utils_dir = os.path.join(SRC_DIR, 'utils')
+        for filename in sorted(os.listdir(utils_dir)):
+            if not filename.endswith('.py') or filename == 'watchdog_probe_core.py':
+                continue
+            path = os.path.join(utils_dir, filename)
+            with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                text = f.read()
+            for m in self._DEF.finditer(text):
+                lineno = text.count('\n', 0, m.start()) + 1
+                violations.append(f"{filename}:{lineno}: {m.group(0).strip()}")
+        assert not violations, (
+            "streak load/save pair defined outside watchdog_probe_core.py — "
+            "alias _load_parity_streak/_save_parity_streak instead "
+            "(2026-09-02 eight-copies finding):\n  " + "\n  ".join(violations))

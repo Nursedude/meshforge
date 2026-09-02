@@ -10,6 +10,7 @@
 
 | Date | Scope (range + paths) | Mechanism | Fix commits | Residuals / refuted notes |
 |------|----------------------|-----------|-------------|---------------------------|
+| 2026-09-02 | **FRONTIER PASS (Fable 5.1) — closes the Pri-1 FALSIFIABILITY AUDIT phase-2 row below.** Scope: all 58 `SIGNAL_CLASSES` MEASURED by `scripts/falsifiability_drill.py` (dead + stuck-loud stub per runner-called entry probe, referencing tests re-run in a throwaway worktree) @ `44b76e86`; the 16 phase-1 "not both polarities" classes READ adversarially (4 parallel forks, every cited line re-checked at the source by me); fleet hosting VERIFIED from `/api/fleet/truth`. | Measured: **58/58 `caught-both`** at the pre-fix head (0 SURVIVED, 0 collateral-only), re-drilled 9/9 at `3e948beb` and 3/3 aliased classes at the item-3 tree. Read: 7 frozen-green shapes CONFIRMED and fixed red-first; 1 reader claim REFUTED by the measurement (`rns_shared_instance_unresponsive` dead-probe WAS caught by 3 named sibling-class tests — only its wedge BRANCH lacked an unconditional witness); 5 phase-1 polarity labels were heuristic artifacts (`== []`, multi-line asserts, wrapper helpers). Then phase-3 items 1 (operator-resolver collapse, 3 probes), 3 (the streak mechanism existed in EIGHT copies → aliased onto probe_core; MF028 lint + `TestStreakSaversAreOne` guard + guard_drill case; `note_state_write_failure` witness in the 5 remaining savers) and 4 (weekly CI `falsifiability_drill.yml`, `--fail-on-survivor`). | `ab0ca19d` (drill), `3e948beb` (7 fixes + drills; MA twins `533971c6`), `17603dc8` (resolver), `ITEM3_SHA` (one streak mechanism + MF028 + CI gate) | Full per-class record + phase-3 queue (recipes attached) in the CLOSED 2026-09-02 section at the end of this file. ⚠️ FLEET EFFECT: root-rnsd boxes now read `dep_version_drift indeterminate` "user-scope unobservable" — correct, not a regression. Residual NOT fixed: fleet-truth labels MeshAnchor's 57 non-MF classes "pre-coverage" (legibility). |
 | 2026-09-01 | **FRONTIER PASS (Fable 5.1) — closes the QUEUED field-eComm + duty-cycle DESIGN row below (not a code review).** Scope: the three ⚖️ decisions in `.claude/plans/field_ecomm_and_dutycycle_fleet.md` (detached = zero fleet deps; rejoin one-way valve; DORMANT as declared posture) against the storm-prep + Lala forensics docs, `fleet_roles.yaml` (`field-node`), `fleet_offline_check.sh` (`via`/UNOBSERVABLE leg), `role_expected_active`/`watchdog_retarget` (declaration re-read), `fleet_truth` cell states, `virtual_fleet.py` chaos drills, and lehua's bring-up (GPS/RTC facts). | Adversarial DESIGN review, inline: every decision attacked with a concrete failure timeline from this fleet's measured history (Lala page storm replayed against today's instruments; moc4's 8-day clock; kiai's path-vs-box page; the two-preset split; the tunnel-is-inbound contradiction), then written as position + invariants + virtual-fleet drills. Key rulings: the kit is a STANDALONE-offering box while detached (`field` role, enrollment conditional on posture); GPS on the MeshAdv Mini is the kit's stratum-0 and the fleet's first owned stratum-1; the tunnel is a DOOR for the operator not a PATH for organs — the kit pushes evidence, nothing pulls, ordering key `boot_id+uptime`; the kit carries evidence not messages across the boundary (message continuity = a second kit tier, deliberately); DORMANT = one operator-values file mirrored pre-storm, four per-box states (`active/shed/dormant/detached`), MANDATORY capped expiry, posture drift a finding both ways, clock-gated expiry that HOLDS when the consumer's clock is unconfirmed, a declare-time validator refusing a mesh-less posture, automatic entry from battery metrics explicitly OUT of this arc, and a closed-enum consumer list that must fail a test until each reads posture (the bulk of the build). | this commit (seed section `⚖️ Frontier design pass — DECIDED 2026-09-01` appended: positions, drills V1–V8 + one real-fleet drill, priority order against the Starlink cutover clock, three operator-only open questions). No code. | **Nothing verified live — a design pass.** Residuals: (i) three OPEN QUESTIONS only the operator can settle (kit tier, whether the truth-spool pull survives, automatic posture entry); (ii) the build is day-work behind the existing gates and the vfleet needs a `field` node type first; (iii) the posture-consumer list was compiled by reading the probes named, not by grepping every freshness judgment in the tree — the seed-coverage test proposed in the position is what makes that list complete, and it does not exist yet. |
 | 2026-09-01 | **FRONTIER PASS (Fable 5.1) — closes the QUEUED mesh-oracle policy-split row below (item (b) of deferred `mesh-oracle-followups`).** Scope: `src/oracle/responder.py` `_allowed`/`from_env`, the five leg builders, the RNS leg in `bridge_rns_events_mixin.py`, `_rns_bridge_xform.py` M→R/R→M formatting + `peer_gateway_destinations`, the LIVE drop-ins and audit logs on moc + moc3, MA's drop-in on meshanchor-server. | Frontier inline adversarial DESIGN pass; every claim drilled against ground truth read live this session, not from the queue text. **Transitivity (sub-q 1) — CONFIRMED, and it had already fired 74 times.** moc bridges every non-consumed Meshtastic text to RNS as RAW content (`content = msg.content`, attribution only in `title`/`fields`) fanned to `default_lxmf_destination`, which on moc includes moc3 (`f68c2f56`). moc3's RNS leg calls `handle(source_hash, raw)` with NO tagged-text guard, so under `*` it answered moc's gateway hash `3dfbdb5d` 74/118 times (06-22→08-13; 62 in June, 10 July, 2 Aug). Exact two-log witness: moc declined `help` from `!896b1917` at 07:05:34Z 08-13 (`cooldown`), moc3 answered `help` from `3dfbdb5d` at 07:05:36Z, and moc's `messages.db` holds that reply as RNS-inbound at 07:05:36. Composition: moc's node allowlist + cooldown bypassed for its whole segment; ALL moc-side askers collapse into ONE moc3 cooldown bucket; moc3's log cannot name the originator (it is in `lxmf_fields.meshforge_from_id`, unread); the reply re-broadcasts on moc's RF via moc's R→M leg (BELIEVED from code — `should_bridge`→queue→`[RNS:f68c]` label; no sibling capture DB holds the RF copy and moc's journal starts 08-30). Net effect of moc's 'strict' allowlist was only to choose WHICH box answers. This is cross-mesh answering, which the operator locked OUT 2026-06-22 (memory `project_mesh_oracle_channel_whitelist_2026_06_22`: per-mesh LOCAL answer, no cross-mesh querying). **Channel gate (sub-q 2) — it IS the authorization primitive on Meshtastic, and the stronger one.** A decoded packet under a channel name means the local radio decrypted it with that channel's PSK = the sender holds the key; the `from` id is unauthenticated and spoofable (responder's own comment) — so a 3-node allowlist with no channel gate on a default-PSK channel authenticates nothing, while `CHANNELS=meshforge` (private PSK) is real key-possession auth. On RNS the LXMF source hash is signed, so THERE an allowlist means something — and that is exactly the leg moc3 left at `*`. The split is INVERTED, not merely inconsistent: each box is strict where identity is weak and open where it is strong. **Verdict: DRIFT, not intent.** moc3's `*` predates both moc's oracle (06-24, operator: 'own nodes only') and the 06-22 no-cross-mesh lock; it was RNS-leg bring-up convenience ('verify end-to-end') never revisited, and the 08-29 drill + today's re-drill (`5f1e34a7`, minted, allowlisted nowhere, 10 answers) show it reaches any announced identity — the fleet RNS links to an external transport node (VolcanoAI + moc `TCPClientInterface`) and moc3 carries an RNode LoRa interface, so 'announced' includes strangers. Three real unknown RNS askers are in the log (`0f648f68` 06-22 = the validator's ephemeral id; `f40f6142` ×3 on 07-20, unidentified). **Position for ratification** (written into deferred `mesh-oracle-followups.check`): (1) replace moc3's `*` with the same two client hashes moc trusts (`f0a6899b`, `3ac3d1e3`) — never a gateway hash; (2) moc gains `MESHFORGE_ORACLE_CHANNELS=<private channel>` OR the operator accepts documented spoofability on LongFast; (3) the structural fix that holds under EITHER ratification is landed here: a peer gateway is never an oracle principal. | this commit (peer-gateway guard on the RNS leg: `decline(reason="peer_gateway_relay")` before the allow logic, keyed on `rns.peer_gateway_destinations` — one constant, hfm #5; relayed text bridges on as chat = 'cmd crosses, ack doesn't'; audit records gain `channel`; `ORACLE_DECLINE_REASONS` closed vocabulary test-pinned to the delivery probe's decline bucket so the new reason can't land in 'benign'; `docs/ENVIRONMENT_VARIABLES.md`; eval case `evals/local_brain/oracle_peer_gateway_relay_2026_09_01.jsonl`). VERIFIED this turn: 594 passed in the 6 oracle/bridge suites (rc 0), lint rc 0, guards 65 passed, sabotage drill (guard reverted) fails exactly the new relay test. | **NOT applied live**: the drop-in edits — a trust-boundary change the queue entry reserved for operator ratification; the guard itself activates on moc3's next gateway restart (deploy is manual). **Follow-through same day (operator-directed)**: ratified → moc3 drop-in `*` → two client hashes + gateway restart onto `922e6d61`, before/after drill 5/5 answered → 5/5 `not_allowlisted`; moc gateway restarted 11:00 HST (guard live on both); pushed, CI 5/5, fleet 9/9, `honest_status` 6/6 PASS. **MA port `17f2b78d`** (shape-parity: `decline()`, channel witness, `ORACLE_DECLINE_REASONS`, `TestOraclePeerGatewayGuard` pinning any future RNS leg — plant-drilled; 198 passed, lint 0, parity in sync, MA CI 4/4 success), pulled + `meshanchor-daemon` restarted 11:07 HST on meshanchor-server (RNS ready, MeshCore healthy; record-shape upgrade BELIEVED until the next real MeshCore query — MA's builder logs nothing on success). MA residual ports `1848757b` (wildcard-anywhere parse + monotonic cooldown with backward-step guard; 202 passed, each fix reverted fails its own test, MA CI 4/4 success, daemon restarted 11:18 HST). **Residuals**: (i) ~~MA twin~~ done above; ~~MA lacked the `_LAST_ANSWER_CAP` prune~~ ported `9eae5f91` (204 passed, prune-disabled drill fails the bounded-map test, MA CI 4/4, daemon restarted 11:36 HST) — the twins' responders now differ only in the MeshForge-specific `_norm` canonicalizer (`node_num_to_id`, #34) and `_send_reason` (RNS-leg `RnsSendResult`, which MA's legs never return); (ii) `_on_lxmf_receive` stores bytes titles/content as reprs (`[b'MeshForge Gateway'] b'dude-AI…'` in moc's messages.db) — legibility bug, day-work; (iii) the RF re-broadcast leg stays BELIEVED — a live drill from a non-allowlisted LongFast node would settle it, deliberately not fired (airtime on the operator's channel); (iv) moc3's log shows `from=''` ×2 answered via channel gate — empty sender folds to key `!`, harmless but ugly; (v) the MQTT/tap legs answer as channel BROADCAST, so on a default-PSK channel a spoofed query = an RF amplification of ~1:1, bounded by cooldown per (spoofable) sender — accepted tradeoff already in the 07-05 row, restated here so it is not rediscovered. |
 | 2026-08-31 | **FRONTIER PASS (Fable 5) — closes the QUEUED rotate_session_notes row below.** `scripts/rotate_session_notes.sh` + `tests/test_rotate_session_notes.py` @ `5d83306f` (working tree byte-identical, verified by empty diff). | Frontier inline adversarial pass, single-context, per the brief's non-doctrine frame (bash/parser/filesystem correctness). Every candidate DRILLED input→output in a scratchpad sandbox before being called a defect; live notes never touched. Steer 1 partially REFUTED by drill: CRLF, first-line-`## ` (pre_lines=0) and bare-final-heading all rotate clean; the two steer-1 shapes that were real: no-trailing-newline and tab-in-heading. Steer 2 CONFIRMED by drill (touched 2026H1 captured 2026H2's content). Steer 3 verified held (mid-pipeline sed loss is caught by the conservation equation — existing fault-injection test). Steer 4 verified benign (byte-mode `grep -cxF` consistent on both sides; display `substr` may split a multibyte char, cosmetic). Steer 5: malformed STICKY_RE dies fail-closed rc 2 before any write (drilled); over-broad regex is visible as all-KEEP-STICKY in the printed plan — accepted for a human-invoked tool. Steer 6 (prune): glob/stem-eviction/backward-clock attacks re-derived — no new defect beyond the existing pins. **Double tap 2026-09-01 (operator doctrine), prune path LIVE against sandbox copies of the real files** (37KB notes + 346KB archive, real emoji headings; live notes never touched, originals checksum-verified): run 1 — full sweep rc 0, byte math re-derived from disk (37193−7342=29851; 346585+7449=354034), both buckets pruned independently to the exact rank-based survivor sets (11+8 oldest deleted), 4 planted foreign files untouched, both own backups md5-identical to pre-apply originals, zero temp litter. Run 1's own catch: the own backup ranked 4th, so rank alone saved it — the identity guard never decided. Run 2 forced that shape (6 future-dated 2099 seeds, --keep-backups 2, own backup rank 7 of 7): identity guard fired as the SOLE protection, own backup survived md5-intact while 4 future-dated files pruned — the stale-clock scenario proven live, not just in the fixture test. No code change needed. | `7086ec4f` — 4 CONFIRMED, fixed, all one class (verification keyed to a representation instead of the thing): **(1) no trailing final newline + last section rotated** → correct rotation failed by 1 B (awk counts every line length+1); cure: conservation measured from disk both sides (stayed+arrived==original, banner measured separately). **(2) duplicate headings inside the NOTES** → both-rotate failed the per-row +1 check, kept+rotated failed "still in notes"; cure: per-unique-heading ledger (archive +k, notes −k). **(3) tab inside a heading** → plan's awk `$6` truncated it, every verification grep missed; cure: heading = tail of the TSV row (mawk-safe, no `{n}` intervals — fleet awk is mawk 1.3.4). **(4) `trap - EXIT` after the mv's** leaked `.add` temp beside the archive + pre-counts in TMPDIR every clean apply; cure: trap stays armed. Plus steer-2 fix: archive chosen by lexically-last NAME, never mtime. Plus fail-closed hardening: empty (errored) verify-phase grep count → −1, never "no mismatch". Tests 33→41; all 6 new/changed guards mutation-drilled red; suite `41 passed` rc 0; shellcheck rc 0; lint rc 0. | Residuals, unfixed and named: 4+-backtick/`~~~` fence conventions can mis-toggle (two ``` sample lines inside a ````-fence expose interior `## ` as boundaries — wrong PLACEMENT, bytes still conserved; odd imbalance still refuses); crash between the two `mv`s duplicates (never loses) content, absorbed next run; invariant 3 is really verify-after-commit + backup + loud restore, not files-untouched-on-failure; `find -name` prune glob would over-match a stem carrying glob metachars (hostname-derived stems don't); test smell: `test_keeps_newest_n`'s `any("202" in n)` is tautological over its 2020 seeds (own-backup survival is properly pinned elsewhere). Steer 8 design verdict: size-triggered human-invoked rotation with sticky-correction stands; no change recommended. |
@@ -104,7 +105,7 @@
 | — | ~~**RF + RNS/LXMF EGRESS GUARD ARC** (Pri-1)~~ **DONE 2026-08-09 same day** — ran as the completed-table row above (Fable 5 /code-review background fork, not the cloud ultra recipe — ultra quota was exhausted; 10 confirmed findings fixed, full suite green). Judgment calls (b) connect_ex split, (c) open_reticulum None-readers and (e) allowlist concurrency were NOT attacked — re-queued as the Pri-2 row below. | Removed by running the pass, per convention. |
 | — | ~~**EGRESS-GUARD residual legs (b, c, e)** (Pri-2)~~ **DONE 2026-08-10 next day** — ran as the completed-table row above: leg b refuted with evidence (plus 3 secondary fixes incl. the missing probe witness), leg c 3 confirmed fixed (incl. an MF019 chokepoint EVASION in MeshAnchor, guard leg added both repos), leg e confirmed and fixed red-first (grant registry + depth counters). | Removed by running the pass, per convention. |
 | Pri-3 | **RNS-fork `known_destinations` / announce-retention root-cause** (queued 2026-08-12 by the overdue-ledger triage; durable twin = deferred_work `rns-known-destinations-retention`, re-gated to 2026-11-15). The 2026-06-29 moc1 incident: hourly re-announce refreshes peers' PATH table but NOT their identity store, so a ~12h identity TTL evicts a re-announcing peer → `Identity.recall` None → echo tx skipped → false `tracer_peer_unreachable` wedge, asymmetric. Full recipe + tells in memory `tracer_peer_unreachable_identity_eviction_2026_06_29`. **Verified quiet 2026-08-12**: 0 `Identity.recall returned None` in 30d of echo journals on moc1 AND VolcanoAI; recent tracer wedges are all the <1h cold-start class. Stopgap (restart the lost peer's echo) works; watchdog re-flags recurrence independently. | Fork-internals judgment on the announce/identity-retention contract — changing retention semantics in a hard fork that must stay wire-compatible is exactly the ambiguous-evidence, high-blast-radius work the rationed tier exists for, and with no live recurrence there is no urgency to spend a smaller session guessing at it. |
-| Pri-1 | **FALSIFIABILITY AUDIT — phase 2 verdicts** (queued 2026-09-02 by the operator: *"silent failures are not acceptable with a NOC"*). Phase 1 shipped as `scripts/falsifiability_audit.py`; its inventory is appended at the END of this file. 58 signal classes, **16 never shown in BOTH polarities** (6 fire-only, 1 none-only, 9 unknown). Phase 1 emits NO falsifiability verdict by design. ⚠️ Read the two "wrong about itself" notes in that section FIRST — its weakest-ranked class was an artifact of its own heuristic, and its polarity axis first read 58/58 `both` before being keyed to `probe_<cls>(`; both calibrate how much its numbers are worth. | `model_router --task-kind adversarial_review --running-tier opus` returns `frontier (upshift)`: "never fake it on the smaller model". The per-class verdict is *would this test still pass if the probe were dead?* — a judgement where a wrong PASS manufactures a false coverage number. A blessed-blind detector is worse than a known-blind one, because the known one stays on this list. |
+| — | ~~**FALSIFIABILITY AUDIT — phase 2 verdicts** (Pri-1)~~ **DONE 2026-09-02 (Fable 5.1) — ran as the completed-table row above** (58/58 caught-both measured; 7 frozen-green fixes + resolver + one-streak-mechanism + MF028 + weekly CI drill). Original queued text retained for provenance: **FALSIFIABILITY AUDIT — phase 2 verdicts** (queued 2026-09-02 by the operator: *"silent failures are not acceptable with a NOC"*). Phase 1 shipped as `scripts/falsifiability_audit.py`; its inventory is appended at the END of this file. 58 signal classes, **16 never shown in BOTH polarities** (6 fire-only, 1 none-only, 9 unknown). Phase 1 emits NO falsifiability verdict by design. ⚠️ Read the two "wrong about itself" notes in that section FIRST — its weakest-ranked class was an artifact of its own heuristic, and its polarity axis first read 58/58 `both` before being keyed to `probe_<cls>(`; both calibrate how much its numbers are worth. | `model_router --task-kind adversarial_review --running-tier opus` returns `frontier (upshift)`: "never fake it on the smaller model". The per-class verdict is *would this test still pass if the probe were dead?* — a judgement where a wrong PASS manufactures a false coverage number. A blessed-blind detector is worse than a known-blind one, because the known one stays on this list. |
 | — | _(add new upshift rows here as sessions surface review-shaped work)_ | |
 
 ## Conventions for future passes
@@ -579,6 +580,168 @@ while moc shows a count. The rename should be checked against BOTH shapes.
 
 
 ---
+
+## ~~QUEUED~~ CLOSED 2026-09-02 (Fable 5.1 — see the top completed-table row) — falsifiability audit, phase 2 verdicts
+
+**Method — two halves, kept apart on purpose.** (1) MEASURED:
+`scripts/falsifiability_drill.py` (`ab0ca19d`) replaced every class's
+runner-called entry probe with a dead stub (None/[]) and a stuck-loud stub in
+a throwaway worktree and re-ran the referencing test files. A failing test
+counts for a class only when the test's OWN source names it (`named`); a
+sibling class's assertion catching the shared probe is reported as
+`collateral` and never as cover. (2) READ: four parallel adversarial reads of
+the sixteen "not both polarities" classes, each asked the same three
+questions — does the drill resemble the REAL condition; is the probe hosted by
+a RUNNING consumer; can it go frozen-green — with every cited line re-checked
+by me at the source before it became a verdict. Reads that survived became
+red-first drills; the fix commit is the witness.
+
+**What phase 1 got wrong about itself, again (its numbers are advisory).**
+Beyond the two notes it already carries, the polarity heuristic misses
+`assert x == []` (list-returning probes), multi-line `assert probe(...) is None`,
+and wrapper helpers (`_prop_probe`, `_lpd`). Five of its sixteen worklist rows
+were drilled both ways all along (`memory_cap_engaged`, `tracer_peer_unreachable`,
+`user_unit_inactive`, `rns_stray_env_drift`, `propagation_soak_degraded`).
+A metric can be correctly calibrated and still wrong about the thing it
+measures; the drill measures.
+
+**Hosted by a running consumer (question 2), fleet-wide, VERIFIED from
+`/api/fleet/truth` 2026-09-02:** all 8 MeshForge boxes that run a watchdog
+report a disposition for every one of the 58 classes (VolcanoAI 41 clean /
+17 inert; the others 29–41 clean, rest inert; one `indeterminate` on moc3:
+`delivery_confirmation_stall` "too few confirmable terminal events"). lehua
+is dark by its declared `field-node` role (`absent`, not blind);
+meshanchor-server runs its own 7-class watchdog. Residual legibility bug,
+NOT fixed: the truth layer labels MeshAnchor's 57 non-MF classes
+"disposition not reported by watchdog (pre-coverage)" — the true reason is a
+different app's class enum, and "pre-coverage" reads as an un-upgraded box.
+`oracle_delivery_degraded` is `inert` on all 8 (gateways: "oracle idle, newest
+answer 1.1d/4.1d ago") — idle, not blind; leave.
+
+**Measured verdicts (full 58-class sweep @ `44b76e86`, the pre-fix HEAD):**
+`caught-both` **58 / 58** — every class's entry probe, replaced by a dead stub, failed at least one test that names the class; likewise stuck-loud. 0 `SURVIVED`, 0 `collateral-only`, 0 `NO-ENTRY-PROBE`. Full per-class rows: run `python3 scripts/falsifiability_drill.py --md out.md`. Re-drilled after the fixes: 9/9 at `3e948beb` (the touched classes) and 3/3 after the streak aliasing (`nomadnet_crashloop`, `user_timer_unit_failing`, `gateway_dup_degraded`). The measurement says the suite notices an entry probe dying AS A UNIT; the read below is about the deaths inside a living probe — a wrong path, an unwritable file, an empty-but-valid input — which is where this fleet's blindness has actually lived.
+
+**Read verdicts — the sixteen, each with the death shape the suite would NOT
+have noticed, and what was done.** ✅ = drilled red-first and fixed in
+`3e948beb` (twins ported to MeshAnchor `533971c6`); ⏭ = queued for phase 3
+with the recipe.
+
+- `rns_shared_instance_unresponsive` — ✅ its ONLY fire assertion sat inside
+  `if sig is not None:` (the backlog test hedges on kernel behaviour), so a
+  dead probe passed the file. Deterministic wedge drill added
+  (`socket.connect` → timeout → wedge Signal, unconditional).
+- `propagation_soak_degraded` + `synth_soak_degraded` — ✅ `_save_synth_streak`
+  was an INDEPENDENT copy of the parity streak saver still carrying the
+  defect the parity copy was cured of 07-26: unwritable state froze the streak
+  at 1 below debounce 2 → neither class could ever fire, each tick "held by
+  debounce". Now aliases the parity pair (hfm #5). Phase-1 `none-only` was a
+  wrapper-helper artifact.
+- `history_write_stalled` — ✅ third costume of the same defect: unwritable
+  baseline → every tick "first sighting recorded" forever. In-process
+  baseline. Also pinned `_MINI_STATE_NAME`/`_MINI_HISTORY_NAME` to the engine's
+  `APP_*_RELPATH` (a rename would have read `inert` "mini not active here"
+  fleet-wide). ⏭ `clean` is noted when `fires_advanced` is False — the write
+  path was not exercised that tick; recipe: reason "no appends this interval;
+  write path unexercised" and consider `indeterminate` past N idle ticks.
+- `tracer_peer_unreachable` — ✅ a well-formed fire with `results: []`
+  (tracer ran, enumerated no peers) fell past the all-rows-unparseable guard
+  to `clean`. Now `indeterminate` "no peer observed". ⏭ resolver:
+  `_find_operator_user` = smallest UID with a `/run/user/*/bus`; no bus (linger
+  off) → `inert` "tracer not run here" with fire files on disk. Shared with
+  `claw_watched_node_silent`, `user_unit_inactive`, `history_write_stalled`,
+  `lxmf_propagation_node_dark` — ONE phase-3 fix: an unresolvable operator is
+  `indeterminate`, never `inert`, and the chosen UID goes in the reason.
+- `rns_rpc_unresponsive` — ✅ `run_rnstatus` returned a bare RNSStatus for
+  EMPTY output and for a non-zero exit whose text matched no error pattern
+  (exit code was never consulted) → probe noted `clean`. Now `parse_error`
+  → `indeterminate`. Ported (shape-parity file, RNS arc).
+- `http_local_unresponsive` — ✅ a CONNECT-phase timeout arrives as
+  `URLError(reason=TimeoutError)` (verified live against a non-routable
+  address); the probe filed it "endpoint unobservable" → a full accept
+  backlog (the fd-exhaustion sibling) could never page. Now fires. ⏭ a wrong
+  `http_port` from `resolve_probe_targets` → refused → "service_inactive owns
+  that" while service_inactive sees active: blind-by-construction; recipe: a
+  runner-level test that the resolved port is the bound one.
+- `foundation_perms_drift` — ✅ `_read_rnsd_user()` None for BOTH "unit read,
+  no User=" (root; inert right) and "no unit readable"; both filed `inert`.
+  New `rnsd_unit_readable()` splits them; unreadable → `indeterminate`. ⏭ rnsd
+  started with `--config` ≠ `CANONICAL_CONFIGDIR` stats the wrong tree and
+  reads clean (08-05 class); recipe: derive configdir from the unit's
+  ExecStart, as the RNS name probes do since 08-05.
+- `dep_version_drift` — ✅ the D1 user-scope gate reached its sibling
+  `dep_install_fragmented` on 08-12 and not this probe: `clean` over the
+  system-dist copy while user-site was never looked at. Ported. ⚠️ FLEET
+  EFFECT: boxes whose rnsd runs as root (or has no unit) now read
+  `indeterminate` "user-scope install locations unobservable" for this class
+  — a true statement that will look like a regression on the /fleet panel.
+  Expected; not a bug.
+- `memory_cap_engaged` — phase-1 `unknown` was an artifact (asserts on the
+  list, never `.cls`); the fixture is the closest-to-real of the sixteen.
+  ⏭ unreadable `memory.max` beside a readable events file → cgroup skipped →
+  if it was the only cap, `inert` "no cgroup carries a finite MemoryMax" on
+  unobserved data; ⏭ `boot_id` unreadable → "unknown-boot" aliases boots →
+  a reboot's zeroed counters read as a decrease → kills this boot lost.
+- `nomadnet_crashloop` — drilled both ways (injected `ts_fn`), real helper
+  pinned (`USER_UNIT=`, rc 1/2). ⏭ the death shape no unit test can see:
+  `journalctl USER_UNIT=` returning EMPTY under the sandbox's journal ACL is
+  rc 0 → `[]` → `clean`. Recipe is a LIVE drill from inside the watchdog
+  sandbox against a deliberately restarted nomadnet.
+- `rns_instance_name_mismatch` — real kernel connect + injected `ss`; the
+  resolver ORDER is tested at the runner. Solid. ⏭ fleet-live check: each
+  box's `instance_name resolved to` line vs `sudo ss -xnpl | grep @rns/`
+  (the test pins the order, not what the box's unit says).
+- `lxmf_propagation_node_dark` — logic drilled via lambdas; NEITHER file
+  reader is exercised by any test. ⏭ `os.path.exists` False on a
+  present-but-unreadable path → `absent` → `inert` (cannot-see collapsed into
+  no-organ); cache key names unpinned to the tracker's `to_dict` (the 07-21
+  `service_type` class). Recipe: a real tmp home with `gateway.json` +
+  `rns_nodes.json` written by the tracker, assert the stale leg fires.
+- `gateway_delivery_degraded` — real journal parser pinned to a canned line.
+  ⏭ the survivable death: a rename of the gateway's att/del stats line makes
+  `GATEWAY_DELIVERY_BLOCK_GREP` match nothing → `[]` is "observed" by design →
+  with `err=0` the probe notes `clean` forever on a live gateway. Writer and
+  reader are unpinned (hfm #4). Recipe: a guard that the grep matches the
+  writer's literal template.
+- `claw_watched_node_silent` — drilled both ways via injected ticks; ⏭ the
+  file reader (`_read_claw_ticks`, `_CLAW_TICK_GLOB`) is never traversed
+  through the probe; home None → `inert` (see the resolver item above).
+- `rns_stray_env_drift` — drilled both ways (multi-line asserts fooled phase
+  1). ⏭ a copy whose `dist-info` is unreadable drops out of `found` and the
+  remainder reads `clean` — the moc3-nomadnet blindness in a new costume;
+  recipe: count unreadable candidate dirs and note `indeterminate` when > 0.
+- `user_unit_inactive` — drilled both ways; ⏭ resolver (above), and
+  `WantedBy=` targets other than `default.target` are a documented blind spot.
+
+**Phase 3 — done the same day (operator: "go with 2, 3, 4"):** (1) the
+operator-resolver collapse — `17603dc8`: only THREE of the five suspected
+probes actually collapsed (tracer, claw_watch, user_unit_inactive; mini and
+lxmf already read indeterminate); all three now `indeterminate` with the legs
+tried in the reason, a RESOLVED home with no files stays `inert`. (3) The
+streak mechanism — `ITEM3_SHA`: the "three copies" were EIGHT (gateway_dup,
+gateway_delivery, resource_canary, oracle, phoneapi_wedge, nomadnet_crashloop,
+user_timer + synth), byte-identical `{"streak": n}` pairs, none with the
+07-26 in-process fallback — seven more classes that could never fire on an
+unwritable state dir. All aliased onto the probe_core pair; the five
+non-streak savers (`dead_letter_baseline`, `phoneapi_leak_state`,
+`history_stall`, `parity_dirty_window`, peer_rf `_save_state`) now witness via
+`note_state_write_failure` (+ in-process copies for the two that lacked one).
+Gates: lint **MF028** (an unwitnessed except in a `_save_*` helper),
+`TestStreakSaversAreOne` (+ guard_drill case, fires), `tests/test_lint_mf028.py`.
+(4) `.github/workflows/falsifiability_drill.yml` — weekly + dispatch, fails on
+any class not `caught-both` (`--fail-on-survivor`).
+
+**Phase 3 — still queued** (Opus-class `probe_authoring`, recipes above):
+(2) gateway stats-line writer/reader pin; (3) `lxmf_propagation_node_dark`
+real-file drill; (4) `rns_stray_env_drift` unreadable-dir count; (5)
+`memory_cap_engaged` two legs; (6) `foundation_perms_drift`
+configdir-from-unit; (7) the `nomadnet_crashloop` live sandbox drill (not a
+unit test); (8) `history_write_stalled` idle-tick `clean`.
+
+**Standing gate.** The drill is re-runnable and keyed to HEAD; the number to
+re-derive (never carry) is the count of `SURVIVED` + `collateral-only` rows.
+Phase-1's inventory remains the cheap first look; its polarity column is
+advisory.
+
 
 ## Phase-1 inventory — falsifiability audit (2026-09-02, appended by the Pri-1 row above)
 

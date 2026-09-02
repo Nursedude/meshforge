@@ -22,6 +22,7 @@ from urllib.request import urlopen
 from urllib.error import HTTPError, URLError
 
 from utils.watchdog_probe_core import (
+    note_state_write_failure,
     Signal,
     _journal_count_match,
     _resolve_main_pid_status,
@@ -334,6 +335,12 @@ def _estab_inodes_to_port(port: int, *, proc_root: str = "/proc") -> Optional[se
     return inodes
 
 
+# In-process copy, written FIRST by the saver: an unwritable state path made
+# every tick (None, {}) — 'no prior sighting' — so consecutive-tick counts
+# could never accumulate (falsifiability audit 2026-09-02, the #60 class).
+_phoneapi_leak_mem: dict = {}
+
+
 def _load_phoneapi_leak_state(state_path: str) -> Tuple[Optional[int], dict]:
     """Read ``(pid, {inode: consecutive_ticks})`` from last tick.
 
@@ -342,6 +349,8 @@ def _load_phoneapi_leak_state(state_path: str) -> Tuple[Optional[int], dict]:
     never spuriously fires. Any error → (None, empty) — conservative: an
     unreadable state suppresses a fire, never causes one.
     """
+    if state_path in _phoneapi_leak_mem:
+        return _phoneapi_leak_mem[state_path]
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -357,6 +366,7 @@ def _load_phoneapi_leak_state(state_path: str) -> Tuple[Optional[int], dict]:
 def _save_phoneapi_leak_state(state_path: str, pid: int, inode_counts: dict) -> None:
     """Persist this tick's per-inode consecutive-tick counts
     (atomic-rename, never raises)."""
+    _phoneapi_leak_mem[state_path] = (int(pid), {int(i): int(c) for i, c in inode_counts.items()})
     try:
         parent = os.path.dirname(state_path)
         if parent:
@@ -368,8 +378,8 @@ def _save_phoneapi_leak_state(state_path: str, pid: int, inode_counts: dict) -> 
                                         for i, c in sorted(inode_counts.items())}},
                       fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
-        pass
+    except OSError as e:
+        note_state_write_failure(state_path, e)
 
 
 def _fetch_persistent_owner(
@@ -686,33 +696,20 @@ PHONEAPI_FORCE_CLOSE_PATTERN = "Force close previous TCP connection"
 DEFAULT_PHONEAPI_WEDGE_THRESHOLD = 12
 
 
-def _load_phoneapi_wedge_streak(state_path: str) -> int:
-    """Read the consecutive-over-threshold streak. Any error → 0.
-
-    A missing/unreadable/garbage state means 'no confirmed streak yet',
-    which suppresses a first-seen burst — the conservative direction the
-    debounce wants (favour silence on uncertainty, not a false page).
-    """
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_phoneapi_wedge_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises)."""
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError:
-        pass
+# _load_phoneapi_wedge_streak, _save_phoneapi_wedge_streak, _load_nomadnet_crashloop_streak, _save_nomadnet_crashloop_streak: byte-identical {"streak": n} pair(s) aliased onto the
+# probe_core parity implementation (in-process fallback + write witness).
+# The 2026-09-02 falsifiability audit found EIGHT independent copies of this
+# mechanism, all still carrying the defect the parity copy was cured of on
+# 2026-07-26: an unwritable state path (the #60 sandbox-drift class) froze
+# every streak at 1 below its debounce, so none of these classes could ever
+# fire. One mechanism, one implementation (honest_failure_modes #5); a lint
+# guard (MF028) and TestStreakSaversAreOne keep it that way.
+from utils.watchdog_probe_core import (  # noqa: E402
+    _load_parity_streak as _load_phoneapi_wedge_streak,
+    _save_parity_streak as _save_phoneapi_wedge_streak,
+    _load_parity_streak as _load_nomadnet_crashloop_streak,
+    _save_parity_streak as _save_nomadnet_crashloop_streak,
+)
 
 
 def probe_meshtasticd_phoneapi_wedge(
@@ -1041,42 +1038,6 @@ def _journal_user_unit_restart_ts(
     return ts
 
 
-def _load_nomadnet_crashloop_streak(state_path: str) -> int:
-    """Consecutive-over-threshold streak; any error → 0 (favour silence)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_nomadnet_crashloop_streak(state_path: str, streak: int) -> None:
-    """Persist the streak counter (atomic-rename, never raises).
-
-    On a persistent write failure the debounce streak can never advance past
-    1 (``_load`` reads 0 each tick) → the probe would silently NEVER fire
-    during a real crashloop. So a swallowed ``OSError`` leaves a WITNESS in
-    the watchdog journal (honest_failure_modes #9) rather than vanishing — a
-    write-only failure here is itself a signal worth grepping.
-    """
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError as exc:
-        logger.warning(
-            "nomadnet_crashloop: could not persist debounce streak to %s "
-            "(%s) — the probe may not advance past its debounce floor; "
-            "check %s is writable.",
-            state_path, exc, os.path.dirname(state_path) or state_path,
-        )
-
-
 def probe_nomadnet_crashloop(
     *,
     user_unit: str = "nomadnet.service",
@@ -1244,7 +1205,6 @@ def probe_nomadnet_crashloop(
             reason="probe raised unexpectedly; unobservable this tick",
         )
         return None
-
 
 
 # ─────────────────────────────────────────────────────────────────────

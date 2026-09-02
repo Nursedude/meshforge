@@ -890,6 +890,29 @@ def _load_parity_streak(state_path: str) -> int:
         return 0
 
 
+def note_state_write_failure(state_path: str, exc: BaseException) -> None:
+    """THE witness for a swallowed state-file write failure. Never raises.
+
+    2026-07-21 review (W4): the parity streak saver's swallow had NO witness —
+    an unwritable state dir (the #60 sandbox-drift class) went undetected.
+    2026-09-02 falsifiability audit: TEN more savers across the probe modules
+    still swallowed with a bare ``pass``. A probe must not crash on
+    bookkeeping, but the blindness must be visible: #63 pattern — ERROR on
+    the first failure, counted while failing, DEBUG thereafter. Lint MF028
+    refuses a ``_save_*`` handler that leaves no witness.
+    """
+    prior = _streak_write_errors.get(state_path, 0)
+    _streak_write_errors[state_path] = prior + 1
+    if prior == 0:
+        logger.error(
+            "watchdog state write FAILED (%s): %s — the value is held "
+            "in-process only and will NOT survive a restart until this is "
+            "fixed (#60)", state_path, exc)
+    else:
+        logger.debug("watchdog state write still failing "
+                     "(%d consecutive, %s): %s", prior + 1, state_path, exc)
+
+
 def _save_parity_streak(state_path: str, streak: int) -> None:
     """Persist the streak counter (atomic-rename, never raises).
 
@@ -907,21 +930,7 @@ def _save_parity_streak(state_path: str, streak: int) -> None:
             json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
     except OSError as e:
-        # 2026-07-21 review (W4): this swallow had NO witness — an unwritable
-        # state dir (the #60 sandbox-drift class) went undetected. Still never
-        # raises (a probe must not crash on bookkeeping), but the blindness is
-        # visible: #63 pattern — ERROR on first failure, counted while
-        # failing, INFO with the count on recovery.
-        prior = _streak_write_errors.get(state_path, 0)
-        _streak_write_errors[state_path] = prior + 1
-        if prior == 0:
-            logger.error(
-                "watchdog streak state write FAILED (%s): %s — debounce "
-                "streaks are held in-process only and will NOT survive a "
-                "restart until this is fixed (#60)", state_path, e)
-        else:
-            logger.debug("watchdog streak state write still failing "
-                         "(%d consecutive, %s): %s", prior + 1, state_path, e)
+        note_state_write_failure(state_path, e)
         return
     if _streak_write_errors.get(state_path):
         logger.info("watchdog streak state write RECOVERED after %d "

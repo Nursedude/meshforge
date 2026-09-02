@@ -21,6 +21,7 @@ from urllib.request import urlopen
 from urllib.error import URLError
 
 from utils.watchdog_probe_core import (
+    note_state_write_failure,
     Signal,
     _journal_count_match,
     _load_parity_streak,
@@ -274,6 +275,12 @@ def probe_delivery_write_canary(
 DEFAULT_QUEUE_BACKLOG_STATE_PATH = "/var/lib/meshforge/queue_backlog_debounce.json"
 
 
+# In-process baseline, written FIRST by the saver: on an unwritable state
+# path every tick used to be 'no baseline yet' — the probe judges GROWTH and
+# could never see any (falsifiability audit 2026-09-02, the #60 class).
+_dead_letter_mem: dict = {}
+
+
 def _load_dead_letter_baseline(state_path: str) -> Optional[int]:
     """Read the last-seen dead_letter count. Best-effort: any error → None.
 
@@ -282,6 +289,8 @@ def _load_dead_letter_baseline(state_path: str) -> Optional[int]:
     historical dead-letter pile doesn't false-alarm on watchdog
     restart (the probe judges GROWTH, not absolute count).
     """
+    if state_path in _dead_letter_mem:
+        return _dead_letter_mem[state_path]
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             value = json.load(fh).get("dead_letter")
@@ -292,6 +301,7 @@ def _load_dead_letter_baseline(state_path: str) -> Optional[int]:
 
 def _save_dead_letter_baseline(state_path: str, count: int) -> None:
     """Persist the dead_letter baseline (atomic-rename, never raises)."""
+    _dead_letter_mem[state_path] = int(count)
     try:
         parent = os.path.dirname(state_path)
         if parent:
@@ -300,8 +310,8 @@ def _save_dead_letter_baseline(state_path: str, count: int) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"dead_letter": int(count)}, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
-        pass
+    except OSError as e:
+        note_state_write_failure(state_path, e)
 
 
 def probe_queue_backlog(
@@ -700,29 +710,18 @@ def probe_delivery_confirmation_stall(
 DEFAULT_GATEWAY_DUP_DEBOUNCE_PATH = "/var/lib/meshforge/gateway_dup_debounce.json"
 
 
-def _load_gateway_dup_streak(state_path: str) -> int:
-    """Consecutive-over-threshold streak. Any error → 0 (favour silence on
-    uncertainty — mirrors _load_synth_streak)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_gateway_dup_streak(state_path: str, streak: int) -> None:
-    """Persist the debounce streak (atomic-rename, never raises)."""
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError:
-        pass
+# _load_gateway_dup_streak, _save_gateway_dup_streak: byte-identical {"streak": n} pair(s) aliased onto the
+# probe_core parity implementation (in-process fallback + write witness).
+# The 2026-09-02 falsifiability audit found EIGHT independent copies of this
+# mechanism, all still carrying the defect the parity copy was cured of on
+# 2026-07-26: an unwritable state path (the #60 sandbox-drift class) froze
+# every streak at 1 below its debounce, so none of these classes could ever
+# fire. One mechanism, one implementation (honest_failure_modes #5); a lint
+# guard (MF028) and TestStreakSaversAreOne keep it that way.
+from utils.watchdog_probe_core import (  # noqa: E402
+    _load_parity_streak as _load_gateway_dup_streak,
+    _save_parity_streak as _save_gateway_dup_streak,
+)
 
 
 _DUPS_COLLECTOR_TOKEN = "fleet_dup_collector"

@@ -65,6 +65,11 @@ CASES = [
         "from pathlib import Path\n\n\n"
         "def drill(backup_dir: Path, backup_id: str) -> Path:\n"
         "    return backup_dir / f'{backup_id}.json'\n")),
+    ("TestStreakSaversAreOne", HEADER + (
+        "import json\n\n\n"
+        "def _save_drill_streak(state_path, streak):\n"
+        "    with open(state_path, 'w') as fh:\n"
+        "        json.dump({'streak': int(streak)}, fh)\n")),
 ]
 
 results = []

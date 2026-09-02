@@ -13,6 +13,7 @@ import time
 from typing import Optional
 
 from utils.watchdog_probe_core import (
+    note_state_write_failure,
     Signal,
     _read_deployment_declaration_status,
     note_disposition,
@@ -138,11 +139,11 @@ def _save_history_stall_state(state_path: str, *, fires: int,
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(doc, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
+    except OSError as e:
         # Never raises (bookkeeping must not crash a probe); the baseline is
         # held in-process above, so the detector keeps working — only restart
         # survival is lost while the path stays broken (#60).
-        pass
+        note_state_write_failure(state_path, e)
 
 
 def probe_history_write_failure(

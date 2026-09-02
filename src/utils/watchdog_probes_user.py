@@ -132,38 +132,18 @@ def _lookback_seconds(spec: str) -> float:
     return int(m.group(1)) * _LOOKBACK_UNITS[m.group(2)]
 
 
-def _load_streak(state_path: str) -> int:
-    """Consecutive-tick streak; any error → 0 (favour silence over a false page)."""
-    try:
-        with open(state_path, "r", encoding="utf-8") as fh:
-            streak = int(json.load(fh).get("streak", 0))
-        return streak if streak >= 0 else 0
-    except (OSError, ValueError, TypeError):
-        return 0
-
-
-def _save_streak(state_path: str, streak: int) -> None:
-    """Persist the debounce streak (atomic rename, never raises).
-
-    A persistent write failure would pin the streak at 1 forever, so the probe
-    would silently NEVER fire during a real outage. The swallow therefore
-    leaves a witness in the watchdog journal (honest_failure_modes #9).
-    """
-    try:
-        parent = os.path.dirname(state_path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        tmp = state_path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump({"streak": int(streak)}, fh, separators=(",", ":"))
-        os.replace(tmp, state_path)
-    except OSError as exc:
-        logger.warning(
-            "user_timer_unit_failing: could not persist debounce streak to %s "
-            "(%s) — the probe may not advance past its debounce floor; "
-            "check %s is writable.",
-            state_path, exc, os.path.dirname(state_path) or state_path,
-        )
+# _load_streak, _save_streak: byte-identical {"streak": n} pair(s) aliased onto the
+# probe_core parity implementation (in-process fallback + write witness).
+# The 2026-09-02 falsifiability audit found EIGHT independent copies of this
+# mechanism, all still carrying the defect the parity copy was cured of on
+# 2026-07-26: an unwritable state path (the #60 sandbox-drift class) froze
+# every streak at 1 below its debounce, so none of these classes could ever
+# fire. One mechanism, one implementation (honest_failure_modes #5); a lint
+# guard (MF028) and TestStreakSaversAreOne keep it that way.
+from utils.watchdog_probe_core import (  # noqa: E402
+    _load_parity_streak as _load_streak,
+    _save_parity_streak as _save_streak,
+)
 
 
 # Promoted to utils.user_units (2026-08-09) so provision_role + the soak probes

@@ -29,6 +29,7 @@ Checks:
 - MF025: file-size ratchet — src/ python files over 1,500 lines (frozen 2026-07-13 baseline for the 5 known offenders, which may only shrink; split the file, never raise the cap)
 - MF026: config/state torn-write guard — os.O_TRUNC banned + non-atomic config `open("w")` ratcheted vs a frozen baseline (route through utils.paths.atomic_write_text; ported from the client repo's MED3 config-atomicity rule)
 - MF027: probe fail-dark guard — in probe_* functions, an except-handler returning None without note_disposition (THE #80 class: degraded state reads as 'all is well' forever; build:fix doctrine 2026-07-29)
+- MF028: state-saver swallow guard — in watchdog `_save_*`/`_write_*`/`_persist_*` helpers, an except-handler that leaves NO witness (no call, no assignment, no non-None return). Ten savers swallowed with a bare `pass` on 2026-09-02; route through probe_core.note_state_write_failure
 
 Usage:
     python3 scripts/lint.py [files...]
@@ -1459,6 +1460,69 @@ def check_bounded_collect_chokepoint(repo_root: str = '.') -> List[LintIssue]:
     return issues
 
 
+MF028_SAVER = re.compile(r'^_(save|write|persist)_')
+
+
+def check_state_saver_swallow(files: List[str],
+                              repo_root: Optional[str] = None) -> List[LintIssue]:
+    """MF028: a state saver's swallowed write failure must leave a witness.
+
+    The 2026-09-02 falsifiability audit found TEN ``_save_*`` helpers across
+    the watchdog probe modules ending in ``except OSError: pass``. Each was a
+    detector that could never fire on an unwritable state dir (the #60
+    sandbox-drift class): the paired loader read the missing file as "no
+    baseline / streak 0", so every tick was a first sighting, forever, and
+    nothing anywhere recorded that the write had failed. The parity saver had
+    been cured of exactly this on 2026-07-21 (witness) + 2026-07-26
+    (in-process fallback); the copies were not.
+
+    Rule: inside a ``_save_*`` / ``_write_*`` / ``_persist_*`` function in a
+    watchdog_probe* module, an ``except`` handler must contain a witness — a
+    call (``note_state_write_failure``, a logger), an assignment (a counter),
+    a ``raise``, or a non-None ``return`` the caller reads. A handler whose
+    body is only ``pass`` / bare ``return`` / ``return None`` is dark.
+    """
+    issues: List[LintIssue] = []
+    for path in files:
+        base = os.path.basename(path)
+        if not (base.startswith('watchdog_probe') and base.endswith('.py')):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as fh:
+                tree = ast.parse(fh.read())
+        except (OSError, SyntaxError):
+            continue
+        for fn in ast.walk(tree):
+            if not (isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and MF028_SAVER.match(fn.name)):
+                continue
+            for node in ast.walk(fn):
+                if not isinstance(node, ast.ExceptHandler):
+                    continue
+                witnessed = False
+                for sub in ast.walk(node):
+                    if isinstance(sub, (ast.Call, ast.Assign, ast.AugAssign,
+                                        ast.AnnAssign, ast.Raise)):
+                        witnessed = True
+                        break
+                    if isinstance(sub, ast.Return) and sub.value is not None \
+                            and not (isinstance(sub.value, ast.Constant)
+                                     and sub.value.value is None):
+                        witnessed = True
+                        break
+                if not witnessed:
+                    issues.append(LintIssue(
+                        path, node.lineno, Severity.ERROR, 'MF028',
+                        f"{fn.name}: except-handler swallows a state write "
+                        f"failure with no witness — the paired loader will "
+                        f"read the missing file as 'no baseline', so the "
+                        f"detector can never fire and nothing records why "
+                        f"(the #60 class). Call "
+                        f"probe_core.note_state_write_failure(path, e) and "
+                        f"keep an in-process copy of the value."))
+    return issues
+
+
 def check_probe_fail_dark(files: List[str],
                           repo_root: Optional[str] = None) -> List[LintIssue]:
     """MF027: a probe's error path must leave a witness, never go dark.
@@ -1622,6 +1686,10 @@ def main():
     # files in the selection; runs in both modes — a dark error path must
     # fail in the commit that writes it, not in the review that finds it.
     issues.extend(check_probe_fail_dark(files))
+
+    # MF028: state-saver swallow guard (an except in a _save_* helper that
+    # leaves no witness). Same cheap AST pass, same files, same reason.
+    issues.extend(check_state_saver_swallow(files))
 
     # Filter by severity
     severity_order = {'error': 0, 'warning': 1, 'info': 2}
