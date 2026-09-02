@@ -3780,3 +3780,48 @@ Full history in `persistent_issues_archive.md`.
 | #68 (2026-05-20) | rnsd hard-wedge → map main thread silent-stuck in `unix_stream_connect`; bg threads kept logging, `:5000` never bound. Cure: bounded AF_UNIX probe in `open_reticulum()` chokepoint (MF019) + FIXED AT SOURCE in fork `rns 1.2.5+mf.1` (`LocalClientInterface.connect` settimeout). Detection/recovery recipes + body in archive. | `TestRNSReticulumChokepoint` + fork test `meshforge_local_connect.py` (4) |
 | manager_deadman transient (2026-07-16) | FALSE `MANAGER DARK`, self-cleared in 10 min: a transient manager→peer ssh gap let the beat write exit 0 without landing. Staleness was REAL; the deadman was CORRECT. **Tell**: FAIL + manager box UP + a manual beat lands live = delivery gap, self-heals. Cure = DHCP reservations, not a threshold bump. Body in archive (demoted 07-27). | `cron_verdict.sh` truncation race fixed (MF `2d34877d`, MA `a1f32f93`) |
 | #74 (2026-06-06, stall-probe fix 06-09) | Gateway health core: write-only circuit breaker, NTP-backstep recovery freeze (→`time.monotonic()`), dead write-canary branch, 2 probes (`queue_backlog`, `delivery_confirmation_stall`); 06-09 stall probe stopped comparing disjoint protocol populations. Body in archive. DISPLAY residual FIXED 2026-06-15: `confirmation_rate` was cross-population (`confirmed/sent`, read 1.64=">164%" while mesh had zero proof) → now `confirmed/(confirmed+failures)` over the confirmable pop (bounded, live 0.99) + `unconfirmable_sent` surfaces the mesh blind spot (`compute_confirmation_view`; snapshot+pulse fallback; failure-set pinned to watchdog). Real mesh-completeness still = ACK consumption (T2 step 4). | `TestComputeConfirmationView` + `TestConfirmationRate` (rewritten) + `TestDeliveryFailureReasonsParity` + circuit/probe tests |
+
+
+## nomadnet-silence-watch rendered "no logfile" as 56.7 years of silence (2026-09-02) — RESOLVED
+
+`probe()` asked each box `expr $(date +%s) - $(stat -c %Y ~/.nomadnetwork/logfile
+2>/dev/null || echo 0)`. **`|| echo 0`** — a box with no NomadNet logfile got
+mtime 0, so its "age" was seconds since the epoch:
+
+    TRANSITION  moc4: unknown -> quiet (last activity 29806174 min ago)
+
+29,806,174 minutes is 56.7 years. honest_failure_modes #1 exactly: a degraded
+state (file absent) mapped to a valid-looking value (a duration), which
+downstream logic converted into a real-world claim — and the claim landed in
+the **alarm** state, `quiet`, the one an operator is meant to act on.
+
+**The latch is worse than the wrong number.** Those boxes reach `quiet` on the
+first poll and `state[box]` never changes again, so a REAL NomadNet silence on
+moc4/kiai/lehua could never fire a TRANSITION line. The detector was loudest
+exactly where it was blind, and its noise buried the two genuine findings in
+the same heartbeat: **moc5 at 401,559 min (279 days)** of actually-dead logfile
+and meshanchor-server at 5.6 days.
+
+**Cure** (`366b435d`): `probe()` returns THREE answers, not two — a real age,
+`NO_LOGFILE` (the box answered; NomadNet never ran here — INERT), or `None`
+(the probe itself failed — UNOBSERVABLE). The absent-file token is deliberately
+**non-numeric**: `0` and `-1` are both values a real mtime delta can take, so a
+numeric sentinel re-creates the collapse. `classify()` names four states,
+splitting out `clock-skew` — a future-dated mtime used to fall through to `ok`,
+and RTC-less Pis produce those after a fake-hwclock restore (hfm #6). The
+heartbeat gained a separate `not observed:` clause so blindness is never folded
+into the quiet list (hfm #2).
+
+**Found by accident**, which is the part worth carrying: the unit was being
+restarted for 13d code skew, and the fix it had been missing was not in the
+gap — it was in the line it had been running all along. The restart also
+revealed the 13-day-old process was watching **9** boxes while the fleet had
+**10**; `lehua` was unwatched entirely.
+
+**Decision tell**: any detector age in the millions of minutes is a sentinel,
+not a measurement. Look at the probe's fallback branch, not at the subject.
+
+**Guard**: `tests/test_nomadnet_silence_watch.py` (17 assertions). Drilled both
+ways — planting `|| echo 0` back fails 4 of them including
+`test_absent_logfile_is_not_quiet`. Eval:
+`evals/local_brain/absurd_duration_sentinel_2026_09_02.jsonl`.
