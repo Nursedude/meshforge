@@ -509,6 +509,48 @@ NOT flagged absent.
 `-0` one cycle and `-84` the next. That is why it survived so long: a field
 that is wrong only some of the time never looks broken.
 
+### THE MECHANISM — it fires at the WEAK end, and the reading INVERTS
+
+Not a random sentinel. Two claws on the same segment, same minute, same
+watched ids:
+
+| id | `.19` (dudeclaw-02) | `.20` (dudeclaw-01) |
+|---|---|---|
+| `!32962f10` | **`-0`** | `-108` |
+| `!851a9fe7` | **`-0`** | `-108` |
+| `!896b1917` | `-62` | `-52` |
+| `!0daee001` | `-71` | `-64` |
+
+Every id reading `-0` on `.19` reads about **-108 dBm** on `.20`; the ids
+`.19` reports correctly are the strong ones. So `.19` fails to capture RSSI
+precisely for **marginal** packets — and pre-fix those became `0`, the
+strongest value in the range.
+
+The reading did not merely go missing, it **inverted**: the weakest links
+presented as the best ones, in the field whose entire purpose is judging which
+links are good enough to site a digipeater on. A node at the edge of the
+mesh — exactly the one you would drive out to investigate — looked like the
+strongest neighbour on the board.
+
+**Truncation ruled out, not assumed**: both firmwares' replies run ~340 chars
+against the 1408 buffer, carry no `cut=` marker, and end on a complete token.
+A clipped `@-104` becoming `@-1` is a real but DIFFERENT mechanism and is not
+what is happening here.
+
+**Live confirmation across cron cycles** (2026-09-01 20:04–20:10, `*/5` cron,
+the consumer of record): `total rssi_dbm==0 across fleet: 0` on every sample.
+dudeclaw-02 reads `absent=8..9 real=2`; both `.20` claws read `absent=0`, all
+real — including a genuinely weak `-117 dBm` on dudeclaw-01 correctly NOT
+flagged absent. The flag discriminates; it does not blanket-null a firmware.
+
+⚠️ **OPEN, deliberately not coded for**: one unreproduced `rssi=-1` on `.19`'s
+header (20:05), absent from 8+ consecutive raw samples minutes later and not
+explained by truncation. -1 dBm is as implausible as -0, but one sighting with
+no mechanism does not justify widening the refusal — inventing a
+"> -10 dBm is implausible" threshold would be a guess wearing a fix's clothes.
+**The check if it recurs**: capture the raw reply at the time and look for
+`cut=`.
+
 ### The open question — ANSWERED, and it was legitimate
 
 On dudeclaw-01 (`.20`) the two blocks disagree about the same node's RSSI —

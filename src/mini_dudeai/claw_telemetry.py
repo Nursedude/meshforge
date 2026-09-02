@@ -113,6 +113,35 @@ def _rssi_or_absent(token: str) -> "tuple[Optional[int], bool]":
     direction: if some firmware ever means "0 dBm" literally, it is still not a
     measurement.
 
+    ⚠️ **THE MECHANISM — it is not a random sentinel, it fires at the WEAK
+    end.** Two claws on the same segment, same minute, same watched ids::
+
+        .19 (dudeclaw-02)  !32962f10@-0    !851a9fe7@-0    !896b1917@-62
+        .20 (dudeclaw-01)  !32962f10@-108  !851a9fe7@-108  !896b1917@-52
+
+    Every id that reads ``-0`` on ``.19`` reads about **-108 dBm** on ``.20``;
+    the ids ``.19`` reports correctly are the strong ones. So ``.19`` fails to
+    capture RSSI precisely for MARGINAL packets — and pre-fix those became
+    ``0``, the strongest value in the range. The reading did not merely go
+    missing, it INVERTED: the weakest links presented as the best ones, in the
+    field whose whole purpose is judging which links are good enough to site a
+    digipeater on. That inversion is why this is worth a witness rather than a
+    silent ``None``.
+
+    Truncation is NOT the cause and was ruled out rather than assumed: both
+    firmwares' replies run ~340 chars against the 1408 buffer, carry no ``cut=``
+    marker, and end on a complete token. A clipped ``@-104`` becoming ``@-1``
+    (see ``_stats_truncated``) is a real but DIFFERENT mechanism, and it is not
+    what is happening here.
+
+    OPEN, deliberately not coded for: one unreproduced ``rssi=-1`` on ``.19``'s
+    header (2026-09-01 20:05), absent from 8+ consecutive raw samples taken
+    minutes later and not explained by truncation. -1 dBm is as implausible as
+    -0, but ONE sighting with no mechanism does not justify widening this
+    refusal — inventing a "> -10 dBm is implausible" threshold would be a guess
+    wearing a fix's clothes. The check if it recurs: capture the raw reply at
+    the time and look for ``cut=``.
+
     An UNPARSEABLE token keeps the previous contract — ``(None, False)`` — so
     the caller's existing ``parse_error`` path is unchanged.
 
