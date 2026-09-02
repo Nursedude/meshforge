@@ -94,6 +94,50 @@ def _str(rx: re.Pattern, s: str) -> Optional[str]:
     return m.group(1).strip() if m else None
 
 
+def _rssi_or_absent(token: str) -> "tuple[Optional[int], bool]":
+    """``(rssi_dbm, rssi_absent)`` — 0 and -0 are sentinels, never measurements.
+
+    dudeclaw ``.19`` emits ``@-0`` for an RSSI it does not have — observed live
+    on dudeclaw-02 2026-09-01 (``rssi=-0``, and ``@-0`` on 4 of 5 watch/direct
+    ids) while both ``.20`` claws on the same segment reported real values and
+    ``snr`` was fine on all three. The firmware half is fixed in ``.20``; this
+    is the reader half, and it matters because ``.19`` devices exist now and
+    will again.
+
+    The bug this closes is the SIGN being thrown away: ``int(float("-0"))`` is
+    ``0``, a perfectly plausible integer, and it was stored with
+    ``parse_error: False``. 0 dBm is 1 mW at the receiver — no LoRa link
+    produces it — so the degraded reading landed at the STRONGEST end of the
+    healthy domain, which is the honest_failure_modes #1 class in the one field
+    a digipeater would be sited from. Refusing both 0 and -0 is safe in either
+    direction: if some firmware ever means "0 dBm" literally, it is still not a
+    measurement.
+
+    An UNPARSEABLE token keeps the previous contract — ``(None, False)`` — so
+    the caller's existing ``parse_error`` path is unchanged.
+
+    Deliberately NOT applied to the BLE/WiFi RSSI fields: no ``-0`` has been
+    observed there, they come from different firmware paths, and the WiFi one
+    already refuses to invent a value when disconnected. Widening this without
+    evidence would be a guess wearing a fix's clothes.
+    """
+    try:
+        value = int(float(token))
+    except (TypeError, ValueError):
+        return None, False
+    if value == 0:
+        return None, True
+    return value, False
+
+
+def _rssi_field(rx: re.Pattern, s: str) -> "tuple[Optional[int], bool]":
+    """``_rssi_or_absent`` for a scalar regex field. Absent field -> (None, False)."""
+    m = rx.search(s)
+    if not m:
+        return None, False
+    return _rssi_or_absent(m.group(1))
+
+
 # battery_read: "Battery: 4.06 V (adc 829 mV)". The FIRST voltage is the pack
 # reading; the parenthesised adc millivolts is a raw sample, never the answer.
 _RE_BATTERY_V = re.compile(r"([\d.]+)\s*V\b", re.IGNORECASE)
@@ -196,7 +240,7 @@ def _parse_direct(result: str) -> Optional[Dict[str, Any]]:
         rest = rest.strip()
         if rest.lower().startswith("never"):
             out[node] = {"age_s": None, "rssi_dbm": None, "direct": False,
-                         "parse_error": False}
+                         "rssi_absent": False, "parse_error": False}
             continue
         age_part, _, rssi_part = rest.partition("@")
         try:
@@ -206,14 +250,11 @@ def _parse_direct(result: str) -> Optional[Dict[str, Any]]:
             # is indistinguishable from "not tracked" to a consumer doing
             # .get(id) (honest_failure_modes #9).
             out[node] = {"age_s": None, "rssi_dbm": None, "direct": None,
-                         "parse_error": True}
+                         "rssi_absent": False, "parse_error": True}
             continue
-        try:
-            rssi = int(float(rssi_part))
-        except ValueError:
-            rssi = None
+        rssi, rssi_absent = _rssi_or_absent(rssi_part)
         out[node] = {"age_s": age, "rssi_dbm": rssi, "direct": True,
-                     "parse_error": False}
+                     "rssi_absent": rssi_absent, "parse_error": False}
     if out and _stats_truncated(result):
         # F1 reader half — see the note in _parse_watch. `direct` is the field
         # the truncation actually forged (it is emitted LAST, so it is the one
@@ -221,7 +262,7 @@ def _parse_direct(result: str) -> Optional[Dict[str, Any]]:
         # from. `direct` becomes None, not False: we do not know.
         for node in out:
             out[node] = {"age_s": None, "rssi_dbm": None, "direct": None,
-                         "parse_error": True}
+                         "rssi_absent": False, "parse_error": True}
     return out or None
 
 
@@ -258,7 +299,8 @@ def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
             continue
         if rest.strip().lower().startswith("never"):
             out[node] = {"age_s": None, "pkts": 0, "rssi_dbm": None,
-                         "never": True, "parse_error": False}
+                         "never": True, "rssi_absent": False,
+                         "parse_error": False}
             continue
         age_part, _, tail = rest.partition("/")
         pkts_part, _, rssi_part = tail.partition("@")
@@ -271,18 +313,17 @@ def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
             # kept with parse_error set: unknown is stated, not implied by
             # absence (honest_failure_modes #9 — every swallow leaves a witness).
             out[node] = {"age_s": None, "pkts": None, "rssi_dbm": None,
-                         "never": False, "parse_error": True}
+                         "never": False, "rssi_absent": False,
+                         "parse_error": True}
             continue
         try:
             pkts = int(pkts_part)
         except ValueError:
             pkts = None
-        try:
-            rssi = int(float(rssi_part))
-        except ValueError:
-            rssi = None
+        rssi, rssi_absent = _rssi_or_absent(rssi_part)
         out[node] = {"age_s": age, "pkts": pkts, "rssi_dbm": rssi,
-                     "never": False, "parse_error": False}
+                     "never": False, "rssi_absent": rssi_absent,
+                     "parse_error": False}
     if out and _stats_truncated(result):
         # F1 reader half. The reply was clipped and nothing tells us WHICH
         # token lost bytes — a clipped `@-104` becomes `@-1`, a perfectly
@@ -294,7 +335,8 @@ def _parse_watch(result: str) -> Optional[Dict[str, Any]]:
         # — losing 11 good readings to refuse 1 forged one.
         for node in out:
             out[node] = {"age_s": None, "pkts": None, "rssi_dbm": None,
-                         "never": False, "parse_error": True}
+                         "never": False, "rssi_absent": False,
+                         "parse_error": True}
     return out or None
 
 
@@ -316,6 +358,7 @@ def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
     if age is None:
         return None
     snr_m = _RE_LORA_SNR.search(result)
+    last_rssi, last_rssi_absent = _rssi_field(_RE_LORA_RSSI, result)
     return {
         "heard_age_s": age,
         "heard_pkts": _int(_RE_LORA_HEARD, result),
@@ -324,7 +367,11 @@ def parse_lora_stats(result: Any) -> Optional[Dict[str, Any]]:
         "hop_start0": _int(_RE_LORA_HOP_START0, result),
         "hop_malformed": _int(_RE_LORA_HOP_MALFORMED, result),
         "last_from": _str(_RE_LORA_FROM, result),
-        "last_rssi_dbm": _int(_RE_LORA_RSSI, result),
+        "last_rssi_dbm": last_rssi,
+        # True when the firmware reported the -0 sentinel rather than a
+        # reading, so "no RSSI" stays distinguishable from a real one
+        # downstream (honest_failure_modes #9 — the swallow leaves a witness).
+        "last_rssi_absent": last_rssi_absent,
         "last_snr": float(snr_m.group(1)) if snr_m else None,
         # None (not {}) when the firmware predates the watch list or no ids are
         # configured — "we cannot see our own transmitter" must not read as

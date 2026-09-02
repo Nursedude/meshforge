@@ -754,6 +754,122 @@ class TestDirectVsRelayedReception:
         assert d["direct"]["!0daee001"]["direct"] is None
 
 
+class TestRssiSentinelIsNotAMeasurement:
+    """`-0` dBm is the firmware saying it has no RSSI, and `int(float("-0"))`
+    is `0` — a plausible integer, and the STRONGEST possible LoRa RSSI.
+
+    Found 2026-09-01 while reading the F2 before/after: three of dudeclaw-02's
+    five direct ids carried `rssi_dbm: 0` in the snapshot. Querying the claw
+    directly showed the wire actually says `@-0`, so the one mark separating
+    "no reading" from "a reading" was being erased in the parser — and stored
+    with `parse_error: False`. 0 dBm is 1 mW at the receiver; no LoRa link
+    produces it. The degraded value landed at the BEST end of the healthy
+    domain, in the field `_parse_direct`'s own docstring calls "the number a
+    digipeater gets sited from" (honest_failure_modes #1).
+
+    Firmware `.19` emits it; `.20` does not. The reader half is fixed here
+    because `.19` devices exist now and will again.
+
+    The two BASE strings below are REAL captures taken off the wire on
+    2026-09-01, not synthetic vectors — the whole defect was that a plausible
+    synthetic value looks exactly like the broken one.
+    """
+
+    # dudeclaw-02, firmware 0.4.0+dudeclaw.19 — verbatim, ids intact.
+    WIRE_19 = ("mesh_heard_age_s: 0 (heard 21711 pkts, crc_err 543, runts 1, "
+               "last from=!32c7ba5a to=!ffffffff ch=0x08 rssi=-0 snr=6.2 "
+               "hops=5) watch=!32962f10:142/1271@-0,!896b1917:1942/417@-0,"
+               "!0daee001:82/243@-71 "
+               "direct=!32962f10:172@-0,!896b1917:1976@-62")
+
+    # dudeclaw-01, firmware 0.4.0+dudeclaw.20 — same segment, same minute.
+    WIRE_20 = ("mesh_heard_age_s: 0 (heard 15573 pkts, crc_err 183, runts 0, "
+               "last from=!32c7ba5a to=!ffffffff ch=0x08 rssi=-97 snr=5.0 "
+               "hops=5) watch=!32962f10:141/829@-98,!896b1917:1942/320@-97 "
+               "direct=!32962f10:172@-109,!896b1917:1976@-52")
+
+    def test_sentinel_direct_rssi_is_absent_not_zero(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.WIRE_19)
+        e = d["direct"]["!32962f10"]
+        assert e["rssi_dbm"] is None, "0 dBm would read as a perfect link"
+        assert e["rssi_absent"] is True
+        # the reading is gone; everything else about the entry survives
+        assert e["direct"] is True
+        assert e["age_s"] == 172
+        assert e["parse_error"] is False
+
+    def test_sentinel_watch_rssi_is_absent_not_zero(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.WIRE_19)
+        e = d["watched"]["!32962f10"]
+        assert e["rssi_dbm"] is None
+        assert e["rssi_absent"] is True
+        assert e["age_s"] == 142 and e["pkts"] == 1271   # data preserved
+        assert e["never"] is False and e["parse_error"] is False
+
+    def test_sentinel_header_rssi_is_absent_not_zero(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.WIRE_19)
+        assert d["last_rssi_dbm"] is None
+        assert d["last_rssi_absent"] is True
+        assert d["last_snr"] == 6.2       # the SNR leg was never broken
+
+    def test_real_readings_on_the_same_wire_are_untouched(self):
+        """The sentinel must not swallow the good readings beside it — the
+        `.19` capture carries both, which is why it is the right fixture."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.WIRE_19)
+        assert d["direct"]["!896b1917"]["rssi_dbm"] == -62
+        assert d["direct"]["!896b1917"]["rssi_absent"] is False
+        assert d["watched"]["!0daee001"]["rssi_dbm"] == -71
+        assert d["watched"]["!0daee001"]["rssi_absent"] is False
+
+    def test_the_fixed_firmware_reports_no_sentinel_at_all(self):
+        """`.20` on the same segment in the same minute — every field real,
+        including a genuinely weak -109 that must NOT be mistaken for absent."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.WIRE_20)
+        assert d["last_rssi_dbm"] == -97 and d["last_rssi_absent"] is False
+        assert d["direct"]["!32962f10"]["rssi_dbm"] == -109
+        assert d["direct"]["!32962f10"]["rssi_absent"] is False
+        for blk in ("direct", "watched"):
+            for e in d[blk].values():
+                assert e["rssi_absent"] is False
+
+    def test_plain_zero_is_refused_too(self):
+        """`-0` is what this firmware happens to emit. A bare `0` is the same
+        claim and must not slip through on the next firmware that rounds it."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats(self.WIRE_19.replace("@-0", "@0")
+                                         .replace("rssi=-0", "rssi=0"))
+        assert d["last_rssi_dbm"] is None and d["last_rssi_absent"] is True
+        assert d["direct"]["!32962f10"]["rssi_absent"] is True
+        assert d["watched"]["!32962f10"]["rssi_absent"] is True
+
+    def test_unparseable_rssi_keeps_the_previous_contract(self):
+        """Absent-because-garbled is a DIFFERENT claim from absent-because-
+        sentinel, and the fix must not merge them."""
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 10 pkts) "
+                             "direct=!0daee001:20@zz")
+        e = d["direct"]["!0daee001"]
+        assert e["rssi_dbm"] is None
+        assert e["rssi_absent"] is False      # not a sentinel — just unreadable
+        assert e["age_s"] == 20
+
+    def test_never_and_truncated_entries_are_not_labelled_sentinel(self):
+        from mini_dudeai.claw_telemetry import parse_lora_stats
+        d = parse_lora_stats("mesh_heard_age_s: 5 (heard 10 pkts) "
+                             "direct=!0daee001:never watch=!0daee001:never")
+        assert d["direct"]["!0daee001"]["rssi_absent"] is False
+        assert d["watched"]["!0daee001"]["rssi_absent"] is False
+        t = parse_lora_stats("mesh_heard_age_s: 5 (heard 10 pkts, cut=1) "
+                             "direct=!0daee001:20@-50 watch=!0daee001:5/2@-50")
+        assert t["direct"]["!0daee001"]["parse_error"] is True
+        assert t["direct"]["!0daee001"]["rssi_absent"] is False
+
+
 class TestStatsTruncationWitness:
     """F1 (+dudeclaw.20): the claw now WITNESSES its own truncated stats tail.
 
