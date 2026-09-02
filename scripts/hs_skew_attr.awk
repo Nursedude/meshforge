@@ -6,10 +6,10 @@
 # Output: "B <repo> <unit> <days>"  behind on CODE
 #         "P <repo> <unit> <days>"  behind on prose only (docs/.claude/evals)
 #         "U <repo> <unit>"         unknown (no start time / no repo HEAD)
-#         "N <unit> <interp>"       DISCLOSURE: no repo resolved, but the unit
-#                                   runs a venv interpreter — if that venv has
-#                                   a repo `pip install -e`'d into it, this
-#                                   unit's skew is INVISIBLE to the leg
+#         "N <unit> <interp>"       DISCLOSURE: the unit runs a venv we could
+#                                   NOT inspect, so an editable install hiding
+#                                   there would be invisible. A venv we CAN
+#                                   read is answered, never disclosed.
 #         nothing                   the unit loads no repo code — untracked
 # Vars  : HTMF/HTMA/HTMM (repo HEADs), HCMF/HCMA/HCMM (repo CODE-heads).
 #
@@ -52,10 +52,52 @@ function venv_interp(s,   n, parts, i, p) {
 }
 
 
+# Resolve a repo `pip install -e`'d into the unit's venv. An editable install
+# lives as a .pth / __editable__* entry in the venv's site-packages, which is
+# why NOTHING about it appears in ExecStart/Environment/WorkingDirectory and a
+# `-m module` ExecStart has no .py to scan.
+#
+# Returns the /opt repo path, or "" — and the "" is TWO different claims, which
+# is the whole point of this function: INSPECTED=1 means we read site-packages
+# and there is genuinely no repo there (silent, correctly untracked);
+# INSPECTED=0 means we could not look at all (disclose as N). Before 2026-09-02
+# the leg could not look at any of them and disclosed EVERY venv unit, which on
+# this fleet meant naming the same four nomadnet units on every run forever —
+# a line that never changes is furniture, and furniture is how a real finding
+# gets scrolled past.
+function editable_repo(s,   iv, venv, cmd, line, sp, found) {
+  INSPECTED = 1
+  iv = venv_interp(s)
+  if (iv == "") return ""                       # no venv: nothing to inspect
+  # This path is interpolated into a shell command. Anything outside a
+  # conservative charset is refused rather than quoted-and-hoped.
+  if (iv !~ /^[A-Za-z0-9_.\/@+-]+$/) { INSPECTED = 0; return "" }
+  venv = iv; sub(/\/bin\/python[0-9.]*$/, "", venv)
+  sp = ""
+  cmd = "ls -d '" venv "'/lib/python*/site-packages 2>/dev/null | head -1"
+  if ((cmd | getline line) > 0) sp = line
+  close(cmd)
+  if (sp == "") { INSPECTED = 0; return "" }    # could not look
+  found = ""
+  cmd = "grep -rhoE '/opt/[A-Za-z0-9_.-]+' '" sp "'/*.pth '" sp "'/__editable__* 2>/dev/null"
+  # Same prefix precedence as the direct resolver — /opt/meshforge is a prefix
+  # of /opt/meshforge-maps, so maps must win first (honest_failure_modes #5:
+  # two consumers of one rule share ONE ordering).
+  while ((cmd | getline line) > 0) {
+    if (index(line, "/opt/meshforge-maps")) { found = "/opt/meshforge-maps"; break }
+    if (index(line, "/opt/meshanchor"))     { found = "/opt/meshanchor";     break }
+    if (index(line, "/opt/meshforge"))      { found = "/opt/meshforge";      break }
+  }
+  close(cmd)
+  return found
+}
+
+
 # Resolve, per `systemctl show` record, the repo whose code the unit's process
 # actually LOADS — never the unit's NAME.
 function decide(   hay, rp, i, n, parts, s, line, H, HC, iv) {
   if (id == "") return
+  INSPECTED = 1
   hay = ex " " env " " wd
   # maps FIRST: /opt/meshforge is a prefix of /opt/meshforge-maps.
   rp = ""
@@ -81,6 +123,8 @@ function decide(   hay, rp, i, n, parts, s, line, H, HC, iv) {
       close(s)
     }
   }
+  # Last resort: an editable install inside the unit's own venv.
+  if (rp == "") rp = editable_repo(ex)
   if      (rp == "/opt/meshforge-maps") { H = HTMM; HC = HCMM }
   else if (rp == "/opt/meshanchor")     { H = HTMA; HC = HCMA }
   else if (rp == "/opt/meshforge")      { H = HTMF; HC = HCMF }
@@ -101,7 +145,7 @@ function decide(   hay, rp, i, n, parts, s, line, H, HC, iv) {
     # appears (honest_failure_modes #9: every swallow leaves a witness). It is
     # a disclosure, never a fault: we cannot tell from `systemctl show` alone
     # whether such a unit loads repo code, and "cannot tell" is the claim.
-    if ((iv = venv_interp(ex)) != "") print "N " id " " iv
+    if (INSPECTED == 0 && (iv = venv_interp(ex)) != "") print "N " id " " iv
     return
   }
   # FAIL-SAFE: an unresolvable code-head collapses to HEAD, never to "no code

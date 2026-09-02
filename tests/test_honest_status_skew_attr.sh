@@ -154,5 +154,53 @@ expect "packaged binary emits no disclosure" "" "$out"
 out=$(run "$(rec meshanchor.service '/opt/meshanchor/venv/bin/python -m core.orchestrator --start')")
 expect "in-repo venv is judged, not disclosed" "B /opt/meshanchor meshanchor.service 0" "$out"
 
+# E. EDITABLE INSTALL INSIDE A VENV (2026-09-02, second pass). A repo
+#    `pip install -e`'d into a venv leaves a .pth / __editable__* entry in
+#    site-packages and NOTHING in ExecStart/Environment/WorkingDirectory. These
+#    use real fixture dirs because the logic reads the filesystem — a mock here
+#    would stand in for the exact layer under test (the 2026-07-25 lesson).
+mkvenv() { # $1=name $2=optional pth content
+  mkdir -p "$TMP/$1/bin" "$TMP/$1/lib/python3.11/site-packages"
+  : > "$TMP/$1/bin/python3.11"
+  [ -n "${2:-}" ] && printf '%s\n' "$2" > "$TMP/$1/lib/python3.11/site-packages/__editable__.demo.pth"
+  return 0
+}
+
+mkvenv ve_mf "/opt/meshforge/src"
+out=$(run "$(rec editable-mf.service "$TMP/ve_mf/bin/python3.11 -m demo.daemon")")
+expect "editable install into /opt/meshforge is JUDGED" \
+       "B /opt/meshforge editable-mf.service 0" "$out"
+
+mkvenv ve_ma "/opt/meshanchor/src"
+out=$(run "$(rec editable-ma.service "$TMP/ve_ma/bin/python3.11 -m demo.daemon")")
+expect "editable install resolves to the RIGHT repo" \
+       "B /opt/meshanchor editable-ma.service 0" "$out"
+
+# /opt/meshforge is a prefix of /opt/meshforge-maps — maps must win, same
+# precedence as the direct resolver.
+mkvenv ve_mm "/opt/meshforge-maps/src"
+out=$(run "$(rec editable-mm.service "$TMP/ve_mm/bin/python3.11 -m demo.daemon")")
+expect "maps is not eaten by the /opt/meshforge prefix (editable path)" \
+       "B /opt/meshforge-maps editable-mm.service 0" "$out"
+
+# THE FURNITURE FIX. A venv we CAN read, holding no repo, is ANSWERED: silent,
+# not disclosed. This is the live nomadnet/pipx shape — before this pass it
+# printed N on every run forever.
+mkvenv ve_none "/home/x/.local/share/pipx/shared/lib/python3.11/site-packages"
+out=$(run "$(rec pipx-app.service "$TMP/ve_none/bin/python3.11 /home/x/wrapper.py")")
+expect "readable venv with no repo -> silent, NOT disclosed" "" "$out"
+
+# ...and a venv we CANNOT inspect still discloses. That is the only thing N
+# means now.
+mkdir -p "$TMP/ve_dark/bin"; : > "$TMP/ve_dark/bin/python3.11"
+out=$(run "$(rec dark-venv.service "$TMP/ve_dark/bin/python3.11 -m demo.daemon")")
+expect "venv with NO site-packages -> N (uninspectable)" \
+       "N dark-venv.service $TMP/ve_dark/bin/python3.11" "$out"
+
+# A path we refuse to interpolate into a shell is uninspectable, not silent.
+out=$(run "$(rec odd-venv.service "/tmp/we'ird/bin/python3.11 -m demo.daemon")")
+expect "shell-unsafe interpreter path -> N, never silent" \
+       "N odd-venv.service /tmp/we'ird/bin/python3.11" "$out"
+
 # exit 0 — a harness that exits 0 without reaching its end asserts nothing.
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED: $fails assertion(s)"; exit 1; fi
