@@ -480,14 +480,45 @@ SUGGESTIVE, not established. It is the honest_failure_modes #1 class in the
 telemetry itself: an unset value landing inside the healthy domain, where
 "0 dBm" reads as a measurement rather than as "no measurement".
 
-### One open question, not a finding
+### UPDATE 2026-09-01 — root-caused, fixed, and the question closed
+
+Dug into the sentinel the same day. **The wire says `@-0`, not `@0`** — queried
+all three claws' raw `lora_stats` over NATS:
+
+    dudeclaw-02 (.19)  last ... rssi=-0 snr=6.2   direct=!32962f10:172@-0,...
+    dudeclaw-01 (.20)  last ... rssi=-97 snr=5.0  direct=!32962f10:172@-109,...
+
+Negative zero: a sentinel with a visible mark, emitted only by `.19`, and only
+for RSSI (`snr` was fine on all three). `int(float("-0"))` is `0`, so the
+PARSER erased the one thing separating "no reading" from "a reading" — and
+stored it with `parse_error: False`. 0 dBm is 1 mW at the receiver; no LoRa
+link produces it. The degraded value landed at the **strongest** end of the
+healthy domain, in the field `_parse_direct`'s own docstring calls "the number
+a digipeater gets sited from" (honest_failure_modes #1).
+
+So the n=1 caveat above is **resolved**: this is a real firmware behaviour
+confirmed on the wire across all three claws simultaneously, not a statistical
+artifact. Fixed reader-side in MF `a22bd60f` / MA `c88e3034` (`rssi_dbm: None`
+plus an `rssi_absent: True` witness; the firmware half is already fixed in
+`.20`). Verified live on the `*/5` cron afterwards: dudeclaw-02's eight
+sentinel fields now read absent, its two real readings survived, and both `.20`
+claws were untouched — including genuinely weak `-108 dBm` readings correctly
+NOT flagged absent.
+
+⚠️ **The sentinel is INTERMITTENT, not constant.** dudeclaw-02's header read
+`-0` one cycle and `-84` the next. That is why it survived so long: a field
+that is wrong only some of the time never looks broken.
+
+### The open question — ANSWERED, and it was legitimate
 
 On dudeclaw-01 (`.20`) the two blocks disagree about the same node's RSSI —
 `!851a9fe7` reads **-119 dBm** in `direct` and **-95 dBm** in `watched`;
-`!32962f10` reads -109 vs -96. That may be entirely legitimate (different
-packets: last direct-flagged reception vs last reception by any path), so it is
-recorded as a question, not a defect. **The check**: read what populates each
-block; if both claim "last packet from this node" they cannot both be right.
+`!32962f10` reads -109 vs -96. **Read the source (2026-09-01): legitimate.**
+`_parse_direct`'s docstring is explicit — the direct RSSI is "the only RSSI in
+this module that describes a LINK to that node rather than to whoever last
+repeated it". Two different packets over two different paths. Recording it as a
+question rather than a finding was the right call; asserting a defect here
+would have been wrong.
 
 ### Consequences
 
