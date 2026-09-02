@@ -212,7 +212,17 @@ def probe_claw_watched_node_silent(
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_CLAW_WATCH_DEBOUNCE_PATH
         if ticks is None:
-            ticks, seen = _read_claw_ticks(home or _operator_home(), now)
+            home = home or _operator_home()
+            if home is None:
+                # Unresolvable operator (no /run/user/<uid>/bus) is not "no
+                # claw here": the tick files may be on disk unread
+                # (falsifiability audit phase 3 item 1, 2026-09-02).
+                note_disposition(
+                    "claw_watched_node_silent", "indeterminate",
+                    reason="operator home unresolvable (no user bus) — "
+                           "claw ticks unread")
+                return None
+            ticks, seen = _read_claw_ticks(home, now)
         else:
             seen = len(ticks)
 

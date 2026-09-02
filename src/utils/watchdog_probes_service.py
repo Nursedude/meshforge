@@ -1374,7 +1374,7 @@ def probe_user_unit_inactive(
     (2) enabled non-empty but the user runtime dir absent → the USER MANAGER
     is down while daemons are enrolled (linger off / crashed), degraded.
 
-    Honest self-guards: no resolvable operator → INERT; empty enrollment →
+    Honest self-guards: no resolvable operator → INDETERMINATE; empty enrollment →
     INERT; wants/units dir unreadable → indeterminate (never "all healthy");
     2-tick debounce rides a deliberate restart window. A live crashloop is
     NOT this probe's fire (invocation marker present while thrashing —
@@ -1386,8 +1386,12 @@ def probe_user_unit_inactive(
         user_home, runtime_dir = _operator_unit_paths(
             operator=operator, user_home=user_home, runtime_dir=runtime_dir)
         if user_home is None:
-            note_disposition("user_unit_inactive", "inert",
-                             reason="no resolvable operator user")
+            # Both legs failed — no live user bus AND no non-root rnsd User=.
+            # The enrolled tree may exist unread; unobserved is never "nothing
+            # enrolled" (falsifiability audit phase 3 item 1, 2026-09-02).
+            note_disposition("user_unit_inactive", "indeterminate",
+                             reason="operator user unresolvable (no user bus, "
+                                    "no non-root rnsd User=) — enrollment unread")
             return None
 
         enabled = _enabled_user_services(user_home)

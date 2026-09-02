@@ -64,7 +64,17 @@ def probe_tracer_peer_unreachable(
     """
     if tracer_dir is None:
         tracer_dir = _default_tracer_dir()
-    if tracer_dir is None or not tracer_dir.is_dir():
+    if tracer_dir is None:
+        # The operator's home could not be resolved (no /run/user/<uid>/bus:
+        # linger off, no session) — the tracer dir is UNKNOWN, not absent.
+        # Reading this as inert hid fire files sitting on disk (falsifiability
+        # audit phase 3 item 1, 2026-09-02).
+        note_disposition(
+            "tracer_peer_unreachable", "indeterminate",
+            reason="operator home unresolvable (no user bus) — tracer dir unknown",
+        )
+        return []
+    if not tracer_dir.is_dir():
         note_disposition(
             "tracer_peer_unreachable", "inert",
             reason="no tracer state dir; tracer not run on this box",

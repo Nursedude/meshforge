@@ -11667,3 +11667,53 @@ class TestFalsifiabilityPhase2:
         from mini_dudeai import _util
         assert m._MINI_STATE_NAME == _util.APP_STATE_RELPATH
         assert m._MINI_HISTORY_NAME == _util.APP_HISTORY_RELPATH
+
+
+class TestUnresolvableOperatorIsNotInert:
+    """Falsifiability phase 3, item 1 (2026-09-02): three probes read the
+    operator's home/user-tree from the watchdog's root context through
+    `_find_operator_user` (smallest UID with a /run/user/<uid>/bus). When
+    NOTHING resolves (linger off, no session, no rnsd User=) they filed
+    `inert` — "no organ here" — while the organ's files may sit on disk.
+    Unobservable is `indeterminate`, and the reason names what was tried."""
+
+    def setup_method(self):
+        from utils.watchdog_probe_core import reset_dispositions
+        reset_dispositions()
+
+    def test_tracer_unresolvable_home_is_indeterminate(self):
+        with patch("utils.watchdog_probes_tracer._default_tracer_dir",
+                   return_value=None):
+            assert probe_tracer_peer_unreachable(tracer_dir=None) == []
+        assert _disp("tracer_peer_unreachable") == "indeterminate"
+        assert "unresolv" in _reason("tracer_peer_unreachable")
+
+    def test_tracer_resolved_but_absent_dir_stays_inert(self, tmp_path):
+        assert probe_tracer_peer_unreachable(tracer_dir=tmp_path / "nope") == []
+        assert _disp("tracer_peer_unreachable") == "inert"
+
+    def test_claw_watch_unresolvable_home_is_indeterminate(self, tmp_path):
+        from utils.watchdog_probes_claw_watch import probe_claw_watched_node_silent
+        with patch("utils.watchdog_probes_claw_watch._operator_home",
+                   return_value=None):
+            assert probe_claw_watched_node_silent(
+                ticks=None, home=None, now=1.0,
+                state_path=str(tmp_path / "cw.json")) is None
+        assert _disp("claw_watched_node_silent") == "indeterminate"
+        assert "unresolv" in _reason("claw_watched_node_silent")
+
+    def test_claw_watch_resolved_home_without_ticks_stays_inert(self, tmp_path):
+        from utils.watchdog_probes_claw_watch import probe_claw_watched_node_silent
+        assert probe_claw_watched_node_silent(
+            ticks=None, home=str(tmp_path), now=1.0,
+            state_path=str(tmp_path / "cw.json")) is None
+        assert _disp("claw_watched_node_silent") == "inert"
+
+    def test_user_unit_unresolvable_operator_is_indeterminate(self, tmp_path):
+        from utils.watchdog_probes_service import probe_user_unit_inactive
+        with patch("utils.fleet_test_runner._find_operator_user", return_value=None), \
+             patch("utils.rns_tree_perms._read_rnsd_user", return_value=None):
+            assert probe_user_unit_inactive(
+                state_path=str(tmp_path / "uu.json")) is None
+        assert _disp("user_unit_inactive") == "indeterminate"
+        assert "unresolv" in _reason("user_unit_inactive")
