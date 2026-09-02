@@ -35,7 +35,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Union
 
 
 def _real_home() -> Path:
@@ -87,8 +87,35 @@ def _boxes_from_fleet_hosts(path: Path, include_self: bool = True) -> list[str]:
     return aliases
 
 
-def probe(host: str, ssh_timeout: int = 15) -> Optional[int]:
-    """Return seconds since the host's NomadNet logfile mtime, or None on error.
+# probe() sentinel: the box answered and has no NomadNet logfile at all.
+# Distinct from None (the probe itself failed) and from a large age (real
+# silence) — see classify().
+NO_LOGFILE = "no-logfile"
+
+# What the remote shell prints when the logfile is absent. A non-numeric
+# token on purpose: any numeric sentinel (0, -1) is a value a real mtime
+# delta could legitimately take.
+_NOLOG_TOKEN = "NOLOG"
+
+
+def probe(host: str, ssh_timeout: int = 15) -> Union[int, str, None]:
+    """Seconds since the host's NomadNet logfile mtime — as one of THREE answers.
+
+    Collapsing these is the defect this detector exists to avoid:
+
+      * ``int``        — a real age. May be NEGATIVE if the file's mtime is
+                         ahead of the box's own clock; RTC-less Pis on this
+                         fleet do that after a fake-hwclock restore.
+      * ``NO_LOGFILE`` — the box answered, and there is no logfile. NomadNet
+                         has never run here. That is INERT, not silence.
+      * ``None``       — the probe itself failed (ssh/transport). Unobservable,
+                         which is never "healthy" and never "quiet".
+
+    Until 2026-09-02 the remote command ended ``|| echo 0``, so an absent
+    logfile became mtime 0 and the age became seconds-since-epoch. Four boxes
+    reported ~29,806,174 minutes (56.7 years) of silence and latched into the
+    "quiet" alarm state permanently — which also meant a REAL silence on those
+    boxes could never fire a transition again, because the state never changed.
 
     `StrictHostKeyChecking=accept-new` is used so IP-addressed boxes from
     fleet.json work on first contact without an operator running ssh-keyscan
@@ -102,13 +129,36 @@ def probe(host: str, ssh_timeout: int = 15) -> Optional[int]:
              "-o", "StrictHostKeyChecking=accept-new",
              "-o", "BatchMode=yes",
              host,
-             "expr $(date +%s) - $(stat -c %Y ~/.nomadnetwork/logfile "
-             "2>/dev/null || echo 0)"],
+             'f="$HOME/.nomadnetwork/logfile"; '
+             'if [ -e "$f" ]; then '
+             'expr $(date +%s) - $(stat -c %Y "$f"); '
+             f'else echo {_NOLOG_TOKEN}; fi'],
             capture_output=True, text=True, timeout=ssh_timeout, check=False,
         )
-        return int(r.stdout.strip())
+        out = r.stdout.strip()
+        if out == _NOLOG_TOKEN:
+            return NO_LOGFILE
+        return int(out)
     except (subprocess.TimeoutExpired, ValueError, FileNotFoundError):
         return None
+
+
+def classify(age: Union[int, str, None], quiet_s: int) -> str:
+    """Map a probe result to a watcher state.
+
+    Absence, blindness, a skewed clock and real silence are four different
+    claims. Only ``quiet`` means "NomadNet stopped talking here" — the one
+    an operator should act on.
+    """
+    if age is None:
+        return "ssh-fail"
+    if age == NO_LOGFILE:
+        return "no-logfile"
+    if age < 0:
+        return "clock-skew"
+    if age > quiet_s:
+        return "quiet"
+    return "ok"
 
 
 def main() -> int:
@@ -150,20 +200,27 @@ def main() -> int:
     while True:
         now = time.time()
         quiet_now = []
+        blind_now = []
         for box in boxes:
             age = probe(box)
-            if age is None:
-                new = "ssh-fail"
-            elif age > quiet_s:
-                new = "quiet"
+            new = classify(age, quiet_s)
+            if new == "quiet":
                 quiet_now.append(f"{box} ({age // 60} min)")
-            else:
-                new = "ok"
+            elif new == "no-logfile":
+                blind_now.append(f"{box} (no nomadnet logfile — never ran here)")
+            elif new == "ssh-fail":
+                blind_now.append(f"{box} (probe failed — UNOBSERVABLE)")
+            elif new == "clock-skew":
+                blind_now.append(
+                    f"{box} (logfile mtime {abs(age) // 60} min AHEAD of its clock)")
             if new != state[box]:
                 ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+                # Only a real, non-negative age is an "age". A sentinel is not
+                # a duration, and printing one as minutes is how this detector
+                # claimed 56.7 years of silence.
                 age_label = (
                     f" (last activity {age // 60} min ago)"
-                    if age is not None else ""
+                    if isinstance(age, int) and age >= 0 else ""
                 )
                 print(f"{ts}  TRANSITION  {box}: {state[box]} -> {new}{age_label}",
                       flush=True)
@@ -175,6 +232,12 @@ def main() -> int:
             extra = (
                 ", quiet: " + ", ".join(quiet_now) if quiet_now else ""
             )
+            # Blindness gets its OWN clause, never folded into the quiet list:
+            # "we cannot see this box" must not read as "this box is silent"
+            # (honest_failure_modes #2 — surface the blind spot, don't average
+            # it away).
+            if blind_now:
+                extra += ", not observed: " + ", ".join(blind_now)
             print(f"{ts}  heartbeat: {ok_count}/{len(boxes)} ok{extra}",
                   flush=True)
             last_heartbeat = now
