@@ -3648,6 +3648,41 @@ condition really bites before asserting the probe survives it.
 must be exercised as the USER THAT HOSTS IT. `unavailable` from a root daemon
 and `ok` from your shell are the same command.
 
+⚠️ **CORRECTION, same night (2026-09-01 22:2x): the dubious-ownership root
+cause above is NOT SUPPORTED.** The end-of-session drill tried to prove the
+counterfactual and could not. Re-tested three ways on the box it happened on:
+
+* `sudo env HOME=/root git -C /opt/meshanchor rev-parse` — **works without the
+  flag**;
+* the exact probe call (`git status --porcelain -z -- <path>`) run **inside the
+  live watchdog's own mount namespace** via `nsenter` — **rc=0, no flag**;
+* root's gitconfig still lists only `/opt/meshforge`, and `/opt/meshanchor` is
+  still `wh6gxz`-owned — i.e. the conditions are unchanged since the failure.
+
+So git-as-root reads that repo fine, and always may have. What is OBSERVED and
+still true: at 17:35 the live watchdog reported `ma=unavailable`, and after the
+`safe.directory` commit + restart it reported success. What is NOT established
+is that the flag caused the change. A likelier confound: my own `git commit` /
+`git pull` in `/opt/meshanchor` at **19:50** refreshed that repo's index between
+the two observations, and a `git status` on a long-stale index has to WRITE
+(the unit runs `ProtectSystem=strict`). That fits the timeline but is
+unproven — reproducing it means re-staling the index, which was not worth doing
+at session end.
+
+**The flag STAYS**: scoping `safe.directory` to the queried root is correct for
+a root daemon reading operator-owned clones, and is real defense-in-depth on
+any box whose root gitconfig differs from this one's. But it is defense, not a
+demonstrated cure, and the commit message for `9786ad3e` overstates it.
+
+**The lesson is the one directly above, turned on itself.** I verified the
+consumer-of-record (good) and then asserted a MECHANISM I had not tested (bad).
+Observing that a symptom disappeared after a change is not evidence the change
+caused it — the counterfactual is the evidence, and I only ran it hours later
+because the end-of-session drill made me. It is the third mechanism claim I
+over-stated in one session (the others: the RSSI `-0` precision-masking theory,
+disproved by an unmasked real position; "GPS is broken on POE", when POE simply
+has no GPS).
+
 Tests: `test_parity_drift_*`, `test_git_dirty_paths_live_reports_status_honestly`
 and `test_git_dirty_paths_survives_dubious_ownership` in
 `tests/test_watchdog_probes.py`, including three live-git drills.
