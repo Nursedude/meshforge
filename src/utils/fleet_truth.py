@@ -853,15 +853,74 @@ def _cascade_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return cell(HEALTHY, source="/fleet/slo.cascade")
 
 
+_CI_SRC = "/fleet/slo.ci_status"
+
+
+def _age_suffix(age_s: Optional[float]) -> str:
+    """`` (5.3h old)`` / `` (12m old)`` / ``""`` when the age is unknown.
+
+    An unknown age renders as NOTHING rather than a zero or a placeholder:
+    "frozen (0m old)" would read as fresh, which is the exact inversion this
+    whole leg exists to prevent.
+    """
+    if not isinstance(age_s, (int, float)) or isinstance(age_s, bool):
+        return ""
+    if age_s < 0:
+        # Clock went backwards (RTC-less Pi, NTP step) — the age is not a
+        # duration we can quote (honest_failure_modes #6).
+        return " (age unknown — clock skew)"
+    if age_s < 3600:
+        return f" ({int(age_s // 60)}m old)"
+    return f" ({age_s / 3600:.1f}h old)"
+
+
 def _ci_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     """CI tri-state. FAILED only on an OBSERVED failure state; a repo whose
     state is in_progress/pending/unknown/None is DARK (cannot judge yet),
     never healthy and never an invented fault (2026-07-19 adversarial review:
     the old cell flipped the fleet verdict to FAILED on a merely in-progress
-    run, and let a None state slip through to healthy)."""
+    run, and let a None state slip through to healthy).
+
+    A FROZEN snapshot cannot support a live verdict in EITHER direction
+    (2026-09-01). The producer stamps ``stale``/``age_s``; this cell read
+    only ``repos`` and dropped both, so a snapshot taken hours ago rendered
+    as a fresh observation. Observed cost: the poller box's cell asserted FAILED
+    for 5h20m off an 18:05 poll of a red run that went green at 18:26 — the
+    timer fires twice daily, so nothing re-derived it. The dangerous
+    polarity is the other one: a dead timer plus a red CI would have read
+    HEALTHY off the same frozen file for up to the stale window
+    (honest_failure_modes #2 — a frozen observation is not a live claim).
+    This module's own contract already names ``stale`` a DARK reason and
+    ``classify_block`` implements it; this hand-rolled classifier was the
+    one leaf that never did.
+
+    Staleness is NOT re-derived from ``age_s`` here: the threshold
+    (``fleet_snapshot.CI_STATUS_STALE_AFTER_S``) belongs to the producer,
+    and this module is stdlib-pure and cannot import it. Two consumers of
+    one artifact share ONE constant or they WILL drift
+    (honest_failure_modes #5). A block carrying no ``stale`` key makes no
+    freshness claim, so we judge it as before rather than invent a fault —
+    but ``age_s`` now rides every cell so the human can see the age we
+    could not act on.
+    """
     if not isinstance(slo, dict) or not isinstance(slo.get("ci_status"), dict):
-        return cell(DARK, reason="ci_status unobservable", source="/fleet/slo.ci_status")
-    repos = [r for r in (slo["ci_status"].get("repos") or []) if isinstance(r, dict)]
+        return cell(DARK, reason="ci_status unobservable", source=_CI_SRC)
+    block = slo["ci_status"]
+    age_s = block.get("age_s")
+    if not isinstance(age_s, (int, float)) or isinstance(age_s, bool):
+        age_s = None
+    observed_at = block.get("generated_unix")
+    if not isinstance(observed_at, (int, float)) or isinstance(observed_at, bool):
+        observed_at = None
+
+    # Truthy (not ``is True``): a producer emitting a non-bool truthy stale
+    # marker must fall to the SAFE side (dark), never slip through as fresh.
+    if block.get("stale"):
+        return cell(DARK, reason=f"ci_status frozen{_age_suffix(age_s)} — "
+                                 "last poll too old to judge",
+                    age_s=age_s, source=_CI_SRC, observed_at=observed_at)
+
+    repos = [r for r in (block.get("repos") or []) if isinstance(r, dict)]
     # Every COMPLETED-with-failure conclusion gh can emit, not just the common
     # three: timed_out/startup_failure/action_required are observed terminal
     # states too — leaving them in the "not judgeable yet" bucket parked a red
@@ -872,15 +931,17 @@ def _ci_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         "action_required")]
     if failing:
         names = ", ".join(f"{r.get('name')}:{r.get('state')}" for r in failing[:3])
-        return cell(FAILED, reason=f"ci failing: {names}", source="/fleet/slo.ci_status")
+        return cell(FAILED, reason=f"ci failing: {names}", age_s=age_s,
+                    source=_CI_SRC, observed_at=observed_at)
     unjudged = [r for r in repos if r.get("state") not in ("success", "clean")]
     if unjudged:
         names = ", ".join(f"{r.get('name')}:{r.get('state')}" for r in unjudged[:3])
-        return cell(DARK, reason=f"ci not judgeable yet: {names}",
-                    source="/fleet/slo.ci_status")
+        return cell(DARK, reason=f"ci not judgeable yet: {names}", age_s=age_s,
+                    source=_CI_SRC, observed_at=observed_at)
     if not repos:
-        return cell(DARK, reason="no ci repos reported", source="/fleet/slo.ci_status")
-    return cell(HEALTHY, source="/fleet/slo.ci_status")
+        return cell(DARK, reason="no ci repos reported", age_s=age_s,
+                    source=_CI_SRC, observed_at=observed_at)
+    return cell(HEALTHY, age_s=age_s, source=_CI_SRC, observed_at=observed_at)
 
 
 def _radio_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:

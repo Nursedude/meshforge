@@ -470,6 +470,113 @@ class TestCiCell:
         assert c["state"] == ft.HEALTHY
 
 
+class TestCiCellStaleness:
+    """2026-09-01: the cell read only ``repos`` and dropped the producer's
+    ``stale``/``age_s``, so a FROZEN snapshot rendered as a live verdict.
+
+    Observed: the poller box asserted ci=FAILED for 5h20m off an 18:05 poll of a
+    run that went green at 18:26 (the timer fires twice daily, so nothing
+    re-derived it). Both polarities are pinned here — the frozen-GREEN one is
+    the dangerous direction (a dead timer + a red CI reading healthy), and it
+    is the one no incident had yet forced.
+    """
+
+    def _slo(self, repos, **block):
+        b = {"repos": repos}
+        b.update(block)
+        return {"ci_status": b}
+
+    # ── the polarity today's incident produced ───────────────────────────
+    def test_stale_failure_is_dark_not_failed(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "failure"}],
+                                  stale=True, age_s=19200.0))
+        assert c["state"] == ft.DARK
+        assert "frozen" in c["reason"]
+        assert "5.3h old" in c["reason"]
+
+    # ── the polarity that had never fired, and is worse ──────────────────
+    def test_stale_success_is_dark_not_healthy(self):
+        """A frozen green is a live health claim off an unobserved source."""
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "success"}],
+                                  stale=True, age_s=54000.0))
+        assert c["state"] == ft.DARK, "frozen snapshot must never read healthy"
+        assert "frozen" in c["reason"]
+
+    def test_stale_beats_every_repo_state(self):
+        for state in ("success", "failure", "in_progress", None,
+                      "timed_out", "startup_failure"):
+            c = ft._ci_cell(self._slo([{"name": "mf", "state": state}],
+                                      stale=True, age_s=60000.0))
+            assert c["state"] == ft.DARK, state
+
+    def test_truthy_non_bool_stale_falls_to_dark(self):
+        """A producer emitting a non-bool truthy marker must land on the SAFE
+        side. ``is True`` would have let it through as fresh."""
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "success"}],
+                                  stale=1, age_s=99999.0))
+        assert c["state"] == ft.DARK
+
+    # ── no freshness claim: judge as before, never invent a fault ────────
+    def test_absent_stale_key_still_judged(self):
+        """MeshAnchor's block (and older peers) may carry no ``stale`` key.
+        Absence of a freshness claim is not a fault — the pre-existing
+        verdicts must survive untouched."""
+        assert ft._ci_cell(self._slo(
+            [{"name": "mf", "state": "success"}]))["state"] == ft.HEALTHY
+        assert ft._ci_cell(self._slo(
+            [{"name": "mf", "state": "failure"}]))["state"] == ft.FAILED
+
+    def test_stale_false_is_judged_normally(self):
+        assert ft._ci_cell(self._slo([{"name": "mf", "state": "success"}],
+                                     stale=False))["state"] == ft.HEALTHY
+        assert ft._ci_cell(self._slo([{"name": "mf", "state": "failure"}],
+                                     stale=False))["state"] == ft.FAILED
+
+    # ── age rides EVERY cell, so the human sees what we acted on ─────────
+    def test_age_and_observed_at_ride_every_state(self):
+        for repos, want in (([{"name": "mf", "state": "success"}], ft.HEALTHY),
+                            ([{"name": "mf", "state": "failure"}], ft.FAILED),
+                            ([{"name": "mf", "state": "queued"}], ft.DARK),
+                            ([], ft.DARK)):
+            c = ft._ci_cell(self._slo(repos, age_s=120.0,
+                                      generated_unix=1788300000.0))
+            assert c["state"] == want
+            assert c["age_s"] == 120.0
+            assert c["observed_at"] == 1788300000.0
+
+    def test_bogus_age_and_observed_at_are_dropped_not_coerced(self):
+        c = ft._ci_cell(self._slo([{"name": "mf", "state": "success"}],
+                                  age_s="soon", generated_unix=True))
+        assert c["age_s"] is None
+        assert c["observed_at"] is None
+
+    def test_missing_ci_status_still_dark(self):
+        assert ft._ci_cell({})["state"] == ft.DARK
+        assert ft._ci_cell(None)["state"] == ft.DARK
+
+
+class TestAgeSuffix:
+    def test_minutes_under_an_hour(self):
+        assert ft._age_suffix(720.0) == " (12m old)"
+
+    def test_hours_at_one_decimal(self):
+        assert ft._age_suffix(19200.0) == " (5.3h old)"
+
+    def test_unknown_age_renders_nothing_not_zero(self):
+        """'frozen (0m old)' would read as FRESH — the exact inversion this
+        leg exists to prevent."""
+        assert ft._age_suffix(None) == ""
+        assert ft._age_suffix("later") == ""
+        assert ft._age_suffix(True) == ""
+
+    def test_negative_age_is_named_skew_not_quoted(self):
+        """RTC-less Pi / NTP step: a backwards clock is not a duration
+        (honest_failure_modes #6)."""
+        out = ft._age_suffix(-500.0)
+        assert "skew" in out
+        assert "-" not in out.replace("—", "")
+
+
 # ── build_fleet_truth: verdict + fan-out honesty ────────────────────────
 class TestFleetTruth:
     def _healthy_snap(self, alias):
