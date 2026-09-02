@@ -1,8 +1,9 @@
 """Watchdog probes — declared-state vs live-state drift failure shapes.
 
-Foundation perms drift, MeshForge<->MeshAnchor parity drift, RNS fork-pin
-version drift, pip dependency version-floor + install-fragmentation drift,
-role drift, MQTT root drift (#77).
+Foundation perms drift, RNS fork-pin version drift, pip dependency
+version-floor + install-fragmentation drift, role drift, MQTT root drift
+(#77). The MeshForge<->MeshAnchor parity probe was split into
+``watchdog_probes_parity`` (2026-09-01, same cap) and is re-exported here.
 Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 ``utils.watchdog_probes`` hub, not from here. The cron/fleet/host liveness
 probes (#78) and the environment probes (router/ntfy/kernel/aredn/inherited)
@@ -120,116 +121,6 @@ def probe_foundation_drift(
             "configdir_mode": perms.configdir_mode,
             "logfile_owner": perms.logfile_owner,
         },
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────
-# Probe: MeshForge <-> MeshAnchor parity drift (lead-repo port debt)
-# ─────────────────────────────────────────────────────────────────────
-
-DEFAULT_PARITY_DEBOUNCE_PATH = "/var/lib/meshforge/parity_debounce.json"
-
-
-def probe_parity_drift(
-    *,
-    meshforge_root: str = "/opt/meshforge",
-    meshanchor_root: str = "/opt/meshanchor",
-    check_fn=None,
-    state_path: Optional[str] = None,
-    debounce_ticks: int = 2,
-) -> Optional[Signal]:
-    """Surface MeshForge<->MeshAnchor RNS-reliability parity drift.
-
-    The two sister NOCs share the fleet's RNS substrate; reliability-critical files
-    (the RNS-init chokepoint, the bridge contract, the rns_tree_perms SSOT, the
-    fork-pin, lint MF009/MF019, the wedge probes) must stay in lockstep —
-    ``scripts/parity_check.py`` is the lead-repo gate. This makes that audit a
-    continuously-monitored signal so a divergence (someone edits one repo and
-    forgets to port) self-surfaces in /fleet + the mini deep-rollup instead of
-    rotting until the next manual run.
-
-    Only meaningful where BOTH repos are present (e.g. the box holding the
-    MeshAnchor clone). Returns None when ``meshanchor_root`` isn't a directory (a
-    MeshForge-only fleet box — not applicable), when the parity tool can't be
-    loaded, when everything's in sync, or when the result is merely ``missing`` (a
-    tracked file absent — indeterminate / possible mid-deploy window, don't
-    false-alarm). Fires ``degraded`` only on definite content ``drift`` — nothing is
-    failing at runtime; the fix is to port the flagged change (MeshForge leads).
-
-    **Debounce**: a drift must persist for ``debounce_ticks`` *consecutive* ticks
-    before firing (default 2). The two repos sync seconds apart during a fleet
-    roll, so a single tick can catch one repo mid-update and see a transient
-    divergence that self-heals before the next tick — the 2026-06-01
-    ``rns_tree_perms.py`` SSOT-port race did exactly this. A consecutive-drift
-    streak (persisted to ``state_path``, default
-    ``/var/lib/meshforge/parity_debounce.json``) rides out those in-flight blips
-    while still surfacing a genuine forgotten port within one extra tick. Any
-    non-drift result (in_sync / missing / tool error) resets the streak.
-    """
-    if not os.path.isdir(meshanchor_root):
-        note_disposition("parity_drift", "inert",
-                         reason="no sister repo on this box")
-        return None  # both repos required; MeshForge-only box → not applicable
-    if state_path is None:
-        state_path = DEFAULT_PARITY_DEBOUNCE_PATH
-    if check_fn is None:
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location(
-                "parity_check",
-                os.path.join(meshforge_root, "scripts", "parity_check.py"),
-            )
-            import sys
-            mod = importlib.util.module_from_spec(spec)
-            # Register before exec: on py3.12+ @dataclass resolves field types via
-            # sys.modules[cls.__module__].__dict__ → AttributeError if absent. This
-            # silently killed parity_drift + role_drift on the 3.13 fleet (found
-            # 2026-06-08 inducing a live role_drift on moc1).
-            sys.modules[spec.name] = mod
-            spec.loader.exec_module(mod)
-            check_fn = mod.check_parity
-        except Exception:
-            note_disposition("parity_drift", "indeterminate",
-                             reason="parity tool unavailable")
-            return None  # parity tool unavailable → indeterminate, don't alarm
-    try:
-        findings, overall = check_fn(meshforge_root, meshanchor_root)
-    except Exception:
-        # Indeterminate — don't let a tool error count toward the streak.
-        _save_parity_streak(state_path, 0)
-        note_disposition("parity_drift", "indeterminate",
-                         reason="parity check raised")
-        return None
-    if overall != "drift":
-        _save_parity_streak(state_path, 0)  # in_sync / missing → streak broken
-        if overall == "in_sync":
-            note_disposition("parity_drift", "clean")
-        else:
-            note_disposition("parity_drift", "indeterminate",
-                             reason=f"parity result '{overall}' — can't compare")
-        return None
-
-    streak = _load_parity_streak(state_path) + 1
-    _save_parity_streak(state_path, streak)
-    if streak < debounce_ticks:
-        note_disposition("parity_drift", "indeterminate",
-                         reason="drift candidate under debounce")
-        return None  # drift seen, but not yet confirmed across consecutive ticks
-
-    drifted = [f for f in findings if getattr(f, "status", None) == "drift"]
-    items = ", ".join(f.label for f in drifted) or "?"
-    detail = (
-        f"MeshForge<->MeshAnchor parity drift ({len(drifted)} item(s)): {items} | "
-        f"confirmed over {streak} consecutive ticks | RNS-reliability files must "
-        f"match (MeshForge is the lead repo). Port the change, then verify: "
-        f"python3 scripts/parity_check.py"
-    )
-    return Signal(
-        cls="parity_drift",
-        subject="meshforge<->meshanchor",
-        severity="degraded",
-        detail=detail,
-        extra={"drift_items": [f.label for f in drifted], "debounce_streak": streak},
     )
 
 
@@ -1338,6 +1229,17 @@ def probe_mqtt_root_drift(
 # moved surface so `from utils.watchdog_probes_drift import <name>` keeps
 # working; the split is API-preserving.
 # ─────────────────────────────────────────────────────────────────────
+from utils.watchdog_probes_parity import (  # noqa: E402,F401 (back-compat re-export)
+    DEFAULT_PARITY_DEBOUNCE_PATH,
+    DEFAULT_PARITY_DIRTY_STATE_PATH,
+    PARITY_DIRTY_WINDOW_MAX_S,
+    PARITY_UNCOMMITTED_PARK_S,
+    _git_dirty_paths,
+    _load_parity_dirty_window,
+    _parity_label_to_relpath,
+    _save_parity_dirty_window,
+    probe_parity_drift,
+)
 from utils.watchdog_probes_rns_env import (  # noqa: E402,F401 (back-compat re-export)
     DEFAULT_RNS_STRAY_DEBOUNCE_PATH,
     DEFAULT_RNS_STRAY_WAIVERS_PATH,

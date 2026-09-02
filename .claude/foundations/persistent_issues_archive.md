@@ -3562,6 +3562,79 @@ does not, any staleness verdict about that organ is meaningless. Eval:
 
 ---
 
+---
+
+## `parity_drift` measured the WORKING TREE while claiming COMMITTED port debt (2026-09-01) — RESOLVED
+
+`probe_parity_drift` consumed `scripts/parity_check.py`, whose `check_parity`
+hashes files **off disk** (`_sha256(os.path.join(mf, rel))`) — so it compared two
+**working trees**. Its claim, though, is about **committed** state: "someone edits
+one repo and forgets to port." The only box that can run it is the one holding
+both clones — i.e. the **authoring** box, whose working tree is dirty by design
+during every session. So the probe reported the interval between editing one twin
+and editing the other as port debt.
+
+**Measured over the 92 days to 2026-09-01** (mini history + git):
+
+- **48 episodes, 46 of them authoring windows** — drift opened *before* the
+  MeshForge commit that changed the file, and closed once the MeshAnchor copy was
+  edited. The other 2 carried no parseable filename.
+- **0 genuine forgotten ports.** Every episode self-cleared; none stayed open.
+- Duty cycle 0.43% (9.5h total), median episode ~6 min, longest 3.5h
+  (`cadence_fallback.py`, 08-04).
+- MeshForge-commit → MeshAnchor-port lag on these files is **26–82 seconds** —
+  effectively simultaneous. There was never any lag to detect.
+- `fleet_truth.py` was only the most recent subject; the same oscillation hit
+  `cadence_fallback.py`, `brief.py`, `warmstart.py`, `calibration_ledger.py`,
+  `dreams.py`, `engine.py`, `rns_init.py`, `canonical_message.py`.
+
+⚠️ **The dismissals became the policy.** All **20** dream proposals it raised were
+rejected as benign / already-fixed, several labelled "REAL lead-repo port-lag that
+has ALREADY RESOLVED" — a mislabel, since the port was never late — and the later
+rejections cited the earlier ones as warrant. That is the exact anti-pattern this
+file names: *a rejection may not cite a prior rejection as its warrant*. A detector
+whose every fire is noise trains the reader to dismiss the one that isn't.
+
+⚠️ **Seven unit tests stayed green throughout**, because all seven injected
+`check_fn` — the mock stood in for the exact layer that was wrong. Same shape as
+the 07-25 `gen_fleet_hosts` case (13 tests passing over a self-confirming
+checker). Only a drill against **real git repos** can pin this layer.
+
+**Cure — a retarget, not a mute** (`src/utils/watchdog_probes_parity.py`, split
+out of `watchdog_probes_drift.py` for MF025). The probe now asks git which side is
+merely mid-edit, and the two states no longer share a value
+(honest_failure_modes #1):
+
+- drifted file **dirty in either repo** → authoring window → `indeterminate`, no
+  fire, and the committed streak stays at 0;
+- both copies **clean at HEAD and still diverging** → real port debt → fires
+  after `debounce_ticks` consecutive **committed** ticks (default 6 ≈ 3 min at the
+  30s cadence, sized off the measured 26–82s port lag);
+- **git cannot answer** → `indeterminate` with the failing leg named. Never
+  "clean" — a failed query answering "nothing is dirty" would put every authoring
+  window straight back on the wire.
+- an uncommitted parity edit **parked past 24h** still fires, as
+  `mode="uncommitted_parked"` — without that leg the fix would trade a noisy
+  detector for a blind one, which is the other half of the same class.
+
+Clock handling: the parked window re-anchors on a backward step or an implausible
+age (honest_failure_modes #6), and on a change of drifted-file set.
+
+**Decision tell**: a detector that fires only on the box where the thing it
+watches is *edited*, and always self-clears, is probably reading in-flight state
+and calling it a committed fact. Ask what input would make the detector and its
+subject disagree — here, a file committed in one repo and not the other, which in
+92 days never once happened.
+
+**Quick check**: `git -C /opt/meshforge status --porcelain -- <drifted file>` —
+output means authoring window, empty in *both* repos means real port debt.
+
+Tests: `test_parity_drift_*` + `test_git_dirty_paths_live_reports_status_honestly`
+in `tests/test_watchdog_probes.py`, including two live-git drills.
+Eval: `evals/local_brain/parity_drift_working_tree_vs_committed_2026_09_01.jsonl`.
+
+---
+
 ## Resolved-issue INDEX (moved out of the hot file 2026-08-05, MF012)
 
 This is the chronological index of fully-resolved issues. It lived in

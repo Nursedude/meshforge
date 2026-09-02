@@ -2371,13 +2371,51 @@ def test_foundation_drift_logfile_owner_mismatch_fires():
 
 # ─────────────────────────────────────────────────────────────────────
 # 2026-06-01 — parity_drift (MeshForge<->MeshAnchor lead-repo port debt)
+#
+# ⚠️ 2026-09-01 RETARGET. Every test below used to inject only `check_fn`, so the
+# mock stood in for the exact layer that was wrong: `check_parity` hashes files
+# off DISK (two WORKING TREES), while "forgot to port" is a claim about COMMITTED
+# state. On the only box that can run this probe — the one holding both clones,
+# i.e. the authoring box — the working tree is dirty by design during a session,
+# so the probe reported the interval between editing one twin and editing the
+# other as port debt: 48 episodes over 92 days, 46 of them authoring windows, 0
+# genuine forgotten ports, and all 20 dream proposals it raised dismissed as
+# benign. Seven green tests throughout. The probe now asks git which side is
+# merely mid-edit, and `test_parity_drift_live_git_*` drills that against REAL
+# repos — a mocked dirty_fn cannot pin the layer a mocked check_fn already hid.
 # ─────────────────────────────────────────────────────────────────────
 
 from types import SimpleNamespace  # noqa: E402
 
+import shutil  # noqa: E402
+
+from utils.watchdog_probes_parity import (  # noqa: E402
+    PARITY_DIRTY_WINDOW_MAX_S,
+    _git_dirty_paths,
+    _load_parity_dirty_window,
+    _parity_label_to_relpath,
+)
+
 
 def _pf(status, label):
     return SimpleNamespace(status=status, label=label)
+
+
+def _clean(root, rels, **kw):
+    """dirty_fn stub: git answered, nothing dirty (both trees at HEAD)."""
+    return set(), "ok"
+
+
+def _dirty(*paths):
+    """dirty_fn stub: git answered, `paths` differ from HEAD in every repo."""
+    def q(root, rels, **kw):
+        return set(paths), "ok"
+    return q
+
+
+def _git_blind(root, rels, **kw):
+    """dirty_fn stub: git could not answer (no checkout / no git / timeout)."""
+    return set(), "unavailable"
 
 
 def test_parity_drift_none_when_meshanchor_absent(tmp_path):
@@ -2385,62 +2423,171 @@ def test_parity_drift_none_when_meshanchor_absent(tmp_path):
     assert probe_parity_drift(meshanchor_root=str(tmp_path / "nope")) is None
 
 
-def test_parity_drift_fires_on_drift(tmp_path):
-    """Drift confirmed over two consecutive ticks fires the Signal."""
+def test_parity_drift_fires_on_committed_drift(tmp_path):
+    """Both trees CLEAN at HEAD and still diverging → the real thing, after debounce."""
     findings = [_pf("ok", "src/utils/rns_init.py"),
                 _pf("drift", "src/utils/rns_tree_perms.py")]
     state = str(tmp_path / "debounce.json")
+    dstate = str(tmp_path / "dirty.json")
     drift = lambda mf, ma: (findings, "drift")  # noqa: E731
-    # Tick 1: drift seen but debounced (streak 1 < 2) → no Signal yet.
-    assert probe_parity_drift(
-        meshanchor_root=str(tmp_path), check_fn=drift, state_path=state) is None
-    # Tick 2: drift persists → confirmed, fires.
-    sig = probe_parity_drift(
-        meshanchor_root=str(tmp_path), check_fn=drift, state_path=state)
+
+    def tick():
+        return probe_parity_drift(
+            meshanchor_root=str(tmp_path), check_fn=drift, state_path=state,
+            dirty_state_path=dstate, dirty_fn=_clean, debounce_ticks=2)
+
+    assert tick() is None          # streak 1 < 2 → debounced
+    sig = tick()                   # streak 2 → confirmed
     assert sig is not None
     assert sig.cls == "parity_drift"
     assert sig.severity == "degraded"
     assert sig.subject == "meshforge<->meshanchor"
     assert "rns_tree_perms.py" in sig.detail
+    assert "COMMITTED in both trees" in sig.detail
+    assert sig.extra["mode"] == "committed_port_debt"
     assert sig.extra["drift_items"] == ["src/utils/rns_tree_perms.py"]
     assert sig.extra["debounce_streak"] == 2
 
 
-def test_parity_drift_debounced_on_single_tick(tmp_path):
-    """A lone drift tick (the fleet-roll deploy-window race) does NOT fire —
-    this is the 2026-06-01 rns_tree_perms.py SSOT-port self-heal case."""
-    findings = [_pf("drift", "src/utils/rns_tree_perms.py")]
-    sig = probe_parity_drift(
-        meshanchor_root=str(tmp_path),
-        check_fn=lambda mf, ma: (findings, "drift"),
-        state_path=str(tmp_path / "debounce.json"))
-    assert sig is None
+def test_parity_drift_silent_while_working_tree_dirty(tmp_path):
+    """THE retarget. A drifted file uncommitted in either tree is an authoring
+    window, not port debt — and no number of ticks turns it into one."""
+    findings = [_pf("drift", "src/utils/fleet_truth.py")]
+    state = str(tmp_path / "debounce.json")
+    dstate = str(tmp_path / "dirty.json")
+    for tick in range(40):
+        sig = probe_parity_drift(
+            meshanchor_root=str(tmp_path),
+            check_fn=lambda mf, ma: (findings, "drift"),
+            state_path=state, dirty_state_path=dstate,
+            dirty_fn=_dirty("src/utils/fleet_truth.py"),
+            now=1_788_000_000.0 + tick * 30, debounce_ticks=2)
+        assert sig is None, f"fired on tick {tick} inside an authoring window"
+
+
+def test_parity_drift_indeterminate_when_git_cannot_answer(tmp_path):
+    """git unavailable → the two states are indistinguishable → indeterminate.
+    Never 'clean' (honest_failure_modes #1) and never a fire."""
+    findings = [_pf("drift", "src/utils/fleet_truth.py")]
+    for _ in range(5):
+        assert probe_parity_drift(
+            meshanchor_root=str(tmp_path),
+            check_fn=lambda mf, ma: (findings, "drift"),
+            state_path=str(tmp_path / "debounce.json"),
+            dirty_state_path=str(tmp_path / "dirty.json"),
+            dirty_fn=_git_blind, debounce_ticks=1) is None
+
+
+def test_parity_drift_uncommitted_edit_parked_past_window_fires(tmp_path):
+    """Retarget, not mute: an uncommitted parity edit left sitting past
+    park_after_s IS a finding — reported as its own mode, not as port debt."""
+    findings = [_pf("drift", "src/utils/fleet_truth.py")]
+    state = str(tmp_path / "debounce.json")
+    dstate = str(tmp_path / "dirty.json")
+    q = _dirty("src/utils/fleet_truth.py")
+    t0 = 1_788_000_000.0
+    kw = dict(meshanchor_root=str(tmp_path),
+              check_fn=lambda mf, ma: (findings, "drift"),
+              state_path=state, dirty_state_path=dstate, dirty_fn=q,
+              park_after_s=86400)
+    assert probe_parity_drift(now=t0, **kw) is None            # anchor
+    assert probe_parity_drift(now=t0 + 86000, **kw) is None    # still inside
+    sig = probe_parity_drift(now=t0 + 90000, **kw)             # past 24h
+    assert sig is not None
+    assert sig.extra["mode"] == "uncommitted_parked"
+    assert sig.extra["dirty_paths"] == ["src/utils/fleet_truth.py"]
+    assert sig.extra["dirty_age_s"] == 90000
+    assert "PARKED uncommitted" in sig.detail
+    assert "not port debt" in sig.detail
+
+
+def test_parity_drift_dirty_window_reanchors_on_backward_clock(tmp_path):
+    """Wall-clock durations are forgeable on this fleet (honest_failure_modes #6):
+    a clock that steps BACKWARD re-anchors the window, never reports a negative
+    or absurd age."""
+    findings = [_pf("drift", "src/utils/fleet_truth.py")]
+    dstate = str(tmp_path / "dirty.json")
+    kw = dict(meshanchor_root=str(tmp_path),
+              check_fn=lambda mf, ma: (findings, "drift"),
+              state_path=str(tmp_path / "debounce.json"),
+              dirty_state_path=dstate, dirty_fn=_dirty("src/utils/fleet_truth.py"),
+              park_after_s=86400)
+    t0 = 1_788_000_000.0
+    assert probe_parity_drift(now=t0, **kw) is None
+    # NTP steps the clock back a week; the anchor must move with it.
+    assert probe_parity_drift(now=t0 - 604800, **kw) is None
+    assert _load_parity_dirty_window(dstate)["since"] == t0 - 604800
+    # ...and an age beyond any plausible edit re-anchors rather than firing.
+    assert probe_parity_drift(now=t0 + PARITY_DIRTY_WINDOW_MAX_S * 3, **kw) is None
+
+
+def test_parity_drift_dirty_window_reanchors_when_the_edit_changes(tmp_path):
+    """A different set of drifted files is a NEW authoring window — the parked
+    clock must not inherit the previous edit's age."""
+    dstate = str(tmp_path / "dirty.json")
+    t0 = 1_788_000_000.0
+
+    def run(label, now):
+        return probe_parity_drift(
+            meshanchor_root=str(tmp_path),
+            check_fn=lambda mf, ma: ([_pf("drift", label)], "drift"),
+            state_path=str(tmp_path / "debounce.json"),
+            dirty_state_path=dstate, dirty_fn=_dirty(label),
+            now=now, park_after_s=86400)
+
+    assert run("src/utils/fleet_truth.py", t0) is None
+    # 23h later the edit MOVES to another file → new window, not 23h of credit.
+    assert run("src/mini_dudeai/brief.py", t0 + 82800) is None
+    assert _load_parity_dirty_window(dstate)["since"] == t0 + 82800
+    assert run("src/mini_dudeai/brief.py", t0 + 82800 + 3600) is None
+
+
+def test_parity_drift_committed_streak_starts_when_the_tree_goes_clean(tmp_path):
+    """The committed debounce times the PORT LAG, not the edit: a long authoring
+    window must not pre-charge the streak so the fire lands the instant the
+    MeshForge commit hits (measured MF→MA port lag is 26-82s)."""
+    findings = [_pf("drift", "src/utils/fleet_truth.py")]
+    state = str(tmp_path / "debounce.json")
+    dstate = str(tmp_path / "dirty.json")
+    kw = dict(meshanchor_root=str(tmp_path),
+              check_fn=lambda mf, ma: (findings, "drift"),
+              state_path=state, dirty_state_path=dstate, debounce_ticks=3)
+    t0 = 1_788_000_000.0
+    for i in range(20):                      # 20 ticks of authoring
+        assert probe_parity_drift(now=t0 + i * 30,
+                                  dirty_fn=_dirty("src/utils/fleet_truth.py"),
+                                  **kw) is None
+    # MeshForge commits; both trees now clean. The streak restarts HERE.
+    assert probe_parity_drift(now=t0 + 600, dirty_fn=_clean, **kw) is None
+    assert probe_parity_drift(now=t0 + 630, dirty_fn=_clean, **kw) is None
+    sig = probe_parity_drift(now=t0 + 660, dirty_fn=_clean, **kw)
+    assert sig is not None
+    assert sig.extra["debounce_streak"] == 3
 
 
 def test_parity_drift_streak_resets_on_self_heal(tmp_path):
-    """drift → in_sync → drift must restart the streak: a single drift tick after a
-    heal is again debounced, NOT immediately fired off the prior streak."""
+    """drift → in_sync → drift must restart the streak."""
     findings = [_pf("drift", "src/utils/rns_tree_perms.py")]
     state = str(tmp_path / "debounce.json")
+    dstate = str(tmp_path / "dirty.json")
+    kw = dict(meshanchor_root=str(tmp_path), state_path=state,
+              dirty_state_path=dstate, dirty_fn=_clean, debounce_ticks=2)
     drift = lambda mf, ma: (findings, "drift")  # noqa: E731
     healed = lambda mf, ma: ([_pf("ok", "x")], "in_sync")  # noqa: E731
-    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=drift,
-                              state_path=state) is None  # streak 1
-    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=healed,
-                              state_path=state) is None  # reset to 0
-    # Lone drift after heal → debounced again (proves the heal reset the counter).
-    assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=drift,
-                              state_path=state) is None
+    assert probe_parity_drift(check_fn=drift, **kw) is None    # streak 1
+    assert probe_parity_drift(check_fn=healed, **kw) is None   # reset to 0
+    assert probe_parity_drift(check_fn=drift, **kw) is None    # debounced again
 
 
 def test_parity_drift_debounce_ticks_one_fires_immediately(tmp_path):
-    """debounce_ticks=1 restores fire-on-first-drift (escape hatch / backward shape)."""
+    """debounce_ticks=1 restores fire-on-first-committed-drift (escape hatch)."""
     findings = [_pf("drift", "src/utils/rns_tree_perms.py")]
     sig = probe_parity_drift(
         meshanchor_root=str(tmp_path),
         check_fn=lambda mf, ma: (findings, "drift"),
         state_path=str(tmp_path / "debounce.json"),
-        debounce_ticks=1)
+        dirty_state_path=str(tmp_path / "dirty.json"),
+        dirty_fn=_clean, debounce_ticks=1)
     assert sig is not None
     assert sig.extra["debounce_streak"] == 1
 
@@ -2449,7 +2596,8 @@ def test_parity_drift_none_when_in_sync(tmp_path):
     sig = probe_parity_drift(
         meshanchor_root=str(tmp_path),
         check_fn=lambda mf, ma: ([_pf("ok", "x")], "in_sync"),
-        state_path=str(tmp_path / "debounce.json"))
+        state_path=str(tmp_path / "debounce.json"),
+        dirty_state_path=str(tmp_path / "dirty.json"), dirty_fn=_clean)
     assert sig is None
 
 
@@ -2459,7 +2607,8 @@ def test_parity_drift_none_when_missing_is_indeterminate(tmp_path):
     sig = probe_parity_drift(
         meshanchor_root=str(tmp_path),
         check_fn=lambda mf, ma: ([_pf("missing", "x")], "missing"),
-        state_path=str(tmp_path / "debounce.json"))
+        state_path=str(tmp_path / "debounce.json"),
+        dirty_state_path=str(tmp_path / "dirty.json"), dirty_fn=_clean)
     assert sig is None
 
 
@@ -2467,7 +2616,115 @@ def test_parity_drift_none_when_check_raises(tmp_path):
     def boom(mf, ma):
         raise RuntimeError("parity tool blew up")
     assert probe_parity_drift(meshanchor_root=str(tmp_path), check_fn=boom,
-                              state_path=str(tmp_path / "debounce.json")) is None
+                              state_path=str(tmp_path / "debounce.json"),
+                              dirty_state_path=str(tmp_path / "dirty.json"),
+                              dirty_fn=_clean) is None
+
+
+def test_parity_drift_indeterminate_when_label_has_no_path(tmp_path):
+    """A drift label nothing path-shaped survives cannot be judged — say so,
+    don't quietly treat the file as clean and fire."""
+    sig = probe_parity_drift(
+        meshanchor_root=str(tmp_path),
+        check_fn=lambda mf, ma: ([_pf("drift", " :: bare_symbol")], "drift"),
+        state_path=str(tmp_path / "debounce.json"),
+        dirty_state_path=str(tmp_path / "dirty.json"),
+        dirty_fn=_clean, debounce_ticks=1)
+    assert sig is None
+
+
+def test_parity_label_to_relpath_strips_every_tier_decoration():
+    """parity_check labels carry tier decoration a git pathspec must not see."""
+    assert _parity_label_to_relpath("src/utils/fleet_truth.py") == "src/utils/fleet_truth.py"
+    assert _parity_label_to_relpath(
+        "src/utils/rns_status_parser.py :: timed_out") == "src/utils/rns_status_parser.py"
+    assert _parity_label_to_relpath(
+        "meshforge:src/utils/watchdog_probes.py :: probe_x") == "src/utils/watchdog_probes.py"
+    assert _parity_label_to_relpath(
+        "meshanchor:src/utils/active_health_probe.py :: check_x") == "src/utils/active_health_probe.py"
+    assert _parity_label_to_relpath(
+        "requirements/rns.txt (fork-pin block)") == "requirements/rns.txt"
+
+
+# ── live git drills — the layer a mocked check_fn hid for 92 days ──────────
+
+def _git(*args, cwd):
+    return subprocess.run(["git", *args], cwd=str(cwd), capture_output=True,
+                          timeout=60, check=True)
+
+
+def _make_repo(root, rel, body):
+    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+    (root / rel).write_text(body)
+    _git("init", "-q", ".", cwd=root)
+    _git("config", "user.email", "t@example.invalid", cwd=root)
+    _git("config", "user.name", "t", cwd=root)
+    _git("add", "-A", cwd=root)
+    _git("commit", "-qm", "init", cwd=root)
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_parity_drift_live_git_uncommitted_edit_is_not_port_debt(tmp_path):
+    """LIVE DRILL — real repos, real `git status`. Edit one twin's working tree
+    and the probe must stay silent however long it ticks. This is the case that
+    fired 46 times in 92 days while seven mocked tests stayed green."""
+    rel = "src/utils/fleet_truth.py"
+    mf, ma = tmp_path / "meshforge", tmp_path / "meshanchor"
+    _make_repo(mf, rel, "shared\n")
+    _make_repo(ma, rel, "shared\n")
+    (mf / rel).write_text("edited, not committed\n")   # the authoring window
+
+    findings = [_pf("drift", rel)]
+    for tick in range(10):
+        assert probe_parity_drift(
+            meshforge_root=str(mf), meshanchor_root=str(ma),
+            check_fn=lambda a, b: (findings, "drift"),
+            state_path=str(tmp_path / "debounce.json"),
+            dirty_state_path=str(tmp_path / "dirty.json"),
+            now=1_788_000_000.0 + tick * 30, debounce_ticks=2) is None
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_parity_drift_live_git_committed_but_unported_fires(tmp_path):
+    """LIVE DRILL — the same edit, COMMITTED in MeshForge only, is real port
+    debt and must fire. Without this half the fix would be a mute, not a
+    retarget (a guard with only one outcome is not evidence)."""
+    rel = "src/utils/fleet_truth.py"
+    mf, ma = tmp_path / "meshforge", tmp_path / "meshanchor"
+    _make_repo(mf, rel, "shared\n")
+    _make_repo(ma, rel, "shared\n")
+    (mf / rel).write_text("ported in the lead repo only\n")
+    _git("commit", "-qam", "lead-repo change", cwd=mf)   # MA never follows
+
+    findings = [_pf("drift", rel)]
+    kw = dict(meshforge_root=str(mf), meshanchor_root=str(ma),
+              check_fn=lambda a, b: (findings, "drift"),
+              state_path=str(tmp_path / "debounce.json"),
+              dirty_state_path=str(tmp_path / "dirty.json"), debounce_ticks=2)
+    assert probe_parity_drift(now=1_788_000_000.0, **kw) is None      # streak 1
+    sig = probe_parity_drift(now=1_788_000_030.0, **kw)               # streak 2
+    assert sig is not None
+    assert sig.extra["mode"] == "committed_port_debt"
+    assert rel in sig.detail
+
+
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_git_dirty_paths_live_reports_status_honestly(tmp_path):
+    """`_git_dirty_paths` must separate 'clean' from 'could not ask'."""
+    rel = "src/utils/fleet_truth.py"
+    repo = tmp_path / "repo"
+    _make_repo(repo, rel, "shared\n")
+    assert _git_dirty_paths(str(repo), [rel]) == (set(), "ok")
+    (repo / rel).write_text("changed\n")
+    assert _git_dirty_paths(str(repo), [rel]) == ({rel}, "ok")
+    _git("add", "-A", cwd=repo)                       # staged is still dirty
+    assert _git_dirty_paths(str(repo), [rel]) == ({rel}, "ok")
+    plain = tmp_path / "not_a_repo"
+    plain.mkdir()
+    assert _git_dirty_paths(str(plain), [rel]) == (set(), "unavailable")
+    assert _git_dirty_paths(str(repo), []) == (set(), "ok")
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────
