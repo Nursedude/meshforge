@@ -3629,8 +3629,28 @@ subject disagree — here, a file committed in one repo and not the other, which
 **Quick check**: `git -C /opt/meshforge status --porcelain -- <drifted file>` —
 output means authoring window, empty in *both* repos means real port debt.
 
-Tests: `test_parity_drift_*` + `test_git_dirty_paths_live_reports_status_honestly`
-in `tests/test_watchdog_probes.py`, including two live-git drills.
+⚠️ **The end-of-session drill on the LIVE unit immediately found a second
+defect the fix had introduced** (2026-09-01, same day): the watchdog is a
+**root** systemd unit reading operator-owned clones, so git's dubious-ownership
+check applies — and root's gitconfig on this box trusted `/opt/meshforge` but
+not `/opt/meshanchor`. The live daemon read
+`indeterminate — git could not say (mf=ok ma=unavailable)` and was **blind on
+the one box that can see this class**. The identical call run as the operator
+user answered `ok` for both, so no proxy-verification could have caught it
+(calibrated_claims #7). Cure: the query carries
+`-c safe.directory=<the root being queried>`, so a new box is correct on
+arrival instead of needing per-box operator gitconfig. Pinned by
+`test_git_dirty_paths_survives_dubious_ownership`, which reproduces the
+condition with git's own `GIT_TEST_ASSUME_DIFFERENT_OWNER` hook and asserts the
+condition really bites before asserting the probe survives it.
+
+**Second decision tell**: a probe that reads a repo, a socket, or a config file
+must be exercised as the USER THAT HOSTS IT. `unavailable` from a root daemon
+and `ok` from your shell are the same command.
+
+Tests: `test_parity_drift_*`, `test_git_dirty_paths_live_reports_status_honestly`
+and `test_git_dirty_paths_survives_dubious_ownership` in
+`tests/test_watchdog_probes.py`, including three live-git drills.
 Eval: `evals/local_brain/parity_drift_working_tree_vs_committed_2026_09_01.jsonl`.
 
 ---

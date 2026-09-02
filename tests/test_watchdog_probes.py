@@ -2725,6 +2725,30 @@ def test_git_dirty_paths_live_reports_status_honestly(tmp_path):
     assert _git_dirty_paths(str(repo), []) == (set(), "ok")
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
+def test_git_dirty_paths_survives_dubious_ownership(tmp_path, monkeypatch):
+    """LIVE DRILL — the consumer of record is a ROOT systemd unit reading
+    operator-owned clones, so git's dubious-ownership check applies. On the box
+    that runs this probe, root's gitconfig trusted /opt/meshforge but not
+    /opt/meshanchor, and the live daemon read `ma=unavailable` — blind on the
+    one box that can see this class. The same call as the operator user
+    answered `ok`, so only drilling the LIVE unit caught it
+    (calibrated_claims #7). GIT_TEST_ASSUME_DIFFERENT_OWNER is git's own hook
+    for forcing that check, so this reproduces it without needing root."""
+    rel = "src/utils/fleet_truth.py"
+    repo = tmp_path / "repo"
+    _make_repo(repo, rel, "shared\n")
+    (repo / rel).write_text("changed\n")
+    monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+    # Sanity: the condition really is active for a bare query (guards against
+    # this test silently passing because the env hook stopped working).
+    bare = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
+                          capture_output=True, timeout=60)
+    assert bare.returncode != 0, "GIT_TEST_ASSUME_DIFFERENT_OWNER no longer bites"
+    # The probe's own query must still answer.
+    assert _git_dirty_paths(str(repo), [rel]) == ({rel}, "ok")
+
+
 
 
 # ─────────────────────────────────────────────────────────────────────

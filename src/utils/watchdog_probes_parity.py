@@ -75,12 +75,25 @@ def _git_dirty_paths(root: str, rels, *, timeout_s: int = 15) -> Tuple[set, str]
     dirty" from a failed query is the honest_failure_modes #1 shape — a degraded
     read mapped onto a valid-looking value — and here it would convert every
     authoring window straight back into a false port-debt claim.
+
+    ``-c safe.directory=<root>`` because the CONSUMER OF RECORD is a root
+    systemd unit reading operator-owned clones. git's dubious-ownership check
+    then refuses any repo root's gitconfig doesn't list — and on the box this
+    probe runs on, root trusted ``/opt/meshforge`` but not ``/opt/meshanchor``,
+    so the live daemon read ``ma=unavailable`` and went blind on the one box
+    that can see this class. Found 2026-09-01 by drilling the LIVE unit; the
+    same call as the operator user had answered ``ok``, which is why a
+    proxy-verification could not have caught it (calibrated_claims #7). Scoping
+    the exemption to the exact root being queried keeps this a read-only query
+    on a path the probe was configured with, and needs no per-box operator
+    setup — a new box is correct on arrival rather than silently blind.
     """
     if not rels:
         return set(), "ok"
     try:
         proc = subprocess.run(
-            ["git", "-C", root, "status", "--porcelain", "-z", "--"] + list(rels),
+            ["git", "-c", f"safe.directory={root}", "-C", root,
+             "status", "--porcelain", "-z", "--"] + list(rels),
             capture_output=True, timeout=timeout_s,
         )
     except (OSError, subprocess.SubprocessError):
