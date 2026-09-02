@@ -38,43 +38,53 @@ else
   fail "collects /opt/meshforge-maps HEAD"
 fi
 
-# 2. meshforge-maps units dispatch to it — and the arm must precede the
-#    catch-all, or the catch-all eats them (the original defect).
-if printf '%s' "$src" | grep -qE 'meshforge-maps\.service\|meshforge-maps@\*\) *H=\\\$HTMM'; then
+# The attribution mechanism moved OUT of this shell into scripts/hs_skew_attr.awk
+# (2026-09-02): dispatch is now on the repo a unit's process actually LOADS, not
+# on its name. Assertions 2-8 follow it there. The BEHAVIOURAL pins for that
+# program live in test_honest_status_skew_attr.sh — these remain the structural
+# CLASS pins: every repo the leg collects a head for must be wired through.
+ATTR="$HERE/../scripts/hs_skew_attr.awk"
+if [ -r "$ATTR" ]; then
+  pass "the attribution program exists ($(basename "$ATTR"))"
+  attr="$(cat "$ATTR")"
+else
+  fail "the attribution program exists"
+  attr=""
+fi
+
+# 2. maps dispatches to its OWN repo's heads, not the catch-all.
+if printf '%s' "$attr" | grep -qE 'rp == "/opt/meshforge-maps"\) *\{ *H = HTMM; *HC = HCMM *\}'; then
   pass "meshforge-maps dispatches to its own repo"
 else
   fail "meshforge-maps dispatches to its own repo"
 fi
 
-# 3. The singular meshforge-map (a DIFFERENT service, from the MeshForge repo)
-#    must NOT be captured by the maps arm.
-if printf '%s' "$src" | grep -qE 'meshforge-maps\.service\|meshforge-maps@\*'; then
-  pass "the arm is anchored so meshforge-map (singular) is unaffected"
+# 3. /opt/meshforge is a proper PREFIX of /opt/meshforge-maps, so the maps test
+#    must be evaluated FIRST or every maps unit is attributed to MeshForge —
+#    the 2026-08-11 defect in its new form. Pin the ORDER, not just presence.
+mapsln=$(printf '%s' "$attr" | grep -n 'index(hay, "/opt/meshforge-maps")' | head -1 | cut -d: -f1)
+mfln=$(printf '%s' "$attr" | grep -n 'index(hay, "/opt/meshforge")) rp' | head -1 | cut -d: -f1)
+if [ -n "$mapsln" ] && [ -n "$mfln" ] && [ "$mapsln" -lt "$mfln" ]; then
+  pass "maps is tested before its /opt/meshforge prefix (line $mapsln < $mfln)"
 else
-  fail "the arm is anchored so meshforge-map (singular) is unaffected"
+  fail "maps is tested before its /opt/meshforge prefix"
+  printf '    maps@%s meshforge@%s\n' "${mapsln:-<none>}" "${mfln:-<none>}"
 fi
 
-# 4. Display carries a prefix identifying WHICH repo judged the unit; a
-#    maps unit shown as mf: would tell the operator the wrong repo.
-if printf '%s' "$src" | grep -q 'mm:maps'; then
-  pass "maps units display an mm: repo prefix"
+# 4. Display carries a prefix identifying WHICH repo judged the unit; a maps
+#    unit shown as mf: would tell the operator the wrong repo. The tag is now
+#    derived from the RESOLVED repo (field 2), not the unit name.
+if printf '%s' "$src" | grep -q 'mm:' && printf '%s' "$src" | grep -q '\$2=="/opt/meshforge-maps"'; then
+  pass "maps units display an mm: repo prefix, keyed on the resolved repo"
 else
-  fail "maps units display an mm: repo prefix"
+  fail "maps units display an mm: repo prefix, keyed on the resolved repo"
 fi
 
-# 5. THE CLASS PIN. Every repo HEAD the leg collects (HT<X..>=$(git -C ...))
-#    must be consumed by a CASE-ARM dispatch (`) H=$HT<X..>`). A new repo
+# 5. THE CLASS PIN. Every repo HEAD the leg collects (HT<X..>=$(git -C ...)) must
+#    be consumed by a dispatch arm — now in the awk (`H = HT<X>`). A new repo
 #    added without an arm is exactly how this bug happened twice.
-#    Tightened 2026-08-11 (frontier review): the old regexes pinned the var
-#    name to exactly two capitals, so a repo collected as e.g. HTMAPS escaped
-#    "defined" entirely while `H=\$HTMAPS` substring-matched into "used" as a
-#    false HTMA — the pin passed around a wholly unpinned repo. And "used"
-#    accepted ANY text containing `H=\$HTxx` (an alias assignment like
-#    `NEWH=\$HTMM`, or a comment), so consumption did not prove a dispatch
-#    arm. Now: var names are [A-Z]+ (maximal munch kills the substring hole),
-#    and "used" requires the `) H=\$HT...` case-arm shape.
 defined=$(printf '%s' "$src" | grep -oE 'HT[A-Z]+=\\\$\(git -C' | grep -oE 'HT[A-Z]+' | sort -u)
-used=$(printf '%s' "$src" | grep -oE '\) *H=\\\$HT[A-Z]+' | grep -oE 'HT[A-Z]+' | sort -u)
+used=$(printf '%s' "$attr" | grep -oE '\{ *H = HT[A-Z]+' | grep -oE 'HT[A-Z]+' | sort -u)
 if [ -n "$defined" ] && [ "$defined" = "$used" ]; then
   pass "every collected repo HEAD has a dispatch arm ($(printf '%s' "$defined" | tr '\n' ' '))"
 else
@@ -83,15 +93,10 @@ else
   printf '    used   : %s\n' "$(printf '%s' "$used" | tr '\n' ' ')"
 fi
 
-# 6. THE SAME CLASS PIN, for the code-heads added 2026-08-12. The leg now
-#    collects a SECOND timestamp per repo — the newest commit touching
-#    src/requirements/templates — so behind-on-CODE can be told from
-#    behind-on-prose. That doubles the number of per-repo values a fourth
-#    repo must wire, and an HC<X> collected without a dispatch arm would
-#    silently reuse another repo's code-head: the 08-09/08-11 bug exactly,
-#    one layer down. Same maximal-munch [A-Z]+ and case-arm shape as #5.
+# 6. THE SAME CLASS PIN for the code-heads. An HC<X> collected without an arm
+#    would silently reuse another repo's code-head: the same bug, one layer down.
 hcdef=$(printf '%s' "$src" | grep -oE 'HC[A-Z]+=\\\$\(hs_codehead' | grep -oE 'HC[A-Z]+' | sort -u)
-hcuse=$(printf '%s' "$src" | grep -oE '; *HC=\\\$HC[A-Z]+' | grep -oE 'HC[A-Z]+$' | sort -u)
+hcuse=$(printf '%s' "$attr" | grep -oE 'HC = HC[A-Z]+' | grep -oE 'HC[A-Z]+$' | sort -u)
 if [ -n "$hcdef" ] && [ "$hcdef" = "$hcuse" ]; then
   pass "every collected repo CODE-head has a dispatch arm ($(printf '%s' "$hcdef" | tr '\n' ' '))"
 else
@@ -100,30 +105,38 @@ else
   printf '    used   : %s\n' "$(printf '%s' "$hcuse" | tr '\n' ' ')"
 fi
 
-# 7. Every repo with a HEAD must also have a code-head, and vice versa. #5 and
-#    #6 each check their own family is internally consistent; a repo present in
-#    one family and missing from the other passes BOTH and is still half-wired.
+# 7. Every repo with a HEAD must also have a code-head, and vice versa. #5 and #6
+#    each check their own family is internally consistent; a repo present in one
+#    and missing from the other passes BOTH and is still half-wired. Guard the
+#    VACUOUS pass too: empty sets are equal to each other and prove nothing.
 htrepos=$(printf '%s' "$defined" | sed 's/^HT//' | sort -u)
 hcrepos=$(printf '%s' "$hcdef" | sed 's/^HC//' | sort -u)
-if [ "$htrepos" = "$hcrepos" ]; then
+if [ -n "$htrepos" ] && [ "$htrepos" = "$hcrepos" ]; then
   pass "HEAD and CODE-head cover the same repo set ($(printf '%s' "$htrepos" | tr '\n' ' '))"
 else
   fail "HEAD and CODE-head cover the same repo set"
-  printf '    HEAD-only: %s\n' "$(comm -23 <(printf '%s\n' "$htrepos") <(printf '%s\n' "$hcrepos") | tr '\n' ' ')"
-  printf '    CODE-only: %s\n' "$(comm -13 <(printf '%s\n' "$htrepos") <(printf '%s\n' "$hcrepos") | tr '\n' ' ')"
+  printf '    HEAD: %s\n    CODE: %s\n' "$(printf '%s' "$htrepos" | tr '\n' ' ')" "$(printf '%s' "$hcrepos" | tr '\n' ' ')"
 fi
 
-# 8. THE FAIL-SAFE. An unresolvable code-head must fall back to that repo's
-#    HEAD — never to "no code changes", which would silently demote every unit
-#    into the benign prose bucket and turn a real stale-code fleet green. Two
-#    independent guards are required: the per-repo `|| HC<X>=$HT<X>` at collect
-#    time, and the non-numeric catch at dispatch time.
+# 8. THE FAIL-SAFE, now in BOTH halves. An unresolvable code-head must fall back
+#    to that repo's HEAD — never to "no code changes", which would silently
+#    demote every unit into the benign bucket and turn a stale fleet green.
 nfall=$(printf '%s' "$src" | grep -cE '\[ -n \\"\\\$HC[A-Z]+\\" \] \|\| HC[A-Z]+=\\\$HT[A-Z]+')
-if [ "$nfall" -ge 1 ] && printf '%s' "$src" | grep -qE "case \\\\\"\\\\\\\$HC\\\\\" in ''\|\*\[!0-9\]\*\) HC=\\\\\\\$H;;"; then
+if [ "$nfall" -ge 1 ] && printf '%s' "$attr" | grep -qE 'if \(HC == "" \|\| HC ~ /\[\^0-9\]/\) HC = H'; then
   pass "unresolvable code-head falls back to HEAD, not to 'no code changes'"
 else
   fail "unresolvable code-head falls back to HEAD, not to 'no code changes'"
   printf '    per-repo fallbacks found: %s\n' "$nfall"
+fi
+
+# 8b. MEMBERSHIP must not be decided by the unit NAME. The leg used to filter
+#     `^(meshforge|meshanchor)-` before judging, which hid nomadnet-silence-watch
+#     (13d) and meshanchor.service (17d — no hyphen) while reporting
+#     meshforge-lxmd (a packaged binary that loads no repo code) as behind.
+if printf '%s' "$src" | grep -qE "grep -E .\^\(sys\|usr\) \(meshforge\|meshanchor\)-"; then
+  fail "membership is not filtered by unit-name prefix"
+else
+  pass "membership is not filtered by unit-name prefix"
 fi
 
 # 9. It LABELS, it does not FILTER. The prose bucket must be COUNTED and

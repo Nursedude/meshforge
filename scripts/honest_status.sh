@@ -355,6 +355,13 @@ else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 # overlap the healthy domain).
 skew_desc=""; skew_behind=0; skew_unknown=0; skew_boxes=0; skew_udark=0
 skew_prose=0; skew_prose_desc=""
+# The attribution program is a real file so it can be unit-tested directly
+# (tests/test_honest_status_skew_attr.sh); ship it base64 so no quoting of an
+# awk program has to survive this remote command string.
+HS_HERE="$(cd "$(dirname "$0")" && pwd)"
+HS_ATTR_F="$HS_HERE/hs_skew_attr.awk"
+[ -r "$HS_ATTR_F" ] || { echo "honest_status: missing $HS_ATTR_F" >&2; exit 3; }
+HS_ATTR_B64=$(base64 -w0 < "$HS_ATTR_F" 2>/dev/null || base64 < "$HS_ATTR_F" | tr -d "\n")
 for b in $BOXES; do
   raw=$(run_on "$b" "echo HSUP
 # Newest commit touching CODE the repo's resident units load. Empty (git
@@ -368,26 +375,21 @@ if [ -e $REPO/.git ]; then
   HCMF=\$(hs_codehead $REPO); [ -n \"\$HCMF\" ] || HCMF=\$HTMF
   HCMA=\$(hs_codehead /opt/meshanchor); [ -n \"\$HCMA\" ] || HCMA=\$HTMA
   HCMM=\$(hs_codehead /opt/meshforge-maps); [ -n \"\$HCMM\" ] || HCMM=\$HTMM
+  AWKF=\$(mktemp); printf %s '$HS_ATTR_B64' | base64 -d > \"\$AWKF\"
+  HSV=\"-v HTMF=\$HTMF -v HCMF=\$HCMF -v HTMA=\$HTMA -v HCMA=\$HCMA -v HTMM=\$HTMM -v HCMM=\$HCMM\"
+  # ATTRIBUTION BY LOADED CODE, NEVER BY UNIT NAME. Enumerate EVERY active
+  # service in both scopes; hs_skew_attr.awk drops the ones whose process
+  # loads no repo code and judges the rest against the repo they actually
+  # load. See that file's header for the audit this replaced.
   XRD=/run/user/\$(id -u)
   if XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --no-pager >/dev/null 2>&1; then USOK=1; else USOK=0; echo USCOPEDARK; fi
-  { systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/sys /'
-    [ \"\$USOK\" = 1 ] && XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}' | sed 's/^/usr /'
-  } | grep -E '^(sys|usr) (meshforge|meshanchor)-' | while read -r sc u; do
-    case \"\$u\" in
-      meshforge-maps.service|meshforge-maps@*) H=\$HTMM; HC=\$HCMM;;
-      meshanchor-*) H=\$HTMA; HC=\$HCMA;;
-      *) H=\$HTMF; HC=\$HCMF;;
-    esac
-    # Belt and braces: a code-head that is empty or non-numeric for ANY reason
-    # collapses to this repo's HEAD, never to 'no code changes'.
-    case \"\$HC\" in ''|*[!0-9]*) HC=\$H;; esac
-    if [ \"\$sc\" = usr ]; then T=\$(XDG_RUNTIME_DIR=\$XRD systemctl --user show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@')
-    else T=\$(systemctl show \"\$u\" -p ActiveEnterTimestamp --value --timestamp=unix 2>/dev/null | tr -d '@'); fi
-    case \"\$T\" in ''|*[!0-9]*) echo \"U \$u\"; continue;; esac
-    if [ \"\$H\" = SKIP ]; then echo \"U \$u\"
-    elif [ \"\$T\" -lt \"\$HC\" ]; then echo \"B \$u \$(( (\$HC - \$T) / 86400 ))\"
-    elif [ \"\$T\" -lt \"\$H\" ]; then echo \"P \$u \$(( (\$H - \$T) / 86400 ))\"; fi
-  done
+  SU=\$(systemctl list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}')
+  [ -n \"\$SU\" ] && systemctl show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp --timestamp=unix \$SU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
+  if [ \"\$USOK\" = 1 ]; then
+    UU=\$(XDG_RUNTIME_DIR=\$XRD systemctl --user list-units --type=service --state=active --no-legend --no-pager 2>/dev/null | awk '{print \$1}')
+    [ -n \"\$UU\" ] && XDG_RUNTIME_DIR=\$XRD systemctl --user show -p Id -p ExecStart -p Environment -p WorkingDirectory -p ActiveEnterTimestamp --timestamp=unix \$UU 2>/dev/null | awk \$HSV -f \"\$AWKF\"
+  fi
+  rm -f \"\$AWKF\"
 else echo HSNOREPO; fi")
   [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || continue
   body=$(printf '%s\n' "$raw" | sed -n '2,$p')
@@ -401,8 +403,12 @@ else echo HSNOREPO; fi")
   skew_prose=$((skew_prose+np))
   # ONE formatter for both buckets — two awk copies would drift the display
   # the first time a fourth repo prefix lands (honest_failure_modes #5).
+  # The repo tag now comes from field 2 (the repo the unit's process ACTUALLY
+  # LOADS, resolved by hs_skew_attr.awk) instead of the unit's name prefix —
+  # so meshanchor.service reads ma: and nomadnet-silence-watch reads mf:,
+  # neither of which the name-prefix display could express (2026-09-02).
   _skew_units() {  # $1 = marker letter
-    printf '%s\n' "$body" | awk -v m="$1" '$1==m{sub(/\.service$/,"",$2); if ($2 ~ /^meshforge-maps($|@)/) sub(/^meshforge-maps/,"mm:maps",$2); else { sub(/^meshforge-/,"mf:",$2); sub(/^meshanchor-/,"ma:",$2) } printf "%s(%sd),", $2, $3}' | sed 's/,$//'
+    printf '%s\n' "$body" | awk -v m="$1" '$1==m{sub(/\.service$/,"",$3); if ($2=="/opt/meshforge-maps") { t="mm:"; sub(/^meshforge-maps/,"maps",$3) } else if ($2=="/opt/meshanchor") { t="ma:"; sub(/^meshanchor-/,"",$3) } else { t="mf:"; sub(/^meshforge-/,"",$3) } printf "%s%s(%sd),", t, $3, $4}' | sed 's/,$//'
   }
   [ "$nb" -gt 0 ] && skew_desc="$skew_desc $b:$(_skew_units B)"
   [ "$np" -gt 0 ] && skew_prose_desc="$skew_prose_desc $b:$(_skew_units P)"
