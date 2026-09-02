@@ -2389,6 +2389,7 @@ from types import SimpleNamespace  # noqa: E402
 
 import shutil  # noqa: E402
 
+from utils import watchdog_probes_parity  # noqa: E402
 from utils.watchdog_probes_parity import (  # noqa: E402
     PARITY_DIRTY_WINDOW_MAX_S,
     _git_dirty_paths,
@@ -2740,13 +2741,51 @@ def test_git_dirty_paths_survives_dubious_ownership(tmp_path, monkeypatch):
     _make_repo(repo, rel, "shared\n")
     (repo / rel).write_text("changed\n")
     monkeypatch.setenv("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
-    # Sanity: the condition really is active for a bare query (guards against
-    # this test silently passing because the env hook stopped working).
+    # Can this git be made to report dubious ownership at all? The hook is a
+    # git-test affordance, not a stable interface: it had no effect on the CI
+    # runner's git (2026-09-02, run 33588289201), where a bare query returned 0.
+    # SKIP LOUDLY rather than assert — an un-inducible condition is an INERT
+    # guard, not a failure, and asserting here made a green-everywhere-else
+    # suite red on ambient state the test never pinned
+    # (feedback_tests_must_pin_ambient_state). The shape half below still runs.
     bare = subprocess.run(["git", "-C", str(repo), "status", "--porcelain"],
                           capture_output=True, timeout=60)
-    assert bare.returncode != 0, "GIT_TEST_ASSUME_DIFFERENT_OWNER no longer bites"
+    if bare.returncode == 0:
+        ver = subprocess.run(["git", "--version"], capture_output=True,
+                             text=True, timeout=60).stdout.strip()
+        pytest.skip(
+            f"GIT_TEST_ASSUME_DIFFERENT_OWNER has no effect on this git "
+            f"({ver}) — the BEHAVIOURAL half of this guard is inert here; "
+            f"test_git_dirty_paths_passes_safe_directory_for_queried_root "
+            f"still pins the flag")
     # The probe's own query must still answer.
     assert _git_dirty_paths(str(repo), [rel]) == ({rel}, "ok")
+
+
+def test_git_dirty_paths_passes_safe_directory_for_queried_root(monkeypatch):
+    """The environment-INDEPENDENT half: the exemption must be on the command
+    and scoped to the root being queried.
+
+    Runs everywhere, including where the ownership condition cannot be induced,
+    so the fix cannot be silently deleted on a box whose git makes the live
+    drill inert. Pairs with the drill above: shape here, behaviour there."""
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = list(argv)
+        return SimpleNamespace(returncode=0, stdout=b"")
+
+    monkeypatch.setattr(watchdog_probes_parity.subprocess, "run", fake_run)
+    _git_dirty_paths("/opt/meshanchor", ["src/utils/fleet_truth.py"])
+    argv = seen["argv"]
+    assert argv[0] == "git"
+    assert "-c" in argv, argv
+    assert argv[argv.index("-c") + 1] == "safe.directory=/opt/meshanchor", argv
+    assert argv[argv.index("-C") + 1] == "/opt/meshanchor", argv
+    # ...and it must follow the root it was handed, not a hardcoded path.
+    _git_dirty_paths("/somewhere/else", ["x.py"])
+    argv = seen["argv"]
+    assert argv[argv.index("-c") + 1] == "safe.directory=/somewhere/else", argv
 
 
 
