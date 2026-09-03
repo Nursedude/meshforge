@@ -393,3 +393,106 @@ def test_claw_seed_without_instance_files_unchanged_shape(tmp_path, capsys):
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["instances"] == []
+
+
+# ── --prune: the retirement half of the seed contract ────────────────
+# merge_seed_rules is strictly additive, so a rule DELETED from the seed is
+# kept as `local` forever. Found live 2026-09-03: four rules the 08-08
+# subtraction arc removed from the seed were still running on every box 26
+# days later, referencing signal classes that no longer exist in the code.
+
+def _stamp(rule, seed_name="fleet_gateway"):
+    """A rule as promote would have written it — provenance of an unmodified
+    copy of THIS seed's body."""
+    from mini_dudeai.candidate import PROVENANCE_KEY, rule_body_sha
+    out = dict(rule)
+    out[PROVENANCE_KEY] = {"origin": f"seed:{seed_name}",
+                           "seed_sha": rule_body_sha(rule)}
+    return out
+
+
+def test_prune_removes_a_rule_the_seed_retired(tmp_path):
+    retired = _stamp(_rule("gone_any"))
+    root, home = _setup(tmp_path, [_stamp(_rule("keep_any")), retired],
+                        [_rule("keep_any")])
+    p = psr.plan(root, home, role="collector", prune=True)
+    assert p["report"]["retired"] == ["gone_any"]
+    assert {r["id"] for r in p["merged"]} == {"keep_any"}
+    assert p["changed"] is True          # a retirement must reach apply()
+
+
+def test_prune_is_off_by_default(tmp_path):
+    root, home = _setup(tmp_path, [_stamp(_rule("gone_any"))], [])
+    p = psr.plan(root, home, role="collector")
+    assert p["report"]["local"] == ["gone_any"]
+    assert not p["report"].get("retired")
+    assert {r["id"] for r in p["merged"]} == {"gone_any"}
+
+
+def test_prune_keeps_an_unstamped_box_local_rule(tmp_path):
+    # No provenance at all — the operator wrote it. Never ours to delete.
+    root, home = _setup(tmp_path, [_rule("box_local_any")], [])
+    p = psr.plan(root, home, role="collector", prune=True)
+    assert not p["report"].get("retired")
+    assert p["report"]["local"] == ["box_local_any"]
+    assert {r["id"] for r in p["merged"]} == {"box_local_any"}
+
+
+def test_prune_keeps_a_rule_stamped_by_a_different_seed(tmp_path):
+    foreign = _stamp(_rule("foreign_any"), seed_name="federator")
+    root, home = _setup(tmp_path, [foreign], [])   # seed_name = fleet_gateway
+    p = psr.plan(root, home, role="collector", prune=True)
+    assert not p["report"].get("retired")
+    assert {r["id"] for r in p["merged"]} == {"foreign_any"}
+
+
+def test_prune_keeps_and_surfaces_a_box_tuned_retired_rule(tmp_path):
+    tuned = _stamp(_rule("tuned_any"))
+    tuned["cooldown_s"] = 99999          # body no longer matches the stamp
+    root, home = _setup(tmp_path, [tuned], [])
+    p = psr.plan(root, home, role="collector", prune=True)
+    assert p["report"]["retired_tuned"] == ["tuned_any"]
+    assert not p["report"].get("retired")
+    assert {r["id"] for r in p["merged"]} == {"tuned_any"}
+
+
+def test_prune_does_not_double_count_the_removed_rule_as_local(tmp_path):
+    root, home = _setup(tmp_path, [_stamp(_rule("gone_any"))], [])
+    p = psr.plan(root, home, role="collector", prune=True)
+    assert p["report"]["retired"] == ["gone_any"]
+    assert "gone_any" not in (p["report"].get("local") or [])
+
+
+def test_prune_apply_actually_writes_the_removal(tmp_path):
+    root, home = _setup(tmp_path, [_stamp(_rule("keep_any")),
+                                   _stamp(_rule("gone_any"))],
+                        [_rule("keep_any")])
+    p = psr.plan(root, home, role="collector", prune=True)
+    psr.apply(p)
+    assert _live_ids(home) == {"keep_any"}
+
+
+def test_prune_apply_is_idempotent(tmp_path):
+    root, home = _setup(tmp_path, [_stamp(_rule("gone_any")),
+                                   _stamp(_rule("keep_any"))],
+                        [_rule("keep_any")])
+    psr.apply(psr.plan(root, home, role="collector", prune=True))
+    again = psr.plan(root, home, role="collector", prune=True)
+    assert again["changed"] is False
+    assert not again["report"].get("retired")
+
+
+def test_main_prune_flag_removes_and_reports(tmp_path, capsys):
+    root, home = _setup(tmp_path, [_stamp(_rule("gone_any"))], [])
+    rc = psr.main(["--meshforge-root", root, "--mini-home", home,
+                   "--role", "collector", "--prune", "--apply"])
+    assert rc == 0
+    assert _live_ids(home) == set()
+    assert "retired" in capsys.readouterr().out
+
+
+def test_main_without_prune_leaves_the_retired_rule(tmp_path):
+    root, home = _setup(tmp_path, [_stamp(_rule("gone_any"))], [])
+    psr.main(["--meshforge-root", root, "--mini-home", home,
+              "--role", "collector", "--apply"])
+    assert _live_ids(home) == {"gone_any"}

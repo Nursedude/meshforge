@@ -21,7 +21,21 @@ Usage:
     python3 scripts/promote_seed_rules.py --apply     # merge + atomic-write (backs up)
     python3 scripts/promote_seed_rules.py --role fleet_gateway --apply
     python3 scripts/promote_seed_rules.py --seed claw --apply   # dude-claw instance
+    python3 scripts/promote_seed_rules.py --prune --apply  # also RETIRE dropped seed rules
     python3 scripts/promote_seed_rules.py --json       # machine-readable
+
+``--prune`` closes the retirement half of the seed contract. merge_seed_rules is
+strictly additive: a rule DELETED from the seed is reported ``local`` and kept
+verbatim forever, so retiring a rule from the seed alone silently converts it
+into a permanent box-local orphan on every box — invisible to
+``probe_rules_seed_drift``, which only looks for live rules BEHIND the seed.
+--prune removes exactly those rules the seed retired, and only when the box's
+copy is provably an UNMODIFIED copy of a seed body this same seed stamped
+(``seed_provenance.origin == seed:<name>`` AND the body hash still equals the
+recorded ``seed_sha``). A rule the box TUNED is never deleted — it is surfaced
+as ``retired_tuned`` and kept, because discarding operator tuning on a rule the
+seed dropped is a decision only the operator can make. A rule with no stamp, or
+one stamped by a different seed, is not ours and stays untouched.
 
 ``--seed claw`` targets the standalone dude-claw instance: seed
 ``configs/mini_dudeai_rules.claw.json`` merged into the claw-suffixed live
@@ -167,8 +181,54 @@ def _doc_rules(doc, what):
     return rules
 
 
+#: Buckets --prune adds on top of the merge helper's own vocabulary. They live
+#: HERE, not in candidate.py: that module is byte-locked to MeshAnchor, and
+#: retirement is a CLI policy decision (what to do about a rule the seed
+#: dropped), not a change to the shared merge contract.
+PRUNE_REMOVE_BUCKET = "retired"
+PRUNE_KEEP_BUCKET = "retired_tuned"
+
+
+def _prune_retired(merged, report, seed_rules, seed_name):
+    """Drop rules this seed RETIRED. Returns (kept_rules, report) — report is
+    mutated in place with the two prune buckets.
+
+    Safety is provenance-based, never name-based: a rule is removed only when
+    the seed no longer defines it AND this seed stamped it AND the body is
+    still byte-for-byte what the stamp recorded. Anything else is kept, so the
+    worst case is a rule that outlives its seed — never a lost box edit."""
+    from mini_dudeai.candidate import PROVENANCE_KEY, rule_body_sha
+
+    seed_ids = {r["id"] for r in seed_rules
+                if isinstance(r, dict) and r.get("id")}
+    origin = f"seed:{seed_name}"
+    report.setdefault(PRUNE_REMOVE_BUCKET, [])
+    report.setdefault(PRUNE_KEEP_BUCKET, [])
+    kept = []
+    for rule in merged:
+        rid = rule.get("id") if isinstance(rule, dict) else None
+        if not rid or rid in seed_ids:
+            kept.append(rule)
+            continue
+        prov = rule.get(PROVENANCE_KEY)
+        if not isinstance(prov, dict) or prov.get("origin") != origin:
+            kept.append(rule)          # box-local or another seed's — not ours
+            continue
+        if rule_body_sha(rule) != prov.get("seed_sha"):
+            # Seed-owned once, but this box tuned it. Surfacing beats guessing.
+            report[PRUNE_KEEP_BUCKET].append(rid)
+            kept.append(rule)
+            continue
+        report[PRUNE_REMOVE_BUCKET].append(rid)
+        # `local` was merge_seed_rules' verdict before we retired it; leaving
+        # the id in both buckets would double-count it in the printed report.
+        if rid in (report.get("local") or []):
+            report["local"].remove(rid)
+    return kept, report
+
+
 def plan(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None, seed_name=None,
-         live_path_override=None):
+         live_path_override=None, prune=False):
     """Resolve + merge IN MEMORY (no write). Returns a plan dict; raises
     PromoteError on any unresolved/unreadable/malformed input.
     ``live_path_override`` retargets the merge at a per-instance claw rules
@@ -192,9 +252,15 @@ def plan(meshforge_root=DEFAULT_ROOT, mini_home=None, role=None, seed_name=None,
     live_rules = _doc_rules(live_doc, "live rules")
     seed_rules = _doc_rules(seed_doc, "role seed")
     merged, report = merge_seed_rules(live_rules, seed_rules, seed_name)
+    if prune:
+        merged, report = _prune_retired(merged, report, seed_rules, seed_name)
     # A WRITE only matters when the rule set actually moves. tuned/local/unchanged
     # leave the file byte-identical, so they don't count as a change.
     changed = any(report.get(k) for k in SEED_MERGE_CHANGE_BUCKETS)
+    # A retirement moves the file too — without this a --prune --apply run
+    # would report the removal and then write nothing (apply() gates on
+    # `changed`), the exact half-state this file already fixed twice.
+    changed = changed or bool(report.get(PRUNE_REMOVE_BUCKET))
     return {
         "role": role, "seed_name": seed_name,
         "seed_path": seed_path, "live_path": live_path,
@@ -303,6 +369,16 @@ def _fmt_report(report):
         ids = report.get(k) or []
         if ids:
             lines.append(f"  {k:<10} {len(ids):>3}  {', '.join(ids)}")
+    # Named, not counted: a REMOVAL the operator cannot see is how a retirement
+    # becomes a silent deletion.
+    ids = report.get(PRUNE_REMOVE_BUCKET) or []
+    if ids:
+        lines.append(f"  {PRUNE_REMOVE_BUCKET:<10} {len(ids):>3}  "
+                     f"{', '.join(ids)}  (REMOVED)")
+    ids = report.get(PRUNE_KEEP_BUCKET) or []
+    if ids:
+        lines.append(f"  {PRUNE_KEEP_BUCKET:<10} {len(ids):>3}  "
+                     f"{', '.join(ids)}  (KEPT — box-tuned, retire by hand)")
     for k in SEED_MERGE_PRESERVE_BUCKETS:
         ids = report.get(k) or []
         if ids:
@@ -316,6 +392,10 @@ def main(argv=None):
                     "rules (the merge_seed_rules CLI). Default: dry-run.")
     ap.add_argument("--apply", action="store_true",
                     help="merge + atomic-write (default: dry-run)")
+    ap.add_argument("--prune", action="store_true",
+                    help="also REMOVE rules this seed retired (provenance-"
+                         "verified unmodified copies only; box-tuned rules are "
+                         "kept and surfaced as retired_tuned)")
     ap.add_argument("--role", help="override role (else from deployment.json)")
     ap.add_argument("--seed", help="target a seed directly (federator|fleet_gateway), "
                                    "bypassing role lookup")
@@ -325,7 +405,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     try:
-        p = plan(args.meshforge_root, args.mini_home, args.role, args.seed)
+        p = plan(args.meshforge_root, args.mini_home, args.role, args.seed,
+                 prune=args.prune)
         applied = bool(args.apply and p["changed"])
         bak = apply(p) if applied else None
     except PromoteError as exc:
@@ -362,7 +443,8 @@ def main(argv=None):
             # class this loop's comment above names).
             try:
                 ip = plan(args.meshforge_root, args.mini_home, args.role,
-                          args.seed, live_path_override=extra)
+                          args.seed, live_path_override=extra,
+                          prune=args.prune)
                 i_applied = bool(args.apply and ip["changed"])
                 i_bak = apply(ip) if i_applied else None
             except (PromoteError, OSError) as exc:
