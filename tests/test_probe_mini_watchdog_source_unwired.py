@@ -36,8 +36,8 @@ from utils.watchdog_probes_mini import (  # noqa: E402
 )
 
 CLS = "mini_watchdog_source_unwired"
-FLEET_CMD = "/usr/bin/python3\0-m\0mini_dudeai\0--preset\0meshforge_fleet\0--interval\30"
-CLAW_CMD = "/usr/bin/python3\0-m\0mini_dudeai\0--preset\0standalone\0--interval\0 30"
+FLEET_CMD = "/usr/bin/python3\0-m\0mini_dudeai\0--preset\0meshforge_fleet\0--interval\x0030"
+CLAW_CMD = "/usr/bin/python3\0-m\0mini_dudeai\0--preset\0standalone\0--interval\x0030"
 
 
 @pytest.fixture
@@ -166,3 +166,96 @@ def test_unlistable_proc_is_indeterminate(tmp_path, dispositions):
     assert probe_mini_watchdog_source_unwired(
         proc_root=str(tmp_path / "does-not-exist"), unit_status="ok") is None
     assert dispositions()[CLS]["disp"] == "indeterminate"
+
+
+# ── 2026-09-03 frontier pass: what a /proc scraper gets wrong on real data ──
+AUTO_CMD = "/usr/bin/python3\0-m\0mini_dudeai\0--preset\0auto\0--interval\x0030"
+MA_CMD = "/usr/bin/python3\0-m\0mini_dudeai\0--preset\0meshanchor_fleet\0--interval\x0030"
+# ONE argv token that merely mentions both words — a shell, a grep, an
+# editor. Substring marks matched this and read ITS environ as mini's.
+SHELL_CMD = "/bin/bash\0-c\0grep mini_dudeai --preset meshforge_fleet ~/notes"
+
+
+def test_two_fleet_minis_disagreeing_is_indeterminate_not_a_verdict(tmp_path, dispositions):
+    """A restart in flight: old process on 0, new one on 1. The first cut
+    returned whichever /proc listed first — a verdict decided by directory
+    order, under exactly the condition the probe's own fix text advises."""
+    proc = _proc(tmp_path, pid="99", env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0"})
+    _proc(tmp_path, pid="100", env={"MINI_DUDEAI_ENABLE_WATCHDOG": "1"})
+    sig = probe_mini_watchdog_source_unwired(proc_root=proc, unit_status="ok")
+    assert sig is None
+    d = dispositions()[CLS]
+    assert d["disp"] == "indeterminate" and "mixed" in (d.get("reason") or "")
+
+
+def test_two_fleet_minis_both_off_is_still_degraded(tmp_path, dispositions):
+    proc = _proc(tmp_path, pid="99", env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0"})
+    _proc(tmp_path, pid="100", env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0"})
+    assert probe_mini_watchdog_source_unwired(proc_root=proc, unit_status="ok") is not None
+
+
+def test_a_shell_mentioning_both_marks_in_one_argv_is_not_a_mini(tmp_path, dispositions):
+    proc = _proc(tmp_path, cmdline=SHELL_CMD,
+                 env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0"})
+    sig = probe_mini_watchdog_source_unwired(
+        proc_root=proc, unit_status="ok", mini_home=str(tmp_path / "nohome"))
+    assert sig is None, "a shell's argv was read as the mini process"
+    assert dispositions()[CLS]["disp"] == "inert"
+
+
+def test_preset_auto_resolving_to_fleet_is_a_consumer(tmp_path, dispositions):
+    """The shipped unit template launches `--preset auto` (templates/systemd);
+    the first cut only recognised a literal `meshforge_fleet` argv and would
+    have read every template-deployed box as 'mini not running'. auto is
+    resolved the way the daemon resolves it — through the fleet_hosts SSOT,
+    with the PROCESS's own environment (its HOME, its override), never the
+    watchdog's root view."""
+    hosts = tmp_path / "fleet_hosts"
+    hosts.write_text("moc1 moc2\n")
+    proc = _proc(tmp_path, cmdline=AUTO_CMD,
+                 env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0",
+                      "MESHFORGE_FLEET_HOSTS": str(hosts)})
+    sig = probe_mini_watchdog_source_unwired(proc_root=proc, unit_status="ok")
+    assert sig is not None, "--preset auto (fleet) was not recognised as a consumer"
+
+
+def test_preset_auto_resolving_to_standalone_is_not_a_consumer(tmp_path, dispositions):
+    # A SET but missing override is authoritative in the resolver: no list ->
+    # standalone. Pins the test to injected state, not this machine's config.
+    proc = _proc(tmp_path, cmdline=AUTO_CMD,
+                 env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0",
+                      "MESHFORGE_FLEET_HOSTS": str(tmp_path / "absent")})
+    sig = probe_mini_watchdog_source_unwired(
+        proc_root=proc, unit_status="ok", mini_home=str(tmp_path / "nohome"))
+    assert sig is None
+    assert dispositions()[CLS]["disp"] == "inert"
+
+
+def test_meshanchor_fleet_preset_is_not_a_consumer(tmp_path, dispositions):
+    """meshanchor-server's real shape: a meshanchor_fleet mini reads MeshAnchor's
+    watchdog document, not this one."""
+    proc = _proc(tmp_path, cmdline=MA_CMD,
+                 env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0"})
+    sig = probe_mini_watchdog_source_unwired(
+        proc_root=proc, unit_status="ok", mini_home=str(tmp_path / "nohome"))
+    assert sig is None
+    assert dispositions()[CLS]["disp"] == "inert"
+
+
+def test_flag_semantics_are_the_preset_s_not_a_private_copy(tmp_path, dispositions):
+    """hfm #5: the preset decides with `!= "0"` exactly; the first cut decided
+    with `.strip() == "0"`, so a value of "0 " read OFF here and ON in mini.
+    One helper, imported by both."""
+    import inspect
+    from mini_dudeai import _util
+    from mini_dudeai.presets import meshforge_fleet
+    assert _util.WATCHDOG_ENV_FLAG == "MINI_DUDEAI_ENABLE_WATCHDOG"
+    assert _util.watchdog_feed_enabled({}) is True
+    assert _util.watchdog_feed_enabled({"MINI_DUDEAI_ENABLE_WATCHDOG": "0"}) is False
+    assert _util.watchdog_feed_enabled({"MINI_DUDEAI_ENABLE_WATCHDOG": "0 "}) is True
+    src = inspect.getsource(meshforge_fleet)
+    assert "watchdog_feed_enabled(" in src
+    assert 'environ.get("MINI_DUDEAI_ENABLE_WATCHDOG"' not in src
+    proc = _proc(tmp_path, env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0 "})
+    assert probe_mini_watchdog_source_unwired(proc_root=proc, unit_status="ok") is None
+    assert dispositions()[CLS]["disp"] == "clean"

@@ -250,3 +250,21 @@ def fetch_json(url, timeout=8, max_bytes=DEFAULT_FETCH_MAX_BYTES):
     except (urllib.error.URLError, OSError, ValueError, TimeoutError,
             http.client.HTTPException, EOFError, zlib.error) as e:
         return None, f"{type(e).__name__}: {e}"
+
+
+#: The env flag that switches the fleet preset's watchdog (signal_class) feed
+#: OFF. ONE definition — the preset decides with it and the watchdog's
+#: ``mini_watchdog_source_unwired`` probe judges the RUNNING process's environ
+#: with the same function, so the two can never disagree about what "0" means
+#: (honest_failure_modes #5; 2026-09-03 frontier pass found a private
+#: ``.strip() == "0"`` copy that read ``"0 "`` as OFF while mini read it ON).
+WATCHDOG_ENV_FLAG = "MINI_DUDEAI_ENABLE_WATCHDOG"
+
+
+def watchdog_feed_enabled(env) -> bool:
+    """Is the watchdog feed ON under this environment mapping?
+
+    Exactly the preset's rule: unset defaults ON; only the literal ``"0"``
+    switches it off. Pass ``os.environ`` (the preset) or a dict parsed from
+    ``/proc/<pid>/environ`` (the probe)."""
+    return env.get(WATCHDOG_ENV_FLAG, "1") != "0"

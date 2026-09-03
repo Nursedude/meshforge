@@ -516,32 +516,121 @@ def probe_rules_seed_drift(
         return None
 
 
-# Selector keys a rule may use to claim subjects. A rule with NONE of these
-# matches every subject of its kind, which makes it a legitimate owner.
-_MINI_SELECTOR_KEYS = ("subject_glob", "peer_glob", "source_glob")
+# ─────────────────────────────────────────────────────────────────────
+# mini_rule_orphaned_exclusion — ownership judged by the ENGINE, on real
+# subjects (2026-09-03 frontier pass)
+# ─────────────────────────────────────────────────────────────────────
+# The first cut decided ownership with a private glob-core solver
+# (`g.strip("*")` matched against any of three selector keys). Against
+# `mini_dudeai.engine._match_rule` — the thing that actually decides what
+# mini watches — it disagreed in five shapes: an owner filtering a DIFFERENT
+# `class` extra was credited (false clean; 60 of this box's 68 live rules
+# carry that filter), a rule with a missing subject_glob beside a matching
+# peer_glob was credited although the engine reads subject_glob alone (false
+# clean), and `subject_glob: ""` / an owner more specific than the core /
+# a `?` in the glob each paged on an owned subject (false page). A checker
+# that re-types the semantics it audits encodes only the narrowness its
+# author already thought of; this one asks the engine.
+#
+# Sample subjects, in order of authority: subjects the box has actually
+# recorded in mini's state.json (rule-state keys are ``rule_id::subject``
+# and outlive the rule's retirement for STALE_KEY_RETENTION_S — exactly what
+# makes a half-landed retirement judgeable on the real name), and only when
+# none of those falls inside the exclusion, the glob's literal core as a
+# synthetic subject. A glob with no literal core (`*`, `*moc?*`) and no
+# observed subject in scope is UNJUDGEABLE, and says so — never a page,
+# never an affirmative clean.
+
+_MINI_GLOB_META = ("?", "[")
 
 
-def _mini_rule_covers(rule: dict, core: str) -> bool:
-    """Does ``rule`` actually watch a subject named ``core``?
+def _mini_observed_subjects(state: Optional[dict]) -> list:
+    """Subject strings mini has recorded, from a state.json document."""
+    out: list = []
+    seen: set = set()
+    for key, ent in ((state or {}).get("rules") or {}).items():
+        s = ent.get("subject") if isinstance(ent, dict) else None
+        if not isinstance(s, str) or not s:
+            _rid, sep, tail = str(key).partition("::")
+            s = tail if sep and tail else None
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
 
-    Structural, never name-based: a rule owns the subject if one of its
-    selectors matches AND it does not exclude the same subject itself (a
-    second catch-all that also excludes the core owns nothing).
+
+def _mini_judge_exclusion(rule: dict, glob: str, rules: list, observed: list,
+                          match_rule, structural_keys, condition_cls) -> tuple:
+    """``(verdict, note)`` for one exclude glob of one rule.
+
+    verdict ∈ ``"orphaned"`` (note names the witness subject), ``"owned"``
+    (note names the method), ``"unjudgeable"`` (note says why).
     """
     m = rule.get("match") or {}
-    sels = [m[k] for k in _MINI_SELECTOR_KEYS if isinstance(m.get(k), str)]
-    if sels and not any(fnmatch.fnmatch(core, s) for s in sels):
-        return False
-    for ex in (m.get("subject_exclude_globs") or []):
-        if isinstance(ex, str) and fnmatch.fnmatch(core, ex):
-            return False
-    return True
+    kind = m.get("kind")
+    extras = {k: v for k, v in m.items() if k not in structural_keys}
+    # The rule MINUS its exclusions: "would this rule have watched s?"
+    bare = {"match": {k: v for k, v in m.items()
+                      if k != "subject_exclude_globs"}}
+
+    def cond(s):
+        return condition_cls(kind=kind, subject=s, extras=dict(extras))
+
+    def in_scope(s):
+        return bool(match_rule(bare, cond(s))) and fnmatch.fnmatchcase(s, glob)
+
+    def owned(s):
+        c = cond(s)
+        return any(o is not rule and match_rule(o, c) for o in rules)
+
+    core = glob.strip("*")
+    if not core:
+        # Excluding everything disables the rule outright — a different
+        # pathology (a rule that matches nothing forever), named as such
+        # rather than judged subject-by-subject.
+        return "unjudgeable", "bare '*' — no owner is nameable for everything"
+    scoped = [s for s in observed if in_scope(s)]
+    if scoped:
+        for s in scoped:
+            if not owned(s):
+                return "orphaned", f"observed subject {s!r}"
+        return "owned", f"{len(scoped)} observed subject(s)"
+    if any(ch in core for ch in _MINI_GLOB_META):
+        return "unjudgeable", ("glob metacharacters and no observed subject "
+                               "in scope")
+    if not in_scope(core):
+        return "unjudgeable", (f"synthetic subject {core!r} is outside the "
+                               f"rule's own selector and no observed subject "
+                               f"is in scope")
+    if owned(core):
+        return "owned", "structural core"
+    return "orphaned", f"synthetic subject {core!r}"
+
+
+def _read_mini_state(home: Optional[str]) -> tuple:
+    """``(state_or_None, note)`` — observed subjects are an ENRICHMENT of the
+    judgement, so a missing/corrupt state degrades to the structural method;
+    the note is the witness that it did (honest_failure_modes #9)."""
+    if not home:
+        return None, "state path unresolvable"
+    path = os.path.join(home, _MINI_STATE_NAME)
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        return None, "no state file yet"
+    except (OSError, ValueError):
+        return None, "state file unreadable or corrupt"
+    if not isinstance(data, dict):
+        return None, "state file misshaped"
+    return data, None
 
 
 def probe_mini_rule_orphaned_exclusion(
     *,
     mini_home: Optional[str] = None,
     live_rules: Optional[list] = None,
+    live_state: Optional[dict] = None,
 ) -> Optional[Signal]:
     """A live mini rule excludes a subject that no other rule watches.
 
@@ -557,14 +646,31 @@ def probe_mini_rule_orphaned_exclusion(
     on the boxes running an unmodified seed copy and HALF on any box that tuned
     it. Measured on the federator during the moc3 retirement (2026-09-03).
 
-    Legitimate and quiet: the documented box-local pattern of a local
-    ``*_known_normal`` rule plus a matching exclude glob (operator-specific,
-    MF014, never in the repo seed) — the local rule IS the owner.
+    Ownership is decided by the engine's own matcher over subjects the box has
+    actually recorded (see the block comment above). Legitimate and quiet: the
+    documented box-local pattern of a local ``*_known_normal`` rule plus a
+    matching exclude glob (operator-specific, MF014, never in the repo seed) —
+    the local rule IS the owner.
     """
     cls = "mini_rule_orphaned_exclusion"
     try:
-        if live_rules is None:
-            home = mini_home or _resolve_mini_home()
+        try:
+            from mini_dudeai.engine import _match_rule
+            from mini_dudeai.candidate import STRUCTURAL_MATCH_KEYS
+            from mini_dudeai.sources.base import Condition
+        except Exception:
+            # No engine, no judgement. A private re-typing of the match
+            # semantics is what the 09-03 pass found wrong — never fall back
+            # to one.
+            note_disposition(cls, "indeterminate",
+                             reason="mini_dudeai engine matcher not importable "
+                                    "— ownership cannot be judged by the "
+                                    "consumer of record")
+            return None
+
+        injected = live_rules is not None
+        home = None if injected else (mini_home or _resolve_mini_home())
+        if not injected:
             if not home:
                 note_disposition(cls, "indeterminate",
                                  reason="operator home unresolvable")
@@ -583,43 +689,39 @@ def probe_mini_rule_orphaned_exclusion(
                 note_disposition(cls, "indeterminate",
                                  reason="live rules file unreadable or corrupt")
                 return None
+        # Injected rules never pull THIS machine's state file underneath
+        # them (feedback_tests_must_pin_ambient_state): observed subjects
+        # then come only from the live_state seam.
+        state_note = None
+        if live_state is None and not injected:
+            live_state, state_note = _read_mini_state(home)
+        observed = _mini_observed_subjects(live_state)
 
         rules = [r for r in live_rules if isinstance(r, dict) and r.get("id")]
-        orphaned: list = []
-        unjudgeable: list = []
-        judged = 0
+        orphaned: list = []        # (rule_id, glob, witness)
+        unjudgeable: list = []     # "rule_id:glob — why"
+        methods: dict = {}
         for r in rules:
             m = r.get("match") or {}
             for g in (m.get("subject_exclude_globs") or []):
                 if not isinstance(g, str):
                     continue
-                core = g.strip("*")
-                if not core:
-                    # A bare "*" exclusion disables the rule outright; that is
-                    # a different pathology and nothing here can name an owner
-                    # for "everything". Counted, never silently dropped.
-                    unjudgeable.append(f"{r['id']}:{g}")
-                    continue
-                judged += 1
-                kind = m.get("kind")
-                # No self-ownership clause is needed: `core` is derived FROM
-                # this rule's own exclude glob, so `_mini_rule_covers` always
-                # sees the rule excluding that very core and rejects it. An
-                # `id != id` guard here would be decorative — a condition no
-                # test could ever fail, which this repo does not count as
-                # evidence. test_a_rule_cannot_own_its_own_exclusion pins the
-                # behaviour through the real mechanism instead.
-                owner = next(
-                    (o["id"] for o in rules
-                     if (o.get("match") or {}).get("kind") == kind
-                     and _mini_rule_covers(o, core)),
-                    None)
-                if owner is None:
-                    orphaned.append((r["id"], g))
+                verdict, note = _mini_judge_exclusion(
+                    r, g, rules, observed, _match_rule,
+                    STRUCTURAL_MATCH_KEYS, Condition)
+                if verdict == "orphaned":
+                    orphaned.append((r["id"], g, note))
+                elif verdict == "owned":
+                    methods[note] = methods.get(note, 0) + 1
+                else:
+                    unjudgeable.append(f"{r['id']}:{g} — {note}")
 
         if orphaned:
-            shown = ", ".join(f"{rid} excludes {g}" for rid, g in orphaned[:4])
+            shown = ", ".join(f"{rid} excludes {g} (witness: {w})"
+                              for rid, g, w in orphaned[:4])
             more = f" (+{len(orphaned) - 4} more)" if len(orphaned) > 4 else ""
+            unj = (f" {len(unjudgeable)} further exclusion(s) could not be "
+                   f"judged (see extra)." if unjudgeable else "")
             return Signal(
                 # LITERAL on purpose: TestSignalClassWiring's AST walker
                 # resolves only `Signal(cls="...")` constants, so a `cls`
@@ -633,23 +735,35 @@ def probe_mini_rule_orphaned_exclusion(
                     f"{len(orphaned)} orphaned exclusion(s) in this box's live "
                     f"mini rules — {shown}{more}. An exclude glob is a "
                     f"deliberate blind spot that is only safe while another "
-                    f"rule of the same kind OWNS that subject; no such rule "
-                    f"exists here, so a real event on that subject is silently "
-                    f"dropped. Usually a half-landed retirement: the owner was "
-                    f"retired and the exclusion outlived it (a box-TUNED rule "
-                    f"is kept verbatim by promote_seed_rules --prune BY "
-                    f"DESIGN). Drop the exclusion, or restore an owner."
+                    f"rule of the same kind OWNS that subject; judged by the "
+                    f"engine's own matcher, no rule here watches it, so a real "
+                    f"event on that subject is silently dropped. Usually a "
+                    f"half-landed retirement: the owner was retired and the "
+                    f"exclusion outlived it (a box-TUNED rule is kept verbatim "
+                    f"by promote_seed_rules --prune BY DESIGN). Drop the "
+                    f"exclusion, or restore an owner.{unj}"
                 ),
-                extra={"orphaned": [f"{rid}:{g}" for rid, g in orphaned],
+                extra={"orphaned": [f"{rid}:{g}" for rid, g, _w in orphaned],
+                       "witness": {f"{rid}:{g}": w for rid, g, w in orphaned},
                        "unjudgeable": unjudgeable},
             )
 
-        if judged == 0 and unjudgeable:
+        if unjudgeable:
+            # Never swallowed beside owned ones (the author's own known
+            # defect at 88f302ac): an exclusion nobody can judge is a
+            # blind spot of the DETECTOR, and reads as such.
+            shown = "; ".join(unjudgeable[:4])
+            more = f" (+{len(unjudgeable) - 4} more)" if len(unjudgeable) > 4 else ""
             note_disposition(cls, "indeterminate",
-                             reason="every exclusion is a bare '*' — no owner "
-                                    "is nameable for 'everything'")
+                             reason=f"{len(unjudgeable)} exclusion(s) cannot "
+                                    f"be judged: {shown}{more}")
             return None
-        note_disposition(cls, "clean")
+        judged = sum(methods.values())
+        how = ", ".join(f"{n} by {k}" for k, n in methods.items()) or "none present"
+        reason = f"{judged} exclusion(s) owned — {how}"
+        if state_note:
+            reason += f"; observed subjects unavailable ({state_note})"
+        note_disposition(cls, "clean", reason=reason)
         return None
     except Exception:
         note_disposition(cls, "indeterminate",
@@ -657,13 +771,43 @@ def probe_mini_rule_orphaned_exclusion(
         return None
 
 
-# The env flag that switches mini's watchdog (signal_class) feed off, and the
-# cmdline marks that identify the FLEET-preset mini process. A claw instance
-# runs --preset standalone and reads no watchdog document, so it is not a
-# consumer of this contract and must not be matched.
-_MINI_WATCHDOG_ENV_FLAG = "MINI_DUDEAI_ENABLE_WATCHDOG"
-_MINI_FLEET_CMDLINE_MARKS = ("mini_dudeai", "meshforge_fleet")
+# ─────────────────────────────────────────────────────────────────────
+# mini_watchdog_source_unwired — the RUNNING fleet mini's watchdog flag
+# ─────────────────────────────────────────────────────────────────────
+# Which processes are "the fleet mini" is decided from argv TOKENS, never
+# substrings: `python3 -m mini_dudeai --preset <p>`. A shell whose single
+# `-c` token merely mentions both words (a grep, an editor, a Claude session
+# running this very audit) matched the first cut's substring marks and had
+# ITS environ read as mini's. `--preset auto` — what the shipped unit
+# templates launch — is resolved the way the daemon resolves it: through the
+# fleet_hosts SSOT with the PROCESS's own environment (its HOME, its
+# override), never the watchdog's root view (the ~/.reticulum-under-root
+# class, 2026-08-05). A claw (`standalone`) or MeshAnchor (`meshanchor_fleet`)
+# mini reads a different document and is not party to this contract.
+_MINI_FLEET_PRESET = "meshforge_fleet"
 _WATCHDOG_UNIT = "meshforge-watchdog"
+# Kept as a name for messages; the DECISION uses mini_dudeai._util's helper.
+_MINI_WATCHDOG_ENV_FLAG = "MINI_DUDEAI_ENABLE_WATCHDOG"
+
+
+def _mini_argv_preset(cmdline: str) -> Optional[str]:
+    """The ``--preset`` of a ``python -m mini_dudeai`` argv, or None when the
+    argv is not one. ``auto`` is returned verbatim for the caller to resolve;
+    a bare ``-m mini_dudeai`` with no preset means ``auto`` (daemon default)."""
+    argv = cmdline.split("\0")
+    try:
+        i = argv.index("-m")
+    except ValueError:
+        return None
+    if i + 1 >= len(argv) or argv[i + 1] != "mini_dudeai":
+        return None
+    preset = "auto"
+    for j, tok in enumerate(argv):
+        if tok == "--preset" and j + 1 < len(argv):
+            preset = argv[j + 1]
+        elif tok.startswith("--preset="):
+            preset = tok.partition("=")[2]
+    return preset or "auto"
 
 
 def _mini_fleet_env_flag(proc_root: str = "/proc") -> tuple:
@@ -675,42 +819,79 @@ def _mini_fleet_env_flag(proc_root: str = "/proc") -> tuple:
     diverge exactly when someone edits the file without restarting the unit
     (calibrated_claims #7).
 
-    ``state`` is one of ``"off"``, ``"on"``, ``"no_process"``, ``"unreadable"``.
+    Every matching process is judged and the verdicts are AGGREGATED:
+    ``"off"`` only when all fleet minis have the feed off, ``"on"`` only when
+    all have it on, ``"mixed"`` when they disagree (a restart in flight, or a
+    stray fleet-preset process — re-judged next tick, never decided by
+    /proc listing order), ``"no_process"``, ``"unreadable"`` (an environ we
+    could not read), ``"unresolvable"`` (a ``--preset auto`` whose fleet_hosts
+    resolution failed, or the mini package is not importable).
     """
-    seen_any = False
-    unreadable = False
+    try:
+        from mini_dudeai._util import WATCHDOG_ENV_FLAG, watchdog_feed_enabled
+    except Exception:
+        return ("unresolvable",
+                "mini_dudeai package not importable; the flag's semantics live there")
     try:
         names = [n for n in os.listdir(proc_root) if n.isdigit()]
     except OSError:
         return "unreadable", "cannot list /proc"
+    offs: list = []
+    ons: list = []
+    unreadable: list = []
+    unresolvable: list = []
     for name in names:
         try:
             with open(os.path.join(proc_root, name, "cmdline"), "rb") as fh:
                 cmdline = fh.read().decode("utf-8", "replace")
         except OSError:
             continue  # a process that exited between listdir and read
-        if not all(mark in cmdline for mark in _MINI_FLEET_CMDLINE_MARKS):
+        preset = _mini_argv_preset(cmdline)
+        if preset is None:
             continue
-        seen_any = True
         try:
             with open(os.path.join(proc_root, name, "environ"), "rb") as fh:
                 env_blob = fh.read().decode("utf-8", "replace")
         except OSError:
             # Present but unreadable is NOT "flag absent" — an empty read and a
             # permission failure must never agree (honest_failure_modes #1).
-            unreadable = True
+            unreadable.append(name)
             continue
+        env: dict = {}
         for entry in env_blob.split("\0"):
-            key, _, val = entry.partition("=")
-            if key == _MINI_WATCHDOG_ENV_FLAG:
-                if val.strip() == "0":
-                    return "off", f"pid {name} started with {key}=0"
-                return "on", f"pid {name} has {key}={val.strip()!r}"
+            if entry:
+                key, _, val = entry.partition("=")
+                env[key] = val
+        if preset == "auto":
+            try:
+                from utils.fleet_hosts import resolve_fleet_hosts
+                preset = (_MINI_FLEET_PRESET if resolve_fleet_hosts(env=env)
+                          else "standalone")
+            except Exception:
+                unresolvable.append(name)
+                continue
+        if preset != _MINI_FLEET_PRESET:
+            continue
+        (ons if watchdog_feed_enabled(env) else offs).append(name)
     if unreadable:
-        return "unreadable", "mini process found but its environ is unreadable"
-    if seen_any:
-        # Flag simply unset — the preset default is ON.
-        return "on", "flag unset; preset default enables the watchdog feed"
+        return ("unreadable",
+                f"fleet mini pid(s) {', '.join(unreadable)} found but environ unreadable")
+    if unresolvable:
+        return ("unresolvable",
+                f"pid(s) {', '.join(unresolvable)} run --preset auto and its "
+                f"fleet_hosts resolution failed under the process's own env")
+    if offs and ons:
+        return ("mixed",
+                f"mixed: {len(offs)} fleet mini(s) started with "
+                f"{WATCHDOG_ENV_FLAG}=0 (pid {', '.join(offs)}) beside "
+                f"{len(ons)} with the feed on (pid {', '.join(ons)}) — a "
+                f"restart in flight or a stray fleet-preset process; "
+                f"re-judged next tick")
+    if offs:
+        return "off", f"pid {', '.join(offs)} started with {WATCHDOG_ENV_FLAG}=0"
+    if ons:
+        return "on", (f"pid {', '.join(ons)}: feed on (flag unset or not \"0\"; "
+                      f"the preset default enables the watchdog feed)")
     return "no_process", "no fleet-preset mini process found"
 
 
@@ -789,7 +970,7 @@ def probe_mini_watchdog_source_unwired(
                 extra={"evidence": evidence, "flag": _MINI_WATCHDOG_ENV_FLAG},
             )
         if state == "on":
-            note_disposition(cls, "clean")
+            note_disposition(cls, "clean", reason=evidence)
             return None
         if state == "no_process":
             home = mini_home or _resolve_mini_home()
@@ -797,18 +978,22 @@ def probe_mini_watchdog_source_unwired(
             if rules and os.path.exists(rules):
                 note_disposition(
                     cls, "indeterminate",
-                    reason="mini is seeded here but not running — its live env "
-                           "is unreadable (user_unit_inactive owns a stopped mini)")
+                    reason="mini is seeded here but no fleet-preset mini "
+                           "process is running — its live env is unreadable "
+                           "(user_unit_inactive owns a stopped mini)")
             else:
                 note_disposition(cls, "inert",
                                  reason="no mini on this box; nothing to wire")
             return None
+        # "mixed", "unreadable", "unresolvable" — and any FUTURE state: the
+        # closed consumer points AWAY from quiet (honest_failure_modes #7).
         note_disposition(cls, "indeterminate", reason=evidence)
         return None
     except Exception:
         note_disposition(cls, "indeterminate",
                          reason="unexpected probe error")
         return None
+
 
 
 # The operator memory index path (relative to the operator home) + its

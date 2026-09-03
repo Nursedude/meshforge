@@ -181,3 +181,163 @@ def test_reads_the_live_file_from_disk(tmp_path, dispositions):
     home = _write(tmp_path, [_catchall(["*moc3*"])])
     sig = probe_mini_rule_orphaned_exclusion(mini_home=home)
     assert sig is not None and "*moc3*" in sig.detail
+
+
+# ── 2026-09-03 frontier pass: the ENGINE is the consumer of record ─────
+# The first cut judged ownership with its own glob-core solver. Against
+# engine._match_rule (the thing that actually decides what mini watches) it
+# read a hole as owned in two shapes and paged on an owned subject in three.
+# Every case below was first confirmed as a disagreement between the probe
+# and the engine on the same rules, then pinned.
+
+def _state(*subjects, rid="retired_owner"):
+    """A mini state.json fragment: rule-state keys are rule_id::subject and
+    survive the rule's retirement (STALE_KEY_RETENTION_S) — which is what makes
+    the retirement case judgeable on a subject the box has actually seen."""
+    return {"rules": {f"{rid}::{s}": {"rule_id": rid, "subject": s}
+                      for s in subjects}}
+
+
+def test_owner_filtering_a_different_class_extra_is_not_an_owner(dispositions):
+    """kind=signal_class carries a `class` extras filter on 60 of this box's
+    68 live rules. An owner whose class filter differs never sees the excluded
+    subject in the engine — crediting it hides a real hole (false CLEAN)."""
+    rules = [
+        {"id": "drift_catchall",
+         "match": {"kind": "signal_class", "class": "rns_version_drift",
+                   "subject_glob": "*", "subject_exclude_globs": ["*moc3*"]},
+         "action": {"kind": "propose_escalation"}},
+        {"id": "other_class",
+         "match": {"kind": "signal_class", "class": "service_inactive",
+                   "subject_glob": "*"},
+         "action": {"kind": "ntfy"}},
+    ]
+    sig = probe_mini_rule_orphaned_exclusion(live_rules=rules)
+    assert sig is not None, "an owner of a DIFFERENT class was credited"
+
+
+def test_owner_with_the_same_class_extra_counts(dispositions):
+    rules = [
+        {"id": "drift_catchall",
+         "match": {"kind": "signal_class", "class": "rns_version_drift",
+                   "subject_glob": "*", "subject_exclude_globs": ["*moc3*"]},
+         "action": {"kind": "propose_escalation"}},
+        {"id": "moc3_drift_known_normal",
+         "match": {"kind": "signal_class", "class": "rns_version_drift",
+                   "subject_glob": "*moc3*"},
+         "action": {"kind": "annotate_digest"}},
+    ]
+    assert probe_mini_rule_orphaned_exclusion(live_rules=rules) is None
+    assert dispositions()[CLS]["disp"] == "clean"
+
+
+def test_engine_selector_precedence_subject_glob_wins_over_peer_glob(dispositions):
+    """The engine reads ONE selector (subject_glob, else peer_glob, else
+    source_glob). A rule carrying a missing subject_glob AND a matching
+    peer_glob matches nothing in the engine and must not be credited."""
+    rules = [_catchall(["*moc3*"]),
+             {"id": "half_migrated",
+              "match": {"kind": KIND, "subject_glob": "*moc4*",
+                        "peer_glob": "*moc3*"},
+              "action": {"kind": "annotate_digest"}}]
+    assert probe_mini_rule_orphaned_exclusion(live_rules=rules) is not None
+
+
+def test_empty_subject_glob_is_a_catch_all_like_the_engine(dispositions):
+    """`subject_glob: ""` falls through to "*" in the engine; the first cut
+    read it as a selector that matches nothing and paged (false page)."""
+    rules = [_catchall(["*moc3*"]),
+             {"id": "empty_sel", "match": {"kind": KIND, "subject_glob": ""},
+              "action": {"kind": "annotate_digest"}}]
+    assert probe_mini_rule_orphaned_exclusion(live_rules=rules) is None
+    assert dispositions()[CLS]["disp"] == "clean"
+
+
+def test_specific_owner_is_judged_on_the_observed_subject(dispositions):
+    """peer_glob 'peer-moc3' owns the only real subject the exclusion
+    '*moc3*' ever blinds. The synthetic core 'moc3' is NOT a subject; judging on
+    it paged the operator about a hole that does not exist."""
+    rules = [_catchall(["*moc3*"]), _owner(glob="peer-moc3")]
+    sig = probe_mini_rule_orphaned_exclusion(
+        live_rules=rules, live_state=_state("peer-moc3"))
+    assert sig is None
+    assert dispositions()[CLS]["disp"] == "clean"
+
+
+def test_metachar_exclusion_without_an_observed_subject_is_unjudgeable(dispositions):
+    """'*moc?*' has no literal core to synthesise; with no observed subject in
+    scope the honest answer is 'cannot judge', named — never a page, never clean."""
+    rules = [_catchall(["*moc?*"]), _owner(glob="*moc3*")]
+    sig = probe_mini_rule_orphaned_exclusion(live_rules=rules, live_state={})
+    assert sig is None
+    d = dispositions()[CLS]
+    assert d["disp"] == "indeterminate" and "*moc?*" in (d.get("reason") or "")
+
+
+def test_metachar_exclusion_is_judged_once_a_subject_was_observed(dispositions):
+    rules = [_catchall(["*moc?*"]), _owner(glob="*moc3*")]
+    sig = probe_mini_rule_orphaned_exclusion(
+        live_rules=rules, live_state=_state("peer-moc3"))
+    assert sig is None
+    assert dispositions()[CLS]["disp"] == "clean"
+
+
+def test_bare_star_beside_an_owned_exclusion_is_not_swallowed(dispositions):
+    """The author's own known defect: one owned exclusion plus one bare '*'
+    used to note a flat clean and drop the un-analysable one (hfm #9)."""
+    rules = [_catchall(["*moc3*", "*"]), _owner()]
+    sig = probe_mini_rule_orphaned_exclusion(live_rules=rules, live_state={})
+    assert sig is None
+    d = dispositions()[CLS]
+    assert d["disp"] == "indeterminate"
+    assert "federation_peer_unhealthy_unexpected:*" in (d.get("reason") or "")
+
+
+def test_orphaned_verdict_names_the_witness_subject(dispositions):
+    sig = probe_mini_rule_orphaned_exclusion(
+        live_rules=[_catchall(["*moc3*"])], live_state=_state("peer-moc3"))
+    assert sig is not None
+    assert "peer-moc3" in sig.detail
+    assert sig.extra["orphaned"] == ["federation_peer_unhealthy_unexpected:*moc3*"]
+    assert sig.extra["witness"] == {"federation_peer_unhealthy_unexpected:*moc3*":
+                                    "observed subject 'peer-moc3'"}
+
+
+def test_partial_hole_is_caught_on_an_observed_subject(dispositions):
+    """Owner '*' that itself excludes a NARROWER sub-glob: the wide exclusion
+    still blinds 'peer-moc3-gw' and nothing owns it."""
+    rules = [_catchall(["*moc3*"]),
+             {"id": "owner", "match": {"kind": KIND, "subject_glob": "*",
+                                        "subject_exclude_globs": ["*moc3-gw*"]},
+              "action": {"kind": "annotate_digest"}}]
+    sig = probe_mini_rule_orphaned_exclusion(
+        live_rules=rules, live_state=_state("peer-moc3", "peer-moc3-gw"))
+    assert sig is not None
+    assert "peer-moc3-gw" in sig.detail
+
+
+def test_engine_matcher_unavailable_is_indeterminate(dispositions, monkeypatch):
+    """No engine, no judgement: never fall back to a private re-typing of the
+    match semantics (that re-typing is what this pass found wrong)."""
+    monkeypatch.setitem(sys.modules, "mini_dudeai.engine", None)
+    sig = probe_mini_rule_orphaned_exclusion(live_rules=[_catchall(["*moc3*"])])
+    assert sig is None
+    assert dispositions()[CLS]["disp"] == "indeterminate"
+
+
+def test_reads_observed_subjects_from_the_state_file_on_disk(tmp_path, dispositions):
+    home = _write(tmp_path, [_catchall(["*moc3*"]), _owner(glob="peer-moc3")])
+    (tmp_path / "mini_dudeai_state.json").write_text(
+        json.dumps(_state("peer-moc3")))
+    assert probe_mini_rule_orphaned_exclusion(mini_home=home) is None
+    assert dispositions()[CLS]["disp"] == "clean"
+
+
+def test_unreadable_state_file_degrades_to_structural_and_says_so(tmp_path, dispositions):
+    """Observed subjects are an enrichment; losing them must leave a witness in
+    the reason, never silently change which method judged."""
+    home = _write(tmp_path, [_catchall(["*moc3*"]), _owner()])
+    (tmp_path / "mini_dudeai_state.json").write_text("{corrupt")
+    assert probe_mini_rule_orphaned_exclusion(mini_home=home) is None
+    d = dispositions()[CLS]
+    assert d["disp"] == "clean" and "state" in (d.get("reason") or "")

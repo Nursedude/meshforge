@@ -248,7 +248,8 @@ def build_engine(
     if enable_boot_health is None:
         enable_boot_health = os.environ.get("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "1") != "0"
     if enable_watchdog is None:
-        enable_watchdog = os.environ.get("MINI_DUDEAI_ENABLE_WATCHDOG", "1") != "0"
+        from .._util import watchdog_feed_enabled
+        enable_watchdog = watchdog_feed_enabled(os.environ)
     from .._util import app_artifact_paths, resolve_home
     home = home or resolve_home()
     # brief/state/history come from the _util adapter — the same function the
