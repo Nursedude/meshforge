@@ -694,8 +694,11 @@ class TestFederationPerVantageRow6:
 
     SEEDS = ("configs/mini_dudeai_rules.fleet_gateway.json",
              "configs/mini_dudeai_rules.federator.json")
-    FED_RULES = ("federation_peer_unhealthy_unexpected",
-                 "moc3_federation_backoff_known_normal")
+    #: The catch-all is the only federation rule a seed MUST carry. Its former
+    #: companion, moc3_federation_backoff_known_normal, was retired 2026-09-03
+    #: (f36c93c2) — see test_moc3_suppression_is_retired_in_both_seeds.
+    FED_RULES = ("federation_peer_unhealthy_unexpected",)
+    RETIRED_MOC3_RULE = "moc3_federation_backoff_known_normal"
 
     def _seed(self, name):
         root = os.path.join(os.path.dirname(__file__), "..")
@@ -703,23 +706,45 @@ class TestFederationPerVantageRow6:
             return json.load(f)
 
     @pytest.mark.parametrize("seed", SEEDS)
-    def test_both_seeds_carry_both_federation_rules(self, seed):
-        """The suppression rule and the escalation rule are ONE mechanism —
-        the moc3 known-normal copy exists in both seeds precisely so a gateway
-        vantage can't escalate the deliberate soak backoff. They are retired
-        together at the RNS roll; missing one half is the failure."""
+    def test_both_seeds_carry_the_catchall_federation_rule(self, seed):
+        """Every map-running vantage must still be able to escalate an
+        unexpected unhealthy peer. This is the half that must never vanish."""
         ids = {r["id"] for r in self._seed(seed)["rules"]}
         for rid in self.FED_RULES:
             assert rid in ids, f"{seed} lost federation rule {rid!r}"
 
     @pytest.mark.parametrize("seed", SEEDS)
-    def test_moc3_soak_canary_is_excluded_from_escalation(self, seed):
-        """Without the exclude glob the catch-all re-fires on moc3 every
-        cooldown — the canary's backoff is DELIBERATE, not a finding."""
-        rule = next(r for r in self._seed(seed)["rules"]
+    def test_moc3_suppression_is_retired_in_both_seeds(self, seed):
+        """The inverse of what this class pinned until 2026-09-03, and the
+        SAME invariant: the suppression rule and its exclude glob are ONE
+        mechanism, so they must be present together or absent together —
+        never one without the other (honest_failure_modes #4).
+
+        They are now absent. ee96a446 removed the CAUSE instead of muting the
+        symptom: the federation collector drops peers whose DECLARED role
+        serves no map (fleet_naming serves_map, stamped by fleet_role_stamp.py),
+        so moc3 — gateway-only, no map by design — is never polled and can no
+        longer reach the catch-all at all. Verified live on a map box:
+        non_federating={'moc3.mf.internal': 'declared role serves no map'}.
+
+        Re-adding EITHER half is the failure this now guards: the rule alone is
+        dead weight, and the glob alone would silently blind that vantage to a
+        REAL moc3 federation alarm with nothing owning it. That exact
+        half-state nearly shipped — on the federator box the catch-all is
+        box-TUNED (operator-specific MeshAnchor-peer globs, MF014), so the
+        seed merge kept its copy verbatim and the dead glob survived the
+        retirement until it was removed by hand."""
+        doc = self._seed(seed)
+        ids = {r["id"] for r in doc["rules"]}
+        assert self.RETIRED_MOC3_RULE not in ids, (
+            f"{seed}: {self.RETIRED_MOC3_RULE} is retired — re-adding it "
+            f"re-suppresses a peer the collector already refuses to poll")
+        rule = next(r for r in doc["rules"]
                     if r["id"] == "federation_peer_unhealthy_unexpected")
-        assert any("moc3" in g for g in rule["match"].get("subject_exclude_globs", [])), (
-            f"{seed}: unexpected-peer rule no longer excludes the moc3 canary")
+        globs = rule["match"].get("subject_exclude_globs") or []
+        assert not any("moc3" in g for g in globs), (
+            f"{seed}: the moc3 exclude glob is retired with its rule; leaving "
+            f"it would blind this vantage to a real moc3 alarm ({globs!r})")
 
     def test_gateway_federation_rules_never_page(self):
         """THE noise policy, pinned. Box-down paging ownership stays with the
@@ -727,7 +752,7 @@ class TestFederationPerVantageRow6:
         gateway box's federation rule were ever switched to ntfy, ONE dead
         peer would fan out to a phone page from every vantage that sees it."""
         for r in self._seed("configs/mini_dudeai_rules.fleet_gateway.json")["rules"]:
-            if r["id"] in self.FED_RULES:
+            if r.get("match", {}).get("kind") == "federation_peer_unhealthy":
                 assert r["action"]["kind"] != "ntfy", (
                     f"gateway rule {r['id']} pages — a peer outage would fan out "
                     f"to N pages; escalate/annotate only (structural-dark row 6)")
