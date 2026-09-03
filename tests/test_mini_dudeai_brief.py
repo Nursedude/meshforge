@@ -427,3 +427,91 @@ def test_brief_eval_ledger_basename_is_ssot_pinned():
     from mini_dudeai.brief import _EVAL_LEDGER_BASENAME
     from mini_dudeai.local_brain_eval import EVAL_RESULTS_BASENAME
     assert _EVAL_LEDGER_BASENAME == EVAL_RESULTS_BASENAME
+
+
+# ── 2026-09-03: the END line — the mesh, above the instruments ────────
+# Operator audit (session notes 2026-09-03 close): the brief had 30 lines and
+# none about a message arriving. Every section measured the harness. This line
+# puts the domain's END first so a session can see the mesh flat while the
+# instruments grew — the negative feedback the loop lacked.
+import time as _time
+from mini_dudeai.brief import end_line, read_delivery_snapshot
+
+
+def _snap(ts, last_event_ts, rate=0.968):
+    return {"schema": 1, "host": "meshforge-gw", "ts": ts,
+            "snapshot": {"confirmation_rate": rate, "last_event_ts": last_event_ts,
+                         "state_totals": {"queued": 10, "sent": 9, "confirmed": 8,
+                                          "dropped": 1}}}
+
+
+def test_end_line_absent_snapshot_is_inert_not_a_number():
+    line = end_line(None, None, NOW)
+    assert line.startswith("🎯 END")
+    assert "inert" in line and "no gateway delivery record" in line
+    assert "confirmation_rate" not in line
+
+
+def test_end_line_fresh_snapshot_shows_the_mesh():
+    snap, err = read_delivery_snapshot_from(_snap(NOW - 20, NOW - 61))
+    line = end_line(snap, err, NOW)
+    assert "confirmation_rate 0.968" in line
+    assert "confirmed 8" in line and "dropped 1" in line
+
+
+def test_end_line_stale_snapshot_is_unknown_never_healthy():
+    snap, err = read_delivery_snapshot_from(_snap(NOW - 3600, NOW - 3700))
+    line = end_line(snap, err, NOW)
+    assert "UNKNOWN" in line and "stale" in line
+    assert "confirmation_rate 0.968" not in line
+
+
+def test_end_line_corrupt_snapshot_is_unknown(tmp_path):
+    p = tmp_path / "delivery_snapshot.json"
+    p.write_text("{not json")
+    snap, err = read_delivery_snapshot(str(p), NOW)
+    line = end_line(snap, err, NOW)
+    assert "UNKNOWN" in line and "unreadable" in line
+
+
+def test_end_line_renders_first_after_posture():
+    out = build_brief(_state(), [], NOW, delivery=None, delivery_err=None)
+    lines = [l for l in out.splitlines() if l.strip()]
+    posture = next(i for i, l in enumerate(lines) if l.startswith("🟢"))
+    assert lines[posture + 1].startswith("🎯 END")
+
+
+def test_write_brief_reads_the_snapshot_beside_the_state_home(tmp_path):
+    home = tmp_path
+    (home / "mini_dudeai_history.jsonl").write_text("")
+    snapdir = home / ".local" / "share" / "meshforge"
+    snapdir.mkdir(parents=True)
+    now = _time.time()
+    (snapdir / "delivery_snapshot.json").write_text(json.dumps(_snap(now - 5, now - 30)))
+    text = write_brief(str(home / "mini_dudeai_state.json"),
+                       str(home / "mini_dudeai_history.jsonl"),
+                       str(home / "brief.md"), state=_state(last_tick=now), now_ts=now)
+    assert "confirmation_rate 0.968" in text
+
+
+def test_end_constants_are_the_gateway_probe_s_not_private_copies():
+    """hfm #5: the path and the freshness window are the delivery probes'."""
+    import pytest
+    from mini_dudeai import brief as b
+    # The byte-identical twin (MeshAnchor) has no MeshForge gateway probe
+    # module; the pin is a MeshForge-side contract.
+    g = pytest.importorskip("utils.watchdog_probes_gateway")
+    assert b.DELIVERY_SNAPSHOT_SUBPATH == g._DELIVERY_SNAPSHOT_SUBPATH
+    assert b.END_FRESH_S == g._DELIVERY_SNAPSHOT_FRESH_S
+
+
+def read_delivery_snapshot_from(doc):
+    """Test helper: route a dict through the real reader via a temp file."""
+    import tempfile, os
+    fd, p = tempfile.mkstemp(suffix=".json"); os.close(fd)
+    with open(p, "w") as fh:
+        json.dump(doc, fh)
+    try:
+        return read_delivery_snapshot(p, NOW)
+    finally:
+        os.unlink(p)

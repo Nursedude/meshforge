@@ -145,13 +145,72 @@ def _age(now_ts: float, ts: float | None) -> str:
     return f"{s // 3600}h"
 
 
+#: Reader half of ``gateway.delivery_counters.DELIVERY_SNAPSHOT_STATE_SUBPATH``
+#: and of the delivery probes' freshness window — local copies so the brief
+#: imports no gateway module; test-pinned equal to the writer/probe constants
+#: (honest_failure_modes #5).
+DELIVERY_SNAPSHOT_SUBPATH = os.path.join(
+    ".local", "share", "meshforge", "delivery_snapshot.json")
+END_FRESH_S = 300.0
+
+
+def read_delivery_snapshot(path: str, now_ts: float) -> tuple:
+    """``(snapshot_or_None, error_or_None)`` for the gateway's own delivery
+    record. Absent → ``(None, None)`` (no gateway writes one here — inert).
+    Present but unreadable / misshaped / stale → ``(None, "<why>")``, which the
+    END line renders as UNKNOWN: a blind read must never print a number."""
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except FileNotFoundError:
+        return None, None
+    except (OSError, ValueError):
+        return None, "unreadable or corrupt"
+    if not isinstance(doc, dict) or not isinstance(doc.get("snapshot"), dict):
+        return None, "misshaped"
+    try:
+        age = now_ts - float(doc.get("ts") or 0)
+    except (TypeError, ValueError):
+        return None, "misshaped"
+    if age > END_FRESH_S:
+        return None, f"stale ({int(age)}s old, > {int(END_FRESH_S)}s)"
+    return doc["snapshot"], None
+
+
+def end_line(snapshot: dict | None, err: str | None, now_ts: float) -> str:
+    """ONE line about the domain's END — a message arriving — rendered above
+    every instrument section. Operator audit 2026-09-03: the brief measured
+    only the harness; a session could not see the mesh flat while the
+    instruments grew. Inert where no gateway writes a record; UNKNOWN when the
+    record cannot be trusted; numbers only from a fresh record."""
+    if err:
+        return (f"🎯 END — UNKNOWN: gateway delivery record {err}; do not read "
+                f"the sections below as the mesh being fine")
+    if snapshot is None:
+        return ("🎯 END — no gateway delivery record on this box (inert); the "
+                "mesh's END is the fleet's — read /fleet, not the sections below")
+    tot = snapshot.get("state_totals") or {}
+    rate = snapshot.get("confirmation_rate")
+    rate_s = f"{rate:.3f}" if isinstance(rate, (int, float)) else "n/a"
+    last = snapshot.get("last_event_ts")
+    try:
+        last_s = datetime.datetime.fromtimestamp(float(last)).strftime("%m-%d %H:%M")
+    except (TypeError, ValueError, OverflowError, OSError):
+        last_s = "n/a"
+    return (f"🎯 END — gateway delivery: confirmation_rate {rate_s}, last event "
+            f"{last_s}, lifetime confirmed {tot.get('confirmed', '?')} / "
+            f"dropped {tot.get('dropped', '?')} (sent {tot.get('sent', '?')})")
+
+
 def build_brief(state: dict, history: list[dict], now_ts: float,
                 stale_s: float = DEFAULT_STALE_S, pending_deltas: int = 0,
                 escalation_window_s: float = ESCALATION_WINDOW_S,
                 cadence_triage: dict | None = None,
                 delta_track_record: dict | None = None,
                 rejection_reasons: dict | None = None,
-                eval_summary: dict | None = None) -> str:
+                eval_summary: dict | None = None,
+                delivery: dict | None = None,
+                delivery_err: str | None = None) -> str:
     """Render the warm-start brief markdown from mini's state + recent history.
 
     `pending_deltas` is the count of unratified B3 memory-deltas; when >0 the
@@ -194,6 +253,8 @@ def build_brief(state: dict, history: list[dict], now_ts: float,
         lines.append(f"🟢 alive — {state.get('rule_count', len(rules))} rules, "
                      f"src_errors={state.get('error_count', 0)} this tick."
                      + (f" ({err_names})" if err_names else ""))
+    # The END, above every instrument section (2026-09-03 audit).
+    lines.append(end_line(delivery, delivery_err, now_ts))
 
     # Still active now
     active = [rs for rs in rules.values() if isinstance(rs, dict) and rs.get("currently_active")]
@@ -501,7 +562,12 @@ def write_brief(state_path: str, history_path: str, out_path: str,
     # record (or None) surfaces the tier-L learning trend in the brief.
     eval_summary = _latest_eval_summary(os.path.join(
         os.path.dirname(deltas_path) or ".", _EVAL_LEDGER_BASENAME))
+    # The END line reads the gateway's own delivery record under the same
+    # home the state file lives in (mini's home IS the operator home).
+    delivery, delivery_err = read_delivery_snapshot(os.path.join(
+        os.path.dirname(state_path) or ".", DELIVERY_SNAPSHOT_SUBPATH), now_ts)
     text = build_brief(state or {}, history, now_ts, pending_deltas=pending,
+                       delivery=delivery, delivery_err=delivery_err,
                        cadence_triage=triage if isinstance(triage, dict) else None,
                        delta_track_record=track_record,
                        rejection_reasons=reasons,
