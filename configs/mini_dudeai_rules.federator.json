@@ -149,31 +149,16 @@
       "annotation": "2026-08-05: the watchdog is probing an @rns/<name> with NO listener while the kernel advertises a different one -- so BOTH RNS probes are dark: rns_shared_instance_unresponsive cannot see the #68 connect-hang wedge and rns_namespace_collision cannot see the #69 foreign-owner class. rnsd is FINE; the watchdog is looking in the wrong place. Found live on the federator box, where _read_rns_instance_name() read a stale /root/.reticulum/config (get_real_user_home() is /root under this ROOT service) while rnsd ran --config /etc/reticulum -- 8.8 days blind, the whole time reporting 'rnsd shutting down or not serving'. Fix: reconcile instance_name so the watchdog reads the config rnsd actually runs with (its unit's --config); verify with `sudo ss -xnpl | grep @rns/`. Side-effect-free escalation; NO ntfy page -- this is monitoring blindness, not impaired traffic."
     },
     {
-      "id": "moc3_federation_backoff_known_normal",
-      "match": {
-        "kind": "federation_peer_unhealthy",
-        "peer_glob": "*moc3*"
-      },
-      "action": {
-        "kind": "annotate_digest"
-      },
-      "cooldown_s": 86400,
-      "annotation": "moc3 is gateway-only; permanent federation backoff is EXPECTED. Annotates digest only \u2014 no ntfy. Catch-all unexpected-peer rule deferred to post-soak (needs subject_exclude_globs support to not re-fire moc3). SUPERSEDED 2026-09-02: the peer list now drops boxes whose DECLARED role serves no map (fleet_naming serves_map, stamped by scripts/fleet_role_stamp.py), so moc3 is no longer polled and this rule matches nothing. RETIRE IT -- together with the *moc3* entry in federation_peer_unhealthy_unexpected's subject_exclude_globs -- once every box has rolled BOTH the code and a re-seeded ruleset. Deleting it from the seed before then only makes every box drift (rules_path is the per-box ~/mini_dudeai_rules.json, not this file). The PREVIOUS trigger ('when the RNS roll ends and moc3 rejoins federation') could never fire: the roll ended 2026-07-19 and a gateway-only box cannot rejoin -- its map is disabled BY DESIGN and starting it re-runs the 07-24 deploy incident."
-    },
-    {
       "id": "federation_peer_unhealthy_unexpected",
       "match": {
         "kind": "federation_peer_unhealthy",
-        "subject_glob": "*",
-        "subject_exclude_globs": [
-          "*moc3*"
-        ]
+        "subject_glob": "*"
       },
       "action": {
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer; subject_exclude_globs skips moc3 (handled by moc3_federation_backoff_known_normal). Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) \u2014 e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed."
+      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer. Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) \u2014 e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed. RETIRED 2026-09-03: this rule's moc3 exclusion AND its companion moc3_federation_backoff_known_normal rule are both gone. The federation collector now drops peers whose DECLARED role serves no map (fleet_naming serves_map, stamped by scripts/fleet_role_stamp.py), so moc3 is never polled and can no longer reach this rule at all \u2014 verified live on a map box's /api/status as non_federating={'moc3.mf.internal': 'declared role serves no map'}. A moc3 federation alarm from here is therefore a REAL finding now, not the known-normal it used to be."
     },
     {
       "id": "digest_stale_30m",
