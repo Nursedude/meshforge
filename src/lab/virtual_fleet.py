@@ -175,10 +175,15 @@ def up(workdir: Path, base_port: int) -> int:
             continue
 
         log = open(nd / "rnsd.log", "ab")
+        # rnsd logs via bare print() (RNS.log -> LOG_STDOUT, no flush), so
+        # with stdout redirected to a file it is BLOCK-buffered and the tail
+        # dies with the process when down() has to SIGKILL a wedged rnsd —
+        # exactly the #72 class the uploaded log is meant to show. Unbuffer.
+        rnsd_env = dict(os.environ, PYTHONUNBUFFERED="1")
         proc = subprocess.Popen(  # daemon under our management; reaped by down()
             [RNSD_BIN, "--config", str(nd), "-v"],
             stdout=log, stderr=subprocess.STDOUT,
-            start_new_session=True,
+            start_new_session=True, env=rnsd_env,
         )
         _pidfile(workdir, name).write_text(str(proc.pid))
         logger.info("%s: rnsd spawned (pid %d)", name, proc.pid)

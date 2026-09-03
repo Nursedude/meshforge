@@ -244,15 +244,20 @@ jobs:
           python -m lab.virtual_fleet down --workdir "$RUNNER_TEMP/vfleet" || true
 
       - name: Upload sandbox logs on failure
-        if: failure()
+        # `failure()` is false when the job hits timeout-minutes (GitHub
+        # CANCELS a timed-out job), which is the slow/hang class this job
+        # exists to drill — so also fire on cancelled(). run_attempt in the
+        # name avoids a 409 on "re-run failed jobs" (overwrite defaults false).
+        # `warn` not `ignore`: a zero-match must leave a witness (hfm #9).
+        if: failure() || cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: virtual-fleet-logs
+          name: virtual-fleet-logs-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/vfleet/*/rnsd.log
             ${{ runner.temp }}/vfleet/*/gateway.log
             ${{ runner.temp }}/vfleet/*/echo.log
-          if-no-files-found: ignore
+          if-no-files-found: warn
           retention-days: 7
 
 # NOTE: the old standalone `security` job was consolidated into `lint`
