@@ -109,6 +109,128 @@
 | Pri-2 | **FALSIFIABILITY DRILL — adversarial pass on the INSTRUMENT itself** (queued 2026-09-02 by the operator, for the next Fable session). Scope: `scripts/falsifiability_drill.py` @ `ca9d84c2` (+ `tests/test_falsifiability_drill.py`, `.github/workflows/falsifiability_drill.yml`, and the phase-1 `falsifiability_audit.py` it supersedes). Questions to attack, each with a planted case: (a) ATTRIBUTION — a class whose literal lives only in a helper reached through a *different* module's probe, or via a `cls=` variable, reads `NO-ENTRY-PROBE` or is attributed to the wrong probe; (b) the `named` tag — a test that asserts on a class through a fixture/helper whose SOURCE does not contain the class string is counted `collateral`, so a real catch is under-reported (and the inverse: a test that merely mentions the class in a docstring is counted `named`); (c) list-returning probes — `extend` detection keys on the runner's literal `.extend(probe_x(` shape; a runner refactor silently turns a dead `[]` stub into `None` and every consumer crashes, which the drill then reports as a CATCH; (d) the stuck-loud stub's severity fallback `"degraded"` can dodge a `.severity == "wedge"` assertion and manufacture a `caught-loud` for the wrong reason; (e) baseline caching by test-file tuple — a flaky test in a shared tuple poisons every class sharing it as `baseline-red`; (f) worktree hygiene — a crash mid-mutation leaves `~/.cache/meshforge-fdrill` mutated for the NEXT run (the `finally` restores per class, not per run); (g) the CI job's first measured duration vs the 240-min cap, and whether a runner timeout reads as a FAIL or as silence. Method: plant each shape in a throwaway worktree and run the drill against it — the same discipline the drill imposes on probes; a blessing gate that itself cannot be shown failing is the defect class this arc exists to end. | `model_router --task-kind adversarial_review --running-tier opus` → frontier. The drill is now a STANDING GATE (weekly CI, `--fail-on-survivor`); a gate that over-reports catches manufactures the exact false coverage number phase 1 refused to print, and only an adversarial read of the instrument — not more runs of it — can find that. |
 | — | _(add new upshift rows here as sessions surface review-shaped work)_ | |
 
+## QUEUED 2026-09-03 (Opus 5) — two new mini/watchdog probes, adversarial pass
+
+**Target**: commit **`88f302ac`** — `probe_mini_rule_orphaned_exclusion` and
+`probe_mini_watchdog_source_unwired`, both in `src/utils/watchdog_probes_mini.py`,
+plus `tests/test_probe_mini_rule_orphaned_exclusion.py` (13) and
+`tests/test_probe_mini_watchdog_source_unwired.py` (12).
+
+⚠️ **Review `88f302ac` exactly.** It is pushed, CI-green (5/5, run for that sha),
+and DEPLOYED to all 9 boxes with watchdog+map restarted. I deliberately did not
+land follow-up commits after queueing this, so the sha you review is the sha
+running in production. If you fix something, that becomes a new sha — say so.
+
+**Run it**:
+```bash
+git -C /opt/meshforge show 88f302ac --stat
+python3 -m pytest tests/test_probe_mini_rule_orphaned_exclusion.py \
+                 tests/test_probe_mini_watchdog_source_unwired.py -q   # 25, <1s
+```
+Both probes take pure injection seams (`live_rules=`, `proc_root=`,
+`unit_status=`, `mini_home=`) — no real /proc, no systemctl, no live rules file
+needed. Fixture patterns are in the test files; copy them.
+
+### What they do
+
+`mini_rule_orphaned_exclusion`: a live mini rule carries a
+`subject_exclude_globs` entry that no OTHER live rule of the same `match.kind`
+claims. An exclusion is a deliberate blind spot, safe only while some other rule
+OWNS that subject. Retire the owner and the exclusion silently becomes an
+unwatched hole. Ownership is structural: the glob's literal core
+(`g.strip("*")`) must be matched by another same-kind rule's selector
+(`subject_glob`/`peer_glob`/`source_glob`, or NO selector = matches every
+subject of that kind) which does not itself exclude the same core.
+
+`mini_watchdog_source_unwired`: this box runs `meshforge-watchdog` while the
+mini process actually running here was started with
+`MINI_DUDEAI_ENABLE_WATCHDOG=0` — the watchdog's signals land in a reader that
+is not listening while mini ticks green at `src_errors=0`. Read from the
+WRITER's side (the probe runs inside the watchdog, so its execution proves a
+producer exists) and from the running process's `/proc/<pid>/environ`, never the
+config file.
+
+### Task frame — attack the SEMANTICS, not the doctrine
+
+Do **not** frame this as "does it comply with CLAUDE.md / honest_failure_modes /
+calibrated_claims". I wrote it with those files `@`-included in context every
+turn and consciously applied the checklist; we would be checking the same list,
+and the defect is by definition outside it. The pre-commit hook's own advisory
+("adds 7 except-handler lines in monitor code") points at that same list.
+
+Frame it instead as: **"this is a glob-matching ownership solver and a
+/proc scraper — what do they get wrong on real data?"** That frame is where my
+two self-found defects came from, and where the one below came from.
+
+### Known defect, found while writing this brief — UNFIXED on purpose
+
+`probe_mini_rule_orphaned_exclusion` **silently swallows the `unjudgeable`
+list** whenever at least one exclusion was judged. The bare-`*` case is only
+carried in `Signal.extra`, and on the clean path no Signal is returned — so a
+rule set with one owned exclusion plus one `"*"` exclusion notes a flat
+`clean` and the un-analysable exclusion vanishes with no witness. That is
+honest_failure_modes #9 in the code I wrote to enforce honest_failure_modes.
+The `judged == 0 and unjudgeable` branch only catches the all-unjudgeable case.
+Left unfixed so the reviewed sha equals the deployed sha; fix belongs in your
+pass or a follow-up.
+
+### Specific attack surfaces (where I am least confident)
+
+1. **`core = g.strip("*")` is crude literal extraction.** `?` and `[...]` are
+   NOT stripped, so `moc?` yields core `moc?` and `fnmatch("moc?", "*moc3*")` is
+   False → reports orphaned even when an owner exists. Multi-star globs
+   (`*a*b*` → core `a*b`) put a literal `*` inside the synthetic subject. Is the
+   whole core-extraction approach sound, or does it need a real glob-overlap
+   test?
+2. **Selector vocabularies are treated interchangeably.** All three of
+   `subject_glob`/`peer_glob`/`source_glob` are read as selectors for every
+   kind, but each kind really uses one. A rule carrying an irrelevant key would
+   be credited as an owner.
+3. **"No selector = owns everything" may be too generous.** It makes any
+   kind-only rule an owner. Check that against how `engine.py` actually matches.
+4. **Action kind is ignored.** A rule with `action.kind == "none"` matches the
+   subject but does nothing — is that really an owner? I never check the action.
+5. **`_mini_fleet_env_flag` returns on the FIRST decisive process.** During a
+   mini restart two fleet-preset processes can briefly coexist and the verdict
+   depends on `os.listdir("/proc")` order. Non-deterministic under exactly the
+   condition (a restart) the probe advises.
+6. **Cost.** Both probes run every watchdog tick;
+   `mini_watchdog_source_unwired` shells out via `_resolve_main_pid_status` and
+   walks all of `/proc`. On a Zero 2W / Pi3B that is not free, and
+   "my footprint is the constraint" is an explicit operator rule.
+7. **`probe_mini_rule_orphaned_exclusion` never checks mini is RUNNING.** A
+   stale rules file on a box whose mini is stopped still yields `degraded`
+   about a file nothing reads. Should that be inert/indeterminate?
+
+### What is already verified — do not spend the pass re-deriving it
+
+- 25 unit tests; **8 planted defects, each caught by a distinct test** (prune
+  disabled / provenance guard / tuned-body guard / self-ownership / claw match /
+  unreadable environ / unit-state collapse / stopped-mini disposition).
+- Run against **all 9 boxes' real live rules files** before shipping: 1 true
+  positive (this box's stale bare-IP exclusion, since 08-27), 8 clean. The
+  documented MF014 box-local pattern reads clean — that was the false-positive
+  risk that would have made the probe unusable.
+- Live fleet dispositions after deploy: `clean` on 8 watchdog boxes, `inert` on
+  meshanchor-server (no MeshForge fleet mini). lehua runs no watchdog so neither
+  probe executes there.
+- Closed-enum contract satisfied and CI-green: SIGNAL_CLASSES entry,
+  `note_disposition` on every return path (adoption gate), export, runner call
+  site, a rule in BOTH seeds, documented-classes list, `Signal(cls=<literal>)`
+  for the reachability walker, and the shared `note_unit_presence_gate` rather
+  than a tenth hand copy. Three of those gates failed on me first and were right.
+
+### Context you will want
+
+- The retirement that produced these: `f36c93c2` (moc3 rule + its exclude glob),
+  `0b6a34f6` (`promote_seed_rules --prune`), `44c74599` (guard re-aim).
+- Why `--prune` cannot cure it alone: `merge_seed_rules` is strictly additive,
+  and `--prune` removes only copies it can prove UNMODIFIED, so a box-TUNED rule
+  keeps the exclusion BY DESIGN. That is the half-state these probes exist for.
+- `MINI_DUDEAI_ENABLE_WATCHDOG=0` is CORRECT on a watchdog-less box (lehua,
+  meshanchor-server) — without it the source pins `src_errors=1` forever. The
+  defect is the COMBINATION, never the flag.
+
 ## Conventions for future passes
 
 1. When a review pass closes, add its row HERE in the same commit as the
