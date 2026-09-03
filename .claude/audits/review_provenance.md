@@ -1026,3 +1026,53 @@ Reference tiers, and what phase 2 owes each:
 - `tracer_peer_unreachable` — fires in `test_watchdog_probes.py`; named in `test_honesty_invariants.py`, `test_mini_dudeai_preset.py`, `test_watchdog_lifecycle_fixes_2026_07_26.py`; enum gate only
 - `user_timer_unit_failing` — fires in `test_watchdog_probes.py`; named in `test_lab_propagation_soak.py`, `test_mini_coverage_blind.py`, `test_mini_dudeai_brief.py`; enum gate only
 - `user_unit_inactive` — fires in `test_watchdog_probes.py`
+
+## QUEUED 2026-09-03 (Fable 5.1) — REVERSE-DIRECTION pass on `40e02f2a`: the reviewer's own fix, unreviewed
+
+**Target**: `40e02f2a` — the fix commit from the Fable pass above (row dated
+2026-09-03, "FRONTIER PASS (Fable 5.1) — closes the QUEUED…"). It rewrote both
+probes in `src/utils/watchdog_probes_mini.py`, added
+`mini_dudeai._util.watchdog_feed_enabled`, and is DEPLOYED on 9 boxes with
+watchdogs restarted and seed rules merged — by the same session that wrote it.
+Nobody outside that session has read it. `feedback_review_your_own_fixes` and
+the operator's 09-03 audit request ("we are in a positive feedback loop") make
+this a required pass, not an optional one: **the brake is that a review-born
+fix is not blessed by its own author.** Any model other than Fable 5.1 is the
+right reviewer here; Opus 5 is the natural one (reverse of the usual direction).
+
+**Run it**:
+```bash
+git -C /opt/meshforge show 40e02f2a --stat
+python3 -m pytest tests/test_probe_mini_rule_orphaned_exclusion.py \
+                 tests/test_probe_mini_watchdog_source_unwired.py -q   # 45
+```
+
+**Frame**: not "does it comply". Ask: what does an engine-backed judge over
+OBSERVED subjects get wrong that the old structural one got right? Candidate
+surfaces the author is least sure of:
+1. A hole subject that was NEVER recorded (no rule ever fired on it) is
+   invisible to the observed-subject sample; the structural core is the only
+   fallback and it is skipped when ANY other observed subject is in scope. Is
+   "observed-first, core only when nothing observed is in scope" the right
+   precedence, or does it trade a false page for a false clean?
+2. `extras` of the synthetic Condition are the EXCLUDING rule's own extras. An
+   owner with a stricter extras filter is never credited (conservative), an
+   owner with a looser one always is. Check against `_match_rule` on the
+   `class`-less kinds (federation_peer_unhealthy, tracer, boot_health).
+3. `_read_mini_state` reads a file mini writes atomically; a mid-write read
+   returns the OLD file (fine) — but `STALE_KEY_RETENTION_S` prunes retired
+   rule keys after a window. After that window the retirement case is judged
+   on the structural core only. Is the window long enough for a half-landed
+   retirement to be noticed? (mini's `prune_24h` — read the constant.)
+4. `--preset auto` resolution runs `utils.fleet_hosts.resolve_fleet_hosts(env=<process env>)`
+   as ROOT inside the watchdog. It reads files under the PROCESS's `$HOME`.
+   No template-deployed box exists to witness it live.
+5. Aggregation: `unreadable` outranks `unresolvable` outranks `mixed`. A box
+   with one readable-off mini and one unreadable stray reads `unreadable`
+   (indeterminate), hiding a real OFF. Right call or wrong precedence?
+6. Cost is measured on a Pi5 (255 procs, 15 ms). Not on a Zero 2W.
+
+**Already verified — don't re-derive**: 16 tests red at 88f302ac, green at
+40e02f2a; suite 11398 passed; CI success on 106d9418; live drills on this
+box's real rules+state fire with a named witness; fleet coverage after the roll
+reads the new reason strings on all 8 watchdog boxes.
