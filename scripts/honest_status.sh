@@ -192,31 +192,104 @@ echo "  fleet legs cover $(echo $BOXES | wc -w) box(es) — source: $BOXES_SRC"
 echo
 
 # 1. CI conclusion for the EXACT current HEAD (external, harness-immune).
-if command -v gh >/dev/null 2>&1; then
-  if gh run list --branch main --limit 30 \
-       --json headSha,conclusion,status,databaseId >$HS_TMP/ci.json 2>/dev/null; then
-    read -r ST CC RID < <(HEADFULL="$HEADFULL" HS_CI_JSON="$HS_TMP/ci.json" python3 - <<'PY' 2>/dev/null
-import json, os, sys
+#
+# TWO sources, on purpose. `gh run list` is cheap, but it is a WINDOWED view of
+# the Actions runs API, and that view transiently LAGS /commits/<sha>/check-runs
+# in the minute after a run finishes — observed twice on 2026-09-03, on two
+# different SHAs whose CI was complete and green both times. This leg used to
+# read "absent from the listing" as "no CI run exists", so the check of record
+# reported UNKNOWN over green work. That is the detector-defect class from its
+# other side: a gate that cries UNKNOWN on healthy work gets tuned out, and then
+# a REAL unknown has nowhere to stand out.
+#
+# So absence in the listing is never a verdict. It ESCALATES to the
+# authoritative per-SHA endpoint, and only "absent from BOTH" is no-run-found.
+#
+# The states stay separate (honest_failure_modes #1 — a degraded value must not
+# overlap the healthy domain): query-failed, unparseable, absent-from-both,
+# still-running, and a real conclusion each say their own thing. "The query
+# broke" must NEVER render as "you haven't pushed yet" — that reading sends you
+# to look at your git remote instead of your credentials.
+_ci_nwo() {   # owner/repo from the origin remote; ssh and https forms both
+  local u
+  u=$(git -C "$REPO" config --get remote.origin.url 2>/dev/null) || return 1
+  [ -n "$u" ] || return 1
+  u=${u%.git}
+  printf '%s\n' "$u" | awk -F'[/:]' 'NF>1 {print $(NF-1)"/"$NF}'
+}
+
+# The authoritative per-SHA view. Echoes exactly one state:
+#   HIT success <n> | HIT failure <names> | PENDING <names> | NONE | FAIL <why>
+_ci_check_runs() {
+  local nwo
+  nwo=$(_ci_nwo) || { echo "FAIL cannot-resolve-owner/repo-from-origin"; return 0; }
+  if ! gh api "repos/$nwo/commits/$HEADFULL/check-runs" \
+        >"$HS_TMP/ci_cr.json" 2>"$HS_TMP/ci_cr.err"; then
+    echo "FAIL $(head -c 120 "$HS_TMP/ci_cr.err" | tr '\n' ' ')"; return 0
+  fi
+  HS_CR="$HS_TMP/ci_cr.json" python3 - <<'PY'
+import json, os
+try:
+    d = json.load(open(os.environ["HS_CR"]))
+except Exception as e:
+    print(f"FAIL unparseable-check-runs:{type(e).__name__}"); raise SystemExit
+runs = d.get("check_runs") or []
+if not runs:
+    print("NONE"); raise SystemExit
+pending = [r.get("name", "?") for r in runs if r.get("status") != "completed"]
+if pending:
+    print("PENDING " + ",".join(pending[:4])); raise SystemExit
+# neutral/skipped are not failures — a skipped optional check must not turn a
+# green head red (the inverse of the bug this whole block fixes).
+bad = [f"{r.get('name','?')}={r.get('conclusion')}" for r in runs
+       if r.get("conclusion") not in ("success", "neutral", "skipped")]
+print("HIT failure " + ",".join(bad[:4]) if bad else f"HIT success {len(runs)}")
+PY
+}
+
+if ! command -v gh >/dev/null 2>&1; then
+  unk "CI($HEAD)" "gh not installed — cannot verify CI externally"
+elif ! gh run list --branch main --limit 30 \
+        --json headSha,conclusion,status,databaseId \
+        >"$HS_TMP/ci.json" 2>"$HS_TMP/ci.err"; then
+  unk "CI($HEAD)" "'gh run list' FAILED (auth/network — NOT evidence of no run): $(head -c 120 "$HS_TMP/ci.err" | tr '\n' ' ')"
+else
+  read -r TAG ST CC RID < <(HEADFULL="$HEADFULL" HS_CI_JSON="$HS_TMP/ci.json" python3 - <<'PY'
+import json, os
 sha = os.environ["HEADFULL"]
 try:
     runs = json.load(open(os.environ["HS_CI_JSON"]))
 except Exception:
-    sys.exit()
+    print("PARSEFAIL - - -"); raise SystemExit
 for r in runs:
     if r.get("headSha") == sha:
-        print(r.get("status",""), r.get("conclusion",""), r.get("databaseId",""))
+        print("HIT", r.get("status") or "-", r.get("conclusion") or "-",
+              r.get("databaseId") or "-")
         break
+else:
+    print("NOMATCH - - -")
 PY
 )
-    if [ -z "${ST:-}" ]; then unk "CI($HEAD)" "no CI run found for this SHA (pushed yet?)"
-    elif [ "$ST" != "completed" ]; then unk "CI($HEAD)" "run $RID still $ST"
-    elif [ "$CC" = "success" ]; then ok "CI($HEAD)" "run $RID success"
-    else bad "CI($HEAD)" "run $RID conclusion=$CC"; fi
-  else
-    unk "CI($HEAD)" "gh present but 'gh run list' failed (auth?)"
-  fi
-else
-  unk "CI($HEAD)" "gh not installed — cannot verify CI externally"
+  case "${TAG:-PARSEFAIL}" in
+    HIT)
+      if [ "$ST" != "completed" ]; then unk "CI($HEAD)" "run $RID still $ST"
+      elif [ "$CC" = "success" ]; then ok "CI($HEAD)" "run $RID success"
+      else bad "CI($HEAD)" "run $RID conclusion=$CC"; fi ;;
+    PARSEFAIL)
+      unk "CI($HEAD)" "'gh run list' returned unparseable JSON — the QUERY broke; this is not evidence about the run" ;;
+    *)
+      # Absent from the windowed listing. Ask the authoritative endpoint before
+      # calling it absent at all (the 2026-09-03 lag).
+      CR=$(_ci_check_runs)
+      case "$CR" in
+        "HIT success"*) ok  "CI($HEAD)" "check-runs ${CR#HIT success } check(s) success (runs listing lagged)" ;;
+        "HIT failure"*) bad "CI($HEAD)" "check-runs failing: ${CR#HIT failure }" ;;
+        PENDING*)       unk "CI($HEAD)" "check-runs still running: ${CR#PENDING }" ;;
+        NONE)           unk "CI($HEAD)" "absent from BOTH the runs listing and check-runs for this SHA (pushed yet?)" ;;
+        FAIL*)          unk "CI($HEAD)" "not in runs listing; check-runs fallback FAILED (query, not verdict): ${CR#FAIL }" ;;
+        *)              unk "CI($HEAD)" "not in runs listing; check-runs fallback returned an unrecognised state: $CR" ;;
+      esac ;;
+  esac
 fi
 
 # 2. Fleet SHA drift — each box's HEAD vs this repo's HEAD (external).
