@@ -87,6 +87,8 @@ from utils.watchdog_probes import (
     probe_meshtasticd_vsz_leak,
     probe_phoneapi_tcp_leak,
     probe_queue_backlog,
+    probe_mini_rule_orphaned_exclusion,
+    probe_mini_watchdog_source_unwired,
     probe_rules_seed_drift,
     probe_foundation_drift,
     probe_parity_drift,
@@ -784,6 +786,12 @@ def run_all_probes(
     if sig is not None:
         signals.append(sig)
     sig = probe_rules_seed_drift()
+    if sig is not None:
+        signals.append(sig)
+    sig = probe_mini_rule_orphaned_exclusion()
+    if sig is not None:
+        signals.append(sig)
+    sig = probe_mini_watchdog_source_unwired()
     if sig is not None:
         signals.append(sig)
     sig = probe_memory_index_oversize()

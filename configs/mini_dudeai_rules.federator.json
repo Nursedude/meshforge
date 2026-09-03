@@ -746,6 +746,32 @@
       "annotation": "Issue #79 \u2014 the box's live ~/mini_dudeai_rules.json is missing rule ids its role seed carries (a seed bump didn't reach this box). Fix: merge the new seed rules into the live file via the candidate flow (preserve box-local rules). Side-effect-free escalation; NO ntfy page."
     },
     {
+      "id": "mini_rule_orphaned_exclusion_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "mini_rule_orphaned_exclusion",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-09-03 \u2014 a live mini rule on this box excludes a subject that no other rule of the same kind watches. An exclude glob is a deliberate blind spot, safe ONLY while another rule owns that subject; when the owner is retired the exclusion outlives it and a real event on that subject is silently dropped. Born from the moc3 retirement (f36c93c2): merge_seed_rules is strictly additive and promote_seed_rules --prune keeps box-TUNED rules verbatim BY DESIGN, so a retirement lands fully on boxes running an unmodified seed copy and HALF on any box that tuned it \u2014 the federator hit exactly that. The seed side is test-guarded; this watches the LIVE copies, the half that actually runs. Fix: drop the stale exclusion, or restore an owner. Side-effect-free escalation; NO ntfy page. The documented box-local pattern (a local *_known_normal rule plus its matching exclude, MF014) reads clean \u2014 the local rule is the owner."
+    },
+    {
+      "id": "mini_watchdog_source_unwired_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "mini_watchdog_source_unwired",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "2026-09-03 \u2014 this box runs meshforge-watchdog while the mini process actually running here was started with MINI_DUDEAI_ENABLE_WATCHDOG=0, so every signal the watchdog emits lands in a reader that is not listening and mini reads GREEN at src_errors=0. The flag is CORRECT and required on a box with no watchdog (it stops a permanent source_error_watchdog), so it cannot be removed \u2014 the defect is the COMBINATION, and it arrives the day a watchdog is installed on such a box and nobody flips the flag back. The loud polarity (flag on, no watchdog) already pins src_errors every tick; this closes the direction that never complains. Fix: set the flag to 1 AND restart the mini user unit \u2014 editing the env file alone leaves the running process on its old environ. Side-effect-free escalation; NO ntfy page."
+    },
+    {
       "id": "memory_index_oversize_any",
       "match": {
         "kind": "signal_class",

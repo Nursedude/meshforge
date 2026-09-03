@@ -6,6 +6,7 @@ Part of the ``watchdog_probes`` split (2026-06-09) — import via the
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import os
 import re
@@ -16,7 +17,9 @@ from utils.watchdog_probe_core import (
     note_state_write_failure,
     Signal,
     _read_deployment_declaration_status,
+    _resolve_main_pid_status,
     note_disposition,
+    note_unit_presence_gate,
 )
 
 # ─────────────────────────────────────────────────────────────────────
@@ -509,6 +512,301 @@ def probe_rules_seed_drift(
         )
     except Exception:
         note_disposition("rules_seed_drift", "indeterminate",
+                         reason="unexpected probe error")
+        return None
+
+
+# Selector keys a rule may use to claim subjects. A rule with NONE of these
+# matches every subject of its kind, which makes it a legitimate owner.
+_MINI_SELECTOR_KEYS = ("subject_glob", "peer_glob", "source_glob")
+
+
+def _mini_rule_covers(rule: dict, core: str) -> bool:
+    """Does ``rule`` actually watch a subject named ``core``?
+
+    Structural, never name-based: a rule owns the subject if one of its
+    selectors matches AND it does not exclude the same subject itself (a
+    second catch-all that also excludes the core owns nothing).
+    """
+    m = rule.get("match") or {}
+    sels = [m[k] for k in _MINI_SELECTOR_KEYS if isinstance(m.get(k), str)]
+    if sels and not any(fnmatch.fnmatch(core, s) for s in sels):
+        return False
+    for ex in (m.get("subject_exclude_globs") or []):
+        if isinstance(ex, str) and fnmatch.fnmatch(core, ex):
+            return False
+    return True
+
+
+def probe_mini_rule_orphaned_exclusion(
+    *,
+    mini_home: Optional[str] = None,
+    live_rules: Optional[list] = None,
+) -> Optional[Signal]:
+    """A live mini rule excludes a subject that no other rule watches.
+
+    An exclude glob is a DELIBERATE blind spot, and it is only safe while some
+    other rule of the same kind owns that subject. Retire the owner and the
+    exclusion silently becomes an unwatched hole — nothing escalates, nothing
+    annotates, and the box looks clean because the rule that would have fired
+    is the one that was excluded.
+
+    This watches the LIVE box copies, which is the half nothing guarded. The
+    seed side has tests; but ``merge_seed_rules`` is strictly additive and
+    ``--prune`` deliberately keeps box-TUNED rules, so a retirement lands fully
+    on the boxes running an unmodified seed copy and HALF on any box that tuned
+    it. Measured on the federator during the moc3 retirement (2026-09-03).
+
+    Legitimate and quiet: the documented box-local pattern of a local
+    ``*_known_normal`` rule plus a matching exclude glob (operator-specific,
+    MF014, never in the repo seed) — the local rule IS the owner.
+    """
+    cls = "mini_rule_orphaned_exclusion"
+    try:
+        if live_rules is None:
+            home = mini_home or _resolve_mini_home()
+            if not home:
+                note_disposition(cls, "indeterminate",
+                                 reason="operator home unresolvable")
+                return None
+            try:
+                with open(os.path.join(home, _MINI_RULES_NAME),
+                          "r", encoding="utf-8") as fh:
+                    live_rules = (json.load(fh) or {}).get("rules") or []
+            except FileNotFoundError:
+                note_disposition(cls, "inert",
+                                 reason="live rules absent; mini not seeded here")
+                return None
+            except (OSError, ValueError, AttributeError):
+                # Present but unreadable is unobservable, never "no exclusions"
+                # — an empty ruleset and a corrupt one must not agree.
+                note_disposition(cls, "indeterminate",
+                                 reason="live rules file unreadable or corrupt")
+                return None
+
+        rules = [r for r in live_rules if isinstance(r, dict) and r.get("id")]
+        orphaned: list = []
+        unjudgeable: list = []
+        judged = 0
+        for r in rules:
+            m = r.get("match") or {}
+            for g in (m.get("subject_exclude_globs") or []):
+                if not isinstance(g, str):
+                    continue
+                core = g.strip("*")
+                if not core:
+                    # A bare "*" exclusion disables the rule outright; that is
+                    # a different pathology and nothing here can name an owner
+                    # for "everything". Counted, never silently dropped.
+                    unjudgeable.append(f"{r['id']}:{g}")
+                    continue
+                judged += 1
+                kind = m.get("kind")
+                # No self-ownership clause is needed: `core` is derived FROM
+                # this rule's own exclude glob, so `_mini_rule_covers` always
+                # sees the rule excluding that very core and rejects it. An
+                # `id != id` guard here would be decorative — a condition no
+                # test could ever fail, which this repo does not count as
+                # evidence. test_a_rule_cannot_own_its_own_exclusion pins the
+                # behaviour through the real mechanism instead.
+                owner = next(
+                    (o["id"] for o in rules
+                     if (o.get("match") or {}).get("kind") == kind
+                     and _mini_rule_covers(o, core)),
+                    None)
+                if owner is None:
+                    orphaned.append((r["id"], g))
+
+        if orphaned:
+            shown = ", ".join(f"{rid} excludes {g}" for rid, g in orphaned[:4])
+            more = f" (+{len(orphaned) - 4} more)" if len(orphaned) > 4 else ""
+            return Signal(
+                # LITERAL on purpose: TestSignalClassWiring's AST walker
+                # resolves only `Signal(cls="...")` constants, so a `cls`
+                # variable here would make this probe invisible to the
+                # run_all_probes reachability gate (it would read as "emitted
+                # by no probe" — the synth_soak gap the gate exists to catch).
+                cls="mini_rule_orphaned_exclusion",
+                subject="mini-dudeai",
+                severity="degraded",
+                detail=(
+                    f"{len(orphaned)} orphaned exclusion(s) in this box's live "
+                    f"mini rules — {shown}{more}. An exclude glob is a "
+                    f"deliberate blind spot that is only safe while another "
+                    f"rule of the same kind OWNS that subject; no such rule "
+                    f"exists here, so a real event on that subject is silently "
+                    f"dropped. Usually a half-landed retirement: the owner was "
+                    f"retired and the exclusion outlived it (a box-TUNED rule "
+                    f"is kept verbatim by promote_seed_rules --prune BY "
+                    f"DESIGN). Drop the exclusion, or restore an owner."
+                ),
+                extra={"orphaned": [f"{rid}:{g}" for rid, g in orphaned],
+                       "unjudgeable": unjudgeable},
+            )
+
+        if judged == 0 and unjudgeable:
+            note_disposition(cls, "indeterminate",
+                             reason="every exclusion is a bare '*' — no owner "
+                                    "is nameable for 'everything'")
+            return None
+        note_disposition(cls, "clean")
+        return None
+    except Exception:
+        note_disposition(cls, "indeterminate",
+                         reason="unexpected probe error")
+        return None
+
+
+# The env flag that switches mini's watchdog (signal_class) feed off, and the
+# cmdline marks that identify the FLEET-preset mini process. A claw instance
+# runs --preset standalone and reads no watchdog document, so it is not a
+# consumer of this contract and must not be matched.
+_MINI_WATCHDOG_ENV_FLAG = "MINI_DUDEAI_ENABLE_WATCHDOG"
+_MINI_FLEET_CMDLINE_MARKS = ("mini_dudeai", "meshforge_fleet")
+_WATCHDOG_UNIT = "meshforge-watchdog"
+
+
+def _mini_fleet_env_flag(proc_root: str = "/proc") -> tuple:
+    """``(state, evidence)`` for the RUNNING fleet-mini's watchdog flag.
+
+    Reads ``/proc/<pid>/environ`` — the environment the process was actually
+    started with — never ``~/.config/meshforge/mini_dudeai.env``. A config file
+    is the wiring; the live environ is the consumer of record, and the two
+    diverge exactly when someone edits the file without restarting the unit
+    (calibrated_claims #7).
+
+    ``state`` is one of ``"off"``, ``"on"``, ``"no_process"``, ``"unreadable"``.
+    """
+    seen_any = False
+    unreadable = False
+    try:
+        names = [n for n in os.listdir(proc_root) if n.isdigit()]
+    except OSError:
+        return "unreadable", "cannot list /proc"
+    for name in names:
+        try:
+            with open(os.path.join(proc_root, name, "cmdline"), "rb") as fh:
+                cmdline = fh.read().decode("utf-8", "replace")
+        except OSError:
+            continue  # a process that exited between listdir and read
+        if not all(mark in cmdline for mark in _MINI_FLEET_CMDLINE_MARKS):
+            continue
+        seen_any = True
+        try:
+            with open(os.path.join(proc_root, name, "environ"), "rb") as fh:
+                env_blob = fh.read().decode("utf-8", "replace")
+        except OSError:
+            # Present but unreadable is NOT "flag absent" — an empty read and a
+            # permission failure must never agree (honest_failure_modes #1).
+            unreadable = True
+            continue
+        for entry in env_blob.split("\0"):
+            key, _, val = entry.partition("=")
+            if key == _MINI_WATCHDOG_ENV_FLAG:
+                if val.strip() == "0":
+                    return "off", f"pid {name} started with {key}=0"
+                return "on", f"pid {name} has {key}={val.strip()!r}"
+    if unreadable:
+        return "unreadable", "mini process found but its environ is unreadable"
+    if seen_any:
+        # Flag simply unset — the preset default is ON.
+        return "on", "flag unset; preset default enables the watchdog feed"
+    return "no_process", "no fleet-preset mini process found"
+
+
+def probe_mini_watchdog_source_unwired(
+    *,
+    proc_root: str = "/proc",
+    mini_home: Optional[str] = None,
+    systemctl_path: str = "systemctl",
+    unit_status: Optional[str] = None,
+) -> Optional[Signal]:
+    """This box produces watchdog signals into a mini that switched them off.
+
+    ``MINI_DUDEAI_ENABLE_WATCHDOG=0`` is CORRECT and required on a box that runs
+    no MeshForge watchdog — the source would otherwise emit
+    ``source_error_watchdog`` every tick and pin ``src_errors=1`` forever
+    (declared-absent ≠ unobservable ≠ error). So the flag cannot be removed; the
+    defect is the COMBINATION, and it arrives the day a watchdog is installed on
+    such a box and nobody flips the flag back. lehua's env file documents that
+    transition in prose — *"FLIP TO 1 the day a watchdog is installed here, or
+    the dead-watchdog rule stays blind"* — and nothing enforced it.
+
+    Detected from the WRITER's side on purpose: this probe runs inside the
+    watchdog, so its own execution is the evidence that a producer exists. The
+    reader half is read from the running process's ``/proc/<pid>/environ``.
+
+    Both polarities are now covered, which is the point: the loud direction
+    (flag on, no watchdog) already pins ``src_errors``; this is the direction
+    that never complains — mini keeps ticking green while every signal this
+    watchdog emits falls into a reader that is not listening.
+    """
+    cls = "mini_watchdog_source_unwired"
+    try:
+        status = unit_status
+        if status is None:
+            status, _pid = _resolve_main_pid_status(
+                _WATCHDOG_UNIT, systemctl_path=systemctl_path)
+        if status != "ok":
+            # ORGAN-PRESENCE family (stopped_is_inert=True): with no watchdog
+            # running there is no producer, so there is no contradiction to
+            # find — absent and stopped are both genuinely quiet. A systemctl
+            # we could not RUN is NOT an observation of absence and must stay
+            # indeterminate. The mechanism is the shared gate (one
+            # implementation, per TestTriStateHelperContract); only the reason
+            # strings are this probe's judgement, and they still name which of
+            # absent/stopped was actually seen.
+            note_unit_presence_gate(
+                cls, status,
+                absent_reason=(
+                    f"no meshforge-watchdog producing here (unit {status}) — "
+                    f"nothing to contradict"
+                    + ("; service_inactive owns the stopped unit"
+                       if status == "down" else "")),
+                unresolved_reason="meshforge-watchdog unit state unresolvable",
+                stopped_is_inert=True,
+            )
+            return None
+
+        state, evidence = _mini_fleet_env_flag(proc_root)
+        if state == "off":
+            return Signal(
+                cls="mini_watchdog_source_unwired",   # literal — see above
+                subject="mini-dudeai",
+                severity="degraded",
+                detail=(
+                    f"this box runs meshforge-watchdog but its mini has the "
+                    f"watchdog feed SWITCHED OFF ({evidence}) — every signal "
+                    f"this watchdog emits lands in a reader that is not "
+                    f"listening, while mini keeps ticking at src_errors=0 and "
+                    f"reads green. Almost always a box that legitimately had "
+                    f"no watchdog (where the flag is REQUIRED) and later got "
+                    f"one without the flag being flipped back. Fix: set "
+                    f"{_MINI_WATCHDOG_ENV_FLAG}=1 in the mini env file and "
+                    f"RESTART the user unit — editing the file alone leaves "
+                    f"the running process on its old environ."
+                ),
+                extra={"evidence": evidence, "flag": _MINI_WATCHDOG_ENV_FLAG},
+            )
+        if state == "on":
+            note_disposition(cls, "clean")
+            return None
+        if state == "no_process":
+            home = mini_home or _resolve_mini_home()
+            rules = os.path.join(home, _MINI_RULES_NAME) if home else None
+            if rules and os.path.exists(rules):
+                note_disposition(
+                    cls, "indeterminate",
+                    reason="mini is seeded here but not running — its live env "
+                           "is unreadable (user_unit_inactive owns a stopped mini)")
+            else:
+                note_disposition(cls, "inert",
+                                 reason="no mini on this box; nothing to wire")
+            return None
+        note_disposition(cls, "indeterminate", reason=evidence)
+        return None
+    except Exception:
+        note_disposition(cls, "indeterminate",
                          reason="unexpected probe error")
         return None
 
