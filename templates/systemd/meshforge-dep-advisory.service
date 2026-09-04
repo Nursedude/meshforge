@@ -12,6 +12,18 @@ Type=oneshot
 # already provides HOME).
 ExecStart=/opt/meshforge/scripts/dep_advisory_check.py
 # 9 boxes over ssh plus deduped advisory queries; generous but bounded.
+# Exit 1 means "advisories were FOUND" — real news, but the job did its job.
+# Exit 2 means "the fleet could not be assessed" (gh unauthenticated, no box
+# reachable, a partial view). Only the second is a broken instrument, so only
+# the second may fail the unit.
+#
+# Deliberately NOT the ecosystem_ci_status.sh shape, which exits 1 on findings
+# and so sits permanently `failed` — mini's user_timer_unit_failing_any then
+# escalates forever and a human has to REMEMBER the exception (it is written
+# down in the operator's notes as a known false positive). A unit whose health
+# tracks the NEWS rather than the OBSERVATION is an instrument aimed one notch
+# off: findings belong in ~/.meshforge-dep-ADVISORY, blindness belongs here.
+SuccessExitStatus=1
 TimeoutStartSec=900
 StandardOutput=journal
 StandardError=journal
