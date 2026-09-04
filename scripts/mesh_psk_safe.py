@@ -49,6 +49,17 @@ import sys
 # found" and printed "AQ==" unredacted.
 PSK_RE = re.compile(r'("psk"\s*:\s*")([A-Za-z0-9+/=]{2,})(")')
 URL_RE = re.compile(r'https://meshtastic\.org/e/#[A-Za-z0-9_\-]+')
+# `--info` also renders the device's NETWORK config, whose wifiPsk is a
+# cleartext credential. Redacting only the channel psk left it printed in full
+# (found 2026-09-04 reading a bot radio through this very tool). Any *Psk /
+# *Password field is redacted by SHAPE, so a future firmware field does not
+# have to be predicted by name to be covered.
+# The negative lookahead makes _redact idempotent: without it a second pass
+# re-redacts the `<redacted:...>` marker this rule just wrote (its `[^"]+` body
+# matches the marker), so redacting twice yielded a different string than once.
+SECRET_FIELD_RE = re.compile(
+    r'("(?:[A-Za-z]*(?:[Pp]sk|[Pp]assword|[Ss]ecret|[Tt]oken))"\s*:\s*")'
+    r'(?!<redacted:)([^"]+)(")')
 B64_32 = re.compile(r'^[A-Za-z0-9+/]{43}=$')  # 32-byte base64
 
 # Tri-state channel-lookup status (honest_failure_modes point 1: a transport
@@ -68,6 +79,11 @@ def _hash16(s: str) -> str:
 
 def _redact(text: str) -> str:
     text = PSK_RE.sub(lambda m: f'{m.group(1)}<redacted:sha256:{_hash8(m.group(2))}>{m.group(3)}', text)
+    # SECRET_FIELD_RE runs after PSK_RE (which already replaced channel psks
+    # with a <redacted:...> marker, so it is idempotent over them) and catches
+    # every other credential-shaped field, wifiPsk chief among them.
+    text = SECRET_FIELD_RE.sub(
+        lambda m: f'{m.group(1)}<redacted:sha256:{_hash8(m.group(2))}>{m.group(3)}', text)
     text = URL_RE.sub(lambda m: f'<channel-url:sha256:{_hash8(m.group(0))}>', text)
     return text
 
