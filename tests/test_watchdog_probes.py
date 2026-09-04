@@ -6661,6 +6661,47 @@ class TestNtfyAckStale:
 # ─────────────────────────────────────────────────────────────────────
 
 
+    # 2026-09-03: the signal used to fire at the very moment the NEW weekly
+    # page landed (the cron judges last week's page in the same run that sends
+    # this week's) and read as "the tap you just made failed". It must name
+    # WHICH page went un-acked, and the current button label.
+    def test_names_the_unacked_page_and_the_fresh_one(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        old_ping, new_ping = 1788000000, 1788604800
+        doc = json.dumps({"consecutive_unacked_pings": 1,
+                          "last_ping_ts": new_ping,
+                          "unacked_ping_ts": old_ping})
+        probe_ntfy_ack_stale(state_text=doc, state_mtime=None, state_path=sp)
+        sig = probe_ntfy_ack_stale(state_text=doc, state_mtime=None, state_path=sp)
+        assert sig is not None
+        assert "UNCONFIRMED" in sig.detail
+        assert time.strftime("%m-%d %H:%M", time.localtime(old_ping)) in sig.detail
+        assert "A fresh page went out" in sig.detail
+        assert time.strftime("%m-%d %H:%M", time.localtime(new_ping)) in sig.detail
+        assert "Confirm receipt" in sig.detail      # the label on the button
+        assert "Got it" not in sig.detail           # the label that never existed
+        assert sig.extra["unacked_ping_ts"] == old_ping
+
+    def test_state_without_unacked_ping_ts_still_fires(self, tmp_path):
+        """A state file written by the pre-09-03 script (no unacked_ping_ts)
+        must still surface the condition — the new field is an enrichment,
+        never a precondition."""
+        sp = str(tmp_path / "d.json")
+        doc = json.dumps({"consecutive_unacked_pings": 1, "last_ping_ts": 1788000000})
+        probe_ntfy_ack_stale(state_text=doc, state_mtime=None, state_path=sp)
+        sig = probe_ntfy_ack_stale(state_text=doc, state_mtime=None, state_path=sp)
+        assert sig is not None and "UNCONFIRMED" in sig.detail
+        assert "is the one that went un-acked" not in sig.detail
+        assert sig.extra["unacked_ping_ts"] is None
+
+    def test_bool_unacked_ping_ts_is_ignored(self, tmp_path):
+        sp = str(tmp_path / "d.json")
+        doc = json.dumps({"consecutive_unacked_pings": 1, "last_ping_ts": 5,
+                          "unacked_ping_ts": True})
+        probe_ntfy_ack_stale(state_text=doc, state_mtime=None, state_path=sp)
+        sig = probe_ntfy_ack_stale(state_text=doc, state_mtime=None, state_path=sp)
+        assert sig is not None and sig.extra["unacked_ping_ts"] is None
+
 class TestHistoryWriteFailure:
     """mini loop alive (state.json last_tick recent) + cumulative fires advancing
     but history.jsonl mtime frozen = a swallowed history-write failure (audit #8).

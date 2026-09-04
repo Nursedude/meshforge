@@ -86,9 +86,23 @@ you. It is also the escalation backbone Options 1 & 2 require.
 - **Phase 3 — the human's device: operator-ack heartbeat (Opt 2). BUILT
   2026-06-18.** `scripts/fleet_ntfy_ack.sh` (hourly manager-box cron) sends a
   **weekly** tap-to-ack page to the fleet topic carrying an ntfy `http` **action
-  button** ("Got it"); tapping it makes the **phone POST to a dedicated ack-topic**
-  (`<fleet>-ack`) — no public ingress needed, since VolcanoAI has none (MF015).
-  The cron polls that ack-topic, tracks `consecutive_unacked_pings`, escalates via
+  button** ("Confirm receipt"); tapping it makes the **phone POST an ack** — no
+  public ingress needed, since VolcanoAI has none (MF015).
+  **⚠️ Re-aimed 2026-09-03:** the ack used to go to a dedicated side topic
+  (`<fleet>-ack`) only the poller read, so a tap had NO visible effect on the
+  device and, one minute later, the fleet paged "ack UNCONFIRMED" (the cron
+  judges LAST week's page in the same run that sends this week's). The operator
+  tapped four times in four seconds and reported the button broken while the
+  server held all four acks — a record nobody can see is not a receipt (MF018).
+  Now the tap publishes a low-priority **"Receipt confirmed"** message onto the
+  **fleet topic itself**, so the phone sees its own ack land within a second;
+  the poller matches that title exactly + a body starting `ack` (a loose
+  substring on the fleet topic would let `backoff` in a real page forge a
+  receipt), still polls the legacy `-ack` topic for pages delivered before the
+  change, and records `unacked_ping_ts` so the probe names WHICH page went
+  un-acked. Drill-verified on a throwaway topic (simulated tap counted, decoy
+  ignored); the phone-side render is again only provable by a live tap.
+  The cron polls for the ack, tracks `consecutive_unacked_pings`, escalates via
   the Phase-1 **email** backbone at ≥2 unacked weeks, and writes
   `~/ntfy_ack_state.json`. `probe_ntfy_ack_stale` (read-only) surfaces unacked
   weeks into mini's brief + `/fleet` (degraded; wedge at ≥2); INERT until first

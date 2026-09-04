@@ -166,12 +166,57 @@ class TestNtfyAckActionIsPostOnly:
         assert m, "Actions header missing"
         action = m.group(1)
         assert action.startswith("http, "), action
-        assert "method=POST" in action and "body=ack" in action
+        assert "method=POST" in action, action
+        # the body rides the ONE shared constant (hfm #5); resolve it and check
+        # the tap still publishes an "ack"
+        assert "body=$ACK_BODY" in action, action
+        body = re.search(r'^ACK_BODY="([^"]*)"', text, re.M)
+        assert body and body.group(1).lower().startswith("ack"), body
 
     def test_no_get_publish_url_action_remains(self):
         """A view action opening /publish?message=ack is ack-able by any
         link-prefetcher — a forged receipt."""
         assert "publish?message=ack" not in self.SH.read_text()
+
+    # 2026-09-03: the tap must be VISIBLE on the device. The ack publishes onto
+    # the fleet topic itself (the phone sees "Receipt confirmed" land at once),
+    # not onto a side topic only the poller reads — four taps in four seconds
+    # on a button that "did nothing" while the server held all four.
+    def test_ack_lands_on_the_fleet_topic_with_a_title(self):
+        text = self.SH.read_text()
+        m = re.search(r'-H "Actions: ([^"]+)"', text)
+        action = m.group(1)
+        assert "https://ntfy.sh/$TOPIC," in action, action       # not $ACK_TOPIC / -ack
+        assert "headers.Title=$ACK_TITLE" in action, action
+        assert "clear=true" in action
+
+    def test_poll_filter_is_exact_on_the_fleet_topic(self):
+        """On the fleet topic a loose 'ack' substring would let 'backoff' /
+        'stack' / 'track' in a real page forge a receipt."""
+        text = self.SH.read_text()
+        assert 'if str(o.get("title", "")) != ack_title:' in text
+        assert 'startswith("ack")' in text
+        # ONE constant feeds both the action header and the filter (hfm #5)
+        assert text.count('ACK_TITLE="Receipt confirmed"') == 1
+        assert 'poll_acks "$TOPIC" strict' in text
+
+    def test_no_comma_in_action_values(self):
+        """A comma inside any headers.*/body value splits the simple-format
+        action and the server drops the button."""
+        text = self.SH.read_text()
+        for var in ("ACK_TITLE", "ACK_BODY", "BUTTON_LABEL"):
+            m = re.search(rf'^{var}="([^"]*)"', text, re.M)
+            assert m, var
+            assert "," not in m.group(1), (var, m.group(1))
+
+    def test_button_label_matches_everywhere(self):
+        """The probe, the email and the page must all name the SAME button —
+        the probe said 'Got it' for 77 days about a button labeled
+        'Confirm receipt'."""
+        probe = (REPO_ROOT / "src" / "utils" / "watchdog_probes_env.py").read_text()
+        assert "Confirm receipt" in probe
+        assert "'Got it'" not in probe
+        assert "'Got it'" not in self.SH.read_text()
 
 
 # ── D12: failed retrieval is not observed absence ────────────────────────────

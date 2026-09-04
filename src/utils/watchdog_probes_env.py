@@ -691,19 +691,41 @@ def probe_ntfy_ack_stale(
             )
             return None
 
+        # Name WHICH page went un-acked, and whether a fresh one has since gone
+        # out. Without this the signal fires at the very moment the new weekly
+        # page lands (the cron judges last week's page in the same run that
+        # sends this week's), and reads as "the tap you just made failed" —
+        # which is how 2026-09-03's four-taps-in-four-seconds happened while
+        # every one of them had landed. Legibility is the instrument's job.
+        unacked_ping_ts = doc.get("unacked_ping_ts")
+        last_ping_ts = doc.get("last_ping_ts")
+        which = ""
+        if isinstance(unacked_ping_ts, (int, float)) and not isinstance(
+                unacked_ping_ts, bool) and unacked_ping_ts > 0:
+            which = (" The page sent "
+                     + time.strftime("%m-%d %H:%M", time.localtime(unacked_ping_ts))
+                     + " is the one that went un-acked.")
+            if (isinstance(last_ping_ts, (int, float))
+                    and not isinstance(last_ping_ts, bool)
+                    and last_ping_ts > unacked_ping_ts):
+                which += (" A fresh page went out "
+                          + time.strftime("%m-%d %H:%M", time.localtime(last_ping_ts))
+                          + " — a tap on THAT one shows 'Receipt confirmed' on "
+                          "your phone at once and clears this within the hour.")
         return Signal(
             cls="ntfy_ack_stale",
             subject="ntfy",
             severity="wedge" if unacked >= wedge_after_pings else "degraded",
             detail=(f"weekly fleet-alert ack UNCONFIRMED — {unacked} consecutive "
-                    "weekly page(s) with no tap-to-ack. Your phone may not be "
-                    "receiving fleet pages (wrong/dead topic, app killed, "
-                    "notifications off — the exact 06-14→17 failure). Tap "
-                    "'Got it' on the next weekly page, or check your ntfy "
-                    "subscription. The cron escalates via the Phase-1 EMAIL "
-                    "backbone; this is visibility."),
+                    "weekly page(s) with no tap-to-ack." + which + " Your phone "
+                    "may not be receiving fleet pages (wrong/dead topic, app "
+                    "killed, notifications off — the exact 06-14→17 failure). "
+                    "Tap 'Confirm receipt' on the next weekly page, or check "
+                    "your ntfy subscription. The cron escalates via the Phase-1 "
+                    "EMAIL backbone; this is visibility."),
             issue_ref=None,
-            extra={"consecutive_unacked_pings": unacked, "streak": streak},
+            extra={"consecutive_unacked_pings": unacked, "streak": streak,
+                   "unacked_ping_ts": unacked_ping_ts if which else None},
         )
     except Exception:
         note_disposition(
