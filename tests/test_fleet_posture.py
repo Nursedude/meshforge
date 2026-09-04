@@ -246,3 +246,82 @@ def test_hand_written_entry_without_since_reads_declared(tmp_path):
                                                     "until": fp.fmt_ts(NOW + 3600)}}}))
     p = fp.read_posture(str(path), now=NOW)
     assert p.status == fp.DECLARED and p.box("moc4").silent
+
+
+class TestBridgeBoxesCaller:
+    """The mesh-less refusal's SOURCE of truth — `_bridge_boxes()` in the CLI.
+
+    2026-09-04: this leg had NEVER run. `gather_fleet_roles(hosts, self_role,
+    ssh_cmd=...)` was called with `hosts` only, the TypeError was swallowed by
+    the advisory `except`, and every invocation printed "mesh-less refusal
+    skipped". The CALLEE's two-arg signature was already pinned by
+    test_provision_role.py; the CALLER was not. These tests pin the caller.
+    """
+
+    def _load_cli(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("fleet_posture_cli", str(CLI))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _fake_pr(self, monkeypatch, role_map, calls):
+        """Install a stub provision_role that RECORDS how it was called."""
+        import types
+        pr = types.ModuleType("provision_role")
+        pr.DEFAULT_ROLES_FILE = "roles.yaml"
+        pr.load_roles = lambda path: {"catalog": True}
+        pr.parse_fleet_hosts = lambda p: ["moc", "moc3"]
+        pr.read_role = lambda: "primary"
+
+        def gather(hosts, self_role, ssh_cmd=None):
+            calls.append({"hosts": hosts, "self_role": self_role})
+            return dict(role_map)
+        pr.gather_fleet_roles = gather
+        pr.resolve_role = lambda cat, role: {
+            "services": {"meshforge-gateway": "enabled" if role in
+                         ("gateway-only", "primary") else "disabled"}}
+        monkeypatch.setitem(sys.modules, "provision_role", pr)
+        return pr
+
+    def test_passes_self_role_the_callee_requires(self, tmp_path, monkeypatch):
+        """A gather() that REQUIRES self_role must actually receive it."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".config" / "meshforge").mkdir(parents=True)
+        (tmp_path / ".config" / "meshforge" / "fleet_hosts").write_text("moc\nmoc3\n")
+        calls = []
+        self._fake_pr(monkeypatch, {"(self)": "primary", "moc": "gateway-only"}, calls)
+        mod = self._load_cli()
+        bridges, note = mod._bridge_boxes()
+        assert calls and calls[0]["self_role"] == "primary", \
+            "caller must pass self_role — omitting it is the 2026-09-04 TypeError"
+        assert "skipped" not in note, f"refusal leg silently disabled: {note}"
+
+    def test_never_returns_the_literal_self_key(self, tmp_path, monkeypatch):
+        """gather() keys the local box "(self)", but validate() compares bridge
+        names against the posture doc's REAL box names. Leaking "(self)" makes
+        the guard structurally unable to refuse a posture silencing THIS box —
+        it would run, look healthy, and never fire."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        (tmp_path / ".config" / "meshforge").mkdir(parents=True)
+        (tmp_path / ".config" / "meshforge" / "fleet_hosts").write_text("moc\n")
+        calls = []
+        self._fake_pr(monkeypatch, {"(self)": "gateway-only", "moc": "disabled-role"}, calls)
+        mod = self._load_cli()
+        bridges, _ = mod._bridge_boxes()
+        assert bridges is not None
+        assert "(self)" not in bridges, "the literal (self) can never match a declaration"
+        import socket
+        assert socket.gethostname() in bridges, \
+            "the local box must appear under the name the operator declares"
+
+    def test_refusal_actually_fires_when_all_bridges_silenced(self):
+        """End of the domain, not the wiring: given a bridge set, validate()
+        must REFUSE a doc that silences all of them."""
+        doc = _doc(moc={"state": "dormant", "until": fp.fmt_ts(NOW + 3600)},
+                   moc3={"state": "dormant", "until": fp.fmt_ts(NOW + 3600)})
+        errs = fp.validate(doc, now=NOW, bridge_boxes={"moc", "moc3"})
+        assert any("bridge-capable" in e for e in errs), errs
+        errs_ok = fp.validate(doc, now=NOW, bridge_boxes={"moc", "moc3", "moc9"})
+        assert not any("bridge-capable" in e for e in errs_ok), \
+            "one surviving bridge must NOT refuse"

@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import socket
 import sys
 import time
 
@@ -44,7 +45,22 @@ def _bridge_boxes():
         hosts_file = Path(os.path.expanduser("~/.config/meshforge/fleet_hosts"))
         if not hosts_file.exists():
             return None, "no fleet_hosts here — mesh-less refusal skipped (not the manager)"
-        role_map = pr.gather_fleet_roles(pr.parse_fleet_hosts(hosts_file))
+        # self_role is REQUIRED (provision_role.gather_fleet_roles(hosts,
+        # self_role, ssh_cmd=...)). Omitting it raised TypeError every run and
+        # the whole refusal was swallowed by the advisory except below, so this
+        # guard had NEVER executed (found 2026-09-04).
+        role_map = pr.gather_fleet_roles(
+            pr.parse_fleet_hosts(hosts_file), pr.read_role())
+        # gather_fleet_roles keys the local box as the literal "(self)", but the
+        # posture document is keyed by REAL box name and validate() compares the
+        # two sets directly (`bridges.issubset(silenced)`). Left as "(self)" the
+        # guard would run, look healthy, and be structurally incapable of ever
+        # refusing a posture that silences THIS box — a false-green guard, worse
+        # than the loud skip it replaced. Re-key it to the hostname the operator
+        # actually declares.
+        self_key = socket.gethostname()
+        if "(self)" in role_map:
+            role_map[self_key] = role_map.pop("(self)")
         out = set()
         for host, role in role_map.items():
             if not role:
