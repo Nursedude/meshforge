@@ -1,0 +1,18 @@
+[Unit]
+Description=MeshForge fleet dependency advisory check
+Documentation=https://github.com/Nursedude/meshforge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Manager-side: ssh's each fleet box, reads the versions the SERVICE python
+# actually has, and asks GitHub's advisory DB about them. gh uses ~/.config/gh,
+# so this must run as the operator's user unit (the systemd-user manager
+# already provides HOME).
+ExecStart=/opt/meshforge/scripts/dep_advisory_check.py
+# 9 boxes over ssh plus deduped advisory queries; generous but bounded.
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-dep-advisory

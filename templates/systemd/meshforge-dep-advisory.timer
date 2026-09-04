@@ -1,0 +1,16 @@
+[Unit]
+Description=MeshForge fleet dependency advisory timer
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Daily. Advisories are published on human timescales, not machine ones, and
+# the run costs 9 ssh round-trips plus a deduped handful of API calls — the
+# footprint constraint says do not pay that more often than the signal changes.
+OnCalendar=*-*-* 09:30:00
+RandomizedDelaySec=900
+# The manager is a Pi that gets powered down (see the 2026-09-04 UPS work);
+# a missed window must still run, or the check silently stops existing.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
