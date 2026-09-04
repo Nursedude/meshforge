@@ -758,6 +758,18 @@ TEMPLATE_PROVENANCE: dict = {
     "meshforge-backup.timer":      ("hand", "manager-box organ (the federator box), hand-enabled; fleet backup (c111f7a)"),
     "meshforge-ci-status.service": ("hand", "manager-box organ (the federator box); ecosystem CI cron (6e0f21f)"),
     "meshforge-ci-status.timer":   ("hand", "manager-box organ (the federator box); ecosystem CI cron (6e0f21f)"),
+    "meshforge-dep-advisory.service": ("hand", "manager-box organ (the federator box); "
+                                        "installed + enabled by hand on the manager box 2026-09-04. "
+                                        "ssh's the fleet and asks GitHub's advisory DB about the "
+                                        "versions the SERVICE python actually has. Manager-only "
+                                        "by design: it needs the fleet host list and gh auth, and "
+                                        "one asker is enough for a shared external API."),
+    "meshforge-dep-advisory.timer":   ("hand", "manager-box organ (the federator box); "
+                                        "installed + enabled by hand on the manager box 2026-09-04, "
+                                        "daily 09:30 + Persistent=true. SuccessExitStatus=1 so the "
+                                        "unit's health tracks OBSERVATION (exit 2 = fleet not "
+                                        "assessable -> fails) not the news (exit 1 = advisories "
+                                        "found -> success; the finding is the ADVISORY file)."),
     "meshforge-fleet-health.service": ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
     "meshforge-fleet-health.timer":   ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
     "lxmd.service":               ("hand", "single-box organ (moc1), hand-deployed 2026-07-20; LXMF "
