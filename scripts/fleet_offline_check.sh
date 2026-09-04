@@ -104,7 +104,51 @@ fi
 
 TS=$(date '+%Y-%m-%d %H:%M:%S %Z')
 NOW=$(date +%s)
+# Heartbeat mtime read BEFORE the touch below overwrites it — it is the only
+# record of when this monitor last ran. An absent/empty heartbeat is a FIRST
+# RUN, never a gap since the epoch (the 29,806,174-minute lesson: an absent-
+# value sentinel must not leak into the measurement domain).
+HB_LAST=""
+[ -s "$HB" ] && HB_LAST=$(stat -c %Y "$HB" 2>/dev/null || echo "")
 touch "$LOG" "$STATE" "$HB" "$WITNESS"
+
+# --- monitor self-absence witness (honest_failure_modes #2 + #9) -------------
+# The heartbeat has been WRITTEN since this script existed and never READ, so a
+# window in which the monitor ITSELF was not running left no trace in $LOG: a
+# reader could not tell "the fleet was healthy" from "nobody was looking". The
+# 2026-09-04 UPS shutdown made that concrete — the manager box is inside the
+# blast radius of the maintenance it watches, so 10:10→10:20 HST had no watcher
+# at all and the alerts log ran straight through the hole. Absence of evidence
+# is not evidence of absence: disclose the blind window, never average it away.
+# This is a WITNESS, not a page — the operator reads it beside the outage it
+# brackets; paging on our own absence would page from the box that was absent.
+CADENCE_S="${MESHFORGE_OFFLINE_CADENCE_S:-300}"
+GAP_FACTOR="${MESHFORGE_OFFLINE_GAP_FACTOR:-2}"
+if [ -n "$HB_LAST" ]; then
+  gap=$(( NOW - HB_LAST ))
+  if [ "$gap" -lt 0 ]; then
+    # Clock went backward (RTC-less Pi, fake-hwclock restore, NTP step). Never
+    # render a forged duration — report that the clock moved, not a measurement.
+    echo "$TS  FLEET: MONITOR-GAP UNKNOWN — clock moved backward ${gap#-}s since the last heartbeat; the unobserved window cannot be measured. Fleet state before this run is UNKNOWN, not healthy" >> "$LOG"
+  elif [ "$gap" -ge $(( CADENCE_S * GAP_FACTOR )) ]; then
+    # A reboot EXPLAINS the gap and is the informative case (the manager was
+    # down, so its watching was too). A gap with the box up the whole time is a
+    # DIFFERENT finding: cron or this script was not running while it could be.
+    # Uptime source is overridable so the drill can PIN it — a test that reads
+    # the real /proc/uptime of whatever box runs the suite pins nothing (the
+    # 2026-07-28 lesson: two probe tests read the live crontab and gave three
+    # different verdicts on three boxes).
+    up_s=$(cut -d. -f1 "${MESHFORGE_OFFLINE_UPTIME_FILE:-/proc/uptime}" 2>/dev/null || echo "")
+    if [ -n "$up_s" ] && [ "$up_s" -lt "$gap" ]; then
+      why="this box REBOOTED (uptime ${up_s}s < gap) — the manager was down, so nothing watched the fleet"
+    elif [ -z "$up_s" ]; then
+      why="uptime unreadable, so the cause is UNKNOWN — do not assume a reboot"
+    else
+      why="this box was UP the whole time (uptime ${up_s}s) — cron or this monitor was not running"
+    fi
+    echo "$TS  FLEET: MONITOR-GAP ${gap}s (cadence ${CADENCE_S}s) — $why. Fleet state during that window is UNKNOWN, not healthy" >> "$LOG"
+  fi
+fi
 
 # Active push via ntfy. Topic from env override (for drills against a throwaway
 # topic — see reference_fleet_drill_throwaway_topic) else ~/.config/fleet_push_topic.

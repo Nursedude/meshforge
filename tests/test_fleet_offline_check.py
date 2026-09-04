@@ -580,3 +580,90 @@ class TestDeclaredPosture:
             h.run(env_extra=env)
         assert "Fleet box" not in h.pushes()
         assert h.row("alpha")[6] == "detached"
+
+
+class TestMonitorSelfAbsenceWitness:
+    """The heartbeat was WRITTEN from this script's first commit and never READ,
+    so a window in which the monitor itself was not running left no trace in the
+    alerts log — a reader could not tell "the fleet was healthy" from "nobody was
+    looking". Made concrete on 2026-09-04: the manager box is inside the blast
+    radius of the maintenance it watches, so the UPS shutdown left 10:10→10:20
+    HST with no watcher and the log ran straight through the hole.
+
+    Drilled, not read (a guard that never failed is not evidence): every branch
+    is driven by PINNING the heartbeat mtime and the uptime source, never by
+    reading whatever box runs the suite.
+    """
+
+    def _setup(self, h):
+        h.write_conf()
+        h.reachable("alpha")
+
+    def _uptime(self, h, seconds):
+        """Pin the uptime source; returns the env override for it."""
+        f = h.tmp / "uptime_pinned"
+        f.write_text("%d.00 %d.00\n" % (seconds, seconds))
+        return {"MESHFORGE_OFFLINE_UPTIME_FILE": str(f)}
+
+    def _age_hb(self, h, seconds_ago):
+        """Pin the heartbeat mtime to N seconds ago (negative = the future)."""
+        import time
+        h.hb.write_text("seed\n")
+        t = time.time() - seconds_ago
+        os.utime(h.hb, (t, t))
+
+    def test_first_run_is_inert_not_a_56_year_gap(self, h):
+        """No heartbeat = FIRST RUN. An absent-value sentinel must never leak
+        into the measurement domain and render `now - 0` as a gap."""
+        self._setup(h)
+        r = h.run(self._uptime(h, 10_000))
+        assert "MONITOR-GAP" not in h.alerts(), h.alerts()
+        assert r.returncode in (0, 1), r.stderr
+
+    def test_normal_cadence_is_silent(self, h):
+        """A gap inside the cadence envelope is the healthy case — say nothing."""
+        self._setup(h)
+        self._age_hb(h, 60)
+        h.run(self._uptime(h, 10_000))
+        assert "MONITOR-GAP" not in h.alerts(), h.alerts()
+
+    def test_gap_explained_by_reboot_names_the_reboot(self, h):
+        """uptime < gap: the manager was DOWN, so its watching was too. That is
+        the informative case — it brackets the window the operator must treat as
+        unobserved."""
+        self._setup(h)
+        self._age_hb(h, 3600)
+        h.run(self._uptime(h, 600))
+        a = h.alerts()
+        assert "MONITOR-GAP" in a and "REBOOTED" in a, a
+        assert "UNKNOWN, not healthy" in a, a
+
+    def test_gap_with_box_up_throughout_is_a_different_finding(self, h):
+        """uptime > gap: nothing rebooted, so cron or this script simply was not
+        running while it could have been. Must NOT be reported as a reboot."""
+        self._setup(h)
+        self._age_hb(h, 3600)
+        h.run(self._uptime(h, 100_000))
+        a = h.alerts()
+        assert "MONITOR-GAP" in a and "UP the whole time" in a, a
+        assert "REBOOTED" not in a, a
+
+    def test_backward_clock_reports_unmeasurable_never_a_forged_duration(self, h):
+        """RTC-less Pi / fake-hwclock / NTP step. A negative gap is the clock
+        moving, not a measurement — and never a plausible-looking number."""
+        self._setup(h)
+        self._age_hb(h, -3600)          # heartbeat stamped in the FUTURE
+        h.run(self._uptime(h, 100_000))
+        a = h.alerts()
+        assert "MONITOR-GAP UNKNOWN" in a and "clock moved backward" in a, a
+        assert "REBOOTED" not in a and "UP the whole time" not in a, a
+
+    def test_unreadable_uptime_refuses_to_assume_a_reboot(self, h):
+        """Unobservable is not healthy AND not a reboot — the gap is still
+        disclosed, but the cause is stated as UNKNOWN."""
+        self._setup(h)
+        self._age_hb(h, 3600)
+        h.run({"MESHFORGE_OFFLINE_UPTIME_FILE": str(h.tmp / "does_not_exist")})
+        a = h.alerts()
+        assert "MONITOR-GAP" in a and "UNKNOWN" in a, a
+        assert "REBOOTED" not in a, a
