@@ -62,6 +62,29 @@ CHARGING_RISE_V = 0.020
 CUTOFF_V = 3.30
 
 
+# Exit code per verdict, for `cron_verdict.sh <name> $?` (0->OK, nonzero->FAIL).
+#
+# `complete` used to exit 1 alongside `broken`, so a run that finished
+# SUCCESSFULLY — the whole point of the exercise — would have been recorded as
+# FAIL the moment anyone wired --report to cron. Caught 2026-09-05 while
+# reviewing this file's own wiring advice; nothing had been wired yet, so the
+# defect was latent rather than live.
+#
+# `charging` is a FAIL on purpose: the pack went back on USB, so the run is no
+# longer measuring what it claims and needs an operator, exactly like `broken`.
+# 2 is reserved for unobservable — never a pass (there is no CONCERN exit code;
+# cron_verdict maps any nonzero to FAIL, so the DETAIL line carries the nuance).
+EXIT_BY_VERDICT = {
+    "clean": 0,
+    "running": 0,       # in progress, nothing wrong
+    "awaiting": 0,      # too early to say
+    "complete": 0,      # SUCCESS — the runtime is in the detail line
+    "broken": 1,        # the test is not measuring anything
+    "charging": 1,      # the pack is back on USB; the run is invalid
+    "unobservable": 2,
+}
+
+
 def _home() -> str:
     return str(get_real_user_home())
 
@@ -171,6 +194,58 @@ def read_run_log(run_id: str) -> Tuple[str, List[Dict[str, Any]]]:
     return "ok", out
 
 
+def sampling_coverage(samples: List[Dict[str, Any]], t0: float,
+                      now: float) -> Tuple[Optional[float], Optional[float],
+                                           Optional[str]]:
+    """``(lead_gap_h, max_inner_gap_h, note)`` — where the run was NOT looking.
+
+    `analyse` takes the rate from the FIRST and LAST sample, so a stretch with
+    no observations is averaged into the slope and disappears: two samples 12h
+    apart and twelve hourly ones produce identical arithmetic. That is this
+    domain's house defect — a blind spot folded into a number instead of
+    surfaced beside it (honest_failure_modes #2).
+
+    Two blind stretches matter and neither shows in the curve:
+      - the LEADING gap, t0 to the first sample. Real: on 2026-09-05 the pack
+        came off USB at 10:02 and the first honest reading arrived at 12:18,
+        so 2.3h of discharge preceded every sample the run holds.
+      - any INNER gap — a telemetry outage mid-run.
+
+    The threshold adapts to the cadence actually observed (3x the median
+    interval, floored at 2h) rather than a fixed constant: a 30-minute reporter
+    and an hourly one have different normal. note is None when coverage is
+    unremarkable; the caller appends it to the head shared by every verdict, so
+    no branch can report a gap while another stays silent.
+    """
+    stamps = sorted(float(s["ts"]) for s in samples
+                    if isinstance(s.get("ts"), (int, float)))
+    if not stamps:
+        return None, None, None
+    lead_h = max(0.0, (stamps[0] - t0) / 3600.0)
+    inner = [(b - a) / 3600.0 for a, b in zip(stamps, stamps[1:])]
+    max_inner = max(inner) if inner else None
+    # The adaptive threshold needs enough intervals to HAVE a cadence. With one
+    # or two, the median IS the gap being judged, so `3 * median` can never be
+    # exceeded and a sparse run could never report a gap — the detector would
+    # be blindest exactly where coverage is worst. Below that, use the absolute
+    # floor only.
+    median = sorted(inner)[len(inner) // 2] if len(inner) >= 3 else None
+    thresh = max(3.0 * median, 2.0) if median else 2.0
+    bits = []
+    if lead_h > thresh:
+        bits.append(f"{lead_h:.1f}h between the run start and the first sample")
+    if max_inner is not None and max_inner > thresh:
+        bits.append(f"a {max_inner:.1f}h gap between samples")
+    if not bits:
+        return lead_h, max_inner, None
+    cadence = f" (normal here is ~{median * 60:.0f} min)" if median else ""
+    return lead_h, max_inner, (
+        "\u26a0\ufe0f COVERAGE: " + "; ".join(bits) + cadence +
+        ". The rate above is taken first-to-last and therefore spans time "
+        "nothing observed — a lower bound on certainty, not a measurement of "
+        "that stretch.")
+
+
 def analyse(samples: List[Dict[str, Any]], t0: float, capacity_mah: float,
             now: float) -> Tuple[str, str]:
     """(verdict, detail). Pure — testable without a fleet or a battery.
@@ -191,6 +266,7 @@ def analyse(samples: List[Dict[str, Any]], t0: float, capacity_mah: float,
                 f"no voltage samples yet ({elapsed:.1f}h in) — waiting for the "
                 f"first telemetry report.")
 
+    _lead, _inner, coverage = sampling_coverage(volts, t0, now)
     first, last = volts[0], volts[-1]
     v0, v1 = float(first["voltage"]), float(last["voltage"])
     span_h = (float(last["ts"]) - float(first["ts"])) / 3600.0
@@ -200,6 +276,12 @@ def analyse(samples: List[Dict[str, Any]], t0: float, capacity_mah: float,
         f"{float(s['voltage']):.3f}V" for s in volts[-8:])
     head = (f"{len(volts)} samples over {span_h:.1f}h, "
             f"{v0:.3f}V -> {v1:.3f}V (drop {drop * 1000:.0f} mV)\ncurve: {curve}")
+    # Appended to head so EVERY sample-bearing verdict carries it — a blind
+    # stretch must not be reportable through one branch and silent through
+    # another (the 2026-08-09 "grep every branch that reaches the same return"
+    # lesson, applied at write time rather than found later).
+    if coverage:
+        head += f"\n{coverage}"
 
     if drop <= -CHARGING_RISE_V:
         return ("charging",
@@ -328,7 +410,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     verdict, detail = analyse(samples, float(run["t0"]), capacity, time.time())
     print(f"discharge [{run['run_id']}] {label}: {verdict.upper()}")
     print(detail)
-    return 1 if verdict in ("broken", "complete") else 0
+    return EXIT_BY_VERDICT.get(verdict, 2)
 
 
 if __name__ == "__main__":

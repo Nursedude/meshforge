@@ -264,3 +264,148 @@ class TestSamplerDoesNotManufactureDuplicates:
         for _ in range(6):
             bdt.main(["--sample"])
         assert len(log.read_text().strip().splitlines()) == 1
+
+
+class TestSamplingCoverageIsSurfacedNotAveraged:
+    """`analyse` takes the rate first-to-last, so an unsampled stretch is
+    averaged into the slope and vanishes. Two samples 12h apart and twelve
+    hourly ones give identical arithmetic — the blind spot must be reported
+    beside the number, never folded into it."""
+
+    def test_leading_gap_is_named(self):
+        """The real 2026-09-05 shape: the pack came off USB at 10:02 and the
+        first honest reading arrived 2.3h later, so every sample the run holds
+        post-dates 2.3h of discharge nothing observed."""
+        now = 1_000_000.0
+        t0 = now - 6 * H
+        samples = [_s(now - 3 * H + i * 1800, 4.10 - 0.005 * i)
+                   for i in range(7)]
+        lead, inner, note = bdt.sampling_coverage(samples, t0, now)
+        assert lead == pytest.approx(3.0, abs=0.01)
+        assert note and "run start and the first sample" in note
+        _, detail = bdt.analyse(samples, t0, 4000, now)
+        assert "COVERAGE" in detail, "the verdict must carry the note"
+
+    def test_inner_gap_is_named(self):
+        now = 1_000_000.0
+        t0 = now - 10 * H
+        samples = [_s(t0, 4.20), _s(t0 + 0.5 * H, 4.19),
+                   _s(t0 + 8 * H, 4.05), _s(t0 + 8.5 * H, 4.04)]
+        _, inner, note = bdt.sampling_coverage(samples, t0, now)
+        assert inner == pytest.approx(7.5, abs=0.01)
+        assert note and "gap between samples" in note
+
+    def test_regular_sampling_produces_no_note(self):
+        """No false alarm on a healthy run — a note on every report would be
+        noise, and noise is how a real one gets ignored."""
+        now = 1_000_000.0
+        t0 = now - 6 * H
+        samples = [_s(t0 + i * 1800, 4.20 - 0.004 * i) for i in range(12)]
+        lead, inner, note = bdt.sampling_coverage(samples, t0, now)
+        assert note is None
+
+    def test_threshold_adapts_to_the_observed_cadence(self):
+        """A 30-min reporter and an hourly one have different normal; a 90-min
+        gap is unremarkable for the latter and suspicious for neither at 2h."""
+        now = 1_000_000.0
+        t0 = now - 20 * H
+        hourly = [_s(t0 + i * H, 4.2 - 0.001 * i) for i in range(10)]
+        assert bdt.sampling_coverage(hourly, t0 + 0.5 * H, now)[2] is None
+
+    def test_every_sample_bearing_verdict_carries_the_note(self):
+        """One branch reporting a gap while another stays silent is the
+        2026-08-09 'grep every branch' defect."""
+        now = 1_000_000.0
+        t0 = now - 20 * H
+        flat = [_s(now - 14 * H + i * 1800, 4.198) for i in range(29)]
+        v, detail = bdt.analyse(flat, t0, 4000, now)
+        assert v == "broken" and "COVERAGE" in detail
+        rising = [_s(now - 14 * H, 3.9), _s(now, 4.19)]
+        v2, d2 = bdt.analyse(rising, t0, 4000, now)
+        assert v2 == "charging" and "COVERAGE" in d2
+
+    def test_no_samples_yields_no_coverage_claim(self):
+        assert bdt.sampling_coverage([], 0.0, 1.0) == (None, None, None)
+
+
+class TestExitCodes:
+    """`complete` used to exit 1 alongside `broken`, so wiring --report to
+    cron_verdict.sh would have logged a SUCCESSFUL finished run as FAIL."""
+
+    def test_complete_is_success_not_failure(self):
+        assert bdt.EXIT_BY_VERDICT["complete"] == 0
+
+    def test_broken_and_charging_are_failures(self):
+        assert bdt.EXIT_BY_VERDICT["broken"] == 1
+        assert bdt.EXIT_BY_VERDICT["charging"] == 1
+
+    def test_in_progress_states_are_ok(self):
+        for v in ("running", "awaiting", "clean"):
+            assert bdt.EXIT_BY_VERDICT[v] == 0
+
+    def test_unobservable_is_never_a_pass(self):
+        assert bdt.EXIT_BY_VERDICT["unobservable"] == 2
+
+    def test_an_unknown_verdict_is_unobservable_not_ok(self, tmp_path,
+                                                        monkeypatch):
+        """A future verdict string must not default to healthy.
+
+        The first version of this test asserted
+        `EXIT_BY_VERDICT.get("x", 2) == 2`, which only proves Python's .get
+        works — it never touched main()'s default, and a mutation flipping that
+        default to 0 sailed through. Drive the real exit path instead.
+        """
+        monkeypatch.setenv("MESHFORGE_DISCHARGE_DIR", str(tmp_path))
+        cfg = tmp_path / "c.json"
+        cfg.write_text(json.dumps({"node_id": "!a", "capacity_mah": 4000}))
+        monkeypatch.setenv("MESHFORGE_DISCHARGE_CONFIG", str(cfg))
+        (tmp_path / "current_run.json").write_text(json.dumps(
+            {"run_id": "r", "t0": 0.0, "node_id": "!a", "capacity_mah": 4000,
+             "label": "x"}))
+        (tmp_path / "r.jsonl").write_text(
+            json.dumps({"ts": 1.0, "voltage": 4.0}) + "\n")
+        monkeypatch.setattr(bdt, "analyse",
+                            lambda *a, **k: ("some_future_state", "detail"))
+        assert bdt.main(["--report"]) == 2, (
+            "an unrecognised verdict must be unobservable, never OK")
+
+    def test_every_verdict_analyse_can_return_has_an_exit_code(self):
+        """Closed enum, closed consumer (honest_failure_modes #7)."""
+        import re
+        src = open(os.path.join(_ROOT, "scripts",
+                                "battery_discharge_track.py")).read()
+        returned = set(re.findall(r'return \(?"(\w+)",', src))
+        verdicts = {v for v in returned
+                    if v in {"clean", "running", "awaiting", "complete",
+                             "broken", "charging", "unobservable"}}
+        missing = verdicts - set(bdt.EXIT_BY_VERDICT)
+        assert not missing, f"verdict(s) with no exit code: {missing}"
+
+
+class TestThresholdCannotBlindItself:
+    """With 1-2 intervals the median IS the gap being judged, so a `3*median`
+    threshold can never be exceeded — the detector would be blindest exactly
+    where coverage is worst. Below 3 intervals the absolute floor applies."""
+
+    def test_two_samples_far_apart_are_flagged(self):
+        now = 1_000_000.0
+        t0 = now - 20 * H
+        samples = [_s(now - 14 * H, 4.20), _s(now, 4.05)]
+        _, inner, note = bdt.sampling_coverage(samples, t0, now)
+        assert inner == pytest.approx(14.0)
+        assert note is not None, "a 14h gap must not hide behind its own median"
+
+    def test_a_single_sample_still_reports_a_leading_gap(self):
+        now = 1_000_000.0
+        samples = [_s(now, 4.05)]
+        lead, inner, note = bdt.sampling_coverage(samples, now - 9 * H, now)
+        assert lead == pytest.approx(9.0)
+        assert inner is None
+        assert note and "run start and the first sample" in note
+
+    def test_three_intervals_enable_the_adaptive_threshold(self):
+        """4 samples at 3h each: the cadence IS 3h, so it is not a gap."""
+        now = 1_000_000.0
+        t0 = now - 9 * H
+        samples = [_s(t0 + i * 3 * H, 4.2 - 0.01 * i) for i in range(4)]
+        assert bdt.sampling_coverage(samples, t0, now)[2] is None
