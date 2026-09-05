@@ -718,7 +718,7 @@ UDEV_RULES
                 if ! $NATIVE_INSTALLED; then
                     echo -e "  ${YELLOW}Native meshtasticd required for SPI radios${NC}"
                     echo -e "  ${YELLOW}Install from: https://meshtastic.org/docs/software/linux-native/${NC}"
-                    if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'; then
+                    if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=50.0.1,<51' 'pyopenssl>=26.4.0'; then
                         echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
                         exit 1
                     fi
@@ -1071,7 +1071,7 @@ NATIVE_SERVICE
             echo -e "  ${CYAN}Installing for USB serial radio...${NC}"
 
             # Install meshtastic Python package for CLI tools
-            if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'; then
+            if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=50.0.1,<51' 'pyopenssl>=26.4.0'; then
                 echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
                 exit 1
             fi
@@ -1268,7 +1268,7 @@ USB_PLACEHOLDER
             echo -e "  ${YELLOW}⚠ No radio detected${NC}"
             echo -e "  ${YELLOW}  Installing Python meshtastic CLI tools${NC}"
 
-            if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=45.0.7,<47' 'pyopenssl>=25.3.0'; then
+            if ! mf_pip_install python3 $PIP_ARGS --ignore-installed -q meshtastic paho-mqtt 'cryptography>=50.0.1,<51' 'pyopenssl>=26.4.0'; then
                 echo -e "  ${RED}✗ meshtastic CLI install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
                 exit 1
             fi

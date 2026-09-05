@@ -55,9 +55,52 @@
 rns @ git+https://github.com/Nursedude/reticulum.git@6dadb335b22e83a5aef19cba5cef6996e400a540
 lxmf @ git+https://github.com/Nursedude/lxmf.git@69811305d5084d4007687bf43504bed19e6d5cd3
 
-# Cryptography / PyOpenSSL version alignment:
-# RNS pulls in cryptography 46.x (its constraint is >=3.4.7, so pip grabs latest).
-# PyOpenSSL <25.3.0 only supports cryptography<45, causing a resolver conflict.
-# Pin both explicitly so pip can resolve them together in a single pass.
-cryptography>=45.0.7,<47
-pyopenssl>=25.3.0
+# Cryptography / PyOpenSSL version alignment — BOTH bounds are load-bearing,
+# and the two packages MOVE TOGETHER. RNS's own constraint is only
+# cryptography>=3.4.7, so pip would otherwise grab latest; pyOpenSSL is what
+# actually caps the pair. Pin both so pip resolves them in a single pass.
+#
+# REBASELINED 2026-09-05 (dependency-advisory arc). The previous line —
+# `cryptography>=45.0.7,<47` + `pyopenssl>=25.3.0` — was written once at file
+# creation (8bff996d, 2026-02-24) and never revisited, and it made the fleet
+# UNPATCHABLE: EVERY version satisfying that range carried GHSA-m2h6-j472-rp4c
+# plus three highs, so a box could be fully requirements-COMPLIANT and
+# vulnerable at the same time. `probe_dep_version_drift` read `clean`
+# throughout — correctly, by its own definition: it asks only "installed BELOW
+# the floor?", so a ceiling that forbids the patched version is invisible to
+# it. The ceiling was the defect, and nothing we owned could see it. Do not
+# leave an unexplained bound in this file again.
+#
+# FLOOR 50.0.1 — NOT 49.0.0. Dependabot's `first_patched_version` for the
+# reported CVE is 49.0.0, but GHSA-g6cj-pr64-35w5 (high, PKCS#7
+# Bleichenbacher) is `< 50.0.0`, so 49.x still ships a known high. Re-derive
+# with an authority outside this repo, before any bump:
+#   gh api "/advisories?ecosystem=pip&affects=cryptography@<v>" --jq length
+#   46.0.7 -> 4   49.0.0 -> 1   50.0.1 -> 0        (measured 2026-09-05)
+#
+# CEILING 51 — because pyOpenSSL DECLARES it, not because we feel cautious.
+# pyOpenSSL 26.4.0's own metadata reads `cryptography<51,>=49.0.0` (read off
+# the installed dist, not inferred). The older 26.2.0 read
+# `cryptography<49,>=46.0.0` — i.e. it EXCLUDED the patched line, so bumping
+# cryptography alone would have failed the resolver; that, not conservatism,
+# is why the pair is stuck together. The old `pyopenssl>=25.3.0` floor was
+# itself vulnerable (GHSA-5pwr-322w-8jr4, high). Re-derive before raising:
+#   python3 -c "import importlib.metadata as m; print(m.requires('pyOpenSSL'))"
+#
+# CANARIED, not assumed (wire-compat invariant above): moc5 ran cryptography
+# 50.0.1 + pyOpenSSL 26.4.0 against the RNS fork for 25 h before this landed —
+# rnsd `active` NRestarts=0, `@rns/default` owned by rnsd, and meshforge-tracer
+# LXMF PING+ACK 9/9 peers `result=ok` while the other eight boxes were still on
+# 46.x. Cross-version LXMF interop is PROVEN, not assumed. moc5 was chosen
+# because `fleet_posture check` says only moc/moc3 are bridge-capable, so a
+# canary failure could not have cost delivery.
+# Rollback point: cryptography==46.0.7 pyOpenSSL==26.2.0.
+#
+# The standing question this pin must keep answering, on every bump: does the
+# declared range still permit a version with ZERO advisories? The check is
+#   python3 scripts/dep_advisory_check.py
+# which asks the external advisory DB about INSTALLED versions — deliberately
+# NOT this repo's Dependabot, which on 2026-09-04 reported `state=fixed` on an
+# unchanged manifest while the installed version carried four advisories.
+cryptography>=50.0.1,<51
+pyopenssl>=26.4.0

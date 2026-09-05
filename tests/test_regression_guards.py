@@ -1955,3 +1955,104 @@ class TestStreakSaversAreOne:
             "streak load/save pair defined outside watchdog_probe_core.py — "
             "alias _load_parity_streak/_save_parity_streak instead "
             "(2026-09-02 eight-copies finding):\n  " + "\n  ".join(violations))
+
+
+class TestCryptoPinIsOneConstant:
+    """Enforce: the cryptography / pyOpenSSL version constraint is declared
+    ONCE, in ``requirements/rns.txt``, and every executable copy agrees.
+
+    2026-09-05: ``requirements/rns.txt`` pinned ``cryptography`` to a range in
+    which EVERY version carried published advisories (one medium + three high)
+    — the fleet was unpatchable while fully requirements-compliant. Raising the
+    pin was not enough: the same constraint was hardcoded in FIVE more places
+    per repo (``scripts/install_noc.sh`` ×3-4 and the in-app RNS dependency
+    repair in ``launcher_tui/handlers/rns_diagnostics.py``). Left alone, a
+    fresh install or an in-app "repair dependencies" would have re-installed
+    the vulnerable range and silently undone the fix.
+
+    Two consumers of one artifact share ONE constant (honest_failure_modes #5)
+    — and across a bash/python boundary the sanctioned form of "share" is a
+    test pin, which is this. Only QUOTED literals count as declarations: prose
+    that cites a historical pin (``scripts/dep_advisory_check.py`` quotes the
+    old broken one on purpose) is documentation, not a use.
+    """
+
+    # A quoted requirement literal, e.g. the pip argument form used by
+    # install_noc.sh and the in-app repair path. Backtick-quoted RST prose is
+    # deliberately NOT matched.
+    _LITERAL = re.compile(
+        r"""['"]\s*(cryptography|pyopenssl)\s*([<>=!~,.0-9\s]+?)\s*['"]""",
+        re.IGNORECASE)
+
+    _SCAN_DIRS = ('src', 'scripts', 'templates')
+    _SCAN_EXTS = ('.py', '.sh')
+
+    @staticmethod
+    def _ssot():
+        """The declared constraint, read from requirements/rns.txt."""
+        path = os.path.join(REPO_ROOT, 'requirements', 'rns.txt')
+        specs = {}
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                m = re.match(r'^(cryptography|pyopenssl)\s*(.+)$', line, re.I)
+                if m:
+                    specs[m.group(1).lower()] = m.group(2).strip()
+        return specs
+
+    def _scan(self):
+        hits = []
+        for rel in self._SCAN_DIRS:
+            root = os.path.join(REPO_ROOT, rel)
+            if not os.path.isdir(root):
+                continue
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if d not in ('.git', '__pycache__')]
+                for name in sorted(filenames):
+                    if not name.endswith(self._SCAN_EXTS):
+                        continue
+                    path = os.path.join(dirpath, name)
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        text = f.read()
+                    for m in self._LITERAL.finditer(text):
+                        lineno = text.count('\n', 0, m.start()) + 1
+                        hits.append((os.path.relpath(path, REPO_ROOT), lineno,
+                                     m.group(1).lower(), m.group(2).strip()))
+        return hits
+
+    def test_ssot_declares_both_packages(self):
+        specs = self._ssot()
+        assert 'cryptography' in specs and 'pyopenssl' in specs, (
+            "requirements/rns.txt must declare both packages explicitly — "
+            f"found: {sorted(specs)}")
+
+    def test_guard_is_not_inert(self):
+        """The scan must actually see the hardcoded copies it exists to pin.
+
+        Without this, a broken scan path or an over-tight regex would let the
+        guard pass vacuously — the failure mode TestGuardsAreNotInert exists
+        for, reproduced once already in this file's history.
+        """
+        hits = self._scan()
+        assert len(hits) >= 4, (
+            "crypto-pin scan found "
+            f"{len(hits)} quoted requirement literal(s) under "
+            f"{self._SCAN_DIRS} — expected the installer + in-app repair "
+            "copies. A zero/low count means the scan broke, not that the "
+            "copies are gone.")
+
+    def test_every_hardcoded_copy_matches_the_ssot(self):
+        specs = self._ssot()
+        violations = []
+        for relpath, lineno, pkg, spec in self._scan():
+            expected = specs.get(pkg)
+            if expected is not None and spec != expected:
+                violations.append(
+                    f"{relpath}:{lineno}: {pkg}{spec!r} != requirements/rns.txt "
+                    f"{pkg}{expected!r}")
+        assert not violations, (
+            "hardcoded version constraint disagrees with requirements/rns.txt "
+            "— update the copy, or better, install from the requirements file "
+            "(2026-09-05 unpatchable-pin finding):\n  " + "\n  ".join(violations))

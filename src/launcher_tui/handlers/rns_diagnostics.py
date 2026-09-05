@@ -421,7 +421,7 @@ class RNSDiagnosticsHandler(BaseHandler):
             for _, _, pip_name in missing:
                 print(f"  Installing {pip_name}...")
                 r = pip_install(
-                    [pip_name, 'cryptography>=45.0.7,<47', 'pyopenssl>=25.3.0'],
+                    [pip_name, 'cryptography>=50.0.1,<51', 'pyopenssl>=26.4.0'],
                     python=rnsd_python, sudo=True, break_system=True, timeout=120,
                 )
                 if r.ok:
