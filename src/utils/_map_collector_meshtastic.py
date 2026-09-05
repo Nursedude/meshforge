@@ -572,6 +572,14 @@ class MeshtasticDataCollectorMixin:
             "role": user.get('role', ''),
             "snr": data.get('snr'),
             "battery": device_metrics.get('batteryLevel'),
+            # Pack voltage rides the SAME DeviceMetrics packet as batteryLevel
+            # and was simply never read here (2026-09-05). batteryLevel is a
+            # 1/16-quantized SoC percentage — one 6.25% step is ~3h on a
+            # 4000mAh pack, so it cannot draw a discharge curve; voltage is
+            # mV-resolution and separates charging from discharging.
+            # node_history._clean_voltage() rejects the 0.0 "no pack measured"
+            # sentinel that USB-powered nodes report.
+            "voltage": device_metrics.get('voltage'),
             "hops_away": data.get('hopsAway'),
             "via_mqtt": data.get('viaMqtt', False),
         }

@@ -53,6 +53,35 @@ from utils.node_history_config import (
 
 logger = logging.getLogger(__name__)
 
+# Plausible pack voltage. 1S LiPo is ~2.5-4.35V; the ceiling is loose so a
+# multi-cell or externally-powered node is not silently discarded.
+_VOLTAGE_MIN = 0.5
+_VOLTAGE_MAX = 30.0
+
+
+def _clean_voltage(value: Any) -> Optional[float]:
+    """Voltage in volts, or None when the device did not actually measure one.
+
+    ⚠️ `voltage=0.000000` is a REAL and common value on this mesh — observed
+    2026-09-05 from USB-powered nodes reporting `battery_level=101`, which have
+    no pack to measure. It means "not measured", not "0 volts". Storing it
+    verbatim would put an absent-value sentinel into the measurement domain and
+    a discharge analysis would read a dead battery — the same class as the
+    epoch-0 age that rendered as 56.7 years (2026-09-02). None is the honest
+    value: absent, not zero.
+    """
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v != v:                       # NaN
+        return None
+    if not (_VOLTAGE_MIN <= v <= _VOLTAGE_MAX):
+        return None
+    return v
+
 
 class NodeHistoryDB:
     """SQLite database for node position and state history.
@@ -180,6 +209,17 @@ class NodeHistoryDB:
                         snr REAL,
                         rssi INTEGER,
                         battery INTEGER,
+                        -- Pack voltage in volts, from Meshtastic DeviceMetrics
+                        -- (2026-09-05). `battery` is a 1/16-quantized SoC
+                        -- percentage: usable for "is it low", useless for a
+                        -- discharge curve, because one 6.25% step is ~3h on a
+                        -- 4000mAh pack. Voltage arrives on the same telemetry
+                        -- packet at mV resolution (voltage=4.122000) and, unlike
+                        -- SoC%, separates CHARGING (pinned ~4.2V) from
+                        -- discharging. node_monitor.py has parsed it into
+                        -- NodeMetrics.voltage all along; there was simply no
+                        -- column, so it was dropped at the persistence layer.
+                        voltage REAL,
                         is_online INTEGER DEFAULT 1,
                         network TEXT DEFAULT 'meshtastic',
                         hardware TEXT DEFAULT '',
@@ -209,6 +249,12 @@ class NodeHistoryDB:
                 if "rssi" not in obs_cols:
                     conn.execute(
                         "ALTER TABLE node_observations ADD COLUMN rssi INTEGER")
+                # Same idempotent migration for voltage (2026-09-05). Existing
+                # rows get NULL — honestly "not captured then", never 0.0,
+                # which would read as a dead pack.
+                if "voltage" not in obs_cols:
+                    conn.execute(
+                        "ALTER TABLE node_observations ADD COLUMN voltage REAL")
                 # Directory table — one row per (network, node_id). Long-retention,
                 # tier-aware (Issue #49). Survives observation-stream eviction so
                 # nodes "stay cached" between long quiet stretches.
@@ -604,6 +650,7 @@ class NodeHistoryDB:
                 props.get("snr"),
                 props.get("rssi"),
                 props.get("battery"),
+                _clean_voltage(props.get("voltage")),
                 1 if props.get("is_online", True) else 0,
                 network,
                 props.get("hardware", ""),
@@ -642,9 +689,9 @@ class NodeHistoryDB:
                 conn.executemany("""
                     INSERT INTO node_observations
                     (node_id, timestamp, latitude, longitude, altitude,
-                     snr, rssi, battery, is_online, network, hardware, role,
-                     via_mqtt, name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     snr, rssi, battery, voltage, is_online, network, hardware,
+                     role, via_mqtt, name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, to_insert)
                 conn.commit()
                 inserted = len(to_insert)
