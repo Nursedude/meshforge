@@ -46,6 +46,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import socket
 import subprocess
 import sys
 from typing import Dict, List, Optional, Tuple
@@ -79,6 +80,17 @@ DEFAULT_PACKAGES = (
 #: python envs than a probe can see (user site, root dist-packages, pipx).
 REMOTE_PYTHON = "/usr/bin/python3"
 
+# ⚠️ KNOWN LIMITATION (found 2026-09-05, not yet cured): ``md.version(name)``
+# returns the FIRST distribution of that name on sys.path, which is not
+# necessarily the one ``import name`` resolves to. the manager box carries THREE
+# cryptography dist-infos — 43.0.3 and 46.0.3 in the SAME
+# /usr/local/lib/python3.13/dist-packages, plus 43.0.0 from apt — so this
+# reporter says 43.0.3 while the interpreter actually imports 46.0.3. Here it
+# OVER-reports, which is the safe direction; a stale NEWER dist-info shadowing
+# a live older package would UNDER-report and read clean while vulnerable code
+# runs. The honest fix is to report ALL claimants rather than silently pick
+# one; until then, treat a version from this sweep as "some dist-info on that
+# box says", and confirm against ``import`` before acting on a single box.
 _REMOTE_SRC = """
 import importlib.metadata as md, json
 out = {}
@@ -130,16 +142,37 @@ def read_fleet_hosts(explicit: Optional[str] = None) -> Tuple[List[str], Optiona
     return [], "no fleet host list found (looked in ~/.config/meshforge and /etc/meshforge)"
 
 
+def local_host_aliases() -> set:
+    """Names that mean THIS box. The manager has no inbound ssh to itself, so
+    a host resolving to one of these is collected by running the same reporter
+    locally rather than over ssh."""
+    aliases = {"localhost"}
+    try:
+        name = socket.gethostname()
+    except OSError:
+        name = ""
+    if name:
+        aliases.add(name)
+        aliases.add(name.split(".")[0])
+    return {a.lower() for a in aliases if a}
+
+
 def collect_installed(host: str, packages, timeout: int = 40):
     """{pkg: version|None} for one box, or (None, reason). A box we cannot
     reach is UNKNOWN — it is never folded in as though it were clean."""
     src = _REMOTE_SRC % {"pkgs": list(packages)}
-    rc, out, err = _run(
-        ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host,
-         REMOTE_PYTHON, "-"], timeout=timeout, stdin_text=src)
+    if host.lower() in local_host_aliases():
+        rc, out, err = _run([REMOTE_PYTHON, "-"], timeout=timeout,
+                            stdin_text=src)
+        how = "local python failed"
+    else:
+        rc, out, err = _run(
+            ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host,
+             REMOTE_PYTHON, "-"], timeout=timeout, stdin_text=src)
+        how = "unreachable or remote python failed"
     if rc != 0:
-        return None, "unreachable or remote python failed (rc=%s): %s" % (
-            rc, (err or out).strip()[:120])
+        return None, "%s (rc=%s): %s" % (
+            how, rc, (err or out).strip()[:120])
     try:
         return json.loads(out.strip().splitlines()[-1]), None
     except (ValueError, IndexError) as exc:
@@ -208,6 +241,22 @@ def main(argv=None) -> int:
         if not args.quiet:
             print(msg)
         return 2
+
+    if not args.only_hosts:
+        # The manager box is absent from the fleet host list BY DESIGN — that
+        # list is shared with fleet_pull.sh, which ssh-es outward and would be
+        # ssh-ing to itself. This sweep has no such constraint: it collects
+        # locally when the host is this box. Inheriting the exclusion made the
+        # checker blind to the box it RUNS ON, and on 2026-09-05 that box was
+        # carrying five unnoticed cryptography advisories (three high) while
+        # this very report covered the other nine and read as the fleet's
+        # whole story. Blind by construction, not by scope.
+        aliases = local_host_aliases()
+        if not any(h.lower() in aliases for h in hosts):
+            try:
+                hosts = [socket.gethostname().split(".")[0]] + list(hosts)
+            except OSError:
+                pass
 
     # One query per DISTINCT (pkg, version) across the whole fleet, not one per
     # box: nine boxes usually share a handful of versions, and the advisory API

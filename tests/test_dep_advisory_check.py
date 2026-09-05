@@ -193,3 +193,92 @@ class TestQueriesAreSharedAcrossBoxes:
         assert rc == 0
         assert len(calls) == 1, ("three boxes on one version must cost ONE "
                                  "advisory query, got %d" % len(calls))
+
+
+class TestTheManagerBoxIsNotABlindSpot:
+    """The sweep must cover the box it RUNS ON.
+
+    2026-09-05: the fleet host list carries an explicit "do NOT include
+    <self>" line — correct for ``fleet_pull.sh``, which ssh-es outward and
+    cannot ssh to itself. This sweep inherited that list and so inherited
+    the exclusion, for which it has no reason: it can collect locally. The
+    result was a report naming nine boxes, read as the fleet's whole story,
+    while the tenth — the manager box, running the tracer, the watchdog and this
+    very check — sat on cryptography 46.0.3 with three highs and appeared
+    nowhere. A checker blind to its own host is blind by construction.
+    """
+
+    def _fleet_run(self, home, monkeypatch, hostname, host_list):
+        """Run a FLEET-wide sweep (no --host) against a written host list."""
+        import json as _json
+        seen = []
+        f = home / "fleet_hosts"
+        f.write_text("\n".join(host_list) + "\n")
+
+        def fake_run(cmd, timeout, stdin_text=None):
+            if cmd[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if cmd[0] == "gh":
+                return 0, "[]", ""
+            if cmd[0] == "ssh":
+                seen.append(("ssh", cmd[5]))
+                return 0, _json.dumps({"cryptography": "46.0.7"}), ""
+            # local collection: the reporter python, no ssh wrapper
+            seen.append(("local", cmd[0]))
+            return 0, _json.dumps({"cryptography": "46.0.3"}), ""
+
+        monkeypatch.setattr(dac, "_run", fake_run)
+        monkeypatch.setattr(dac.socket, "gethostname", lambda: hostname)
+        rc = dac.main(["--hosts-file", str(f), "--packages", "cryptography",
+                       "--quiet"])
+        return rc, seen
+
+    def test_local_box_is_swept_even_when_absent_from_the_host_list(
+            self, home, monkeypatch):
+        rc, seen = self._fleet_run(home, monkeypatch, "boxM",
+                                   ["moc", "moc1"])
+        assert rc == 0, rc
+        assert ("local", dac.REMOTE_PYTHON) in seen, (
+            "the manager box was not collected — this is the exact blind spot "
+            "the exclusion produced: %r" % (seen,))
+        # and it did NOT try to ssh to itself, while the listed boxes still went
+        # over ssh by name (pins that `seen` really carries hosts, so the
+        # negative assertion above cannot pass vacuously)
+        ssh_hosts = [h for kind, h in seen if kind == "ssh"]
+        assert ssh_hosts == ["moc", "moc1"], ssh_hosts
+        assert "boxM" not in ssh_hosts
+
+    def test_local_box_is_not_swept_twice_when_already_listed(
+            self, home, monkeypatch):
+        rc, seen = self._fleet_run(home, monkeypatch, "moc", ["moc", "moc1"])
+        assert rc == 0, rc
+        assert sum(1 for kind, _ in seen if kind == "local") == 1, (
+            "a host list that already names this box must not add it again: %r"
+            % (seen,))
+
+    def test_explicit_host_selection_is_not_widened(self, home, monkeypatch):
+        """``--host moc`` means moc, not moc plus wherever I happen to run."""
+        import json as _json
+        seen = []
+
+        def fake_run(cmd, timeout, stdin_text=None):
+            if cmd[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if cmd[0] == "gh":
+                return 0, "[]", ""
+            seen.append(cmd[5] if cmd[0] == "ssh" else "local")
+            return 0, _json.dumps({"cryptography": "46.0.7"}), ""
+
+        monkeypatch.setattr(dac, "_run", fake_run)
+        monkeypatch.setattr(dac.socket, "gethostname", lambda: "boxM")
+        rc = dac.main(["--host", "moc", "--packages", "cryptography", "--quiet"])
+        assert rc == 0 and seen == ["moc"], seen
+
+    def test_a_local_collection_failure_is_unknown_not_clean(self, monkeypatch):
+        monkeypatch.setattr(dac.socket, "gethostname", lambda: "boxM")
+        monkeypatch.setattr(dac, "_run",
+                            lambda cmd, timeout, stdin_text=None: (1, "", "boom"))
+        installed, err = dac.collect_installed("boxM", ["cryptography"])
+        assert installed is None and err, (installed, err)
+        assert "local" in err, (
+            "a failed LOCAL collection must say so, not blame ssh: %r" % err)
