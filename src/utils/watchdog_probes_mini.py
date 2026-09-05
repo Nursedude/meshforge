@@ -516,95 +516,16 @@ def probe_rules_seed_drift(
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────
-# mini_rule_orphaned_exclusion — ownership judged by the ENGINE, on real
-# subjects (2026-09-03 frontier pass)
-# ─────────────────────────────────────────────────────────────────────
-# The first cut decided ownership with a private glob-core solver
-# (`g.strip("*")` matched against any of three selector keys). Against
-# `mini_dudeai.engine._match_rule` — the thing that actually decides what
-# mini watches — it disagreed in five shapes: an owner filtering a DIFFERENT
-# `class` extra was credited (false clean; 60 of this box's 68 live rules
-# carry that filter), a rule with a missing subject_glob beside a matching
-# peer_glob was credited although the engine reads subject_glob alone (false
-# clean), and `subject_glob: ""` / an owner more specific than the core /
-# a `?` in the glob each paged on an owned subject (false page). A checker
-# that re-types the semantics it audits encodes only the narrowness its
-# author already thought of; this one asks the engine.
-#
-# Sample subjects, in order of authority: subjects the box has actually
-# recorded in mini's state.json (rule-state keys are ``rule_id::subject``
-# and outlive the rule's retirement for STALE_KEY_RETENTION_S — exactly what
-# makes a half-landed retirement judgeable on the real name), and only when
-# none of those falls inside the exclusion, the glob's literal core as a
-# synthetic subject. A glob with no literal core (`*`, `*moc?*`) and no
-# observed subject in scope is UNJUDGEABLE, and says so — never a page,
-# never an affirmative clean.
+# The ownership solver lives in watchdog_probes_mini_ownership (split
+# 2026-09-05, MF025). Re-exported so the probe below and its tests keep
+# one import site.
+from utils.watchdog_probes_mini_ownership import (  # noqa: E402
+    _MINI_GLOB_META,
+    _mini_judge_exclusion,
+    _mini_observed_subjects,
+    _mini_peer_universe,
+)
 
-_MINI_GLOB_META = ("?", "[")
-
-
-def _mini_observed_subjects(state: Optional[dict]) -> list:
-    """Subject strings mini has recorded, from a state.json document."""
-    out: list = []
-    seen: set = set()
-    for key, ent in ((state or {}).get("rules") or {}).items():
-        s = ent.get("subject") if isinstance(ent, dict) else None
-        if not isinstance(s, str) or not s:
-            _rid, sep, tail = str(key).partition("::")
-            s = tail if sep and tail else None
-        if s and s not in seen:
-            seen.add(s)
-            out.append(s)
-    return out
-
-
-def _mini_judge_exclusion(rule: dict, glob: str, rules: list, observed: list,
-                          match_rule, structural_keys, condition_cls) -> tuple:
-    """``(verdict, note)`` for one exclude glob of one rule.
-
-    verdict ∈ ``"orphaned"`` (note names the witness subject), ``"owned"``
-    (note names the method), ``"unjudgeable"`` (note says why).
-    """
-    m = rule.get("match") or {}
-    kind = m.get("kind")
-    extras = {k: v for k, v in m.items() if k not in structural_keys}
-    # The rule MINUS its exclusions: "would this rule have watched s?"
-    bare = {"match": {k: v for k, v in m.items()
-                      if k != "subject_exclude_globs"}}
-
-    def cond(s):
-        return condition_cls(kind=kind, subject=s, extras=dict(extras))
-
-    def in_scope(s):
-        return bool(match_rule(bare, cond(s))) and fnmatch.fnmatchcase(s, glob)
-
-    def owned(s):
-        c = cond(s)
-        return any(o is not rule and match_rule(o, c) for o in rules)
-
-    core = glob.strip("*")
-    if not core:
-        # Excluding everything disables the rule outright — a different
-        # pathology (a rule that matches nothing forever), named as such
-        # rather than judged subject-by-subject.
-        return "unjudgeable", "bare '*' — no owner is nameable for everything"
-    scoped = [s for s in observed if in_scope(s)]
-    if scoped:
-        for s in scoped:
-            if not owned(s):
-                return "orphaned", f"observed subject {s!r}"
-        return "owned", f"{len(scoped)} observed subject(s)"
-    if any(ch in core for ch in _MINI_GLOB_META):
-        return "unjudgeable", ("glob metacharacters and no observed subject "
-                               "in scope")
-    if not in_scope(core):
-        return "unjudgeable", (f"synthetic subject {core!r} is outside the "
-                               f"rule's own selector and no observed subject "
-                               f"is in scope")
-    if owned(core):
-        return "owned", "structural core"
-    return "orphaned", f"synthetic subject {core!r}"
 
 
 def _read_mini_state(home: Optional[str]) -> tuple:
@@ -631,6 +552,7 @@ def probe_mini_rule_orphaned_exclusion(
     mini_home: Optional[str] = None,
     live_rules: Optional[list] = None,
     live_state: Optional[dict] = None,
+    fleet_hosts: Optional[list] = None,
 ) -> Optional[Signal]:
     """A live mini rule excludes a subject that no other rule watches.
 
@@ -696,6 +618,17 @@ def probe_mini_rule_orphaned_exclusion(
         if live_state is None and not injected:
             live_state, state_note = _read_mini_state(home)
         observed = _mini_observed_subjects(live_state)
+        # The peer universe closes the never-recorded gap (2026-09-05). Like
+        # live_state above, INJECTED rules never pull this machine's host list
+        # underneath them (feedback_tests_must_pin_ambient_state): a test's
+        # verdict must not depend on which boxes this fleet happens to have.
+        if fleet_hosts is None and not injected:
+            try:
+                from utils.fleet_hosts import resolve_fleet_hosts
+                fleet_hosts = resolve_fleet_hosts()
+            except Exception:
+                fleet_hosts = None
+        universe = _mini_peer_universe(observed, fleet_hosts or [])
 
         rules = [r for r in live_rules if isinstance(r, dict) and r.get("id")]
         orphaned: list = []        # (rule_id, glob, witness)
@@ -708,7 +641,7 @@ def probe_mini_rule_orphaned_exclusion(
                     continue
                 verdict, note = _mini_judge_exclusion(
                     r, g, rules, observed, _match_rule,
-                    STRUCTURAL_MATCH_KEYS, Condition)
+                    STRUCTURAL_MATCH_KEYS, Condition, universe)
                 if verdict == "orphaned":
                     orphaned.append((r["id"], g, note))
                 elif verdict == "owned":

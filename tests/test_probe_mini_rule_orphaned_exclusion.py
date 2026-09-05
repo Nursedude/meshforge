@@ -341,3 +341,120 @@ def test_unreadable_state_file_degrades_to_structural_and_says_so(tmp_path, disp
     assert probe_mini_rule_orphaned_exclusion(mini_home=home) is None
     d = dispositions()[CLS]
     assert d["disp"] == "clean" and "state" in (d.get("reason") or "")
+
+
+# ── the never-recorded peer (frontier pass 2026-09-05) ────────────────
+# The 09-03 cure judged ownership over subjects mini had OBSERVED. Measured
+# against the engine on identical rules, that read CLEAN on a real hole: an
+# excluder carving '*moc*' out of itself, '*moc1*' the only owner, and a peer
+# the box had never recorded owned by nothing. Worse, the SAME rules with an
+# EMPTY state PAGED via the structural core — detection got weaker as state
+# filled, the inverse of the expected direction.
+#
+# It is not fixable by a cleverer glob solver: containment over an unbounded
+# name space always finds a hole and re-pages the 09-03 finding (d) (an owner
+# more specific than the core), and bare HOST names are not subjects, so
+# testing them re-pages it too. The universe is built from the naming
+# convention the box demonstrably uses.
+
+_HOSTS = ["moc", "moc1", "moc2", "moc3", "moc9", "kiai"]
+
+
+class TestPeerUniverse:
+    def test_prefix_is_inferred_from_an_observed_subject(self):
+        from utils.watchdog_probes_mini import _mini_peer_universe
+        u = _mini_peer_universe(["peer-moc1"], _HOSTS)
+        assert "peer-moc9" in u
+        assert "peer-moc1" not in u, "already observed — not un-recorded"
+        assert "moc9" not in u, "a bare host is not a subject name"
+
+    def test_no_hosts_yields_no_universe(self):
+        from utils.watchdog_probes_mini import _mini_peer_universe
+        assert _mini_peer_universe(["peer-moc1"], []) == []
+
+    def test_no_observed_subjects_yields_no_universe(self):
+        """Nothing to infer a convention from — fall back to the core."""
+        from utils.watchdog_probes_mini import _mini_peer_universe
+        assert _mini_peer_universe([], _HOSTS) == []
+
+    def test_non_peer_shaped_kind_yields_no_universe(self):
+        """A kind whose subjects are service names teaches no prefix, so peer
+        names are never invented for it."""
+        from utils.watchdog_probes_mini import _mini_peer_universe
+        assert _mini_peer_universe(["meshtasticd", "rnsd"], _HOSTS) == []
+
+
+def _excl_moc():
+    return [
+        {"id": "excl", "match": {"kind": KIND, "subject_glob": "*",
+                                 "subject_exclude_globs": ["*moc*"]}},
+        {"id": "own1", "match": {"kind": KIND, "subject_glob": "*moc1*"}},
+    ]
+
+
+class TestNeverRecordedPeerIsJudged:
+    def test_engine_agrees_the_unrecorded_peer_is_a_hole(self):
+        """Ground truth first: the finding is a disagreement with the consumer
+        of record, not an opinion about the code."""
+        from mini_dudeai.engine import _match_rule
+        from mini_dudeai.sources.base import Condition
+        c = Condition(kind=KIND, subject="peer-moc9", extras={})
+        owners = [r for r in _excl_moc() if r["id"] != "excl"]
+        assert not any(_match_rule(o, c) for o in owners)
+
+    def test_owned_observed_sample_no_longer_certifies_the_glob(self, dispositions):
+        state = {"rules": {"own1::peer-moc1": {"subject": "peer-moc1"}}}
+        sig = probe_mini_rule_orphaned_exclusion(
+            live_rules=_excl_moc(), live_state=state, fleet_hosts=_HOSTS)
+        assert sig is not None, "a never-recorded peer in this glob is a hole"
+        witness = " ".join(sig.extra["witness"].values())
+        assert "fleet peer" in witness and "never recorded" in witness, witness
+
+    def test_without_a_host_list_it_falls_back_and_does_not_page(self, dispositions):
+        """Absence of a universe is not evidence of a hole either."""
+        state = {"rules": {"own1::peer-moc1": {"subject": "peer-moc1"}}}
+        assert probe_mini_rule_orphaned_exclusion(
+            live_rules=_excl_moc(), live_state=state, fleet_hosts=[]) is None
+
+    def test_a_populated_state_is_not_less_sensitive_than_an_empty_one(self, dispositions):
+        """The inversion this fix exists for."""
+        empty = probe_mini_rule_orphaned_exclusion(
+            live_rules=_excl_moc(), live_state={"rules": {}},
+            fleet_hosts=_HOSTS)
+        populated = probe_mini_rule_orphaned_exclusion(
+            live_rules=_excl_moc(),
+            live_state={"rules": {"own1::peer-moc1":
+                                  {"subject": "peer-moc1"}}},
+            fleet_hosts=_HOSTS)
+        assert empty is not None and populated is not None
+
+    def test_an_observed_orphan_still_wins_the_witness(self, dispositions):
+        """A real recorded subject outranks an inferred peer name in the
+        reason — the operator should see the name that actually occurred."""
+        rules = [{"id": "excl", "match": {"kind": KIND, "subject_glob": "*",
+                                          "subject_exclude_globs": ["*moc*"]}}]
+        state = {"rules": {"x::peer-moc1": {"subject": "peer-moc1"}}}
+        sig = probe_mini_rule_orphaned_exclusion(
+            live_rules=rules, live_state=state, fleet_hosts=_HOSTS)
+        assert sig is not None
+        assert "observed subject" in " ".join(sig.extra["witness"].values())
+
+    def test_owner_more_specific_than_the_core_stays_clean(self, dispositions):
+        """The 09-03 finding (d) must NOT come back: peer-moc3 owns the only
+        subject '*moc3*' blinds, and no invented peer name falls in that glob."""
+        rules = [{"id": "excl", "match": {"kind": KIND, "subject_glob": "*",
+                                          "subject_exclude_globs": ["*moc3*"]}},
+                 {"id": "own", "match": {"kind": KIND,
+                                         "subject_glob": "peer-moc3"}}]
+        state = {"rules": {"own::peer-moc3": {"subject": "peer-moc3"}}}
+        sig = probe_mini_rule_orphaned_exclusion(
+            live_rules=rules, live_state=state, fleet_hosts=_HOSTS)
+        assert sig is None
+        assert dispositions()[CLS]["disp"] == "clean"
+
+    def test_injected_rules_never_pull_this_machines_host_list(self, dispositions):
+        """feedback_tests_must_pin_ambient_state: a verdict must not depend on
+        which boxes THIS fleet happens to have."""
+        state = {"rules": {"own1::peer-moc1": {"subject": "peer-moc1"}}}
+        assert probe_mini_rule_orphaned_exclusion(
+            live_rules=_excl_moc(), live_state=state) is None
