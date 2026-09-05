@@ -46,6 +46,13 @@ LOUD refusal, never an empty check that would look identical to a healthy bot:
       "debounce_ticks": 2
     }
 
+⚠️ `bot_unit` and `corroborator_unit` are read in SYSTEM scope
+(`systemctl show <unit>`, no `--user`). A user-scope unit reads `inert` with
+"does not exist on <host>", which is true of system scope and misleading
+about the box -- resolve a unit's manager before configuring it here; the
+split is per-UNIT on this fleet, not per-box. lehua's `mesh_bot` is a system
+unit (verified 2026-09-05).
+
 `corroborator_match` is a PROXY for "traffic the bot should have heard" --
 it counts what a box on the same logical channel observed. It cannot prove
 the bot was in range of any particular packet, so this probe claims only
@@ -160,27 +167,77 @@ def _ssh(host: str, remote_cmd: str) -> Tuple[int, str]:
     return r.returncode, r.stdout
 
 
-def unit_state(host: str, unit: str) -> Tuple[str, str]:
-    """(status, detail). status is one of ok/inert/unobservable.
+def parse_unit_uptime(fields: dict, proc_uptime: str) -> Optional[float]:
+    """Seconds the unit has been active, from MONOTONIC anchors only.
+
+    Both inputs come from the BOT box, so this never compares clocks across
+    machines and never parses a timezone. systemd's
+    `ActiveEnterTimestamp` is a locale string ("Fri 2026-09-04 09:21:51 HST")
+    -- parsing that would re-introduce exactly the cross-box timezone defect
+    just removed from the journal leg. `ActiveEnterTimestampMonotonic` is
+    microseconds since the bot box's own boot, and /proc/uptime is seconds
+    since that same boot, so the difference is a pure duration.
+
+    Wall clocks are forgeable on this fleet anyway (honest_failure_modes #6:
+    RTC-less Pis, fake-hwclock, NTP steps); lehua is a Zero 2W with no RTC.
+
+    Returns None when the value is absent or nonsensical -- the caller must
+    treat that as unobservable, never as "no restart happened".
+    """
+    raw = fields.get("ActiveEnterTimestampMonotonic", "").strip()
+    if not raw:
+        return None
+    try:
+        entered_us = float(raw)
+        boot_elapsed_s = float(proc_uptime.split()[0])
+    except (ValueError, IndexError):
+        return None
+    # systemd writes 0 for a unit that has never become active.
+    if entered_us <= 0:
+        return None
+    up = boot_elapsed_s - (entered_us / 1_000_000.0)
+    # A unit cannot have started before the boot it is measured against; a
+    # negative value means the two anchors disagree, which is knowledge we
+    # do not have rather than an uptime of zero.
+    if up < 0:
+        return None
+    return up
+
+
+def unit_state(host: str, unit: str) -> Tuple[str, str, Optional[float]]:
+    """(status, detail, uptime_seconds). status is one of ok/inert/unobservable.
 
     LoadState=not-found means the unit does not exist here -- the DETECTOR is
     pointed at nothing, which reads `inert`, never a failure and never a
-    silent pass (the 2026-08-12 'nothing owned them' class)."""
-    rc, out = _ssh(host, f"systemctl show {unit} -p LoadState -p ActiveState")
+    silent pass (the 2026-08-12 'nothing owned them' class).
+
+    uptime_seconds is how long the CURRENT process has been active, and it is
+    load-bearing: `journalctl -u <unit>` spans restarts, so receptions logged
+    by a PREVIOUS process would otherwise count as this one having heard
+    something. Fetched in the SAME round trip -- one ssh, not two.
+    """
+    rc, out = _ssh(
+        host,
+        f"systemctl show {unit} -p LoadState -p ActiveState "
+        f"-p ActiveEnterTimestampMonotonic; echo '--'; cat /proc/uptime",
+    )
     if rc < 0:
-        return UNOBSERVABLE, "ssh transport failed"
+        return UNOBSERVABLE, "ssh transport failed", None
+    show, _, proc_uptime = out.partition("--")
     fields = dict(
-        line.split("=", 1) for line in out.strip().splitlines() if "=" in line
+        line.split("=", 1) for line in show.strip().splitlines() if "=" in line
     )
     load = fields.get("LoadState", "")
     active = fields.get("ActiveState", "")
     if not load:
-        return UNOBSERVABLE, "systemctl returned no LoadState"
+        return UNOBSERVABLE, "systemctl returned no LoadState", None
     if load == "not-found":
-        return INERT, f"unit {unit} does not exist on {host}"
+        return INERT, f"unit {unit} does not exist on {host}", None
     if active != "active":
-        return INERT, f"unit {unit} is {active} (service-down probes own that)"
-    return "ok", f"{unit} active"
+        return (INERT,
+                f"unit {unit} is {active} (service-down probes own that)",
+                None)
+    return "ok", f"{unit} active", parse_unit_uptime(fields, proc_uptime)
 
 
 def parse_reception_age(line: str, now: float) -> Tuple[str, Optional[float]]:
@@ -260,33 +317,89 @@ def corroborating_traffic(host: str, unit: str, match: str,
         return UNOBSERVABLE, None
 
 
+def effective_silence(age: Optional[float], unit_up_s: float,
+                      lookback_s: float = JOURNAL_LOOKBACK_S
+                      ) -> Tuple[float, bool]:
+    """(seconds the CURRENT process has heard nothing, was_it_bounded_by_restart).
+
+    `journalctl -u <unit>` spans restarts, so `age` can point at a reception
+    made by a PREVIOUS process. The current process cannot have been silent
+    for longer than it has been running, so the honest figure is
+    `min(age, uptime)` -- and when nothing was found at all, simply `uptime`.
+
+    This is the 2026-09-04 incident's own shape and the reason the gap
+    mattered: lehua's radio died mid-run and the bot was restarted twice that
+    day. Without this, a bot restarted seconds ago with no journal history
+    reads "heard nothing, ever" and can reach DEAF before it has had any
+    chance to hear -- and conversely a pre-restart reception could vouch for
+    a process that has heard nothing since.
+
+    The grace period falls out of the arithmetic rather than being a second
+    tunable: silence can never exceed uptime, so a unit up for less than the
+    threshold can never be called deaf.
+
+    When nothing was found at all, the bound is the LOOKBACK window, not
+    infinity -- the journal was only consulted that far back, so claiming
+    more silence than we looked for would be asserting what we did not
+    observe. It also keeps the returned flag honest: a bot up 24h with an
+    empty 6h window is silent because it heard nothing, not because it
+    restarted, and the two must not print the same sentence.
+    """
+    observed = lookback_s if age is None else age
+    if unit_up_s < observed:
+        return unit_up_s, True
+    return observed, False
+
+
 def decide(unit_status: str, unit_detail: str,
            age_status: str, age: Optional[float],
            corr_status: str, corr: Optional[int],
            deaf_after_s: float,
-           min_corroboration: int = DEFAULT_MIN_CORROBORATION) -> Tuple[str, str]:
-    """Pure verdict function -- unit-testable without a fleet."""
+           min_corroboration: int = DEFAULT_MIN_CORROBORATION,
+           unit_up_s: Optional[float] = None) -> Tuple[str, str]:
+    """Pure verdict function -- unit-testable without a fleet.
+
+    `unit_up_s` (how long the CURRENT process has been active) is required to
+    judge silence honestly, because `journalctl -u <unit>` spans restarts. See
+    `effective_silence()`.
+    """
     if unit_status == UNOBSERVABLE:
         return UNOBSERVABLE, f"bot box: {unit_detail}"
     if unit_status == INERT:
         return INERT, unit_detail
     if age_status == UNOBSERVABLE:
         return UNOBSERVABLE, "bot journal unreadable or undateable"
-    if age is not None and age <= deaf_after_s:
-        return CLEAN, f"bot heard traffic {int(age)}s ago"
-    # Bot has heard nothing in the threshold window. Only a second witness
-    # can tell deafness from a quiet mesh.
+    if unit_up_s is None:
+        # We cannot tell a deaf bot from one that restarted seconds ago and
+        # has not yet had a chance to hear anything. Guessing either way is
+        # the defect class: a degraded observation must not be given a
+        # healthy-looking (or alarming) value.
+        return (UNOBSERVABLE,
+                "bot unit uptime unreadable -- cannot tell a deaf bot from a "
+                "freshly restarted one, so neither claim is available")
+
+    silence, since_restart = effective_silence(age, unit_up_s)
+    if silence <= deaf_after_s:
+        if since_restart:
+            return (CLEAN,
+                    f"bot restarted {int(unit_up_s)}s ago and has not been up "
+                    f"long enough to call silent (threshold {int(deaf_after_s)}s)")
+        return CLEAN, f"bot heard traffic {int(silence)}s ago"
+
+    # Bot has been silent past the threshold FOR THIS PROCESS. Only a second
+    # witness can tell deafness from a quiet mesh.
     if corr_status == UNOBSERVABLE:
         return (UNOBSERVABLE,
                 "bot silent, and the corroborating box could not be read -- "
                 "cannot tell deafness from a quiet mesh")
+    heard = (f"nothing in {int(unit_up_s)}s since it restarted" if since_restart
+             else "nothing in the lookback window" if age is None
+             else f"{int(age)}s ago")
     if not corr or corr < min_corroboration:
-        heard = "nothing in the lookback window" if age is None else f"{int(age)}s ago"
         return (CLEAN,
                 f"bot last heard {heard}, and the corroborator saw only "
                 f"{corr or 0} message(s) (< {min_corroboration}) -- quiet mesh "
                 f"or RF luck, not demonstrable deafness")
-    heard = "nothing in the lookback window" if age is None else f"{int(age)}s ago"
     return (DEAF,
             f"bot is ACTIVE but heard {heard}, while the corroborator saw "
             f"{corr} message(s) in the same window -- the feed is not reaching it")
@@ -344,7 +457,7 @@ def main(argv) -> int:
     min_corr = int(cfg.get("min_corroboration", DEFAULT_MIN_CORROBORATION))
 
     now = time.time()
-    u_status, u_detail = unit_state(bot_host, bot_unit)
+    u_status, u_detail, u_up = unit_state(bot_host, bot_unit)
     if u_status == "ok":
         a_status, age = last_reception_age(bot_host, bot_unit, now)
         c_status, corr = corroborating_traffic(
@@ -353,7 +466,8 @@ def main(argv) -> int:
         a_status, age, c_status, corr = "ok", None, "ok", 0
 
     verdict, detail = decide(u_status, u_detail, a_status, age,
-                             c_status, corr, deaf_after_s, min_corr)
+                             c_status, corr, deaf_after_s, min_corr,
+                             unit_up_s=u_up)
 
     state = _load_state(_state_path())
     streak = int(state.get("deaf_streak", 0)) + 1 if verdict == DEAF else 0

@@ -21,8 +21,15 @@ _spec.loader.exec_module(bdc)
 THRESH = 600
 
 
-def _decide(unit=("ok", "mesh_bot active"), age=("ok", 60.0), corr=("ok", 5)):
-    return bdc.decide(unit[0], unit[1], age[0], age[1], corr[0], corr[1], THRESH)
+# A long-running bot, so the restart leg is out of the way unless a test is
+# specifically about it. Anything under THRESH can never be called deaf.
+LONG_UPTIME = 86400.0
+
+
+def _decide(unit=("ok", "mesh_bot active"), age=("ok", 60.0), corr=("ok", 5),
+            up=LONG_UPTIME):
+    return bdc.decide(unit[0], unit[1], age[0], age[1], corr[0], corr[1],
+                      THRESH, unit_up_s=up)
 
 
 class TestHealthyPaths:
@@ -102,8 +109,12 @@ class TestUnobservableIsNeverAPass:
             (("ok", "a"), (bdc.UNOBSERVABLE, None), ("ok", 0)),
             (("ok", "a"), ("ok", None), (bdc.UNOBSERVABLE, None)),
         ]:
+            # unit_up_s MUST be passed: omitting it defaults to None, which
+            # is itself unobservable, and every case would pass vacuously
+            # while testing nothing about the leg it names.
             verdict, _ = bdc.decide(unit[0], unit[1], age[0], age[1],
-                                    corr[0], corr[1], THRESH)
+                                    corr[0], corr[1], THRESH,
+                                    unit_up_s=LONG_UPTIME)
             assert verdict == bdc.UNOBSERVABLE
 
 
@@ -145,9 +156,6 @@ class TestConfigRefusal:
         assert bdc.main([]) == 2
         assert "bot_host" in capsys.readouterr().err
 
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-v"]))
 
 
 # ── The layer the first draft skipped ────────────────────────────────────────
@@ -274,3 +282,110 @@ class TestEpochParse:
                 _os.environ["TZ"] = original
             _time.tzset()
         assert len(set(ages)) == 1, f"age varied by timezone: {ages}"
+
+
+class TestRestartGrace:
+    """The 2026-09-04 shape: lehua's radio died mid-run and the bot was
+    restarted TWICE that day. `journalctl -u <unit>` spans restarts, so
+    without an uptime anchor a freshly restarted bot reads "heard nothing,
+    ever" and can reach DEAF before it has had any chance to hear."""
+
+    def test_fresh_restart_with_empty_history_is_not_deaf(self):
+        verdict, detail = _decide(age=("ok", None), corr=("ok", 12), up=30.0)
+        assert verdict == bdc.CLEAN, "a bot up 30s cannot have been silent 600s"
+        assert "restarted" in detail
+
+    def test_restart_grace_ends_at_the_threshold(self):
+        """Up longer than the threshold, still nothing heard, traffic seen."""
+        verdict, _ = _decide(age=("ok", None), corr=("ok", 12),
+                             up=THRESH + 1.0)
+        assert verdict == bdc.DEAF
+
+    def test_silence_can_never_exceed_uptime(self):
+        """A pre-restart reception must not be attributed to this process,
+        and the process cannot have been silent longer than it has run."""
+        silence, bounded = bdc.effective_silence(age=5000.0, unit_up_s=10.0)
+        assert silence == 10.0 and bounded is True
+
+    def test_post_restart_reception_is_used_as_is(self):
+        silence, bounded = bdc.effective_silence(age=300.0, unit_up_s=10000.0)
+        assert silence == 300.0 and bounded is False
+
+    def test_long_uptime_with_empty_window_is_not_called_a_restart(self):
+        """Legibility: a bot up 24h that heard nothing in the 6h lookback is
+        silent because it heard nothing, not because it restarted. Bounding
+        by the lookback also avoids claiming more silence than we looked for."""
+        silence, bounded = bdc.effective_silence(
+            age=None, unit_up_s=86400.0, lookback_s=21600.0)
+        assert silence == 21600.0
+        assert bounded is False
+        verdict, detail = _decide(age=("ok", None), corr=("ok", 12), up=86400.0)
+        assert verdict == bdc.DEAF
+        assert "restarted" not in detail
+
+    def test_the_grace_needs_no_second_tunable(self):
+        """Silence is bounded by uptime, so any unit up less than the
+        threshold is un-deafable by construction — no separate grace knob to
+        drift out of sync with deaf_after_s (hfm #5)."""
+        for up in (0.0, 1.0, THRESH / 2, THRESH):
+            verdict, _ = _decide(age=("ok", None), corr=("ok", 99), up=up)
+            assert verdict == bdc.CLEAN, f"up={up} should be un-deafable"
+
+
+class TestUnknownUptimeIsNeverGuessed:
+    def test_missing_uptime_is_unobservable_not_clean_and_not_deaf(self):
+        verdict, detail = bdc.decide(
+            "ok", "mesh_bot active", "ok", None, "ok", 12, THRESH,
+            unit_up_s=None)
+        assert verdict == bdc.UNOBSERVABLE
+        assert "freshly restarted" in detail
+
+    def test_missing_uptime_does_not_page_even_with_heavy_corroboration(self):
+        verdict, _ = bdc.decide("ok", "a", "ok", 99999.0, "ok", 500, THRESH,
+                                unit_up_s=None)
+        assert verdict != bdc.DEAF
+
+
+class TestUnitUptimeParse:
+    """Monotonic anchors only — both read from the BOT box, so no clock is
+    compared across machines and no timezone is parsed (hfm #6: wall clocks
+    are forgeable on RTC-less Pis; lehua is a Zero 2W)."""
+
+    # Verbatim shapes from `systemctl show` + /proc/uptime on the bot box.
+    def test_real_values_give_the_real_uptime(self):
+        fields = {"ActiveEnterTimestampMonotonic": "31725812"}
+        up = bdc.parse_unit_uptime(fields, "78217.00 309994.59")
+        assert up == pytest.approx(78217.00 - 31.725812, abs=0.01)
+
+    def test_never_activated_unit_reports_unknown_not_zero(self):
+        """systemd writes 0 here; a 0 uptime would mean 'just started' and
+        silently grant infinite grace."""
+        assert bdc.parse_unit_uptime(
+            {"ActiveEnterTimestampMonotonic": "0"}, "78217.00 0") is None
+
+    def test_absent_property_is_unknown(self):
+        assert bdc.parse_unit_uptime({}, "78217.00 0") is None
+
+    def test_unparseable_values_are_unknown(self):
+        assert bdc.parse_unit_uptime(
+            {"ActiveEnterTimestampMonotonic": "nope"}, "78217.00 0") is None
+        assert bdc.parse_unit_uptime(
+            {"ActiveEnterTimestampMonotonic": "31725812"}, "") is None
+
+    def test_disagreeing_anchors_are_unknown_not_negative(self):
+        """Unit start after the boot it is measured against = knowledge we do
+        not have, not an uptime of zero."""
+        assert bdc.parse_unit_uptime(
+            {"ActiveEnterTimestampMonotonic": "99000000000"}, "100.0 0") is None
+
+    def test_no_timezone_string_is_ever_parsed(self):
+        """ActiveEnterTimestamp is a locale string ('Fri 2026-09-04 09:21:51
+        HST'); parsing it would re-introduce the cross-box timezone defect
+        removed from the journal leg."""
+        import inspect
+        src = inspect.getsource(bdc)
+        assert "ActiveEnterTimestamp=" not in src
+        assert "strptime" not in src, "no wall-clock string parsing anywhere"
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-v"]))
