@@ -20,6 +20,7 @@ this module + tests, mirroring MF007/MF008/MF009.
 """
 
 import sqlite3
+import urllib.parse
 from pathlib import Path
 from typing import Union
 
@@ -37,6 +38,24 @@ DEFAULT_BUSY_TIMEOUT_SECONDS = 30.0
 
 # Sentinel for "use sqlite3's default isolation_level (deferred autocommit)".
 _DEFAULT_ISOLATION = object()
+
+
+def _is_readonly_uri(uri: bool, path: Union[str, Path]) -> bool:
+    """True when this open is read-only, so file-writing pragmas are skipped.
+
+    Only a URI open can be read-only, and only via a `mode=` parameter in its
+    query string. Parsed rather than substring-matched so a database whose
+    PATH happens to contain "mode=ro" is not mistaken for a read-only open.
+    `mode=ro` is the read-only mode; `memory` is writable, `rw`/`rwc` are not
+    read-only.
+    """
+    if not uri:
+        return False
+    try:
+        query = urllib.parse.urlparse(str(path)).query
+        return "ro" in urllib.parse.parse_qs(query).get("mode", [])
+    except (ValueError, AttributeError):
+        return False
 
 
 def connect_tuned(
@@ -83,7 +102,20 @@ def connect_tuned(
     if isolation_level is not _DEFAULT_ISOLATION:
         kwargs["isolation_level"] = isolation_level
     conn = sqlite3.connect(str(path), **kwargs)
-    conn.execute("PRAGMA journal_mode=WAL")
+    # journal_mode / journal_size_limit WRITE to the database file, so on a
+    # read-only connection they raise "attempt to write a readonly database"
+    # and the connect fails outright. The docstring above has advertised
+    # `mode=ro` readers since this helper was written, and MF013 requires every
+    # consumer to come through here — so a read-only reader had to choose
+    # between the lint rule and read-only, and the rule usually won. That is a
+    # tool forcing the weaker guarantee (2026-09-05).
+    #
+    # WAL is a property of the DATABASE, not of a connection: whichever writer
+    # opened it already set it, and a reader neither needs nor can change it.
+    # Skipping these on a read-only open therefore loses nothing.
+    if not _is_readonly_uri(uri, path):
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(f"PRAGMA journal_size_limit={int(journal_size_limit)}")
+    # synchronous is per-connection and legal read-only; harmless either way.
     conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(f"PRAGMA journal_size_limit={int(journal_size_limit)}")
     return conn

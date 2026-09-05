@@ -1179,6 +1179,7 @@ class MapDataCollector(
     def _make_feature(self, node_id: str, name: str, lat: float, lon: float,
                       network: str = "meshtastic", is_online: bool = False,
                       snr: Optional[float] = None, battery: Optional[int] = None,
+                      voltage: Optional[float] = None,
                       hardware: str = "", role: str = "",
                       is_gateway: bool = False, via_mqtt: bool = False,
                       is_local: bool = False, last_seen: str = "",
@@ -1212,6 +1213,12 @@ class MapDataCollector(
             "role": role,
         }
         # Add sensor data only when present (avoid cluttering output)
+        # voltage: mV-resolution pack voltage from DeviceMetrics, the field
+        # that makes a discharge curve possible (`battery` is 1/16-quantized
+        # SoC — ~3h per step on a 4000mAh pack). node_history._clean_voltage()
+        # rejects the 0.0 "no pack measured" sentinel USB nodes send.
+        if voltage is not None:
+            props["voltage"] = voltage
         if temperature is not None:
             props["temperature"] = temperature
         if humidity is not None:

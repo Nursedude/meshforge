@@ -145,3 +145,54 @@ class TestMigrationOnAPreExistingDatabase:
         h = NodeHistoryDB(db_path=db)
         assert h.record_observations(
             [_feature("!x", battery=1, voltage=3.1)]) == 1
+
+
+# ── The branch I missed on the first pass ────────────────────────────────────
+# 2026-09-05: the column shipped, the collector was patched, the service was
+# restarted — and 377 fresh rows landed with voltage=NULL. The patch had gone
+# into `_extract_node_info_without_position`, and record_observations() REQUIRES
+# lat/lon, so position-less features never reach the observation time-series at
+# all. Two builders read the same deviceMetrics dict; only one feeds the table.
+#
+# Same shape as the 2026-08-09 lesson in persistent_issues: grep EVERY branch
+# that reaches the same return, not just the one you came in through. These
+# tests pin BOTH builders so a future fix cannot land in only one.
+
+class TestBothFeatureBuildersCarryVoltage:
+    def _collector(self):
+        from utils.map_data_collector import MapDataCollector
+        return MapDataCollector.__new__(MapDataCollector)
+
+    def test_make_feature_emits_voltage(self):
+        """_make_feature is the POSITIONED path — the one whose features
+        actually become node_observations rows."""
+        f = self._collector()._make_feature(
+            node_id="!aaa", name="n", lat=19.4, lon=-155.2,
+            battery=94, voltage=4.122)
+        assert f["properties"]["voltage"] == pytest.approx(4.122)
+
+    def test_make_feature_omits_voltage_when_absent(self):
+        """Absent must stay absent — not a null that looks measured."""
+        f = self._collector()._make_feature(
+            node_id="!aaa", name="n", lat=19.4, lon=-155.2, battery=94)
+        assert "voltage" not in f["properties"]
+
+    def test_positioned_collector_reads_voltage_from_device_metrics(self):
+        """The specific regression: the positioned extractor must pull
+        'voltage' off the same deviceMetrics dict it takes batteryLevel from."""
+        import inspect
+
+        from utils import _map_collector_meshtastic as mc
+        src = inspect.getsource(mc.MeshtasticDataCollectorMixin._parse_tcp_node)
+        assert "device_metrics.get('batteryLevel')" in src
+        assert "device_metrics.get('voltage')" in src, (
+            "the POSITIONED builder must read voltage — patching only the "
+            "position-less one populates nothing")
+
+    def test_positionless_collector_also_reads_voltage(self):
+        import inspect
+
+        from utils import _map_collector_meshtastic as mc
+        src = inspect.getsource(
+            mc.MeshtasticDataCollectorMixin._extract_node_info_without_position)
+        assert "device_metrics.get('voltage')" in src

@@ -522,6 +522,12 @@ class MeshtasticDataCollectorMixin:
             is_online=is_online,
             snr=data.get('snr'),
             battery=device_metrics.get('batteryLevel'),
+            # POSITIONED path — this is the one that reaches the observation
+            # time-series. record_observations() requires lat/lon, so the
+            # position-less builder below never contributes a row to it; a fix
+            # applied only there populates nothing (learned the hard way
+            # 2026-09-05: the column shipped and 377 rows landed with NULL).
+            voltage=device_metrics.get('voltage'),
             hardware=user.get('hwModel', ''),
             role=user.get('role', ''),
             is_gateway=user.get('role', '') in ('ROUTER', 'ROUTER_CLIENT'),
