@@ -20,7 +20,9 @@ from typing import Dict, List, Optional, Tuple
 from utils import claw_battery
 from utils.watchdog_probe_core import (
     CRON_SPOOL_PATHS as _CRON_SPOOL_PATHS,
+    CRON_VERDICT_ORPHAN_ACKNOWLEDGED,
     Signal,
+    classify_orphan_verdicts,
     _load_parity_streak,
     _save_parity_streak,
     note_disposition,
@@ -267,11 +269,18 @@ def probe_cron_verdict_stale(
                 reason="verdict log unreadable — cron verdicts unobservable",
             )
 
-        # 4. Cross-reference — judge ONLY wired crons (orphans ignored).
+        # 4. Cross-reference. HEALTH is judged for wired crons only: an orphan
+        # is usually a parked cron's fossil, and judging it false-alarms forever
+        # (#78). But an unwired name still writing FRESH verdicts is no fossil —
+        # it is a live emitter nothing judges, reported as a WIRING gap (not as
+        # its health). Same fresh/stale rule fleet_snapshot._read_cron_verdicts
+        # already uses, on `stale` from the SHARED parser: one rule, two
+        # consumers (honest_failure_modes #5). Why: see tests/test_cron_verdict_orphan.py
         failed: List[str] = []
         stale: List[str] = []
         reboot_unjudged: List[str] = []
         unconfirmed: List[str] = []
+        unwired, acknowledged = classify_orphan_verdicts(latest, wired)
         for name, schedule in sorted(wired.items()):
             v = latest.get(name)
             if v is not None and v.get("status", "").upper().startswith(
@@ -316,7 +325,7 @@ def probe_cron_verdict_stale(
             elif float(v.get("age_s", 0.0)) > threshold:
                 stale.append(f"{name}({int(float(v['age_s']) // 3600)}h)")
 
-        if not failed and not stale:
+        if not failed and not stale and not unwired:
             if reboot_unjudged:
                 # PARTIAL coverage, not whole-class blindness (2026-08-13
                 # Pri-1 review). This used to note `indeterminate` for the
@@ -356,6 +365,14 @@ def probe_cron_verdict_stale(
                     reason=("unconfirmed first failure on fast cron(s), "
                             "awaiting next run: " + ", ".join(unconfirmed)),
                 )
+            elif acknowledged:
+                # Name WHOSE detector owns each: an unreadable acknowledgement
+                # is just a mute button.
+                note_disposition(
+                    "cron_verdict_stale", "clean",
+                    reason="unwired verdict(s) acknowledged elsewhere: " + "; ".join(
+                        "%s -> %s" % (n, CRON_VERDICT_ORPHAN_ACKNOWLEDGED[n])
+                        for n in acknowledged))
             else:
                 note_disposition("cron_verdict_stale", "clean")
             # Do NOT clear the streak on an unconfirmed failure — the tick
@@ -377,6 +394,12 @@ def probe_cron_verdict_stale(
         bits = []
         if failed:
             bits.append(f"{len(failed)} failing: " + ", ".join(failed[:5]))
+        if unwired:
+            bits.append(f"{len(unwired)} writing verdicts nothing judges: "
+                        + ", ".join(unwired[:5])
+                        + " (wire `cron_verdict.sh <name> $?` into the crontab line, or"
+                          " give it a detector and record that in"
+                          " CRON_VERDICT_ORPHAN_ACKNOWLEDGED)")
         if stale:
             bits.append(f"{len(stale)} silent: " + ", ".join(stale[:5]))
         return Signal(
@@ -387,7 +410,8 @@ def probe_cron_verdict_stale(
                     + " (fix the job or re-run + re-verify; silence is the "
                     "failure mode)"),
             issue_ref=78,
-            extra={"failed": failed, "stale": stale, "streak": streak,
+            extra={"failed": failed, "stale": stale, "unwired": unwired,
+                   "acknowledged": acknowledged, "streak": streak,
                    "wired_count": len(wired)},
         )
     except Exception:

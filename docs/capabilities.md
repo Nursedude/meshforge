@@ -176,7 +176,7 @@ MeshForge retains MeshCore as an optional gateway handler.
 ### Testing Reality Check
 
 MeshForge has **~9,300 automated tests** (run `python3 -m pytest tests/ --co -q`
-for the live count) across <!--STAT:testfiles-->355<!--/STAT--> test files. However, automated tests
+for the live count) across <!--STAT:testfiles-->360<!--/STAT--> test files. However, automated tests
 validate code paths with mocks — they do not replace field testing. The following
 features have strong unit test coverage but have **not been run with real services
 and radios** in a live deployment:

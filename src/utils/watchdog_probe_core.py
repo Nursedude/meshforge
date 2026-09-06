@@ -198,6 +198,37 @@ def note_disposition(cls: str, disp: str, *, reason: Optional[str] = None,
     _tick_dispositions[cls] = entry
 
 
+#: Verdict names UNWIRED on purpose because a dedicated detector owns them.
+#: Each entry MUST name that detector: an acknowledgement is a claim someone can
+#: check, not a mute button, and the probe echoes it in its disposition reason
+#: so it cannot become an invisible permanent exception.
+CRON_VERDICT_ORPHAN_ACKNOWLEDGED = {
+    "wan_path": ("covered by wan_path_degraded / wan_path_stale "
+                 "(mini_dudeai.sources.wan_path reads the ladder state directly)"),
+}
+
+
+def classify_orphan_verdicts(latest, wired):
+    """Split unwired verdict names into ``(unwired, acknowledged)``.
+
+    Pure. ``latest`` is {name: verdict-dict} from the shared verdict parser,
+    ``wired`` the names a crontab wires via ``cron_verdict.sh``.
+
+    A STALE unwired verdict is a parked cron's fossil and is returned in
+    neither list — judging fossils false-alarms forever (#78). A FRESH one is a
+    live emitter nothing judges: a wiring gap. Same fresh/stale rule
+    ``fleet_snapshot._read_cron_verdicts`` uses, read off the shared parser's
+    ``stale`` flag so the two consumers cannot drift (honest_failure_modes #5).
+    """
+    unwired, acknowledged = [], []
+    for name, v in sorted(latest.items()):
+        if name in wired or v.get("stale", False):
+            continue
+        (acknowledged if name in CRON_VERDICT_ORPHAN_ACKNOWLEDGED
+         else unwired).append(name)
+    return unwired, acknowledged
+
+
 def collect_dispositions() -> dict:
     """Snapshot the recorder (shallow copy — entries are never mutated)."""
     return dict(_tick_dispositions)
