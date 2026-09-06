@@ -1029,7 +1029,12 @@ Reference tiers, and what phase 2 owes each:
 - `user_timer_unit_failing` — fires in `test_watchdog_probes.py`; named in `test_lab_propagation_soak.py`, `test_mini_coverage_blind.py`, `test_mini_dudeai_brief.py`; enum gate only
 - `user_unit_inactive` — fires in `test_watchdog_probes.py`
 
-## QUEUED 2026-09-03 (Fable 5.1) — REVERSE-DIRECTION pass on `40e02f2a`: the reviewer's own fix, unreviewed
+## ~~QUEUED~~ CLOSED 2026-09-05 (Opus 5 — see the top completed-table row, fix commit `7ba9effe`) — was QUEUED 2026-09-03 (Fable 5.1): REVERSE-DIRECTION pass on `40e02f2a`, the reviewer's own fix
+
+> ⚠️ Closed 2026-09-05 by `7ba9effe`, which added the completed-table row but left this header
+> reading QUEUED — so `grep '^## QUEUED'` reported three open passes when two were open, and a
+> future session would have re-run a pass already done. Struck through 2026-09-05 on the
+> end-of-session sweep. **Closing a section means BOTH edits: the table row AND this header.**
 
 **Target**: `40e02f2a` — the fix commit from the Fable pass above (row dated
 2026-09-03, "FRONTIER PASS (Fable 5.1) — closes the QUEUED…"). It rewrote both

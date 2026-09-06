@@ -2056,3 +2056,67 @@ class TestCryptoPinIsOneConstant:
             "hardcoded version constraint disagrees with requirements/rns.txt "
             "— update the copy, or better, install from the requirements file "
             "(2026-09-05 unpatchable-pin finding):\n  " + "\n  ".join(violations))
+
+
+class TestSignalClassBudget:
+    """The detector-class count is a BUDGET, not a scoreboard — it may shrink
+    freely and may not grow without a deliberate decision.
+
+    2026-08-08's subtraction arc took SIGNAL_CLASSES from 62 to 58 on the
+    operator's footprint constraint: this fleet is Pi-class, and machinery to
+    watch machinery competes with the services it watches. By 2026-09-05 the
+    count was back to 60 — added one probe at a time, each individually
+    justified, none of them noticed as a trend by anybody. That is the failure
+    mode this pins: every gate in this repo checks CORRECTNESS, and nothing
+    checked VOLUME, so the ratchet only ever turned one way.
+
+    honest_failure_modes #10 makes it structural rather than careless: a
+    resolved incident is *supposed* to compile down to a probe. There is no
+    matching instruction to ever remove one, so the standing gradient of this
+    codebase is toward more detectors. A gradient needs a counterweight, not
+    vigilance.
+
+    To ADD a class, name the one it replaces and lower the ceiling in the same
+    change; or make the case in the commit and raise it deliberately. Either is
+    fine — being unable to do it *by accident* is the point.
+    """
+
+    #: Frozen ceiling. May only ever be LOWERED (the MF025 baseline idiom).
+    #: 62 -> 58 (subtraction arc, 2026-08-08) -> 60 (drift, 2026-09-05).
+    SIGNAL_CLASS_BUDGET = 60
+
+    @staticmethod
+    def _live_count():
+        src = os.path.join(SRC_DIR, 'utils', 'watchdog_probe_core.py')
+        with open(src, 'r', encoding='utf-8') as f:
+            text = f.read()
+        m = re.search(r'^SIGNAL_CLASSES\s*=\s*\((.*?)^\)', text, re.M | re.S)
+        assert m, "SIGNAL_CLASSES tuple not found — this guard cannot see its subject"
+        return len(re.findall(r'^\s+"', m.group(1), re.M))
+
+    def test_the_scanner_can_see_its_subject(self):
+        """Anti-vacuous: a zero count would make the budget trivially satisfied."""
+        n = self._live_count()
+        assert n > 20, (
+            "counted only %d signal class(es) — the parse broke, and a broken "
+            "parse would let the budget pass no matter how many were added" % n)
+
+    def test_signal_classes_stay_within_budget(self):
+        n = self._live_count()
+        assert n <= self.SIGNAL_CLASS_BUDGET, (
+            "SIGNAL_CLASSES is %d, budget is %d. Adding a detector class is a "
+            "deliberate act: name the class this one REPLACES and remove it, or "
+            "raise SIGNAL_CLASS_BUDGET in this file with the reason in the "
+            "commit. The 2026-08-08 subtraction arc got this to 58 and it drifted "
+            "back to 60 unnoticed — one justified probe at a time."
+            % (n, self.SIGNAL_CLASS_BUDGET))
+
+    def test_budget_is_ratcheted_to_reality(self):
+        """If the count DROPS, lower the budget in the same change — otherwise
+        the headroom silently banks itself and the next drift is invisible.
+        Same rule as the MF025 file-length baseline: it only shrinks."""
+        n = self._live_count()
+        assert n >= self.SIGNAL_CLASS_BUDGET, (
+            "SIGNAL_CLASSES is down to %d but the budget still reads %d — lower "
+            "SIGNAL_CLASS_BUDGET to %d so the win is banked, not spent."
+            % (n, self.SIGNAL_CLASS_BUDGET, n))
