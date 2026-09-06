@@ -9,3 +9,45 @@ updates:
     directory: /
     schedule:
       interval: weekly
+
+  # Python dependencies — turned on 2026-09-05, after the cryptography arc.
+  #
+  # Deliberately absent until now, and that absence WAS the bug: neither this
+  # repo nor MeshAnchor listed the pip ecosystem, so Dependabot only ever
+  # watched workflow actions. `cryptography>=45.0.7,<47` therefore sat for six
+  # months in a range where EVERY satisfying version carried a medium plus
+  # three highs, and nothing in either repo could say so. urllib3, requests,
+  # flask, werkzeug and jinja2 drifted years behind the same way.
+  #
+  # ⚠️ What this does and does NOT buy. It watches the MANIFESTS — what a fresh
+  # install and CI resolve. It does NOT patch a running box: the fleet installs
+  # out of band and carries up to SIX python envs per box, which on 2026-09-05
+  # held five different cryptography versions against this one pin. The
+  # installed-side watcher is `scripts/dep_advisory_check.py`
+  # (meshforge-dep-advisory.timer, daily) and it stays the authority on what
+  # the fleet is actually running.
+  - package-ecosystem: pip
+    directories:
+      - /
+      - /requirements
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # Routine version bumps arrive as ONE reviewable PR — a solo workflow on
+      # a Pi fleet cannot absorb a dozen at once. Security updates are NOT
+      # grouped: each should stand alone so it can be judged and merged fast.
+      python-version-updates:
+        applies-to: version-updates
+        patterns:
+          - "*"
+    ignore:
+      # rns and lxmf are MeshForge-OWNED hard forks, pinned by commit SHA under
+      # the `# MF-FORK-PIN` SSOT in requirements/rns.txt and gated fleet-wide by
+      # scripts/rns_version_check.py. Moving them is a governed procedure —
+      # merge the upstream tag into the fork, re-run Phase-1 parity including a
+      # public-net interop proof, canary one box, then roll — never a merged
+      # PR. A bump here would also risk the wire-compat invariant (changing the
+      # crypto/packet format forks the NETWORK, not just the code).
+      - dependency-name: rns
+      - dependency-name: lxmf
