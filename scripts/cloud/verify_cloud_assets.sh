@@ -29,7 +29,10 @@ fi
 URL="https://$CLOUD_HOST/"
 
 log() { printf "%(%Y-%m-%dT%H:%M:%S%z)T  verify: %s\n" -1 "$*"; }
-fail() { log "FAIL: $*" >&2; exit 1; }
+# exit 2, not 1: the unit declares SuccessExitStatus=0 1 (1 = a transient
+# push failure that the timer will retry), so an exit 1 from this verifier
+# would be counted as SUCCESS and never surface. 2 is outside that set.
+fail() { log "FAIL: $*" >&2; exit 2; }
 
 # Bypass any intermediate cache so we read what Caddy is serving right
 # now, not what a downstream might have cached from the previous push.
@@ -47,4 +50,18 @@ grep -q "overflow-wrap: anywhere" <<< "$HTML" || \
     fail "popup-wrap overflow-wrap rule missing on $CLOUD_HOST"
 
 log "OK: popup-wrap CSS present on $CLOUD_HOST"
+
+# The precompressed sidecar must actually be what browsers receive
+# (2026-09-06): /data.geojson with gzip accepted must come back
+# Content-Encoding: gzip and small. Without this reader, a missing or
+# unserved sidecar would silently return the page to 4.2 MB per fetch.
+GZ_HDR=$(curl -sSI --max-time 15 -H "Accept-Encoding: gzip" "https://$CLOUD_HOST/data.geojson") || \
+    fail "HEAD /data.geojson (gzip accepted) failed on $CLOUD_HOST"
+grep -qi "^content-encoding: *gzip" <<< "$GZ_HDR" || \
+    fail "/data.geojson is not served precompressed on $CLOUD_HOST (no Content-Encoding: gzip — sidecar missing or Caddy lacks 'precompressed gzip')"
+GZ_LEN=$(grep -i "^content-length:" <<< "$GZ_HDR" | tr -dc "0-9")
+if [[ -n "$GZ_LEN" && "$GZ_LEN" -gt 1500000 ]]; then
+    fail "/data.geojson gzip body is ${GZ_LEN} B — not the sidecar"
+fi
+log "OK: /data.geojson served precompressed (${GZ_LEN:-?} B) on $CLOUD_HOST"
 exit 0

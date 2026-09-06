@@ -280,7 +280,27 @@ RSYNC_OPTS=(
     -e "ssh -i $CLOUD_SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 )
 
-PUSH_FILES=("$SNAPSHOT_FINAL" "$META_FINAL")
+# 6a. Precompress the snapshot (2026-09-06). The raw geojson is 4.2 MB and
+#     gzips to ~250 KB. Caddy's on-the-fly `encode` never touched it (its
+#     default MIME match excludes application/geo+json), so every browser
+#     fetched the raw 4.2 MB every 30 s, and every push carried the raw
+#     file's delta over a residential uplink. The Caddyfile already declares
+#     `file_server { precompressed gzip }`: a data.geojson.gz sidecar is
+#     served as /data.geojson with Content-Encoding: gzip to any client that
+#     accepts it (all browsers), transparently to the page.
+#     --rsyncable keeps gzip's blocks aligned so rsync's delta transfer still
+#     works on the compressed file (plain gzip changes the whole stream on any
+#     byte change). Only the SIDECAR crosses the wire; the raw file the
+#     sidecar lookup needs is re-inflated on the VPS in step 7.
+GZ_FINAL="$SNAPSHOT_FINAL.gz"
+if ! gzip -9 --rsyncable -c "$SNAPSHOT_FINAL" > "$GZ_FINAL.tmp"; then
+    err "gzip of snapshot failed"
+    rm -f "$GZ_FINAL.tmp"
+    exit 1
+fi
+mv "$GZ_FINAL.tmp" "$GZ_FINAL"
+
+PUSH_FILES=("$GZ_FINAL" "$META_FINAL")
 [[ -n "$SW_PUSH" ]] && PUSH_FILES+=("$SW_PUSH")
 [[ -n "$AL_PUSH" ]] && PUSH_FILES+=("$AL_PUSH")
 
@@ -298,6 +318,19 @@ if ! rsync "${RSYNC_OPTS[@]}" \
     exit 1
 fi
 
+# 7. Inflate the sidecar into the raw data.geojson ON the VPS, atomically.
+#    Caddy's precompressed lookup stats the ORIGINAL path first, and the
+#    freshness checker reads the original's Last-Modified, so the raw file
+#    must exist and be current — but it never needs to cross the wire.
+#    A failure here is a real half-push (fresh sidecar, stale raw): say so
+#    and exit 1 so the verdict is FAIL, never "pushed".
+if ! ssh -i "$CLOUD_SSH_KEY" -o BatchMode=yes -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+        "$CLOUD_USER@$CLOUD_HOST" \
+        "gzip -dc '$CLOUD_WEBROOT/data.geojson.gz' > '$CLOUD_WEBROOT/.tmp/data.geojson.inflate' && mv -f '$CLOUD_WEBROOT/.tmp/data.geojson.inflate' '$CLOUD_WEBROOT/data.geojson'"; then
+    err "sidecar pushed but remote inflate failed — raw data.geojson on the VPS is STALE; will retry on next firing"
+    exit 1
+fi
+
 date +%s > "$STAMP"
-log "pushed $N_FEATURES features${SW_PUSH:+ + space_weather}${AL_PUSH:+ + alerts} to $CLOUD_HOST in $((SECONDS))s"
+log "pushed $N_FEATURES features (gz $(stat -c %s "$GZ_FINAL") B)${SW_PUSH:+ + space_weather}${AL_PUSH:+ + alerts} to $CLOUD_HOST in $((SECONDS))s"
 exit 0
