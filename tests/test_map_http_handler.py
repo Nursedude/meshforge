@@ -2146,3 +2146,55 @@ class TestFleetSloHandlerMakesNoOutboundHttp:
     def test_the_builder_makes_no_outbound_http(self):
         from utils.fleet_snapshot import build_slo_snapshot
         self._run(lambda: build_slo_snapshot(collector=None))
+
+
+class TestServeFleetWan:
+    """/fleet/wan serves utils.wan_path's state file (2026-09-06): honest
+    absent, staleness on its own axis, history attached, never a 500."""
+
+    def _h(self):
+        h = MapRequestHandler.__new__(MapRequestHandler)
+        captured: dict = {}
+        h._serve_json = (lambda payload, status=200, **kw:
+                         captured.update(payload=payload, status=status))
+        h._captured = captured
+        return h
+
+    def test_unavailable_when_no_run_yet(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        h = self._h()
+        h._serve_fleet_wan()
+        assert h._captured["payload"]["status"] == "unavailable"
+        assert h._captured["status"] == 200
+
+    def test_serves_state_with_freshness_and_history(self, tmp_path, monkeypatch):
+        import time as _t
+        from utils import wan_path as wp
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        st = wp.build_state([wp.RungResult("far", "github", "github.com", 20, 16, 20.0, 118.0, 0.5)],
+                            wp.Verdict("fail", "transit", "loss beyond the ISP"), now=_t.time())
+        wp.write_state(st)
+        h = self._h()
+        h._serve_fleet_wan()
+        pl = h._captured["payload"]
+        assert pl["status"] == "fail" and pl["cause"] == "transit"
+        assert pl["freshness"]["stale"] is False
+        assert len(pl["history"]) == 1 and pl["history"][0]["r"]["far:github"] == 20.0
+
+    def test_old_state_is_stale_on_its_own_axis(self, tmp_path, monkeypatch):
+        from utils import wan_path as wp
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        wp.write_state(wp.build_state([], wp.Verdict("ok", "clean", "x"), now=1.0))
+        h = self._h()
+        h._serve_fleet_wan()
+        pl = h._captured["payload"]
+        assert pl["status"] == "ok" and pl["freshness"]["stale"] is True
+
+    def test_corrupt_state_file_is_an_error_payload_not_a_500(self, tmp_path, monkeypatch):
+        from utils import wan_path as wp
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+        wp.state_path().parent.mkdir(parents=True)
+        wp.state_path().write_text("{not json")
+        h = self._h()
+        h._serve_fleet_wan()
+        assert h._captured["payload"]["status"] == "error"

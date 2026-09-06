@@ -920,6 +920,48 @@
         document.getElementById('soak').innerHTML = head + body;
     }
 
+    const WAN_URL = '/fleet/wan';
+    function wanBar(vals) {
+        // 24h of loss per target as block glyphs — oldest left, newest right.
+        // 0% = ▁ … ≥25% = █ ; a missing sample is a dot.
+        const g = '▁▂▃▄▅▆▇█';
+        return vals.map(v => v === null || v === undefined ? '·'
+            : g[Math.min(7, Math.floor(Math.max(0, v) / 25 * 7))]).join('');
+    }
+    function renderWan(doc) {
+        const el = document.getElementById('wan');
+        const meta = document.getElementById('wan-meta');
+        if (!doc || doc.status === 'unavailable' || doc.status === 'error') {
+            el.innerHTML = '<div class="panel-err">⚠ ' + esc((doc && doc.reason) || 'no data') + '</div>';
+            return;
+        }
+        const fr = doc.freshness || {};
+        const hist = doc.history || [];
+        const cls = doc.status === 'ok' ? 'ok' : doc.status === 'concern' ? 'warn' : doc.status === 'fail' ? 'fail' : 'dark';
+        const head = '<div class="soak-chips"><span class="vstatus ' + cls + (fr.stale ? ' stale' : '') + '">' +
+            esc(String(doc.status).toUpperCase()) + ' · ' + esc(doc.cause) +
+            (fr.stale ? ' · STALE ' + fmtAge(fr.age_s) : ' · ' + fmtAge(fr.age_s) + ' ago') +
+            '</span><span class="vstatus dark">' + esc(doc.message || '') + '</span></div>';
+        const rows = (doc.rungs || []).map(r => {
+            const key = r.rung + ':' + r.label;
+            const series = hist.map(h => (h.r || {})[key]);
+            const worst = series.filter(v => typeof v === 'number').reduce((a, b) => Math.max(a, b), 0);
+            const lossTxt = r.loss_pct === null || r.loss_pct === undefined
+                ? '<span class="vstatus dark" title="' + esc(r.error || '') + '">unmeasured</span>'
+                : '<span class="vstatus ' + (r.loss_pct >= (doc.fail_pct || 5) ? 'fail' : r.loss_pct > 0 ? 'warn' : 'ok') + '">' +
+                  r.loss_pct.toFixed(0) + '%</span>';
+            return '<tr><td>' + esc(r.rung) + '</td><td>' + esc(r.label) + '</td>' +
+                '<td class="msg">' + esc(r.host) + '</td><td>' + lossTxt + '</td>' +
+                '<td>' + (r.avg_ms === null || r.avg_ms === undefined ? '–' : r.avg_ms.toFixed(0) + ' ms') + '</td>' +
+                '<td>' + (r.mdev_ms === null || r.mdev_ms === undefined ? '–' : r.mdev_ms.toFixed(1) + ' ms') + '</td>' +
+                '<td><span class="mono" title="24h loss, oldest→newest; ▁=0% █≥25%">' + wanBar(series) + '</span>' +
+                (series.length ? ' <span class="sub">worst ' + worst.toFixed(0) + '%</span>' : '') + '</td></tr>';
+        }).join('');
+        el.innerHTML = head + '<table><thead><tr><th>rung</th><th>target</th><th>host</th><th>loss</th>' +
+            '<th>rtt</th><th>jitter</th><th>24h</th></tr></thead><tbody>' + rows + '</tbody></table>';
+        meta.textContent = (hist.length ? hist.length + ' samples in 24h · ' : '') +
+            'measured on ' + (doc.host || '?') + ' · fail at ≥' + (doc.fail_pct || 5) + '% loss';
+    }
     async function pollLocal() {
         let slo = null;
         try {
@@ -932,6 +974,13 @@
             const msg = e && e.message ? e.message : String(e);
             panelErr('verdicts', SLO_URL, msg);
             panelErr('schedules', SLO_URL, msg);
+        }
+        try {
+            const resp = await fetch(WAN_URL, { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            renderWan(await resp.json());
+        } catch (e) {
+            panelErr('wan', WAN_URL, e && e.message ? e.message : String(e));
         }
         try {
             let resp = await fetch(SOAK_URL);
@@ -1006,4 +1055,8 @@
     initLogs();
     </script>
 </body>
-</html>
+</html><section class="panel" id="wan-panel">
+                <h2>Internet — the path out <span class="sub" id="wan-meta">rung by rung · lan → isp edge → near anycast → the hosts we depend on · 20 pings each, every 10 min</span></h2>
+                <div id="wan"><div class="empty">loading…</div></div>
+            </section>
+            

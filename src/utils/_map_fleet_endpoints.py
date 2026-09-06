@@ -222,6 +222,44 @@ class FleetEndpointsMixin:
     # Cross-box dedup rollup is considered stale (collector likely dead) past
     # this age — surfaced as its own axis so a frozen file can't read as live.
     _FLEET_DUPS_STALE_S = 1800.0
+    _FLEET_WAN_STALE_S = 25 * 60   # 2.5 cadences of the 10-min wan_path cron
+
+    def _serve_fleet_wan(self):
+        """Serve the WAN ladder (utils.wan_path): latest run + 24h history.
+
+        Same shape as ``_serve_fleet_dups``: the cron owns the measurement,
+        the endpoint serves the cached result. An absent state file is
+        ``unavailable`` (never a clean path); staleness rides its own axis so
+        a dead cron cannot serve a frozen verdict as live (honest_failure_modes
+        #2). Born 2026-09-06, the night 25% transit loss went unmeasured while
+        every other surface read fine."""
+        import json as _json
+        import time as _time
+        try:
+            from utils import wan_path as _wp
+            try:
+                raw = _wp.state_path().read_text(encoding="utf-8")
+            except FileNotFoundError:
+                self._serve_json({
+                    "status": "unavailable",
+                    "reason": ("no wan_path run yet on this box — wire "
+                               "scripts/wan_path_probe.py --verdict on a 10-min cron"),
+                }, status=200)
+                return
+            state = _json.loads(raw)
+            gen = state.get("generated_at")
+            if isinstance(gen, (int, float)) and not isinstance(gen, bool):
+                age = max(0.0, _time.time() - float(gen))
+                state["freshness"] = {"age_s": age, "stale": age > self._FLEET_WAN_STALE_S,
+                                      "threshold_s": self._FLEET_WAN_STALE_S}
+            else:
+                state["freshness"] = {"age_s": None, "stale": True,
+                                      "threshold_s": self._FLEET_WAN_STALE_S}
+            state["history"] = _wp.read_history()
+            self._serve_json(state, status=200)
+        except Exception as exc:  # never let a bad state file 500 the page
+            self._serve_json({"status": "error", "reason": "%s: %s" % (type(exc).__name__, exc)},
+                             status=200)
 
     def _serve_fleet_dups(self):
         """Serve the cross-box dedup rollup (dedup/identity arc STEP 4c).
