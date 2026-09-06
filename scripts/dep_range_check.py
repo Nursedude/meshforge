@@ -54,6 +54,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import ssl
 import subprocess
 import sys
@@ -85,6 +86,19 @@ USER_AGENT = "MeshForge-dep-range-check"
 # bump. Detected structurally (a direct URL) as well, but named here so an
 # operator reading the report knows the omission is deliberate.
 FORK_PINNED = ("rns", "lxmf")
+
+
+def canonical_name(name: str) -> str:
+    """PEP 503 normalisation: ``prometheus_client`` -> ``prometheus-client``.
+
+    PyPI normalises on its side (either spelling resolves), the GitHub advisory
+    DB does NOT: drilled 2026-09-06, ``affects=python_jose`` returns 0 records
+    while ``affects=python-jose`` returns 4. A manifest that spells a name with
+    an underscore (ours does: ``prometheus_client``) would therefore be told
+    "no advisories" forever — the silent under-report this script exists to
+    refuse. Every advisory query and every package-name comparison goes
+    through here."""
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 def _run(cmd: List[str], timeout: int):
@@ -187,6 +201,7 @@ def advisory_ranges(package: str, timeout: int = 60):
     # compact object per line across every page instead (gh 2.46 has no
     # --slurp), so each line parses independently and a malformed line is
     # visible as itself.
+    package = canonical_name(package)
     rc, out, err = _run(
         ["gh", "api", "--paginate",
          "/advisories?ecosystem=pip&affects=%s&per_page=100" % package,
@@ -208,9 +223,16 @@ def advisory_ranges(package: str, timeout: int = 60):
     for adv in advisories:
         ghsa = adv.get("ghsa_id") or "?"
         sev = adv.get("severity") or "?"
+        if adv.get("withdrawn_at"):
+            # A withdrawn advisory is not a constraint. Counting it would
+            # manufacture an UNPATCHABLE finding out of a retracted record
+            # (over-report, but a page nobody can act on). Drilled 2026-09-06:
+            # none returned today for our packages; the filter is for the day
+            # one is.
+            continue
         for vuln in adv.get("vulnerabilities") or []:
-            pkg = ((vuln.get("package") or {}).get("name") or "").lower()
-            if pkg != package.lower():
+            pkg = canonical_name((vuln.get("package") or {}).get("name") or "")
+            if pkg != package:
                 continue
             raw = vuln.get("vulnerable_version_range")
             if not raw:
@@ -311,7 +333,7 @@ def main(argv=None) -> int:
             lines.append("%-24s %-18s %-9s %s" % (rel, raw[:18] or "(file)", UNKNOWN,
                                                   "unparseable: " + reason))
         for lineno, req in reqs:
-            name = req.name.lower()
+            name = canonical_name(req.name)
             if req.url or name in FORK_PINNED:
                 lines.append("%-24s %-18s %-9s %s" % (
                     rel, req.name, INERT,

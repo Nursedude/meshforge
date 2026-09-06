@@ -1084,7 +1084,7 @@ surfaces the author is least sure of:
 box's real rules+state fire with a named witness; fleet coverage after the roll
 reads the new reason strings on all 8 watchdog boxes.
 
-## QUEUED 2026-09-05 (Opus 5) — the dependency-range probe + its gate leg, unreviewed by anyone but its author
+## REVIEWED 2026-09-06 (Fable 5.1) — the dependency-range probe + its gate leg (queued 2026-09-05 by Opus 5 as unreviewed by anyone but its author)
 
 **Range**: `e8e1d099` (and the arc it closes: `558ffe55`, `38727b6d`,
 `686d37ea`). ~973 new lines. `scripts/dep_range_check.py`,
@@ -1137,3 +1137,45 @@ defect is by definition outside them.
 
 **Mechanism when picked up**: `/code-review high` over the range, then a live
 drill against a manifest crafted to sit exactly on each boundary above.
+
+### Verdicts (2026-09-06, Fable 5.1) — live drills against the real authorities, not a read-through
+
+- **Seam 1 — `evaluate()` prerelease asymmetry / epochs / local / `>=0`: HELD.**
+  `spec.contains(v)` with default prereleases mirrors pip (prereleases excluded
+  unless the specifier names one); vulnerable ranges checked with
+  `prereleases=True` is the conservative side. `>= 0` on an un-withdrawn
+  advisory IS an unpatchable finding, correctly.
+- **Seam 1b — package-name normalisation (not on the list; found while
+  attacking 3): CONFIRMED, fixed.** `gh api /advisories?affects=python_jose`
+  returns 0 records, `affects=python-jose` returns 4. PyPI normalises, the
+  advisory DB does not. `requirements/monitoring.txt` declares
+  `prometheus_client`; both checks would have read it clean forever. Fix: PEP
+  503 `canonical_name()` in both scripts (query + vulnerability-name compare),
+  tests in both suites.
+- **Seam 2 — PyPI as version oracle (yanked / `requires_python`): PLAUSIBLE,
+  queued.** Every current "newest safe" installs on the fleet's oldest python
+  (3.11) — drilled all 13. A safe version needing a newer python than the
+  oldest box runs would still be a false clean. Cure = a fleet-python floor
+  read from the advisory sweep's observations, not a new constant.
+- **Seam 3 — advisory reader completeness (pagination, `affects=`): HELD.**
+  GHSA id sets identical to OSV's independent DB for urllib3 (19), requests
+  (8), cryptography (24), flask (5), werkzeug (13), jinja2 (10), pyopenssl
+  (5), meshtastic (0). Withdrawn advisories: none returned today, and the
+  reader never filtered `withdrawn_at` — a latent false-UNPATCHABLE; now
+  filtered and tested.
+- **Seam 4 — 48h staleness vs the two timers' cadence: PINNED.**
+  `test_gate_leg_staleness_window_is_two_missed_daily_windows` fails when
+  either timer stops being daily while `dep_stale_h=48` stands.
+- **Seam 5 — gate-leg integration (exit code + tally) unpinned: OPEN.** Not
+  addressed; the extraction-driven test remains the only guard.
+- **Seam 6 — `FORK_PINNED` vs `MF-FORK-PIN` SSOT: PINNED.**
+  `test_fork_pinned_matches_the_mf_fork_pin_ssot` reads the SSOT lines and
+  asserts equality.
+
+⚠️ Seam 1b's fix and seam 3's filter are **self-applied by the reviewer** in the
+same session (commit named in `git log --grep "advisory DB does not normalise"`).
+By this repo's own rule that is unreviewed code again; it is small (two
+functions, six tests) and the operator's brake against same-session
+self-deploy is respected — the manager's timer will pick it up on its next
+daily fire, nothing was fleet-rolled. **QUEUED for a second opinion**: that
+commit, plus seam 2's floor and seam 5.

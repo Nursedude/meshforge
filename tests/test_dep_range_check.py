@@ -367,3 +367,90 @@ class TestPaginationIsNotStringSurgery:
         monkeypatch.setattr(drc, "_run", lambda cmd, timeout: (0, good + "\n{oops", ""))
         ranges, err = drc.advisory_ranges("pkg")
         assert ranges is None and "unparseable advisory record" in err, (ranges, err)
+
+
+# --------------------------------------------------------------------------
+# 2026-09-06 adversarial pass (Fable 5.1) — what the live drills found
+# --------------------------------------------------------------------------
+
+import json as _json  # noqa: E402
+import re as _re  # noqa: E402
+
+
+class TestNamesAreCanonicalForTheAdvisoryDB:
+    """CONFIRMED by drill: ``affects=python_jose`` returns 0 advisories while
+    ``affects=python-jose`` returns 4. PyPI normalises names; the advisory DB
+    does not. Our manifests spell ``prometheus_client`` with an underscore, so
+    without canonicalisation that requirement reads "clean" forever — an
+    assertion of absence built on a query that could never match."""
+
+    def test_underscore_spelling_is_queried_with_a_hyphen(self, monkeypatch):
+        seen = []
+
+        def fake_run(cmd, timeout):
+            seen.append(cmd)
+            return 0, "", ""
+
+        monkeypatch.setattr(drc, "_run", fake_run)
+        ranges, err = drc.advisory_ranges("prometheus_client")
+        assert err is None and ranges == []
+        assert any("affects=prometheus-client&" in c for c in seen[0]), seen[0]
+        assert not any("prometheus_client" in c for c in seen[0])
+
+    def test_vulnerability_record_named_canonically_matches_an_underscore_requirement(
+            self, monkeypatch):
+        rec = {"ghsa_id": "GHSA-t", "severity": "high", "vulnerabilities": [
+            {"package": {"name": "prometheus-client", "ecosystem": "pip"},
+             "vulnerable_version_range": "< 1.0.0"}]}
+        monkeypatch.setattr(drc, "_run",
+                            lambda cmd, timeout: (0, _json.dumps(rec) + "\n", ""))
+        ranges, err = drc.advisory_ranges("prometheus_client")
+        assert err is None and len(ranges) == 1, (ranges, err)
+
+    def test_canonical_name_is_pep503(self):
+        assert drc.canonical_name("Zope.Interface") == "zope-interface"
+        assert drc.canonical_name("prometheus__client") == "prometheus-client"
+        assert drc.canonical_name("rns") == "rns"
+
+    def test_a_withdrawn_advisory_is_not_a_constraint(self, monkeypatch):
+        """Latent (none returned today for our packages, drilled): a withdrawn
+        record counted as a range would manufacture an UNPATCHABLE page out of
+        a retraction."""
+        rec = {"ghsa_id": "GHSA-w", "severity": "critical",
+               "withdrawn_at": "2026-01-01T00:00:00Z", "vulnerabilities": [
+                   {"package": {"name": "rich", "ecosystem": "pip"},
+                    "vulnerable_version_range": ">= 0"}]}
+        monkeypatch.setattr(drc, "_run",
+                            lambda cmd, timeout: (0, _json.dumps(rec) + "\n", ""))
+        ranges, err = drc.advisory_ranges("rich")
+        assert err is None and ranges == []
+
+
+class TestTwoConstantsArePinnedTogether:
+    """honest_failure_modes #5: two consumers of one artifact share ONE constant
+    or are test-pinned together. Neither pair below could be derived at runtime
+    cheaply (a bash gate reading systemd calendars; a tuple reading a comment
+    convention), so the pin is a test that fails the day they drift."""
+
+    def test_fork_pinned_matches_the_mf_fork_pin_ssot(self):
+        rns_txt = pathlib.Path(_ROOT, "requirements", "rns.txt").read_text()
+        ssot = set(_re.findall(r"^# MF-FORK-PIN (\S+)", rns_txt, _re.M))
+        assert ssot, "no MF-FORK-PIN lines found — the SSOT moved; fix this test"
+        assert ssot == set(drc.FORK_PINNED), (
+            "FORK_PINNED %r != MF-FORK-PIN names %r — a third fork would be "
+            "judged against PyPI and read as a finding" % (drc.FORK_PINNED, ssot))
+
+    def test_gate_leg_staleness_window_is_two_missed_daily_windows(self):
+        gate = pathlib.Path(_ROOT, "scripts", "honest_status.sh").read_text()
+        m = _re.search(r"^dep_stale_h=(\d+)", gate, _re.M)
+        assert m, "dep_stale_h moved or was renamed in honest_status.sh"
+        stale_h = int(m.group(1))
+        for unit in ("meshforge-dep-advisory.timer", "meshforge-dep-range.timer"):
+            body = pathlib.Path(_ROOT, "templates", "systemd", unit).read_text()
+            cal = _re.search(r"^OnCalendar=(.+)$", body, _re.M)
+            assert cal, unit
+            assert cal.group(1).startswith("*-*-* "), (
+                "%s is no longer daily (%s) but honest_status.sh still waits "
+                "dep_stale_h=%dh = two DAILY windows — change both" % (unit, cal.group(1), stale_h))
+        assert stale_h == 2 * 24, (
+            "dep_stale_h=%d is not two daily windows; both timers are daily" % stale_h)

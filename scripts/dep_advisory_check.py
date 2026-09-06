@@ -87,6 +87,7 @@ import argparse
 import datetime as _dt
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -367,6 +368,14 @@ def collect_installed(host: str, packages, timeout: int = 90):
         return None, None, "unparseable version report: %s" % exc
 
 
+def canonical_name(name: str) -> str:
+    """PEP 503: ``prometheus_client`` -> ``prometheus-client``. The advisory DB
+    does NOT normalise (drilled 2026-09-06: ``affects=python_jose`` -> 0,
+    ``affects=python-jose`` -> 4), so an underscore spelling would be told
+    "no advisories" forever. Same helper as dep_range_check.py."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def query_advisories(package: str, version: str, timeout: int = 60):
     """(list_of_advisories, None) or (None, reason).
 
@@ -375,7 +384,7 @@ def query_advisories(package: str, version: str, timeout: int = 60):
     advisories and may only come from a call that actually succeeded."""
     rc, out, err = _run(
         ["gh", "api", "/advisories?ecosystem=pip&affects=%s@%s&per_page=100"
-         % (package, version)], timeout=timeout)
+         % (canonical_name(package), version)], timeout=timeout)
     if rc != 0:
         return None, "advisory query failed (rc=%s): %s" % (
             rc, (err or out).strip()[:120])

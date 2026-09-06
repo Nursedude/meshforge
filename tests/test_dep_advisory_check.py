@@ -478,3 +478,21 @@ class TestAptHygiene:
         assert rc == 0
         assert not re.search(r"^boxA\s+apt\s", status, re.M), (
             "a box with no dpkg must produce no apt line at all (inert)")
+
+
+class TestNamesAreCanonicalForTheAdvisoryDB:
+    """Same drill as the range check (2026-09-06): the advisory DB does not
+    normalise ``_`` to ``-``; PyPI does. ``--packages prometheus_client`` must
+    not be told 'no advisories' by a query that could never match."""
+
+    def test_underscore_spelling_is_queried_with_a_hyphen(self, monkeypatch):
+        seen = []
+
+        def fake_run(cmd, timeout, stdin_text=None):
+            seen.append(cmd)
+            return 0, "[]", ""
+
+        monkeypatch.setattr(dac, "_run", fake_run)
+        advs, err = dac.query_advisories("prometheus_client", "0.1")
+        assert err is None and advs == []
+        assert "affects=prometheus-client@0.1" in seen[0][2], seen[0]
