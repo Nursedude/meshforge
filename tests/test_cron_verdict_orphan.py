@@ -137,3 +137,35 @@ class TestAcknowledgement:
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
         assert sig is not None and any("myjob" in f for f in sig.extra["failed"])
         assert sig.extra["acknowledged"] == ["wan_path"]
+
+
+class TestTheSentenceMeansWhatItSays:
+    """Caught by reading the LIVE signal, not by a test: the detail opened
+    "Wired cron(s) unhealthy — 5 writing verdicts nothing judges", which
+    contradicts itself, and advised "fix the job" when the job is fine and the
+    wiring is missing. A misread instrument is a bug report against it."""
+
+    def test_a_coverage_gap_alone_does_not_claim_wired_crons_are_unhealthy(self, tmp_path):
+        sig = _fire(tmp_path, crontab_text=WIRED,
+                    verdicts_text=_v("myjob", "OK", 60) + _v("selfverdicting", "OK", 60))
+        assert sig.detail.startswith("Cron verdict coverage gap")
+        assert "Wired cron(s) unhealthy" not in sig.detail
+
+    def test_a_coverage_gap_alone_does_not_advise_fixing_a_job(self, tmp_path):
+        sig = _fire(tmp_path, crontab_text=WIRED,
+                    verdicts_text=_v("myjob", "OK", 60) + _v("selfverdicting", "OK", 60))
+        assert "fix the job" not in sig.detail
+
+    def test_a_real_wired_failure_keeps_its_original_wording(self, tmp_path):
+        """The #78 leg's voice must not change underneath the operator."""
+        verdicts = _v("myjob", "FAIL(1)", 360) + _v("myjob", "FAIL(1)", 60)
+        sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
+        assert sig.detail.startswith("Wired cron(s) unhealthy")
+        assert "silence is the failure mode" in sig.detail
+
+    def test_a_mixed_finding_leads_with_the_unhealthy_cron(self, tmp_path):
+        verdicts = (_v("myjob", "FAIL(1)", 360) + _v("myjob", "FAIL(1)", 60)
+                    + _v("selfverdicting", "OK", 60))
+        sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
+        assert sig.detail.startswith("Wired cron(s) unhealthy")
+        assert "nothing judges" in sig.detail

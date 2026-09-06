@@ -406,9 +406,17 @@ def probe_cron_verdict_stale(
             cls="cron_verdict_stale",
             subject="cron",
             severity="degraded",
-            detail=("Wired cron(s) unhealthy — " + "; ".join(bits)
-                    + " (fix the job or re-run + re-verify; silence is the "
-                    "failure mode)"),
+            # Lead and tail follow the FINDING. Saying "Wired cron(s)
+            # unhealthy — 5 writing verdicts nothing judges" contradicts
+            # itself: those are precisely the UNwired ones, and "fix the job"
+            # is wrong advice when the job is fine and the wiring is missing.
+            # Caught by reading the live signal on 2026-09-06 — a misread
+            # instrument is a bug report against the instrument.
+            detail=(("Wired cron(s) unhealthy — " if (failed or stale)
+                     else "Cron verdict coverage gap — ")
+                    + "; ".join(bits)
+                    + (" (fix the job or re-run + re-verify; silence is the "
+                       "failure mode)" if (failed or stale) else "")),
             issue_ref=78,
             extra={"failed": failed, "stale": stale, "unwired": unwired,
                    "acknowledged": acknowledged, "streak": streak,
