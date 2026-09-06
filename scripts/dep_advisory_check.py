@@ -173,14 +173,21 @@ for name in PKGS:
     try:
         rec["version"] = md.version(name)
     except Exception:
-        packages[name] = rec            # not installed here -- absent, not vulnerable
-        continue
+        rec["version"] = None
     rec["claimants"] = sorted(claimants.get(name.lower(), set()))
     try:
         spec = importlib.util.find_spec(IMPORT_NAMES.get(name, name))
         rec["origin"] = spec.origin if spec else None
     except Exception:
         rec["origin"] = None
+    if not rec["version"]:
+        # No version but the module IMPORTS: a dist-info with no METADATA is
+        # first on sys.path (the manager grew a requests-2.32.5.dist-info
+        # holding only REQUESTED, 2026-09-05). Reporting that as "absent" would
+        # read vulnerable-but-unlabelled code as nothing-to-judge. Keep the
+        # origin so the caller renders it UNKNOWN, never inert.
+        packages[name] = rec
+        continue
     if rec["origin"] and rec["origin"].startswith(DISTRO_PREFIX + "/"):
         rc, out = _run(["dpkg", "-S", rec["origin"]])
         deb = out.split(":", 1)[0].strip() if rc == 0 and ":" in out else None
@@ -552,6 +559,15 @@ def main(argv=None) -> int:
             rec = installed.get(pkg) or {}
             ver = rec.get("version")
             if not ver:
+                if rec.get("origin"):
+                    # Importable but no version claimable: a versionless
+                    # dist-info shadows the real one. Unobservable ≠ absent.
+                    lines.append("%-20s %-14s %-10s UNKNOWN — importable from %s but no "
+                                 "dist-info carries a version (claimants: %s); remove "
+                                 "the stale *.dist-info"
+                                 % (host, pkg, "?", rec["origin"],
+                                    ", ".join(rec.get("claimants") or []) or "none"))
+                    unknown_hosts.append("%s/%s" % (host, pkg))
                 continue                      # absent by design → inert, not a finding
             key = (pkg, ver)
             if key not in cache:

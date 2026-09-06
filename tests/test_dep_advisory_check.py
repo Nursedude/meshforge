@@ -496,3 +496,26 @@ class TestNamesAreCanonicalForTheAdvisoryDB:
         advs, err = dac.query_advisories("prometheus_client", "0.1")
         assert err is None and advs == []
         assert "affects=prometheus-client@0.1" in seen[0][2], seen[0]
+
+
+class TestVersionlessDistInfoIsUnknownNotAbsent:
+    """Live on the manager 2026-09-05: pip left ``requests-2.32.5.dist-info``
+    holding only ``REQUESTED``; ``importlib.metadata.version`` returned None
+    while ``import requests`` gave 2.34.2. Reporting None as 'not installed'
+    silently drops a package that is running from the sweep."""
+
+    def test_importable_but_versionless_is_unknown(self, home, monkeypatch):
+        rep = {"packages": {"urllib3": {"version": None,
+                                        "origin": "/usr/local/lib/python3.13/dist-packages/urllib3/__init__.py",
+                                        "claimants": ["2.3.0", "2.7.0"], "dpkg": None}},
+               "apt": None}
+        rc, status, finding = _drive(home, monkeypatch, rep, [])
+        assert rc == 2, "a package we can import but cannot version is unobservable, not absent"
+        assert "boxA/urllib3" in status.splitlines()[1]
+        assert "claimants: 2.3.0, 2.7.0" in status
+
+    def test_truly_absent_stays_inert(self, home, monkeypatch):
+        rep = {"packages": {"urllib3": {"version": None, "origin": None,
+                                        "claimants": [], "dpkg": None}}, "apt": None}
+        rc, status, finding = _drive(home, monkeypatch, rep, [])
+        assert rc == 0 and finding is None
