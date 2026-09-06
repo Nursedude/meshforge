@@ -770,6 +770,26 @@ TEMPLATE_PROVENANCE: dict = {
                                         "unit's health tracks OBSERVATION (exit 2 = fleet not "
                                         "assessable -> fails) not the news (exit 1 = advisories "
                                         "found -> success; the finding is the ADVISORY file)."),
+    "meshforge-dep-range.service":    ("hand", "manager-box organ (the federator box); "
+                                        "installed + enabled by hand on the manager box 2026-09-05. "
+                                        "Repo-side twin of dep-advisory: that one asks what the fleet "
+                                        "has INSTALLED, this asks whether the manifests still DECLARE "
+                                        "a range permitting anything advisory-free. Audits BOTH repos "
+                                        "(--root /opt/meshforge --root /opt/meshanchor), so there is "
+                                        "no MeshAnchor copy to drift. Deliberately NOT a second "
+                                        "ExecStart on dep-advisory: Type=oneshot aborts the chain at "
+                                        "the first failure, so an unreachable FLEET (that job's exit "
+                                        "2) would silently stop this repo-side check from running."),
+    "meshforge-dep-range.timer":      ("hand", "manager-box organ (the federator box); "
+                                        "installed + enabled by hand on the manager box 2026-09-05, "
+                                        "daily 10:15 + Persistent=true, offset from dep-advisory's "
+                                        "09:30 so the two do not contend for the advisory API. "
+                                        "SuccessExitStatus=1 for the same reason as its sibling: the "
+                                        "unit's health tracks the OBSERVATION (exit 2 = the check "
+                                        "could not be made -> fails) not the news (exit 1 = "
+                                        "unpatchable ranges found -> success; the finding is the "
+                                        "RANGE-FINDING file). Both polarities drilled through "
+                                        "systemd-run 2026-09-05."),
     "meshforge-fleet-health.service": ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
     "meshforge-fleet-health.timer":   ("hand", "manager-box organ (the federator box); fleet runtime health sweep (28c15a3)"),
     "lxmd.service":               ("hand", "single-box organ (moc1), hand-deployed 2026-07-20; LXMF "

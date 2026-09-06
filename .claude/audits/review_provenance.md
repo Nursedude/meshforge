@@ -1078,3 +1078,57 @@ surfaces the author is least sure of:
 40e02f2a; suite 11398 passed; CI success on 106d9418; live drills on this
 box's real rules+state fire with a named witness; fleet coverage after the roll
 reads the new reason strings on all 8 watchdog boxes.
+
+## QUEUED 2026-09-05 (Opus 5) — the dependency-range probe + its gate leg, unreviewed by anyone but its author
+
+**Range**: `e8e1d099` (and the arc it closes: `558ffe55`, `38727b6d`,
+`686d37ea`). ~973 new lines. `scripts/dep_range_check.py`,
+`tests/test_dep_range_check.py`, the `dependency findings` leg in
+`scripts/honest_status.sh`, `tests/test_honest_status_dep_leg.sh`, and
+`templates/systemd/meshforge-dep-range.{service,timer}`.
+
+**Why it is queued rather than closed**: no adversarial pass was run on it. It
+was built and verified by the same session, which is unreviewed code by this
+repo's own rule ([[feedback_review_your_own_fixes]] — a self-applied fix is
+unreviewed code, and re-reviewing one has caught a defect the fix itself
+introduced). The operator's standing brake on same-session self-deploy applies
+here too. What DID happen is drills, not review: four mutations of the honest
+error paths each failing exactly their own test, an inert→unknown collapse
+drill, both polarities of `SuccessExitStatus=1` proven through `systemd-run`,
+and live runs through the real unit. Drills prove the cases I thought of; the
+defect is by definition outside them.
+
+**What a frontier pass should attack, in descending order of my own unease**:
+
+1. **`evaluate()` is the whole verdict and it is pure range arithmetic.** It
+   calls a version safe when no advisory range contains it. Attack the seams:
+   prereleases (`contains(..., prereleases=True)` on vulnerable ranges but
+   default handling for the declared specifier — is that asymmetry right, or
+   does it mark a prerelease safe that the specifier would actually install?),
+   epochs (`1!2.0`), local versions (`+mf.0` — our OWN fork scheme, though
+   forks are `inert` here), and `>=0` ranges. A wrong "safe" here is the exact
+   lie the probe exists to prevent.
+2. **PyPI as the version oracle.** `pypi_versions` drops fully-yanked releases
+   and unparseable version strings. A release yanked AFTER we call it the
+   newest safe version, or a package whose PyPI name differs from its import
+   name, both weaken the claim. Also: it trusts `releases` rather than the
+   files' `requires_python` — a "permitted, advisory-free" version that cannot
+   install on the fleet's python is a false clean in practice.
+3. **The advisory reader's completeness.** `--paginate --jq '.[] | @json'` was
+   verified to return 19 records for urllib3 matching the unpaginated count,
+   ONCE, for one package. Is there a package where pagination truncates or the
+   `affects=` filter omits an advisory that `vulnerabilities[]` would carry?
+   The gate fails closed on a parse error but NOT on a silently short list.
+4. **The honest_status leg's 48h staleness window** is a hardcoded constant
+   beside two timers whose cadence is declared in their own unit files —
+   honest_failure_modes #5 (two consumers, two constants, they WILL drift). If
+   a timer moves to weekly, the leg starts crying UNKNOWN daily.
+5. **The gate leg's test drives extracted source, not the running script.** The
+   extraction guard aborts if the leg moves, but the leg's INTEGRATION (its
+   effect on the exit code and the tally) is pinned nowhere.
+6. **`FORK_PINNED` is a hardcoded tuple** beside the `MF-FORK-PIN` SSOT in
+   `requirements/rns.txt`. Same two-constants problem; a third fork would be
+   judged against PyPI and read as a finding.
+
+**Mechanism when picked up**: `/code-review high` over the range, then a live
+drill against a manifest crafted to sit exactly on each boundary above.

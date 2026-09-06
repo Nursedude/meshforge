@@ -744,6 +744,52 @@ elif [ "$FLEET_SSOT" = 0 ]; then
   unk "watchdog signals" "$clean/$wdtotal clean on THIS box only — no fleet_hosts SSOT, fleet not observed${sigdesc:+;$sigdesc}"
 else ok "watchdog signals" "$clean/$wdtotal clean, 0 signals${sigdesc:+;$sigdesc}"; fi
 
+# --- dependency findings -----------------------------------------------------
+# Reads the two dependency checks' artifacts. Added 2026-09-05 because both were
+# WRITERS WITH NO READER: dep_advisory_check.py shipped 09-04 and dep_range_check.py
+# 09-05, each dutifully writing a finding file that nothing consumed — no mini
+# rule, no probe, no gate leg. A finding only a human who remembers to `cat` it
+# will ever see is the half-wired detector shape (honest_failure_modes #4), and
+# it is how the cryptography pin stayed invisible for six months in the first
+# place. One leg, both artifacts.
+#
+# The two answer DIFFERENT halves and neither substitutes for the other:
+#   ~/.meshforge-dep-ADVISORY      — what the fleet has INSTALLED (the stock)
+#   ~/.meshforge-dep-RANGE-FINDING — what the manifests DECLARE (the inflow)
+#
+# Findings are a WARN, not a FAIL, for the same reason the watchdog leg is: they
+# are a real fleet condition, not evidence this repo's code is broken. --strict
+# promotes them. But a MISSING or STALE status file is UNKNOWN, never a pass —
+# "no finding file" and "the check has not run in days" look identical on disk,
+# and collapsing them would let a dead timer read as safety. Both timers are
+# daily, so 48h is two missed windows.
+dep_stale_h=48
+dep_note=""; dep_state="ok"
+for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:installed" \
+            "ranges:.meshforge-dep-ranges:.meshforge-dep-RANGE-FINDING:declared"; do
+  IFS=: read -r dlabel dstatus dfind dwhat <<<"$pair"
+  spath="$HOME/$dstatus"; fpath="$HOME/$dfind"
+  if [ ! -f "$spath" ]; then
+    dep_note="$dep_note ${dwhat}:never-ran"; dep_state="unk"; continue
+  fi
+  age_h=$(( ( $(date +%s) - $(stat -c %Y "$spath" 2>/dev/null || echo 0) ) / 3600 ))
+  if [ "$age_h" -gt "$dep_stale_h" ]; then
+    dep_note="$dep_note ${dwhat}:STALE(${age_h}h)"; dep_state="unk"; continue
+  fi
+  if [ -f "$fpath" ]; then
+    n=$(grep -cv '^#' "$fpath" 2>/dev/null || echo 0)
+    dep_note="$dep_note ${dwhat}:${n}_finding(s)"
+    [ "$dep_state" != "unk" ] && dep_state="warn"
+  else
+    dep_note="$dep_note ${dwhat}:clean(${age_h}h)"
+  fi
+done
+case "$dep_state" in
+  unk)  unk   "dependency findings" "could not confirm both halves —$dep_note (a check that stopped running is not a clean bill)" ;;
+  warn) warnf "dependency findings" "$dep_note — see ~/.meshforge-dep-ADVISORY / ~/.meshforge-dep-RANGE-FINDING" ;;
+  *)    ok    "dependency findings" "$dep_note" ;;
+esac
+
 echo
 total_checks=$((pass+fail+unknown+warns))
 SUM="$pass/$total_checks PASS"

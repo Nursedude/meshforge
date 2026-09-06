@@ -1,0 +1,17 @@
+[Unit]
+Description=MeshForge declared-dependency-range timer
+Documentation=https://github.com/Nursedude/meshforge
+
+[Timer]
+# Daily, and deliberately offset from meshforge-dep-advisory (09:30) so the two
+# do not contend for the advisory API inside one window. Advisories publish on
+# human timescales; a manifest changes less often still. This run costs no ssh
+# at all — a PyPI fetch and a deduped advisory query per distinct package.
+OnCalendar=*-*-* 10:15:00
+RandomizedDelaySec=900
+# The manager is a Pi that gets powered down; a missed window must still run,
+# or the check silently stops existing.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

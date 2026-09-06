@@ -1,0 +1,40 @@
+[Unit]
+Description=MeshForge declared-dependency-range check
+Documentation=https://github.com/Nursedude/meshforge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Repo-side twin of meshforge-dep-advisory. That one asks what the fleet has
+# INSTALLED; this one asks whether the manifests still DECLARE a range that
+# permits anything safe. `cryptography>=45.0.7,<47` passed every other check
+# for six months while permitting only vulnerable releases.
+#
+# Deliberately its OWN unit and timer rather than a second ExecStart on
+# meshforge-dep-advisory.service. Type=oneshot aborts the chain at the first
+# failing ExecStart, so sharing a unit would mean an unreachable FLEET (that
+# job's exit 2) silently prevents this repo-side check from running at all —
+# reintroducing, at the systemd layer, exactly the blindness coupling the two
+# scripts were split to avoid. Independent instruments need independent health.
+#
+# gh uses ~/.config/gh, so this runs as the operator's user unit.
+# Both repos: the pin lines are byte-identical across MeshForge and
+# MeshAnchor, and parity_check.py does NOT gate them (it compares only the
+# MF-FORK-PIN block and the rns/lxmf git lines), so they can drift apart
+# silently. A root that is not checked out on this box reports inert, not
+# unknown — absence by design must never read as a failed observation.
+ExecStart=/opt/meshforge/scripts/dep_range_check.py --root /opt/meshforge --root /opt/meshanchor
+# Same contract as its sibling, and for the same reason: exit 1 means ranges
+# with no safe version were FOUND — real news, but the job did its job, and
+# findings belong in ~/.meshforge-dep-RANGE-FINDING. Exit 2 means the check
+# could not be MADE (gh unauthenticated, PyPI unreachable, a vulnerable range
+# that would not parse, no manifest found). Only the second is a broken
+# instrument, so only the second may fail the unit — a unit whose health
+# tracks the news rather than the observation is aimed one notch off, and
+# mini's user_timer_unit_failing_any would then escalate on it forever.
+SuccessExitStatus=1
+TimeoutStartSec=600
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=meshforge-dep-range
