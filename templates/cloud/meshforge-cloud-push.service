@@ -21,13 +21,15 @@ ExecStart=/opt/meshforge/scripts/cloud/push_snapshot.sh
 ExecStartPost=/opt/meshforge/scripts/cloud/verify_cloud_assets.sh
 # Don't fail the unit on transient errors — the timer fires again in 120s.
 SuccessExitStatus=0 1
-# Budget envelope: curl(90s) + space_weather(15s) + alerts(15s) + rsync(20s)
-# = ~140s worst case. The timer cadence is 120s (see meshforge-cloud-push.timer)
-# so we cap below that to avoid piling firings. Most cycles finish in 20–30s;
-# this ceiling exists for the local-map slow path (region filter ~67s on
-# directories north of 75k nodes).
-TimeoutStartSec=120s
-RuntimeMaxSec=120s
+# Budget envelope: curl(90s) + space_weather(15s) + alerts(15s) + rsync. The
+# timer cadence is 600s (see meshforge-cloud-push.timer — the 120s figure this
+# comment once carried had drifted from it), so we cap BELOW that to avoid
+# piling firings. 2026-09-05: with the ISP's transit at 5-10% loss / ~200 ms
+# RTT to the VPS, a 4.2 MB snapshot legitimately takes 100-300 s and the old
+# 120s ceiling killed every push for 80+ min while the VPS was healthy. Most
+# cycles still finish in 20-60s; the ceiling exists for the lossy-WAN path.
+TimeoutStartSec=540s
+RuntimeMaxSec=540s
 
 [Install]
 WantedBy=multi-user.target

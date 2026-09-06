@@ -263,9 +263,19 @@ fi
 
 # 6. Rsync. --temp-dir ensures the destination file swap is atomic from
 #    Caddy's perspective. --inplace would race with concurrent reads.
+# --timeout is rsync's STALL timeout (no data for N s), not a total budget.
+# 2026-09-05: the ISP's transit ran 5-10% loss at ~200 ms RTT to the VPS and
+# TCP throughput fell to ~20-40 KB/s; a 4.2 MB snapshot then stalls past 20 s
+# routinely and every push failed for 80+ min while the VPS was healthy.
+# 60 s rides out a loss burst; --partial-dir keeps what was sent (a plain
+# --partial is defeated by --temp-dir: the fragment lands in the temp dir
+# where the next run never looks) so the next firing RESUMES instead of
+# restarting. The total budget is the unit's RuntimeMaxSec (540 s, below the
+# 600 s timer cadence), not this.
 RSYNC_OPTS=(
     -az
-    --timeout=20
+    --partial-dir="$CLOUD_WEBROOT/.rsync-partial"
+    --timeout=60
     --temp-dir="$CLOUD_WEBROOT/.tmp"
     -e "ssh -i $CLOUD_SSH_KEY -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10"
 )
