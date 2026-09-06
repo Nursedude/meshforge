@@ -233,6 +233,32 @@ fi
 log ""
 
 # ─────────────────────────────────────────────────────────────────
+# Section 1c: OS security updates (read-only; the installer's writer half
+# is the unattended-upgrades step in install_noc.sh — reader/writer pair,
+# honest_failure_modes #4). 2026-09-06: 9 of 10 fleet boxes lacked it and
+# NOTHING detected the absence for the life of those boxes.
+# ─────────────────────────────────────────────────────────────────
+log "${BOLD}[1c] OS Security Updates${NC}"
+
+if command -v dpkg-query &>/dev/null; then
+    UU_STATUS="$(dpkg-query -W -f='${Status}' unattended-upgrades 2>/dev/null || true)"
+    if [[ "$UU_STATUS" == "install ok installed" ]]; then
+        check_pass "unattended-upgrades installed" "$(dpkg-query -W -f='${Version}' unattended-upgrades 2>/dev/null)"
+        if grep -qs 'APT::Periodic::Unattended-Upgrade "1"' /etc/apt/apt.conf.d/20auto-upgrades; then
+            check_pass "periodic security updates enabled" "/etc/apt/apt.conf.d/20auto-upgrades"
+        else
+            check_warn "periodic security updates enabled" "20auto-upgrades missing or set to 0 — the package is installed but idle" \
+                "sudo dpkg-reconfigure -f noninteractive unattended-upgrades"
+        fi
+    else
+        check_fail "unattended-upgrades installed" "not installed — security updates are not applied automatically" \
+            "sudo apt install -y unattended-upgrades"
+    fi
+else
+    check_skip "unattended-upgrades installed" "not a dpkg system"
+fi
+
+# ─────────────────────────────────────────────────────────────────
 # Section 2: meshtasticd Installation
 # ─────────────────────────────────────────────────────────────────
 log "${BOLD}[2/6] meshtasticd Installation${NC}"

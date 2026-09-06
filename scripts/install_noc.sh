@@ -532,6 +532,7 @@ apt-get update -qq
 if mf_apt_install \
     python3 python3-pip python3-venv \
     python3-msgpack \
+    unattended-upgrades \
     git wget curl gnupg \
     libusb-1.0-0 \
     mosquitto mosquitto-clients \
@@ -540,6 +541,27 @@ if mf_apt_install \
 else
     echo -e "  ${RED}✗ System dependency install failed (see ${MF_INSTALL_LOG:-console})${NC}" >&2
     exit 1
+fi
+
+# ─────────────────────────────────────────────────────────────────
+# OS security updates — unattended-upgrades (added 2026-09-06)
+# ─────────────────────────────────────────────────────────────────
+# 9 of 10 fleet boxes were imaged WITHOUT unattended-upgrades and nothing
+# ever noticed: every trixie box sat on 35 pending security updates and the
+# python stack drifted years behind (urllib3 1.26.12 on one box). The package
+# is in the apt list above; this makes sure the periodic config that actually
+# turns it on exists. Never overwrite an operator's own 20auto-upgrades —
+# only write it when absent. Security-origin only (the package default); it
+# does not touch the Meshtastic repo or reboot anything.
+AUTO_UPGRADES_CONF="/etc/apt/apt.conf.d/20auto-upgrades"
+if [[ ! -f "$AUTO_UPGRADES_CONF" ]]; then
+    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > "$AUTO_UPGRADES_CONF"
+    echo -e "  ${GREEN}✓ Enabled periodic security updates (${AUTO_UPGRADES_CONF})${NC}"
+fi
+if systemctl enable --now unattended-upgrades >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓ unattended-upgrades service enabled${NC}"
+else
+    echo -e "  ${YELLOW}⚠ unattended-upgrades service could not be enabled — check: systemctl status unattended-upgrades${NC}"
 fi
 
 # ─────────────────────────────────────────────────────────────────

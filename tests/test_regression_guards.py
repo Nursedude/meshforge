@@ -2120,3 +2120,54 @@ class TestSignalClassBudget:
             "SIGNAL_CLASSES is down to %d but the budget still reads %d — lower "
             "SIGNAL_CLASS_BUDGET to %d so the win is banked, not spent."
             % (n, self.SIGNAL_CLASS_BUDGET, n))
+
+
+class TestInstallerProvisionsUnattendedUpgrades:
+    """Reader/writer pair for OS security updates (honest_failure_modes #4).
+
+    2026-09-06: 9 of 10 fleet boxes had been imaged WITHOUT unattended-upgrades
+    and nothing detected the absence for the life of those boxes — every trixie
+    box sat on 35 pending security updates while the python stack drifted years
+    behind. The fix on the running fleet was by hand; this pins the two halves
+    that keep a FRESH box from coming up the same way:
+
+      writer — ``scripts/install_noc.sh`` installs the package and enables the
+               periodic config (never overwriting an operator's own);
+      reader — ``scripts/verify_post_install.sh`` checks for it and names the
+               fix, so the absence is a FAIL at install-verification time.
+
+    The daily advisory sweep remains the backstop for boxes already deployed.
+    """
+
+    _ROOT = os.path.join(os.path.dirname(__file__), "..")
+
+    def _read(self, rel):
+        with open(os.path.join(self._ROOT, rel), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_installer_apt_list_carries_unattended_upgrades(self):
+        s = self._read("scripts/install_noc.sh")
+        start = s.index("if mf_apt_install \\")
+        end = s.index("; then", start)
+        block = s[start:end]
+        assert "unattended-upgrades" in block, (
+            "install_noc.sh's system-dependency apt list no longer installs "
+            "unattended-upgrades — a fresh box would come up with no security "
+            "updates again")
+
+    def test_installer_enables_but_never_overwrites_the_periodic_config(self):
+        s = self._read("scripts/install_noc.sh")
+        assert 'AUTO_UPGRADES_CONF="/etc/apt/apt.conf.d/20auto-upgrades"' in s
+        assert '[[ ! -f "$AUTO_UPGRADES_CONF" ]]' in s, (
+            "the periodic config must only be written when ABSENT — an "
+            "operator's own 20auto-upgrades is theirs")
+        assert "systemctl enable --now unattended-upgrades" in s
+
+    def test_post_install_verifier_reads_what_the_installer_writes(self):
+        v = self._read("scripts/verify_post_install.sh")
+        assert 'dpkg-query -W -f=\'${Status}\' unattended-upgrades' in v, (
+            "verify_post_install.sh no longer checks unattended-upgrades — the "
+            "writer half has no reader (honest_failure_modes #4)")
+        assert 'check_fail "unattended-upgrades installed"' in v
+        assert "sudo apt install -y unattended-upgrades" in v, "the FAIL must name the fix"
+        assert "20auto-upgrades" in v, "installed-but-idle must be distinguishable from installed"
