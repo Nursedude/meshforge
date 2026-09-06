@@ -85,6 +85,91 @@ class TestParsing:
         assert t[2].error and "malformed" in t[2].error
 
 
+class TestEndpointIsRecorded:
+    """The github-rung defect (2026-09-06): ``github.com`` round-robins between
+    GitHub's own AS (~118 ms, that day 20-35% lossy behind a transit provider)
+    and an Azure edge (~61 ms, clean). Pinging the NAME measured a different
+    endpoint run to run and filed both under one label, so the history read as
+    one flapping path instead of two steady ones. A measurement must say what
+    it measured."""
+
+    def test_ip_literal_resolves_to_itself(self):
+        assert wp.resolve_host("192.0.2.1") == ("192.0.2.1", None)
+
+    def test_dns_failure_is_an_error_never_a_fallback_to_the_name(self, monkeypatch):
+        import socket as _s
+
+        def boom(*a, **k):
+            raise _s.gaierror("Name or service not known")
+
+        monkeypatch.setattr(wp.socket, "getaddrinfo", boom)
+        addr, err = wp.resolve_host("nx.example")
+        assert addr is None and "no IPv4 address" in err
+
+    def test_empty_dns_answer_is_an_error(self, monkeypatch):
+        monkeypatch.setattr(wp.socket, "getaddrinfo", lambda *a, **k: [])
+        addr, err = wp.resolve_host("nx.example")
+        assert addr is None and err
+
+    def test_measure_probes_the_address_not_the_name(self, monkeypatch):
+        """Handing ping the name would let it resolve to a DIFFERENT address
+        than the one recorded — the row would claim an endpoint it never hit."""
+        monkeypatch.setattr(wp, "resolve_host", lambda h: ("140.82.114.3", None))
+        seen = {}
+
+        def fake_run(cmd, timeout):
+            seen["cmd"] = list(cmd)
+            return 0, TestParsing.PING_OUT
+
+        monkeypatch.setattr(wp, "_run", fake_run)
+        r = wp.measure(R("far", "github", "github.com"), count=20)
+        assert seen["cmd"][-1] == "140.82.114.3"
+        assert "github.com" not in seen["cmd"]
+        assert r.addr == "140.82.114.3" and r.host == "github.com"
+
+    def test_unresolvable_target_is_unmeasured_and_never_pinged(self, monkeypatch):
+        monkeypatch.setattr(wp, "resolve_host", lambda h: (None, "no IPv4 address for 'x'"))
+
+        def never(*a, **k):
+            raise AssertionError("ping must not run when the name did not resolve")
+
+        monkeypatch.setattr(wp, "_run", never)
+        r = wp.measure(R("far", "github", "github.com"))
+        assert r.loss_pct is None and "no IPv4 address" in r.error
+
+    def test_verdict_message_names_the_endpoint_for_a_resolved_name(self):
+        lossy = R("far", "github", "github.com", 20, 15, 25.0, 118.0, 1.0,
+                  addr="140.82.114.3")
+        assert wp.rung_name(lossy) == "github@140.82.114.3"
+        assert "github@140.82.114.3 25%/118ms" in wp._fmt(lossy)
+
+    def test_an_ip_target_is_not_annotated(self):
+        assert wp.rung_name(R("near", "cloudflare-dns", "1.1.1.1", addr="1.1.1.1")) \
+            == "cloudflare-dns"
+
+    def test_two_samples_of_one_label_stay_distinguishable_in_history(self):
+        """The whole point: the same label on two endpoints must not read as
+        one path changing."""
+        far_a = R("far", "github", "github.com", 20, 15, 25.0, 118.0, 1.0,
+                  addr="140.82.114.3")
+        far_b = R("far", "github", "github.com", 20, 20, 0.0, 61.0, 0.4,
+                  addr="20.29.134.23")
+        rows = []
+        for i, far in enumerate((far_a, far_b)):
+            st = wp.build_state([far], wp.classify(_ladder()), now=1000 + i)
+            rows.append(json.loads(wp.history_line(st)))
+        assert rows[0]["a"]["far:github"] == "140.82.114.3"
+        assert rows[1]["a"]["far:github"] == "20.29.134.23"
+        assert rows[0]["r"]["far:github"] == 25.0 and rows[1]["r"]["far:github"] == 0.0
+
+    def test_history_omits_the_endpoint_map_when_nothing_can_vary(self):
+        """An all-IP ladder gains no ``a`` key — the row stays as small as it
+        was, and a reader of an old row is not misled into thinking one was
+        recorded."""
+        st = wp.build_state(_ladder(), wp.classify(_ladder()), now=1000)
+        assert "a" not in json.loads(wp.history_line(st))
+
+
 class TestState:
     def test_state_and_history_round_trip_and_trim(self, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))

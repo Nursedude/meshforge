@@ -950,16 +950,27 @@
             const key = r.rung + ':' + r.label;
             const series = hist.map(h => (h.r || {})[key]);
             const worst = series.filter(v => typeof v === 'number').reduce((a, b) => Math.max(a, b), 0);
+            // Which endpoint produced each sample. A name like github.com can
+            // round-robin between a lossy far AS and a clean nearby edge, so a
+            // single label's series may mix two different paths — say so rather
+            // than let the sparkline read as one flapping path.
+            const seen = Array.from(new Set(hist.map(h => (h.a || {})[key]).filter(Boolean)));
+            const mixed = seen.length > 1;
             const lossTxt = r.loss_pct === null || r.loss_pct === undefined
                 ? '<span class="vstatus dark" title="' + esc(r.error || '') + '">unmeasured</span>'
                 : '<span class="vstatus ' + (r.loss_pct >= (doc.fail_pct || 5) ? 'fail' : r.loss_pct > 0 ? 'warn' : 'ok') + '">' +
                   r.loss_pct.toFixed(0) + '%</span>';
+            const hostTxt = esc(r.host) + ((r.addr && r.addr !== r.host)
+                ? ' <span class="sub">&rarr; ' + esc(r.addr) + '</span>' : '');
             return '<tr><td>' + esc(r.rung) + '</td><td>' + esc(r.label) + '</td>' +
-                '<td class="msg">' + esc(r.host) + '</td><td>' + lossTxt + '</td>' +
+                '<td class="msg">' + hostTxt + '</td><td>' + lossTxt + '</td>' +
                 '<td>' + (r.avg_ms === null || r.avg_ms === undefined ? '–' : r.avg_ms.toFixed(0) + ' ms') + '</td>' +
                 '<td>' + (r.mdev_ms === null || r.mdev_ms === undefined ? '–' : r.mdev_ms.toFixed(1) + ' ms') + '</td>' +
-                '<td><span class="mono" title="24h loss, oldest→newest; ▁=0% █≥25%">' + wanBar(series) + '</span>' +
-                (series.length ? ' <span class="sub">worst ' + worst.toFixed(0) + '%</span>' : '') + '</td></tr>';
+                '<td><span class="mono" title="24h loss, oldest→newest; ▁=0% █≥25%' +
+                (mixed ? ' — MIXED endpoints: ' + esc(seen.join(', ')) : '') + '">' + wanBar(series) + '</span>' +
+                (series.length ? ' <span class="sub">worst ' + worst.toFixed(0) + '%</span>' : '') +
+                (mixed ? ' <span class="vstatus warn" title="' + esc(seen.join(', ')) +
+                    '">' + seen.length + ' endpoints</span>' : '') + '</td></tr>';
         }).join('');
         el.innerHTML = head + '<table><thead><tr><th>rung</th><th>target</th><th>host</th><th>loss</th>' +
             '<th>rtt</th><th>jitter</th><th>24h</th></tr></thead><tbody>' + rows + '</tbody></table>';

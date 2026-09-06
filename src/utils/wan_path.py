@@ -46,7 +46,7 @@ import tempfile
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 from utils.paths import get_real_user_home
 
@@ -79,6 +79,11 @@ class RungResult:
     avg_ms: Optional[float] = None
     mdev_ms: Optional[float] = None
     error: Optional[str] = None          # why loss_pct is None
+    #: The address actually probed. A named host is resolved ONCE and that
+    #: address is what ping receives, so the row cannot claim one endpoint
+    #: and measure another. None until measured; equal to ``host`` for an
+    #: IP literal.
+    addr: Optional[str] = None
 
 
 @dataclass
@@ -176,6 +181,40 @@ def load_targets() -> List[RungResult]:
 # measurement
 # --------------------------------------------------------------------------
 
+_IPV4_LITERAL = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+
+def resolve_host(host: str) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve ``host`` to ONE IPv4 address; return ``(addr, error)``.
+
+    Why this exists (2026-09-06, the trace that followed the first night):
+    ``github.com`` round-robins between GitHub's own AS (``140.82.x``, US-east,
+    ~118 ms, and that day 20-35% lossy behind a transit provider) and an Azure
+    edge (~61 ms, clean). Pinging the NAME meant consecutive runs measured
+    DIFFERENT endpoints and filed both under the label ``github`` — the history
+    then showed a path flapping between 0% and 30% when in truth there were two
+    steady paths, one lossy and one clean. Same defect class as the rest of this
+    module: a measurement that does not say what it measured.
+
+    An IP literal resolves to itself, so the lan/edge/near rungs are untouched.
+    Failure is an ERROR, never a silent fallback to the name — a rung that
+    could not be resolved is unmeasured, which is its own honest state.
+    """
+    if not host or host == "?":
+        return None, "no host"
+    if _IPV4_LITERAL.match(host):
+        return host, None
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+    except (socket.gaierror, OSError, UnicodeError) as exc:
+        return None, "no IPv4 address for %r (this ladder is IPv4-only): %s" % (host, exc)
+    for info in infos:
+        addr = info[4][0]
+        if addr:
+            return addr, None
+    return None, "DNS returned no A record"
+
+
 def _run(cmd: Sequence[str], timeout: float):
     try:
         p = subprocess.run(list(cmd), capture_output=True, text=True, timeout=timeout)
@@ -206,8 +245,15 @@ def parse_ping(out: str) -> Dict[str, Optional[float]]:
 def measure(target: RungResult, count: int = PING_COUNT) -> RungResult:
     if target.error:
         return target
+    # Resolve BEFORE probing and probe the address, so the recorded endpoint is
+    # provably the one measured. Handing ping the name would let it resolve to a
+    # different address than the one we report (see resolve_host).
+    addr, dns_err = resolve_host(target.host)
+    if dns_err:
+        return RungResult(target.rung, target.label, target.host,
+                          error="unmeasured: %s" % dns_err)
     rc, out = _run(["ping", "-n", "-c", str(count), "-i", str(PING_INTERVAL_S),
-                    "-W", str(PING_WAIT_S), target.host],
+                    "-W", str(PING_WAIT_S), addr],
                    timeout=count * PING_INTERVAL_S + PING_WAIT_S * 3 + 5)
     stats = parse_ping(out)
     if stats["sent"] == 0:
@@ -215,21 +261,32 @@ def measure(target: RungResult, count: int = PING_COUNT) -> RungResult:
         # timeout before the summary. Unmeasured is its own state.
         reason = out.strip().splitlines()[-1][:80] if out.strip() else "no output"
         return RungResult(target.rung, target.label, target.host,
-                          error="unmeasured (rc=%s): %s" % (rc, reason))
+                          error="unmeasured (rc=%s): %s" % (rc, reason), addr=addr)
     return RungResult(target.rung, target.label, target.host,
                       sent=stats["sent"], received=stats["received"],
                       loss_pct=stats["loss_pct"], avg_ms=stats["avg_ms"],
-                      mdev_ms=stats["mdev_ms"])
+                      mdev_ms=stats["mdev_ms"], addr=addr)
 
 
 # --------------------------------------------------------------------------
 # verdict — pure
 # --------------------------------------------------------------------------
 
+def rung_name(r: RungResult) -> str:
+    """``label`` for an IP target, ``label@addr`` for a resolved name.
+
+    The verdict message is what lands in cron_verdicts.log and in a page, and
+    it has to survive being read a week later next to a different sample of
+    the same label."""
+    if r.addr and r.addr != r.host:
+        return "%s@%s" % (r.label, r.addr)
+    return r.label
+
+
 def _fmt(r: RungResult) -> str:
     if r.loss_pct is None:
-        return "%s ?" % r.label
-    return "%s %.0f%%/%sms" % (r.label, r.loss_pct,
+        return "%s ?" % rung_name(r)
+    return "%s %.0f%%/%sms" % (rung_name(r), r.loss_pct,
                                 ("%.0f" % r.avg_ms) if r.avg_ms is not None else "?")
 
 
@@ -334,8 +391,17 @@ def build_state(results: Sequence[RungResult], verdict: Verdict, now: Optional[f
 
 
 def history_line(state: dict) -> str:
+    """One compact row. ``r`` keeps the per-label loss series CONTINUOUS (so a
+    24 h trend stays comparable); ``a`` records the endpoint each sample came
+    from, for the labels where that can vary. Rows written before 2026-09-06
+    carry no ``a`` — readers must treat it as optional, not as "same endpoint"."""
+    rungs = state["rungs"]
     compact = {"t": int(state["generated_at"]), "s": state["status"], "c": state["cause"],
-               "r": {"%s:%s" % (r["rung"], r["label"]): r["loss_pct"] for r in state["rungs"]}}
+               "r": {"%s:%s" % (r["rung"], r["label"]): r["loss_pct"] for r in rungs}}
+    addrs = {"%s:%s" % (r["rung"], r["label"]): r["addr"] for r in rungs
+             if r.get("addr") and r["addr"] != r.get("host")}
+    if addrs:
+        compact["a"] = addrs
     return json.dumps(compact, separators=(",", ":"))
 
 
@@ -397,8 +463,9 @@ def main(argv=None) -> int:
 
     if not args.quiet:
         for r in results:
-            print("  %-5s %-14s %-24s %s" % (
-                r.rung, r.label, r.host,
+            shown = r.host if (not r.addr or r.addr == r.host) else "%s -> %s" % (r.host, r.addr)
+            print("  %-5s %-14s %-34s %s" % (
+                r.rung, r.label, shown,
                 ("loss %5.1f%%  avg %6.1f ms  jitter %5.1f ms" % (
                     r.loss_pct, r.avg_ms or 0.0, r.mdev_ms or 0.0))
                 if r.loss_pct is not None else "UNMEASURED — %s" % r.error))
