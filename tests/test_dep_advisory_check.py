@@ -132,9 +132,9 @@ class TestUnobservableIsNotHealthy:
         # boxA answers clean; boxB is unreachable -> partial view.
         real_collect = dac.collect_installed
 
-        def half_blind(host, packages, timeout=40):
+        def half_blind(host, packages, timeout=90):
             if host == "boxB":
-                return None, "unreachable"
+                return None, None, "unreachable"
             return real_collect(host, packages, timeout)
 
         monkeypatch.setattr(dac, "collect_installed", half_blind)
@@ -278,7 +278,203 @@ class TestTheManagerBoxIsNotABlindSpot:
         monkeypatch.setattr(dac.socket, "gethostname", lambda: "boxM")
         monkeypatch.setattr(dac, "_run",
                             lambda cmd, timeout, stdin_text=None: (1, "", "boom"))
-        installed, err = dac.collect_installed("boxM", ["cryptography"])
-        assert installed is None and err, (installed, err)
+        installed, apt, err = dac.collect_installed("boxM", ["cryptography"])
+        assert installed is None and apt is None and err, (installed, apt, err)
         assert "local" in err, (
             "a failed LOCAL collection must say so, not blame ssh: %r" % err)
+
+
+# --- distro-managed packages + apt hygiene (2026-09-06) -----------------------
+#
+# The over-report that motivated this: moc4's apt-managed urllib3 reports
+# ``1.26.12`` to importlib.metadata while ``1.26.12-1+deb12u4`` carries eight
+# CVE fixes. Matching the upstream version against upstream ranges called it
+# "8 advisories, 5 high" and pointed at pip — the wrong cure. These tests pin
+# the three honest states (distro-patched / accepted-with-expiry / still open)
+# and, above all, that an UNREADABLE changelog never reads as patched.
+
+import datetime as _dt  # noqa: E402
+import re  # noqa: E402
+
+_TODAY = _dt.date(2026, 9, 6)
+ADV_CVE_A = {"ghsa_id": "GHSA-aaaa-aaaa-aaaa", "severity": "high", "cve_id": "CVE-2026-1"}
+ADV_CVE_B = {"ghsa_id": "GHSA-bbbb-bbbb-bbbb", "severity": "medium", "cve_id": "CVE-2026-2"}
+ADV_NO_CVE = {"ghsa_id": "GHSA-cccc-cccc-cccc", "severity": "high"}
+
+
+def _report(version="1.26.12", origin="/usr/lib/python3/dist-packages/urllib3/__init__.py",
+            dpkg_version="1.26.12-1+deb12u4", changelog=("CVE-2026-1",), apt="skip",
+            claimants=None):
+    rec = {"version": version, "origin": origin,
+           "claimants": claimants if claimants is not None else [version], "dpkg": None}
+    if origin and origin.startswith(dac.DISTRO_PREFIX + "/"):
+        rec["dpkg"] = {"package": "python3-urllib3", "version": dpkg_version,
+                       "changelog_cves": None if changelog is None else list(changelog)}
+    if apt == "skip":
+        apt = None
+    return {"packages": {"urllib3": rec}, "apt": apt}
+
+
+def _drive(home, monkeypatch, report, advisories, accept_text=None, today=_TODAY,
+           hosts=("boxA",)):
+    import json as _json
+
+    def fake_run(cmd, timeout, stdin_text=None):
+        if cmd[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if cmd[0] == "gh":
+            return 0, _json.dumps(advisories), ""
+        return 0, _json.dumps(report), ""
+
+    monkeypatch.setattr(dac, "_run", fake_run)
+    monkeypatch.setattr(dac._dt, "date", _FixedDate)
+    _FixedDate.fixed = today
+    argv = []
+    for h in hosts:
+        argv += ["--host", h]
+    argv += ["--packages", "urllib3", "--quiet"]
+    if accept_text is not None:
+        f = home / "accept"
+        f.write_text(accept_text)
+        argv += ["--accept-file", str(f)]
+    else:
+        argv += ["--accept-file", str(home / "no-such-accept-file")]
+    rc = dac.main(argv)
+    status = (home / ".meshforge-dep-advisories").read_text()
+    fpath = home / ".meshforge-dep-ADVISORY"
+    finding = fpath.read_text() if fpath.exists() else None
+    return rc, status, finding
+
+
+class _FixedDate(_dt.date):
+    fixed = _TODAY
+
+    @classmethod
+    def today(cls):
+        return cls.fixed
+
+
+class TestDistroManagedPackages:
+    def test_cve_named_in_changelog_is_distro_patched_not_a_finding(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(), [ADV_CVE_A])
+        assert rc == 0, status
+        assert finding is None
+        assert "distro-patched x1" in status
+        assert "[apt 1.26.12-1+deb12u4]" in status, (
+            "the distro version is the tell a reader needs; it must be shown")
+
+    def test_cve_not_in_changelog_stays_a_finding_tagged_apt_managed(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(), [ADV_CVE_A, ADV_CVE_B])
+        assert rc == 1
+        assert finding and "GHSA-bbbb-bbbb-bbbb" in finding
+        assert "GHSA-aaaa-aaaa-aaaa" not in finding.split("\n")[1].split(":")[1].split("—")[0], (
+            "the patched advisory must not be listed among the open ones")
+        assert "apt-managed" in finding and "never pip" in finding
+
+    def test_unreadable_changelog_leaves_every_advisory_open(self, home, monkeypatch):
+        """THE error path. 'Could not read what the distro fixed' must never
+        become 'the distro fixed it' — that is the empty-list-from-a-broken-
+        call lie in changelog form."""
+        rc, status, finding = _drive(home, monkeypatch, _report(changelog=None), [ADV_CVE_A])
+        assert rc == 1
+        assert finding and "GHSA-aaaa-aaaa-aaaa" in finding
+        assert "UNREADABLE" in status
+
+    def test_advisory_without_a_cve_id_cannot_be_called_patched(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(changelog=("CVE-2026-1",)),
+                                     [ADV_NO_CVE])
+        assert rc == 1 and finding and "GHSA-cccc-cccc-cccc" in finding
+
+    def test_pip_managed_copy_is_reported_exactly_as_before(self, home, monkeypatch):
+        rep = _report(origin="/usr/local/lib/python3.13/dist-packages/urllib3/__init__.py")
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 1
+        assert finding and "apt" not in finding
+        assert "[apt" not in status
+
+    def test_legacy_flat_report_shape_still_parses(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, {"urllib3": "1.26.12"}, [ADV_CVE_A])
+        assert rc == 1 and finding and "urllib3 1.26.12" in finding
+
+    def test_disagreeing_claimants_are_shown(self, home, monkeypatch):
+        rep = _report(version="43.0.3", origin="/usr/local/lib/python3.13/dist-packages/x.py",
+                      claimants=["43.0.3", "46.0.3"])
+        rc, status, finding = _drive(home, monkeypatch, rep, [])
+        assert "claimants: 43.0.3, 46.0.3" in status
+
+
+class TestAcceptList:
+    ACCEPT = "GHSA-aaaa-aaaa-aaaa until=2026-12-31 Debian ignored (no-dsa)\n"
+
+    def test_accepted_advisory_on_a_distro_package_is_not_a_finding(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(changelog=()), [ADV_CVE_A],
+                                     accept_text=self.ACCEPT)
+        assert rc == 0, status
+        assert finding is None
+        assert "accepted x1" in status and "Debian ignored" in status, (
+            "an acceptance must stay visible in the status file, never vanish")
+
+    def test_expired_acceptance_is_a_finding_again_and_says_so(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(changelog=()), [ADV_CVE_A],
+                                     accept_text=self.ACCEPT, today=_dt.date(2027, 1, 1))
+        assert rc == 1
+        assert finding and "GHSA-aaaa-aaaa-aaaa" in finding
+        assert "EXPIRED" in status
+
+    def test_acceptance_never_silences_a_pip_managed_copy(self, home, monkeypatch):
+        rep = _report(origin="/usr/local/lib/python3.13/dist-packages/urllib3/__init__.py")
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A], accept_text=self.ACCEPT)
+        assert rc == 1 and finding and "GHSA-aaaa-aaaa-aaaa" in finding, (
+            "a pip-managed copy has a fix one pip away; the accept list must not apply")
+
+    def test_acceptance_without_an_expiry_is_ignored_and_warned(self, home, monkeypatch):
+        rc, status, finding = _drive(home, monkeypatch, _report(changelog=()), [ADV_CVE_A],
+                                     accept_text="GHSA-aaaa-aaaa-aaaa some reason, no date\n")
+        assert rc == 1 and finding
+        assert "# WARN accept list line 1 ignored" in status
+
+    def test_read_accepted_parses_and_rejects(self, tmp_path):
+        f = tmp_path / "a"
+        f.write_text("# comment\n\nGHSA-x-y-z until=2026-10-01 reason here\n"
+                     "GHSA-bad until=not-a-date\nnot-a-ghsa until=2026-10-01\n")
+        acc, warns = dac.read_accepted(str(f))
+        assert acc == {"GHSA-x-y-z": (_dt.date(2026, 10, 1), "reason here")}
+        assert len(warns) == 2
+
+
+class TestAptHygiene:
+    def test_absent_unattended_upgrades_is_a_finding(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "absent", "pending_total": 3,
+                           "pending_security": 0, "lists_age_h": 2})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 1 and finding
+        assert "unattended-upgrades ABSENT" in finding
+
+    def test_pending_security_updates_are_a_finding(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 40,
+                           "pending_security": 35, "lists_age_h": 6})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 1 and finding and "35 security update(s) pending" in finding
+
+    def test_stale_lists_are_a_finding_and_counts_are_a_lower_bound(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 0,
+                           "pending_security": 0, "lists_age_h": 400})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 1 and finding and "400h stale" in finding and "lower bound" in finding
+
+    def test_failed_apt_simulation_is_unknown_not_clean(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "installed", "pending_total": None,
+                           "pending_security": None, "lists_age_h": 1})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 2, "pending updates unobservable must not read as a clean box"
+        assert "boxA/apt" in status.splitlines()[1]
+
+    def test_healthy_apt_is_clean_and_a_non_deb_box_is_silent(self, home, monkeypatch):
+        rep = _report(apt={"unattended_upgrades": "installed", "pending_total": 2,
+                           "pending_security": 0, "lists_age_h": 1})
+        rc, status, finding = _drive(home, monkeypatch, rep, [ADV_CVE_A])
+        assert rc == 0 and finding is None and "0 security" in status
+        rc, status, finding = _drive(home, monkeypatch, _report(apt=None), [ADV_CVE_A])
+        assert rc == 0
+        assert not re.search(r"^boxA\s+apt\s", status, re.M), (
+            "a box with no dpkg must produce no apt line at all (inert)")
