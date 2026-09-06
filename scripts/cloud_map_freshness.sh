@@ -51,6 +51,18 @@ if [ -z "$lm_epoch" ]; then
     exit 2
 fi
 
+# A Last-Modified that parses to the epoch (or earlier) is a SENTINEL, not an
+# age. "Thu, 01 Jan 1970 00:00:00 GMT" is what an rsync that landed the file
+# with a zero mtime looks like, and what a server fills in when it has no
+# mtime to report — the parse SUCCEEDS, so the -z guard above waves it
+# through. Left unguarded it becomes `now - 0`: a ~56-year staleness claim
+# that blames the push chain when the defect is the timestamp. Absent is not
+# old (honest_failure_modes #1) — an epoch mtime is unobservable freshness.
+if [ "$lm_epoch" -le 0 ]; then
+    echo "FAIL: Last-Modified '$lm' parsed to ${lm_epoch} (epoch sentinel) — the file has no real mtime; freshness is UNKNOWN, not stale"
+    exit 2
+fi
+
 now="$(date -u +%s)"
 age=$(( now - lm_epoch ))
 
