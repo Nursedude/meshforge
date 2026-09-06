@@ -58,33 +58,42 @@ def _disp():
 
 
 class TestTheGapCloses:
-    def test_a_fresh_unwired_emitter_is_reported(self, tmp_path):
-        """The wan_path shape: a live script writing verdicts nothing judges."""
-        verdicts = _v("myjob", "OK", 60) + _v("selfverdicting", "OK", 120)
+    """A FRESH orphan cannot be a fossil — a retired cron stops writing — so its
+    FAIL gets the same hearing a wired cron's does."""
+
+    def test_a_failing_fresh_orphan_is_reported(self, tmp_path):
+        """The real 2026-09-06 shape: boot_survival FAILED, unwired, unheard."""
+        verdicts = _v("myjob", "OK", 60) + _v("boot_survival", "FAIL", 120)
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
         assert sig is not None
-        assert "selfverdicting" in sig.extra["unwired"]
-        assert "nothing judges" in sig.detail
+        assert any("boot_survival" in x for x in sig.extra["unwired_failing"])
+        assert "nothing else would have told you" in sig.detail
 
-    def test_it_reports_the_gap_even_when_the_orphan_says_OK(self, tmp_path):
-        """The defect is unjudgeABILITY, not current health: an emitter that is
-        fine today is exactly the one whose future FAIL nobody will hear."""
-        verdicts = _v("myjob", "OK", 60) + _v("selfverdicting", "OK", 60)
-        sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
-        assert sig is not None and sig.extra["unwired"] == ["selfverdicting"]
-
-    def test_the_detail_says_how_to_close_it(self, tmp_path):
+    def test_a_concern_from_a_fresh_orphan_also_counts(self, tmp_path):
         sig = _fire(tmp_path, crontab_text=WIRED,
-                    verdicts_text=_v("myjob", "OK", 60) + _v("newthing", "OK", 60))
-        assert "cron_verdict.sh <name>" in sig.detail
-        assert "CRON_VERDICT_ORPHAN_ACKNOWLEDGED" in sig.detail
+                    verdicts_text=_v("myjob", "OK", 60) + _v("x", "CONCERN", 60))
+        assert sig is not None and sig.extra["unwired_failing"]
+
+    def test_a_HEALTHY_fresh_orphan_is_not_a_finding(self, tmp_path):
+        """Measured that day: 3 of 5 fresh orphans were fine. Nagging about
+        working software while the real failures go unheard is an instrument
+        talking about itself instead of serving the product."""
+        verdicts = _v("myjob", "OK", 60) + _v("identity_backup", "OK", 60)
+        sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
+        assert sig is None
+
+    def test_the_detail_says_nothing_else_would_have_caught_it(self, tmp_path):
+        sig = _fire(tmp_path, crontab_text=WIRED,
+                    verdicts_text=_v("myjob", "OK", 60) + _v("newthing", "FAIL(2)", 60))
+        assert "failing UNWIRED" in sig.detail
 
 
 class TestTheFossilStaysQuiet:
     """The non-regression that matters: this must not resurrect dead crons."""
 
-    def test_a_stale_unwired_verdict_does_not_fire(self, tmp_path):
-        """A parked cron's fossil — old, unwired. Judging it is the #78 defect."""
+    def test_a_stale_unwired_FAIL_does_not_fire(self, tmp_path):
+        """A parked cron's fossil — old, unwired, and FAILING. This is the exact
+        case the orphan filter exists for; judging it is the #78 defect."""
         verdicts = _v("myjob", "OK", 60) + _v("parked_long_ago", "FAIL(1)", 40 * 3600)
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
         assert sig is None
@@ -96,7 +105,7 @@ class TestTheFossilStaysQuiet:
                     + _v("parked_long_ago", "FAIL(1)", 40 * 3600))
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
         assert sig is not None
-        assert sig.extra["unwired"] == []
+        assert sig.extra["unwired_failing"] == []
         assert "parked_long_ago" not in sig.detail
 
     def test_no_wired_crons_is_still_inert(self, tmp_path):
@@ -111,7 +120,7 @@ class TestAcknowledgement:
     """An unwired name owned by a dedicated detector is not a finding — but the
     acknowledgement must be readable, or it is just a mute button."""
 
-    def test_an_acknowledged_orphan_does_not_fire(self, tmp_path):
+    def test_an_acknowledged_failing_orphan_does_not_fire(self, tmp_path):
         sig = _fire(tmp_path, crontab_text=WIRED,
                     verdicts_text=_v("myjob", "OK", 60) + _v("wan_path", "FAIL", 60))
         assert sig is None
@@ -140,32 +149,25 @@ class TestAcknowledgement:
 
 
 class TestTheSentenceMeansWhatItSays:
-    """Caught by reading the LIVE signal, not by a test: the detail opened
-    "Wired cron(s) unhealthy — 5 writing verdicts nothing judges", which
-    contradicts itself, and advised "fix the job" when the job is fine and the
-    wiring is missing. A misread instrument is a bug report against it."""
+    """The first cut of this leg opened "Wired cron(s) unhealthy — 5 writing
+    verdicts nothing judges", which contradicts itself: those are the UNWIRED
+    ones. Caught by reading the LIVE signal, not by a test. Now every bucket
+    this leg reports IS a failing cron, wired or not, so one honest lead
+    covers them all."""
 
-    def test_a_coverage_gap_alone_does_not_claim_wired_crons_are_unhealthy(self, tmp_path):
+    def test_the_lead_does_not_claim_wiring_it_has_not_established(self, tmp_path):
         sig = _fire(tmp_path, crontab_text=WIRED,
-                    verdicts_text=_v("myjob", "OK", 60) + _v("selfverdicting", "OK", 60))
-        assert sig.detail.startswith("Cron verdict coverage gap")
+                    verdicts_text=_v("myjob", "OK", 60) + _v("orph", "FAIL", 60))
+        assert sig.detail.startswith("Cron(s) unhealthy")
         assert "Wired cron(s) unhealthy" not in sig.detail
 
-    def test_a_coverage_gap_alone_does_not_advise_fixing_a_job(self, tmp_path):
-        sig = _fire(tmp_path, crontab_text=WIRED,
-                    verdicts_text=_v("myjob", "OK", 60) + _v("selfverdicting", "OK", 60))
-        assert "fix the job" not in sig.detail
-
-    def test_a_real_wired_failure_keeps_its_original_wording(self, tmp_path):
-        """The #78 leg's voice must not change underneath the operator."""
+    def test_a_wired_failure_still_carries_the_78_advice(self, tmp_path):
         verdicts = _v("myjob", "FAIL(1)", 360) + _v("myjob", "FAIL(1)", 60)
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
-        assert sig.detail.startswith("Wired cron(s) unhealthy")
         assert "silence is the failure mode" in sig.detail
 
-    def test_a_mixed_finding_leads_with_the_unhealthy_cron(self, tmp_path):
+    def test_a_mixed_finding_carries_both_buckets(self, tmp_path):
         verdicts = (_v("myjob", "FAIL(1)", 360) + _v("myjob", "FAIL(1)", 60)
-                    + _v("selfverdicting", "OK", 60))
+                    + _v("orph", "FAIL", 60))
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
-        assert sig.detail.startswith("Wired cron(s) unhealthy")
-        assert "nothing judges" in sig.detail
+        assert "failing:" in sig.detail and "failing UNWIRED" in sig.detail

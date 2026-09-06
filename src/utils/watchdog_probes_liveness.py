@@ -280,7 +280,7 @@ def probe_cron_verdict_stale(
         stale: List[str] = []
         reboot_unjudged: List[str] = []
         unconfirmed: List[str] = []
-        unwired, acknowledged = classify_orphan_verdicts(latest, wired)
+        unwired_failing, acknowledged = classify_orphan_verdicts(latest, wired)
         for name, schedule in sorted(wired.items()):
             v = latest.get(name)
             if v is not None and v.get("status", "").upper().startswith(
@@ -325,7 +325,7 @@ def probe_cron_verdict_stale(
             elif float(v.get("age_s", 0.0)) > threshold:
                 stale.append(f"{name}({int(float(v['age_s']) // 3600)}h)")
 
-        if not failed and not stale and not unwired:
+        if not failed and not stale and not unwired_failing:
             if reboot_unjudged:
                 # PARTIAL coverage, not whole-class blindness (2026-08-13
                 # Pri-1 review). This used to note `indeterminate` for the
@@ -394,12 +394,9 @@ def probe_cron_verdict_stale(
         bits = []
         if failed:
             bits.append(f"{len(failed)} failing: " + ", ".join(failed[:5]))
-        if unwired:
-            bits.append(f"{len(unwired)} writing verdicts nothing judges: "
-                        + ", ".join(unwired[:5])
-                        + " (wire `cron_verdict.sh <name> $?` into the crontab line, or"
-                          " give it a detector and record that in"
-                          " CRON_VERDICT_ORPHAN_ACKNOWLEDGED)")
+        if unwired_failing:
+            bits.append(f"{len(unwired_failing)} failing UNWIRED (nothing else "
+                        "would have told you): " + ", ".join(unwired_failing[:5]))
         if stale:
             bits.append(f"{len(stale)} silent: " + ", ".join(stale[:5]))
         return Signal(
@@ -412,13 +409,12 @@ def probe_cron_verdict_stale(
             # is wrong advice when the job is fine and the wiring is missing.
             # Caught by reading the live signal on 2026-09-06 — a misread
             # instrument is a bug report against the instrument.
-            detail=(("Wired cron(s) unhealthy — " if (failed or stale)
-                     else "Cron verdict coverage gap — ")
-                    + "; ".join(bits)
-                    + (" (fix the job or re-run + re-verify; silence is the "
-                       "failure mode)" if (failed or stale) else "")),
+            detail=("Cron(s) unhealthy — " + "; ".join(bits)
+                    + " (fix the job or re-run + re-verify; silence is the "
+                    "failure mode)"),
             issue_ref=78,
-            extra={"failed": failed, "stale": stale, "unwired": unwired,
+            extra={"failed": failed, "stale": stale,
+                   "unwired_failing": unwired_failing,
                    "acknowledged": acknowledged, "streak": streak,
                    "wired_count": len(wired)},
         )

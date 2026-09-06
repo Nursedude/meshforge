@@ -215,18 +215,36 @@ def classify_orphan_verdicts(latest, wired):
     ``wired`` the names a crontab wires via ``cron_verdict.sh``.
 
     A STALE unwired verdict is a parked cron's fossil and is returned in
-    neither list — judging fossils false-alarms forever (#78). A FRESH one is a
-    live emitter nothing judges: a wiring gap. Same fresh/stale rule
-    ``fleet_snapshot._read_cron_verdicts`` uses, read off the shared parser's
-    ``stale`` flag so the two consumers cannot drift (honest_failure_modes #5).
+    neither list — judging fossils false-alarms forever (#78). A FRESH one
+    cannot be a fossil, because a retired cron stops writing: it is a live
+    emitter, and its FAIL deserves the same hearing a wired cron's gets. Same
+    fresh/stale rule ``fleet_snapshot._read_cron_verdicts`` uses, read off the
+    shared parser's ``stale`` flag so the two consumers cannot drift
+    (honest_failure_modes #5).
+
+    Only FAILING fresh orphans are returned. A healthy one is not a finding:
+    reporting every unwired-but-fine emitter would nag permanently about
+    working software while the real failures still went unheard — an
+    instrument talking about itself instead of serving the product. (Measured
+    2026-09-06 on the manager box: 5 fresh orphans, 3 of them OK, and the two
+    FAILING ones were a genuine unheard boot casualty and a genuine unheard
+    cloud-push failure.)
+
+    ⚠️ Residual, stated rather than papered over: an orphan has no crontab
+    schedule, so its SILENCE cannot be judged — only its failures. A fresh
+    orphan that dies simply ages into a fossil and drops out quietly. Closing
+    that half needs a real declaration mechanism, not this function.
     """
-    unwired, acknowledged = [], []
+    failing, acknowledged = [], []
     for name, v in sorted(latest.items()):
         if name in wired or v.get("stale", False):
             continue
-        (acknowledged if name in CRON_VERDICT_ORPHAN_ACKNOWLEDGED
-         else unwired).append(name)
-    return unwired, acknowledged
+        if name in CRON_VERDICT_ORPHAN_ACKNOWLEDGED:
+            acknowledged.append(name)
+            continue
+        if str(v.get("status", "")).upper().startswith(("FAIL", "CONCERN")):
+            failing.append("%s(%s)" % (name, v.get("status")))
+    return failing, acknowledged
 
 
 def collect_dispositions() -> dict:
