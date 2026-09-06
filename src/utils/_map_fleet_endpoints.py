@@ -256,6 +256,33 @@ class FleetEndpointsMixin:
                 state["freshness"] = {"age_s": None, "stale": True,
                                       "threshold_s": self._FLEET_WAN_STALE_S}
             state["history"] = _wp.read_history()
+            # The localization, when the ladder cron runs with --auto-trace.
+            # Carried here rather than left in mini's brief alone: a reader on
+            # this page seeing "transit loss" with no "where" is the same
+            # silence one surface over (2026-09-06).
+            try:
+                from utils.wan_autotrace import TRACE_STALE_S, read_trace_state
+                tr = read_trace_state()
+                if isinstance(tr, dict):
+                    tgen = tr.get("generated_at")
+                    tage = (_time.time() - float(tgen)) if isinstance(
+                        tgen, (int, float)) and not isinstance(tgen, bool) else None
+                    tr["freshness"] = {
+                        "age_s": tage,
+                        "stale": tage is None or tage > TRACE_STALE_S,
+                        "threshold_s": TRACE_STALE_S,
+                    }
+                    state["trace"] = tr
+                else:
+                    state["trace_absent"] = (
+                        "no trace has run on this box — wire "
+                        "`wan_path_probe.py --verdict --auto-trace` on the ladder cron")
+            except Exception as _exc:   # noqa: BLE001 - never 500 the page...
+                # ...but never swallow silently either: a reader must be able to
+                # tell "no trace organ here" from "the trace organ is broken"
+                # (honest_failure_modes #9 — every swallow gets a witness).
+                state["trace_absent"] = "trace unreadable: %s: %s" % (
+                    type(_exc).__name__, _exc)
             self._serve_json(state, status=200)
         except Exception as exc:  # never let a bad state file 500 the page
             self._serve_json({"status": "error", "reason": "%s: %s" % (type(exc).__name__, exc)},

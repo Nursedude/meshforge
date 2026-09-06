@@ -451,6 +451,9 @@ def main(argv=None) -> int:
                     help="also leave a cron_verdict.sh line (OK/CONCERN/FAIL)")
     ap.add_argument("--count", type=int, default=PING_COUNT)
     ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--auto-trace", action="store_true",
+                    help="on a red verdict, run a throttled path trace so the "
+                         "localization is already waiting (utils.wan_autotrace)")
     args = ap.parse_args(argv)
 
     results = [measure(t, args.count) for t in load_targets()]
@@ -470,6 +473,20 @@ def main(argv=None) -> int:
                     r.loss_pct, r.avg_ms or 0.0, r.mdev_ms or 0.0))
                 if r.loss_pct is not None else "UNMEASURED — %s" % r.error))
         print("%s (%s): %s" % (verdict.status.upper(), verdict.cause, verdict.message))
+
+    # Auto-trace BEFORE the verdict so the localization the operator will read
+    # is already on disk when the page/brief picks the verdict up. Never let a
+    # trace failure change the ladder's own verdict — the ladder is the
+    # measurement of record; the trace is commentary on it.
+    if getattr(args, "auto_trace", False):
+        try:
+            from utils.wan_autotrace import autotrace
+            ran, why = autotrace(state)
+            if not args.quiet:
+                print("auto-trace: %s — %s" % ("ran" if ran else "skipped", why))
+        except Exception as exc:            # noqa: BLE001 - never break the ladder
+            print("warn: auto-trace failed: %s: %s" % (type(exc).__name__, exc),
+                  file=sys.stderr)
 
     if args.verdict:
         status = {"ok": "OK", "concern": "CONCERN", "fail": "FAIL", "unknown": "FAIL"}[verdict.status]

@@ -1,5 +1,5 @@
 {
-  "_comment": "mini-dudeai FEDERATOR seed \u2014 the primary/manager box (the one that runs the :5000 federator + situation digest). Runs watchdog + federation + digest sources (MINI_DUDEAI_ENABLE_FEDERATION/_ENABLE_DIGEST default on); gateway boxes use mini_dudeai_rules.fleet_gateway.json instead, which since structural-dark row 6 (2026-07-19) ALSO carries the two federation rules -- every map-running box now watches federation per-vantage off its OWN :5000, but escalates only (no ntfy), and the digest source stays federator-scoped by design. The moc3 known-normal suppression now exists in BOTH seeds: retire the two copies TOGETHER at the RNS roll. Per-box file at ~/mini_dudeai_rules.json; the daemon promotes ~/mini_dudeai_rules.json.candidate over it on the next tick. Repo canonical for backup + re-deploy parity with the gateway seed (closes the federator repo-parity gap, 2026-05-31).",
+  "_comment": "mini-dudeai FEDERATOR seed — the primary/manager box (the one that runs the :5000 federator + situation digest). Runs watchdog + federation + digest sources (MINI_DUDEAI_ENABLE_FEDERATION/_ENABLE_DIGEST default on); gateway boxes use mini_dudeai_rules.fleet_gateway.json instead, which since structural-dark row 6 (2026-07-19) ALSO carries the two federation rules -- every map-running box now watches federation per-vantage off its OWN :5000, but escalates only (no ntfy), and the digest source stays federator-scoped by design. The moc3 known-normal suppression now exists in BOTH seeds: retire the two copies TOGETHER at the RNS roll. Per-box file at ~/mini_dudeai_rules.json; the daemon promotes ~/mini_dudeai_rules.json.candidate over it on the next tick. Repo canonical for backup + re-deploy parity with the gateway seed (closes the federator repo-parity gap, 2026-05-31).",
   "rules": [
     {
       "id": "rns_namespace_collision_any",
@@ -19,7 +19,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #69 \u2014 foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
+      "annotation": "Issue #69 — foreign daemon hijacked @rns/<instance>. Recovery: stop the foreign daemon, restart rnsd, restart RNS-using services."
     },
     {
       "id": "main_thread_wedge_any",
@@ -39,7 +39,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #68 \u2014 main thread silent-stuck in syscall while background threads keep logging. Check /proc/PID/task/PID/stack."
+      "annotation": "Issue #68 — main thread silent-stuck in syscall while background threads keep logging. Check /proc/PID/task/PID/stack."
     },
     {
       "id": "http_local_unresponsive_any",
@@ -58,7 +58,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #61 / #70 / #71 class \u2014 GIL-bound serialization or socketserver deadlock. Check cache hit-rates at /api/status.{directory,geojson,topology}.cache."
+      "annotation": "Issue #61 / #70 / #71 class — GIL-bound serialization or socketserver deadlock. Check cache hit-rates at /api/status.{directory,geojson,topology}.cache."
     },
     {
       "id": "delivery_write_canary_any",
@@ -77,7 +77,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #63 \u2014 write-path silent failure (sandbox path drift). Audit ReadWritePaths= against actual write sites."
+      "annotation": "Issue #63 — write-path silent failure (sandbox path drift). Audit ReadWritePaths= against actual write sites."
     },
     {
       "id": "service_inactive_any",
@@ -158,7 +158,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer. Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) \u2014 e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed. RETIRED 2026-09-03: this rule's moc3 exclusion AND its companion moc3_federation_backoff_known_normal rule are both gone. The federation collector now drops peers whose DECLARED role serves no map (fleet_naming serves_map, stamped by scripts/fleet_role_stamp.py), so moc3 is never polled and can no longer reach this rule at all \u2014 verified live on a map box's /api/status as non_federating={'moc3.mf.internal': 'declared role serves no map'}. A moc3 federation alarm from here is therefore a REAL finding now, not the known-normal it used to be."
+      "annotation": "B2 (2026-05-28): unexpected unhealthy federation peer. Side-effect-free escalation -> history for the cloud session to chase; NO ntfy page. Per-box pattern (2026-05-31): operator boxes may add a local *_federation_known_normal rule (annotate_digest) plus a matching subject_exclude_globs entry for a KNOWN cross-project peer that surfaces as a bare IP (peer_name=null) — e.g. the MeshAnchor host meshanchor-server. Such rules live in that box's own ~/mini_dudeai_rules.json because the addresses are operator-specific (MF014); they are deliberately NOT in this repo seed. RETIRED 2026-09-03: this rule's moc3 exclusion AND its companion moc3_federation_backoff_known_normal rule are both gone. The federation collector now drops peers whose DECLARED role serves no map (fleet_naming serves_map, stamped by scripts/fleet_role_stamp.py), so moc3 is never polled and can no longer reach this rule at all — verified live on a map box's /api/status as non_federating={'moc3.mf.internal': 'declared role serves no map'}. A moc3 federation alarm from here is therefore a REAL finding now, not the known-normal it used to be."
     },
     {
       "id": "digest_stale_30m",
@@ -193,7 +193,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "watchdog.json unreadable \u2014 meshforge-watchdog.service may be down."
+      "annotation": "watchdog.json unreadable — meshforge-watchdog.service may be down."
     },
     {
       "id": "source_error_federator",
@@ -211,7 +211,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "/api/status unreachable \u2014 meshforge-map.service may be down (see Issue #68 detection recipe). grace_s=90 debounces our own meshforge-map restart blips (~30s, self-clearing); a real >90s federator outage still pages.",
+      "annotation": "/api/status unreachable — meshforge-map.service may be down (see Issue #68 detection recipe). grace_s=90 debounces our own meshforge-map restart blips (~30s, self-clearing); a real >90s federator outage still pages.",
       "grace_s": 90
     },
     {
@@ -225,7 +225,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #69 \u2014 foreign daemon owns @rns/<instance> (often lab.lxmf_tracer winning the @rns race during an rnsd cycle); the box's RNS is broken until reclaimed. Recovery: stop the foreign daemon, `sudo systemctl restart rnsd.service`, restart RNS-using services. Verify owner is rnsd: `sudo ss -xnpl | grep @rns/`. Companion to the ntfy page rns_namespace_collision_any \u2014 surfaces it in the deep-feed/brief 'look here first'."
+      "annotation": "Issue #69 — foreign daemon owns @rns/<instance> (often lab.lxmf_tracer winning the @rns race during an rnsd cycle); the box's RNS is broken until reclaimed. Recovery: stop the foreign daemon, `sudo systemctl restart rnsd.service`, restart RNS-using services. Verify owner is rnsd: `sudo ss -xnpl | grep @rns/`. Companion to the ntfy page rns_namespace_collision_any — surfaces it in the deep-feed/brief 'look here first'."
     },
     {
       "id": "foundation_perms_drift_any",
@@ -238,7 +238,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-01: born-correct permission foundation drifted (mf.4/#73) \u2014 /etc/reticulum perms wrong for the non-root rnsd; latent (works until the next logfile rotation, then RNS.log() fails every write). Fix: sudo scripts/fleet_foundation.py apply (no restart). Side-effect-free escalation -> brief/deep-rollup; NO ntfy page (degraded, not an active outage)."
+      "annotation": "2026-06-01: born-correct permission foundation drifted (mf.4/#73) — /etc/reticulum perms wrong for the non-root rnsd; latent (works until the next logfile rotation, then RNS.log() fails every write). Fix: sudo scripts/fleet_foundation.py apply (no restart). Side-effect-free escalation -> brief/deep-rollup; NO ntfy page (degraded, not an active outage)."
     },
     {
       "id": "parity_drift_any",
@@ -316,7 +316,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-12: a critical pip dep (meshtastic) installed BELOW the requirements/core.txt floor in the service user's env \u2014 a box that missed/failed an update (the recurring update/install/env class, feedback_version_env_rigor). Fix: pip3 install --break-system-packages --upgrade <pkg> (or the TUI Update), then verify version + import in the service user python. Side-effect-free escalation; NO ntfy page (degraded)."
+      "annotation": "2026-06-12: a critical pip dep (meshtastic) installed BELOW the requirements/core.txt floor in the service user's env — a box that missed/failed an update (the recurring update/install/env class, feedback_version_env_rigor). Fix: pip3 install --break-system-packages --upgrade <pkg> (or the TUI Update), then verify version + import in the service user python. Side-effect-free escalation; NO ntfy page (degraded)."
     },
     {
       "id": "dep_install_fragmented_any",
@@ -329,7 +329,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-17: meshtastic installed at DIVERGENT versions across root-readable locations (venv / system-wide dist-packages / root+user pipx / user-site) with \u22651 copy BELOW the core.txt floor \u2014 the service consumer-of-record can be fine while the TUI-as-root reads a stale stray and shows phantom 'update available' (the install-fragmentation half of the update class, feedback_version_env_rigor; dep_version_drift sees only the consumer). Fix: reconcile every copy to >= the floor via python3 scripts/meshtastic_install_audit.py (see its --fix hint), then re-check. Side-effect-free escalation; NO ntfy page (degraded)."
+      "annotation": "2026-06-17: meshtastic installed at DIVERGENT versions across root-readable locations (venv / system-wide dist-packages / root+user pipx / user-site) with ≥1 copy BELOW the core.txt floor — the service consumer-of-record can be fine while the TUI-as-root reads a stale stray and shows phantom 'update available' (the install-fragmentation half of the update class, feedback_version_env_rigor; dep_version_drift sees only the consumer). Fix: reconcile every copy to >= the floor via python3 scripts/meshtastic_install_audit.py (see its --fix hint), then re-check. Side-effect-free escalation; NO ntfy page (degraded)."
     },
     {
       "id": "role_drift_any",
@@ -342,7 +342,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-03: live systemd unit state diverges from the box's declared role (fleet_roles.yaml + deployment.json overrides) \u2014 the moc2 legibility class. Documented service_overrides do NOT fire. Fix: review python3 scripts/provision_role.py, then sudo --apply or correct the declared role. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+      "annotation": "2026-06-03: live systemd unit state diverges from the box's declared role (fleet_roles.yaml + deployment.json overrides) — the moc2 legibility class. Documented service_overrides do NOT fire. Fix: review python3 scripts/provision_role.py, then sudo --apply or correct the declared role. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
       "id": "inherited_app_drift_any",
@@ -355,7 +355,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 1800,
-      "annotation": "2026-06-21 upstream-app ownership Action 5: an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch \u2014 a hand-edit that exists in no repo we control and is one `git pull` from silent deletion (the rescued .32 + dev-box bot patches were exactly this; policy \u00a74.2). Fix: rescue the patch into an owned fork or the tracked overlay (Nursedude/fleet-overlays), or upstream it as a PR, then converge the checkout clean and record the pin in fleet-overlays/PINS.md. Side-effect-free escalation; NO ntfy page (degraded, latent version-control hygiene debt, not an outage)."
+      "annotation": "2026-06-21 upstream-app ownership Action 5: an INHERITED (non-Nursedude-origin) upstream app checkout carries an unversioned tracked-file CODE patch — a hand-edit that exists in no repo we control and is one `git pull` from silent deletion (the rescued .32 + dev-box bot patches were exactly this; policy §4.2). Fix: rescue the patch into an owned fork or the tracked overlay (Nursedude/fleet-overlays), or upstream it as a PR, then converge the checkout clean and record the pin in fleet-overlays/PINS.md. Side-effect-free escalation; NO ntfy page (degraded, latent version-control hygiene debt, not an outage)."
     },
     {
       "id": "rns_rpc_unresponsive_any",
@@ -375,7 +375,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #72 \u2014 rnsd accepts the shared-instance socket but the RPC round-trip hangs (rnstatus times out though the listener accepts). Recovery: sudo systemctl restart rnsd, then restart RNS-using services (meshforge-map, tracer)."
+      "annotation": "Issue #72 — rnsd accepts the shared-instance socket but the RPC round-trip hangs (rnstatus times out though the listener accepts). Recovery: sudo systemctl restart rnsd, then restart RNS-using services (meshforge-map, tracer)."
     },
     {
       "id": "rns_interface_down_peer_reachable_any",
@@ -395,7 +395,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "#68 family \u2014 a TCPInterface is Down while its peer is TCP-reachable (stuck uplink that won't self-heal). Check rnstatus interface state; bounce rnsd or the uplink interface."
+      "annotation": "#68 family — a TCPInterface is Down while its peer is TCP-reachable (stuck uplink that won't self-heal). Check rnstatus interface state; bounce rnsd or the uplink interface."
     },
     {
       "id": "fd_exhaustion_any",
@@ -414,7 +414,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "Issue #73 \u2014 open fds approaching the soft RLIMIT_NOFILE (proactive companion to http_local; fires BEFORE :5000 wedges with [Errno 24]). Restart the service to clear, then find the fd leak (sudo ls /proc/PID/fd | wc -l)."
+      "annotation": "Issue #73 — open fds approaching the soft RLIMIT_NOFILE (proactive companion to http_local; fires BEFORE :5000 wedges with [Errno 24]). Restart the service to clear, then find the fd leak (sudo ls /proc/PID/fd | wc -l)."
     },
     {
       "id": "host_memory_pressure_any",
@@ -433,7 +433,7 @@
         ]
       },
       "cooldown_s": 900,
-      "annotation": "2026-07-24 hard-reset arc (8th) \u2014 the box is running out of RAM. Pages (not escalate-only) because the end state is a HARDWARE reset, not a degraded service: on this fleet a sustained memory stall starves PID 1 past RuntimeWatchdogUSec=1min and the watchdog resets the box, so there is no oom-kill to soften it and no second chance to notice. The 07-24 reset gave ~34s between the first sub-20% sample and the cut, hence the short 15m cooldown. The detail names the top RSS consumers \u2014 read it FIRST, it is the only record of who was allocating (/tmp is tmpfs and is wiped by the reset). Also check tmpfs: df -h /tmp /dev/shm \u2014 that is RAM the OOM killer cannot reclaim and it leaves no RSS trail."
+      "annotation": "2026-07-24 hard-reset arc (8th) — the box is running out of RAM. Pages (not escalate-only) because the end state is a HARDWARE reset, not a degraded service: on this fleet a sustained memory stall starves PID 1 past RuntimeWatchdogUSec=1min and the watchdog resets the box, so there is no oom-kill to soften it and no second chance to notice. The 07-24 reset gave ~34s between the first sub-20% sample and the cut, hence the short 15m cooldown. The detail names the top RSS consumers — read it FIRST, it is the only record of who was allocating (/tmp is tmpfs and is wiped by the reset). Also check tmpfs: df -h /tmp /dev/shm — that is RAM the OOM killer cannot reclaim and it leaves no RSS trail."
     },
     {
       "id": "memory_cap_engaged_any",
@@ -452,7 +452,7 @@
         ]
       },
       "cooldown_s": 1800,
-      "annotation": "2026-07-24 hard-reset arc \u2014 a MemoryMax cap actually BIT. Pages because the two possible causes both need a human NOW and the counter cannot tell them apart: either a runaway was correctly bounded (find what allocated) or LEGITIMATE work was OOM-killed because the cap is too tight \u2014 the failure this same session caused at 18:22, when a MemoryHigh+systemd-oomd pairing killed 49 processes (the operator's desktop included) with 7.7 GB still free. Read the detail: it names the cgroup, the cap, and both readings. `journalctl -k | grep -i 'killed process'` names the victim; a killed agent/ssh session or user unit means RAISE the cap. The degraded CEILING leg (max_hits climbing, no kills) is the evidence-based trigger to revisit a cap number \u2014 it replaces the 'read memory.peak in a week' calendar plan, which was willpower rather than harness and pointed the wrong way (a generous cap still bounds a runaway; a tight one kills real work). Cooldown 30m: a biting cap is not a transient, and re-paging every 15m adds nothing."
+      "annotation": "2026-07-24 hard-reset arc — a MemoryMax cap actually BIT. Pages because the two possible causes both need a human NOW and the counter cannot tell them apart: either a runaway was correctly bounded (find what allocated) or LEGITIMATE work was OOM-killed because the cap is too tight — the failure this same session caused at 18:22, when a MemoryHigh+systemd-oomd pairing killed 49 processes (the operator's desktop included) with 7.7 GB still free. Read the detail: it names the cgroup, the cap, and both readings. `journalctl -k | grep -i 'killed process'` names the victim; a killed agent/ssh session or user unit means RAISE the cap. The degraded CEILING leg (max_hits climbing, no kills) is the evidence-based trigger to revisit a cap number — it replaces the 'read memory.peak in a week' calendar plan, which was willpower rather than harness and pointed the wrong way (a generous cap still bounds a runaway; a tight one kills real work). Cooldown 30m: a biting cap is not a transient, and re-paging every 15m adds nothing."
     },
     {
       "id": "channel_feed_dark_any",
@@ -511,7 +511,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "MF Issue #74 (2026-06-06): sends keep flowing but the recent-ring confirm rate collapsed (<=50% degraded, <=10% wedge, >=20 ring sends). The bridge self-report reads HEALTHY while shouting into a void \u2014 check RNS paths to fan-out peers + /api/gateway/delivery drop_reasons."
+      "annotation": "MF Issue #74 (2026-06-06): sends keep flowing but the recent-ring confirm rate collapsed (<=50% degraded, <=10% wedge, >=20 ring sends). The bridge self-report reads HEALTHY while shouting into a void — check RNS paths to fan-out peers + /api/gateway/delivery drop_reasons."
     },
     {
       "id": "synth_soak_degraded_any",
@@ -531,7 +531,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "MF synth-soak watch (2026-06-15): the hourly LXMF round-trip exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope (pass_envelope=false) or went DARK (no fresh result in ~2.5 cadences). The synth canary was previously unwatched \u2014 the fire script always exits 0 and nothing consumed pass_envelope. Check meshforge-synth-soak.timer (systemd --user) + ~/.local/state/meshforge/synth_soak/fire.log; for an envelope fail, the detail carries the worst pair \u2014 also check /api/gateway/delivery drop_reasons. Self-guards INERT on boxes that don't run the soak — judged since 2026-08-09 by whether meshforge-synth-soak.timer is ENABLED here (the enable-symlink in timers.target.wants), not by whether the state dir exists. The DARK bar is derived from the timer's own cadence, so it means nothing without a timer: meshanchor-server read degraded for 78 days over seven hand-fired May lab runs, blaming a timer that box has never had. A wants-dir it cannot read is indeterminate, never 'not scheduled'."
+      "annotation": "MF synth-soak watch (2026-06-15): the hourly LXMF round-trip exerciser (meshforge-synth-soak.timer) FAILED its delivery envelope (pass_envelope=false) or went DARK (no fresh result in ~2.5 cadences). The synth canary was previously unwatched — the fire script always exits 0 and nothing consumed pass_envelope. Check meshforge-synth-soak.timer (systemd --user) + ~/.local/state/meshforge/synth_soak/fire.log; for an envelope fail, the detail carries the worst pair — also check /api/gateway/delivery drop_reasons. Self-guards INERT on boxes that don't run the soak — judged since 2026-08-09 by whether meshforge-synth-soak.timer is ENABLED here (the enable-symlink in timers.target.wants), not by whether the state dir exists. The DARK bar is derived from the timer's own cadence, so it means nothing without a timer: meshanchor-server read degraded for 78 days over seven hand-fired May lab runs, blaming a timer that box has never had. A wants-dir it cannot read is indeterminate, never 'not scheduled'."
     },
     {
       "id": "propagation_soak_degraded_any",
@@ -582,7 +582,7 @@
         "kind": "annotate_digest"
       },
       "cooldown_s": 3600,
-      "annotation": "Crash forensic seed for the next warm cloud session \u2014 surfaces the unclean-boot verdict + last pre-cut power reading in situation_digest."
+      "annotation": "Crash forensic seed for the next warm cloud session — surfaces the unclean-boot verdict + last pre-cut power reading in situation_digest."
     },
     {
       "id": "phoneapi_tcp_leak_any",
@@ -601,7 +601,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "Issue #75 \u2014 an unaccounted persistent TCP to meshtasticd :4403 is draining the PhoneAPI stream (web client goes deaf to inbound texts/ACKs while the radio journal shows healthy RX). Recovery: sudo systemctl restart meshforge-map.service, then verify /api/radio/status persistent_owner."
+      "annotation": "Issue #75 — an unaccounted persistent TCP to meshtasticd :4403 is draining the PhoneAPI stream (web client goes deaf to inbound texts/ACKs while the radio journal shows healthy RX). Recovery: sudo systemctl restart meshforge-map.service, then verify /api/radio/status persistent_owner."
     },
     {
       "id": "meshtasticd_phoneapi_wedge_any",
@@ -620,7 +620,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "2026-06-13\u219215 moc incident \u2014 \u22652 contending single-consumers thrash meshtasticd's :4403 ('Force close previous TCP connection' churn, #17/#75 class), wedging the gateway's stateless-HTTP-protobuf mesh-TX: bot output stops reaching nodes while the RNS round-trip canary stays green (mesh-RF leg unwatched). Recovery: sudo systemctl restart meshtasticd, then stop the 2nd consumer (typically the map's _collect_meshtasticd :4403 source)."
+      "annotation": "2026-06-13→15 moc incident — ≥2 contending single-consumers thrash meshtasticd's :4403 ('Force close previous TCP connection' churn, #17/#75 class), wedging the gateway's stateless-HTTP-protobuf mesh-TX: bot output stops reaching nodes while the RNS round-trip canary stays green (mesh-RF leg unwatched). Recovery: sudo systemctl restart meshtasticd, then stop the 2nd consumer (typically the map's _collect_meshtasticd :4403 source)."
     },
     {
       "id": "mqtt_root_drift_any",
@@ -639,7 +639,7 @@
         ]
       },
       "cooldown_s": 7200,
-      "annotation": "Issue #77 \u2014 the radio's OBSERVED publish root diverged from the box's DECLARED consumer root (zero-config join or factory reset reintroduces msh/US). This is the CAUSE of the dark-feed class, visible hours before channel_feed_dark proves the symptom. Fix: meshtastic --host localhost --set mqtt.root <declared> (or correct gateway.json if the radio is the intended truth)."
+      "annotation": "Issue #77 — the radio's OBSERVED publish root diverged from the box's DECLARED consumer root (zero-config join or factory reset reintroduces msh/US). This is the CAUSE of the dark-feed class, visible hours before channel_feed_dark proves the symptom. Fix: meshtastic --host localhost --set mqtt.root <declared> (or correct gateway.json if the radio is the intended truth)."
     },
     {
       "id": "cron_verdict_stale_any",
@@ -652,7 +652,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "Issue #78 \u2014 a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+      "annotation": "Issue #78 — a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
       "id": "fleet_box_unreachable_any",
@@ -730,7 +730,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "Issue #79 \u2014 mini's loop is alive and firing but history.jsonl stopped accumulating (swallowed write failure: perms/owner/disk). The warm-context feed is the casualty. Check file perms + free disk on the mini host. Side-effect-free escalation; NO ntfy page."
+      "annotation": "Issue #79 — mini's loop is alive and firing but history.jsonl stopped accumulating (swallowed write failure: perms/owner/disk). The warm-context feed is the casualty. Check file perms + free disk on the mini host. Side-effect-free escalation; NO ntfy page."
     },
     {
       "id": "rules_seed_drift_any",
@@ -743,7 +743,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "Issue #79 \u2014 the box's live ~/mini_dudeai_rules.json is missing rule ids its role seed carries (a seed bump didn't reach this box). Fix: merge the new seed rules into the live file via the candidate flow (preserve box-local rules). Side-effect-free escalation; NO ntfy page."
+      "annotation": "Issue #79 — the box's live ~/mini_dudeai_rules.json is missing rule ids its role seed carries (a seed bump didn't reach this box). Fix: merge the new seed rules into the live file via the candidate flow (preserve box-local rules). Side-effect-free escalation; NO ntfy page."
     },
     {
       "id": "mini_rule_orphaned_exclusion_any",
@@ -756,7 +756,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "2026-09-03 \u2014 a live mini rule on this box excludes a subject that no other rule of the same kind watches. An exclude glob is a deliberate blind spot, safe ONLY while another rule owns that subject; when the owner is retired the exclusion outlives it and a real event on that subject is silently dropped. Born from the moc3 retirement (f36c93c2): merge_seed_rules is strictly additive and promote_seed_rules --prune keeps box-TUNED rules verbatim BY DESIGN, so a retirement lands fully on boxes running an unmodified seed copy and HALF on any box that tuned it \u2014 the federator hit exactly that. The seed side is test-guarded; this watches the LIVE copies, the half that actually runs. Fix: drop the stale exclusion, or restore an owner. Side-effect-free escalation; NO ntfy page. The documented box-local pattern (a local *_known_normal rule plus its matching exclude, MF014) reads clean \u2014 the local rule is the owner."
+      "annotation": "2026-09-03 — a live mini rule on this box excludes a subject that no other rule of the same kind watches. An exclude glob is a deliberate blind spot, safe ONLY while another rule owns that subject; when the owner is retired the exclusion outlives it and a real event on that subject is silently dropped. Born from the moc3 retirement (f36c93c2): merge_seed_rules is strictly additive and promote_seed_rules --prune keeps box-TUNED rules verbatim BY DESIGN, so a retirement lands fully on boxes running an unmodified seed copy and HALF on any box that tuned it — the federator hit exactly that. The seed side is test-guarded; this watches the LIVE copies, the half that actually runs. Fix: drop the stale exclusion, or restore an owner. Side-effect-free escalation; NO ntfy page. The documented box-local pattern (a local *_known_normal rule plus its matching exclude, MF014) reads clean — the local rule is the owner."
     },
     {
       "id": "mini_watchdog_source_unwired_any",
@@ -769,7 +769,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "2026-09-03 \u2014 this box runs meshforge-watchdog while the mini process actually running here was started with MINI_DUDEAI_ENABLE_WATCHDOG=0, so every signal the watchdog emits lands in a reader that is not listening and mini reads GREEN at src_errors=0. The flag is CORRECT and required on a box with no watchdog (it stops a permanent source_error_watchdog), so it cannot be removed \u2014 the defect is the COMBINATION, and it arrives the day a watchdog is installed on such a box and nobody flips the flag back. The loud polarity (flag on, no watchdog) already pins src_errors every tick; this closes the direction that never complains. Fix: set the flag to 1 AND restart the mini user unit \u2014 editing the env file alone leaves the running process on its old environ. Side-effect-free escalation; NO ntfy page."
+      "annotation": "2026-09-03 — this box runs meshforge-watchdog while the mini process actually running here was started with MINI_DUDEAI_ENABLE_WATCHDOG=0, so every signal the watchdog emits lands in a reader that is not listening and mini reads GREEN at src_errors=0. The flag is CORRECT and required on a box with no watchdog (it stops a permanent source_error_watchdog), so it cannot be removed — the defect is the COMBINATION, and it arrives the day a watchdog is installed on such a box and nobody flips the flag back. The loud polarity (flag on, no watchdog) already pins src_errors every tick; this closes the direction that never complains. Fix: set the flag to 1 AND restart the mini user unit — editing the env file alone leaves the running process on its old environ. Side-effect-free escalation; NO ntfy page."
     },
     {
       "id": "memory_index_oversize_any",
@@ -782,7 +782,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "Issue #79 \u2014 MEMORY.md crept over the ~24KB context-load limit; sessions silently partial-load the index. Remedy: demote older/shipped entries to MEMORY_ARCHIVE.md (mini_dudeai.memory_apply.demote_memory). Side-effect-free escalation; NO ntfy page."
+      "annotation": "Issue #79 — MEMORY.md crept over the ~24KB context-load limit; sessions silently partial-load the index. Remedy: demote older/shipped entries to MEMORY_ARCHIVE.md (mini_dudeai.memory_apply.demote_memory). Side-effect-free escalation; NO ntfy page."
     },
     {
       "id": "kernel_reboot_pending_any",
@@ -795,7 +795,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "2026-06-09 version-updates arc \u2014 a newer same-flavor kernel is installed under /lib/modules than the running one (or /var/run/reboot-required exists); moc1 ran 6.12.75 for days with 6.18.33 installed and nothing paged. Fix: schedule a clean reboot (planned reboots through clean shutdown record boot_health clean-exit). Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+      "annotation": "2026-06-09 version-updates arc — a newer same-flavor kernel is installed under /lib/modules than the running one (or /var/run/reboot-required exists); moc1 ran 6.12.75 for days with 6.18.33 installed and nothing paged. Fix: schedule a clean reboot (planned reboots through clean shutdown record boot_health clean-exit). Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
     },
     {
       "id": "meshtasticd_vsz_leak_any",
@@ -821,7 +821,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "AREDN Phase 0 (2026-06-12) \u2014 a box with aredn_node_ips configured whose local AREDN sysinfo collection went dark: node unreachable, or the running service predates the config (reports not_configured while the settings file carries IPs \u2014 restart meshforge-map to load). The worldmap fallback masks the loss; found dormant on the AREDN-site box itself. Side-effect-free escalation; NO ntfy page (degraded \u2014 the map serves, the AREDN leg is blind)."
+      "annotation": "AREDN Phase 0 (2026-06-12) — a box with aredn_node_ips configured whose local AREDN sysinfo collection went dark: node unreachable, or the running service predates the config (reports not_configured while the settings file carries IPs — restart meshforge-map to load). The worldmap fallback masks the loss; found dormant on the AREDN-site box itself. Side-effect-free escalation; NO ntfy page (degraded — the map serves, the AREDN leg is blind)."
     },
     {
       "id": "lxmf_propagation_node_dark_any",
@@ -834,7 +834,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 86400,
-      "annotation": "CONFIGURED LXMF propagation node has gone quiet (2026-07-20) \u2014 gateway.json rns.propagation_node names a node that is either STALE (it announced before and stopped) or UNHEARD (the hash was never heard on this box at all, i.e. a wrong or truncated hash \u2014 the failure adoption itself introduces). Store-and-forward to OFFLINE peers is degraded: an LXMF message to a peer that is down right now fails outright again, exactly as it did before adoption. LIVE delivery is unaffected, which is why this is escalation only, NO ntfy page. This is the shape-A companion that had to ship WITH adoption: setting propagation_node makes lxmf_propagation_unused INERT by design, so without this leg the fleet would trade a WATCHED gap for an UNWATCHED dependency. It fires ONLY when some OTHER propagation announce reached the box inside the window \u2014 positive proof the box can hear the class \u2014 so an RNS-wide wedge holds here and stays with its own probes. Fix: STALE \u2192 check the node's host (systemctl is-active lxmd + NRestarts, then its rnsd); UNHEARD \u2192 re-check the 32-hex hash for truncation. If the node is genuinely gone, point rns.propagation_node at a replacement or clear it \u2014 clearing hands the gap back to lxmf_propagation_unused, which is honest, not a regression. Any edit needs a meshforge-gateway restart \u2014 never mid-soak."
+      "annotation": "CONFIGURED LXMF propagation node has gone quiet (2026-07-20) — gateway.json rns.propagation_node names a node that is either STALE (it announced before and stopped) or UNHEARD (the hash was never heard on this box at all, i.e. a wrong or truncated hash — the failure adoption itself introduces). Store-and-forward to OFFLINE peers is degraded: an LXMF message to a peer that is down right now fails outright again, exactly as it did before adoption. LIVE delivery is unaffected, which is why this is escalation only, NO ntfy page. This is the shape-A companion that had to ship WITH adoption: setting propagation_node makes lxmf_propagation_unused INERT by design, so without this leg the fleet would trade a WATCHED gap for an UNWATCHED dependency. It fires ONLY when some OTHER propagation announce reached the box inside the window — positive proof the box can hear the class — so an RNS-wide wedge holds here and stays with its own probes. Fix: STALE → check the node's host (systemctl is-active lxmd + NRestarts, then its rnsd); UNHEARD → re-check the 32-hex hash for truncation. If the node is genuinely gone, point rns.propagation_node at a replacement or clear it — clearing hands the gap back to lxmf_propagation_unused, which is honest, not a regression. Any edit needs a meshforge-gateway restart — never mid-soak."
     },
     {
       "id": "calibration_drift_any",
@@ -845,7 +845,7 @@
       },
       "action": {
         "kind": "ntfy",
-        "title": "[AMBER] Calibration drift \u2014 a VERIFIED claim broke",
+        "title": "[AMBER] Calibration drift — a VERIFIED claim broke",
         "message": "{subject}: {detail}",
         "priority": "high",
         "tags": [
@@ -873,7 +873,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "2026-06-19 \u2014 the NomadNet user unit is crashlooping (the NRestarts=7842, 10-day-silent class; probe_service_inactive is structurally blind to user units). Usually exit 75 from the rnstatus boot-gate (rnsd not hosting) or exit 87 rpc_key mismatch. Check: journalctl --user -u nomadnet -n 50; systemctl --user status nomadnet. Recovery: fix the start-pre gate / rpc_key, then systemctl --user restart nomadnet."
+      "annotation": "2026-06-19 — the NomadNet user unit is crashlooping (the NRestarts=7842, 10-day-silent class; probe_service_inactive is structurally blind to user units). Usually exit 75 from the rnstatus boot-gate (rnsd not hosting) or exit 87 rpc_key mismatch. Check: journalctl --user -u nomadnet -n 50; systemctl --user status nomadnet. Recovery: fix the start-pre gate / rpc_key, then systemctl --user restart nomadnet."
     },
     {
       "id": "nomadnet_crashloop_escalate",
@@ -886,7 +886,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 3600,
-      "annotation": "2026-06-19 \u2014 companion to nomadnet_crashloop_any; surfaces the crashloop in the deep-feed/brief 'look here first' so a session catches an episode the posture pane no longer shows. Cross-refs the #69-fix-regression (the rnstatus boot-gate)."
+      "annotation": "2026-06-19 — companion to nomadnet_crashloop_any; surfaces the crashloop in the deep-feed/brief 'look here first' so a session catches an episode the posture pane no longer shows. Cross-refs the #69-fix-regression (the rnstatus boot-gate)."
     },
     {
       "id": "gateway_delivery_degraded_any",
@@ -979,7 +979,7 @@
         ]
       },
       "cooldown_s": 3600,
-      "annotation": "2026-07-19 structural-dark row 7 \u2014 a dude-claw EDGE NODE stopped answering while its capture cron kept writing FRESH ticks, so this is a statement about the DEVICE (power/battery/wifi/hardware), not about a job. It pages because the claw is the fleet's out-of-band witness: when it dies we lose the independent RF/host-probe vantage that exists precisely for when the boxes' own self-reports can't be trusted. On 2026-07-10 a battery claw was dark 17.4 h while the fleet's only words were 'cron_verdict_stale: claw02_metrics FAIL \u2014 fix the job' \u2014 a hardware death laundered into infrastructure noise, in the channel known to flap benignly. Check power/pack, wifi, then the node. INERT off a claw-brain box; stale ticks are cron_verdict_stale's call, not this one."
+      "annotation": "2026-07-19 structural-dark row 7 — a dude-claw EDGE NODE stopped answering while its capture cron kept writing FRESH ticks, so this is a statement about the DEVICE (power/battery/wifi/hardware), not about a job. It pages because the claw is the fleet's out-of-band witness: when it dies we lose the independent RF/host-probe vantage that exists precisely for when the boxes' own self-reports can't be trusted. On 2026-07-10 a battery claw was dark 17.4 h while the fleet's only words were 'cron_verdict_stale: claw02_metrics FAIL — fix the job' — a hardware death laundered into infrastructure noise, in the channel known to flap benignly. Check power/pack, wifi, then the node. INERT off a claw-brain box; stale ticks are cron_verdict_stale's call, not this one."
     },
     {
       "id": "claw_battery_low_any",
@@ -998,7 +998,7 @@
         ]
       },
       "cooldown_s": 21600,
-      "annotation": "2026-07-19 structural-dark row 7 \u2014 a battery-powered claw's pack is under the 3.5 V single-cell LiPo working floor: hours, not days, before the node drops off and takes its RF/witness coverage with it. This is the warning that did NOT exist on 2026-07-10, when dudeclaw-02 sat ~38 h below floor, bottomed at 2.41 V and died; the battery_v sensor spec that would have caught it was bound to dudeclaw-01, which lives on USB at 4.06 V and can never breach (the alarm pointed at the wrong device). Lower priority than claw_device_dark BY DESIGN \u2014 this is the actionable early warning, not the outage. Charge or swap the pack. Fires only on a concrete voltage from a REACHABLE claw; no gauge reads indeterminate, never 'charged'."
+      "annotation": "2026-07-19 structural-dark row 7 — a battery-powered claw's pack is under the 3.5 V single-cell LiPo working floor: hours, not days, before the node drops off and takes its RF/witness coverage with it. This is the warning that did NOT exist on 2026-07-10, when dudeclaw-02 sat ~38 h below floor, bottomed at 2.41 V and died; the battery_v sensor spec that would have caught it was bound to dudeclaw-01, which lives on USB at 4.06 V and can never breach (the alarm pointed at the wrong device). Lower priority than claw_device_dark BY DESIGN — this is the actionable early warning, not the outage. Charge or swap the pack. Fires only on a concrete voltage from a REACHABLE claw; no gauge reads indeterminate, never 'charged'."
     },
     {
       "id": "claw_rf_silent_any",
@@ -1011,7 +1011,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 3600,
-      "annotation": "2026-07-19 structural-dark row 9 \u2014 the fleet's ONLY over-the-air witness. Every other mesh-RF check is a box talking about itself: the gateway can read healthy (RNS round-trip canary green, service active, queue draining) while nothing actually leaves the antenna \u2014 deaf radio, wrong region/preset, dead PA, unplugged coax. The claws answer lora_stats from a SEPARATE radio on SEPARATE silicon, which is physical-layer evidence no box can fabricate about itself. Fires only when EVERY reachable claw reporting a reading is silent (one deaf claw is that claw's problem; all of them is the channel). \u26a0\ufe0f propose_escalation, NOT ntfy, DELIBERATELY: the 1800s quiet window is PROVISIONAL \u2014 the operator staged it pending a heard-rate soak across overnight lulls, and that soak data did not exist until the lora_stats capture shipped the same day. A genuine quiet night can reach this threshold. Promote to a pager only from measured quiet-hours data, the way calibration_drift soaked 34 days before promotion; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
+      "annotation": "2026-07-19 structural-dark row 9 — the fleet's ONLY over-the-air witness. Every other mesh-RF check is a box talking about itself: the gateway can read healthy (RNS round-trip canary green, service active, queue draining) while nothing actually leaves the antenna — deaf radio, wrong region/preset, dead PA, unplugged coax. The claws answer lora_stats from a SEPARATE radio on SEPARATE silicon, which is physical-layer evidence no box can fabricate about itself. Fires only when EVERY reachable claw reporting a reading is silent (one deaf claw is that claw's problem; all of them is the channel). ⚠️ propose_escalation, NOT ntfy, DELIBERATELY: the 1800s quiet window is PROVISIONAL — the operator staged it pending a heard-rate soak across overnight lulls, and that soak data did not exist until the lora_stats capture shipped the same day. A genuine quiet night can reach this threshold. Promote to a pager only from measured quiet-hours data, the way calibration_drift soaked 34 days before promotion; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
     },
     {
       "id": "claw_watched_node_silent_any",
@@ -1063,7 +1063,7 @@
         "kind": "propose_escalation"
       },
       "cooldown_s": 21600,
-      "annotation": "2026-07-19 row-8 accept, LEADING indicator \u2014 a recipient became reachable from MORE THAN ONE gateway. This is the PRECONDITION for a cross-gateway duplicate, NOT a duplicate and NOT a fault. Row 8 was accepted-permanent (keep the detector, never build coordination) on COST ASYMMETRY: an unsuppressed dup means the message arrived twice (redundancy), while a yield protocol that misfires means it arrived zero times (silence) \u2014 emergency-comms infrastructure must fail toward redundancy. That accept did NOT claim dups are rare: three human recipients were already dual-homed the day it was made. So this tracks the exposure the decision knowingly accepts, and answers 'is time changing this?' with a number that moves BEFORE any duplicate happens. propose_escalation, never ntfy \u2014 a routing change is something to look at, not an outage; check whether the new dual-homing was intended. Fires once per newly-observed recipient (never on the count, which churns with the rollup window). \u26a0\ufe0f Confirmable population only \u2014 a mesh recipient never confirms, so mesh exposure stays invisible until the gateway-side attempted/routing emission lands (the residual)."
+      "annotation": "2026-07-19 row-8 accept, LEADING indicator — a recipient became reachable from MORE THAN ONE gateway. This is the PRECONDITION for a cross-gateway duplicate, NOT a duplicate and NOT a fault. Row 8 was accepted-permanent (keep the detector, never build coordination) on COST ASYMMETRY: an unsuppressed dup means the message arrived twice (redundancy), while a yield protocol that misfires means it arrived zero times (silence) — emergency-comms infrastructure must fail toward redundancy. That accept did NOT claim dups are rare: three human recipients were already dual-homed the day it was made. So this tracks the exposure the decision knowingly accepts, and answers 'is time changing this?' with a number that moves BEFORE any duplicate happens. propose_escalation, never ntfy — a routing change is something to look at, not an outage; check whether the new dual-homing was intended. Fires once per newly-observed recipient (never on the count, which churns with the rollup window). ⚠️ Confirmable population only — a mesh recipient never confirms, so mesh exposure stays invisible until the gateway-side attempted/routing emission lands (the residual)."
     },
     {
       "id": "local_brain_regressed_any",
@@ -1090,6 +1090,30 @@
       "grace_s": 86400,
       "cooldown_s": 86400,
       "annotation": "2026-07-26 second-brain taxonomy T1 -- a WATCHDOG DETECTOR has been unable to observe for >=24h continuously (as OBSERVED -- daemon downtime is not observation). Subject is the signal class; detail carries the probe's own reason. Why this exists: a blind probe returns nothing, and nothing is exactly what a healthy probe returns, so its silence is indistinguishable from health at every consumer -- the coverage block has recorded this every tick since fleet-truth Phase 0 and NOTHING has ever read it. Fire count measures the phenomenon; DISPOSITION measures the detector. Disjoint from the Pri-2 hold, which covers blind-AND-signalling; this is blind-AND-QUIET (e.g. kernel_reboot_pending, which has never fired and could not read the modules dir on 2026-07-26). ANNOTATE ONLY, NO ntfy -- deliberately unsoaked: some classes may be chronically blind BY DESIGN on a given box (delivery_confirmation_stall has nothing confirmable to judge on a map-only box), and those should be reclassified `inert` at the PROBE rather than paged for here. Read the annotations for a week before anyone proposes escalating this. `inert` is never scored -- a legitimately-absent organ is not a blind one."
+    },
+    {
+      "id": "wan_path_degraded_any",
+      "match": {
+        "kind": "wan_path_degraded",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 1800,
+      "annotation": "2026-09-06: the path OUT of this box is losing packets, named by rung (utils.wan_path) and, when the ladder cron runs with --auto-trace, localized hop by hop (utils.wan_autotrace -> utils.path_trace). The subject is the CAUSE: 'lan' = this box's first hop, 'edge' = the ISP's access hop, 'transit' = beyond the ISP (not ours to fix; the detail names the losing targets and the last clean hop). Side-effect-free escalation; NO ntfy page ON PURPOSE -- ntfy needs the very WAN this rule reports on, so a page would be swallowed by the fault it describes (same reasoning as ntfy_loopback_any's email backbone). Why this rule exists at all: the ladder is a SELF-VERDICTING cron -- it writes its own cron_verdict line rather than carrying a 'cron_verdict.sh <name>' token -- so probe_cron_verdict_stale judged it an ORPHAN and skipped it, and mini said nothing through seven straight hours of FAIL on 2026-09-06. A tool that is silent has no diagnostic meaning to a user."
+    },
+    {
+      "id": "wan_path_stale_any",
+      "match": {
+        "kind": "wan_path_stale",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-09-06: the path ladder has not run past 2.5 cadences of its 10-minute cron, so its last verdict -- green or red -- is NOT current and must not be read as live (honest_failure_modes #2: a frozen green never complains). Check the wan_path cron on this box: `crontab -l | grep wan_path` and ~/cron_verdicts.log. INERT on any box with no ladder state file at all, which is absence by design, not blindness."
     }
   ]
 }

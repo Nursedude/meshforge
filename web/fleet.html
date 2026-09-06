@@ -932,6 +932,17 @@
         return vals.map(v => v === null || v === undefined ? '·'
             : g[Math.min(7, Math.floor(Math.max(0, v) / 25 * 7))]).join('');
     }
+    function wanTrace(tr) {
+        // Where the loss STARTS, when an auto-trace has run. A stale trace
+        // describes a different moment and is labelled, never shown as current.
+        if (!tr || !tr.summary) return '';   // absence is rendered by the caller
+        const fr = tr.freshness || {};
+        const cls = tr.status === 'clean' || tr.status === 'policing' ? 'ok'
+            : tr.status === 'unknown' ? 'dark' : 'fail';
+        return '<span class="vstatus ' + cls + (fr.stale ? ' stale' : '') + '" title="' +
+            esc(tr.reason || '') + '">trace' + (fr.stale ? ' (STALE ' : ' (') +
+            fmtAge(fr.age_s) + (fr.stale ? ')' : ' ago)') + ' · ' + esc(tr.summary) + '</span>';
+    }
     function renderWan(doc) {
         const el = document.getElementById('wan');
         const meta = document.getElementById('wan-meta');
@@ -945,7 +956,11 @@
         const head = '<div class="soak-chips"><span class="vstatus ' + cls + (fr.stale ? ' stale' : '') + '">' +
             esc(String(doc.status).toUpperCase()) + ' · ' + esc(doc.cause) +
             (fr.stale ? ' · STALE ' + fmtAge(fr.age_s) : ' · ' + fmtAge(fr.age_s) + ' ago') +
-            '</span><span class="vstatus dark">' + esc(doc.message || '') + '</span></div>';
+            '</span><span class="vstatus dark">' + esc(doc.message || '') + '</span>' +
+            wanTrace(doc.trace) +
+            (!(doc.trace && doc.trace.summary) && doc.trace_absent
+                ? '<span class="vstatus dark">no trace · ' + esc(doc.trace_absent) + '</span>'
+                : '') + '</div>';
         const rows = (doc.rungs || []).map(r => {
             const key = r.rung + ':' + r.label;
             const series = hist.map(h => (h.r || {})[key]);

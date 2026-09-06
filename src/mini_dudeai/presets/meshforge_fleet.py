@@ -30,11 +30,39 @@ from ..engine import RuleEngine
 from ..sources import (
     BootHealthSource, FileMtimeSource, HttpJsonSource, JsonFileSource,
 )
+# Imported from its module rather than re-exported through ``..sources``:
+# sources/__init__.py is BYTE-LOCKED with MeshAnchor (scripts/parity_check.py,
+# byte-identical tier), and the WAN ladder is a MeshForge-only organ. Adding an
+# export there would either break that lock or drag the whole organ into the
+# sister repo. The source file itself is generic and ports cleanly if MeshAnchor
+# ever grows a ladder.
+from ..sources.wan_path import WanPathSource
 from ..sources.base import Condition, Source
 
 DEFAULT_FEDERATOR_URL = "http://localhost:5000/api/status"
 DEFAULT_WATCHDOG_PATH = "/var/lib/meshforge/watchdog.json"
 DEFAULT_DIGEST_STALE_THRESHOLD_S = 1800
+
+
+def _state_root() -> str:
+    """Where the cron-side organs (ladder, trace) leave artifacts for mini.
+
+    Resolved through the WRITER's own ``state_dir()`` rather than recomputed
+    here, so reader and writer cannot drift apart — the 2026-08-11 defect this
+    module already carries a comment about, where the twin's readers pointed at
+    paths its preset never wrote (honest_failure_modes #5: two consumers of one
+    artifact share ONE constant). Falls back to the documented default only if
+    that import is unavailable, and never raises into engine construction.
+    """
+    try:
+        from utils.wan_path import state_dir
+        return str(state_dir())
+    except Exception:  # noqa: BLE001 - a missing organ must not break the engine
+        base = os.environ.get("XDG_STATE_HOME")
+        if base:
+            return os.path.join(base, "meshforge")
+        from .._util import resolve_home
+        return os.path.join(resolve_home(), ".local", "state", "meshforge")
 
 
 def _watchdog_extractor(data):
@@ -202,6 +230,7 @@ def build_engine(
     enable_federation: bool | None = None,
     enable_digest: bool | None = None,
     enable_boot_health: bool | None = None,
+    enable_wan_path: bool | None = None,
     enable_watchdog: bool | None = None,
 ) -> RuleEngine:
     """Wire up the engine the way the fleet's primary node runs it today.
@@ -235,6 +264,12 @@ def build_engine(
     source_error_watchdog forever and pin src_errors=1 in every rollup
     (honest_failure_modes: declared-absent ≠ unobservable ≠ error).
 
+    enable_wan_path: the path out — the ladder's verdict carrying the trace's
+    localization (WanPathSource). Defaults ON everywhere (env
+    MINI_DUDEAI_ENABLE_WAN_PATH = "0" to disable) and is INERT by construction:
+    with no ladder state file it emits nothing, so a box that runs no ladder
+    pays one stat() per tick and says nothing.
+
     enable_boot_health: unexpected-reboot detection (BootHealthSource). Defaults
     ON for every box — gateways included; a hard reset is fleet-relevant
     everywhere (env MINI_DUDEAI_ENABLE_BOOT_HEALTH = "0" to disable). When on,
@@ -247,6 +282,8 @@ def build_engine(
         enable_digest = os.environ.get("MINI_DUDEAI_ENABLE_DIGEST", "1") != "0"
     if enable_boot_health is None:
         enable_boot_health = os.environ.get("MINI_DUDEAI_ENABLE_BOOT_HEALTH", "1") != "0"
+    if enable_wan_path is None:
+        enable_wan_path = os.environ.get("MINI_DUDEAI_ENABLE_WAN_PATH", "1") != "0"
     if enable_watchdog is None:
         from .._util import watchdog_feed_enabled
         enable_watchdog = watchdog_feed_enabled(os.environ)
@@ -303,6 +340,19 @@ def build_engine(
     # Digest stays federator-only by design (see the docstring above).
     if enable_federation:
         sources.append(FederationPeerSource(url=federator_url))
+    # The path out. Wired unconditionally and INERT by construction: the source
+    # emits nothing at all when this box has no ladder state file, so a box that
+    # runs no ladder costs one stat() per tick and says nothing. Added because
+    # the ladder is a SELF-VERDICTING cron — it writes its own cron_verdict line
+    # rather than carrying a `cron_verdict.sh <name>` token in the crontab — so
+    # probe_cron_verdict_stale judged it an orphan and skipped it, and mini said
+    # nothing through seven hours of FAIL (2026-09-06).
+    if enable_wan_path:
+        _root = _state_root()
+        sources.append(WanPathSource(
+            ladder_path=os.path.join(_root, "wan_path.json"),
+            trace_path=os.path.join(_root, "wan_trace.json"),
+        ))
     if enable_digest:
         sources.append(FileMtimeSource(
             path=digest_path,

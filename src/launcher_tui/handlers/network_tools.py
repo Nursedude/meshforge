@@ -61,6 +61,7 @@ class NetworkToolsHandler(BaseHandler):
             choices = [
                 ("status", "Quick Network Status"),
                 ("traceroute", "Mesh Traceroute"),
+                ("wanpath", "WAN Path Trace     Where does the internet lose?"),
                 ("ports", "Listening Ports (ss -tlnp)"),
                 ("ifaces", "Network Interfaces (ip addr)"),
                 ("conns", "Active Connections (ss -tunp)"),
@@ -80,6 +81,7 @@ class NetworkToolsHandler(BaseHandler):
             dispatch = {
                 "status": ("Network Status", self._run_terminal_network),
                 "traceroute": ("Mesh Traceroute", self._mesh_traceroute),
+                "wanpath": ("WAN Path Trace", self._wan_path_trace),
                 "ping": ("Ping Test", self._ping_test),
                 "dns": ("DNS Lookup", self._dns_lookup),
                 "discover": ("Device Discovery", self._meshtastic_discovery),
@@ -116,6 +118,78 @@ class NetworkToolsHandler(BaseHandler):
                     "Network Tools Error",
                     f"Operation failed:\n{type(e).__name__}: {e}",
                 )
+
+    # --- WAN Path Trace ---
+
+    def _wan_path_trace(self):
+        """Locate WAN packet loss hop by hop, without leaving the app (MF018).
+
+        The engine (``utils.path_trace``) carries the method and the traps —
+        per-hop loss comes from DIRECT echo, never the traceroute column, and a
+        hop that answers no echo is opaque rather than guilty. Tracing a second,
+        known-good target is what separates "my uplink" from "one provider", so
+        the menu offers that comparison as a first-class choice.
+        """
+        from utils.path_trace import compare, render, trace
+
+        default_far = "github.com"
+        target = self.ctx.dialog.inputbox(
+            "WAN Path Trace",
+            "Host or IP to trace.\n\n"
+            "Finds where loss STARTS on the path out — the hop-by-hop question\n"
+            "the WAN ladder on /fleet cannot answer.",
+            default_far,
+        )
+        if not target:
+            return
+        target = target.strip()
+        if not target:
+            return
+
+        control = self.ctx.dialog.inputbox(
+            "Known-good comparison (optional)",
+            "A target you expect to be CLEAN, traced for comparison.\n\n"
+            "Two paths that share their first hops and then split localise the\n"
+            "suspect to what they do NOT share. Leave blank to skip.",
+            "pypi.org",
+        )
+        control = (control or "").strip()
+
+        careful = self.ctx.dialog.yesno(
+            "Probe depth",
+            "Use 20 probes per hop (careful, ~2x slower)?\n\n"
+            "No = 10 probes, 10% resolution, roughly a minute per target.",
+        )
+        probes = 20 if careful else 10
+
+        targets = [target] + ([control] if control and control != target else [])
+        clear_screen()
+        print("=== WAN Path Trace ===\n")
+        print("Tracing %s. This takes about a minute per target — each hop is\n"
+              "measured with real echo probes, not the traceroute column.\n"
+              % ", ".join(targets))
+
+        def progress(stage, detail):
+            print("  [%s] %s" % (stage, detail))
+
+        results = []
+        try:
+            for t in targets:
+                print("\n--- %s ---" % t)
+                results.append(trace(t, probes=probes, progress=progress))
+        except KeyboardInterrupt:
+            print("\nInterrupted — showing what was measured.")
+        if not results:
+            self.ctx.wait_for_enter()
+            return
+
+        clear_screen()
+        report = "\n\n".join(render(r) for r in results)
+        if len(results) > 1:
+            report += "\n\n=== comparison ===\n" + "\n".join(compare(results))
+        print(report)
+        print()
+        self.ctx.wait_for_enter()
 
     # --- Mesh Traceroute ---
 
