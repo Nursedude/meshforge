@@ -19,8 +19,12 @@
 #
 # Exit codes:
 #   0  pushed successfully
-#   1  retryable error (network blip, VPS unreachable) — timer retries in 60s
+#   1  retryable error (network blip, VPS unreachable) — timer retries; the
+#      unit declares SuccessExitStatus=0 1 so ONE of these stays quiet
 #   2  configuration error — investigate, don't auto-retry
+#   3  persistent: N consecutive runs pushed nothing, so the map is going
+#      stale. Deliberately OUTSIDE SuccessExitStatus so the unit FAILS and
+#      every existing detector (systemd state, boot_survival) can see it.
 
 set -uo pipefail
 
@@ -35,6 +39,11 @@ CACHE_DIR="${CACHE_DIR:-/var/lib/meshforge/cloud}"
 log() { printf "%(%Y-%m-%dT%H:%M:%S%z)T  %s\n" -1 "$*"; }
 err() { log "ERROR: $*" >&2; }
 
+#: Consecutive pushed-nothing runs before this stops being "transient".
+#: 3 x the 600 s timer = the map is ~30 min stale, still inside
+#: cloud_map_freshness's 3600 s bound, so this speaks FIRST.
+PUSH_SKIP_ESCALATE="${PUSH_SKIP_ESCALATE:-3}"
+
 if [[ -z "${CLOUD_HOST:-}" ]]; then
     err "CLOUD_HOST not set; configure /etc/default/meshforge-cloud-push"
     exit 2
@@ -45,6 +54,49 @@ if [[ ! -f "$CLOUD_SSH_KEY" ]]; then
 fi
 
 mkdir -p "$CACHE_DIR"
+
+# --- consecutive-skip escalation -----------------------------------------
+# ONE skipped push is a transient the timer retries, and the unit's
+# SuccessExitStatus=0 1 keeps it quiet. 2026-09-06 showed the other half of
+# that bargain was missing: FIVE consecutive skips, five unit "successes",
+# ZERO rsync attempts, and the map sat 39 minutes stale while systemd,
+# NRestarts and boot_survival all read healthy. Transient-quiet is only
+# honest if persistent-loud exists.
+#
+# An EXIT trap rather than edits at each `exit 1`: there are six today, and a
+# seventh added later must not silently escape the counter (the same
+# reader/writer-drift class this file already carries scars from).
+SKIP_STREAK_FILE="$CACHE_DIR/push_skip_streak"
+
+_on_exit() {
+    local rc=$?
+    if [ "$rc" -eq 0 ]; then
+        rm -f "$SKIP_STREAK_FILE"          # a real push clears the streak
+        exit 0
+    fi
+    [ "$rc" -ne 1 ] && exit "$rc"          # 2 and 3 are already loud
+
+    local n
+    n=$(cat "$SKIP_STREAK_FILE" 2>/dev/null || echo 0)
+    case "$n" in ''|*[!0-9]*) n=0;; esac
+    n=$((n + 1))
+
+    if ! printf '%s\n' "$n" > "$SKIP_STREAK_FILE" 2>/dev/null; then
+        # Cannot count means cannot honestly claim "only one". A streak file
+        # that silently fails to save is how a debounce freezes one below its
+        # threshold and never fires again (2026-09-02). Fail loud instead.
+        err "cannot persist skip streak at $SKIP_STREAK_FILE — escalation would be BLIND"
+        exit 3
+    fi
+
+    if [ "$n" -ge "$PUSH_SKIP_ESCALATE" ]; then
+        err "pushed NOTHING on $n consecutive run(s) — the map is going stale; this is no longer transient"
+        exit 3
+    fi
+    log "pushed nothing ($n/$PUSH_SKIP_ESCALATE consecutive; quiet until $PUSH_SKIP_ESCALATE)"
+    exit 1
+}
+trap _on_exit EXIT
 SNAPSHOT="$CACHE_DIR/data.geojson.tmp"
 STAMP="$CACHE_DIR/last_pushed.txt"
 META="$CACHE_DIR/meta.json.tmp"
@@ -256,8 +308,24 @@ PYEOF
 fi
 
 # 5. Cloud healthcheck — don't bother pushing to a VPS that's down.
-if ! curl -sS --max-time 5 -o /dev/null "https://$CLOUD_HOST/healthz" 2>/dev/null; then
-    log "cloud healthcheck failed; will retry on next firing"
+# RETRIED on purpose (2026-09-06). A single 5 s probe answers "did this one
+# exchange get through", not "is the VPS up" — and on that day's ~50 %-loss
+# transit event it answered no five times running and skipped the push every
+# time, while the rsync below — hardened the day before to RIDE OUT exactly
+# this (60 s stall timeout, --partial-dir resume) — never got to try. A gate
+# must not be stricter than the thing it guards.
+# Budget: 3 x 10 s + 2 x 3 s = 36 s worst case, well inside RuntimeMaxSec=540s.
+HEALTH_TRIES="${HEALTH_TRIES:-3}"
+health_ok=0
+for _try in $(seq 1 "$HEALTH_TRIES"); do
+    if curl -sS --max-time 10 -o /dev/null "https://$CLOUD_HOST/healthz" 2>/dev/null; then
+        health_ok=1
+        break
+    fi
+    [ "$_try" -lt "$HEALTH_TRIES" ] && sleep 3
+done
+if [ "$health_ok" -ne 1 ]; then
+    log "cloud healthcheck failed ${HEALTH_TRIES}x (10s each); will retry on next firing"
     exit 1
 fi
 
