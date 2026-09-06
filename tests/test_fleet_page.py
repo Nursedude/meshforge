@@ -81,11 +81,11 @@ class TestFleetPageHonestyContract:
     # The page's entire fetch surface: the truth SSOT + the three NOC-local
     # diagnostics endpoints (logging/diag/soak). Anything else is a contract
     # break — the truth sections must keep reading the truth document alone.
-    ALLOWED_FETCH_TARGETS = {"TRUTH_URL", "SLO_URL", "SOAK_URL", "LAB_URL",
+    ALLOWED_FETCH_TARGETS = {"TRUTH_URL", "SLO_URL", "SOAK_URL", "LAB_URL", "WAN_URL",
                              "logsUrl"}
     ALLOWED_PATH_LITERALS = {
         "/api/fleet/truth", "/fleet/slo", "/lab/synth-rollup", "/lab/rollup",
-        "/fleet/logs",
+        "/fleet/logs", "/fleet/wan",   # WAN path ladder pane (2026-09-06)
     }
 
     def test_fetch_surface_is_allowlisted(self, page_source):
