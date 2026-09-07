@@ -650,3 +650,37 @@ class TestAbsentEnvIsInertNotUnknown:
         ]))
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 2, "'could not look' must never read as clean"
+
+
+class TestRecoveredRootEnvIsNotDroppedAsAbsent:
+    """A root env recovered via sudo must survive the loop that consumes it.
+
+    2026-09-06, caught by a live drill and NOT by reading the code: the env
+    loop guarded each root with ``os.path.isdir(root)``, which RETURNS FALSE
+    (it does not raise) for a path the caller cannot stat. So every /root env
+    the sudo find had just recovered was silently dropped — unreadable rendered
+    as absent, one line after that exact bug was fixed in _roots_for. The
+    symptom was indistinguishable from "there is nothing there", and the
+    earlier inert-vs-UNKNOWN fix had made the last visible trace disappear.
+    Removing the drill's plant then exposed a REAL unreported find: a
+    root-owned pipx venv carrying urllib3 2.6.3 (two highs) on the manager box.
+    """
+
+    def test_a_root_env_the_reporter_recovered_is_still_judged(self, home, monkeypatch):
+        _install_runner(monkeypatch, advisories=ADV_HIGH, versions={
+            "packages": {"cryptography": {"version": "50.0.1", "origin": None,
+                                          "claimants": [], "dpkg": None}},
+            "apt": None,
+            "envs": [{
+                # The reporter reached this only through sudo; the manager
+                # process running these assertions cannot stat it either.
+                "root": "/root/.local/share/pipx/venvs/somecli/lib/python3.13/site-packages",
+                "kind": "root-pipx", "readable": True, "reason": None,
+                "collective": False,
+                "packages": {"cryptography": [{"version": "41.0.0", "dpkg": None}]},
+            }]})
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 1, "a root-owned env the reporter could read must still be judged"
+        body = (home / ".meshforge-dep-ADVISORY").read_text()
+        assert "41.0.0" in body and "root-pipx" not in body.split("41.0.0")[0][-5:], body
+        assert "/root/.local/share/pipx" in body, body

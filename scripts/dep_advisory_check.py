@@ -328,7 +328,14 @@ for kind, pattern in ENV_ROOT_GLOBS:
                      "reason": root_err, "collective": False, "packages": {}})
         continue
     for root in roots:
-        if root in seen_roots or not os.path.isdir(root):
+        # NO os.path.isdir() guard here. It returns False -- it does not raise --
+        # for a path the caller cannot stat, so on /root it silently DROPPED
+        # every env the sudo find had just recovered: unreadable rendered as
+        # absent, one line after the same bug was fixed above. Both sources are
+        # already existence-proven: glob only returns real paths, and the sudo
+        # find is `-type d`. Caught 2026-09-06 by planting a root-owned pipx
+        # venv, never by reading the code.
+        if root in seen_roots:
             continue
         seen_roots.add(root)
         names, reason = _entries(root)
