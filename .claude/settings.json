@@ -27,11 +27,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/lint.py\" --severity warning \"$CLAUDE_TOOL_ARG_file_path\" 2>/dev/null || true"
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/lint.py\" --severity warning \"$CLAUDE_TOOL_ARG_file_path\" 2>/dev/null || true"
           },
           {
             "type": "command",
-            "command": "case \"$CLAUDE_TOOL_ARG_file_path\" in */.claude/settings.json|.claude/settings.json) python3 \"$CLAUDE_PROJECT_DIR/scripts/validate_claude_settings.py\" \"$CLAUDE_TOOL_ARG_file_path\" ;; esac"
+            "command": "case \"$CLAUDE_TOOL_ARG_file_path\" in */.claude/settings.json|.claude/settings.json) python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/validate_claude_settings.py\" \"$CLAUDE_TOOL_ARG_file_path\" ;; esac"
           }
         ]
       }
@@ -41,7 +41,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/claim_gate.py\""
+            "command": "python3 \"${CLAUDE_PROJECT_DIR:-.}/scripts/claim_gate.py\""
           }
         ]
       }

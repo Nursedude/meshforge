@@ -439,3 +439,28 @@ class TestMarkerScopeAndTree:
 
     def test_legacy_marker_without_fields_honored(self):
         assert claim_gate.marker_satisfies(self._fresh(), self.HEAD, 1000.0)
+
+
+class TestHedgePolarityAroundClaims:
+    """Review of the first fix (2026-09-07): stripping STRONG_CLAIMS from the
+    text before the marker scan also deleted the 'verified' inside honest
+    hedges that OVERLAP a claim, so 'not fully verified yet' went from pass to
+    BLOCK. Hedges that contain or border a strong-claim phrase must pass; the
+    bare phrase must still block."""
+
+    @pytest.mark.parametrize("text", [
+        "This is not fully verified yet.",
+        "unverified green on moc3 — treat as UNKNOWN",
+        "I have not verified green status.",
+        "haven't fully verified the fleet leg",
+        "never fully verified; needs a live drill",
+    ])
+    def test_negated_or_embedded_claim_is_not_a_claim(self, text):
+        assert not claim_gate.has_strong_claim(text), text
+        block, _ = claim_gate.evaluate(text, "c" * 40, None, 1000.0)
+        assert not block, text
+
+    @pytest.mark.parametrize("text", ["Fully verified.", "verified green", "all tests passed"])
+    def test_bare_or_suffixed_claim_still_blocks(self, text):
+        block, _ = claim_gate.evaluate(text, "c" * 40, None, 1000.0)
+        assert block, text

@@ -15,7 +15,10 @@
 set -uo pipefail
 
 REPO="${MESHFORGE_REPO:-/opt/meshforge}"
-MA_REPO="/opt/meshanchor"
+# Env-overridable like REPO, so the sandboxed test can point it at nothing
+# instead of auditing whatever MeshAnchor checkout the running box carries
+# (review 2026-09-07: ambient state in the closing control).
+MA_REPO="${MESHANCHOR_REPO:-/opt/meshanchor}"
 # Shared pytest-invocation wrapper (run + classify honestly).
 MF_REPO_ROOT="$REPO"
 # shellcheck source=lib/pytest_checked.sh
@@ -65,23 +68,30 @@ try:
         d = json.load(f)
 except FileNotFoundError:
     print("absent"); raise SystemExit
-except (OSError, ValueError):
+except (PermissionError, IsADirectoryError, OSError):
+    print("unreadable"); raise SystemExit   # bytes never read — say so, not "bad JSON"
+except ValueError:
     print("badjson"); raise SystemExit
+if not isinstance(d, dict):
+    print("notobject"); raise SystemExit
 hit = False
 for grp in ((d.get("hooks") or {}).get(ev) or []):
     for h in (grp.get("hooks") or []) if isinstance(grp, dict) else []:
-        if isinstance(h, dict) and needle in str(h.get("command", "")):
+        # command must be a STRING — Claude Code runs nothing else.
+        if isinstance(h, dict) and isinstance(h.get("command"), str) and needle in h["command"]:
             hit = True
 print("yes" if hit else "no")
 PY
 }
 judge_hook() {  # $1=label  $2=event  $3=needle  $4=settings file
     case "$(hook_wired "$4" "$2" "$3")" in
-        yes)     P "$1" "wired under $2 in $(basename "$4")" ;;
-        no)      F "$1" "$3 is not a $2 hook command in $4 (the name elsewhere in the file does not count)" ;;
-        badjson) F "$1" "$4 is NOT valid JSON — Claude Code loads no hooks from it" ;;
-        absent)  U "$1" "cannot read $4" ;;
-        *)       U "$1" "could not parse $4" ;;
+        yes)       P "$1" "wired under $2 in $(basename "$4")" ;;
+        no)        F "$1" "$3 is not a $2 hook command in $4 (the name elsewhere in the file does not count)" ;;
+        badjson)   F "$1" "$4 is NOT valid JSON — Claude Code loads no hooks from it" ;;
+        notobject) F "$1" "$4 parses but is not a JSON object — Claude Code loads no hooks from it" ;;
+        absent)    U "$1" "cannot read $4" ;;
+        unreadable) U "$1" "$4 exists but could not be read (permissions?) — wiring unobservable" ;;
+        *)         U "$1" "could not parse $4" ;;
     esac
 }
 judge_hook "Stop->claim_gate" Stop "claim_gate.py" "$SETTINGS"
@@ -93,40 +103,61 @@ judge_hook "SessionStart->warmstart" SessionStart "mini_dudeai.warmstart" "$SETT
 # not the repo's. Legs 2/2b could not see a deleted live hook that the user
 # settings still referenced. Every command there that names a
 # ~/.claude/hooks/<file> must point at a file that exists and is executable.
-USER_SETTINGS="$HOME/.claude/settings.json"
-_us="$(python3 - "$USER_SETTINGS" "$HOME" <<'PY' 2>/dev/null || echo error
+# One walker for BOTH settings files (review 2026-09-07: the first version
+# knew only the literal `$HOME/.claude/hooks/<file>` spelling, required X_OK
+# — bash runs a 644 file fine — accepted a directory, and checked nothing
+# on the repo side, where psk_leak_guard is wired). Every script path a hook
+# command names — `$CLAUDE_PROJECT_DIR/…`, `$HOME/…`, `${HOME}/…`, `~/…` —
+# must resolve to an existing, readable FILE.
+hook_files_ok() {  # $1=settings file  $2=repo root  $3=home → absent|unreadable|badjson|notobject|ok <n> <missing,...>
+    python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null || echo error
 import json, os, re, sys
-p, home = sys.argv[1:3]
+p, repo, home = sys.argv[1:4]
 try:
     with open(p, encoding="utf-8") as f:
         d = json.load(f)
 except FileNotFoundError:
     print("absent"); raise SystemExit
-except (OSError, ValueError):
+except (PermissionError, IsADirectoryError, OSError):
+    print("unreadable"); raise SystemExit
+except ValueError:
     print("badjson"); raise SystemExit
+if not isinstance(d, dict):
+    print("notobject"); raise SystemExit
+# Bare, braced, and braced-with-default (`${VAR:-.}`) spellings all resolve.
+TOK = re.compile(r"(\$CLAUDE_PROJECT_DIR|\$\{CLAUDE_PROJECT_DIR(?::-[^}]*)?\}|\$HOME|\$\{HOME(?::-[^}]*)?\}|~)(/[\w./\-]+\.(?:sh|py))")
 n = 0; missing = []
 for ev, groups in ((d.get("hooks") or {}).items()):
     for grp in groups or []:
         for h in (grp.get("hooks") or []) if isinstance(grp, dict) else []:
-            if not isinstance(h, dict):
+            if not isinstance(h, dict) or not isinstance(h.get("command"), str):
                 continue
-            for ref in re.findall(r"\$HOME/\.claude/hooks/[\w.\-]+", str(h.get("command", ""))):
+            for base, rel in TOK.findall(h["command"]):
                 n += 1
-                if not os.access(ref.replace("$HOME", home), os.X_OK):
-                    missing.append(f"{ev}:{os.path.basename(ref)}")
+                root = repo if "PROJECT" in base else home
+                path = root + rel
+                if not (os.path.isfile(path) and os.access(path, os.R_OK)):
+                    missing.append(f"{ev}:{os.path.basename(rel)}")
 print("ok", n, ",".join(missing))
 PY
-)"
-case "$_us" in
-    absent)  U "user hooks" "no $USER_SETTINGS — operator-local guards not wired on this box" ;;
-    badjson) F "user hooks" "$USER_SETTINGS is NOT valid JSON — Claude Code loads no user-level hooks" ;;
-    ok*)
-        read -r _ _us_n _us_miss <<<"$_us"
-        if [ -n "${_us_miss:-}" ]; then F "user hooks" "wired but the hook file is absent/not executable: $_us_miss"
-        elif [ "${_us_n:-0}" -eq 0 ]; then P "user hooks" "no ~/.claude/hooks command wired"
-        else P "user hooks" "$_us_n ~/.claude/hooks command(s) wired, all present + executable"; fi ;;
-    *)       U "user hooks" "could not parse $USER_SETTINGS" ;;
-esac
+}
+judge_hook_files() {  # $1=label  $2=settings file  $3=absent-wording(U)
+    _hf="$(hook_files_ok "$2" "$REPO" "$HOME")"
+    case "$_hf" in
+        absent)     U "$1" "$3" ;;
+        unreadable) U "$1" "$2 exists but could not be read — wiring unobservable" ;;
+        badjson)    F "$1" "$2 is NOT valid JSON — Claude Code loads no hooks from it" ;;
+        notobject)  F "$1" "$2 parses but is not a JSON object — Claude Code loads no hooks from it" ;;
+        ok*)
+            read -r _ _hf_n _hf_miss <<<"$_hf"
+            if [ -n "${_hf_miss:-}" ]; then F "$1" "wired but the hook file is absent/unreadable: $_hf_miss"
+            elif [ "${_hf_n:-0}" -eq 0 ]; then P "$1" "no script-path hook command wired"
+            else P "$1" "$_hf_n script-path hook command(s) wired, all present + readable"; fi ;;
+        *)          U "$1" "could not parse $2" ;;
+    esac
+}
+judge_hook_files "hook files(repo)" "$SETTINGS" "cannot read $SETTINGS"
+judge_hook_files "user hooks" "$HOME/.claude/settings.json" "no ~/.claude/settings.json — operator-local guards not wired on this box"
 
 # 2b. the RUNNING hook == the REVIEWED hook (2026-09-07)
 # Legs 1-2 check hooks are WIRED. Nothing checked that the file a wired hook
@@ -230,8 +261,15 @@ PY
     if [ "$_lc" = error ]; then U "calibration ledger" "could not read $LEDGER"
     else
         read -r _lg _lb <<<"$_lc"
-        if [ "${_lb:-0}" -gt 0 ]; then F "calibration ledger" "$_lb unparseable line(s) beside $_lg events — corrupted, not healthy"
-        elif [ "${_lg:-0}" -eq 0 ]; then U "calibration ledger" "no parseable event in $LEDGER"
+        # The ledger's own appender deliberately leaves ONE isolated malformed
+        # line after a torn (power-loss) write and every reader skips it
+        # (history._repair_torn_tail / load_events). A few such lines are the
+        # writer's contract, not corruption; they are DISCLOSED, never hidden.
+        # Garbage is when there is nothing parseable, or more than three malformed
+        # lines AND more than 1 in 10 (review 2026-09-07).
+        if [ "${_lg:-0}" -eq 0 ]; then F "calibration ledger" "0 parseable events, $_lb unparseable line(s) — corrupted, not healthy"
+        elif [ "${_lb:-0}" -gt 3 ] && [ $((_lb * 10)) -gt "$_lg" ]; then F "calibration ledger" "$_lb unparseable line(s) beside $_lg events — more than the torn-tail contract explains"
+        elif [ "${_lb:-0}" -gt 0 ]; then P "calibration ledger" "$_lg events ($_lb torn/malformed line(s) skipped — the appender's torn-tail contract)"
         else P "calibration ledger" "$_lg events"; fi
     fi
 else
@@ -245,16 +283,25 @@ check_verdict_fresh() {  # $1=name $2=max_age_s
     # whole-line grep would select the wrong row (review 2026-07-31, finding 7).
     line="$(awk -v n="$1" '$2 == n' "$VERDICTS" 2>/dev/null | tail -1)"
     [ -n "$line" ] || { U "$1 verdict" "never reported"; return; }
-    ts="$(date -d "$(printf '%s' "$line" | awk '{print $1}')" +%s 2>/dev/null || echo 0)"
+    _tsf="$(printf '%s' "$line" | awk '{print $1}')"
+    # An unparseable timestamp is its own state — `|| echo 0` made it read
+    # "FAIL stale 17xxxxxxxxs", the now-0 sentinel this file removed from the
+    # mini leg the same day (review 2026-09-07).
+    if ! ts="$(date -d "$_tsf" +%s 2>/dev/null)"; then
+        U "$1 verdict" "latest line's timestamp is unparseable ('${_tsf:0:24}') — a torn/NUL-prefixed line? freshness unobservable"; return
+    fi
     age=$(( $(date +%s) - ts ))
     status="$(printf '%s' "$line" | awk '{print $3}')"
+    msg="$(printf '%s' "$line" | cut -d' ' -f4- | cut -c1-80)"
     # A verdict stamped in the FUTURE read "PASS OK, -86382s ago" (§3 drill
     # 2026-09-07). A negative age is a stepped clock (honest_failure_modes #6),
-    # and a verdict whose age cannot be known cannot be called fresh.
+    # and a verdict whose age cannot be known cannot be called fresh. The
+    # writer's own FAIL outranks staleness — an old FAIL is still a FAIL, and
+    # the status must not be hidden behind "stale".
     if [ "$age" -lt 0 ]; then U "$1 verdict" "stamped ${age#-}s in the FUTURE — a clock stepped; freshness unobservable"
-    elif [ "$age" -gt "$2" ]; then F "$1 verdict" "stale ${age}s (>${2}s)"
-    elif [ "$status" = "OK" ]; then P "$1 verdict" "OK, ${age}s ago"
-    else F "$1 verdict" "$status, ${age}s ago"; fi
+    elif [ "$status" != "OK" ]; then F "$1 verdict" "$status ${msg:+($msg) }${age}s ago"
+    elif [ "$age" -gt "$2" ]; then F "$1 verdict" "stale ${age}s (>${2}s) — last OK${msg:+: $msg}"
+    else P "$1 verdict" "OK${msg:+ ($msg)}, ${age}s ago"; fi
 }
 check_verdict_fresh "calibration_reverify" 93600
 

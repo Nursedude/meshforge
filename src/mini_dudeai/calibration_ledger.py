@@ -278,6 +278,13 @@ def rederive_open(events: list[dict], head_full_now: str | None,
         return []
     if not marker.get("ran_full_suite"):
         return []
+    # Second reader of the marker, same refusal as claim_gate.marker_satisfies
+    # (review 2026-09-07): a run narrowed by HONEST_BOXES / no fleet SSOT, or
+    # made on a tree with uncommitted edits, verified something other than
+    # "this HEAD, fleet-wide" — minting `held` from it would inflate the
+    # held-rate with exactly the run class the gate refuses (hfm #5).
+    if marker.get("scope_narrowed") or marker.get("dirty_tree"):
+        return []
     m_head = marker.get("head_full")
     m_exit = marker.get("exit_code")
     if not m_head or m_head != head_full_now:

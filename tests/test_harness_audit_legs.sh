@@ -38,14 +38,16 @@ git -C "$H/.claude/projects/-opt-meshforge/memory" init -q
 git -C "$H/.claude/projects/-opt-meshforge/memory" remote add origin git@github.com:example/mem.git
 printf '# notes\n' > "$H/.claude/plans/gateway-session-notes-sbhost.md"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.claude/hooks/guard_a.sh"; chmod +x "$H/.claude/hooks/guard_a.sh"
+printf '#!/usr/bin/env bash\nexit 0\n' > "$H/.claude/hooks/guard_b.sh"; chmod 644 "$H/.claude/hooks/guard_b.sh"   # 644: bash <file> runs it; readable is the bar
 cat > "$H/.claude/settings.json" <<'EOF'
-{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \"$HOME/.claude/hooks/guard_a.sh\""}]}]}}
+{"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \"$HOME/.claude/hooks/guard_a.sh\""}, {"type": "command", "command": "bash ~/.claude/hooks/guard_b.sh"}]}]}}
 EOF
 
 # ── fake repo ─────────────────────────────────────────────────────────
 git -C "$R" init -q
 cp "$REAL_REPO/scripts/lib/pytest_checked.sh" "$R/scripts/lib/"
 cp "$REAL_REPO/scripts/pytest_verdict.sh" "$R/scripts/"
+printf '#!/usr/bin/env python3\nraise SystemExit(0)\n' > "$R/scripts/claim_gate.py"   # the Stop hook's target must EXIST for the repo hook-files leg
 mkdir -p "$R/.githooks"
 for hk in pre-commit pre-push; do printf '#!/bin/sh\nexit 0\n' > "$R/.githooks/$hk"; chmod +x "$R/.githooks/$hk"; done
 git -C "$R" config core.hooksPath .githooks
@@ -53,6 +55,7 @@ cp "$H/.claude/hooks/guard_a.sh" "$R/.claude/hooks/guard_a.sh"
 cat > "$R/.claude/settings.json" <<'EOF'
 {"hooks": {
   "SessionStart": [{"hooks": [{"type": "command", "command": "python3 -m mini_dudeai.warmstart --hook || true"}]}],
+  "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard_a.sh\""}]}],
   "Stop": [{"hooks": [{"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/claim_gate.py\""}]}]
 }}
 EOF
@@ -67,14 +70,14 @@ printf '#!/bin/sh\necho sbhost\n' > "$SB/hostname"
 chmod +x "$SB"/*
 
 run() {
-  HOME="$H" MESHFORGE_REPO="$R" CRON_VERDICT_LOG="$H/cron_verdicts.log" MANAGER_HEARTBEAT_PEER=peerbox \
+  HOME="$H" MESHFORGE_REPO="$R" MESHANCHOR_REPO="$TMP/no-such-repo" CRON_VERDICT_LOG="$H/cron_verdicts.log" MANAGER_HEARTBEAT_PEER=peerbox \
     PATH="$SB:$PATH" bash "$SCRIPT" 2>&1
 }
 leg() { echo "$1" | grep -E "^  $2 " ; }   # $1=out $2=leg label regex
 
 # ── control: every leg asserted below must be PASS here ──────────────
 out="$(run)"
-for l in 'hooksPath\(repo\)' 'Stop->claim_gate' 'SessionStart->warmstart' 'user hooks' 'mini fresh' \
+for l in 'hooksPath\(repo\)' 'Stop->claim_gate' 'SessionStart->warmstart' 'hook files\(repo\)' 'user hooks' 'mini fresh' \
          'calibration ledger' 'calibration_reverify verdict' 'cron_freshness' 'heartbeat cron \(local\)'; do
   check "control: $l PASS" "$(leg "$out" "$l" | grep -q ' PASS ' && echo ok)"
 done
@@ -120,6 +123,24 @@ cp "$H/.claude/settings.json" "$TMP/user.good.json"; printf '\n}x' >> "$H/.claud
 out="$(run)"
 check "user hooks: unparseable user settings → FAIL" "$(leg "$out" 'user hooks' | grep -q ' FAIL ' && echo ok)"
 cp "$TMP/user.good.json" "$H/.claude/settings.json"
+mv "$H/.claude/hooks/guard_b.sh" "$TMP/guard_b.bak"
+out="$(run)"
+check "user hooks: a hook wired with the ~/ spelling and deleted → FAIL naming it" "$(leg "$out" 'user hooks' | grep ' FAIL ' | grep -q 'guard_b.sh' && echo ok)"
+mv "$TMP/guard_b.bak" "$H/.claude/hooks/guard_b.sh"
+mv "$R/.claude/hooks/guard_a.sh" "$TMP/rguard.bak"
+out="$(run)"
+check "hook files(repo): a \$CLAUDE_PROJECT_DIR-wired hook deleted → FAIL naming it" "$(leg "$out" 'hook files\(repo\)' | grep ' FAIL ' | grep -q 'guard_a.sh' && echo ok)"
+mv "$TMP/rguard.bak" "$R/.claude/hooks/guard_a.sh"
+if [ "$(id -u)" != 0 ]; then
+  chmod 000 "$R/.claude/settings.json"
+  out="$(run)"
+  check "Stop->claim_gate: settings file unreadable → UNKNOWN, not 'bad JSON'" "$(leg "$out" 'Stop->claim_gate' | grep ' UNKNOWN ' | grep -q 'could not be read' && echo ok)"
+  chmod 644 "$R/.claude/settings.json"
+fi
+printf '[1, 2]' > "$R/.claude/settings.json"
+out="$(run)"
+check "Stop->claim_gate: settings parses but is not an object → FAIL" "$(leg "$out" 'Stop->claim_gate' | grep -q ' FAIL ' && echo ok)"
+cp "$TMP/settings.good.json" "$R/.claude/settings.json"
 
 # ── leg 3: mini fresh — future tick and absent key say what they are ──
 printf '{"last_tick_ts": %s}\n' "$((NOW+600))" > "$H/mini_dudeai_state.json"
@@ -142,6 +163,23 @@ cp "$H/cron_verdicts.log" "$TMP/verdicts.bak"
 printf '%s calibration_reverify OK\n' "$(iso $((NOW+86400)))" >> "$H/cron_verdicts.log"
 out="$(run)"
 check "calibration_reverify: verdict stamped in the future → UNKNOWN" "$(leg "$out" 'calibration_reverify verdict' | grep ' UNKNOWN ' | grep -q 'FUTURE' && echo ok)"
+cp "$TMP/verdicts.bak" "$H/cron_verdicts.log"
+printf '{"kind": "claim", "ts": 1}\n{"kind": "cl' > "$H/calibration_ledger.jsonl"   # one torn tail — the appender's contract
+out="$(run)"
+check "calibration ledger: ONE torn line beside good events → PASS that discloses it" "$(leg "$out" 'calibration ledger' | grep ' PASS ' | grep -q 'torn' && echo ok)"
+cp "$TMP/ledger.bak" "$H/calibration_ledger.jsonl"
+printf '{"kind": "claim", "ts": 1}\n' > "$H/calibration_ledger.jsonl"; for i in 1 2 3 4 5 6 7 8 9 10 11 12; do printf 'not json %s\n' $i >> "$H/calibration_ledger.jsonl"; done
+out="$(run)"
+check "calibration ledger: 12 malformed beside 1 good → FAIL (beyond the torn-tail contract)" "$(leg "$out" 'calibration ledger' | grep -q ' FAIL ' && echo ok)"
+cp "$TMP/ledger.bak" "$H/calibration_ledger.jsonl"
+printf 'garbage calibration_reverify OK\n' >> "$H/cron_verdicts.log"
+out="$(run)"
+check "calibration_reverify: unparseable timestamp → UNKNOWN naming it (never now-0 stale)" "$(leg "$out" 'calibration_reverify verdict' | grep ' UNKNOWN ' | grep -q 'unparseable' && echo ok)"
+cp "$TMP/verdicts.bak" "$H/cron_verdicts.log"
+grep -v ' calibration_reverify ' "$TMP/verdicts.bak" > "$H/cron_verdicts.log"
+printf '%s calibration_reverify FAIL 3 crons stale\n' "$(iso $((NOW-2*86400)))" >> "$H/cron_verdicts.log"
+out="$(run)"
+check "calibration_reverify: a 2-day-old FAIL shows the writer's status, not just 'stale'" "$(leg "$out" 'calibration_reverify verdict' | grep ' FAIL ' | grep -q 'FAIL (3 crons stale)' && echo ok)"
 cp "$TMP/verdicts.bak" "$H/cron_verdicts.log"
 
 # ── leg 5: cron_freshness — age window and status both judged ─────────

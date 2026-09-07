@@ -150,24 +150,44 @@ def extract_last_assistant_model(transcript_lines) -> str | None:
     return model
 
 
+# A strong claim is a claim only when it is not negated and not the tail of a
+# longer word: "not fully verified yet", "haven't fully verified", "unverified
+# green" are hedges, not overclaims. Leading word boundary + negation
+# look-behinds; no trailing boundary, so "all tests passed" still counts.
+_CLAIM_NEG = r"(?<!\bnot )(?<!\bnever )(?<!n't )(?<!\bno )(?<!\bnothing )(?<![\w])"
+_CLAIM_RES = tuple(re.compile(_CLAIM_NEG + re.escape(c)) for c in STRONG_CLAIMS)
+
+
+def _claim_spans(low: str):
+    return [m.span() for rx in _CLAIM_RES for m in rx.finditer(low)]
+
+
 def has_strong_claim(text: str) -> bool:
-    low = text.lower()
-    return any(claim in low for claim in STRONG_CLAIMS)
+    return bool(_claim_spans(text.lower()))
 
 
 def is_calibrated(text: str) -> bool:
     """True if the message already shows evidence or honest hedging — the
-    autonomy-preserving exempt path."""
+    autonomy-preserving exempt path.
+
+    A marker that lies INSIDE a strong claim does not count: two
+    STRONG_CLAIMS ("fully verified", "verified green") contain the marker
+    "verified", so the phrase that should trip the gate exempted itself for
+    the gate's whole life (§3 drill 2026-09-07). The first fix stripped the
+    claims from the text before the scan, which also deleted the "verified"
+    inside honest hedges that overlap a claim ("not fully verified yet" went
+    from pass to BLOCK — caught by the same-day review). Spans, not strips:
+    a marker anywhere outside a claim span still calibrates."""
     low = text.lower()
-    # Strip the strong claims themselves before scanning for markers: two
-    # STRONG_CLAIMS ("fully verified", "verified green") contain the marker
-    # "verified", so the phrase that should trip the gate exempted itself —
-    # both passed untouched for the gate's whole life (§3 drill 2026-09-07).
-    # A tag or hedge OUTSIDE the claim still calibrates, as before.
-    for claim in STRONG_CLAIMS:
-        low = low.replace(claim, " ")
-    if any(m in low for m in CALIBRATION_MARKERS):
-        return True
+    spans = _claim_spans(low)
+
+    def _inside(s, e):
+        return any(a <= s and e <= b for a, b in spans)
+
+    for mk in CALIBRATION_MARKERS:
+        for m in re.finditer(re.escape(mk), low):
+            if not _inside(*m.span()):
+                return True
     return any(re.search(p, text, re.IGNORECASE) for p in EVIDENCE_PATTERNS)
 
 

@@ -864,7 +864,11 @@ VERDICT_PATH="${HONEST_VERDICT_PATH:-${HOME:-/tmp}/.cache/meshforge/honest_verdi
 # fleet run, and no marker could tell a clean tree from one with uncommitted
 # edits. claim_gate refuses a marker carrying either flag.
 HV_NARROW=0; { [ -n "${HONEST_BOXES:-}" ] || [ "$FLEET_SSOT" = 0 ]; } && HV_NARROW=1
-HV_DIRTY=0; git -C "$REPO" status --porcelain 2>/dev/null | grep -q . && HV_DIRTY=1
+# A git failure is NOT a clean tree (review 2026-09-07): unknown → dirty, the
+# refusing direction. Untracked files count — an uncommitted new test file is
+# exactly the edit-beside-a-committed-HEAD shape this flag exists for.
+HV_DIRTY=1
+if _hv_st="$(git -C "$REPO" status --porcelain 2>/dev/null)" && [ -z "$_hv_st" ]; then HV_DIRTY=0; fi
 if ! HV_RC="$verdict_rc" HV_MSG="$verdict_msg" HV_HEAD="$HEADFULL" \
      HV_FULL="$RUN_TESTS" HV_STRICT="$STRICT" HV_PATH="$VERDICT_PATH" \
      HV_NARROW="$HV_NARROW" HV_DIRTY="$HV_DIRTY" HV_BOXES="$BOXES" \

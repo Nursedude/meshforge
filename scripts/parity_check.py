@@ -288,6 +288,30 @@ def _extract_literal_constant(text, name):
     return None
 
 
+def _extract_def_dump(text, name):
+    """``ast.dump`` of the module-level function ``name`` with its docstring
+    dropped — a BODY fingerprint. Presence-by-name was the whole check before
+    2026-09-07, and it could not fire: MF's is_calibrated changed behaviour
+    (the self-exempting STRONG_CLAIMS fix) while MA's did not, and this leg
+    printed OK for both. None if unparseable or absent (reported 'missing')."""
+    if text is None:
+        return None
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return None
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            body = list(node.body)
+            if (body and isinstance(body[0], ast.Expr)
+                    and isinstance(getattr(body[0], "value", None), ast.Constant)
+                    and isinstance(body[0].value.value, str)):
+                body = body[1:]
+            node.body = body
+            return ast.dump(node, include_attributes=False)
+    return None
+
+
 def _fork_pin_block(text):
     """Extract the normalized parity-relevant lines from requirements/rns.txt:
     the ``# MF-FORK-PIN`` markers and the ``rns @ git+`` / ``lxmf @ git+``
@@ -406,13 +430,19 @@ def check_parity(mf=DEFAULT_MESHFORGE, ma=DEFAULT_MESHANCHOR):
                 findings.append(ParityFinding("calibgate", label, "drift",
                     f"(mf-only={sorted(va - vb)} ma-only={sorted(vb - va)})"))
         for sym in CLAIM_GATE_CORE_SYMBOLS:
-            in_a, in_b = sym in cga, sym in cgb
+            # "def name(" → name; compare the function BODY, not its presence.
+            fname = sym[len("def "):].rstrip("(")
+            da, db = _extract_def_dump(cga, fname), _extract_def_dump(cgb, fname)
             label = f"{CLAIM_GATE_FILE} :: {sym}"
-            if in_a and in_b:
+            if da is None or db is None:
+                findings.append(ParityFinding("calibgate", label, "missing",
+                    f"(mf={'ok' if da is not None else 'absent'} "
+                    f"ma={'ok' if db is not None else 'absent'})"))
+            elif da == db:
                 findings.append(ParityFinding("calibgate", label, "ok"))
             else:
                 findings.append(ParityFinding("calibgate", label, "drift",
-                    f"(mf={'y' if in_a else 'n'} ma={'y' if in_b else 'n'})"))
+                    "(function body differs — port the decision core, then re-run)"))
 
     if any(f.status == "missing" for f in findings):
         overall = "missing"

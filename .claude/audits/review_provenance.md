@@ -766,6 +766,55 @@ that removes rather than repairs.
 6. Tests — the five honest_status shell tests `unset` the five ambient
    variables at the top. **DONE.**
 
+### Second pass — the review of the fix commit (`c0e91844`), same day
+
+Convention 3: a fix commit is unreviewed code. `/code-review` at high effort
+over `d14999e8..c0e91844` returned 10 findings (8 CONFIRMED, 2 that a
+follow-up commit had already closed), and one was a REGRESSION my fix
+introduced — the exact shape `feedback_review_your_own_fixes` exists for. All
+addressed in the commit after `16e7d643`:
+
+- **Regression**: stripping STRONG_CLAIMS before the marker scan also deleted
+  the `verified` inside honest hedges that overlap a claim — `not fully
+  verified yet`, `unverified green`, `I have not verified green status` went
+  from pass to BLOCK. Cure: claims are matched with a leading word boundary and
+  negation look-behinds, and a marker is discounted only when it lies INSIDE a
+  claim span (spans, not strips). Pinned by `TestHedgePolarityAroundClaims`.
+- **Second marker reader**: `calibration_ledger.rederive_open` (SessionStart
+  warmstart) did not know `scope_narrowed`/`dirty_tree` and would have minted
+  `held` from a narrowed run. Same refusal added; test added. Byte-locked
+  twin: MeshAnchor's copy carries the identical edit.
+- **Ledger leg vs the torn-tail contract**: the appender deliberately leaves
+  ONE isolated malformed line after a torn write and every reader skips it;
+  the leg FAILed on any. Now: FAIL only when nothing parses, or more than three
+  malformed lines AND more than 1 in 10; a few are disclosed in the PASS text.
+- **Freshness writer stamped FAIL from the 6h re-alert-gated notification
+  list**, so a persistently silent cron would read FAIL one hour in six — the
+  09-02 "rate limiter withheld the record" class. The operator-local writer
+  now stamps from an ungated per-run observation list.
+- **Hook-file walker**: knew one spelling, required X_OK (bash runs 644),
+  accepted a directory, and never looked at the repo side. One walker over
+  both settings files resolves `$CLAUDE_PROJECT_DIR`, `$HOME`, `${HOME}`,
+  `${VAR:-default}` and `~` forms and requires a readable FILE. The live run
+  now sees 4 repo-side and 2 user-side script paths.
+- **`check_verdict_fresh`**: an unparseable timestamp is its own UNKNOWN (it
+  was the now-0 sentinel again); the writer's FAIL now outranks staleness and
+  the message rides along, so a FAIL's reason is no longer the word FAIL.
+- **`hook_wired`**: unreadable → UNKNOWN (was reported as bad JSON — a claim
+  about bytes never read); non-object → FAIL; a non-string command never
+  matches.
+- **Ambient state**: `MA_REPO` is env-overridable and the sandbox test points
+  it at nothing; the sandbox repo carries the Stop hook's target file.
+- **The MeshAnchor twin**: `is_calibrated`, `has_strong_claim`,
+  `marker_satisfies`, `evaluate` ported verbatim with tests; honest_status
+  marker gains the same three fields. And `parity_check` now compares the
+  decision-core function BODIES (docstring-stripped AST), not `def name(`
+  presence — the leg that could never fire on a body change now can, and did
+  (it flagged `evaluate` until the port landed).
+- Cut by the reviewer's cap and NOT done: the dep-findings leg still drops an
+  unreachable box silently (legibility); the no-ts test case runs the real
+  `systemctl` on SELF (pre-existing pattern extended).
+
 ### Original ranked worklist (kept as written, for the record)
 
 1. **cron_freshness**: delete the leg and retire `cron_verdict_freshness.sh`

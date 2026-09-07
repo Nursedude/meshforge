@@ -406,3 +406,17 @@ class TestFormatBriefBlock:
         block = cl.format_brief_block(cl.fold(events))
         assert "⚠️" in block and "BROKE" in block
         assert "everything works" in block
+
+
+def test_rederive_refuses_narrowed_or_dirty_marker():
+    """Second reader of honest_verdict.json (review 2026-09-07): a marker from
+    a HONEST_BOXES-narrowed run or a dirty tree must mint NO verdict, exactly
+    as claim_gate.marker_satisfies refuses it — else the held-rate is inflated
+    by the run class the gate excludes."""
+    from mini_dudeai import calibration_ledger as cl
+    events = [{"kind": "claim", "id": "c1", "ts": 1.0, "claim": "all green",
+               "head_full": HEAD, "status": "open"}]
+    base = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True}
+    assert cl.rederive_open(events, HEAD, dict(base), 9.0), "control: a clean marker mints held"
+    assert cl.rederive_open(events, HEAD, dict(base, scope_narrowed=True), 9.0) == []
+    assert cl.rederive_open(events, HEAD, dict(base, dirty_tree=True), 9.0) == []
