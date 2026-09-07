@@ -7,6 +7,10 @@
 > review — that absence is the signal this ledger makes legible.
 > Convention: record the RANGE + scope paths + fix commits + where the
 > residual/refuted notes live. Never delete rows; supersede them.
+>
+> **Widened 2026-09-06**: this ledger also records LIVE-BOX TOUCHES — see the
+> touch log below the conventions. A review pass is not the only thing a
+> session does that a later session has to attribute.
 
 | Date | Scope (range + paths) | Mechanism | Fix commits | Residuals / refuted notes |
 |------|----------------------|-----------|-------------|---------------------------|
@@ -281,6 +285,49 @@ pass or a follow-up.
    still OPEN by design, which is the whole point of a queue. Companion to
    MF014/MF015, which keep operator-specific values and LAN IPs out of
    published docs for the same reason.
+
+7. **A live-box touch gets a line in the touch log below** — whether or not it
+   belongs to a review, and whether or not it produces a commit. Convention 1
+   ties review rows to fix commits; a touch frequently has no commit to ride,
+   which is exactly why it goes unrecorded and why the gate cannot catch it.
+
+## Live-box touch log — what a session ran on a box, and what it could trip
+
+> **Why this exists**: on 2026-09-06 two artifacts on live boxes cost a later
+> session real time to attribute. A 2.5-min `rns_stray_env_drift` page was
+> recoverable — but only because its author had written the plants up in this
+> file, and only after the reading session had already reconstructed it from
+> history timestamps and an `/opt` mtime. Twenty files under
+> `/var/lib/meshforge` on a box declared to run no watchdog were NOT
+> recoverable: that board's journal retains about two hours, and the question
+> arrived six hours later. It closed because the operator remembered. **A
+> box's own logs age out faster than the questions about them**, and two
+> agents now work this fleet.
+>
+> **A line is required when a session changes state on a box outside its own
+> repo checkout, or runs something there with observable side effects** —
+> planting fixtures, writing under `/var/lib`, restarting a unit, a probe
+> one-shot, an install. Reading is free; writing is not.
+>
+> Format, newest first, one line each — deliberately NOT a row in the table
+> above, whose 5-cell pipe parser the gate depends on (convention 5):
+>
+> `YYYY-MM-DD HH:MM TZ · <box> · <session> · <what ran> · <what it could trip> · <cleanup>`
+>
+> Convention 6 applies unchanged: the RISK, not the RECIPE. Record what was
+> touched and what it could page; not a path that helps someone reach a
+> degraded state.
+>
+> ⚠️ **This half of the ledger is PROSE, and weaker than the review half.**
+> `review_provenance_check.py` gates a review claim because a review produces
+> a push it can inspect; a touch often produces nothing in git, so nothing
+> refuses you for skipping the line. Treat it as a habit that has to hold on
+> its own — and when a line is missing, say the attribution is UNKNOWN rather
+> than reasoning backwards from mtimes.
+
+- 2026-09-06 23:24 HST · lehua · Opus 5 · watchdog `--one-shot` (read-only; one-shot never reaches `run_loop`, so no phase-2 action) to measure enrollment cost on a Zero 2W · wrote `watchdog.oneshot.json` + 19 debounce files under `/var/lib/meshforge` on a box whose role declares `meshforge-watchdog: absent` — a stray watchdog-shaped state file there can mislead a later reader · **cleaned**: all 20 removed 23:30, the 2 pre-existing files left untouched
+- 2026-09-06 ~17:56 HST · lehua · Fable 5.1 · UNKNOWN — created `/var/lib/meshforge` + 2 probe debounce files · nothing observed · **not cleaned** (the 2 files remain; harmless `{"streak":0}`). Attribution is the operator's recollection, not evidence: the box's journal had aged out before the question was asked. This line is the counterexample the log exists to prevent
+- 2026-09-06 22:15 HST · VolcanoAI · Fable 5.1 · review fixtures planted under `/opt` + `/srv` as root for the `518170fa`/`14290e60` second opinion · **paged the live watchdog**: `rns_stray_env_drift` edge_up 22:15:47 → edge_down 22:18:18 · **cleaned**: plants removed, removal listed in the pass. Rule taken: plant in a tmp tree and inject the glob; a live-path plant is a declared production event, and excluding the drill path in the detector was REFUSED
 
 ## 2026-08-11 — tonight's INSTRUMENT changes, queued for a frontier pass
 
