@@ -1533,3 +1533,14 @@ over every env root returned ZERO for the ten WANTED packages. Not live.
   resolve to one refuted and one latent note.
 - Nothing rolled, nothing restarted, no signal class touched. Fleet stays at
   `7099ac4f` 9/9.
+- **Witness, added at close-out (found by `/memory-health`, not by me):** the
+  `/opt/mfdrillB1`/`B2` probe plants tripped the LIVE watchdog on this box —
+  `rns_stray_env_drift_any` edge_up 22:15:47, edge_down 22:18:18 (mini
+  history), detail `foreign-venv:app=1.1.4`. I planted under `/opt` because
+  the coherence probe's globs are absolute, and did not ask which live
+  detector reads that path. The detector WORKED (first real fire of the
+  day-old leg); the 2.5-min page was mine. A cadence pass had already
+  ratified it benign and proposed a `/opt/mfdrill*` exclusion — REFUSED: an
+  exclusion in the detector to accommodate a drill is `known_benign`
+  becoming policy. Rule recorded in memory: plant in a tmp tree and inject
+  the glob; a live-path plant is a declared production event.
