@@ -37,22 +37,96 @@ echo "harness_audit — $(hostname) $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 for r in "$REPO" "$MA_REPO"; do
     [ -d "$r" ] || continue
     hp="$(git -C "$r" config core.hooksPath 2>/dev/null)"
-    if [ "$hp" = ".githooks" ]; then P "hooksPath($(basename "$r"))" ".githooks"
-    else F "hooksPath($(basename "$r"))" "got '${hp:-unset}'"; fi
+    if [ "$hp" != ".githooks" ]; then F "hooksPath($(basename "$r"))" "got '${hp:-unset}'"; continue; fi
+    # The config STRING was the whole check, and it read PASS with the hooks
+    # directory gone (§3 drill 2026-09-07) — the dormant spine this leg exists
+    # to catch, entered through a second door. The hooks must also EXIST and
+    # be executable, or git runs nothing and says nothing.
+    _hk_missing=""
+    for _hk in pre-commit pre-push; do [ -x "$r/.githooks/$_hk" ] || _hk_missing="$_hk_missing $_hk"; done
+    if [ -n "$_hk_missing" ]; then F "hooksPath($(basename "$r"))" ".githooks set but hook absent/not executable:$_hk_missing"
+    else P "hooksPath($(basename "$r"))" ".githooks (pre-commit + pre-push executable)"; fi
 done
 
 # 2. session hooks wired (Stop->claim_gate is the calibrated-claims enforcer)
 SETTINGS="$REPO/.claude/settings.json"
-if [ -r "$SETTINGS" ]; then
-    grep -q "claim_gate.py" "$SETTINGS" \
-        && P "Stop->claim_gate" "wired in .claude/settings.json" \
-        || F "Stop->claim_gate" "claim_gate.py not in settings hooks"
-    grep -q "mini_dudeai.warmstart" "$SETTINGS" \
-        && P "SessionStart->warmstart" "wired" \
-        || F "SessionStart->warmstart" "not wired"
-else
-    U "session hooks" "cannot read $SETTINGS"
-fi
+# PARSE the file; never grep it. A substring grep read `PASS wired` on an
+# UNPARSEABLE settings file (Claude Code loads NO hooks from one), on a Stop
+# entry deleted with the filename surviving in a note key, and on the hook
+# moved under a different event (§3 drill 2026-09-07, three plants, all
+# silent). The question is "is this command a hook under THIS event", and
+# only the JSON can answer it.
+hook_wired() {  # $1=settings file  $2=event  $3=command substring → yes|no|badjson|absent|error
+    python3 - "$1" "$2" "$3" <<'PY' 2>/dev/null || echo error
+import json, sys
+p, ev, needle = sys.argv[1:4]
+try:
+    with open(p, encoding="utf-8") as f:
+        d = json.load(f)
+except FileNotFoundError:
+    print("absent"); raise SystemExit
+except (OSError, ValueError):
+    print("badjson"); raise SystemExit
+hit = False
+for grp in ((d.get("hooks") or {}).get(ev) or []):
+    for h in (grp.get("hooks") or []) if isinstance(grp, dict) else []:
+        if isinstance(h, dict) and needle in str(h.get("command", "")):
+            hit = True
+print("yes" if hit else "no")
+PY
+}
+judge_hook() {  # $1=label  $2=event  $3=needle  $4=settings file
+    case "$(hook_wired "$4" "$2" "$3")" in
+        yes)     P "$1" "wired under $2 in $(basename "$4")" ;;
+        no)      F "$1" "$3 is not a $2 hook command in $4 (the name elsewhere in the file does not count)" ;;
+        badjson) F "$1" "$4 is NOT valid JSON — Claude Code loads no hooks from it" ;;
+        absent)  U "$1" "cannot read $4" ;;
+        *)       U "$1" "could not parse $4" ;;
+    esac
+}
+judge_hook "Stop->claim_gate" Stop "claim_gate.py" "$SETTINGS"
+judge_hook "SessionStart->warmstart" SessionStart "mini_dudeai.warmstart" "$SETTINGS"
+
+# 2c. USER-level hooks — the file this audit never read (§3 drill 2026-09-07).
+# Two of the three Bash guards (psk_leak_guard on MeshAnchor sessions, the
+# Layer B exit_code_mask_guard everywhere) are wired in ~/.claude/settings.json,
+# not the repo's. Legs 2/2b could not see a deleted live hook that the user
+# settings still referenced. Every command there that names a
+# ~/.claude/hooks/<file> must point at a file that exists and is executable.
+USER_SETTINGS="$HOME/.claude/settings.json"
+_us="$(python3 - "$USER_SETTINGS" "$HOME" <<'PY' 2>/dev/null || echo error
+import json, os, re, sys
+p, home = sys.argv[1:3]
+try:
+    with open(p, encoding="utf-8") as f:
+        d = json.load(f)
+except FileNotFoundError:
+    print("absent"); raise SystemExit
+except (OSError, ValueError):
+    print("badjson"); raise SystemExit
+n = 0; missing = []
+for ev, groups in ((d.get("hooks") or {}).items()):
+    for grp in groups or []:
+        for h in (grp.get("hooks") or []) if isinstance(grp, dict) else []:
+            if not isinstance(h, dict):
+                continue
+            for ref in re.findall(r"\$HOME/\.claude/hooks/[\w.\-]+", str(h.get("command", ""))):
+                n += 1
+                if not os.access(ref.replace("$HOME", home), os.X_OK):
+                    missing.append(f"{ev}:{os.path.basename(ref)}")
+print("ok", n, ",".join(missing))
+PY
+)"
+case "$_us" in
+    absent)  U "user hooks" "no $USER_SETTINGS — operator-local guards not wired on this box" ;;
+    badjson) F "user hooks" "$USER_SETTINGS is NOT valid JSON — Claude Code loads no user-level hooks" ;;
+    ok*)
+        read -r _ _us_n _us_miss <<<"$_us"
+        if [ -n "${_us_miss:-}" ]; then F "user hooks" "wired but the hook file is absent/not executable: $_us_miss"
+        elif [ "${_us_n:-0}" -eq 0 ]; then P "user hooks" "no ~/.claude/hooks command wired"
+        else P "user hooks" "$_us_n ~/.claude/hooks command(s) wired, all present + executable"; fi ;;
+    *)       U "user hooks" "could not parse $USER_SETTINGS" ;;
+esac
 
 # 2b. the RUNNING hook == the REVIEWED hook (2026-09-07)
 # Legs 1-2 check hooks are WIRED. Nothing checked that the file a wired hook
@@ -86,17 +160,34 @@ fi
 # 3. mini fresh + seed coverage test
 MINI_STATE="$HOME/mini_dudeai_state.json"
 if [ -r "$MINI_STATE" ]; then
-    age="$(python3 - "$MINI_STATE" <<'PY' 2>/dev/null || echo -1
+    # Three absent/odd shapes get their own words (§3 drill 2026-09-07): a
+    # missing key used to read as `now - 0` (the epoch-sentinel tell, 56 years
+    # stale), and a tick in the FUTURE — a stepped clock on an RTC-less Pi —
+    # read as "state unparseable", which sends the reader to the JSON instead
+    # of the clock.
+    age="$(python3 - "$MINI_STATE" <<'PY' 2>/dev/null || echo error
 import json, sys, time
 try:
-    print(int(time.time() - float(json.load(open(sys.argv[1])).get("last_tick_ts", 0))))
+    d = json.load(open(sys.argv[1]))
 except Exception:
-    print(-1)
+    print("unparseable"); raise SystemExit
+if not isinstance(d, dict) or "last_tick_ts" not in d:
+    print("nokey"); raise SystemExit
+try:
+    print(int(time.time() - float(d["last_tick_ts"])))
+except (TypeError, ValueError):
+    print("badvalue")
 PY
 )"
-    if [ "$age" -ge 0 ] && [ "$age" -lt 300 ]; then P "mini fresh" "last tick ${age}s ago"
-    elif [ "$age" -ge 0 ]; then F "mini fresh" "last tick ${age}s ago (stale)"
-    else U "mini fresh" "state unparseable"; fi
+    case "$age" in
+        unparseable) U "mini fresh" "state file is not valid JSON" ;;
+        nokey)       U "mini fresh" "state has no last_tick_ts key — freshness unobservable (never 'now - 0')" ;;
+        badvalue)    U "mini fresh" "last_tick_ts is not a number" ;;
+        error)       U "mini fresh" "could not read state" ;;
+        -*)          U "mini fresh" "last tick ${age#-}s in the FUTURE — a clock stepped, not a fresh tick" ;;
+        *) if [ "$age" -lt 300 ]; then P "mini fresh" "last tick ${age}s ago"
+           else F "mini fresh" "last tick ${age}s ago (stale)"; fi ;;
+    esac
 else
     U "mini fresh" "no state file (not a mini box?)"
 fi
@@ -119,8 +210,33 @@ esac
 
 # 4. calibration ledger + daily reverify freshness (<26h)
 LEDGER="$HOME/calibration_ledger.jsonl"
-[ -s "$LEDGER" ] && P "calibration ledger" "$(wc -l < "$LEDGER") events" \
-                 || U "calibration ledger" "absent/empty at $LEDGER"
+# Count PARSEABLE events. `-s` + `wc -l` read 4 KB of random bytes as
+# "21 events" (§3 drill 2026-09-07); a corrupted ledger is not a healthy one.
+if [ -s "$LEDGER" ]; then
+    _lc="$(python3 - "$LEDGER" <<'PY' 2>/dev/null || echo error
+import json, sys
+good = bad = 0
+with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
+    for line in f:
+        if not line.strip():
+            continue
+        try:
+            json.loads(line); good += 1
+        except ValueError:
+            bad += 1
+print(good, bad)
+PY
+)"
+    if [ "$_lc" = error ]; then U "calibration ledger" "could not read $LEDGER"
+    else
+        read -r _lg _lb <<<"$_lc"
+        if [ "${_lb:-0}" -gt 0 ]; then F "calibration ledger" "$_lb unparseable line(s) beside $_lg events — corrupted, not healthy"
+        elif [ "${_lg:-0}" -eq 0 ]; then U "calibration ledger" "no parseable event in $LEDGER"
+        else P "calibration ledger" "$_lg events"; fi
+    fi
+else
+    U "calibration ledger" "absent/empty at $LEDGER"
+fi
 check_verdict_fresh() {  # $1=name $2=max_age_s
     # Select by the structural NAME field, never a whole-line grep: verdict
     # messages now embed raw job output (evidence capture), and a failing
@@ -132,20 +248,24 @@ check_verdict_fresh() {  # $1=name $2=max_age_s
     ts="$(date -d "$(printf '%s' "$line" | awk '{print $1}')" +%s 2>/dev/null || echo 0)"
     age=$(( $(date +%s) - ts ))
     status="$(printf '%s' "$line" | awk '{print $3}')"
-    if [ "$age" -gt "$2" ]; then F "$1 verdict" "stale ${age}s (>${2}s)"
+    # A verdict stamped in the FUTURE read "PASS OK, -86382s ago" (§3 drill
+    # 2026-09-07). A negative age is a stepped clock (honest_failure_modes #6),
+    # and a verdict whose age cannot be known cannot be called fresh.
+    if [ "$age" -lt 0 ]; then U "$1 verdict" "stamped ${age#-}s in the FUTURE — a clock stepped; freshness unobservable"
+    elif [ "$age" -gt "$2" ]; then F "$1 verdict" "stale ${age}s (>${2}s)"
     elif [ "$status" = "OK" ]; then P "$1 verdict" "OK, ${age}s ago"
     else F "$1 verdict" "$status, ${age}s ago"; fi
 }
 check_verdict_fresh "calibration_reverify" 93600
 
-# 5. cron freshness watcher healthy and reporting 0 stale. Same structural
-# rule as check_verdict_fresh: select by field 2, judge by field 3 — a FAIL
-# line whose captured excerpt contains " OK " (e.g. "13 OK, 1 stale") must
-# not read as green (review 2026-07-31, finding 7).
-fresh_line="$(awk '$2 == "cron_freshness"' "$VERDICTS" 2>/dev/null | tail -1)"
-if [ -z "$fresh_line" ]; then U "cron_freshness" "never reported"
-elif [ "$(printf '%s' "$fresh_line" | awk '{print $3}')" = "OK" ]; then P "cron_freshness" "$(printf '%s' "$fresh_line" | cut -d' ' -f3-)"
-else F "cron_freshness" "$(printf '%s' "$fresh_line" | cut -d' ' -f3-)"; fi
+# 5. cron freshness watcher healthy. This leg had exactly ONE outcome from
+# birth to 2026-09-07 (§3 drill): it judged status only, with no age window,
+# and its writer stamped OK unconditionally — the log held zero non-OK
+# cron_freshness lines, ever. The watcher for silent crons could not detect
+# its own silence. Now: the same age + status rule as calibration_reverify
+# (hourly cron → 3h window), and the writer stamps FAIL when anything is
+# stale (fixed the same day in the operator-local watcher script).
+check_verdict_fresh "cron_freshness" 10800
 
 # 6. memory hot index under the load limit (24576 B; warn at 75%)
 if [ -r "$MEM_DIR/MEMORY.md" ]; then
@@ -171,10 +291,13 @@ else
 fi
 
 # 8. manager deadman spine (heartbeat cron here + deadman cron on peer)
-crontab -l 2>/dev/null | grep -q "manager_heartbeat.sh" \
+# Comment lines are skipped on both sides: a commented-out crontab entry read
+# `PASS wired` (§3 drill 2026-09-07) — a parked cron is exactly the dormant
+# spine this leg exists to catch.
+crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q "manager_heartbeat.sh" \
     && P "heartbeat cron (local)" "wired" \
-    || F "heartbeat cron (local)" "missing from crontab"
-peer_line="$(timeout 25 ssh -o ConnectTimeout=8 -o BatchMode=yes "$DEADMAN_PEER" "crontab -l 2>/dev/null | grep -c manager_deadman.sh" 2>/dev/null)"
+    || F "heartbeat cron (local)" "missing from crontab (or commented out)"
+peer_line="$(timeout 25 ssh -o ConnectTimeout=8 -o BatchMode=yes "$DEADMAN_PEER" "crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -c manager_deadman.sh" 2>/dev/null)"
 if [ "${peer_line:-}" = "" ]; then U "deadman cron ($DEADMAN_PEER)" "peer unreachable"
 elif [ "$peer_line" -ge 1 ]; then P "deadman cron ($DEADMAN_PEER)" "wired"
 else F "deadman cron ($DEADMAN_PEER)" "missing from peer crontab"; fi

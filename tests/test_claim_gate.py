@@ -388,3 +388,54 @@ class TestMainRecording:
             str(tmp_path / "no_marker.json"), ledger)
         assert rc == 0 and out.strip() == ""  # passed (calibrated text)
         assert self._claims(ledger) == []  # but not recorded (no marker)
+
+
+# ── §3 drill 2026-09-07: the gate's own list must be able to fire ───────
+
+class TestEveryStrongClaimFires:
+    """'fully verified' and 'verified green' sat in STRONG_CLAIMS for the
+    gate's whole life and NEVER blocked: both contain the calibration marker
+    'verified', and is_calibrated scanned the same text. Every strong claim,
+    alone and unbacked, must block — this is the test that would have caught
+    it on day one."""
+
+    @pytest.mark.parametrize("claim", claim_gate.STRONG_CLAIMS)
+    def test_each_strong_claim_alone_blocks(self, claim):
+        block, _ = claim_gate.evaluate(f"Done. {claim}.", "c" * 40, None, 1000.0)
+        assert block, f"STRONG_CLAIM {claim!r} cannot fire"
+
+    @pytest.mark.parametrize("text", [
+        "Fully verified — VERIFIED: honest_status exit 0 quoted above.",
+        "Verified green. BELIEVED for the fleet leg, not run.",
+        "All green — I have not verified the deploy yet.",
+    ])
+    def test_tag_or_hedge_outside_the_claim_still_calibrates(self, text):
+        assert claim_gate.is_calibrated(text)
+
+
+class TestMarkerScopeAndTree:
+    """A marker from a NARROWED run (HONEST_BOXES / no fleet SSOT) or a DIRTY
+    tree cannot back a fleet-strength claim about HEAD. Older markers without
+    the fields are judged on what they carry."""
+    HEAD = "a" * 40
+
+    def _fresh(self, **over):
+        m = {"head_full": self.HEAD, "exit_code": 0,
+             "ran_full_suite": True, "ts": 1000.0}
+        m.update(over)
+        return m
+
+    def test_narrowed_scope_rejected(self):
+        assert not claim_gate.marker_satisfies(
+            self._fresh(scope_narrowed=True), self.HEAD, 1000.0)
+
+    def test_dirty_tree_rejected(self):
+        assert not claim_gate.marker_satisfies(
+            self._fresh(dirty_tree=True), self.HEAD, 1000.0)
+
+    def test_explicit_false_flags_honored(self):
+        assert claim_gate.marker_satisfies(
+            self._fresh(scope_narrowed=False, dirty_tree=False), self.HEAD, 1000.0)
+
+    def test_legacy_marker_without_fields_honored(self):
+        assert claim_gate.marker_satisfies(self._fresh(), self.HEAD, 1000.0)

@@ -10,6 +10,10 @@
 # Drives the REAL script with a stub ssh so each box's answer is scriptable,
 # and asserts the derivation + the dispositions that make widening safe.
 set -u
+# Pin ambient state (2026-09-07): a caller that exported an override — a full
+# honest_status run under HONEST_BOXES drives this very suite — made the
+# SSOT cases here fail, and an exported marker path was overwritten mid-suite.
+unset HONEST_BOXES MESHFORGE_FLEET_HOSTS HONEST_VERDICT_PATH HONEST_WD_PATH HONEST_WD_STALE_S
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../scripts/honest_status.sh"
 REAL_PYTHON3="$(command -v python3)"; export REAL_PYTHON3
@@ -41,6 +45,10 @@ cat > "$SB/ssh" <<'EOF'
 #!/usr/bin/env bash
 box=""; for a in "$@"; do case "$a" in -*|*=*) ;; *) box="$a"; break;; esac; done
 cmd="${!#}"
+# The conf_rate leg carries a liveness token since 2026-09-07 (echo HSUP; curl).
+# Every UP personality answers it; box-down stays unreachable for it too.
+case "$box" in box-down) exit 255 ;; esac
+case "$cmd" in *curl*) echo "HSUP"; [ -n "${FAKE_CURL_JSON:-}" ] && printf '%s' "$FAKE_CURL_JSON"; exit 0 ;; esac
 case "$box" in
   box-down) exit 255 ;;                       # unreachable
   box-norepo)                                  # up; no repo, no watchdog UNIT
@@ -360,4 +368,21 @@ check "watchdog leg reports the dormant box as :dormant, not unreach" \
 out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_BOXES="box-good box-down" MESHFORGE_FLEET_POSTURE="$TMP/absent.json" run)"
 check "without a declaration the same box is unreach (today's behaviour)" \
   "$(echo "$out" | grep 'fleet SHA drift' | grep -q 'box-down:unreach' && echo ok)"
+
+# ── §3 drill 2026-09-07: two conflations the fleet legs read as green ──
+# (a) an UNREACHABLE box was silently dropped from the conf_rate leg, which
+#     then printed PASS over the boxes that answered.
+out="$(HONEST_BOXES="box-good box-down" run)"
+check "conf_rate leg is UNKNOWN when a box is unreachable, never PASS" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'UNKNOWN' && echo ok)"
+check "and it names the unreachable box" \
+  "$(echo "$out" | grep -E 'conf_rate' | grep -q 'box-down:unreach' && echo ok)"
+# (b) a watchdog snapshot with NO ts skipped the freshness gate and counted
+#     clean — an absent age reading as a fresh one.
+WD_NOTS="$TMP/wd_nots.json"; printf '{"signals": []}\n' > "$WD_NOTS"
+out="$(HONEST_BOXES="$SELF_NAME" HONEST_WD_PATH="$WD_NOTS" HONEST_WD_STALE_S=300 run)"
+check "watchdog snapshot without ts is UNKNOWN under the stale gate, not clean" \
+  "$(echo "$out" | grep -E 'watchdog signals' | grep -q 'UNKNOWN' && echo ok)"
+check "and says the age is unobservable" \
+  "$(echo "$out" | grep -E 'watchdog signals' | grep -q 'no-ts' && echo ok)"
 if [ "$fails" = 0 ]; then echo "ALL PASS"; exit 0; else echo "FAILED"; exit 1; fi

@@ -16,6 +16,10 @@
 # Drives the REAL script with a stub pytest whose OUTPUT and EXIT CODE are set
 # independently, which is the only way to reproduce "says failed, exits 0".
 set -u
+# Pin ambient state (2026-09-07): a caller that exported an override — a full
+# honest_status run under HONEST_BOXES drives this very suite — made the
+# SSOT cases here fail, and an exported marker path was overwritten mid-suite.
+unset HONEST_BOXES MESHFORGE_FLEET_HOSTS HONEST_VERDICT_PATH HONEST_WD_PATH HONEST_WD_STALE_S
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPT="$HERE/../scripts/honest_status.sh"
 REAL_PYTHON3="$(command -v python3)"; export REAL_PYTHON3

@@ -159,6 +159,13 @@ def is_calibrated(text: str) -> bool:
     """True if the message already shows evidence or honest hedging — the
     autonomy-preserving exempt path."""
     low = text.lower()
+    # Strip the strong claims themselves before scanning for markers: two
+    # STRONG_CLAIMS ("fully verified", "verified green") contain the marker
+    # "verified", so the phrase that should trip the gate exempted itself —
+    # both passed untouched for the gate's whole life (§3 drill 2026-09-07).
+    # A tag or hedge OUTSIDE the claim still calibrates, as before.
+    for claim in STRONG_CLAIMS:
+        low = low.replace(claim, " ")
     if any(m in low for m in CALIBRATION_MARKERS):
         return True
     return any(re.search(p, text, re.IGNORECASE) for p in EVIDENCE_PATTERNS)
@@ -174,6 +181,13 @@ def marker_satisfies(marker, head_full, now_ts, max_age_s=MARKER_MAX_AGE_S) -> b
     if marker.get("exit_code") != 0:
         return False
     if not marker.get("ran_full_suite"):
+        return False
+    # A run whose box list was narrowed (HONEST_BOXES override / no fleet
+    # SSOT) or whose tree carried uncommitted edits cannot back a
+    # fleet-strength claim about HEAD (§3 drill 2026-09-07). honest_status
+    # writes both fields; a marker without them (older writer, test fixture)
+    # is judged on the fields it has.
+    if marker.get("scope_narrowed") or marker.get("dirty_tree"):
         return False
     ts = marker.get("ts")
     if not isinstance(ts, (int, float)):

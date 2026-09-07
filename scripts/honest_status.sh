@@ -613,10 +613,17 @@ else bad "lint" "exit $rc — $(grep -E '\[E\]' $HS_TMP/lint.log | tail -1)"; fi
 
 # 5. Live honesty assert — no displayed confirmation_rate may exceed 1.0
 #    (the exact #74 false-green: a rate that read 1.64 = ">164% confirmed").
-viol=""; checked=0; det=""
+viol=""; checked=0; det=""; cr_unreach=0
 for b in $BOXES; do
-  j=$(run_on "$b" "curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null")
-  [ -z "$j" ] && continue   # no map served here — not a failure, just nothing to check
+  # Liveness token, as the SHA leg has had since 2026-07-28: an empty answer
+  # used to mean "no map served here" AND "the box did not answer", and the
+  # leg printed PASS over a fleet with an unreachable box silently dropped
+  # (§3 drill 2026-09-07). Down is UNKNOWN; up-with-no-map is nothing to check.
+  raw=$(run_on "$b" "echo HSUP; curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null")
+  if fleet_posture_is_silent "$b" 2>/dev/null; then det="$det $b:dormant"; continue; fi
+  [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || { cr_unreach=$((cr_unreach+1)); det="$det $b:unreach"; continue; }
+  j=$(printf '%s\n' "$raw" | sed -n '2,$p')
+  [ -z "$j" ] && continue   # up, no map served here — not a failure, just nothing to check
   checked=$((checked+1))
   v=$(printf '%s' "$j" | python3 -c 'import sys,json
 try: d=json.load(sys.stdin)
@@ -629,6 +636,7 @@ else: print("%.3f"%r if isinstance(r,(int,float)) else "shape?")' 2>/dev/null)
   case "$v" in VIOL*) viol="$viol$b:$v ";; esac
 done
 if [ -n "$viol" ]; then bad "live conf_rate<=1.0" "$viol"
+elif [ "$cr_unreach" -gt 0 ]; then unk "live conf_rate<=1.0" "$checked checked, $cr_unreach box(es) unreachable — not a fleet-wide assertion;$det"
 elif [ "$checked" = 0 ]; then unk "live conf_rate<=1.0" "no box served /api/gateway/delivery"
 elif [ "$FLEET_SSOT" = 0 ]; then
   # A violation found here is still real (the bad branch above stands), but
@@ -728,6 +736,12 @@ print("%d %d %d %s %s"%(wg,dg,hd,tsf,cl))' 2>/dev/null)
   ts=$(printf '%s' "$p" | awk "{print \$4}"); cl=$(printf '%s' "$p" | cut -d" " -f5-)
   # Freshness gate: a valid-but-stale snapshot (wedged loop) is NOT clean.
   # Same UNKNOWN tier as unparseable — old signals are not current truth.
+  # A snapshot with NO usable ts cannot prove its age either: it read
+  # "1/1 clean" under the stale gate (§3 drill 2026-09-07) — the absent value
+  # landing in the healthy domain (honest_failure_modes #1).
+  if [ "$WD_STALE_S" -gt 0 ] && [ "$ts" = "NOTS" ]; then
+    unreach=$((unreach+1)); sigdesc="$sigdesc $b:no-ts(age unobservable)"; continue
+  fi
   if [ "$WD_STALE_S" -gt 0 ] && [ "$ts" != "NOTS" ] && [ -n "$rnow" ]; then
     age=$(awk "BEGIN{printf \"%d\", $rnow - $ts}" 2>/dev/null)
     if [ -n "$age" ] && [ "$age" -gt "$WD_STALE_S" ] 2>/dev/null; then
@@ -845,8 +859,15 @@ echo "--> $verdict_msg"
 # (honest_failure_modes #9), never a silent swallow. A missing/old marker simply
 # reads as "this HEAD is unverified" downstream, which is the safe direction.
 VERDICT_PATH="${HONEST_VERDICT_PATH:-${HOME:-/tmp}/.cache/meshforge/honest_verdict.json}"
+# Scope + tree fingerprint (§3 drill 2026-09-07): a run narrowed by
+# HONEST_BOXES (or with no fleet SSOT) wrote a marker indistinguishable from a
+# fleet run, and no marker could tell a clean tree from one with uncommitted
+# edits. claim_gate refuses a marker carrying either flag.
+HV_NARROW=0; { [ -n "${HONEST_BOXES:-}" ] || [ "$FLEET_SSOT" = 0 ]; } && HV_NARROW=1
+HV_DIRTY=0; git -C "$REPO" status --porcelain 2>/dev/null | grep -q . && HV_DIRTY=1
 if ! HV_RC="$verdict_rc" HV_MSG="$verdict_msg" HV_HEAD="$HEADFULL" \
      HV_FULL="$RUN_TESTS" HV_STRICT="$STRICT" HV_PATH="$VERDICT_PATH" \
+     HV_NARROW="$HV_NARROW" HV_DIRTY="$HV_DIRTY" HV_BOXES="$BOXES" \
      python3 - <<'PY' 2>/dev/null
 import json, os, tempfile, time
 p = os.environ["HV_PATH"]
@@ -863,6 +884,9 @@ payload = json.dumps({
     "instrument": "honest_status",
     "ran_full_suite": os.environ.get("HV_FULL") == "1",
     "strict": os.environ.get("HV_STRICT") == "1",
+    "scope_narrowed": os.environ.get("HV_NARROW") == "1",
+    "dirty_tree": os.environ.get("HV_DIRTY") == "1",
+    "boxes": os.environ.get("HV_BOXES", ""),
 }, indent=2)
 fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(p) + ".", suffix=".tmp")
 try:
