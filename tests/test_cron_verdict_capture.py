@@ -369,12 +369,26 @@ class TestConsumersParseStructurally(unittest.TestCase):
             "{now} cron_freshness FAIL out=/x/cron_freshness.fail.out |"
             " peer moc1 OK peer moc2 stale\n"
         )
-        row = [ln for ln in lines if ln.strip().startswith("cron_freshness")]
+        # The leg is labelled "cron_freshness verdict" since 2026-09-07 (it
+        # shares check_verdict_fresh with calibration_reverify: age window +
+        # status, after the §3 drill found it had one outcome since birth).
+        row = [ln for ln in lines if "cron_freshness verdict" in ln]
         self.assertEqual(len(row), 1, lines)
         # Column-positional (see above): the message echoes the raw line,
         # which contains both "FAIL" and " OK " — only the verdict column
         # distinguishes the fixed parser from the broken one.
-        self.assertEqual(row[0].split()[1], "FAIL", row[0])
+        self.assertEqual(row[0].split()[2], "FAIL", row[0])
+
+    def test_stale_ok_cannot_green_the_freshness_leg(self):
+        """The watcher's last OK is 30 days old: the leg must FAIL on age —
+        it had no age window at all before 2026-09-07."""
+        lines = self._audit_lines(
+            "2026-01-01T00:00:00Z cron_freshness OK 0 stale\n"
+        )
+        row = [ln for ln in lines if "cron_freshness verdict" in ln]
+        self.assertEqual(len(row), 1, lines)
+        self.assertEqual(row[0].split()[2], "FAIL", row[0])
+        self.assertIn("stale", row[0])
 
 
 if __name__ == "__main__":
