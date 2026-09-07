@@ -16,7 +16,8 @@ from typing import Optional
 
 from utils.watchdog_probe_core import (
     Signal,
-    _SYSTEM_DIST_GLOBS,
+    env_site_globs,
+    SERVICE_ENV_LABELS,
     _load_parity_streak,
     _read_pkg_version_at_dirs,
     _save_parity_streak,
@@ -60,16 +61,7 @@ def _load_stray_waivers(path):
 # venv named after it — the stray that proved this class lived inside the
 # NOMADNET pipx venv on moc3 (silently stock 1.1.4 while the box's consumer
 # ran the fork pin; invisible to every existing drift probe).
-_LIB_STRAY_SITE_GLOBS = {
-    "venv":        ["{root}/venv/lib/python3*/site-packages"],
-    "system-dist": list(_SYSTEM_DIST_GLOBS),
-    "root-pipx":   [
-        "/root/.local/share/pipx/venvs/*/lib/python3*/site-packages",
-        "/opt/pipx/venvs/*/lib/python3*/site-packages",
-    ],
-    "user-site":   ["{home}/.local/lib/python3*/site-packages"],
-    "user-pipx":   ["{home}/.local/share/pipx/venvs/*/lib/python3*/site-packages"],
-}
+_LIB_STRAY_SITE_GLOBS = env_site_globs(pkg="*", labels=SERVICE_ENV_LABELS)
 
 
 def _enumerate_lib_installs(pkg, service_user, *, meshforge_root="/opt/meshforge",

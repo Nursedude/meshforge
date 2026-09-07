@@ -97,6 +97,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "src"))
 
 from utils.paths import get_real_user_home  # noqa: E402
+from utils.watchdog_probe_core import env_site_globs  # noqa: E402
 
 CLEAN = "clean"
 ADVISORY = "advisory"
@@ -136,28 +137,17 @@ APT_LISTS_STALE_H = 7 * 24
 #: python envs than a probe can see (user site, root dist-packages, pipx).
 REMOTE_PYTHON = "/usr/bin/python3"
 
-#: Every python env root a MeshForge box is known to grow, as (kind, glob).
-#: Since 2026-09-06 the reporter walks ALL of these, not just the interpreter
-#: it happens to be running under — see ``_REMOTE_SRC``'s env block for why.
+#: The env universe, from the ONE list every consumer shares
+#: (``watchdog_probe_core.PYTHON_ENV_SITE_GLOBS``). Before 2026-09-06 this was
+#: a third independent copy, and it diverged from the two probe copies on the
+#: day it was written — each list correct about its own incident and blind to
+#: the others'. ``pkg="*"`` because a LIBRARY rides inside any app venv.
 #: ``~`` is expanded remotely, by the reporter, against the ssh user's home.
-ENV_ROOT_GLOBS = (
-    ("apt",        "/usr/lib/python3/dist-packages"),
-    ("system-pip", "/usr/local/lib/python3.*/dist-packages"),
-    ("system-pip", "/usr/local/lib/python3.*/site-packages"),
-    ("user-site",  "~/.local/lib/python3.*/site-packages"),
-    ("root-site",  "/root/.local/lib/python3.*/site-packages"),
-    ("pipx",       "~/.local/share/pipx/venvs/*/lib/python3.*/site-packages"),
-    # moc4 predates the XDG move and keeps pipx venvs one level up.
-    ("pipx",       "~/.local/pipx/venvs/*/lib/python3.*/site-packages"),
-    ("venv",       "/opt/*/venv/lib/python3.*/site-packages"),
-    ("venv",       "/opt/*/*/venv/lib/python3.*/site-packages"),
-    # platformio's own env, present on every box that builds meshtasticd.
-    ("tooling",    "~/.platformio/penv/lib/python3.*/site-packages"),
+ENV_ROOT_GLOBS = tuple(
+    (label, pat.replace("{home}", "~").replace("{root}", "/opt/meshforge"))
+    for label, pats in env_site_globs(pkg="*").items()
+    for pat in pats
 )
-# The list is EXPLICIT by design: an unbounded filesystem walk on a Pi is the
-# kind of machinery-to-watch-machinery this fleet refuses. The cost of that
-# choice is that a NEW env class is invisible until it is added here — so when
-# one appears, it lands in this tuple in the same change that creates it.
 
 #: An env carrying RNS or LXMF speaks to the MESH, so its versions are a
 #: fleet-wide contract (the fork pin is byte-exact by tag+SHA); an env without
@@ -176,7 +166,7 @@ COLLECTIVE_MARKERS = ("rns", "lxmf")
 # still runs against ``md.version``'s answer; a line carrying ``claimants:`` is
 # the cue to clean the stale dist-info rather than trust either number alone.
 _REMOTE_SRC = r"""
-import glob, gzip, importlib.metadata as md, importlib.util, json, os, re, subprocess, time
+import fnmatch, glob, gzip, importlib.metadata as md, importlib.util, json, os, re, subprocess, time
 PKGS = %(pkgs)r
 IMPORT_NAMES = %(import_names)r
 DISTRO_PREFIX = %(distro_prefix)r
@@ -303,24 +293,31 @@ def _split_dist(entry):
     return None, None
 
 def _roots_for(kind, pattern):
-    found = sorted(glob.glob(os.path.expanduser(pattern)))
-    if found or "/root/" not in pattern:
+    pat = os.path.expanduser(pattern)
+    found = sorted(glob.glob(pat))
+    if found or not pat.startswith("/root/"):
         return found, None
-    # The glob itself needs read on /root to expand; ask a tool that has it.
-    # A FAILING find is ambiguous and the two readings are opposites: the
-    # directory may genuinely not exist (inert -- most boxes never grew a root
-    # user-site) or we may be unable to look (UNKNOWN). Collapsing them is the
-    # inert/indeterminate confusion this whole file exists to refuse, so ask
-    # sudo one more question before choosing.
-    if _run(["sudo", "-n", "/usr/bin/test", "-d", "/root/.local/lib"])[0] == 0:
-        rc, out = _run(["sudo", "-n", "/usr/bin/find", "/root/.local/lib",
-                        "-maxdepth", "2", "-type", "d", "-name", "site-packages"])
-        if rc == 0:
-            return sorted(x for x in out.splitlines() if x), None
-        return [], "unreadable (find failed under sudo)"
+    # Globbing under /root needs read on /root; ask a tool that has it. A
+    # FAILING find is ambiguous and the two readings are opposites: the path
+    # may genuinely not exist (inert -- most boxes never grew a root env) or
+    # we may be unable to look (UNKNOWN). Collapsing them is the
+    # inert/indeterminate confusion this file exists to refuse, so ask sudo
+    # one more question before choosing.
+    if _run(["sudo", "-n", "/usr/bin/test", "-d", "/root"])[0] == 0:
+        if _ROOT_DIRS[0] is None:
+            rc, out = _run(["sudo", "-n", "/usr/bin/find", "/root", "-maxdepth",
+                            "8", "-type", "d", "-name", "site-packages"])
+            _ROOT_DIRS[0] = sorted(x for x in out.splitlines() if x) if rc == 0 else False
+        if _ROOT_DIRS[0] is False:
+            return [], "unreadable (find failed under sudo)"
+        return [d for d in _ROOT_DIRS[0] if fnmatch.fnmatch(d, pat)], None
     if _run(["sudo", "-n", "/usr/bin/true"])[0] == 0:
         return [], None            # sudo works, the path is simply absent
     return [], "unreadable (sudo -n unavailable)"
+
+# One find under /root serves every /root pattern: None = not asked yet,
+# False = asked and could not look.
+_ROOT_DIRS = [None]
 
 envs = []
 seen_roots = set()
@@ -338,7 +335,7 @@ for kind, pattern in ENV_ROOT_GLOBS:
         env = {"root": root, "kind": kind, "readable": names is not None,
                "reason": reason, "collective": False, "packages": {}}
         if names is not None:
-            is_apt = root.startswith(DISTRO_PREFIX)
+            is_apt = root.startswith("/usr/lib/")
             hits = {}
             for entry in names:
                 nm, ver = _split_dist(entry)

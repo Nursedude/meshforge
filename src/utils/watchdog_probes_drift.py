@@ -25,6 +25,8 @@ from typing import Dict, List, Optional, Tuple
 from utils.watchdog_probe_core import (
     Signal,
     _SYSTEM_DIST_GLOBS,
+    env_site_globs,
+    SERVICE_ENV_LABELS,
     _journal_newest_match_status,
     _load_parity_streak,
     _read_deployment_declaration,
@@ -157,6 +159,11 @@ DEFAULT_CONSUMER_PATH_CACHE = "/var/lib/meshforge/rns_consumer_path.json"
 CONSUMER_PATH_TTL_S = 6 * 3600
 
 
+#: User-scope half of the fallback, from the shared universe.
+_CONSUMER_USER_SITE_GLOBS = tuple(
+    env_site_globs(labels=("user-site",)).get("user-site", ()))
+
+
 def _glob_consumer_site_dirs(user):
     """FALLBACK path guess: user-site then system dist-packages.
 
@@ -169,13 +176,19 @@ def _glob_consumer_site_dirs(user):
     """
     import glob
     dirs = []
+    # Order is CPython's resolution order and is load-bearing: user-site is
+    # imported AHEAD of system-wide dist-packages. Both name-lists are module
+    # level because probe tests monkeypatch them to redirect this guess at a
+    # tmp tree; reading them straight from the shared table would silently
+    # ignore that seam and make the fallback read the REAL box under test.
     if user and user != "root":
         try:
             import pwd
             home = pwd.getpwnam(user).pw_dir
         except (KeyError, OSError):
             home = f"/home/{user}"
-        dirs += sorted(glob.glob(f"{home}/.local/lib/python3*/site-packages"))
+        for pat in _CONSUMER_USER_SITE_GLOBS:
+            dirs += sorted(glob.glob(pat.format(home=home, root="")))
     for pat in _SYSTEM_DIST_GLOBS:
         dirs += sorted(glob.glob(pat))
     return [d for d in dict.fromkeys(dirs) if os.path.isdir(d)]
@@ -634,16 +647,6 @@ DEFAULT_DEP_FRAGMENT_DEBOUNCE_PATH = "/var/lib/meshforge/dep_fragment_debounce.j
 # Glob patterns (by location label) for every place a root-context read can
 # find a pip install of the watched package. `{home}` / `{root}` are filled per
 # call. Versioned-python dirs are globbed (the fleet runs mixed 3.12/3.13).
-_DEP_INSTALL_SITE_GLOBS = {
-    "venv":        ["{root}/venv/lib/python3*/site-packages"],
-    "system-dist": list(_SYSTEM_DIST_GLOBS),
-    "root-pipx":   [
-        "/root/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages",
-        "/opt/pipx/venvs/{pkg}/lib/python3*/site-packages",
-    ],
-    "user-site":   ["{home}/.local/lib/python3*/site-packages"],
-    "user-pipx":   ["{home}/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages"],
-}
 
 
 def _enumerate_pkg_installs(pkg, service_user, *, meshforge_root="/opt/meshforge",
@@ -662,7 +665,8 @@ def _enumerate_pkg_installs(pkg, service_user, *, meshforge_root="/opt/meshforge
         except (KeyError, OSError):
             user_home = f"/home/{service_user}"
     found = {}
-    for label, patterns in _DEP_INSTALL_SITE_GLOBS.items():
+    for label, patterns in env_site_globs(
+            pkg=pkg, labels=SERVICE_ENV_LABELS).items():
         if ("{home}" in "".join(patterns)) and not user_home:
             continue  # user-scoped location but no resolvable home — skip
         dirs = []

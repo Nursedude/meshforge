@@ -865,11 +865,72 @@ def signal_to_dict(sig: Signal, *, first_seen_ts: Optional[float] = None) -> dic
 # ─────────────────────────────────────────────────────────────────────
 
 # Every root-readable location a SYSTEM-scope pip install can land.
-_SYSTEM_DIST_GLOBS = [
-    "/usr/local/lib/python3*/dist-packages",
-    "/usr/lib/python3*/dist-packages",
-    "/usr/lib/python3/dist-packages",
-]
+
+# Every root-readable location ANY python package copy can live, as
+# (label, glob). THE single env universe for this repo — extended 2026-09-06
+# from the same rule that put _SYSTEM_DIST_GLOBS here, after the third
+# independent copy of this list appeared and diverged on the day it was born:
+# the advisory sweep listed ~/.local/pipx (moc4's older layout), platformio and
+# /opt/*/venv but not root-owned pipx; the two probes listed root-owned pipx
+# but none of the others. Each list was correct about the incident that created
+# it and blind to the others' — which is how a copy nobody patches survives.
+#
+# Placeholders are filled by env_site_globs(): {home} and {root} by the caller,
+# {pkg} by the LIBRARY-vs-CLI distinction — a library rides inside ANY app
+# venv that depends on it (pkg="*", the moc3 nomadnet stray), while a CLI
+# lives in the venv named after it.
+PYTHON_ENV_SITE_GLOBS = (
+    ("system-dist", "/usr/local/lib/python3*/dist-packages"),
+    ("system-dist", "/usr/lib/python3*/dist-packages"),
+    ("system-dist", "/usr/lib/python3/dist-packages"),
+    ("system-dist", "/usr/local/lib/python3*/site-packages"),
+    ("user-site",   "{home}/.local/lib/python3*/site-packages"),
+    ("root-site",   "/root/.local/lib/python3*/site-packages"),
+    ("user-pipx",   "{home}/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages"),
+    ("user-pipx",   "{home}/.local/pipx/venvs/{pkg}/lib/python3*/site-packages"),
+    ("root-pipx",   "/root/.local/share/pipx/venvs/{pkg}/lib/python3*/site-packages"),
+    ("root-pipx",   "/opt/pipx/venvs/{pkg}/lib/python3*/site-packages"),
+    ("venv",         "{root}/venv/lib/python3*/site-packages"),
+    # Not OUR service envs: another app's venv, or a build tool's. They can
+    # still hold a vulnerable copy, so the ADVISORY sweep wants them -- but
+    # "some other app ships meshtastic" is not OUR install fragmented, so the
+    # probes must not read them. That difference is a SCOPE, declared here
+    # once, rather than three lists that merely happen to disagree.
+    ("foreign-venv", "/opt/*/venv/lib/python3*/site-packages"),
+    ("foreign-venv", "/opt/*/*/venv/lib/python3*/site-packages"),
+    ("tooling",      "{home}/.platformio/penv/lib/python3*/site-packages"),
+)
+
+#: The envs OUR services actually read — what a coherence/fragmentation probe
+#: means by "this box". The sweep deliberately takes the full universe instead.
+SERVICE_ENV_LABELS = (
+    "system-dist", "user-site", "root-site", "user-pipx", "root-pipx", "venv",
+)
+
+#: Every root-readable location a SYSTEM-scope pip install can land. DERIVED
+#: from the universe above rather than re-typed: two lists in one file drift
+#: just as surely as two lists in five files, only more quietly. Kept as its
+#: own module-level name because probe tests monkeypatch it as the injection
+#: seam for "pretend the system dirs are over here".
+_SYSTEM_DIST_GLOBS = [g for label, g in PYTHON_ENV_SITE_GLOBS
+                      if label == "system-dist"]
+
+
+def env_site_globs(pkg="*", labels=None):
+    """``{label: [glob, ...]}`` from the ONE list above.
+
+    ``pkg`` fills the pipx venv-name slot and is substituted HERE, not by the
+    caller: both existing consumers format patterns with only ``root``/``home``,
+    so a surviving ``{pkg}`` would raise KeyError and be swallowed by their
+    ``except: continue`` — silently dropping every pipx location. That failure
+    would be invisible and would look exactly like "no strays found".
+    """
+    out = {}
+    for label, pat in PYTHON_ENV_SITE_GLOBS:
+        if labels is not None and label not in labels:
+            continue
+        out.setdefault(label, []).append(pat.replace("{pkg}", pkg))
+    return out
 
 
 def _read_pkg_version_at_dirs(site_dirs, pkg):

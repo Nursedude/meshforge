@@ -2171,3 +2171,50 @@ class TestInstallerProvisionsUnattendedUpgrades:
         assert 'check_fail "unattended-upgrades installed"' in v
         assert "sudo apt install -y unattended-upgrades" in v, "the FAIL must name the fix"
         assert "20auto-upgrades" in v, "installed-but-idle must be distinguishable from installed"
+
+
+class TestOnePythonEnvUniverse:
+    """Where python envs live is declared ONCE, in watchdog_probe_core.
+
+    2026-09-06: three independent copies of this list existed — two probes and
+    the advisory sweep — and they diverged on the day the third was written.
+    Each was correct about the incident that created it and blind to the
+    others': the sweep listed platformio and moc4's older pipx layout but not
+    root-owned pipx; the probes listed root-owned pipx and none of the rest. A
+    location no list carries is a copy nobody patches, which is the whole
+    failure this family of probes exists to catch. honest_failure_modes #5:
+    two consumers of one artifact share ONE constant, or they WILL drift.
+    """
+
+    #: The glob shape is unmistakable — a versioned-python env root.
+    #: A GLOB literal only — prose in a docstring, and single non-glob
+    #: paths like DISTRO_PREFIX, are not a re-listing of the universe.
+    _ENV_GLOB = re.compile(r"lib/python3\*[.0-9]*/(site|dist)-packages")
+
+    def test_no_second_copy_of_the_env_root_list(self):
+        offenders = []
+        roots = [SRC_DIR, os.path.abspath(os.path.join(SRC_DIR, "..", "scripts"))]
+        for root_dir in roots:
+            for dirpath, _dirs, files in os.walk(root_dir):
+                for fn in sorted(files):
+                    if not fn.endswith(".py") or fn == "watchdog_probe_core.py":
+                        continue
+                    path = os.path.join(dirpath, fn)
+                    try:
+                        with open(path, encoding="utf-8") as fh:
+                            tree = ast.parse(fh.read(), filename=path)
+                    except (OSError, SyntaxError):
+                        continue
+                    for node in ast.walk(tree):
+                        if (isinstance(node, ast.Constant)
+                                and isinstance(node.value, str)
+                                and "*" in node.value
+                                and "\n" not in node.value
+                                and self._ENV_GLOB.search(node.value)):
+                            offenders.append("%s:%s %r" % (
+                                os.path.relpath(path, os.path.dirname(SRC_DIR)),
+                                node.lineno, node.value))
+        assert offenders == [], (
+            "python env-root globs must come from watchdog_probe_core."
+            "PYTHON_ENV_SITE_GLOBS (via env_site_globs()), never be re-listed:\n  "
+            + "\n  ".join(offenders))

@@ -15,7 +15,7 @@ phantom-update; the watchdog companion is the ``dep_install_fragmented`` probe).
 This is the install-layout SSOT audit, mirroring ``scripts/db_audit.py``: it
 names every install, its owner, the consumer-of-record (venv else user-site),
 and the reconcile commands. It shares the location glob-set with the probe
-(``_DEP_INSTALL_SITE_GLOBS``) so the two can't drift about WHERE to look.
+(``PYTHON_ENV_SITE_GLOBS``) so the two can't drift about WHERE to look.
 
 Read-only by default. ``--fix`` PRINTS the reconcile commands; it does NOT
 execute them — installs on this externally-managed fleet are canary-first,
@@ -49,8 +49,11 @@ if str(_SRC_DIR) not in sys.path:
     sys.path.insert(0, str(_SRC_DIR))
 
 from utils.requirements_floor import read_floor, version_below  # noqa: E402
+from utils.watchdog_probe_core import (  # noqa: E402
+    SERVICE_ENV_LABELS,
+    env_site_globs,
+)
 from utils.watchdog_probes_drift import (  # noqa: E402
-    _DEP_INSTALL_SITE_GLOBS,
     _read_pkg_version_at_dirs,
 )
 
@@ -101,7 +104,7 @@ def enumerate_installs(
     site-packages dir, so mixed-python-minor copies surface separately).
 
     Uses the SAME glob-set the ``dep_install_fragmented`` probe enumerates
-    (``_DEP_INSTALL_SITE_GLOBS``) so audit and probe never disagree about where
+    (``PYTHON_ENV_SITE_GLOBS``) so audit and probe never disagree about where
     meshtastic can live."""
     if meshforge_root is None:
         meshforge_root = str(_SCRIPT_DIR.parent)
@@ -112,7 +115,8 @@ def enumerate_installs(
             user_home = f"/home/{user}"
 
     records: List[InstallRecord] = []
-    for label, patterns in _DEP_INSTALL_SITE_GLOBS.items():
+    for label, patterns in env_site_globs(
+            pkg=_PKG, labels=SERVICE_ENV_LABELS).items():
         if ("{home}" in "".join(patterns)) and not user_home:
             continue  # user-scoped location but no resolvable home — skip
         seen_dirs = set()
