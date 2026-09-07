@@ -133,11 +133,27 @@ scan() {  # $1 = "" for system, "--user" for user manager
 }
 
 scan ""
+# `systemctl --user` needs a bus ADDRESS, not merely a running manager. Under
+# cron there is no session, so XDG_RUNTIME_DIR is unset and the probe below
+# fails ("$DBUS_SESSION_BUS_ADDRESS and $XDG_RUNTIME_DIR not defined") even
+# while the user manager is active under linger=yes. The whole USER scope
+# then went unjudged on every scheduled run, and the old skip line said
+# `user-manager-absent(linger=yes)` — an explanation its own parenthetical
+# contradicts: the manager was present, the address was not. Measured cost
+# (2026-09-06): a failed user unit sat unreported for 2 days and surfaced
+# only because the audit was run by hand from a login session.
+# Supply the address when the runtime dir exists; genuine absence stays a SKIP.
+if [ -z "${XDG_RUNTIME_DIR:-}" ] && [ -d "/run/user/$(id -u)" ]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
 if systemctl --user show-environment >/dev/null 2>&1; then
     scan "--user"
 else
+    # Report what was OBSERVED, not a cause we did not establish: linger says
+    # whether a manager should persist, runtime_dir whether we could address
+    # it. Both go in the line so the next reader is not guessing.
     linger=$(loginctl show-user "$(id -un)" -p Linger --value 2>/dev/null || echo "?")
-    skips=" user-manager-absent(linger=$linger)"
+    skips=" user-scope-unobservable(linger=$linger,runtime_dir=${XDG_RUNTIME_DIR:-unset})"
 fi
 
 waived_note=""

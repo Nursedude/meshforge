@@ -872,18 +872,61 @@ def _parse_cron_verdicts(
 # The captured <name> is the cron the verdict belongs to.
 _VERDICT_CALL_RE = re.compile(r"cron_verdict\.sh\s+(\S+)")
 
+# Matches a SELF-VERDICT declaration on a crontab command:
+#   17 7 * * * /path/boot_survival_audit.sh >>log 2>&1  # cron_verdict:boot_survival
+#
+# WHY (2026-09-06). Some jobs call ``cron_verdict.sh`` from INSIDE their own
+# body, so no name ever appears on the crontab line — boot_survival_audit.sh
+# and cron_verdict_freshness.sh both do. They emit verdicts nothing can judge:
+# ``classify_orphan_verdicts`` hears their FAILures (a fresh unwired verdict is
+# a live emitter) but can never hear their SILENCE, because silence is only
+# judgeable against a cadence and the cadence lives on the very crontab line
+# the name is missing from. That is the residual its docstring flags as
+# "needs a real declaration mechanism, not this function" — this is it.
+#
+# The marker supplies the missing half, the NAME, beside the schedule, so both
+# halves live on one line and move together; the cadence is still READ from
+# the crontab, never hand-entered, so it cannot drift from reality
+# (honest_failure_modes #5). A trailing ``#`` is a shell comment, so the marker
+# never reaches the command (verified 2026-09-06).
+#
+# ⚠️ It is a DECLARATION, not an acknowledgement. ``CRON_VERDICT_ORPHAN_ACKNOWLEDGED``
+# says "another detector owns this, stay quiet" — a mute that must name its
+# owner. This says the opposite: "judge this one's silence too." Adding a
+# marker can only ever make MORE failures visible, never fewer, so it is safe
+# to apply without an owning detector to point at.
+_SELF_VERDICT_DECL_RE = re.compile(r"#\s*cron_verdict:\s*([^\s#]+)")
+
 
 def _verdict_names_in_command(command: str) -> List[str]:
-    """All cron names a crontab command WIRES via ``cron_verdict.sh``.
+    """All cron names a crontab command wires OR declares.
 
-    A single command may chain several verdict calls (``jobA; cron_verdict.sh a
-    $?; jobB; cron_verdict.sh b $?``) — ALL are wired (``finditer``, not
-    ``search``: a second wired cron is still a real cron). This is the SSOT for
-    "which crons are wired", shared by this module's orphan filter and Issue
-    #78's ``probe_cron_verdict_stale`` so the two can never drift (one regex,
-    one extractor — honest_failure_modes #5).
+    Two ways a command claims a verdict name:
+
+    * WIRED — it calls ``cron_verdict.sh <name>`` itself. A single command may
+      chain several (``jobA; cron_verdict.sh a $?; jobB; cron_verdict.sh b $?``)
+      and ALL are wired (``finditer``, not ``search``: a second wired cron is
+      still a real cron).
+    * DECLARED — it carries a ``# cron_verdict:<name>`` marker because the job
+      emits that verdict from inside its own body. See ``_SELF_VERDICT_DECL_RE``.
+
+    Both are returned, in that order, de-duplicated while preserving first
+    appearance: a command that wires AND declares the same name is one cron,
+    not two, and a duplicate would double-count it in every consumer's tally.
+
+    This is the SSOT for "which crons are judgeable", shared by this module's
+    orphan filter and Issue #78's ``probe_cron_verdict_stale`` so the two can
+    never drift (one extractor, two consumers — honest_failure_modes #5).
     """
-    return [m.group(1) for m in _VERDICT_CALL_RE.finditer(command or "")]
+    text = command or ""
+    names = [m.group(1) for m in _VERDICT_CALL_RE.finditer(text)]
+    names += [m.group(1) for m in _SELF_VERDICT_DECL_RE.finditer(text)]
+    seen, out = set(), []
+    for n in names:
+        if n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
 
 
 def _wired_verdict_names(crontab_block: Dict[str, Any]) -> Optional[set]:

@@ -171,3 +171,90 @@ class TestTheSentenceMeansWhatItSays:
                     + _v("orph", "FAIL", 60))
         sig = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
         assert "failing:" in sig.detail and "failing UNWIRED" in sig.detail
+
+
+class TestSelfVerdictDeclaration:
+    """The residual the orphan filter could not close (2026-09-06).
+
+    ``classify_orphan_verdicts``' own docstring states it: an orphan has no
+    crontab schedule, so its SILENCE cannot be judged — only its failures.
+    "A fresh orphan that dies simply ages into a fossil and drops out quietly.
+    Closing that half needs a real declaration mechanism, not this function."
+
+    Measured shape: ``boot_survival_audit.sh`` and ``cron_verdict_freshness.sh``
+    call ``cron_verdict.sh`` from inside their own bodies, so no name reaches
+    the crontab line. A ``# cron_verdict:<name>`` marker on that line supplies
+    the NAME beside the schedule the cadence is read from — the pair completed,
+    on one line that moves together.
+
+    ⚠️ This is a DECLARATION, not an acknowledgement. It makes silence JUDGED;
+    the ack list mutes. Adding one can only ever surface more failures.
+    """
+
+    DECLARED = ("17 7 * * * /opt/meshforge/scripts/boot_survival_audit.sh "
+                ">>/tmp/b.log 2>&1  # cron_verdict:boot_survival\n")
+
+    def test_a_declared_cron_is_wired_not_orphaned(self, tmp_path):
+        """Its FAIL is judged as a wired cron's, not reported as a wiring gap."""
+        verdicts = _v("myjob", "OK", 60) + _v("boot_survival", "FAIL", 120)
+        sig = _fire(tmp_path, crontab_text=WIRED + self.DECLARED,
+                    verdicts_text=verdicts)
+        assert sig is not None
+        assert not sig.extra.get("unwired_failing"), (
+            "a declared cron is wired — reporting it as an orphan would still "
+            "be describing the wiring instead of judging the failure")
+        assert any("boot_survival" in x for x in sig.extra["failed"])
+
+    def test_the_silence_of_a_declared_cron_is_now_judged(self, tmp_path):
+        """THE point. Undeclared, a dead emitter ages into a fossil in silence.
+
+        Declared, its cadence is known, so 'no verdict at all' is a finding.
+        This is the half the orphan filter could not reach.
+        """
+        verdicts = _v("myjob", "OK", 60)          # boot_survival: nothing, ever
+        undeclared = _fire(tmp_path, crontab_text=WIRED, verdicts_text=verdicts)
+        assert undeclared is None, (
+            "baseline: with no declaration the dead emitter is invisible")
+
+        declared = _fire(tmp_path, crontab_text=WIRED + self.DECLARED,
+                         verdicts_text=verdicts)
+        assert declared is not None, "a declared cron that never wrote is stale"
+        assert any("boot_survival" in x for x in declared.extra["stale"])
+
+    def test_a_declared_cron_that_is_current_stays_quiet(self, tmp_path):
+        """The other polarity: declaring must not manufacture a finding."""
+        verdicts = _v("myjob", "OK", 60) + _v("boot_survival", "OK", 120)
+        assert _fire(tmp_path, crontab_text=WIRED + self.DECLARED,
+                     verdicts_text=verdicts) is None
+
+
+class TestDeclarationExtractor:
+    """Unit-level rules for the marker itself."""
+
+    def test_declared_name_is_extracted(self):
+        from utils.fleet_snapshot import _verdict_names_in_command
+        assert _verdict_names_in_command(
+            "/x/job.sh >>log 2>&1  # cron_verdict:boot_survival"
+        ) == ["boot_survival"]
+
+    def test_wired_and_declared_same_name_counts_once(self):
+        """One cron, not two — a duplicate double-counts in every tally."""
+        from utils.fleet_snapshot import _verdict_names_in_command
+        assert _verdict_names_in_command(
+            "/x/job.sh; /opt/meshforge/scripts/cron_verdict.sh j $?  "
+            "# cron_verdict:j") == ["j"]
+
+    def test_an_ordinary_trailing_comment_declares_nothing(self):
+        """The marker must be specific — any `#` would enrol junk as crons."""
+        from utils.fleet_snapshot import _verdict_names_in_command
+        assert _verdict_names_in_command("/x/job.sh  # nightly, see runbook") == []
+        assert _verdict_names_in_command("/x/job.sh  # cron_verdict is nice") == []
+
+    def test_marker_is_a_shell_comment_so_it_never_reaches_the_command(self):
+        """Pinning the property the whole design rests on: adding a marker to a
+        live crontab line must not change what the job RUNS."""
+        import subprocess
+        r = subprocess.run(
+            ["bash", "-c", "echo ran  # cron_verdict:demo"],
+            capture_output=True, text=True, timeout=30)
+        assert r.returncode == 0 and r.stdout.strip() == "ran"

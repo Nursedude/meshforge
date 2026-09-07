@@ -8,9 +8,19 @@
 # Born in the 2026-06-09 version-updates arc: a push failure or domain
 # lapse previously only left a journal line on the publisher; nothing paged.
 #
-# Run it on the CLOUD-PUBLISHER box (moc1), wired into the cron_verdict
-# regime so cron_verdict_freshness.sh (federator) + probe_cron_verdict_stale
-# page on FAIL or silence:
+# WHERE TO RUN IT: any box that can reach the public URL. The check is
+# publisher-agnostic — it reads the SERVED artifact over HTTPS, never local
+# disk — so running it somewhere other than the publisher is the stronger
+# test: it proves the artifact is publicly reachable, not merely written.
+# One box should own the cron, so the verdict has a single writer.
+# (This header used to name a specific box as "the CLOUD-PUBLISHER". That
+# went stale: the named box had the CHECK's cron while its push timer was
+# disabled, and the actual publisher was a different box entirely. A comment
+# that routes an operator to a box is a comment that rots — describe the
+# ROLE, let `systemctl is-enabled meshforge-cloud-push.timer` name the box.)
+#
+# Wire it into the cron_verdict regime so cron_verdict_freshness.sh +
+# probe_cron_verdict_stale page on FAIL or silence:
 #   17 * * * * /opt/meshforge/scripts/cloud_map_freshness.sh >/dev/null 2>&1; /opt/meshforge/scripts/cron_verdict.sh cloud_map_freshness $?
 #
 # Env overrides:
