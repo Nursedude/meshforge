@@ -82,9 +82,19 @@ for guard, body in CASES:
              f"tests/test_regression_guards.py::{guard}", "-q", "--no-header",
              "-p", "no:cacheprovider"],
             cwd=REPO, capture_output=True, text=True, timeout=300)
-        fired = proc.returncode != 0
+        # pytest exits NON-ZERO for a node id that does not exist (4 = usage
+        # error, 5 = nothing collected) — the same shape as "the guard fired".
+        # Verified 2026-09-07: a bogus class gives rc=4, so a RENAMED OR
+        # DELETED guard was being counted in "N/M contracts fired" and the
+        # drill exited 0. The drill that exists to prove guards work would
+        # bless a guard that does not exist ("a drill that defeats a guard
+        # must first assert the guard EXISTS").
+        missing = (proc.returncode in (4, 5)
+                   or "no tests ran" in proc.stdout
+                   or "collected 0 items" in proc.stdout)
+        fired = (not missing) and proc.returncode != 0
         named = "_audit_drill_tmp" in proc.stdout
-        results.append((guard, fired, named))
+        results.append((guard, fired, named, missing))
     finally:
         if os.path.exists(DRILL):
             os.remove(DRILL)
@@ -93,8 +103,12 @@ assert not os.path.exists(DRILL), "drill file left behind!"
 
 print(f"### {APP}: does each contract fire on a live violation?\n")
 silent = []
-for guard, fired, named in results:
-    if fired and named:
+missing_guards = []
+for guard, fired, named, missing in results:
+    if missing:
+        verdict = "MISSING — no such contract; NOTHING was drilled"
+        missing_guards.append(guard)
+    elif fired and named:
         verdict = "FIRES  (and names the file)"
     elif fired:
         verdict = "fires  (did NOT name the drill file — check it caught the right thing)"
@@ -103,7 +117,18 @@ for guard, fired, named in results:
         silent.append(guard)
     print(f"  {guard:34s} {verdict}")
 
-print(f"\n{len(results) - len(silent)}/{len(results)} contracts fired.")
+# Layer C: announce the SCOPE actually exercised, not just the outcome. A drill
+# that ran against nothing must not read as a clean sweep.
+drilled = len(results) - len(missing_guards)
+print(f"\nguard_drill: drilled {drilled} of {len(CASES)} declared contract(s); "
+      f"{drilled - len(silent)} fired.")
+if not results or drilled == 0:
+    print("UNKNOWN: no contract was actually drilled — this proves NOTHING.")
+    sys.exit(2)
+if missing_guards:
+    print("MISSING (renamed or deleted — the drill could not test them): "
+          + ", ".join(missing_guards))
 if silent:
     print("SILENT: " + ", ".join(silent))
+if silent or missing_guards:
     sys.exit(1)

@@ -343,8 +343,21 @@ def main() -> int:
     counts: dict = {}
     for r in results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
-    summary = {"head": head, "total": len(results), "counts": counts, "rows": results}
+    summary = {"head": head, "total": len(results), "counts": counts, "rows": results,
+               "declared": len(signal_classes())}
     print("\n" + "  ".join(f"{k}={v}" for k, v in sorted(counts.items())))
+    # Layer C (2026-09-07): announce the SCOPE actually drilled. With an empty
+    # selection this printed a blank counts line and then "PASS — all 0 classes
+    # caught in both polarities" and exited 0: a drill that measured NOTHING
+    # claiming the strongest result it can give.
+    print(f"falsifiability_drill: drilled {len(results)} of "
+          f"{summary['declared']} declared signal class(es)")
+    if not results:
+        print("UNKNOWN: no class was drilled — this proves NOTHING, and is "
+              "not a pass.", file=sys.stderr)
+        if a.json:
+            Path(a.json).write_text(json.dumps(summary, indent=2))
+        return 2
     if a.json:
         Path(a.json).write_text(json.dumps(summary, indent=2))
     if a.md:

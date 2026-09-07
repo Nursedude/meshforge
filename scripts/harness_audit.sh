@@ -54,6 +54,35 @@ else
     U "session hooks" "cannot read $SETTINGS"
 fi
 
+# 2b. the RUNNING hook == the REVIEWED hook (2026-09-07)
+# Legs 1-2 check hooks are WIRED. Nothing checked that the file a wired hook
+# POINTS AT still matches its repo-tracked source — so the reviewed artifact
+# and the running artifact could diverge silently, and did: psk_leak_guard.sh
+# in ~/.claude/hooks/ was 2 MONTHS behind the repo copy (2650B Jul 10 vs
+# 4972B Jul 11). The live one was missing the honest SCOPE section AND the
+# fail-open witness added precisely so "a harness JSON-shape change can't
+# silently disable the guard". A security guard was running an older, weaker
+# version while its improvements sat reviewed and undeployed.
+# A hook present in both places but DIFFERENT is the failure; absent from the
+# repo is not this leg's business (an operator-local hook is legitimate).
+hook_drift=0; hook_checked=0
+for repo_hook in "$REPO"/.claude/hooks/*.sh; do
+    [ -f "$repo_hook" ] || continue
+    live_hook="$HOME/.claude/hooks/$(basename "$repo_hook")"
+    [ -f "$live_hook" ] || continue          # not deployed here — not drift
+    hook_checked=$((hook_checked+1))
+    if ! cmp -s "$repo_hook" "$live_hook"; then
+        hook_drift=$((hook_drift+1))
+        F "hook drift($(basename "$repo_hook"))" \
+          "live copy differs from the repo-tracked source — the reviewed hook is NOT the running one"
+    fi
+done
+if [ "$hook_checked" -eq 0 ]; then
+    U "hook repo==live" "no repo hook is deployed to ~/.claude/hooks — nothing compared"
+elif [ "$hook_drift" -eq 0 ]; then
+    P "hook repo==live" "$hook_checked hook(s) match their repo source"
+fi
+
 # 3. mini fresh + seed coverage test
 MINI_STATE="$HOME/mini_dudeai_state.json"
 if [ -r "$MINI_STATE" ]; then

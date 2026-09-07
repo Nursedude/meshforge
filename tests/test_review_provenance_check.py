@@ -761,3 +761,63 @@ class TestInternalErrorWitness(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLayerCScopeAnnouncement(unittest.TestCase):
+    """Layer C (2026-09-07): a checker must announce WHAT IT JUDGED.
+
+    Defect 1 of the exit-code-gate plan was this gate reporting GATE_RC=0 over
+    an EMPTY `origin/main..HEAD` while an uncommitted edit sat in the tree. A
+    check that judged nothing and exited 0 is indistinguishable from one that
+    judged the work and found it clean. "The check ran against nothing" is not
+    syntactic — it cannot be linted or hooked — so the cure is legibility.
+    """
+
+    def _scope(self, repo, rng, base):
+        sink = []
+        rpc.run(repo, rng, base, ledger_path="/nonexistent",
+                witness_path=os.path.join(repo, "wit.log"), scope_sink=sink)
+        return sink
+
+    def test_empty_range_reports_zero_not_silence(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, "README.md", "base\n")
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+            base = _commit(repo, "chore: base")
+            sink = self._scope(repo, f"{base}..HEAD", base)
+            self.assertEqual(sink[0]["commits"], 0)
+
+    def test_real_range_reports_the_count(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, "README.md", "base\n")
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+            base = _commit(repo, "chore: base")
+            _write(repo, "a.py", "a = 1\n"); _commit(repo, "feat: a")
+            _write(repo, "b.py", "b = 1\n"); _commit(repo, "feat: b")
+            sink = self._scope(repo, f"{base}..HEAD", base)
+            self.assertEqual(sink[0]["commits"], 2)
+
+    def test_unresolvable_range_is_UNKNOWN_not_zero(self):
+        """`None` and `0` are different claims: "I could not see the range" is
+        not "the range is empty". Collapsing them would let a broken base ref
+        read as a clean, empty push (honest_failure_modes #2)."""
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, "README.md", "base\n")
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+            base = _commit(repo, "chore: base")
+            sink = self._scope(repo, "nosuchref..HEAD", base)
+            self.assertIsNone(sink[0]["commits"])
+
+    def test_scope_sink_is_optional_so_existing_callers_are_untouched(self):
+        with tempfile.TemporaryDirectory() as repo:
+            _init_repo(repo)
+            _write(repo, "README.md", "base\n")
+            _write(repo, rpc.PROVENANCE_REL, PROV_HEADER + WORKLIST)
+            base = _commit(repo, "chore: base")
+            code, _out, _warn = rpc.run(repo, f"{base}..HEAD", base,
+                                        ledger_path="/nonexistent",
+                                        witness_path=os.path.join(repo, "wit.log"))
+            self.assertEqual(code, 0)

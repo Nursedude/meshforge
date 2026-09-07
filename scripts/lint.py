@@ -1299,6 +1299,26 @@ MF022_ALLOWED_FILES = {
 }
 
 MF022_PIPE_MASK = re.compile(r'\bpip3?\s+install\b.*\|\s*(tail|head)\b')
+
+# Layer A (2026-09-07): the exit-code mask is NOT a pip property. Defect 3 of
+# the exit-code-gate plan was "printed rc=0 that was head's exit code from a
+# pipeline, not python's", and it RECURRED that same day in a session that had
+# just named the class. CLAUDE.md states the rule generally ("never pytest |
+# tail — the exit code is tail's").
+#
+# Discriminator: piping to head/tail is perfectly fine for DISPLAY. It is only
+# a defect when the pipeline's exit code is then CONSUMED — so this fires only
+# when `$?` is referenced on the same line or the next non-blank one. That
+# keeps the rule quiet on the many legitimate `... | head` display lines while
+# catching the shape that actually lies.
+MF022_VERDICT_CMDS = (
+    'pytest', 'python3', 'python', 'gh', 'git', 'systemctl', 'curl', 'ssh',
+    'lint.py', 'honest_status.sh',
+)
+MF022_EXITCODE_MASK = re.compile(
+    r'\b(' + '|'.join(re.escape(c) for c in MF022_VERDICT_CMDS)
+    + r')\b.*\|\s*(tail|head)\b')
+MF022_USES_RC = re.compile(r'\$\?')
 MF022_BARE_PIP = re.compile(r'\bpip3?\s+install\b')
 MF022_APT_SWALLOW = re.compile(r'\bapt(-get)?\s+install\b.*&>\s*/dev/null')
 
@@ -1315,8 +1335,25 @@ def _check_pip_invocations_in_file(filepath: str, rel_path: str) -> List[LintIss
     issues: List[LintIssue] = []
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
-            for lineno, line in enumerate(f, 1):
+            lines = f.readlines()
+        for lineno, line in enumerate(lines, 1):
                 if line.lstrip().startswith('#'):
+                    continue
+                # Does this pipeline's exit code get consumed here or next?
+                nxt = ""
+                for cand in lines[lineno:lineno + 2]:
+                    if cand.strip():
+                        nxt = cand
+                        break
+                m = MF022_EXITCODE_MASK.search(line)
+                if (m and not _match_in_quotes(line, m.start())
+                        and (MF022_USES_RC.search(line) or MF022_USES_RC.search(nxt))):
+                    issues.append(LintIssue(
+                        rel_path, lineno, Severity.ERROR, "MF022",
+                        f"'{m.group(1)}' piped to {m.group(2)} and then $? is read — "
+                        "that is the PIPE's exit code, not the command's. Capture the "
+                        "real rc first (`cmd >log 2>&1; rc=$?`) and read the log after",
+                    ))
                     continue
                 m = MF022_PIPE_MASK.search(line)
                 if m and not _match_in_quotes(line, m.start()):

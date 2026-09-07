@@ -118,3 +118,40 @@ class TestMF022RealTreeIsClean:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestMF022ExitCodeMaskPastPip:
+    """Layer A (2026-09-07): the exit-code mask is not a pip property.
+
+    Defect 3 of the exit-code-gate plan was "printed rc=0 that was head's exit
+    code from a pipeline, not python's" — and it RECURRED the same day, in a
+    session that had just named the class. CLAUDE.md states the rule generally:
+    never `pytest | tail`, because the exit code is tail's.
+
+    The discriminator is CONSUMPTION, not the pipe: `... | head` for display is
+    fine and extremely common, so this fires only when `$?` is then read.
+    """
+
+    def test_pytest_piped_then_rc_read_is_an_error(self, tmp_path):
+        issues = _check("#!/bin/bash\npython3 -m pytest tests/ -q | tail -3\n"
+                        'echo "rc=$?"\n', tmp_path=tmp_path)
+        assert any(i.code == "MF022" for i in issues), issues
+        assert any("not the command's" in i.message for i in issues)
+
+    def test_same_line_form_is_caught(self, tmp_path):
+        issues = _check('#!/bin/bash\ngh run list | head -1; echo "exit=$?"\n',
+                        tmp_path=tmp_path)
+        assert any(i.code == "MF022" for i in issues), issues
+
+    def test_display_only_pipe_is_NOT_flagged(self, tmp_path):
+        """The rule must stay quiet on the legitimate shape or it becomes noise
+        the reader learns to skip — a guard that cries wolf is disarmed by its
+        own users."""
+        issues = _check("#!/bin/bash\nsystemctl list-units | head -20\n"
+                        "git log --oneline | tail -5\n", tmp_path=tmp_path)
+        assert not [i for i in issues if i.code == "MF022"], issues
+
+    def test_quoted_example_is_not_a_command(self, tmp_path):
+        issues = _check('#!/bin/bash\necho "never do: pytest | tail -3; echo $?"\n',
+                        tmp_path=tmp_path)
+        assert not [i for i in issues if i.code == "MF022"], issues

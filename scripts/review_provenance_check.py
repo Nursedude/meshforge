@@ -545,8 +545,21 @@ def _fmt_structure_block(rows):
     return "\n".join(lines)
 
 
-def run(repo, rev_range, base_ref, ledger_path, witness_path):
-    """Execute all three legs. Returns (exit_code, out_lines, warn_lines)."""
+def run(repo, rev_range, base_ref, ledger_path, witness_path, scope_sink=None):
+    """Execute all three legs. Returns (exit_code, out_lines, warn_lines).
+
+    ``scope_sink`` (Layer C, 2026-09-07): an optional list the caller passes to
+    learn WHAT THIS RUN ACTUALLY JUDGED. A checker that judged an empty input
+    set and exited 0 is indistinguishable from one that judged the work and
+    found it clean — defect 1 of the exit-code-gate plan was this gate
+    reporting GATE_RC=0 over an EMPTY ``origin/main..HEAD`` while an uncommitted
+    edit sat in the tree. "The check ran against nothing" is not syntactic and
+    cannot be linted or hooked; the cure is legibility, so the scope is
+    announced on every run and an empty one says so out loud.
+
+    Kept as a sink rather than a fourth tuple element so existing callers and
+    tests are untouched.
+    """
     out = []
     warn = []
     prov_head = _read_provenance_at(repo, "HEAD")
@@ -560,6 +573,13 @@ def run(repo, rev_range, base_ref, ledger_path, witness_path):
     # --- Leg 1 -------------------------------------------------------------
     leg1_violations = []
     commits = commits_in_range(repo, rev_range) if rev_range else []
+    if scope_sink is not None:
+        scope_sink.append({
+            "rev_range": rev_range,
+            # None = the range could not be RESOLVED (unknown), which is a
+            # different claim from an empty range (nothing to judge).
+            "commits": None if commits is None else len(commits),
+        })
     if commits is None:
         warn.append(f"leg1: could not resolve push range '{rev_range}' "
                     "(base not fetched?) — skipping review-claim witness check")
@@ -680,9 +700,10 @@ def main(argv=None):
     repo = args.repo or str(REPO)
     ledger_path = args.ledger or _default_ledger_path()
     rev_range = args.rev_range or f"{args.base_ref}..HEAD"
+    scope: list = []
     try:
         code, out, warn = run(repo, rev_range, args.base_ref,
-                              ledger_path, args.witness)
+                              ledger_path, args.witness, scope_sink=scope)
     except Exception as e:  # noqa: BLE001 — a gate bug must not wedge a push
         # Pass open, but never silently: a fail-dark gate is indistinguishable
         # from a healthy one (#9) — the witness log is what makes "did the
@@ -691,6 +712,20 @@ def main(argv=None):
         print(f"review_provenance_check: WARN — internal error ({e!r}); "
               "passing open", file=sys.stderr)
         return 0
+    # Layer C: announce the scope on EVERY run, before any verdict. An empty
+    # check is then self-announcing instead of silently green. stderr, so the
+    # violation blocks on stdout stay machine-readable and the pre-push hook
+    # (which reads only the exit code) is unaffected.
+    for sc in scope:
+        n = sc.get("commits")
+        rng = sc.get("rev_range") or "<no range>"
+        if n is None:
+            note = f"could not resolve {rng} — SCOPE UNKNOWN, nothing was judged"
+        elif n == 0:
+            note = f"judged 0 commit(s) in {rng} — NOTHING TO CHECK"
+        else:
+            note = f"judged {n} commit(s) in {rng}"
+        print(f"review_provenance_check: {note}", file=sys.stderr)
     for line in warn:
         print(f"review_provenance_check: WARN — {line}", file=sys.stderr)
     for block in out:
