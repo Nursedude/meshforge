@@ -51,6 +51,16 @@ check "  ...and names the failing test" \
   "$(printf '%s' "$MF_PYTEST_WHY" | grep -q 'test_bad' && echo 0 || echo 1)"
 rm -f "$MF_PYTEST_LOG"
 
+# A caller whose environment forces colour (FORCE_COLOR / PY_COLORS — any
+# Claude tool shell, some CI runners) must not degrade the classifier: ANSI
+# escapes around "FAILED" broke the anchored grep and the verdict read
+# "0 FAILED/ERROR" beside a real failure (2026-09-06).
+FORCE_COLOR=3 PY_COLORS=1 mf_pytest_checked "$TMP/test_red.py" -q; rc=$?
+check "a failing run under FORCE_COLOR still returns 1" "$([ "$rc" = 1 ] && echo 0 || echo 1)"
+check "  ...and still names the failing test" \
+  "$(printf '%s' "$MF_PYTEST_WHY" | grep -q 'test_bad' && echo 0 || echo 1)"
+rm -f "$MF_PYTEST_LOG"
+
 # THE ONE THAT MATTERS: classifier gone. Callers use `if ! mf_pytest_checked`,
 # so returning 0 here would wave a broken tree through every gate that uses it.
 MF_PYTEST_VERDICT_SH="/nonexistent/pytest_verdict.sh" \

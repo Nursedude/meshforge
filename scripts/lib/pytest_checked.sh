@@ -46,7 +46,12 @@ mf_pytest_checked() {
     local _verdict_sh="${MF_PYTEST_VERDICT_SH:-$_root/scripts/pytest_verdict.sh}"
 
     MF_PYTEST_LOG="$(mktemp)"
-    "$_py" -m pytest "$@" >"$MF_PYTEST_LOG" 2>&1
+    # --color=no, always: the classifier greps ANCHORED "FAILED <nodeid>"
+    # lines, and a caller whose env carries FORCE_COLOR/PY_COLORS makes pytest
+    # wrap them in ANSI escapes even with stdout redirected — the verdict then
+    # read "0 FAILED/ERROR" beside a real failure (2026-09-06, a Claude tool
+    # shell with FORCE_COLOR=3). The log is for the classifier, not for eyes.
+    "$_py" -m pytest --color=no "$@" >"$MF_PYTEST_LOG" 2>&1
     local _rc=$?
 
     if [ ! -x "$_verdict_sh" ]; then
