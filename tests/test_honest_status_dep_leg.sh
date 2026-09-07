@@ -61,16 +61,22 @@ check() { # label, fake-home, expected-verdict
 
 mk() { mkdir -p "$TMP/$1"; printf '%s' "$1" > /dev/null; }
 
+# An installed-stock record the leg may READ must declare itself a fleet run
+# (2026-09-06: a `--host X` spot-check overwrote the fleet file twice in one
+# session; the script now stamps the canonical pair and writes narrow runs to
+# `.scoped` siblings). These fixtures are what the unnarrowed daily run writes.
+fleet_status() { printf '# fleet dependency advisories\n# scope: fleet\n' > "$1/.meshforge-dep-advisories"; }
+
 # 1. Both halves fresh with no findings — the only state that may pass.
 mk h1
-: > "$TMP/h1/.meshforge-dep-advisories"
+fleet_status "$TMP/h1"
 : > "$TMP/h1/.meshforge-dep-ranges"
 check "both fresh, no findings" "$TMP/h1" PASS
 
 # 2. Installed-side findings present. A real fleet condition, not a broken
 #    gate, so WARN — the same treatment the watchdog leg gives a degraded box.
 mk h2
-: > "$TMP/h2/.meshforge-dep-advisories"
+fleet_status "$TMP/h2"
 : > "$TMP/h2/.meshforge-dep-ranges"
 printf '# header\nmoc cryptography 46.0.5: GHSA-x(high)\nmoc1 urllib3 2.6.3: GHSA-y(high)\n' \
   > "$TMP/h2/.meshforge-dep-ADVISORY"
@@ -78,7 +84,7 @@ check "installed findings present" "$TMP/h2" WARN
 
 # 3. Declared-side findings present — an unpatchable pin, the 2026-09-05 case.
 mk h3
-: > "$TMP/h3/.meshforge-dep-advisories"
+fleet_status "$TMP/h3"
 : > "$TMP/h3/.meshforge-dep-ranges"
 printf '# header\nrequirements/rns.txt:62 cryptography>=45.0.7,<47 — UNPATCHABLE\n' \
   > "$TMP/h3/.meshforge-dep-RANGE-FINDING"
@@ -92,7 +98,7 @@ check "one half never ran" "$TMP/h4" UNKNOWN
 # 5. Status file present but stale — a dead timer. Same claim as never-ran:
 #    we cannot say anything current, so we must not say "clean".
 mk h5
-: > "$TMP/h5/.meshforge-dep-advisories"
+fleet_status "$TMP/h5"
 : > "$TMP/h5/.meshforge-dep-ranges"
 touch -d '5 days ago' "$TMP/h5/.meshforge-dep-ranges"
 check "status stale (dead timer)" "$TMP/h5" UNKNOWN
@@ -108,8 +114,30 @@ check "blindness outranks a finding" "$TMP/h6" UNKNOWN
 mk h7
 check "neither half ever ran" "$TMP/h7" UNKNOWN
 
+# 8. THE 2026-09-06 shape: a fresh installed record with NO fleet stamp beside
+#    a finding file — a `--host kiai` spot-check that overwrote the fleet's
+#    ten-box record (the leg reported 4, then 7 findings while the real number
+#    was 22). Whatever it holds, it is not the fleet's answer: UNKNOWN, never
+#    WARN-with-the-wrong-count and never PASS.
+mk h8
+printf '# fleet dependency advisories\n# boxes observed: 1/1\nkiai apt - FINDING\n' \
+  > "$TMP/h8/.meshforge-dep-advisories"
+: > "$TMP/h8/.meshforge-dep-ranges"
+printf '# header\nkiai apt: 1 security update(s) pending\n' > "$TMP/h8/.meshforge-dep-ADVISORY"
+check "installed record lacks the fleet stamp" "$TMP/h8" UNKNOWN
+
+# 9. A stamped fleet run that never LOOKED (gh unauthenticated, host list
+#    unreadable) writes UNKNOWN as its body. The finding file beside it is the
+#    previous run's leftover, not this run's verdict.
+mk h9
+printf '# scope: fleet\nUNKNOWN: gh CLI missing or unauthenticated — the fleet was NOT checked\n' \
+  > "$TMP/h9/.meshforge-dep-advisories"
+: > "$TMP/h9/.meshforge-dep-ranges"
+printf '# header\nmoc cryptography 46.0.5: GHSA-x(high)\n' > "$TMP/h9/.meshforge-dep-ADVISORY"
+check "fleet run that never looked" "$TMP/h9" UNKNOWN
+
 if [ "$fails" -ne 0 ]; then
   echo "test_honest_status_dep_leg: $fails failure(s)"
   exit 1
 fi
-echo "ALL PASS — test_honest_status_dep_leg: all 7 states behaved as specified"
+echo "ALL PASS — test_honest_status_dep_leg: all 9 states behaved as specified"

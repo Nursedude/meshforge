@@ -10,6 +10,7 @@
 
 | Date | Scope (range + paths) | Mechanism | Fix commits | Residuals / refuted notes |
 |------|----------------------|-----------|-------------|---------------------------|
+| 2026-09-06 | **FRONTIER PASS (Fable 5.1) — closes the QUEUED 2026-09-06 (Opus 5) section: env-universe + advisory-sweep widening.** Scope: `d73c3590`, `9004704e`, `9854b45b`, `5489f796` — `scripts/dep_advisory_check.py` (the remote reporter's env walk + `_roots_for`), `src/utils/watchdog_probe_core.py` (`PYTHON_ENV_SITE_GLOBS`, `SERVICE_ENV_LABELS`, `_SYSTEM_DIST_GLOBS`), the three probe/audit consumers, `TestOnePythonEnvUniverse`; plus the filed-not-fixed scoped-run clobber. | Every surface drilled against the real authority, none read-through: the shipped reporter source run locally under four shimmed `sudo` shapes; two root-only-readable envs PLANTED under `/opt` (removed after); a glob-recording pytest plugin over 922 tests to MEASURE ambient reads; `probe_rns_env_coherence` run live as root with its disposition printed; per-box ssh for ssh-user / rnsd-user / RNS-in-foreign-venv; MeshAnchor's units + `@rns` owner read on its box; the bash leg test mutation-checked. | The clobber defect only (path split + `# scope: fleet` stamp + reader refusal; 5 py + 2 bash tests, mutation-proven). Review findings REPORTED, not fixed — a review-born fix is not blessed by its own author. | **CONFIRMED, new (surface 1 one layer out)**: the sudo three-way exists only for `/root/` patterns; a root-only-readable ancestor anywhere else (`/opt/pipx` 0700 = the `root-pipx` label's own second location; `/opt/<app>` 0700 = `foreign-venv`) is swallowed by `glob` as absent — planted both holding cryptography 41.0.0, one tagged mesh: NO line as the sweep user, both visible as root. Fourth appearance of the inert/unreadable collapse in one day. **CONFIRMED (surface 2, one direction)**: the `SERVICE_ENV_LABELS` split is right for `dep_install_fragmented` (a foreign venv is never on the TUI's root sys.path) and wrong for `rns_env_coherence` by that probe's own criterion — live, meshanchor-server runs both MeshAnchor units from `/opt/meshanchor/venv/bin/python` against the box's single rnsd (`@rns/default`, owner rnsd), and that venv carries rns `1.3.8+mf.0`/lxmf `1.0.1+mf.1`: coherent today, excluded from the probe that would notice when it stops being. **HELD (surface 1 as asked)**: sudo refused / absent / `find` failing / `test`+`true` absent all degrade to UNKNOWN, never clean (shape D's reason string says "sudo -n unavailable" — legibility only). **MEASURED (surface 3)**: 6 of 922 tests glob real box paths; 4 exercise `_enumerate_pkg_installs` / `_enumerate_lib_installs` / audit `enumerate_installs`, which have NO injection seam and pass only because their assertions are `.get(key)==`-tolerant — on this box the real dist-packages holds rns and meshtastic, so an exact-equality assertion would flip per box; no false fire today. **ACCEPTED (surface 4)**: glob-literal-only is the right trade; f-strings escape it, none exist. **REFUTED (surface 5)**: `probe_rns_env_coherence` as root returns None WITH disposition `clean — coherent with 1 waived location(s): user-pipx:reticulum-meshchatx`; None is its witnessed clean shape, not fail-dark. Minor: `_split_dist` misparses `name-ver-pyX.Y.egg-info` (dropped silently; none in the fleet's apt dirs today); pip's vendored urllib3/requests are invisible to any dist-info scanner; `fnmatch` `*` crosses `/`. Full verdicts in the CLOSED section. |
 | 2026-09-05 | **FRONTIER PASS (Opus 5) — closes the QUEUED 2026-09-03 (Fable 5.1) section: `40e02f2a` review of the engine-backed judge.** Scope: `40e02f2a` exactly — `probe_mini_rule_orphaned_exclusion` + `probe_mini_watchdog_source_unwired` in `src/utils/watchdog_probes_mini.py`, their 45 tests. Frame as asked: what does an engine-backed judge over OBSERVED subjects get wrong that the old structural one got right? | Differential drill against `mini_dudeai.engine._match_rule` as ground truth on the SAME rules (the mechanism the 09-03 pass established); both probes run live on two hardware tiers; `_find_operator_user`/`_resolve_mini_home` traced to the live consumer; watchdog unit LoadState checked per box before claiming a probe runs there. | *(none — reported, not fixed: a review-born fix is not blessed by its own author, and the operator holds the call)* | **CONFIRMED (1)**: brief surface #1 is a real FALSE CLEAN, and worse than stated — observed-first precedence returns `owned` as soon as EVERY in-scope OBSERVED subject is owned, so a never-observed unowned subject in the same glob is invisible. Drilled: excluder `*` excluding `*moc*`, owner `*moc1*` only; engine confirms `meshforge-moc9` is owned by nothing; probe reads **clean**. The same rules with an EMPTY state **page** (structural core) — i.e. **detection DEGRADES as the box accumulates observations**, which is the inverse of the expected direction. Live exposure on VolcanoAI is currently nil (its one exclusion is judged `by structural core`), and it grows as state fills. ⚠️ Not fixable by a cleverer solver: glob containment over an unbounded name space always finds a hole and would re-page the 09-03 finding (d) (owner more specific than the core). Honest options: when all observed in-scope subjects are owned BUT the structural core is in scope and unowned, read **indeterminate** with a named reason instead of clean (costs precision where the owner is legitimately more specific than the core); or at minimum state the residual in the clean reason. **REFUTED / sound (2, 3, 5)**: #2 the synthetic Condition carrying the EXCLUDER's extras is not merely conservative but semantically RIGHT — it asks 'of the conditions THIS rule would have watched, is one unowned?'; drilled both ways (owner filtering a different `class` → page, correct because class-Y conditions really are unowned; excluder and owner agreeing → clean). #3 `STALE_KEY_RETENTION_S = 7*86400`, and the verdict NAMES its method (`structural core` vs `N observed subject(s)`), so the post-window method change is visible rather than silent. #5 mixed → indeterminate, re-judged next tick — the blind spot surfaces as its own state. **#6 CLOSED by measurement**: cost on a Zero 2W (lehua, 158 procs) = orphaned **10.8 ms**, unwired **43.2 ms**, vs Pi5 1.3/12.1 — 0.14% of a 30 s tick. **#4 remains BELIEVED** (no template-deployed box exists to witness `--preset auto` under root). **LATENT, not live**: `_resolve_mini_home` → `_find_operator_user` scans `/run/user/<uid>/bus`; on a box without one the probe reads `indeterminate: operator home unresolvable` even where mini runs (observed on lehua, mini active with 64 rules). NOT a live blind spot — `meshforge-watchdog` is `LoadState=not-found` on lehua, so the probe never executes there; it would bite if the watchdog were ever deployed to a field-node. |
 | 2026-09-03 | **FRONTIER PASS (Fable 5.1) — closes the QUEUED 2026-09-03 (Opus 5) section below.** Scope: `88f302ac` exactly (the deployed sha) — `probe_mini_rule_orphaned_exclusion` + `probe_mini_watchdog_source_unwired` in `src/utils/watchdog_probes_mini.py`, their 25 tests, the seed rules, the SIGNAL_CLASSES comments. Frame as asked: a glob-ownership solver and a /proc scraper against real data, not a doctrine check. | Differential oracle: every ownership verdict re-derived against `mini_dudeai.engine._match_rule` (the consumer of record) on the same rules; 7 rule plants + 2 /proc plants run BEFORE any fix; the 9-box live sweep of mini argv + unit ExecStart; the shipped `templates/systemd` units read; live drills on this box's real rules + state + the real mini environ; cost timed (255 procs). | `40e02f2a` — 16 tests red at 88f302ac, green after. | **CONFIRMED (9)**: (a) false CLEAN — an owner filtering a different `class` extra was credited (60/68 live rules carry that filter → no signal_class exclusion could ever fire); (b) false CLEAN — engine reads ONE selector (subject>peer>source), probe credited any; (c–e) false PAGE — `subject_glob ""`, an owner more specific than the core, `?` in the glob; (f) the author's own `unjudgeable` swallow; (g) `--preset auto` — what the shipped unit template launches — unrecognised (fleet correct by accident: all 8 live units pin `meshforge_fleet` explicitly); (h) substring marks matched a shell's single `-c` token (incl. the Claude session running the audit) and read its environ as mini's; (i) two fleet minis decided by /proc listing order. Also: flag decided `.strip()=="0"` vs preset `!="0"` (hfm #5) → one helper `mini_dudeai._util.watchdog_feed_enabled`; test fixture `"\30"` was an octal escape. **Brief surfaces refuted/qualified**: #1 core extraction — the approach itself was the defect, replaced by the engine over observed subjects (state.json keys outlive a retirement, so the moc3 case judges on the real name; core is fallback only; metachar+no-observed = named unjudgeable); #3 "no selector owns everything" — correct, the engine agrees; #4 action kind — left, any match records the observation; #6 cost — 1.1 ms / 15 ms per 30 s tick, acceptable; #7 stopped mini + stale rules — left degraded on purpose, that file is what the next start runs. **Residuals**: FLEET NOT ROLLED — 8 boxes still run 88f302ac (this box's watchdog restart was enqueued by the post-commit hook); bare `*` exclusions are always unjudgeable by choice; the `--preset auto` resolver runs under the PROCESS env from root (drilled here, not on a template-deployed box — none exists yet); full suite result recorded in the closing commit body / `honest_status`. |
 | 2026-09-02 | **FRONTIER PASS (Fable 5.1) — closes the Pri-1 FALSIFIABILITY AUDIT phase-2 row below.** Scope: all 58 `SIGNAL_CLASSES` MEASURED by `scripts/falsifiability_drill.py` (dead + stuck-loud stub per runner-called entry probe, referencing tests re-run in a throwaway worktree) @ `44b76e86`; the 16 phase-1 "not both polarities" classes READ adversarially (4 parallel forks, every cited line re-checked at the source by me); fleet hosting VERIFIED from `/api/fleet/truth`. | Measured: **58/58 `caught-both`** at the pre-fix head (0 SURVIVED, 0 collateral-only), re-drilled 9/9 at `3e948beb` and 3/3 aliased classes at the item-3 tree. Read: 7 frozen-green shapes CONFIRMED and fixed red-first; 1 reader claim REFUTED by the measurement (`rns_shared_instance_unresponsive` dead-probe WAS caught by 3 named sibling-class tests — only its wedge BRANCH lacked an unconditional witness); 5 phase-1 polarity labels were heuristic artifacts (`== []`, multi-line asserts, wrapper helpers). Then phase-3 items 1 (operator-resolver collapse, 3 probes), 3 (the streak mechanism existed in EIGHT copies → aliased onto probe_core; MF028 lint + `TestStreakSaversAreOne` guard + guard_drill case; `note_state_write_failure` witness in the 5 remaining savers) and 4 (weekly CI `falsifiability_drill.yml`, `--fail-on-survivor`). | `ab0ca19d` (drill), `3e948beb` (7 fixes + drills; MA twins `533971c6`), `17603dc8` (resolver), `5af1ab03` (one streak mechanism + MF028 + CI gate) | Full per-class record + phase-3 queue (recipes attached) in the CLOSED 2026-09-02 section at the end of this file. ⚠️ FLEET EFFECT: root-rnsd boxes now read `dep_version_drift indeterminate` "user-scope unobservable" — correct, not a regression. Residual NOT fixed: fleet-truth labels MeshAnchor's 57 non-MF classes "pre-coverage" (legibility). |
@@ -1182,7 +1183,7 @@ commit, plus seam 2's floor and seam 5.
 
 ---
 
-## QUEUED for a second opinion — env-universe + advisory-sweep widening (2026-09-06, Opus 5)
+## ~~QUEUED~~ CLOSED 2026-09-06 (Fable 5.1 — see the top completed-table row; verdicts at the end of this section) — env-universe + advisory-sweep widening (queued 2026-09-06, Opus 5)
 
 Three commits, all **written and reviewed by the same session**, and all
 already fleet-rolled (operator directed push + `fleet_pull` explicitly). So the
@@ -1233,3 +1234,105 @@ fleet run writes and `honest_status.sh` reads, so a one-box spot-check silently
 replaces the ten-box record. Observed twice in one session (reported 4 and 7
 findings when the fleet number was 22). Cure should make the narrow file
 UNUSABLE as the fleet answer, not merely labelled.
+
+### Verdicts (2026-09-06, Fable 5.1) — drills against the real authority, not a read-through
+
+Method, so the next pass can repeat it: the shipped reporter (`_REMOTE_SRC`
+rendered exactly as `collect_installed` renders it) run locally as the sweep
+user; `sudo` replaced by PATH shims for the failure shapes; envs PLANTED and
+removed; a pytest plugin that records every `glob.glob` of a real box path per
+test; the probe run live under the identity that hosts it (root), disposition
+printed; the fleet asked over ssh, serially.
+
+1. **`_roots_for` three-way (as asked): HELD.** Shims: (A) `sudo -n` refused
+   with "a password is required" (covers `requiretty`), (B) no `sudo` on
+   PATH, (C) `test`/`true` succeed but `find` exits 1, (D) `/usr/bin/test` and
+   `/usr/bin/true` absent. All four render `root-site` and `root-pipx` as
+   `readable: False` → the run is UNKNOWN. Nothing collapses to clean. On the
+   fleet, `sudo -n true` succeeds on all nine ssh targets and every box's
+   ssh user IS the rnsd service user (lehua's rnsd runs as root), so the
+   `~` expansion is aimed at the right home everywhere. Legibility nit: shape
+   D reports "sudo -n unavailable" when sudo is fine and the helper binary is
+   missing.
+   **CONFIRMED, one layer out — the fourth appearance of the class in one
+   day.** The sudo path is taken only when the PATTERN starts with `/root/`.
+   For every other pattern `glob.glob` swallows `EACCES` on an unreadable
+   ancestor and returns `[]`, which the walk reads as absent. Planted
+   `/opt/pipx/venvs/drillcli/.../cryptography-41.0.0.dist-info` (+ an `rns`
+   marker) and `/opt/drillapp/venv/.../cryptography-41.0.0.dist-info` with
+   `/opt/pipx` and `/opt/drillapp` at `0700 root:root`: as the sweep user the
+   report carried **no line at all** for either — not UNKNOWN, nothing; as
+   root both appear (`root-pipx … collective=True`, `foreign-venv`). `/opt/pipx`
+   is the `root-pipx` label's own second location, so the universe already
+   declares this shape and cannot see it. Cure (not applied): when a pattern
+   globs empty, walk up to the first existing ancestor; if it is not
+   `R_OK|X_OK` for us, take the sudo `find` path keyed on that ancestor (the
+   `_ROOT_DIRS` cache generalised) or mark the env unreadable. Test: plant an
+   unreadable ancestor, expect `readable: False`.
+2. **`SERVICE_ENV_LABELS` scope split: RIGHT for one probe, WRONG for the
+   other.** `dep_install_fragmented` asks "is OUR meshtastic fragmented" — a
+   copy inside another app's `/opt/*/venv` is never on the TUI's root
+   `sys.path`, so it cannot drive the phantom-update class; excluding it is
+   correct. `rns_env_coherence` asks "does every env that speaks to this box's
+   single rnsd carry the identical substrate" — ownership is not the
+   criterion, RPC clientship is. Live on meshanchor-server: `meshanchor.service`
+   (root) and `meshanchor-daemon` (wh6gxz) both exec from
+   `/opt/meshanchor/venv/bin/python`; the box has exactly one `@rns/default`
+   listener, owned by rnsd; that venv carries `rns-1.3.8+mf.0` and
+   `lxmf-1.0.1+mf.1`. It is coherent today and it is outside the probe that
+   would page when it stops being — the moc3 nomadnet shape in a venv the
+   universe labels `foreign`. The sweep already computes the right criterion
+   (`collective`). Recommendation: the coherence probe enumerates the full
+   universe (or at least `foreign-venv`); the existing waiver mechanism
+   already covers deliberately isolated instances (meshchatx). `tooling` can
+   stay excluded — platformio cannot be an RNS client.
+3. **Ambient-state hazard: MEASURED, not inferred.** Over 922 tests in the
+   five relevant files, 6 glob a real box path. Two are `_glob_consumer_site_dirs`
+   on `/home/nosuchuser-ever` (inert). Four exercise helpers that read the
+   shared table with NO injection seam: `_enumerate_pkg_installs`,
+   `_enumerate_lib_installs` (via module-level `_LIB_STRAY_SITE_GLOBS`), and the
+   audit's `enumerate_installs` — each globs the real `/usr/local/lib/python3*/
+   dist-packages`, `/usr/lib/python3/dist-packages`, `/root/.local/...`,
+   `/opt/pipx/...`. They pass because every assertion is `found.get("venv") ==`
+   tolerant; this box's real dist-packages holds `rns-1.3.8+mf.0` and
+   `meshtastic-2.7.9`, so an exact-equality assertion would flip per box —
+   [[feedback_tests_must_pin_ambient_state]] in latent form. No false fire
+   today. Cure: a `site_globs=` parameter (or a module-level table per consumer,
+   as `_SYSTEM_DIST_GLOBS` already is) plus an autouse fixture pinning the
+   universe to `tmp_path` in those test modules. Low priority; not applied.
+4. **`TestOnePythonEnvUniverse` glob-literal-only: ACCEPTED.** Every copy that
+   actually occurred was a pasted glob literal, which the guard catches by
+   file+line. An f-string (`ast.JoinedStr`) or `os.path.join` pieces escape it;
+   none exist in `src/` or `scripts/` today (the only `site-packages` strings
+   outside the table are prose, `DISTRO_PREFIX`, `--system-site-packages`
+   flags, and the reporter's `find -name`). Cheap widening if wanted: also
+   scan `JoinedStr.values` constants.
+5. **`probe_rns_env_coherence` returns None as root: REFUTED.** Run live under
+   root with `collect_dispositions()` printed: return `None`, disposition
+   `rns_stray_env_drift: clean — coherent with 1 waived location(s):
+   user-pipx:reticulum-meshchatx`. None is the probe's witnessed clean shape;
+   every `return None` in the function sits after a `note_disposition`,
+   including the `except` arm. Not the MF027 shape. (Same result as wh6gxz.)
+6. **Minor, reported only.** `_split_dist` misparses the setuptools
+   `name-ver-pyX.Y.egg-info` form (`cryptography-41.0.0-py3.11.egg-info` →
+   name `cryptography-41.0.0`, version `py3.11`, silently dropped as not
+   wanted); the fleet's apt dirs use `name-ver.egg-info`, which parses. Vendored
+   copies (`pip/_vendor/urllib3`, present in every venv and the pipx `shared`
+   dir) are invisible to any dist-info scanner — a limit to state in the
+   docstring, not a defect. `fnmatch` on the sudo-find results lets `*` cross
+   `/`, unlike `glob` — over-match only, harmless.
+7. **Filed-not-fixed clobber: FIXED here** (the one change this pass ships).
+   At review time the live canonical record WAS the 18:06 `--host kiai` run:
+   `# boxes observed: 1/1`, one finding, and `honest_status.sh` would have
+   reported `installed:1_finding(s)` for a fleet whose number was 22. Cure:
+   `run_scope()` calls a run narrow when `--host`, `--hosts-file` or a
+   non-default `--packages` is given; narrow runs write `~/.meshforge-dep-
+   advisories.scoped` / `~/.meshforge-dep-ADVISORY.scoped` and never touch
+   the canonical pair (so a clean one-box run can no longer delete the
+   fleet's finding file — the worse half); the canonical pair carries
+   `# scope: fleet`; the reader refuses an installed record without it and a
+   stamped record whose body opens with `UNKNOWN`. Pinned by 5 tests in
+   `tests/test_dep_advisory_check.py` (`TestScopedRunNeverClobbersTheFleetRecord`)
+   and 2 new states in `tests/test_honest_status_dep_leg.sh` (9/9); removing
+   the stamp check from the leg makes state 8 fail (mutation-proven).
+   Canonical record restore: unnarrowed run at 18:42, rc=1 (findings present, the correct exit): `# boxes observed: 10/10`, `# scope: fleet`, **24 findings** re-derived (the notes carried 22 — re-measured, not patched), 2 UNKNOWN legs unchanged (moc4/moc5 unversioned apt cryptography dist-info), 99 distro-patched credited, 87 accept-listed; the manager root-pipx urllib3 2.6.3 (2 high) is back in the record.

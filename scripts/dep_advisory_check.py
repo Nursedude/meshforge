@@ -67,6 +67,14 @@ Outputs:
   - Always: ``~/.meshforge-dep-advisories`` — one block per box.
   - On findings: ``~/.meshforge-dep-ADVISORY`` — present = act, absent = clean.
     (Absent is only written when the run could actually SEE the fleet.)
+  - A run narrowed by ``--host`` / ``--hosts-file`` / ``--packages`` writes the
+    SAME two files with a ``.scoped`` suffix instead, and never touches the
+    pair above. 2026-09-06: a one-box spot-check overwrote the ten-box record
+    twice in one session, and ``honest_status.sh`` reported 4 and then 7
+    findings while the fleet number was 22 — a narrow observation rendering
+    as the authoritative answer, this file's own defect class. The canonical
+    pair also carries a ``# scope: fleet`` stamp; the reader refuses a record
+    without it, so a copy from an older script cannot pass as the fleet either.
 
 Exit codes:
   0 — every box observed, no advisories
@@ -639,8 +647,17 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     home = str(get_real_user_home())
-    status_file = os.path.join(home, ".meshforge-dep-advisories")
-    finding_file = os.path.join(home, ".meshforge-dep-ADVISORY")
+    scope, narrow_why = run_scope(args.only_hosts, args.hosts_file, args.packages)
+    status_file, finding_file = record_paths(home, scope)
+    scope_stamp = (FLEET_SCOPE_STAMP if scope == "fleet"
+                   else "# scope: NARROW (%s) — a question, not the fleet record"
+                   % narrow_why)
+    if scope != "fleet":
+        # Said on stderr even under --quiet: the operator who narrowed the run
+        # is the one who will otherwise go looking in the canonical file.
+        print("scoped run (%s): writing %s; the fleet record %s is untouched"
+              % (narrow_why, status_file, record_paths(home, "fleet")[0]),
+              file=sys.stderr)
     accept_file = args.accept_file or os.path.join(
         home, ".config", "meshforge", "dep_advisory_accepted")
     today = _dt.date.today()
@@ -648,7 +665,7 @@ def main(argv=None) -> int:
     rc_gh, _, _ = _run(["gh", "auth", "status"], timeout=30)
     if rc_gh != 0:
         msg = "UNKNOWN: gh CLI missing or unauthenticated — the fleet was NOT checked"
-        _write(status_file, [msg])
+        _write(status_file, [scope_stamp, msg])
         if not args.quiet:
             print(msg)
         return 2
@@ -659,7 +676,7 @@ def main(argv=None) -> int:
         hosts, err = read_fleet_hosts(args.hosts_file)
     if err:
         msg = "UNKNOWN: %s — the fleet was NOT checked" % err
-        _write(status_file, [msg])
+        _write(status_file, [scope_stamp, msg])
         if not args.quiet:
             print(msg)
         return 2
@@ -844,6 +861,7 @@ def main(argv=None) -> int:
               "GitHub advisory DB", "# boxes observed: %d/%d%s"
               % (observed, len(hosts),
                  ("  UNKNOWN: " + ", ".join(unknown_hosts)) if unknown_hosts else ""),
+              scope_stamp,
               "# distro-patched (CVE named in the package's Debian changelog): %d; "
               "accepted via %s: %d" % (n_patched, accept_file, n_accepted)]
     header += ["# WARN %s" % w for w in accept_warnings]
@@ -867,6 +885,39 @@ def main(argv=None) -> int:
         return 2
     _remove(finding_file)
     return 0
+
+
+#: What the canonical record's second line must say for a reader to treat it
+#: as the fleet's answer. ``honest_status.sh`` greps for exactly this prefix.
+FLEET_SCOPE_STAMP = "# scope: fleet"
+SCOPED_SUFFIX = ".scoped"
+
+
+def run_scope(only_hosts, hosts_file, packages) -> Tuple[str, Optional[str]]:
+    """``("fleet", None)`` for the unnarrowed daily run, else ``("narrow", why)``.
+
+    Anything that changes WHICH boxes or WHICH packages are judged makes the
+    run an answer to a question, not the fleet record: an explicit host, a
+    non-default host list, or a package subset. An accept list does not — it
+    changes how findings are classified, not what was looked at."""
+    why = []
+    if only_hosts:
+        why.append("hosts=%s" % ",".join(only_hosts))
+    if hosts_file:
+        why.append("hosts-file=%s" % hosts_file)
+    if set(packages) != set(DEFAULT_PACKAGES):
+        why.append("packages=%s" % ",".join(packages))
+    return ("narrow", "; ".join(why)) if why else ("fleet", None)
+
+
+def record_paths(home: str, scope: str) -> Tuple[str, str]:
+    """``(status_file, finding_file)`` — the canonical pair for a fleet-scope
+    run, the ``.scoped`` siblings for anything narrower. Different PATHS, not a
+    label: a narrow record must be unusable as the fleet answer, and a reader
+    that never opens the sibling cannot be misled by it."""
+    suffix = "" if scope == "fleet" else SCOPED_SUFFIX
+    return (os.path.join(home, ".meshforge-dep-advisories" + suffix),
+            os.path.join(home, ".meshforge-dep-ADVISORY" + suffix))
 
 
 def _write(path: str, lines: List[str]) -> None:

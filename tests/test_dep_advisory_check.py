@@ -40,6 +40,17 @@ def home(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _status(home, scoped=True):
+    """The status file a run WRITES. Every ``main()`` drive in this module
+    narrows by ``--host`` or ``--packages``, so it lands in the ``.scoped``
+    sibling (2026-09-06) — pass ``scoped=False`` for the canonical fleet pair."""
+    return home / (".meshforge-dep-advisories" + (dac.SCOPED_SUFFIX if scoped else ""))
+
+
+def _finding(home, scoped=True):
+    return home / (".meshforge-dep-ADVISORY" + (dac.SCOPED_SUFFIX if scoped else ""))
+
+
 def _install_runner(monkeypatch, *, gh_auth_rc=0, versions=None, version_rc=0,
                     advisories=ADV_HIGH, advisory_rc=0, advisory_body=None):
     """Drive the script by replacing its ONE subprocess chokepoint."""
@@ -91,22 +102,22 @@ class TestABrokenQueryIsNeverClean:
     def test_failed_query_exits_unknown_not_zero(self, home, monkeypatch):
         rc = _run_main(home, monkeypatch, advisory_rc=1)
         assert rc == 2, "a fleet we could not assess must never exit 0"
-        assert "UNKNOWN" in (home / ".meshforge-dep-advisories").read_text()
+        assert "UNKNOWN" in (_status(home)).read_text()
 
 
 class TestSuccessfulEmptyIsAPositiveFinding:
     def test_empty_list_from_a_working_query_is_clean(self, home, monkeypatch):
         rc = _run_main(home, monkeypatch, advisories=[])
         assert rc == 0
-        assert not (home / ".meshforge-dep-ADVISORY").exists()
-        assert "clean" in (home / ".meshforge-dep-advisories").read_text()
+        assert not (_finding(home)).exists()
+        assert "clean" in (_status(home)).read_text()
 
 
 class TestFindings:
     def test_advisory_exits_one_and_writes_the_finding_file(self, home, monkeypatch):
         rc = _run_main(home, monkeypatch, advisories=ADV_HIGH)
         assert rc == 1
-        body = (home / ".meshforge-dep-ADVISORY").read_text()
+        body = (_finding(home)).read_text()
         assert "GHSA-xxxx-yyyy-zzzz" in body and "boxA" in body
 
     def test_severity_is_carried_into_the_summary(self):
@@ -117,7 +128,7 @@ class TestUnobservableIsNotHealthy:
     def test_unreachable_box_is_unknown_never_clean(self, home, monkeypatch):
         rc = _run_main(home, monkeypatch, version_rc=255)
         assert rc == 2
-        txt = (home / ".meshforge-dep-advisories").read_text()
+        txt = (_status(home)).read_text()
         assert "UNKNOWN" in txt and "clean" not in txt
 
     def test_no_box_observed_exits_unknown_even_with_zero_findings(self, home, monkeypatch):
@@ -126,7 +137,7 @@ class TestUnobservableIsNotHealthy:
                          "is not a clean fleet")
 
     def test_partial_blindness_does_not_delete_a_standing_finding(self, home, monkeypatch):
-        stale = home / ".meshforge-dep-ADVISORY"
+        stale = _finding(home)
         stale.write_text("previous finding\n")
         _install_runner(monkeypatch, advisories=[])
         # boxA answers clean; boxB is unreachable -> partial view.
@@ -146,14 +157,14 @@ class TestUnobservableIsNotHealthy:
     def test_unauthenticated_gh_is_unknown(self, home, monkeypatch):
         rc = _run_main(home, monkeypatch, gh_auth_rc=1)
         assert rc == 2
-        assert "NOT checked" in (home / ".meshforge-dep-advisories").read_text()
+        assert "NOT checked" in (_status(home)).read_text()
 
 
 class TestAbsentPackageIsInert:
     def test_package_not_installed_is_not_a_finding(self, home, monkeypatch):
         rc = _run_main(home, monkeypatch, versions={"cryptography": None})
         assert rc == 0, "absent by design must read inert, never as an advisory"
-        assert not (home / ".meshforge-dep-ADVISORY").exists()
+        assert not (_finding(home)).exists()
 
 
 class TestFleetHostList:
@@ -341,8 +352,8 @@ def _drive(home, monkeypatch, report, advisories, accept_text=None, today=_TODAY
     else:
         argv += ["--accept-file", str(home / "no-such-accept-file")]
     rc = dac.main(argv)
-    status = (home / ".meshforge-dep-advisories").read_text()
-    fpath = home / ".meshforge-dep-ADVISORY"
+    status = (_status(home)).read_text()
+    fpath = _finding(home)
     finding = fpath.read_text() if fpath.exists() else None
     return rc, status, finding
 
@@ -547,7 +558,7 @@ class TestEveryEnvIsWalked:
         ]))
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 1, "a vulnerable copy outside the primary env must be a finding"
-        body = (home / ".meshforge-dep-ADVISORY").read_text()
+        body = (_finding(home)).read_text()
         assert "41.0.0" in body and "/opt/app/venv" in body, body
 
     def test_an_unreadable_env_is_unknown_never_absent(self, home, monkeypatch):
@@ -559,7 +570,7 @@ class TestEveryEnvIsWalked:
         ]))
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 2, "an env we could not list makes the run UNKNOWN, not clean"
-        status = (home / ".meshforge-dep-advisories").read_text()
+        status = (_status(home)).read_text()
         assert "UNKNOWN" in status and "/root/.local" in status, status
 
     def test_an_apt_owned_copy_keeps_its_distro_credit(self, home, monkeypatch):
@@ -576,12 +587,12 @@ class TestEveryEnvIsWalked:
                  "changelog_cves": ["CVE-2026-27459"]}}]}},
         ]))
         dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
-        status = (home / ".meshforge-dep-advisories").read_text()
+        status = (_status(home)).read_text()
         apt_row = [ln for ln in status.splitlines() if dac.DISTRO_PREFIX in ln]
         assert apt_row and "distro-patched" in apt_row[0], apt_row
         assert "ADVISORY" not in apt_row[0], (
             "a CVE named in the distro changelog is patched, not a finding: %s" % apt_row[0])
-        findings = home / ".meshforge-dep-ADVISORY"
+        findings = _finding(home)
         if findings.exists():
             assert dac.DISTRO_PREFIX not in findings.read_text(), (
                 "the apt-owned copy must not be reported as a pip finding")
@@ -595,7 +606,7 @@ class TestEveryEnvIsWalked:
              "packages": {"cryptography": [{"version": "49.0.0", "dpkg": None}]}},
         ]))
         dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
-        status = (home / ".meshforge-dep-advisories").read_text()
+        status = (_status(home)).read_text()
         assert "mesh env" in status, status
         assert "leaf env" not in status, status
 
@@ -609,7 +620,7 @@ class TestEveryEnvIsWalked:
         ]))
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 0
-        status = (home / ".meshforge-dep-advisories").read_text()
+        status = (_status(home)).read_text()
         assert status.count("50.0.1") == 1, status
 
     def test_a_reporter_with_no_env_block_still_reads(self, home, monkeypatch):
@@ -638,7 +649,7 @@ class TestAbsentEnvIsInertNotUnknown:
         _install_runner(monkeypatch, advisories=[], versions=self._versions([]))
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 0, "a box with no root user-site is clean, not UNKNOWN"
-        assert "UNKNOWN" not in (home / ".meshforge-dep-advisories").read_text()
+        assert "UNKNOWN" not in (_status(home)).read_text()
 
     def test_a_genuinely_unreadable_env_still_reports_unknown(self, home, monkeypatch):
         """The other polarity, which must not be lost to the fix above: when we
@@ -681,6 +692,90 @@ class TestRecoveredRootEnvIsNotDroppedAsAbsent:
             }]})
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 1, "a root-owned env the reporter could read must still be judged"
-        body = (home / ".meshforge-dep-ADVISORY").read_text()
+        body = (_finding(home)).read_text()
         assert "41.0.0" in body and "root-pipx" not in body.split("41.0.0")[0][-5:], body
         assert "/root/.local/share/pipx" in body, body
+
+
+class TestScopedRunNeverClobbersTheFleetRecord:
+    """A narrowed run answers a question; it must not become the fleet record.
+
+    2026-09-06: ``--host kiai`` overwrote ``~/.meshforge-dep-advisories``
+    (ten boxes, 22 findings) with a one-box view, twice in one session, and
+    ``honest_status.sh`` read 4 and then 7 findings off it. The canonical
+    pair is written ONLY by an unnarrowed run and carries a scope stamp;
+    narrow runs write ``.scoped`` siblings. Paths, not labels: the narrow
+    file cannot be read as the fleet by a reader that never opens it.
+    """
+
+    @staticmethod
+    def _plant_fleet_record(home):
+        s, f = _status(home, scoped=False), _finding(home, scoped=False)
+        s.write_text("# fleet dependency advisories\n%s\n"
+                     "moc cryptography 1.0 ADVISORY x3\n" % dac.FLEET_SCOPE_STAMP)
+        f.write_text("# installed versions carrying published advisories\n"
+                     "moc cryptography 1.0: GHSA-1(high)\n")
+        return s.read_bytes(), f.read_bytes()
+
+    def test_host_narrowed_run_writes_the_scoped_sibling_only(self, home, monkeypatch):
+        s0, f0 = self._plant_fleet_record(home)
+        rc = _run_main(home, monkeypatch, advisories=ADV_HIGH)
+        assert rc == 1
+        assert _status(home).exists() and _finding(home).exists()
+        assert "# scope: NARROW" in _status(home).read_text()
+        assert _status(home, scoped=False).read_bytes() == s0
+        assert _finding(home, scoped=False).read_bytes() == f0
+
+    def test_clean_narrow_run_does_not_erase_the_fleet_finding_file(self, home, monkeypatch):
+        """THE dangerous half: 'absent = clean' applied to the fleet's file by
+        a one-box run that found nothing on that one box."""
+        _s0, f0 = self._plant_fleet_record(home)
+        rc = _run_main(home, monkeypatch, advisories=[])
+        assert rc == 0
+        assert not _finding(home).exists()
+        assert _finding(home, scoped=False).read_bytes() == f0
+
+    def test_what_counts_as_narrow(self):
+        full = list(dac.DEFAULT_PACKAGES)
+        assert dac.run_scope(["moc"], None, full)[0] == "narrow"
+        assert dac.run_scope(None, "/some/list", full)[0] == "narrow"
+        assert dac.run_scope(None, None, ["cryptography"])[0] == "narrow"
+        # the default list in any order is still the fleet
+        assert dac.run_scope(None, None, list(reversed(full))) == ("fleet", None)
+
+    def test_unnarrowed_run_writes_the_canonical_pair_with_the_stamp(
+            self, home, monkeypatch):
+        import json as _json
+        hosts = home / "fleet_hosts"
+        hosts.write_text("moc\nmoc1\n")
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(hosts))
+        monkeypatch.setattr(dac.socket, "gethostname", lambda: "moc")
+
+        def fake_run(cmd, timeout, stdin_text=None):
+            if cmd[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if cmd[0] == "gh":
+                return 0, _json.dumps(ADV_HIGH), ""
+            return 0, _json.dumps({"cryptography": "46.0.7"}), ""
+
+        monkeypatch.setattr(dac, "_run", fake_run)
+        rc = dac.main(["--quiet"])
+        assert rc == 1
+        status = _status(home, scoped=False).read_text().splitlines()
+        assert dac.FLEET_SCOPE_STAMP in status[:4], status[:4]
+        assert _finding(home, scoped=False).exists()
+        assert not _status(home).exists() and not _finding(home).exists()
+
+    def test_a_fleet_run_that_could_not_look_still_carries_the_stamp(
+            self, home, monkeypatch):
+        """gh unauthenticated: the canonical file must read 'fleet run, never
+        looked' (UNKNOWN under the stamp) — not 'not a fleet run'."""
+        hosts = home / "fleet_hosts"
+        hosts.write_text("moc\n")
+        monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(hosts))
+        _install_runner(monkeypatch, gh_auth_rc=1)
+        rc = dac.main(["--quiet"])
+        assert rc == 2
+        lines = _status(home, scoped=False).read_text().splitlines()
+        assert lines[0] == dac.FLEET_SCOPE_STAMP
+        assert lines[1].startswith("UNKNOWN")

@@ -776,6 +776,21 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   if [ "$age_h" -gt "$dep_stale_h" ]; then
     dep_note="$dep_note ${dwhat}:STALE(${age_h}h)"; dep_state="unk"; continue
   fi
+  # The installed-stock record must SAY it is a fleet run. 2026-09-06: a
+  # `--host X` spot-check overwrote the ten-box file twice in one session and
+  # this leg reported 4, then 7 findings while the fleet number was 22. The
+  # script now writes narrow runs to `.scoped` siblings and stamps the
+  # canonical pair `# scope: fleet`; a file without the stamp is a narrow view,
+  # an older script, or a hand copy — none of which is the fleet's answer.
+  if [ "$dwhat" = installed ] && ! grep -q '^# scope: fleet' "$spath" 2>/dev/null; then
+    dep_note="$dep_note ${dwhat}:NOT-A-FLEET-RUN(no scope stamp)"; dep_state="unk"; continue
+  fi
+  # A status file whose body opens with UNKNOWN (gh unauthenticated, host list
+  # unreadable) is a run that never looked; the finding file beside it is a
+  # leftover from the last run that did, not this one's verdict.
+  if grep -v '^#' "$spath" 2>/dev/null | head -1 | grep -q '^UNKNOWN'; then
+    dep_note="$dep_note ${dwhat}:$(grep -v '^#' "$spath" | head -1 | cut -c1-60)"; dep_state="unk"; continue
+  fi
   if [ -f "$fpath" ]; then
     n=$(grep -cv '^#' "$fpath" 2>/dev/null || echo 0)
     dep_note="$dep_note ${dwhat}:${n}_finding(s)"
