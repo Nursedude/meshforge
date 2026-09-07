@@ -1336,3 +1336,47 @@ printed; the fleet asked over ssh, serially.
    and 2 new states in `tests/test_honest_status_dep_leg.sh` (9/9); removing
    the stamp check from the leg makes state 8 fail (mutation-proven).
    Canonical record restore: unnarrowed run at 18:42, rc=1 (findings present, the correct exit): `# boxes observed: 10/10`, `# scope: fleet`, **24 findings** re-derived (the notes carried 22 — re-measured, not patched), 2 UNKNOWN legs unchanged (moc4/moc5 unversioned apt cryptography dist-info), 99 distro-patched credited, 87 accept-listed; the manager root-pipx urllib3 2.6.3 (2 high) is back in the record.
+
+### Addendum (2026-09-06, Fable 5.1) — findings 1 and 2 FIXED at the operator's direction
+
+The operator read the "reported, not fixed" line and made the call ("fix —
+your call"). Fix commit: `518170fa`. By this repo's rule it is the
+reviewer's own unreviewed code; **QUEUED for a second opinion** below.
+
+- **Finding 1 (unreadable ancestor outside /root)**: the reporter's
+  `_roots_for` no longer special-cases `/root/`. A new `_expand()` walks each
+  pattern component by component and RETURNS the directories it was denied
+  under instead of swallowing them (`_stat_kind()` keeps dir / other / absent /
+  denied apart — `os.path.isdir`'s fold of denied into False is the recurring
+  defect). Every denied dir gets one `sudo -n find`, cached per dir; a failure
+  renders the env UNKNOWN with the dir named. The old `sudo test -d /root`
+  three-way is gone because absence is now decided by the readable parent,
+  not by sudo. Live, as the sweep user with the plants back in place: both
+  `/opt/pipx/…` (tagged mesh) and `/opt/drillapp/…` recovered with
+  cryptography 41.0.0; with sudo refused, five UNKNOWN rows each naming
+  `/root`, `/opt/pipx` or `/opt/drillapp`. Tests: the walk slice is now
+  EXECUTED for the first time (`_walk_envs` execs the real template text with
+  the subprocess chokepoint replaced) — denied + no sudo → UNKNOWN row, denied
+  + sudo → recovered and judged, find failing under working sudo named,
+  absent under a readable parent asks nobody, expander agrees with `glob.glob`
+  on a readable tree including the dot-name rule. Known residual: a denied dir
+  reached through two patterns (`/opt/*/venv` and `/opt/*/*/venv`) yields two
+  UNKNOWN rows; harmless, inflates the unknown count by one.
+- **Finding 2 (coherence probe blind to foreign venvs)**: `_LIB_STRAY_SITE_GLOBS`
+  now includes `foreign-venv` (not `tooling`), keyed per app
+  (`foreign-venv:meshanchor`) so a waiver can name it; our own
+  `/opt/meshforge/venv`, which the foreign glob also matches, is deduped under
+  its `venv` label. `dep_install_fragmented` and the install audit keep
+  `SERVICE_ENV_LABELS`. Live as root on the manager with a planted
+  `/opt/drillapp2/venv/…/rns-1.1.4`: `rns_stray_env_drift` fired, detail
+  `foreign-venv:drillapp2=1.1.4, system-dist=1.3.8+mf.0, user-site=…`. On
+  meshanchor-server this will read `foreign-venv:meshanchor=1.3.8+mf.0`
+  (coherent) once its watchdog restarts on the new code — NOT verified there;
+  the box runs the old probe until `fleet_pull` + restart.
+- **Findings 3, 4, 6**: unchanged, still reported only.
+
+**QUEUED for a second opinion**: `518170fa` — attack `_expand()`'s parity
+with `glob.glob` on shapes the test tree does not have (symlinked ancestors,
+a listable-but-unsearchable dir, a `python3*` component that is a file), and
+whether keying foreign venvs by basename can collide (`/opt/a/app` vs
+`/opt/b/app`).
