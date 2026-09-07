@@ -134,7 +134,7 @@ class TestUnobservableIsNotHealthy:
 
         def half_blind(host, packages, timeout=90):
             if host == "boxB":
-                return None, None, "unreachable"
+                return None, None, None, "unreachable"
             return real_collect(host, packages, timeout)
 
         monkeypatch.setattr(dac, "collect_installed", half_blind)
@@ -278,8 +278,9 @@ class TestTheManagerBoxIsNotABlindSpot:
         monkeypatch.setattr(dac.socket, "gethostname", lambda: "boxM")
         monkeypatch.setattr(dac, "_run",
                             lambda cmd, timeout, stdin_text=None: (1, "", "boom"))
-        installed, apt, err = dac.collect_installed("boxM", ["cryptography"])
-        assert installed is None and apt is None and err, (installed, apt, err)
+        installed, apt, envs, err = dac.collect_installed("boxM", ["cryptography"])
+        assert installed is None and apt is None and envs is None and err, (
+            installed, apt, envs, err)
         assert "local" in err, (
             "a failed LOCAL collection must say so, not blame ssh: %r" % err)
 
@@ -519,3 +520,102 @@ class TestVersionlessDistInfoIsUnknownNotAbsent:
                                         "claimants": [], "dpkg": None}}, "apt": None}
         rc, status, finding = _drive(home, monkeypatch, rep, [])
         assert rc == 0 and finding is None
+
+
+# --- every interpreter per box, not just the reporter's own (2026-09-06) ------
+#
+# The blindness these pin: until this date the reporter read ONE interpreter
+# (`REMOTE_PYTHON`) and the sweep called that "the box". The manager box carried SIX
+# cryptography copies while the report named one, and a roll plan built on that
+# report was wrong about five of them -- including a /root/.local shadow the
+# root watchdog actually imported. A copy the sweep cannot see is a copy nobody
+# patches, so "how many envs" is not cosmetic: it is the whole claim.
+class TestEveryEnvIsWalked:
+
+    @staticmethod
+    def _versions(envs, primary="50.0.1"):
+        return {"packages": {"cryptography": {"version": primary, "origin": None,
+                                              "claimants": [], "dpkg": None}},
+                "apt": None, "envs": envs}
+
+    def test_a_second_copy_in_another_env_is_a_finding(self, home, monkeypatch):
+        """The whole point: the primary interpreter is clean, another env is not."""
+        _install_runner(monkeypatch, advisories=ADV_HIGH, versions=self._versions([
+            {"root": "/opt/app/venv/lib/python3.13/site-packages", "kind": "venv",
+             "readable": True, "reason": None, "collective": False,
+             "packages": {"cryptography": [{"version": "41.0.0", "dpkg": None}]}},
+        ]))
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 1, "a vulnerable copy outside the primary env must be a finding"
+        body = (home / ".meshforge-dep-ADVISORY").read_text()
+        assert "41.0.0" in body and "/opt/app/venv" in body, body
+
+    def test_an_unreadable_env_is_unknown_never_absent(self, home, monkeypatch):
+        """/root/.local is 0700. 'could not look' must not render as 'nothing there'."""
+        _install_runner(monkeypatch, advisories=[], versions=self._versions([
+            {"root": "/root/.local/lib/python3.13/site-packages", "kind": "root-site",
+             "readable": False, "reason": "unreadable (not owner; sudo -n unavailable)",
+             "collective": False, "packages": {}},
+        ]))
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 2, "an env we could not list makes the run UNKNOWN, not clean"
+        status = (home / ".meshforge-dep-advisories").read_text()
+        assert "UNKNOWN" in status and "/root/.local" in status, status
+
+    def test_an_apt_owned_copy_keeps_its_distro_credit(self, home, monkeypatch):
+        """Regression on my own 2026-09-06 first cut, which reported Debian
+        backports in an env as open advisories and pointed at pip -- reviving
+        the exact over-report the dpkg leg exists to kill."""
+        adv = [{"ghsa_id": "GHSA-aaaa-bbbb-cccc", "severity": "high",
+                "cve_id": "CVE-2026-27459"}]
+        _install_runner(monkeypatch, advisories=adv, versions=self._versions([
+            {"root": dac.DISTRO_PREFIX, "kind": "apt", "readable": True,
+             "reason": None, "collective": False,
+             "packages": {"cryptography": [{"version": "43.0.0", "dpkg": {
+                 "package": "python3-cryptography", "version": "43.0.0-3+deb13u1",
+                 "changelog_cves": ["CVE-2026-27459"]}}]}},
+        ]))
+        dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        status = (home / ".meshforge-dep-advisories").read_text()
+        apt_row = [ln for ln in status.splitlines() if dac.DISTRO_PREFIX in ln]
+        assert apt_row and "distro-patched" in apt_row[0], apt_row
+        assert "ADVISORY" not in apt_row[0], (
+            "a CVE named in the distro changelog is patched, not a finding: %s" % apt_row[0])
+        findings = home / ".meshforge-dep-ADVISORY"
+        if findings.exists():
+            assert dac.DISTRO_PREFIX not in findings.read_text(), (
+                "the apt-owned copy must not be reported as a pip finding")
+
+    def test_an_env_carrying_rns_is_tagged_mesh_not_leaf(self, home, monkeypatch):
+        """Which version matters to the COLLECTIVE: an env holding RNS/LXMF is on
+        the wire, so its packages are a fleet contract, not a leaf's business."""
+        _install_runner(monkeypatch, advisories=ADV_HIGH, versions=self._versions([
+            {"root": "/home/u/.local/share/pipx/venvs/client/lib/python3.13/site-packages",
+             "kind": "pipx", "readable": True, "reason": None, "collective": True,
+             "packages": {"cryptography": [{"version": "49.0.0", "dpkg": None}]}},
+        ]))
+        dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        status = (home / ".meshforge-dep-advisories").read_text()
+        assert "mesh env" in status, status
+        assert "leaf env" not in status, status
+
+    def test_the_primary_version_is_not_reported_twice(self, home, monkeypatch):
+        """The env walk necessarily re-finds the primary copy; judging it again
+        would double every row and bury the copies that are actually new."""
+        _install_runner(monkeypatch, advisories=[], versions=self._versions([
+            {"root": "/usr/local/lib/python3.13/dist-packages", "kind": "system-pip",
+             "readable": True, "reason": None, "collective": False,
+             "packages": {"cryptography": [{"version": "50.0.1", "dpkg": None}]}},
+        ]))
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 0
+        status = (home / ".meshforge-dep-advisories").read_text()
+        assert status.count("50.0.1") == 1, status
+
+    def test_a_reporter_with_no_env_block_still_reads(self, home, monkeypatch):
+        """An un-upgraded box must degrade to the old one-interpreter answer,
+        never to an exception that makes the whole box UNKNOWN."""
+        _install_runner(monkeypatch, advisories=[],
+                        versions={"cryptography": "50.0.1"})
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 0

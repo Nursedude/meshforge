@@ -136,6 +136,36 @@ APT_LISTS_STALE_H = 7 * 24
 #: python envs than a probe can see (user site, root dist-packages, pipx).
 REMOTE_PYTHON = "/usr/bin/python3"
 
+#: Every python env root a MeshForge box is known to grow, as (kind, glob).
+#: Since 2026-09-06 the reporter walks ALL of these, not just the interpreter
+#: it happens to be running under — see ``_REMOTE_SRC``'s env block for why.
+#: ``~`` is expanded remotely, by the reporter, against the ssh user's home.
+ENV_ROOT_GLOBS = (
+    ("apt",        "/usr/lib/python3/dist-packages"),
+    ("system-pip", "/usr/local/lib/python3.*/dist-packages"),
+    ("system-pip", "/usr/local/lib/python3.*/site-packages"),
+    ("user-site",  "~/.local/lib/python3.*/site-packages"),
+    ("root-site",  "/root/.local/lib/python3.*/site-packages"),
+    ("pipx",       "~/.local/share/pipx/venvs/*/lib/python3.*/site-packages"),
+    # moc4 predates the XDG move and keeps pipx venvs one level up.
+    ("pipx",       "~/.local/pipx/venvs/*/lib/python3.*/site-packages"),
+    ("venv",       "/opt/*/venv/lib/python3.*/site-packages"),
+    ("venv",       "/opt/*/*/venv/lib/python3.*/site-packages"),
+    # platformio's own env, present on every box that builds meshtasticd.
+    ("tooling",    "~/.platformio/penv/lib/python3.*/site-packages"),
+)
+# The list is EXPLICIT by design: an unbounded filesystem walk on a Pi is the
+# kind of machinery-to-watch-machinery this fleet refuses. The cost of that
+# choice is that a NEW env class is invisible until it is added here — so when
+# one appears, it lands in this tuple in the same change that creates it.
+
+#: An env carrying RNS or LXMF speaks to the MESH, so its versions are a
+#: fleet-wide contract (the fork pin is byte-exact by tag+SHA); an env without
+#: them is a leaf whose packages reach only its own process. The distinction
+#: is what makes a full-coverage sweep readable instead of merely longer:
+#: "six cryptography copies" is noise, "one of the six is under RNS" is a fact.
+COLLECTIVE_MARKERS = ("rns", "lxmf")
+
 # ``md.version(name)`` returns the FIRST distribution of that name on sys.path,
 # which is not necessarily the one ``import name`` resolves to (the manager box
 # carried three cryptography dist-infos on 2026-09-05 — 43.0.3 and 46.0.3 in the
@@ -150,6 +180,10 @@ import glob, gzip, importlib.metadata as md, importlib.util, json, os, re, subpr
 PKGS = %(pkgs)r
 IMPORT_NAMES = %(import_names)r
 DISTRO_PREFIX = %(distro_prefix)r
+ENV_ROOT_GLOBS = %(env_globs)r
+COLLECTIVE_MARKERS = %(collective)r
+# dist-info names normalise per PEP 503; the watch list is written informally.
+WANTED = set(p.lower().replace("_", "-") for p in PKGS)
 
 def _run(cmd):
     try:
@@ -166,6 +200,28 @@ try:
             claimants.setdefault(n, set()).add(d.version)
 except Exception:
     claimants = {}
+
+# Debian package + version + the CVEs its changelog NAMES, for any path apt
+# owns. Shared by the primary record and the env walk: an apt-managed copy
+# found in an env must get the same distro-patched credit, or the walk
+# re-invents the over-report the dpkg leg exists to prevent.
+def _dpkg_for(path):
+    rc, out = _run(["dpkg", "-S", path])
+    deb = out.split(":", 1)[0].strip() if rc == 0 and ":" in out else None
+    dpkg = {"package": deb, "version": None, "changelog_cves": None}
+    if not deb:
+        return dpkg
+    rc2, ver = _run(["dpkg-query", "-W", "-f=${Version}", deb])
+    if rc2 == 0 and ver.strip():
+        dpkg["version"] = ver.strip()
+    for doc in glob.glob("/usr/share/doc/%%s/changelog.Debian.gz" %% deb):
+        try:
+            with gzip.open(doc, "rt", encoding="utf-8", errors="replace") as fh:
+                dpkg["changelog_cves"] = sorted(set(
+                    re.findall(r"CVE-\d{4}-\d{4,}", fh.read())))
+        except Exception:
+            dpkg["changelog_cves"] = None   # unreadable != nothing fixed
+    return dpkg
 
 packages = {}
 for name in PKGS:
@@ -189,21 +245,7 @@ for name in PKGS:
         packages[name] = rec
         continue
     if rec["origin"] and rec["origin"].startswith(DISTRO_PREFIX + "/"):
-        rc, out = _run(["dpkg", "-S", rec["origin"]])
-        deb = out.split(":", 1)[0].strip() if rc == 0 and ":" in out else None
-        dpkg = {"package": deb, "version": None, "changelog_cves": None}
-        if deb:
-            rc2, ver = _run(["dpkg-query", "-W", "-f=${Version}", deb])
-            if rc2 == 0 and ver.strip():
-                dpkg["version"] = ver.strip()
-            for path in glob.glob("/usr/share/doc/%%s/changelog.Debian.gz" %% deb):
-                try:
-                    with gzip.open(path, "rt", encoding="utf-8", errors="replace") as fh:
-                        dpkg["changelog_cves"] = sorted(set(
-                            re.findall(r"CVE-\d{4}-\d{4,}", fh.read())))
-                except Exception:
-                    dpkg["changelog_cves"] = None   # unreadable != nothing fixed
-        rec["dpkg"] = dpkg
+        rec["dpkg"] = _dpkg_for(rec["origin"])
     packages[name] = rec
 
 apt = None
@@ -225,7 +267,92 @@ if os.path.exists("/usr/bin/dpkg-query"):
             apt["lists_age_h"] = int(max(0.0, time.time() - newest) / 3600)
     except Exception:
         pass
-print(json.dumps({"packages": packages, "apt": apt}))
+# ---- every python env on this box, not just the one running this probe ----
+# calibrated_claims #7 at its widest: the consumer of record is not ONE
+# interpreter. On 2026-09-06 the manager box carried SIX cryptography copies (system
+# pip, apt, a root user-site shadow the root watchdog actually imported, a pipx
+# venv serving a live LXMF client, a dormant app venv, platformio's) while this
+# reporter named exactly one -- and the roll plan built on it was wrong about
+# five of them.
+#
+# Versions are read from the dist-info DIRECTORY NAME, so listing permission is
+# enough and no other interpreter has to be executed (one ssh round-trip, same
+# as before). /root/.local is 0700: a non-root probe calling os.listdir there
+# reads "no packages", which is indistinguishable from a clean env, so we retry
+# under `sudo -n` and mark the env UNREADABLE when that fails too. Absence of
+# evidence is not evidence of absence (honest_failure_modes #2).
+def _entries(root):
+    try:
+        return sorted(os.listdir(root)), None
+    except PermissionError:
+        rc, out = _run(["sudo", "-n", "/bin/ls", "-1", root])
+        if rc == 0:
+            return sorted(x for x in out.splitlines() if x), None
+        return None, "unreadable (not owner; sudo -n unavailable)"
+    except OSError as exc:
+        return None, "unreadable ({0})".format(exc.__class__.__name__)
+
+def _split_dist(entry):
+    for suffix in (".dist-info", ".egg-info"):
+        if entry.endswith(suffix):
+            stem = entry[:-len(suffix)]
+            nm, sep, ver = stem.rpartition("-")
+            if sep:
+                return nm.lower().replace("_", "-"), ver
+            return stem.lower().replace("_", "-"), None
+    return None, None
+
+def _roots_for(kind, pattern):
+    found = sorted(glob.glob(os.path.expanduser(pattern)))
+    if found or "/root/" not in pattern:
+        return found, None
+    # The glob itself needs read on /root to expand; ask a tool that has it.
+    rc, out = _run(["sudo", "-n", "/usr/bin/find", "/root/.local/lib",
+                    "-maxdepth", "2", "-type", "d", "-name", "site-packages"])
+    if rc == 0:
+        return sorted(x for x in out.splitlines() if x), None
+    if os.path.isdir("/root"):
+        return [], "unreadable (sudo -n unavailable)"
+    return [], None
+
+envs = []
+seen_roots = set()
+for kind, pattern in ENV_ROOT_GLOBS:
+    roots, root_err = _roots_for(kind, pattern)
+    if root_err:
+        envs.append({"root": pattern, "kind": kind, "readable": False,
+                     "reason": root_err, "collective": False, "packages": {}})
+        continue
+    for root in roots:
+        if root in seen_roots or not os.path.isdir(root):
+            continue
+        seen_roots.add(root)
+        names, reason = _entries(root)
+        env = {"root": root, "kind": kind, "readable": names is not None,
+               "reason": reason, "collective": False, "packages": {}}
+        if names is not None:
+            is_apt = root.startswith(DISTRO_PREFIX)
+            hits = {}
+            for entry in names:
+                nm, ver = _split_dist(entry)
+                if not nm:
+                    continue
+                if nm in COLLECTIVE_MARKERS:
+                    env["collective"] = True
+                if nm not in WANTED:
+                    continue
+                # An apt-owned copy gets the SAME distro-patched credit the
+                # primary record gets. Without this the walk reports Debian
+                # backports as open advisories and points at pip -- the exact
+                # over-report the dpkg leg was added to kill.
+                dpkg = _dpkg_for(os.path.join(root, entry)) if is_apt else None
+                hits.setdefault(nm, []).append({"version": ver, "dpkg": dpkg})
+            env["packages"] = dict(
+                (k, sorted(v, key=lambda r: (r["version"] is None, r["version"])))
+                for k, v in hits.items())
+        envs.append(env)
+
+print(json.dumps({"packages": packages, "apt": apt, "envs": envs}))
 """
 
 
@@ -325,12 +452,14 @@ def local_host_aliases() -> set:
     return {a.lower() for a in aliases if a}
 
 
-def parse_report(data) -> Tuple[Dict[str, dict], Optional[dict]]:
-    """Normalise a reporter payload to ({pkg: record}, apt|None).
+def parse_report(data) -> Tuple[Dict[str, dict], Optional[dict], List[dict]]:
+    """Normalise a reporter payload to ({pkg: record}, apt|None, [env, ...]).
 
     Accepts the pre-2026-09-06 shape too — ``{pkg: "version"|None}`` — so an
     older reporter (or a test written against it) still reads as a plain
-    version with no origin knowledge, never as an error."""
+    version with no origin knowledge, never as an error. A reporter that
+    predates the env walk yields ``[]`` envs, which the caller renders as "not
+    reported by this box" rather than as "this box has one env"."""
     if not isinstance(data, dict):
         raise ValueError("report is not an object")
     if "packages" in data and isinstance(data["packages"], dict):
@@ -345,17 +474,21 @@ def parse_report(data) -> Tuple[Dict[str, dict], Optional[dict]]:
                 pkgs[name] = {"version": rec, "origin": None,
                               "claimants": [], "dpkg": None}
         apt = data.get("apt")
-        return pkgs, apt if isinstance(apt, dict) else None
+        envs = data.get("envs")
+        return (pkgs, apt if isinstance(apt, dict) else None,
+                envs if isinstance(envs, list) else [])
     return ({name: {"version": v, "origin": None, "claimants": [], "dpkg": None}
-             for name, v in data.items()}, None)
+             for name, v in data.items()}, None, [])
 
 
 def collect_installed(host: str, packages, timeout: int = 90):
-    """({pkg: record}, apt|None, None) for one box, or (None, None, reason).
-    A box we cannot reach is UNKNOWN — it is never folded in as though it
-    were clean."""
+    """({pkg: record}, apt|None, [env, ...], None) for one box, or
+    (None, None, None, reason). A box we cannot reach is UNKNOWN — it is never
+    folded in as though it were clean."""
     src = _REMOTE_SRC % {"pkgs": list(packages), "import_names": IMPORT_NAMES,
-                         "distro_prefix": DISTRO_PREFIX}
+                         "distro_prefix": DISTRO_PREFIX,
+                         "env_globs": list(ENV_ROOT_GLOBS),
+                         "collective": list(COLLECTIVE_MARKERS)}
     if host.lower() in local_host_aliases():
         rc, out, err = _run([REMOTE_PYTHON, "-"], timeout=timeout,
                             stdin_text=src)
@@ -366,13 +499,13 @@ def collect_installed(host: str, packages, timeout: int = 90):
              REMOTE_PYTHON, "-"], timeout=timeout, stdin_text=src)
         how = "unreachable or remote python failed"
     if rc != 0:
-        return None, None, "%s (rc=%s): %s" % (
+        return None, None, None, "%s (rc=%s): %s" % (
             how, rc, (err or out).strip()[:120])
     try:
-        pkgs, apt = parse_report(json.loads(out.strip().splitlines()[-1]))
-        return pkgs, apt, None
+        pkgs, apt, envs = parse_report(json.loads(out.strip().splitlines()[-1]))
+        return pkgs, apt, envs, None
     except (ValueError, IndexError) as exc:
-        return None, None, "unparseable version report: %s" % exc
+        return None, None, None, "unparseable version report: %s" % exc
 
 
 def canonical_name(name: str) -> str:
@@ -549,7 +682,7 @@ def main(argv=None) -> int:
     n_patched = n_accepted = 0
 
     for host in hosts:
-        installed, apt, herr = collect_installed(host, args.packages)
+        installed, apt, envs, herr = collect_installed(host, args.packages)
         if installed is None:
             unknown_hosts.append(host)
             lines.append("%-20s UNKNOWN — %s" % (host, herr))
@@ -618,6 +751,78 @@ def main(argv=None) -> int:
             lines.append("%-20s %-14s %-10s ADVISORY x%d — %s"
                          % (host, pkg, shown, len(advs), summarize(advs)))
             findings.append("%s %s %s: %s" % (host, pkg, shown, summarize(advs)))
+
+        # --- the copies the primary interpreter cannot see (2026-09-06) ---
+        # The loop above reports ONE interpreter's answer. Everything the box
+        # also carries — a root user-site shadow, a pipx venv, an app venv —
+        # is judged here, and an env whose listing failed is UNKNOWN so that
+        # "could not look" never renders as "nothing there".
+        primary = dict((p, (installed.get(p) or {}).get("version"))
+                       for p in args.packages)
+        for env in envs or []:
+            root, kind = env.get("root"), env.get("kind")
+            tag = "%s env %s" % ("mesh" if env.get("collective") else "leaf", root)
+            if not env.get("readable", True):
+                lines.append("%-20s %-14s %-10s UNKNOWN — %s env %s: %s"
+                             % (host, "(env)", "?", kind, root,
+                                env.get("reason") or "unreadable"))
+                unknown_hosts.append("%s/env:%s" % (host, root))
+                continue
+            for pkg, recs in sorted((env.get("packages") or {}).items()):
+                if pkg not in args.packages:
+                    continue
+                for erec in recs:
+                    ver = erec.get("version") if isinstance(erec, dict) else erec
+                    edpkg = erec.get("dpkg") if isinstance(erec, dict) else None
+                    if ver is None:
+                        lines.append("%-20s %-14s %-10s UNKNOWN — %s carries an "
+                                     "unversioned dist-info" % (host, pkg, "?", tag))
+                        unknown_hosts.append("%s/%s@%s" % (host, pkg, root))
+                        continue
+                    if ver == primary.get(pkg):
+                        continue          # already judged as the primary answer
+                    key = (pkg, ver)
+                    if key not in cache:
+                        cache[key] = query_advisories(pkg, ver)
+                    advs, aerr = cache[key]
+                    shown_v = ver if not edpkg else "%s [apt %s]" % (
+                        ver, edpkg.get("version") or "?")
+                    if advs is None:
+                        lines.append("%-20s %-14s %-10s UNKNOWN — %s — %s"
+                                     % (host, pkg, shown_v, tag, aerr))
+                        unknown_hosts.append("%s/%s@%s" % (host, pkg, root))
+                        continue
+                    if not advs:
+                        lines.append("%-20s %-14s %-10s clean — %s"
+                                     % (host, pkg, shown_v, tag))
+                        continue
+                    if edpkg:
+                        patched, acc, expired, open_ = partition_distro(
+                            advs, edpkg, accepted, today)
+                        n_patched += len(patched)
+                        n_accepted += len(acc)
+                        still = open_ + expired
+                        if not still:
+                            lines.append("%-20s %-14s %-10s distro-patched x%d; "
+                                         "accepted x%d — %s"
+                                         % (host, pkg, shown_v, len(patched),
+                                            len(acc), tag))
+                            continue
+                        lines.append("%-20s %-14s %-10s ADVISORY x%d — %s — %s "
+                                     "(apt-managed)"
+                                     % (host, pkg, shown_v, len(still),
+                                        summarize(still), tag))
+                        findings.append(
+                            "%s %s %s: %s — %s; apt-managed, fix via apt or the "
+                            "accept list, never pip"
+                            % (host, pkg, shown_v, summarize(still), tag))
+                        continue
+                    lines.append("%-20s %-14s %-10s ADVISORY x%d — %s — %s"
+                                 % (host, pkg, shown_v, len(advs),
+                                    summarize(advs), tag))
+                    findings.append("%s %s %s: %s — %s"
+                                    % (host, pkg, shown_v, summarize(advs), tag))
+
         a_status, a_findings, a_unknown = apt_lines(host, apt)
         lines.extend(a_status)
         findings.extend(a_findings)
