@@ -1380,3 +1380,11 @@ with `glob.glob` on shapes the test tree does not have (symlinked ancestors,
 a listable-but-unsearchable dir, a `python3*` component that is a file), and
 whether keying foreign venvs by basename can collide (`/opt/a/app` vs
 `/opt/b/app`).
+
+**Also queued (same reviewer, same day)**: `14290e60` — `_meta_version()` in the
+reporter reads `PKG-INFO`/`METADATA` before a versionless metadata dir is
+called UNKNOWN (Debian's dpkg-owned `cryptography.egg-info` beside the
+versioned dist-info had rendered moc4/moc5 UNKNOWN since the walk shipped).
+Attack: a PKG-INFO whose `Version:` disagrees with the sibling dist-info name
+(which one is the install?), and the one-row dedupe hiding a genuine second
+copy at the same version in the same dir.
