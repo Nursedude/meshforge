@@ -14,6 +14,7 @@
 
 | Date | Scope (range + paths) | Mechanism | Fix commits | Residuals / refuted notes |
 |------|----------------------|-----------|-------------|---------------------------|
+| 2026-09-07 | **§3 of the exit-code-gate plan — falsify the HARNESS (Fable 5.1, fresh session after `/clear`). Closes the QUEUED 2026-09-07 entry.** Scope @ `93889fb1`: `scripts/harness_audit.sh` (all 15 leg lines), `scripts/honest_status.sh` (watchdog, conf_rate and marker legs), `scripts/claim_gate.py` (pure core + the hook command line), and the two cron-verdict judges. **FILED, NOT FIXED** — the 09-03 brake: a Fable review-fix rolled by its own author is the loop this ledger exists to break; the ranked worklist is in the CLOSED section. | Every leg PLANTED, none read-through: the REAL `harness_audit.sh` run 24 times in a sandbox (fake HOME, throwaway repo, stubbed crontab/gh/ssh on PATH): 1 control + 23 mutations; `honest_status.sh` run 3 times against fixtures with the marker path redirected; 21 synthetic inputs through `claim_gate.evaluate`; 4 verdict-log plants through mini's `probe_cron_verdict_stale` with the live crontab; 3 command shapes through the Layer B guard; 903 real transcript messages measured for the row-shape hypothesis. No live box touched; moc1 read once (rev-parse, curl, systemctl show) by a narrowed honest_status run. | none (this commit is the write-up) | **harness_audit: 7 of 14 legs have a planted condition they cannot see** (10 silent plants, 11 fires, 2 UNKNOWN). Worst: the `cron_freshness` leg has had ONE outcome since birth (its writer stamps OK unconditionally — 0 non-OK lines in the log, ever — and the leg has no age check); `Stop->claim_gate` is a string grep that passes an unparseable settings file, a deleted hook whose filename survives in a note, and a hook wired to the wrong event; the audit reads no user-level settings, where 2 of the 3 Bash guards are actually wired. **claim_gate: two of its own STRONG_CLAIMS can never fire** (`fully verified` and `verified green` contain the exempting marker `verified`); the hook command is cwd-relative (rc=2 from a subdirectory — harness consequence BELIEVED, not driven live). **honest_status: a watchdog file with no `ts` reads clean under the stale gate; an unreachable box is dropped from the conf_rate leg, which still prints PASS; the verdict marker carries no scope or dirty-tree fingerprint.** Refuted: transcript row-splitting (0 of 903). §3 item 2: `harness_audit` IS judged — by mini (FAIL, never and 96h all fire; 47h clean), not by the legacy hourly watcher whose manifest is a 9-name hardcode. §3 item 3: instrument coverage of the six defects is **1 of 6** (Layer B WARNs on defect 3); defects 1 and 6 got legibility, not a gate; 2, 4 and 5 untouched. §3 item 4: those three are reasoning-process failures — not closeable by an instrument; recorded as the permanent residual. |
 | 2026-09-06 | **SECOND OPINION (Fable 5.1, fresh session after `/clear`) — closes the two QUEUED lines at the end of the CLOSED 2026-09-06 env-universe section: `518170fa` (the `_expand()` walk + `foreign-venv` in the coherence probe) and `14290e60` (`_meta_version`).** Scope: `scripts/dep_advisory_check.py` (`_stat_kind`, `_expand`, `_roots_for`, `_meta_version`, the hits dedupe), `src/utils/watchdog_probes_rns_env.py` (`_enumerate_lib_installs` keying), `src/utils/watchdog_probe_core.py` glob table. Filed, NOT fixed (operator: "file don't fix"). | Every attack in the queue text was PLANTED and run, none read-through: five shapes planted under `/opt` + `/srv` as root (symlinked venv to a 0700 target, 0444 ancestor, a file named `python3.11`, two `/opt/*/app/venv` twins), the shipped reporter's walk slice executed in-process with the REAL `sudo` and with sudo refused, `glob.glob` run as user and as root for parity, `_enumerate_lib_installs` run as root; a 10-box ssh sweep for the shapes each defect needs (nested venvs, symlinks under /opt, `-py3.X.egg-info`, the moc4/moc5 egg-info pair with `dpkg -S` on both); the same-version and disagreeing-version dedupe drilled in a tmp tree. Plants removed and the removal listed. | none (filed) | **2 CONFIRMED, both latent on today's fleet, both the false-clean polarity**: (1) a venv reached through a SYMLINK into a root-only tree is rendered ABSENT with sudo working — `os.stat` follows the link to report `denied`, `find` runs `-P` and never descends it, `[]` reads inert; (2) `foreign-venv:<basename>` keying drops the second of two same-named app dirs and a waiver by that name covers both. HELD: 0444 ancestor recovered; file-as-component no row, no raise; moc4/moc5 pair is same-version + both dpkg-owned so the one-row dedupe is right for the shape that exists. Notes: disagreeing metadata versions render as two installs (the reporter never reads `__about__`); the sudo leg's `fnmatch` lets `*` cross `/` and match dot-names (inclusive asymmetry); a refused-sudo UNKNOWN names only the FIRST denied dir. Verdicts: the `### Second opinion` subsection at the end of the CLOSED 2026-09-06 env-universe section. |
 | 2026-09-06 | **MeshChatX TUI handler retirement (operator decision: NomadNet is the LXMF client).** Scope: the working tree that became `2bfa1fcb` — deletion of `handlers/meshchatx.py`, `_meshchatx_service_ops.py`, `tests/test_meshchatx_handler.py`, the `meshchatx` feature flag, `utils.paths.MeshChatXPaths`; manifest/capability-index/README-stat regeneration. | `/code-review high` in-session (forked reviewer, 29 tool uses): 10 candidates, 2 REFUTED by its verifier (a dated audit register with no live consumer; chunk placement), 8 survived — 7 CONFIRMED with quoted lines, 1 PLAUSIBLE. Frame it found: every finding was ONE shape — the in-app half removed while installer, templates, tests and docs still assumed it. | `2bfa1fcb` (the retirement, with every finding closed in the same commit); `97b6cd6e` (pytest_checked `--color=no`, found by the full-suite run under a `FORCE_COLOR=3` tool shell — not a review finding, but the suite could not go green without it). | **CONFIRMED + fixed (7)**: no surviving uninstall route → installer `--uninstall` that VERIFIES unit-not-enabled and binary-gone; installer liveness was `is-active` presence → waits for the `:8000` socket and names "active but NOT bound"; wrapper exit-87 FIX line named a deleted TUI menu; wrapper + unit template named a second writer that never existed; docs routed through four deleted TUI actions and a feature flag `load_profile()` never read; no REMOVED changelog entry; `_lxmf_utils` meshchatx storage-dir lost its only pin → pinned against installer + wrapper. **PLAUSIBLE, recorded (1)**: `MeshChatXPaths` still lives in MeshAnchor and is imported there — deliberate non-port both ways, written into the twin-map memory. **Residual, deliberate**: `scripts/install_meshchatx.sh`, its templates and 26 installer tests STAY — MeshChatX is installer-only now, not gone; full removal is a separate decision. Gate-caught: this row itself — the upshift-witness pre-push gate refused `2bfa1fcb` because its message claimed a review with no row riding the push. |
 | 2026-09-06 | **FRONTIER PASS (Fable 5.1) — closes the QUEUED 2026-09-06 (Opus 5) section: env-universe + advisory-sweep widening.** Scope: `d73c3590`, `9004704e`, `9854b45b`, `5489f796` — `scripts/dep_advisory_check.py` (the remote reporter's env walk + `_roots_for`), `src/utils/watchdog_probe_core.py` (`PYTHON_ENV_SITE_GLOBS`, `SERVICE_ENV_LABELS`, `_SYSTEM_DIST_GLOBS`), the three probe/audit consumers, `TestOnePythonEnvUniverse`; plus the filed-not-fixed scoped-run clobber. | Every surface drilled against the real authority, none read-through: the shipped reporter source run locally under four shimmed `sudo` shapes; two root-only-readable envs PLANTED under `/opt` (removed after); a glob-recording pytest plugin over 922 tests to MEASURE ambient reads; `probe_rns_env_coherence` run live as root with its disposition printed; per-box ssh for ssh-user / rnsd-user / RNS-in-foreign-venv; MeshAnchor's units + `@rns` owner read on its box; the bash leg test mutation-checked. | The clobber defect only (path split + `# scope: fleet` stamp + reader refusal; 5 py + 2 bash tests, mutation-proven). Review findings REPORTED, not fixed — a review-born fix is not blessed by its own author. | **CONFIRMED, new (surface 1 one layer out)**: the sudo three-way exists only for `/root/` patterns; a root-only-readable ancestor anywhere else (`/opt/pipx` 0700 = the `root-pipx` label's own second location; `/opt/<app>` 0700 = `foreign-venv`) is swallowed by `glob` as absent — planted both holding cryptography 41.0.0, one tagged mesh: NO line as the sweep user, both visible as root. Fourth appearance of the inert/unreadable collapse in one day. **CONFIRMED (surface 2, one direction)**: the `SERVICE_ENV_LABELS` split is right for `dep_install_fragmented` (a foreign venv is never on the TUI's root sys.path) and wrong for `rns_env_coherence` by that probe's own criterion — live, meshanchor-server runs both MeshAnchor units from `/opt/meshanchor/venv/bin/python` against the box's single rnsd (`@rns/default`, owner rnsd), and that venv carries rns `1.3.8+mf.0`/lxmf `1.0.1+mf.1`: coherent today, excluded from the probe that would notice when it stops being. **HELD (surface 1 as asked)**: sudo refused / absent / `find` failing / `test`+`true` absent all degrade to UNKNOWN, never clean (shape D's reason string says "sudo -n unavailable" — legibility only). **MEASURED (surface 3)**: 6 of 922 tests glob real box paths; 4 exercise `_enumerate_pkg_installs` / `_enumerate_lib_installs` / audit `enumerate_installs`, which have NO injection seam and pass only because their assertions are `.get(key)==`-tolerant — on this box the real dist-packages holds rns and meshtastic, so an exact-equality assertion would flip per box; no false fire today. **ACCEPTED (surface 4)**: glob-literal-only is the right trade; f-strings escape it, none exist. **REFUTED (surface 5)**: `probe_rns_env_coherence` as root returns None WITH disposition `clean — coherent with 1 waived location(s): user-pipx:reticulum-meshchatx`; None is its witnessed clean shape, not fail-dark. Minor: `_split_dist` misparses `name-ver-pyX.Y.egg-info` (dropped silently; none in the fleet's apt dirs today); pip's vendored urllib3/requests are invisible to any dist-info scanner; `fnmatch` `*` crosses `/`. Full verdicts in the CLOSED section. |
@@ -455,7 +456,7 @@ while map/gateway/fleet-collector/fleet-watchdog are SYSTEM on the same boxes.
 
 ---
 
-## QUEUED 2026-09-07 (Opus 5) — §3 of the exit-code-gate plan: falsify the HARNESS
+## ~~QUEUED~~ CLOSED 2026-09-07 (Fable 5.1 — see the top completed-table row) — was QUEUED 2026-09-07 (Opus 5) — §3 of the exit-code-gate plan: falsify the HARNESS
 
 **Why this is queued and not done.** The seed plan
 (`.claude/plans/exit_code_gate_and_harness_audit.md` §3) calls this
@@ -504,6 +505,260 @@ planting or by accident; none by reading.
 "Coverage today: 0/6". Layers A+B+C move the DETECTION surface for 1 and 3;
 2, 4, 5 and 6 are judgement failures that no gate catches, and §3 is where
 that gets confronted honestly rather than declared solved.
+
+---
+
+## CLOSED 2026-09-07 (Fable 5.1) — §3 findings: what the harness cannot see about itself
+
+> Method, so the numbers can be re-derived rather than carried: the REAL
+> `harness_audit.sh` was run against a sandbox (a fake `HOME` holding copies
+> of the state files, a throwaway git repo carrying the settings, hooks and
+> git-hooks, and stub `crontab`/`gh`/`ssh`/`hostname` binaries on `PATH` that
+> only `cat` sandbox files). Control run: 15 PASS, rc 0. Each plant below
+> changed ONE thing, ran the script, restored, and the closing control was
+> again 15 PASS, rc 0. `honest_status.sh` ran with `HONEST_BOXES`,
+> `HONEST_WD_PATH`, `HONEST_WD_STALE_S` and `HONEST_VERDICT_PATH` pointed at
+> scratch. `claim_gate.evaluate` and `probe_cron_verdict_stale` were called
+> in-process with synthetic inputs. Nothing was planted on a live-probed
+> path (the 2026-09-06 lesson). Scratch scripts are not repo-tracked; the
+> plants are described by CLASS below, not by command (convention 6).
+
+### harness_audit.sh — per-leg record (fires / silent / unobservable)
+
+14 distinct legs (15 lines; `hooksPath` prints twice). **7 legs have at
+least one planted condition they read as PASS.** Re-derived from the run
+log: 23 mutations → 11 fired, 10 silent, 2 UNKNOWN.
+
+- **hooksPath** — config unset: FIRES. Config set but the hooks directory
+  absent: **SILENT** (PASS `.githooks`). The leg checks the config STRING,
+  not that any hook exists or is executable — the exact dormancy it was
+  written to catch (2026-06-15) has a second door.
+- **Stop->claim_gate** and **SessionStart->warmstart** — command removed:
+  FIRES. Three plants **SILENT**, all reading `PASS wired`: the settings file
+  made unparseable with the filename still in it (Claude Code loads NO
+  hooks from an unparseable settings file, so this is the total-outage
+  shape); the Stop entry deleted with the filename surviving in a note
+  key; the entry moved under a different event. Root cause: a substring
+  grep where a JSON parse of `hooks.<Event>[].hooks[].command` is needed.
+  `validate_claude_settings.py` exists but runs only as a PostToolUse hook
+  on Write/Edit — an edit from a shell, or a hand edit, never meets it.
+- **hook repo==live** — live copy edited: FIRES. Live copy of a WIRED guard
+  deleted: **SILENT** ("not deployed here — not drift", 1 hook matched).
+  Deeper: the audit never reads the user-level settings file, and that is
+  where two of the three Bash guards (`psk_leak_guard`, the Layer B
+  `exit_code_mask_guard`) are actually wired; the repo settings wire only
+  `psk_leak_guard`. So Layer B, landed the same day as this leg, has no
+  wiring leg at all — the drift leg sees it only because a repo copy
+  happens to exist. Also observed while reading: `psk_leak_guard` is wired
+  in BOTH files, so it very likely runs twice per Bash call (BELIEVED —
+  settings scopes merge their hook arrays; a witness line would confirm).
+- **mini fresh** — tick 1000s old: FIRES. Tick 600s in the FUTURE (clock
+  stepped back — this fleet's standing hazard): UNKNOWN, but with the
+  reason `state unparseable`, which sends the reader to the JSON instead
+  of the clock. Key absent: FIRES, but as `last tick 1788820640s ago` —
+  the epoch-sentinel shape from the 2026-09-02 tell, `.get(key, 0)` leaking
+  into the measurement domain.
+- **seed coverage** — not planted here; it delegates to `pytest_checked.sh`,
+  which `guard_drill.py` exercises.
+- **calibration ledger** — 4 KB of random bytes: **SILENT** (`PASS 21
+  events`). `-s` plus `wc -l` measures bytes and newlines, not events; a
+  corrupted ledger reads as a healthy one.
+- **calibration_reverify verdict** — latest FAIL: FIRES. Last OK five days
+  old: FIRES. Latest OK stamped 24 h in the FUTURE: **SILENT** — `PASS OK,
+  -86382s ago`. A negative age is printed and accepted (honest_failure_modes
+  #6: a verdict written while the clock was ahead reads fresh until the
+  clock catches up).
+- **cron_freshness** — the worst leg. Last line OK but 30 DAYS old:
+  **SILENT** (no age check — the watcher for silent crons cannot detect its
+  own silence). Message `OK 7 stale`: **SILENT**. And the producer,
+  `cron_verdict_freshness.sh`, stamps status `OK` UNCONDITIONALLY, carrying
+  the stale count only in the message — the log holds **zero non-OK
+  `cron_freshness` lines, ever**. The leg's comment defends against a FAIL
+  line whose excerpt contains ` OK `; the writer has never emitted a FAIL
+  line. This leg has had exactly one outcome since it was born. The same
+  script's manifest is a hardcoded 9-name list (no `harness_audit`, no
+  `calibration_reverify`, none of the ~30 other wired crons); mini's
+  `probe_cron_verdict_stale` supersedes it by parsing the crontab.
+- **memory index** — 30000 B: FIRES.
+- **memory repo** — PUBLIC: FIRES. Empty answer: UNKNOWN (correct).
+- **heartbeat cron (local)** — crontab line commented out: **SILENT** (`PASS
+  wired`; `grep -q` matches comments). The peer expression has the same
+  shape: `grep -c` on a commented line returns 1 (measured).
+- **deadman cron (peer)** — peer reports 0: FIRES.
+- **session notes** — 90000 B: FIRES.
+- **Exit-code composition** — FAIL beats UNKNOWN beats PASS in every run
+  above; no defect found there.
+
+### claim_gate.py — pure core, 21 planted inputs
+
+- **Two STRONG_CLAIMS can never fire.** `fully verified` and `verified
+  green` both contain `verified`, which is a CALIBRATION_MARKER, and
+  `is_calibrated` runs on the same text — so the gate's own list names two
+  phrases it will always pass. `tests/test_claim_gate.py` asserts
+  `has_strong_claim("fully verified and shipped")` and stops there; no test
+  walks STRONG_CLAIMS through `evaluate`. A one-line parametrized test
+  ("every STRONG_CLAIM, alone, blocks") would have caught this on the day
+  the lists were written.
+- **`unknown` anywhere exempts.** `All green. Root cause of the earlier
+  flake is unknown.` passes. So does `Coverage is 100%. The retry should
+  work too.` — a hedge about one thing calibrates a certainty about another.
+  Design tension, not a bug: the markers are generous on purpose. Recorded
+  so the trade is a known one.
+- **Lexical coverage is narrow, by design — and the number should be
+  known**: of nine natural overclaim phrasings that are not in the list
+  (`All tests are passing`, `CI is green`, `all 312 tests pass`,
+  `everything's green`, `green across the board`, `fixed and deployed`, two
+  spaces in `all  green`, a prose `return code`, `**ALL GREEN**`), eight
+  pass and one blocks (the markdown one, by lowercasing). Precision was
+  chosen over recall; the ledger is the stated backstop.
+- **The hook command is cwd-relative.** `python3 scripts/claim_gate.py`
+  run from a subdirectory exits 2 with "can't open file"; a Stop hook exit
+  of 2 is a BLOCK with stderr as the reason, and a script that cannot start
+  cannot honor `stop_hook_active`. Consequence inside the harness is
+  BELIEVED (not driven live — it would have required ending this turn from
+  another cwd). The PostToolUse lint hook has the same shape behind an
+  or-true guard, so from a subdirectory it silently no-ops. The PreToolUse
+  guard already anchors on `$CLAUDE_PROJECT_DIR`; the other two should.
+- **Marker semantics** — all the safe-direction checks hold: another HEAD,
+  `ran_full_suite` false, a future `ts`, a string `"0"` exit code all
+  BLOCK. Trivia: a boolean `False` exit code satisfies (`False != 0` is
+  false in Python); no writer emits one.
+- **The marker carries no scope and no dirty-tree fingerprint.** `evaluate`
+  takes no tree state, so a fresh green marker for HEAD backs "all green"
+  identically on a clean tree and on a tree with uncommitted edits (the
+  2-hour window the docstring already names — but defect 1 in the plan was
+  exactly an uncommitted edit judged against a committed range). And
+  `honest_status.sh` writes the marker from a run whose box list came from
+  `HONEST_BOXES` with the same fields as a fleet run: a narrowed override
+  that goes green mints a marker the gate honors and the ledger records as
+  a fleet-strength VERIFIED claim. Measured: the narrowed run's outcome is
+  recorded at the end of this section.
+- **Refuted**: the hypothesis that a closing message split across several
+  transcript rows would let the gate judge only the last fragment. Measured
+  over the six most recent transcripts: 903 assistant messages, 0 with text
+  in more than one row.
+
+### honest_status.sh — three fixture runs
+
+- **A watchdog file with no `ts` reads clean under the stale gate.** Fixture
+  `{"signals": []}`, stale gate 300 s, self only: `watchdog signals PASS 1/1
+  clean, 0 signals`. The freshness check is skipped when `ts` is not
+  numeric (`NOTS`), so a snapshot that cannot prove its age is treated as
+  current — honest_failure_modes #1, the absent value in the healthy domain.
+  Should be UNKNOWN, alongside `unparseable` and `stale`.
+- **An unreachable box is dropped from the conf_rate leg, which still prints
+  PASS.** Box list = one nonexistent name plus self: `live conf_rate<=1.0
+  PASS 1 checked` while the watchdog leg on the same run said `1
+  unreachable`. The leg's `[ -z "$j" ] && continue` conflates "no map served
+  here" with "the box did not answer"; the SHA leg already solved this with a
+  liveness token and the conf_rate leg never got it. Also: a `null`
+  confirmation_rate is counted as `checked`.
+- **The narrowed-scope marker** — see the claim_gate item above and the
+  outcome line at the end of this section.
+- **Ambient-state note for the shell leg tests**: `test_honest_status_*_leg.sh`
+  isolate `HOME` (so the default marker path lands in a fake home) but do not
+  pin `HONEST_VERDICT_PATH`. An outer process that exports it — this drill
+  did — has its marker overwritten mid-suite by the inner fake-repo run
+  (observed: a marker for a HEAD that is not this repo's, exit 2, stamped
+  while the outer run was still in its suite leg). Production is unaffected
+  because nothing exports that variable; recorded because
+  `feedback_tests_must_pin_ambient_state` says a test whose behaviour depends
+  on the caller's environment pins nothing.
+
+### §3 item 2 — is harness_audit's own verdict judged?
+
+Yes, by mini. `probe_cron_verdict_stale` was called in-process with the LIVE
+crontab and four planted verdict logs: latest `harness_audit FAIL` → fires
+(`1 failing: harness_audit(FAIL)`); no `harness_audit` line at all → fires
+(`silent: harness_audit(never)`); last OK 4 days old → fires (`96h`); last OK
+47 h old → clean (inside the 72 h window that 3× a daily cadence gives). The
+control against the real log was clean. The legacy hourly watcher does NOT
+judge it (9-name hardcoded manifest) — and, per the cron_freshness leg
+above, that watcher's own verdict cannot go red either. It is a candidate
+for removal, not repair: mini already does its job and does it better.
+
+### §3 item 3 — coverage of the six defects, re-derived
+
+Instrument coverage: **1 of 6.**
+
+- Defect 1 (a check judged an empty range against an uncommitted edit and
+  reported rc 0): Layer C makes the scope LEGIBLE in the checker's output;
+  no harness leg refuses it, and the honest_status marker cannot see an
+  uncommitted edit either (above). Legibility, not a gate.
+- Defect 2 (a test built around a flag the function never reads): nothing.
+- Defect 3 (rc that was `head`'s, not python's): **Layer B WARNs** on the
+  `cmd | head; echo rc=$?` shape (planted: fires). It is silent on
+  `pytest | tail -3` with no `$?` read afterward, by its own design.
+- Defect 4 (a declared absence called a gap): nothing.
+- Defect 5 (a live-box measurement before checking the declaration): nothing.
+- Defect 6 (reconstructing another session's plants from mtimes): the
+  warmstart handoff surfacing (`79dd746c`) and the touch log make the
+  write-up findable. Legibility, not a gate.
+
+### §3 item 4 — the blind spot, stated plainly
+
+The harness watches code and fleet state. Defects 2, 4 and 5 are failures of
+the session's reasoning process — building the wrong test, not reading the
+declaration, acting before checking — and no instrument that reads files or
+sockets sees them. **They are not closeable by an instrument.** What DOES
+move them is legibility at the moment of decision: the declaration surfaced
+next to the box name before an ssh, the handoff surfaced at session start,
+the scope printed beside the verdict. That is the permanent residual of this
+audit, recorded as such rather than averaged into the 1-of-6.
+
+### Narrowed-run outcome (the measurement the marker items above refer to)
+
+`HONEST_BOXES=moc1`, full run, marker redirected to scratch: `6/7 PASS, 1
+FAIL (proven not-green)`, rc 1, marker `exit_code 1` → the gate BLOCKS on it
+(measured with `claim_gate.evaluate`). So this run did NOT mint an honored
+marker — but for an accidental reason that is itself a finding: the one
+failure was `test_honest_status_shell.py::test_shell_harness_passes
+[test_honest_status_boxes.sh]`, and the sub-cases that failed are exactly the
+ones that expect NO `HONEST_BOXES` in the environment (SSOT-file resolution,
+SELF-ONLY wording, peers-only drift count). They inherited the outer run's
+override. The sub-cases that set their own `HONEST_BOXES` all passed. Three
+consequences, stated separately:
+
+- The claim "a green narrowed run mints a fleet-strength marker the gate
+  honors" is **BELIEVED from the schema** (the marker has no `boxes` or
+  `fleet_ssot` field; `marker_satisfies` reads none), not measured — the
+  measurement was pre-empted by the leak.
+- `honest_status.sh` cannot pass its own suite leg while a box-list override
+  is exported, because the suite contains its own shell tests and they read
+  the caller's environment. `feedback_tests_must_pin_ambient_state`, in the
+  gate's own test file. Worklist item 6 grows to cover `HONEST_BOXES` and
+  `MESHFORGE_FLEET_HOSTS` as well as the marker path.
+- **Operator note**: that run overwrote `~/.local/state/meshforge/hs_failures/
+  last_failure.log` on this box (stamped 2026-09-07, 48 KB) with the
+  drill-induced failure above. It is not a real suite failure; the same
+  suite passed 11809/0 at the previous session's close on the same HEAD.
+  `_hs_preserve` overwrites on every non-green run by design, so the prior
+  (July) log is gone.
+
+### Ranked worklist (for an Opus day-session — not for this session)
+
+1. **cron_freshness**: delete the leg and retire `cron_verdict_freshness.sh`
+   in favour of mini's `cron_verdict_stale` (subtraction), or make the writer
+   stamp FAIL when stale > 0 and give the leg an age window. Do not do both.
+2. **Stop/SessionStart wiring**: parse the JSON, assert the command under the
+   right event, FAIL on unparseable; add the user-level settings to the
+   audit's scope so the Layer B and psk wiring have a leg; resolve the
+   double-wired psk guard.
+3. **claim_gate**: strip matched STRONG_CLAIMS from the text before the
+   marker scan (or drop the two self-exempting phrases); anchor the Stop and
+   PostToolUse commands on `$CLAUDE_PROJECT_DIR`; add the "every STRONG_CLAIM
+   alone blocks" test.
+4. **honest_status**: `NOTS` → UNKNOWN; conf_rate liveness token; marker gains
+   `boxes`, `fleet_ssot` and `dirty` fields and claim_gate refuses a marker
+   that is not fleet-SSOT or was written on a dirty tree.
+5. **harness_audit small**: hooksPath leg also checks the hook files exist and
+   are executable; ledger leg counts PARSEABLE lines and fails on garbage;
+   negative age → UNKNOWN naming the clock; crontab greps skip comment lines;
+   absent tick key → UNKNOWN naming the key.
+6. **Tests**: the shell leg tests and `test_honest_status_boxes.sh` pin `HONEST_VERDICT_PATH`, `HONEST_BOXES` and `MESHFORGE_FLEET_HOSTS` into their sandbox (clear them at the top) — the drill above showed the suite failing its own gate test under an exported override.
+
+Every fix above lands behind a test that plants the condition — the plants
+in this section are the test cases.
 
 ---
 
