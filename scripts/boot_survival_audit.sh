@@ -41,7 +41,11 @@
 #   ./boot_survival_audit.sh --install-cron
 # which wires:
 #   @reboot sleep 420; boot_survival_audit.sh   (7 min grace for slow Pis)
-#   17 7 * * * boot_survival_audit.sh           (daily re-derivation)
+#   17 7 * * * boot_survival_audit.sh  # cron_verdict:boot_survival
+# The marker on the daily line is what lets probe_cron_verdict_stale judge this
+# audit's SILENCE (not just its failures) — see the note at the install block.
+# Re-running --install-cron is idempotent and is the migration path for a box
+# whose crontab predates the marker.
 
 set -uo pipefail
 
@@ -67,7 +71,15 @@ if [ "${1:-}" = "--install-cron" ]; then
     {
         cat "$tmp"
         echo "@reboot sleep 420; $SELF >> \$HOME/.local/state/boot_survival.log 2>&1"
-        echo "17 7 * * * $SELF >> \$HOME/.local/state/boot_survival.log 2>&1"
+        # The DAILY line carries the self-verdict declaration; the @reboot twin
+        # deliberately does NOT. This script emits its verdict from inside its
+        # own body, so no name reaches the crontab line and probe_cron_verdict_
+        # stale could hear its FAILures but never its SILENCE (2026-09-06). The
+        # marker supplies the name beside a schedule the cadence can be read
+        # from — and @reboot has no cadence, so declaring both would let dict
+        # ordering decide which schedule judges the silence, with @reboot
+        # making it unjudgeable. One declaration, on the line that has a period.
+        echo "17 7 * * * $SELF >> \$HOME/.local/state/boot_survival.log 2>&1  # cron_verdict:$NAME"
     } | crontab -
     rm -f "$tmp"
     mkdir -p "$HOME/.local/state"
