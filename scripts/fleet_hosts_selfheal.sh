@@ -41,6 +41,23 @@
 # the case where the script itself never got far enough to write one):
 #   47 * * * * /opt/meshforge/scripts/fleet_hosts_selfheal.sh >/dev/null 2>&1 \
 #     || /opt/meshforge/scripts/cron_verdict.sh fleet_hosts_drift FAIL wrapper_crashed
+#
+# $MESHFORGE_FLEET_DNS (2026-09-07) — space-separated DNS server IPs passed to
+# EVERY generator call as --server. For a box whose own resolver does not serve
+# the fleet zone: lehua is an AREDN-attached field node whose only nameserver
+# answers *.mf.internal with a confident NXDOMAIN, so without this the hourly
+# run is permanently UNOBSERVABLE and this organ can never heal there.
+#   47 * * * * MESHFORGE_FLEET_DNS=<fleet-dns-ip> /opt/meshforge/scripts/...
+#
+# It is an ENV VAR and nothing else — deliberately NOT a new file-resolution
+# chain. utils/fleet_hosts.py exists because ~13 hand-rolled copies of one
+# chain drifted apart (honest_failure_modes #5); adding a fourteenth to reach
+# one box would be that mistake with a fresh coat of paint. The crontab line
+# is already per-box, so the per-box value belongs there.
+#
+# ⚠️ When the override is in use EVERY verdict says so. An `OK` from a box
+# whose own resolver is broken must not read as "this box's DNS is healthy" —
+# that is honest_failure_modes #1 in the reporting layer.
 
 set -uo pipefail
 
@@ -53,7 +70,39 @@ LOCK="${FLEET_HOSTS_SELFHEAL_LOCK:-${TMPDIR:-/tmp}/fleet_hosts_selfheal.lock}"
 # gen_fleet_hosts.py exit codes (EXIT_OK / EXIT_DRIFT / EXIT_UNKNOWN)
 RC_OK=0; RC_DRIFT=1; RC_UNKNOWN=2
 
-say() { "$VERDICT" "$NAME" "$1" "$2"; }
+# One arg list, threaded to ALL THREE generator calls. A mechanism with a
+# producing and a consuming half must wire together or fail together
+# (honest_failure_modes #4): passing --server to --check but not to --apply
+# would heal from one resolver's answer while checking against another's.
+GEN_ARGS=()
+SRC_NOTE=""
+if [ -n "${MESHFORGE_FLEET_DNS:-}" ]; then
+    for _srv in $MESHFORGE_FLEET_DNS; do
+        GEN_ARGS+=(--server "$_srv")
+    done
+    SRC_NOTE=" [via --server ${MESHFORGE_FLEET_DNS// /,}; this box's own resolver does NOT serve the fleet zone]"
+fi
+# Appended in say() rather than at each call site, so a branch added later
+# cannot quietly omit the disclosure.
+say() { "$VERDICT" "$NAME" "$1" "$2$SRC_NOTE"; }
+
+# ONE place where the override is attached to a generator call, root path and
+# sudo path alike. It was two expansion sites for about an hour on 2026-09-07,
+# and a mutation drill showed why that is wrong: deleting --server from the
+# ROOT branch left the whole suite green, because the tests run unprivileged
+# and only ever take the sudo branch. Two hardcodes of one rule, and the
+# unexercised copy is the one that rots (honest_failure_modes #5).
+#
+# `${a[@]+"${a[@]}"}` — an empty array under `set -u` is an error on older
+# bash; this expands to nothing there instead of aborting the hourly run.
+gen() {
+    local pre=()
+    if [ "${1:-}" = "--as-root" ]; then
+        shift
+        [ "$(id -u)" -eq 0 ] || pre=(sudo -n)
+    fi
+    ${pre[@]+"${pre[@]}"} "$GEN" "$@" ${GEN_ARGS[@]+"${GEN_ARGS[@]}"}
+}
 
 # Serialize against a concurrent manual run so check and apply cannot interleave
 # on the same file (honest_failure_modes #8). A missing/wedged flock degrades to
@@ -66,7 +115,7 @@ if [ ! -x "$GEN" ]; then
     exit 0
 fi
 
-out=$("$GEN" --check 2>&1); rc=$?
+out=$(gen --check 2>&1); rc=$?
 
 case "$rc" in
   "$RC_OK")
@@ -96,17 +145,15 @@ n=$(printf '%s\n' "$out" | grep -c '^DRIFT ')
 provenance=$(printf '%s\n' "$out" | awk '/^PROVENANCE /{print $2}' | tr -d ':' | paste -sd, -)
 np=$(printf '%s\n' "$out" | grep -c '^PROVENANCE ')
 
-if [ "$(id -u)" -eq 0 ]; then
-    apply_out=$("$GEN" --apply 2>&1); apply_rc=$?
-else
-    apply_out=$(sudo -n "$GEN" --apply 2>&1); apply_rc=$?
-    if [ "$apply_rc" -ne 0 ] && printf '%s' "$apply_out" | grep -qi "sudo\|password"; then
-        say FAIL "drift in $n name(s) [$drifted] / $np stale marker(s) [$provenance] — cannot heal, sudo -n refused"
-        exit 0
-    fi
+apply_out=$(gen --as-root --apply 2>&1); apply_rc=$?
+# The sudo-refusal witness is checked unconditionally now: running as root it
+# simply never matches, and a single path cannot drift from its own copy.
+if [ "$apply_rc" -ne 0 ] && printf '%s' "$apply_out" | grep -qi "sudo\|password"; then
+    say FAIL "drift in $n name(s) [$drifted] / $np stale marker(s) [$provenance] — cannot heal, sudo -n refused"
+    exit 0
 fi
 
-verify_out=$("$GEN" --check 2>&1); verify_rc=$?
+verify_out=$(gen --check 2>&1); verify_rc=$?
 
 if [ "$verify_rc" -eq "$RC_OK" ]; then
     if [ "$n" -gt 0 ] && [ "$np" -gt 0 ]; then

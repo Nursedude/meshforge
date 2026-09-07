@@ -96,9 +96,15 @@ def rig(tmp_path):
     shutil.copy2(WRAPPER, tmp_path / WRAPPER.name)
     _stub_verdict(tmp_path / "cron_verdict.sh")
 
-    def run():
+    def run(**env_extra):
         env = dict(os.environ)
         env["FLEET_HOSTS_SELFHEAL_LOCK"] = str(tmp_path / "lock")
+        # Pinned, never inherited: if the box running the suite happened to
+        # export MESHFORGE_FLEET_DNS, every verdict below would change and the
+        # suite would answer differently per machine
+        # (feedback_tests_must_pin_ambient_state).
+        env.pop("MESHFORGE_FLEET_DNS", None)
+        env.update(env_extra)
         proc = subprocess.run(
             ["bash", str(tmp_path / WRAPPER.name)],
             capture_output=True, text=True, timeout=60, env=env,
@@ -278,3 +284,66 @@ class TestProvenanceRepairIsNotReportedAsAMove:
         assert "moc4.mf.internal" in verdict and "lehua.mf.internal" in verdict
         assert "1 drifted" in verdict and "1 stale provenance" in verdict, (
             f"collapsed two different findings into one count: {verdict!r}")
+
+
+class TestServerOverridePassThrough:
+    """$MESHFORGE_FLEET_DNS -> --server on EVERY generator call (2026-09-07).
+
+    lehua is an AREDN-attached field node whose only nameserver answers every
+    *.mf.internal with a confident NXDOMAIN. Without the override its hourly
+    run is permanently UNOBSERVABLE, so this organ can never heal there — the
+    one box that most needs a self-healing block is the one it cannot serve.
+    """
+
+    def test_override_reaches_check_apply_and_recheck(self, rig):
+        """Half-wiring is the failure to fear: --server on --check but not on
+        --apply would heal from one resolver while checking against another
+        (honest_failure_modes #4). All THREE calls or it is broken."""
+        tmp, run = rig
+        _stub_generator(tmp / "gen_fleet_hosts.py", check_rc=1, apply_rc=0,
+                        check_out="DRIFT moc: hosts=- dns=192.0.2.1\n",
+                        recheck_rc=0)
+        _proc, verdict, calls = run(MESHFORGE_FLEET_DNS="198.51.100.9")
+        lines = [l for l in calls.strip().split("\n") if l]
+        assert len(lines) == 3, f"expected check/apply/recheck, got {lines}"
+        for line in lines:
+            assert "--server 198.51.100.9" in line, f"override missing from: {line}"
+        assert "CONCERN" in verdict
+
+    def test_multiple_servers_all_pass_through(self, rig):
+        tmp, run = rig
+        _stub_generator(tmp / "gen_fleet_hosts.py", check_rc=0, check_out="in sync\n")
+        _proc, _v, calls = run(MESHFORGE_FLEET_DNS="198.51.100.9 203.0.113.5")
+        assert "--server 198.51.100.9 --server 203.0.113.5" in calls
+
+    def test_unset_override_changes_nothing(self, rig):
+        """The 8 boxes with a working resolver must be byte-for-byte unaffected."""
+        tmp, run = rig
+        _stub_generator(tmp / "gen_fleet_hosts.py", check_rc=0, check_out="in sync\n")
+        _proc, verdict, calls = run()
+        assert calls.strip() == "--check"
+        assert "--server" not in calls
+        assert verdict.startswith("fleet_hosts_drift OK")
+        assert "resolver" not in verdict
+
+    def test_every_verdict_discloses_the_override(self, rig):
+        """An OK from a box whose own resolver is broken must not read as
+        'this box's DNS is healthy' — honest_failure_modes #1 in the
+        reporting layer. Disclosure lives in say(), so no branch can omit it."""
+        tmp, run = rig
+        _stub_generator(tmp / "gen_fleet_hosts.py", check_rc=0, check_out="in sync\n")
+        _proc, verdict, _c = run(MESHFORGE_FLEET_DNS="198.51.100.9")
+        assert "OK" in verdict
+        assert "--server 198.51.100.9" in verdict
+        assert "own resolver does NOT serve the fleet zone" in verdict
+
+    def test_unobservable_still_never_heals_under_the_override(self, rig):
+        """The override must not weaken the rule it exists beside: rc=2 is
+        still blindness, and blindness still never writes."""
+        tmp, run = rig
+        _stub_generator(tmp / "gen_fleet_hosts.py", check_rc=2,
+                        check_out="UNKNOWN: no name resolved via DNS\n")
+        _proc, verdict, calls = run(MESHFORGE_FLEET_DNS="198.51.100.9")
+        assert "--apply" not in calls
+        assert "FAIL" in verdict
+        assert " OK " not in verdict
