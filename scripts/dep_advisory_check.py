@@ -302,6 +302,32 @@ def _split_dist(entry):
             return stem.lower().replace("_", "-"), None
     return None, None
 
+# A metadata dir whose NAME carries no version may still say it inside:
+# Debian ships `cryptography.egg-info/PKG-INFO` (Version: 38.0.4) beside the
+# versioned dist-info, dpkg-owned, on every bookworm/noble box. Reading the
+# name alone rendered those two boxes UNKNOWN for a version that was one
+# file away (2026-09-06). Only when neither file names a version is it
+# genuinely unversioned. A dir we cannot read is retried under sudo like the
+# listing was; a failure here leaves None, which the caller reports as
+# UNKNOWN -- never as a version it did not see.
+def _meta_version(path):
+    for meta in ("PKG-INFO", "METADATA"):
+        fp = os.path.join(path, meta)
+        text = None
+        try:
+            with open(fp, encoding="utf-8", errors="replace") as fh:
+                text = fh.read(4096)
+        except PermissionError:
+            rc, out = _run(["sudo", "-n", "/bin/cat", fp])
+            text = out if rc == 0 else None
+        except OSError:
+            continue
+        if text:
+            m = re.search(r"^Version:\s*(\S+)", text, re.M)
+            if m:
+                return m.group(1)
+    return None
+
 # The FOUR answers a stat can give, kept apart: dir / other / absent / denied.
 # os.path.isdir() and os.path.exists() fold denied into False, and that fold
 # is this file's recurring defect. (Comments, not docstrings: this whole
@@ -417,11 +443,15 @@ for kind, pattern in ENV_ROOT_GLOBS:
                     env["collective"] = True
                 if nm not in WANTED:
                     continue
+                if ver is None:
+                    ver = _meta_version(os.path.join(root, entry))
                 # An apt-owned copy gets the SAME distro-patched credit the
                 # primary record gets. Without this the walk reports Debian
                 # backports as open advisories and points at pip -- the exact
                 # over-report the dpkg leg was added to kill.
                 dpkg = _dpkg_for(os.path.join(root, entry)) if is_apt else None
+                if any(r["version"] == ver for r in hits.get(nm, [])):
+                    continue   # egg-info + dist-info naming ONE install: one row
                 hits.setdefault(nm, []).append({"version": ver, "dpkg": dpkg})
             env["packages"] = dict(
                 (k, sorted(v, key=lambda r: (r["version"] is None, r["version"])))

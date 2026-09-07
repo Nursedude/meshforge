@@ -895,3 +895,28 @@ class TestAbsentUnderAReadableParentIsInertWithoutSudo:
         envs = _walk_envs([("foreign-venv", pattern)], lambda cmd: (1, ""))
         assert sorted(e["root"] for e in envs) == sorted(glob.glob(pattern))
         assert all(e["readable"] for e in envs)
+
+
+class TestAVersionlessMetadataDirIsReadBeforeBeingCalledUnknown:
+    """Debian ships `cryptography.egg-info/PKG-INFO` beside the versioned
+    dist-info (dpkg-owned, bookworm and noble). Reading the NAME alone called
+    moc4 and moc5 UNKNOWN for a version one file away — the sweep's own
+    defect, carried as "2 genuine UNKNOWNs" until 2026-09-06."""
+
+    def test_egg_info_version_comes_from_pkg_info_and_is_one_row(self, tmp_path):
+        site = _plant_env(tmp_path / "usr/lib/python3/dist-packages",
+                          "cryptography-38.0.4.dist-info", "cryptography.egg-info")
+        (site / "cryptography.egg-info" / "PKG-INFO").write_text(
+            "Metadata-Version: 2.1\nName: cryptography\nVersion: 38.0.4\n")
+        envs = _walk_envs([("system-dist", str(tmp_path / "usr/lib/python3/dist-packages"))],
+                          lambda cmd: (1, ""))
+        recs = envs[0]["packages"]["cryptography"]
+        assert [r["version"] for r in recs] == ["38.0.4"], recs
+
+    def test_no_version_anywhere_stays_unknown(self, tmp_path):
+        site = _plant_env(tmp_path / "usr/lib/python3/dist-packages", "cryptography.egg-info")
+        (site / "cryptography.egg-info" / "not-metadata").write_text("")
+        envs = _walk_envs([("system-dist", str(tmp_path / "usr/lib/python3/dist-packages"))],
+                          lambda cmd: (1, ""))
+        recs = envs[0]["packages"]["cryptography"]
+        assert [r["version"] for r in recs] == [None], recs
