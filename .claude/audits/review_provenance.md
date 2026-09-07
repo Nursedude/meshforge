@@ -1179,3 +1179,57 @@ functions, six tests) and the operator's brake against same-session
 self-deploy is respected — the manager's timer will pick it up on its next
 daily fire, nothing was fleet-rolled. **QUEUED for a second opinion**: that
 commit, plus seam 2's floor and seam 5.
+
+---
+
+## QUEUED for a second opinion — env-universe + advisory-sweep widening (2026-09-06, Opus 5)
+
+Three commits, all **written and reviewed by the same session**, and all
+already fleet-rolled (operator directed push + `fleet_pull` explicitly). So the
+ask is review-AFTER-roll, not review-before. By this repo's own brake
+(no same-session self-deploy of a review fix) they are unreviewed code.
+
+    d73c3590  dep_advisory_check: walk every python env per box, not one interpreter
+    9004704e  dep_advisory_check: an absent root user-site is inert, not UNKNOWN
+    9854b45b  env-universe: one list of where python envs live, five consumers
+
+Verification that DID run: full suite `11771 passed, 3 skipped` exit 0; lint
+exit 0; `honest_status.sh` FULL exit 0 on the pre-consolidation head; live
+sweep reproducing a hand inventory on the manager box; a falsifiability drill
+(plant a `cryptography-41.0.0.dist-info` + `rns` marker in a new `/opt` venv →
+detected as `mesh env` with 11 advisories; remove → cleared); a guard drill on
+`TestOnePythonEnvUniverse` in both directions; and an A/B of the probes as root
+against pre-change code (rns identical, lxmf gains `root-site 1.0.1+mf.1`).
+
+**Attack these, ranked by where the author is least sure:**
+
+1. **`_roots_for` three-way sudo branching** (`scripts/dep_advisory_check.py`).
+   The first cut collapsed "path absent" into "unreadable" and produced 8 false
+   UNKNOWNs across the fleet — the inert/indeterminate confusion this file
+   family exists to refuse. Cured by `sudo -n test -d` then `sudo -n true`.
+   Does the split still hold when sudo exists but needs a tty, is rate-limited,
+   or `/usr/bin/test` is absent?
+2. **`SERVICE_ENV_LABELS` scope split** (`src/utils/watchdog_probe_core.py`).
+   An author judgement that changes what TWO LIVE detectors look at: probes
+   excluded from `foreign-venv`/`tooling`, sweep includes them. Argue the
+   opposite — a stray meshtastic inside another app's `/opt/*/venv` read as
+   root by the TUI is arguably exactly the phantom-update class.
+3. **Ambient-state hazard in probe helpers.** `_glob_consumer_site_dirs`
+   stopped consulting module-level `_SYSTEM_DIST_GLOBS` (the monkeypatch seam),
+   and under test the fallback read the REAL box and **fired a false
+   `rns_version_drift` signal** against a fake pin. Only the FULL suite caught
+   it. Sweep for other helpers that read the shared table directly.
+4. **`TestOnePythonEnvUniverse` completeness.** Flags GLOB literals only, so a
+   sixth copy spelled as explicit non-glob paths passes. Deliberate (avoids
+   docstring/DISTRO_PREFIX false positives) — is the trade right?
+5. **Pre-existing, NOT introduced here:** `probe_rns_env_coherence` returns
+   `None` as root on the manager box both before and after (A/B'd). A probe
+   returning None with no `note_disposition` witness is the MF027 fail-dark
+   shape. Own investigation.
+
+**Separate defect, filed not fixed:** a scoped run
+(`--host X --packages Y`) overwrites the SAME canonical status files the full
+fleet run writes and `honest_status.sh` reads, so a one-box spot-check silently
+replaces the ten-box record. Observed twice in one session (reported 4 and 7
+findings when the fleet number was 22). Cure should make the narrow file
+UNUSABLE as the fleet answer, not merely labelled.
