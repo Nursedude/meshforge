@@ -146,7 +146,35 @@ def _is_loopback(addr: str) -> bool:
     return addr.startswith("127.") or addr == "::1"
 
 
-def upstream_servers() -> List[str]:
+def normalise_servers(servers: List[str]) -> List[str]:
+    """De-duplicate, preserve order, drop loopback stubs (`_is_loopback`).
+
+    ONE normaliser for every source -- discovery and the --server override --
+    so a stub can never enter through the newer door (honest_failure_modes #5).
+    """
+    seen, out_list = set(), []
+    for srv in servers:
+        srv = (srv or "").strip()
+        if srv and srv not in seen and not _is_loopback(srv):
+            seen.add(srv)
+            out_list.append(srv)
+    return out_list
+
+
+def _is_ip_literal(addr: str) -> bool:
+    """True for an IPv4/IPv6 literal. --server takes ONLY literals: accepting
+    a hostname would require the resolver this flag exists to bypass, so a
+    typo'd name would fail as "no server answered" (UNOBSERVABLE) rather than
+    as the usage error it is."""
+    import ipaddress
+    try:
+        ipaddress.ip_address((addr or "").strip())
+        return True
+    except ValueError:
+        return False
+
+
+def upstream_servers(override: Optional[List[str]] = None) -> List[str]:
     """The DNS server(s) that actually hold the fleet zone.
 
     Discovered, never hardcoded (MF014: no operator addresses in the repo).
@@ -157,8 +185,23 @@ def upstream_servers() -> List[str]:
     2026-07-26: every name fell through to ip_fallback and the run correctly
     refused, but the box could never get a block at all).
 
+    ``override`` (the --server flag) is **AUTHORITATIVE when non-empty** and
+    never falls through to discovery -- same contract as MESHFORGE_FLEET_HOSTS.
+    A box whose own resolver does not serve the fleet zone must be able to name
+    the server that does, and must NOT silently fall back to the resolver that
+    was already wrong. Born 2026-09-07 on lehua: an AREDN-attached field node
+    whose only nameserver is the AREDN localnode, which answers every
+    `*.mf.internal` with a confident **NXDOMAIN in 68ms**. That is the worst
+    possible input here -- an authoritative-looking negative, so every name was
+    classified NEGATIVE (not UNOBSERVABLE), fell to ip_fallback, and the run
+    correctly refused to write. m1 answers that same box in 3ms; it was simply
+    never asked. Reachability was never the problem, so no network-config
+    change is needed to cure it.
+
     Loopback stubs are dropped at every source -- see `_is_loopback`.
     """
+    if override:
+        return normalise_servers(override)
     servers: List[str] = []
     dropin_dir = RESOLVED_DROPIN_DIR
     if dropin_dir.is_dir():
@@ -195,12 +238,7 @@ def upstream_servers() -> List[str]:
                 if len(parts) >= 2:
                     servers.append(parts[1])
 
-    seen, out_list = set(), []
-    for srv in servers:
-        if srv and srv not in seen and not _is_loopback(srv):
-            seen.add(srv)
-            out_list.append(srv)
-    return out_list
+    return normalise_servers(servers)
 
 
 def _skip_name(data: bytes, off: int) -> int:
@@ -266,7 +304,8 @@ def _dns_query_a(server: str, fqdn: str, timeout: float) -> Tuple[bool, Optional
     return True, None          # answered, but no A record
 
 
-def resolve_a(fqdn: str, timeout: float = 3.0) -> Tuple[str, Optional[str]]:
+def resolve_a(fqdn: str, timeout: float = 3.0, *,
+              servers: Optional[List[str]] = None) -> Tuple[str, Optional[str]]:
     """Authoritative IPv4 for `fqdn` from the DNS SERVER — never via NSS.
 
     -> (status, ip): ANSWERED (with the A record), NEGATIVE (at least one
@@ -288,7 +327,9 @@ def resolve_a(fqdn: str, timeout: float = 3.0) -> Tuple[str, Optional[str]]:
     script exists to eliminate.
     """
     negative_seen = False
-    for server in upstream_servers():
+    # Resolved ONCE by the caller when given: re-discovering per name would
+    # re-read the resolver config for every host in the registry.
+    for server in (upstream_servers() if servers is None else servers):
         answered, ip = _dns_query_a(server, fqdn, timeout)
         if answered and ip:
             return ANSWERED, ip
@@ -298,6 +339,7 @@ def resolve_a(fqdn: str, timeout: float = 3.0) -> Tuple[str, Optional[str]]:
 
 
 def build_entries(registry, current: Optional[Dict[str, str]] = None,
+                  *, servers: Optional[List[str]] = None,
                   ) -> Tuple[List[Tuple[str, str, str]], List[str]]:
     """-> ([(ip, fqdn, source)], warnings). source: 'dns' | 'held' | 'ip_fallback'.
 
@@ -314,7 +356,7 @@ def build_entries(registry, current: Optional[Dict[str, str]] = None,
     for alias in sorted(registry.hosts):
         host = registry.hosts[alias]
         fqdn = f"{alias}.{domain}"
-        status, ip = resolve_a(fqdn)
+        status, ip = resolve_a(fqdn, servers=servers)
         if status == ANSWERED and ip:
             entries.append((ip, fqdn, "dns"))
             if host.ip_fallback and host.ip_fallback != ip:
@@ -569,7 +611,33 @@ def main() -> int:
     mode.add_argument("--check", action="store_true")
     mode.add_argument("--apply", action="store_true")
     ap.add_argument("--hosts-file", default=str(HOSTS_PATH))
+    ap.add_argument("--server", action="append", metavar="ADDR",
+                    help="Query this DNS server instead of the box's own "
+                         "resolver (repeatable). AUTHORITATIVE: no fall-back "
+                         "to discovery. For a box whose resolver does not "
+                         "serve the fleet zone -- e.g. an AREDN-attached "
+                         "field node answering *.mf.internal with NXDOMAIN. "
+                         "Must be an IP literal: a hostname would need the "
+                         "very DNS that is broken.")
     args = ap.parse_args()
+
+    servers: Optional[List[str]] = None
+    if args.server:
+        bad = [a for a in args.server if not _is_ip_literal(a)]
+        if bad:
+            print(f"UNKNOWN: --server needs IP literals, got {bad} — a hostname "
+                  "would need the DNS this flag exists to bypass", file=sys.stderr)
+            return EXIT_UNKNOWN
+        servers = upstream_servers(override=args.server)
+        if not servers:
+            # SET but unusable (all loopback). Never fall through to the
+            # resolver the operator just told us not to trust.
+            print("UNKNOWN: --server resolved to no usable server (loopback "
+                  "stubs are dropped — they answer from /etc/hosts, which is "
+                  "the file we write)", file=sys.stderr)
+            return EXIT_UNKNOWN
+        print(f"note: querying {', '.join(servers)} (--server override; "
+              "the box's own resolver is NOT consulted)", file=sys.stderr)
 
     registry, errors = load_registry()
     if errors or registry is None:
@@ -585,7 +653,7 @@ def main() -> int:
     have = parse_block(have_block)
     have_src = parse_provenance(have_block)
 
-    entries, warnings = build_entries(registry, have)
+    entries, warnings = build_entries(registry, have, servers=servers)
     for warn in warnings:
         print(f"warn: {warn}", file=sys.stderr)
 

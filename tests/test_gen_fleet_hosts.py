@@ -47,17 +47,21 @@ def registry():
     })
 
 
+# These doubles mirror resolve_a's REAL signature, keyword-only `servers`
+# included (added 2026-09-07 with --server). A double that does not accept what
+# the caller passes fails as a TypeError rather than pinning behaviour, so the
+# signature is kept in step deliberately rather than absorbed with **kwargs.
 def _dns(ip):
     """resolve_a stub: authoritative A answer."""
-    return lambda f, timeout=3.0: (gfh.ANSWERED, ip)
+    return lambda f, timeout=3.0, *, servers=None: (gfh.ANSWERED, ip)
 
 
-def _negative(f, timeout=3.0):
+def _negative(f, timeout=3.0, *, servers=None):
     """resolve_a stub: server answered, name/record not in the zone."""
     return (gfh.NEGATIVE, None)
 
 
-def _unobservable(f, timeout=3.0):
+def _unobservable(f, timeout=3.0, *, servers=None):
     """resolve_a stub: no server answered at all (blind, not negative)."""
     return (gfh.UNOBSERVABLE, None)
 
@@ -555,7 +559,7 @@ class TestHoldOnPerNameUnobservable:
                             ["gen", "--apply", "--hosts-file", str(hosts)])
         assert gfh.main() == gfh.EXIT_OK
 
-        def flaky(fqdn, timeout=3.0):
+        def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
                 return (gfh.UNOBSERVABLE, None)     # one lost datagram
             return (gfh.ANSWERED, "10.0.0.9")
@@ -577,7 +581,7 @@ class TestHoldOnPerNameUnobservable:
                             ["gen", "--apply", "--hosts-file", str(hosts)])
         gfh.main()
 
-        def flaky(fqdn, timeout=3.0):
+        def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
                 return (gfh.UNOBSERVABLE, None)
             return (gfh.ANSWERED, "10.0.0.9")
@@ -634,7 +638,7 @@ class TestWriteDurabilityAndTornRepair:
 
 # ── 2026-08-31: the provenance marker is compared, not just the address ──────
 
-def _zone_without_moc(fqdn, timeout=3.0):
+def _zone_without_moc(fqdn, timeout=3.0, *, servers=None):
     """m1 holds every fleet name EXCEPT `moc` — the lehua shape. An
     all-negative zone cannot be used to seed this state: the generator
     refuses to write when nothing resolved (blindness is not an empty
@@ -644,7 +648,7 @@ def _zone_without_moc(fqdn, timeout=3.0):
     return (gfh.ANSWERED, "192.0.2.249")
 
 
-def _zone_with_moc(fqdn, timeout=3.0):
+def _zone_with_moc(fqdn, timeout=3.0, *, servers=None):
     """The record has been added — at the address the ip_fallback already
     held, so the address map is byte-identical to _zone_without_moc's."""
     if fqdn.startswith("moc."):
@@ -739,7 +743,7 @@ class TestProvenanceComparison:
                             ["gen", "--apply", "--hosts-file", str(hosts)])
         gfh.main()
 
-        def dropped(fqdn, timeout=3.0):
+        def dropped(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc."):
                 return (gfh.NEGATIVE, None)      # gone from the zone
             return (gfh.ANSWERED, "192.0.2.38")
@@ -783,7 +787,7 @@ class TestProvenanceComparison:
                             ["gen", "--apply", "--hosts-file", str(hosts)])
         gfh.main()
 
-        def flaky(fqdn, timeout=3.0):
+        def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
                 return (gfh.UNOBSERVABLE, None)
             return (gfh.ANSWERED, "10.0.0.9")
@@ -809,7 +813,7 @@ class TestProvenanceComparison:
         gfh.main()
         before = hosts.read_text()
 
-        def flaky(fqdn, timeout=3.0):
+        def flaky(fqdn, timeout=3.0, *, servers=None):
             if fqdn.startswith("moc1."):
                 return (gfh.UNOBSERVABLE, None)
             return (gfh.ANSWERED, "10.0.0.9")
@@ -852,3 +856,84 @@ class TestProvenanceComparison:
         with pytest.raises(KeyError):
             gfh.render_block([("192.0.2.1", "moc.mf.internal", "brand_new")],
                              local="")
+
+
+class TestServerOverride:
+    """--server: query a named DNS server instead of the box's own resolver.
+
+    Born 2026-09-07 on lehua, an AREDN-attached field node whose only
+    nameserver is the AREDN localnode. That resolver answers every
+    `*.mf.internal` with a confident NXDOMAIN in 68ms — an authoritative-looking
+    negative, so every name classified NEGATIVE (not UNOBSERVABLE), fell to
+    ip_fallback, and the run correctly refused to write. The fleet's own DNS
+    answered that same box in 3ms; it was simply never asked.
+    """
+
+    def test_override_is_authoritative_and_skips_discovery(self, monkeypatch,
+                                                           tmp_path):
+        """The whole point: a box whose resolver is WRONG must not fall back
+        to it. Discovery would find 192.0.2.53 here and must not be consulted."""
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 192.0.2.53\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", tmp_path / "absent")
+        monkeypatch.setattr(gfh, "RESOLV_CONF", resolv)
+        assert gfh.upstream_servers(override=["198.51.100.9"]) == ["198.51.100.9"]
+
+    def test_override_drops_loopback_through_the_shared_normaliser(self):
+        """A stub answers from /etc/hosts — the file we WRITE. It must not be
+        able to enter through the newer door either (the 07-25 self-confirming
+        drill bug, in its third skin)."""
+        assert gfh.upstream_servers(override=["127.0.0.53", "198.51.100.9"]) \
+            == ["198.51.100.9"]
+        assert gfh.upstream_servers(override=["127.0.0.53"]) == []
+
+    def test_empty_override_still_discovers(self, monkeypatch, tmp_path):
+        """None/[] means 'not set' — normal discovery, unchanged."""
+        resolv = tmp_path / "resolv.conf"
+        resolv.write_text("nameserver 192.0.2.53\n")
+        monkeypatch.setattr(gfh, "RESOLVED_DROPIN_DIR", tmp_path / "absent")
+        monkeypatch.setattr(gfh, "RESOLV_CONF", resolv)
+        monkeypatch.setattr(gfh.subprocess, "run",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError()))
+        assert gfh.upstream_servers(override=None) == ["192.0.2.53"]
+        assert gfh.upstream_servers(override=[]) == ["192.0.2.53"]
+
+    def test_ip_literal_validator_rejects_hostnames(self):
+        """A hostname would need the very resolver this flag bypasses, so it
+        must fail as a USAGE error, not later as 'no server answered'."""
+        assert gfh._is_ip_literal("198.51.100.9")
+        assert gfh._is_ip_literal("2001:db8::1")
+        assert not gfh._is_ip_literal("m1.mf.internal")
+        assert not gfh._is_ip_literal("")
+
+    def test_resolve_a_uses_the_given_servers_not_discovery(self, monkeypatch):
+        """The list is resolved ONCE by the caller and threaded down."""
+        asked = []
+
+        def fake_query(server, fqdn, timeout):
+            asked.append(server)
+            return (True, "192.0.2.7") if server == "198.51.100.9" else (False, None)
+
+        monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
+        monkeypatch.setattr(gfh, "upstream_servers",
+                            lambda *a, **k: ["203.0.113.1"])  # must NOT be used
+        got = gfh.resolve_a("moc.mf.internal", servers=["198.51.100.9"])
+        assert got == (gfh.ANSWERED, "192.0.2.7")
+        assert asked == ["198.51.100.9"]
+
+    def test_build_entries_threads_servers_through(self, monkeypatch):
+        """build_entries -> resolve_a must carry the override, or --server
+        would be silently ignored for every name in the registry."""
+        asked = []
+
+        def fake_query(server, fqdn, timeout):
+            asked.append(server)
+            return True, "192.0.2.7"
+
+        monkeypatch.setattr(gfh, "_dns_query_a", fake_query)
+        monkeypatch.setattr(gfh, "upstream_servers",
+                            lambda *a, **k: ["203.0.113.1"])  # must NOT be used
+        registry = _Registry({"boxa": _Host("boxa", "192.0.2.1")})
+        entries, _w = gfh.build_entries(registry, servers=["198.51.100.9"])
+        assert [e[2] for e in entries] == ["dns"]
+        assert set(asked) == {"198.51.100.9"}
