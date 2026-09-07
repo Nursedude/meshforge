@@ -177,6 +177,7 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
     # None-if-undecidable, and None must NEVER become False.
     watchdog_expected: Optional[bool] = None
     spool_services: Optional[Dict[str, Any]] = None
+    spool_schedules: Optional[Dict[str, Any]] = None
 
     if slo is None and status is None:
         # Direct fan-out failed — try the ssh spool (fresh-only).
@@ -189,6 +190,8 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
             radio_probe = spool.get("radio_probe")
             if isinstance(spool.get("services"), dict):
                 spool_services = spool["services"]
+            spool_schedules = judge_spooled_schedules(
+                alias, spool.get("schedules"))
             # Decided by the spool writer (it holds the role catalog). True /
             # False / None-if-undecidable; None must NEVER become False —
             # "not expected" is what stops a dark box tainting the verdict.
@@ -246,7 +249,80 @@ def _fetch_peer(alias: str, *, is_self: bool, port: int) -> Dict[str, Any]:
         "http_surface_expected": http_surface_expected,
         "watchdog_expected": watchdog_expected,
         "spool_services": spool_services,
+        "spool_schedules": spool_schedules,
     }
+
+
+def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
+                           *, now: "Optional[float]" = None,
+                           ) -> "Optional[Dict[str, Any]]":
+    """Judge a map-less peer's spooled crontab + cron verdicts (2026-09-07).
+
+    WHY THIS EXISTS. lehua is a `field-node`: no map (so ``fleet_snapshot``
+    never publishes its verdicts) and no watchdog (so
+    ``probe_cron_verdict_stale`` — the ONLY emitter of the signal class mini's
+    rule matches — never runs there). Its hourly self-healing hosts-block cron
+    wrote an honest verdict into a file that NOTHING read: a producing half
+    shipped without its consuming half (honest_failure_modes #4).
+
+    The judging is the box's OWN probe, run here on its spooled text, with a
+    per-alias debounce file and a capture sink so a peer's verdict can never
+    overwrite this box's disposition record. One predicate, two callers.
+
+    Returns None when there is nothing to say (no section spooled).
+    """
+    if not isinstance(section, dict):
+        return None
+    import base64
+
+    def _dec(key: str) -> "Optional[str]":
+        """b64 -> text. Empty or undecodable -> None = UNOBSERVABLE.
+
+        Deliberately not "": an absent file and an empty one encode
+        identically here, so claiming "the log is empty" would be a guess.
+        None makes the probe treat verdicts as unreadable, which fails dark.
+        """
+        v = section.get(key)
+        if not isinstance(v, str) or not v:
+            return None
+        try:
+            return base64.b64decode(v.encode("ascii"), validate=True).decode(
+                "utf-8", "replace")
+        except Exception:
+            return None
+
+    crontab_text = _dec("crontab_b64")
+    if crontab_text is None:
+        return {"state": "dark", "reason": "peer crontab unobservable"}
+
+    sink: list = []
+    try:
+        from utils.watchdog_probes_liveness import probe_cron_verdict_stale
+        sig = probe_cron_verdict_stale(
+            crontab_text=crontab_text,
+            verdicts_text=_dec("verdicts_b64"),
+            now=now,
+            state_path=str(truth_spool_dir() / f"cron_debounce.{alias}.json"),
+            disposition_sink=sink,
+        )
+    except Exception as exc:                      # never break the fan-out
+        return {"state": "dark", "reason": f"peer cron judge failed: {exc}"}
+
+    # The probe returns None for BOTH inert and clean; the sink is what tells
+    # them apart. Worst-wins, matching note_disposition's own contract.
+    disps = [d for _c, d, _r in sink]
+    reason = next((r for _c, d, r in sink if d not in ("clean",) and r), None)
+    if sig is not None:
+        return {"state": "failed",
+                "reason": getattr(sig, "detail", None) or "cron verdict unhealthy"}
+    if "indeterminate" in disps:
+        return {"state": "dark", "reason": reason or "cron verdicts unobservable"}
+    if "inert" in disps:
+        return {"state": "inert",
+                "reason": reason or "no crons wired to cron_verdict.sh"}
+    if "clean" in disps:
+        return {"state": "healthy", "reason": "wired crons fresh and passing"}
+    return {"state": "dark", "reason": "cron judge returned no disposition"}
 
 
 def collect_snapshots(*, port: int = DEFAULT_PORT) -> "tuple[List[Dict[str, Any]], int]":

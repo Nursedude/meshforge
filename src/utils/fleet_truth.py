@@ -751,6 +751,9 @@ def build_box_truth(
         spool_observed.add("radio")
     if isinstance(spool_services, dict):
         spool_observed.add("services")
+    spool_schedules = snap.get("spool_schedules")
+    if isinstance(spool_schedules, dict):
+        spool_observed.add("schedules")
 
     subsystems = {
         "watchdog": classify_block(watchdog_block, source="/api/status.watchdog"),
@@ -766,7 +769,9 @@ def build_box_truth(
     }
     # radio / schedules / rns_paths: present in slo when observable
     subsystems["radio"] = _radio_cell(slo)
-    subsystems["schedules"] = _schedules_cell(slo)
+    subsystems["schedules"] = (_schedules_cell_from_spool(spool_schedules)
+                               if isinstance(spool_schedules, dict)
+                               else _schedules_cell(slo))
     subsystems["rns_paths"] = _generic_present_cell(
         slo, "path_table", "/fleet/slo.path_table")
 
@@ -960,6 +965,36 @@ def _schedules_cell(slo: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     if not isinstance(slo, dict) or slo.get("schedules") is None:
         return cell(DARK, reason="schedules unobservable", source="/fleet/slo.schedules")
     return cell(HEALTHY, source="/fleet/slo.schedules")
+
+
+def _schedules_cell_from_spool(judged: Dict[str, Any]) -> Dict[str, Any]:
+    """Schedules cell for a map-less box, from the spool's JUDGED cron verdicts.
+
+    ⚠️ STRICTER THAN ``_schedules_cell`` ABOVE, on purpose. That one asks only
+    whether ``/fleet/slo.schedules`` is PRESENT — a box with a map relies on
+    its own ``probe_cron_verdict_stale`` to judge health. A box with neither
+    (lehua: no map, no watchdog) has nobody else, so this cell carries the
+    verdict itself rather than reporting presence. Terminating acceptance at
+    "the block exists" would be measuring the proxy, not the function.
+
+    The judging happened in the collector via the box's own probe; this stays
+    pure and only renders (mirrors ``fleet_snapshot``'s pure contract).
+    """
+    src = "ssh_spool.cron_verdicts"
+    state = (judged or {}).get("state")
+    reason = (judged or {}).get("reason") or ""
+    if state == "healthy":
+        return cell(HEALTHY, source=src)
+    if state == "failed":
+        return cell(FAILED, reason=reason or "cron verdict unhealthy", source=src)
+    if state == "inert":
+        # The organ is not here: this box wires no cron to cron_verdict.sh.
+        # `inert`, never DARK — absent-by-design must not read as a failed
+        # observation, or the real blind spots have nowhere to stand out.
+        c = cell(HEALTHY, reason=reason or "no wired crons", source=src)
+        c["absent"] = True
+        return c
+    return cell(DARK, reason=reason or "cron verdicts unobservable", source=src)
 
 
 def _generic_present_cell(slo: Optional[Dict[str, Any]], key: str, source: str) -> Dict[str, Any]:

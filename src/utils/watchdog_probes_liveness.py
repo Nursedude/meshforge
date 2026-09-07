@@ -28,6 +28,8 @@ from utils.watchdog_probe_core import (
     note_disposition,
 )
 
+_GLOBAL_NOTE_DISPOSITION = note_disposition  # probe_cron_verdict_stale shadows it
+
 logger = logging.getLogger(__name__)
 
 
@@ -186,6 +188,7 @@ def probe_cron_verdict_stale(
     now: Optional[float] = None,
     state_path: Optional[str] = None,
     debounce_ticks: int = 2,
+    disposition_sink: Optional[list] = None,
 ) -> Optional[Signal]:
     """Fire when a cron WIRED to cron_verdict.sh reported FAIL/CONCERN or went
     silent past its schedule cadence — "silence is the failure mode" for the
@@ -198,6 +201,13 @@ def probe_cron_verdict_stale(
     no wired crons — the regime is opt-in. 2-tick debounce rides a mid-run
     window where a fresh run hasn't recorded yet. Never raises into the tick.
     """
+    # A LIST not a bool (None means BOTH inert and clean); shadowed not renamed
+    # so MF027 sees it. Why: fleet_truth_collector.judge_spooled_schedules.
+    if disposition_sink is None:
+        note_disposition = _GLOBAL_NOTE_DISPOSITION
+    else:
+        def note_disposition(c, d, **k):   # noqa: F811 - deliberate shadow
+            disposition_sink.append((c, d, k.get('reason')))
     try:
         now = time.time() if now is None else now
         sp = state_path or DEFAULT_CRON_VERDICT_DEBOUNCE_PATH

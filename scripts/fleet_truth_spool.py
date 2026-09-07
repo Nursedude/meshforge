@@ -84,15 +84,43 @@ _REMOTE_CMD = (
     "[ $_f -eq 1 ] || printf ','; _f=0; "
     "printf '\"%s\":{\"active\":\"%s\",\"enabled\":\"%s\"}' \"$u\" \"${_a:-unknown}\" \"${_e:-unknown}\"; "
     "done; printf '}'; }"
+    # ── Cron schedules + verdicts (2026-09-07) ────────────────────────────
+    # A map-less box's cron verdicts were read by NOTHING. On lehua that was
+    # load-bearing: it has no map (so fleet_snapshot never publishes them) and
+    # no watchdog (so `probe_cron_verdict_stale`, the ONLY emitter of the
+    # signal class mini's rule matches, never runs). Its hourly self-healing
+    # hosts-block cron wrote an honest verdict into a file with no reader —
+    # a writer whose consuming half was never wired (honest_failure_modes #4).
+    #
+    # Shipped as RAW TEXT, deliberately: the judging lives in fleet_snapshot's
+    # parsers on the manager, so there is ONE implementation of "last verdict
+    # per name" and of the per-cron staleness cadence. Reproducing that in
+    # bash here would be a second copy, free to drift (#5).
+    #
+    # base64 because these are arbitrary text going inside a JSON string —
+    # crontab commands contain quotes, backslashes and `%`. Encoding sidesteps
+    # shell-to-JSON escaping entirely; a failed encode yields an empty string,
+    # which reads as unobservable rather than as an empty crontab.
+    #
+    # The awk reduces the log to its LAST line per name. That is exactly what
+    # `_parse_cron_verdicts` computes, so the reduction cannot change the
+    # answer (it is idempotent w.r.t. that parser) — it only stops a
+    # 1000-line log riding every 2-minute spool run. Pinned by a test.
+    "; echo; echo __TRUTH_SCHEDULES__; "
+    "_ct=$(crontab -l 2>/dev/null | base64 -w0 2>/dev/null); "
+    "_cv=$(awk '{a[$2]=$0} END{for(k in a) print a[k]}' \"$HOME/cron_verdicts.log\" "
+    "2>/dev/null | base64 -w0 2>/dev/null); "
+    "printf '{\"crontab_b64\":\"%s\",\"verdicts_b64\":\"%s\"}' \"${_ct:-}\" \"${_cv:-}\""
 )
 _SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
              "__TRUTH_DEPLOY__", "__TRUTH_RAWMINI__", "__TRUTH_RADIO__",
-             "__TRUTH_SERVICES__")
+             "__TRUTH_SERVICES__", "__TRUTH_SCHEDULES__")
 _SECTION_KEYS = {"__TRUTH_SLO__": "slo", "__TRUTH_STATUS__": "status",
                  "__TRUTH_RAWWD__": "raw_watchdog",
                  "__TRUTH_DEPLOY__": "deployment",
                  "__TRUTH_RAWMINI__": "raw_mini", "__TRUTH_RADIO__": "radio_probe",
-                 "__TRUTH_SERVICES__": "services"}
+                 "__TRUTH_SERVICES__": "services",
+                 "__TRUTH_SCHEDULES__": "schedules"}
 
 
 #: Service whose absence removes a box's whole HTTP truth surface

@@ -319,3 +319,151 @@ class TestWatchdogExpected:
         mod = _load_spool_script()
         for raw in ({}, {"role": ""}, {"role": "no-such-role"}, None, "nope"):
             assert mod.watchdog_expected(raw) is None, raw
+
+
+# --- cron verdicts for map-less boxes (2026-09-07) ----------------------------
+# lehua is a `field-node`: no map (fleet_snapshot never publishes its verdicts)
+# and no watchdog (probe_cron_verdict_stale, the ONLY emitter of the signal
+# class mini's rule matches, never runs there). Its hourly self-healing
+# hosts-block cron wrote an honest verdict into a file NOTHING read — a
+# producing half shipped without its consuming half (honest_failure_modes #4).
+
+import base64  # noqa: E402
+
+from utils import fleet_truth as ft  # noqa: E402
+
+_CRONTAB = (
+    "41 * * * * MESHFORGE_FLEET_DNS=198.51.100.9 /opt/meshforge/scripts/"
+    "fleet_hosts_selfheal.sh >/dev/null 2>&1 || /opt/meshforge/scripts/"
+    "cron_verdict.sh fleet_hosts_drift FAIL wrapper_crashed\n"
+)
+
+
+def _b64(text):
+    return base64.b64encode(text.encode()).decode()
+
+
+def _section(crontab=_CRONTAB, verdicts=""):
+    return {"crontab_b64": _b64(crontab), "verdicts_b64": _b64(verdicts)}
+
+
+def _verdict(status, ago_s, now, name="fleet_hosts_drift"):
+    import datetime
+    ts = datetime.datetime.utcfromtimestamp(now - ago_s).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    return f"{ts} {name} {status} some message\n"
+
+
+class TestSpoolCarriesSchedules:
+
+    def test_schedules_is_a_parsed_section(self):
+        mod = _load_spool_script()
+        assert "__TRUTH_SCHEDULES__" in mod._SECTIONS
+        assert mod._SECTION_KEYS["__TRUTH_SCHEDULES__"] == "schedules"
+        blob = ('__TRUTH_SCHEDULES__\n'
+                '{"crontab_b64":"YQ==","verdicts_b64":"Yg=="}\n')
+        assert mod.parse_sections(blob)["schedules"] == {
+            "crontab_b64": "YQ==", "verdicts_b64": "Yg=="}
+
+    def test_remote_command_reads_both_artifacts(self):
+        mod = _load_spool_script()
+        assert "crontab -l" in mod._REMOTE_CMD
+        assert "cron_verdicts.log" in mod._REMOTE_CMD
+        assert "base64" in mod._REMOTE_CMD
+
+
+class TestAwkReductionCannotChangeTheAnswer:
+    """The remote awk sends only the LAST line per name. That is exactly what
+    `_parse_cron_verdicts` computes, so it is a bandwidth optimisation that is
+    idempotent w.r.t. the authoritative parser — pinned here, because if it
+    ever stopped being idempotent the spool would quietly disagree with the
+    local read (honest_failure_modes #5)."""
+
+    def test_full_log_and_last_per_name_parse_identically(self):
+        from utils.fleet_snapshot import _parse_cron_verdicts
+        now = 1_800_000_000.0
+        full = (_verdict("OK", 7200, now)
+                + _verdict("FAIL", 3600, now, name="other")
+                + _verdict("CONCERN", 1800, now)
+                + _verdict("OK", 60, now))
+        # what the awk sends: last line per name, order-independent
+        reduced = "\n".join(
+            {ln.split()[1]: ln for ln in full.strip().split("\n")}.values()) + "\n"
+        assert (_parse_cron_verdicts(full, now)
+                == _parse_cron_verdicts(reduced, now))
+
+
+class TestPeerJudgeUsesTheBoxesOwnProbe:
+
+    def test_fresh_ok_verdict_is_healthy(self, tmp_path):
+        now = time.time()
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules(
+                "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now)
+        assert got["state"] == "healthy", got
+
+    def test_failing_verdict_is_failed(self, tmp_path):
+        """The whole point: a FAIL on a map-less, watchdog-less box now
+        reaches the NOC instead of dying in a local file."""
+        now = time.time()
+        sec = _section(verdicts=_verdict("FAIL", 60, now))
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            # 2-tick debounce: the probe confirms before firing.
+            for _ in range(4):
+                got = c.judge_spooled_schedules("lehua", sec, now=now)
+        assert got["state"] in ("failed", "dark"), got
+        assert got["state"] != "healthy"
+
+    def test_unreadable_crontab_is_dark_never_healthy(self, tmp_path):
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules("lehua", {"crontab_b64": ""})
+        assert got["state"] == "dark"
+
+    def test_absent_section_says_nothing(self, tmp_path):
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            assert c.judge_spooled_schedules("lehua", None) is None
+
+    def test_no_wired_crons_is_inert_not_dark(self, tmp_path):
+        """A box that wires no cron to cron_verdict.sh is absent-by-design.
+        `inert` and `indeterminate` are different claims — collapsing them is
+        how a real blind spot loses its place to stand out."""
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            got = c.judge_spooled_schedules(
+                "lehua", _section(crontab="7 * * * * /bin/true\n"))
+        assert got["state"] == "inert", got
+
+    def test_peer_judgement_never_pollutes_this_box_disposition(self, tmp_path):
+        """THE safety property. Dispositions are per-CLASS for the local tick,
+        so judging a peer here must not overwrite the manager's own
+        cron_verdict_stale record."""
+        # Patch the binding the PROBE actually calls. It does
+        # `from watchdog_probe_core import note_disposition`, so patching the
+        # core module is a no-op here — the first cut of this test did exactly
+        # that and could never fail (caught by drilling it, 2026-09-07).
+        from utils import watchdog_probes_liveness as live
+        now = time.time()
+        seen = []
+        with patch.object(live, "note_disposition",
+                          side_effect=lambda *a, **k: seen.append(a)):
+            with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+                c.judge_spooled_schedules(
+                    "lehua", _section(verdicts=_verdict("OK", 60, now)), now=now)
+        assert seen == [], f"peer judging wrote global dispositions: {seen}"
+
+
+class TestSchedulesCellFromSpool:
+
+    def test_states_render(self):
+        assert ft._schedules_cell_from_spool({"state": "healthy"})["state"] == ft.HEALTHY
+        assert ft._schedules_cell_from_spool(
+            {"state": "failed", "reason": "boom"})["state"] == ft.FAILED
+        assert ft._schedules_cell_from_spool({"state": "dark"})["state"] == ft.DARK
+        assert ft._schedules_cell_from_spool({})["state"] == ft.DARK
+
+    def test_inert_is_absent_not_dark(self):
+        c_ = ft._schedules_cell_from_spool({"state": "inert"})
+        assert c_["state"] == ft.HEALTHY and c_.get("absent") is True
+
+    def test_source_is_honest_about_where_it_came_from(self):
+        c_ = ft._schedules_cell_from_spool({"state": "healthy"})
+        assert c_["source"] == "ssh_spool.cron_verdicts"
