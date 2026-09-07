@@ -161,7 +161,19 @@ SSH="ssh -o ConnectTimeout=8 -o BatchMode=yes"
 # leg report FAIL on an exit-0 run: a false NOT-GREEN from the gate whose
 # whole job is to not lie about green. Observed 2026-07-28.
 HS_TMP="$(mktemp -d -t honest_status.XXXXXX)"
-trap 'rm -rf "$HS_TMP"' EXIT INT TERM
+# EXIT cleans up. INT/TERM clean up AND EXIT — never resume.
+#
+# A handler that only cleans lets bash RESUME the script with the scratch dir
+# already deleted, so every later leg reads its log as missing and reports
+# FAIL. Measured 2026-09-07: an interrupted run printed
+#   full suite  UNKNOWN  log .../pytest.log unreadable — cannot classify
+#   lint        FAIL     exit 1 —          (a direct lint run was exit 0)
+# and closed with "proven not-green" on a green tree. That is the SECOND route
+# into the false-NOT-GREEN above: 07-28 came through fixed tmp NAMES, this one
+# through the interrupt handler. An interrupted check knows nothing, so the
+# only honest answer is UNKNOWN (2) — never a FAIL it did not observe.
+trap 'rm -rf "$HS_TMP"' EXIT
+trap 'rm -rf "$HS_TMP"; printf "\nUNKNOWN: interrupted — scratch state removed, refusing to classify\n" >&2; exit 2' INT TERM
 
 # Consumer-of-record interpreter (calibrated_claims rule 7; ported from the
 # MA twin 2026-07-19, where bare python3 had no pytest at all and the suite
