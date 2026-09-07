@@ -455,6 +455,58 @@ while map/gateway/fleet-collector/fleet-watchdog are SYSTEM on the same boxes.
 
 ---
 
+## QUEUED 2026-09-07 (Opus 5) — §3 of the exit-code-gate plan: falsify the HARNESS
+
+**Why this is queued and not done.** The seed plan
+(`.claude/plans/exit_code_gate_and_harness_audit.md` §3) calls this
+frontier-shaped, and `model_advisor` is explicit that a shallow pass which
+BLESSES the harness is worse than an honest queue entry. This session was
+Opus 5 (`is_frontier_model` keys on `claude-fable-`), so it built Layers
+A/B/C and stopped here rather than half-doing the adversarial half. That is
+the note's own instruction, followed.
+
+**What DID land** (so the reviewer knows the ground has moved):
+`b6a43717` (Layers A+B + the hook-drift leg), `ca770a23`/`4f21889e`
+(honest_status interrupt trap), `79dd746c` (warmstart handoff surfacing).
+Layer C is in `review_provenance_check.py`, `guard_drill.py`,
+`falsifiability_drill.py`; `dep_advisory_check.py` already complied.
+
+**The question §3 asks**: not "what does the harness check?" but **"can each
+leg FAIL?"** — the same falsifiability discipline `scripts/falsifiability_drill.py`
+applies to probes, turned on the harness itself.
+
+**Concrete attack surface, from what this session actually found** — each of
+these was a leg that could not fail, discovered by accident rather than by
+audit, which is the argument for doing §3 deliberately:
+
+1. `guard_drill.py` counted a **renamed or deleted** guard as "fires"
+   (pytest exits 4 for a missing node id, and `fired = rc != 0`). The drill
+   that proves guards work would have certified a guard that no longer exists.
+   FIXED in `b6a43717` — but ask what ELSE keys on a bare non-zero rc.
+2. `harness_audit.sh` checked hooks were WIRED, never that the file a wired
+   hook POINTS AT matches its repo source. `psk_leak_guard.sh` had been
+   running a copy 2 months behind the reviewed one — missing the fail-open
+   witness added so the guard could not be silently disabled. FIXED (leg 2b);
+   ask the same question of every other "is it wired?" leg in that file.
+3. `honest_status.sh` reported **`proven not-green`** on a green tree when
+   interrupted: the INT/TERM trap deleted its scratch dir and let bash resume.
+   FIXED — but the general form is open: which other legs can emit a verdict
+   from state that was removed underneath them?
+4. `falsifiability_drill.py` printed `PASS — all 0 classes caught` on an
+   empty selection. FIXED. Ask which other checkers can pass on empty input.
+
+**Suggested method**: for each leg of `harness_audit.sh`, `honest_status.sh`
+and `claim_gate.py`, plant the condition the leg claims to detect and confirm
+it FAILS — never read the code and reason. The four above were all found by
+planting or by accident; none by reading.
+
+**Standing scoreboard**: the plan's §1 lists six observed defects with
+"Coverage today: 0/6". Layers A+B+C move the DETECTION surface for 1 and 3;
+2, 4, 5 and 6 are judgement failures that no gate catches, and §3 is where
+that gets confronted honestly rather than declared solved.
+
+---
+
 ## QUEUED 2026-08-31 (Opus 5) — `scripts/rotate_session_notes.sh` adversarial pass
 
 > **CLOSED 2026-08-31 by the Fable 5 pass** — see the 2026-08-31 rotate_session_notes table row at the top. Fix commit `7086ec4f`. Brief kept below for the record.
