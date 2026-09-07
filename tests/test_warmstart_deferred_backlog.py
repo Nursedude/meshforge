@@ -162,7 +162,8 @@ def test_render_warmstart_carries_the_line_with_a_fresh_brief(tmp_path):
     p = _ledger(tmp_path, [{"id": "old-thing", "status": "blocked",
                             "review_after": "2026-01-01"}])
     out = render_warmstart(str(brief), str(state), 1_780_000_010.0,
-                           ledger_path=p)
+                           ledger_path=p,
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "FRESH" in out and "old-thing" in out and "# brief body" in out
 
 
@@ -172,7 +173,8 @@ def test_backlog_shows_even_on_a_box_with_no_mini(tmp_path):
     p = _ledger(tmp_path, [{"id": "old-thing", "status": "blocked",
                             "review_after": "2026-01-01"}])
     out = render_warmstart(str(tmp_path / "none.md"), str(tmp_path / "none.json"),
-                           1_780_000_010.0, ledger_path=p)
+                           1_780_000_010.0, ledger_path=p,
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "old-thing" in out
 
 
@@ -180,7 +182,8 @@ def test_no_mini_and_no_backlog_stays_completely_silent(tmp_path):
     """The hook must remain harmless on a plain box — no ledger, no mini, no
     output at all (not a blank banner)."""
     out = render_warmstart(str(tmp_path / "none.md"), str(tmp_path / "none.json"),
-                           1_780_000_010.0, ledger_path=str(tmp_path / "no.json"))
+                           1_780_000_010.0, ledger_path=str(tmp_path / "no.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert out == ""
 
 
@@ -209,7 +212,8 @@ def test_empty_env_override_reaches_the_loud_branch(tmp_path, monkeypatch):
     through to the real production ledger."""
     monkeypatch.setenv("DEFERRED_WORK_LEDGER", "")
     out = render_warmstart(str(tmp_path / "none.md"), str(tmp_path / "none.json"),
-                           1_780_000_010.0)
+                           1_780_000_010.0,
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "ledger path is empty" in out
 
 

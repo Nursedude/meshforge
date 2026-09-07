@@ -59,6 +59,113 @@ def _read_text(path: str) -> str | None:
 #: this byte-locked file may name it directly.
 DEFERRED_LEDGER_BASENAME = "deferred_work.json"
 
+#: The previous session's per-box HANDOFF note. App-agnostic for the same
+#: reason as the ledger above: keyed to the human's home and the box, not to a
+#: repo. CLAUDE.md names it the active sprint.
+HANDOFF_BASENAME_FMT = "plans/gateway-session-notes-{host}.md"
+#: Older than this and the note is shown WITH a stale banner, never silently.
+HANDOFF_STALE_S = 36 * 3600
+HANDOFF_MAX_CHARS = 1400
+
+
+def handoff_block(now_ts: float, path: str | None = None) -> str:
+    """The last session's START HERE section, or an honest line saying none.
+
+    **Why this exists (2026-09-07, operator's question).** SessionStart
+    injected mini's brief — MACHINE state — and nothing else. The previous
+    session's handoff note, which CLAUDE.md names as the active sprint and
+    which opened with "Do this first", sat FIVE HOURS old and unread while
+    this session worked on something else entirely. A fresh session cannot
+    know to look for a note nobody shows it: "read the handoff" is not a
+    check, it is a hope. The operator put it plainly — *a fresh AI would not
+    look for other notes.*
+
+    Absence is reported, not hidden (honest_failure_modes #2): a session
+    starting with no handoff should know that is what it is doing. Staleness
+    is reported too — an old note read as current is worse than none, the
+    same contract the freshness banner above already keeps for the brief.
+    """
+    import glob
+    import socket
+
+    tried: list = []
+    if path is None:
+        try:
+            host = socket.gethostname().split(".", 1)[0]
+        except OSError:
+            host = ""
+        base = os.path.join(operator_home(), ".claude")
+        # Case matters and the two sources disagree: gethostname() may return
+        # "BoxA" while the note on disk is "...-boxa.md". The first
+        # cut matched only the exact case and reported "no handoff note" on
+        # the ONE box that has one — a feature that would have been silently
+        # inert forever, found by RUNNING it, not by reading it.
+        for cand in (host, host.lower()):
+            if not cand:
+                continue
+            c = os.path.join(base, HANDOFF_BASENAME_FMT.format(host=cand))
+            tried.append(c)
+            if os.path.exists(c):
+                path = c
+                break
+        else:
+            path = tried[0] if tried else os.path.join(base, "plans")
+    text = _read_text(path)
+    if text is None:
+        # Absent-by-design and absent-but-siblings-exist are DIFFERENT claims,
+        # and only the second is a finding. A box that never carries a handoff
+        # note (most of the fleet) stays SILENT — inert, not indeterminate —
+        # because this text is injected into every session and a permanent
+        # "nothing here" line is noise that trains the reader to skip.
+        #
+        # But if notes DO exist here and none matched this box's name, that is
+        # the case-mismatch defect this function was born with (gethostname()
+        # "BoxA" vs "...-boxa.md" on disk) and it must be LOUD — the
+        # silent version of it would have made this whole feature inert on the
+        # one box that has a note.
+        # Glob BESIDE the resolved path, not in the operator's home: when a
+        # caller injects `path` the function must read nothing ambient at all.
+        # A seam that covers only half the function still lets a test's verdict
+        # depend on the box it runs on (feedback_tests_must_pin_ambient_state).
+        others = sorted(os.path.basename(f) for f in glob.glob(
+            os.path.join(os.path.dirname(path) or ".",
+                         "gateway-session-notes-*.md")))
+        if not others:
+            return ""
+        return ("\n📝 ⚠️ **no handoff note matched this box** — tried "
+                + ", ".join(f"`{t}`" for t in (tried or [path]))
+                + f", but {len(others)} note(s) DO exist here "
+                + f"({', '.join(others[:3])}). This session starts without "
+                "the last one's intent.\n")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = None
+    age = _age_str(now_ts, mtime)
+    stale = bool(mtime and (now_ts - mtime) > HANDOFF_STALE_S)
+
+    # First "START HERE" heading, else the first section after the title.
+    lines = text.splitlines()
+    start = next((i for i, l in enumerate(lines)
+                  if l.startswith("## ") and "START HERE" in l.upper()), None)
+    if start is None:
+        start = next((i for i, l in enumerate(lines) if l.startswith("## ")), None)
+    if start is None:
+        return (f"\n📝 **session handoff** ({age} old) — `{path}` has no "
+                "`## ` section to lift; read it directly.\n")
+    end = next((j for j in range(start + 1, len(lines))
+                if lines[j].startswith("## ")), len(lines))
+    body = "\n".join(lines[start:end]).strip()
+    if len(body) > HANDOFF_MAX_CHARS:
+        body = body[:HANDOFF_MAX_CHARS].rstrip() + "\n\n…(truncated — read the full note)"
+    banner = ("⚠️ **STALE session handoff**" if stale
+              else "📝 **session handoff — the last session's own words**")
+    return (f"\n{banner} ({age} old, `{path}`)"
+            + (" — older than the window; treat as historical, verify before acting"
+               if stale else "")
+            + f"\n\n{body}\n")
+
+
 
 def deferred_backlog_line(ledger_path: str, today: str) -> str:
     """One line naming deferred work whose review date has passed, or ``""``.
@@ -169,7 +276,8 @@ def deferred_backlog_line(ledger_path: str, today: str) -> str:
 
 def render_warmstart(brief_path: str, state_path: str, now_ts: float,
                      stale_s: float = DEFAULT_STALE_S,
-                     ledger_path: str | None = None) -> str:
+                     ledger_path: str | None = None,
+                     handoff_path: str | None = None) -> str:
     """Return the warm-start text to inject, with an honest freshness banner.
 
     Returns ``""`` (silent) when mini has never run here — no brief AND no
@@ -197,6 +305,11 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             os.path.join(operator_home(), DEFERRED_LEDGER_BASENAME))
     today = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d")
     backlog = deferred_backlog_line(ledger_path, today)
+    # The HUMAN's handoff rides at the top, ahead of mini's machine state:
+    # it carries intent ("do this first"), which no amount of box telemetry
+    # implies. Like the backlog it is the operator's, not mini's, so it must
+    # survive the mini-less early return below.
+    handoff = handoff_block(now_ts, handoff_path)
 
     brief = _read_text(brief_path)
     state, _ = read_json(state_path)
@@ -213,7 +326,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
     # — EXCEPT an overdue backlog, which is the operator's, not mini's, and must
     # not be hidden just because this box runs no watcher.
     if brief is None and last_tick is None:
-        return backlog
+        return handoff + backlog
 
     age = _age_str(now_ts, last_tick)
     stale = bool(last_tick and (now_ts - last_tick) > stale_s)
@@ -225,7 +338,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             f"mini has ticked (last tick {age} ago) but no brief exists at "
             f"`{brief_path}`. Generate one with "
             f"`python3 -m mini_dudeai --preset {APP_FLEET_PRESET} --brief`.\n"
-            + backlog
+            + handoff + backlog
         )
 
     if last_tick is None:
@@ -247,7 +360,7 @@ def render_warmstart(brief_path: str, state_path: str, now_ts: float,
             "A piece of me was already here; the brief below is current.\n"
         )
 
-    return banner + backlog + "\n" + brief
+    return banner + handoff + backlog + "\n" + brief
 
 
 # ---------------------------------------------------------------------------

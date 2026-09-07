@@ -38,6 +38,33 @@ the breadth check — which boxes are healthy, stale, or running no mini.
 (On a box that can't ssh the fleet — e.g. a gateway Pi — step 2 prints only the
 local box; that's expected, run it from the manager box for the full pane.)
 
+## The session handoff — read this before the brief (2026-09-07)
+
+Above mini's banner sits the **previous session's own `START HERE`**, lifted
+from `~/.claude/plans/gateway-session-notes-<box>.md` with its age and path.
+
+Why it is there: SessionStart used to inject mini's brief — MACHINE state —
+and nothing else. On 2026-09-07 the last session's handoff, which CLAUDE.md
+names as the active sprint and which opened **"Do this first"**, sat five
+hours old and unread while the session worked on something else entirely.
+The operator's framing is the rule: *a fresh AI would not look for other
+notes.* "Read the handoff" is a hope; showing it is a check.
+
+- **📝 session handoff** — the last session's words, with age. Read it before
+  acting; it carries INTENT, which no amount of box telemetry implies.
+- **⚠️ STALE session handoff** — older than the window. Shown anyway, banner
+  first: an old note read as current is worse than no note.
+- **📝 ⚠️ no handoff note matched this box** — notes exist here but none for
+  this hostname. That is the defect this feature shipped with (a mixed-case
+  hostname vs a lowercase filename) and it is deliberately LOUD.
+- **silence** — no notes on this box at all. Absent-by-design is inert; most
+  of the fleet carries none, and a permanent "nothing here" line would only
+  train the reader to skip.
+
+⚠️ The note is the operator's, not mini's, so it rides ahead of the brief and
+survives the mini-less early return — a box with no watcher still gets the
+last session's intent.
+
 ## Reading the banner (the part that matters)
 
 - **🟢 FRESH** — last tick recent; the brief is current, trust it.

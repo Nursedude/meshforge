@@ -47,7 +47,8 @@ def test_fresh_when_tick_is_recent(tmp_path):
     _write_state(state, NOW - 40)  # 40s ago — well within the stale window
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
 
     assert "FRESH" in out
     assert "🟢" in out
@@ -68,7 +69,8 @@ def test_stale_when_tick_is_old(tmp_path):
     _write_state(state, NOW - 6 * 3600)  # 6h ago — daemon likely dead
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
 
     assert "STALE" in out
     assert "🔴" in out
@@ -84,7 +86,8 @@ def test_stale_boundary_just_past_threshold(tmp_path):
     _write_state(state, NOW - (DEFAULT_STALE_S + 1))
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "STALE" in out
 
 
@@ -95,7 +98,8 @@ def test_fresh_boundary_just_under_threshold(tmp_path):
     _write_state(state, NOW - (DEFAULT_STALE_S - 1))
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "FRESH" in out
     assert "STALE" not in out
 
@@ -112,7 +116,8 @@ def test_unknown_freshness_when_no_last_tick(tmp_path):
     _write_state(state, None)  # state exists but carries no tick timestamp
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "UNKNOWN" in out
     # Never claims the green FRESH verdict when it cannot prove freshness.
     # (The brief body itself may contain 🟢 from its own generation-time
@@ -132,7 +137,8 @@ def test_no_brief_but_state_present(tmp_path):
     brief = tmp_path / "brief.md"  # never created
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "no brief yet" in out
     assert "--brief" in out  # tells the reader how to generate one
 
@@ -147,7 +153,8 @@ def test_silent_when_no_brief_and_no_state(tmp_path):
     state = tmp_path / "state.json"    # absent
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert out == ""  # harmless on a mini-less box — inject nothing
 
 
@@ -157,7 +164,8 @@ def test_silent_when_state_unreadable_and_no_brief(tmp_path):
     state.write_text("{ this is not json", encoding="utf-8")  # corrupt
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     # No usable tick and no brief → stay silent rather than emit a half-truth.
     assert out == ""
 
@@ -177,7 +185,8 @@ def test_non_numeric_last_tick_is_treated_as_unknown(tmp_path):
     )
 
     out = render_warmstart(str(brief), str(state), NOW,
-                           ledger_path=str(tmp_path / "no-ledger.json"))
+                           ledger_path=str(tmp_path / "no-ledger.json"),
+                           handoff_path=str(tmp_path / "no-handoff.md"))
     assert "UNKNOWN" in out
 
 
@@ -241,3 +250,113 @@ def test_default_paths_come_from_the_app_adapter(tmp_path, monkeypatch):
     assert (brief, state) == (a_brief, a_state)
     assert brief == os.path.join(str(tmp_path), "mini_dudeai_brief.md")
     assert state == os.path.join(str(tmp_path), "mini_dudeai_state.json")
+
+
+# --- the session handoff block (2026-09-07) ----------------------------------
+# SessionStart injected mini's brief — MACHINE state — and nothing else, so the
+# previous session's handoff note (which CLAUDE.md calls the active sprint, and
+# which opened "Do this first") sat five hours old and unread while the session
+# worked on something else. The operator's framing: a fresh AI would not look
+# for other notes. Every test here pins `path`, so none reads the real note.
+
+from mini_dudeai.warmstart import HANDOFF_MAX_CHARS, handoff_block  # noqa: E402
+
+_NOTE = (
+    "# Gateway session notes — boxa\n\n"
+    "> season line\n\n"
+    "## ⏭️ START HERE — close: do the thing\n\n"
+    "**Do this first.** the plan.\n\n"
+    "## Older section\n\nnot this one\n"
+)
+
+
+def test_handoff_lifts_the_start_here_section(tmp_path):
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    n.write_text(_NOTE, encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 60, path=str(n))
+    assert "START HERE" in out and "Do this first" in out
+    assert "not this one" not in out, "must stop at the next ## heading"
+    assert "session handoff" in out
+
+
+def test_handoff_flags_a_stale_note_rather_than_presenting_it_as_current(tmp_path):
+    """An old note read as current is worse than none — same contract the
+    freshness banner already keeps for the brief."""
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    n.write_text(_NOTE, encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 10 * 24 * 3600, path=str(n))
+    assert "STALE" in out and "verify before acting" in out
+
+
+def test_absent_with_no_siblings_is_SILENT(tmp_path):
+    """Absent-by-design is inert. Most of the fleet carries no handoff note,
+    and this text is injected into EVERY session — a permanent "nothing here"
+    line is noise that trains the reader to skip."""
+    assert handoff_block(1_800_000_000.0,
+                         path=str(tmp_path / "gateway-session-notes-boxa.md")) == ""
+
+
+def test_absent_WITH_siblings_is_loud(tmp_path):
+    """THE defect this function shipped with: gethostname() may return
+    "BoxA" while the note on disk is "...-boxa.md", so the first cut
+    matched nothing and would have been silently inert forever on the one box
+    that has a note. Notes present + none matched = a finding, not silence."""
+    (tmp_path / "gateway-session-notes-otherbox.md").write_text(_NOTE, encoding="utf-8")
+    out = handoff_block(1_800_000_000.0,
+                        path=str(tmp_path / "gateway-session-notes-boxa.md"))
+    assert out != ""
+    assert "no handoff note matched this box" in out
+    assert "otherbox" in out, "must name what it DID find"
+
+
+def test_handoff_is_truncated_not_dumped(tmp_path):
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    n.write_text("## START HERE\n\n" + ("x" * 9000), encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 60, path=str(n))
+    assert "truncated" in out
+    assert len(out) < HANDOFF_MAX_CHARS + 400
+
+
+def test_note_without_any_section_says_so(tmp_path):
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    n.write_text("just prose, no headings\n", encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 60, path=str(n))
+    assert "no `## ` section" in out and "read it directly" in out
+
+
+def test_injected_path_reads_nothing_ambient(tmp_path, monkeypatch):
+    """The seam must cover the WHOLE function: an injected path must not leave
+    the sibling glob reading the operator's real home. A seam covering half a
+    function still lets a verdict depend on the box running the suite."""
+    monkeypatch.setattr("mini_dudeai.warmstart.operator_home",
+                        lambda: "/nonexistent-operator-home")
+    assert handoff_block(1_800_000_000.0,
+                         path=str(tmp_path / "gateway-session-notes-boxa.md")) == ""
+
+
+def test_hostname_resolution_tolerates_case(tmp_path, monkeypatch):
+    """THE defect that actually shipped, and the one the other tests could not
+    see: they all inject `path=`, so the RESOLUTION branch was never exercised
+    and removing the case fallback left every test green.
+
+    gethostname() may return "BoxA"; the note on disk is
+    "gateway-session-notes-boxa.md". Matching only the exact case made the
+    feature silently inert on the one box that has a note — found by RUNNING
+    it, not by reading it. This pins the branch, not the parse.
+    """
+    plans = tmp_path / ".claude" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "gateway-session-notes-boxa.md").write_text(_NOTE, encoding="utf-8")
+    monkeypatch.setattr("mini_dudeai.warmstart.operator_home", lambda: str(tmp_path))
+    monkeypatch.setattr("socket.gethostname", lambda: "BoxA")
+    out = handoff_block(1_800_000_000.0)          # no path= — resolve it
+    assert "START HERE" in out, "mixed-case hostname must still find the note"
+
+
+def test_hostname_resolution_strips_the_domain(tmp_path, monkeypatch):
+    plans = tmp_path / ".claude" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "gateway-session-notes-boxa.md").write_text(_NOTE, encoding="utf-8")
+    monkeypatch.setattr("mini_dudeai.warmstart.operator_home", lambda: str(tmp_path))
+    monkeypatch.setattr("socket.gethostname", lambda: "BoxA.mf.internal")
+    assert "START HERE" in handoff_block(1_800_000_000.0)
