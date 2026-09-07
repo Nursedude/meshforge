@@ -158,7 +158,7 @@ def detect_chronic_flap(state: dict, history: list[dict], now_ts: float,
     return out
 
 
-def _known_fleet_subjects() -> tuple[set, bool]:
+def _known_fleet_subjects(hosts_path: str = "/etc/hosts") -> tuple[set, bool]:
     """(known subject names, registry_readable).
 
     Names as mini writes subjects: the bare host, and the ``meshforge-<host>``
@@ -166,46 +166,104 @@ def _known_fleet_subjects() -> tuple[set, bool]:
     local box by convention, and "first-ever sighting of the box I am running
     on" is never a topology discovery.
 
-    ⚠️ FAILS OPEN. When no registry resolves, ``known`` is empty and every
-    subject stays proposable: an unreadable registry means we do not know what
-    is expected, which must never be spoken as "nothing is expected" (the whole
-    point of the second return value).
+    **TWO registries, because the first one is not everywhere (2026-09-07).**
+    ``fleet_hosts`` resolves only on the manager: it was ABSENT on all nine
+    fleet boxes, so this returned ``readable=False`` with just the 2-3
+    self-names and the whole membership suppression was inert — moc proposed
+    "first-ever sighting" of its own declared, running ``meshtasticd.service``.
+    The generated ``/etc/hosts`` fleet block is the registry that IS on every
+    box (hourly self-healing since 2026-07-27), so it is now read for NAMES,
+    not merely mined for addresses. The old address leg could never rescue
+    this: it only added an address whose hostname was ALREADY known, so with
+    ``known`` empty its 14 ``mf.internal`` entries contributed nothing.
+
+    ⚠️ **FAILS OPEN.** When NEITHER registry resolves, ``known`` is empty and
+    every subject stays proposable: not knowing what is expected must never be
+    spoken as "nothing is expected" (the whole point of the second return
+    value). ``readable`` is true when EITHER registry answered.
+
+    ``hosts_path`` is injectable so no test's verdict depends on the
+    /etc/hosts of whichever box runs the suite
+    (feedback_tests_must_pin_ambient_state).
     """
     try:
         import socket
-        from utils.fleet_hosts import resolve_fleet_hosts, resolve_fleet_hosts_file
-        readable = resolve_fleet_hosts_file() is not None
-        names = list(resolve_fleet_hosts() or [])
+        from utils.fleet_hosts import (parse_hosts_block, resolve_fleet_hosts,
+                                       resolve_fleet_hosts_file)
     except Exception:
         return set(), False
+
+    known: set = set()
+    readable = False
+
+    def _add(name: str) -> None:
+        """A name in every form mini writes subjects: as given, its bare
+        label, and the ``meshforge-`` prefix of each.
+
+        ⚠️ The bare-label form is NOT taken from an address-shaped name: the
+        first octet of ``10.0.0.1`` is ``10``, and learning ``10`` (and
+        ``meshforge-10``) as an expected fleet member would suppress a real
+        subject that merely shares that string. Widening what counts as known
+        is the one direction this must never fail in.
+        """
+        n = (name or "").strip().lower().rstrip(".")
+        if not n:
+            return
+        forms = {n}
+        head = n.split(".", 1)[0]
+        if not head.isdigit():
+            forms.add(head)
+        for form in forms:
+            known.add(form)
+            known.add(f"meshforge-{form}")
+
+    # Registry 1 — the fleet_hosts membership SSOT (manager boxes).
+    names: list = []
     try:
-        names.append(socket.gethostname())
+        if resolve_fleet_hosts_file() is not None:
+            names = list(resolve_fleet_hosts() or [])
+            readable = True
+    except Exception:
+        pass  # unreadable -> fewer names known -> MORE proposals, not fewer
+    try:
+        names.append(socket.gethostname())  # self is never a discovery
     except OSError:
         pass  # self unknown -> self stays proposable (fail open, never quiet)
-    known = set()
     for n in names:
-        n = (n or "").strip().lower()
-        if n:
-            known.add(n)
-            known.add(f"meshforge-{n}")
+        _add(n)
+
+    # Registry 2 — the generated /etc/hosts fleet block, present on EVERY box.
     # Fleet subjects also arrive as bare ADDRESSES (federation peers name
     # themselves by IP), and the operator had to resolve those by hand every
-    # time — "verified .29 = meshanchor-server.lan, an EXPECTED host". The
-    # fleet's own /etc/hosts block already carries that mapping, so read it
-    # rather than resolve: no network, no AAAA round trip, and it is the same
-    # artifact `gen_fleet_hosts.py` writes. Unreadable → no addresses added
-    # (fail open again; a missing map must never widen what counts as known).
+    # time — "verified .29 = meshanchor-server.lan, an EXPECTED host". This
+    # block already carries that mapping, so read it rather than resolve: no
+    # network, no AAAA round trip, and it is the same artifact
+    # `gen_fleet_hosts.py` writes. Only the DELIMITED block is parsed, so a
+    # hand-added /etc/hosts line can never widen what counts as expected.
     try:
-        with open("/etc/hosts", "r", encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                line = line.split("#", 1)[0].split()
-                if len(line) < 2:
-                    continue
-                addr, hostnames = line[0], [h.strip().lower() for h in line[1:]]
-                if any(h in known or h.split(".", 1)[0] in known for h in hostnames):
-                    known.add(addr.lower())
+        with open(hosts_path, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
     except OSError:
-        pass  # no address map -> fewer names known -> MORE proposals, not fewer
+        text = ""  # no map -> fewer names known -> MORE proposals, not fewer
+    block = parse_hosts_block(text)
+    if block:
+        readable = True
+    for addr, hostnames in block:
+        for h in hostnames:
+            _add(h)
+        known.add(addr)
+
+    # Addresses for names known from registry 1 but living OUTSIDE the managed
+    # block (a peer the block does not name). Additive only, and still gated on
+    # the hostname already being known — it can never introduce a new member.
+    for raw in text.splitlines():
+        fields = raw.split("#", 1)[0].split()
+        if len(fields) < 2:
+            continue
+        addr, hostnames = fields[0], [h.strip().lower() for h in fields[1:]]
+        if any(h in known or h.split(".", 1)[0] in known for h in hostnames):
+            known.add(addr.lower())
+
     return known, readable
 
 
