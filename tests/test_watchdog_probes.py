@@ -11760,3 +11760,33 @@ class TestUnresolvableOperatorIsNotInert:
                 state_path=str(tmp_path / "uu.json")) is None
         assert _disp("user_unit_inactive") == "indeterminate"
         assert "unresolv" in _reason("user_unit_inactive")
+
+
+def test_enumerate_lib_installs_reads_a_foreign_app_venv(tmp_path, monkeypatch):
+    """2026-09-06 review: an app venv under /opt that carries rns is a client
+    of this box's ONE rnsd (meshanchor-server runs both MeshAnchor units from
+    /opt/meshanchor/venv/bin/python) — RPC clientship, not ownership, is this
+    probe's criterion. Keyed per app so a waiver can name it; and our own
+    /opt/meshforge/venv, which the foreign glob also matches, is not
+    double-counted under a second label."""
+    from utils import watchdog_probes_rns_env as mod
+    from utils.watchdog_probe_core import env_site_globs, SERVICE_ENV_LABELS
+    opt = tmp_path / "opt"
+    _make_distinfo(opt / "meshanchor/venv/lib/python3.13/site-packages", "rns", "1.1.4")
+    _make_distinfo(opt / "meshforge/venv/lib/python3.13/site-packages", "rns", "1.3.8+mf.0")
+    globs = env_site_globs(pkg="*", labels=SERVICE_ENV_LABELS)
+    globs["foreign-venv"] = [str(opt / "*/venv/lib/python3*/site-packages")]
+    monkeypatch.setattr(mod, "_LIB_STRAY_SITE_GLOBS", globs)
+    found = mod._enumerate_lib_installs(
+        "rns", "svc", meshforge_root=str(opt / "meshforge"),
+        user_home=str(tmp_path / "nohome"))
+    assert found.get("foreign-venv:meshanchor") == "1.1.4", found
+    assert found.get("venv") == "1.3.8+mf.0", found
+    assert "foreign-venv:meshforge" not in found, found
+
+
+def test_lib_stray_globs_include_foreign_venv_and_not_tooling():
+    """Pins the scope decision itself, not just its effect."""
+    from utils.watchdog_probes_rns_env import _LIB_STRAY_SITE_GLOBS
+    assert "foreign-venv" in _LIB_STRAY_SITE_GLOBS
+    assert "tooling" not in _LIB_STRAY_SITE_GLOBS

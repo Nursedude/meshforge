@@ -892,17 +892,21 @@ PYTHON_ENV_SITE_GLOBS = (
     ("root-pipx",   "/opt/pipx/venvs/{pkg}/lib/python3*/site-packages"),
     ("venv",         "{root}/venv/lib/python3*/site-packages"),
     # Not OUR service envs: another app's venv, or a build tool's. They can
-    # still hold a vulnerable copy, so the ADVISORY sweep wants them -- but
-    # "some other app ships meshtastic" is not OUR install fragmented, so the
-    # probes must not read them. That difference is a SCOPE, declared here
-    # once, rather than three lists that merely happen to disagree.
+    # still hold a vulnerable copy, so the ADVISORY sweep wants them. "Some
+    # other app ships meshtastic" is not OUR install fragmented, so the
+    # FRAGMENTATION probe and the install audit must not read them -- but an
+    # app venv that carries RNS is a client of this box's one rnsd, so the
+    # COHERENCE probe reads `foreign-venv` (2026-09-06 review; see
+    # watchdog_probes_rns_env). Scope is declared here once, per consumer,
+    # rather than as lists that merely happen to disagree.
     ("foreign-venv", "/opt/*/venv/lib/python3*/site-packages"),
     ("foreign-venv", "/opt/*/*/venv/lib/python3*/site-packages"),
     ("tooling",      "{home}/.platformio/penv/lib/python3*/site-packages"),
 )
 
-#: The envs OUR services actually read — what a coherence/fragmentation probe
-#: means by "this box". The sweep deliberately takes the full universe instead.
+#: The envs OUR services actually read — what the fragmentation probe and the
+#: install audit mean by "this box". The coherence probe adds `foreign-venv`;
+#: the sweep deliberately takes the full universe instead.
 SERVICE_ENV_LABELS = (
     "system-dist", "user-site", "root-site", "user-pipx", "root-pipx", "venv",
 )

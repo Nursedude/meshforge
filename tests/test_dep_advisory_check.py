@@ -779,3 +779,119 @@ class TestScopedRunNeverClobbersTheFleetRecord:
         lines = _status(home, scoped=False).read_text().splitlines()
         assert lines[0] == dac.FLEET_SCOPE_STAMP
         assert lines[1].startswith("UNKNOWN")
+
+
+# ---------------------------------------------------------------------------
+# The reporter's env walk, EXECUTED — not fed back as JSON. Every test above
+# hands main() a finished `envs` block, so nothing here had ever run the walk
+# that produces one. 2026-09-06 review: the walk's sudo retry fired only for
+# patterns spelled /root/...; for everything else glob.glob swallowed EACCES on
+# an unreadable ancestor and the env was rendered ABSENT — no row, no UNKNOWN.
+# ---------------------------------------------------------------------------
+
+def _walk_envs(env_globs, run, wanted=("cryptography",)):
+    """Run the reporter's env-walk slice in-process against tmp globs, with
+    the ONE subprocess chokepoint replaced. Slices the real template text, so
+    a move of the walk fails here loudly rather than passing vacuously."""
+    import fnmatch, glob, re, stat  # noqa: E401
+    src = dac._REMOTE_SRC
+    a = src.index("# ---- every python env on this box")
+    b = src.index("\nprint(json.dumps(", a)
+    body = src[a:b]
+    assert "def _roots_for" in body and "envs = []" in body, "walk slice moved"
+    assert "%" not in body.replace("%%", ""), (
+        "the walk slice must not use %-formatting: the template is rendered "
+        "with % and this test executes the slice unrendered")
+    ns = {"os": os, "glob": glob, "fnmatch": fnmatch, "re": re, "stat": stat,
+          "_run": run, "_dpkg_for": lambda p: None,
+          "WANTED": set(wanted), "COLLECTIVE_MARKERS": ("rns", "lxmf"),
+          "ENV_ROOT_GLOBS": list(env_globs)}
+    exec(compile(body, "<env-walk>", "exec"), ns)
+    return ns["envs"]
+
+
+def _plant_env(site, *names):
+    site.mkdir(parents=True)
+    for n in names:
+        (site / n).mkdir()
+    return site
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read anything; the denial cannot be planted")
+class TestAnUnreadableAncestorAnywhereIsNotAbsent:
+
+    @pytest.fixture
+    def denied_tree(self, tmp_path):
+        """/opt/pipx-shaped: the ancestor is 0000, the env under it holds a
+        vulnerable copy tagged mesh. Perms restored so tmp cleanup works."""
+        site = _plant_env(tmp_path / "opt/pipx/venvs/drillcli/lib/python3.13/site-packages",
+                          "cryptography-41.0.0.dist-info", "rns-1.0.0.dist-info")
+        top = tmp_path / "opt/pipx"
+        top.chmod(0)
+        try:
+            yield site, top, str(tmp_path / "opt/pipx/venvs/*/lib/python3*/site-packages")
+        finally:
+            top.chmod(0o755)
+
+    def test_denied_with_no_sudo_is_unknown_not_silence(self, denied_tree):
+        """THE 2026-09-06 shape: before, this returned [] — no row at all."""
+        site, top, pattern = denied_tree
+        calls = []
+
+        def no_sudo(cmd):
+            calls.append(cmd)
+            return 1, ""
+
+        envs = _walk_envs([("root-pipx", pattern)], no_sudo)
+        assert len(envs) == 1, envs
+        assert envs[0]["readable"] is False
+        assert str(top) in envs[0]["reason"] and "sudo -n unavailable" in envs[0]["reason"]
+        assert any("find" in c[2] for c in calls), "sudo find must have been attempted"
+
+    def test_denied_but_sudo_works_is_recovered_and_judged(self, denied_tree):
+        site, top, pattern = denied_tree
+        names = ["cryptography-41.0.0.dist-info", "rns-1.0.0.dist-info"]
+
+        def sudo(cmd):
+            if "/usr/bin/find" in cmd:
+                return 0, str(site) + "\n"
+            if "/bin/ls" in cmd:
+                return 0, "\n".join(names) + "\n"
+            return 0, ""
+
+        envs = _walk_envs([("root-pipx", pattern)], sudo)
+        assert len(envs) == 1 and envs[0]["readable"] is True, envs
+        assert envs[0]["root"] == str(site)
+        assert envs[0]["collective"] is True
+        assert [r["version"] for r in envs[0]["packages"]["cryptography"]] == ["41.0.0"]
+
+    def test_find_failing_under_working_sudo_names_that(self, denied_tree):
+        _site, top, pattern = denied_tree
+
+        def sudo(cmd):
+            return (1, "") if "/usr/bin/find" in cmd else (0, "")
+
+        envs = _walk_envs([("root-pipx", pattern)], sudo)
+        assert envs[0]["readable"] is False
+        assert "find failed under sudo" in envs[0]["reason"], envs[0]["reason"]
+
+
+class TestAbsentUnderAReadableParentIsInertWithoutSudo:
+    def test_nothing_there_asks_nobody(self, tmp_path):
+        calls = []
+        envs = _walk_envs(
+            [("root-site", str(tmp_path / "nope/.local/lib/python3*/site-packages"))],
+            lambda cmd: calls.append(cmd) or (1, ""))
+        assert envs == [] and calls == [], (envs, calls)
+
+    def test_expander_agrees_with_glob_on_a_readable_tree(self, tmp_path):
+        """Same answers as glob.glob where glob is honest, including the
+        dot-name rule for magic components."""
+        import glob
+        for name in ("a", "b", ".hidden"):
+            _plant_env(tmp_path / "opt" / name / "venv/lib/python3.13/site-packages")
+        (tmp_path / "opt/a/venv/lib/python3.13/site-packages/notadir").write_text("")
+        pattern = str(tmp_path / "opt/*/venv/lib/python3*/site-packages")
+        envs = _walk_envs([("foreign-venv", pattern)], lambda cmd: (1, ""))
+        assert sorted(e["root"] for e in envs) == sorted(glob.glob(pattern))
+        assert all(e["readable"] for e in envs)

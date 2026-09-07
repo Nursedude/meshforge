@@ -61,7 +61,19 @@ def _load_stray_waivers(path):
 # venv named after it — the stray that proved this class lived inside the
 # NOMADNET pipx venv on moc3 (silently stock 1.1.4 while the box's consumer
 # ran the fork pin; invisible to every existing drift probe).
-_LIB_STRAY_SITE_GLOBS = env_site_globs(pkg="*", labels=SERVICE_ENV_LABELS)
+#
+# `foreign-venv` is IN scope here and OUT of scope for the fragmentation
+# probe, deliberately (2026-09-06 review). That probe asks "is OUR meshtastic
+# fragmented", and another app's venv is never on the TUI's root sys.path.
+# THIS probe asks "does every env that speaks to this box's single rnsd carry
+# the identical substrate" — ownership is not the criterion, RPC clientship
+# is. Live on meshanchor-server both MeshAnchor units exec from
+# /opt/meshanchor/venv/bin/python against the box's one @rns listener, and
+# that venv carries its own rns/lxmf: coherent today, and it was outside the
+# probe that would page when it stops being. Keyed per app (`foreign-venv:
+# meshanchor`) so a deliberately isolated instance can be waived by name.
+_LIB_STRAY_SITE_GLOBS = env_site_globs(
+    pkg="*", labels=SERVICE_ENV_LABELS + ("foreign-venv",))
 
 
 def _enumerate_lib_installs(pkg, service_user, *, meshforge_root="/opt/meshforge",
@@ -82,6 +94,7 @@ def _enumerate_lib_installs(pkg, service_user, *, meshforge_root="/opt/meshforge
         except (KeyError, OSError):
             user_home = f"/home/{service_user}"
     found = {}
+    seen_dirs = set()
     for label, patterns in _LIB_STRAY_SITE_GLOBS.items():
         if ("{home}" in "".join(patterns)) and not user_home:
             continue  # user-scoped location but no resolvable home — skip
@@ -91,15 +104,22 @@ def _enumerate_lib_installs(pkg, service_user, *, meshforge_root="/opt/meshforge
             except (KeyError, IndexError):
                 continue
             for d in sorted(glob.glob(expanded)):
+                if d in seen_dirs:
+                    # /opt/meshforge/venv matches both the `venv` glob and the
+                    # `/opt/*/venv` foreign glob; the first (our own) label wins.
+                    continue
                 if "pipx/venvs/" in d:
                     venv_name = d.split("pipx/venvs/", 1)[1].split("/", 1)[0]
                     key = f"{label}:{venv_name}"
+                elif label == "foreign-venv":
+                    key = f"{label}:{os.path.basename(d.split('/venv/', 1)[0])}"
                 else:
                     key = label
                 if key in found:
                     continue  # first found per label wins (path priority)
                 ver = _read_pkg_version_at_dirs([d], pkg)
                 if ver is not None:
+                    seen_dirs.add(d)
                     found[key] = ver
     return found
 

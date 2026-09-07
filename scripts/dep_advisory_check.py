@@ -174,7 +174,7 @@ COLLECTIVE_MARKERS = ("rns", "lxmf")
 # still runs against ``md.version``'s answer; a line carrying ``claimants:`` is
 # the cue to clean the stale dist-info rather than trust either number alone.
 _REMOTE_SRC = r"""
-import fnmatch, glob, gzip, importlib.metadata as md, importlib.util, json, os, re, subprocess, time
+import fnmatch, glob, gzip, importlib.metadata as md, importlib.util, json, os, re, stat, subprocess, time
 PKGS = %(pkgs)r
 IMPORT_NAMES = %(import_names)r
 DISTRO_PREFIX = %(distro_prefix)r
@@ -278,7 +278,9 @@ if os.path.exists("/usr/bin/dpkg-query"):
 # as before). /root/.local is 0700: a non-root probe calling os.listdir there
 # reads "no packages", which is indistinguishable from a clean env, so we retry
 # under `sudo -n` and mark the env UNREADABLE when that fails too. Absence of
-# evidence is not evidence of absence (honest_failure_modes #2).
+# evidence is not evidence of absence (honest_failure_modes #2). The same
+# rule applies to an unreadable ANCESTOR anywhere in a pattern (see _expand),
+# not just to /root -- that special case is how the third fix left a fourth.
 def _entries(root):
     try:
         return sorted(os.listdir(root)), None
@@ -300,32 +302,87 @@ def _split_dist(entry):
             return stem.lower().replace("_", "-"), None
     return None, None
 
+# The FOUR answers a stat can give, kept apart: dir / other / absent / denied.
+# os.path.isdir() and os.path.exists() fold denied into False, and that fold
+# is this file's recurring defect. (Comments, not docstrings: this whole
+# reporter is one raw triple-quoted template.)
+def _stat_kind(path):
+    try:
+        st = os.stat(path)
+    except PermissionError:
+        return "denied"
+    except OSError:
+        return "absent"
+    return "dir" if stat.S_ISDIR(st.st_mode) else "other"
+
+# glob.glob that REPORTS what it could not look into instead of swallowing
+# it. Returns (matching dirs, dirs we were denied under).
+#
+# 2026-09-06 review: the sudo retry below used to fire only for patterns
+# spelled /root/... . For every other pattern glob.glob swallowed EACCES on an
+# unreadable ancestor and returned [], which the walk read as absent: two
+# root-only-readable envs planted under /opt (one of them /opt/pipx -- the
+# root-pipx label's OWN second location) holding cryptography 41.0.0 produced
+# no line at all. Fourth appearance of the inert/unreadable collapse in one
+# day, one layer out. Walking the pattern component by component is what lets
+# a denial be SEEN. glob semantics kept where they matter: a magic component
+# never matches a dot-name.
+def _expand(pattern):
+    cur, denied = ["/"], []
+    for part in pattern.strip("/").split("/"):
+        nxt = []
+        for base in cur:
+            if glob.has_magic(part):
+                try:
+                    names = os.listdir(base)
+                except PermissionError:
+                    denied.append(base)
+                    continue
+                except OSError:
+                    continue
+                for n in sorted(names):
+                    if not n.startswith(".") and fnmatch.fnmatchcase(n, part):
+                        nxt.append(os.path.join(base, n))
+            else:
+                p = os.path.join(base, part)
+                k = _stat_kind(p)
+                if k == "denied":
+                    denied.append(base)
+                elif k != "absent":
+                    nxt.append(p)
+        cur = nxt
+    out = []
+    for p in cur:
+        k = _stat_kind(p)
+        if k == "dir":
+            out.append(p)
+        elif k == "denied":
+            denied.append(os.path.dirname(p))
+    return out, sorted(set(denied))
+
+# One sudo find per denied dir serves every pattern that passes through it:
+# absent = not asked yet, False = asked and could not look.
+_SUDO_FOUND = {}
+
 def _roots_for(kind, pattern):
     pat = os.path.expanduser(pattern)
-    found = sorted(glob.glob(pat))
-    if found or not pat.startswith("/root/"):
-        return found, None
-    # Globbing under /root needs read on /root; ask a tool that has it. A
-    # FAILING find is ambiguous and the two readings are opposites: the path
-    # may genuinely not exist (inert -- most boxes never grew a root env) or
-    # we may be unable to look (UNKNOWN). Collapsing them is the
-    # inert/indeterminate confusion this file exists to refuse, so ask sudo
-    # one more question before choosing.
-    if _run(["sudo", "-n", "/usr/bin/test", "-d", "/root"])[0] == 0:
-        if _ROOT_DIRS[0] is None:
-            rc, out = _run(["sudo", "-n", "/usr/bin/find", "/root", "-maxdepth",
-                            "8", "-type", "d", "-name", "site-packages"])
-            _ROOT_DIRS[0] = sorted(x for x in out.splitlines() if x) if rc == 0 else False
-        if _ROOT_DIRS[0] is False:
-            return [], "unreadable (find failed under sudo)"
-        return [d for d in _ROOT_DIRS[0] if fnmatch.fnmatch(d, pat)], None
-    if _run(["sudo", "-n", "/usr/bin/true"])[0] == 0:
-        return [], None            # sudo works, the path is simply absent
-    return [], "unreadable (sudo -n unavailable)"
-
-# One find under /root serves every /root pattern: None = not asked yet,
-# False = asked and could not look.
-_ROOT_DIRS = [None]
+    found, denied = _expand(pat)
+    for d in denied:
+        # We could not look under d ourselves. A path that is ABSENT never
+        # reaches here (its readable parent said so), so the only ambiguity
+        # left is sudo's own answer: a listing (possibly empty -> inert) or a
+        # failure (-> UNKNOWN for every pattern through d).
+        if d not in _SUDO_FOUND:
+            rc, out = _run(["sudo", "-n", "/usr/bin/find", d, "-maxdepth", "8",
+                            "-type", "d", "-name", "site-packages"])
+            _SUDO_FOUND[d] = sorted(x for x in out.splitlines() if x) if rc == 0 else False
+        if _SUDO_FOUND[d] is False:
+            why = ("find failed under sudo"
+                   if _run(["sudo", "-n", "/usr/bin/true"])[0] == 0
+                   else "sudo -n unavailable")
+            return [], "unreadable ({0} not readable here; {1})".format(d, why)
+        found += [x for x in _SUDO_FOUND[d] if fnmatch.fnmatch(x, pat)]
+    return sorted(set(found)), None
 
 envs = []
 seen_roots = set()
