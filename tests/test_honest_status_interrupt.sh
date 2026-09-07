@@ -24,10 +24,22 @@ TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
 SB="$TMP/bin"; mkdir -p "$SB"
 
 # A pytest that BLOCKS, so the run is reliably mid-flight when the signal lands.
+# It CLOSES its stdout/stderr before sleeping: if this child outlives the
+# signalled parent it must not keep the captured pipe open. It did, in the
+# first cut — the sleeping orphan held the pipe, so the python globber that
+# runs these harnesses (`subprocess.run(..., capture_output=True)`) blocked
+# until ITS timeout and crashed the whole CI suite before pytest could report.
+# Locally the same hang finished just under the local timeout, so this file
+# went green by luck. Bounded sleep for the same reason.
 cat > "$SB/python3" <<'EOF'
 #!/usr/bin/env bash
 for a in "$@"; do
-  if [ "$a" = "pytest" ]; then echo "__FAKE_PYTEST_STARTED__"; sleep 60; exit 0; fi
+  if [ "$a" = "pytest" ]; then
+    echo "__FAKE_PYTEST_STARTED__"
+    exec 1>&- 2>&-        # never hold the harness's capture pipe
+    sleep 20
+    exit 0
+  fi
 done
 exec "$REAL_PYTHON3" "$@"
 EOF
@@ -40,14 +52,16 @@ printf 'import sys\nsys.exit(0)\n' > "$FAKE_REPO/scripts/lint.py"
 
 out="$TMP/out.log"
 PATH="$SB:$PATH" HOME="$FAKE_HOME" XDG_STATE_HOME="" HONEST_BOXES="hs-test-dummy" \
-  MESHFORGE_REPO="$FAKE_REPO" bash "$SCRIPT" > "$out" 2>&1 &
+  MESHFORGE_REPO="$FAKE_REPO" setsid bash "$SCRIPT" > "$out" 2>&1 &
 pid=$!
 # Wait until the run is genuinely underway, then signal it.
 for _ in $(seq 1 100); do
   grep -q "__FAKE_PYTEST_STARTED__\|honest_status —" "$out" 2>/dev/null && break
   sleep 0.2
 done
-kill -TERM "$pid" 2>/dev/null
+# Signal the process GROUP (setsid above), so the fake pytest's sleeping
+# child dies with its parent instead of outliving the run.
+kill -TERM -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null
 wait "$pid"; rc=$?
 
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }
