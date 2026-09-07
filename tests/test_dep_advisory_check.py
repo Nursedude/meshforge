@@ -619,3 +619,34 @@ class TestEveryEnvIsWalked:
                         versions={"cryptography": "50.0.1"})
         rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
         assert rc == 0
+
+
+class TestAbsentEnvIsInertNotUnknown:
+    """A root user-site that does not EXIST and one we cannot LOOK AT are
+    opposite answers. My first cut collapsed them: any non-zero `find` read as
+    "unreadable", so eight boxes reported UNKNOWN when /root/.local/lib simply
+    was not there — noise that would drown the one box where it IS there, which
+    is the entire reason the root-site leg exists."""
+
+    @staticmethod
+    def _versions(envs):
+        return {"packages": {"cryptography": {"version": "50.0.1", "origin": None,
+                                              "claimants": [], "dpkg": None}},
+                "apt": None, "envs": envs}
+
+    def test_absent_root_site_does_not_make_the_run_unknown(self, home, monkeypatch):
+        _install_runner(monkeypatch, advisories=[], versions=self._versions([]))
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 0, "a box with no root user-site is clean, not UNKNOWN"
+        assert "UNKNOWN" not in (home / ".meshforge-dep-advisories").read_text()
+
+    def test_a_genuinely_unreadable_env_still_reports_unknown(self, home, monkeypatch):
+        """The other polarity, which must not be lost to the fix above: when we
+        truly cannot look, silence is not clean."""
+        _install_runner(monkeypatch, advisories=[], versions=self._versions([
+            {"root": "/root/.local/lib/python3.13/site-packages", "kind": "root-site",
+             "readable": False, "reason": "unreadable (sudo -n unavailable)",
+             "collective": False, "packages": {}},
+        ]))
+        rc = dac.main(["--host", "boxA", "--packages", "cryptography", "--quiet"])
+        assert rc == 2, "'could not look' must never read as clean"

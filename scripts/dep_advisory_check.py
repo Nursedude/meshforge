@@ -307,13 +307,20 @@ def _roots_for(kind, pattern):
     if found or "/root/" not in pattern:
         return found, None
     # The glob itself needs read on /root to expand; ask a tool that has it.
-    rc, out = _run(["sudo", "-n", "/usr/bin/find", "/root/.local/lib",
-                    "-maxdepth", "2", "-type", "d", "-name", "site-packages"])
-    if rc == 0:
-        return sorted(x for x in out.splitlines() if x), None
-    if os.path.isdir("/root"):
-        return [], "unreadable (sudo -n unavailable)"
-    return [], None
+    # A FAILING find is ambiguous and the two readings are opposites: the
+    # directory may genuinely not exist (inert -- most boxes never grew a root
+    # user-site) or we may be unable to look (UNKNOWN). Collapsing them is the
+    # inert/indeterminate confusion this whole file exists to refuse, so ask
+    # sudo one more question before choosing.
+    if _run(["sudo", "-n", "/usr/bin/test", "-d", "/root/.local/lib"])[0] == 0:
+        rc, out = _run(["sudo", "-n", "/usr/bin/find", "/root/.local/lib",
+                        "-maxdepth", "2", "-type", "d", "-name", "site-packages"])
+        if rc == 0:
+            return sorted(x for x in out.splitlines() if x), None
+        return [], "unreadable (find failed under sudo)"
+    if _run(["sudo", "-n", "/usr/bin/true"])[0] == 0:
+        return [], None            # sudo works, the path is simply absent
+    return [], "unreadable (sudo -n unavailable)"
 
 envs = []
 seen_roots = set()
