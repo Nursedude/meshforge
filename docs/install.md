@@ -126,11 +126,10 @@ cd /opt/meshforge && sudo git pull origin main
 ```
 
 **Upgrading from pre-v0.5.4?** The gateway now uses MQTT instead of TCP.
-**Upgrading from v0.5.4?** The old in-app MeshChat handler was removed (upstream unmaintained). For a
-browser-based LXMF client, **MeshChatX** is now integrated as an opt-in sibling to NomadNet — see
-**[docs/MESHCHATX_IN_MESHFORGE.md](MESHCHATX_IN_MESHFORGE.md)** for the full domain setup
-(isolated install, propagation node, gateway enrollment, bot round-trips). NomadNet remains the
-default LXMF client.
+**Upgrading from v0.5.4?** The old in-app MeshChat handler was removed (upstream unmaintained), and
+the MeshChatX TUI handler followed it on 2026-09-06. **NomadNet is the supported LXMF client.** A
+browser client is still available installer-only — `scripts/install_meshchatx.sh`, see
+**[docs/MESHCHATX_IN_MESHFORGE.md](MESHCHATX_IN_MESHFORGE.md)** — with no TUI surface.
 Install mosquitto (`sudo apt install mosquitto`) and configure via
 `TUI → Gateway Config → MQTT Bridge Settings → Run Setup Guide`.
 

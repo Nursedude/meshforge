@@ -168,7 +168,6 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": True,
             "maps": True,
             "tactical": True,
-            "meshchatx": False,
         },
     ),
     ProfileName.FULL: ProfileDefinition(
@@ -190,7 +189,6 @@ PROFILES: Dict[ProfileName, ProfileDefinition] = {
             "mqtt": True,
             "maps": True,
             "tactical": True,
-            "meshchatx": False,
         },
     ),
 }

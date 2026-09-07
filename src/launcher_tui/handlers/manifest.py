@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 80 handlers · 111 menu actions (derived from get_all_handlers(), never hand-edited).
+# 79 handlers · 110 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -431,17 +431,6 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('mesh_alerts', 'Mesh Alerts     Battery, emergency, disconnect', None),
-        ],
-    },
-    {
-        "handler_id": 'meshchatx',
-        "module": 'handlers.meshchatx',
-        "class_name": 'MeshChatXHandler',
-        "menu_section": 'mesh_networks',
-        "lifecycle": False,
-        "error": None,
-        "menu_items": [
-            ('meshchatx', 'MeshChatX Web Client    LXMF web UI on :8000', 'meshchatx'),
         ],
     },
     {

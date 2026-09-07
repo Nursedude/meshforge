@@ -149,7 +149,6 @@ def get_all_handlers() -> List[Type]:
     from handlers.db_audit import DBAuditHandler
     from handlers.system_tools import SystemToolsHandler
     from handlers.nomadnet import NomadNetHandler
-    from handlers.meshchatx import MeshChatXHandler
     from handlers.first_run import FirstRunHandler
     handlers.extend([
         AIToolsHandler,
@@ -157,7 +156,6 @@ def get_all_handlers() -> List[Type]:
         DBAuditHandler,
         SystemToolsHandler,
         NomadNetHandler,
-        MeshChatXHandler,
         FirstRunHandler,
     ])
 

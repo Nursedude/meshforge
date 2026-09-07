@@ -5,9 +5,12 @@ runs side-by-side with NomadNet on a MeshForge box. MeshChatX gives HAMs and
 first-time RNS users a browser UI ("normal" UX) instead of the keyboard-driven
 NomadNet TUI; the install path mirrors NomadNet's canonical pattern.
 
-> Status: parity install (Phase 1). Field validation pending on the
-> designated test-bed and operator-monitor boxes; remaining fleet
-> hosts stay NomadNet-only until soak signal closes.
+> **Status (2026-09-06): installer-only.** The MeshChatX TUI handler, its
+> feature flag and its in-app service controls were removed — operator
+> decision: **NomadNet is MeshForge's supported LXMF client**, as it always
+> has been. `scripts/install_meshchatx.sh` remains the sole entry point for
+> a box that deliberately wants a browser client; `--uninstall` takes it
+> off again. Nothing here is reachable from the TUI.
 
 ## What MeshChatX is
 
@@ -104,7 +107,6 @@ What the installer does:
 | Yes (monitor on Pi) | Run `xdg-open http://127.0.0.1:8000/` on the box                             |
 | No (headless Pi)    | `ssh -L 8000:localhost:8000 user@host` then visit `http://localhost:8000/`   |
 
-The TUI menu does both for you: **MeshChatX > Open Web UI**.
 
 ## Day-to-day
 
@@ -122,7 +124,6 @@ journalctl --user -u meshchatx -n 100 --no-pager
 sudo bash /opt/meshforge/scripts/install_meshchatx.sh --check
 ```
 
-Or use the TUI: **MeshChatX > Service Control / View Logs / Run install audit**.
 
 ## Coexistence with NomadNet
 
@@ -204,8 +205,11 @@ The installer's gitea API parse failed. Either:
 
 ## Uninstall
 
-The TUI's **MeshChatX > Uninstall** action stops + disables the service, removes
-the unit file, and `pipx uninstall reticulum-meshchatx`. It does **not** delete
+`sudo bash /opt/meshforge/scripts/install_meshchatx.sh --uninstall` stops +
+disables the service, removes the unit file, and `pipx uninstall
+reticulum-meshchatx` — then verifies the unit is no longer enabled and the
+binary is gone (a still-enabled unit over a missing binary crashloops on every
+boot). It does **not** delete
 the storage directory or wrapper — to clean those, re-run the installer with
 `--reinstall --wipe-identity`, or remove manually:
 
@@ -216,8 +220,9 @@ rm -f ~/.config/meshforge/meshchatx_wrapper.sh
 
 ## Rollout sequencing
 
-The opt-in feature flag (`meshchatx: False` on every profile) keeps this
-dormant until an operator decides to enable it. Recommended order:
+There is no feature flag and no TUI surface: installing is an explicit
+operator act, one box at a time, via the installer. If a box ever wants it,
+the order that was planned for the original rollout still holds:
 
 1. **Test-bed Pi** (full profile, designated for staged rollouts) — install
    first, run `--check`, soak 24-48h watching `journalctl --user -u meshchatx`

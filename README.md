@@ -83,7 +83,7 @@ you want.
 | **[MeshAnchor](https://github.com/Nursedude/meshanchor)** | Sister NOC, MeshCore-primary radio. Same reliability spine, different mesh. |
 | **[MeshForge Maps](https://github.com/Nursedude/meshforge-maps)** | Multi-source map (Meshtastic, AREDN, MeshCore, MQTT, RNS), port 8808 |
 | **NomadNet** | Terminal LXMF client for Reticulum users |
-| **MeshChatX** ([setup](docs/MESHCHATX_IN_MESHFORGE.md)) | Browser LXMF chat, isolated RNS instance, port 8000 |
+| **MeshChatX** ([setup](docs/MESHCHATX_IN_MESHFORGE.md)) | Browser LXMF chat, installer-only (no TUI surface since 2026-09-06); NomadNet is the supported client |
 | **Dude-claw** | Pi brain driving WireClaw ESP32 edge nodes over NATS — sensors → rules → actuators |
 | **Meshing Around** (client/monitor) | Alerting + maps-writer layer for the meshing-around bot — **not** the bot itself |
 

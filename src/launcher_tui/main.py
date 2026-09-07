@@ -79,7 +79,7 @@ SECTION_ORDERINGS = {
     ],
     "mesh_networks": [
         "meshtastic", "meshcore", "rns", "gateway", "wizard", "check",
-        "export", "test_gateway_rx", "aredn", "messaging", "meshchatx",
+        "export", "test_gateway_rx", "aredn", "messaging",
         "nomadnet", "traffic", "mqtt", "broker-menu", "mesh_alerts",
         "automation", "dual_failover", "load_balancer", "favorites",
         "ham", "services",

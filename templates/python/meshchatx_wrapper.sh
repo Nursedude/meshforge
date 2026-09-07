@@ -19,10 +19,10 @@
 # may shift between releases. To change a flag, edit this wrapper and
 # re-run:  sudo bash /opt/meshforge/scripts/install_meshchatx.sh --refresh
 #
-# Both ``scripts/install_meshchatx.sh`` and the TUI's
-# ``_install_user_unit`` copy this file verbatim into
-# ``~/.config/meshforge/meshchatx_wrapper.sh``. Bumping the
-# ``Version:`` line above forces both sides to refresh.
+# ``scripts/install_meshchatx.sh`` (step 5) is the ONLY writer that
+# copies this file into ``~/.config/meshforge/meshchatx_wrapper.sh``
+# (the TUI handler was retired 2026-09-06). Bumping the ``Version:``
+# line above makes ``--refresh`` rewrite it.
 
 set -eu
 
@@ -54,9 +54,8 @@ if ! rpc_key_pinned; then
     err "RNS rpc_key MISMATCH detected (or rpc_key not pinned)."
     err "  rnsd and MeshChatX would use different identities → AuthenticationError."
     err "  FIX:"
-    err "    MeshForge TUI > MeshChatX > Service Control > Repair RNS alignment"
-    err "  or:"
     err "    sudo python3 /opt/meshforge/scripts/rns_alignment.py normalize"
+    err "    then: sudo bash /opt/meshforge/scripts/install_meshchatx.sh --refresh"
     exit "${EXIT_AUTH_MISMATCH}"
 fi
 

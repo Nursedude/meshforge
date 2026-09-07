@@ -101,7 +101,7 @@ Gateways deployed before 2026-04-24 that used the single-enum pattern (e.g. `bri
 
 ### Test Coverage
 
-**~11,000 tests** across <!--STAT:testfiles-->362<!--/STAT--> test files. Selected high-volume files
+**~11,000 tests** across <!--STAT:testfiles-->361<!--/STAT--> test files. Selected high-volume files
 (per-file counts are a 2026-07 snapshot — run `python3 -m pytest tests/<file> --co -q` for the live number):
 
 | Test File | Tests | Covers |
@@ -218,7 +218,7 @@ always exits 0; the blocking gate is `scripts/lint.py --all`.
 - Shared connection manager prevents TCP:4403 client contention
 - Exponential backoff reconnection (1s → 2s → 4s → ... → 30s max)
 - Canonical logging via `setup_logging()` — all 9 `basicConfig()` calls consolidated
-- Handler registry pattern: all <!--STAT:handlers-->103<!--/STAT--> TUI handler modules use registry dispatch (mixin inheritance fully replaced)
+- Handler registry pattern: all <!--STAT:handlers-->101<!--/STAT--> TUI handler modules use registry dispatch (mixin inheritance fully replaced)
 - Connection failure logs upgraded to WARNING level for visibility (cleanup errors stay DEBUG)
 
 ---

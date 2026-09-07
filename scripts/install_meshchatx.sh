@@ -28,6 +28,8 @@
 #                                       # (preserves identity)
 #   ./install_meshchatx.sh --reinstall --wipe-identity
 #                                       # also clears ~/.local/share/meshchatx/
+#   ./install_meshchatx.sh --uninstall  # stop+disable the unit, remove it,
+#                                       # pipx uninstall (keeps storage + wrapper)
 #
 # See the parallel:
 #   scripts/install_nomadnet.sh                 (model for this script)
@@ -118,8 +120,9 @@ while (( "$#" )); do
         --refresh)       MODE="refresh" ;;
         --reinstall)     MODE="reinstall" ;;
         --wipe-identity) WIPE_IDENTITY="yes" ;;
+        --uninstall)     MODE="uninstall" ;;
         -h|--help)
-            sed -n '2,32p' "$0"
+            sed -n '2,34p' "$0"
             exit 0
             ;;
         *)
@@ -481,11 +484,47 @@ do_reinstall() {
 }
 
 # --------------------------------------------------------------------
+# Mode: --uninstall — the retirement route (2026-09-06). The TUI's
+# Uninstall action went with the handler, so this is the ONLY in-repo
+# way to take MeshChatX off a box, and it must leave nothing that
+# crashloops: a still-enabled user unit pointing at an uninstalled
+# binary hits StartLimitBurst on every boot. Keeps the storage dir
+# (identity) and the wrapper; --reinstall --wipe-identity clears those.
+# --------------------------------------------------------------------
+do_uninstall() {
+    echo "=== Uninstalling MeshChatX (user: ${REAL_USER}) ==="
+    run_user_systemctl stop meshchatx 2>/dev/null || true
+    run_user_systemctl disable meshchatx 2>/dev/null || true
+    if [[ -f "${UNIT_DEST}" ]]; then
+        run_as_user rm -f "${UNIT_DEST}"
+        echo "  removed ${UNIT_DEST}"
+    fi
+    run_user_systemctl daemon-reload 2>/dev/null || true
+    pipx_uninstall_meshchatx
+    # Verify the two things that would crashloop, never assume them.
+    if run_user_systemctl is-enabled meshchatx >/dev/null 2>&1; then
+        echo "ERROR: meshchatx.service is still enabled — uninstall incomplete" >&2
+        return 1
+    fi
+    if [[ -x "${MCX_BIN}" ]]; then
+        echo "ERROR: ${MCX_BIN} still present — pipx uninstall did not take" >&2
+        return 1
+    fi
+    echo "  meshchatx.service: removed; pipx package: removed"
+    echo "  kept: ${STORAGE_DIR} (identity) and ${WRAPPER_DEST}"
+    echo "        clear them with: $0 --reinstall --wipe-identity, or rm"
+}
+
+# --------------------------------------------------------------------
 # Main
 # --------------------------------------------------------------------
 case "${MODE}" in
     check)
         do_check
+        exit $?
+        ;;
+    uninstall)
+        do_uninstall
         exit $?
         ;;
     reinstall)
@@ -528,15 +567,26 @@ activate_unit
 
 echo
 echo "=== Verifying ==="
-sleep 5
-if run_user_systemctl is-active meshchatx >/dev/null 2>&1; then
-    echo "  meshchatx.service: ACTIVE"
+# Liveness is the LISTENING SOCKET, not unit state: a Type=simple unit reads
+# active while the daemon is still warming, or never binds because :8000 is
+# held by something else. Presence is not function (2026-09-06 review).
+bound="no"
+for _ in $(seq 1 20); do
+    if ss -ltn 2>/dev/null | grep -q ':8000 '; then bound="yes"; break; fi
+    sleep 1
+done
+if run_user_systemctl is-active meshchatx >/dev/null 2>&1 && [[ "${bound}" == "yes" ]]; then
+    echo "  meshchatx.service: ACTIVE, 127.0.0.1:8000 bound"
     echo
     echo "Open the web UI:  http://127.0.0.1:8000/"
     echo "  (on a headless box: ssh -L 8000:localhost:8000 ${REAL_USER}@\$(hostname))"
     exit 0
+elif run_user_systemctl is-active meshchatx >/dev/null 2>&1; then
+    echo "WARN: meshchatx.service is active but :8000 is NOT bound after 20s — active-and-deaf." >&2
+    echo "  Inspect: journalctl --user -u meshchatx -n 50 --no-pager ; ss -ltnp | grep 8000" >&2
+    exit 4
 else
-    echo "WARN: meshchatx.service did not become active within 5s." >&2
+    echo "WARN: meshchatx.service did not become active within 20s." >&2
     echo "  Inspect: journalctl --user -u meshchatx -n 50 --no-pager" >&2
     exit 4
 fi

@@ -135,7 +135,6 @@ test_tui_runtime_stability.py
 test_commands.py
 test_device_config_store.py
 test_startup_health.py
-test_meshchatx_handler.py
 test_install_meshchatx.py
 PATTERNS
             ;;

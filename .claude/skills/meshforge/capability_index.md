@@ -10,7 +10,7 @@
 > X?", grep this file for the capability, then open the handler under
 > `src/launcher_tui/handlers/`.
 
-**80 handlers · 111 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
+**79 handlers · 110 menu actions · 11 sections** (all derived from `get_all_handlers()`, never hardcoded).
 
 A non-empty **Flag** means the action only appears when that deployment-profile feature is enabled (blank = always visible).
 
@@ -112,7 +112,6 @@ A non-empty **Flag** means the action only appears when that deployment-profile 
 | `wizard` | Gateway Wizard — Guided SF↔MeshForge↔RNS setup | `gateway` | GatewayWizardHandler |
 | `load_balancer` | TX Load Balancer — Dual-radio TX distribution |  | LoadBalancerHandler |
 | `mesh_alerts` | Mesh Alerts — Battery, emergency, disconnect |  | MeshAlertsHandler |
-| `meshchatx` | MeshChatX Web Client — LXMF web UI on :8000 | `meshchatx` | MeshChatXHandler |
 | `meshcore` | MeshCore — Companion radio, config | `meshcore` | MeshCoreHandler |
 | `messaging` | Messaging — Send/receive messages |  | MessagingHandler |
 | `mqtt` | MQTT Monitor — Nodeless mesh observation | `mqtt` | MQTTHandler |

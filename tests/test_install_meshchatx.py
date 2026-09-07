@@ -87,7 +87,7 @@ class TestScriptStructure:
 class TestModesContract:
     """The 4 install modes are operator-facing API — must not regress."""
 
-    @pytest.mark.parametrize("mode", ["check", "refresh", "reinstall"])
+    @pytest.mark.parametrize("mode", ["check", "refresh", "reinstall", "uninstall"])
     def test_mode_arg_recognized(self, mode):
         text = INSTALLER.read_text()
         # Each --mode flag must appear in the argparse case statement.
@@ -336,3 +336,51 @@ class TestCheckModeAudit:
         )
         assert "MeshChatX canonical install audit" in proc.stdout
         assert "RESULT:" in proc.stdout
+
+
+class TestInstallerIsTheOnlySurface:
+    """2026-09-06: the MeshChatX TUI handler was retired (operator decision —
+    NomadNet is the supported LXMF client). The installer is now the ONLY
+    in-repo surface, so the things the handler used to do that would leave a
+    box in a crashlooping half-state must live here, verified, or nowhere."""
+
+    def test_uninstall_mode_verifies_it_left_nothing_to_crashloop(self):
+        text = INSTALLER.read_text()
+        body = text.split("do_uninstall() {", 1)[1].split("\n}\n", 1)[0]
+        for must in ("stop meshchatx", "disable meshchatx", 'rm -f "${UNIT_DEST}"',
+                     "daemon-reload", "pipx_uninstall_meshchatx",
+                     "is-enabled meshchatx", '-x "${MCX_BIN}"'):
+            assert must in body, f"--uninstall must {must!r}"
+        assert 'uninstall)\n        do_uninstall' in text, "--uninstall is not dispatched"
+
+    def test_liveness_is_the_bound_socket_not_unit_state(self):
+        """A Type=simple unit reads active while the daemon never binds; the
+        installer must not print ACTIVE on presence alone."""
+        text = INSTALLER.read_text()
+        verify = text.split('echo "=== Verifying ==="', 1)[1]
+        assert "ss -ltn" in verify and ":8000" in verify
+        assert "active but :8000 is NOT bound" in verify
+        assert "sleep 5\nif run_user_systemctl is-active" not in verify
+
+    def test_wrapper_fix_line_names_no_tui_menu(self):
+        text = WRAPPER_TEMPLATE.read_text()
+        assert "MeshForge TUI >" not in text, "the wrapper points at a menu that no longer exists"
+        assert "rns_alignment.py normalize" in text
+
+    def test_templates_name_the_installer_as_the_only_writer(self):
+        for path in (WRAPPER_TEMPLATE, UNIT_TEMPLATE):
+            assert "_install_user_unit" not in path.read_text(), path
+
+    def test_storage_dir_matches_the_lxmf_coexistence_table(self):
+        """honest_failure_modes #5: the storage dir is spelled in the installer,
+        the wrapper AND _lxmf_utils.DEFAULT_CONFIG_DIRS (the coexistence check
+        falls through to that entry because the wrapper passes --storage-dir,
+        which _argv_config_dir never parses). The deleted MeshChatXPaths was
+        the constant that tied them; this pin replaces it."""
+        import sys
+        sys.path.insert(0, str(INSTALLER.parent.parent / "src" / "launcher_tui"))
+        from handlers._lxmf_utils import DEFAULT_CONFIG_DIRS
+        rel = DEFAULT_CONFIG_DIRS["meshchatx"]
+        assert rel.startswith(".local/")
+        assert f'STORAGE_DIR="${{REAL_HOME}}/{rel}"' in INSTALLER.read_text()
+        assert rel in WRAPPER_TEMPLATE.read_text()

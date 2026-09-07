@@ -2,7 +2,7 @@
 
 Q2 dedup (2026-08-14): the run-script → concat stdout+[stderr] →
 tail-truncate → verdict-msgbox block existed in THREE copies
-(_meshchatx_service_ops, _nomadnet_service_ops, _nomadnet_install_utils —
+(_nomadnet_service_ops, _nomadnet_install_utils, and the since-removed _meshchatx_service_ops —
 audit E7), and the "Repair RNS alignment" sudo flow verbatim in TWO
 (audit E6). One implementation, so the next fix lands everywhere at once.
 

@@ -30,8 +30,8 @@
 # a silent restart loop.
 #
 # The ExecStart placeholder __MESHCHATX_EXEC__ is substituted at
-# install time by scripts/install_meshchatx.sh and by the TUI's
-# handlers/_meshchatx_service_ops.py::_install_user_unit. The value
+# install time by scripts/install_meshchatx.sh, its only writer (the
+# TUI handler was retired 2026-09-06). The value
 # resolves to the canonical wrapper path (e.g.
 # ~/.config/meshforge/meshchatx_wrapper.sh).
 
