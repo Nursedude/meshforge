@@ -10,6 +10,7 @@
 
 | Date | Scope (range + paths) | Mechanism | Fix commits | Residuals / refuted notes |
 |------|----------------------|-----------|-------------|---------------------------|
+| 2026-09-06 | **SECOND OPINION (Fable 5.1, fresh session after `/clear`) — closes the two QUEUED lines at the end of the CLOSED 2026-09-06 env-universe section: `518170fa` (the `_expand()` walk + `foreign-venv` in the coherence probe) and `14290e60` (`_meta_version`).** Scope: `scripts/dep_advisory_check.py` (`_stat_kind`, `_expand`, `_roots_for`, `_meta_version`, the hits dedupe), `src/utils/watchdog_probes_rns_env.py` (`_enumerate_lib_installs` keying), `src/utils/watchdog_probe_core.py` glob table. Filed, NOT fixed (operator: "file don't fix"). | Every attack in the queue text was PLANTED and run, none read-through: five shapes planted under `/opt` + `/srv` as root (symlinked venv to a 0700 target, 0444 ancestor, a file named `python3.11`, two `/opt/*/app/venv` twins), the shipped reporter's walk slice executed in-process with the REAL `sudo` and with sudo refused, `glob.glob` run as user and as root for parity, `_enumerate_lib_installs` run as root; a 10-box ssh sweep for the shapes each defect needs (nested venvs, symlinks under /opt, `-py3.X.egg-info`, the moc4/moc5 egg-info pair with `dpkg -S` on both); the same-version and disagreeing-version dedupe drilled in a tmp tree. Plants removed and the removal listed. | none (filed) | **2 CONFIRMED, both latent on today's fleet, both the false-clean polarity**: (1) a venv reached through a SYMLINK into a root-only tree is rendered ABSENT with sudo working — `os.stat` follows the link to report `denied`, `find` runs `-P` and never descends it, `[]` reads inert; (2) `foreign-venv:<basename>` keying drops the second of two same-named app dirs and a waiver by that name covers both. HELD: 0444 ancestor recovered; file-as-component no row, no raise; moc4/moc5 pair is same-version + both dpkg-owned so the one-row dedupe is right for the shape that exists. Notes: disagreeing metadata versions render as two installs (the reporter never reads `__about__`); the sudo leg's `fnmatch` lets `*` cross `/` and match dot-names (inclusive asymmetry); a refused-sudo UNKNOWN names only the FIRST denied dir. Verdicts: the `### Second opinion` subsection at the end of the CLOSED 2026-09-06 env-universe section. |
 | 2026-09-06 | **MeshChatX TUI handler retirement (operator decision: NomadNet is the LXMF client).** Scope: the working tree that became `2bfa1fcb` — deletion of `handlers/meshchatx.py`, `_meshchatx_service_ops.py`, `tests/test_meshchatx_handler.py`, the `meshchatx` feature flag, `utils.paths.MeshChatXPaths`; manifest/capability-index/README-stat regeneration. | `/code-review high` in-session (forked reviewer, 29 tool uses): 10 candidates, 2 REFUTED by its verifier (a dated audit register with no live consumer; chunk placement), 8 survived — 7 CONFIRMED with quoted lines, 1 PLAUSIBLE. Frame it found: every finding was ONE shape — the in-app half removed while installer, templates, tests and docs still assumed it. | `2bfa1fcb` (the retirement, with every finding closed in the same commit); `97b6cd6e` (pytest_checked `--color=no`, found by the full-suite run under a `FORCE_COLOR=3` tool shell — not a review finding, but the suite could not go green without it). | **CONFIRMED + fixed (7)**: no surviving uninstall route → installer `--uninstall` that VERIFIES unit-not-enabled and binary-gone; installer liveness was `is-active` presence → waits for the `:8000` socket and names "active but NOT bound"; wrapper exit-87 FIX line named a deleted TUI menu; wrapper + unit template named a second writer that never existed; docs routed through four deleted TUI actions and a feature flag `load_profile()` never read; no REMOVED changelog entry; `_lxmf_utils` meshchatx storage-dir lost its only pin → pinned against installer + wrapper. **PLAUSIBLE, recorded (1)**: `MeshChatXPaths` still lives in MeshAnchor and is imported there — deliberate non-port both ways, written into the twin-map memory. **Residual, deliberate**: `scripts/install_meshchatx.sh`, its templates and 26 installer tests STAY — MeshChatX is installer-only now, not gone; full removal is a separate decision. Gate-caught: this row itself — the upshift-witness pre-push gate refused `2bfa1fcb` because its message claimed a review with no row riding the push. |
 | 2026-09-06 | **FRONTIER PASS (Fable 5.1) — closes the QUEUED 2026-09-06 (Opus 5) section: env-universe + advisory-sweep widening.** Scope: `d73c3590`, `9004704e`, `9854b45b`, `5489f796` — `scripts/dep_advisory_check.py` (the remote reporter's env walk + `_roots_for`), `src/utils/watchdog_probe_core.py` (`PYTHON_ENV_SITE_GLOBS`, `SERVICE_ENV_LABELS`, `_SYSTEM_DIST_GLOBS`), the three probe/audit consumers, `TestOnePythonEnvUniverse`; plus the filed-not-fixed scoped-run clobber. | Every surface drilled against the real authority, none read-through: the shipped reporter source run locally under four shimmed `sudo` shapes; two root-only-readable envs PLANTED under `/opt` (removed after); a glob-recording pytest plugin over 922 tests to MEASURE ambient reads; `probe_rns_env_coherence` run live as root with its disposition printed; per-box ssh for ssh-user / rnsd-user / RNS-in-foreign-venv; MeshAnchor's units + `@rns` owner read on its box; the bash leg test mutation-checked. | The clobber defect only (path split + `# scope: fleet` stamp + reader refusal; 5 py + 2 bash tests, mutation-proven). Review findings REPORTED, not fixed — a review-born fix is not blessed by its own author. | **CONFIRMED, new (surface 1 one layer out)**: the sudo three-way exists only for `/root/` patterns; a root-only-readable ancestor anywhere else (`/opt/pipx` 0700 = the `root-pipx` label's own second location; `/opt/<app>` 0700 = `foreign-venv`) is swallowed by `glob` as absent — planted both holding cryptography 41.0.0, one tagged mesh: NO line as the sweep user, both visible as root. Fourth appearance of the inert/unreadable collapse in one day. **CONFIRMED (surface 2, one direction)**: the `SERVICE_ENV_LABELS` split is right for `dep_install_fragmented` (a foreign venv is never on the TUI's root sys.path) and wrong for `rns_env_coherence` by that probe's own criterion — live, meshanchor-server runs both MeshAnchor units from `/opt/meshanchor/venv/bin/python` against the box's single rnsd (`@rns/default`, owner rnsd), and that venv carries rns `1.3.8+mf.0`/lxmf `1.0.1+mf.1`: coherent today, excluded from the probe that would notice when it stops being. **HELD (surface 1 as asked)**: sudo refused / absent / `find` failing / `test`+`true` absent all degrade to UNKNOWN, never clean (shape D's reason string says "sudo -n unavailable" — legibility only). **MEASURED (surface 3)**: 6 of 922 tests glob real box paths; 4 exercise `_enumerate_pkg_installs` / `_enumerate_lib_installs` / audit `enumerate_installs`, which have NO injection seam and pass only because their assertions are `.get(key)==`-tolerant — on this box the real dist-packages holds rns and meshtastic, so an exact-equality assertion would flip per box; no false fire today. **ACCEPTED (surface 4)**: glob-literal-only is the right trade; f-strings escape it, none exist. **REFUTED (surface 5)**: `probe_rns_env_coherence` as root returns None WITH disposition `clean — coherent with 1 waived location(s): user-pipx:reticulum-meshchatx`; None is its witnessed clean shape, not fail-dark. Minor: `_split_dist` misparses `name-ver-pyX.Y.egg-info` (dropped silently; none in the fleet's apt dirs today); pip's vendored urllib3/requests are invisible to any dist-info scanner; `fnmatch` `*` crosses `/`. Full verdicts in the CLOSED section. |
 | 2026-09-05 | **FRONTIER PASS (Opus 5) — closes the QUEUED 2026-09-03 (Fable 5.1) section: `40e02f2a` review of the engine-backed judge.** Scope: `40e02f2a` exactly — `probe_mini_rule_orphaned_exclusion` + `probe_mini_watchdog_source_unwired` in `src/utils/watchdog_probes_mini.py`, their 45 tests. Frame as asked: what does an engine-backed judge over OBSERVED subjects get wrong that the old structural one got right? | Differential drill against `mini_dudeai.engine._match_rule` as ground truth on the SAME rules (the mechanism the 09-03 pass established); both probes run live on two hardware tiers; `_find_operator_user`/`_resolve_mini_home` traced to the live consumer; watchdog unit LoadState checked per box before claiming a probe runs there. | *(none — reported, not fixed: a review-born fix is not blessed by its own author, and the operator holds the call)* | **CONFIRMED (1)**: brief surface #1 is a real FALSE CLEAN, and worse than stated — observed-first precedence returns `owned` as soon as EVERY in-scope OBSERVED subject is owned, so a never-observed unowned subject in the same glob is invisible. Drilled: excluder `*` excluding `*moc*`, owner `*moc1*` only; engine confirms `meshforge-moc9` is owned by nothing; probe reads **clean**. The same rules with an EMPTY state **page** (structural core) — i.e. **detection DEGRADES as the box accumulates observations**, which is the inverse of the expected direction. Live exposure on VolcanoAI is currently nil (its one exclusion is judged `by structural core`), and it grows as state fills. ⚠️ Not fixable by a cleverer solver: glob containment over an unbounded name space always finds a hole and would re-page the 09-03 finding (d) (owner more specific than the core). Honest options: when all observed in-scope subjects are owned BUT the structural core is in scope and unowned, read **indeterminate** with a named reason instead of clean (costs precision where the owner is legitimately more specific than the core); or at minimum state the residual in the clean reason. **REFUTED / sound (2, 3, 5)**: #2 the synthetic Condition carrying the EXCLUDER's extras is not merely conservative but semantically RIGHT — it asks 'of the conditions THIS rule would have watched, is one unowned?'; drilled both ways (owner filtering a different `class` → page, correct because class-Y conditions really are unowned; excluder and owner agreeing → clean). #3 `STALE_KEY_RETENTION_S = 7*86400`, and the verdict NAMES its method (`structural core` vs `N observed subject(s)`), so the post-window method change is visible rather than silent. #5 mixed → indeterminate, re-judged next tick — the blind spot surfaces as its own state. **#6 CLOSED by measurement**: cost on a Zero 2W (lehua, 158 procs) = orphaned **10.8 ms**, unwired **43.2 ms**, vs Pi5 1.3/12.1 — 0.14% of a 30 s tick. **#4 remains BELIEVED** (no template-deployed box exists to witness `--preset auto` under root). **LATENT, not live**: `_resolve_mini_home` → `_find_operator_user` scans `/run/user/<uid>/bus`; on a box without one the probe reads `indeterminate: operator home unresolvable` even where mini runs (observed on lehua, mini active with 64 rules). NOT a live blind spot — `meshforge-watchdog` is `LoadState=not-found` on lehua, so the probe never executes there; it would bite if the watchdog were ever deployed to a field-node. |
@@ -1376,16 +1377,159 @@ reviewer's own unreviewed code; **QUEUED for a second opinion** below.
   the box runs the old probe until `fleet_pull` + restart.
 - **Findings 3, 4, 6**: unchanged, still reported only.
 
-**QUEUED for a second opinion**: `518170fa` — attack `_expand()`'s parity
+~~**QUEUED for a second opinion**~~ CLOSED 2026-09-06 (Fable 5.1, verdicts below): `518170fa` — attack `_expand()`'s parity
 with `glob.glob` on shapes the test tree does not have (symlinked ancestors,
 a listable-but-unsearchable dir, a `python3*` component that is a file), and
 whether keying foreign venvs by basename can collide (`/opt/a/app` vs
 `/opt/b/app`).
 
-**Also queued (same reviewer, same day)**: `14290e60` — `_meta_version()` in the
+~~**Also queued (same reviewer, same day)**~~ CLOSED 2026-09-06 (verdicts below): `14290e60` — `_meta_version()` in the
 reporter reads `PKG-INFO`/`METADATA` before a versionless metadata dir is
 called UNKNOWN (Debian's dpkg-owned `cryptography.egg-info` beside the
 versioned dist-info had rendered moc4/moc5 UNKNOWN since the walk shipped).
 Attack: a PKG-INFO whose `Version:` disagrees with the sibling dist-info name
 (which one is the install?), and the one-row dedupe hiding a genuine second
 copy at the same version in the same dir.
+
+### Second opinion (2026-09-06, Fable 5.1, fresh session) — `518170fa` + `14290e60`, filed not fixed
+
+Model check, first line: review-shaped work on a frontier session — right-sized.
+The queue's attacks were each PLANTED and RUN, never read through. Plants
+lived under `/opt/mfdrill*` and `/srv/mfdrillA`, were created as root from a
+script file, and the removal was listed after (`ls -d /opt/mfdrill* /srv/mfdrill*`
+→ none). The 09-03 volume brake applies: **nothing fixed, nothing rolled.**
+
+#### `518170fa` — `_expand()` parity with `glob.glob`
+
+**1. Symlinked ancestor → CONFIRMED, and it is the false-clean polarity.**
+Planted `/opt/mfdrillA/venv -> /srv/mfdrillA/venv` with `/srv/mfdrillA` 0700
+root, the site-packages holding `cryptography-41.0.0.dist-info`. The walk
+slice run as the sweep user with the REAL `sudo` (works on this box):
+
+```
+== REAL sudo euid 1000
+{"root": "/opt/mfdrillD/venv/lib/python3.11/site-packages", "readable": true, ... "41.0.0"}
+{"root": "/opt/mfdrillB1/app/venv/...", ...}   {"root": "/opt/mfdrillB2/app/venv/...", ...}
+                                                # mfdrillA: NO ROW AT ALL
+== NO sudo euid 1000
+{"root": "/opt/*/venv/lib/python3*/site-packages", "readable": false,
+ "reason": "unreadable (/opt/mfdrillA not readable here; sudo -n unavailable)"}
+glob.glob as euid 1000: []      as euid 0: ['/opt/mfdrillA/venv/lib/python3.11/site-packages', '/opt/mfdrillD/...']
+```
+
+Mechanism: `_stat_kind('/opt/mfdrillA/venv')` calls `os.stat`, which FOLLOWS
+the link and raises `PermissionError`, so `denied` gets the link's parent
+`/opt/mfdrillA` — readable, correct as far as it goes. `_roots_for` then runs
+`sudo find /opt/mfdrillA -maxdepth 8 -type d -name site-packages`, and `find`
+is `-P` by default: it never descends the link, returns nothing, `rc=0`, and
+`_SUDO_FOUND[d] = []` reads as "asked and empty → inert". The refused-sudo
+path is honest (UNKNOWN naming the dir); the WORKING-sudo path is the one that
+lies — a fifth appearance of the inert/unreadable collapse, this time inside
+the fix for the fourth, and only on the branch that has the privilege to
+know better. Root's `glob.glob` sees the env; the sweep does not.
+**Live exposure: none today** — the 10-box sweep (`find /opt -maxdepth 3
+-type l`) shows only `venv/lib64 -> lib` and asset files under `/opt`; no venv
+or app dir is a symlink. Latent, not paging.
+Cure when taken: hand sudo a `find -L` (bounded by the existing `-maxdepth 8`,
+`-type d` matches link targets under `-L`), or resolve the denied path with
+`os.path.realpath` before choosing the dir to hand to `find`. Test: the
+denied-tree fixture with the env reached through a symlink into the 0000
+subtree, asserting the row is present under working sudo.
+
+**2. Listable-but-unsearchable ancestor (0444 root) → HELD.** `/opt/mfdrillD`
+recovered under sudo with `cryptography 41.0.0` (first row above). The magic
+component lists it, the literal `venv` stat is denied, the parent is handed to
+`find`, `find` descends as root.
+
+**3. A `python3*` component that is a FILE → HELD.** `/opt/mfdrillE/venv/lib/python3.11`
+as a regular file: no row, no exception, same as `glob.glob`. (`_stat_kind`
+on `<file>/site-packages` gets `NotADirectoryError` → `absent`.)
+
+**4. `foreign-venv` keyed by basename → CONFIRMED, silent drop.** As root with
+`/opt/mfdrillB1/app/venv` carrying `rns 1.1.4` and `/opt/mfdrillB2/app/venv`
+carrying `rns 1.0.0`:
+
+```
+euid 0  {'system-dist': '1.3.8+mf.0', 'user-site': '1.3.8+mf.0', 'foreign-venv:app': '1.1.4'}
+```
+
+One key, first-found wins (`if key in found: continue`), so the 1.0.0 stray in
+the second app is unobservable — and a waiver written as `foreign-venv:app`
+waives BOTH apps. The collision is by design of `os.path.basename(d.split('/venv/', 1)[0])`:
+`/opt/x/meshanchor/venv` and `/opt/meshanchor/venv` collide the same way.
+**Live exposure: none today** — `ls -d /opt/*/*/venv` is empty on all 10 boxes;
+the fleet's foreign venvs are `/opt/meshanchor/venv`, `/opt/meshforge-maps/venv`,
+`/opt/meshing-around/venv` (+ a `.venv` the glob does not name). Latent.
+Cure when taken: key by the path relative to `/opt` (`foreign-venv:mfdrillB1/app`),
+which is also the better waiver name; one test with two same-basename twins
+asserting two keys.
+
+**5. Note — the sudo leg is a SUPERSET of the readable leg.** Drilled:
+`fnmatch.fnmatch('/opt/a/b/venv/lib/python3.11/site-packages', '/opt/*/venv/lib/python3*/site-packages')`
+is `True` (`*` crosses `/`), and the same for `/opt/.h/venv/...` (dot-names
+match). So a nested venv under a denied dir lands under the FIRST pattern's
+label and a dot-named app dir is visible only when its parent is denied. Both
+inclusive; `seen_roots` dedupes the double hit. Not a defect, an asymmetry to
+know about when reading a `kind` column.
+
+**6. Note — a refused-sudo UNKNOWN names only the first denied dir.**
+`_roots_for` returns on the first `False` in `_SUDO_FOUND`, so the row above
+names `/opt/mfdrillA` while `/opt/mfdrillD` was equally denied. Honest
+polarity (UNKNOWN), incomplete name; the operator fixing `/opt/mfdrillA` would
+re-run and meet the next one. Legibility, not detection.
+
+#### `14290e60` — `_meta_version()`
+
+**1. The live shape, measured on both boxes** (`dpkg -S` on each dir, `grep
+^Version` in each metadata file):
+
+```
+moc4  /usr/lib/python3/dist-packages/cryptography-38.0.4.dist-info  ver=38.0.4  dpkg=python3-cryptography
+moc4  /usr/lib/python3/dist-packages/cryptography.egg-info           ver=38.0.4  dpkg=python3-cryptography
+moc5  /usr/lib/python3/dist-packages/cryptography-41.0.7.dist-info  ver=41.0.7  dpkg=python3-cryptography
+moc5  /usr/lib/python3/dist-packages/cryptography.egg-info           ver=41.0.7  dpkg=python3-cryptography
+```
+
+Same version, same dpkg owner: ONE install, and the one-row dedupe is right for
+it. The other 8 boxes ship only the dist-info (43.0.0). The "genuine second
+copy at the same version in the same dir" the queue asked about cannot be a
+second IMPORTABLE copy — one site-dir holds one `cryptography/` package dir —
+so collapsing two metadata dirs at one version to one row is sound.
+**Attack 2 REFUTED.**
+
+**2. Disagreeing versions → two rows, each judged as an install (drilled).**
+Planted in a tmp tree `cryptography-41.0.7.dist-info` beside
+`cryptography.egg-info/PKG-INFO` `Version: 38.0.4`:
+`{"cryptography": [{"version": "38.0.4"}, {"version": "41.0.7"}]}`. The
+renderer (`for erec in recs:`) queries advisories for BOTH, so the stale
+metadata's version would print as an open advisory on a copy nothing can
+import. The reporter has no read of `cryptography/__about__.py` (the
+importable truth) inside the env walk — only the primary record's `claimants:`
+leg has that idea. **Not live anywhere** (10/10 agree). Note; cure when it
+ever appears: on disagreement inside one site-dir, read the package's own
+`__version__` and mark the other row `stale-metadata` the way `claimants:`
+already does for the primary.
+
+**3. Note — the dedupe keeps the FIRST row's dpkg attribution.** Sorted
+names put `cryptography-41.0.7.dist-info` before `cryptography.egg-info`
+(`-` < `.`), so if a pip-owned dist-info ever sat beside a dpkg egg-info at
+the same version the distro-patched credit would be lost (over-report, the
+loud direction). BELIEVED from the code path — the drill ran with `is_apt`
+False so `_dpkg_for` was never consulted. The realistic direction
+(dpkg-owned dist-info first, as on moc4/moc5) is correct.
+
+**4. The `name-ver-py3.X.egg-info` shape** `_split_dist` mis-splits (noted
+in the prior pass): a fleet-wide `find -regex '.*-py3\.[0-9]+\.egg-info'`
+over every env root returned ZERO for the ten WANTED packages. Not live.
+
+#### Disposition
+
+- **518170fa**: two confirmed defects, both the polarity this file exists to
+  refuse (something present rendered absent), both needing a shape the fleet
+  does not have today. Filed. The commit's OWN claim — "an unreadable ancestor
+  anywhere is UNKNOWN" — holds for every shape it tested and fails for the
+  symlink shape it did not.
+- **14290e60**: holds for the shape that exists; the two attacks in the queue
+  resolve to one refuted and one latent note.
+- Nothing rolled, nothing restarted, no signal class touched. Fleet stays at
+  `7099ac4f` 9/9.
