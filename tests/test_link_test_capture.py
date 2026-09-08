@@ -232,3 +232,121 @@ class TestSummarize:
         s = lt.summarize_rows(rows)
         assert s["rssi_n"] == 20
         assert s["rssi_median"] == pytest.approx(-100)
+
+class FakePort:
+    """Minimal serial stand-in: scripted replies, and it honours a buffer flush.
+
+    The flush behaviour is the point -- see TestConfirmRadioOn's echo test.
+    """
+
+    def __init__(self, reply_for_ask=None, prequeued=b"", answer_after=0):
+        self.reply_for_ask = reply_for_ask
+        self.buffer = bytearray(prequeued)
+        self.writes = []
+        self.asks = 0
+        self.answer_after = answer_after   # ignore this many ASKs before replying
+        self.flushes = 0
+
+    def write(self, data):
+        self.writes.append(bytes(data))
+        if len(data) >= 3 and data[1] == K.CMD_RADIO_STATE and data[2] == K.RADIO_STATE_ASK:
+            self.asks += 1
+            if self.reply_for_ask is not None and self.asks > self.answer_after:
+                self.buffer += frame(K.CMD_RADIO_STATE, bytes([self.reply_for_ask]))
+        return len(data)
+
+    def read(self, n):
+        out = bytes(self.buffer[:n])
+        del self.buffer[:n]
+        return out
+
+    def reset_input_buffer(self):
+        self.flushes += 1
+        self.buffer.clear()
+
+
+class TestRadioStateDecode:
+    def test_radio_state_is_decoded(self):
+        d = lt.KissDecoder()
+        d.feed(frame(K.CMD_RADIO_STATE, bytes([0x01])))
+        assert d.radio_state == 0x01
+
+    def test_radio_state_off_is_decoded(self):
+        d = lt.KissDecoder()
+        d.feed(frame(K.CMD_RADIO_STATE, bytes([0x00])))
+        assert d.radio_state == 0x00
+
+    def test_starts_unknown_not_assumed_on(self):
+        """Absence of a report must never read as a healthy radio."""
+        assert lt.KissDecoder().radio_state is None
+
+    def test_radio_error_is_captured_with_a_name(self):
+        d = lt.KissDecoder()
+        d.feed(frame(K.CMD_ERROR, bytes([0x01])))
+        assert len(d.errors) == 1
+        assert "INITRADIO" in d.errors[0]
+
+    def test_unknown_error_code_still_recorded(self):
+        d = lt.KissDecoder()
+        d.feed(frame(K.CMD_ERROR, bytes([0x7E])))
+        assert d.errors and "0x7e" in d.errors[0]
+
+
+class TestConfirmRadioOn:
+    def test_radio_on_is_confirmed(self):
+        dec = lt.KissDecoder()
+        port = FakePort(reply_for_ask=0x01)
+        state, _ = lt.confirm_radio_on(port, dec, timeout_s=2.0)
+        assert state == K.RADIO_STATE_ON
+
+    def test_radio_off_is_reported_not_assumed(self):
+        dec = lt.KissDecoder()
+        port = FakePort(reply_for_ask=0x00)
+        state, why = lt.confirm_radio_on(port, dec, timeout_s=2.0)
+        assert state == K.RADIO_STATE_OFF
+        assert "OFF" in why
+
+    def test_silent_radio_is_unknown_never_on(self):
+        """No answer must not fall through to 'fine'."""
+        dec = lt.KissDecoder()
+        port = FakePort(reply_for_ask=None)
+        state, why = lt.confirm_radio_on(port, dec, timeout_s=1.0)
+        assert state is None
+        assert "never answered" in why
+
+    def test_it_actually_asks(self):
+        dec = lt.KissDecoder()
+        port = FakePort(reply_for_ask=0x01)
+        lt.confirm_radio_on(port, dec, timeout_s=2.0)
+        assert port.asks >= 1, "must send RADIO_STATE_ASK, not trust an unsolicited frame"
+
+    def test_a_stale_echo_is_flushed_and_not_believed(self):
+        """THE bug this guard exists for (2026-09-08).
+
+        A CMD_RADIO_STATE frame already sitting in the buffer is an echo of the
+        value we just SET, not an observation. Here the echo says ON and the
+        real answer says OFF -- believing the echo is the failure that let a
+        dead receiver look healthy.
+        """
+        dec = lt.KissDecoder()
+        port = FakePort(reply_for_ask=0x00,
+                        prequeued=frame(K.CMD_RADIO_STATE, bytes([0x01])))
+        state, _ = lt.confirm_radio_on(port, dec, timeout_s=2.0)
+        assert port.flushes >= 1, "must flush the port, not just the decoder"
+        assert state == K.RADIO_STATE_OFF, "believed a stale echo over the real answer"
+
+    def test_retries_until_the_radio_answers(self):
+        dec = lt.KissDecoder()
+        port = FakePort(reply_for_ask=0x01, answer_after=2)
+        state, _ = lt.confirm_radio_on(port, dec, timeout_s=4.0)
+        assert state == K.RADIO_STATE_ON
+        assert port.asks >= 3
+
+    def test_errors_are_cleared_before_asking(self):
+        """A stale error from init must not be attributed to this check."""
+        dec = lt.KissDecoder()
+        dec.errors.append("stale error from an earlier phase")
+        port = FakePort(reply_for_ask=0x01)
+        lt.confirm_radio_on(port, dec, timeout_s=2.0)
+        assert dec.errors == []
+

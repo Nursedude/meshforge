@@ -40,6 +40,14 @@ packet and this one? If a run comes back with ``stats_fresh`` mostly 0, the
 numbers are stale-by-one and ``--summarize`` says so instead of averaging a lie
 into a confident headline. An unverified assumption gets a witness, not silence.
 
+The radio is confirmed ON before a single row is written
+--------------------------------------------------------
+Setting ``RADIO_STATE_ON`` is not evidence the radio started. This tool asks
+(``RADIO_STATE_ASK``) and refuses to capture unless the device answers ``0x01``,
+because a switched-off receiver is indistinguishable from a silent band and
+would turn every reading into a false negative. Only the reply to an explicit
+ASK counts -- a state frame can be an echo of the value just sent.
+
 Deliberate non-goal: transmitting
 ---------------------------------
 This captures only. Generating test traffic is the far end's job (an RNS link,
@@ -125,9 +133,19 @@ class KISS:
     CMD_STAT_SNR = 0x24
     CMD_FW_VERSION = 0x50
 
+    CMD_ERROR = 0x90
+
     DETECT_REQ = 0x73
     DETECT_RESP = 0x46
+    RADIO_STATE_OFF = 0x00
     RADIO_STATE_ON = 0x01
+    RADIO_STATE_ASK = 0xFF
+
+    ERRORS = {
+        0x01: "ERROR_INITRADIO — the radio hardware failed to initialise",
+        0x02: "ERROR_TXFAILED",
+        0x03: "ERROR_EEPROM_LOCKED",
+    }
 
     RSSI_OFFSET = 157
 
@@ -155,6 +173,12 @@ class KissDecoder:
         self.snr: Optional[float] = None
         self.detected = False
         self.fw_version: Optional[str] = None
+        # Radio state as last REPORTED by the device. Deliberately starts None
+        # and is cleared before an ASK: a CMD_RADIO_STATE frame arriving right
+        # after we set the state can be an echo of the value we just sent, not
+        # an observation. Only the reply to an explicit ASK is authority.
+        self.radio_state: Optional[int] = None
+        self.errors: List[str] = []
         # Bumped on every stats frame; lets a consumer tell whether the RSSI/SNR
         # it is about to record actually belongs to the packet in hand.
         self.stat_seq = 0
@@ -211,6 +235,10 @@ class KissDecoder:
         elif self.command == KISS.CMD_STAT_SNR:
             self.snr = int.from_bytes(bytes([byte]), byteorder="big", signed=True) * 0.25
             self.stat_seq += 1
+        elif self.command == KISS.CMD_RADIO_STATE:
+            self.radio_state = byte
+        elif self.command == KISS.CMD_ERROR:
+            self.errors.append(KISS.ERRORS.get(byte, f"unknown radio error 0x{byte:02x}"))
         elif self.command == KISS.CMD_DETECT:
             self.detected = (byte == KISS.DETECT_RESP)
         elif self.command == KISS.CMD_FW_VERSION:
@@ -407,6 +435,51 @@ def do_summarize(path: Path) -> int:
     return print_summary(summarize_rows(rows))
 
 
+def confirm_radio_on(port, dec: "KissDecoder", timeout_s: float = 5.0):
+    """Ask the radio whether it is actually ON, and believe only the answer.
+
+    Born 2026-09-08: this tool used to send RADIO_STATE_ON and then print
+    "listening" without ever checking. On a board whose radio silently declines
+    to start (one of two identical Heltec V4s did exactly that, reporting no
+    error at all) it would capture nothing forever and look perfectly healthy —
+    honest_failure_modes #9, in this file's own code.
+
+    ⚠️ The subtlety that makes this non-trivial: a ``CMD_RADIO_STATE`` frame
+    arriving just after we SET the state can be an echo of the value we sent
+    rather than an observation. On that day a loose probe read the echo as
+    ``01`` while the radio was off, and only an explicit ASK told the truth. So
+    the reported state is CLEARED before asking, and only a reply that lands
+    afterwards is accepted.
+
+    Returns (state, reason) — state is None if the radio never answered.
+    """
+    dec.radio_state = None
+    dec.errors.clear()
+    # Discard anything already buffered -- clearing only the decoder would still
+    # let a queued echo be read back and believed a moment later.
+    try:
+        port.reset_input_buffer()
+    except (AttributeError, OSError):
+        pass
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        port.write(_cmd(KISS.CMD_RADIO_STATE, bytes([KISS.RADIO_STATE_ASK])))
+        wait_until = min(time.monotonic() + 0.5, deadline)
+        while time.monotonic() < wait_until:
+            dec.feed(port.read(256))
+            if dec.radio_state is not None:
+                break
+        if dec.radio_state is not None:
+            break
+
+    if dec.radio_state is None:
+        return None, "the radio never answered RADIO_STATE_ASK"
+    if dec.radio_state == KISS.RADIO_STATE_OFF:
+        return dec.radio_state, ("the radio reports state OFF (0x00) after being told to "
+                                 "turn on, and reported no error explaining why")
+    return dec.radio_state, f"state 0x{dec.radio_state:02x}"
+
+
 def do_capture(args) -> int:
     if not _HAS_SERIAL:
         print("FAIL: pyserial is not available — cannot open the RNode.")
@@ -452,6 +525,19 @@ def do_capture(args) -> int:
                                            args.tx_power_setting):
             port.write(command)
             time.sleep(0.05)
+
+        state, why = confirm_radio_on(port, dec)
+        if state != KISS.RADIO_STATE_ON:
+            print(f"FAIL: the radio did not come up — {why}")
+            print("      Refusing to capture. A receiver that is switched off looks")
+            print("      exactly like a silent band, and every reading would be a")
+            print("      false negative you could not tell from a real one.")
+            for err in dec.errors:
+                print(f"      radio reported: {err}")
+            print("      Check the board with: rnodeconf -i <port>")
+            return 1
+        print(f"radio    : ON (confirmed by RADIO_STATE_ASK)")
+
         print(f"listening: {args.freq/1e6:.3f} MHz  bw {args.bw/1e3:.1f} kHz  "
               f"sf {args.sf}  cr 4/{args.cr}")
         print(f"writing  : {out_path}")
