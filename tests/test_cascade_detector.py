@@ -126,7 +126,9 @@ class TestProbeRnsRpcWedge:
             assert cfp.probe_rns_rpc_wedge() is None
 
     def test_returns_hit_on_rns_rpc_syn_sent(self):
-        """Pathological: at least one SYN-SENT targeting @rns/*/rpc."""
+        """Pathological: SYN-SENT targeting @rns/*/rpc that is STILL there
+        on the re-sample (the mock returns the same table both times) —
+        a client genuinely stuck in unix_wait_for_peer."""
         stdout = (
             "u_str  SYN-SENT  0  0  *  1234  @rns/default/rpc  5678\n"
             "u_str  SYN-SENT  0  0  *  9999  @rns/default/rpc  10000\n"
@@ -140,6 +142,84 @@ class TestProbeRnsRpcWedge:
         assert hit is not None
         assert "SYN-SENT" in hit.evidence
         assert hit.metric["syn_sent_count"] == 2
+
+    def test_transient_syn_sent_does_not_hit(self):
+        """THE 2026-09-08 false positive, pinned. On moc this fired at
+        :07:51-:08:34 past the hour and at no other time in 7 days —
+        50-72s after the hourly `kilo matrix` cron started on a 4-core
+        Pi — while the rnstatus-based rns_rpc_unresponsive probe, the
+        direct test of the same claim, fired ZERO times on that box.
+        rnsd listens with a zero-length accept backlog, so a connect that
+        arrives while another is being accepted queues in SYN-SENT
+        legitimately. A socket that has CLEARED by the re-sample was
+        busy, not wedged."""
+        wedged = "u_str  SYN-SENT  0  0  *  1234  @rns/default/rpc  5678\n"
+        samples = [
+            MagicMock(returncode=0, stdout=wedged),   # candidate seen
+            MagicMock(returncode=0, stdout=""),       # ...gone 0.4s later
+        ]
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=samples):
+            assert cfp.probe_rns_rpc_wedge() is None
+
+    def test_different_socket_in_second_sample_does_not_hit(self):
+        """Connect CHURN: sockets present in both samples, but not the
+        SAME ones. Counting rows instead of identities would call steady
+        client turnover a wedge."""
+        first = MagicMock(
+            returncode=0,
+            stdout="u_str  SYN-SENT  0  0  *  1111  @rns/default/rpc  2222\n")
+        second = MagicMock(
+            returncode=0,
+            stdout="u_str  SYN-SENT  0  0  *  3333  @rns/default/rpc  4444\n")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=[first, second]):
+            assert cfp.probe_rns_rpc_wedge() is None
+
+    def test_hit_survives_queue_depth_change(self):
+        """Same socket (same inode pair), recv-q/send-q moved under load.
+        Identity must key on the inodes, not the volatile queue columns,
+        or a real wedge on a busy box would go unreported."""
+        first = MagicMock(
+            returncode=0,
+            stdout="u_str  SYN-SENT  0  0  *  1234  @rns/default/rpc  5678\n")
+        second = MagicMock(
+            returncode=0,
+            stdout="u_str  SYN-SENT  4  9  *  1234  @rns/default/rpc  5678\n")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=[first, second]):
+            hit = cfp.probe_rns_rpc_wedge()
+        assert hit is not None
+        assert hit.metric["syn_sent_count"] == 1
+
+    def test_unobservable_second_sample_does_not_hit(self):
+        """`ss` failed on the confirming read: we do not know whether the
+        socket persisted. An unconfirmed candidate is not a wedge."""
+        first = MagicMock(
+            returncode=0,
+            stdout="u_str  SYN-SENT  0  0  *  1234  @rns/default/rpc  5678\n")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   side_effect=[first, MagicMock(returncode=1, stdout="")]):
+            assert cfp.probe_rns_rpc_wedge() is None
+
+    def test_healthy_box_pays_no_resample_delay(self):
+        """The 0.4s confirmation is only paid on the candidate path. A
+        clean box must sample `ss` exactly once per probe."""
+        clean = MagicMock(returncode=0, stdout="")
+        with patch("utils.cascade_fingerprints.shutil.which",
+                   return_value="/usr/bin/ss"), \
+             patch("utils.cascade_fingerprints.subprocess.run",
+                   return_value=clean) as m:
+            assert cfp.probe_rns_rpc_wedge() is None
+        assert m.call_count == 1
 
     def test_matches_non_default_instance_name(self):
         """Some hosts use a custom instance_name (per ReticulumPaths.

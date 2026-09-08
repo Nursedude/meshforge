@@ -617,6 +617,109 @@ def probe_rns_shared_instance_responsive(
 # ─────────────────────────────────────────────────────────────────────
 
 
+# ── rnstatus-timeout confirmation (2026-09-08) ───────────────────────
+#
+# A single `rnstatus` run exceeding its bound is NOT evidence that rnsd's
+# RPC is wedged. `rnstatus` is a fresh interpreter that imports RNS
+# before it speaks one byte of RPC, so its WALL TIME measures the box's
+# CPU/IO headroom at least as much as rnsd's health. Measured on moc3,
+# 2026-09-08 — the whole false page, end to end:
+#
+#   06:36:34  apt-daily-upgrade starts (consumed 61s CPU, 273 MB, 35 MB swap)
+#   06:37:41  rnstatus timed out  ->  signal NEW rns_rpc_unresponsive
+#   06:37:49  ...while the gateway's own rnsd RPC calls were logging
+#             `rpc[rnsd.path_table_read] ok 0.000s` every 10 seconds,
+#             uninterrupted, straight THROUGH the declared "wedge"
+#   06:37:53  apt-daily-upgrade finishes
+#   06:38:26  signal CLEARED — no operator action, nothing restarted
+#
+# rnsd's RPC round-trip was sub-millisecond at the exact second we told
+# the operator it was wedged. The claim was correctly derived from its
+# measurement; the measurement was of the wrong quantity
+# (calibrated_claims, "Coverage": ask what would still trip this check
+# if the subject were perfectly healthy — answer: any CPU starvation of
+# a subprocess spawn).
+#
+# ⚠️ Why this was dangerous and not merely noisy: the signal's detail
+# tells the operator to restart rnsd, and rapid rnsd restart cycling is
+# precisely what opens the `@rns` ownership race (#69, and the standing
+# "do NOT rapid-cycle rnsd restarts fleet-wide" rule in
+# persistent_issues). The instrument's recommended cure was the fleet's
+# known outage trigger.
+#
+# The discriminator is PERSISTENCE. A genuine #68/#69 wedge holds until
+# rnsd is restarted — minutes to hours. CPU contention passes within a
+# tick or two (every false positive observed cleared inside ONE tick).
+# So require N consecutive timed-out observations before converting them
+# into a wedge claim. Until confirmed the class reads `indeterminate`,
+# never `clean`: the blind moment gets its own witness rather than being
+# averaged into health (honest_failure_modes #2).
+#
+# State is in-memory ON PURPOSE. The watchdog is a long-lived daemon
+# (verified: one PID across ticks), and a streak counter on disk would
+# inherit the 2026-09-02 debounce-saver trap — an unwritable
+# /var/lib/meshforge froze three probes' streaks below their threshold
+# so they could never fire at all. A daemon restart resets the streak,
+# which is correct: a restart also resets the wedge context.
+_RPC_CONFIRM_TICKS_ENV = "MESHFORGE_RNS_RPC_CONFIRM_TICKS"
+_DEFAULT_RPC_CONFIRM_TICKS = 3
+
+_rpc_timeout_streak = 0
+
+
+def _rpc_confirm_ticks() -> int:
+    """Consecutive timed-out ticks required before claiming a wedge.
+
+    Resolved per call so an operator can retune without a restart.
+    Default 3: at the ~30s watchdog cadence the condition must hold
+    across ~60s of wall time, which clears every contention excursion
+    observed (all <1 tick) while adding negligible latency to a real
+    wedge that would otherwise persist for hours.
+    """
+    raw = os.environ.get(_RPC_CONFIRM_TICKS_ENV)
+    if raw is None:
+        return _DEFAULT_RPC_CONFIRM_TICKS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_RPC_CONFIRM_TICKS
+    return value if value >= 1 else _DEFAULT_RPC_CONFIRM_TICKS
+
+
+def reset_rns_rpc_timeout_streak() -> None:
+    """Clear the consecutive-timeout streak. For tests and cold start."""
+    global _rpc_timeout_streak
+    _rpc_timeout_streak = 0
+
+
+def _cpu_pressure_context() -> str:
+    """Short, best-effort load/PSI string carried WITH the wedge claim.
+
+    Evidence, never gating logic: it lets the operator tell "rnsd is
+    wedged" from "this Pi was buried" at a glance, on the page itself,
+    instead of reconstructing it from journals afterwards — which is the
+    whole cost this defect imposed. Unreadable /proc yields "unknown"
+    rather than a confident-looking blank.
+    """
+    parts = []
+    try:
+        with open("/proc/loadavg", "r") as fh:
+            parts.append("loadavg " + " ".join(fh.read().split()[:3]))
+    except OSError:
+        parts.append("loadavg unknown")
+    try:
+        with open("/proc/pressure/cpu", "r") as fh:
+            for line in fh:
+                if line.startswith("some"):
+                    for tok in line.split():
+                        if tok.startswith("avg10="):
+                            parts.append("cpu-psi-some10 " + tok[6:])
+                    break
+    except OSError:
+        pass
+    return "; ".join(parts)
+
+
 def probe_rns_rpc_responsive(
     *,
     rnstatus_status: "Optional[RNSStatus]" = None,
@@ -639,8 +742,18 @@ def probe_rns_rpc_responsive(
     listener, so ``rnstatus`` fails FAST (binary-missing / "no shared
     instance" / connection-refused) — ``RNSStatus.timed_out`` stays False
     and we return None (``service_inactive`` owns rnsd-down). Only a
-    subprocess TIMEOUT sets ``timed_out=True`` → wedge. Binary missing
-    likewise returns None (no false alarm on RNS-less boxes).
+    subprocess TIMEOUT sets ``timed_out=True``. Binary missing likewise
+    returns None (no false alarm on RNS-less boxes).
+
+    Distinguishing wedge from a BUSY BOX (2026-09-08): one timeout is not
+    enough. ``rnstatus`` wall time also measures CPU/IO headroom, so
+    ordinary background load (apt-daily-upgrade, an hourly analysis cron)
+    starves it on a Pi while rnsd answers RPC sub-millisecond throughout.
+    We therefore require ``_rpc_confirm_ticks()`` CONSECUTIVE timed-out
+    observations before emitting; short of that the class is noted
+    ``indeterminate`` with the streak and the box's load in the reason.
+    See the block comment above for the measured incident and why a false
+    page here is dangerous rather than merely noisy.
 
     Args:
         rnstatus_status: a pre-fetched ``RNSStatus`` (the runner shares
@@ -656,7 +769,10 @@ def probe_rns_rpc_responsive(
     else:
         status = rnstatus_status
 
+    global _rpc_timeout_streak
+
     if not status.timed_out:
+        _rpc_timeout_streak = 0
         if status.parse_error:
             note_disposition("rns_rpc_unresponsive", "indeterminate",
                              reason="rnstatus failed fast (rnsd down or binary missing)")
@@ -664,21 +780,53 @@ def probe_rns_rpc_responsive(
             note_disposition("rns_rpc_unresponsive", "clean")
         return None
 
+    _rpc_timeout_streak += 1
+    needed = _rpc_confirm_ticks()
+    pressure = _cpu_pressure_context()
+
+    if _rpc_timeout_streak < needed:
+        # Observed, not yet decidable. A wedge persists; CPU contention
+        # passes. Never `clean` here — that would launder the one moment
+        # we genuinely cannot see into a healthy reading.
+        note_disposition(
+            "rns_rpc_unresponsive", "indeterminate",
+            reason=(
+                f"rnstatus exceeded its bound on {_rpc_timeout_streak} of "
+                f"{needed} consecutive tick(s) required to distinguish a "
+                f"wedge from CPU starvation of the rnstatus subprocess "
+                f"({pressure})"
+            ),
+        )
+        return None
+
     return Signal(
         cls="rns_rpc_unresponsive",
         subject="rnsd",
         severity="wedge",
         detail=(
-            "rnstatus did not return within its timeout — rnsd accepts "
-            "shared-instance connects but the RPC round-trip is wedged "
+            f"rnstatus exceeded its timeout on {_rpc_timeout_streak} "
+            "consecutive watchdog ticks — rnsd accepts shared-instance "
+            "connects but the RPC round-trip is wedged "
             "(rpc_connection.recv hang/EOF). New RNS clients that get past "
             "connect still stall in init and destination lookups silently "
-            "fail. Recovery: sudo systemctl restart rnsd.service, then "
+            "fail. "
+            f"Box at the time: {pressure}. "
+            "CONFIRM BEFORE ACTING: `timeout 8 rnstatus >/dev/null; echo $?` "
+            "(124 = still wedged) and check whether rnsd's OWN RPC is "
+            "answering in the journal (`rpc[rnsd.path_table_read] ok`) — a "
+            "loaded box can starve the rnstatus subprocess while rnsd is "
+            "healthy. Only then: sudo systemctl restart rnsd.service, then "
             "restart RNS-using services (meshforge-map, meshforge-echo, "
-            "tracer). See Issue #68/#69."
+            "tracer). Do NOT rapid-cycle rnsd fleet-wide — that opens the "
+            "@rns ownership race. See Issue #68/#69."
         ),
         issue_ref=68,
-        extra={"timed_out": True},
+        extra={
+            "timed_out": True,
+            "consecutive_timeouts": _rpc_timeout_streak,
+            "confirm_ticks": needed,
+            "cpu_pressure": pressure,
+        },
     )
 
 

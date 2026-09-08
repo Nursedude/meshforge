@@ -79,6 +79,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
     probe_rns_rpc_responsive,
+    reset_rns_rpc_timeout_streak,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
     probe_tracer_peer_unreachable,
@@ -92,6 +93,7 @@ from utils.watchdog_runner import (  # noqa: E402
     _DEFAULT_SERVICES_EXPECTED_ACTIVE,
     _DEFAULT_SERVICES_WEDGE_CHECK,
 )
+import utils.watchdog_probes_rns as wpr  # noqa: E402
 from utils.watchdog_probes_service import (  # noqa: E402
     _journal_user_unit_restart_ts,
     _save_nomadnet_crashloop_streak,
@@ -922,27 +924,104 @@ class TestProbeRnsRpcResponsive:
     false-alarm. Companion to the connect-layer shared-instance probe
     (#68 SYN-SENT) and the #69 RPC-EOF family."""
 
+    @pytest.fixture(autouse=True)
+    def _clean_streak(self):
+        """The consecutive-timeout streak is module state; a test that
+        leaves it dirty would arm or disarm the next one."""
+        reset_rns_rpc_timeout_streak()
+        yield
+        reset_rns_rpc_timeout_streak()
+
     @staticmethod
     def _status(**kw):
         from utils.rns_status_parser import RNSStatus
         return RNSStatus(**kw)
 
-    def test_signal_class_registered(self):
-        assert "rns_rpc_unresponsive" in SIGNAL_CLASSES
-
-    def test_fires_wedge_when_rnstatus_timed_out(self):
-        status = self._status(
+    @staticmethod
+    def _timed_out():
+        from utils.rns_status_parser import RNSStatus
+        return RNSStatus(
             timed_out=True,
             parse_error="rnstatus timed out (rnsd unresponsive)",
         )
+
+    def test_signal_class_registered(self):
+        assert "rns_rpc_unresponsive" in SIGNAL_CLASSES
+
+    def test_fires_wedge_when_timeout_persists(self):
+        """A wedge holds until rnsd restarts, so the probe fires once the
+        timeout has been confirmed across consecutive ticks."""
+        status = self._timed_out()
+        needed = wpr._rpc_confirm_ticks()
+        for _ in range(needed - 1):
+            assert probe_rns_rpc_responsive(rnstatus_status=status) is None
         sig = probe_rns_rpc_responsive(rnstatus_status=status)
         assert sig is not None
         assert sig.cls == "rns_rpc_unresponsive"
         assert sig.severity == "wedge"
         assert sig.subject == "rnsd"
         assert sig.issue_ref == 68
-        # Detail names the cure: restart rnsd.
+        assert sig.extra["consecutive_timeouts"] == needed
+        # Detail names the cure AND the confirmation that must precede it.
         assert "rnsd.service" in sig.detail
+        assert "rnstatus" in sig.detail
+
+    def test_single_timeout_does_not_page(self):
+        """THE 2026-09-08 false page, pinned. moc3: apt-daily-upgrade
+        starved the rnstatus subprocess for one tick while rnsd's own RPC
+        logged `ok 0.000s` throughout. One timeout must never become a
+        wedge claim whose stated cure is restarting a healthy rnsd."""
+        sig = probe_rns_rpc_responsive(rnstatus_status=self._timed_out())
+        assert sig is None
+
+    def test_unconfirmed_timeout_is_indeterminate_never_clean(self):
+        """The un-decidable moment gets its own witness. Reporting `clean`
+        here would launder a real blind spot into health
+        (honest_failure_modes #2)."""
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions,
+        )
+        reset_dispositions()
+        probe_rns_rpc_responsive(rnstatus_status=self._timed_out())
+        noted = collect_dispositions()["rns_rpc_unresponsive"]
+        assert noted["disp"] == "indeterminate"
+        assert "1 of" in noted["reason"]
+
+    def test_streak_resets_when_rnstatus_recovers(self):
+        """Two isolated timeouts an hour apart are not a wedge. Only a
+        CONSECUTIVE run counts, so any healthy sample rearms the guard."""
+        needed = wpr._rpc_confirm_ticks()
+        timed = self._timed_out()
+        for _ in range(needed - 1):
+            probe_rns_rpc_responsive(rnstatus_status=timed)
+        # one healthy tick lands between the excursions
+        assert probe_rns_rpc_responsive(rnstatus_status=self._status()) is None
+        for _ in range(needed - 1):
+            assert probe_rns_rpc_responsive(rnstatus_status=timed) is None
+
+    def test_confirm_ticks_env_override(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_RNS_RPC_CONFIRM_TICKS", "1")
+        sig = probe_rns_rpc_responsive(rnstatus_status=self._timed_out())
+        assert sig is not None
+        assert sig.extra["confirm_ticks"] == 1
+
+    def test_confirm_ticks_env_garbage_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_RNS_RPC_CONFIRM_TICKS", "not-a-number")
+        assert wpr._rpc_confirm_ticks() == wpr._DEFAULT_RPC_CONFIRM_TICKS
+        monkeypatch.setenv("MESHFORGE_RNS_RPC_CONFIRM_TICKS", "0")
+        assert wpr._rpc_confirm_ticks() == wpr._DEFAULT_RPC_CONFIRM_TICKS
+
+    def test_wedge_signal_carries_load_evidence(self):
+        """The page must let the operator tell `rnsd is wedged` from
+        `this Pi was buried` without reconstructing it from journals."""
+        monkeyless = self._timed_out()
+        for _ in range(wpr._rpc_confirm_ticks() - 1):
+            probe_rns_rpc_responsive(rnstatus_status=monkeyless)
+        sig = probe_rns_rpc_responsive(rnstatus_status=monkeyless)
+        assert sig is not None
+        assert "cpu_pressure" in sig.extra
+        assert sig.extra["cpu_pressure"]
+        assert "loadavg" in sig.detail
 
     def test_quiet_when_healthy_interfaces_present(self):
         """Connect accepted + RPC answered (timed_out False) → no signal,
@@ -984,8 +1063,13 @@ class TestProbeRnsRpcResponsive:
         )
         with patch("utils.rns_status_parser.run_rnstatus",
                    return_value=timed) as m:
+            for _ in range(wpr._rpc_confirm_ticks() - 1):
+                probe_rns_rpc_responsive(timeout_s=4.0)
             sig = probe_rns_rpc_responsive(timeout_s=4.0)
-        m.assert_called_once_with(timeout_s=4.0)
+        # ONE rnstatus per invocation — the confirmation is spread across
+        # ticks, never N subprocesses inside a single tick's budget.
+        assert m.call_count == wpr._rpc_confirm_ticks()
+        m.assert_called_with(timeout_s=4.0)
         assert sig is not None
         assert sig.cls == "rns_rpc_unresponsive"
 

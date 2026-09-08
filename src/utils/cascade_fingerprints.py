@@ -76,6 +76,66 @@ class Fingerprint:
 # ── Fingerprint 1: rns_rpc_wedge ──────────────────────────────────────────
 
 
+# A wedged client sits in `unix_wait_for_peer` until rnsd is restarted.
+# A HEALTHY client passes through SYN-SENT in microseconds — and rnsd
+# listens with a backlog of 0 (`ss -xnpl` shows `Send-Q 0` on the
+# `@rns/*/rpc` LISTEN row on every fleet box), so any connect that
+# arrives while another is being accepted legitimately queues there.
+# A single sample therefore cannot tell "wedged" from "busy": we must
+# re-sample and require the SAME socket to still be waiting.
+#
+# 0.4s is ~400x longer than a healthy connect and ~0.001x a real wedge,
+# so it separates the two cleanly while keeping the probe well inside
+# its 30s cadence. Only paid on the candidate path (a first sample that
+# already matched), never on a healthy box.
+_RPC_WEDGE_RESAMPLE_DELAY_S = 0.4
+
+
+def _ss_syn_sent_rns_rpc(ss_timeout: float = 2.0) -> Optional[List[str]]:
+    """One ``ss -xH state syn-sent`` sample, filtered to rnsd RPC sockets.
+
+    Returns None when the table is UNOBSERVABLE (``ss`` timed out or
+    exited non-zero) and ``[]`` when it was read and nothing matched.
+    The caller must not collapse the two into "healthy" silently — we
+    log the blind case so a swallow leaves a witness
+    (honest_failure_modes #2 and #9).
+    """
+    try:
+        result = subprocess.run(
+            ["ss", "-xH", "state", "syn-sent"],
+            capture_output=True, text=True, timeout=ss_timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.debug("rns_rpc_wedge: ss sample unobservable (%s)", exc)
+        return None
+    if result.returncode != 0:
+        logger.debug("rns_rpc_wedge: ss exited %d", result.returncode)
+        return None
+    return [
+        ln.strip() for ln in result.stdout.splitlines()
+        if "@rns/" in ln and "/rpc" in ln
+    ]
+
+
+def _socket_key(line: str) -> str:
+    """Stable identity for one ``ss`` row, ignoring volatile queue depths.
+
+    ``ss -xH`` columns are: netid state recv-q send-q local_addr
+    local_inode peer_addr peer_inode. The inode pair uniquely identifies
+    a socket for as long as it exists, so it is what makes "the same
+    socket is STILL waiting" a decidable question. recv-q/send-q are
+    dropped because they can move under load on a socket that never
+    changed identity. A row we cannot parse falls back to the whole line
+    — conservative: it can still match itself across samples, so an
+    unexpected ``ss`` format degrades to the old behavior rather than to
+    a silent miss.
+    """
+    fields = line.split()
+    if len(fields) >= 8:
+        return " ".join(fields[:2] + fields[4:])
+    return line
+
+
 def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
     """Detect rnsd's @rns/*/rpc abstract Unix-socket listener stalling.
 
@@ -84,12 +144,32 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
     ``unix_wait_for_peer`` on ``connect()`` — visible in ``ss`` as one or
     more peers stuck in ``SYN-SENT`` against the abstract socket name.
 
-    Probe (no sudo needed): ``ss -xH state syn-sent`` lists all
-    SYN-SENT Unix sockets system-wide. We grep for ``@rns/`` in the
-    output — any match is a candidate wedge.
+    Probe (no sudo needed): ``ss -xH state syn-sent`` lists all SYN-SENT
+    Unix sockets system-wide; we filter for ``@rns/*/rpc``. **A match is
+    only a CANDIDATE.** We re-sample after
+    ``_RPC_WEDGE_RESAMPLE_DELAY_S`` and report only sockets present in
+    BOTH samples, because a socket still waiting 0.4s later is wedged
+    while one that cleared was just queued behind rnsd's zero-length
+    accept backlog.
 
-    Returns ``None`` if ``ss`` isn't installed, if the command times
-    out, or if no matching lines are found.
+    Why the re-sample exists (measured 2026-09-08, moc). The
+    single-sample form fired at :07:51-:08:34 past the hour and at no
+    other time in 7 days, 50-72s after the ``7 * * * *`` ``kilo matrix``
+    cron started on a 4-core Pi::
+
+        13:07:01 CRON kilo matrix  -> 13:08:13 suspected -> 13:08:43 cleared
+        14:07:01 CRON kilo matrix  -> 14:07:51 suspected -> 14:08:21 cleared
+        15:07:01 CRON kilo matrix  -> 15:07:58 suspected -> 15:08:28 cleared
+
+    Meanwhile the rnstatus-based ``rns_rpc_unresponsive`` probe — the
+    direct RPC round-trip test, the authority on this exact claim —
+    fired ZERO times on that box over the same 7 days. Two detectors of
+    one claim disagreed and the more direct one said clean: the SYN-SENT
+    count was measuring CPU contention, not rnsd.
+
+    Returns ``None`` if ``ss`` isn't installed, if a sample is
+    unobservable, if nothing matches, or if no matched socket survived
+    the re-sample.
 
     Also returns ``None`` immediately when the test-only escape-hatch
     env var ``MESHFORGE_CASCADE_PROBE_DISABLED`` is set — prevents the
@@ -100,27 +180,39 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
         return None
     if shutil.which("ss") is None:
         return None
-    try:
-        result = subprocess.run(
-            ["ss", "-xH", "state", "syn-sent"],
-            capture_output=True, text=True, timeout=2,
+
+    first = _ss_syn_sent_rns_rpc()
+    if not first:
+        return None
+
+    time.sleep(_RPC_WEDGE_RESAMPLE_DELAY_S)
+
+    second = _ss_syn_sent_rns_rpc()
+    if not second:
+        return None
+
+    first_keys = {_socket_key(ln) for ln in first}
+    persisted = [ln for ln in second if _socket_key(ln) in first_keys]
+    if not persisted:
+        logger.debug(
+            "rns_rpc_wedge: %d SYN-SENT candidate(s) cleared within %.1fs "
+            "— transient connect queueing, not a wedge",
+            len(first), _RPC_WEDGE_RESAMPLE_DELAY_S,
         )
-    except (subprocess.TimeoutExpired, OSError):
         return None
-    if result.returncode != 0:
-        return None
-    lines = [
-        ln.strip() for ln in result.stdout.splitlines()
-        if "@rns/" in ln and "/rpc" in ln
-    ]
-    if not lines:
-        return None
+
     return ProbeHit(
         evidence=(
-            f"{len(lines)} SYN-SENT connect to rnsd RPC socket — listener "
+            f"{len(persisted)} SYN-SENT connect to rnsd RPC socket still "
+            f"waiting {_RPC_WEDGE_RESAMPLE_DELAY_S:.1f}s later — listener "
             "appears wedged in unix_wait_for_peer"
         ),
-        metric={"syn_sent_count": len(lines), "sample_line": lines[0][:200]},
+        metric={
+            "syn_sent_count": len(persisted),
+            "candidate_count": len(first),
+            "resample_delay_s": _RPC_WEDGE_RESAMPLE_DELAY_S,
+            "sample_line": persisted[0][:200],
+        },
     )
 
 

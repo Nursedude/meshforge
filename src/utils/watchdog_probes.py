@@ -79,6 +79,7 @@ from utils.watchdog_probes_rns import (
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
     probe_rns_rpc_responsive,
+    reset_rns_rpc_timeout_streak,
     probe_rns_shared_instance_responsive,
     _tcp_reachable,
 )
@@ -179,6 +180,7 @@ __all__ = [
     "probe_rns_shared_instance_responsive",
     "probe_rns_interface_down_peer_reachable",
     "probe_rns_rpc_responsive",
+    "reset_rns_rpc_timeout_streak",
     "_tcp_reachable",
     "probe_http_local",
     "probe_fd_exhaustion",
