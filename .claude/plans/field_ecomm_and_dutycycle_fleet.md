@@ -721,10 +721,18 @@ between (none of which the fleet can see).
 RNode), Starlink Standard v4, fiber, AREDN, two routers.
 
 The fleet is **not distributed in any sense that matters for survival**: one
-structure, one power feed, one weather event — and a TENT is the least
-storm-survivable building on the property. That is why Lala took "the bot and
-much of the fleet" while several hundred battery/solar RF nodes carried on. Not
-nine power problems; ONE shared fate.
+structure, ONE POWER FEED. That is why Lala took "the bot and much of the fleet"
+while several hundred battery/solar RF nodes carried on. Not nine power
+problems; ONE shared fate.
+
+⚠️ **CORRECTED 2026-09-07 (operator).** This section first said "a TENT is the
+least storm-survivable building on the property." **That was wrong** — it is a
+**Cimmaron platform tent, standing 12 years through many storms including
+Lala**. I reasoned from the word "tent" and wrote an assumption into the record
+as a finding, in a file full of rules against exactly that. The correction
+SHARPENS the finding rather than removing it: the structure held and the fleet
+went down anyway, so the shared fate was never the building — **it is the single
+POWER DOMAIN.** State it that way; it is both more accurate and more actionable.
 Corollary: alaula's reverse tunnel crosses a LOGICAL boundary (m1's hardened
 `.88`) between two machines sitting FEET APART in the same tent. It was never
 an internet problem — see the deferred rendezvous work above.
@@ -914,3 +922,94 @@ autonomy measurement anyone has.
 ⚠️ It also sets the mechanical bar: 150 mph is Cat-4/5. The tent that currently
 holds most of the fleet does not meet it, and neither does anything we would
 have specified.
+
+---
+
+## 🏗️ Consolidation analysis — moving the lab to the yurt (2026-09-07)
+
+Operator is considering consolidating the whole lab into the yurt, and flagged
+the obvious problem themselves: *"that's a lot of RF so that would need some
+planning."*
+
+**The tension is real and worth naming: consolidation serves MANAGEABILITY;
+Lala's lesson is DISTRIBUTION.** Today there are two sites and two power
+domains. Consolidating gives one of each — and if the yurt then loses power you
+are back to exactly Lala: the mesh carries on and the thing watching it is dark,
+with no observer left to say so.
+
+### The rule
+
+> **Never let the observer share a failure domain with everything it observes.**
+
+### The resolution — consolidate compute, distribute RF and power
+
+- **Compute in the yurt: fine, even good.** Ten boxes on ONE well-sized battery
+  bank is far easier to get right than ten scattered power problems, and it is
+  one place to maintain, cool and secure.
+- **⚠️ Designate an AUTONOMOUS OUTPOST.** At least one node outside that power
+  domain, on its own solar, running mini-dudeai, able to say *"the yurt is
+  dark."* Farley or base1 are the candidates. One honest observer outside the
+  blast radius is the whole difference between an outage and a SILENT outage.
+  This is cheap insurance and it buys back exactly what consolidation costs.
+
+### RF planning — three concrete items
+
+1. **Desense is already measured, before anything moves.** moc3's RNode sits in
+   **29 dB** of local interference (`Intrfrnc. -71 dBm` vs a `-100 dBm` noise
+   floor) in the yurt TODAY. Adding ten boxes' worth of 900 MHz radios to that
+   structure degrades every receiver in it. Cure: **antennas OUT of the
+   building, on masts, with VERTICAL separation**, coax or POE down — the same
+   move that buys canopy clearance for the tent↔yurt path (~1.2 dB in 30 ft of
+   LMR-400 against ~15–30 dB of vegetation avoided). Co-located blocking at 2 ft
+   is ~**-6 dBm** into a neighbouring front end, ~117 dB above sensitivity —
+   frequency separation does NOT help, only physical separation does.
+2. **Write an actual channel plan** — Meshtastic presets (LongFast/ch20 +
+   SHORT_TURBO/ch8), the RNode at 903.625 MHz, AREDN's 2.4/5.8 — rather than
+   discovering collisions empirically.
+3. **RF exposure.** Multiple co-located transmitters — including Station G2's
+   **4.46 W PA** — in an OCCUPIED structure requires the aggregate evaluation
+   under §97.13(c)(1). Each radio passes alone; the aggregate is what catches
+   people, and it is a human-safety question, not paperwork.
+
+---
+
+## 🔗 The unifying principle: infrastructure is UNTRUSTED (operator, 2026-09-07)
+
+> *"this also frames why we have autonomy with tcp - dns. when we plug into a
+> network - we can use it like we do rf - the user has the tools, tui, and you
+> if they choose … building linked connections"*
+
+**This is the through-line for the whole domain, and it explains work that
+already exists.** RF taught the posture: there is no DHCP on a LoRa mesh, no
+authoritative resolver, no admin to call — a node ANNOUNCES and DISCOVERS, and
+depends on nothing it did not bring. **Applying that same posture to TCP/IP is
+the insight**: treat a plugged-in ethernet the way you treat a band — probe it,
+learn it, use what is there, depend on none of it.
+
+Seen this way, several existing efforts are one principle, not separate chores:
+
+| Work | What it really was |
+|---|---|
+| `gen_fleet_hosts.py` + the `/etc/hosts` block | **DNS autonomy** — names resolve with the resolver or the uplink DOWN |
+| the mf.internal AAAA fix (902 ms → 4 ms) | removing an **internet dependency** from LOCAL name lookup |
+| the cloud-init `manage_etc_hosts` fight | refusing to let a foreign owner overwrite our autonomy |
+| ⚠️ address-pinning (rtun ×2, VolcanoAI's RNS target) | the **FAILURE** of this principle — three live instances |
+| "the TUI sees what is around it" | the **IMPLEMENTATION** of it |
+
+**So discovery is not a feature request; it is the principle made executable.**
+And it is why "plug into a new network without a multi-day config" and "see what
+is around me" are the SAME capability — configuration is what you need when you
+assume the infrastructure; discovery is what you do when you do not.
+
+### And the user-facing half
+
+*"the user has the tools, tui, and you if they choose."* For the CERT/VERT
+package that is three layers, and the third one has a constraint: **an assistant
+in a disconnected field kit cannot be a cloud assistant.**
+⚠️ That retroactively gives **tier-L (Ollama) its missing justification.** It was
+parked earlier the SAME DAY (`MINI_CADENCE_PRESCORE=0`) precisely because it
+"earns nothing in production today… its only product justification is the
+field-kit chat compiler, which has no code yet." Tonight's arc gives that
+justification a concrete shape and a customer. Parked, not deleted, was the
+right call — revisit at the field-kit milestone, not before.
+See [[project_ollama_parked_2026_09_07]].
