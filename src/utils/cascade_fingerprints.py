@@ -188,7 +188,20 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
     time.sleep(_RPC_WEDGE_RESAMPLE_DELAY_S)
 
     second = _ss_syn_sent_rns_rpc()
-    if not second:
+    if second is None:
+        # We HAD a candidate and then went blind on the confirming read.
+        # "Socket cleared" (healthy) and "ss failed" (unobservable) must
+        # not collapse into one silent None — this is the only path that
+        # could suppress a genuine wedge, so it gets a loud witness even
+        # though the fingerprint has no indeterminate state to report
+        # (honest_failure_modes #2 and #9). Rare by construction: it
+        # needs a matching first sample.
+        logger.warning(
+            "rns_rpc_wedge: %d SYN-SENT candidate(s) seen but the "
+            "confirming ss sample was UNOBSERVABLE — cannot tell a wedge "
+            "from transient connect queueing this tick",
+            len(first),
+        )
         return None
 
     first_keys = {_socket_key(ln) for ln in first}
