@@ -475,3 +475,194 @@ WiFi → household onto m1 VLANs). IPv6: keep firewalled at the edge; a v6
 inbound path is a deliberate arc, never an install side effect. Expect
 `fleet_offline_check` to page kiai/alaula as PATH-down during the re-home —
 the instrument being right. Watch the clock leg (NTP island stays inside).
+
+---
+
+## 🌀 Lala reframe + RF/TCP data-path findings (2026-09-07, Opus 5 + operator)
+
+**The organizing fact, from the operator's own outage record:** during Lala the
+power went out — no internet, no intranet — and **LoRa kept working. Several
+hundred nodes on RF + battery + solar stayed up.** What died was **the bot and
+much of the MeshForge fleet.** The mesh did not need us; we needed mains power
+and a switch.
+
+**So the defect is an inversion: THE OBSERVER IS MORE FRAGILE THAN THE
+OBSERVED.** Every "route the control plane over better transport" idea is
+downstream of this. A perfect RNS-over-RF design on a Pi that is OFF is still
+off. ⚠️ This invalidated ~an hour of this session's own work (a cloud ssh
+rendezvous, VPS consolidation) — all of it optimizing the plane that fails
+first. Recorded so the next session does not repeat it.
+
+### The three planes, and how they failed differently
+
+| Plane | Carries | Medium today | Lala |
+|---|---|---|---|
+| **Data** | messages — the product's END | Meshtastic + RNS, RF-native | **survived** |
+| **Access** | ssh, tunnels, control | 100% internet | dead |
+| **Evidence** | cloud push, map, pages | 100% internet | dead (staleness) |
+
+The product kept working; **observability and control died**, and the operator
+found out by looking outside the app. Access and Evidence need RF fallbacks.
+
+### The survivability ladder (why the fleet died and the nodes did not)
+
+| Tier | Power | Lala outcome |
+|---|---|---|
+| ESP32 + LoRa + solar | ~0.1–0.5 W | **survived, hundreds** |
+| Pi + RNode LoRa + battery | ~3–7 W | possible, UNTESTED — **no Pi has a battery** |
+| Pi + AREDN | ~10–15 W | needs infrastructure |
+| Pi + Starlink | ~20–100 W | dies first |
+
+One to two orders of magnitude separates the fleet from the network it watches.
+That gap is the finding, and it is why the V4 discharge number (54.1 h) and the
+INA219 shunt thread matter more than they looked — they measure the constraint
+that decides who is alive.
+
+**Design target for STANDALONE**: not "runs on a Pi" but **"the same survival
+profile as the nodes it watches"** — battery/solar, RF-only, duty-cycled, no
+switch, no uplink, still telling the truth. Not met today. This is also what
+gives the DORMANT posture arc its real purpose: staying ALIVE and HONEST at a
+duty cycle a panel can carry, not power thrift.
+
+Open question that sizes the whole design: **what is the smallest MeshForge
+that still tells the truth, and how long does it run on a battery and a panel?**
+
+### MEASURED: the fleet's RNS interface inventory (2026-09-07)
+
+Swept `/etc/reticulum/config` on every reachable box, comments stripped:
+
+| Box | AutoInterface | TCP | RNode |
+|---|---|---|---|
+| moc | ✓ | 1 client + 1 server | — |
+| moc1 / moc2 / moc4 / kiai | ✓ | 2 client | — |
+| moc5 | ✓ | 1 client | — |
+| moc3 | ✓ | 1 server | **1 RNodeInterface** |
+| lehua | *(config unread — UNKNOWN, not "missing")* | | |
+| **VolcanoAI** | **NONE** | 1 client (hardcoded LAN IP) | — |
+
+**Two findings.** (1) **VolcanoAI — the manager, canonical writer and cloud
+publisher — is the LEAST-connected RNS node in the fleet**: no AutoInterface,
+one TCP client to a hardcoded LAN address. If that one target goes, the manager
+is RNS-partitioned. Every peer has an AutoInterface; this box does not. Whether
+that is deliberate is UNKNOWN — ask before "fixing" it (a declared absence is a
+human decision).
+(2) moc3 is the only box with an RNodeInterface.
+
+### ⚠️ MEASURED: the RF control plane has ZERO working links
+
+moc3's RNodeInterface is `Status: Up` — and has **never received a byte**:
+
+```
+RNodeInterface[RNode LoRa]   Status: Up   Rate: 10.94 kbps
+  Traffic : ↑910.11 KB      ← transmitted
+            ↓0 B            ← never received, ever
+  Airtime : 1.28% (15s), 0.43% (1h)     Intrfrnc.: -71 dBm (noise fl. -100)
+  Access  : 64-bit IFAC      Battery : 0% (charging)
+```
+
+910 KB announced into the void, spending airtime and power, for nothing.
+**`Up` is presence, not function** — an RNodeInterface with no peer is Up and
+carries nothing (the calibrated_claims coverage lesson, in RF form). Cause is
+almost certainly the simplest: moc3 is the ONLY RNodeInterface in the fleet —
+**one radio is a transmitter, not a network**. Secondary suspects once a peer
+exists: the `64-bit IFAC` (derived from `network_name` alone — no passphrase
+line is set) must match EXACTLY or packets drop silently, reproducing this same
+`↓0 B` symptom; and RX itself is unproven.
+
+**So the RF-control-plane premise is at zero, not at one.** First step is
+HARDWARE, not config: a second RNode, then prove a packet crosses. That is the
+smallest falsifiable unit of the whole idea.
+
+moc3's exact stanza (replicate verbatim, change only `port`; use the
+`/dev/serial/by-id/` path, never `ttyUSB0`):
+`type=RNodeInterface, frequency=903625000, bandwidth=250000, txpower=17,
+spreadingfactor=7, codingrate=5, id_callsign=WH6GXZ, id_interval=600,
+network_name="hawaiinet rns"`.
+
+**Where the second one goes: VolcanoAI** — it is the manager AND the
+least-connected node, so this closes both gaps at once. Bench the two radios in
+the SAME ROOM first: prove a packet crosses before proving range.
+
+### 🔑 The unifying principle: a portable fleet cannot know its own addresses
+
+The operator's goal — *"portable, self-healing, plug into a new network (e.g. a
+satellite) without a multi-day config"* — is blocked by ONE defect class found
+three times tonight:
+
+- `rtun` pins the endpoint as a **hardcoded LAN IP in two places**
+  (`/etc/init.d/rtun` AND `RTUN_REMOTE` in `rtun_watchdog.conf`).
+- VolcanoAI's only RNS interface is a **TCPClientInterface to a hardcoded LAN
+  IP**, and it has no AutoInterface to fall back on.
+- The `/etc/hosts` fleet block is seeded from live DNS — correct today, but it
+  couples names to the edge being up and unchanged.
+
+**The fleet is ADDRESS-PINNED, and that is exactly what makes a network change
+a multi-day reconfiguration.** Cure is discovery-first: AutoInterface for RNS,
+names not addresses everywhere, and **RF as the discovery medium of last
+resort** — a box that comes up on an unknown network should find the fleet over
+LoRa and be told where it is.
+
+### Tiered evidence — the real design work
+
+RNS is transport-agnostic and already on every box, so the Access and Evidence
+planes should ride RNS rather than raw TCP-to-cloud: same code path over fiber,
+AREDN or LoRa, with only bandwidth changing. But **LoRa is ~1–5 kbps effective
+— a 260 KB map snapshot over LoRa is not slow, it is impossible.** So the work
+is defining what survives each step down:
+
+- **Broadband** — full snapshot, maps, git (today's behaviour).
+- **AREDN (Mbps, line-of-sight)** — the missing middle; real IP over ham RF.
+  Status digests, `/fleet` truth, ssh. This is what makes "TCP works with RF"
+  literally true. AREDN is already first-class in the code
+  (`utils/aredn.py`, `watchdog_probes_aredn.py`, `_map_collector_aredn.py`),
+  and moc1 ran AREDN-only during the 06-24 outage — but its RF DEPLOYMENT state
+  is UNKNOWN.
+- **LoRa (kbps)** — heartbeat, alerts, posture. Tens of bytes.
+  *What is the smallest message that still tells the truth?*
+
+### The yurt — a second site you can walk to
+
+A **Starlink Standard v4 now lives in the yurt** (2026-09-07). Putting OpenWrt
+there makes it a real second edge with a physically independent WAN — the
+plan's "QTH and kit differ only in WAN and box count", on-property.
+**Join it to the house over AREDN RF, not wire** (wiring it with FiOS proves
+nothing — operator's point). Then Lala becomes a weekly DRILL rather than a
+weather event: kill the yurt's Starlink → does RF hold? kill the house WAN →
+does the yurt's Starlink become the fleet's uplink? kill both → does the fleet
+still tell the truth locally over LoRa?
+⚠️ Needs line-of-sight (a physical survey, not a config), and **Standard v4 is
+the BIG dish** — materially more power than a Mini, which changes the battery
+budget.
+
+### Clock: the silent multiplier
+
+RTC-less Pis + no NTP during an outage = drift, and moc4 has already run ~8 days
+behind. Wall-clock instruments (cron, verdict freshness, wtmp) all lie
+TOGETHER. **GPS-disciplined stratum-0 is outage-proof** and needs no internet —
+already planned for the kit; it should extend to the fleet's own time island.
+
+### Next steps, ordered by what Lala actually taught
+
+1. **Second RNode on VolcanoAI; prove a packet crosses** (same room first).
+   Everything RF is downstream of this and it is falsifiable in an hour.
+   ⚠️ `rnodeconf` is installed (`/usr/local/bin`, rns 1.3.8+mf.0) but the TUI's
+   RNode handler only does Detect / Deep Scan / Recommended Config — it never
+   calls `rnodeconf`. Flashing means leaving the app, which is an MF018
+   (in-domain remediation) gap worth closing.
+2. **Battery/solar bench for the Zero 2W bot.** The bot died for want of a
+   battery; the new bot is a Pi Zero 2W + mini HAT. NO PI HAS A BATTERY TODAY.
+3. **Power inventory per box** — measured draw + what each has for battery and
+   solar. Mostly UNKNOWN, and that is itself the finding.
+4. **Then** the architecture map — organized by SURVIVABILITY UNDER POWER LOSS,
+   not by protocol, with a "never tested" column (falsifiability applied to
+   architecture).
+
+**Deferred deliberately:** the cloud ssh rendezvous and Vultr consolidation.
+Measured while there: the map VPS is **327 ms** away (Hetzner EU, 0% loss —
+distance, not fault; 260 KB takes 13–16 s, latency-bound, 144×/day) while the
+operator's own Vultr box `wh6gxzhub.ddns.net` is **9.5 ms**. The Europe box is
+2 vCPU / 3.8 GB / load 0.00 serving 4.3 MB of static files and nothing else, so
+consolidating onto Vultr would be cost-NEGATIVE and ~34× closer. ⚠️ Inbound :22
+to the Vultr box TIMES OUT from VolcanoAI (filtered, not refused) — access
+details needed. **But none of this survives a power outage, which is why it is
+parked below the hardware items.**
