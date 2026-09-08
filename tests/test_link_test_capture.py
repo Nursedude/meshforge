@@ -350,3 +350,42 @@ class TestConfirmRadioOn:
         lt.confirm_radio_on(port, dec, timeout_s=2.0)
         assert dec.errors == []
 
+
+class TestPromiscuousIsAlwaysCleared:
+    """The 2026-09-08 defect: capture left two production radios promiscuous.
+
+    Promiscuous is a MODE the RNode stays in, and RNS's interface init never
+    clears it — so a capture would silently break normal reception on the very
+    radio it just measured. The bug presented as a one-way link and cost an
+    afternoon.
+    """
+
+    def test_clear_command_is_well_formed(self):
+        c = lt._cmd(K.CMD_PROMISC, bytes([0x00]))
+        assert c == bytes([K.FEND, K.CMD_PROMISC, 0x00, K.FEND])
+
+    def test_init_turns_promiscuous_ON_so_teardown_must_turn_it_OFF(self):
+        """Pins the pairing: if init stops setting it, this test should be revisited."""
+        cmds = lt.radio_init_commands(903625000, 250000, 7, 5, 0)
+        assert any(c[1] == K.CMD_PROMISC and c[2] == 0x01 for c in cmds), \
+            "init no longer enables promiscuous mode — re-check the teardown"
+
+    def test_source_clears_promiscuous_in_a_finally_block(self):
+        """Reader/writer halves must be wired together (honest_failure_modes #4).
+
+        Asserted against the source because the alternative is driving a real
+        serial port; the live proof is in the commit message.
+        """
+        src = SCRIPT.read_text()
+        i = src.index("    finally:")
+        tail = src[i:i + 1200]
+        assert "CMD_PROMISC, bytes([0x00])" in tail, \
+            "teardown must clear promiscuous mode, not just close the port"
+
+    def test_failure_to_clear_is_reported_not_swallowed(self):
+        src = SCRIPT.read_text()
+        i = src.index("    finally:")
+        tail = src[i:i + 1200]
+        assert "could not clear promiscuous mode" in tail, \
+            "a failed teardown must leave a witness"
+

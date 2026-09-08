@@ -48,6 +48,13 @@ because a switched-off receiver is indistinguishable from a silent band and
 would turn every reading into a false negative. Only the reply to an explicit
 ASK counts -- a state frame can be an echo of the value just sent.
 
+It always hands the radio back
+------------------------------
+Capture puts the RNode in **promiscuous mode**, which is a mode the device stays
+in. RNS's own interface init does not clear it, so an RNode left promiscuous
+stops receiving normally -- the capture would break the very link it exists to
+measure. This tool clears it on every exit path, including Ctrl-C and errors.
+
 Deliberate non-goal: transmitting
 ---------------------------------
 This captures only. Generating test traffic is the far end's job (an RNS link,
@@ -575,6 +582,19 @@ def do_capture(args) -> int:
         print(f"\nFAIL: serial error during capture: {e}")
         return 1
     finally:
+        # Hand the radio back. Promiscuous mode is a MODE, not a read: leaving it
+        # set silently breaks normal RNS reception on that RNode until something
+        # resets it, and RNS's own init never clears it. On 2026-09-08 this tool
+        # left two production radios promiscuous and cost an afternoon chasing a
+        # phantom one-way link -- the capture "measured" the link into a state
+        # where the thing being measured no longer worked.
+        try:
+            port.write(_cmd(KISS.CMD_PROMISC, bytes([0x00])))
+            port.flush()
+            time.sleep(0.2)
+        except (serial.SerialException, OSError, AttributeError):
+            print("WARNING: could not clear promiscuous mode on the way out.")
+            print("         That RNode may not receive normally until it is reset.")
         try:
             port.close()
         except (serial.SerialException, OSError):
