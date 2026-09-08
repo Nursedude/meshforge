@@ -84,6 +84,7 @@ from utils.watchdog_probes_rns import (
     probe_rns_shared_instance_responsive,
     _tcp_reachable,
 )
+from utils.watchdog_probes_rf_leg import probe_rf_leg_silent  # noqa: F401
 from utils.watchdog_probes_channel import (
     probe_channel_feed_dark,
 )
@@ -175,6 +176,7 @@ __all__ = [
     "note_disposition",
     "reset_dispositions",
     "collect_dispositions",
+    "probe_rf_leg_silent",
     "probe_rns_namespace_collision",
     "probe_main_thread_wedge",
     "probe_lxmf_process_wedge",

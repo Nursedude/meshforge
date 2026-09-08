@@ -102,6 +102,7 @@ from utils.watchdog_probes import (
     probe_main_thread_wedge,
     probe_rns_interface_down_peer_reachable,
     probe_rns_namespace_collision,
+    probe_rf_leg_silent,
     probe_nomadnet_crashloop,
     probe_user_unit_inactive,
     probe_user_timer_unit_failing,
@@ -297,6 +298,17 @@ def run_all_probes(
     # shared rnstatus result; self-guards on parse_error when rnsd is
     # unreachable. Catches the stuck-uplink class directly at the
     # interface layer (previously only via tracer_peer_unreachable).
+    # RF leg silent (2026-09-08): an RNode leg transmitting while receiving
+    # NOTHING, sustained, on a leg that HAS received before. "Status: Up" is
+    # presence; this asks for function. Born self-inflicted — a capture tool
+    # left two RNodes promiscuous and both went deaf while every other surface
+    # read healthy, because traffic was still flowing over TCP. Reuses the
+    # rnstatus already fetched above: a second subprocess is the contention
+    # class we spent this week curing.
+    sig = probe_rf_leg_silent(status=rns_status)
+    if sig is not None:
+        signals.append(sig)
+
     sig = probe_rns_interface_down_peer_reachable(rnstatus_status=rns_status)
     if sig is not None:
         signals.append(sig)

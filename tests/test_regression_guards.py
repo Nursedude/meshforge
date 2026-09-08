@@ -2083,7 +2083,29 @@ class TestSignalClassBudget:
 
     #: Frozen ceiling. May only ever be LOWERED (the MF025 baseline idiom).
     #: 62 -> 58 (subtraction arc, 2026-08-08) -> 60 (drift, 2026-09-05).
-    SIGNAL_CLASS_BUDGET = 60
+    # 2026-09-08: 60 -> 61 for rf_leg_silent. Raised, NOT paid for by a
+
+    # replacement, and that is a debt not a free pass. The class earns its
+
+    # place: it is the only detector that judges an RF leg on bytes MOVED
+
+    # rather than on interface state, and it exists because a self-inflicted
+
+    # outage went unseen for hours while Status:Up, service active, box
+
+    # reachable and traffic flowing all read healthy — traffic was flowing
+
+    # over TCP. On a pure-RF gateway that same fault is a total outage.
+
+    # ⚠️ The replacement is DEFERRED, not waived: picking which detector to
+
+    # retire needs per-class fleet disposition data (inert-everywhere = cut,
+
+    # clean-everywhere = armed backstop, keep), which is a subtraction pass
+
+    # of its own. Do that before the next class is added.
+
+    SIGNAL_CLASS_BUDGET = 61
 
     @staticmethod
     def _live_count():
