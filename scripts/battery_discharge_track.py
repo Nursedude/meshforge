@@ -352,6 +352,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             return 2
         print(f"discharge run {run_id} started for {label} ({node_id}). "
               f"Unplug now; samples land in {_run_dir()}/{run_id}.jsonl")
+        # Arming a run and arming its SAMPLER are two separate acts, and a run
+        # with no sampler looks exactly like a healthy quiet one until the 12h
+        # horizon (honest_failure_modes #4 — the halves wire together or fail
+        # together). The cron line is deliberately left commented between runs
+        # rather than armed forever, because an idle sampler returns INERT
+        # every tick and stamps OK regardless of anything being true.
+        print("REMINDER: re-arm the sampler cron, or nothing will be "
+              "recorded. Uncomment in `crontab -e`:\n"
+              "  */10 * * * * " + os.path.abspath(__file__) + " --sample ...\n"
+              "Backstop if you forget: --report turns BROKEN "
+              f"({IMPLAUSIBLE_FLAT_H:.0f}h in) with 'no voltage samples', "
+              "rather than reporting a flat curve as a slow discharge.")
         return 0
 
     try:

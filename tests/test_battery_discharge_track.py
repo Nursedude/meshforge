@@ -382,6 +382,35 @@ class TestExitCodes:
         assert not missing, f"verdict(s) with no exit code: {missing}"
 
 
+class TestStartArmsBothHalves:
+    """--start and the sampler cron are a reader/writer pair (hfm #4).
+
+    The cron line is left COMMENTED between runs on purpose (2026-09-07): an
+    idle sampler returns INERT every tick and stamps OK regardless of anything
+    being true. That makes `--start` the only place the pairing is stated, so
+    a run armed with no sampler records nothing and looks merely quiet.
+    """
+
+    def test_start_names_the_sampler_the_operator_must_re_arm(
+            self, tmp_path, monkeypatch, capsys):
+        cfg = tmp_path / "discharge_test.json"
+        cfg.write_text(json.dumps(
+            {"node_id": "!abc", "capacity_mah": 4000, "label": "t"}))
+        monkeypatch.setenv("MESHFORGE_DISCHARGE_CONFIG", str(cfg))
+        monkeypatch.setattr(bdt, "_run_dir", lambda: str(tmp_path / "d"))
+        monkeypatch.setattr(bdt, "_current_run_path",
+                            lambda: str(tmp_path / "d" / "current_run.json"))
+        assert bdt.main(["--start"]) == 0
+        out = capsys.readouterr().out
+        assert "--sample" in out, (
+            "--start must name the sampler; without it a run can be armed "
+            "with no consumer and record nothing")
+        assert "crontab" in out.lower()
+        assert "BROKEN" in out, (
+            "--start must name the backstop, so the reminder is a check the "
+            "operator can rely on rather than a hope")
+
+
 class TestThresholdCannotBlindItself:
     """With 1-2 intervals the median IS the gap being judged, so a `3*median`
     threshold can never be exceeded — the detector would be blindest exactly
