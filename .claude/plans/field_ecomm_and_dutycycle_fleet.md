@@ -799,3 +799,118 @@ product than the lab fleet:**
 
 The STANDALONE offering finally has a concrete customer. Design target stands:
 *the same survival profile as the nodes it watches.*
+
+---
+
+## ⚡ Power sizing — the math, for a network engineer (2026-09-07)
+
+> Operator: *"i'm a network geek - power is something i need to learn more about
+> - and to get the formula right batt/solar/gen/etc"*. Power is the scarce
+> resource this domain does not measure (see the 80%-blind finding above), so
+> the formulas live here beside the findings that need them.
+
+### The mapping — this is capacity planning with different units
+
+| Power | Networking |
+|---|---|
+| Watts (W) | **rate** — bits/sec |
+| Watt-hours (Wh) | **volume** — bytes transferred |
+| Battery capacity | **buffer depth** |
+| Solar | a **bursty ingress link**: scheduled nightly outage + unscheduled weather ones |
+| Load | constant **egress** |
+| Days of autonomy | how long the buffer covers a TOTAL ingress outage |
+| Depth of discharge (DoD) | **usable** buffer vs allocated |
+| Derate factors (η) | protocol/framing **overhead** |
+| Voltage drop in wire | **cable loss** |
+
+### The four formulas
+
+**1. Daily load**
+```
+E_day (Wh) = P_idle × 24  +  (P_tx − P_idle) × duty × 24
+```
+For a PA-equipped router like Station G2, `P_tx` is large and `duty` dominates —
+which is why it must be MEASURED, not assumed.
+
+**2. Battery**
+```
+Usable Wh  = E_day × days_of_autonomy
+Nominal Wh = Usable ÷ DoD
+Amp-hours  = Nominal Wh ÷ V_nominal
+```
+DoD: **LiFePO4 ≈ 0.8**, lead-acid ≈ 0.5 (deeper destroys it), Li-ion ≈ 0.8.
+LiFePO4 is the right chemistry here: cycle life, heat tolerance, tolerates
+partial states of charge.
+
+**3. Solar**
+```
+Daily harvest = P_panel × PSH × η
+⇒ P_panel ≥ E_day ÷ (PSH_worst × η)
+```
+`PSH` = peak sun hours (location + worst month). `η` = panel derate (dirt,
+temperature, angle) × controller: **PWM ≈ 0.65, MPPT ≈ 0.75–0.85**. MPPT earns
+its cost exactly when you are marginal — which, in Volcano, you will be.
+
+**4. Generator** — a different problem: it must carry the load AND the charge
+current simultaneously; runtime = fuel ÷ burn rate. A recovery tool, not a supply.
+
+### ⚠️ The error almost everyone makes
+
+**A panel sized to match AVERAGE consumption produces a system that never
+recovers.** It is the 100%-utilized-link problem: if ingress equals egress the
+buffer never refills after a deficit, so the first three-day storm drains the
+battery and it STAYS drained. Size from the **worst month**, then add **20–30%
+headroom** so good days pay back bad ones.
+
+### Worked example — Farley-server (assumes 2 W avg, UNMEASURED)
+
+```
+E_day   = 2 W × 24 h                 =  48 Wh/day
+battery = 48 × 3 days ÷ 0.8 DoD      = 180 Wh  → 12 V × 15 Ah LiFePO4
+panel   = 48 ÷ (3 PSH × 0.7 η)       =  23 W minimum
+        + 30% recovery headroom      ≈  30 W
+```
+**So the on-hand 20 W panel is likely marginal-to-short.** Note the
+sensitivity: at 3 W average the panel wants ~45 W. Everything hinges on the load
+measurement — hence the shunt first. ⚠️ `PSH = 3` is an ESTIMATE for Volcano
+(windward, ~4,000 ft, rainforest); Kona-side Hawaii gets 5–6 and we do not.
+Verify against NREL **PVWatts** — that number moves panel size linearly.
+Station G2 facts that drive this: LoRa **PA, max RF out 36.5 dBm (4.46 W)
+US915**; input **15 W USB-C PD or 9–19 VDC**, with a **12 V connector on the
+side** (so: 12 V battery → charge controller → side connector, no USB-PD in the
+path). ⚠️ TX power is the biggest single lever on the energy budget, but
+Farley's VALUE is its reach to Mauna Kea / HPP — measure SNR margin on the long
+links before trading any of it away.
+
+### Order of operations
+
+1. **MEASURE the load** (INA219 on the 12 V line). Do not guess — two estimates
+   in one session were wrong, one by a whole device class.
+2. `E_day` from the measurement, including duty cycle.
+3. Autonomy days — **3 is standard for critical**; Volcano's weather argues more.
+4. Battery = `E_day × days ÷ DoD`.
+5. Panel from **worst-month** PSH, +30%.
+6. Charge controller rated above panel short-circuit current; MPPT if marginal.
+7. Wire gauge for **≤3% voltage drop** (`V_drop = I × R` — same instinct as cable loss).
+
+Refs: PVWatts <https://pvwatts.nrel.gov/> ·
+Meshtastic power measurement
+<https://meshtastic.org/docs/hardware/solar-powered/measure-power-consumption/> ·
+Solar Station G2 thread <https://meshtastic.discourse.group/t/solar-node-station-g2/13284>
+
+### 🏆 There is a PROVEN reference design — get its BOM before computing anything
+
+A friend of the operator built the **BIARC Mauna Loa Station G2**, and it has
+**survived 150 mph winds**. That is a field-hardened solar Station G2 install on
+this island, same hardware, built by someone reachable.
+
+**This outranks the arithmetic above.** Calibrated-claims rule: a witness you did
+not author beats one you did, and a design that survived a real 150 mph event
+beats a spreadsheet. Ask for: panel watts, battery chemistry + Ah, charge
+controller model, the 12 V connector/cabling used (the operator's "hard to find"
+part), enclosure + mounting/guying detail, and — most valuable — **whether it has
+ever run down, and in what weather**. That last answer is the only real
+autonomy measurement anyone has.
+⚠️ It also sets the mechanical bar: 150 mph is Cat-4/5. The tent that currently
+holds most of the fleet does not meet it, and neither does anything we would
+have specified.
