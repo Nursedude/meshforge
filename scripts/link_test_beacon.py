@@ -40,6 +40,22 @@ here is the RF interface's own TX byte counter, read from ``rnstatus`` before
 and after. A run whose counter did not move reports FAILED, loudly, even though
 every announce "succeeded".
 
+Observed limit: announces do NOT flow indefinitely
+--------------------------------------------------
+Measured 2026-09-08 across three runs: the far end receives every announce on
+an exact cadence with ZERO loss, then hits a hard cliff -- at 30 s, 47 s and
+81 s in three runs -- after which nothing arrives for minutes at a time. The
+local TX byte counter keeps moving across the cliff, so this is not the beacon
+failing to hand RNS the announces. The cause is not yet pinned (RNS announce
+airtime capping is the leading suspect; it is NOT plain RF loss, because a
+lossy path does not deliver 27 consecutive packets and then exactly zero).
+
+What that means for a capture: size the run by PACKETS RECEIVED at the far end,
+not by --count here, and expect roughly 12-30 usable packets per run whatever
+cadence you choose. If you need more, take several runs and concatenate the
+CSVs rather than lengthening one -- the readings are stable across runs (RSSI
+medians -98.0, -92.5, -93.0 for two TX powers, all internally tight).
+
 Usage
 -----
     # on the box that must TRANSMIT (its rnsd stays running)
