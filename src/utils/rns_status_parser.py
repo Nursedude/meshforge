@@ -15,6 +15,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import List, Optional
@@ -108,6 +109,13 @@ class RNSStatus:
     # connection refused), which leaves this False. The watchdog's
     # rns_rpc_unresponsive probe keys on this flag (see watchdog_probes).
     timed_out: bool = False
+    # Wall time the rnstatus subprocess actually took, by MONOTONIC clock
+    # (hfm #6: wall-clock durations are forgeable on RTC-less Pis). None
+    # when no subprocess ran (binary missing) — never 0.0, which would be
+    # indistinguishable from an impossibly fast run and would poison a
+    # latency baseline built from these values. On a TIMEOUT this is the
+    # bound we gave up at, not a measurement of rnsd.
+    duration_s: Optional[float] = None
 
     @property
     def all_up(self) -> bool:
@@ -340,6 +348,7 @@ def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
             parse_error="rnstatus binary not found. Install RNS: pip install rns"
         )
 
+    started = time.monotonic()
     try:
         proc = subprocess.run(
             [rnstatus_path],
@@ -347,6 +356,7 @@ def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
             text=True,
             timeout=timeout_s,
         )
+        elapsed = time.monotonic() - started
         combined = (proc.stdout or "") + (proc.stderr or "")
         status = parse_rnstatus(combined)
         # A bare RNSStatus (no parse_error) used to come back for EMPTY output
@@ -360,16 +370,19 @@ def run_rnstatus(timeout_s: float = 15.0) -> RNSStatus:
         elif rc != 0 and not status.parse_error:
             first = combined.strip().splitlines()[0][:120]
             status.parse_error = f"rnstatus exited {rc}: {first}"
+        status.duration_s = elapsed
         return status
     except subprocess.TimeoutExpired:
         logger.warning("rnstatus timed out — rnsd may be unresponsive")
         return RNSStatus(
             parse_error="rnstatus timed out (rnsd unresponsive)",
             timed_out=True,
+            duration_s=time.monotonic() - started,
         )
     except FileNotFoundError:
         logger.warning("rnstatus not found at %s", rnstatus_path)
         return RNSStatus(parse_error=f"rnstatus not found at {rnstatus_path}")
     except OSError as e:
         logger.warning("Failed to run rnstatus: %s", e)
-        return RNSStatus(parse_error=f"Failed to run rnstatus: {e}")
+        return RNSStatus(parse_error=f"Failed to run rnstatus: {e}",
+                         duration_s=time.monotonic() - started)

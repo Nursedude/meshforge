@@ -80,6 +80,7 @@ from utils.watchdog_probes import (  # noqa: E402
     probe_rns_namespace_collision,
     probe_rns_rpc_responsive,
     reset_rns_rpc_timeout_streak,
+    reset_rnstatus_baseline,
     probe_rns_shared_instance_responsive,
     probe_service_inactive,
     probe_tracer_peer_unreachable,
@@ -926,11 +927,13 @@ class TestProbeRnsRpcResponsive:
 
     @pytest.fixture(autouse=True)
     def _clean_streak(self):
-        """The consecutive-timeout streak is module state; a test that
-        leaves it dirty would arm or disarm the next one."""
+        """The streak AND the latency baseline are module state; a test
+        that leaves either dirty would arm or disarm the next one."""
         reset_rns_rpc_timeout_streak()
+        reset_rnstatus_baseline()
         yield
         reset_rns_rpc_timeout_streak()
+        reset_rnstatus_baseline()
 
     @staticmethod
     def _status(**kw):
@@ -11874,3 +11877,143 @@ def test_lib_stray_globs_include_foreign_venv_and_not_tooling():
     from utils.watchdog_probes_rns_env import _LIB_STRAY_SITE_GLOBS
     assert "foreign-venv" in _LIB_STRAY_SITE_GLOBS
     assert "tooling" not in _LIB_STRAY_SITE_GLOBS
+
+
+# ─────────────────────────────────────────────────────────────────────
+# 2026-09-08 — rns_rpc_unresponsive latency arm (judge the box against
+# ITSELF; an absolute threshold falls silent on a slow box)
+# ─────────────────────────────────────────────────────────────────────
+
+
+class TestRnsRpcLatencyBaseline:
+    """Second arm of rns_rpc_unresponsive. The wedge arm fires on a fixed
+    8s subprocess timeout; on a box whose healthy rnstatus is ~1.2s a
+    degradation to 6s never reaches it, so the detector goes SILENT on the
+    box that has actually drifted. This arm judges each box against its own
+    rolling median."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        reset_rns_rpc_timeout_streak()
+        reset_rnstatus_baseline()
+        yield
+        reset_rns_rpc_timeout_streak()
+        reset_rnstatus_baseline()
+
+    @staticmethod
+    def _ok(duration):
+        from utils.rns_status_parser import RNSStatus
+        return RNSStatus(duration_s=duration)
+
+    def _warm(self, seconds=1.2, n=None):
+        """Fill the baseline with healthy samples."""
+        n = n if n is not None else wpr._RNSTATUS_BASELINE_MIN_SAMPLES
+        for _ in range(n):
+            assert probe_rns_rpc_responsive(
+                rnstatus_status=self._ok(seconds)) is None
+
+    def test_warming_baseline_is_disclosed_not_silently_clean(self):
+        """A half-armed detector must not read as a tidy clean — coverage
+        says 1 of 2 arms judged (the partial-blindness side-channel)."""
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions,
+        )
+        reset_dispositions()
+        probe_rns_rpc_responsive(rnstatus_status=self._ok(1.2))
+        noted = collect_dispositions()["rns_rpc_unresponsive"]
+        assert noted["disp"] == "clean"
+        assert "warming" in noted["reason"]
+        assert noted["coverage"] == {"judged": 1, "enrolled": 2}
+
+    def test_normal_run_against_warm_baseline_is_clean_both_arms(self):
+        from utils.watchdog_probe_core import (
+            collect_dispositions, reset_dispositions,
+        )
+        self._warm()
+        reset_dispositions()
+        assert probe_rns_rpc_responsive(rnstatus_status=self._ok(1.3)) is None
+        noted = collect_dispositions()["rns_rpc_unresponsive"]
+        assert noted["disp"] == "clean"
+        assert "both arms judged" in noted["reason"]
+
+    def test_the_silent_case_degradation_that_never_reaches_the_timeout(self):
+        """THE reason this arm exists. Box median 1.2s degrades to 6.0s.
+        timed_out is False — the 8s wedge arm is structurally blind here —
+        yet the box has drifted 5x and something must say so."""
+        self._warm(1.2)
+        status = self._ok(6.0)
+        assert status.timed_out is False       # wedge arm cannot fire
+        needed = wpr._rpc_confirm_ticks()
+        for _ in range(needed - 1):
+            assert probe_rns_rpc_responsive(rnstatus_status=status) is None
+        sig = probe_rns_rpc_responsive(rnstatus_status=status)
+        assert sig is not None
+        assert sig.cls == "rns_rpc_unresponsive"
+        assert sig.severity == "degraded"      # not "wedge" — it still answers
+        assert sig.extra["baseline_median_s"] == pytest.approx(1.2, abs=0.05)
+        assert sig.extra["duration_s"] == pytest.approx(6.0, abs=0.05)
+
+    def test_baseline_does_NOT_learn_its_own_illness(self):
+        """The trap in every adaptive baseline: a slow drift raises the
+        median, the median raises the threshold, and the detector silently
+        re-normalises around a sick box. Slow samples must never be
+        admitted, so a SUSTAINED degradation keeps firing forever rather
+        than adapting away."""
+        self._warm(1.2)
+        slow = self._ok(6.0)
+        needed = wpr._rpc_confirm_ticks()
+        for _ in range(needed):
+            probe_rns_rpc_responsive(rnstatus_status=slow)
+        # far longer than the window could hold — if slow samples were
+        # admitted, the median would have moved and the alarm would stop
+        for _ in range(wpr._RNSTATUS_BASELINE_MAXLEN * 2):
+            sig = probe_rns_rpc_responsive(rnstatus_status=slow)
+            assert sig is not None, "detector adapted away from a sick box"
+        assert sig.extra["baseline_median_s"] == pytest.approx(1.2, abs=0.05)
+
+    def test_recovery_resumes_learning_and_clears(self):
+        """A box that genuinely recovers must go clean and start learning
+        again — the guard above must not make the alarm permanent."""
+        self._warm(1.2)
+        slow = self._ok(6.0)
+        for _ in range(wpr._rpc_confirm_ticks()):
+            probe_rns_rpc_responsive(rnstatus_status=slow)
+        assert probe_rns_rpc_responsive(rnstatus_status=self._ok(1.25)) is None
+
+    def test_floor_protects_a_very_fast_box(self):
+        """A box with a 0.01s median must not alarm at 0.2s: 5x of a tiny
+        median is noise, so an absolute floor bounds the sensitivity."""
+        self._warm(0.01)
+        for _ in range(wpr._rpc_confirm_ticks() + 2):
+            assert probe_rns_rpc_responsive(
+                rnstatus_status=self._ok(0.2)) is None
+
+    def test_baseline_only_tightens_never_loosens_the_hard_timeout(self):
+        """A SLOW box (median 6s) must still page on a real timeout — the
+        baseline may add sensitivity, never remove it."""
+        self._warm(6.0)
+        from utils.rns_status_parser import RNSStatus
+        timed = RNSStatus(timed_out=True, parse_error="rnstatus timed out",
+                          duration_s=8.0)
+        needed = wpr._rpc_confirm_ticks()
+        for _ in range(needed - 1):
+            probe_rns_rpc_responsive(rnstatus_status=timed)
+        sig = probe_rns_rpc_responsive(rnstatus_status=timed)
+        assert sig is not None and sig.severity == "wedge"
+
+    def test_fast_error_does_not_poison_the_baseline(self):
+        """rnsd down measured nothing about RPC latency; admitting that
+        run would corrupt the median with a fast failure."""
+        from utils.rns_status_parser import RNSStatus
+        probe_rns_rpc_responsive(rnstatus_status=RNSStatus(
+            parse_error="Could not connect to local shared instance.",
+            duration_s=0.02))
+        assert len(wpr._rnstatus_durations) == 0
+
+    def test_slow_factor_env_override_and_garbage_fallback(self, monkeypatch):
+        monkeypatch.setenv("MESHFORGE_RNS_RPC_SLOW_FACTOR", "2.0")
+        assert wpr._rnstatus_slow_factor() == 2.0
+        monkeypatch.setenv("MESHFORGE_RNS_RPC_SLOW_FACTOR", "nope")
+        assert wpr._rnstatus_slow_factor() == wpr._DEFAULT_RNSTATUS_SLOW_FACTOR
+        monkeypatch.setenv("MESHFORGE_RNS_RPC_SLOW_FACTOR", "0.5")
+        assert wpr._rnstatus_slow_factor() == wpr._DEFAULT_RNSTATUS_SLOW_FACTOR

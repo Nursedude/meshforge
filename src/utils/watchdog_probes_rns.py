@@ -11,6 +11,8 @@ import os
 import re
 import socket
 import subprocess
+from collections import deque
+from statistics import median
 from typing import TYPE_CHECKING, List, Optional, Tuple
 
 from utils.watchdog_probe_core import (  # noqa: F401
@@ -667,6 +669,85 @@ _DEFAULT_RPC_CONFIRM_TICKS = 3
 _rpc_timeout_streak = 0
 
 
+# ── per-box rnstatus latency baseline (2026-09-08) ───────────────────
+#
+# The confirmation above fixed WHAT we measure and WHETHER it persists. It
+# did not fix what we measure AGAINST. The wedge arm fires on a fixed 8s
+# subprocess timeout, and the fleet is heterogeneous — Pi 4, Pi 5, a cloud
+# VPS, USB vs SPI radios. Measured 2026-09-08: moc3's healthy rnstatus is
+# ~1.2s (6 runs, 1.19-1.57s). So on that box the alarm needs a 6.7x
+# degradation, and **a box degrading 1.2s -> 6s never trips 8s at all**.
+# (Boundary note: comparison is strictly greater-than the threshold, so a
+# run sitting exactly ON the multiple reads clean — deliberate, so the
+# alarm needs a real excursion rather than a tie.)
+# An absolute threshold on a heterogeneous fleet does not merely misfire;
+# it FALLS SILENT on exactly the box that has drifted, which is the
+# failure this whole file exists to refuse.
+#
+# So: judge each box against ITSELF. Keep a rolling window of healthy
+# rnstatus durations and treat a sustained multiple of that box's own
+# median as the same condition the wedge arm catches, seen earlier and on
+# boxes whose normal is slow. Same signal class, severity `degraded` — no
+# new class (the 09-03 volume brake: add a class only by replacing one).
+#
+# ⚠️ The trap in every adaptive baseline is that it LEARNS THE ILLNESS: a
+# slow drift raises the median, the median raises the threshold, and the
+# detector silently re-normalises around a sick box. Two guards:
+#   1. Samples judged slow are NOT admitted. While the condition holds the
+#      median stays at pre-degradation values, so it keeps alarming instead
+#      of adapting away. Recovery resumes learning.
+#   2. The baseline may only make the threshold TIGHTER than the hard
+#      timeout, never looser — it can add sensitivity, never remove it.
+# And a warming baseline is disclosed, never silent: until it has enough
+# samples the class reports coverage judged=1 of enrolled=2 arms, so a
+# half-armed detector cannot read as a tidy `clean`.
+#
+# In-memory (deque, process-lifetime) for the same reason as the streak: on
+# disk it would inherit the 2026-09-02 debounce-saver trap, where an
+# unwritable state dir froze three probes below threshold forever.
+_RNSTATUS_BASELINE_MAXLEN = 60        # ~30 min of ticks at the 30s cadence
+_RNSTATUS_BASELINE_MIN_SAMPLES = 12   # don't judge a box before we know it
+_RNSTATUS_SLOW_FACTOR_ENV = "MESHFORGE_RNS_RPC_SLOW_FACTOR"
+# 3.0, not 5.0: the arm only earns its keep in the band BELOW the hard
+# timeout. On moc3's measured 1.2s median, 5x puts the threshold at 6.0s
+# and leaves a 6.0-8.0s window to catch anything in — nearly nothing. 3x
+# puts it at 3.6s and catches 3.6-8.0s, while a 3x slowdown on a box whose
+# normal is stable is still plainly anomalous. On a box whose median is
+# already slow the threshold exceeds the timeout and the WEDGE arm fires
+# first, which is correct: this arm adds sensitivity, it never gates.
+_DEFAULT_RNSTATUS_SLOW_FACTOR = 3.0   # multiple of the box's OWN median
+_RNSTATUS_SLOW_FLOOR_S = 2.0          # never alarm on a sub-2s absolute run
+
+_rnstatus_durations: "deque[float]" = deque(maxlen=_RNSTATUS_BASELINE_MAXLEN)
+_rpc_slow_streak = 0
+
+
+def _rnstatus_slow_factor() -> float:
+    """Multiple of this box's own median that counts as degraded."""
+    raw = os.environ.get(_RNSTATUS_SLOW_FACTOR_ENV)
+    if raw is None:
+        return _DEFAULT_RNSTATUS_SLOW_FACTOR
+    try:
+        value = float(raw)
+    except ValueError:
+        return _DEFAULT_RNSTATUS_SLOW_FACTOR
+    return value if value > 1.0 else _DEFAULT_RNSTATUS_SLOW_FACTOR
+
+
+def reset_rnstatus_baseline() -> None:
+    """Clear the latency baseline and slow streak. For tests and cold start."""
+    global _rpc_slow_streak
+    _rnstatus_durations.clear()
+    _rpc_slow_streak = 0
+
+
+def _rnstatus_median() -> Optional[float]:
+    """Median of the healthy-sample window, or None while warming."""
+    if len(_rnstatus_durations) < _RNSTATUS_BASELINE_MIN_SAMPLES:
+        return None
+    return median(_rnstatus_durations)
+
+
 def _rpc_confirm_ticks() -> int:
     """Consecutive timed-out ticks required before claiming a wedge.
 
@@ -769,16 +850,17 @@ def probe_rns_rpc_responsive(
     else:
         status = rnstatus_status
 
-    global _rpc_timeout_streak
+    global _rpc_timeout_streak, _rpc_slow_streak
 
     if not status.timed_out:
         _rpc_timeout_streak = 0
         if status.parse_error:
+            # rnsd down / binary missing: the run measured nothing about
+            # RPC latency, so it must not enter the baseline.
             note_disposition("rns_rpc_unresponsive", "indeterminate",
                              reason="rnstatus failed fast (rnsd down or binary missing)")
-        else:
-            note_disposition("rns_rpc_unresponsive", "clean")
-        return None
+            return None
+        return _judge_rnstatus_latency(status.duration_s)
 
     _rpc_timeout_streak += 1
     needed = _rpc_confirm_ticks()
@@ -826,6 +908,99 @@ def probe_rns_rpc_responsive(
             "consecutive_timeouts": _rpc_timeout_streak,
             "confirm_ticks": needed,
             "cpu_pressure": pressure,
+        },
+    )
+
+
+def _judge_rnstatus_latency(duration_s: "Optional[float]") -> Optional[Signal]:
+    """Second arm of ``rns_rpc_unresponsive``: is rnstatus slow FOR THIS BOX?
+
+    Called only on a healthy, parsed rnstatus. Returns a ``degraded``
+    Signal when the run is a sustained multiple of this box's own median,
+    else None — and always leaves a disposition, including the honest
+    "still warming" one.
+    """
+    global _rpc_slow_streak
+
+    if duration_s is None:
+        # No subprocess ran (injected status in tests, binary missing).
+        # The wedge arm judged; the latency arm could not.
+        note_disposition("rns_rpc_unresponsive", "clean",
+                         reason="rnstatus responsive; no duration observed "
+                                "(latency arm not applicable)",
+                         coverage={"judged": 1, "enrolled": 2})
+        return None
+
+    baseline = _rnstatus_median()
+    if baseline is None:
+        # Warming. Admit the sample and DISCLOSE the half-armed state —
+        # a warming detector must not read as a tidy clean.
+        _rnstatus_durations.append(duration_s)
+        _rpc_slow_streak = 0
+        note_disposition(
+            "rns_rpc_unresponsive", "clean",
+            reason=(
+                f"rnstatus responsive ({duration_s:.2f}s); latency baseline "
+                f"warming {len(_rnstatus_durations)}/"
+                f"{_RNSTATUS_BASELINE_MIN_SAMPLES} samples"
+            ),
+            coverage={"judged": 1, "enrolled": 2},
+        )
+        return None
+
+    factor = _rnstatus_slow_factor()
+    # The baseline may only TIGHTEN the hard timeout, never loosen it.
+    threshold = max(_RNSTATUS_SLOW_FLOOR_S, baseline * factor)
+
+    if duration_s <= threshold:
+        _rnstatus_durations.append(duration_s)
+        _rpc_slow_streak = 0
+        note_disposition(
+            "rns_rpc_unresponsive", "clean",
+            reason=(f"rnstatus {duration_s:.2f}s vs box median "
+                    f"{baseline:.2f}s (both arms judged)"),
+        )
+        return None
+
+    # Slow. Do NOT admit the sample — an adaptive baseline that learns its
+    # own illness re-normalises around a sick box and falls silent.
+    _rpc_slow_streak += 1
+    needed = _rpc_confirm_ticks()
+    if _rpc_slow_streak < needed:
+        note_disposition(
+            "rns_rpc_unresponsive", "indeterminate",
+            reason=(
+                f"rnstatus {duration_s:.2f}s vs box median {baseline:.2f}s "
+                f"(>{factor:.1f}x) on {_rpc_slow_streak} of {needed} "
+                f"consecutive tick(s) required; {_cpu_pressure_context()}"
+            ),
+        )
+        return None
+
+    return Signal(
+        cls="rns_rpc_unresponsive",
+        subject="rnsd",
+        severity="degraded",
+        detail=(
+            f"rnstatus is taking {duration_s:.2f}s against this box's own "
+            f"median of {baseline:.2f}s (>{factor:.1f}x) on "
+            f"{_rpc_slow_streak} consecutive ticks — the RPC round-trip is "
+            "degrading but has NOT yet crossed the hard timeout, so the "
+            "wedge arm is still silent. This is the early shape of #68/#69, "
+            f"and on a box whose normal is slow it is the ONLY shape that "
+            f"ever fires. Box at the time: {_cpu_pressure_context()}. "
+            "Check whether the box is merely busy before touching rnsd: a "
+            "sustained multiple with an IDLE box is rnsd; with a loaded box "
+            "it is contention. Do NOT rapid-cycle rnsd fleet-wide."
+        ),
+        issue_ref=68,
+        extra={
+            "duration_s": round(duration_s, 3),
+            "baseline_median_s": round(baseline, 3),
+            "slow_factor": factor,
+            "consecutive_slow": _rpc_slow_streak,
+            "baseline_samples": len(_rnstatus_durations),
+            "cpu_pressure": _cpu_pressure_context(),
         },
     )
 
