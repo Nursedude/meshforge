@@ -62,11 +62,28 @@ satisfied; the truth wasn't.
    it never happened — until the operator finds out outside the app.
 10. **A resolved incident compiles down to THREE artifacts, not two.** When a
     frontier session root-causes an incident, the write-time deliverables are
-    the probe/rule (→R), the persistent_issues/runbook entry (→R), **and an
-    eval case in `evals/local_brain/` (→L)** proving the local tier can triage
-    the class next time. Without the eval case the fallback brain's competence
-    on this class stays permanently BELIEVED — the check is the weekly
-    `local_brain_eval --gate` cron verdict (2026-07-09, cross-model arc).
+    the probe/rule (→R), the persistent_issues/runbook entry (→R), **and a
+    triage artifact for the tier that will meet this class next (→L)** — so
+    the next reader's competence on it is not permanently BELIEVED.
+    ⚠️ **The third artifact is owed to a tier that CONSUMES it.** Writing one
+    for a parked organ is machinery watching machinery — the exact cost this
+    file exists to refuse — so resolve the consumer before writing it:
+    * **tier-L live** (Ollama running, `local_brain_eval` cron armed): the
+      artifact is an eval case in `evals/local_brain/`, checked by the weekly
+      `local_brain_eval --gate` verdict (2026-07-09, cross-model arc).
+    * **tier-L parked** (the state since 2026-09-07 — pre-score off, Ollama
+      kept only for the future field-kit chat compiler): the artifact is the
+      **decision-tell row in `persistent_issues.md`**, because the frontier
+      cadence and a human at a terminal are who actually read it. Do NOT add
+      `evals/local_brain/` cases while parked; see
+      [[project_ollama_parked_2026_09_07]]. When the chat-compiler arc starts,
+      this reverts to the eval-case form.
+    **Check the consumer's live state before writing — do not infer it from
+    this rule.** (Amended 2026-09-08: on the RNS-RPC contention incident a
+    session wrote the eval case first and read the parked decision after, and
+    would have committed a rule violation as "follow-through". A rule carried
+    in context is not a check against current ground truth — this file's own
+    class, aimed at the process instead of the code.)
 
 ## How to apply
 
