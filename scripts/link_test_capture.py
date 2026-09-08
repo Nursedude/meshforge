@@ -48,12 +48,42 @@ because a switched-off receiver is indistinguishable from a silent band and
 would turn every reading into a false negative. Only the reply to an explicit
 ASK counts -- a state frame can be an echo of the value just sent.
 
+Promiscuous mode is OFF by default -- measured, not assumed
+-----------------------------------------------------------
+This tool originally forced promiscuous mode, because LoRaMon does. On the
+first real capture (2026-09-08, RNode firmware 1.86, ESP32-S3) that produced
+**zero packets in 160 s** while the far end's own TX counter proved it had
+radiated 8,840 B. A raw hexdump of the serial stream, promiscuous on then off,
+over one beacon run, said why:
+
+    PROMISC=ON   527 raw bytes, 0 data frames   (only CHTM/PHYPRM/BAT telemetry)
+    PROMISC=OFF  3338 raw bytes, 13 data frames, RSSI -71 dBm, SNR -7.5 dB
+
+On this firmware, promiscuous mode stops CMD_DATA frames reaching the host
+entirely -- so the one setting the tool believed it needed was the reason it
+measured nothing. Normal mode delivers the data frames AND their CMD_STAT_RSSI /
+CMD_STAT_SNR companions, which is everything this measurement wants. Normal mode
+is also the better filter for a path-loss reading: only well-formed frames on the
+configured modem parameters arrive, so a stray transmitter is less likely to be
+averaged into the result. ``--promiscuous`` remains available for a board whose
+firmware behaves the other way -- but it is opt-in, and the silence witness below
+will tell you which one you have within seconds rather than after a wasted run.
+
+A capture that hears nothing says so WHILE it runs
+--------------------------------------------------
+The zero-packet run above looked perfectly healthy for its full 160 s: radio
+confirmed ON, parameters printed, not one word about the silence. That is this
+project's oldest defect class wearing a new hat -- a degraded state rendered as
+a valid-looking one -- and on a hill, in the field, it costs a trip. The capture
+now reports how long it has been silent, and names promiscuous mode as the first
+thing to suspect. Silence is a finding, not a state to sit in quietly.
+
 It always hands the radio back
 ------------------------------
-Capture puts the RNode in **promiscuous mode**, which is a mode the device stays
-in. RNS's own interface init does not clear it, so an RNode left promiscuous
-stops receiving normally -- the capture would break the very link it exists to
-measure. This tool clears it on every exit path, including Ctrl-C and errors.
+Promiscuous mode, if enabled, is a mode the device STAYS in. RNS's own interface
+init does not clear it, so an RNode left promiscuous stops receiving normally --
+the capture would break the very link it exists to measure. This tool clears it
+on every exit path, including Ctrl-C and errors.
 
 Deliberate non-goal: transmitting
 ---------------------------------
@@ -94,14 +124,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from utils.rf import free_space_path_loss  # noqa: E402
 from utils.rnode_session import (  # noqa: E402
-    KISS,
-    KissDecoder,
     RNodeUnavailable,
-    confirm_radio_on,
-    kiss_cmd as _cmd,
-    radio_config_commands,
     rnode_session,
-    u32 as _u32,
 )
 
 # Minimum packets before a summary is worth quoting. Below this the median is
@@ -111,6 +135,10 @@ MIN_PACKETS_FOR_SUMMARY = 20
 # Below this fraction of rows carrying fresh stats, the RSSI/SNR pairing is
 # unreliable and the headline number is withheld rather than qualified.
 MIN_FRESH_FRACTION = 0.5
+
+# How long a capture may hear nothing before it says so out loud. Short enough
+# that a wrong mode is caught while you are still standing next to the radio.
+SILENCE_WARN_S = 20.0
 
 # SX126x sensitivity floor is around -137 dBm at the narrowest settings. A
 # median within this margin of it means the reading is compressed against the
@@ -284,49 +312,26 @@ def do_summarize(path: Path) -> int:
     return print_summary(summarize_rows(rows))
 
 
-def confirm_radio_on(port, dec: "KissDecoder", timeout_s: float = 5.0):
-    """Ask the radio whether it is actually ON, and believe only the answer.
+def report_silence(silent_s: float, count: int, promiscuous: bool) -> None:
+    """Say that nothing is arriving, and name the likeliest reason.
 
-    Born 2026-09-08: this tool used to send RADIO_STATE_ON and then print
-    "listening" without ever checking. On a board whose radio silently declines
-    to start (one of two identical Heltec V4s did exactly that, reporting no
-    error at all) it would capture nothing forever and look perfectly healthy —
-    honest_failure_modes #9, in this file's own code.
-
-    ⚠️ The subtlety that makes this non-trivial: a ``CMD_RADIO_STATE`` frame
-    arriving just after we SET the state can be an echo of the value we sent
-    rather than an observation. On that day a loose probe read the echo as
-    ``01`` while the radio was off, and only an explicit ASK told the truth. So
-    the reported state is CLEARED before asking, and only a reply that lands
-    afterwards is accepted.
-
-    Returns (state, reason) — state is None if the radio never answered.
+    A capture that prints its parameters and then goes quiet is indistinguishable
+    from a working one -- the 2026-09-08 zero-packet run looked healthy for its
+    entire 160 s. Silence gets a witness (honest_failure_modes #9), and the
+    witness carries the diagnosis rather than leaving it to be rediscovered.
     """
-    dec.radio_state = None
-    dec.errors.clear()
-    # Discard anything already buffered -- clearing only the decoder would still
-    # let a queued echo be read back and believed a moment later.
-    try:
-        port.reset_input_buffer()
-    except (AttributeError, OSError):
-        pass
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        port.write(_cmd(KISS.CMD_RADIO_STATE, bytes([KISS.RADIO_STATE_ASK])))
-        wait_until = min(time.monotonic() + 0.5, deadline)
-        while time.monotonic() < wait_until:
-            dec.feed(port.read(256))
-            if dec.radio_state is not None:
-                break
-        if dec.radio_state is not None:
-            break
-
-    if dec.radio_state is None:
-        return None, "the radio never answered RADIO_STATE_ASK"
-    if dec.radio_state == KISS.RADIO_STATE_OFF:
-        return dec.radio_state, ("the radio reports state OFF (0x00) after being told to "
-                                 "turn on, and reported no error explaining why")
-    return dec.radio_state, f"state 0x{dec.radio_state:02x}"
+    if count == 0:
+        print(f"  ... NOTHING RECEIVED for {silent_s:.0f}s. The radio is confirmed on, so "
+              f"either nothing is transmitting on these parameters, or the host is not "
+              f"being given the frames.")
+        if promiscuous:
+            print("      Suspect --promiscuous FIRST: on RNode firmware 1.86 it stops "
+                  "CMD_DATA frames reaching the host entirely. Re-run without it.")
+        else:
+            print("      Check that the far end is actually radiating -- "
+                  "scripts/link_test_beacon.py proves it from the TX counter.")
+    else:
+        print(f"  ... silent for {silent_s:.0f}s ({count} packet(s) so far).")
 
 
 def do_capture(args) -> int:
@@ -347,10 +352,11 @@ def do_capture(args) -> int:
     try:
         with rnode_session(args.port, freq=args.freq, bw=args.bw, sf=args.sf,
                            cr=args.cr, txpower=args.tx_power_setting,
-                           promiscuous=True, baud=args.baud) as rn:
+                           promiscuous=args.promiscuous, baud=args.baud) as rn:
             print(f"RNode detected on {args.port}"
                   + (f", firmware {rn.fw_version}" if rn.fw_version else ""))
             print("radio    : ON (confirmed by RADIO_STATE_ASK)")
+            print(f"promisc  : {'ON (opt-in)' if args.promiscuous else 'off'}")
             print(f"listening: {args.freq/1e6:.3f} MHz  bw {args.bw/1e3:.1f} kHz  "
                   f"sf {args.sf}  cr 4/{args.cr}")
             print(f"writing  : {out_path}")
@@ -364,11 +370,21 @@ def do_capture(args) -> int:
 
                 count = 0
                 last_stat_seq = -1
-                end = time.monotonic() + args.seconds if args.seconds else None
+                started = time.monotonic()
+                last_packet_at = started
+                next_silence_report = started + SILENCE_WARN_S
+                end = started + args.seconds if args.seconds else None
                 try:
                     while end is None or time.monotonic() < end:
                         rn.decoder.feed(rn.read(256))
+                        now = time.monotonic()
+                        if now >= next_silence_report:
+                            report_silence(now - last_packet_at, count,
+                                           args.promiscuous)
+                            next_silence_report = now + SILENCE_WARN_S
                         for stat_seq, rssi, snr, nbytes in rn.decoder.drain_packets():
+                            last_packet_at = time.monotonic()
+                            next_silence_report = last_packet_at + SILENCE_WARN_S
                             fresh = 1 if stat_seq != last_stat_seq else 0
                             last_stat_seq = stat_seq
                             row = dict(meta)
@@ -410,6 +426,11 @@ def main() -> int:
     ap.add_argument("--seconds", type=int, default=0,
                     help="stop after N seconds (default: run until Ctrl-C)")
     ap.add_argument("--baud", type=int, default=115200)
+    ap.add_argument("--promiscuous", action="store_true",
+                    help="put the RNode in promiscuous mode. OFF by default: on "
+                         "firmware 1.86 promiscuous mode delivers NO data frames at "
+                         "all (measured 2026-09-08). Opt in only for a board you have "
+                         "shown behaves otherwise.")
 
     prov = ap.add_argument_group(
         "provenance", "recorded on EVERY row — without these a reading is not reusable")

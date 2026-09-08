@@ -11,16 +11,24 @@ asserts that bad captures are refused rather than summarized.
 """
 
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "link_test_capture.py"
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT / "src"))
+
+SCRIPT = _ROOT / "scripts" / "link_test_capture.py"
 _spec = importlib.util.spec_from_file_location("link_test_capture", SCRIPT)
 lt = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(lt)
 
-K = lt.KISS
+# KISS lives in the rnode_session chokepoint, not in this script. It used to be
+# re-exported here and the test reached through the re-export; that made the
+# script look like it owned the protocol constants, and left a dead shadowing
+# copy of confirm_radio_on beside them. Import from the owner.
+from utils.rnode_session import KISS as K  # noqa: E402
 
 
 def frame(command: int, payload: bytes) -> bytes:
