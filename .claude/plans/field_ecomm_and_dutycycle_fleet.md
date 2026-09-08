@@ -666,3 +666,136 @@ consolidating onto Vultr would be cost-NEGATIVE and ~34× closer. ⚠️ Inbound
 to the Vultr box TIMES OUT from VolcanoAI (filtered, not refused) — access
 details needed. **But none of this survives a power outage, which is why it is
 parked below the hardware items.**
+
+### MEASURED: ~80% of the mesh is power-invisible (2026-09-07)
+
+```
+distinct nodes seen (2-day window):  385
+             reporting battery:       75
+             reporting voltage:       67
+```
+
+**310 of 385 nodes tell you nothing about whether they can survive the next
+outage.** So the question Lala posed — *which of these is still here when the
+grid is not?* — is UNANSWERABLE from our own data. The V4's silent telemetry
+was not a one-node bug; it is the NORM, and it was treated as an anomaly for a
+day. ⚠️ Consequence for the INA219 plan: a shunt measures ONE node beautifully;
+`telemetry.device_update_interval` on the other 310 gives the whole mesh in
+outline. Coarse and quantized, but ~300x the reach. Do both; the cheap one first.
+
+⚠️ Position data cannot substitute: 385 nodes report only **270 distinct
+coordinates** (one point shared by 10 nodes, another by 9, another by 8; lat
+decimal places range 3-7). Fixed positions are hand-entered and copied, so
+co-location CANNOT be inferred from the DB — a distance of `0.0 m` between two
+nodes is not evidence they share a site. Also means map placement is looser
+than it looks.
+
+### Farley-server: regional infrastructure with the fleet's own defect
+
+`!a2ed8ea0` `Farley-server`, **STATION_G2**, role **ROUTER_LATE**, 8 dBi at
+23 ft, reaches Mauna Kea / Mauna Loa / HPP — part of **Hawaii Meshtastic
+critical infrastructure**, and **it went down in Lala. Needs solar.** It also
+reports NO battery and NO voltage, so its loss is only visible as silence.
+
+**Why an elevated relay outranks leaf nodes for power work:** Meshtastic's hop
+limit is a hard budget (3 default, 7 max). An outage disproportionately kills
+the *mains-powered, well-sited relays* — so surviving battery nodes are alive
+but the paths BETWEEN them lengthen, and routes that took 3 hops may need 5 and
+**silently exceed the limit**. Both endpoints healthy, no route. The mesh does
+not degrade gracefully at that boundary; it partitions. One autonomous node at
+height keeps everyone else's hop count down. **Rank the power work: elevated
+relays first, leaves last** — the opposite of what is cheapest.
+⚠️ `FOh-ENV` (`!96393e02`, RAK4631, CLIENT_BASE) also reaches Mauna Kea, so the
+regional path has RF redundancy. UNKNOWN whether it has POWER redundancy — if
+both are mains at one site, two paths that fail together are not two paths.
+Open question: did FOh-ENV survive Lala?
+
+### ⚠️ THE structural finding: the tent is a single point of failure
+
+**Tent** — VolcanoAI (manager, canonical writer, cloud publisher, + the CH341
+toad at 225 pkt/hr), kiai, alaula (tunnel box, OpenWrt), moc, moc5,
+meshanchor-server, **m1 (border, .248)**, TWO AREDN routers, wh6gxz-POE,
+several SHORT_TURBO nodes. Fed by ~300 ft of fiber with a few routers in
+between (none of which the fleet can see).
+**Yurt** (~250 ft away, ʻōhiʻa forest, no LOS) — moc3 (gateway-only, the only
+RNode), Starlink Standard v4, fiber, AREDN, two routers.
+
+The fleet is **not distributed in any sense that matters for survival**: one
+structure, one power feed, one weather event — and a TENT is the least
+storm-survivable building on the property. That is why Lala took "the bot and
+much of the fleet" while several hundred battery/solar RF nodes carried on. Not
+nine power problems; ONE shared fate.
+Corollary: alaula's reverse tunnel crosses a LOGICAL boundary (m1's hardened
+`.88`) between two machines sitting FEET APART in the same tent. It was never
+an internet problem — see the deferred rendezvous work above.
+⚠️ A second WAN for the tent (Starlink Mini) treats the wrong problem: the
+tent's exposure is not its uplink, it is that it holds everything.
+
+### ⚠️ AREDN — the TCP-over-RF middle tier is DARK
+
+| | Count |
+|---|---|
+| AREDN nodes that exist | **3** — `WH6GXZ-6-VOLCANO-QTH-HAP` (tent), `WH6GXZ-6-VOLCANO-HI-HAP`, `WH6GXZ-6-BI-ECOM` |
+| declared in `fleet_naming.json` | **2** — the tent's node is UNDECLARED |
+| configured for polling (`map_settings.json`) | **1** |
+| successfully polled | **0** |
+
+Declared in `deployment.json` as *"polled by the map collector since
+2026-07-17"*; `aredn_config_capture.log` has been **0 bytes since Sep 5**.
+Root cause is the documented **wrong-vantage** class: the poll target `hap`
+resolves fine (`192.168.86.249`, same /24), but AREDN serves `sysinfo` on the
+MESH side and **VolcanoAI has no route to any 172.16/12 network** — the polling
+box structurally cannot see what it asks for.
+**A hand-maintained registry drifted 3 → 2 → 1 → 0 with no alert.** The
+"missing middle" between LoRa and broadband is real hardware the NOC has never
+once seen.
+
+### 🎯 The product thesis (operator, 2026-09-07): the TUI sees what is around it
+
+> *"my goal was the tui to see what around it - to diagnose - connect - fix"*
+
+**The architecture map should be GENERATED, not written.** A hand-drawn map is
+stale the first time a router moves and can diagnose nothing; the AREDN drift
+above is that failure in miniature. Make the diagnostic tool and the map the
+same artifact and it cannot go stale, because LOOKING IS THE PRODUCT.
+
+Nearly every piece already exists — it is aimed wrong, not missing:
+
+| Capability | Exists as | Aimed at today |
+|---|---|---|
+| hop tracing (no `traceroute` binary on the fleet) | `utils.wan_autotrace` | the WAN only — takes no target |
+| AREDN node + RF `link_info` | `utils/aredn.py` | one node, wrong vantage |
+| RNS topology | `rnstatus` / `rnpath` | per-box, manual |
+| 385 RF nodes, SNR, position | `node_history.db` | the map |
+| service + port state | `utils/service_check.py` | per-box |
+
+**And it is the same feature as portability.** "Plug into a new network without
+a multi-day config" and "see what is around me" are one capability: discovery
+replaces configuration, which is the cure for the address-pinning defect found
+three times tonight. It is also MF018 (never quit the app to fix it) finally
+applied to the NETWORK layer instead of just the service layer.
+**First build: give the tracer a `--target`, add a "what is around me" TUI view**
+(L2/L3 neighbours, hops to each fleet box, AREDN links, RNS interfaces + peers,
+RF nodes heard). Mostly wiring together code we already own.
+
+### 🚨 NEW DIRECTION: "remote MeshForge" — an ecomm package for VERT
+
+Operator works with an emergency response team (**VERT**). The package shape:
+**mini-dudeai + OpenWrt**, standalone, deployable by people who did not build it.
+
+**This changes the requirements class, and it should be treated as a different
+product than the lab fleet:**
+- **Non-operator users.** It must be diagnosable by a volunteer at 2 a.m. with
+  no NOC, no manager, and no one to call. The TUI is expert-facing today.
+- **Zero-config deploy.** The "multi-day config" problem stops being an
+  annoyance and becomes disqualifying.
+- **Honest degradation becomes LIFE-SAFETY.** The calibrated-claims and
+  honest_failure_modes doctrine was written for infrastructure trust; in an ERT
+  context a map that LOOKS live while frozen is something a responder acts on.
+  The existing discipline is exactly right — the stakes are now higher.
+- **Power autonomy is the gate** (see the ladder above), and it is unproven.
+- **RF-first, local-first**: responders' phones on the OpenWrt AP using local
+  services with no internet; LoRa/Meshtastic when nothing else works.
+
+The STANDALONE offering finally has a concrete customer. Design target stands:
+*the same survival profile as the nodes it watches.*
