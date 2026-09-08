@@ -6,7 +6,8 @@
 
 <p align="center">
   <strong>Mesh Network Operations Center</strong><br>
-  <em>Meshtastic + Reticulum + AREDN — Build. Test. Deploy. Monitor.</em>
+  <em>Meshtastic + Reticulum + AREDN — one interface over incompatible meshes,
+  and an honest answer when it can't see.</em>
 </p>
 
 <p align="center">
@@ -36,6 +37,13 @@ incompatible meshes.
 
 It runs on **one box**. No cloud dependencies, no subscriptions, no account.
 A $35 Pi you can SSH into from anywhere.
+
+**The design constraint is honesty.** Mesh monitoring fails in a specific way:
+the dashboard reads healthy because the thing measuring it died. Silence and
+success look identical. MeshForge is built against that failure — every probe
+distinguishes *working*, *broken*, and *I can't tell*; an unobservable state is
+reported as unobservable, never as healthy; and the status gate refuses to
+report green without quoting the check that produced it.
 
 ```bash
 sudo python3 src/launcher_tui/main.py
@@ -125,16 +133,31 @@ python3 src/standalone.py
 
 Field-tested on a live multi-site fleet.
 
+- **Calibrated status** — probes report *working / broken / unobservable* as
+  three distinct states; the status gate quotes the check behind any green
 - **Gateway bridge** — Meshtastic ⇄ Reticulum via MQTT, zero radio interference
 - **NOC + coverage maps** — both protocols on one map, SNR-coloured links
 - **Traffic inspection** — packet dissection for Meshtastic, RNS, and MQTT
 - **RF engineering** — link budgets, Fresnel zones, terrain, site planning
 - **Radio config** — meshtastic CLI integration, transient and non-interfering
 - **AI diagnostics** — offline symptom→cause→fix; optional Claude tier
-- **Reliability spine** — per-failure-class probes, calibrated status reporting
 
 **The full inventory, with what's proven vs. what needs field validation:
 [docs/capabilities.md](docs/capabilities.md)**
+
+---
+
+## Why it's built this way
+
+MeshForge is developed in Hawaii, where the failure modes aren't hypothetical.
+During Hurricane Lala the power went out and the internet went with it, and
+several hundred battery-and-solar LoRa nodes kept working — while the
+infrastructure monitoring them did not.
+
+That's the design target: a monitoring layer that survives what it monitors, and
+reports honestly when it doesn't. It isn't there yet, and the gaps are written
+down rather than hidden — see [docs/capabilities.md](docs/capabilities.md) for
+what's proven and what isn't.
 
 ---
 
