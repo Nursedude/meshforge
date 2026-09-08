@@ -93,9 +93,16 @@ from typing import Dict, List, Optional, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from utils.rf import free_space_path_loss  # noqa: E402
-from utils.safe_import import safe_import  # noqa: E402
-
-serial, _HAS_SERIAL = safe_import('serial')
+from utils.rnode_session import (  # noqa: E402
+    KISS,
+    KissDecoder,
+    RNodeUnavailable,
+    confirm_radio_on,
+    kiss_cmd as _cmd,
+    radio_config_commands,
+    rnode_session,
+    u32 as _u32,
+)
 
 # Minimum packets before a summary is worth quoting. Below this the median is
 # noise dressed as a measurement.
@@ -117,171 +124,6 @@ FIELDS = [
     "freq_hz", "bw_hz", "sf", "cr", "distance_m",
     "rssi_dbm", "snr_db", "bytes", "stats_fresh",
 ]
-
-
-class KISS:
-    """RNode KISS constants — transcribed from markqvist/LoRaMon."""
-    FEND = 0xC0
-    FESC = 0xDB
-    TFEND = 0xDC
-    TFESC = 0xDD
-
-    CMD_UNKNOWN = 0xFE
-    CMD_DATA = 0x00
-    CMD_FREQUENCY = 0x01
-    CMD_BANDWIDTH = 0x02
-    CMD_TXPOWER = 0x03
-    CMD_SF = 0x04
-    CMD_CR = 0x05
-    CMD_RADIO_STATE = 0x06
-    CMD_DETECT = 0x08
-    CMD_PROMISC = 0x0E
-    CMD_STAT_RSSI = 0x23
-    CMD_STAT_SNR = 0x24
-    CMD_FW_VERSION = 0x50
-
-    CMD_ERROR = 0x90
-
-    DETECT_REQ = 0x73
-    DETECT_RESP = 0x46
-    RADIO_STATE_OFF = 0x00
-    RADIO_STATE_ON = 0x01
-    RADIO_STATE_ASK = 0xFF
-
-    ERRORS = {
-        0x01: "ERROR_INITRADIO — the radio hardware failed to initialise",
-        0x02: "ERROR_TXFAILED",
-        0x03: "ERROR_EEPROM_LOCKED",
-    }
-
-    RSSI_OFFSET = 157
-
-    @staticmethod
-    def escape(data: bytes) -> bytes:
-        data = data.replace(bytes([0xDB]), bytes([0xDB, 0xDD]))
-        data = data.replace(bytes([0xC0]), bytes([0xDB, 0xDC]))
-        return data
-
-
-class KissDecoder:
-    """Byte-stream state machine: RNode serial -> packet and stat events.
-
-    Pure and hardware-free by design — feed it bytes, read the events. That is
-    what makes the load-bearing half of this tool testable without a radio on
-    the bench, which is the only place it could otherwise be tested.
-    """
-
-    def __init__(self) -> None:
-        self.in_frame = False
-        self.escape = False
-        self.command = KISS.CMD_UNKNOWN
-        self.buf = bytearray()
-        self.rssi: Optional[int] = None
-        self.snr: Optional[float] = None
-        self.detected = False
-        self.fw_version: Optional[str] = None
-        # Radio state as last REPORTED by the device. Deliberately starts None
-        # and is cleared before an ASK: a CMD_RADIO_STATE frame arriving right
-        # after we set the state can be an echo of the value we just sent, not
-        # an observation. Only the reply to an explicit ASK is authority.
-        self.radio_state: Optional[int] = None
-        self.errors: List[str] = []
-        # Bumped on every stats frame; lets a consumer tell whether the RSSI/SNR
-        # it is about to record actually belongs to the packet in hand.
-        self.stat_seq = 0
-        self.packets: List[Tuple[int, Optional[int], Optional[float], int]] = []
-
-    def _unescape(self, byte: int) -> Optional[int]:
-        if byte == KISS.FESC:
-            self.escape = True
-            return None
-        if self.escape:
-            if byte == KISS.TFEND:
-                byte = KISS.FEND
-            elif byte == KISS.TFESC:
-                byte = KISS.FESC
-            self.escape = False
-        return byte
-
-    def feed(self, data: bytes) -> int:
-        """Feed raw serial bytes. Returns the number of packets completed."""
-        before = len(self.packets)
-        for byte in data:
-            self._feed_byte(byte)
-        return len(self.packets) - before
-
-    def _feed_byte(self, byte: int) -> None:
-        if self.in_frame and byte == KISS.FEND and self.command == KISS.CMD_DATA:
-            self.in_frame = False
-            self.packets.append((self.stat_seq, self.rssi, self.snr, len(self.buf)))
-            self.buf = bytearray()
-            self.command = KISS.CMD_UNKNOWN
-            return
-
-        if byte == KISS.FEND:
-            self.in_frame = True
-            self.command = KISS.CMD_UNKNOWN
-            self.buf = bytearray()
-            self.escape = False
-            return
-
-        if not self.in_frame:
-            return
-
-        if not self.buf and self.command == KISS.CMD_UNKNOWN:
-            self.command = byte
-            return
-
-        if self.command == KISS.CMD_DATA:
-            b = self._unescape(byte)
-            if b is not None and len(self.buf) < 512:
-                self.buf.append(b)
-        elif self.command == KISS.CMD_STAT_RSSI:
-            self.rssi = byte - KISS.RSSI_OFFSET
-            self.stat_seq += 1
-        elif self.command == KISS.CMD_STAT_SNR:
-            self.snr = int.from_bytes(bytes([byte]), byteorder="big", signed=True) * 0.25
-            self.stat_seq += 1
-        elif self.command == KISS.CMD_RADIO_STATE:
-            self.radio_state = byte
-        elif self.command == KISS.CMD_ERROR:
-            self.errors.append(KISS.ERRORS.get(byte, f"unknown radio error 0x{byte:02x}"))
-        elif self.command == KISS.CMD_DETECT:
-            self.detected = (byte == KISS.DETECT_RESP)
-        elif self.command == KISS.CMD_FW_VERSION:
-            self.buf.append(byte)
-            if len(self.buf) == 2:
-                self.fw_version = f"{self.buf[0]}.{self.buf[1]:02d}"
-
-    def drain_packets(self):
-        out = self.packets
-        self.packets = []
-        return out
-
-
-def _cmd(command: int, payload: bytes) -> bytes:
-    return bytes([KISS.FEND, command]) + KISS.escape(payload) + bytes([KISS.FEND])
-
-
-def _u32(value: int) -> bytes:
-    return bytes([(value >> 24) & 0xFF, (value >> 16) & 0xFF,
-                  (value >> 8) & 0xFF, value & 0xFF])
-
-
-def radio_init_commands(freq: int, bw: int, sf: int, cr: int, txp: int) -> List[bytes]:
-    """The exact byte sequence that puts an RNode into promiscuous capture.
-
-    Returned rather than written, so the encoding is testable without a port.
-    """
-    return [
-        _cmd(KISS.CMD_FREQUENCY, _u32(freq)),
-        _cmd(KISS.CMD_BANDWIDTH, _u32(bw)),
-        _cmd(KISS.CMD_TXPOWER, bytes([txp])),
-        _cmd(KISS.CMD_SF, bytes([sf])),
-        _cmd(KISS.CMD_CR, bytes([cr])),
-        _cmd(KISS.CMD_RADIO_STATE, bytes([KISS.RADIO_STATE_ON])),
-        _cmd(KISS.CMD_PROMISC, bytes([0x01])),
-    ]
 
 
 def measured_path_loss(tx_power_dbm: float, tx_gain_dbi: float,
@@ -488,11 +330,6 @@ def confirm_radio_on(port, dec: "KissDecoder", timeout_s: float = 5.0):
 
 
 def do_capture(args) -> int:
-    if not _HAS_SERIAL:
-        print("FAIL: pyserial is not available — cannot open the RNode.")
-        print("      Install it with: pip3 install pyserial")
-        return 1
-
     out_path = Path(args.out).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -504,101 +341,57 @@ def do_capture(args) -> int:
         "sf": args.sf, "cr": args.cr, "distance_m": args.distance,
     }
 
+    # utils.rnode_session owns opening the device, confirming the radio is
+    # genuinely ON, and — the part this tool got wrong on 2026-09-08 — putting
+    # every mode back on the way out, on every exit path.
     try:
-        port = serial.Serial(
-            port=args.port, baudrate=args.baud, bytesize=8,
-            parity=serial.PARITY_NONE, stopbits=1, timeout=0.1,
-        )
-    except (serial.SerialException, OSError) as e:
-        print(f"FAIL: cannot open {args.port}: {e}")
+        with rnode_session(args.port, freq=args.freq, bw=args.bw, sf=args.sf,
+                           cr=args.cr, txpower=args.tx_power_setting,
+                           promiscuous=True, baud=args.baud) as rn:
+            print(f"RNode detected on {args.port}"
+                  + (f", firmware {rn.fw_version}" if rn.fw_version else ""))
+            print("radio    : ON (confirmed by RADIO_STATE_ASK)")
+            print(f"listening: {args.freq/1e6:.3f} MHz  bw {args.bw/1e3:.1f} kHz  "
+                  f"sf {args.sf}  cr 4/{args.cr}")
+            print(f"writing  : {out_path}")
+            print("Ctrl-C to stop.\n")
+
+            new_file = not out_path.exists() or out_path.stat().st_size == 0
+            with open(out_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.DictWriter(f, fieldnames=FIELDS)
+                if new_file:
+                    writer.writeheader()
+
+                count = 0
+                last_stat_seq = -1
+                end = time.monotonic() + args.seconds if args.seconds else None
+                try:
+                    while end is None or time.monotonic() < end:
+                        rn.decoder.feed(rn.read(256))
+                        for stat_seq, rssi, snr, nbytes in rn.decoder.drain_packets():
+                            fresh = 1 if stat_seq != last_stat_seq else 0
+                            last_stat_seq = stat_seq
+                            row = dict(meta)
+                            row.update({
+                                "ts_iso": datetime.datetime.now().astimezone().isoformat(),
+                                "rssi_dbm": rssi if rssi is not None else "",
+                                "snr_db": snr if snr is not None else "",
+                                "bytes": nbytes, "stats_fresh": fresh,
+                            })
+                            writer.writerow(row)
+                            f.flush()
+                            count += 1
+                            flag = "" if fresh else "   [STALE STATS]"
+                            print(f"[{count:5d}] {rssi} dBm  SNR {snr} dB  "
+                                  f"{nbytes} bytes{flag}")
+                except KeyboardInterrupt:
+                    print("\nstopped by operator")
+    except RNodeUnavailable as exc:
+        print(f"FAIL: {exc}")
+        print("      Refusing to capture. A receiver that is switched off looks")
+        print("      exactly like a silent band, and every reading would be a")
+        print("      false negative you could not tell from a real one.")
         return 1
-
-    dec = KissDecoder()
-    try:
-        time.sleep(2.0)  # let the board settle after the port opens
-        port.write(_cmd(KISS.CMD_DETECT, bytes([KISS.DETECT_REQ])))
-        port.write(_cmd(KISS.CMD_FW_VERSION, bytes([0x00])))
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline and not dec.detected:
-            dec.feed(port.read(256))
-        if not dec.detected:
-            print(f"FAIL: no RNode responded on {args.port}. Wrong port, or the board")
-            print("      is not running RNode firmware. Check with: rnodeconf -i <port>")
-            return 1
-        print(f"RNode detected on {args.port}"
-              + (f", firmware {dec.fw_version}" if dec.fw_version else ""))
-
-        for command in radio_init_commands(args.freq, args.bw, args.sf, args.cr,
-                                           args.tx_power_setting):
-            port.write(command)
-            time.sleep(0.05)
-
-        state, why = confirm_radio_on(port, dec)
-        if state != KISS.RADIO_STATE_ON:
-            print(f"FAIL: the radio did not come up — {why}")
-            print("      Refusing to capture. A receiver that is switched off looks")
-            print("      exactly like a silent band, and every reading would be a")
-            print("      false negative you could not tell from a real one.")
-            for err in dec.errors:
-                print(f"      radio reported: {err}")
-            print("      Check the board with: rnodeconf -i <port>")
-            return 1
-        print(f"radio    : ON (confirmed by RADIO_STATE_ASK)")
-
-        print(f"listening: {args.freq/1e6:.3f} MHz  bw {args.bw/1e3:.1f} kHz  "
-              f"sf {args.sf}  cr 4/{args.cr}")
-        print(f"writing  : {out_path}")
-        print("Ctrl-C to stop.\n")
-
-        new_file = not out_path.exists() or out_path.stat().st_size == 0
-        with open(out_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=FIELDS)
-            if new_file:
-                writer.writeheader()
-
-            count = 0
-            last_stat_seq = -1
-            end = time.monotonic() + args.seconds if args.seconds else None
-            while end is None or time.monotonic() < end:
-                dec.feed(port.read(256))
-                for stat_seq, rssi, snr, nbytes in dec.drain_packets():
-                    fresh = 1 if stat_seq != last_stat_seq else 0
-                    last_stat_seq = stat_seq
-                    row = dict(meta)
-                    row.update({
-                        "ts_iso": datetime.datetime.now().astimezone().isoformat(),
-                        "rssi_dbm": rssi if rssi is not None else "",
-                        "snr_db": snr if snr is not None else "",
-                        "bytes": nbytes, "stats_fresh": fresh,
-                    })
-                    writer.writerow(row)
-                    f.flush()
-                    count += 1
-                    flag = "" if fresh else "   [STALE STATS]"
-                    print(f"[{count:5d}] {rssi} dBm  SNR {snr} dB  {nbytes} bytes{flag}")
-    except KeyboardInterrupt:
-        print("\nstopped by operator")
-    except (serial.SerialException, OSError) as e:
-        print(f"\nFAIL: serial error during capture: {e}")
-        return 1
-    finally:
-        # Hand the radio back. Promiscuous mode is a MODE, not a read: leaving it
-        # set silently breaks normal RNS reception on that RNode until something
-        # resets it, and RNS's own init never clears it. On 2026-09-08 this tool
-        # left two production radios promiscuous and cost an afternoon chasing a
-        # phantom one-way link -- the capture "measured" the link into a state
-        # where the thing being measured no longer worked.
-        try:
-            port.write(_cmd(KISS.CMD_PROMISC, bytes([0x00])))
-            port.flush()
-            time.sleep(0.2)
-        except (serial.SerialException, OSError, AttributeError):
-            print("WARNING: could not clear promiscuous mode on the way out.")
-            print("         That RNode may not receive normally until it is reset.")
-        try:
-            port.close()
-        except (serial.SerialException, OSError):
-            pass
 
     print(f"\nWrote {out_path}")
     print(f"Now run: python3 {sys.argv[0]} --summarize {out_path}")

@@ -29,6 +29,7 @@ Checks:
 - MF025: file-size ratchet — src/ python files over 1,500 lines (frozen 2026-07-13 baseline for the 5 known offenders, which may only shrink; split the file, never raise the cap)
 - MF026: config/state torn-write guard — os.O_TRUNC banned + non-atomic config `open("w")` ratcheted vs a frozen baseline (route through utils.paths.atomic_write_text; ported from the client repo's MED3 config-atomicity rule)
 - MF027: probe fail-dark guard — in probe_* functions, an except-handler returning None without note_disposition (THE #80 class: degraded state reads as 'all is well' forever; build:fix doctrine 2026-07-29)
+- MF029: RNode radio MODE changed outside the session chokepoint (CMD_PROMISC / RADIO_STATE written raw; must use utils.rnode_session.rnode_session — a mode outlives the process that set it, and a stranded promiscuous RNode stops receiving; self-inflicted 2026-09-08)
 - MF028: state-saver swallow guard — in watchdog `_save_*`/`_write_*`/`_persist_*` helpers, an except-handler that leaves NO witness (no call, no assignment, no non-None return). Ten savers swallowed with a bare `pass` on 2026-09-02; route through probe_core.note_state_write_failure
 
 Usage:
@@ -372,6 +373,35 @@ class MeshForgeLinter:
                     "wedged rnsd instead of hanging the thread; #68/#69). If the "
                     "call is genuinely isolated, add it to the chokepoint "
                     "allowlist in lint.py + TestRNSReticulumChokepoint."
+                ))
+
+        # MF029: RNode radio MODE written outside the session chokepoint.
+        # Promiscuous mode and radio state are MODES the device stays in — they
+        # outlive the process that set them, and RNS's own RNodeInterface init
+        # never clears them. On 2026-09-08 link_test_capture set promiscuous on
+        # two production RNodes and exited; both stopped receiving normally and
+        # stayed that way, which presented as a one-way RF link and cost an
+        # afternoon. TCP being up is what hid it — on a pure-RF gateway the same
+        # bug is a total outage. Route mode changes through
+        # utils.rnode_session.rnode_session, which restores what it set on every
+        # exit path. Mirror of MF007 (TCPInterface) and MF019 (RNS.Reticulum).
+        if 'CMD_PROMISC' in line or 'CMD_RADIO_STATE' in line:
+            basename = os.path.basename(filepath)
+            is_test = '/tests/' in filepath or 'test_' in basename
+            is_comment = stripped.startswith('#')
+            # Allowlisted homes: the chokepoint itself defines and uses these.
+            chokepoint_files = ('utils/rnode_session.py',)
+            is_allowed = any(f in filepath for f in chokepoint_files)
+            # Only flag an actual write to the device, not a constant reference.
+            is_write = bool(re.search(r'(write|kiss_cmd|_cmd)\s*\(', line))
+            if is_write and not is_test and not is_comment and not is_allowed:
+                issues.append(LintIssue(
+                    filepath, lineno, Severity.ERROR, "MF029",
+                    "RNode radio mode written outside the session chokepoint — "
+                    "use rnode_session() from utils.rnode_session. A mode "
+                    "outlives the process that set it: a stranded promiscuous "
+                    "RNode stops receiving and RNS never clears it "
+                    "(self-inflicted 2026-09-08, two production radios)."
                 ))
 
         # MF020: apply_config_and_restart() return value discarded in a TUI handler.
