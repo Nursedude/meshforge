@@ -87,13 +87,24 @@ if [ -n "$HOLD_UNTIL" ] && [ "$(date +%s)" -lt "$HOLD_UNTIL" ]; then
   exit 0
 fi
 
+# Load the operator env file the systemd unit uses. UNCONDITIONAL, and it must
+# stay that way: until 2026-09-07 this lived inside the MINI_SKIP_DREAM guard
+# below, so setting MINI_SKIP_DREAM=1 — a documented, legitimate option — also
+# silently dropped EVERY operator value this script reads. MINI_CADENCE_PRESCORE
+# defaults to 1 in run_local_prescore, so the 09-07 Ollama parking would have
+# quietly un-parked itself and resumed local inference, and MINI_DUDEAI_NTFY_TOPIC
+# would have gone unset in the same stroke, with nothing saying so. Two settings
+# that must agree, coupled through an unrelated feature flag
+# (honest_failure_modes #4 — half-wiring). Config loading is not a feature; it
+# belongs before every consumer, not inside one of them.
+if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
+
 # Refresh proposals FIRST. mini's --dream pass is deterministic (no LLM, cheap)
 # and is the ONLY thing that proposes memory-deltas — without it the gate below
 # can never open. Set MINI_SKIP_DREAM=1 to gate on existing deltas only (e.g. if
 # a separate --dream cron owns synthesis). The preset's build_engine() needs the
-# ntfy topic even for --dream, so load the env file the systemd unit uses.
+# ntfy topic even for --dream, which the load above already guarantees.
 if [ "${MINI_SKIP_DREAM:-0}" != "1" ]; then
-  if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
   if ! PYTHONPATH="$REPO/src" python3 -m mini_dudeai --preset "$PRESET" --dream >/dev/null 2>&1; then
     echo "mini-cadence: --dream refresh failed; gating on existing deltas only." >&2
   fi

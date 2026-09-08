@@ -162,3 +162,33 @@ class TestTimeoutBackoff:
         rc, out, calls = run(sandbox, claude_exit=1)
         assert rc == 1
         assert not sandbox.state.exists()       # backoff cleared, not armed on exit 1
+
+
+class TestOperatorEnvIsLoadedUnconditionally:
+    """The env file must load regardless of MINI_SKIP_DREAM (fixed 2026-09-07).
+
+    Until this fix the ONLY `. "$ENV_FILE"` lived inside the
+    `MINI_SKIP_DREAM != 1` guard, so setting that documented flag silently
+    dropped every operator value the script reads. `run_local_prescore` reads
+    `${MINI_CADENCE_PRESCORE:-1}` — defaulting to ENABLED — so the 2026-09-07
+    Ollama parking would have quietly un-parked itself and resumed local
+    inference, with nothing in the log saying so. Two settings that must agree,
+    coupled through an unrelated feature flag (honest_failure_modes #4).
+
+    Note what let it survive: every other test in this file runs with
+    MINI_SKIP_DREAM=1, i.e. entirely inside the broken branch, and none of them
+    asserted on operator env. The bug lived in the condition the suite always
+    used.
+    """
+
+    def test_prescore_parking_survives_mini_skip_dream(self, sandbox):
+        envf = sandbox.home / ".config" / "meshforge" / "mini_dudeai.env"
+        envf.parent.mkdir(parents=True)
+        envf.write_text("MINI_CADENCE_PRESCORE=0\n")
+        sandbox.deltas.write_text(PROPOSED_A)
+        # run() sets MINI_SKIP_DREAM=1 — the exact condition that hid the bug.
+        rc, out, calls = run(sandbox)
+        assert rc == 0
+        assert "pre-score disabled (MINI_CADENCE_PRESCORE=0)" in out, (
+            "the operator's parking was not honored with MINI_SKIP_DREAM=1 — "
+            "the env file is being sourced inside a feature-flag branch again")
