@@ -53,7 +53,18 @@ from utils.watchdog_probe_core import (
     note_state_write_failure,
 )
 
-CLASS = "rf_leg_silent"
+# The class name below is repeated as a LITERAL at every emit site, and that is
+# deliberate — do not hoist it back to a module constant. Three gates read this
+# module as TEXT and recognise only a literal ``Signal(cls="...")`` /
+# ``note_disposition("...")``: the run_all_probes wiring gate, the
+# disposition-adoption gate, and the closed-enum documentation gate. This module
+# shipped 2026-09-08 emitting through a module constant and all three went blind
+# at once — they reported the probe as UNWIRED and DISPOSITION-LESS while it was
+# correctly called in run_all_probes and noting four honest dispositions. They
+# failed CLOSED, which is the safe direction, but their message sent the reader
+# to add a duplicate probe call. Every other signal class in the tree uses
+# literals; this module was the only outlier. Keep it that way.
+SIGNAL_CLASS_DOC = "rf_leg_silent"  # for humans; the code below uses literals
 
 DEFAULT_STATE_PATH = "/var/lib/meshforge/rf_leg_state.json"
 
@@ -115,14 +126,14 @@ def probe_rf_leg_silent(
             from utils.rns_status_parser import run_rnstatus
             status = run_rnstatus()
         except Exception as e:  # noqa: BLE001 - unobservable, never "healthy"
-            note_disposition(CLASS, "indeterminate",
+            note_disposition("rf_leg_silent", "indeterminate",
                              reason=f"rnstatus unavailable: {e}")
             return None
 
     ifaces = [i for i in getattr(status, "interfaces", [])
               if "RNodeInterface" in getattr(i, "type_name", "")]
     if not ifaces:
-        note_disposition(CLASS, "inert",
+        note_disposition("rf_leg_silent", "inert",
                          reason="no RNode RF interface configured on this box")
         return None
 
@@ -172,9 +183,9 @@ def probe_rf_leg_silent(
     _save_state(state_path, state)
 
     if findings:
-        note_disposition(CLASS, "degraded", reason="; ".join(findings))
+        note_disposition("rf_leg_silent", "degraded", reason="; ".join(findings))
         return Signal(
-            cls=CLASS,
+            cls="rf_leg_silent",
             subject=findings[0].split(":")[0],
             severity="degraded",
             detail=(
@@ -189,10 +200,10 @@ def probe_rf_leg_silent(
         )
 
     if judged == 0:
-        note_disposition(CLASS, "inert",
+        note_disposition("rf_leg_silent", "inert",
                          reason="no RF peer has ever been heard on this box's "
                                 "RNode leg(s); nothing to judge yet")
         return None
 
-    note_disposition(CLASS, "clean")
+    note_disposition("rf_leg_silent", "clean")
     return None

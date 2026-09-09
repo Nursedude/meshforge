@@ -116,10 +116,34 @@ def cache_dirs() -> Tuple[Path, Optional[str]]:
     return upd, warning
 
 
+RNODECONF_MISSING = (
+    "RNS.Utilities.rnodeconf is not importable — is the rns package installed? "
+    "This tool deliberately reads its board table and firmware URLs from "
+    "rnodeconf rather than carrying its own copy, so it cannot run without it."
+)
+
+
+def _require_rnodeconf():
+    """Fail with the actual cause, not with ``'NoneType' has no attribute``.
+
+    ``safe_import`` hands back None when the dependency is absent — the correct
+    degraded value, but it sits in the same slot a module occupies, so the first
+    attribute access downstream raises an AttributeError naming NoneType and not
+    one word about rns being missing. ``main()`` has always guarded this; the
+    library functions had not, so anything importing this module (the test
+    suite, on a CI runner that installs the minimal-deps profile) hit the
+    confusing form instead. Same class as everything else in this repo: a
+    degraded value that reads as a valid one until a consumer trips over it.
+    """
+    if not _HAS_RNODECONF:
+        raise RuntimeError(RNODECONF_MISSING)
+    return rc
+
+
 def known_firmware() -> Dict[str, List[dict]]:
     """Map firmware zip -> the models that use it, straight from rnodeconf.models."""
     out: Dict[str, List[dict]] = {}
-    for model_id, spec in rc.models.items():
+    for model_id, spec in _require_rnodeconf().models.items():
         low, high, dbm, band, fw, chip = spec[0], spec[1], spec[2], spec[3], spec[4], spec[5]
         if not fw:
             # Homebrew models (0xFE/0xFF) carry a None firmware name on purpose:
@@ -344,9 +368,7 @@ def main() -> int:
     args = ap.parse_args()
 
     if not _HAS_RNODECONF:
-        print("FAIL: RNS.Utilities.rnodeconf is not importable — is the rns package installed?")
-        print("      This tool deliberately reads its board table and URLs from rnodeconf")
-        print("      rather than carrying its own copy, so it cannot run without it.")
+        print(f"FAIL: {RNODECONF_MISSING}")
         return 1
 
     if not (args.list or args.fetch or args.verify):

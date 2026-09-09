@@ -1014,6 +1014,19 @@
       "annotation": "2026-07-19 structural-dark row 9 — the fleet's ONLY over-the-air witness. Every other mesh-RF check is a box talking about itself: the gateway can read healthy (RNS round-trip canary green, service active, queue draining) while nothing actually leaves the antenna — deaf radio, wrong region/preset, dead PA, unplugged coax. The claws answer lora_stats from a SEPARATE radio on SEPARATE silicon, which is physical-layer evidence no box can fabricate about itself. Fires only when EVERY reachable claw reporting a reading is silent (one deaf claw is that claw's problem; all of them is the channel). ⚠️ propose_escalation, NOT ntfy, DELIBERATELY: the 1800s quiet window is PROVISIONAL — the operator staged it pending a heard-rate soak across overnight lulls, and that soak data did not exist until the lora_stats capture shipped the same day. A genuine quiet night can reach this threshold. Promote to a pager only from measured quiet-hours data, the way calibration_drift soaked 34 days before promotion; paging on an unmeasured threshold is the 'worked once' trap wearing an RF hat."
     },
     {
+      "id": "rf_leg_silent_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "rf_leg_silent",
+        "subject_glob": "*"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 3600,
+      "annotation": "2026-09-08 — an RNode RF leg TRANSMITTING while receiving NOTHING, sustained, on a leg that has received before. 'Status: Up' is PRESENCE; this asks for FUNCTION. Born self-inflicted: a capture tool left two production RNodes in promiscuous mode and exited — promiscuous is a MODE the device keeps and RNS's RNodeInterface init never clears it, so both radios went deaf while EVERY other surface read healthy, because traffic kept flowing over TCP. A redundant path masked a dead one for hours and it presented as a one-way link. ⚠️ propose_escalation, NOT ntfy, deliberately: the 3-tick debounce and the min-TX-delta are UNSOAKED as of this seeding, and the discriminator (tx grows while rx stays exactly flat, on a leg that has received before) has never been observed firing on a real fault — only reasoned from the incident that produced it. Promote to a pager only after it has been seen to fire true, or after a deliberate drill leaves a radio promiscuous and this catches it. Inert on the many boxes with no RNode leg, so a quiet seed here is expected, not evidence the rule is wrong."
+    },
+    {
       "id": "claw_watched_node_silent_any",
       "match": {
         "kind": "signal_class",

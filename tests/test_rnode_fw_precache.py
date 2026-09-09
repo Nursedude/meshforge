@@ -24,6 +24,21 @@ _spec = importlib.util.spec_from_file_location("rnode_fw_precache", SCRIPT)
 pc = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(pc)
 
+# The board table and firmware URLs come from rnodeconf, which ships with rns.
+# CI installs the minimal-deps profile and has no rns, so every test that reads
+# the model table must SKIP there rather than fail — it is testing a dependency
+# that is legitimately absent, not a defect. The zip-shape and cache tests below
+# build their own fixtures and need none of this, so they still run on CI, which
+# is the point: the skip is scoped to what actually needs the dependency.
+#
+# ⚠️ Scoped, and visible. A blanket module-level skip would hide the zip-shape
+# coverage too, and a silent one would let this file quietly stop testing
+# anything at all. pytest reports skips with this reason attached.
+needs_rnodeconf = pytest.mark.skipif(
+    not pc._HAS_RNODECONF,
+    reason="RNS.Utilities.rnodeconf not importable (rns not installed — "
+           "expected on the minimal-deps CI profile)")
+
 FW_ESP = "rnode_firmware_heltec32v3.zip"
 FW_NRF = "rnode_firmware_rak4631.zip"
 VERSION = "1.86"
@@ -141,6 +156,7 @@ class TestVerify:
         assert pc.do_verify(tmp_path, [FW_ESP]) == 0
 
 
+@needs_rnodeconf
 class TestBoardResolution:
     def test_exact_name_resolves(self):
         resolved, unknown = pc.resolve_boards([FW_ESP])
@@ -173,6 +189,7 @@ class TestBoardResolution:
             assert fw in known, f"{fw} is not a firmware rnodeconf knows about"
 
 
+@needs_rnodeconf
 class TestFetchDegradedPaths:
     def test_unreachable_manifest_fails_loud(self, tmp_path, monkeypatch):
         """No manifest means no trustworthy version or hash — must not guess."""
