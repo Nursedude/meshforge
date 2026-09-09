@@ -347,6 +347,84 @@ elif [ "$reached" -lt "$expect" ]; then unk "fleet SHA drift" "$matched/$reached
 elif [ "$reached" = 0 ]; then unk "fleet SHA drift" "no box carried $REPO;$desc"
 else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
 
+# 2a. TWIN fleet SHA drift — the SISTER repo's own boxes (2026-09-09).
+#
+# WHY THIS LEG EXISTS. The leg above is scoped to $REPO (MeshForge), so
+# MeshAnchor's fleet was outside the check of record entirely. On 2026-09-09
+# FOUR MeshAnchor pushes landed with the deploy never run — meshanchor-server sat
+# four commits behind for hours while this gate printed "fleet SHA drift PASS
+# 9/9". That 9/9 was TRUE and about the wrong repo, which is this file's own
+# recurring defect class read back at it.
+#
+# It surfaced only by ACCIDENT: parity_drift on that box went indeterminate
+# because a byte-locked test file was absent there. Had that file not been
+# byte-locked hours earlier, the drift could have sat indefinitely with every
+# leg green. The tooling was never the gap — `fleet_pull.sh /opt/meshanchor` and
+# fleet_hosts.meshanchor have both existed since 2026-07-16. Nothing CALLED
+# them, and nothing could SEE that.
+#
+# Documentation was not the fix and had already been tried: the instruction
+# ("push the sister repo from the dev box, PULL on its own fleet box") was in the operator's
+# memory, injected at session start, read, and missed four times that day.
+#
+# ⚠️ THE HOST LIST MUST BE THE PER-REPO ONE. fleet_hosts_resolve falls back to
+# the GENERIC fleet_hosts, and for this repo that means comparing 9 boxes when
+# the sister repo lives on 1 — exactly the "every MA deploy reads 6 NOT
+# converged" wolf-cry fixed on 2026-07-16. If the per-repo list did not win the
+# resolution, this leg reports UNKNOWN rather than judging against the wrong
+# denominator. Wrong-denominator is not a verdict.
+#
+# ABSENT is not a verdict either: on 8 of 10 boxes the sister repo is absent BY
+# DESIGN, so a run from there emits a NOTE that touches no counter — never
+# UNKNOWN, which would make the gate un-greenable where the twin does not live.
+TWIN_REPO="${HONEST_TWIN_REPO:-/opt/meshanchor}"
+if [ ! -e "$TWIN_REPO/.git" ]; then
+  disc "twin fleet SHA" "$TWIN_REPO not on this box — sister repo absent by design here"
+elif ! TWIN_HEADFULL=$(git -C "$TWIN_REPO" rev-parse HEAD 2>/dev/null); then
+  unk "twin fleet SHA" "$TWIN_REPO present but git could not read HEAD — unobservable, not converged"
+else
+  # Subshell so the resolver cannot leak FLEET_HOSTS_* into later legs.
+  _twin_out=$(
+    if [ -r "$_HS_LIB" ]; then
+      . "$_HS_LIB"
+      unset MESHFORGE_FLEET_HOSTS FLEET_HOSTS
+      if fleet_hosts_resolve "$TWIN_REPO"; then
+        printf '%s\n' "FILE=$FLEET_HOSTS_FILE"
+        printf '%s\n' "$FLEET_HOSTS_LIST" | sed 's/^/HOST=/'
+      fi
+    fi
+  )
+  _twin_file=$(printf '%s\n' "$_twin_out" | sed -n 's/^FILE=//p')
+  _twin_rb=$(basename "$TWIN_REPO")
+  if [ -z "$_twin_file" ]; then
+    unk "twin fleet SHA" "no host list resolved for $TWIN_REPO — cannot tell where the sister repo is deployed"
+  elif [ "$(basename "$_twin_file")" != "fleet_hosts.$_twin_rb" ]; then
+    unk "twin fleet SHA" "resolved the GENERIC $(basename "$_twin_file") for $_twin_rb — refusing to judge the sister repo against the wrong denominator (create fleet_hosts.$_twin_rb)"
+  else
+    t_reached=0; t_matched=0; t_total=0; t_desc=""
+    for tb in $(printf '%s\n' "$_twin_out" | sed -n 's/^HOST=//p'); do
+      t_total=$((t_total+1))
+      traw=$(run_on "$tb" "if [ -e $TWIN_REPO/.git ]; then git -C $TWIN_REPO rev-parse HEAD 2>/dev/null || echo HSGITERR; else echo HSNOREPO; fi")
+      case "${traw:-}" in
+        "")          t_desc="$t_desc $tb:unreach" ;;
+        HSNOREPO)    t_desc="$t_desc $tb:no-repo" ;;
+        HSGITERR)    t_desc="$t_desc $tb:git-error" ;;
+        "$TWIN_HEADFULL") t_reached=$((t_reached+1)); t_matched=$((t_matched+1)) ;;
+        *)           t_reached=$((t_reached+1)); t_desc="$t_desc $tb:${traw:0:7}" ;;
+      esac
+    done
+    if [ "$t_total" -eq 0 ]; then
+      unk "twin fleet SHA" "$(basename "$_twin_file") yielded zero hosts — a list that names nobody is not 'all converged'"
+    elif [ "$t_matched" -lt "$t_reached" ]; then
+      bad "twin fleet SHA" "$t_matched/$t_total @ ${TWIN_HEADFULL:0:8} ($_twin_rb);$t_desc — deploy: scripts/fleet_pull.sh $TWIN_REPO"
+    elif [ "$t_reached" -lt "$t_total" ]; then
+      unk "twin fleet SHA" "$t_matched/$t_reached reachable of $t_total @ ${TWIN_HEADFULL:0:8} ($_twin_rb);$t_desc"
+    else
+      ok "twin fleet SHA" "$t_matched/$t_total @ ${TWIN_HEADFULL:0:8} ($_twin_rb)"
+    fi
+  fi
+fi
+
 # 2b. Running code vs DEPLOYED code — DISCLOSURE, never a verdict.
 #
 # The SHA-drift leg above compares each box's git HEAD ON DISK. That is not the
