@@ -8,6 +8,7 @@
 @.claude/rules/calibrated_claims.md
 @.claude/rules/model_advisor.md
 @.claude/rules/honest_failure_modes.md
+@.claude/rules/harness_restraint.md   # EXPIRES 2026-10-09 — delete file + this line
 @.claude/foundations/persistent_issues.md
 
 ---
