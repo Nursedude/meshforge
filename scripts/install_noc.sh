@@ -176,16 +176,31 @@ if [[ "$DRY_RUN" == "true" ]]; then
     VENV_DIR="$INSTALL_DIR/venv"
     MESHTASTICD_CONFIG_DIR="$DRY_SANDBOX/etc/meshtasticd"
     command mkdir -p "$INSTALL_DIR" "$MESHTASTICD_CONFIG_DIR"
-    trap 'rc=$?; if [[ $rc -ne 0 ]]; then
-            echo "";
-            echo "  ══ DRY RUN ABORTED (exit $rc) ══";
-            echo "  This is a FINDING, not a fault on your machine: the run hit a";
-            echo "  path this preview does not cover, so it was STOPPED";
-            echo "  rather than letting it proceed (set -e). Nothing was changed.";
-            echo "  Please report the last command shown above.";
-            echo "";
-          fi' EXIT
+    :  # the unified EXIT trap is installed below, for BOTH modes
 fi
+
+# ONE EXIT trap for both modes. Installed after the dry-run block so it cannot
+# be clobbered by a second `trap ... EXIT` (the later trap silently wins, which
+# is exactly how a failure report disappears). A dry-run abort is a COVERAGE
+# finding; a real-run failure is a partially-configured box. Different messages,
+# one handler.
+mf_on_exit() {
+    local rc=$?
+    [[ $rc -eq 0 ]] && { mf_dry_run_summary; return 0; }
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo ""
+        echo "  ══ DRY RUN ABORTED (exit $rc) ══"
+        echo "  This is a FINDING, not a fault on your machine: the run reached a"
+        echo "  path this preview does not cover, so it was STOPPED (set -e)"
+        echo "  rather than allowed to proceed. NOTHING was changed."
+        echo "  Failed during: [${MF_PHASE_NUM:-?}] ${MF_PHASE:-startup}"
+        echo "  Please report the last command shown above."
+        echo ""
+    else
+        mf_install_failed_report "$rc"
+    fi
+}
+trap mf_on_exit EXIT
 
 # Resolve operator login for systemd User= placeholders.
 # Refuses root and users not in /etc/passwd — loud-fail rather than
@@ -521,8 +536,7 @@ add_meshtastic_repo() {
 # ─────────────────────────────────────────────────────────────────
 # Detect existing installations
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[1/8] Checking existing installations...${NC}"
-
+mf_phase "1/8" "Checking existing installations..."
 MESHTASTICD_EXISTS=false
 RNS_EXISTS=false
 MESHFORGE_EXISTS=false
@@ -593,8 +607,7 @@ fi
 # ─────────────────────────────────────────────────────────────────
 # System dependencies
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[2/8] Installing system dependencies...${NC}"
-
+mf_phase "2/8" "Installing system dependencies..."
 # Show detected OS
 OS_REPO=$(detect_os_repo)
 if [[ -f /etc/os-release ]]; then
@@ -692,8 +705,7 @@ fi
 # broke the kiai 2026-07-12 provision ("Could not open requirements
 # file: .../requirements/rns.txt").
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[3/8] Syncing MeshForge source...${NC}"
-
+mf_phase "3/8" "Syncing MeshForge source..."
 # Clone/update via the shared helper — honors an optional MESHFORGE_REF pin
 # (unresolvable pin hard-fails) and records the resolved HEAD for provenance.
 if ! mf_git_sync "https://github.com/Nursedude/meshforge.git" "$INSTALL_DIR"; then
@@ -708,8 +720,7 @@ echo -e "  ${GREEN}✓ MeshForge source ready${NC}"
 # Install meshtasticd (auto-detect USB vs SPI)
 # ─────────────────────────────────────────────────────────────────
 if $INSTALL_MESHTASTICD; then
-    echo -e "${CYAN}[4/8] Installing meshtasticd...${NC}"
-
+    mf_phase "4/8" "Installing meshtasticd..."
     # Create udev rules first (needed for detection)
     if [[ ! -f /etc/udev/rules.d/99-meshtastic.rules ]]; then
         echo "  Creating udev rules for radio devices..."
@@ -1437,7 +1448,7 @@ NO_RADIO_SERVICE
     echo -e "  ${GREEN}✓ meshtasticd installed (${DAEMON_TYPE})${NC}"
     echo -e "  ${GREEN}✓ Config directory: $MESHTASTICD_CONFIG_DIR${NC}"
 else
-    echo -e "${CYAN}[4/8] Skipping meshtasticd...${NC}"
+    mf_phase "4/8" "Skipping meshtasticd..."
     echo -e "  ${YELLOW}⊘ Skipped${NC}"
 fi
 
@@ -1445,8 +1456,7 @@ fi
 # Install Reticulum (RNS)
 # ─────────────────────────────────────────────────────────────────
 if $INSTALL_RNS; then
-    echo -e "${CYAN}[5/8] Installing Reticulum (RNS)...${NC}"
-
+    mf_phase "5/8" "Installing Reticulum (RNS)..."
     # Install pipx (needed for NomadNet install via menu) — non-fatal.
     if ! command -v pipx &>/dev/null; then
         echo "  Installing pipx..."
@@ -1621,7 +1631,7 @@ RNSD_SERVICE
 
     echo -e "  ${GREEN}✓ Reticulum installed${NC}"
 else
-    echo -e "${CYAN}[5/8] Skipping Reticulum...${NC}"
+    mf_phase "5/8" "Skipping Reticulum..."
     echo -e "  ${YELLOW}⊘ Skipped${NC}"
 fi
 
@@ -1634,8 +1644,7 @@ cd "$INSTALL_DIR"
 # ─────────────────────────────────────────────────────────────────
 # Python dependencies
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[6/8] Installing Python dependencies...${NC}"
-
+mf_phase "6/8" "Installing Python dependencies..."
 # Use virtual environment
 if [[ ! -d "$VENV_DIR" ]]; then
     python3 -m venv "$VENV_DIR" --system-site-packages
@@ -1661,8 +1670,7 @@ fi
 # ─────────────────────────────────────────────────────────────────
 # Create NOC configuration
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[7/8] Configuring NOC mode...${NC}"
-
+mf_phase "7/8" "Configuring NOC mode..."
 # Determine mode based on what we installed
 NOC_MODE="local"
 if ! $INSTALL_MESHTASTICD; then
@@ -1729,8 +1737,7 @@ echo -e "  ${GREEN}✓ Daemon type: $DAEMON_TYPE${NC}"
 # ─────────────────────────────────────────────────────────────────
 # Create system commands and services
 # ─────────────────────────────────────────────────────────────────
-echo -e "${CYAN}[8/8] Creating system integration...${NC}"
-
+mf_phase "8/8" "Creating system integration..."
 # Main command
 mf_write_stdin /usr/local/bin/meshforge << 'MESHFORGE_CMD'
 #!/bin/bash
@@ -2177,7 +2184,6 @@ echo -e "${CYAN}Documentation:${NC} https://github.com/Nursedude/meshforge"
 echo -e "${CYAN}Made with aloha for the mesh community${NC}"
 echo ""
 
-# Dry-run epilogue: the count of previewed operations, and an explicit
-# statement of what the preview does NOT cover. A summary that claimed
-# completeness would be the very overclaim this feature exists to avoid.
-mf_dry_run_summary
+# NOTE: no explicit mf_dry_run_summary call here. The unified EXIT trap
+# (mf_on_exit) prints it on a clean exit. Calling it here TOO printed the
+# summary twice — caught by the drill on 2026-09-09, not by reading.

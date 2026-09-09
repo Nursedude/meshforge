@@ -398,3 +398,60 @@ mf_write_stdin() {   # <file>  — body on stdin
 mf_have_tty() {
     { : < /dev/tty; } 2>/dev/null
 }
+
+# ==========================================================================
+# PHASE TRACKING + THE FAILURE REPORT (2026-09-09)
+# ==========================================================================
+# install_noc.sh runs `set -e` across 8 phases of real system mutation. Before
+# this, an unhandled failure in phase 5 simply KILLED the script: whatever error
+# the failing command happened to print, then nothing. The user was left with a
+# partially-configured box and no statement of what had been done, what had not,
+# or what to do next — and the log path was only mentioned at the very top of a
+# long transcript they had just watched scroll past.
+#
+# WHAT THIS DOES NOT DO, deliberately: it does not roll back. Undoing an apt
+# install, a systemd unit, or a udev rule automatically is both hard and
+# genuinely dangerous — a rollback that removes a package the user already
+# depended on is worse than a half-install. Claiming transactional safety we do
+# not have would be the exact defect class this session was about. So the
+# contract is honest instead: name the phase, name the log, and state the
+# recovery path.
+MF_PHASE="startup"
+MF_PHASE_NUM=0
+
+# phase <n/total> <description>
+mf_phase() {
+    MF_PHASE="$2"
+    MF_PHASE_NUM="$1"
+    printf '\033[0;36m[%s] %s\033[0m\n' "$1" "$2"
+}
+
+mf_install_failed_report() {
+    local rc="$1"
+    printf '\n\033[0;31m══ INSTALL FAILED (exit %s) ══\033[0m\n' "$rc"
+    printf '  Failed during: [%s] %s\n' "${MF_PHASE_NUM:-?}" "${MF_PHASE:-unknown}"
+    printf '\n'
+    printf '  Your box is PARTIALLY CONFIGURED. Nothing was rolled back — that is\n'
+    printf '  deliberate: automatically undoing apt installs and systemd units can\n'
+    printf '  remove something you already depended on.\n'
+    printf '\n'
+    printf '  WHAT TO DO\n'
+    printf '    1. Re-run the same command. The steps are written to be repeatable:\n'
+    printf '       existing installs are detected, config files are rewritten\n'
+    printf '       rather than appended to, and apt/systemctl operations are\n'
+    printf '       idempotent. A re-run picks up from where this stopped.\n'
+    if [[ -n "${MF_INSTALL_LOG:-}" ]]; then
+        printf '    2. If it fails the same way, the full transcript is here:\n'
+        printf '         %s\n' "$MF_INSTALL_LOG"
+        printf '       The last RUN/EXIT lines in it name the exact command.\n'
+    else
+        printf '    2. If it fails the same way, re-run and capture the output —\n'
+        printf '       no transcript was written (the log dir was not writable).\n'
+    fi
+    printf '    3. To see what the installer WOULD do without changing anything:\n'
+    printf '         bash %s --dry-run\n' "${0:-scripts/install_noc.sh}"
+    printf '\n'
+    printf '  HONEST LIMIT: re-run-to-recover is the designed path, not a\n'
+    printf '  guarantee proven from every one of the 8 phases. If a re-run does\n'
+    printf '  not clear it, please report the transcript rather than hand-patching.\n\n'
+}

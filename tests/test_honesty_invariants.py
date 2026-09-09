@@ -1243,3 +1243,91 @@ r apt-get update
     assert p.returncode == 0, p.stderr[:300]
     assert p.stdout.split() == ["READ", "MUT", "READ", "MUT", "READ", "MUT", "MUT"], \
         f"read/mutation classification wrong: {p.stdout.split()}"
+
+
+# --- installer failure legibility (2026-09-09, the `set -e` gap) -------------
+# install_noc.sh runs `set -e` across 8 phases of real mutation. An unhandled
+# failure in phase 5 used to simply KILL the script — whatever the failing
+# command printed, then nothing: no phase, no log pointer, no recovery path, on
+# a box that was now partially configured.
+#
+# It does NOT roll back, on purpose: undoing an apt install or systemd unit
+# automatically can remove something the user already depended on, and claiming
+# transactional safety we do not have is the defect class these invariants
+# exist to stop. The contract is legibility, and these pin it.
+
+def _run_bash(script: str, timeout: int = 60):
+    import subprocess
+    return subprocess.run(["bash", "-c", script], capture_output=True,
+                          text=True, timeout=timeout)
+
+
+def test_every_phase_goes_through_mf_phase():
+    """The trap can only name the failing phase if every phase sets it. A raw
+    `echo "[N/8] ..."` would print but leave MF_PHASE stale, so the report would
+    confidently name the WRONG phase — worse than naming none."""
+    import re
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    raw = re.findall(r'echo -e "\$\{CYAN\}\[\d/8\]', text)
+    assert not raw, f"{len(raw)} phase marker(s) bypass mf_phase and leave MF_PHASE stale"
+    assert len(re.findall(r'mf_phase "\d/8"', text)) >= 8
+
+
+def test_failure_report_names_phase_log_and_recovery():
+    """A failure report that omits any of these leaves the user guessing."""
+    out = _run_bash(f'''
+        source {_INSTALL_LIB}
+        MF_PHASE="Installing Reticulum (RNS)..."; MF_PHASE_NUM="5/8"
+        MF_INSTALL_LOG="/var/log/meshforge/install-TEST.log"
+        mf_install_failed_report 1
+    ''').stdout
+    assert "INSTALL FAILED" in out
+    assert "[5/8] Installing Reticulum" in out, "must name the phase that failed"
+    assert "install-TEST.log" in out, "must point at the transcript"
+    assert "Re-run the same command" in out, "must state the recovery path"
+    assert "PARTIALLY CONFIGURED" in out, "must not imply a clean rollback"
+    assert "HONEST LIMIT" in out, "must not overclaim that re-run always recovers"
+
+
+def test_failure_report_says_so_when_there_is_no_transcript():
+    """An unwritable log dir must not leave the report pointing at an empty
+    path — absence stated, not implied (honest_failure_modes #2)."""
+    out = _run_bash(f'''
+        source {_INSTALL_LIB}
+        MF_INSTALL_LOG=""
+        mf_install_failed_report 3
+    ''').stdout
+    assert "no transcript was written" in out
+
+
+def test_exit_handler_branches_on_mode():
+    """One EXIT trap serves both modes; a dry-run abort is a COVERAGE finding
+    and a real failure is a partial install. Mixing them would tell a dry-run
+    user their box was modified when nothing was."""
+    dry = _run_bash(f'''
+        source {_INSTALL_LIB}
+        DRY_RUN=true; MF_PHASE="Configuring NOC mode..."; MF_PHASE_NUM="7/8"
+        mf_on_exit() {{ local rc=1
+            if [[ "$DRY_RUN" == "true" ]]; then
+                echo "DRY RUN ABORTED (exit $rc)"; echo "NOTHING was changed."
+                echo "Failed during: [${{MF_PHASE_NUM}}] ${{MF_PHASE}}"
+            else mf_install_failed_report "$rc"; fi; }}
+        mf_on_exit
+    ''').stdout
+    assert "NOTHING was changed" in dry and "[7/8]" in dry
+    assert "PARTIALLY CONFIGURED" not in dry, \
+        "a dry-run abort must never claim the box was modified"
+
+
+def test_dry_run_summary_prints_exactly_once():
+    """Regression pin. The summary was called BOTH by the EXIT trap and by an
+    explicit call at the end of the script, so a clean dry-run printed it twice.
+    Found by the drill, not by reading."""
+    import subprocess
+    p = subprocess.run(["bash", str(REPO / "scripts" / "install_noc.sh"),
+                        "--dry-run", "--client-only"],
+                       capture_output=True, text=True, timeout=240,
+                       stdin=subprocess.DEVNULL, cwd=str(REPO))
+    assert p.returncode == 0, p.stdout[-400:]
+    assert p.stdout.count("DRY RUN COMPLETE") == 1, \
+        f"summary printed {p.stdout.count('DRY RUN COMPLETE')} times, expected 1"
