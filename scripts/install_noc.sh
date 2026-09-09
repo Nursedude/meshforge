@@ -53,9 +53,52 @@ esac
 # Supports: Debian_12, Debian_13, Debian_Testing, Raspbian_12, Ubuntu_24.04, etc.
 OBS_BASE_URL="https://download.opensuse.org/repositories/network:/Meshtastic:/beta"
 
+# --help must work WITHOUT root and BEFORE any mutation. Added 2026-09-09 from
+# the first-hour audit: `--help` returned "Unknown option: --help" and exit 1,
+# so the universal reflex failed on the very command the README makes a
+# newcomer's first instruction — `sudo bash scripts/install_noc.sh`. The five
+# options below were already documented in docs/install.md; what was missing is
+# that the SCRIPT could not tell you, at the terminal, where you actually are.
+#
+# Keep this list adjacent to the parser below so the two drift visibly rather
+# than silently.
+usage() {
+    cat <<'USAGE'
+MeshForge NOC Stack Installer
+
+Usage:  sudo bash scripts/install_noc.sh [options]
+
+Options:
+  --skip-meshtasticd   Do not install/configure meshtasticd (the Meshtastic daemon)
+  --skip-rns           Do not install Reticulum (RNS/rnsd)
+  --client-only        Neither of the above — client tooling only.
+                       Use this on a laptop/desktop with no radio attached.
+  --force-native       Force the native meshtasticd package (OBS repo)
+  --force-python       Force the Python meshtastic path instead of native
+  -h, --help           Show this help and exit
+
+Installs to /opt/meshforge with a venv at /opt/meshforge/venv.
+
+This script runs as root and DOES mutate the system: apt update/install,
+systemd unit installation, and `systemctl enable` on services. There is
+currently NO --dry-run, so it cannot preview those changes for you — read
+docs/install.md first if that matters to you, and prefer --client-only on a
+machine you are not dedicating to this.
+
+No radio, and just want the RF math? Nothing here is required:
+  python3 src/standalone.py
+
+Full instructions (hardware, install, first run, upgrades): docs/install.md
+USAGE
+}
+
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
+        -h|--help)
+            usage
+            exit 0
+            ;;
         --skip-meshtasticd)
             INSTALL_MESHTASTICD=false
             shift

@@ -1115,3 +1115,51 @@ class TestDaemonOutputCoverage:
         """A renamed run_all_probes raises rather than passing an empty call set."""
         with pytest.raises(KeyError):
             probe_calls_reachable_from("def other():\n    pass\n")
+
+
+# --- installer discoverability (2026-09-09, first-hour audit) ----------------
+# The README's first instruction to a newcomer is `sudo bash
+# scripts/install_noc.sh`. Before this date `--help` returned "Unknown option:
+# --help" and exit 1 — the universal reflex failed on a 2,088-line root script.
+# The five real options were documented in docs/install.md all along; what was
+# missing is that the SCRIPT could not tell you at the terminal.
+#
+# These two invariants keep it that way, and keep usage() from drifting away
+# from the parser it describes (honest_failure_modes #5 — two consumers of one
+# list must be pinned together or they WILL drift).
+
+_INSTALL_NOC = REPO / "scripts" / "install_noc.sh"
+
+
+def _install_noc_text() -> str:
+    return _INSTALL_NOC.read_text(encoding="utf-8")
+
+
+def test_install_noc_help_needs_no_root_and_exits_zero():
+    """A newcomer must be able to ask what a root script will do WITHOUT
+    running it as root. Both spellings, exit 0, and it must not fall through to
+    the root check or the mutation path."""
+    import subprocess
+    for flag in ("-h", "--help"):
+        p = subprocess.run(["bash", str(_INSTALL_NOC), flag],
+                           capture_output=True, text=True, timeout=30,
+                           stdin=subprocess.DEVNULL)
+        assert p.returncode == 0, f"{flag} exited {p.returncode}: {p.stderr[:200]}"
+        assert "Usage:" in p.stdout, f"{flag} printed no usage"
+        assert "must be run as root" not in p.stdout + p.stderr, \
+            f"{flag} fell through to the root check"
+
+
+def test_install_noc_usage_lists_every_option_the_parser_accepts():
+    """usage() and the arg parser are two consumers of one list. A new option
+    added to the `case` without a usage line makes the help quietly wrong —
+    which is how the script came to have five undiscoverable options."""
+    import re
+    text = _install_noc_text()
+    body = text.split("# Parse arguments", 1)[1]
+    parsed = set(re.findall(r"^\s{8}(--[a-z][a-z0-9-]*)\)", body, re.M))
+    parsed |= set(re.findall(r"^\s{8}-h\|(--[a-z][a-z0-9-]*)\)", body, re.M))
+    assert parsed, "found no options in the parser — the regex needs updating"
+    usage_block = text.split("usage() {", 1)[1].split("USAGE\n}", 1)[0]
+    missing = sorted(o for o in parsed if o not in usage_block)
+    assert not missing, f"parser accepts {missing} but usage() never mentions them"
