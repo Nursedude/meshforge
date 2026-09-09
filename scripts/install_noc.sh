@@ -650,7 +650,8 @@ fi
 # does not touch the Meshtastic repo or reboot anything.
 AUTO_UPGRADES_CONF="/etc/apt/apt.conf.d/20auto-upgrades"
 if [[ ! -f "$AUTO_UPGRADES_CONF" ]]; then
-    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' > "$AUTO_UPGRADES_CONF"
+    printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\n' \
+        | mf_write_stdin "$AUTO_UPGRADES_CONF"
     echo -e "  ${GREEN}✓ Enabled periodic security updates (${AUTO_UPGRADES_CONF})${NC}"
 fi
 if systemctl enable --now unattended-upgrades >/dev/null 2>&1; then
@@ -921,9 +922,9 @@ FALLBACK_CONFIG
                                 sed -i 's/^#dtparam=spi=on/dtparam=spi=on/' "$BOOT_CONFIG"
                             else
                                 # Add to [all] section or end of file
-                                echo "" >> "$BOOT_CONFIG"
+                                mf_append_line "$BOOT_CONFIG" ""
                                 echo "# SPI enabled by MeshForge for LoRa HAT" >> "$BOOT_CONFIG"
-                                echo "dtparam=spi=on" >> "$BOOT_CONFIG"
+                                mf_append_line "$BOOT_CONFIG" "dtparam=spi=on"
                             fi
                             echo -e "  ${GREEN}✓ SPI enabled in ${BOOT_CONFIG}${NC}"
                             SPI_NEEDS_REBOOT=true

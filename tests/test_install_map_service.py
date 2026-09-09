@@ -63,10 +63,23 @@ class TestInstallerSubstitution:
         )
 
     def test_installer_inline_fallback_uses_operator(self):
-        """Inline fallback heredoc must use the resolved operator, not root."""
+        """Inline fallback heredoc must use the resolved operator, not root.
+
+        The anchor moved on 2026-09-09: every `cat > SYSTEM_PATH <<` in the
+        installer was converted to `mf_write_stdin SYSTEM_PATH <<` so the
+        --dry-run can preview it (a shell redirection is not a command and
+        cannot be shadowed). Accept EITHER spelling — the property under test is
+        the heredoc's CONTENT, not which writer delivers it, and pinning the
+        writer is what made this test fail on a change that did not touch what
+        it cares about.
+        """
         text = INSTALLER.read_text()
-        marker = "cat > /etc/systemd/system/meshforge-map.service"
-        idx = text.find(marker)
+        idx = -1
+        for marker in ("mf_write_stdin /etc/systemd/system/meshforge-map.service",
+                       "cat > /etc/systemd/system/meshforge-map.service"):
+            idx = text.find(marker)
+            if idx >= 0:
+                break
         assert idx >= 0, "inline fallback heredoc not found in installer"
         # Skip past the heredoc opener line; closing terminator is "MAP_SERVICE"
         # at column 0 on its own line.

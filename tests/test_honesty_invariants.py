@@ -1210,15 +1210,49 @@ def test_no_tty_presence_checks_remain():
         "use mf_have_tty (can we READ it?) not a check that the node exists"
 
 
-def test_no_raw_heredoc_writes_to_system_paths():
-    """Redirections cannot be shadowed, so every write to a hardcoded system
-    path must route through mf_write_stdin or the dry-run aborts on it. 20 sites
-    were converted on 2026-09-09; this stops the 21st from reintroducing it."""
+#: Path VARIABLES that --dry-run redirects into its mktemp sandbox. A
+#: redirection through one of these is safe: it lands in the sandbox, which is
+#: strictly better than a preview line because the user can inspect the result.
+#: Anything else must route through mf_write_stdin / mf_append_line.
+_DRY_RUN_SANDBOXED_VARS = ("INSTALL_DIR", "VENV_DIR", "MESHTASTICD_CONFIG_DIR")
+
+
+def test_no_raw_writes_bypass_the_dry_run():
+    """Redirections cannot be shadowed, so every write to a system path must
+    route through mf_write_stdin / mf_append_line or the dry-run aborts on it.
+
+    TWO shapes, and the second is the one that bit me. On 2026-09-09 I converted
+    20 HARDCODED `cat > /etc/...` sites and declared the class closed — but the
+    regex only saw literal paths, so `printf ... > "$AUTO_UPGRADES_CONF"` (which
+    is /etc/apt/apt.conf.d/20auto-upgrades) survived. It did not reproduce
+    locally because this box already had unattended-upgrades configured and the
+    branch was skipped; CI's clean container ran it and the dry-run correctly
+    aborted. The guard now covers both shapes, because a guard with the same
+    blind spot as the bug is not a guard.
+    """
     import re
     text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
-    bad = re.findall(r"^\s*(?:cat|tee)[^|\n]*>{1,2}\s*/(?:etc|usr|var|lib|boot)/\S*",
-                     text, re.M)
-    assert not bad, f"raw system-path writes bypass the dry-run: {bad[:3]}"
+    # JOIN line continuations first. Without this the guard is INERT for the
+    # very shape it was written to catch: `printf ... \` on one line and
+    # `> "$VAR"` on the next means the redirect line does not start with a
+    # command, so a regex anchored at the command name never sees it. Caught by
+    # drilling the guard rather than trusting it — the reintroduced bug PASSED
+    # the first version of this test (2026-09-09).
+    text = re.sub(r"\\\n\s*", " ", text)
+
+    literal = re.findall(
+        r"(?:^|;|&&|\|\|)\s*(?:cat|tee|printf|echo)[^|\n#]*?>{1,2}\s*/(?:etc|usr|var|lib|boot)/\S*",
+        text, re.M)
+    assert not literal, f"raw system-path writes bypass the dry-run: {literal[:3]}"
+
+    var_writes = re.findall(
+        r'(?:^|;|&&|\|\|)\s*(?:cat|tee|printf|echo)[^|\n#]*?>{1,2}\s*"?\$\{?([A-Za-z_][A-Za-z0-9_]*)',
+        text, re.M)
+    unsafe = sorted({v for v in var_writes if v not in _DRY_RUN_SANDBOXED_VARS})
+    assert not unsafe, (
+        f"redirection(s) through un-sandboxed path variable(s) {unsafe} bypass "
+        f"the dry-run — route them through mf_write_stdin/mf_append_line, or add "
+        f"the variable to _DRY_RUN_SANDBOXED_VARS if --dry-run redirects it")
 
 
 def test_dry_run_read_detection_skips_leading_flags():
