@@ -336,6 +336,21 @@ _ROLE_TO_MINI_SEED = {
     # inert on exactly the boxes most likely to be forgotten in a re-seed.
     "collector": "fleet_gateway",
     "cloud-publisher": "fleet_gateway",
+    # field-node (lehua) — added 2026-09-08, the SAME gap one role later. The
+    # role landed in fleet_roles.yaml on 2026-08-31 declaring itself "a full
+    # fleet member: enrolled in the naming registry, the hosts block, the RF
+    # watch lists, and mini-dudeai", and it ran a live 64-rule mini for 8 days
+    # that no seed could reach: promote_seed_rules refused it ("no declared
+    # role") and this probe read inert, so the box was silently frozen behind
+    # the seed.
+    #
+    # fleet_gateway is not a guess. lehua's 64 live rules were measured to be a
+    # PERFECT SUBSET of that seed (overlap 64, lehua-only 0) — it is already a
+    # fleet_gateway-seeded box that drifted 5 rules behind before provenance
+    # stamping existed. The role owns no gateway, so the gateway-shaped rules
+    # match signal classes that never arrive there and sit inert, which is the
+    # correct reading of an absent organ rather than a false alarm.
+    "field-node": "fleet_gateway",
 }
 
 

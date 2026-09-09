@@ -617,13 +617,69 @@ class TestCleanupBatch:
 
 
 class TestProbeAlignment:
+    @staticmethod
+    def _mini_running_roles():
+        """Roles that run MeshForge's mini, DERIVED from the role SSOT.
+
+        This list used to be five names typed into the test. That is why it
+        could not catch `field-node`: the role landed in fleet_roles.yaml on
+        2026-08-31 declaring itself enrolled in mini-dudeai, ran a live 64-rule
+        mini, and stayed unmapped for 8 days because the guard's notion of "the
+        roles" was a literal the new role never joined. The map's own comment
+        records the same thing happening to collector/cloud-publisher before
+        that. Two instances is a class, so the guard now reads the SSOT.
+
+        A role qualifies when it is a fleet member (bot is explicitly
+        ``fleet_member: false``) and its repo — resolved through ``inherits``,
+        since collector/cloud-publisher carry no repo of their own — is
+        meshforge (meshanchor-noc runs the twin's mini on its own convention).
+        """
+        import yaml
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "docs", "fleet_roles.yaml")) as f:
+            roles = (yaml.safe_load(f) or {}).get("roles") or {}
+        assert roles, "role SSOT parsed empty — the guard would vacuously pass"
+
+        def repo_of(name, seen=()):
+            blk = roles.get(name) or {}
+            if blk.get("repo"):
+                return blk["repo"]
+            parent = blk.get("inherits")
+            if parent and parent not in seen:
+                return repo_of(parent, seen + (name,))
+            return None
+
+        out = [n for n, blk in roles.items()
+               if (blk or {}).get("fleet_member", True) is not False
+               and repo_of(n) == "meshforge"]
+        assert len(out) >= 5, f"only {out} qualified — SSOT shape changed"
+        return out
+
     def test_role_seed_map_covers_mini_running_roles(self):
         from utils.watchdog_probes import _ROLE_TO_MINI_SEED
-        for role in ("primary", "full-gateway", "gateway-only",
-                     "collector", "cloud-publisher"):
+        for role in self._mini_running_roles():
             assert role in _ROLE_TO_MINI_SEED, (
-                f"role {role!r} runs mini but has no seed mapping — "
-                f"probe_rules_seed_drift is inert on those boxes")
+                f"role {role!r} is a meshforge fleet member in "
+                f"docs/fleet_roles.yaml and so runs mini, but has no seed "
+                f"mapping — promote_seed_rules refuses it and "
+                f"probe_rules_seed_drift reads inert, so that box's mini "
+                f"silently freezes behind the seed. Add it to "
+                f"_ROLE_TO_MINI_SEED.")
+
+    def test_role_seed_guard_would_catch_an_unmapped_role(self):
+        """RED proof — the guard must FAIL on a role missing from the map.
+
+        Without this, the rewrite above could pass by deriving an empty or
+        already-covered list and nobody would know it had stopped biting.
+        """
+        roles = self._mini_running_roles()
+        assert "field-node" in roles, (
+            "field-node should qualify from the SSOT; if the role was removed, "
+            "retarget this proof at another meshforge fleet-member role")
+        crippled = {r: "fleet_gateway" for r in roles if r != "field-node"}
+        missing = [r for r in roles if r not in crippled]
+        assert missing == ["field-node"], (
+            "the guard's own logic no longer detects an unmapped role")
 
     def test_memory_index_limit_matches_writer(self):
         from mini_dudeai.memory_apply import MEMORY_INDEX_SOFT_LIMIT_BYTES

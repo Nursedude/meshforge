@@ -57,11 +57,32 @@ def _find_operator_user() -> Optional[Tuple[int, str]]:
             continue
         if uid == 0:
             continue
-        if (entry / "bus").exists():
+        try:
+            has_bus = (entry / "bus").exists()
+        except (PermissionError, OSError):
+            # A /run/user/<uid> we cannot read belongs to SOMEONE ELSE and is
+            # not evidence about the operator. Only iterdir() was guarded, so
+            # this raised straight out of the function and every caller's broad
+            # `except` turned "one foreign UID is mode 700" into "this box has
+            # no operator user at all" — a degraded value landing squarely in
+            # the healthy domain. Measured 2026-09-08 on the one fleet box with
+            # a desktop: /run/user/104 (lightdm, 0700) made promote_seed_rules
+            # report "could not resolve the mini home" on a box whose rules file
+            # was sitting right there.
+            continue
+        if has_bus:
             candidates.append(uid)
     if not candidates:
         return None
-    uid = min(candidates)
+    # Prefer a REGULAR user over a system account. `min()` alone picked the
+    # lowest UID present, which on that same box would have selected lightdm
+    # (104) as "the operator" over the actual operator (1000) — the docstring
+    # says operator, and a display manager is not one. Debian keeps human
+    # accounts at >= 1000 (SYS_UID_MAX 999); fall back to the old behaviour
+    # when nothing qualifies, so a box with an unconventional operator UID
+    # resolves exactly as it did before.
+    human = [u for u in candidates if u >= 1000]
+    uid = min(human) if human else min(candidates)
     try:
         name = pwd.getpwuid(uid).pw_name
     except KeyError:

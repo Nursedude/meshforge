@@ -237,6 +237,95 @@ def test_find_operator_user_picks_smallest_non_root_uid(tmp_path, monkeypatch):
     assert fleet_test_runner._find_operator_user() == (1000, "operator")
 
 
+def test_find_operator_user_skips_unreadable_foreign_uid(tmp_path, monkeypatch):
+    """An unreadable /run/user/<uid> must be SKIPPED, not fatal.
+
+    Measured 2026-09-08 on the one fleet box with a desktop: /run/user/104
+    (lightdm, mode 0700) made `(entry / "bus").exists()` raise PermissionError
+    straight out of this function — only iterdir() was guarded — and every
+    caller's broad `except` rendered it as "no operator user on this box".
+    promote_seed_rules then reported "could not resolve the mini home" on a box
+    whose rules file was sitting right there. One foreign UID must not erase
+    the operator.
+    """
+    from utils import fleet_test_runner
+
+    fake_run_user = tmp_path / "run_user"
+    fake_run_user.mkdir()
+    (fake_run_user / "1000").mkdir()
+    (fake_run_user / "1000" / "bus").touch()
+
+    denied = fake_run_user / "104"
+    denied.mkdir()
+
+    orig_exists = Path.exists
+
+    def fake_exists(self, *a, **kw):
+        if "104" in str(self):
+            raise PermissionError(13, "Permission denied", str(self))
+        return orig_exists(self, *a, **kw)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+    monkeypatch.setattr(
+        fleet_test_runner, "Path",
+        lambda p: fake_run_user if p == "/run/user" else Path(p),
+    )
+    monkeypatch.setattr(
+        fleet_test_runner.pwd, "getpwuid", _fake_pwd({1000: "operator"}),
+    )
+
+    assert fleet_test_runner._find_operator_user() == (1000, "operator")
+
+
+def test_find_operator_user_prefers_a_human_uid_over_a_system_account(
+        tmp_path, monkeypatch):
+    """A system account with a user bus must not be chosen as "the operator".
+
+    Same box, latent second half: even with the PermissionError fixed,
+    `min(candidates)` picks the LOWEST uid present, which would have selected
+    lightdm (104) over the real operator (1000). A display manager is not an
+    operator, and the caller drops privilege to whatever this returns.
+    """
+    from utils import fleet_test_runner
+
+    fake_run_user = tmp_path / "run_user"
+    fake_run_user.mkdir()
+    for uid in ("104", "1000"):
+        (fake_run_user / uid).mkdir()
+        (fake_run_user / uid / "bus").touch()
+
+    monkeypatch.setattr(
+        fleet_test_runner, "Path",
+        lambda p: fake_run_user if p == "/run/user" else Path(p),
+    )
+    monkeypatch.setattr(
+        fleet_test_runner.pwd, "getpwuid",
+        _fake_pwd({104: "lightdm", 1000: "operator"}),
+    )
+
+    assert fleet_test_runner._find_operator_user() == (1000, "operator")
+
+
+def test_find_operator_user_falls_back_when_no_human_uid(tmp_path, monkeypatch):
+    """Unconventional operator UID (<1000) still resolves — no regression."""
+    from utils import fleet_test_runner
+
+    fake_run_user = tmp_path / "run_user"
+    fake_run_user.mkdir()
+    (fake_run_user / "500").mkdir()
+    (fake_run_user / "500" / "bus").touch()
+
+    monkeypatch.setattr(
+        fleet_test_runner, "Path",
+        lambda p: fake_run_user if p == "/run/user" else Path(p),
+    )
+    monkeypatch.setattr(
+        fleet_test_runner.pwd, "getpwuid", _fake_pwd({500: "oldop"}),
+    )
+
+    assert fleet_test_runner._find_operator_user() == (500, "oldop")
+
+
 def test_find_operator_user_returns_none_when_no_candidates(tmp_path, monkeypatch):
     from utils import fleet_test_runner
 
