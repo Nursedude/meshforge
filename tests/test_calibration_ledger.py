@@ -420,3 +420,63 @@ def test_rederive_refuses_narrowed_or_dirty_marker():
     assert cl.rederive_open(events, HEAD, dict(base), 9.0), "control: a clean marker mints held"
     assert cl.rederive_open(events, HEAD, dict(base, scope_narrowed=True), 9.0) == []
     assert cl.rederive_open(events, HEAD, dict(base, dirty_tree=True), 9.0) == []
+
+
+# --- the END field (2026-09-09) ----------------------------------------------
+# The ledger re-derived whether claims HELD but never whether they MATTERED —
+# precision without aim, the same defect as the instruments it watches. These
+# pin the half that can lie: a ratio diluted by unstated ends, or fabricated
+# from an empty set.
+
+def test_end_is_recorded_when_it_names_a_real_end(tmp_path):
+    p = str(tmp_path / "led.jsonl")
+    rec = cl.record_claim("moved traffic", "green", "exit 0", "a" * 40,
+                          end="message_delivered", path=p)
+    assert rec["end"] == "message_delivered"
+
+
+def test_unknown_or_omitted_end_folds_to_unknown_never_rejects(tmp_path):
+    """A claim must never fail to record because its end was mislabelled."""
+    p = str(tmp_path / "led.jsonl")
+    assert cl.record_claim("a", "green", "e", "h" * 40, path=p)["end"] == "unknown"
+    assert cl.record_claim("b", "green", "e", "h" * 40, end="product",
+                        path=p)["end"] == "unknown", "invented ends fold, not raise"
+    assert cl.record_claim("c", "green", "e", "h" * 40, end=None,
+                        path=p)["end"] == "unknown"
+
+
+def test_harness_share_is_computed_over_STATED_ends_only(tmp_path):
+    """The dilution trap: a pile of 'unknown' must not make harness work look
+    like a small slice. Absence is not evidence of product work."""
+    p = str(tmp_path / "led.jsonl")
+    for i in range(3):
+        cl.record_claim(f"h{i}", "green", "e", "x" * 40, end="harness", path=p)
+    cl.record_claim("p", "green", "e", "x" * 40, end="message_delivered", path=p)
+    for i in range(50):                      # a flood of unstated claims
+        cl.record_claim(f"u{i}", "green", "e", "x" * 40, path=p)
+    st = cl.fold(cl.load_events(p))
+    assert st["ends"]["harness"] == 3
+    assert st["ends"]["unknown"] == 50
+    assert st["n_ends_stated"] == 4
+    assert st["harness_share"] == 0.75, \
+        "50 unstated claims must not dilute 3-of-4 harness into ~5%"
+
+
+def test_harness_share_is_none_when_nothing_stated_an_end(tmp_path):
+    """Never a fabricated 0% from an empty set — the ratio's own contract."""
+    p = str(tmp_path / "led.jsonl")
+    cl.record_claim("a", "green", "e", "x" * 40, path=p)
+    st = cl.fold(cl.load_events(p))
+    assert st["harness_share"] is None
+    assert st["n_ends_stated"] == 0
+
+
+def test_end_tally_is_not_filtered_by_whether_the_claim_was_verified(tmp_path):
+    """Whether a claim HELD and whether it was WORTH MAKING are different
+    questions; the aim half must not inherit the calibration half's filter."""
+    p = str(tmp_path / "led.jsonl")
+    rec = cl.record_claim("h", "green", "e", "x" * 40, end="harness", path=p)
+    cl.record_verdict(rec["id"], "broke", "re-derived not-green", path=p)
+    st = cl.fold(cl.load_events(p))
+    assert st["n_broke"] == 1
+    assert st["ends"]["harness"] == 1, "a broken claim still had an end"

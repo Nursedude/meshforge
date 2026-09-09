@@ -66,9 +66,43 @@ def make_claim_id(ts: float, claim_text: str, head_full: str) -> str:
     return h[:12]
 
 
+#: The ENDS a claim can serve. CLOSED vocabulary on purpose — an open one
+#: would let every claim invent a flattering end for itself, and the whole
+#: point is that most of them cannot.
+#:
+#: WHY THIS EXISTS (2026-09-09, operator's question: "who is watching who?").
+#: The ledger already re-derived whether my claims HELD. It had no way to ask
+#: whether they MATTERED — precision without aim, which is the same defect the
+#: instruments it watches kept committing. Measured the day this landed: 316
+#: commits in 30 days, 53% harness-subject, and ZERO of the twelve most-touched
+#: files were product. The most-touched file in the repo was one that tracks
+#: reviews. Nothing in that list moves a message.
+#:
+#: The domain's ENDS are the operator's, not mine (feedback_domain_clarity_
+#: two_offerings): the END is "message arrives / truth told in-app", across two
+#: offerings, standalone and fleet.
+#:
+#: ⚠️ READ THIS BEFORE ADDING A VALUE. `harness` is not a bug and is not
+#: forbidden — gates are load-bearing and some work legitimately serves them.
+#: It is here to be COUNTED. This field's output is meant to be a SUBTRACTION
+#: list: an instrument whose claims are all `harness` is a candidate for
+#: deletion, not a candidate for a dashboard. If this field ever grows a value
+#: that lets harness work describe itself as product, it has become the thing
+#: it was built to prevent — delete the value, not the evidence.
+CLAIM_ENDS = (
+    "message_delivered",   # the mesh's end: traffic actually moved
+    "truth_in_app",        # the app told the operator the truth, in-app (MF018)
+    "operator_time",       # saved the human hours, or stopped a false page
+    "secret_safe",         # a key/credential/private thing stayed private
+    "harness",             # served only the instruments — COUNT ME
+    "unknown",             # not stated; pre-2026-09-09 claims fold here
+)
+
+
 def record_claim(claim_text: str, claim_class: str, evidence: str,
                  head_full: str, *, model_id: str | None = None,
                  session_id: str | None = None, source: str | None = None,
+                 end: str | None = None,
                  ts: float | None = None, path: str | None = None,
                  max_bytes: int = DEFAULT_LEDGER_MAX_BYTES) -> dict:
     """Append one ``claim`` event and return the record (with its generated id).
@@ -79,6 +113,12 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
     marker: CI conclusion, live drill, fleet check). Recorded so held-rates can
     later be split per feed. Pre-2026-07-03 records lack the key — consumers
     must ``.get`` it.
+
+    ``end`` names which of ``CLAIM_ENDS`` the work served — what a USER would
+    have gotten out of it, not how sure I was. An unrecognised or omitted value
+    folds to ``"unknown"`` rather than being rejected: a claim must never fail
+    to record because its end was mislabelled, and "unknown" is an honest
+    terminal state (it is exactly what every pre-2026-09-09 row is).
 
     Best-effort persistence: an append failure leaves a log witness
     (honest_failure_modes #9) but never raises — recording a claim must not be
@@ -92,6 +132,7 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
         "session_id": session_id,
         "model_id": model_id,
         "source": source,
+        "end": end if end in CLAIM_ENDS else "unknown",
         "claim_class": claim_class,
         "claim_text": claim_text,
         "evidence": evidence,
@@ -246,6 +287,22 @@ def fold(events: list[dict]) -> dict:
     # qualifying that verdict's evidence. Surfaced beside the ratio so the
     # headline number is never quoted without its caveat.
     n_annotated = sum(1 for rec in held + broke if annotations.get(rec.get("id")))
+    # Which ENDS the work served. Tallied over ALL claims, not just verified
+    # ones: whether a claim held is a different question from whether it was
+    # worth making, and this half must not inherit the other's filter.
+    #
+    # `harness_share` is the number this exists to produce. It is deliberately
+    # computed over claims that STATED an end — a pile of "unknown" must not
+    # be able to dilute the ratio into looking healthy (absence is not
+    # evidence of product work, honest_failure_modes #2). None when nothing
+    # has stated one yet, never a fabricated 0%.
+    ends: dict[str, int] = {}
+    for rec in claims.values():
+        e = rec.get("end")
+        ends[e if e in CLAIM_ENDS else "unknown"] = ends.get(
+            e if e in CLAIM_ENDS else "unknown", 0) + 1
+    n_stated = sum(v for k, v in ends.items() if k != "unknown")
+    harness_share = (ends.get("harness", 0) / n_stated) if n_stated else None
     return {
         "n_total": len(claims),
         "n_held": len(held),
@@ -257,6 +314,9 @@ def fold(events: list[dict]) -> dict:
         "open": open_,
         "annotations": annotations,
         "n_annotated": n_annotated,
+        "ends": ends,
+        "n_ends_stated": n_stated,
+        "harness_share": harness_share,
     }
 
 
