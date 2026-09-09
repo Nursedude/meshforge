@@ -123,6 +123,16 @@ BYTE_IDENTICAL = (
     # assertion added in the lead repo must reach the twin or parity_check says
     # so. (tests/fixtures/lxmface_vectors.json is the same precedent.)
     "tests/test_calibration_ledger.py",
+    # Same precedent, same shape, found 2026-09-09 while porting a warmstart
+    # fix: MeshAnchor carried the byte-locked warmstart.py with NO test file
+    # at all, so every assertion protecting that module lived in one repo. It
+    # could not be twinned until that day because one test in it
+    # (test_default_paths_come_from_the_app_adapter) pinned MeshForge's
+    # ADAPTER basenames — legitimately per-app, and MA's own
+    # test_mini_artifact_paths.py already covers its side. That test was moved
+    # into a same-named MF file, leaving this one app-agnostic (every test
+    # pins `path`/`tmp_path` and touches no adapter) and safe to lock.
+    "tests/test_mini_warmstart.py",
     "src/mini_dudeai/model_router.py",
     # The engine's generic I/O building blocks — concrete sources + actions.
     # All import-clean and generic (a reader/writer per medium); an app that

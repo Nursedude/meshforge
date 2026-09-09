@@ -350,10 +350,58 @@ elif [ "$peer_line" -ge 1 ]; then P "deadman cron ($DEADMAN_PEER)" "wired"
 else F "deadman cron ($DEADMAN_PEER)" "missing from peer crontab"; fi
 
 # 9. session-notes size (rotation convention: archive when large)
+#
+# ⚠️ 2026-09-09: for months this leg reported ONLY the file's total size, and
+# that number reaches no reader. warmstart.handoff_block lifts exactly ONE
+# section (the first "## ... START HERE") and caps it at HANDOFF_MAX_CHARS —
+# so total file size has NEVER had any bearing on what the next session
+# actually sees. The day this was found, the leg FAILED at 115,914B, took a
+# mini escalation and a cron FAIL, and was "cured" by rotating 81KB out of
+# the file: the handoff the next session receives was byte-for-byte
+# unchanged. An honest gate, correctly measuring the wrong quantity.
+#
+# Both numbers are now reported. File size still FAILS (it drives the
+# rotation convention, which keeps the note navigable for a human and for
+# grep — a real end). The LIFTED-section size is reported beside it because
+# that is the one a reader is actually subject to. Deliberately NOT a second
+# failure condition: the truncation now states its own magnitude inline
+# (warmstart.py), so an over-long section is disclosed to its reader rather
+# than silently eaten, and adding a gate here would be one more instrument
+# watching an instrument.
+#
+# The cap is READ from warmstart.py, never restated here: two consumers of
+# one constant must share it or they drift (honest_failure_modes #5, the
+# 24,000-vs-24,576 precedent).
 if [ -r "$NOTES" ]; then
     nsz="$(wc -c < "$NOTES")"
-    if [ "$nsz" -gt 81920 ]; then F "session notes" "${nsz}B >80KB — rotate to archive"
-    else P "session notes" "${nsz}B"; fi
+    cap="$(grep -oE '^HANDOFF_MAX_CHARS = [0-9]+' \
+             "$REPO/src/mini_dudeai/warmstart.py" 2>/dev/null \
+           | grep -oE '[0-9]+$')"
+    if [ -n "$cap" ]; then
+        # The section warmstart would lift: first "## ...START HERE", else
+        # the first "## " heading; ends at the next "## ".
+        # wc -m (CHARACTERS), never wc -c: HANDOFF_MAX_CHARS is a character
+        # cap and this text is full of em-dashes and emoji, so bytes overstate
+        # it (measured on the live note: 5327B vs 5301 chars). Comparing a
+        # byte count against a character cap is the same units-mismatch class
+        # this leg was rewritten to stop committing. Within ~2 of Python's
+        # len() on the stripped section (trailing newline).
+        sec="$(awk '
+            /^## / { if (started) exit; if (toupper($0) ~ /START HERE/) { started=1 } }
+            started { print; next }
+            ' "$NOTES" | wc -m)"
+        [ "${sec:-0}" -le 1 ] && sec="$(awk '/^## /{n++} n==1{print}' "$NOTES" | wc -m)"
+        if [ "${sec:-0}" -gt "$cap" ]; then
+            pctshown=$(( sec > 0 ? cap * 100 / sec : 0 ))
+            legible="lifted section ${sec} chars vs ${cap}-char cap — next session sees ~${pctshown}% inline (disclosed, not silent)"
+        else
+            legible="lifted section ${sec} chars fits the ${cap}-char cap — reaches the next session whole"
+        fi
+    else
+        legible="lifted-section size UNKNOWN — could not read HANDOFF_MAX_CHARS from warmstart.py"
+    fi
+    if [ "$nsz" -gt 81920 ]; then F "session notes" "${nsz}B >80KB — rotate to archive; $legible"
+    else P "session notes" "${nsz}B; $legible"; fi
 else
     U "session notes" "absent"
 fi
