@@ -116,5 +116,71 @@ PY
     fi
 fi
 
+# Byte-lock parity — the twin contract (2026-09-09). 151ms, env-independent.
+# WHY IT IS HERE: on 2026-09-09 I edited the byte-locked src/utils/fleet_truth.py
+# and pushed FOUR times without porting it. parity_check.py existed, took a
+# seventh of a second, and was not wired into any hook — the drift surfaced
+# hours later in honest_status. Tri-state on purpose: 1 = real drift and BLOCKS,
+# 2 = the twin repo is not on this box so parity is UNOBSERVABLE and must not
+# read as either (unobservable != in sync != drift, honest_failure_modes #2).
+PARITY_RAN=no
+if [ -f "$REPO_ROOT/scripts/parity_check.py" ]; then
+    echo "Pre-push: byte-lock parity (twin contract)..."
+    python3 "$REPO_ROOT/scripts/parity_check.py" >/tmp/.prepush_parity.out 2>&1
+    prc=$?
+    if [ "$prc" -eq 1 ]; then
+        cat /tmp/.prepush_parity.out
+        echo ""
+        echo "Byte-locked file(s) DRIFTED from the twin. MeshForge is the lead repo:"
+        echo "  port the flagged file(s), then re-run: python3 scripts/parity_check.py"
+        echo "Override (sparingly): git push --no-verify"
+        rm -f /tmp/.prepush_parity.out
+        exit 1
+    elif [ "$prc" -eq 0 ]; then
+        PARITY_RAN=yes
+    else
+        echo "  WARN: parity UNOBSERVABLE (exit $prc) — twin repo absent on this box."
+        echo "        Not a pass and not a failure; port checks are on you."
+    fi
+    rm -f /tmp/.prepush_parity.out
+fi
+
+# Doc stat sentinels — 67ms. Same story: adding ONE test file on 2026-09-09
+# bumped a filesystem-derived count and reddened CI three pushes running, while
+# the checker sat unwired. Note --check: the bare invocation exits 2 whether
+# clean or drifted, so its raw exit code is NOT a gate signal.
+SENTINELS_RAN=no
+if [ -f "$REPO_ROOT/scripts/readme_stats.py" ]; then
+    echo "Pre-push: doc stat sentinels..."
+    if ! python3 "$REPO_ROOT/scripts/readme_stats.py" --check >/tmp/.prepush_stats.out 2>&1; then
+        cat /tmp/.prepush_stats.out
+        echo ""
+        echo "Doc stat sentinel(s) drifted from the tree. Fix with:"
+        echo "  python3 scripts/readme_stats.py --update   # then commit the docs change"
+        echo "Override (sparingly): git push --no-verify"
+        rm -f /tmp/.prepush_stats.out
+        exit 1
+    fi
+    SENTINELS_RAN=yes
+    rm -f /tmp/.prepush_stats.out
+fi
+
+# ── THE SCOPE STATEMENT ──────────────────────────────────────────────────────
+# This used to read "Pre-push checks passed." and nothing else. That single line
+# is what let me push red CI four times on 2026-09-09: the hook measured a
+# SUBSET honestly, and I read its pass as clearance. It never claimed that — I
+# borrowed the broader claim, which is the same thing service_inactive's cell
+# was doing to /fleet and the 80KB gate was doing to harness_audit. So the gate
+# now states what it did NOT check, exactly as those cells now name their
+# quantity. A gate that reports its own scope cannot be misread as coverage.
+if [ "$PARITY_RAN" = yes ]; then p_state="checked"; else p_state="UNOBSERVABLE"; fi
+if [ "$SENTINELS_RAN" = yes ]; then s_state="checked"; else s_state="skipped"; fi
+echo ""
 echo "Pre-push checks passed."
+echo "  SCOPE: lint, regression guards, upshift-witness,"
+echo "         byte-lock parity ($p_state), doc sentinels ($s_state)."
+echo "  NOT RUN: the full test suite (~13 min), and CI."
+echo "           This is a SUBSET. It does not license 'safe to push'."
+echo "    full suite before pushing:  MESHFORGE_PREPUSH_FULL=1 git push"
+echo "    after pushing (of record):  bash scripts/honest_status.sh"
 exit 0
