@@ -716,3 +716,48 @@ class TestShippedCatalogDeclaresUserTimers:
             for unit, state in (node.get("user_timers") or {}).items():
                 assert state in pr.VALID_UNIT_STATES, (
                     f"{name}.{unit} = {state!r}")
+
+
+class TestWaiverIsActuallyChecked:
+    """Aim-audit fix (2026-09-09). ``plan()`` computed ``cur`` on the override
+    path and then never compared it to the waived state, so a VIOLATED waiver
+    read as an honored exception — and ``probe_role_drift``, which fires only on
+    blocking warnings, read ``clean`` over it.
+    """
+
+    def test_violated_waiver_blocks(self, monkeypatch):
+        """Declared OFF while the unit is ENABLED is hidden drift, not an
+        exception. This is the case that used to read as honored."""
+        import provision_role as pr
+        monkeypatch.setattr(pr, "_unit_current", lambda u: "active/enabled")
+        acts = pr.plan({"services": {"u.service": "enabled"}},
+                       {"u.service": {"state": "disabled", "reason": "declared off"}})
+        a = [x for x in acts if x.item == "u.service"][0]
+        assert a.required is True, "a waiver the box does not honor must block"
+        assert "NOT MET" in a.detail
+
+    def test_running_while_declared_disabled_discloses_but_does_not_block(
+            self, monkeypatch):
+        """The manager-box case. VALID_UNIT_STATES is enablement-only, so
+        'disabled' cannot express 'not running'. The declaration IS met; paging
+        would be paging about a human decision. It must SAY SO instead —
+        silence is what let this read as a clean 'honored' for two days."""
+        import provision_role as pr
+        monkeypatch.setattr(pr, "_unit_current", lambda u: "active/disabled")
+        acts = pr.plan({"services": {"u.service": "enabled"}},
+                       {"u.service": {"state": "disabled", "reason": "runs RADIO-OFF"}})
+        a = [x for x in acts if x.item == "u.service"][0]
+        assert a.required is False, "must not page about an operator decision"
+        assert "RUNNING" in a.detail and "UNVERIFIED" in a.detail
+        assert "runs RADIO-OFF" in a.detail, "the operator's reason stays visible"
+
+    def test_absent_satisfies_a_disabled_waiver(self, monkeypatch):
+        """Regression pin: the first cut of the fix required an exact match and
+        broke this — absent is off and then some. An existing test caught it."""
+        import provision_role as pr
+        monkeypatch.setattr(pr, "_unit_current", lambda u: "absent")
+        acts = pr.plan({"services": {"u.service": "enabled"}},
+                       {"u.service": {"state": "disabled", "reason": "RF-sparse site"}})
+        a = [x for x in acts if x.item == "u.service"][0]
+        assert a.required is False
+        assert "NOT MET" not in a.detail

@@ -153,6 +153,37 @@ def _unit_current(name: str) -> str:
     return f"{'active' if running else 'inactive'}/{'enabled' if enabled else 'disabled'}"
 
 
+def _waiver_enablement_met(cur: str, waived: str) -> bool:
+    """Is a waiver's DECLARED state satisfied by the live state?
+
+    Deliberately PERMISSIVE: it answers only "is the box MORE ON than the
+    operator declared?", because that is the sole case that is unambiguously
+    hidden drift. Everything else is honored.
+
+    ``VALID_UNIT_STATES`` is {enabled, disabled, absent} — a vocabulary about
+    ENABLEMENT, never about running — so only the enablement half of
+    ``_unit_current``'s ``active|inactive/enabled|disabled`` form is compared.
+
+    Why permissive (2026-09-09): the first cut required an exact match and
+    immediately failed an existing pinned test — a waiver declaring ``disabled``
+    on a unit that is ``absent`` (not installed at all). That waiver IS honored:
+    absent is off and then some, exactly as ``masked`` is. The guard caught the
+    over-strict version before it shipped; a stricter rule here would have
+    turned a satisfied declaration into a blocking warning on the RF-sparse
+    boxes. A waiver naming a state outside the vocabulary is treated as met —
+    the caller's own branch already reports unknown desired states, and
+    double-reporting it as a violation would be noise.
+    """
+    if waived not in VALID_UNIT_STATES:
+        return True
+    _, _, enablement = cur.partition("/") if "/" in cur else ("", "", cur)
+    if waived == "enabled":
+        # Declared ON: absent/masked/disabled all fail to deliver it.
+        return enablement == "enabled"
+    # Declared OFF (disabled or absent): only an ENABLED unit contradicts it.
+    return enablement != "enabled"
+
+
 def _user_timer_actions(declared: Dict[str, str]) -> List[Action]:
     """Observe-only actions for declared ``systemd --user`` timers.
 
@@ -225,9 +256,52 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
             waived = ov.get("state", "?") if isinstance(ov, dict) else str(ov)
             cur = _unit_current(unit)
             if reason:
-                actions.append(Action(unit, cur, f"waived:{waived}", "warn",
-                                      required=False,
-                                      detail=f"intentional per-node exception: {reason}"))
+                # 2026-09-09 (aim audit finding, NARROWED after re-derivation).
+                # This branch used to emit "honored" without ever comparing
+                # `cur` to `waived`, so a waiver could be VIOLATED and still
+                # read as an honored exception — and role_drift, which fires
+                # only on blocking warnings, read `clean` over it.
+                #
+                # Two distinct cases, and conflating them was the defect:
+                #
+                #  1. The waiver is not MET (enablement differs from the
+                #     declared state). That is hidden drift in exactly the way
+                #     a reason-less waiver is, so it blocks. A declaration
+                #     nothing checks is decoration.
+                #  2. The waiver IS met on enablement, but the unit is RUNNING
+                #     while declared `disabled`. This is NOT drift and must not
+                #     block: VALID_UNIT_STATES is {enabled,disabled,absent} —
+                #     a vocabulary about ENABLEMENT ONLY. It cannot express
+                #     "not running", so an override whose reason is about
+                #     runtime ("runs RADIO-OFF") is unverifiable by
+                #     construction. Measured on the manager box 2026-09-09:
+                #     is-enabled=disabled (declaration MET), is-active=active,
+                #     the radio serving ~225 pkt/hr — and the operator knows,
+                #     having said so on 09-07. Paging here would be paging
+                #     about a human decision (feedback_never_restore_a_
+                #     deliberate_stop). So DISCLOSE it instead: silence is what
+                #     let it read as a clean "honored" for two days.
+                met = _waiver_enablement_met(cur, waived)
+                if not met:
+                    actions.append(Action(
+                        unit, cur, f"waived:{waived}", "warn", required=True,
+                        detail=(f"service_override NOT MET: declares "
+                                f"'{waived}' but the unit is '{cur}' — a "
+                                f"waiver the box does not honor is hidden "
+                                f"drift, not an exception ({reason})")))
+                elif waived == "disabled" and cur.startswith("active/"):
+                    actions.append(Action(
+                        unit, cur, f"waived:{waived}", "warn", required=False,
+                        detail=(f"intentional per-node exception: {reason} "
+                                f"— ⚠️ declaration MET on enablement but the "
+                                f"unit is RUNNING ({cur}). 'disabled' cannot "
+                                f"express 'not running', so this override's "
+                                f"runtime intent is UNVERIFIED here; judge it "
+                                f"by hand")))
+                else:
+                    actions.append(Action(unit, cur, f"waived:{waived}", "warn",
+                                          required=False,
+                                          detail=f"intentional per-node exception: {reason}"))
             else:
                 actions.append(Action(unit, cur, f"waived:{waived}", "warn",
                                       required=True,

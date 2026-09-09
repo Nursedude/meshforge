@@ -4295,7 +4295,7 @@ def test_delivery_canary_fires_wedge_on_preflight_false():
     }}
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_write_canary()
+        sig = probe_delivery_write_canary(gateway_main_pid=5678)
     assert sig is not None
     assert sig.cls == "delivery_write_canary"
     assert sig.severity == "wedge"
@@ -4314,7 +4314,7 @@ def test_delivery_canary_fires_degraded_above_error_threshold():
     }}
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_write_canary(error_threshold=3)
+        sig = probe_delivery_write_canary(gateway_main_pid=5678, error_threshold=3)
     assert sig is not None
     assert sig.severity == "degraded"
     assert "5 consecutive" in sig.detail
@@ -4329,7 +4329,7 @@ def test_delivery_canary_quiet_when_healthy():
     }}
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_write_canary()
+        sig = probe_delivery_write_canary(gateway_main_pid=5678)
     assert sig is None
 
 
@@ -4342,7 +4342,7 @@ def test_delivery_canary_quiet_when_endpoint_unreachable(tmp_path):
     def _raise(*args, **kwargs):
         raise URLError("connection refused")
     with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-        sig = probe_delivery_write_canary(
+        sig = probe_delivery_write_canary(gateway_main_pid=5678,
             snapshot_state_path=str(tmp_path / "absent.json"))
     assert sig is None
 
@@ -4996,7 +4996,7 @@ def test_queue_backlog_none_on_unreachable_endpoint(tmp_path):
         raise URLError("connection refused")
 
     with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-        sig = probe_queue_backlog(
+        sig = probe_queue_backlog(gateway_main_pid=5678,
             state_path=str(tmp_path / "s.json"),
             stats_state_path=str(tmp_path / "absent.json"))
     assert sig is None
@@ -5008,7 +5008,7 @@ def test_queue_backlog_none_when_max_queue_size_unlimited(tmp_path):
     payload = _queue_payload(depth=50_000, max_size=0)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=str(tmp_path / "s.json"))
     assert sig is None
 
 
@@ -5016,7 +5016,7 @@ def test_queue_backlog_degraded_at_80pct_depth(tmp_path):
     payload = _queue_payload(depth=820, max_size=1000)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=str(tmp_path / "s.json"))
     assert sig is not None
     assert sig.cls == "queue_backlog"
     assert sig.severity == "degraded"
@@ -5030,7 +5030,7 @@ def test_queue_backlog_wedge_at_95pct_depth(tmp_path):
     payload = _queue_payload(depth=960, max_size=1000)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=str(tmp_path / "s.json"))
     assert sig is not None
     assert sig.severity == "wedge"
     assert "shed" in sig.detail
@@ -5045,9 +5045,9 @@ def test_queue_backlog_dead_letter_static_pile_never_fires(tmp_path):
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
         # First tick: establishes baseline, no fire.
-        assert probe_queue_backlog(state_path=sp) is None
+        assert probe_queue_backlog(gateway_main_pid=5678, state_path=sp) is None
         # Second tick, same count: still no fire.
-        assert probe_queue_backlog(state_path=sp) is None
+        assert probe_queue_backlog(gateway_main_pid=5678, state_path=sp) is None
 
 
 def test_queue_backlog_fires_on_dead_letter_growth(tmp_path):
@@ -5055,11 +5055,11 @@ def test_queue_backlog_fires_on_dead_letter_growth(tmp_path):
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=100))):
-        assert probe_queue_backlog(state_path=sp) is None  # baseline
+        assert probe_queue_backlog(gateway_main_pid=5678, state_path=sp) is None  # baseline
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=115))):
-        sig = probe_queue_backlog(state_path=sp)
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=sp)
     assert sig is not None
     assert sig.severity == "degraded"
     assert "+15" in sig.detail
@@ -5070,11 +5070,11 @@ def test_queue_backlog_dead_letter_spike_is_wedge(tmp_path):
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=10))):
-        assert probe_queue_backlog(state_path=sp) is None  # baseline
+        assert probe_queue_backlog(gateway_main_pid=5678, state_path=sp) is None  # baseline
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(dead_letter=75))):
-        sig = probe_queue_backlog(state_path=sp)
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=sp)
     assert sig is not None
     assert sig.severity == "wedge"
     assert "retries exhausting" in sig.detail
@@ -5086,12 +5086,12 @@ def test_queue_backlog_takes_max_severity_across_legs(tmp_path):
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(depth=850, max_size=1000, dead_letter=0))):
-        probe_queue_backlog(state_path=sp)  # baseline (fires degraded)
+        probe_queue_backlog(gateway_main_pid=5678, state_path=sp)  # baseline (fires degraded)
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    _queue_payload(depth=850, max_size=1000,
                                   dead_letter=60))):
-        sig = probe_queue_backlog(state_path=sp)
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=sp)
     assert sig is not None
     assert sig.severity == "wedge"
     # Both legs present in the operator detail.
@@ -5104,7 +5104,7 @@ def test_queue_backlog_none_on_unexpected_shape(tmp_path):
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(
                    {"error": "message_queue_unavailable"})):
-        sig = probe_queue_backlog(state_path=str(tmp_path / "s.json"))
+        sig = probe_queue_backlog(gateway_main_pid=5678, state_path=str(tmp_path / "s.json"))
     assert sig is None
 
 
@@ -9670,7 +9670,7 @@ def test_delivery_canary_db_unobservable_is_indeterminate_not_clean():
     reset_dispositions()
     with patch("utils.watchdog_probes_gateway.urlopen",
                return_value=_http_json_mock(payload)):
-        sig = probe_delivery_write_canary()
+        sig = probe_delivery_write_canary(gateway_main_pid=5678)
     assert sig is None
     got = collect_dispositions()["delivery_write_canary"]
     assert got["disp"] == "indeterminate"
@@ -10909,7 +10909,7 @@ class TestDeliverySnapshotFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_delivery_write_canary(snapshot_state_path=str(p))
+            sig = probe_delivery_write_canary(gateway_main_pid=5678, snapshot_state_path=str(p))
         assert sig is not None
         assert sig.cls == "delivery_write_canary"
         assert sig.severity == "wedge"
@@ -11041,7 +11041,7 @@ class TestQueueStatsFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_queue_backlog(
+            sig = probe_queue_backlog(gateway_main_pid=5678,
                 state_path=str(tmp_path / "dl.json"),
                 stats_state_path=str(p))
         assert sig is not None
@@ -11059,7 +11059,7 @@ class TestQueueStatsFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_queue_backlog(
+            sig = probe_queue_backlog(gateway_main_pid=5678,
                 state_path=str(tmp_path / "dl.json"),
                 stats_state_path=str(p))
         assert sig is None
@@ -11072,7 +11072,7 @@ class TestQueueStatsFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_queue_backlog(
+            sig = probe_queue_backlog(gateway_main_pid=5678,
                 state_path=str(tmp_path / "dl.json"),
                 stats_state_path=str(tmp_path / "absent.json"))
         assert sig is None
@@ -11094,7 +11094,7 @@ class TestQueueStatsFileFallback:
             raise URLError("connection refused")
 
         with patch("utils.watchdog_probes_gateway.urlopen", side_effect=_raise):
-            sig = probe_queue_backlog(
+            sig = probe_queue_backlog(gateway_main_pid=5678,
                 state_path=str(tmp_path / "dl.json"),
                 stats_state_path=str(p))
         assert sig is None
@@ -11114,7 +11114,7 @@ class TestQueueStatsFileFallback:
         payload = _queue_payload(depth=10, max_size=1000)
         with patch("utils.watchdog_probes_gateway.urlopen",
                    return_value=_http_json_mock(payload)):
-            sig = probe_queue_backlog(
+            sig = probe_queue_backlog(gateway_main_pid=5678,
                 state_path=str(tmp_path / "dl.json"),
                 stats_state_path=str(p))
         assert sig is None

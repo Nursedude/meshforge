@@ -627,15 +627,22 @@ def merge_coverage(
 
 # ── Per-box + whole-fleet builders ──────────────────────────────────────
 def _subsystem_from_slo(slo: Optional[Dict[str, Any]], key: str, source: str,
-                        *, ok_value: Any = True) -> Dict[str, Any]:
+                        *, ok_value: Any = True,
+                        ok_reason: Optional[str] = None) -> Dict[str, Any]:
     """Classify a /fleet/slo sub-block that reports a status string."""
     if not isinstance(slo, dict):
         return cell(DARK, reason="slo unobservable", source=source)
     val = slo.get(key)
     if val is None:
         return cell(DARK, reason=f"{key} absent from slo", source=source)
+    # 2026-09-09 (aim audit): the OK branch used to carry reason=None, so a
+    # green cell said nothing about what produced it. Name the quantity — the
+    # same reason the spool path below now does. `ok_reason` lets a caller whose
+    # status string is presence-derived say so; default states the plain fact.
     return cell(HEALTHY if val == ok_value else FAILED,
-                reason=None if val == ok_value else f"{key}={val}", source=source)
+                reason=(ok_reason or f"{key}={val}") if val == ok_value
+                       else f"{key}={val}",
+                source=source)
 
 
 def _services_cell_from_spool(services: Dict[str, Any]) -> Dict[str, Any]:
@@ -682,7 +689,22 @@ def _services_cell_from_spool(services: Dict[str, Any]) -> Dict[str, Any]:
                            f"across re-checks it is a crashloop; probe-side "
                            f"detectors page that)",
                     source=src)
-    return cell(HEALTHY, source=src)
+    # 2026-09-09 (aim audit, OVERCLAIMED): this returned a bare HEALTHY with NO
+    # reason. This module's own contract at the top of the file says healthy
+    # means "observed, and observed OK" — and what was observed here is
+    # `systemctl is-active`, i.e. PRESENCE. A unit can be active and serving
+    # nothing: on 2026-08-11 meshtasticd's NRestarts=0 was true while its web
+    # client served nothing, because it binds :9443 with or without a
+    # certificate. The state stays HEALTHY (a live unit IS a fresh positive
+    # observation, and demoting it would blind the real enabled-but-inactive
+    # fault this cell exists to catch) — what changes is that the cell now SAYS
+    # which quantity it observed, so a reader cannot borrow a functional claim
+    # from it.
+    return cell(HEALTHY,
+                reason=f"{len(enabled)} enabled unit(s) all active — PRESENCE "
+                       f"(systemctl is-active); a unit can be active and not "
+                       f"functioning, so this licenses no functional claim",
+                source=src)
 
 
 def build_box_truth(
@@ -762,8 +784,12 @@ def build_box_truth(
         "claw": _claw_cell(claw_block),
         "services": (_services_cell_from_spool(spool_services)
                      if isinstance(spool_services, dict)
-                     else _subsystem_from_slo(slo, "overall_status",
-                                              "/fleet/slo.services", ok_value="ready")),
+                     else _subsystem_from_slo(
+                         slo, "overall_status", "/fleet/slo.services",
+                         ok_value="ready",
+                         ok_reason="overall_status=ready — PRESENCE "
+                                   "(systemctl is-active); licenses no "
+                                   "functional claim")),
         "cascade": _cascade_cell(slo),
         "ci": _ci_cell(slo),
     }

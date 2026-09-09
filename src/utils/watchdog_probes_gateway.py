@@ -176,6 +176,9 @@ def probe_delivery_write_canary(
     timeout_s: float = 3.0,
     error_threshold: int = 3,
     snapshot_state_path: Optional[str] = None,
+    gateway_unit: str = "meshforge-gateway.service",
+    gateway_main_pid: Optional[int] = None,
+    systemctl_path: str = "systemctl",
 ) -> Optional[Signal]:
     """Read ``/api/gateway/delivery.health`` and surface preflight/runtime errors.
 
@@ -194,6 +197,32 @@ def probe_delivery_write_canary(
       - degraded: consecutive_write_errors >= error_threshold
       - None: healthy, or endpoint unreachable (a different probe surfaces that)
     """
+    # ORGAN GATE (2026-09-09, aim audit). Without this the probe read `clean`
+    # on a box with NO GATEWAY: the payload's absent/zero fields look exactly
+    # like a healthy quiet gateway. Measured that day on the manager box —
+    # meshforge-gateway inactive, health.last_successful_write_ts=None, and
+    # THIS class read `clean` while its sibling delivery_confirmation_stall
+    # correctly read `inert: gateway not running on this box (absent)`. Two
+    # probes, one absent organ, opposite dispositions — the inert-vs-clean
+    # collapse (persistent_issues 2026-08-05: an organ absent BY DESIGN must
+    # never be reported as an observation that succeeded).
+    #
+    # Uses the SAME helper as the sibling rather than a second presence check
+    # (honest_failure_modes #5 — two consumers of one policy must share it).
+    if gateway_main_pid is not None:
+        gw_status, gw_pid = "ok", gateway_main_pid
+    else:
+        gw_status, gw_pid = _resolve_main_pid_status(
+            gateway_unit, systemctl_path=systemctl_path)
+    if gw_pid is None:
+        note_unit_presence_gate(
+            "delivery_write_canary", gw_status,
+            stopped_is_inert=True,
+            absent_reason=f"gateway not running on this box ({gw_status})",
+            unresolved_reason=(f"{gateway_unit} state unobservable; cannot tell "
+                               f"whether a gateway organ exists here"))
+        return None
+
     payload, blind = _fetch_delivery_payload(
         host, port, timeout_s, state_path=snapshot_state_path)
     if payload is None:
@@ -325,6 +354,9 @@ def probe_queue_backlog(
     dead_letter_growth_wedge: int = 50,
     state_path: Optional[str] = None,
     stats_state_path: Optional[str] = None,
+    gateway_unit: str = "meshforge-gateway.service",
+    gateway_main_pid: Optional[int] = None,
+    systemctl_path: str = "systemctl",
 ) -> Optional[Signal]:
     """Persistent-queue backpressure via ``/api/gateway/queue`` (Issue #74).
 
@@ -352,6 +384,31 @@ def probe_queue_backlog(
     the dead-letter baseline). Transport/shape errors → None
     (http_local / service_inactive own those).
     """
+    # ORGAN GATE (2026-09-09, aim audit). Same defect and same cure as
+    # probe_delivery_write_canary above. Measured on the manager box that day:
+    # meshforge-gateway inactive, /api/gateway/queue reporting pending=4 and
+    # dead_letter=62 with NOTHING draining them, and this class read `clean`
+    # while its sibling gateway_delivery_degraded correctly read
+    # `inert: gateway not running on this box (absent)`. This is the worse of
+    # the pair — a real, stranded backlog rendered as an affirmative green,
+    # because the leftover queue DB outlives the process that drains it.
+    #
+    # Shares the sibling's helper rather than re-deciding presence
+    # (honest_failure_modes #5).
+    if gateway_main_pid is not None:
+        gw_status, gw_pid = "ok", gateway_main_pid
+    else:
+        gw_status, gw_pid = _resolve_main_pid_status(
+            gateway_unit, systemctl_path=systemctl_path)
+    if gw_pid is None:
+        note_unit_presence_gate(
+            "queue_backlog", gw_status,
+            stopped_is_inert=True,
+            absent_reason=f"gateway not running on this box ({gw_status})",
+            unresolved_reason=(f"{gateway_unit} state unobservable; cannot tell "
+                               f"whether a gateway organ exists here"))
+        return None
+
     payload, blind = _fetch_queue_payload(
         host, port, timeout_s, state_path=stats_state_path)
     if payload is None:
