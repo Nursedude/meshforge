@@ -40,6 +40,7 @@ VENV_DIR="$INSTALL_DIR/venv"
 MESHTASTICD_CONFIG_DIR="/etc/meshtasticd"
 FORCE_NATIVE=false
 FORCE_PYTHON=false
+DRY_RUN=false
 
 # Architecture detection
 ARCH=$(dpkg --print-architecture 2>/dev/null || uname -m)
@@ -75,15 +76,18 @@ Options:
                        Use this on a laptop/desktop with no radio attached.
   --force-native       Force the native meshtasticd package (OBS repo)
   --force-python       Force the Python meshtastic path instead of native
+  -n, --dry-run        Preview every change WITHOUT making any. Runs
+                       unprivileged on purpose (no sudo needed), so anything
+                       the preview misses is refused by the kernel rather than
+                       silently applied. Read this before your first install.
   -h, --help           Show this help and exit
 
 Installs to /opt/meshforge with a venv at /opt/meshforge/venv.
 
 This script runs as root and DOES mutate the system: apt update/install,
-systemd unit installation, and `systemctl enable` on services. There is
-currently NO --dry-run, so it cannot preview those changes for you — read
-docs/install.md first if that matters to you, and prefer --client-only on a
-machine you are not dedicating to this.
+systemd unit installation, and `systemctl enable` on services. Preview all of
+it first with --dry-run (no sudo required, changes nothing), and prefer
+--client-only on a machine you are not dedicating to this.
 
 No radio, and just want the RF math? Nothing here is required:
   python3 src/standalone.py
@@ -98,6 +102,10 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             usage
             exit 0
+            ;;
+        --dry-run|-n)
+            DRY_RUN=true
+            shift
             ;;
         --skip-meshtasticd)
             INSTALL_MESHTASTICD=false
@@ -134,10 +142,17 @@ echo "║        Network Operations Center for Mesh Networks        ║"
 echo "╚═══════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
-# Check root
-if [[ $EUID -ne 0 ]]; then
+# Check root. DRY-RUN IS DELIBERATELY EXEMPT — and that exemption is the
+# load-bearing safety property, not a convenience (2026-09-09). Shadowing the
+# mutating commands cannot cover shell redirections or heredocs, because those
+# are not commands; running unprivileged means anything the preview misses is
+# refused by the kernel instead of silently applied. Do NOT "fix" this by
+# letting --dry-run run as root: that would convert every gap in the shadow
+# list from a loud abort into a real mutation.
+if [[ "$DRY_RUN" != "true" && $EUID -ne 0 ]]; then
    echo -e "${RED}Error: This script must be run as root${NC}"
    echo "Please run: sudo bash $0"
+   echo "To see what it WOULD do first, no root needed: bash $0 --dry-run"
    exit 1
 fi
 
@@ -148,6 +163,29 @@ MF_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/install_common.sh
 source "$MF_SCRIPT_DIR/lib/install_common.sh"
 mf_log_init
+
+if [[ "$DRY_RUN" == "true" ]]; then
+    mf_dry_run_enable
+    # Redirect the path VARIABLES into a sandbox so the `cat > "$INSTALL_DIR/..."`
+    # style writes (21 of them) land there instead of on the real system.
+    # Hardcoded /etc paths are NOT covered by this and do not need to be: they
+    # fail unprivileged, which aborts loudly under `set -e`.
+    DRY_SANDBOX="$(mktemp -d -t meshforge-dryrun-XXXXXX)"
+    echo -e "  sandbox for previewed file writes: ${DRY_SANDBOX}\n"
+    INSTALL_DIR="$DRY_SANDBOX/opt/meshforge"
+    VENV_DIR="$INSTALL_DIR/venv"
+    MESHTASTICD_CONFIG_DIR="$DRY_SANDBOX/etc/meshtasticd"
+    command mkdir -p "$INSTALL_DIR" "$MESHTASTICD_CONFIG_DIR"
+    trap 'rc=$?; if [[ $rc -ne 0 ]]; then
+            echo "";
+            echo "  ══ DRY RUN ABORTED (exit $rc) ══";
+            echo "  This is a FINDING, not a fault on your machine: the run hit a";
+            echo "  path this preview does not cover, so it was STOPPED";
+            echo "  rather than letting it proceed (set -e). Nothing was changed.";
+            echo "  Please report the last command shown above.";
+            echo "";
+          fi' EXIT
+fi
 
 # Resolve operator login for systemd User= placeholders.
 # Refuses root and users not in /etc/passwd — loud-fail rather than
@@ -465,7 +503,8 @@ add_meshtastic_repo() {
     local key_url="${OBS_BASE_URL}/${os_repo}/Release.key"
 
     # Add repo
-    echo "deb ${repo_url} /" > /etc/apt/sources.list.d/meshtastic.list
+    printf 'deb %s /\n' "${repo_url}" \
+        | mf_write_stdin /etc/apt/sources.list.d/meshtastic.list
 
     # Add GPG key
     curl -fsSL "$key_url" | gpg --dearmor > /etc/apt/trusted.gpg.d/meshtastic.gpg 2>/dev/null
@@ -528,7 +567,7 @@ if $MESHTASTICD_EXISTS && $INSTALL_MESHTASTICD; then
     echo -e "  ${BOLD}q)${NC} Quit installer"
     echo ""
 
-    if [[ -c /dev/tty ]]; then
+    if mf_have_tty; then
         read -p "  Select mode [1/2/3/q] (default: 1): " -n 1 -r mode_choice < /dev/tty
         echo ""
         case $mode_choice in
@@ -636,7 +675,8 @@ if [[ -f "$ALSA_RULES" ]] && [[ ! -f /etc/udev/rules.d/90-alsa-restore.rules ]];
         # Append missing LABEL declarations before EOF
         while IFS= read -r goto_label; do
             if ! grep -q "LABEL=\"$goto_label\"" "$ALSA_RULES"; then
-                echo "LABEL=\"$goto_label\"" >> /etc/udev/rules.d/90-alsa-restore.rules
+                mf_append_line /etc/udev/rules.d/90-alsa-restore.rules \
+                    "LABEL=\"$goto_label\""
                 echo "    Added missing LABEL=\"$goto_label\""
             fi
         done < <(grep -oP 'GOTO="\K[^"]+' "$ALSA_RULES" | sort -u)
@@ -673,7 +713,7 @@ if $INSTALL_MESHTASTICD; then
     # Create udev rules first (needed for detection)
     if [[ ! -f /etc/udev/rules.d/99-meshtastic.rules ]]; then
         echo "  Creating udev rules for radio devices..."
-        cat > /etc/udev/rules.d/99-meshtastic.rules << 'UDEV_RULES'
+        mf_write_stdin /etc/udev/rules.d/99-meshtastic.rules << 'UDEV_RULES'
 # Meshtastic USB devices
 # T-Beam, Heltec, RAK, etc.
 
@@ -789,7 +829,7 @@ UDEV_RULES
                     fi
 
                     # Create placeholder service explaining the requirement
-                    cat > /etc/systemd/system/meshtasticd.service << 'SPI_NEEDS_NATIVE'
+                    mf_write_stdin /etc/systemd/system/meshtasticd.service << 'SPI_NEEDS_NATIVE'
 [Unit]
 Description=Meshtastic (Native daemon required for SPI)
 Documentation=https://meshtastic.org/docs/software/linux-native/
@@ -807,7 +847,7 @@ SPI_NEEDS_NATIVE
 
                     # Only create config.yaml if it doesn't exist (meshtasticd package provides it)
                     if [[ ! -f "$MESHTASTICD_CONFIG_DIR/config.yaml" ]]; then
-                        cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'FALLBACK_CONFIG'
+                        mf_write_stdin "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'FALLBACK_CONFIG'
 ---
 Lora:
   # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
@@ -895,7 +935,7 @@ FALLBACK_CONFIG
 
                         # Still create minimal config and service so re-run picks up where we left off
                         if [[ ! -f "$MESHTASTICD_CONFIG_DIR/config.yaml" ]]; then
-                            cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'REBOOT_CONFIG'
+                            mf_write_stdin "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'REBOOT_CONFIG'
 ---
 Lora:
   # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
@@ -1038,7 +1078,7 @@ ADD_WEBSERVER
                         fi
                     else
                         echo -e "  ${CYAN}Creating fallback config.yaml...${NC}"
-                        cat > "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'SPI_CONFIG'
+                        mf_write_stdin "$MESHTASTICD_CONFIG_DIR/config.yaml" << 'SPI_CONFIG'
 ---
 Lora:
   # Module: auto  # Disabled — select hardware via TUI or copy template to config.d/
@@ -1065,7 +1105,7 @@ SPI_CONFIG
                             "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
                             > /etc/systemd/system/meshtasticd.service
                     else
-                        cat > /etc/systemd/system/meshtasticd.service << NATIVE_SERVICE
+                        mf_write_stdin /etc/systemd/system/meshtasticd.service << NATIVE_SERVICE
 [Unit]
 Description=Meshtastic Daemon (Native SPI)
 Documentation=https://meshtastic.org
@@ -1279,7 +1319,7 @@ NATIVE_SERVICE
                         "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
                         > /etc/systemd/system/meshtasticd.service
                 else
-                    cat > /etc/systemd/system/meshtasticd.service << NATIVE_USB_SERVICE
+                    mf_write_stdin /etc/systemd/system/meshtasticd.service << NATIVE_USB_SERVICE
 [Unit]
 Description=Meshtastic Daemon (USB Serial)
 Documentation=https://meshtastic.org
@@ -1310,7 +1350,7 @@ NATIVE_USB_SERVICE
                     echo -e "  ${GREEN}✓ Existing meshtasticd service is valid — keeping it${NC}"
                     DAEMON_TYPE="native-usb"
                 else
-                    cat > /etc/systemd/system/meshtasticd.service << 'USB_PLACEHOLDER'
+                    mf_write_stdin /etc/systemd/system/meshtasticd.service << 'USB_PLACEHOLDER'
 [Unit]
 Description=Meshtastic (pending native install)
 Documentation=https://meshtastic.org
@@ -1345,7 +1385,7 @@ USB_PLACEHOLDER
                 echo -e "  ${YELLOW}  Configure hardware in /etc/meshtasticd/config.d/${NC}"
 
                 # Create service using native meshtasticd
-                cat > /etc/systemd/system/meshtasticd.service << NATIVE_GENERIC
+                mf_write_stdin /etc/systemd/system/meshtasticd.service << NATIVE_GENERIC
 [Unit]
 Description=Meshtastic Daemon
 Documentation=https://meshtastic.org
@@ -1372,7 +1412,7 @@ NATIVE_GENERIC
                     echo -e "  ${GREEN}✓ Existing meshtasticd service is valid — keeping it${NC}"
                     DAEMON_TYPE="native"
                 else
-                    cat > /etc/systemd/system/meshtasticd.service << 'NO_RADIO_SERVICE'
+                    mf_write_stdin /etc/systemd/system/meshtasticd.service << 'NO_RADIO_SERVICE'
 [Unit]
 Description=Meshtastic (No Radio Configured)
 Documentation=https://meshtastic.org
@@ -1516,7 +1556,7 @@ if $INSTALL_RNS; then
     # System-wide service running as the non-root operator user (fleet parity,
     # arch-meeting 2026-06-01), pinned to the canonical /etc/reticulum configdir
     # so it uses the born-correct, operator-owned RNS tree.
-    cat > /etc/systemd/system/rnsd.service << RNSD_SERVICE
+    mf_write_stdin /etc/systemd/system/rnsd.service << RNSD_SERVICE
 [Unit]
 Description=Reticulum Network Stack Daemon
 Documentation=https://reticulum.network
@@ -1639,7 +1679,7 @@ CONFIG_DIR="/etc/meshforge"
 mkdir -p "$CONFIG_DIR"
 
 # Create comprehensive NOC config
-cat > "$CONFIG_DIR/noc.yaml" << NOC_CONFIG
+mf_write_stdin "$CONFIG_DIR/noc.yaml" << NOC_CONFIG
 # MeshForge NOC Configuration
 # Generated by install_noc.sh on $(date)
 # Architecture: $ARCH
@@ -1692,7 +1732,7 @@ echo -e "  ${GREEN}✓ Daemon type: $DAEMON_TYPE${NC}"
 echo -e "${CYAN}[8/8] Creating system integration...${NC}"
 
 # Main command
-cat > /usr/local/bin/meshforge << 'MESHFORGE_CMD'
+mf_write_stdin /usr/local/bin/meshforge << 'MESHFORGE_CMD'
 #!/bin/bash
 cd /opt/meshforge
 exec sudo /opt/meshforge/venv/bin/python src/launcher.py "$@"
@@ -1700,7 +1740,7 @@ MESHFORGE_CMD
 chmod +x /usr/local/bin/meshforge
 
 # NOC orchestrator command
-cat > /usr/local/bin/meshforge-noc << 'NOC_CMD'
+mf_write_stdin /usr/local/bin/meshforge-noc << 'NOC_CMD'
 #!/bin/bash
 cd /opt/meshforge/src
 exec sudo /opt/meshforge/venv/bin/python -m core.orchestrator "$@"
@@ -1708,14 +1748,14 @@ NOC_CMD
 chmod +x /usr/local/bin/meshforge-noc
 
 # LoRa configuration helper
-cat > /usr/local/bin/meshforge-lora << 'LORA_CMD'
+mf_write_stdin /usr/local/bin/meshforge-lora << 'LORA_CMD'
 #!/bin/bash
 exec sudo /opt/meshforge/scripts/configure_lora.sh "$@"
 LORA_CMD
 chmod +x /usr/local/bin/meshforge-lora
 
 # Status command (terminal-native diagnostics)
-cat > /usr/local/bin/meshforge-status << 'STATUS_CMD'
+mf_write_stdin /usr/local/bin/meshforge-status << 'STATUS_CMD'
 #!/bin/bash
 cd /opt/meshforge
 exec /opt/meshforge/venv/bin/python src/cli/status.py "$@"
@@ -1723,7 +1763,7 @@ STATUS_CMD
 chmod +x /usr/local/bin/meshforge-status
 
 # Web client launcher
-cat > /usr/local/bin/meshforge-web << 'WEB_CMD'
+mf_write_stdin /usr/local/bin/meshforge-web << 'WEB_CMD'
 #!/bin/bash
 # Open or display the meshtasticd web client URL
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}')
@@ -1761,7 +1801,7 @@ WEB_CMD
 chmod +x /usr/local/bin/meshforge-web
 
 # MeshForge Map Server command (NOC web UI on port 5000)
-cat > /usr/local/bin/meshforge-map << 'MAP_CMD'
+mf_write_stdin /usr/local/bin/meshforge-map << 'MAP_CMD'
 #!/bin/bash
 # MeshForge Map Server - NOC Web Interface
 # Serves the live node map on port 5000
@@ -1820,7 +1860,7 @@ if [[ -f "$INSTALL_DIR/scripts/meshforge-map.service" ]]; then
     echo -e "  ${GREEN}✓ meshforge-map.service installed (User=${MESHFORGE_MAP_USER})${NC}"
 else
     # Inline service definition (fallback) — heredoc unquoted so $MESHFORGE_MAP_USER expands
-    cat > /etc/systemd/system/meshforge-map.service << MAP_SERVICE
+    mf_write_stdin /etc/systemd/system/meshforge-map.service << MAP_SERVICE
 [Unit]
 Description=MeshForge Map Server - NOC Web Interface
 Documentation=https://github.com/Nursedude/meshforge
@@ -1850,7 +1890,7 @@ fi
 
 # Update systemd service to use orchestrator
 # Start order: meshtasticd -> rnsd -> meshforge
-cat > /etc/systemd/system/meshforge.service << 'MESHFORGE_SERVICE'
+mf_write_stdin /etc/systemd/system/meshforge.service << 'MESHFORGE_SERVICE'
 [Unit]
 Description=MeshForge Mesh Network Operations Center
 Documentation=https://github.com/Nursedude/meshforge
@@ -2089,8 +2129,15 @@ else
     echo -e "  ${YELLOW}⚠ Map Server not running (check: journalctl -u meshforge-map)${NC}"
 fi
 
-# Offer to start services (only if services can actually run)
-if [[ "$DAEMON_TYPE" != "spi-pending" && "$DAEMON_TYPE" != "placeholder" ]] && [[ -c /dev/tty ]]; then
+# Offer to start services (only if services can actually run).
+# DRY-RUN never prompts and never starts anything: an interactive question is
+# not a preview, and `read < /dev/tty` fails outright in a non-interactive
+# context, which aborted the 2026-09-09 dry-run one line from the end.
+if [[ "$DRY_RUN" == "true" ]]; then
+    echo ""
+    echo -e "  ${CYAN}[dry-run]${NC} a real run would offer to start the NOC here"
+    echo -e "  ${CYAN}[dry-run]${NC} would run: /usr/local/bin/meshforge-noc --start"
+elif [[ "$DAEMON_TYPE" != "spi-pending" && "$DAEMON_TYPE" != "placeholder" ]] && mf_have_tty; then
     echo ""
     echo -e "${CYAN}Would you like to start MeshForge NOC now? [Y/n]${NC}"
     read -r response < /dev/tty
@@ -2129,3 +2176,8 @@ echo ""
 echo -e "${CYAN}Documentation:${NC} https://github.com/Nursedude/meshforge"
 echo -e "${CYAN}Made with aloha for the mesh community${NC}"
 echo ""
+
+# Dry-run epilogue: the count of previewed operations, and an explicit
+# statement of what the preview does NOT cover. A summary that claimed
+# completeness would be the very overclaim this feature exists to avoid.
+mf_dry_run_summary

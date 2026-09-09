@@ -1163,3 +1163,83 @@ def test_install_noc_usage_lists_every_option_the_parser_accepts():
     usage_block = text.split("usage() {", 1)[1].split("USAGE\n}", 1)[0]
     missing = sorted(o for o in parsed if o not in usage_block)
     assert not missing, f"parser accepts {missing} but usage() never mentions them"
+
+
+# --- installer dry-run (2026-09-09) -----------------------------------------
+# The dry-run's safety rests on THREE layers, and each has a pin below. The
+# design constraint that drove it: a half-working dry-run that mutates anyway is
+# FAR more dangerous than no dry-run — it would be an instrument claiming a
+# safety it does not have.
+
+_INSTALL_LIB = REPO / "scripts" / "lib" / "install_common.sh"
+
+
+def test_dry_run_must_not_require_root():
+    """LAYER 2, the load-bearing one. Shadowing cannot cover shell redirections
+    or heredocs (they are not commands), so UNPRIVILEGED execution is what stops
+    anything the shadow list misses — the kernel refuses it. If a future edit
+    makes --dry-run require root, every gap in the shadow list silently converts
+    from a loud abort into a real mutation. Pin it at the source."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    assert 'if [[ "$DRY_RUN" != "true" && $EUID -ne 0 ]]; then' in text, \
+        "the root check must exempt --dry-run; see install_common.sh dry-run notes"
+
+
+def test_dry_run_completes_and_performs_nothing():
+    """LAYER 3 + the end-to-end claim. A dry-run that aborts is a FINDING (an
+    uncovered path); one that completes must say so and must report zero
+    operations performed."""
+    import subprocess
+    p = subprocess.run(["bash", str(REPO / "scripts" / "install_noc.sh"),
+                        "--dry-run", "--client-only"],
+                       capture_output=True, text=True, timeout=240,
+                       stdin=subprocess.DEVNULL, cwd=str(REPO))
+    assert p.returncode == 0, f"dry-run aborted (exit {p.returncode}): {p.stdout[-600:]}"
+    assert "DRY RUN COMPLETE" in p.stdout
+    assert "0 performed" in p.stdout, "the summary must state that nothing was done"
+    assert "[dry-run] would:" in p.stdout, "a preview that previews nothing is not a preview"
+    assert "must be run as root" not in p.stdout, "dry-run must not demand root"
+
+
+def test_no_tty_presence_checks_remain():
+    """`[[ -c /dev/tty ]]` is a PRESENCE check: the node exists in a pipeline or
+    under </dev/null, and the guarded `read < /dev/tty` then fails, aborting the
+    installer under `set -e`. mf_have_tty is the FUNCTION check."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    assert "-c /dev/tty" not in text, \
+        "use mf_have_tty (can we READ it?) not a check that the node exists"
+
+
+def test_no_raw_heredoc_writes_to_system_paths():
+    """Redirections cannot be shadowed, so every write to a hardcoded system
+    path must route through mf_write_stdin or the dry-run aborts on it. 20 sites
+    were converted on 2026-09-09; this stops the 21st from reintroducing it."""
+    import re
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    bad = re.findall(r"^\s*(?:cat|tee)[^|\n]*>{1,2}\s*/(?:etc|usr|var|lib|boot)/\S*",
+                     text, re.M)
+    assert not bad, f"raw system-path writes bypass the dry-run: {bad[:3]}"
+
+
+def test_dry_run_read_detection_skips_leading_flags():
+    """A shadowed READ returns 0 without output, so the script takes a DIFFERENT
+    BRANCH under dry-run and the preview is of a program nobody runs. `git -C
+    <dir> rev-parse` and `systemctl --user is-active` are the cases that broke
+    it: the subcommand is not argv[1]."""
+    import subprocess
+    script = f'''
+source {_INSTALL_LIB}
+r() {{ if _mf_is_read "$@"; then echo READ; else echo MUT; fi; }}
+r git -C /x rev-parse HEAD
+r git clone u d
+r systemctl --user is-active f
+r systemctl enable f
+r sed -e s/a/b/ f
+r sed -i s/a/b/ f
+r apt-get update
+'''
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       timeout=30)
+    assert p.returncode == 0, p.stderr[:300]
+    assert p.stdout.split() == ["READ", "MUT", "READ", "MUT", "READ", "MUT", "MUT"], \
+        f"read/mutation classification wrong: {p.stdout.split()}"
