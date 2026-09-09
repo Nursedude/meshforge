@@ -130,3 +130,61 @@ class TestRunLoopRetargets(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDeclarationPathWithoutRnsd:
+    """A role may declare ``rnsd: absent`` — its declaration must still be read.
+
+    ``deployment_declaration_path`` derives the home from the SERVICE USER,
+    which is read off rnsd. field-node (lehua) declares ``rnsd: absent`` on
+    purpose, so that derivation returned None, the reader answered
+    ``unreadable``, and a deployment.json sitting right there readable was
+    reported as a declaration that could not be observed — the pessimistic
+    value for a box that is merely built differently. It made the role
+    unresolvable to promote_seed_rules, so that box's mini could never be
+    seeded at all (measured 2026-09-08).
+    """
+
+    def test_falls_back_to_the_operator_when_no_service_user(self, tmp_path):
+        from utils import watchdog_probe_core as core
+
+        home = tmp_path / "home" / "operator"
+        (home / ".config" / "meshforge").mkdir(parents=True)
+        expected = home / ".config" / "meshforge" / "deployment.json"
+        expected.write_text('{"role": "field-node"}')
+
+        class _PW:
+            pw_dir = str(home)
+
+        with patch("utils.fleet_test_runner._find_operator_user",
+                   return_value=(1000, "operator")), \
+             patch("pwd.getpwuid", return_value=_PW()):
+            # service_user None — exactly what a box with no rnsd produces.
+            assert core.deployment_declaration_path(None) == str(expected)
+
+    def test_reads_the_role_rather_than_reporting_unreadable(self, tmp_path):
+        from utils import watchdog_probe_core as core
+
+        home = tmp_path / "home" / "operator"
+        (home / ".config" / "meshforge").mkdir(parents=True)
+        (home / ".config" / "meshforge" / "deployment.json").write_text(
+            '{"role": "field-node"}')
+
+        class _PW:
+            pw_dir = str(home)
+
+        with patch("utils.fleet_test_runner._find_operator_user",
+                   return_value=(1000, "operator")), \
+             patch("pwd.getpwuid", return_value=_PW()):
+            status, role, _ = core._read_deployment_declaration_status(None)
+        assert (status, role) == ("declared", "field-node"), (
+            "a readable declaration on an rnsd-less box must read as DECLARED, "
+            "not as an observation that failed")
+
+    def test_still_none_when_no_operator_either(self):
+        """No service user AND no operator → honestly unresolvable."""
+        from utils import watchdog_probe_core as core
+
+        with patch("utils.fleet_test_runner._find_operator_user",
+                   return_value=None):
+            assert core.deployment_declaration_path(None) is None

@@ -2348,9 +2348,43 @@ class TestDeploymentDeclarationStatus:
         self._write(tmp_path, '{"profile": "full"}')
         assert _read_deployment_declaration_status("svc")[0] == "undeclared"
 
-    def test_no_service_user_is_unreadable(self):
+    def test_no_service_user_and_no_operator_is_unreadable(self, monkeypatch):
+        """Nothing resolvable at all → still honestly ``unreadable``.
+
+        ⚠️ CONTRACT NARROWED 2026-09-08, deliberately. This used to assert that
+        an unresolvable SERVICE USER alone means unreadable. That collapsed
+        "rnsd is absent on this box" into "I could not observe the
+        declaration" — the very absent-vs-unreadable collapse this class's
+        docstring calls OPPOSITE FACTS, one layer further down. field-node
+        declares ``rnsd: absent`` by design, so on lehua the reader called a
+        deployment.json that was sitting there readable "unreadable", and the
+        box's mini could never be seeded. Unreadable now requires that the
+        operator fallback fail too.
+
+        It also no longer reads the real box: with no mock, the fallback finds
+        this machine's own operator and the verdict depends on whoever runs the
+        suite (a test whose verdict rests on un-pinned ambient state pins
+        nothing).
+        """
         from utils.watchdog_probe_core import _read_deployment_declaration_status
+        monkeypatch.setattr("utils.fleet_test_runner._find_operator_user",
+                            lambda: None)
         assert _read_deployment_declaration_status("")[0] == "unreadable"
+
+    def test_no_service_user_falls_back_to_the_operator(self, tmp_path,
+                                                        monkeypatch):
+        """The rnsd-less box: readable declaration → DECLARED, not unreadable."""
+        import pwd as _pwd
+        from utils.watchdog_probe_core import _read_deployment_declaration_status
+
+        class _Ent:
+            pw_dir = str(tmp_path)
+        monkeypatch.setattr(_pwd, "getpwuid", lambda u: _Ent())
+        monkeypatch.setattr("utils.fleet_test_runner._find_operator_user",
+                            lambda: (1000, "operator"))
+        self._write(tmp_path, '{"role": "field-node"}')
+        assert _read_deployment_declaration_status("") == (
+            "declared", "field-node", {})
 
     def test_shim_still_returns_the_legacy_pair(self, tmp_path, monkeypatch):
         """Back-compat: the flat form keeps its (role, overrides) contract for

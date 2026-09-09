@@ -462,14 +462,40 @@ def deployment_declaration_path(service_user) -> Optional[str]:
     would say /root — the rns_version_drift lesson). ONE derivation, shared
     by the declaration reader and the runner's mtime-gated re-read
     (honest_failure_modes #5: two copies of a path WILL drift)."""
-    if not service_user:
+    import pwd
+    home = None
+    if service_user:
+        try:
+            home = pwd.getpwnam(service_user).pw_dir
+        except (KeyError, OSError, TypeError):
+            home = None
+    if home is None:
+        # The service user is derived from rnsd — and a role may declare
+        # `rnsd: absent` ON PURPOSE. field-node does exactly that, so on
+        # lehua this returned None, the reader answered "unreadable", and a
+        # deployment.json sitting right there readable was reported as a
+        # declaration that could not be observed. That is the pessimistic
+        # value for a box that is simply built differently, and it made the
+        # role unresolvable to promote_seed_rules — the box's mini could
+        # never be seeded (2026-09-08).
+        #
+        # Fall back to the operator who owns the systemd --user manager, the
+        # same root-safe derivation _resolve_mini_home uses. Still never
+        # get_real_user_home(): under the sandboxed-root watchdog that says
+        # /root (the rns_version_drift lesson this function was written for).
+        try:
+            from utils.fleet_test_runner import _find_operator_user
+            op = _find_operator_user()
+        except Exception:  # noqa: BLE001 - unresolvable operator is not fatal
+            op = None
+        if op:
+            try:
+                home = pwd.getpwuid(op[0]).pw_dir
+            except (KeyError, OSError, TypeError):
+                home = None
+    if home is None:
         return None
-    try:
-        import pwd
-        home = pwd.getpwnam(service_user).pw_dir
-        return os.path.join(home, ".config", "meshforge", "deployment.json")
-    except (KeyError, OSError, TypeError):
-        return None
+    return os.path.join(home, ".config", "meshforge", "deployment.json")
 
 
 def _read_deployment_declaration_status(
