@@ -65,7 +65,13 @@ DEFERRED_LEDGER_BASENAME = "deferred_work.json"
 HANDOFF_BASENAME_FMT = "plans/gateway-session-notes-{host}.md"
 #: Older than this and the note is shown WITH a stale banner, never silently.
 HANDOFF_STALE_S = 36 * 3600
-HANDOFF_MAX_CHARS = 1400
+#: How much of the lifted section is shown inline. Raised 1400 -> 2400 on
+#: 2026-09-09: at 1400 every real START HERE section on this fleet (measured
+#: 3,581-5,647 B) was showing 24-39% of itself, and the cut was SILENT about
+#: the magnitude — see the truncation branch below. 1000 extra chars is ~250
+#: tokens at session start, negligible beside the memory index this sits under,
+#: and it roughly doubles what lands without a Read.
+HANDOFF_MAX_CHARS = 2400
 
 
 def handoff_block(now_ts: float, path: str | None = None) -> str:
@@ -156,8 +162,39 @@ def handoff_block(now_ts: float, path: str | None = None) -> str:
     end = next((j for j in range(start + 1, len(lines))
                 if lines[j].startswith("## ")), len(lines))
     body = "\n".join(lines[start:end]).strip()
-    if len(body) > HANDOFF_MAX_CHARS:
-        body = body[:HANDOFF_MAX_CHARS].rstrip() + "\n\n…(truncated — read the full note)"
+    total = len(body)
+    if total > HANDOFF_MAX_CHARS:
+        # TWO defects fixed here 2026-09-09, both of the house class: a loss
+        # rendered as though nothing were lost.
+        #
+        # 1. The cut was UNQUANTIFIED. It said "(truncated — read the full
+        #    note)" whether 20 chars or 4,000 were missing, so the reader had
+        #    no way to judge whether the Read was worth a tool call. Measured
+        #    that day: every START HERE section on the fleet was showing
+        #    24-39% of itself under this branch, and no session had ever
+        #    remarked on it — including the one that had just WRITTEN one.
+        #    This whole feature exists (2026-09-07) because "read the handoff"
+        #    is a hope and showing it is a check; a truncation that hides its
+        #    own size is that same hope one layer down.
+        # 2. The cut landed mid-CHARACTER-index, so it routinely severed a
+        #    table row or a sentence. These sections lead with an indented
+        #    key/value summary block — exactly the payload — and half a row of
+        #    it reads as data rather than as damage.
+        #
+        # Cut on the last complete LINE instead, but only when that keeps at
+        # least half the budget: a section whose first line is enormous (or
+        # which has no newline at all) must still yield its opening, so fall
+        # back to the character cut rather than collapsing to nothing.
+        head = body[:HANDOFF_MAX_CHARS]
+        nl = head.rfind("\n")
+        if nl > HANDOFF_MAX_CHARS // 2:
+            head = head[:nl]
+        head = head.rstrip()
+        unread = total - len(head)
+        pct = round(100 * len(head) / total)
+        body = (head + f"\n\n…**TRUNCATED — showing {len(head):,} of "
+                f"{total:,} chars ({pct}%); {unread:,} unread.** Read the full "
+                "section at the path above before acting on it.")
     banner = ("⚠️ **STALE session handoff**" if stale
               else "📝 **session handoff — the last session's own words**")
     return (f"\n{banner} ({age} old, `{path}`)"

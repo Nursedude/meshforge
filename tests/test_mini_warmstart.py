@@ -259,6 +259,7 @@ def test_default_paths_come_from_the_app_adapter(tmp_path, monkeypatch):
 # worked on something else. The operator's framing: a fresh AI would not look
 # for other notes. Every test here pins `path`, so none reads the real note.
 
+import re  # noqa: E402
 from mini_dudeai.warmstart import HANDOFF_MAX_CHARS, handoff_block  # noqa: E402
 
 _NOTE = (
@@ -310,11 +311,72 @@ def test_absent_WITH_siblings_is_loud(tmp_path):
 
 
 def test_handoff_is_truncated_not_dumped(tmp_path):
+    """RETARGETED 2026-09-09, not deleted.
+
+    This asserted only that SOMETHING was elided and the block stayed bounded
+    — which stayed green for the whole period in which every real section on
+    the fleet was silently showing 24-39% of itself. "Is truncated" was never
+    the property worth pinning; "says how much it truncated" is. The bound is
+    kept (it is still the footprint guard); the vague marker is replaced by
+    the quantified contract the sibling tests below pin in detail.
+    """
     n = tmp_path / "gateway-session-notes-boxa.md"
     n.write_text("## START HERE\n\n" + ("x" * 9000), encoding="utf-8")
     out = handoff_block(n.stat().st_mtime + 60, path=str(n))
-    assert "truncated" in out
+    assert "TRUNCATED" in out
+    assert "unread" in out, "an elision must state its own size"
     assert len(out) < HANDOFF_MAX_CHARS + 400
+    # A body with no usable line boundary must still yield its opening rather
+    # than collapsing to nothing when the line-aligned cut is unavailable.
+    assert "xxxx" in out
+
+
+def test_truncation_states_how_much_is_unread(tmp_path):
+    """The 2026-09-09 defect: a cut that hid its own magnitude.
+
+    The reader has to decide whether the Read is worth a tool call, and
+    "(truncated)" carries nothing to decide on. Numbers must be real and
+    self-consistent, not decorative.
+    """
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    section = "## START HERE — x\n\n" + "\n".join(
+        f"    key{i:<10} value {i}" for i in range(300))
+    n.write_text(section, encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 60, path=str(n))
+
+    m = re.search(r"showing ([\d,]+) of ([\d,]+) chars \((\d+)%\); "
+                  r"([\d,]+) unread", out)
+    assert m, f"truncation notice must carry real numbers, got: {out[-300:]!r}"
+    shown, total, pct, unread = (int(g.replace(",", "")) for g in m.groups())
+    assert shown + unread == total, "shown + unread must account for the whole"
+    assert total == len(section.strip()), "total must be the REAL section size"
+    assert 0 < shown <= HANDOFF_MAX_CHARS
+    assert pct == round(100 * shown / total)
+    assert unread > 0, "a truncation notice that reports 0 unread is a lie"
+
+
+def test_truncation_cuts_on_a_line_boundary(tmp_path):
+    """These sections lead with an indented key/value block — the payload.
+
+    Half a table row reads as data, not as damage, so the cut must land
+    between lines whenever that still spends most of the budget.
+    """
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    n.write_text("## START HERE\n\n" + "\n".join(
+        f"    row{i:<4} value-{i}" for i in range(400)), encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 60, path=str(n))
+    shown = out.split("…**TRUNCATED")[0]
+    assert shown.rstrip().endswith(tuple(f"value-{i}" for i in range(400))), \
+        "cut landed mid-row instead of on a line boundary"
+
+
+def test_short_handoff_carries_no_truncation_notice(tmp_path):
+    """An elision notice on a complete section would be a false claim of loss."""
+    n = tmp_path / "gateway-session-notes-boxa.md"
+    n.write_text("## START HERE\n\n    verdict   all good\n", encoding="utf-8")
+    out = handoff_block(n.stat().st_mtime + 60, path=str(n))
+    assert "TRUNCATED" not in out and "unread" not in out
+    assert "all good" in out
 
 
 def test_note_without_any_section_says_so(tmp_path):
