@@ -7250,7 +7250,10 @@ class TestCalibrationDrift:
         p = str(tmp_path / "calibration_ledger.jsonl")
         cl.record_claim("100% verified", "tests_passed", "exit 0", self.HEAD,
                         ts=1.0, path=p)
-        marker = {"head_full": self.HEAD, "exit_code": 1, "ran_full_suite": True}
+        # The marker must POST-DATE the claim (a5711cb1: an undated marker, or
+        # one older than the claim, is not new evidence and mints no verdict).
+        marker = {"head_full": self.HEAD, "exit_code": 1, "ran_full_suite": True,
+                  "ts": 1.5}
         cl.rederive_and_persist(p, self.HEAD, marker, now_ts=2.0)
         # claim ts=1.0 → pass a matching now_ts so it's inside the recency window
         sig = probe_calibration_drift(ledger_path=p, now_ts=2.0)
