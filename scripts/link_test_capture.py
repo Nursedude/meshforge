@@ -32,13 +32,26 @@ and a field tool should not acquire a dependency it can avoid.
 ⚠️ The measurement caveat this tool refuses to hide
 ---------------------------------------------------
 RSSI and SNR arrive from the radio in their OWN KISS frames, separate from the
-data frame. The tool records the most recently reported pair — which is correct
-only if the firmware emits the stats BEFORE the packet they describe. That
-ordering has not been verified against hardware here, so every row carries a
-``stats_fresh`` flag: did a stats frame actually arrive between the previous
-packet and this one? If a run comes back with ``stats_fresh`` mostly 0, the
-numbers are stale-by-one and ``--summarize`` says so instead of averaging a lie
-into a confident headline. An unverified assumption gets a witness, not silence.
+data frame — and separate from each other. RNS's own ``process_incoming`` clears
+its stats AFTER the packet they describe, so on the firmware the two stat frames
+precede the data frame (review 2026-09-09; the earlier "unverified ordering"
+caveat is retired). What can still go wrong is a MISSING half: one stat frame
+lost or never sent. So every row carries a ``stats_fresh`` flag that is 1 only
+when BOTH an RSSI and an SNR frame arrived between the previous packet and this
+one; a half that did not arrive is written blank, never carried over from the
+previous packet. If a run comes back with ``stats_fresh`` mostly 0, the numbers
+cannot be paired and ``--summarize`` says so instead of averaging a lie into a
+confident headline.
+
+One capture, one provenance
+---------------------------
+``--out`` appends, and the beacon's docstring recommends concatenating several
+runs — which is fine as long as they share the SAME provenance. Two runs at
+different TX power in one file would produce a median RSSI that belongs to
+neither and a path loss computed against the FIRST row's power: 6 dB wrong,
+silently (review 2026-09-09, finding 15). ``--summarize`` groups rows by their
+provenance and refuses to reduce a file that carries more than one; split it
+by ``run`` and summarize each.
 
 The radio is confirmed ON before a single row is written
 --------------------------------------------------------
@@ -82,8 +95,15 @@ It always hands the radio back
 ------------------------------
 Promiscuous mode, if enabled, is a mode the device STAYS in. RNS's own interface
 init does not clear it, so an RNode left promiscuous stops receiving normally --
-the capture would break the very link it exists to measure. This tool clears it
-on every exit path, including Ctrl-C and errors.
+the capture would break the very link it exists to measure. ``utils.rnode_session``
+clears it on every exit path, including Ctrl-C and errors, and puts the radio
+back OFF if that is how it found it. It also refuses a port another process
+holds: on a box whose rnsd owns the RNode, a second reader splits the byte
+stream and rewrites the production radio's parameters.
+
+A USB unplug mid-capture ends with a FAIL line and the rows written so far, not
+a traceback (review 2026-09-09, finding 12) — three minutes of hill-side data
+are still in the file and ``--summarize`` still reads them.
 
 Deliberate non-goal: transmitting
 ---------------------------------
@@ -112,7 +132,6 @@ information about the path, and averaging it away discards it.
 import argparse
 import csv
 import datetime
-import math
 import os
 import statistics
 import sys
@@ -153,11 +172,48 @@ FIELDS = [
     "rssi_dbm", "snr_db", "bytes", "stats_fresh",
 ]
 
+# The columns that define WHICH measurement a row belongs to. Rows differing
+# in any of these cannot share a median or a path-loss figure.
+PROVENANCE_FIELDS = (
+    "run", "direction", "tx_hw", "rx_hw",
+    "tx_power_dbm", "tx_gain_dbi", "rx_gain_dbi",
+    "freq_hz", "bw_hz", "sf", "cr", "distance_m",
+)
+
+# Radio parameter ranges the RNode firmware can actually take. Out of range
+# used to surface as ``bytes([x]) ValueError`` AFTER the port was open and
+# DETECT had passed, or go to the radio silently (``u32(-1)``).
+SF_RANGE = (5, 12)          # SX126x spreading factors
+CR_RANGE = (5, 8)           # coding rate denominators 4/5 .. 4/8
+TXPOWER_RANGE = (0, 37)     # dBm; no RNode product exceeds this, firmware clamps lower
+U32_MAX = 0xFFFFFFFF
+
 
 def measured_path_loss(tx_power_dbm: float, tx_gain_dbi: float,
                        rx_gain_dbi: float, rssi_dbm: float) -> float:
     """Total path loss implied by a received signal level, in dB."""
     return tx_power_dbm + tx_gain_dbi + rx_gain_dbi - rssi_dbm
+
+
+def validate_radio_args(freq: int, bw: int, sf: int, cr: int, txp: int) -> List[str]:
+    """Reasons the radio parameters cannot be sent to an RNode; empty = fine."""
+    problems = []
+    if not (0 < freq <= U32_MAX):
+        problems.append(f"--freq {freq} is not a frequency the radio can take (1..{U32_MAX} Hz)")
+    if not (0 < bw <= U32_MAX):
+        problems.append(f"--bw {bw} is not a bandwidth the radio can take (1..{U32_MAX} Hz)")
+    if not (SF_RANGE[0] <= sf <= SF_RANGE[1]):
+        problems.append(f"--sf {sf} is outside {SF_RANGE[0]}..{SF_RANGE[1]}")
+    if not (CR_RANGE[0] <= cr <= CR_RANGE[1]):
+        problems.append(f"--cr {cr} is outside {CR_RANGE[0]}..{CR_RANGE[1]} (4/5 .. 4/8)")
+    if not (TXPOWER_RANGE[0] <= txp <= TXPOWER_RANGE[1]):
+        problems.append(f"--tx-power-setting {txp} is outside "
+                        f"{TXPOWER_RANGE[0]}..{TXPOWER_RANGE[1]} dBm")
+    return problems
+
+
+def provenance_of(row: Dict[str, str]) -> Tuple[str, ...]:
+    return tuple(str(row.get(k, "")).strip() for k in PROVENANCE_FIELDS)
 
 
 def summarize_rows(rows: List[Dict[str, str]]) -> Dict[str, object]:
@@ -171,6 +227,12 @@ def summarize_rows(rows: List[Dict[str, str]]) -> Dict[str, object]:
     if not rows:
         out["blockers"].append("capture is empty — no packets were received")
         return out
+
+    groups: Dict[Tuple[str, ...], int] = {}
+    for r in rows:
+        key = provenance_of(r)
+        groups[key] = groups.get(key, 0) + 1
+    out["provenance_groups"] = len(groups)
 
     rssis, snrs, fresh = [], [], 0
     for r in rows:
@@ -203,6 +265,23 @@ def summarize_rows(rows: List[Dict[str, str]]) -> Dict[str, object]:
     for key in ("run", "direction", "tx_hw", "rx_hw"):
         out[key] = first.get(key, "")
 
+    if len(groups) > 1:
+        described = []
+        for key, n in groups.items():
+            prov = dict(zip(PROVENANCE_FIELDS, key))
+            described.append(
+                f"{n} row(s): run={prov['run']!r} direction={prov['direction']!r} "
+                f"tx_power={prov['tx_power_dbm']} gains={prov['tx_gain_dbi']}/"
+                f"{prov['rx_gain_dbi']} distance={prov['distance_m']} "
+                f"freq={prov['freq_hz']} sf={prov['sf']}")
+        out["blockers"].append(
+            f"this file mixes {len(groups)} different measurements — "
+            + "; ".join(described)
+            + ". One median cannot describe both, and the path loss would be "
+              "computed against the first row's TX power only. Split the CSV by "
+              "run/direction and summarize each.")
+        return out
+
     if not rssis:
         out["blockers"].append("no usable RSSI values in the capture")
         return out
@@ -214,8 +293,8 @@ def summarize_rows(rows: List[Dict[str, str]]) -> Dict[str, object]:
 
     if fresh_fraction < MIN_FRESH_FRACTION:
         out["blockers"].append(
-            f"only {fresh_fraction:.0%} of rows carried fresh RSSI/SNR — the values "
-            "are stale-by-one and cannot be paired with their packets. "
+            f"only {fresh_fraction:.0%} of rows carried a fresh RSSI/SNR pair — the "
+            "values cannot be paired with their packets. "
             "Re-capture; do not quote a number from this file.")
 
     if out["blockers"]:
@@ -334,6 +413,11 @@ def report_silence(silent_s: float, count: int, promiscuous: bool) -> None:
         print(f"  ... silent for {silent_s:.0f}s ({count} packet(s) so far).")
 
 
+def _footer(out_path: Path, count: int) -> None:
+    print(f"\nWrote {count} row(s) to {out_path}")
+    print(f"Now run: python3 {sys.argv[0]} --summarize {out_path}")
+
+
 def do_capture(args) -> int:
     out_path = Path(args.out).expanduser()
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,6 +430,7 @@ def do_capture(args) -> int:
         "sf": args.sf, "cr": args.cr, "distance_m": args.distance,
     }
 
+    count = 0
     # utils.rnode_session owns opening the device, confirming the radio is
     # genuinely ON, and — the part this tool got wrong on 2026-09-08 — putting
     # every mode back on the way out, on every exit path.
@@ -368,7 +453,6 @@ def do_capture(args) -> int:
                 if new_file:
                     writer.writeheader()
 
-                count = 0
                 last_stat_seq = -1
                 started = time.monotonic()
                 last_packet_at = started
@@ -408,9 +492,17 @@ def do_capture(args) -> int:
         print("      exactly like a silent band, and every reading would be a")
         print("      false negative you could not tell from a real one.")
         return 1
+    except OSError as exc:
+        # pyserial's SerialException is an OSError: the RNode went away
+        # (USB unplugged, cable, power) or the port was revoked mid-capture.
+        print(f"\nFAIL: serial error during capture: {exc}")
+        print("      The RNode stopped answering — check the USB connection and power.")
+        if count:
+            print("      The rows captured before the error are intact.")
+            _footer(out_path, count)
+        return 1
 
-    print(f"\nWrote {out_path}")
-    print(f"Now run: python3 {sys.argv[0]} --summarize {out_path}")
+    _footer(out_path, count)
     return 0
 
 
@@ -465,6 +557,14 @@ def main() -> int:
     if not args.out:
         print("FAIL: --out is required for a capture. A reading kept only in the")
         print("      terminal is the thing this tool exists to prevent.")
+        return 1
+
+    problems = validate_radio_args(args.freq, args.bw, args.sf, args.cr,
+                                   args.tx_power_setting)
+    if problems:
+        for p in problems:
+            print(f"FAIL: {p}")
+        print("      Refusing to open the radio with parameters it cannot take.")
         return 1
 
     missing = [n for n, v in (("--tx-power", args.tx_power), ("--distance", args.distance))

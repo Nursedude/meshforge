@@ -195,24 +195,96 @@ class TestFetchDegradedPaths:
         """No manifest means no trustworthy version or hash — must not guess."""
         def boom(*a, **kw):
             raise pc.URLError("no route to host")
-        monkeypatch.setattr(pc, "urlretrieve", boom)
+        monkeypatch.setattr(pc, "_download", boom)
         assert pc.do_fetch(tmp_path, [FW_ESP]) == 1
 
     def test_firmware_absent_from_manifest_fails(self, tmp_path, monkeypatch):
-        def fake(url, dest):
+        def fake(url, dest, timeout=None):
             Path(dest).write_text(json.dumps({"some_other_firmware.zip":
                                               {"version": "1.86", "hash": "ab"}}))
-        monkeypatch.setattr(pc, "urlretrieve", fake)
+        monkeypatch.setattr(pc, "_download", fake)
         assert pc.do_fetch(tmp_path, [FW_ESP]) == 1
 
     def test_hash_mismatch_removes_the_corpse(self, tmp_path, monkeypatch):
         """A bad download must not be left behind looking like a cache entry."""
-        def fake(url, dest):
+        def fake(url, dest, timeout=None):
             dest = Path(dest)
             if dest.name == "release_info.json":
                 dest.write_text(json.dumps({FW_ESP: {"version": VERSION, "hash": "de" * 32}}))
             else:
                 _make_zip(dest, _esp_members(FW_ESP))
-        monkeypatch.setattr(pc, "urlretrieve", fake)
+        monkeypatch.setattr(pc, "_download", fake)
         assert pc.do_fetch(tmp_path, [FW_ESP]) == 1
         assert not (tmp_path / VERSION / FW_ESP).exists()
+
+
+class _Resp:
+    """A urlopen() response: chunks, then b"" — or an exception mid-stream."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    def read(self, n):
+        item = self._chunks.pop(0) if self._chunks else b""
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+class TestDownloadIsBounded:
+    """Finding 11 (2026-09-09): both urlretrieve() calls had no timeout at
+    all; DOWNLOAD_TIMEOUT was defined and never used. On a lossy WAN a
+    stalled TCP connection mid-zip hung --fetch forever, and a Ctrl-C left a
+    partial zip at the cache path that only the NEXT run rejected."""
+
+    def test_urlopen_is_given_the_timeout(self, tmp_path, monkeypatch):
+        seen = {}
+
+        def fake_urlopen(url, timeout=None):
+            seen["url"], seen["timeout"] = url, timeout
+            return _Resp([b"abc", b"def"])
+        monkeypatch.setattr(pc, "urlopen", fake_urlopen)
+        dest = tmp_path / "x.zip"
+        assert pc._download("http://example.invalid/x.zip", dest) == 6
+        assert dest.read_bytes() == b"abcdef"
+        assert seen["timeout"] == pc.DOWNLOAD_TIMEOUT, "an unbounded download on a lossy WAN"
+
+    def test_a_stall_raises_and_leaves_no_partial_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pc, "urlopen",
+                            lambda url, timeout=None: _Resp([b"abc", TimeoutError("timed out")]))
+        dest = tmp_path / "x.zip"
+        with pytest.raises(OSError):
+            pc._download("http://example.invalid/x.zip", dest)
+        assert not dest.exists(), "a half zip at the cache path looks like a cache entry"
+        assert list(tmp_path.glob("*.part")) == []
+
+    def test_a_keyboard_interrupt_leaves_no_partial_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pc, "urlopen",
+                            lambda url, timeout=None: _Resp([b"abc", KeyboardInterrupt()]))
+        dest = tmp_path / "x.zip"
+        with pytest.raises(KeyboardInterrupt):
+            pc._download("http://example.invalid/x.zip", dest)
+        assert not dest.exists() and list(tmp_path.glob("*.part")) == []
+
+    def test_nothing_in_the_tool_calls_urlretrieve(self):
+        assert "urlretrieve(" not in SCRIPT.read_text(encoding="utf-8")
+
+    @needs_rnodeconf
+    def test_a_stalled_zip_reports_fail_and_leaves_no_corpse(self, tmp_path, monkeypatch):
+        manifest = json.dumps({FW_ESP: {"version": VERSION, "hash": "de" * 32}}).encode()
+
+        def fake_urlopen(url, timeout=None):
+            assert timeout == pc.DOWNLOAD_TIMEOUT
+            if url == pc.rc.firmware_version_url:
+                return _Resp([manifest])
+            return _Resp([b"PK\x03\x04", TimeoutError("timed out")])
+        monkeypatch.setattr(pc, "urlopen", fake_urlopen)
+        assert pc.do_fetch(tmp_path, [FW_ESP]) == 1
+        assert not (tmp_path / VERSION / FW_ESP).exists()
+        assert list((tmp_path / VERSION).glob("*.part")) == []

@@ -33,6 +33,16 @@ A zip matching NEITHER shape fails loud rather than being accepted as "present"
 — a truncated or wrong-target download is exactly the degraded state that would
 otherwise render as a valid-looking cache entry (honest_failure_modes #1).
 
+Downloads are bounded and atomic
+--------------------------------
+The whole premise is a lossy WAN path, and ``urlretrieve`` has no timeout at
+all — a TCP connection that stalls mid-zip hung ``--fetch`` forever with no
+witness, and a Ctrl-C left a partial zip at the cache path that only the NEXT
+run's sha256 rejected (review 2026-09-09, finding 11). Every fetch now goes
+through ``urlopen(timeout=DOWNLOAD_TIMEOUT)``, streams to a ``.part`` file
+and is renamed into place only when complete; a stall raises, the ``.part`` is
+removed, and nothing that looks like a cache entry is left behind.
+
 Where the board list comes from
 -------------------------------
 ``rnodeconf.models`` and ``rnodeconf.products`` — imported, never re-typed.
@@ -76,7 +86,7 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.error import URLError, HTTPError
-from urllib.request import urlretrieve
+from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
@@ -93,12 +103,44 @@ FIELD_KIT = [
     "rnode_firmware_rak4631.zip",       # remote node (nRF52840, low idle draw)
 ]
 
+#: Socket timeout for every download (connect AND each read). Stalls raise.
 DOWNLOAD_TIMEOUT = 120
+DOWNLOAD_CHUNK = 64 * 1024
 
 ESP32_SUFFIXES = (".bin", ".bootloader", ".partitions", ".boot_app0")
 ESP32_EXTRAS = ("console_image.bin", "esptool.py")
 NRF52_SUFFIXES = (".bin", ".dat")
 NRF52_EXTRAS = ("manifest.json",)
+
+
+def _download(url: str, dest: Path, timeout: float = DOWNLOAD_TIMEOUT) -> int:
+    """Fetch ``url`` to ``dest`` atomically, bounded by ``timeout`` per socket op.
+
+    Streams to ``<dest>.part`` and renames on completion, so a stall, a
+    Ctrl-C or a dropped connection never leaves a partial file AT ``dest``
+    looking like a cache entry. Raises URLError/HTTPError/OSError (a socket
+    timeout is an OSError subclass). Returns bytes written.
+    """
+    part = dest.with_name(dest.name + ".part")
+    written = 0
+    try:
+        with urlopen(url, timeout=timeout) as resp, open(part, "wb") as out:
+            while True:
+                chunk = resp.read(DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                out.write(chunk)
+                written += len(chunk)
+        os.replace(part, dest)
+    except BaseException:
+        # KeyboardInterrupt included: the half-file must not survive as a
+        # look-alike cache entry. Re-raised untouched.
+        try:
+            part.unlink()
+        except OSError:
+            pass
+        raise
+    return written
 
 
 def cache_dirs() -> Tuple[Path, Optional[str]]:
@@ -222,9 +264,9 @@ def do_fetch(upd: Path, wanted: List[str]) -> int:
     upd.mkdir(parents=True, exist_ok=True)
     rel = upd / "release_info.json"
 
-    print(f"manifest : {rc.firmware_version_url}")
+    print(f"manifest : {rc.firmware_version_url}  (timeout {DOWNLOAD_TIMEOUT}s)")
     try:
-        urlretrieve(rc.firmware_version_url, rel)
+        _download(rc.firmware_version_url, rel)
     except (URLError, HTTPError, OSError) as e:
         print(f"FAIL: could not retrieve the release manifest: {e}")
         print("      Without it there is no version or hash to trust. Not guessing.")
@@ -260,7 +302,7 @@ def do_fetch(upd: Path, wanted: List[str]) -> int:
             url = rc.firmware_update_url + version + "/" + fw
             print(f"[GET ] {fw} v{version}")
             try:
-                urlretrieve(url, zpath)
+                _download(url, zpath)
             except (URLError, HTTPError, OSError) as e:
                 print(f"[FAIL] {fw}: download failed: {e}")
                 failures.append(fw)
