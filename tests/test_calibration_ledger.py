@@ -141,12 +141,16 @@ class TestFold:
 # ── rederive_open (cheap, conservative) ─────────────────────────────────
 
 class TestRederiveOpen:
+    # The claim is stamped 1.0 and the marker 5.0: a marker must POST-DATE the
+    # claim to count as a re-check (finding 11, 2026-09-09) — see
+    # TestMarkerMustPostDateClaim for the rule itself.
     def _open_claim(self, head=HEAD):
         return {"kind": "claim", "id": cl.make_claim_id(1.0, "c", head),
-                "head_full": head}
+                "head_full": head, "ts": 1.0}
 
     def _marker(self, **over):
-        m = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True}
+        m = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True,
+             "ts": 5.0}
         m.update(over)
         return m
 
@@ -263,7 +267,8 @@ def test_rederive_and_persist_end_to_end(tmp_path):
     p = _ledger(tmp_path)
     cl.record_claim("all green", "fleet_green", "honest_status exit 0", HEAD,
                     ts=100.0, path=p)
-    marker = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True}
+    marker = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True,
+              "ts": 150.0}
     state = cl.rederive_and_persist(p, HEAD, marker, now_ts=200.0)
     assert state["n_held"] == 1 and state["ratio"] == 1.0
     # The verdict was persisted — a fresh load reflects it.
@@ -276,7 +281,8 @@ def test_rederive_and_persist_surfaces_a_broken_claim(tmp_path):
     p = _ledger(tmp_path)
     cl.record_claim("100% verified", "tests_passed", "exit 0", HEAD,
                     ts=100.0, path=p)
-    marker = {"head_full": HEAD, "exit_code": 1, "ran_full_suite": True}
+    marker = {"head_full": HEAD, "exit_code": 1, "ran_full_suite": True,
+              "ts": 150.0}
     state = cl.rederive_and_persist(p, HEAD, marker, now_ts=200.0)
     assert state["n_broke"] == 1 and state["ratio"] == 0.0
     assert state["broke"][0]["claim_text"] == "100% verified"
@@ -416,67 +422,158 @@ def test_rederive_refuses_narrowed_or_dirty_marker():
     from mini_dudeai import calibration_ledger as cl
     events = [{"kind": "claim", "id": "c1", "ts": 1.0, "claim": "all green",
                "head_full": HEAD, "status": "open"}]
-    base = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True}
+    base = {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True, "ts": 5.0}
     assert cl.rederive_open(events, HEAD, dict(base), 9.0), "control: a clean marker mints held"
     assert cl.rederive_open(events, HEAD, dict(base, scope_narrowed=True), 9.0) == []
     assert cl.rederive_open(events, HEAD, dict(base, dirty_tree=True), 9.0) == []
 
 
-# --- the END field (2026-09-09) ----------------------------------------------
-# The ledger re-derived whether claims HELD but never whether they MATTERED —
-# precision without aim, the same defect as the instruments it watches. These
-# pin the half that can lie: a ratio diluted by unstated ends, or fabricated
-# from an empty set.
+# --- the marker must POST-DATE the claim (finding 11, 2026-09-09) ------------
+# claim_gate records only marker-BACKED claims, so the marker that ADMITTED a
+# claim is still the freshest marker on that head at the next warm start —
+# and rederive_open minted `held` from it: zero new evidence, a verdict that
+# confirms itself. 9 of 47 live held verdicts had landed within 15 min of
+# their claim. A marker is a re-check only if it was produced AFTER the claim.
 
-def test_end_is_recorded_when_it_names_a_real_end(tmp_path):
+class TestMarkerMustPostDateClaim:
+    def _events(self, claim_ts=100.0):
+        return [{"kind": "claim", "id": "c1", "ts": claim_ts,
+                 "claim_text": "all green", "head_full": HEAD, "status": "open"}]
+
+    def _marker(self, ts):
+        return {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True, "ts": ts}
+
+    def test_the_marker_that_admitted_the_claim_mints_no_verdict(self):
+        """THE plant: same ts as the claim (the gate stamps the claim from the
+        marker's own run) → not new evidence → stays open."""
+        assert cl.rederive_open(self._events(100.0), HEAD, self._marker(100.0), 200.0) == []
+
+    def test_an_older_marker_mints_no_verdict(self):
+        assert cl.rederive_open(self._events(100.0), HEAD, self._marker(90.0), 200.0) == []
+
+    def test_a_later_marker_on_the_same_head_mints_held(self):
+        """Control: the rule must not make the ledger permanently silent."""
+        new = cl.rederive_open(self._events(100.0), HEAD, self._marker(100.5), 200.0)
+        assert len(new) == 1 and new[0]["outcome"] == "held"
+
+    def test_undated_marker_mints_nothing(self):
+        m = self._marker(150.0); del m["ts"]
+        assert cl.rederive_open(self._events(), HEAD, m, 200.0) == []
+        assert cl.rederive_open(self._events(), HEAD, self._marker("150"), 200.0) == []
+
+    def test_undated_claim_mints_nothing(self):
+        ev = self._events(); del ev[0]["ts"]
+        assert cl.rederive_open(ev, HEAD, self._marker(150.0), 200.0) == []
+
+
+# --- ONE marker predicate, shared with claim_gate (finding 11 / 15) ---------
+
+class TestMarkerRefusal:
+    def _ok(self):
+        return {"head_full": HEAD, "exit_code": 0, "ran_full_suite": True,
+                "scope_narrowed": False, "dirty_tree": False, "ts": 5.0}
+
+    def test_fleet_strength_marker_is_not_refused(self):
+        assert cl.marker_refusal(self._ok()) is None
+
+    def test_legacy_marker_without_flags_is_judged_on_what_it_has(self):
+        m = self._ok(); del m["scope_narrowed"]; del m["dirty_tree"]
+        assert cl.marker_refusal(m) is None
+
+    def test_each_refusal_names_its_field(self):
+        assert "no marker" in cl.marker_refusal(None)
+        assert "ran_full_suite" in cl.marker_refusal(dict(self._ok(), ran_full_suite=False))
+        assert "scope_narrowed" in cl.marker_refusal(dict(self._ok(), scope_narrowed=True))
+        assert "dirty_tree" in cl.marker_refusal(dict(self._ok(), dirty_tree=True))
+
+    def test_the_ledger_and_the_gate_apply_the_same_predicate(self):
+        """The rule used to be typed twice; this pins that the gate now
+        imports it rather than carrying a copy that can drift."""
+        import importlib.util
+        import pathlib
+        p = pathlib.Path(__file__).resolve().parent.parent / "scripts" / "claim_gate.py"
+        spec = importlib.util.spec_from_file_location("claim_gate_under_test", p)
+        cg = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cg)
+        assert cg._cl is cl
+        assert "marker_refusal" in cg.marker_refusal_reason.__code__.co_names or \
+            any("marker_refusal" in c.co_names for c in
+                cg.marker_refusal_reason.__code__.co_consts if hasattr(c, "co_names"))
+
+
+# --- ONE marker path / builder / tree predicate (finding 11 + 18) -----------
+
+def test_verdict_marker_path_env_override_wins(monkeypatch):
+    monkeypatch.setenv("HONEST_VERDICT_PATH", "/x/y.json")
+    assert cl.verdict_marker_path() == "/x/y.json"
+
+
+def test_verdict_marker_path_under_unset_HOME_is_the_pw_home_not_tmp(monkeypatch):
+    """honest_status.sh wrote to ${HOME:-/tmp}/…, the readers to
+    expanduser('~') — under an unset HOME (cron/daemon) writer and reader
+    diverged. One function now; the fallback is the pw-database home."""
+    import os
+    monkeypatch.delenv("HONEST_VERDICT_PATH", raising=False)
+    monkeypatch.delenv("HOME", raising=False)
+    p = cl.verdict_marker_path()
+    assert not p.startswith("/tmp/")
+    assert p.endswith(os.path.join(".cache", "meshforge", "honest_verdict.json"))
+    assert p.startswith(os.path.expanduser("~"))
+
+
+def test_build_marker_carries_every_field_the_readers_judge():
+    m = cl.build_marker("a" * 40, 0, instrument="t", summary="s",
+                        ran_full_suite=True, scope_narrowed=False,
+                        dirty_tree=True, ts=1.0, boxes="x")
+    for k in ("head_full", "exit_code", "ts", "iso", "summary", "instrument",
+              "ran_full_suite", "scope_narrowed", "dirty_tree"):
+        assert k in m, k
+    assert m["dirty_tree"] is True and m["boxes"] == "x"
+    assert cl.marker_refusal(m) is not None, "a dirty marker must refuse"
+
+
+def test_write_marker_is_readable_back(tmp_path):
+    import json
+    p = str(tmp_path / "sub" / "honest_verdict.json")
+    cl.write_marker(p, {"head_full": "h", "exit_code": 0})
+    assert json.load(open(p))["head_full"] == "h"
+
+
+def _git_repo(path):
+    import subprocess
+    subprocess.run(["git", "init", "-q", str(path)], check=True, timeout=30)
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+           "PATH": __import__("os").environ.get("PATH", "")}
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "--allow-empty",
+                    "-m", "seed"], check=True, timeout=30, env=env)
+
+
+def test_tree_is_dirty_sees_untracked_files_and_refuses_on_no_repo(tmp_path):
+    """Untracked counts (an uncommitted new test file is the exact shape the
+    flag exists for); a non-repo reads DIRTY — unknown is the refusing
+    direction, never a clean bill."""
+    repo = tmp_path / "r"; _git_repo(repo)
+    assert cl.tree_is_dirty(str(repo)) is False
+    (repo / "new_test.py").write_text("x")
+    assert cl.tree_is_dirty(str(repo)) is True
+    assert cl.tree_is_dirty(str(tmp_path / "not-a-repo")) is True
+
+
+def test_repo_head_returns_the_sha_or_none(tmp_path):
+    repo = tmp_path / "r"; _git_repo(repo)
+    h = cl.repo_head(str(repo))
+    assert isinstance(h, str) and len(h) == 40
+    assert cl.repo_head(str(tmp_path / "nope")) is None
+
+
+def test_old_rows_carrying_the_removed_end_field_still_fold(tmp_path):
+    """The `end` field (2026-09-09) was removed the same day: a writer with
+    no reader. Rows written while it existed must remain readable."""
     p = str(tmp_path / "led.jsonl")
-    rec = cl.record_claim("moved traffic", "green", "exit 0", "a" * 40,
-                          end="message_delivered", path=p)
-    assert rec["end"] == "message_delivered"
-
-
-def test_unknown_or_omitted_end_folds_to_unknown_never_rejects(tmp_path):
-    """A claim must never fail to record because its end was mislabelled."""
-    p = str(tmp_path / "led.jsonl")
-    assert cl.record_claim("a", "green", "e", "h" * 40, path=p)["end"] == "unknown"
-    assert cl.record_claim("b", "green", "e", "h" * 40, end="product",
-                        path=p)["end"] == "unknown", "invented ends fold, not raise"
-    assert cl.record_claim("c", "green", "e", "h" * 40, end=None,
-                        path=p)["end"] == "unknown"
-
-
-def test_harness_share_is_computed_over_STATED_ends_only(tmp_path):
-    """The dilution trap: a pile of 'unknown' must not make harness work look
-    like a small slice. Absence is not evidence of product work."""
-    p = str(tmp_path / "led.jsonl")
-    for i in range(3):
-        cl.record_claim(f"h{i}", "green", "e", "x" * 40, end="harness", path=p)
-    cl.record_claim("p", "green", "e", "x" * 40, end="message_delivered", path=p)
-    for i in range(50):                      # a flood of unstated claims
-        cl.record_claim(f"u{i}", "green", "e", "x" * 40, path=p)
+    open(p, "w").write(json.dumps({"kind": "claim", "id": "c1", "ts": 1.0,
+                                   "end": "unknown", "head_full": HEAD,
+                                   "status": "open"}) + "\n")
     st = cl.fold(cl.load_events(p))
-    assert st["ends"]["harness"] == 3
-    assert st["ends"]["unknown"] == 50
-    assert st["n_ends_stated"] == 4
-    assert st["harness_share"] == 0.75, \
-        "50 unstated claims must not dilute 3-of-4 harness into ~5%"
-
-
-def test_harness_share_is_none_when_nothing_stated_an_end(tmp_path):
-    """Never a fabricated 0% from an empty set — the ratio's own contract."""
-    p = str(tmp_path / "led.jsonl")
-    cl.record_claim("a", "green", "e", "x" * 40, path=p)
-    st = cl.fold(cl.load_events(p))
-    assert st["harness_share"] is None
-    assert st["n_ends_stated"] == 0
-
-
-def test_end_tally_is_not_filtered_by_whether_the_claim_was_verified(tmp_path):
-    """Whether a claim HELD and whether it was WORTH MAKING are different
-    questions; the aim half must not inherit the calibration half's filter."""
-    p = str(tmp_path / "led.jsonl")
-    rec = cl.record_claim("h", "green", "e", "x" * 40, end="harness", path=p)
-    cl.record_verdict(rec["id"], "broke", "re-derived not-green", path=p)
-    st = cl.fold(cl.load_events(p))
-    assert st["n_broke"] == 1
-    assert st["ends"]["harness"] == 1, "a broken claim still had an end"
+    assert st["n_total"] == 1 and st["n_open"] == 1
+    assert "ends" not in st and "harness_share" not in st

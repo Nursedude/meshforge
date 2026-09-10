@@ -396,6 +396,29 @@ def test_hostname_resolution_tolerates_case(tmp_path, monkeypatch):
     assert "START HERE" in out, "mixed-case hostname must still find the note"
 
 
+def test_handoff_note_path_is_one_resolver_for_both_consumers(tmp_path, monkeypatch):
+    """Finding 18 (2026-09-09): harness_audit.sh lowercased the hostname
+    unconditionally while this module tried the exact case first — two
+    consumers, two resolutions of one file. The audit now asks THIS function
+    with its own `hostname`, so an exact-case note (the shape the audit read
+    as 'absent') and a lowercase one resolve the same way for both."""
+    from mini_dudeai.warmstart import handoff_note_path
+    plans = tmp_path / ".claude" / "plans"
+    plans.mkdir(parents=True)
+    monkeypatch.setattr("mini_dudeai.warmstart.operator_home", lambda: str(tmp_path))
+    exact = plans / "gateway-session-notes-BoxA.md"
+    exact.write_text(_NOTE, encoding="utf-8")
+    path, tried = handoff_note_path("BoxA.mf.internal")
+    assert path == str(exact), "exact case must win when it exists"
+    exact.unlink()
+    (plans / "gateway-session-notes-boxa.md").write_text(_NOTE, encoding="utf-8")
+    path, tried = handoff_note_path("BoxA")
+    assert path.endswith("gateway-session-notes-boxa.md")
+    assert len(tried) == 2
+    path, tried = handoff_note_path("nobody")
+    assert path == tried[0] and not __import__("os").path.exists(path)
+
+
 def test_hostname_resolution_strips_the_domain(tmp_path, monkeypatch):
     plans = tmp_path / ".claude" / "plans"
     plans.mkdir(parents=True)

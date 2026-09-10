@@ -90,25 +90,34 @@ HV_HEAD="$HEAD" HV_EXIT="$code_exit" HV_PY="$pyrc" HV_LINT="$lintrc" \
   HV_SUITE="$suite_verdict" \
   "$PY" - <<'PY' || { echo "reverify: re-derivation step failed" >&2; exit 3; }
 import os, sys, time
-sys.path.insert(0, os.path.join(
-    os.environ.get("MESHFORGE_REPO", "/opt/meshforge"), "src"))
+repo = os.environ.get("MESHFORGE_REPO", "/opt/meshforge")
+sys.path.insert(0, os.path.join(repo, "src"))
 from mini_dudeai import calibration_ledger as cl
 head = os.environ["HV_HEAD"]
 code_exit = int(os.environ["HV_EXIT"])
 green = "green" if code_exit == 0 else "RED"
-marker = {
-    "head_full": head,
-    "exit_code": code_exit,          # 0 held / 1 broke (code-only, no fleet/CI)
-    "ran_full_suite": True,
-    "ts": time.time(),
-    # `instrument` names the producer; `summary` is the message that rides
-    # along in the verdict detail. They were one field until 2026-07-31 (f8):
-    # rederive_open read `summary` as the producer name, which only worked
-    # here because this message happens to start with the tool's name.
-    "instrument": "calibration_reverify",
-    "summary": (f"suite={os.environ['HV_SUITE']}"
-                f"(rc={os.environ['HV_PY']})+lint(rc={os.environ['HV_LINT']})"),
-}
+# ONE marker shape, ONE tree predicate — shared with honest_status.sh
+# (finding 11, 2026-09-09). This dict was hand-typed here and carried NO
+# dirty_tree/scope_narrowed, so a reverify on a dirty tree passed
+# rederive_open's refusal (None is falsy) and minted `held` for code other
+# than HEAD. `scope_narrowed` is False by construction: this instrument makes
+# a CODE-only claim about HEAD (see the header) and never a fleet one — the
+# `instrument` field carries that; the tree predicate is what keeps the
+# code claim honest. `instrument` names the producer; `summary` is the
+# message that rides along in the verdict detail (2026-07-31, f8).
+marker = cl.build_marker(
+    head, code_exit,                 # 0 held / 1 broke (code-only, no fleet/CI)
+    instrument="calibration_reverify",
+    summary=(f"suite={os.environ['HV_SUITE']}"
+             f"(rc={os.environ['HV_PY']})+lint(rc={os.environ['HV_LINT']})"),
+    ran_full_suite=True,
+    scope_narrowed=False,
+    dirty_tree=cl.tree_is_dirty(repo),
+)
+if marker["dirty_tree"]:
+    print(f"reverify: tree at {repo} is dirty (or unreadable) — the marker "
+          "is stamped dirty_tree and mints no verdict; claims stay open",
+          file=sys.stderr)
 state = cl.rederive_and_persist(cl.ledger_path(), head, marker, time.time())
 ratio = state["ratio"]
 print(f"reverify head={head[:7]} code={green} -> held={state['n_held']} "

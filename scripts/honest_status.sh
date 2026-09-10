@@ -111,6 +111,14 @@ BOXES="$(printf '%s\n' $BOXES | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ 
 # a leg read PASS about it. Absent/broken declaration = every box checked.
 _HP_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)/lib/fleet_posture.sh"
 if [ -f "$_HP_LIB" ]; then . "$_HP_LIB"; fleet_posture_read "$REPO"; fi
+if ! command -v fleet_posture_is_silent >/dev/null 2>&1; then
+  # The lib did not source (absent, unreadable, broken). Every call site wraps
+  # the predicate in `2>/dev/null`, which turned rc 127 into "not dormant" for
+  # every box SILENTLY (finding 24, 2026-09-09). Same safe default — watch
+  # everything — but declared once, out loud, in the posture note below.
+  fleet_posture_is_silent() { return 1; }
+  FLEET_POSTURE_STATUS="posture-lib-missing"
+fi
 _hp_note=""
 case "${FLEET_POSTURE_STATUS:-undeclared}" in
   declared*) _hp_note="; declared posture in effect" ;;
@@ -305,47 +313,69 @@ PY
 fi
 
 # 2. Fleet SHA drift — each box's HEAD vs this repo's HEAD (external).
-matched=0; reached=0; total=0; norepo=0; dormant=0; desc="$_hp_note"
-for b in $PEERS; do
-  total=$((total+1))
-  # Compare FULL 40-char SHAs — abbreviation length varies per box (a 7-char
-  # local abbrev vs an 8-char remote one is the SAME commit, not drift).
-  #
-  # The liveness token separates two states an empty answer used to conflate
-  # (2026-07-28, widening the list to the whole fleet): a box that is DOWN
-  # (UNKNOWN — cannot confirm it converged) and a box that is UP but has no
-  # repo at $REPO (a MeshAnchor-only box, say). The latter cannot drift, so
-  # counting it against the denominator would make the gate permanently
-  # UNKNOWN; it is reported and excluded, never silently dropped.
-  #
-  # "No repo" is proven by the .git path, NOT by empty git output (2026-07-28
-  # review): a box that carries the repo but whose git errors (dubious
-  # ownership over ssh, git not installed, corrupt .git) also prints nothing,
-  # and counting it norepo silently dropped it from the denominator — a PASS
-  # that never verified that box, the same conflation class one door over.
-  # A repo-present git failure stays in the denominator as unverified.
-  raw=$(run_on "$b" "echo HSUP; if [ -e $REPO/.git ]; then git -C $REPO rev-parse HEAD 2>/dev/null || echo HSGITERR; else echo HSNOREPO; fi")
-  up=$(printf '%s\n' "$raw" | sed -n '1p')
-  s=$(printf '%s\n' "$raw" | sed -n '2p')
-  if fleet_posture_is_silent "$b" 2>/dev/null; then dormant=$((dormant+1)); desc="$desc $b:dormant"; continue; fi
-  if [ "$up" != "HSUP" ]; then desc="$desc $b:unreach"; continue; fi
-  case "$s" in
-    HSNOREPO) norepo=$((norepo+1)); desc="$desc $b:no-repo"; continue ;;
-    HSGITERR|"") desc="$desc $b:git-error(repo present)"; continue ;;
-  esac
-  reached=$((reached+1))
-  if [ "$s" = "$HEADFULL" ]; then matched=$((matched+1)); else desc="$desc $b:${s:0:7}"; fi
-done
-drifted=$((reached - matched))
-expect=$((total - norepo - dormant))
+#
+# ONE measurement for BOTH repos' fleets (finding 13, 2026-09-09): the twin
+# leg below was a hand-copy of this loop that lacked the declared-posture
+# exclusion, the no-repo denominator subtraction and the HSUP liveness token,
+# so a dormant sister-repo box read `unreach` → UNKNOWN for the whole declared
+# window and the check of record could not exit 0. Two consumers of one
+# mechanism share it or they drift (honest_failure_modes #5).
+#
+# Compare FULL 40-char SHAs — abbreviation length varies per box (a 7-char
+# local abbrev vs an 8-char remote one is the SAME commit, not drift).
+#
+# The liveness token separates two states an empty answer used to conflate
+# (2026-07-28, widening the list to the whole fleet): a box that is DOWN
+# (UNKNOWN — cannot confirm it converged) and a box that is UP but has no
+# repo at $repo (a MeshAnchor-only box, say). The latter cannot drift, so
+# counting it against the denominator would make the gate permanently
+# UNKNOWN; it is reported and excluded, never silently dropped.
+#
+# "No repo" is proven by the .git path, NOT by empty git output (2026-07-28
+# review): a box that carries the repo but whose git errors (dubious
+# ownership over ssh, git not installed, corrupt .git) also prints nothing,
+# and counting it norepo silently dropped it from the denominator — a PASS
+# that never verified that box, the same conflation class one door over.
+# A repo-present git failure stays in the denominator as unverified.
+#
+# Posture is asked BEFORE the round-trip (finding 24): a box the operator
+# switched off is not sshed at all — it used to pay the ConnectTimeout and
+# then be discarded.
+sha_drift_measure() {  # $1=repo $2=headfull $3..=hosts → SD_* variables
+  local repo="$1" headfull="$2" b raw up s; shift 2
+  SD_matched=0; SD_reached=0; SD_total=0; SD_norepo=0; SD_dormant=0; SD_desc=""
+  for b in "$@"; do
+    SD_total=$((SD_total+1))
+    if fleet_posture_is_silent "$b" 2>/dev/null; then SD_dormant=$((SD_dormant+1)); SD_desc="$SD_desc $b:dormant"; continue; fi
+    raw=$(run_on "$b" "echo HSUP; if [ -e $repo/.git ]; then git -C $repo rev-parse HEAD 2>/dev/null || echo HSGITERR; else echo HSNOREPO; fi")
+    up=$(printf '%s\n' "$raw" | sed -n '1p')
+    s=$(printf '%s\n' "$raw" | sed -n '2p')
+    if [ "$up" != "HSUP" ]; then SD_desc="$SD_desc $b:unreach"; continue; fi
+    case "$s" in
+      HSNOREPO) SD_norepo=$((SD_norepo+1)); SD_desc="$SD_desc $b:no-repo"; continue ;;
+      HSGITERR|"") SD_desc="$SD_desc $b:git-error(repo present)"; continue ;;
+    esac
+    SD_reached=$((SD_reached+1))
+    if [ "$s" = "$headfull" ]; then SD_matched=$((SD_matched+1)); else SD_desc="$SD_desc $b:${s:0:7}"; fi
+  done
+  SD_drifted=$((SD_reached - SD_matched))
+  SD_expect=$((SD_total - SD_norepo - SD_dormant))
+}
+sha_drift_verdict() {  # $1=label $2=head-display $3=repo $4=fail-hint (may be "")
+  if [ "$SD_drifted" -gt 0 ]; then bad "$1" "$SD_matched/$SD_expect @ $2;$SD_desc$4"
+  elif [ "$SD_reached" -lt "$SD_expect" ]; then unk "$1" "$SD_matched/$SD_reached reachable of $SD_expect @ $2;$SD_desc"
+  elif [ "$SD_reached" = 0 ]; then unk "$1" "no box carried $3;$SD_desc"
+  else ok "$1" "$SD_matched/$SD_expect @ $2${SD_desc:+;$SD_desc}"; fi
+}
+sha_drift_measure "$REPO" "$HEADFULL" $PEERS
+SD_desc="$_hp_note$SD_desc"
 if [ -z "$PEERS" ]; then
   # Nothing external to compare against. Self is excluded by construction, so
   # there is no evidence here at all — not "converged", UNKNOWN.
   unk "fleet SHA drift" "no peer box to compare against — self cannot drift from itself ($BOXES_SRC)"
-elif [ "$drifted" -gt 0 ]; then bad "fleet SHA drift" "$matched/$expect @ $HEAD;$desc"
-elif [ "$reached" -lt "$expect" ]; then unk "fleet SHA drift" "$matched/$reached reachable of $expect @ $HEAD;$desc"
-elif [ "$reached" = 0 ]; then unk "fleet SHA drift" "no box carried $REPO;$desc"
-else ok "fleet SHA drift" "$matched/$expect @ $HEAD${desc:+;$desc}"; fi
+else
+  sha_drift_verdict "fleet SHA drift" "$HEAD" "$REPO" ""
+fi
 
 # 2a. TWIN fleet SHA drift — the SISTER repo's own boxes (2026-09-09).
 #
@@ -401,26 +431,14 @@ else
   elif [ "$(basename "$_twin_file")" != "fleet_hosts.$_twin_rb" ]; then
     unk "twin fleet SHA" "resolved the GENERIC $(basename "$_twin_file") for $_twin_rb — refusing to judge the sister repo against the wrong denominator (create fleet_hosts.$_twin_rb)"
   else
-    t_reached=0; t_matched=0; t_total=0; t_desc=""
-    for tb in $(printf '%s\n' "$_twin_out" | sed -n 's/^HOST=//p'); do
-      t_total=$((t_total+1))
-      traw=$(run_on "$tb" "if [ -e $TWIN_REPO/.git ]; then git -C $TWIN_REPO rev-parse HEAD 2>/dev/null || echo HSGITERR; else echo HSNOREPO; fi")
-      case "${traw:-}" in
-        "")          t_desc="$t_desc $tb:unreach" ;;
-        HSNOREPO)    t_desc="$t_desc $tb:no-repo" ;;
-        HSGITERR)    t_desc="$t_desc $tb:git-error" ;;
-        "$TWIN_HEADFULL") t_reached=$((t_reached+1)); t_matched=$((t_matched+1)) ;;
-        *)           t_reached=$((t_reached+1)); t_desc="$t_desc $tb:${traw:0:7}" ;;
-      esac
-    done
-    if [ "$t_total" -eq 0 ]; then
+    # The SAME measurement as leg 2 — posture exclusion, liveness token,
+    # no-repo denominator — never a second loop (finding 13).
+    _twin_hosts=$(printf '%s\n' "$_twin_out" | sed -n 's/^HOST=//p' | tr '\n' ' ')
+    sha_drift_measure "$TWIN_REPO" "$TWIN_HEADFULL" $_twin_hosts
+    if [ "$SD_total" -eq 0 ]; then
       unk "twin fleet SHA" "$(basename "$_twin_file") yielded zero hosts — a list that names nobody is not 'all converged'"
-    elif [ "$t_matched" -lt "$t_reached" ]; then
-      bad "twin fleet SHA" "$t_matched/$t_total @ ${TWIN_HEADFULL:0:8} ($_twin_rb);$t_desc — deploy: scripts/fleet_pull.sh $TWIN_REPO"
-    elif [ "$t_reached" -lt "$t_total" ]; then
-      unk "twin fleet SHA" "$t_matched/$t_reached reachable of $t_total @ ${TWIN_HEADFULL:0:8} ($_twin_rb);$t_desc"
     else
-      ok "twin fleet SHA" "$t_matched/$t_total @ ${TWIN_HEADFULL:0:8} ($_twin_rb)"
+      sha_drift_verdict "twin fleet SHA" "${TWIN_HEADFULL:0:8} ($_twin_rb)" "$TWIN_REPO" " — deploy: scripts/fleet_pull.sh $TWIN_REPO"
     fi
   fi
 fi
@@ -527,6 +545,9 @@ HS_ATTR_F="$HS_HERE/hs_skew_attr.awk"
 [ -r "$HS_ATTR_F" ] || { echo "honest_status: missing $HS_ATTR_F" >&2; exit 3; }
 HS_ATTR_B64=$(base64 -w0 < "$HS_ATTR_F" 2>/dev/null || base64 < "$HS_ATTR_F" | tr -d "\n")
 for b in $BOXES; do
+  # A declared-dormant box is not asked (finding 24): this leg had no posture
+  # check at all, so it paid a ConnectTimeout per switched-off box.
+  fleet_posture_is_silent "$b" 2>/dev/null && continue
   raw=$(run_on "$b" "echo HSUP
 # Newest commit touching CODE the repo's resident units load. Empty (git
 # error / paths never touched) FALLS BACK to that repo's HEAD below, so an
@@ -697,8 +718,8 @@ for b in $BOXES; do
   # used to mean "no map served here" AND "the box did not answer", and the
   # leg printed PASS over a fleet with an unreachable box silently dropped
   # (§3 drill 2026-09-07). Down is UNKNOWN; up-with-no-map is nothing to check.
-  raw=$(run_on "$b" "echo HSUP; curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null")
   if fleet_posture_is_silent "$b" 2>/dev/null; then det="$det $b:dormant"; continue; fi
+  raw=$(run_on "$b" "echo HSUP; curl -s --max-time 8 http://localhost:5000/api/gateway/delivery 2>/dev/null")
   [ "$(printf '%s\n' "$raw" | sed -n '1p')" = "HSUP" ] || { cr_unreach=$((cr_unreach+1)); det="$det $b:unreach"; continue; }
   j=$(printf '%s\n' "$raw" | sed -n '2,$p')
   [ -z "$j" ] && continue   # up, no map served here — not a failure, just nothing to check
@@ -748,6 +769,8 @@ for b in $BOXES; do
   # unit ACTIVE state and LOAD state ride the SAME round-trip (2026-07-28) to
   # split what an empty answer used to conflate — see below. Each field is
   # forced to exactly one line so the positional parse cannot shear.
+  # Posture first — a declared-dormant box is not sshed (finding 24).
+  if fleet_posture_is_silent "$b" 2>/dev/null; then wddormant=$((wddormant+1)); sigdesc="$sigdesc $b:dormant"; continue; fi
   raw=$(run_on "$b" "date +%s 2>/dev/null; { systemctl is-active meshforge-watchdog.service 2>/dev/null || echo absent; } | head -1; { systemctl show meshforge-watchdog.service -p LoadState --value 2>/dev/null || echo unknown; } | head -1; echo '---WDSEP---'; cat $WD_PATH 2>/dev/null")
   rnow=$(printf '%s\n' "$raw" | sed -n '1p')
   wunit=$(printf '%s\n' "$raw" | sed -n '2p')
@@ -764,7 +787,6 @@ for b in $BOXES; do
   # no state, which stays UNKNOWN-loud (honest_failure_modes #2). Only
   # LoadState distinguishes absent from broken — is-active prints "inactive"
   # for both a missing unit and a dead one.
-  if fleet_posture_is_silent "$b" 2>/dev/null; then wddormant=$((wddormant+1)); sigdesc="$sigdesc $b:dormant"; continue; fi
   if [ -z "$rnow" ]; then unreach=$((unreach+1)); sigdesc="$sigdesc $b:unreach"; continue; fi
   if [ "$wload" = "loaded" ] && [ "$wunit" != "active" ]; then
     wdfault=$((wdfault+1)); sigdesc="$sigdesc $b:WATCHDOG-UNIT-$wunit"; continue
@@ -817,12 +839,31 @@ print("%d %d %d %s %s"%(wg,dg,hd,tsf,cl))' 2>/dev/null)
   # A snapshot with NO usable ts cannot prove its age either: it read
   # "1/1 clean" under the stale gate (§3 drill 2026-09-07) — the absent value
   # landing in the healthy domain (honest_failure_modes #1).
-  if [ "$WD_STALE_S" -gt 0 ] && [ "$ts" = "NOTS" ]; then
-    unreach=$((unreach+1)); sigdesc="$sigdesc $b:no-ts(age unobservable)"; continue
-  fi
-  if [ "$WD_STALE_S" -gt 0 ] && [ "$ts" != "NOTS" ] && [ -n "$rnow" ]; then
-    age=$(awk "BEGIN{printf \"%d\", $rnow - $ts}" 2>/dev/null)
-    if [ -n "$age" ] && [ "$age" -gt "$WD_STALE_S" ] 2>/dev/null; then
+  if [ "$WD_STALE_S" -gt 0 ]; then
+    if [ "$ts" = "NOTS" ]; then
+      unreach=$((unreach+1)); sigdesc="$sigdesc $b:no-ts(age unobservable)"; continue
+    fi
+    # The age was `awk "BEGIN{printf ..., $rnow - $ts}"` and an EMPTY result
+    # silently SKIPPED the stale gate (finding 14a): a .bashrc echo landing in
+    # the box's `date +%s` line made a days-old snapshot read clean. Both
+    # operands are validated as integers; anything else is its own UNKNOWN
+    # state, never a fresh-looking number.
+    case "$rnow" in ''|*[!0-9]*)
+      unreach=$((unreach+1)); sigdesc="$sigdesc $b:clock-unreadable('${rnow:0:24}')"; continue ;;
+    esac
+    tsi=${ts%.*}
+    case "$tsi" in ''|*[!0-9]*)
+      unreach=$((unreach+1)); sigdesc="$sigdesc $b:ts-unreadable('${ts:0:24}')"; continue ;;
+    esac
+    age=$((rnow - tsi))
+    # A snapshot stamped in the box's own FUTURE is a stepped clock (RTC-less
+    # Pi; honest_failure_modes #6) and cannot prove its age. 60s of grace: the
+    # `date` runs BEFORE the `cat` in the same round-trip, so a tick landing
+    # between them legitimately reads a second or two "young".
+    if [ "$age" -lt -60 ]; then
+      unreach=$((unreach+1)); sigdesc="$sigdesc $b:future-stamped(${age#-}s — clock stepped)"; continue
+    fi
+    if [ "$age" -gt "$WD_STALE_S" ]; then
       unreach=$((unreach+1)); sigdesc="$sigdesc $b:stale(${age}s)"; continue
     fi
   fi
@@ -830,16 +871,20 @@ print("%d %d %d %s %s"%(wg,dg,hd,tsf,cl))' 2>/dev/null)
   if [ "${wg:-0}" = 0 ] && [ "${dg:-0}" = 0 ] && [ "${hd:-0}" = 0 ]; then clean=$((clean+1))
   else sigdesc="$sigdesc $b:[$cl]"; wedge_t=$((wedge_t+wg)); deg_t=$((deg_t+dg)); fi
 done
-# Order is deliberate: proven-bad outranks unobservable outranks held-blind.
-# A held signal NEVER reaches the WARN/FAIL tiers on its own — it is
-# last-known evidence from a blind observer, which is UNKNOWN by this
-# project's tiering, and UNKNOWN is never a pass either.
+# Order is deliberate: proven-bad outranks unobservable outranks WARN. A held
+# signal is last-known evidence from a BLIND observer — UNKNOWN by this
+# project's tiering — and UNKNOWN outranks WARN (finding 12, 2026-09-09):
+# `deg_t` used to be judged before `held_t`, so a held-blind box beside any
+# other box's live degraded signal yielded WARN / exit 0, while the held
+# signal ALONE yielded UNKNOWN / exit 2. Adding a fault made the gate greener.
+# A held signal never reaches WARN/FAIL on its own; a live degraded signal
+# rides along in the UNKNOWN line so it is not hidden either.
 wdtotal=$((btotal - nowd - wddormant))   # boxes that actually carry a watchdog unit (declared-dormant excluded)
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
 elif [ "$wdfault" -gt 0 ]; then bad "watchdog (unit down)" "$wdfault box(es) with the watchdog unit installed but not running — a dead watchdog is a fault, not an absent organ:$sigdesc"
 elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$wdtotal clean, $unreach unreachable/stale:$sigdesc"
+elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see) beside $deg_t live degraded, 0 wedge:$sigdesc"
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
-elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see), 0 observed:$sigdesc"
 elif [ "$wdtotal" = 0 ]; then unk "watchdog signals" "no box ran a watchdog:$sigdesc"
 elif [ "$FLEET_SSOT" = 0 ]; then
   # Clean on the one box we could enumerate. A real signal here still outranks
@@ -876,7 +921,17 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
   if [ ! -f "$spath" ]; then
     dep_note="$dep_note ${dwhat}:never-ran"; dep_state="unk"; continue
   fi
-  age_h=$(( ( $(date +%s) - $(stat -c %Y "$spath" 2>/dev/null || echo 0) ) / 3600 ))
+  # `stat … || echo 0` was the epoch-0 sentinel persistent_issues names
+  # (finding 14b): an unreadable status file read as 56 years STALE — a true
+  # UNKNOWN wearing a stale number. Tri-state: unreadable is its own state,
+  # a future mtime is a stepped clock (honest_failure_modes #6), never fresh.
+  if ! _dep_mt=$(stat -c %Y "$spath" 2>/dev/null) || [ -z "$_dep_mt" ]; then
+    dep_note="$dep_note ${dwhat}:mtime-unreadable"; dep_state="unk"; continue
+  fi
+  age_h=$(( ( $(date +%s) - _dep_mt ) / 3600 ))
+  if [ "$age_h" -lt 0 ]; then
+    dep_note="$dep_note ${dwhat}:FUTURE-STAMPED(${age_h#-}h — clock stepped)"; dep_state="unk"; continue
+  fi
   if [ "$age_h" -gt "$dep_stale_h" ]; then
     dep_note="$dep_note ${dwhat}:STALE(${age_h}h)"; dep_state="unk"; continue
   fi
@@ -896,9 +951,20 @@ for pair in "advisories:.meshforge-dep-advisories:.meshforge-dep-ADVISORY:instal
     dep_note="$dep_note ${dwhat}:$(grep -v '^#' "$spath" | head -1 | cut -c1-60)"; dep_state="unk"; continue
   fi
   if [ -f "$fpath" ]; then
-    n=$(grep -cv '^#' "$fpath" 2>/dev/null || echo 0)
-    dep_note="$dep_note ${dwhat}:${n}_finding(s)"
-    [ "$dep_state" != "unk" ] && dep_state="warn"
+    # `grep -c … || echo 0` yielded the TWO-line value $'0\n0' on a file with
+    # no findings (grep -c prints its 0 AND exits 1), and any finding file at
+    # all flipped the leg to WARN (finding 14c). Count non-blank,
+    # non-comment lines; an unreadable file is UNKNOWN; zero findings is OK.
+    n=$(grep -cvE '^[[:space:]]*(#|$)' "$fpath" 2>/dev/null); _grc=$?
+    if [ "$_grc" -gt 1 ] || [ -z "$n" ]; then
+      dep_note="$dep_note ${dwhat}:finding-file-unreadable"; dep_state="unk"; continue
+    fi
+    if [ "$n" -gt 0 ]; then
+      dep_note="$dep_note ${dwhat}:${n}_finding(s)"
+      [ "$dep_state" != "unk" ] && dep_state="warn"
+    else
+      dep_note="$dep_note ${dwhat}:clean(${age_h}h, finding file empty)"
+    fi
   else
     dep_note="$dep_note ${dwhat}:clean(${age_h}h)"
   fi
@@ -936,51 +1002,46 @@ echo "--> $verdict_msg"
 # verdict the operator just saw — but it leaves a stderr witness
 # (honest_failure_modes #9), never a silent swallow. A missing/old marker simply
 # reads as "this HEAD is unverified" downstream, which is the safe direction.
-VERDICT_PATH="${HONEST_VERDICT_PATH:-${HOME:-/tmp}/.cache/meshforge/honest_verdict.json}"
-# Scope + tree fingerprint (§3 drill 2026-09-07): a run narrowed by
-# HONEST_BOXES (or with no fleet SSOT) wrote a marker indistinguishable from a
-# fleet run, and no marker could tell a clean tree from one with uncommitted
-# edits. claim_gate refuses a marker carrying either flag.
+#
+# Path, shape and tree predicate come from mini_dudeai.calibration_ledger —
+# the ONE contract the claim-gate and warm-start read (finding 11/18,
+# 2026-09-09). The path was typed here as ${HOME:-/tmp}/… while both readers
+# used expanduser('~'): under an unset HOME the writer and its readers
+# diverged. The marker dict was hand-typed here AND in calibration_reverify.sh,
+# and the reverify copy lacked the flags this one had. The package is resolved
+# beside THIS script (like fleet_posture.sh), never via $REPO: the suite drives
+# this gate against a FAKE repo with no src/.
+#
+# Scope fingerprint (§3 drill 2026-09-07): a run narrowed by HONEST_BOXES (or
+# with no fleet SSOT) wrote a marker indistinguishable from a fleet run.
+# claim_gate refuses a marker carrying scope_narrowed or dirty_tree; the tree
+# flag is computed by the shared predicate (untracked counts; git failure =
+# dirty, the refusing direction).
 HV_NARROW=0; { [ -n "${HONEST_BOXES:-}" ] || [ "$FLEET_SSOT" = 0 ]; } && HV_NARROW=1
-# A git failure is NOT a clean tree (review 2026-09-07): unknown → dirty, the
-# refusing direction. Untracked files count — an uncommitted new test file is
-# exactly the edit-beside-a-committed-HEAD shape this flag exists for.
-HV_DIRTY=1
-if _hv_st="$(git -C "$REPO" status --porcelain 2>/dev/null)" && [ -z "$_hv_st" ]; then HV_DIRTY=0; fi
-if ! HV_RC="$verdict_rc" HV_MSG="$verdict_msg" HV_HEAD="$HEADFULL" \
+HS_SRC="$(cd "$HS_HERE/../src" 2>/dev/null && pwd)"
+VERDICT_PATH="$(PYTHONPATH="$HS_SRC" python3 - <<'PY' 2>/dev/null
+from mini_dudeai.calibration_ledger import verdict_marker_path
+print(verdict_marker_path())
+PY
+)"
+if [ -z "$VERDICT_PATH" ]; then
+  echo "honest_status: WARN — could not resolve the verdict marker path (mini_dudeai" \
+       "unimportable from $HS_SRC); no marker written, claim-gate will treat this HEAD as unverified" >&2
+elif ! HV_RC="$verdict_rc" HV_MSG="$verdict_msg" HV_HEAD="$HEADFULL" \
      HV_FULL="$RUN_TESTS" HV_STRICT="$STRICT" HV_PATH="$VERDICT_PATH" \
-     HV_NARROW="$HV_NARROW" HV_DIRTY="$HV_DIRTY" HV_BOXES="$BOXES" \
-     python3 - <<'PY' 2>/dev/null
-import json, os, tempfile, time
-p = os.environ["HV_PATH"]
-d = os.path.dirname(os.path.abspath(p)) or "."
-os.makedirs(d, exist_ok=True)
-payload = json.dumps({
-    "head_full": os.environ.get("HV_HEAD", ""),
-    "exit_code": int(os.environ.get("HV_RC", "2") or 2),
-    "ts": time.time(),
-    "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    "summary": os.environ.get("HV_MSG", ""),
-    # Producer name, separate from the message: rederive_open attributes the
-    # verdict to `instrument`; `summary` is display text (2026-07-31, f8).
-    "instrument": "honest_status",
-    "ran_full_suite": os.environ.get("HV_FULL") == "1",
-    "strict": os.environ.get("HV_STRICT") == "1",
-    "scope_narrowed": os.environ.get("HV_NARROW") == "1",
-    "dirty_tree": os.environ.get("HV_DIRTY") == "1",
-    "boxes": os.environ.get("HV_BOXES", ""),
-}, indent=2)
-fd, tmp = tempfile.mkstemp(dir=d, prefix=os.path.basename(p) + ".", suffix=".tmp")
-try:
-    with os.fdopen(fd, "w") as f:
-        f.write(payload); f.flush(); os.fsync(f.fileno())
-    os.replace(tmp, p)
-except BaseException:
-    try:
-        os.unlink(tmp)
-    except OSError:
-        pass
-    raise
+     HV_NARROW="$HV_NARROW" HV_BOXES="$BOXES" HV_REPO="$REPO" \
+     PYTHONPATH="$HS_SRC" python3 - <<'PY' 2>/dev/null
+import os
+from mini_dudeai import calibration_ledger as cl
+env = os.environ
+m = cl.build_marker(
+    env.get("HV_HEAD", ""), int(env.get("HV_RC", "2") or 2),
+    instrument="honest_status", summary=env.get("HV_MSG", ""),
+    ran_full_suite=env.get("HV_FULL") == "1",
+    scope_narrowed=env.get("HV_NARROW") == "1",
+    dirty_tree=cl.tree_is_dirty(env["HV_REPO"]),
+    strict=env.get("HV_STRICT") == "1", boxes=env.get("HV_BOXES", ""))
+cl.write_marker(env["HV_PATH"], m)
 PY
 then
   echo "honest_status: WARN — could not write verdict marker $VERDICT_PATH" \

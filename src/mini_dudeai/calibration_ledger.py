@@ -33,9 +33,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import subprocess
 import time
 
-from ._util import log_warning, resolve_home
+from ._util import (APP_VERDICT_SUBDIR, atomic_write_json, log_warning,
+                    resolve_home)
 from .history import append_jsonl
 
 #: 2 MB cap — matches the #79 ledger-rotation bound. Plenty of forensic history
@@ -43,6 +45,13 @@ from .history import append_jsonl
 DEFAULT_LEDGER_MAX_BYTES = 2_000_000
 
 _DEFINITIVE = ("held", "broke")
+
+#: Basename of the verdict marker honest_status.sh writes and the claim-gate +
+#: warm-start read. ONE constant — the path was typed in three places
+#: (claim_gate, warmstart, honest_status) with three different HOME fallbacks
+#: (review 2026-09-09, finding 18), so writer and reader diverged under an
+#: unset HOME (cron/daemon context).
+VERDICT_MARKER_BASENAME = "honest_verdict.json"
 
 
 def ledger_path(home: str | None = None) -> str:
@@ -57,6 +66,123 @@ def ledger_path(home: str | None = None) -> str:
     return os.path.join(home, "calibration_ledger.jsonl")
 
 
+def verdict_marker_path() -> str:
+    """THE honest_status verdict-marker path: $HONEST_VERDICT_PATH, else
+    ``<home>/<APP_VERDICT_SUBDIR>/honest_verdict.json`` where home is $HOME
+    or, when HOME is unset, the pw-database home (``expanduser``). Writer
+    (honest_status.sh) and both readers (claim_gate, warmstart) resolve
+    through this one function."""
+    env = os.environ.get("HONEST_VERDICT_PATH")
+    if env:
+        return env
+    home = os.environ.get("HOME") or os.path.expanduser("~")
+    return os.path.join(home, APP_VERDICT_SUBDIR, VERDICT_MARKER_BASENAME)
+
+
+def repo_head(repo: str) -> str | None:
+    """Full HEAD sha of ``repo``, or None on ANY git failure.
+
+    ``-c safe.directory=<repo>`` is load-bearing: under git's dubious-ownership
+    refusal (root/service-account host, a worktree owned by another user) a
+    plain ``rev-parse`` fails and None means "no HEAD" downstream — the gate
+    then blocks every strong claim beside a fresh green marker, and the ledger
+    silently stops re-deriving. Shared by warmstart and claim_gate so the two
+    readers of one repo cannot disagree about what HEAD is (finding 18)."""
+    try:
+        out = subprocess.run(["git", "-c", f"safe.directory={repo}",
+                              "-C", repo, "rev-parse", "HEAD"],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def tree_is_dirty(repo: str) -> bool:
+    """True when the working tree carries uncommitted OR untracked changes —
+    or when git cannot tell. Unknown → dirty is the REFUSING direction: a
+    marker stamped ``dirty_tree`` backs no fleet-strength claim and mints no
+    verdict, so a git failure can only make the ledger quieter, never a
+    fabricated ``held`` for code other than HEAD (review 2026-09-07/09-09).
+    ONE predicate for honest_status.sh and calibration_reverify.sh; the
+    reverify marker carried no such flag at all (finding 11, second leg)."""
+    try:
+        out = subprocess.run(["git", "-c", f"safe.directory={repo}",
+                              "-C", repo, "status", "--porcelain"],
+                             capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return True
+    if out.returncode != 0:
+        return True
+    return bool(out.stdout.strip())
+
+
+def marker_refusal(marker) -> str | None:
+    """Why a verdict marker cannot back a fleet-strength claim, or None if it
+    can. THE one predicate both readers apply (claim_gate.marker_satisfies and
+    rederive_open carried the rule verbatim, twice — finding 11):
+
+      * not a dict → "no marker"
+      * ``ran_full_suite`` falsy → a --quick run verified no suite
+      * ``scope_narrowed`` → HONEST_BOXES override / no fleet SSOT: the run
+        verified something other than "this HEAD, fleet-wide"
+      * ``dirty_tree`` → uncommitted/untracked edits: the run verified a tree
+        other than HEAD
+
+    A marker without the two flags (older writer, test fixture) is judged on
+    the fields it has. The string NAMES the field, so a reader can render the
+    refusal instead of the self-contradiction "no fresh verdict covers HEAD"
+    beside "latest verdict: N/N PASS on HEAD" (finding 15)."""
+    if not isinstance(marker, dict):
+        return "no marker"
+    if not marker.get("ran_full_suite"):
+        return "ran_full_suite is false — a --quick run verified no suite"
+    if marker.get("scope_narrowed"):
+        return ("scope_narrowed — the run's box list was narrowed (HONEST_BOXES "
+                "override or no fleet_hosts SSOT on this box), so it verified "
+                "something other than this HEAD fleet-wide")
+    if marker.get("dirty_tree"):
+        return ("dirty_tree — the tree carried uncommitted or untracked files, "
+                "so the run verified code other than HEAD (commit or stash, "
+                "then re-run)")
+    return None
+
+
+def build_marker(head_full: str, exit_code: int, *, instrument: str,
+                 summary: str, ran_full_suite: bool, scope_narrowed: bool,
+                 dirty_tree: bool, ts: float | None = None, **extra) -> dict:
+    """The ONE marker shape every producer writes (honest_status.sh,
+    calibration_reverify.sh). Both used to hand-type the dict, and the
+    reverify copy lacked ``scope_narrowed``/``dirty_tree`` entirely, so a
+    reverify on a dirty tree sailed past ``marker_refusal`` (None is falsy)
+    and minted ``held`` for code other than HEAD (finding 11)."""
+    ts = time.time() if ts is None else ts
+    m = {
+        "head_full": head_full,
+        "exit_code": int(exit_code),
+        "ts": ts,
+        "iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts)),
+        "summary": summary,
+        # Producer name, separate from the message: rederive_open attributes
+        # the verdict to `instrument`; `summary` is display text (2026-07-31).
+        "instrument": instrument,
+        "ran_full_suite": bool(ran_full_suite),
+        "scope_narrowed": bool(scope_narrowed),
+        "dirty_tree": bool(dirty_tree),
+    }
+    m.update(extra)
+    return m
+
+
+def write_marker(path: str, marker: dict) -> None:
+    """Atomic (unique tmp + fsync + replace) marker write; creates the parent
+    dir. Raises OSError — the caller (honest_status.sh) owns the witness."""
+    d = os.path.dirname(os.path.abspath(path)) or "."
+    os.makedirs(d, exist_ok=True)
+    atomic_write_json(path, marker)
+
+
 def make_claim_id(ts: float, claim_text: str, head_full: str) -> str:
     """Stable short id from the claim's identity. Deterministic given inputs
     (so tests are not clock/random dependent)."""
@@ -66,43 +192,22 @@ def make_claim_id(ts: float, claim_text: str, head_full: str) -> str:
     return h[:12]
 
 
-#: The ENDS a claim can serve. CLOSED vocabulary on purpose — an open one
-#: would let every claim invent a flattering end for itself, and the whole
-#: point is that most of them cannot.
-#:
-#: WHY THIS EXISTS (2026-09-09, operator's question: "who is watching who?").
-#: The ledger already re-derived whether my claims HELD. It had no way to ask
-#: whether they MATTERED — precision without aim, which is the same defect the
-#: instruments it watches kept committing. Measured the day this landed: 316
-#: commits in 30 days, 53% harness-subject, and ZERO of the twelve most-touched
-#: files were product. The most-touched file in the repo was one that tracks
-#: reviews. Nothing in that list moves a message.
-#:
-#: The domain's ENDS are the operator's, not mine (feedback_domain_clarity_
-#: two_offerings): the END is "message arrives / truth told in-app", across two
-#: offerings, standalone and fleet.
-#:
-#: ⚠️ READ THIS BEFORE ADDING A VALUE. `harness` is not a bug and is not
-#: forbidden — gates are load-bearing and some work legitimately serves them.
-#: It is here to be COUNTED. This field's output is meant to be a SUBTRACTION
-#: list: an instrument whose claims are all `harness` is a candidate for
-#: deletion, not a candidate for a dashboard. If this field ever grows a value
-#: that lets harness work describe itself as product, it has become the thing
-#: it was built to prevent — delete the value, not the evidence.
-CLAIM_ENDS = (
-    "message_delivered",   # the mesh's end: traffic actually moved
-    "truth_in_app",        # the app told the operator the truth, in-app (MF018)
-    "operator_time",       # saved the human hours, or stopped a false page
-    "secret_safe",         # a key/credential/private thing stayed private
-    "harness",             # served only the instruments — COUNT ME
-    "unknown",             # not stated; pre-2026-09-09 claims fold here
-)
+#: The ``end`` field (2026-09-09 → removed the same day, finding 16). It was
+#: meant to answer the operator's "who is watching who?" — which END (message
+#: delivered / truth in-app / operator time / harness) a claim served — but
+#: the only automatic writer (claim_gate) has no honest way to derive a USER
+#: end from a Stop-hook transcript, every production row folded to "unknown"
+#: without a log, and no reader anywhere rendered the tally. A writer with no
+#: reader beside a metric with no producer (honest_failure_modes #4), added
+#: inside the harness freeze. The measurement it wanted is the commit split
+#: harness_restraint.md re-runs on 2026-10-09 (git paths, not claim text);
+#: that is the honest instrument for the question. Old rows carrying
+#: ``"end": "unknown"`` are tolerated by ``fold`` as any unknown key is.
 
 
 def record_claim(claim_text: str, claim_class: str, evidence: str,
                  head_full: str, *, model_id: str | None = None,
                  session_id: str | None = None, source: str | None = None,
-                 end: str | None = None,
                  ts: float | None = None, path: str | None = None,
                  max_bytes: int = DEFAULT_LEDGER_MAX_BYTES) -> dict:
     """Append one ``claim`` event and return the record (with its generated id).
@@ -113,12 +218,6 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
     marker: CI conclusion, live drill, fleet check). Recorded so held-rates can
     later be split per feed. Pre-2026-07-03 records lack the key — consumers
     must ``.get`` it.
-
-    ``end`` names which of ``CLAIM_ENDS`` the work served — what a USER would
-    have gotten out of it, not how sure I was. An unrecognised or omitted value
-    folds to ``"unknown"`` rather than being rejected: a claim must never fail
-    to record because its end was mislabelled, and "unknown" is an honest
-    terminal state (it is exactly what every pre-2026-09-09 row is).
 
     Best-effort persistence: an append failure leaves a log witness
     (honest_failure_modes #9) but never raises — recording a claim must not be
@@ -132,7 +231,6 @@ def record_claim(claim_text: str, claim_class: str, evidence: str,
         "session_id": session_id,
         "model_id": model_id,
         "source": source,
-        "end": end if end in CLAIM_ENDS else "unknown",
         "claim_class": claim_class,
         "claim_text": claim_text,
         "evidence": evidence,
@@ -287,22 +385,6 @@ def fold(events: list[dict]) -> dict:
     # qualifying that verdict's evidence. Surfaced beside the ratio so the
     # headline number is never quoted without its caveat.
     n_annotated = sum(1 for rec in held + broke if annotations.get(rec.get("id")))
-    # Which ENDS the work served. Tallied over ALL claims, not just verified
-    # ones: whether a claim held is a different question from whether it was
-    # worth making, and this half must not inherit the other's filter.
-    #
-    # `harness_share` is the number this exists to produce. It is deliberately
-    # computed over claims that STATED an end — a pile of "unknown" must not
-    # be able to dilute the ratio into looking healthy (absence is not
-    # evidence of product work, honest_failure_modes #2). None when nothing
-    # has stated one yet, never a fabricated 0%.
-    ends: dict[str, int] = {}
-    for rec in claims.values():
-        e = rec.get("end")
-        ends[e if e in CLAIM_ENDS else "unknown"] = ends.get(
-            e if e in CLAIM_ENDS else "unknown", 0) + 1
-    n_stated = sum(v for k, v in ends.items() if k != "unknown")
-    harness_share = (ends.get("harness", 0) / n_stated) if n_stated else None
     return {
         "n_total": len(claims),
         "n_held": len(held),
@@ -314,9 +396,6 @@ def fold(events: list[dict]) -> dict:
         "open": open_,
         "annotations": annotations,
         "n_annotated": n_annotated,
-        "ends": ends,
-        "n_ends_stated": n_stated,
-        "harness_share": harness_share,
     }
 
 
@@ -332,23 +411,32 @@ def rederive_open(events: list[dict], head_full_now: str | None,
         called green — the exact "you said 100%%" miss made visible)
     Any other state (head moved on, no marker, --quick/exit 2 = couldn't verify)
     yields NO event — the claim stays open and is surfaced as unverified. We
-    never manufacture a verdict from absence (honest_failure_modes #2)."""
+    never manufacture a verdict from absence (honest_failure_modes #2).
+
+    THE MARKER MUST POST-DATE THE CLAIM (finding 11, 2026-09-09). claim_gate
+    records only marker-BACKED claims, so the honest_status marker that
+    ADMITTED a claim is, on the next warm start, still the freshest marker on
+    that head — and this function re-derived the claim as ``held`` from it:
+    zero new evidence, a self-confirming verdict. Live ledger that day: 9 of
+    47 held verdicts landed within 15 min of their claim. A marker is new
+    evidence only if it was PRODUCED AFTER the claim, so ``marker.ts`` must be
+    strictly greater than the claim's ``ts``; a marker or claim with no
+    numeric ts cannot establish that and mints nothing."""
     state = fold(events)
-    if not isinstance(marker, dict):
-        return []
-    if not marker.get("ran_full_suite"):
-        return []
-    # Second reader of the marker, same refusal as claim_gate.marker_satisfies
-    # (review 2026-09-07): a run narrowed by HONEST_BOXES / no fleet SSOT, or
-    # made on a tree with uncommitted edits, verified something other than
-    # "this HEAD, fleet-wide" — minting `held` from it would inflate the
-    # held-rate with exactly the run class the gate refuses (hfm #5).
-    if marker.get("scope_narrowed") or marker.get("dirty_tree"):
+    # ONE predicate shared with claim_gate.marker_satisfies (review
+    # 2026-09-07 wrote the rule twice; finding 11 folded it): a --quick run,
+    # a run narrowed by HONEST_BOXES / no fleet SSOT, or a dirty tree verified
+    # something other than "this HEAD, fleet-wide" — minting `held` from it
+    # would inflate the held-rate with exactly the run class the gate refuses.
+    if marker_refusal(marker) is not None:
         return []
     m_head = marker.get("head_full")
     m_exit = marker.get("exit_code")
+    m_ts = marker.get("ts")
     if not m_head or m_head != head_full_now:
         return []
+    if not isinstance(m_ts, (int, float)) or isinstance(m_ts, bool):
+        return []  # undated evidence cannot be shown to be NEW evidence
     # The verdict must name the instrument that actually produced it. This
     # previously hardcoded "honest_status ..." for EVERY marker; the first fix
     # then read `summary` as the producer name — but honest_status writes its
@@ -382,9 +470,15 @@ def rederive_open(events: list[dict], head_full_now: str | None,
 
     new: list[dict] = []
     for rec in state["open"]:
-        if rec.get("head_full") == m_head:
-            new.append({"kind": "verdict", "claim_id": rec.get("id"),
-                        "ts": now_ts, "outcome": outcome, "detail": detail})
+        if rec.get("head_full") != m_head:
+            continue
+        c_ts = rec.get("ts")
+        if not isinstance(c_ts, (int, float)) or isinstance(c_ts, bool):
+            continue  # undated claim — cannot show the marker post-dates it
+        if m_ts <= c_ts:
+            continue  # the marker that admitted the claim is not a re-check
+        new.append({"kind": "verdict", "claim_id": rec.get("id"),
+                    "ts": now_ts, "outcome": outcome, "detail": detail})
     return new
 
 

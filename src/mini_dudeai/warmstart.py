@@ -25,8 +25,8 @@ import json
 import os
 
 from ._util import (APP_FLEET_PRESET, APP_MINI_UNIT, APP_REPO_DEFAULT,
-                    APP_REPO_ENV, APP_VERDICT_SUBDIR, READ_JSON_NOT_FOUND,
-                    operator_home, read_json)
+                    APP_REPO_ENV, READ_JSON_NOT_FOUND, operator_home,
+                    read_json)
 
 #: Past this age (s) since the last tick, the brief is treated as historical.
 #: Mirrors brief.DEFAULT_STALE_S (30s tick → >5m means the daemon likely died).
@@ -74,6 +74,44 @@ HANDOFF_STALE_S = 36 * 3600
 HANDOFF_MAX_CHARS = 2400
 
 
+def handoff_note_path(host: str | None = None) -> tuple:
+    """Resolve THIS box's handoff note: ``(path, tried)``.
+
+    ``path`` is the first existing candidate, else the first candidate tried
+    (so an absent note still names where it was looked for), else the plans
+    dir when no hostname could be had at all. ``host`` defaults to this box's
+    short hostname; ``scripts/harness_audit.sh`` passes its own ``hostname``
+    so the two consumers resolve ONE way — the audit used to lowercase the
+    name unconditionally while this tried the exact case first, so on a box
+    whose note carries mixed case the audit read "absent" beside a note the
+    warm start was lifting every session (finding 18, 2026-09-09)."""
+    import socket
+
+    if host is None:
+        try:
+            host = socket.gethostname()
+        except OSError:
+            host = ""
+    host = (host or "").split(".", 1)[0]
+    base = os.path.join(operator_home(), ".claude")
+    tried: list = []
+    # Case matters and the two sources disagree: gethostname() may return
+    # "BoxA" while the note on disk is "...-boxa.md". The first cut matched
+    # only the exact case and reported "no handoff note" on the ONE box that
+    # has one — a feature that would have been silently inert forever, found
+    # by RUNNING it, not by reading it.
+    for cand in (host, host.lower()):
+        if not cand:
+            continue
+        c = os.path.join(base, HANDOFF_BASENAME_FMT.format(host=cand))
+        if c in tried:
+            continue
+        tried.append(c)
+        if os.path.exists(c):
+            return c, tried
+    return (tried[0] if tried else os.path.join(base, "plans")), tried
+
+
 def handoff_block(now_ts: float, path: str | None = None) -> str:
     """The last session's START HERE section, or an honest line saying none.
 
@@ -92,30 +130,10 @@ def handoff_block(now_ts: float, path: str | None = None) -> str:
     same contract the freshness banner above already keeps for the brief.
     """
     import glob
-    import socket
 
     tried: list = []
     if path is None:
-        try:
-            host = socket.gethostname().split(".", 1)[0]
-        except OSError:
-            host = ""
-        base = os.path.join(operator_home(), ".claude")
-        # Case matters and the two sources disagree: gethostname() may return
-        # "BoxA" while the note on disk is "...-boxa.md". The first
-        # cut matched only the exact case and reported "no handoff note" on
-        # the ONE box that has one — a feature that would have been silently
-        # inert forever, found by RUNNING it, not by reading it.
-        for cand in (host, host.lower()):
-            if not cand:
-                continue
-            c = os.path.join(base, HANDOFF_BASENAME_FMT.format(host=cand))
-            tried.append(c)
-            if os.path.exists(c):
-                path = c
-                break
-        else:
-            path = tried[0] if tried else os.path.join(base, "plans")
+        path, tried = handoff_note_path()
     text = _read_text(path)
     if text is None:
         # Absent-by-design and absent-but-siblings-exist are DIFFERENT claims,
@@ -425,37 +443,23 @@ def _current_head() -> str | None:
     re-derivation) — repo env/default come from the _util adapter, so the
     byte-locked twin never reads the OTHER app's HEAD on a dual-stack box
     (07-23 audit). None on any failure — re-derivation then mints no new
-    verdict and simply surfaces the existing ledger state."""
-    import subprocess
-    repo = os.environ.get(APP_REPO_ENV, APP_REPO_DEFAULT)
-    try:
-        # -c safe.directory: this returns None on ANY git failure, and None
-        # means "mint no verdict" — so a git refusal stops calibration
-        # re-derivation SILENTLY. Today both twins' mini units run as the repo
-        # owner, but a root/service-account host would hit git's dubious-
-        # ownership check and the ledger would just quietly stop re-deriving.
-        # Scoped to the repo the adapter handed us (2026-09-01, ported from the
-        # parity probe's root-blindness defect).
-        out = subprocess.run(["git", "-c", f"safe.directory={repo}",
-                              "-C", repo, "rev-parse", "HEAD"],
-                             capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if out.returncode != 0:
-        return None
-    return out.stdout.strip() or None
+    verdict and simply surfaces the existing ledger state.
+
+    The git call itself (with its ``-c safe.directory`` guard against the
+    dubious-ownership refusal that would otherwise stop re-derivation
+    SILENTLY) lives in ``calibration_ledger.repo_head`` — one resolver for
+    this reader and the claim-gate, which had grown a copy WITHOUT the guard
+    (finding 18, 2026-09-09)."""
+    from .calibration_ledger import repo_head
+    return repo_head(os.environ.get(APP_REPO_ENV, APP_REPO_DEFAULT))
 
 
 def _read_verdict_marker() -> dict | None:
-    """Read honest_status.sh's verdict marker (same path contract as the
-    claim-gate). None on absence/parse error."""
-    env = os.environ.get("HONEST_VERDICT_PATH")
-    if env:
-        path = env
-    else:
-        home = os.environ.get("HOME") or os.path.expanduser("~")
-        path = os.path.join(home, APP_VERDICT_SUBDIR, "honest_verdict.json")
-    data, _ = read_json(path)
+    """Read honest_status.sh's verdict marker at the ONE path contract
+    (``calibration_ledger.verdict_marker_path`` — writer and both readers).
+    None on absence/parse error."""
+    from .calibration_ledger import verdict_marker_path
+    data, _ = read_json(verdict_marker_path())
     return data if isinstance(data, dict) else None
 
 

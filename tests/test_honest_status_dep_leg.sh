@@ -130,6 +130,31 @@ printf '# fleet dependency advisories\n# boxes observed: 1/1\nkiai apt - FINDING
 printf '# header\nkiai apt: 1 security update(s) pending\n' > "$TMP/h8/.meshforge-dep-ADVISORY"
 check "installed record lacks the fleet stamp" "$TMP/h8" UNKNOWN
 
+# 10. Finding 14c (2026-09-09): a finding file with NO findings (header +
+#     blank line) yielded n=$'0\n0' from `grep -c … || echo 0` and flipped
+#     the leg to WARN on zero findings. Zero findings is OK.
+mk h10
+fleet_status "$TMP/h10"
+: > "$TMP/h10/.meshforge-dep-ranges"
+printf '# header only\n\n' > "$TMP/h10/.meshforge-dep-ADVISORY"
+check "finding file with zero findings" "$TMP/h10" PASS
+
+# 11. Finding 14b: a status file stamped in the FUTURE is a stepped clock,
+#     never a fresh run.
+mk h11
+fleet_status "$TMP/h11"
+: > "$TMP/h11/.meshforge-dep-ranges"
+touch -d '+3 days' "$TMP/h11/.meshforge-dep-ranges"
+check "status stamped in the future" "$TMP/h11" UNKNOWN
+
+# 12. Finding 14b: `stat … || echo 0` read an unreadable mtime as epoch-0 →
+#     "STALE(49xxxxh)". Unreadable is its own state.
+mk h12; mkdir -p "$TMP/nostat"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/nostat/stat"; chmod +x "$TMP/nostat/stat"
+fleet_status "$TMP/h12"
+: > "$TMP/h12/.meshforge-dep-ranges"
+PATH="$TMP/nostat:$PATH" check "status mtime unreadable" "$TMP/h12" UNKNOWN
+
 # 9. A stamped fleet run that never LOOKED (gh unauthenticated, host list
 #    unreadable) writes UNKNOWN as its body. The finding file beside it is the
 #    previous run's leftover, not this run's verdict.
