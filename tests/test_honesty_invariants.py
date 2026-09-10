@@ -1221,7 +1221,7 @@ def test_dry_run_refuses_root():
             f"guard misfires for DRY_RUN={dry} EUID={euid}: {p.stdout!r}"
 
 
-def _run_installer_dry_run(home, *extra):
+def _run_installer_dry_run(home, *extra, scrub_user=False):
     """Run the real installer preview with a SCRATCH HOME.
 
     The scratch HOME is not hygiene, it is the regression pin for the defect
@@ -1231,10 +1231,30 @@ def _run_installer_dry_run(home, *extra):
     ~/.gitconfig — 35 of them on this box, one per suite run per fleet box,
     because `--add` never dedups. A test that shells out to a root installer
     must not be able to write to the operator's dotfiles at all.
+
+    $USER is PINNED for the same reason the HOME is: it was ambient, so the
+    verdict of every test below was a property of whoever launched pytest
+    rather than of the code. Interactive shells export USER; cron does not, so
+    on 2026-09-10 the 04:45 calibration_reverify cron got five aborts on a head
+    the suite had passed hours earlier. A test whose verdict depends on
+    un-pinned machine state pins nothing.
+
+    `scrub_user=True` removes both login vars instead, which is the cron shape
+    itself — that is a DIFFERENT assertion (the installer must resolve the
+    operator from the real uid) and it has its own test below.
     """
-    import subprocess, os
+    import subprocess, os, pwd
     env = dict(os.environ, HOME=str(home))
     env.pop("MF_DRY_RUN", None)
+    # Exactly one login var either way, so the child's view of "who am I" is
+    # decided here and not by the launcher. The pinned value comes from the
+    # real uid, not from getpass/$USER, because those read the same ambient
+    # env this pin exists to remove.
+    env.pop("SUDO_USER", None)
+    if scrub_user:
+        env.pop("USER", None)
+    else:
+        env["USER"] = pwd.getpwuid(os.getuid()).pw_name
     return subprocess.run(
         ["bash", str(REPO / "scripts" / "install_noc.sh"), "--dry-run", *extra],
         capture_output=True, text=True, timeout=240,
@@ -1300,6 +1320,67 @@ def test_dry_run_does_not_build_a_real_venv(tmp_path):
     p = _run_installer_dry_run(tmp_path, "--client-only")
     assert p.returncode == 0, p.stdout[-500:]
     assert "would: python3 -m venv" in p.stdout, "the venv must be PREVIEWED, not built"
+
+
+@pytest.mark.skipif(os.getuid() == 0,
+                    reason="as root the uid fallback yields root, which "
+                           "resolve_operator_user refuses BY DESIGN "
+                           "(test_dry_run_refuses_root pins that side)")
+def test_dry_run_resolves_the_operator_without_any_login_env(tmp_path):
+    """The installer must resolve the operator from the REAL UID when neither
+    $SUDO_USER nor $USER is set.
+
+    This is the cron shape, and it is the test that would have caught the
+    2026-09-10 finding. `resolve_operator_user` read `${SUDO_USER:-$USER}` and
+    exited 1 when both were empty — an env var is a REPRESENTATION of who is
+    running, and cron and systemd set neither, while `id -un` is the thing
+    itself. Consequences, both real:
+
+      * the 04:45 calibration_reverify cron aborted five dry-run tests on a
+        head the suite had passed hours earlier and recorded a VERIFIED claim
+        as "broke". Note what that was NOT: a false positive. The claim (that
+        honest_status.sh exited 0) held in the env it was made in, AND the head
+        really did carry this defect — only the sparse env could see it. The
+        re-derivation was right to go red and wrong about what had broken,
+        which is why "known_benign" was never available here;
+      * a genuine non-interactive install (cron, a systemd unit, a provisioning
+        runner) refused to proceed for no reason a user could act on.
+
+    Sibling pin: the SUDO_USER-first ORDER must survive this fix, because under
+    sudo the real uid is root and the operator is the invoker.
+    """
+    p = _run_installer_dry_run(tmp_path, "--client-only", scrub_user=True)
+    assert "Cannot resolve operator user" not in p.stdout + p.stderr, (
+        "the preview refused to resolve an operator with an empty login env; "
+        "it must fall back to the real uid: " + (p.stdout + p.stderr)[-500:])
+    assert p.returncode == 0, f"dry-run aborted (exit {p.returncode}): {p.stdout[-600:]}"
+    assert "DRY RUN COMPLETE" in p.stdout
+
+
+def test_resolver_prefers_sudo_user_over_the_real_uid():
+    """The fix above must not reorder the resolution. Under sudo `id -un` is
+    root, so a uid-first resolver would install units owned by root and drift
+    from the TUI's $SUDO_USER home — the exact failure the function's original
+    comment was written to prevent."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    body = text[text.index("resolve_operator_user() {"):]
+    body = body[:body.index("\n}\n")]
+    assert 'local u="${SUDO_USER:-${USER:-$uid_user}}"' in body, \
+        "resolution order must stay SUDO_USER -> USER -> real uid"
+    assert '"$u" == "root"' in body, "root must still be refused as the operator"
+
+
+def test_installer_resolves_the_operator_in_exactly_one_place():
+    """Two consumers of one fact, derived two ways, WILL drift (hfm #5). The
+    user-service block re-derived the login inline as `${SUDO_USER:-$USER}`,
+    which with both empty yielded "" — so `eval echo "~"` expanded to the
+    INVOKING user's home and the systemd tree was created there and chown'd
+    ":". The guarded form exits loudly instead; the inline one was silent."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    stray = [ln for ln in text.splitlines()
+             if "${SUDO_USER:-$USER}" in ln and "local u=" not in ln]
+    assert not stray, (
+        "operator login re-derived outside resolve_operator_user(): " + repr(stray))
 
 
 def test_dry_run_never_prompts_at_the_ownership_question():
@@ -1772,15 +1853,17 @@ def test_exit_handler_branches_on_mode():
         "a dry-run abort must never claim the box was modified"
 
 
-def test_dry_run_summary_prints_exactly_once():
+def test_dry_run_summary_prints_exactly_once(tmp_path):
     """Regression pin. The summary was called BOTH by the EXIT trap and by an
     explicit call at the end of the script, so a clean dry-run printed it twice.
-    Found by the drill, not by reading."""
-    import subprocess
-    p = subprocess.run(["bash", str(REPO / "scripts" / "install_noc.sh"),
-                        "--dry-run", "--client-only"],
-                       capture_output=True, text=True, timeout=240,
-                       stdin=subprocess.DEVNULL, cwd=str(REPO))
+    Found by the drill, not by reading.
+
+    Runs through the shared helper: this test used to shell out with the raw
+    inherited environment and no scratch HOME, so it was outside the
+    ~/.gitconfig protection its siblings have, and its verdict rode on the
+    launcher's $USER like theirs did.
+    """
+    p = _run_installer_dry_run(tmp_path, "--client-only")
     assert p.returncode == 0, p.stdout[-400:]
     assert p.stdout.count("DRY RUN COMPLETE") == 1, \
         f"summary printed {p.stdout.count('DRY RUN COMPLETE')} times, expected 1"

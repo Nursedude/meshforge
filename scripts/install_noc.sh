@@ -293,10 +293,21 @@ trap mf_on_exit EXIT
 # Resolve operator login for systemd User= placeholders.
 # Refuses root and users not in /etc/passwd — loud-fail rather than
 # silently install a unit that drifts from the TUI's $SUDO_USER home.
+#
+# SUDO_USER is consulted FIRST and that order is deliberate: under sudo the real
+# uid IS root, and the operator we want is the one who invoked us. Only when
+# BOTH env vars are absent do we fall back to the actual uid, because $USER and
+# $SUDO_USER are ADVISORY — cron and systemd set neither, so a run that aborts
+# there is reading a REPRESENTATION of who is running instead of the thing
+# itself. (Found 2026-09-10: the 04:45 calibration_reverify cron marked a
+# verified head "broke" because five dry-run tests hit this abort under an
+# empty env.) Under sudo the fallback yields root and is refused below, which
+# is the correct answer.
 resolve_operator_user() {
-    local u="${SUDO_USER:-$USER}"
+    local uid_user; uid_user="$(id -un 2>/dev/null || true)"
+    local u="${SUDO_USER:-${USER:-$uid_user}}"
     if [[ -z "$u" || "$u" == "root" ]]; then
-        echo -e "${RED}✗ Cannot resolve operator user (SUDO_USER='$SUDO_USER' USER='$USER')${NC}" >&2
+        echo -e "${RED}✗ Cannot resolve operator user (SUDO_USER='$SUDO_USER' USER='$USER' id -un='$uid_user')${NC}" >&2
         echo -e "${YELLOW}  Run via: sudo bash scripts/install_noc.sh${NC}" >&2
         exit 1
     fi
@@ -1760,7 +1771,12 @@ WantedBy=multi-user.target
 RNSD_SERVICE
 
     # Also deploy user-level service template for non-root setups
-    REAL_USER="${SUDO_USER:-$USER}"
+    # Route through the chokepoint rather than re-deriving the same login a
+    # second way. With both env vars empty the old inline form silently yielded
+    # "", so `eval echo "~"` expanded to the INVOKING user's home and the tree
+    # below was created — and chown'd ":" — under the wrong account. Two
+    # consumers of one fact, two derivations, one of them silent (hfm #5).
+    REAL_USER="$(resolve_operator_user)"
     REAL_HOME=$(eval echo "~${REAL_USER}")
     USER_SYSTEMD_DIR="${REAL_HOME}/.config/systemd/user"
     if [[ -d "$INSTALL_DIR/templates/systemd" ]]; then
