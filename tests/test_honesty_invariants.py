@@ -1185,20 +1185,204 @@ def test_dry_run_must_not_require_root():
         "the root check must exempt --dry-run; see install_common.sh dry-run notes"
 
 
-def test_dry_run_completes_and_performs_nothing():
+def test_dry_run_refuses_root():
+    """LAYER 2's OTHER half, missing until 2026-09-09. The root check exempts
+    --dry-run; nothing REFUSED root, so `sudo bash scripts/install_noc.sh
+    --dry-run` — the spelling the usage text's own `Usage: sudo bash ...` line
+    invites — ran the preview as uid 0 and dropped the load-bearing layer:
+    every heredoc, `>` redirection to a hardcoded /etc path, udevadm call and
+    the APT signing key would then mutate FOR REAL under a trap that printed
+    "0 performed".
+
+    Pinned two ways, because the string alone would survive an inverted
+    comparison: the guard must EXIST, it must be evaluated BEFORE anything that
+    mutates as root (mf_log_init creates /var/log/meshforge), and its real
+    condition text — lifted out of the file — must actually fire for root +
+    dry-run and stay quiet for the three other combinations.
+    """
+    import subprocess
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    guard = 'if [[ "$DRY_RUN" == "true" && $EUID -eq 0 ]]; then'
+    assert guard in text, "--dry-run as root must be REFUSED, not merely un-required"
+    assert text.index(guard) < text.index("mf_log_init"), \
+        "the refusal must come before mf_log_init, which mkdirs /var/log/meshforge as root"
+    assert text.index(guard) < text.index("mf_dry_run_enable"), \
+        "the refusal must come before the shadows are installed"
+
+    # DRILL the condition itself against all four combinations.
+    cond = guard.replace("$EUID", "$FAKE_EUID")
+    for dry, euid, expect in (("true", "0", "REFUSE"), ("true", "1000", "ok"),
+                              ("false", "0", "ok"), ("false", "1000", "ok")):
+        p = subprocess.run(
+            ["bash", "-c", f'DRY_RUN={dry}; FAKE_EUID={euid}\n{cond}\n'
+                           f'  echo REFUSE\nelse\n  echo ok\nfi'],
+            capture_output=True, text=True, timeout=30)
+        assert p.stdout.strip() == expect, \
+            f"guard misfires for DRY_RUN={dry} EUID={euid}: {p.stdout!r}"
+
+
+def _run_installer_dry_run(home, *extra):
+    """Run the real installer preview with a SCRATCH HOME.
+
+    The scratch HOME is not hygiene, it is the regression pin for the defect
+    that made it necessary: `git config` was classified as a READ, so
+    mf_git_sync's `git config --global --add safe.directory "$dir"` executed for
+    real on every preview and appended a dead sandbox path to the operator's
+    ~/.gitconfig — 35 of them on this box, one per suite run per fleet box,
+    because `--add` never dedups. A test that shells out to a root installer
+    must not be able to write to the operator's dotfiles at all.
+    """
+    import subprocess, os
+    env = dict(os.environ, HOME=str(home))
+    env.pop("MF_DRY_RUN", None)
+    return subprocess.run(
+        ["bash", str(REPO / "scripts" / "install_noc.sh"), "--dry-run", *extra],
+        capture_output=True, text=True, timeout=240,
+        stdin=subprocess.DEVNULL, cwd=str(REPO), env=env)
+
+
+def test_dry_run_completes_and_performs_nothing(tmp_path):
     """LAYER 3 + the end-to-end claim. A dry-run that aborts is a FINDING (an
     uncovered path); one that completes must say so and must report zero
     operations performed."""
-    import subprocess
-    p = subprocess.run(["bash", str(REPO / "scripts" / "install_noc.sh"),
-                        "--dry-run", "--client-only"],
-                       capture_output=True, text=True, timeout=240,
-                       stdin=subprocess.DEVNULL, cwd=str(REPO))
+    p = _run_installer_dry_run(tmp_path, "--client-only")
     assert p.returncode == 0, f"dry-run aborted (exit {p.returncode}): {p.stdout[-600:]}"
     assert "DRY RUN COMPLETE" in p.stdout
     assert "0 performed" in p.stdout, "the summary must state that nothing was done"
     assert "[dry-run] would:" in p.stdout, "a preview that previews nothing is not a preview"
     assert "must be run as root" not in p.stdout, "dry-run must not demand root"
+    # The operator's git config is OUTSIDE the scratch HOME; the sandbox path
+    # must not have reached it (finding: `git config` classified as a read).
+    assert not (tmp_path / ".gitconfig").exists(), \
+        "the preview wrote to ~/.gitconfig — `git config` must be shadowed as a mutator"
+
+
+def test_dry_run_leaves_nothing_behind(tmp_path):
+    """The sandbox is a mktemp dir under /tmp, which is TMPFS on the fleet's
+    Pis — anything left there is unreclaimable RAM. Every preview used to build
+    a real ~19 MB venv inside it and never remove it (there was no cleanup, and
+    `rm` is shadowed anyway): 37 orphans totalling 636 MB were found on this
+    box, one per preview PLUS one per suite run, on every box."""
+    import glob
+    before = set(glob.glob("/tmp/meshforge-dryrun-*"))
+    p = _run_installer_dry_run(tmp_path, "--client-only")
+    assert p.returncode == 0, p.stdout[-500:]
+    leaked = sorted(set(glob.glob("/tmp/meshforge-dryrun-*")) - before)
+    assert not leaked, f"dry-run left sandbox(es) behind: {leaked}"
+
+
+def test_dry_run_walks_the_real_template_branches(tmp_path):
+    """The sandbox INSTALL_DIR used to stay permanently EMPTY (git clone is
+    shadowed), so every `[[ -f "$INSTALL_DIR/templates/..." ]]` gate took its
+    inline-fallback branch and the preview was of a program a real fresh
+    install never runs — the exact contract the shadow design promises to keep.
+    The template-rendered units (User= substituted, the real hardening) were
+    invisible. Now the sandbox is populated from the checkout."""
+    p = _run_installer_dry_run(tmp_path, "--client-only")
+    assert p.returncode == 0, p.stdout[-500:]
+    assert "meshforge-map.service installed (User=" in p.stdout, \
+        "the preview took the inline-fallback branch — the sandbox is empty again"
+    assert "Verification script not found" not in p.stdout, \
+        "the sandbox is missing scripts/ — the preview is not walking real branches"
+
+
+def test_dry_run_does_not_build_a_real_venv(tmp_path):
+    """`python3 -m venv` is not shadowable (shadowing python3 would break every
+    read made through it), so it must be gated on DRY_RUN explicitly. Second
+    reason it must be gated: on a box without python3-venv, phase 2's apt
+    install was only PREVIEWED, so the real venv call failed and the preview
+    aborted at [6/8] blaming the box."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    assert 'mf_dry_note "python3 -m venv' in text, "the venv must be previewed"
+    real = text.index('\n        python3 -m venv "$VENV_DIR"')
+    assert 'if [[ "$DRY_RUN" == "true" ]]; then' in text[real - 800:real], \
+        "the REAL python3 -m venv must sit in the else of a DRY_RUN gate"
+    p = _run_installer_dry_run(tmp_path, "--client-only")
+    assert p.returncode == 0, p.stdout[-500:]
+    assert "would: python3 -m venv" in p.stdout, "the venv must be PREVIEWED, not built"
+
+
+def test_dry_run_never_prompts_at_the_ownership_question():
+    """"--dry-run never prompts" was true only of the FINAL prompt. The phase-1
+    ownership prompt was guarded solely by mf_have_tty, so an interactive
+    preview on any box that already has meshtasticd (every fleet box) BLOCKED
+    on "Select mode [1/2/3/q]" — and answering `q` exited 0, which then printed
+    "DRY RUN COMPLETE" for a preview that had covered phase 1 only. The honesty
+    suite could not see it: it passes --client-only (skips the block) and
+    stdin=DEVNULL (irrelevant to an explicit `< /dev/tty`).
+
+    Invariant, and it is BROADER than the finding that produced it: every
+    BLOCKING `read` in the installer — `< /dev/tty` or plain stdin, prompt or
+    not — must be reached only through a branch that excludes DRY_RUN. Drilling
+    the broader shape immediately found a second one the finding had not named:
+    ask_radio_type's whiptail menu / `read -rp "Select [1/2/3]"`.
+
+    Reads carrying `-t <timeout>` are exempt: they cannot block. (The one in
+    flush_terminal_input is a 0.1s input drain, not a question.)"""
+    import re
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    reads = [m for m in re.finditer(r"^[^\n#]*\bread\b[ \t]+[^\n]*", text, re.M)
+             if not re.search(r"\bread\b[^\n]*\s-t\s", m.group(0))
+             and "IFS=" not in m.group(0)]
+    assert reads, "the regex found no prompts — it needs updating"
+    fns = [m.start() for m in re.finditer(r"^[a-z_][a-z0-9_]*\(\) \{", text, re.M)]
+    for m in reads:
+        pos = m.start()
+        # Scope = the enclosing function if we are inside one, else the block
+        # just above. A DRY_RUN check must appear in that scope before the read.
+        last_fn = max((s for s in fns if s < pos), default=-1)
+        last_close = text.rfind("\n}\n", 0, pos)
+        scope = text[last_fn:pos] if last_fn > last_close else text[max(0, pos - 1200):pos]
+        assert 'DRY_RUN' in scope, (
+            f"a blocking read at offset {pos} is not excluded from "
+            f"--dry-run: {m.group(0).strip()[:70]!r}")
+    # ...and whiptail is a prompt too, even though it is not a `read`.
+    assert 'elif [[ "$DRY_RUN" == "true" ]]; then\n        # DRY-RUN NEVER PROMPTS' in text, \
+        "ask_radio_type (whiptail menu) must be skipped under --dry-run"
+
+
+def _extract_mf_on_exit(text: str) -> str:
+    """Lift the REAL mf_on_exit out of install_noc.sh so the drill below tests
+    the handler that ships, not a paraphrase of it in the test file. (The
+    older exit-handler test does paraphrase — a copy cannot regress with the
+    original.)"""
+    start = text.index("mf_on_exit() {")
+    end = text.index("trap mf_on_exit EXIT", start)
+    return text[start:end]
+
+
+def test_dry_run_complete_claims_coverage_not_exit_status():
+    """"DRY RUN COMPLETE" is a claim about how much of the install was
+    previewed, not about the exit status. Every `exit 0` used to print it — the
+    ownership prompt's `q`, the SPI reboot gate at the end of phase 4 — so a
+    preview that stopped inside phase 1 announced itself as a complete preview
+    of an 8-phase install, and told the reader "To install for real: sudo bash
+    ..." on the strength of it."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    assert text.count("MF_REACHED_END=1") == 1, \
+        "MF_REACHED_END must be set at exactly one place: the end of the script"
+    assert text.rindex("MF_REACHED_END=1") > text.rindex('mf_phase "8/8"'), \
+        "MF_REACHED_END must be set AFTER the last phase, or it certifies nothing"
+
+    handler = _extract_mf_on_exit(text)
+    early = _run_bash(f'''
+        source {_INSTALL_LIB}
+        DRY_RUN=true; MF_DRY_RUN=true
+        MF_PHASE="Checking existing installations..."; MF_PHASE_NUM="1/8"
+{handler}
+        ( exit 0 ); mf_on_exit
+    ''').stdout
+    assert "ENDED EARLY" in early, f"an early exit 0 must not claim completeness: {early!r}"
+    assert "DRY RUN COMPLETE" not in early
+
+    done = _run_bash(f'''
+        source {_INSTALL_LIB}
+        DRY_RUN=true; MF_DRY_RUN=true; MF_REACHED_END=1
+{handler}
+        ( exit 0 ); mf_on_exit
+    ''').stdout
+    assert "DRY RUN COMPLETE" in done, \
+        "reaching the end must still produce the completion summary"
 
 
 def test_no_tty_presence_checks_remain():
@@ -1217,42 +1401,100 @@ def test_no_tty_presence_checks_remain():
 _DRY_RUN_SANDBOXED_VARS = ("INSTALL_DIR", "VENV_DIR", "MESHTASTICD_CONFIG_DIR")
 
 
+def _raw_write_offenders(text: str):
+    """Return (literal_hits, var_names) for redirections that bypass the
+    dry-run. Factored out of the guard so the guard itself can be DRILLED — a
+    regex nobody ever fed a violation is an assertion, not a check.
+
+    THREE shapes, and each was found by a bug the previous version missed:
+      * line continuations must be JOINED, or `printf ... \\` + `> "$VAR"`
+        never starts with a command name and the guard is inert;
+      * the command list must NOT be a closed vocabulary — `sed ... > /etc/...`
+        and `gpg --dearmor > /etc/...` were both invisible to
+        (cat|tee|printf|echo);
+      * the payload must be allowed to contain `#`. The old `[^|\\n#]*?` stopped
+        at the FIRST hash, so `echo "# SPI enabled by MeshForge" >>
+        "$BOOT_CONFIG"` — the one surviving raw append in the file — could
+        never be seen. The guard had the same blind spot as the bug.
+    """
+    import re
+    text = re.sub(r"\\\n\s*", " ", text)          # join continuations
+    text = re.sub(r"^[ \t]*#.*$", "", text, flags=re.M)  # drop comment LINES
+
+    # Any command, not a vocabulary. `2>/dev/null`-style redirects are excluded
+    # by the target-path alternation (/dev is not a system config root).
+    literal = re.findall(
+        r"(?:^|[;&|])[^|\n]*?[^0-9\s>]\s*>{1,2}\s*/(?:etc|usr|var|lib|boot)/\S*",
+        text, re.M)
+    var_writes = re.findall(
+        r'(?:^|[;&|])[^|\n]*?[^0-9\s>]\s*>{1,2}\s*"?\$\{?([A-Za-z_][A-Za-z0-9_]*)',
+        text, re.M)
+    return literal, sorted({v for v in var_writes if v not in _DRY_RUN_SANDBOXED_VARS})
+
+
 def test_no_raw_writes_bypass_the_dry_run():
     """Redirections cannot be shadowed, so every write to a system path must
     route through mf_write_stdin / mf_append_line or the dry-run aborts on it.
-
-    TWO shapes, and the second is the one that bit me. On 2026-09-09 I converted
-    20 HARDCODED `cat > /etc/...` sites and declared the class closed — but the
-    regex only saw literal paths, so `printf ... > "$AUTO_UPGRADES_CONF"` (which
-    is /etc/apt/apt.conf.d/20auto-upgrades) survived. It did not reproduce
-    locally because this box already had unattended-upgrades configured and the
-    branch was skipped; CI's clean container ran it and the dry-run correctly
-    aborted. The guard now covers both shapes, because a guard with the same
-    blind spot as the bug is not a guard.
     """
-    import re
     text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
-    # JOIN line continuations first. Without this the guard is INERT for the
-    # very shape it was written to catch: `printf ... \` on one line and
-    # `> "$VAR"` on the next means the redirect line does not start with a
-    # command, so a regex anchored at the command name never sees it. Caught by
-    # drilling the guard rather than trusting it — the reintroduced bug PASSED
-    # the first version of this test (2026-09-09).
-    text = re.sub(r"\\\n\s*", " ", text)
-
-    literal = re.findall(
-        r"(?:^|;|&&|\|\|)\s*(?:cat|tee|printf|echo)[^|\n#]*?>{1,2}\s*/(?:etc|usr|var|lib|boot)/\S*",
-        text, re.M)
+    literal, unsafe = _raw_write_offenders(text)
     assert not literal, f"raw system-path writes bypass the dry-run: {literal[:3]}"
-
-    var_writes = re.findall(
-        r'(?:^|;|&&|\|\|)\s*(?:cat|tee|printf|echo)[^|\n#]*?>{1,2}\s*"?\$\{?([A-Za-z_][A-Za-z0-9_]*)',
-        text, re.M)
-    unsafe = sorted({v for v in var_writes if v not in _DRY_RUN_SANDBOXED_VARS})
     assert not unsafe, (
         f"redirection(s) through un-sandboxed path variable(s) {unsafe} bypass "
         f"the dry-run — route them through mf_write_stdin/mf_append_line, or add "
         f"the variable to _DRY_RUN_SANDBOXED_VARS if --dry-run redirects it")
+
+
+def test_raw_write_guard_catches_the_shapes_that_got_past_it():
+    """DRILL the guard — an instrument with only one outcome is not evidence.
+
+    Every line below is a real bypass this guard failed to catch at some point.
+    If any of them stops being flagged, the guard has gone blind again and the
+    test above becomes a green light over an unpreviewed system write.
+    """
+    planted = [
+        # The #-in-payload blind spot: the surviving raw BOOT_CONFIG append.
+        'echo "# SPI enabled by MeshForge for LoRa HAT" >> "$BOOT_CONFIG"',
+        # Closed-vocabulary blind spots: neither sed nor gpg was in the list.
+        'sed "s/@X@/y/g" tpl > /etc/systemd/system/meshtasticd.service',
+        'curl -fsSL "$u" | gpg --dearmor > /etc/apt/trusted.gpg.d/meshtastic.gpg',
+        # Line-continuation blind spot.
+        'printf \'a\\n\' \\\n    > "$AUTO_UPGRADES_CONF"',
+        # The original shape.
+        'cat > /etc/meshforge/noc.yaml <<EOF',
+    ]
+    for line in planted:
+        literal, unsafe = _raw_write_offenders(line + "\n")
+        assert literal or unsafe, f"guard is BLIND to this bypass: {line!r}"
+
+    # ...and it must not fire on the routed forms, or it would be uninformative.
+    for ok in [
+        'mf_append_line "$BOOT_CONFIG" "# SPI enabled by MeshForge for LoRa HAT"',
+        'sed "s/@X@/y/g" tpl | mf_write_stdin /etc/systemd/system/x.service',
+        'mf_write_stdin /etc/meshforge/noc.yaml <<EOF',
+        'systemctl enable meshforge-map 2>/dev/null || true',
+        'apt-get install -y -qq meshtasticd >/dev/null 2>&1',
+        'command cp -a "$d" "$INSTALL_DIR/" 2>/dev/null || true',
+    ]:
+        literal, unsafe = _raw_write_offenders(ok + "\n")
+        assert not literal and not unsafe, f"guard false-fires on: {ok!r}"
+
+
+def test_apt_signing_key_write_is_previewable():
+    """`curl ... | gpg --dearmor > /etc/apt/trusted.gpg.d/meshtastic.gpg` was
+    the worst uncovered write in the file: add_meshtastic_repo is invoked as an
+    `if` CONDITION, so set -e is OFF for its body — the unprivileged EACCES was
+    swallowed as a bare "Permission denied", the shadowed apt-get update
+    returned 0, and the function reported SUCCESS into a branch a real run
+    never takes. As root (see the dry-run root refusal) it installed a real APT
+    signing key during a "preview"."""
+    import re
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    assert "| mf_write_stdin /etc/apt/trusted.gpg.d/meshtastic.gpg" in text, \
+        "the signing-key write must route through mf_write_stdin"
+    code = re.sub(r"^[ \t]*#.*$", "", text, flags=re.M)   # comments describe it
+    assert "> /etc/apt/trusted.gpg.d" not in code, \
+        "a raw redirect to the APT keyring is not previewable and fails silently"
 
 
 def test_dry_run_read_detection_skips_leading_flags():
@@ -1277,6 +1519,183 @@ r apt-get update
     assert p.returncode == 0, p.stderr[:300]
     assert p.stdout.split() == ["READ", "MUT", "READ", "MUT", "READ", "MUT", "MUT"], \
         f"read/mutation classification wrong: {p.stdout.split()}"
+
+
+def test_git_config_write_is_classified_as_a_mutation():
+    """`git config` was in the READ list wholesale, so mf_git_sync's
+    `git config --global --add safe.directory "$dir"` executed for real on
+    every preview and appended a DEAD sandbox path to the operator's
+    ~/.gitconfig. `--add` never dedups: 35 of them accumulated on this box,
+    one per preview and one per suite run, on every fleet box that runs it.
+
+    The query forms are still reads — shadowing `git config --get` would make
+    the script take a different BRANCH under dry-run, which is the failure the
+    read passthrough exists to prevent."""
+    import subprocess
+    script = f'''
+source {_INSTALL_LIB}
+r() {{ if _mf_is_read "$@"; then echo READ; else echo MUT; fi; }}
+r git config --global --add safe.directory /x
+r git config user.name someone
+r git config --global --get user.name
+r git config --list
+r git config --get-regexp '^safe'
+'''
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       timeout=30)
+    assert p.returncode == 0, p.stderr[:300]
+    assert p.stdout.split() == ["MUT", "MUT", "READ", "READ", "READ"], \
+        f"git config classification wrong: {p.stdout.split()}"
+
+
+def test_udevadm_control_is_classified_as_a_mutation():
+    """`udevadm control --reload-rules` / `udevadm trigger` were neither
+    shadowed nor guarded, unlike the ALSA sibling twenty lines above. On a
+    FRESH box (no /etc/udev/rules.d/99-meshtastic.rules) they sit in an `if`
+    BODY under set -e, return rc=1 "Permission denied" unprivileged, and
+    aborted the preview in phase 4 — phases 4-8 were never shown. Fleet boxes
+    already have the rules file and skip the block, and CI's --client-only
+    skips phase 4 entirely, which is why nothing saw it."""
+    import subprocess
+    script = f'''
+source {_INSTALL_LIB}
+r() {{ if _mf_is_read "$@"; then echo READ; else echo MUT; fi; }}
+r udevadm control --reload-rules
+r udevadm trigger
+r udevadm info -q path -n /dev/spidev0.0
+'''
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       timeout=30)
+    assert p.returncode == 0, p.stderr[:300]
+    assert p.stdout.split() == ["MUT", "MUT", "READ"], \
+        f"udevadm classification wrong: {p.stdout.split()}"
+    # ...and belt-and-braces for the REAL run, where a container/chroot with no
+    # udevd fails the same way: both calls carry a non-fatal guard.
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    for call in ("udevadm control --reload-rules", "udevadm trigger"):
+        for line in [ln for ln in text.splitlines()
+                     if ln.strip().startswith(call)]:
+            assert line.rstrip().endswith("\\") or "||" in line, \
+                f"ungated udevadm call aborts the run under set -e: {line.strip()!r}"
+
+
+def test_env_cannot_switch_the_library_into_dry_run():
+    """MF_DRY_RUN was seeded from the ENVIRONMENT at source time and gates
+    mf_pip_install / mf_ensure_pip / mf_verify_import / mf_write_stdin /
+    mf_append_line for FIVE other scripts (install.sh, dev_setup.sh,
+    configure_gateway.sh, fix_packaging_conflict.sh, healthcheck.sh) — none of
+    which has a --dry-run flag or checks the variable. An exported
+    MF_DRY_RUN=true therefore turned a REAL root install into printed "would:"
+    lines returning 0: nothing pip-installed, no unit files written, and green
+    checkmarks all the way to a completed install that fails at first launch.
+
+    Dry-run is an explicit opt-in through mf_dry_run_enable, and an
+    environment that asks for it is told plainly that it was ignored."""
+    import subprocess, os
+    env = dict(os.environ, MF_DRY_RUN="true")
+    p = subprocess.run(
+        ["bash", "-c", f'source {_INSTALL_LIB}; echo "MF_DRY_RUN=$MF_DRY_RUN"'],
+        capture_output=True, text=True, timeout=30, env=env)
+    assert p.returncode == 0, p.stderr[:300]
+    assert "MF_DRY_RUN=false" in p.stdout, \
+        f"the environment switched the library into dry-run: {p.stdout!r}"
+    assert "IGNORED" in p.stderr, \
+        "silently ignoring the variable is the same defect one layer down"
+
+    # The real consumer-of-record: a write helper must actually WRITE.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "x.conf")
+        q = subprocess.run(
+            ["bash", "-c", f'source {_INSTALL_LIB}; mf_append_line "{f}" real'],
+            capture_output=True, text=True, timeout=30, env=env)
+        assert q.returncode == 0, q.stderr[:300]
+        assert os.path.exists(f) and open(f).read() == "real\n", \
+            "MF_DRY_RUN in the environment turned a real write into a preview"
+
+
+def test_dry_note_survives_a_redirected_call_site():
+    """mf_dry_note printed to the CURRENT stdout, so a shadowed mutator at a
+    call site that redirects — `systemctl enable --now unattended-upgrades
+    >/dev/null 2>&1`, `apt-get install ... meshtasticd >/dev/null 2>&1` — had
+    its note swallowed by the call site's own /dev/null while the shadow
+    returned 0 and a green checkmark printed underneath. CI's preview reached
+    that line every run and reported "unattended-upgrades service enabled"
+    inside a run that changed nothing.
+
+    The saved fd is what fixes it; this drills the exact call shape."""
+    # mf_dry_run_enable must NOT be redirected here: it saves the stdout it
+    # sees, exactly as install_noc.sh calls it.
+    out = _run_bash(f'''
+        source {_INSTALL_LIB}
+        mf_dry_run_enable
+        systemctl enable --now unattended-upgrades >/dev/null 2>&1
+        apt-get install -y -qq meshtasticd >/dev/null 2>&1
+    ''').stdout
+    assert "would: systemctl enable --now unattended-upgrades" in out, \
+        "a redirected call site swallowed its own preview note"
+    assert "would: apt-get install -y -qq meshtasticd" in out
+
+
+def test_dry_run_summary_states_no_count_it_cannot_keep():
+    """The summary used to print "N operation(s) previewed". mf_dry_note runs
+    in a SUBSHELL at every pipeline call site (`printf ... | mf_write_stdin`),
+    so those increments never reached the summary's shell and the number
+    silently under-reported the transcript printed directly above it. A tally
+    that can disagree with the evidence beside it is worse than no tally."""
+    out = _run_bash(f'''
+        source {_INSTALL_LIB}
+        mf_dry_run_enable
+        printf 'x\\n' | mf_write_stdin /etc/nope.conf
+        mf_dry_run_summary
+    ''').stdout
+    assert "DRY RUN COMPLETE" in out and "0 performed" in out
+    import re
+    assert not re.search(r"\d+ operation", out), \
+        "a previewed-operation COUNT cannot be kept across pipeline subshells"
+
+
+def test_log_flush_waits_for_the_tee_to_drain(tmp_path):
+    """`exec > >(tee -a "$LOG")` was never waited: bash exits before tee drains,
+    so the EXIT trap's failure report / dry-run summary — the LAST thing
+    written and the whole point of the trap — lands after the caller's prompt,
+    interleaved with it, or is missed entirely by a wrapper that reads until
+    the child exits.
+
+    After mf_log_flush returns, tee has EXITED, so the transcript is complete
+    by construction rather than by luck."""
+    text = _INSTALL_LIB.read_text(encoding="utf-8")
+    assert "MF_TEE_PID=$!" in text, "the tee's pid must be recorded to be waited on"
+    verdict = tmp_path / "verdict.txt"
+    out = _run_bash(f'''
+        export HOME="{tmp_path}"
+        source {_INSTALL_LIB}
+        mf_log_init
+        # A saved fd on a FILE (not the tee pipe), so it cannot itself hold the
+        # pipe open — the verdict has to be written after stdout/stderr close.
+        exec 9>"{verdict}"
+        echo "TRAP-REPORT-MARKER"
+        mf_log_flush
+        grep -c "TRAP-REPORT-MARKER" "$MF_INSTALL_LOG" >&9
+    ''', timeout=30)
+    assert out.returncode == 0, (out.stdout[-400:], out.stderr[-400:])
+    assert verdict.read_text().strip() == "1", \
+        f"the transcript was not drained before flush returned: {verdict.read_text()!r}"
+
+
+def test_installer_exit_handler_flushes_last(tmp_path):
+    """mf_log_flush closes stdout, so it must be the LAST statement of the
+    handler — and MF_DRY_FD (mf_dry_note's saved stdout) is a duplicate of the
+    tee's input end, so it must be closed too or the wait DEADLOCKS every
+    dry-run on its final line."""
+    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
+    handler = _extract_mf_on_exit(text)
+    body = handler.rstrip().rstrip("}").rstrip()
+    assert body.rstrip().endswith("mf_log_flush"), \
+        "mf_log_flush must be the last statement of mf_on_exit (it closes stdout)"
+    lib = _INSTALL_LIB.read_text(encoding="utf-8")
+    assert "MF_DRY_FD" in lib.split("mf_log_flush() {", 1)[1].split("\n}", 1)[0], \
+        "mf_log_flush must close MF_DRY_FD too, or the wait never returns"
 
 
 # --- installer failure legibility (2026-09-09, the `set -e` gap) -------------

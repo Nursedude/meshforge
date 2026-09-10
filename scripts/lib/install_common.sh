@@ -1,8 +1,9 @@
 # scripts/lib/install_common.sh — hardened install primitives for shell scripts.
 #
-# Source this file; it defines functions, no side effects on source (the only
-# side effect, the whole-run transcript, happens only when you CALL
-# mf_log_init). Bash 4+.
+# Source this file; it defines functions. The only side effects on source are a
+# WARNING when MF_DRY_RUN=true is exported (which this library refuses to honor
+# — see the dry-run section) and variable defaults; the whole-run transcript
+# happens only when you CALL mf_log_init. Bash 4+.
 #
 # Born from a recurring failure class (feedback_version_env_rigor,
 # feedback_install_method_fragility): a fresh user's app+env "did not install
@@ -48,6 +49,14 @@ mf_log_init() {
         # `| tee`, so the script keeps its own exit status and `set -e` still
         # trips on real failures.
         exec > >(tee -a "$MF_INSTALL_LOG") 2>&1
+        # Remember the tee's pid so mf_log_flush can WAIT for it. Without this
+        # the shell exits while tee is still draining the pipe, so the very last
+        # thing written — the EXIT trap's failure report / dry-run summary —
+        # lands AFTER the caller's prompt, interleaved with it, or (for a
+        # subprocess wrapper that reads until the child exits) is never seen at
+        # all. The report is the whole point of the trap; it must be flushed
+        # before the process goes away.
+        MF_TEE_PID=$!
         ln -sf "$MF_INSTALL_LOG" "$dir/install-latest.log" 2>/dev/null || true
         export MF_INSTALL_LOG
         echo "MeshForge install transcript: $MF_INSTALL_LOG"
@@ -56,6 +65,26 @@ mf_log_init() {
         MF_INSTALL_LOG=""
     fi
     MF_LOG_INITED=1
+}
+
+# mf_log_flush — close the transcript pipe and WAIT for tee to drain it.
+# Call it as the LAST statement of the EXIT handler, after everything the user
+# must see has been printed: it closes stdout/stderr, so nothing printed after
+# it survives. A no-op when mf_log_init never redirected (no transcript).
+mf_log_flush() {
+    # EVERY duplicate of the tee's input end must be closed or tee never sees
+    # EOF and the wait below HANGS forever. MF_DRY_FD (mf_dry_note's saved
+    # stdout) is exactly such a duplicate — closing only stdout/stderr would
+    # deadlock every dry-run at the last line.
+    if [[ -n "${MF_DRY_FD:-}" ]]; then
+        exec {MF_DRY_FD}>&- || true
+        MF_DRY_FD=""
+    fi
+    [[ -z "${MF_TEE_PID:-}" ]] && return 0
+    exec >&- 2>&- || true
+    wait "$MF_TEE_PID" 2>/dev/null || true
+    MF_TEE_PID=""
+    return 0
 }
 
 # Run a command, echoing a timestamped marker around it. Output already tees to
@@ -275,12 +304,34 @@ mf_systemctl_confirm() {
 # What this does NOT claim: completeness. It claims that a miss fails loudly
 # rather than mutating. Do not "improve" it by running dry-run as root.
 # --------------------------------------------------------------------------
-MF_DRY_RUN="${MF_DRY_RUN:-false}"
-MF_DRY_RUN_COUNT=0
+# NOT seeded from the environment. `MF_DRY_RUN="${MF_DRY_RUN:-false}"` looked
+# harmless and was the most dangerous line in this file: five other scripts
+# source it (install.sh, dev_setup.sh, configure_gateway.sh,
+# fix_packaging_conflict.sh, healthcheck.sh) and none of them has a --dry-run
+# flag, so an exported MF_DRY_RUN=true silently turned every pip install,
+# import verification and config write in a REAL root install into a printed
+# "would:" that returned 0 — green checkmarks over an install that wrote
+# nothing. Dry-run is an EXPLICIT opt-in through mf_dry_run_enable, which is
+# reached only from install_noc.sh's --dry-run flag.
+if [[ "${MF_DRY_RUN:-}" == "true" ]]; then
+    echo "WARN: MF_DRY_RUN=true in the environment is IGNORED — it is not an" >&2
+    echo "      opt-in. Use: bash scripts/install_noc.sh --dry-run" >&2
+fi
+MF_DRY_RUN=false
 
+# mf_dry_note prints to a SAVED fd, not to the current stdout. Call sites that
+# redirect (`systemctl enable --now unattended-upgrades >/dev/null 2>&1`,
+# `apt-get install ... >/dev/null 2>&1`) would otherwise have their shadow's
+# note swallowed by the call site's own /dev/null while the shadow returned 0
+# and a green checkmark printed underneath — a preview that silently omitted
+# the operations it exists to show. MF_DRY_FD is opened in mf_dry_run_enable,
+# AFTER mf_log_init's tee redirect, so notes still reach the transcript.
 mf_dry_note() {
-    MF_DRY_RUN_COUNT=$((MF_DRY_RUN_COUNT + 1))
-    printf '  [dry-run] would: %s\n' "$*"
+    if [[ -n "${MF_DRY_FD:-}" ]]; then
+        printf '  [dry-run] would: %s\n' "$*" >&"$MF_DRY_FD"
+    else
+        printf '  [dry-run] would: %s\n' "$*"
+    fi
 }
 
 # Echo the first SUBCOMMAND in an argv, skipping leading option flags (and the
@@ -318,7 +369,25 @@ _mf_is_read() {
             case "$*" in *--print-architecture*|-l*|*--list*|-s*|*--status*) return 0 ;; esac ;;
         sed)   [[ "$*" != *-i* ]] && return 0 ;;
         git)
-            case "$(_mf_subcmd "$@")" in rev-parse|status|log|show|diff|config|describe|ls-remote|remote) return 0 ;; esac ;;
+            case "$(_mf_subcmd "$@")" in
+                rev-parse|status|log|show|diff|describe|ls-remote|remote) return 0 ;;
+                # `git config` is a MUTATOR by default — the whole subcommand
+                # was classified as a read, so mf_git_sync's
+                # `git config --global --add safe.directory "$dir"` executed
+                # for REAL on every dry-run and appended a dead sandbox path to
+                # the operator's ~/.gitconfig (35 of them accumulated on this
+                # box; --add never dedups). Only the explicit query forms read.
+                config)
+                    case " $* " in
+                        *\ --get\ *|*\ --get-all\ *|*\ --get-regexp\ *|*\ --list\ *|*\ -l\ *) return 0 ;;
+                    esac
+                    return 1 ;;
+            esac ;;
+        udevadm)
+            # `udevadm info`/`monitor` read; control/trigger/settle mutate the
+            # kernel's udev state and FAIL (rc=1, "Permission denied") for an
+            # unprivileged dry-run, aborting it under set -e.
+            case "$(_mf_subcmd "$@")" in info|monitor|test-builtin) return 0 ;; esac ;;
         pip|pip3)
             case "$(_mf_subcmd "$@")" in show|list|freeze) return 0 ;; esac
             case "$*" in *--version*) return 0 ;; esac ;;
@@ -332,6 +401,10 @@ _mf_is_read() {
 
 mf_dry_run_enable() {
     MF_DRY_RUN=true
+    # Save the CURRENT stdout so mf_dry_note can print past a call site's own
+    # redirect (see mf_dry_note). Opened here, after mf_log_init's tee, so the
+    # notes still land in the transcript.
+    exec {MF_DRY_FD}>&1
     local tool
     # ALWAYS-mutating tools: no read form worth passing through.
     for tool in mkdir cp mv rm ln chmod chown install tee useradd usermod \
@@ -339,7 +412,7 @@ mf_dry_run_enable() {
         eval "${tool}() { mf_dry_note \"${tool} \$*\"; return 0; }"
     done
     # MIXED tools: reads pass through, writes are previewed.
-    for tool in systemctl apt-get apt dpkg sed git pip pip3 curl wget; do
+    for tool in systemctl apt-get apt dpkg sed git udevadm pip pip3 curl wget; do
         eval "${tool}() {
             if _mf_is_read ${tool} \"\$@\"; then command ${tool} \"\$@\"; return \$?; fi
             mf_dry_note \"${tool} \$*\"; return 0
@@ -356,8 +429,16 @@ mf_dry_run_enable() {
 
 mf_dry_run_summary() {
     [[ "$MF_DRY_RUN" == "true" ]] || return 0
-    printf '\n  ══ DRY RUN COMPLETE — %d operation(s) previewed, 0 performed ══\n' \
-        "$MF_DRY_RUN_COUNT"
+    # NO count. There used to be one ("N operation(s) previewed") and it could
+    # not be right: mf_dry_note runs in a SUBSHELL at every pipeline call site
+    # (`printf ... | mf_write_stdin`, `curl ... | gpg ... | mf_write_stdin`), so
+    # those increments never reached this shell and the number silently
+    # under-reported the transcript printed directly above it. A tally that can
+    # disagree with the evidence beside it is worse than no tally — the reader
+    # counts the `[dry-run] would:` lines, which are the actual record.
+    printf '\n  ══ DRY RUN COMPLETE — 0 performed ══\n'
+    printf '  Every operation this preview covered is listed above, one per\n'
+    printf '  "[dry-run] would:" line.\n'
     printf '  This preview covers shadowed commands. Shell REDIRECTIONS and\n'
     printf '  heredocs (cat > file) cannot be shadowed in bash; running\n'
     printf '  unprivileged is what stops those, so a system path they touch\n'

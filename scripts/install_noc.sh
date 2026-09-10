@@ -36,6 +36,10 @@ NC='\033[0m'
 INSTALL_MESHTASTICD=true
 INSTALL_RNS=true
 INSTALL_DIR="/opt/meshforge"
+# The REAL install path, kept even when --dry-run redirects INSTALL_DIR into a
+# sandbox: "is MeshForge already installed on this box?" must be answered about
+# the box, not about the sandbox we just created (which would always say yes).
+REAL_INSTALL_DIR="$INSTALL_DIR"
 VENV_DIR="$INSTALL_DIR/venv"
 MESHTASTICD_CONFIG_DIR="/etc/meshtasticd"
 FORCE_NATIVE=false
@@ -76,9 +80,10 @@ Options:
                        Use this on a laptop/desktop with no radio attached.
   --force-native       Force the native meshtasticd package (OBS repo)
   --force-python       Force the Python meshtastic path instead of native
-  -n, --dry-run        Preview every change WITHOUT making any. Runs
-                       unprivileged on purpose (no sudo needed), so anything
-                       the preview misses is refused by the kernel rather than
+  -n, --dry-run        Preview every change WITHOUT making any. MUST run
+                       unprivileged (do NOT prefix it with sudo — it will
+                       refuse): running unprivileged is what makes anything the
+                       preview misses get refused by the kernel rather than
                        silently applied. Read this before your first install.
   -h, --help           Show this help and exit
 
@@ -156,6 +161,32 @@ if [[ "$DRY_RUN" != "true" && $EUID -ne 0 ]]; then
    exit 1
 fi
 
+# ...and the OTHER half of that exemption, which was missing until 2026-09-09:
+# root + --dry-run must be REFUSED, not merely un-required. The exemption above
+# short-circuits on DRY_RUN, so `sudo bash scripts/install_noc.sh --dry-run` —
+# the spelling the usage text's own `Usage: sudo bash ...` line invites —
+# sailed straight through with EUID 0 and dropped the load-bearing layer:
+# every write the shadow list does not cover (heredocs, `>` redirections to
+# hardcoded /etc paths, udevadm, the APT signing key) would then MUTATE FOR
+# REAL while the trap printed "0 performed". A preview that installs an APT
+# signing key is not a preview. Refuse loudly instead.
+if [[ "$DRY_RUN" == "true" && $EUID -eq 0 ]]; then
+   echo -e "${RED}Error: --dry-run must NOT be run as root.${NC}"
+   echo ""
+   echo "  This is not a nicety. The preview works by replacing mutating"
+   echo "  commands with print-only shells — but shell REDIRECTIONS and"
+   echo "  heredocs writing into /etc are not commands, so they cannot be"
+   echo "  replaced either."
+   echo "  Running unprivileged is what stops those: the kernel refuses them,"
+   echo "  the run aborts loudly, and you learn the preview has a gap. As"
+   echo "  root, that same gap silently writes to your system while this"
+   echo "  script reports that nothing was performed."
+   echo ""
+   echo "  Run it without sudo:  bash $0 --dry-run"
+   echo "  Then install for real: sudo bash $0"
+   exit 1
+fi
+
 # Hardened install primitives (ensure_pip + checked pip/apt + import verify +
 # service confirm + the install transcript). Sourced by the script's own dir so
 # it works regardless of CWD.
@@ -176,6 +207,33 @@ if [[ "$DRY_RUN" == "true" ]]; then
     VENV_DIR="$INSTALL_DIR/venv"
     MESHTASTICD_CONFIG_DIR="$DRY_SANDBOX/etc/meshtasticd"
     command mkdir -p "$INSTALL_DIR" "$MESHTASTICD_CONFIG_DIR"
+
+    # POPULATE the sandbox from the checkout this script is running out of.
+    # Without this the sandbox tree stayed permanently EMPTY (git clone is
+    # shadowed), so every `[[ -f "$INSTALL_DIR/templates/..." ]]` and
+    # `[[ -x "$INSTALL_DIR/scripts/..." ]]` gate — eight of them — took its
+    # inline-fallback / "not found, skipping" branch, and the preview was of a
+    # program a real fresh install never runs: the template-rendered
+    # meshtasticd/map units, the rnsd + nomadnet user units, the mini-dudeai
+    # enrollment and the post-install verifier were all invisible. That is the
+    # exact contract the shadow design promises to keep (reads pass through so
+    # BRANCHING matches a real run) broken by the sandbox instead of a shadow.
+    #
+    # A SUBSET, deliberately: only the trees the installer reads. A full copy
+    # is ~75 MB onto a tmpfs /tmp, which is unreclaimable RAM on the fleet's
+    # Pis — the same cost the leaked venv used to impose.
+    # HONEST LIMIT: .git is not copied, so mf_git_sync takes its CLONE branch
+    # (shadowed) rather than the pull branch. Both are previewed; the file
+    # gates downstream are what needed the content.
+    for _d in templates requirements scripts configs; do
+        [[ -d "$MF_SCRIPT_DIR/../$_d" ]] || continue
+        command cp -a "$MF_SCRIPT_DIR/../$_d" "$INSTALL_DIR/" 2>/dev/null || true
+    done
+    for _f in requirements.txt README.md; do
+        [[ -f "$MF_SCRIPT_DIR/../$_f" ]] || continue
+        command cp -a "$MF_SCRIPT_DIR/../$_f" "$INSTALL_DIR/" 2>/dev/null || true
+    done
+    unset _d _f
     :  # the unified EXIT trap is installed below, for BOTH modes
 fi
 
@@ -186,8 +244,25 @@ fi
 # one handler.
 mf_on_exit() {
     local rc=$?
-    [[ $rc -eq 0 ]] && { mf_dry_run_summary; return 0; }
-    if [[ "$DRY_RUN" == "true" ]]; then
+    if [[ $rc -eq 0 ]]; then
+        # "DRY RUN COMPLETE" is a claim about COVERAGE, so it may only be made
+        # when the script actually reached its end. Every `exit 0` used to
+        # print it — the ownership prompt's `q`, the SPI reboot gate — so a
+        # preview that stopped inside phase 1 announced itself as a complete
+        # preview of an 8-phase install. MF_REACHED_END is set by the last
+        # statement of the script and nowhere else.
+        if [[ "$DRY_RUN" == "true" && -z "${MF_REACHED_END:-}" ]]; then
+            echo ""
+            echo "  ══ DRY RUN ENDED EARLY (exit 0) ══"
+            echo "  The script exited cleanly BEFORE the end of the install path,"
+            echo "  at: [${MF_PHASE_NUM:-?}] ${MF_PHASE:-startup}"
+            echo "  Everything above was previewed only; NOTHING was changed."
+            echo "  This preview does NOT cover the steps after that point."
+            echo ""
+        else
+            mf_dry_run_summary
+        fi
+    elif [[ "$DRY_RUN" == "true" ]]; then
         echo ""
         echo "  ══ DRY RUN ABORTED (exit $rc) ══"
         echo "  This is a FINDING, not a fault on your machine: the run reached a"
@@ -199,6 +274,19 @@ mf_on_exit() {
     else
         mf_install_failed_report "$rc"
     fi
+    # Remove the preview sandbox. `rm` is SHADOWED under dry-run (it would
+    # print "would: rm -rf ..." and leave the tree), so this must use the real
+    # binary. Before this, every dry-run left a ~19 MB venv under /tmp — on the
+    # fleet's tmpfs /tmp that is unreclaimable RAM, once per preview and once
+    # per test-suite run (37 of them, 636 MB, were found on this box).
+    if [[ -n "${DRY_SANDBOX:-}" && -d "${DRY_SANDBOX:-}" \
+          && "$(basename "$DRY_SANDBOX")" == meshforge-dryrun-* ]]; then
+        command rm -rf "$DRY_SANDBOX" 2>/dev/null || true
+    fi
+    # LAST: close the transcript pipe and wait for tee to drain, so everything
+    # printed above is flushed before this process goes away. Nothing may print
+    # after this line.
+    mf_log_flush
 }
 trap mf_on_exit EXIT
 
@@ -252,6 +340,17 @@ ask_radio_type() {
     # Ask user what radio they have, showing detected hardware as hints
     # Returns (stdout): "spi", "usb", or "none"
     # All display output goes to stderr so it doesn't pollute the return value
+
+    # DRY-RUN must never reach here — the caller answers from hardware
+    # detection instead, because an interactive preview must not stop on a
+    # whiptail menu or a blocking `read`. Guarded HERE as well as at the call
+    # site: a future second caller would otherwise reintroduce the block
+    # silently, and a preview that hangs looks like a hung machine.
+    if [[ "${DRY_RUN:-false}" == "true" ]]; then
+        echo "  BUG: ask_radio_type reached under --dry-run; not prompting." >&2
+        echo "none"
+        return 0
+    fi
 
     detect_hardware_hints
 
@@ -521,8 +620,20 @@ add_meshtastic_repo() {
     printf 'deb %s /\n' "${repo_url}" \
         | mf_write_stdin /etc/apt/sources.list.d/meshtastic.list
 
-    # Add GPG key
-    curl -fsSL "$key_url" | gpg --dearmor > /etc/apt/trusted.gpg.d/meshtastic.gpg 2>/dev/null
+    # Add GPG key. The redirect MUST go through mf_write_stdin. A bare
+    # `gpg --dearmor > /etc/apt/trusted.gpg.d/meshtastic.gpg` is a redirection,
+    # not a command, so the dry-run cannot shadow it — and because this whole
+    # function is invoked as an `if` CONDITION (set -e is off for its body) the
+    # unprivileged EACCES was swallowed: the preview printed a bare
+    # "Permission denied", then went on to report the repo added and walk the
+    # package-install branch. Route it, and fail the function loudly if the key
+    # cannot be written.
+    if ! curl -fsSL "$key_url" \
+        | gpg --dearmor \
+        | mf_write_stdin /etc/apt/trusted.gpg.d/meshtastic.gpg; then
+        echo -e "  ${YELLOW}Warning: could not install the Meshtastic signing key${NC}"
+        return 1
+    fi
 
     # Update apt cache
     if ! apt-get update -qq 2>/dev/null; then
@@ -551,7 +662,7 @@ if command -v rnsd &> /dev/null; then
     echo -e "  ${YELLOW}⚡ Reticulum (RNS) already installed${NC}"
 fi
 
-if [[ -d "$INSTALL_DIR" ]]; then
+if [[ -d "$REAL_INSTALL_DIR" ]]; then
     MESHFORGE_EXISTS=true
     echo -e "  ${YELLOW}⚡ MeshForge already installed${NC}"
 fi
@@ -581,7 +692,18 @@ if $MESHTASTICD_EXISTS && $INSTALL_MESHTASTICD; then
     echo -e "  ${BOLD}q)${NC} Quit installer"
     echo ""
 
-    if mf_have_tty; then
+    # DRY-RUN NEVER PROMPTS. An interactive question is not a preview: an
+    # operator running `bash scripts/install_noc.sh --dry-run` from a terminal
+    # on any box that already has meshtasticd (every fleet box) used to BLOCK
+    # here, and answering `q` exited 0 — which then printed "DRY RUN COMPLETE"
+    # for a preview that had covered phase 1 only. Default to the recommended
+    # mode and SAY which branch the preview is therefore walking; the reader
+    # can re-run with --skip-meshtasticd to preview the other one.
+    if [[ "$DRY_RUN" == "true" ]]; then
+        echo -e "  ${CYAN}[dry-run]${NC} a real run would ASK here; previewing the default,"
+        echo -e "  ${CYAN}[dry-run]${NC} mode 1 (take ownership of meshtasticd)."
+        echo -e "  ${CYAN}[dry-run]${NC} To preview modes 2/3 instead: re-run with --skip-meshtasticd"
+    elif mf_have_tty; then
         read -p "  Select mode [1/2/3/q] (default: 1): " -n 1 -r mode_choice < /dev/tty
         echo ""
         case $mode_choice in
@@ -746,8 +868,16 @@ SUBSYSTEM=="tty", ATTRS{idVendor}=="303a", ATTRS{idProduct}=="1001", MODE="0666"
 SUBSYSTEM=="spidev", MODE="0666", GROUP="spi"
 UDEV_RULES
 
-        udevadm control --reload-rules
-        udevadm trigger
+        # Guarded like the ALSA sibling above. Two reasons, one shape: an
+        # unprivileged dry-run gets "Permission denied" rc=1 from both (this
+        # block sits in an `if` BODY, so set -e killed the whole preview in
+        # phase 4 and phases 4-8 were never shown), and a real install inside a
+        # container/chroot with no udevd fails the same way. Neither is fatal:
+        # the rules file is written, it applies on the next reboot or replug.
+        # (Under --dry-run udevadm is also shadowed, so this is previewed.)
+        udevadm control --reload-rules 2>/dev/null \
+            || echo -e "  ${YELLOW}⚠ udevadm reload failed — rules apply after reboot/replug${NC}"
+        udevadm trigger 2>/dev/null || true
         sleep 1
     fi
 
@@ -761,6 +891,18 @@ UDEV_RULES
     elif $FORCE_PYTHON; then
         RADIO_TYPE="usb"
         echo -e "  ${CYAN}Radio type forced: ${BOLD}usb${NC} (--force-python)"
+    elif [[ "$DRY_RUN" == "true" ]]; then
+        # DRY-RUN NEVER PROMPTS — same rule as the phase-1 ownership question.
+        # ask_radio_type raises a whiptail menu (or a blocking `read`) and an
+        # interactive preview would stop dead on it. Take the answer the
+        # hardware already gives, name it, and name the flags that override.
+        detect_hardware_hints
+        if $HW_HAS_SPI || $HW_HAS_CH341; then RADIO_TYPE="spi"
+        elif $HW_HAS_USB; then RADIO_TYPE="usb"
+        else RADIO_TYPE="none"; fi
+        echo -e "  ${CYAN}[dry-run]${NC} a real run would ASK which radio is attached;"
+        echo -e "  ${CYAN}[dry-run]${NC} previewing the hardware-detected answer: ${BOLD}${RADIO_TYPE}${NC}"
+        echo -e "  ${CYAN}[dry-run]${NC} force the other branch with --force-native / --force-python"
     else
         RADIO_TYPE=$(ask_radio_type)
     fi
@@ -923,7 +1065,7 @@ FALLBACK_CONFIG
                             else
                                 # Add to [all] section or end of file
                                 mf_append_line "$BOOT_CONFIG" ""
-                                echo "# SPI enabled by MeshForge for LoRa HAT" >> "$BOOT_CONFIG"
+                                mf_append_line "$BOOT_CONFIG" "# SPI enabled by MeshForge for LoRa HAT"
                                 mf_append_line "$BOOT_CONFIG" "dtparam=spi=on"
                             fi
                             echo -e "  ${GREEN}✓ SPI enabled in ${BOOT_CONFIG}${NC}"
@@ -1009,7 +1151,18 @@ REBOOT_CONFIG
                             HAT_COUNT=$((${#HAT_OPTIONS[@]} / 2))
                             SELECTED_HAT=""
 
-                            if command -v whiptail &>/dev/null; then
+                            if [[ "$DRY_RUN" == "true" ]]; then
+                                # DRY-RUN NEVER PROMPTS — same rule as the
+                                # phase-1 ownership question and ask_radio_type.
+                                # A whiptail menu (or the `read` fallback below)
+                                # stops an interactive preview dead, and under
+                                # </dev/null the fallback silently selects
+                                # nothing, so the preview walked the "no HAT
+                                # selected" branch instead of the real one.
+                                SELECTED_HAT="${HAT_TAG_MAP[${HAT_OPTIONS[0]}]:-${HAT_OPTIONS[0]#f:}}"
+                                echo -e "  ${CYAN}[dry-run]${NC} a real run would ASK which of the ${HAT_COUNT} HAT config(s) is fitted;" >&2
+                                echo -e "  ${CYAN}[dry-run]${NC} previewing the first one: ${SELECTED_HAT}" >&2
+                            elif command -v whiptail &>/dev/null; then
                                 MENU_H=$((HAT_COUNT + 7))
                                 [[ $MENU_H -lt 12 ]] && MENU_H=12
                                 [[ $MENU_H -gt 22 ]] && MENU_H=22
@@ -1033,8 +1186,11 @@ REBOOT_CONFIG
                                 fi
                             fi
 
-                            # Fallback: text menu (if whiptail unavailable or failed)
-                            if [[ -z "$SELECTED_HAT" ]]; then
+                            # Fallback: text menu (if whiptail unavailable or failed).
+                            # Excluded under --dry-run: the branch above already
+                            # answered, and a blocking `read` here would stop an
+                            # interactive preview (DRY-RUN NEVER PROMPTS).
+                            if [[ -z "$SELECTED_HAT" && "$DRY_RUN" != "true" ]]; then
                                 if command -v whiptail &>/dev/null; then
                                     echo -e "  ${YELLOW}Dialog failed or cancelled — trying text menu...${NC}" >&2
                                 fi
@@ -1115,7 +1271,7 @@ SPI_CONFIG
                     if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" ]]; then
                         sed "s|@MESHTASTICD_BIN@|${MESHTASTICD_BIN}|g" \
                             "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
-                            > /etc/systemd/system/meshtasticd.service
+                            | mf_write_stdin /etc/systemd/system/meshtasticd.service
                     else
                         mf_write_stdin /etc/systemd/system/meshtasticd.service << NATIVE_SERVICE
 [Unit]
@@ -1268,7 +1424,13 @@ NATIVE_SERVICE
                             USB_COUNT=$((${#USB_OPTIONS[@]} / 2))
                             SELECTED_USB=""
 
-                            if command -v whiptail &>/dev/null; then
+                            if [[ "$DRY_RUN" == "true" ]]; then
+                                # DRY-RUN NEVER PROMPTS — twin of the SPI HAT
+                                # menu above; same reasoning, same shape.
+                                SELECTED_USB="${USB_TAG_MAP[${USB_OPTIONS[0]}]:-${USB_OPTIONS[0]#f:}}"
+                                echo -e "  ${CYAN}[dry-run]${NC} a real run would ASK which of the ${USB_COUNT} USB radio config(s) applies;" >&2
+                                echo -e "  ${CYAN}[dry-run]${NC} previewing the first one: ${SELECTED_USB}" >&2
+                            elif command -v whiptail &>/dev/null; then
                                 MENU_H=$((USB_COUNT + 7))
                                 [[ $MENU_H -lt 12 ]] && MENU_H=12
                                 [[ $MENU_H -gt 22 ]] && MENU_H=22
@@ -1291,8 +1453,10 @@ NATIVE_SERVICE
                                 fi
                             fi
 
-                            # Fallback: text menu (if whiptail unavailable or failed)
-                            if [[ -z "$SELECTED_USB" ]]; then
+                            # Fallback: text menu (if whiptail unavailable or
+                            # failed). Excluded under --dry-run: DRY-RUN NEVER
+                            # PROMPTS, and the branch above already answered.
+                            if [[ -z "$SELECTED_USB" && "$DRY_RUN" != "true" ]]; then
                                 if command -v whiptail &>/dev/null; then
                                     echo -e "  ${YELLOW}Dialog failed or cancelled — trying text menu...${NC}" >&2
                                 fi
@@ -1329,7 +1493,7 @@ NATIVE_SERVICE
                 if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" ]]; then
                     sed "s|@MESHTASTICD_BIN@|${MESHTASTICD_BIN}|g" \
                         "$INSTALL_DIR/templates/systemd/meshtasticd-native.service" \
-                        > /etc/systemd/system/meshtasticd.service
+                        | mf_write_stdin /etc/systemd/system/meshtasticd.service
                 else
                     mf_write_stdin /etc/systemd/system/meshtasticd.service << NATIVE_USB_SERVICE
 [Unit]
@@ -1613,8 +1777,17 @@ RNSD_SERVICE
     # (configdir root:${RNSD_USER} 1775, logfile + storage operator-owned) and the
     # app data-roots, applied via the SSOT — the SAME path the converge/repair flow
     # uses. The installer no longer leans on the TUI _fix_rnsd_user step for this.
-    python3 "$INSTALL_DIR/scripts/fleet_foundation.py" apply --user "$RNSD_USER" 2>/dev/null \
-        || echo -e "  ${YELLOW}⚠ foundation apply skipped — run: sudo python3 scripts/fleet_foundation.py apply${NC}"
+    # DRY-RUN gate: this is a CHILD PROCESS, and the shadow list lives in this
+    # shell's function table — a child python3 does not inherit it. `apply`
+    # chowns/chmods the real RNS tree. Since 2026-09-09 the sandbox is
+    # populated from the checkout, so this line is now REACHABLE under
+    # --dry-run; before that the file did not exist and it silently no-opped.
+    if [[ "$DRY_RUN" == "true" ]]; then
+        mf_dry_note "python3 scripts/fleet_foundation.py apply --user $RNSD_USER"
+    else
+        python3 "$INSTALL_DIR/scripts/fleet_foundation.py" apply --user "$RNSD_USER" 2>/dev/null \
+            || echo -e "  ${YELLOW}⚠ foundation apply skipped — run: sudo python3 scripts/fleet_foundation.py apply${NC}"
+    fi
 
     systemctl daemon-reload
     systemctl enable rnsd 2>/dev/null || true
@@ -1648,7 +1821,18 @@ cd "$INSTALL_DIR"
 mf_phase "6/8" "Installing Python dependencies..."
 # Use virtual environment
 if [[ ! -d "$VENV_DIR" ]]; then
-    python3 -m venv "$VENV_DIR" --system-site-packages
+    # `python3 -m venv` is not in the shadow list (shadowing `python3` itself
+    # would break every read the script makes through it), so every dry-run
+    # BUILT a real ~19 MB venv inside the mktemp sandbox — on the fleet's
+    # tmpfs /tmp that is unreclaimable RAM, once per preview and once per
+    # test-suite run. Route it through a note instead. Second reason: on a box
+    # without python3-venv, phase 2's apt install was only PREVIEWED, so the
+    # real `venv` call failed and the dry-run aborted at [6/8] blaming the box.
+    if [[ "$DRY_RUN" == "true" ]]; then
+        mf_dry_note "python3 -m venv $VENV_DIR --system-site-packages"
+    else
+        python3 -m venv "$VENV_DIR" --system-site-packages
+    fi
 fi
 
 VENV_PY="$VENV_DIR/bin/python"
@@ -1864,7 +2048,7 @@ MESHFORGE_MAP_USER="$(resolve_operator_user)"
 if [[ -f "$INSTALL_DIR/scripts/meshforge-map.service" ]]; then
     sed "s/__MESHFORGE_USER__/${MESHFORGE_MAP_USER}/g" \
         "$INSTALL_DIR/scripts/meshforge-map.service" \
-        > /etc/systemd/system/meshforge-map.service
+        | mf_write_stdin /etc/systemd/system/meshforge-map.service
     echo -e "  ${GREEN}✓ meshforge-map.service installed (User=${MESHFORGE_MAP_USER})${NC}"
 else
     # Inline service definition (fallback) — heredoc unquoted so $MESHFORGE_MAP_USER expands
@@ -2098,7 +2282,16 @@ echo -e "${CYAN}╚════════════════════�
 echo ""
 
 VERIFY_SCRIPT="$INSTALL_DIR/scripts/verify_post_install.sh"
-if [[ -x "$VERIFY_SCRIPT" ]]; then
+if [[ "$DRY_RUN" == "true" ]]; then
+    # A preview installed NOTHING, so running the post-install verifier here
+    # would grade a system this run never touched and print its verdict —
+    # "Installation has warnings" — as if it were about the install being
+    # previewed. A check that is right about the wrong quantity is worse than
+    # no check. (It is also a child process, outside the shadow list.)
+    echo -e "  ${CYAN}[dry-run]${NC} a real run verifies the install here:"
+    echo -e "  ${CYAN}[dry-run]${NC}   bash $VERIFY_SCRIPT"
+    echo -e "  ${CYAN}[dry-run]${NC} not run — nothing was installed to verify."
+elif [[ -x "$VERIFY_SCRIPT" ]]; then
     if bash "$VERIFY_SCRIPT"; then
         echo ""
         echo -e "${GREEN}✓ Installation verified successfully${NC}"
@@ -2188,3 +2381,10 @@ echo ""
 # NOTE: no explicit mf_dry_run_summary call here. The unified EXIT trap
 # (mf_on_exit) prints it on a clean exit. Calling it here TOO printed the
 # summary twice — caught by the drill on 2026-09-09, not by reading.
+#
+# This flag is the trap's ONLY evidence that the script reached its end, and it
+# is why "DRY RUN COMPLETE" is a claim about coverage rather than about exit
+# status. Set it here and nowhere else: any earlier `exit 0` (the ownership
+# prompt's `q`, the SPI reboot gate) must NOT be able to claim a complete
+# preview.
+MF_REACHED_END=1
