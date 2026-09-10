@@ -840,6 +840,23 @@ class DeliveryCounters:
                     "SELECT content_id, recipient, state, COUNT(*) "
                     "FROM events GROUP BY content_id, recipient, state"
                 ).fetchall()
+                # 2026-09-10: TERMINAL events across the WHOLE ring, not just
+                # the newest `recent_limit` slots. `recent` is a general-purpose
+                # FIFO, so on a gateway whose traffic is mostly a protocol that
+                # can never confirm, the confirmable events a judgement needs
+                # get evicted by ones it must ignore. Measured on moc3: 200
+                # slots spanning 17.7 h held 196 meshtastic queued/sent and 4
+                # rns confirmed, against a probe needing 20 — so
+                # `delivery_confirmation_stall` could not judge, and a TOTAL
+                # confirmation collapse would have read the same. The same ring
+                # held 49 rns terminals over 25.9 h. Bounded by the same limit.
+                terminal_rows = conn.execute(
+                    "SELECT ts, id, state, protocol, drop_reason "
+                    "FROM events WHERE state IN (?, ?) "
+                    "ORDER BY rowid DESC LIMIT ?",
+                    (DeliveryState.CONFIRMED.value, DeliveryState.DROPPED.value,
+                     max(0, recent_limit)),
+                ).fetchall()
                 ring_capacity = self._ring_cap
         except sqlite3.Error as e:
             logger.warning(
@@ -849,6 +866,7 @@ class DeliveryCounters:
             rows = []
             events_rows = []
             agg_rows = []
+            terminal_rows = []
             ring_capacity = self._ring_cap
             # G3 (2026-07-18, honest_failure_modes #2): a DB that became
             # unreadable AFTER startup must not serve a healthy-looking
@@ -930,6 +948,16 @@ class DeliveryCounters:
                 d["note"] = note
             recent.append(d)
 
+        # Newest-LAST, same contract as `recent`. Compact by design: a consumer
+        # judging confirmation rates needs state/protocol/drop_reason, not the
+        # identity columns.
+        recent_terminal: List[Dict[str, Any]] = [
+            {"ts": ts, "id": msg_id, "state": state,
+             "protocol": protocol, "drop_reason": drop_reason}
+            for (ts, msg_id, state, protocol, drop_reason)
+            in reversed(terminal_rows)
+        ]
+
         # Health block (Issue #63 / reliability backlog #2; #74
         # cross-process write-error truth). The cross-process truth is
         # what's persisted in the DB (`db_preflight_*` and
@@ -991,6 +1019,7 @@ class DeliveryCounters:
             "unconfirmable_sent": confirmation["unconfirmable_sent"],
             "content_id_view": content_id_view,
             "recent": recent,
+            "recent_terminal": recent_terminal,
             "first_event_ts": first_event_ts,
             "last_event_ts": last_event_ts,
             "ring_capacity": ring_capacity,

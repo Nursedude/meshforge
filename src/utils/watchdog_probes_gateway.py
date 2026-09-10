@@ -730,7 +730,20 @@ def probe_delivery_confirmation_stall(
                          reason="no confirmable protocol recorded — cannot judge")
         return None
 
-    recent = payload.get("recent")
+    # Prefer the terminal-only ring (2026-09-10). `recent` is a general-purpose
+    # FIFO: on a gateway whose traffic is mostly a protocol that can never
+    # confirm, it fills with queued/sent events this probe must ignore and
+    # evicts the confirmable terminals it needs. moc3 sat permanently
+    # `indeterminate` on 4 usable events out of 200 while the same ring held 49
+    # — and a TOTAL confirmation collapse would have read identically, which is
+    # the #74 class inside the detector built to catch it. Older gateways (and
+    # older snapshot files) carry no `recent_terminal`; fall back to `recent`
+    # rather than going blind on the box that has not rolled yet.
+    recent = payload.get("recent_terminal")
+    ring_source = "recent_terminal"
+    if not isinstance(recent, list):
+        recent = payload.get("recent")
+        ring_source = "recent"
     if not isinstance(recent, list):
         note_disposition("delivery_confirmation_stall", "indeterminate",
                          reason="recent-events ring absent/misshaped")
@@ -749,8 +762,19 @@ def probe_delivery_confirmation_stall(
 
     terminal = ring_confirmed + ring_failed
     if terminal < min_terminal:
-        note_disposition("delivery_confirmation_stall", "indeterminate",
-                         reason="too few confirmable terminal events to judge")
+        # Name the ring that came up short, and say when the shortfall is the
+        # OLD one — that reads as "this box has not rolled the fix yet", not as
+        # "this leg is quiet". An unexplained absence is the thing that hid
+        # this defect for 16 h.
+        stale = "" if ring_source == "recent_terminal" else (
+            " (judged the legacy `recent` ring — this gateway predates "
+            "`recent_terminal`, so unconfirmable traffic may be evicting "
+            "the events needed here)")
+        note_disposition(
+            "delivery_confirmation_stall", "indeterminate",
+            reason=(f"too few confirmable terminal events to judge "
+                    f"({terminal} of {min_terminal} required in "
+                    f"{len(recent)} `{ring_source}` events){stale}"))
         return None
 
     ring_rate = ring_confirmed / terminal

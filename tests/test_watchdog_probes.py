@@ -5328,6 +5328,85 @@ def _delivery_payload(*, confirmed=0, failed=0, mesh_sent=0, dedup_drops=0,
     }
 
 
+def _reset():
+    from utils.watchdog_probe_core import reset_dispositions
+    reset_dispositions()
+
+
+def _starved_payload(*, ring_confirmed, ring_mesh, terminal_confirmed,
+                     terminal_failed=0, include_terminal=True):
+    """moc3's real shape (2026-09-10): a general-purpose `recent` FIFO flooded
+    by a protocol that can never confirm, beside a terminal-only ring that
+    unconfirmable traffic cannot evict."""
+    payload = _delivery_payload(confirmed=ring_confirmed, mesh_sent=ring_mesh)
+    if include_terminal:
+        payload["recent_terminal"] = (
+            [{"state": "confirmed", "protocol": "rns", "id": f"tc{i}"}
+             for i in range(terminal_confirmed)]
+            + [{"state": "dropped", "protocol": "rns",
+                "drop_reason": "rns_delivery_failed", "id": f"tf{i}"}
+               for i in range(terminal_failed)]
+        )
+    return payload
+
+
+class TestConfirmationRingStarvation:
+    """The 2026-09-10 ratified delta
+    ``persistent_active::detector_blind_any::delivery_confirmation_stall``.
+
+    moc3: 200 `recent` slots spanning 17.7 h held 196 meshtastic queued/sent
+    and 4 rns confirmed, against min_terminal=20 — permanently `indeterminate`
+    on a live gateway with 30,906 lifetime confirmations. The same DB ring held
+    49 rns terminals over 25.9 h. The detector built for #74 had #74's own
+    shape: an absence that could not be told from health.
+    """
+
+    def _probe(self, payload, **kw):
+        with patch("utils.watchdog_probes_gateway.urlopen",
+                   return_value=_http_json_mock(payload)):
+            return probe_delivery_confirmation_stall(
+                gateway_main_pid=_GW_RUNNING, **kw)
+
+    @staticmethod
+    def _disp():
+        from utils.watchdog_probe_core import collect_dispositions
+        return collect_dispositions()["delivery_confirmation_stall"]
+
+    def test_a_healthy_leg_drowned_in_unconfirmable_traffic_is_judged(self):
+        """The exact moc3 numbers: 4 usable in `recent`, 49 in the terminal
+        ring. Before the fix this was indeterminate forever."""
+        _reset()
+        payload = _starved_payload(ring_confirmed=4, ring_mesh=196,
+                                   terminal_confirmed=49)
+        assert self._probe(payload, min_terminal=20) is None
+        d = self._disp()
+        assert d["disp"] == "clean", (
+            f"still blind on a 100%-confirming leg: {d.get('reason')}")
+
+    def test_a_collapse_hidden_by_that_flood_now_fires(self):
+        """THE consequence, and the reason this was never benign: with only 4
+        usable events a TOTAL confirmation collapse read exactly like a quiet
+        leg. The terminal ring makes it visible."""
+        _reset()
+        payload = _starved_payload(ring_confirmed=0, ring_mesh=196,
+                                   terminal_confirmed=1, terminal_failed=48)
+        sig = self._probe(payload, min_terminal=20)
+        assert sig is not None, "a 2% confirmation rate still read as nothing-to-judge"
+        assert sig.severity == "wedge"
+
+    def test_an_older_gateway_falls_back_and_says_so(self):
+        """A box that has not rolled the producer must keep working, and its
+        shortfall must be legible as 'not rolled yet', never as 'quiet leg'."""
+        _reset()
+        payload = _starved_payload(ring_confirmed=4, ring_mesh=196,
+                                   terminal_confirmed=0, include_terminal=False)
+        assert self._probe(payload, min_terminal=20) is None
+        d = self._disp()
+        assert d["disp"] == "indeterminate"
+        assert "legacy `recent` ring" in d["reason"], d["reason"]
+        assert "4 of 20" in d["reason"], "the shortfall must be quantified"
+
+
 #: probe_delivery_confirmation_stall gained an organ-presence check
 #: 2026-08-05 (no gateway on this box -> inert). Every test below is about
 #: the PAYLOAD logic, so each pins the gateway as present — otherwise the
