@@ -35,6 +35,10 @@ def _make_sandbox_repo(tmp):
     (repo / "scripts").mkdir()
     (repo / "tests" / "test_trivial.py").write_text("def test_ok():\n    assert True\n")
     (repo / "scripts" / "lint.py").write_text("print('stub lint ok')\n")
+    # The marker's dirty_tree flag is the SHARED git-status predicate
+    # (2026-09-09), and running the sandbox suite creates tests/__pycache__ —
+    # ignored in the real repo, untracked here without this file.
+    (repo / ".gitignore").write_text("__pycache__/\n.pytest_cache/\n")
     shutil.copy(REAL_CLASSIFIER, repo / "scripts" / "pytest_verdict.sh")
     os.chmod(repo / "scripts" / "pytest_verdict.sh", 0o755)
     env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
@@ -112,6 +116,25 @@ class TestClassifierInfraFailureWritesNoVerdict(unittest.TestCase):
             self.assertEqual(r.returncode, 3, r.stderr)
             self.assertEqual(_verdicts(ledger), [],
                              "a classifier that could not exec minted a verdict")
+
+
+class TestDirtyTreeMintsNoVerdict(unittest.TestCase):
+    """Finding 11 (2026-09-09), second leg: the reverify marker carried no
+    dirty_tree/scope_narrowed and never ran git status, so a reverify on a
+    dirty tree passed rederive_open's refusal and minted `held` for code
+    other than HEAD. The marker now comes from the shared builder with the
+    shared tree predicate: an untracked file → no verdict, claim stays open."""
+
+    def test_untracked_file_leaves_the_claim_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo, head = _make_sandbox_repo(tmp)
+            ledger = _seed_ledger(tmp, head)
+            (repo / "tests" / "test_uncommitted.py").write_text("def test_x():\n    assert True\n")
+            r = _run(repo, ledger)
+            self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+            self.assertIn("dirty", r.stderr)
+            self.assertEqual(_verdicts(ledger), [],
+                             "a dirty tree minted a verdict about HEAD")
 
 
 class TestHealthyPathStillFlips(unittest.TestCase):

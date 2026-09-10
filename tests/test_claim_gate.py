@@ -464,3 +464,102 @@ class TestHedgePolarityAroundClaims:
     def test_bare_or_suffixed_claim_still_blocks(self, text):
         block, _ = claim_gate.evaluate(text, "c" * 40, None, 1000.0)
         assert block, text
+
+
+class TestNegationWindow:
+    """Finding 10 (2026-09-09): the look-behind saw ONE token, so an honest
+    hedge whose negation is not adjacent BLOCKED. Reproduced: 'I have not yet
+    fully verified this.' and "hasn't been fully tested yet" → BLOCK. A
+    negation within NEG_WINDOW tokens of the same sentence now negates."""
+
+    @pytest.mark.parametrize("text", [
+        "I have not yet fully verified this.",
+        "hasn't been fully tested yet",
+        "not fully verified yet",
+        "This has not been fully tested — treat as open.",
+        "I never actually fully verified the fleet leg.",
+    ])
+    def test_windowed_negation_is_a_hedge_not_a_claim(self, text):
+        assert not claim_gate.has_strong_claim(text), text
+        block, _ = claim_gate.evaluate(text, "c" * 40, None, 1000.0)
+        assert not block, text
+
+    @pytest.mark.parametrize("text", [
+        "Not sure about the fleet leg. All green.",       # sentence boundary
+        "I did not run lint but all tests pass.",         # negation 4 back, past `but`
+        "No. Everything works.",
+    ])
+    def test_negation_does_not_leak_across_a_sentence_or_the_window(self, text):
+        assert claim_gate.has_strong_claim(text), text
+        block, _ = claim_gate.evaluate(text, "c" * 40, None, 1000.0)
+        assert block, text
+
+
+class TestRefusalIsNamed:
+    """Finding 15: a marker on THIS head that fails the scope/tree rule used to
+    render 'no fresh verdict covers HEAD' beside 'Latest verdict: PASS on
+    HEAD' — a self-contradiction. The refusal must name its cause."""
+    HEAD = "d" * 40
+
+    def _m(self, **over):
+        m = {"head_full": self.HEAD, "exit_code": 0, "ran_full_suite": True,
+             "ts": 1000.0, "summary": "12/12 PASS"}
+        m.update(over)
+        return m
+
+    def test_narrowed_scope_is_named(self):
+        block, reason = claim_gate.evaluate("all green", self.HEAD,
+                                            self._m(scope_narrowed=True), 1000.0)
+        assert block and "scope_narrowed" in reason and "NOT honored" in reason
+
+    def test_dirty_tree_is_named(self):
+        block, reason = claim_gate.evaluate("all green", self.HEAD,
+                                            self._m(dirty_tree=True), 1000.0)
+        assert block and "dirty_tree" in reason
+
+    def test_quick_run_stale_and_other_head_are_named(self):
+        assert "ran_full_suite" in claim_gate.marker_refusal_reason(
+            self._m(ran_full_suite=False), self.HEAD, 1000.0)
+        assert "min old" in claim_gate.marker_refusal_reason(
+            self._m(ts=0.0), self.HEAD, 100000.0)
+        assert "not this one" in claim_gate.marker_refusal_reason(
+            self._m(head_full="e" * 40), self.HEAD, 1000.0)
+        assert claim_gate.marker_refusal_reason(self._m(), self.HEAD, 1000.0) is None
+
+
+class TestSharedResolvers:
+    """Finding 18: HEAD resolver, marker path and marker predicate come from
+    the ledger module — no third hand-typed copy in this file."""
+
+    def test_marker_path_is_the_ledger_ssot(self, monkeypatch):
+        from mini_dudeai import calibration_ledger as cl
+        monkeypatch.setenv("HONEST_VERDICT_PATH", "/tmp/x.json")
+        assert claim_gate._marker_path() == cl.verdict_marker_path() == "/tmp/x.json"
+        monkeypatch.delenv("HONEST_VERDICT_PATH")
+        monkeypatch.delenv("HOME", raising=False)
+        assert claim_gate._marker_path() == cl.verdict_marker_path()
+
+    def test_head_resolver_is_the_ledger_ssot(self, monkeypatch):
+        from mini_dudeai import calibration_ledger as cl
+        seen = {}
+
+        def fake_head(repo):
+            seen["repo"] = repo
+            return "h" * 40
+        monkeypatch.setattr(cl, "repo_head", fake_head)
+        assert claim_gate._current_head() == "h" * 40
+        assert seen["repo"] == str(claim_gate.REPO)
+
+
+class TestSwallowsLeaveAWitness:
+    """Finding 17: the two `except Exception: pass` handlers around ledger
+    recording contradicted the module's own fail-open-WITH-witness contract."""
+
+    def test_record_failure_prints_a_stderr_witness(self, monkeypatch, capsys):
+        from mini_dudeai import calibration_ledger as cl
+        def boom(*a, **k):
+            raise OSError("ledger unwritable")
+        monkeypatch.setattr(cl, "record_claim", boom)
+        claim_gate._record_verified_claim("all green", "a" * 40, {"summary": "s"}, "s", "m")
+        err = capsys.readouterr().err
+        assert "claim_gate: WARN" in err and "ledger unwritable" in err

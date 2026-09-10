@@ -24,15 +24,48 @@ MF_REPO_ROOT="$REPO"
 # shellcheck source=lib/pytest_checked.sh
 . "$REPO/scripts/lib/pytest_checked.sh"
 MEM_DIR="${HOME}/.claude/projects/-opt-meshforge/memory"
-NOTES="${HOME}/.claude/plans/gateway-session-notes-$(hostname | tr '[:upper:]' '[:lower:]').md"
+# The paths this audit READS are resolved by the Python that WRITES/READS
+# them (finding 18, 2026-09-09) — never a fourth hand-typed copy: the ledger
+# path honours CALIBRATION_LEDGER_PATH + MINI_DUDEAI_HOME (this file assumed
+# $HOME), and the handoff note is resolved exactly as warmstart lifts it
+# (this file lowercased the hostname; warmstart tries the exact case first).
+# The package is found beside THIS script, never via $REPO — the sandboxed
+# test points MESHFORGE_REPO at a repo with no src/.
+HA_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../src" 2>/dev/null && pwd)"
+ha_py() { PYTHONPATH="$HA_SRC" python3 - "$@" 2>/dev/null; }
+LEDGER="$(ha_py <<'PY'
+from mini_dudeai.calibration_ledger import ledger_path
+print(ledger_path())
+PY
+)"
+NOTES="$(ha_py "$(hostname)" <<'PY'
+import sys
+from mini_dudeai.warmstart import handoff_note_path
+print(handoff_note_path(sys.argv[1])[0])
+PY
+)"
 VERDICTS="${CRON_VERDICT_LOG:-$HOME/cron_verdicts.log}"
-DEADMAN_PEER="${MANAGER_HEARTBEAT_PEER:-moc1}"
+# The deadman PEER is operator config, not a default (finding 23): the bare
+# fleet hostname that sat here was an executable operator-specific value MF014
+# does not catch by pattern, and on any other operator's box leg 8 sshed a
+# nonexistent host forever. Resolution: env → ~/.config/meshforge/
+# manager_heartbeat_peer (one line) → empty. Empty is judged in leg 8 against
+# whether THIS box sends heartbeats at all: a sender with no known peer is
+# UNKNOWN (blind); a box that never sends is inert (absent by design).
+DEADMAN_PEER="${MANAGER_HEARTBEAT_PEER:-}"
+if [ -z "$DEADMAN_PEER" ] && [ -r "$HOME/.config/meshforge/manager_heartbeat_peer" ]; then
+    DEADMAN_PEER="$(sed 's/#.*//' "$HOME/.config/meshforge/manager_heartbeat_peer" | tr -d ' \t\r\n' | head -c 64)"
+fi
 
 pass=0; fail=0; unknown=0
 say() { printf '  %-28s %-8s %s\n' "$1" "$2" "$3"; }
 P() { say "$1" "PASS" "$2"; pass=$((pass+1)); }
 F() { say "$1" "FAIL" "$2"; fail=$((fail+1)); }
 U() { say "$1" "UNKNOWN" "$2"; unknown=$((unknown+1)); }
+# Inert: an organ absent BY DESIGN on this box. Touches no counter, like
+# honest_status's NOTE — absent-by-design must never read as an observation
+# that failed (persistent_issues, 2026-08-05).
+N() { say "$1" "NOTE" "$2"; }
 
 echo "harness_audit — $(hostname) $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
@@ -240,10 +273,11 @@ case "$_ha_rc" in
 esac
 
 # 4. calibration ledger + daily reverify freshness (<26h)
-LEDGER="$HOME/calibration_ledger.jsonl"
 # Count PARSEABLE events. `-s` + `wc -l` read 4 KB of random bytes as
 # "21 events" (§3 drill 2026-09-07); a corrupted ledger is not a healthy one.
-if [ -s "$LEDGER" ]; then
+if [ -z "$LEDGER" ]; then
+    U "calibration ledger" "ledger path unresolvable — mini_dudeai.calibration_ledger unimportable from $HA_SRC"
+elif [ -s "$LEDGER" ]; then
     _lc="$(python3 - "$LEDGER" <<'PY' 2>/dev/null || echo error
 import json, sys
 good = bad = 0
@@ -341,13 +375,26 @@ fi
 # Comment lines are skipped on both sides: a commented-out crontab entry read
 # `PASS wired` (§3 drill 2026-09-07) — a parked cron is exactly the dormant
 # spine this leg exists to catch.
-crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q "manager_heartbeat.sh" \
-    && P "heartbeat cron (local)" "wired" \
-    || F "heartbeat cron (local)" "missing from crontab (or commented out)"
-peer_line="$(timeout 25 ssh -o ConnectTimeout=8 -o BatchMode=yes "$DEADMAN_PEER" "crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -c manager_deadman.sh" 2>/dev/null)"
-if [ "${peer_line:-}" = "" ]; then U "deadman cron ($DEADMAN_PEER)" "peer unreachable"
-elif [ "$peer_line" -ge 1 ]; then P "deadman cron ($DEADMAN_PEER)" "wired"
-else F "deadman cron ($DEADMAN_PEER)" "missing from peer crontab"; fi
+if crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -q "manager_heartbeat.sh"; then
+    P "heartbeat cron (local)" "wired"; _hb_sender=1
+else
+    F "heartbeat cron (local)" "missing from crontab (or commented out)"; _hb_sender=0
+fi
+if [ -z "$DEADMAN_PEER" ]; then
+    # No peer known. A box that SENDS heartbeats has a peer by definition, so
+    # not knowing which is blindness (UNKNOWN); a box that never sends has no
+    # deadman spine to audit — inert, not a failed observation.
+    if [ "$_hb_sender" = 1 ]; then
+        U "deadman cron" "heartbeat cron is wired here but no peer is configured — set MANAGER_HEARTBEAT_PEER or ~/.config/meshforge/manager_heartbeat_peer"
+    else
+        N "deadman cron" "no heartbeat sender and no peer configured — not a manager box; inert"
+    fi
+else
+    peer_line="$(timeout 25 ssh -o ConnectTimeout=8 -o BatchMode=yes "$DEADMAN_PEER" "crontab -l 2>/dev/null | grep -v '^[[:space:]]*#' | grep -c manager_deadman.sh" 2>/dev/null)"
+    if [ "${peer_line:-}" = "" ]; then U "deadman cron ($DEADMAN_PEER)" "peer unreachable"
+    elif [ "$peer_line" -ge 1 ]; then P "deadman cron ($DEADMAN_PEER)" "wired"
+    else F "deadman cron ($DEADMAN_PEER)" "missing from peer crontab"; fi
+fi
 
 # 9. session-notes size (rotation convention: archive when large)
 #
@@ -372,7 +419,9 @@ else F "deadman cron ($DEADMAN_PEER)" "missing from peer crontab"; fi
 # The cap is READ from warmstart.py, never restated here: two consumers of
 # one constant must share it or they drift (honest_failure_modes #5, the
 # 24,000-vs-24,576 precedent).
-if [ -r "$NOTES" ]; then
+if [ -z "$NOTES" ]; then
+    U "session notes" "note path unresolvable — mini_dudeai.warmstart unimportable from $HA_SRC"
+elif [ -r "$NOTES" ]; then
     nsz="$(wc -c < "$NOTES")"
     cap="$(grep -oE '^HANDOFF_MAX_CHARS = [0-9]+' \
              "$REPO/src/mini_dudeai/warmstart.py" 2>/dev/null \
@@ -403,7 +452,7 @@ if [ -r "$NOTES" ]; then
     if [ "$nsz" -gt 81920 ]; then F "session notes" "${nsz}B >80KB — rotate to archive; $legible"
     else P "session notes" "${nsz}B; $legible"; fi
 else
-    U "session notes" "absent"
+    U "session notes" "absent at $NOTES"
 fi
 
 echo

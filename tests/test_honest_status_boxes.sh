@@ -63,9 +63,30 @@ case "$box" in
     esac ;;
   box-good)
     case "$cmd" in
-      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      # The SHA leg asks per REPO: the twin leg's command names the sister
+      # repo, and this box answers with THAT repo's head (finding 13 test).
+      *rev-parse*) echo "HSUP"
+                   if [ -n "${FAKE_TWIN_REPO:-}" ] && [[ "$cmd" == *"$FAKE_TWIN_REPO"* ]]; then echo "$FAKE_TWIN_HEAD"; else echo "$FAKE_HEAD"; fi ;;
       *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
                echo "{\"ts\": $(date +%s), \"signals\": []}" ;;
+    esac ;;
+  box-degraded)                                # ONE live degraded signal, nothing held
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
+               echo "{\"ts\": $(date +%s), \"signals\": [{\"class\": \"service_inactive\", \"severity\": \"degraded\", \"extra\": {}}]}" ;;
+    esac ;;
+  box-noisyclock)                              # a .bashrc echo pollutes the `date +%s` line; snapshot is DAYS old
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      *WDSEP*) echo "welcome to the box"; echo "active"; echo "loaded"; echo "---WDSEP---"
+               echo "{\"ts\": $(( $(date +%s) - 200000 )), \"signals\": []}" ;;
+    esac ;;
+  box-future)                                  # snapshot stamped a day in the box's OWN future
+    case "$cmd" in
+      *rev-parse*) echo "HSUP"; echo "$FAKE_HEAD" ;;
+      *WDSEP*) echo "$(date +%s)"; echo "active"; echo "loaded"; echo "---WDSEP---"
+               echo "{\"ts\": $(( $(date +%s) + 86400 )), \"signals\": []}" ;;
     esac ;;
   box-mute)                                    # watchdog ACTIVE but no state
     case "$cmd" in
@@ -105,9 +126,14 @@ chmod +x "$SB"/*
 FAKE_HOME="$TMP/home"; mkdir -p "$FAKE_HOME/.config/meshforge"
 
 run() {  # env: HONEST_BOXES / MESHFORGE_FLEET_HOSTS as needed
+  # The twin repo is pinned to a nonexistent path unless a case sets it — the
+  # box running this suite may carry a real /opt/meshanchor, and ambient
+  # state must not reach a verdict (feedback_tests_must_pin_ambient_state).
   PATH="$SB:$PATH" HOME="$FAKE_HOME" XDG_STATE_HOME="" \
     MESHFORGE_REPO="$FAKE_REPO" FAKE_HEAD="$FAKE_HEAD" \
     FAKE_CURL_JSON="${FAKE_CURL_JSON:-}" HONEST_WD_PATH="${HONEST_WD_PATH:-}" \
+    HONEST_TWIN_REPO="${HONEST_TWIN_REPO:-$TMP/no-twin}" \
+    FAKE_TWIN_REPO="${FAKE_TWIN_REPO:-}" FAKE_TWIN_HEAD="${FAKE_TWIN_HEAD:-}" \
     bash "$SCRIPT" --quick "$@" 2>&1
 }
 
@@ -116,7 +142,13 @@ run() {  # env: HONEST_BOXES / MESHFORGE_FLEET_HOSTS as needed
 # matters: with a repo-less fake repo self fell out through the "no-repo" path,
 # which HID the fact that self is compared against itself (2026-07-28).
 git -C "$FAKE_REPO" init -q 2>/dev/null
-git -C "$FAKE_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
+# The fixture files are COMMITTED (2026-09-09): the marker's dirty_tree flag
+# now comes from the shared git-status predicate, and an empty commit beside
+# untracked fixtures would read every run as dirty — the plant below could
+# then never distinguish clean from dirty.
+printf '__pycache__/\n.pytest_cache/\n' > "$FAKE_REPO/.gitignore"
+git -C "$FAKE_REPO" add -A 2>/dev/null
+git -C "$FAKE_REPO" -c user.email=t@t -c user.name=t commit -q -m init 2>/dev/null
 FAKE_HEAD="$(git -C "$FAKE_REPO" rev-parse HEAD 2>/dev/null)"; export FAKE_HEAD
 
 check() { if [ -n "$2" ]; then echo "PASS: $1"; else echo "FAIL: $1"; fails=1; fi; }
@@ -337,10 +369,99 @@ check "held-only box produces NO degraded WARN line" \
   "$(echo "$out" | grep -q 'watchdog (degraded)' || echo ok)"
 printf 'box-mixhold\n' > "$hosts"
 out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" run)"
-check "mixed box: only the LIVE signal counts as degraded (1, not 2)" \
-  "$(echo "$out" | grep 'watchdog (degraded)' | grep -q '1 degraded, 0 wedge' && echo ok)"
+# Finding 12 (2026-09-09): the held-blind signal is UNKNOWN and UNKNOWN
+# outranks WARN — a live degraded signal beside it must not demote the leg
+# to WARN/exit 0. The live signal is still counted and named (1, not 2).
+check "mixed box: held-blind keeps the leg UNKNOWN; the live signal is counted beside it (1, not 2)" \
+  "$(echo "$out" | grep 'watchdog signals' | grep 'UNKNOWN' | grep -q 'beside 1 live degraded' && echo ok)"
+check "mixed box: no WARN line — a fault must never make the gate greener" \
+  "$(echo "$out" | grep -q 'watchdog (degraded)' || echo ok)"
 check "mixed box: the held signal stays visible in the class list" \
   "$(echo "$out" | grep -q 'held-blind' && echo ok)"
+
+# ── finding 12: held-blind on ONE box + live degraded on ANOTHER ───────
+# The exact shape: alone, box-heldonly read UNKNOWN; add box-degraded and the
+# old ordering read WARN (exit 0 non-strict). Adding a fault made it greener.
+printf 'box-heldonly\nbox-degraded\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" run)"
+check "held-blind box + degraded box → UNKNOWN, not WARN" \
+  "$(echo "$out" | grep 'watchdog signals' | grep -q 'UNKNOWN' && echo ok)"
+check "and no degraded WARN line masks it" \
+  "$(echo "$out" | grep -q 'watchdog (degraded)' || echo ok)"
+printf 'box-degraded\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" run)"
+check "control: a degraded box ALONE still reads WARN" \
+  "$(echo "$out" | grep 'watchdog (degraded)' | grep -q '1 degraded, 0 wedge' && echo ok)"
+
+# ── finding 14a: a polluted remote clock is UNKNOWN, never a fresh age ──
+# `awk "BEGIN{… $rnow - $ts}"` yielded EMPTY on a non-numeric rnow and the
+# empty age SKIPPED the stale gate, so a days-old snapshot counted clean.
+printf 'box-noisyclock\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" HONEST_WD_STALE_S=300 run)"
+check "non-numeric remote clock → UNKNOWN naming the clock, not clean" \
+  "$(echo "$out" | grep 'watchdog signals' | grep 'UNKNOWN' | grep -q 'box-noisyclock:clock-unreadable' && echo ok)"
+check "and the days-old snapshot is NOT counted clean" \
+  "$(echo "$out" | grep 'watchdog signals' | grep -q '2/2 clean' && echo '' || echo ok)"
+printf 'box-future\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_WD_PATH="$WD_FIX" HONEST_WD_STALE_S=300 run)"
+check "snapshot stamped in the box's own future → UNKNOWN naming the stepped clock" \
+  "$(echo "$out" | grep 'watchdog signals' | grep 'UNKNOWN' | grep -q 'box-future:future-stamped' && echo ok)"
+
+# ── finding 13: the TWIN fleet SHA leg shares leg 2's measurement ────────
+# A dormant sister-repo box read `unreach` → UNKNOWN for the whole declared
+# window: the twin loop was a hand-copy with no posture check.
+TWIN="$TMP/twin"; mkdir -p "$TWIN"
+git -C "$TWIN" init -q 2>/dev/null
+git -C "$TWIN" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init 2>/dev/null
+TWIN_HEAD="$(git -C "$TWIN" rev-parse HEAD)"
+printf 'box-good\nbox-down\n' > "$FAKE_HOME/.config/meshforge/fleet_hosts.twin"
+POSTURE2="$TMP/posture2.json"
+"$REAL_PYTHON3" - "$POSTURE2" <<'PYEOF'
+import json, sys, time
+from datetime import datetime, timezone
+ts = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+json.dump({"boxes": {"box-down": {"state": "dormant", "since": ts(time.time()),
+                                  "until": ts(time.time() + 3600), "reason": "drill"}}},
+          open(sys.argv[1], "w"))
+PYEOF
+printf 'box-good\n' > "$hosts"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_TWIN_REPO="$TWIN" FAKE_TWIN_REPO="$TWIN" FAKE_TWIN_HEAD="$TWIN_HEAD" \
+       MESHFORGE_FLEET_POSTURE="$POSTURE2" run)"
+check "twin leg: dormant sister-repo box reads :dormant" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep -q 'box-down:dormant' && echo ok)"
+check "twin leg: dormant box is not :unreach" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep -q 'box-down:unreach' && echo '' || echo ok)"
+check "twin leg: PASSES 1/1 with the dormant box out of the denominator" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep -q 'PASS' && echo ok)"
+out="$(MESHFORGE_FLEET_HOSTS="$hosts" HONEST_TWIN_REPO="$TWIN" FAKE_TWIN_REPO="$TWIN" FAKE_TWIN_HEAD="$TWIN_HEAD" \
+       MESHFORGE_FLEET_POSTURE="$TMP/absent.json" run)"
+check "twin leg: without a declaration the down box is unreach → UNKNOWN (control)" \
+  "$(echo "$out" | grep 'twin fleet SHA' | grep 'UNKNOWN' | grep -q 'box-down:unreach' && echo ok)"
+rm -f "$FAKE_HOME/.config/meshforge/fleet_hosts.twin"
+
+# ── finding 11/18: the marker comes from the shared builder + predicate ──
+# The tree flag was computed by a bash copy here and NOT AT ALL in
+# calibration_reverify.sh; both now call calibration_ledger.tree_is_dirty.
+# The path is verdict_marker_path() — under HOME=$FAKE_HOME that is
+# $FAKE_HOME/.cache/meshforge/honest_verdict.json for writer AND readers.
+MARKER="$FAKE_HOME/.cache/meshforge/honest_verdict.json"
+rm -f "$MARKER"
+out="$(HONEST_BOXES="box-good" run)"
+mflag() { "$REAL_PYTHON3" - "$MARKER" "$1" <<'PYEOF'
+import json, sys
+try: print(json.load(open(sys.argv[1])).get(sys.argv[2]))
+except Exception as e: print("ERR", e)
+PYEOF
+}
+check "marker written at the SSOT path with instrument=honest_status" \
+  "$(test "$(mflag instrument)" = honest_status && echo ok)"
+check "clean fake repo → dirty_tree False" \
+  "$(test "$(mflag dirty_tree)" = False && echo ok)"
+: > "$FAKE_REPO/untracked_new_test.py"
+out="$(HONEST_BOXES="box-good" run)"
+check "an untracked file → dirty_tree True (the shared predicate counts untracked)" \
+  "$(test "$(mflag dirty_tree)" = True && echo ok)"
+rm -f "$FAKE_REPO/untracked_new_test.py"
 
 echo "---"
 # ── 12. declared posture (2026-09-01 DORMANT arc): a box switched OFF on

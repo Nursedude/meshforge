@@ -16,7 +16,7 @@
 # CONTROL run must read PASS on every leg asserted below, so a typo in a plant
 # cannot masquerade as a firing guard.
 set -u
-unset HOME_OVERRIDE MESHFORGE_REPO CRON_VERDICT_LOG MANAGER_HEARTBEAT_PEER
+unset HOME_OVERRIDE MESHFORGE_REPO CRON_VERDICT_LOG MANAGER_HEARTBEAT_PEER CALIBRATION_LEDGER_PATH MINI_DUDEAI_HOME SUDO_USER
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REAL_REPO="$HERE/.."
 SCRIPT="$REAL_REPO/scripts/harness_audit.sh"
@@ -197,6 +197,50 @@ cp "$TMP/verdicts.bak" "$H/cron_verdicts.log"
 printf '# 0 * * * * /x/manager_heartbeat.sh\n' > "$TMP/crontab.txt"
 out="$(run)"
 check "heartbeat cron: commented-out line → FAIL" "$(leg "$out" 'heartbeat cron \(local\)' | grep -q ' FAIL ' && echo ok)"
+printf '0 * * * * /x/manager_heartbeat.sh\n' > "$TMP/crontab.txt"
+
+# ── finding 18 (2026-09-09): paths come from the producers' SSOT ──────
+# (a) the ledger leg read $HOME/calibration_ledger.jsonl by hand while
+#     ledger_path() honours CALIBRATION_LEDGER_PATH — the audit certified a
+#     file the ledger never writes. Point the SSOT elsewhere; the leg follows.
+printf '{"kind": "claim", "ts": 1}\n' > "$TMP/elsewhere.jsonl"
+for i in 1 2 3 4 5; do printf 'not json %s\n' $i >> "$TMP/elsewhere.jsonl"; done
+out="$(CALIBRATION_LEDGER_PATH="$TMP/elsewhere.jsonl" run)"
+check "calibration ledger: reads the path ledger_path() resolves (CALIBRATION_LEDGER_PATH), not \$HOME's file" \
+  "$(leg "$out" 'calibration ledger' | grep -q ' FAIL ' && echo ok)"
+# (b) the notes leg lowercased the hostname; warmstart tries the exact case
+#     first. A note stored under the exact-case name read "absent" here while
+#     warmstart lifted it every session.
+printf '#!/bin/sh\necho SbHost\n' > "$SB/hostname"
+mv "$H/.claude/plans/gateway-session-notes-sbhost.md" "$H/.claude/plans/gateway-session-notes-SbHost.md"
+out="$(run)"
+check "session notes: exact-case note resolves the way warmstart resolves it → PASS" \
+  "$(leg "$out" 'session notes' | grep -q ' PASS ' && echo ok)"
+mv "$H/.claude/plans/gateway-session-notes-SbHost.md" "$H/.claude/plans/gateway-session-notes-sbhost.md"
+out="$(run)"
+check "session notes: lowercase note still resolves under a mixed-case hostname" \
+  "$(leg "$out" 'session notes' | grep -q ' PASS ' && echo ok)"
+printf '#!/bin/sh\necho sbhost\n' > "$SB/hostname"
+
+# ── finding 23: the deadman peer is config, never a fleet hostname ────
+run_nopeer() {
+  HOME="$H" MESHFORGE_REPO="$R" MESHANCHOR_REPO="$TMP/no-such-repo" CRON_VERDICT_LOG="$H/cron_verdicts.log" \
+    PATH="$SB:$PATH" bash "$SCRIPT" 2>&1
+}
+out="$(run_nopeer)"
+check "deadman cron: heartbeat wired + no peer configured → UNKNOWN naming the config, never a hardcoded host" \
+  "$(leg "$out" 'deadman cron' | grep ' UNKNOWN ' | grep -q 'manager_heartbeat_peer' && echo ok)"
+check "deadman cron: no hardcoded fleet host is sshed" \
+  "$(leg "$out" 'deadman cron' | grep -q 'moc' && echo '' || echo ok)"
+mkdir -p "$H/.config/meshforge"; printf 'peerbox  # the deadman box\n' > "$H/.config/meshforge/manager_heartbeat_peer"
+out="$(run_nopeer)"
+check "deadman cron: peer from ~/.config/meshforge/manager_heartbeat_peer → PASS" \
+  "$(leg "$out" 'deadman cron \(peerbox\)' | grep -q ' PASS ' && echo ok)"
+rm -f "$H/.config/meshforge/manager_heartbeat_peer"
+printf '# 0 * * * * /x/manager_heartbeat.sh\n' > "$TMP/crontab.txt"
+out="$(run_nopeer)"
+check "deadman cron: no sender and no peer → inert NOTE, not UNKNOWN" \
+  "$(leg "$out" 'deadman cron' | grep -q ' NOTE ' && echo ok)"
 printf '0 * * * * /x/manager_heartbeat.sh\n' > "$TMP/crontab.txt"
 
 # ── closing control ───────────────────────────────────────────────────
