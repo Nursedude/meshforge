@@ -517,7 +517,10 @@ def test_verdict_marker_path_under_unset_HOME_is_the_pw_home_not_tmp(monkeypatch
     monkeypatch.delenv("HOME", raising=False)
     p = cl.verdict_marker_path()
     assert not p.startswith("/tmp/")
-    assert p.endswith(os.path.join(".cache", "meshforge", "honest_verdict.json"))
+    # The subdir comes from the app SSOT so this byte-locked twin passes in
+    # both repos (".cache/meshforge" here, ".cache/meshanchor" in MeshAnchor).
+    from mini_dudeai._util import APP_VERDICT_SUBDIR
+    assert p.endswith(os.path.join(APP_VERDICT_SUBDIR, "honest_verdict.json"))
     assert p.startswith(os.path.expanduser("~"))
 
 
