@@ -55,6 +55,7 @@ from utils.user_units import enabled_user_timers, timer_wants_dirs
 from utils.watchdog_probe_core import (
     Signal,
     _journal_user_unit_has_lines,
+    _lookback_seconds as _core_lookback_seconds,
     note_disposition,
 )
 
@@ -113,23 +114,19 @@ _FAIL_PATTERN = "Failed with result"
 _OK_PATTERN = "Finished "
 
 
-_LOOKBACK_UNITS = {"s": 1.0, "m": 60.0, "h": 3600.0, "d": 86400.0}
-
-
 def _lookback_seconds(spec: str) -> float:
     """The flat ``lookback`` string in seconds — the FLOOR the cadence math
     raises from.
 
-    Deliberately tiny: this parses only the ``<int><s|m|h|d>`` form this
-    module's own constant and its callers use, and anything else falls back to
-    the module default rather than inventing a number. A wrong floor here
-    would silently resize every timer's window, so the failure mode is "the
-    documented default", never "whatever the regex happened to match".
+    ONE parser (pass-3 finding 19, 2026-09-09): the probe core owns the
+    ``<n><s|m|h|d>`` grammar every journal helper shares; this module used
+    to carry a narrower private copy. The core answers None for a shape it
+    cannot measure, and THIS caller substitutes its documented default
+    rather than inventing a number — a wrong floor here would silently
+    resize every timer's window.
     """
-    m = re.fullmatch(r"\s*(\d+)\s*([smhd])\s*", spec or "")
-    if not m:
-        return USER_TIMER_FAILING_LOOKBACK_S
-    return int(m.group(1)) * _LOOKBACK_UNITS[m.group(2)]
+    secs = _core_lookback_seconds(spec)
+    return USER_TIMER_FAILING_LOOKBACK_S if secs is None else float(secs)
 
 
 # _load_streak, _save_streak: byte-identical {"streak": n} pair(s) aliased onto the

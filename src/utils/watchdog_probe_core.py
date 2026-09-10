@@ -463,39 +463,53 @@ def deployment_declaration_path(service_user) -> Optional[str]:
     by the declaration reader and the runner's mtime-gated re-read
     (honest_failure_modes #5: two copies of a path WILL drift)."""
     import pwd
-    home = None
     if service_user:
+        # A CONFIGURED service user that does not resolve (User= names a
+        # deleted account) is an UNREADABLE declaration — not a licence to
+        # go read the operator's file and call the result "declared"
+        # (pass-3 finding 9, 2026-09-09: the fallback below used to cover
+        # this branch too, laundering a broken unit into a healthy read).
         try:
             home = pwd.getpwnam(service_user).pw_dir
         except (KeyError, OSError, TypeError):
-            home = None
-    if home is None:
-        # The service user is derived from rnsd — and a role may declare
-        # `rnsd: absent` ON PURPOSE. field-node does exactly that, so on
-        # lehua this returned None, the reader answered "unreadable", and a
-        # deployment.json sitting right there readable was reported as a
-        # declaration that could not be observed. That is the pessimistic
-        # value for a box that is simply built differently, and it made the
-        # role unresolvable to promote_seed_rules — the box's mini could
-        # never be seeded (2026-09-08).
-        #
-        # Fall back to the operator who owns the systemd --user manager, the
-        # same root-safe derivation _resolve_mini_home uses. Still never
-        # get_real_user_home(): under the sandboxed-root watchdog that says
-        # /root (the rns_version_drift lesson this function was written for).
-        try:
-            from utils.fleet_test_runner import _find_operator_user
-            op = _find_operator_user()
-        except Exception:  # noqa: BLE001 - unresolvable operator is not fatal
-            op = None
-        if op:
-            try:
-                home = pwd.getpwuid(op[0]).pw_dir
-            except (KeyError, OSError, TypeError):
-                home = None
+            return None
+    else:
+        # NO service user at all: the service user is derived from rnsd —
+        # and a role may declare `rnsd: absent` ON PURPOSE. field-node does
+        # exactly that, so on lehua this returned None, the reader answered
+        # "unreadable", and a deployment.json sitting right there readable
+        # was reported as a declaration that could not be observed. That is
+        # the pessimistic value for a box that is simply built differently,
+        # and it made the role unresolvable to promote_seed_rules — the box's
+        # mini could never be seeded (2026-09-08). Only THIS branch — the
+        # rnsd-absent-by-design shape — falls back to the operator.
+        home = _operator_home()
     if home is None:
         return None
     return os.path.join(home, ".config", "meshforge", "deployment.json")
+
+
+def _operator_home() -> Optional[str]:
+    """Home of the operator who owns the systemd --user manager, or None.
+
+    The same root-safe derivation ``_resolve_mini_home`` uses. Still never
+    ``get_real_user_home()``: under the sandboxed-root watchdog that says
+    /root (the rns_version_drift lesson ``deployment_declaration_path`` was
+    written for). ONE helper for every consumer that needs "the operator's
+    home from inside the root watchdog" (honest_failure_modes #5).
+    """
+    import pwd
+    try:
+        from utils.fleet_test_runner import _find_operator_user
+        op = _find_operator_user()
+    except Exception:  # noqa: BLE001 - unresolvable operator is not fatal
+        return None
+    if not op:
+        return None
+    try:
+        return pwd.getpwuid(op[0]).pw_dir
+    except (KeyError, OSError, TypeError):
+        return None
 
 
 def _read_deployment_declaration_status(
@@ -614,14 +628,27 @@ def _lookback_seconds(lookback: str) -> Optional[float]:
     return float(m.group(1)) * _LOOKBACK_UNITS[m.group(2)]
 
 
-def _match_line_ts(line: Optional[str]) -> Optional[float]:
-    """Epoch seconds off a ``-o short-unix`` line (its first token), or None."""
-    if not line:
-        return None
-    try:
-        return float(line.split(None, 1)[0])
-    except (ValueError, IndexError):
-        return None
+def _journal_rc_unobservable(proc) -> bool:
+    """Did this ``journalctl`` run FAIL to answer (vs. answer "nothing")?
+
+    ``rc 1`` means "no entries matched" on some systemd builds — a true
+    empty, not an error. But a MALFORMED ``--since`` or a bad ``-g`` pattern
+    ALSO exits 1 with empty stdout, saying why only on stderr (measured
+    2026-08-12 and again 2026-09-09: ``Failed to parse timestamp: -7x``,
+    ``Bad pattern "["``). A reader that checks only the code reads those as
+    an affirmative "nothing matched" — and stays clean forever, with no
+    witness, on a query that never ran. Only ``_journal_newest_match_status``
+    carried this guard until pass-3 finding 3; now ONE helper, four
+    consumers (honest_failure_modes #5).
+
+    ``getattr``, not ``proc.stderr``: an injected double that omits the
+    field must degrade to "no stderr", never raise — an AttributeError
+    here would take down the whole tick.
+    """
+    rc = getattr(proc, "returncode", None)
+    if rc not in (0, 1):
+        return True
+    return rc == 1 and bool((getattr(proc, "stderr", "") or "").strip())
 
 
 def _journal_newest_match_status(
@@ -648,7 +675,12 @@ def _journal_newest_match_status(
     always kept the distinction.
     """
     now_ts = time.time() if now is None else now
-    key = (unit, pattern, journalctl_path)
+    # The window is part of the identity (pass-3 finding 22): two callers
+    # sharing unit+pattern with DIFFERENT lookbacks would otherwise share one
+    # scan floor, and the narrower caller's "nothing new" memo would blind
+    # the wider one. Latent today (no two callers share a pattern) — pinned
+    # before it is not.
+    key = (unit, pattern, journalctl_path, lookback)
     window_s = _lookback_seconds(lookback)
     horizon = None if window_s is None else (now_ts - window_s)
 
@@ -676,18 +708,10 @@ def _journal_newest_match_status(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return ("unobservable", None)   # memo untouched — never skip unread journal
-    # rc 1 = "no entries matched" on some systemd builds; only >1 is an error.
-    if proc.returncode not in (0, 1):
-        return ("unobservable", None)
-    # ⚠️ A MALFORMED --since also exits 1 with an empty stdout ("Failed to parse
-    # timestamp: …" on stderr) — measured 2026-08-12 — which the rc check above
-    # would otherwise read as an affirmative "nothing matched". That is the
-    # error-reads-as-empty shape, and it would make this optimisation fail
-    # silently and permanently: a probe would go dark and call it clean.
-    # getattr, not proc.stderr: an injected double (or a caller passing a
-    # lightweight stand-in) that omits the field must degrade to "no stderr",
-    # never raise — an AttributeError here would take down the whole tick.
-    if proc.returncode == 1 and (getattr(proc, "stderr", "") or "").strip():
+    # rc>1, or rc 1 WITH stderr (a malformed --since / bad -g pattern — the
+    # error-reads-as-empty shape): unobservable, memo untouched. See
+    # ``_journal_rc_unobservable``.
+    if _journal_rc_unobservable(proc):
         return ("unobservable", None)
 
     lines = proc.stdout.strip().splitlines()
@@ -698,7 +722,7 @@ def _journal_newest_match_status(
 
     if line is not None:
         _JOURNAL_MEMO[key] = {"scanned_through": now_ts,
-                              "match_ts": _match_line_ts(line),
+                              "match_ts": _short_unix_ts(line),
                               "line": line}
         return ("ok", line)
 
@@ -749,26 +773,13 @@ def _journal_count_match(
     contention this counts (honest_failure_modes #1: empty ≠ error).
     The watchdog runs as root, so journalctl needs no sudo. ``--since``
     plus the subprocess timeout bound the worst case on a busy unit.
+
+    Derived from ``_journal_match_lines`` — one subprocess shape, one
+    unobservable rule (finding 3, 2026-09-09); ``len`` of the honest list.
     """
-    try:
-        proc = subprocess.run(
-            [
-                journalctl_path, "-u", unit, "--since", f"-{lookback}",
-                "-g", pattern, "-o", "cat", "-q", "--no-pager",
-            ],
-            capture_output=True, text=True, timeout=15,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return None
-    # rc 1 = "no entries matched" on some systemd builds (a true 0, not an
-    # error); only >1 is a real failure → unobservable.
-    if proc.returncode not in (0, 1):
-        return None
-    out = proc.stdout
-    if not out:
-        return 0
-    # Count non-empty lines; trailing newline must not inflate by one.
-    return sum(1 for ln in out.splitlines() if ln)
+    lines = _journal_match_lines(unit, pattern, lookback,
+                                 journalctl_path=journalctl_path)
+    return None if lines is None else len(lines)
 
 
 def _journal_match_lines(
@@ -796,9 +807,9 @@ def _journal_match_lines(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
-    if proc.returncode not in (0, 1):
-        return None
-    return [ln for ln in proc.stdout.splitlines() if ln]
+    if _journal_rc_unobservable(proc):
+        return None     # rc>1, or rc 1 with stderr — the query did not run
+    return [ln for ln in (proc.stdout or "").splitlines() if ln]
 
 
 def _journal_user_unit_has_lines(
@@ -848,9 +859,9 @@ def _journal_user_unit_has_lines(
         )
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return None
-    if proc.returncode not in (0, 1):
-        return None
-    return bool(proc.stdout.strip())
+    if _journal_rc_unobservable(proc):
+        return None     # rc>1, or rc 1 with stderr — the query did not run
+    return bool((proc.stdout or "").strip())
 
 
 def _short_unix_ts(line: str) -> Optional[float]:

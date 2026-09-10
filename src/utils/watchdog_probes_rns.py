@@ -75,6 +75,73 @@ def _token_is_ours(token: str, instance_name: str) -> bool:
 # ─────────────────────────────────────────────────────────────────────
 
 
+def _scan_rns_listener_owners(
+    instance_name: str, *, ss_path: str = "ss",
+) -> Optional[Tuple[dict, "subprocess.CompletedProcess"]]:
+    """One ``ss -xnpl`` scan → ``({pid: comm}, proc)``, or None when ``ss``
+    itself was unobservable (missing / timed out / OSError).
+
+    N1 (2026-07-18, the #69/#82 class): ``ss`` splits columns on
+    whitespace, so a SPACED instance_name ("volcano ai rns") is displayed
+    truncated at the first space ("@rns/volcano") — an inline
+    f"@rns/{instance_name}" needle matches NOTHING on exactly the
+    incident boxes and the probe would note an affirmative CLEAN. Reuse
+    the twin parser ``utils.rns_init._parse_ss_listener_line`` (Issue #82
+    fix), which falls back to the truncated-needle form. rns_init imports
+    no RNS / heavy modules at import time.
+    """
+    try:
+        proc = subprocess.run(
+            [ss_path, "-xnpl"], capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        return None
+    from utils.rns_init import _parse_ss_listener_line
+
+    owners: dict = {}  # pid -> ss comm name
+    for line in proc.stdout.splitlines():
+        parsed = _parse_ss_listener_line(line, instance_name)
+        if parsed is not None:
+            pid, comm = parsed
+            owners[pid] = comm
+    return owners, proc
+
+
+def _classify_listener_owners(
+    owners: dict, proc_root: str,
+) -> Tuple[List[Tuple[int, str]], List[Tuple[int, str]], List[int]]:
+    """Sort listener owners into ``(foreign, inverted, vanished)``.
+
+    ``foreign`` — not RNS-family at all (the #69 squatter, wedge tier);
+    ``inverted`` — RNS-family but not rnsd (degraded tier);
+    ``vanished`` — ``/proc/<pid>/cmdline`` unreadable, i.e. the owner
+    exited between ``ss`` and the read. A vanished owner is NEVER classified
+    by its empty cmdline: the caller re-scans (finding 4, 2026-09-09).
+    """
+    from utils.rns_init import cmdline_is_rns_family, cmdline_is_rnsd_shaped
+
+    foreign: List[Tuple[int, str]] = []
+    inverted: List[Tuple[int, str]] = []
+    vanished: List[int] = []
+    for pid, comm in owners.items():
+        if comm == "rnsd":
+            continue  # ss-level comm fast-path: the designated host
+        try:
+            with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
+                cmdline = fh.read().replace(b"\x00", b" ").decode(
+                    "utf-8", errors="replace").strip()
+        except OSError:
+            vanished.append(pid)
+            continue
+        if cmdline_is_rnsd_shaped(cmdline):
+            continue
+        if cmdline_is_rns_family(cmdline):
+            inverted.append((pid, cmdline))
+        else:
+            foreign.append((pid, cmdline))
+    return foreign, inverted, vanished
+
+
 def probe_rns_namespace_collision(
     instance_name: str,
     *,
@@ -108,32 +175,12 @@ def probe_rns_namespace_collision(
                          reason="no rns instance name provided")
         return None
 
-    try:
-        proc = subprocess.run(
-            [ss_path, "-xnpl"], capture_output=True, text=True, timeout=5,
-        )
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+    scanned = _scan_rns_listener_owners(instance_name, ss_path=ss_path)
+    if scanned is None:
         note_disposition("rns_namespace_collision", "indeterminate",
                          reason="ss unavailable/timed out; listeners unobservable")
         return None
-
-    # N1 (2026-07-18, the #69/#82 class): ``ss`` splits columns on
-    # whitespace, so a SPACED instance_name ("volcano ai rns") is displayed
-    # truncated at the first space ("@rns/volcano") — an inline
-    # f"@rns/{instance_name}" needle matches NOTHING on exactly the
-    # incident boxes and the probe would note an affirmative CLEAN. Reuse
-    # the twin parser ``utils.rns_init._parse_ss_listener_line`` (Issue #82
-    # fix), which falls back to the truncated-needle form. rns_init imports
-    # no RNS / heavy modules at import time (the probe already imports its
-    # cmdline predicates below).
-    from utils.rns_init import _parse_ss_listener_line
-
-    owners: dict = {}  # pid -> ss comm name
-    for line in proc.stdout.splitlines():
-        parsed = _parse_ss_listener_line(line, instance_name)
-        if parsed is not None:
-            pid, comm = parsed
-            owners[pid] = comm
+    owners, proc = scanned
 
     if not owners:
         if proc.returncode != 0:
@@ -165,25 +212,47 @@ def probe_rns_namespace_collision(
             note_disposition("rns_namespace_collision", "clean")
         return None  # no listener → not a collision
 
-    from utils.rns_init import cmdline_is_rns_family, cmdline_is_rnsd_shaped
+    foreign, inverted, vanished = _classify_listener_owners(owners, proc_root)
 
-    foreign: List[Tuple[int, str]] = []
-    inverted: List[Tuple[int, str]] = []
-    for pid, comm in owners.items():
-        if comm == "rnsd":
-            continue  # ss-level comm fast-path: the designated host
-        try:
-            with open(f"{proc_root}/{pid}/cmdline", "rb") as fh:
-                cmdline = fh.read().replace(b"\x00", b" ").decode(
-                    "utf-8", errors="replace").strip()
-        except OSError:
-            cmdline = ""
-        if cmdline_is_rnsd_shaped(cmdline):
-            continue
-        if cmdline_is_rns_family(cmdline):
-            inverted.append((pid, cmdline))
-        else:
-            foreign.append((pid, cmdline))
+    if vanished and not foreign and not inverted:
+        # TOCTOU (pass-3 finding 4, 2026-09-09). An owner whose
+        # /proc/<pid>/cmdline is unreadable EXITED between ``ss`` and the
+        # read — a dead pid cannot hold an abstract socket, so the realistic
+        # cause is listener teardown in progress (an rnsd restart racing
+        # this tick), not a squatter. The old branch fed the empty cmdline
+        # to the family predicate, classified it ``foreign`` and paged a
+        # WEDGE whose cure text said ``sudo kill <pid>`` for a pid that no
+        # longer existed and may have been recycled. ``rns_init.
+        # check_rns_listener_owner`` already carries the one-re-scan cure;
+        # this is its twin. Re-scan once, no delay (a probe runs inside the
+        # daemon loop — MF010): teardown finished (no listener) or the new
+        # owner is readable, and anything still unreadable is honestly
+        # ``indeterminate`` — never a kill directive against a ghost.
+        rescan = _scan_rns_listener_owners(instance_name, ss_path=ss_path)
+        gone = ", ".join(str(p) for p in vanished)
+        if rescan is None:
+            note_disposition(
+                "rns_namespace_collision", "indeterminate",
+                reason=(f"owner pid(s) {gone} exited between ss and /proc "
+                        f"and the re-scan was unobservable — cannot classify"))
+            return None
+        owners, proc = rescan
+        if not owners:
+            note_disposition(
+                "rns_namespace_collision", "indeterminate",
+                reason=(f"owner pid(s) {gone} exited between ss and /proc; "
+                        f"no @rns/{instance_name} listener on re-scan "
+                        f"(teardown in progress — rnsd restart?)"))
+            return None
+        foreign, inverted, vanished = _classify_listener_owners(
+            owners, proc_root)
+        if vanished and not foreign and not inverted:
+            note_disposition(
+                "rns_namespace_collision", "indeterminate",
+                reason=(f"owner pid(s) "
+                        f"{', '.join(str(p) for p in vanished)} unreadable "
+                        f"on two consecutive scans — cannot classify"))
+            return None
 
     if foreign:
         pid, cmdline = foreign[0]
@@ -204,6 +273,11 @@ def probe_rns_namespace_collision(
 
     if inverted:
         if rnsd_enabled is None:
+            # Was called WITHOUT being imported until 2026-09-09 (pyflakes:
+            # undefined name) — the runner passes rnsd_enabled=None, so the
+            # #69 inverted tier raised NameError in production and blanked
+            # the whole tick; every test had injected True/False.
+            from utils.rns_init import _rnsd_unit_enabled
             rnsd_enabled = _rnsd_unit_enabled()
         if not rnsd_enabled:
             note_disposition("rns_namespace_collision", "inert",
@@ -494,7 +568,21 @@ def probe_rns_shared_instance_responsive(
     # Abstract Unix socket address: leading NUL byte then the name.
     # `@rns/<name>` in `ss -xnpl` is the kernel's display form.
     addr = "\x00rns/" + instance_name
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    except OSError as exc:
+        # EMFILE/ENFILE (the #73 fd-leak class) or ENOBUFS on the WATCHDOG'S
+        # own process: the connect was never attempted, so this says nothing
+        # about rnsd's accept path. Until 2026-09-09 this line sat outside
+        # the try and the exception escaped the probe into the tick handler.
+        for _cls in ("rns_shared_instance_unresponsive",
+                     "rns_instance_name_mismatch"):
+            note_disposition(
+                _cls, "indeterminate",
+                reason=(f"socket() failed before connect "
+                        f"({type(exc).__name__}: {exc}) — the watchdog's own "
+                        f"fd budget, not rnsd; accept path unobserved"))
+        return None
     sock.settimeout(timeout_s)
     try:
         sock.connect(addr)
@@ -720,6 +808,10 @@ _RNSTATUS_SLOW_FLOOR_S = 2.0          # never alarm on a sub-2s absolute run
 
 _rnstatus_durations: "deque[float]" = deque(maxlen=_RNSTATUS_BASELINE_MAXLEN)
 _rpc_slow_streak = 0
+#: Subject of the latency (degraded) arm — deliberately NOT the wedge arm's
+#: ``"rnsd"``, so the tracker sees a wedge after a slow phase as a NEW
+#: transition (see the comment at the emit site).
+_RPC_LATENCY_SUBJECT = "rnsd:latency"
 
 
 def _rnstatus_slow_factor() -> float:
@@ -788,16 +880,13 @@ def _cpu_pressure_context() -> str:
             parts.append("loadavg " + " ".join(fh.read().split()[:3]))
     except OSError:
         parts.append("loadavg unknown")
-    try:
-        with open("/proc/pressure/cpu", "r") as fh:
-            for line in fh:
-                if line.startswith("some"):
-                    for tok in line.split():
-                        if tok.startswith("avg10="):
-                            parts.append("cpu-psi-some10 " + tok[6:])
-                    break
-    except OSError:
-        pass
+    # ONE PSI parser (finding 19): the host module owns ``some avg10``
+    # reading for cgroup memory.pressure; /proc/pressure/cpu is the same
+    # format. Unreadable/CONFIG_PSI-off → None → omitted, never a blank.
+    from utils.watchdog_probes_host import _read_psi_some_avg10
+    psi = _read_psi_some_avg10("/proc/pressure/cpu")
+    if psi is not None:
+        parts.append(f"cpu-psi-some10 {psi:g}")
     return "; ".join(parts)
 
 
@@ -856,12 +945,18 @@ def probe_rns_rpc_responsive(
         _rpc_timeout_streak = 0
         if status.parse_error:
             # rnsd down / binary missing: the run measured nothing about
-            # RPC latency, so it must not enter the baseline.
+            # RPC latency, so it must not enter the baseline — and it breaks
+            # the slow streak: "N CONSECUTIVE slow ticks" must not span an
+            # rnsd restart (finding 2, 2026-09-09).
+            _rpc_slow_streak = 0
             note_disposition("rns_rpc_unresponsive", "indeterminate",
                              reason="rnstatus failed fast (rnsd down or binary missing)")
             return None
         return _judge_rnstatus_latency(status.duration_s)
 
+    # A timeout is the wedge arm's observation; the latency arm saw no
+    # duration, so its consecutive-slow streak restarts (finding 2).
+    _rpc_slow_streak = 0
     _rpc_timeout_streak += 1
     needed = _rpc_confirm_ticks()
     pressure = _cpu_pressure_context()
@@ -977,9 +1072,19 @@ def _judge_rnstatus_latency(duration_s: "Optional[float]") -> Optional[Signal]:
         )
         return None
 
+    # Its OWN subject (finding 2, 2026-09-09). The wedge arm emits
+    # ``("rns_rpc_unresponsive", "rnsd")``; had this arm shared that key,
+    # ``SignalTracker.update`` — which treats a same-key signal as "still
+    # active" with no severity comparison — would have swallowed a real
+    # wedge that followed a slow-phase page: no NEW transition, no "restart
+    # rnsd" page, the escalation invisible. A distinct subject is the
+    # smaller, safer change (a tracker-side "severity rose = new
+    # transition" rule would re-page every class on every flap of severity).
+    # The slow→timeout hand-off therefore reads as CLEARED latency + NEW
+    # wedge, which is the truth of what was observed.
     return Signal(
         cls="rns_rpc_unresponsive",
-        subject="rnsd",
+        subject=_RPC_LATENCY_SUBJECT,
         severity="degraded",
         detail=(
             f"rnstatus is taking {duration_s:.2f}s against this box's own "
