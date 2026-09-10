@@ -189,6 +189,40 @@ check "box running no watchdog is excluded, not counted blind" \
 check "and it is still named in the detail" \
   "$(echo "$out" | grep -q 'box-norepo:no-watchdog' && echo ok)"
 
+# ── 5b. absent-by-DESIGN vs absent-by-ACCIDENT (2026-09-10) ──────────────
+# Observed absence is only half the fact. Until this split, a box that had LOST
+# its watchdog was excluded from the denominator exactly like lehua, whose role
+# DECLARES `meshforge-watchdog: absent` with a written rationale — so losing a
+# watchdog made the fleet look CLEANER (wdtotal shrank, clean/wdtotal stayed
+# green). honest_failure_modes #1, and the reason `inert` and `broken` may
+# never share a rendering.
+DECL="$TMP/wd_decl"
+
+printf 'box-good\tenabled\nbox-norepo\tabsent\n' > "$DECL"
+out="$(HONEST_BOXES="box-good box-norepo" HONEST_WD_DECL="$DECL" run)"
+check "declared-absent watchdog stays excluded and the leg is clean" \
+  "$(echo "$out" | grep -E 'watchdog signals' | grep -q '1/1 clean' && echo ok)"
+check "and it is labelled by-design, not left to be misread as a fault" \
+  "$(echo "$out" | grep -q 'box-norepo:no-watchdog(declared-absent,by-design)' && echo ok)"
+
+# The branch that did not exist before: the role says this box RUNS one.
+printf 'box-good\tenabled\nbox-norepo\tenabled\n' > "$DECL"
+out="$(HONEST_BOXES="box-good box-norepo" HONEST_WD_DECL="$DECL" run)"
+check "role declares watchdog ENABLED but none installed → FAIL, not excluded" \
+  "$(echo "$out" | grep -E 'watchdog' | grep -q 'FAIL' && echo ok)"
+check "and it names the box as provisioning drift" \
+  "$(echo "$out" | grep -q 'box-norepo:WATCHDOG-MISSING' && echo ok)"
+
+# Unresolvable declaration must NOT go red: role stamps are a re-derived cache,
+# and a new/unstamped box turning the whole gate UNKNOWN would cry wolf over
+# something no operator can act on. Excluded as before — but LABELLED.
+printf 'box-good\tenabled\n' > "$DECL"
+out="$(HONEST_BOXES="box-good box-norepo" HONEST_WD_DECL="$DECL" run)"
+check "unknown declaration is excluded as before, never a new alarm" \
+  "$(echo "$out" | grep -E 'watchdog signals' | grep -q '1/1 clean' && echo ok)"
+check "and the blind spot is visible in the label" \
+  "$(echo "$out" | grep -q 'box-norepo:no-watchdog(.*declaration-unknown)' && echo ok)"
+
 out="$(HONEST_BOXES="box-good box-mute" run)"
 check "watchdog ACTIVE but no state is UNKNOWN-loud, never excused" \
   "$(echo "$out" | grep -q 'ACTIVE-but-no-state' && echo ok)"

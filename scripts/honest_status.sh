@@ -761,7 +761,30 @@ elif [ -n "${HONEST_WD_PATH:-}" ]; then WD_STALE_S=0
 else WD_STALE_S=300; fi
 
 wedge_t=0; deg_t=0; held_t=0; clean=0; unreach=0; nowd=0; wdfault=0; wddormant=0; sigdesc=""
+wdmissing=0; nowdunk=0
 btotal=$(echo $BOXES | wc -w)
+# DECLARED watchdog state per box, resolved ONCE (one python call, not one per
+# box). Until 2026-09-10 this leg inferred an absent watchdog from
+# LoadState=not-found alone and dropped the box from the denominator — so
+# lehua, whose role DECLARES `meshforge-watchdog: absent` with a written
+# rationale, and a box that had simply LOST its watchdog read identically, and
+# the benign reading won. A box losing its watchdog made the fleet look
+# CLEANER: wdtotal shrank while clean/wdtotal stayed green.
+# Unresolvable stays `unknown` and is NEVER collapsed into absent.
+# HONEST_WD_DECL overrides the resolved table with a fixture — ONLY so this
+# gate's own tests can drive the three branches below. Without it the
+# `declared enabled but missing` branch could never be exercised, and a branch
+# that has never fired is not evidence that it works.
+if [ -n "${HONEST_WD_DECL:-}" ]; then
+  WD_DECL="$HONEST_WD_DECL"
+else
+  WD_DECL=$(mktemp 2>/dev/null || echo /tmp/hs_wd_decl.$$)
+  timeout 60 python3 "$REPO/scripts/role_declared_services.py" \
+    --service meshforge-watchdog $BOXES >"$WD_DECL" 2>/dev/null || : >"$WD_DECL"
+fi
+wd_declared() {  # $1=box -> enabled|disabled|absent|unknown
+  awk -v b="$1" -F'\t' '$1==b{print $2; f=1; exit} END{if(!f) print "unknown"}' "$WD_DECL"
+}
 for b in $BOXES; do
   # Fetch the box's OWN clock alongside its watchdog.json in ONE round-trip, so
   # the freshness age is computed same-clock — never this box's clock vs that
@@ -792,7 +815,32 @@ for b in $BOXES; do
     wdfault=$((wdfault+1)); sigdesc="$sigdesc $b:WATCHDOG-UNIT-$wunit"; continue
   fi
   if [ -z "$w" ] && [ "$wunit" != "active" ]; then
-    nowd=$((nowd+1)); sigdesc="$sigdesc $b:no-watchdog($wunit)"; continue
+    # THREE outcomes, not one. Observed-absent is only half the fact; the other
+    # half is whether the role DECLARED it absent. Collapsing them is how a
+    # lost watchdog hid inside a legitimate exclusion.
+    case "$(wd_declared "$b")" in
+      absent|disabled)
+        # Absent BY DESIGN. Excluded from the denominator, and labelled so the
+        # next reader does not mistake it for a fault the way one did on
+        # 2026-09-10 — the label is the fix as much as the branch is.
+        nowd=$((nowd+1)); sigdesc="$sigdesc $b:no-watchdog(declared-absent,by-design)"; continue ;;
+      enabled)
+        # The role says this box RUNS a watchdog and no unit is installed.
+        # That is provisioning drift — a fault, not an absent organ.
+        wdmissing=$((wdmissing+1)); sigdesc="$sigdesc $b:WATCHDOG-MISSING(role declares enabled)"; continue ;;
+      *)
+        # No resolvable declaration. Treated exactly as before — excluded from
+        # the denominator, the leg claims NOTHING about this box — but LABELLED
+        # so the blind spot is visible instead of implied.
+        #
+        # Deliberately NOT escalated to a gate-level UNKNOWN. Role stamps are a
+        # re-derived CACHE, and utils.fleet_naming's tri-state contract says the
+        # safe reading of unknown is "keep watching", not "go red": a new or
+        # unstamped box would otherwise turn the whole gate UNKNOWN over
+        # something no operator can act on. The actionable half of this class —
+        # declared ENABLED but missing — is caught by the branch above.
+        nowdunk=$((nowdunk+1)); sigdesc="$sigdesc $b:no-watchdog($wunit,declaration-unknown)"; continue ;;
+    esac
   fi
   if [ -z "$w" ]; then
     unreach=$((unreach+1)); sigdesc="$sigdesc $b:ACTIVE-but-no-state"; continue
@@ -879,9 +927,14 @@ done
 # signal ALONE yielded UNKNOWN / exit 2. Adding a fault made the gate greener.
 # A held signal never reaches WARN/FAIL on its own; a live degraded signal
 # rides along in the UNKNOWN line so it is not hidden either.
-wdtotal=$((btotal - nowd - wddormant))   # boxes that actually carry a watchdog unit (declared-dormant excluded)
+# Declared-absent and declaration-unknown both leave the denominator: neither
+# can be judged clean. A box whose role declares the watchdog ENABLED stays IN
+# (wdmissing), because a missing-but-required watchdog is a fault to report,
+# not a box to quietly stop counting.
+wdtotal=$((btotal - nowd - nowdunk - wddormant))
 if [ "$wedge_t" -gt 0 ]; then bad "watchdog (wedge)" "$wedge_t WEDGE + $deg_t degraded across fleet:$sigdesc"
 elif [ "$wdfault" -gt 0 ]; then bad "watchdog (unit down)" "$wdfault box(es) with the watchdog unit installed but not running — a dead watchdog is a fault, not an absent organ:$sigdesc"
+elif [ "$wdmissing" -gt 0 ]; then bad "watchdog (missing)" "$wdmissing box(es) whose ROLE declares meshforge-watchdog enabled but no unit is installed — provisioning drift, not an absent organ:$sigdesc"
 elif [ "$unreach" -gt 0 ]; then unk "watchdog signals" "$clean/$wdtotal clean, $unreach unreachable/stale:$sigdesc"
 elif [ "$held_t" -gt 0 ]; then unk "watchdog signals" "$held_t held-blind (last-known, observer cannot see) beside $deg_t live degraded, 0 wedge:$sigdesc"
 elif [ "$deg_t" -gt 0 ]; then warnf "watchdog (degraded)" "$deg_t degraded, 0 wedge:$sigdesc"
