@@ -33,12 +33,35 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+# ── Rate-limited witness for swallows ─────────────────────────────────────
+#
+# Fingerprint probes must never raise, and they have no ``indeterminate``
+# state to report. A swallow that leaves NO artifact is the honest_failure
+# _modes #9 shape; a warning on every 60s tick while a state dir is broken
+# is noise that trains the operator to ignore the log. One line per key per
+# window, on a MONOTONIC clock (wall time is forgeable on this fleet, #6).
+_WITNESS_WINDOW_S = 600.0
+_witness_last: Dict[str, float] = {}
+
+
+def _witness(key: str, msg: str, *args) -> None:
+    """``logger.warning`` at most once per ``_WITNESS_WINDOW_S`` per key."""
+    now = time.monotonic()
+    last = _witness_last.get(key)
+    if last is not None and now - last < _WITNESS_WINDOW_S:
+        logger.debug(msg, *args)
+        return
+    _witness_last[key] = now
+    logger.warning(msg, *args)
 
 
 # Test-only escape hatch — pytest conftest sets this so the daemon
@@ -67,10 +90,16 @@ class Fingerprint:
     """A pre-failure shape with a probe that returns ProbeHit on match."""
     name: str                               # stable id, e.g. "rns_rpc_wedge"
     severity: str                           # "degraded" | "pre_fail" | "wedged"
-    probe: Callable[[], Optional[ProbeHit]]
+    probe: Callable[..., Optional[ProbeHit]]
     cadence_s: int                          # min seconds between this probe's fires
     incident_refs: Tuple[str, ...]          # memory entries this maps to
     coupled_to: Tuple[str, ...]             # what cascades next when this fires
+    # A probe that pauses mid-run (re-sample) must wait on the DETECTOR'S
+    # stop event, never ``time.sleep`` on its thread (MF010). The detector
+    # passes ``stop_event=`` only to probes that declare it — explicit
+    # dispatch, no module-global binding a stopped detector could leave SET
+    # for the next caller (2026-09-09, pass-3 finding 7).
+    wants_stop_event: bool = False
 
 
 # ── Fingerprint 1: rns_rpc_wedge ──────────────────────────────────────────
@@ -120,23 +149,39 @@ def _ss_syn_sent_rns_rpc(ss_timeout: float = 2.0) -> Optional[List[str]]:
 def _socket_key(line: str) -> str:
     """Stable identity for one ``ss`` row, ignoring volatile queue depths.
 
-    ``ss -xH`` columns are: netid state recv-q send-q local_addr
-    local_inode peer_addr peer_inode. The inode pair uniquely identifies
-    a socket for as long as it exists, so it is what makes "the same
-    socket is STILL waiting" a decidable question. recv-q/send-q are
-    dropped because they can move under load on a socket that never
-    changed identity. A row we cannot parse falls back to the whole line
-    — conservative: it can still match itself across samples, so an
-    unexpected ``ss`` format degrades to the old behavior rather than to
-    a silent miss.
+    Two row shapes exist and the sampler above produces the SECOND one
+    (measured on a fleet box 2026-09-09, pass-3 finding 7):
+
+    * ``ss -xH``                 → netid STATE recv-q send-q local inode
+                                    peer inode   (8 fields)
+    * ``ss -xH state <filter>``  → netid recv-q send-q local inode peer
+                                    inode        (7 fields — the State
+                                    column is OMITTED when it is implied)
+
+    The first cut keyed only the 8-field form, so every real row fell
+    through to a whole-line match INCLUDING recv-q/send-q — a wedged
+    connect whose queue moved between the two samples read "cleared,
+    transient" and a genuine wedge went unreported. The forms are told
+    apart by the second token: a State is alphabetic (``SYN-SENT``), a
+    recv-q is numeric. Everything from the local address onward is kept
+    — that includes the inode pair (the identity) and survives a SPACED
+    instance name (``@rns/moc 3/rpc``), which the old fixed slice cut in
+    half. A row with too few tokens falls back to the whole line —
+    conservative: it can still match itself across samples.
     """
     fields = line.split()
+    if len(fields) >= 7 and fields[1].isdigit():
+        # State-filtered form: drop recv-q, send-q.
+        return " ".join([fields[0]] + fields[3:])
     if len(fields) >= 8:
+        # Unfiltered form: keep netid + state, drop recv-q, send-q.
         return " ".join(fields[:2] + fields[4:])
     return line
 
 
-def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
+def probe_rns_rpc_wedge(
+    *, stop_event: Optional[threading.Event] = None,
+) -> Optional[ProbeHit]:
     """Detect rnsd's @rns/*/rpc abstract Unix-socket listener stalling.
 
     The fingerprint (per ``project_rnsd_rpc_listener_wedge.md``): when
@@ -182,10 +227,28 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
         return None
 
     first = _ss_syn_sent_rns_rpc()
+    if first is None:
+        # Blind on the FIRST sample. Until 2026-09-09 this collapsed into
+        # the same silent None as "nothing matched" — the confirming sample
+        # got a witness (a2827005) and the opening one did not.
+        _witness(
+            "rns_rpc_wedge:first-sample",
+            "rns_rpc_wedge: the SYN-SENT sample was UNOBSERVABLE (ss "
+            "failed) — this fingerprint is blind this tick, not clean",
+        )
+        return None
     if not first:
         return None
 
-    time.sleep(_RPC_WEDGE_RESAMPLE_DELAY_S)
+    # Interruptible pause on the DETECTOR'S stop event, never time.sleep
+    # on its thread (MF010). A stop request during the pause abandons the
+    # probe: the process is shutting down and a half-confirmed candidate
+    # must not become a last-gasp page. A bare call (no detector) waits on
+    # a private never-set event, which behaves exactly like a sleep.
+    ev = stop_event if stop_event is not None else threading.Event()
+    if ev.wait(_RPC_WEDGE_RESAMPLE_DELAY_S):
+        logger.debug("rns_rpc_wedge: stop requested during re-sample pause")
+        return None
 
     second = _ss_syn_sent_rns_rpc()
     if second is None:
@@ -237,6 +300,10 @@ def probe_rns_rpc_wedge() -> Optional[ProbeHit]:
 # env var so an operator can tighten/loosen without code change.
 _DEFAULT_TRACER_STALE_THRESHOLD_S = 1500
 _TRACER_STALE_THRESHOLD_ENV = "MESHFORGE_CASCADE_TRACER_STALE_S"
+# mtime may legitimately lead time.time() by filesystem timestamp
+# granularity + a write racing this stat; anything beyond this is a clock
+# step, not skew.
+_TRACER_FUTURE_SKEW_S = 30.0
 
 
 def _tracer_stale_threshold_s() -> int:
@@ -298,7 +365,14 @@ def probe_tracer_stale_fire() -> Optional[ProbeHit]:
         return None
     try:
         sd = _tracer_state_dir()
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - fingerprints never raise
+        # Went dark with NO witness until 2026-09-09 (finding 8).
+        _witness(
+            "tracer_stale_fire:state-dir",
+            "tracer_stale_fire: cannot resolve the tracer state dir (%s: "
+            "%s) — this fingerprint is blind, not clean",
+            type(exc).__name__, exc,
+        )
         return None
     try:
         if not sd.is_dir():
@@ -315,13 +389,37 @@ def probe_tracer_stale_fire() -> Optional[ProbeHit]:
             if newest_mtime is None or mtime > newest_mtime:
                 newest_mtime = mtime
                 newest_name = entry.name
-    except OSError:
+    except OSError as exc:
+        _witness(
+            "tracer_stale_fire:scan",
+            "tracer_stale_fire: cannot scan %s (%s: %s) — this fingerprint "
+            "is blind, not clean", sd, type(exc).__name__, exc,
+        )
         return None
     if newest_mtime is None:
         return None
 
     threshold = _tracer_stale_threshold_s()
     age = time.time() - newest_mtime
+    if age < -_TRACER_FUTURE_SKEW_S:
+        # A file stamped in the FUTURE: the clock stepped backwards (RTC-less
+        # Pi, fake-hwclock, NTP step — honest_failure_modes #6). `age` would
+        # be negative for as long as the step is large, so "within threshold"
+        # would read healthy indefinitely while the tracer could be dead.
+        # Surface it as its own evidence rather than a silent pass.
+        return ProbeHit(
+            evidence=(
+                f"newest tracer file {newest_name} is stamped {int(-age)}s in "
+                "the FUTURE — the clock stepped backwards; tracer freshness "
+                "cannot be judged until the clock is corrected"
+            ),
+            metric={
+                "age_s": int(age),
+                "threshold_s": threshold,
+                "newest_file": newest_name,
+                "clock_stepped": True,
+            },
+        )
     if age < threshold:
         return None
     return ProbeHit(
@@ -344,6 +442,11 @@ def probe_tracer_stale_fire() -> Optional[ProbeHit]:
 _SS_PID_COMM_RE = re.compile(
     r'users:\(\(\s*"([^"]+)"\s*,\s*pid=(\d+)'
 )
+# Port 4403 as a WHOLE port token (``...:4403`` followed by whitespace or
+# end of row), on either the local or the peer column. A bare ``":4403" in
+# line`` also matched EPHEMERAL ports 44030-44039 (finding 20, 2026-09-09):
+# two unrelated pids on such ports read as meshtasticd API contention.
+_PORT_4403_RE = re.compile(r":4403(?=\s|$)")
 
 
 def _read_proc_cmdline(pid: int) -> str:
@@ -362,32 +465,21 @@ def _read_proc_cmdline(pid: int) -> str:
 
 
 def _resolve_meshforge_map_main_pid() -> Optional[int]:
-    """``systemctl show -p MainPID --value meshforge-map.service``.
+    """MainPID of ``meshforge-map.service`` when it is live (>1), else None.
 
-    Returns the int pid when systemd reports a live MainPID (>1).
-    Returns None on subprocess failure, when systemctl is missing,
-    or when MainPID is 0/1 (service inactive). Mirrors the helper
-    pattern in ``utils.watchdog_probes._resolve_main_pid``; kept
-    local here so the cascade layer doesn't import the watchdog
-    layer.
+    Delegates to the probe core's ``_resolve_main_pid_status`` (finding 19,
+    2026-09-09): the local copy re-implemented it with ``--value``
+    positional parsing, the exact latent mis-pairing that helper's
+    docstring warns about (systemd emits properties in ITS order). The
+    core module is import-light (no RNS, no map imports), so the cascade
+    layer taking this one dependency creates no cycle. Kept as a shim
+    because the flat None is what this probe's documented conservative
+    branch consumes (``unresolved`` fires — by design, finding 28).
     """
     if shutil.which("systemctl") is None:
         return None
-    try:
-        proc = subprocess.run(
-            ["systemctl", "show", "-p", "MainPID", "--value",
-             "meshforge-map.service"],
-            capture_output=True, text=True, timeout=2,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return None
-    if proc.returncode != 0:
-        return None
-    try:
-        pid = int(proc.stdout.strip())
-    except (ValueError, TypeError):
-        return None
-    return pid if pid > 1 else None
+    from utils.watchdog_probe_core import _resolve_main_pid_status
+    return _resolve_main_pid_status("meshforge-map.service")[1]
 
 
 def probe_tcp_4403_contention() -> Optional[ProbeHit]:
@@ -445,7 +537,7 @@ def probe_tcp_4403_contention() -> Optional[ProbeHit]:
 
     pid_to_comm: dict = {}
     for line in result.stdout.splitlines():
-        if ":4403" not in line:
+        if not _PORT_4403_RE.search(line):
             continue
         match = _SS_PID_COMM_RE.search(line)
         if not match:
@@ -531,6 +623,7 @@ FINGERPRINTS: List[Fingerprint] = [
         name="rns_rpc_wedge",
         severity="pre_fail",
         probe=probe_rns_rpc_wedge,
+        wants_stop_event=True,
         cadence_s=30,
         incident_refs=("project_rnsd_rpc_listener_wedge",),
         coupled_to=(

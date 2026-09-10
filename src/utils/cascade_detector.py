@@ -173,7 +173,11 @@ class CascadeDetector:
                 return
 
         try:
-            hit: Optional[ProbeHit] = fp.probe()
+            # A probe that pauses mid-run waits on THIS event (MF010), so
+            # stop() interrupts a re-sample instead of sleeping it out.
+            hit: Optional[ProbeHit] = (
+                fp.probe(stop_event=self._stop_event)
+                if fp.wants_stop_event else fp.probe())
         except Exception as e:
             logger.warning(
                 f"cascade fingerprint {fp.name}: probe raised {type(e).__name__}: {e} "

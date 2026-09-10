@@ -19,6 +19,7 @@ import subprocess
 from typing import List, Optional, Tuple
 from urllib.request import urlopen
 from urllib.error import URLError
+from http.client import HTTPException
 
 from utils.watchdog_probe_core import (
     note_state_write_failure,
@@ -32,6 +33,15 @@ from utils.watchdog_probe_core import (
     note_unit_presence_gate,
     operator_cron_wired,
 )
+
+# Every way a local HTTP fetch of a gateway/rollup payload can fail SHORT of a
+# probe bug. ``HTTPException`` (2026-09-09, pass-3 finding 1): a torn map
+# response raises ``http.client.IncompleteRead``, which is NOT an ``OSError``
+# (``issubclass`` verified False) — it escaped all four fetch sites into the
+# tick-level handler and blanked every class for the tick. ONE tuple, four
+# consumers (honest_failure_modes #5).
+_HTTP_FETCH_ERRORS = (URLError, HTTPException, socket.timeout,
+                      json.JSONDecodeError, OSError, ValueError)
 
 # Same logger name the runner uses (watchdog_runner.py) so a swallowed
 # state-write failure lands in the one "watchdog" namespace the operator
@@ -133,8 +143,7 @@ def _fetch_delivery_payload(
         if isinstance(payload, dict):
             return payload, None
         return None, "delivery payload not a dict"
-    except (URLError, socket.timeout, json.JSONDecodeError, OSError,
-            ValueError):
+    except _HTTP_FETCH_ERRORS:
         pass
     return _read_gateway_state_file(
         state_path=state_path, api="delivery API", noun="delivery snapshot",
@@ -156,8 +165,7 @@ def _fetch_queue_payload(
         if isinstance(payload, dict):
             return payload, None
         return None, "queue payload not a dict"
-    except (URLError, socket.timeout, json.JSONDecodeError, OSError,
-            ValueError):
+    except _HTTP_FETCH_ERRORS:
         pass
     return _read_gateway_state_file(
         state_path=state_path, api="queue API", noun="queue stats",
@@ -243,6 +251,20 @@ def probe_delivery_write_canary(
     if health.get("db_unobservable") is True:
         note_disposition("delivery_write_canary", "indeterminate",
                          reason="delivery DB unobservable — snapshot failed")
+        return None
+
+    # A PRESENT-but-EMPTY health block ({"health": {}}) is the producer/
+    # reader schema-skew shape: the fields this probe judges are simply not
+    # there. Coercing a missing counter to 0 and reading a missing
+    # preflight as "not False" passed every check below and noted an
+    # affirmative clean (pass-3 finding 6, 2026-09-09). Require the fields.
+    missing = [k for k in ("preflight_ok", "consecutive_write_errors")
+               if k not in health]
+    if missing:
+        note_disposition(
+            "delivery_write_canary", "indeterminate",
+            reason=(f"health block missing {', '.join(missing)} — "
+                    f"producer/reader schema skew; cannot judge writes"))
         return None
 
     preflight_ok = health.get("preflight_ok")
@@ -1010,7 +1032,7 @@ def probe_gateway_dup_degraded(
     try:
         with urlopen(url, timeout=timeout_s) as resp:
             payload = json.loads(resp.read())
-    except (URLError, socket.timeout, json.JSONDecodeError, OSError, ValueError):
+    except _HTTP_FETCH_ERRORS:
         # G1 (2026-07-18): on the manager box (the only observable one) a
         # crashed map / 5xx lands here too — "unobservable ≠ clean / HOLD"
         # means this cannot read as benign inert. Off the manager it is the
@@ -1159,14 +1181,26 @@ def probe_gateway_dup_degraded(
 DEFAULT_DUAL_HOMED_STATE_PATH = "/var/lib/meshforge/gateway_dual_homed_state.json"
 
 
+#: In-process copy of the known set, keyed by state path — the memory-first
+#: read that its sibling ``_dead_letter_mem`` already had. Without it an
+#: unwritable /var/lib/meshforge (the #60 sandbox class) made the loader
+#: re-read the STALE file every tick, so every known dual-homed recipient was
+#: re-announced as NEW every 30s with a warning per tick (pass-3 finding 5,
+#: 2026-09-09). Disk is read only when this process has no entry yet.
+_known_dual_homed_mem: dict = {}
+
+
 def _load_known_dual_homed(state_path: str) -> set:
     """Recipients already known to be dual-homed. Any error → empty set.
 
-    An unreadable state file means we cannot tell new from known, so the next
-    tick re-announces what it sees. That is noisy-but-honest; the alternative
+    Memory first (see ``_known_dual_homed_mem``). An unreadable state file
+    at process start means we cannot tell new from known, so the first tick
+    re-announces what it sees. That is noisy-but-honest; the alternative
     (treating unreadable as "everything known") would silently swallow the
     first real exposure growth after a disk hiccup.
     """
+    if state_path in _known_dual_homed_mem:
+        return set(_known_dual_homed_mem[state_path])
     try:
         with open(state_path, "r", encoding="utf-8") as fh:
             known = json.load(fh).get("known")
@@ -1176,7 +1210,13 @@ def _load_known_dual_homed(state_path: str) -> set:
 
 
 def _save_known_dual_homed(state_path: str, known: set) -> None:
-    """Persist the known set (atomic-rename, never raises)."""
+    """Persist the known set (atomic-rename, never raises).
+
+    Records in-process FIRST so a failed disk write costs only restart
+    survival, never a re-announce per tick; the swallow goes through THE
+    witness (``note_state_write_failure``) like every other saver.
+    """
+    _known_dual_homed_mem[state_path] = set(known)
     try:
         parent = os.path.dirname(state_path)
         if parent:
@@ -1185,8 +1225,8 @@ def _save_known_dual_homed(state_path: str, known: set) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"known": sorted(known)}, fh, separators=(",", ":"))
         os.replace(tmp, state_path)
-    except OSError:
-        logger.warning("watchdog: dual-homed state write failed at %s", state_path)
+    except OSError as e:
+        note_state_write_failure(state_path, e)
 
 
 def probe_gateway_dual_homed_exposure(
@@ -1224,8 +1264,7 @@ def probe_gateway_dual_homed_exposure(
         try:
             with urlopen(url, timeout=timeout_s) as resp:
                 payload = json.loads(resp.read())
-        except (URLError, socket.timeout, json.JSONDecodeError, OSError,
-                ValueError):
+        except _HTTP_FETCH_ERRORS:
             _disp, _reason = _classify_dups_unreachable(
                 suffix=" — dual-homing needs two vantages to observe")
             note_disposition("gateway_dual_homed_exposure", _disp,

@@ -623,24 +623,27 @@ class TestProbeTcp4403Contention:
 
 
 class TestResolveMeshforgeMapMainPid:
-    """Pins parsing of ``systemctl show -p MainPID --value`` for the
-    tcp_4403_contention probe's false-positive cross-check.
+    """The tcp_4403_contention cross-check now delegates to the probe
+    core's ``_resolve_main_pid_status`` (pass-3 finding 19, 2026-09-09),
+    which parses ``KEY=value`` lines — never ``--value`` positionals
+    (systemd emits properties in ITS order). Mocks target the core's
+    subprocess.run and use its real output shape.
     """
 
     def test_returns_pid_when_service_running(self):
-        result = MagicMock(returncode=0, stdout="636099\n")
+        result = MagicMock(returncode=0, stdout="MainPID=636099\nLoadState=loaded\n")
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/systemctl"), \
-             patch("utils.cascade_fingerprints.subprocess.run",
+             patch("utils.watchdog_probe_core.subprocess.run",
                    return_value=result):
             assert cfp._resolve_meshforge_map_main_pid() == 636099
 
     def test_returns_none_when_service_inactive(self):
         # MainPID=0 from systemd → normalize to None.
-        result = MagicMock(returncode=0, stdout="0\n")
+        result = MagicMock(returncode=0, stdout="MainPID=0\nLoadState=loaded\n")
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/systemctl"), \
-             patch("utils.cascade_fingerprints.subprocess.run",
+             patch("utils.watchdog_probe_core.subprocess.run",
                    return_value=result):
             assert cfp._resolve_meshforge_map_main_pid() is None
 
@@ -654,7 +657,7 @@ class TestResolveMeshforgeMapMainPid:
             raise subprocess.TimeoutExpired(args[0], 2)
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/systemctl"), \
-             patch("utils.cascade_fingerprints.subprocess.run",
+             patch("utils.watchdog_probe_core.subprocess.run",
                    side_effect=boom):
             assert cfp._resolve_meshforge_map_main_pid() is None
 
@@ -662,15 +665,15 @@ class TestResolveMeshforgeMapMainPid:
         result = MagicMock(returncode=1, stdout="")
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/systemctl"), \
-             patch("utils.cascade_fingerprints.subprocess.run",
+             patch("utils.watchdog_probe_core.subprocess.run",
                    return_value=result):
             assert cfp._resolve_meshforge_map_main_pid() is None
 
     def test_returns_none_on_malformed_output(self):
-        result = MagicMock(returncode=0, stdout="not-a-number\n")
+        result = MagicMock(returncode=0, stdout="MainPID=not-a-number\nLoadState=loaded\n")
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/systemctl"), \
-             patch("utils.cascade_fingerprints.subprocess.run",
+             patch("utils.watchdog_probe_core.subprocess.run",
                    return_value=result):
             assert cfp._resolve_meshforge_map_main_pid() is None
 

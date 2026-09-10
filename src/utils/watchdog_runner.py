@@ -133,6 +133,17 @@ from utils.watchdog_actions import (
 
 logger = logging.getLogger("watchdog")
 
+
+# Per-probe isolation (2026-09-09, pass-3 finding 1): every probe_* name
+# imported above is re-bound to a wrapper that turns a raise into a logged,
+# class-scoped `indeterminate` and lets the remaining probes run — one probe
+# bug must never blank the whole tick. Call sites keep their literal
+# probe_x(...) syntax (the honesty-invariant wiring gate walks them by AST).
+# Machinery + ownership table live in utils.watchdog_isolation (MF025 cap).
+from utils.watchdog_isolation import install_probe_isolation  # noqa: E402
+
+install_probe_isolation(globals())
+
 DEFAULT_OUTPUT_PATH = Path("/var/lib/meshforge/watchdog.json")
 DEFAULT_TICK_S = 30.0
 
