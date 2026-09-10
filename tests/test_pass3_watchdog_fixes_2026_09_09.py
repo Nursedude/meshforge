@@ -380,10 +380,25 @@ class TestFinding7SocketKey:
                           stdout="u_str 0 0 * 1234 @rns/default/rpc 5678\n")
         second = MagicMock(returncode=0,
                            stdout="u_str 4 9 * 1234 @rns/default/rpc 5678\n")
+        # ``utils.cascade_fingerprints.subprocess`` IS the stdlib module, so
+        # patching ``.run`` on it is process-global. A fixed two-item
+        # side_effect list was eaten by a stray ``subprocess.run`` from a
+        # thread another test leaked, during the probe's 0.4 s re-sample
+        # pause (CI 3.11 run 34461082035: StopIteration on the SECOND
+        # sample; passed on 3.9 and twice locally). Serve the canned samples
+        # only to the probe's own ``ss`` argv; everything else runs for real.
+        samples = iter([first, second])
+        real_run = cfp.subprocess.run
+
+        def _dispatch(argv, *a, **kw):
+            if argv and argv[0] == "ss":
+                return next(samples)
+            return real_run(argv, *a, **kw)
+
         with patch("utils.cascade_fingerprints.shutil.which",
                    return_value="/usr/bin/ss"), \
              patch("utils.cascade_fingerprints.subprocess.run",
-                   side_effect=[first, second]):
+                   side_effect=_dispatch):
             hit = cfp.probe_rns_rpc_wedge()
         assert hit is not None and hit.metric["syn_sent_count"] == 1
 
