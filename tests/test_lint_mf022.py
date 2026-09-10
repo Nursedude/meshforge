@@ -155,3 +155,81 @@ class TestMF022ExitCodeMaskPastPip:
         issues = _check('#!/bin/bash\necho "never do: pytest | tail -3; echo $?"\n',
                         tmp_path=tmp_path)
         assert not [i for i in issues if i.code == "MF022"], issues
+
+
+class TestMF022StatementAware:
+    """Review pass 4 (2026-09-09), findings 5-8: the predicate is one shared
+    function over SHELL STATEMENTS, not per-line regex + parity quote count.
+    The PreToolUse hook derives from `mf022_exit_code_mask_findings`, so these
+    cases pin the hook's verdicts too (tests/test_exit_code_mask_guard.sh
+    asserts the two agree)."""
+
+    def _f(self, text):
+        return lint.mf022_exit_code_mask_findings(text)
+
+    # finding 5 — consumption that never names $?
+    def test_and_echo_green_is_consumption(self):
+        f = self._f("python3 -m pytest tests/ -q | tail -3 && echo GREEN\n")
+        assert f and f[0]["how"] == "&&"
+
+    def test_if_then_is_consumption(self):
+        f = self._f("if python3 -m pytest tests/ -q | tail -3; then echo ok; fi\n")
+        assert f and f[0]["how"] == "conditional"
+
+    def test_or_exit_is_consumption(self):
+        f = self._f("python3 -m pytest tests/ -q | tail -3 || exit 1\n")
+        assert f and f[0]["how"] == "||"
+
+    def test_or_true_is_an_explicit_discard(self):
+        assert self._f("git log | head -3 || true\n") == []
+
+    # finding 6 — a real quote state machine
+    def test_apostrophe_inside_double_quotes_is_literal(self):
+        assert self._f('echo "Bob\'s run"; git log | head -3; rc=$?\n')
+
+    def test_nested_substitution_quotes_do_not_flip_outer_state(self):
+        assert self._f('echo "=== $(git status | head -3) ==="; echo "rc=$?"\n')
+
+    # finding 7 — lookahead skips comments / blanks, joins continuations
+    def test_rc_read_behind_a_comment(self):
+        assert self._f("python3 -m pytest tests/ | tail -3\n# grab rc\nrc=$?\n")
+
+    def test_rc_read_after_blank_lines(self):
+        assert self._f("python3 -m pytest tests/ | tail -3\n\n\nrc=$?\n")
+
+    def test_backslash_continuation_is_one_statement(self):
+        assert self._f("python3 -m pytest tests/ \\\n  | tail -3\nrc=$?\n")
+
+    def test_pipe_at_end_of_line_continues_the_pipeline(self):
+        assert self._f("python3 -m pytest tests/ |\ntail -3\nrc=$?\n")
+
+    # finding 8 — the $? must belong to the pipeline
+    def test_rc_read_before_the_pipe_is_clean(self):
+        # The 1c class: $? belongs to the redirected pytest, the pipe is display.
+        assert self._f("python3 -m pytest tests/ > log 2>&1; rc=$?; cat log | tail -3\n") == []
+
+    def test_pipefail_exempts(self):
+        assert self._f("set -o pipefail; python3 -m pytest tests/ | tail -3; rc=$?\n") == []
+        assert self._f("set -euo pipefail\npython3 -m pytest tests/ | tail -3; rc=$?\n") == []
+
+    def test_intervening_statement_breaks_the_read(self):
+        assert self._f("python3 -m pytest tests/ | tail -3\nls\nrc=$?\n") == []
+
+    def test_pure_output_between_is_skipped(self):
+        assert self._f('curl -s http://x/api | head -c 4000; echo; echo "EXIT:$?"\n')
+
+    def test_quoted_remote_command_still_reads_rc(self):
+        assert self._f("ssh moc3 'rnstatus 2>&1 | head -30; echo \"rc=$?\"'\n")
+
+    def test_plain_next_statement_read_still_fires(self):
+        # The false-negative the 1c audit feared losing — kept.
+        f = self._f("python3 -m pytest tests/ | tail -3; rc=$?\n")
+        assert f and f[0]["how"] == "rc-read" and f[0]["lineno"] == 1
+
+    def test_file_scan_reports_the_pipe_line_with_how(self, tmp_path):
+        issues = _check("#!/bin/bash\necho start\n"
+                        "python3 -m pytest tests/ -q | tail -3 && echo GREEN\n",
+                        tmp_path=tmp_path)
+        assert [i.line for i in issues if i.code == "MF022"] == [3]
+        assert "consumed by `&&`" in issues[0].message
+        assert "not the command's" in issues[0].message

@@ -12,129 +12,259 @@
 # ── WARN-ONLY, DELIBERATELY ───────────────────────────────────────────────
 # A PreToolUse hook's blast radius is EVERY Bash call, including the ones the
 # session needs to fix a mistake this hook makes
-# ([[feedback_never_arm_a_guard_that_can_kill_the_session]]: never arm a guard
-# whose blast radius holds the session arming it). So:
-#   * it NEVER emits a deny decision and ALWAYS exits 0;
-#   * every path is guarded so a bug degrades to silence, not to a wedged
-#     session;
-#   * it leaves a WITNESS either way, because "did the guard even run?" must be
-#     answerable after the fact (honest_failure_modes #9) — and the witness log
-#     is what will later justify (or refuse) promoting this to a deny.
+# ([[feedback_never_arm_a_guard_that_can_kill_the_session]]). So:
+#   * it NEVER emits a deny decision and ALWAYS exits 0 — HOME unset, malformed
+#     JSON, oversize payload, python missing/crashing/timing out included;
+#   * the warning rides the channel the model actually SEES: PreToolUse stdout
+#     JSON `hookSpecificOutput.additionalContext` ("shown to Claude without
+#     blocking"; with permissionDecision omitted "the tool call continues
+#     through the normal permission flow" — code.claude.com/docs/en/hooks).
+#     The first version printed to stderr, which on exit 0 "goes to the debug
+#     log only, never the transcript, and Claude never sees it" — the
+#     corrective half was a no-op for two days (review pass 4, finding 1);
+#   * every path past the pre-filter leaves a WITNESS row with a distinct state
+#     (honest_failure_modes #9): MASKED-EXIT-CODE / near-miss, or DARK-<reason>
+#     when the guard could not judge. A DARK row is a finding, not weather.
 #
-# ── ONE IMPLEMENTATION OF THE RULE (2026-09-09) ───────────────────────────
-# This file used to re-implement MF022's discriminator in bash, and its header
-# claimed `tests/test_exit_code_mask_guard.sh` pinned the two to the same
-# verdicts. That test NEVER EXISTED (`git log --all -- <path>` returns nothing),
-# and the two implementations had already DRIFTED — measured on a 7-case corpus:
+# ── ONE IMPLEMENTATION OF THE RULE ────────────────────────────────────────
+# The verdict is lint's `mf022_exit_code_mask_findings` (scripts/lint.py) —
+# derive, don't duplicate (honest_failure_modes #5). Two earlier bash
+# re-implementations drifted from it within days. `tests/test_exit_code_mask_guard.sh`
+# pins hook and lint to identical verdicts on one corpus and plants every
+# degraded path.
 #
-#   python3 -m pytest tests/ | grep -v ok | tail -3; rc=$?
-#       MF022 FIRES · this guard was SILENT   <- false negative, common shape
-#   echo "never do: pytest tests/ | tail -3; rc=$?"
-#       MF022 clean · this guard FIRED        <- false positive on a fix-hint
-#
-# The bash regex used `[^|]*`, which cannot cross an intervening pipe, and had
-# no quote-awareness. So the guard that actually runs was blind to the shape
-# lint catches — exactly the unpinned pair honest_failure_modes #5 predicts.
-#
-# The cure is #5's STRONGEST form: derive, don't duplicate. The slow path now
-# hands the command to lint's real MF022 predicate, inheriting quote-awareness
-# and the next-line `$?` lookahead for free. `tests/test_exit_code_mask_guard.sh`
-# now exists and pins the two to identical verdicts on that corpus.
+# lint is imported ONLY from the repo this hook was pinned against: the
+# candidate ($CLAUDE_PROJECT_DIR, or the repo copy's own ../..) must carry a
+# BYTE-IDENTICAL copy of this hook, the pin, and a scripts/lint.py that bears
+# the MF022 marker. Anything else (a foreign repo's lint.py, the CWD's, a
+# ~/scripts/lint.py) is never executed; python runs with -I (no CWD / user
+# site on sys.path). The residual: a repo that deliberately ships this exact
+# hook + pin is trusted to ship the matching lint. Otherwise, or when import
+# raises ANYTHING (BaseException — a decoy's sys.exit(3) used to take the guard
+# dark with no witness), the verdict falls back to a coarse inline rule and
+# the witness row says `fallback:<reason>` so it can never pass as lint's.
 #
 # ── LATENCY ───────────────────────────────────────────────────────────────
-# Measured on VolcanoAI (Pi 5, 2026-09-07): the existing psk_leak_guard costs
-# 55.5 ms/call, bare python3 startup 21.0 ms, `import lint` 83.7 ms. So the rule
-# is NOT imported on the fast path — that would put it on EVERY Bash call. A
-# bash-only pre-filter (two greps, no interpreter) runs first on the RAW
-# payload; python is invoked only for the rare command that could actually
-# match, and that path already paid for an interpreter. Re-measured 2026-09-09:
-# bare python3 19 ms, +import lint 72 ms — so the change costs ~53 ms on the
-# slow path only, and 0 ms on the per-call cost of the session.
+# Measured on VolcanoAI (Pi 5): bare python3 ~20 ms, +import lint ~70 ms. So no
+# interpreter runs on the fast path: two greps on the RAW payload decide
+# whether a pipe into head/tail AND some consumption shape ($?, &&, ||,
+# if/while/then) are even present. The greps accept the JSON escapes `\n`
+# `\t` between the pipe and head/tail (a pipe at end-of-line used to slip
+# through, finding 10). They are deliberately over-inclusive; lint decides.
+#
+# ── WITNESS FORMAT ────────────────────────────────────────────────────────
+#   <utc ts> \t <state> \t <offending line, secrets redacted> \t <source>
+# state:  MASKED-EXIT-CODE | near-miss | skip-nonbash | DARK-badjson |
+#         DARK-oversize | DARK-nocmd | DARK-pycrash | DARK-timeout
+# source: lint | lint-legacy (lint without the shared predicate: an older
+#         checkout still runs the quote-blind per-line rule) | fallback:<why>
+# The line logged is the one carrying the `| head/tail`, not the first 200
+# chars of a multi-line command (which omitted the offending line). Values
+# after Authorization:/Bearer/token=/password=/psk= and known key shapes are
+# redacted before the row is written; the file is 0600 and appended under
+# flock (parallel Bash calls run this hook concurrently and the old
+# read-then-mv rotation lost rows).
 set -u
-WITNESS="${EXIT_CODE_MASK_WITNESS:-$HOME/.claude/hooks/exit_code_mask_witness.log}"
+HOME_DIR="${HOME:-}"
+if [ -z "$HOME_DIR" ]; then
+  HOME_DIR="$(getent passwd "$(id -u 2>/dev/null)" 2>/dev/null | cut -d: -f6)" || HOME_DIR=""
+fi
+WITNESS="${EXIT_CODE_MASK_WITNESS:-}"
+if [ -z "$WITNESS" ] && [ -n "$HOME_DIR" ]; then
+  WITNESS="$HOME_DIR/.claude/hooks/exit_code_mask_witness.log"
+fi
 MAX_WITNESS_LINES=500
+PY="${EXIT_CODE_MASK_PYTHON:-python3}"
+PY_TIMEOUT="${EXIT_CODE_MASK_TIMEOUT:-6}"
+MAX_PAYLOAD=120000   # one env var must stay under the kernel's 128 KiB arg limit
 
 payload="$(cat 2>/dev/null)" || exit 0
 [ -n "$payload" ] || exit 0
 
-# ── fast path: two string greps, no interpreter ───────────────────────────
-# Cheap enough to sit in front of every Bash call. A command with no pipe into
-# head/tail, or that never reads $?, cannot be this defect.
-printf '%s' "$payload" | grep -Eq '\|[[:space:]]*(tail|head)\b' || exit 0
-printf '%s' "$payload" | grep -q '[$]?' || exit 0
+# ── witness writer: flock'd append + rotate, 0600, never fails the hook ───
+witness() {  # $1=state $2=line $3=source
+  [ -n "$WITNESS" ] || return 0
+  [ -d "$(dirname "$WITNESS")" ] || return 0
+  (
+    umask 077
+    if command -v flock >/dev/null 2>&1; then
+      exec 9>>"$WITNESS.lock" && flock -w 2 9 || true
+    fi
+    printf '%s\t%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" "$3" >> "$WITNESS"
+    chmod 600 "$WITNESS" 2>/dev/null || true
+    lines="$(wc -l < "$WITNESS" 2>/dev/null || echo 0)"
+    if [ "${lines:-0}" -gt "$MAX_WITNESS_LINES" ] 2>/dev/null; then
+      tmp="$(mktemp "$WITNESS.XXXXXX" 2>/dev/null)" || exit 0
+      if tail -n "$MAX_WITNESS_LINES" "$WITNESS" > "$tmp" 2>/dev/null; then
+        mv -f "$tmp" "$WITNESS" 2>/dev/null || rm -f "$tmp" 2>/dev/null
+      else
+        rm -f "$tmp" 2>/dev/null
+      fi
+    fi
+  ) 2>/dev/null || true
+}
 
-# ── slow path (rare): defer to lint's MF022, the single implementation ────
-REPO="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)}"
-# The payload rides an ENV VAR, not stdin: a `<<HEREDOC` redirects stdin, so a
-# `printf ... | python3 - <<PY` pipeline silently feeds the SCRIPT to the script
-# and the real payload is discarded (measured — the first draft of this change
-# went dark on every case). Guard the size before exporting.
-[ "${#payload}" -lt 200000 ] || exit 0
-verdict="$(EXIT_CODE_MASK_PAYLOAD="$payload" timeout 10 python3 - "${REPO:-.}" <<'PY' 2>/dev/null || true
+# ── fast path: two string greps on the raw JSON, no interpreter ───────────
+# EXIT_CODE_MASK_TRACE is a TEST seam: the pin sets it so a pre-filter exit
+# leaves a `prefiltered` row and an EMPTY witness can only mean dark. Unset in
+# production, so the fast path never touches the file.
+prefiltered() { [ -n "${EXIT_CODE_MASK_TRACE:-}" ] && witness "prefiltered" "-" "-"; exit 0; }
+printf '%s' "$payload" | grep -Eq '\|([[:space:]]|\\[nrt])*(tail|head)\b' || prefiltered
+printf '%s' "$payload" \
+  | grep -Eq '[$][{]?\?|&&|\|\||\b(if|elif|while|until|then|do)\b' || prefiltered
+
+if [ "${#payload}" -ge "$MAX_PAYLOAD" ]; then
+  witness "DARK-oversize" "payload ${#payload} chars" "-"
+  exit 0
+fi
+
+# ── which lint may judge: only the repo this exact hook was pinned against ─
+SELF="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)" || SELF="${BASH_SOURCE[0]}"
+cand="${CLAUDE_PROJECT_DIR:-}"
+if [ -z "$cand" ]; then
+  case "$SELF" in
+    "${HOME_DIR:-/nonexistent}/.claude/hooks/"*) cand="" ;;   # installed copy: ../.. is $HOME, not a repo
+    *) cand="$(cd "$(dirname "$SELF")/../.." 2>/dev/null && pwd)" || cand="" ;;
+  esac
+fi
+LINT_DIR=""; reason="norepo"
+if [ -n "$cand" ] && [ ! -d "$cand" ]; then
+  cand=""
+fi
+if [ -n "$cand" ]; then
+  if ! cmp -s "$cand/.claude/hooks/exit_code_mask_guard.sh" "$SELF" 2>/dev/null; then
+    reason="hook-mismatch"
+  elif [ ! -f "$cand/tests/test_exit_code_mask_guard.sh" ]; then
+    reason="no-pin"
+  elif [ ! -f "$cand/scripts/lint.py" ]; then
+    reason="no-lint"
+  else
+    LINT_DIR="$cand/scripts"; reason="-"
+  fi
+fi
+
+# ── slow path (rare): the payload rides an ENV VAR, not stdin — the heredoc
+# below owns stdin (a `printf | python3 - <<PY` pipeline feeds the SCRIPT to
+# the script; measured, the first draft went dark on every case).
+verdict="$(EXIT_CODE_MASK_PAYLOAD="$payload" EXIT_CODE_MASK_LINT_DIR="$LINT_DIR" \
+  EXIT_CODE_MASK_REASON="$reason" timeout "$PY_TIMEOUT" "$PY" -I - <<'PY' 2>/dev/null
 import json, os, re, sys, tempfile
 
+SENT = "ECMG\t"
 FALLBACK_CMDS = ('pytest', 'python3', 'python', 'gh', 'git', 'systemctl',
                  'curl', 'ssh', 'lint.py', 'honest_status.sh')
+FALLBACK_RX = re.compile(r'\b(' + '|'.join(re.escape(c) for c in FALLBACK_CMDS)
+                         + r')\b.*\|\s*(tail|head)\b')
+PIPE_RX = re.compile(r'\|\s*(tail|head)\b')
+REDACT = [
+    (re.compile(r'((?:authorization|x-api-key|api[-_]?key|cookie)\s*[:=]\s*)(?:bearer\s+|basic\s+|token\s+)?[^\s"\'&;]+',
+                re.I), r'\1<redacted>'),
+    (re.compile(r'\b(bearer\s+)[^\s"\'&;]+', re.I), r'\1<redacted>'),
+    (re.compile(r'\b((?:token|psk|password|passwd|secret|api_?key|access_?key|client_?secret)\s*=\s*)[^\s"\'&;]+',
+                re.I), r'\1<redacted>'),
+    (re.compile(r'(--?(?:token|password|passwd|psk|secret|api-key)[\s=]+)[^\s"\'&;]+', re.I), r'\1<redacted>'),
+    (re.compile(r'\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}'), r'\1_<redacted>'),
+    (re.compile(r'\bgithub_pat_[A-Za-z0-9_]{20,}'), 'github_pat_<redacted>'),
+    (re.compile(r'\bAKIA[0-9A-Z]{16}\b'), 'AKIA<redacted>'),
+    (re.compile(r'\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}'), 'sk-<redacted>'),
+    (re.compile(r'\bxox[abpors]-[A-Za-z0-9-]{10,}'), 'xox?-<redacted>'),
+]
+
+
+def redact(s):
+    for rx, rep in REDACT:
+        s = rx.sub(rep, s)
+    return s
+
+
+def out(state, line, src):
+    line = re.sub(r'\s+', ' ', line).strip()[:200] or '-'
+    sys.stdout.write(SENT + state + "\t" + line + "\t" + (src or '-') + "\n")
+    sys.stdout.flush()
+
+
+def offending_line(cmd):
+    for ln in cmd.splitlines():
+        if PIPE_RX.search(ln):
+            return ln
+    return cmd.splitlines()[0] if cmd.splitlines() else cmd
 
 
 def fallback(cmd):
-    """Used only when lint cannot be imported (another repo, moved file).
-    Deliberately the OLD inline rule minus the `[^|]*` bug: answering with a
-    slightly noisy verdict beats going dark."""
-    rx = re.compile(r'\b(' + '|'.join(re.escape(c) for c in FALLBACK_CMDS)
-                    + r')\b.*\|\s*(tail|head)\b')
-    return bool(rx.search(cmd)) and '$?' in cmd
+    """Only when lint may not judge. The coarse old rule minus its `[^|]*`
+    bug: a noisy verdict beats a dark one."""
+    return bool(FALLBACK_RX.search(cmd)) and ('$?' in cmd or '&&' in cmd or '||' in cmd)
 
 
+payload = os.environ.get("EXIT_CODE_MASK_PAYLOAD", "")
 try:
-    d = json.loads(os.environ.get("EXIT_CODE_MASK_PAYLOAD", ""))
-    if d.get("tool_name") != "Bash":
-        sys.exit(0)
-    cmd = d.get("tool_input", {}).get("command", "")
+    d = json.loads(payload)
+    if not isinstance(d, dict):
+        raise ValueError("not an object")
 except Exception:
+    out("DARK-badjson", redact(payload[:120]), "-")
+    sys.exit(0)
+if d.get("tool_name") != "Bash":
+    out("skip-nonbash", str(d.get("tool_name"))[:40], "-")
+    sys.exit(0)
+ti = d.get("tool_input")
+cmd = ti.get("command") if isinstance(ti, dict) else None
+if not isinstance(cmd, str) or not cmd.strip():
+    out("DARK-nocmd", "-", "-")
     sys.exit(0)
 
-if not cmd or len(cmd) >= 200000:
-    sys.exit(0)
-
+line = redact(offending_line(cmd))
+lint_dir = os.environ.get("EXIT_CODE_MASK_LINT_DIR", "")
+reason = os.environ.get("EXIT_CODE_MASK_REASON", "norepo")
 fired = None
-try:
-    sys.path.insert(0, os.path.join(sys.argv[1], 'scripts'))
-    import lint
-    with tempfile.TemporaryDirectory() as td:
-        p = os.path.join(td, 'agent_cmd.sh')
-        with open(p, 'w', encoding='utf-8') as fh:
-            fh.write(cmd + "\n")
-        issues = lint.check_pip_invocations_in_files([p], repo_root=td)
-    fired = any(i.code == "MF022" for i in issues)
-except Exception:
-    fired = None
-
+src = None
+if lint_dir:
+    try:
+        with open(os.path.join(lint_dir, "lint.py"), encoding="utf-8", errors="ignore") as fh:
+            if "MF022_EXITCODE_MASK" not in fh.read(600000):
+                raise RuntimeError("no-marker")
+        sys.path.insert(0, lint_dir)
+        import lint
+        if hasattr(lint, "mf022_exit_code_mask_findings"):
+            fired = bool(lint.mf022_exit_code_mask_findings(cmd))
+            src = "lint"
+        else:
+            with tempfile.TemporaryDirectory() as td:
+                p = os.path.join(td, "agent_cmd.sh")
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write(cmd + "\n")
+                issues = lint.check_pip_invocations_in_files([p], repo_root=td)
+            fired = any(i.code == "MF022" and "not the command's" in i.message
+                        for i in issues)
+            src = "lint-legacy"
+    except BaseException as e:          # SystemExit from a decoy included
+        fired = None
+        reason = "import-" + type(e).__name__
 if fired is None:
     fired = fallback(cmd)
-
-print("MASKED-EXIT-CODE" if fired else "near-miss")
-print(cmd.replace("\n", " ")[:160])
+    src = "fallback:" + reason
+out("MASKED-EXIT-CODE" if fired else "near-miss", line, src)
 PY
-)" || true
+)"; py_rc=$?
 
-note="$(printf '%s' "$verdict" | sed -n 1p)"
-cmdline="$(printf '%s' "$verdict" | sed -n 2p)"
-[ -n "$note" ] || exit 0
-
-if [ "$note" = "MASKED-EXIT-CODE" ]; then
-  printf '⚠️  exit-code mask: a verdict-bearing command is piped to tail/head and $? is then read — that is the PIPE'"'"'s exit code, not the command'"'"'s. Capture it first: `cmd >log 2>&1; rc=$?` then read the log. (WARN only; nothing was blocked.)\n' >&2
+# Parse by SENTINEL, last one wins — stray import-time stdout cannot displace
+# the verdict, and a decoy cannot print one after ours.
+row="$(printf '%s\n' "$verdict" | awk -F'\t' '$1=="ECMG"{r=$0} END{print r}')"
+state=""; line="-"; src="-"
+if [ -n "$row" ]; then
+  IFS=$'\t' read -r _ state line src <<<"$row"
+fi
+if [ -z "${state:-}" ]; then
+  if [ "$py_rc" = 124 ] || [ "$py_rc" = 137 ]; then state="DARK-timeout"
+  else state="DARK-pycrash"; fi
+  line="python rc=$py_rc"; src="-"
 fi
 
-# Witness, always — a guard that leaves no trace cannot be audited later.
-{
-  printf '%s\t%s\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$note" "$cmdline"
-} >> "$WITNESS" 2>/dev/null || true
-if [ -f "$WITNESS" ]; then
-  lines="$(wc -l < "$WITNESS" 2>/dev/null || echo 0)"
-  if [ "${lines:-0}" -gt "$MAX_WITNESS_LINES" ] 2>/dev/null; then
-    tail -n "$MAX_WITNESS_LINES" "$WITNESS" > "$WITNESS.tmp" 2>/dev/null \
-      && mv "$WITNESS.tmp" "$WITNESS" 2>/dev/null || true
-  fi
+if [ "$state" = "MASKED-EXIT-CODE" ]; then
+  # The ONLY stdout this hook ever produces. Static text: no command content
+  # is interpolated, so the JSON cannot be malformed by the payload.
+  printf '%s\n' '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":"exit-code mask guard (WARN only, nothing blocked): this command pipes a verdict-bearing command into head/tail and then consumes the pipeline'"'"'s exit status ($?, &&, ||, if/while) — that is the PIPE'"'"'s exit code, not the command'"'"'s. Capture it first: `cmd >log 2>&1; rc=$?` then read the log."}}'
 fi
+
+witness "$state" "${line:--}" "${src:--}"
 exit 0

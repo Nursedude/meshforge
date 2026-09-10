@@ -1326,6 +1326,8 @@ MF022_ALLOWED_FILES = {
     'scripts/lib/install_common.sh',
     'scripts/lint.py',
     'tests/test_lint_mf022.py',
+    # The hook's pin carries every example shape as a quoted argument string.
+    'tests/test_exit_code_mask_guard.sh',
 }
 
 MF022_PIPE_MASK = re.compile(r'\bpip3?\s+install\b.*\|\s*(tail|head)\b')
@@ -1337,10 +1339,23 @@ MF022_PIPE_MASK = re.compile(r'\bpip3?\s+install\b.*\|\s*(tail|head)\b')
 # tail — the exit code is tail's").
 #
 # Discriminator: piping to head/tail is perfectly fine for DISPLAY. It is only
-# a defect when the pipeline's exit code is then CONSUMED — so this fires only
-# when `$?` is referenced on the same line or the next non-blank one. That
-# keeps the rule quiet on the many legitimate `... | head` display lines while
-# catching the shape that actually lies.
+# a defect when the pipeline's exit status is then CONSUMED. Consumption
+# (statement-aware since 2026-09-09, review pass 4 findings 5-8) is any of:
+#   * `$?` read in the NEXT statement (`; rc=$?`, next line, blank lines and
+#     `# comments` skipped, `\`-continuations joined) — or later in the same
+#     statement after the pipe (a quoted remote command: `ssh box 'x | head;
+#     echo $?'`);
+#   * `&&` / `||` after the pipeline (`| tail -3 && echo GREEN`), except the
+#     explicit discard `|| true` / `|| :`;
+#   * the pipeline is the condition of `if`/`elif`/`while`/`until`/`!`.
+# It is NOT consumption when another statement sits between the pipe and the
+# `$?` read (`cmd > log 2>&1; rc=$?; cat log | tail -3` — the $? belongs to
+# `cmd`; that was the 1c false-positive class), except pure-output `echo` /
+# `printf` statements that read nothing, which are skipped (up to 3). An
+# earlier `set -o pipefail` makes the pipeline's status the command's, so it
+# exempts. Quote tracking is a real state machine, so an apostrophe inside
+# double quotes is literal — the old per-line parity count went blind on
+# `echo "Bob's run"; git log | head -3; rc=$?` (finding 6).
 MF022_VERDICT_CMDS = (
     'pytest', 'python3', 'python', 'gh', 'git', 'systemctl', 'curl', 'ssh',
     'lint.py', 'honest_status.sh',
@@ -1348,17 +1363,231 @@ MF022_VERDICT_CMDS = (
 MF022_EXITCODE_MASK = re.compile(
     r'\b(' + '|'.join(re.escape(c) for c in MF022_VERDICT_CMDS)
     + r')\b.*\|\s*(tail|head)\b')
-MF022_USES_RC = re.compile(r'\$\?')
+MF022_USES_RC = re.compile(r'\$\?|\$\{\?\}')
+MF022_PIPEFAIL = re.compile(r'\bset\s+-[A-Za-z]*o\s+pipefail\b')
+MF022_CONDITIONAL = re.compile(r'^\s*(if|elif|while|until)\s|^\s*!\s')
+MF022_PURE_OUTPUT = re.compile(r'^\s*(echo|printf)\b')
+MF022_DISCARD = re.compile(r'^\s*(true|:)\s*$')
 MF022_BARE_PIP = re.compile(r'\bpip3?\s+install\b')
 MF022_APT_SWALLOW = re.compile(r'\bapt(-get)?\s+install\b.*&>\s*/dev/null')
 
 
+def _shell_quote_state(text: str, upto: int = None):
+    """Walk `text` (to `upto`, default end) with a small shell lexer and return
+    the quote mode at that position: '' (unquoted), "'" (single / $'…'),
+    '"' (double). `$(…)` and backticks push a fresh unquoted context, so a
+    `"$(x "y")"` nest does not flip the outer state. Backslash escapes the
+    next char outside single quotes. A real state machine, not a parity
+    count: an apostrophe inside double quotes is literal (finding 6)."""
+    end = len(text) if upto is None else upto
+    stack = ['']
+    i = 0
+    while i < end:
+        c = text[i]
+        mode = stack[-1]
+        if mode == "'":
+            if c == "'":
+                stack[-1] = ''
+        elif mode == '$':          # $'…' ANSI-C quoting: backslash escapes
+            if c == '\\':
+                i += 1
+            elif c == "'":
+                stack[-1] = ''
+        elif mode == '"':
+            if c == '\\':
+                i += 1
+            elif c == '"':
+                stack[-1] = ''
+            elif c == '$' and text[i + 1:i + 2] == '(':
+                stack.append(''); i += 1
+            elif c == '`':
+                stack.append('')
+            elif c == ')' and len(stack) > 1 and stack[-2] == '':
+                pass
+        else:                      # unquoted
+            if c == '\\':
+                i += 1
+            elif c == "'":
+                stack[-1] = "'"
+            elif c == '"':
+                stack[-1] = '"'
+            elif c == '$' and text[i + 1:i + 2] == "'":
+                stack[-1] = '$'; i += 1
+            elif c == '$' and text[i + 1:i + 2] == '(':
+                stack.append(''); i += 1
+            elif c == '`':
+                if len(stack) > 1:
+                    stack.pop()
+                else:
+                    stack.append('')
+            elif c == ')' and len(stack) > 1:
+                stack.pop()
+        i += 1
+    m = stack[-1]
+    return "'" if m == '$' else m
+
+
 def _match_in_quotes(line: str, pos: int) -> bool:
     """True when the match at `pos` sits inside a quoted string — i.e. it is a
-    fix-hint / echo / dry-run preview, not an actual command. An odd count of
-    quotes before the match means we are inside one."""
-    prefix = line[:pos]
-    return (prefix.count('"') % 2 == 1) or (prefix.count("'") % 2 == 1)
+    fix-hint / echo / dry-run preview, not an actual command."""
+    return _shell_quote_state(line, pos) != ''
+
+
+def _shell_statements(text: str):
+    """Split shell text into (lineno, statement, following_separator) at the
+    UNQUOTED top-level separators `;`, `&&`, `||`, `&` and newline. Comments
+    are dropped, `\\`-newline continuations joined (the statement keeps the
+    line number it started on), and `$(…)` / backtick bodies stay inside
+    their statement. Redirection `&` (`2>&1`, `&>`, `<&`) is not a separator."""
+    out = []
+    stack = ['']
+    buf = []
+    lineno = 1
+    start = 1
+    i = 0
+    n = len(text)
+
+    def flush(sep):
+        nonlocal buf, start
+        out.append((start, ''.join(buf), sep))
+        buf = []
+        start = lineno
+
+    while i < n:
+        c = text[i]
+        mode = stack[-1]
+        nxt = text[i + 1:i + 2]
+        if mode == "'":
+            buf.append(c)
+            if c == "'":
+                stack[-1] = ''
+        elif mode == '$':
+            buf.append(c)
+            if c == '\\':
+                buf.append(nxt); i += 1
+            elif c == "'":
+                stack[-1] = ''
+        elif mode == '"':
+            buf.append(c)
+            if c == '\\':
+                buf.append(nxt); i += 1
+                if nxt == '\n':
+                    lineno += 1
+            elif c == '"':
+                stack[-1] = ''
+            elif c == '$' and nxt == '(':
+                buf.append(nxt); i += 1; stack.append('')
+            elif c == '`':
+                stack.append('')
+            elif c == '\n':
+                lineno += 1
+        else:
+            if c == '\\':
+                if nxt == '\n':
+                    buf.append(' '); lineno += 1; i += 2
+                    continue
+                buf.append(c); buf.append(nxt); i += 1
+            elif c == '#' and (not buf or buf[-1] in ' \t' or buf[-1] == '\n'
+                               or ''.join(buf).strip() == ''):
+                j = text.find('\n', i)
+                i = n if j < 0 else j
+                continue
+            elif c == "'":
+                buf.append(c); stack[-1] = "'"
+            elif c == '"':
+                buf.append(c); stack[-1] = '"'
+            elif c == '$' and nxt == "'":
+                buf.append(c); buf.append(nxt); i += 1; stack[-1] = '$'
+            elif c == '$' and nxt == '(':
+                buf.append(c); buf.append(nxt); i += 1; stack.append('')
+            elif c == '`':
+                buf.append(c)
+                if len(stack) > 1:
+                    stack.pop()
+                else:
+                    stack.append('')
+            elif c == ')' and len(stack) > 1:
+                buf.append(c); stack.pop()
+            elif len(stack) > 1:
+                buf.append(c)
+                if c == '\n':
+                    lineno += 1
+            elif c == '\n':
+                if ''.join(buf).rstrip().endswith('|'):   # `cmd |` + newline = one pipeline
+                    buf.append(' '); lineno += 1
+                else:
+                    flush('\n'); lineno += 1; start = lineno
+            elif c == ';':
+                flush(';')
+            elif c == '&' and nxt == '&':
+                flush('&&'); i += 1
+            elif c == '|' and nxt == '|':
+                flush('||'); i += 1
+            elif c == '&' and nxt != '>' and not (buf and buf[-1] in '<>'):
+                flush('&')
+            else:
+                buf.append(c)
+        i += 1
+    if ''.join(buf).strip():
+        flush('')
+    return out
+
+
+def mf022_exit_code_mask_findings(text: str) -> List[dict]:
+    """The MF022 exit-code-mask predicate — THE single implementation, shared
+    by the shell-file scan below and by the PreToolUse hook
+    `.claude/hooks/exit_code_mask_guard.sh` (which imports it rather than
+    re-implementing it; honest_failure_modes #5). Returns one dict per masked
+    verdict: {lineno, verdict_cmd, pipe_cmd, how} where `how` is 'rc-read',
+    '&&', '||' or 'conditional'. Empty list = clean."""
+    stmts = [s for s in _shell_statements(text) if s[1].strip()]
+    findings: List[dict] = []
+    pipefail = False
+    for idx, (ln, stmt, sep) in enumerate(stmts):
+        pf = MF022_PIPEFAIL.search(stmt)
+        if pf and not _match_in_quotes(stmt, pf.start()):
+            pipefail = True
+        if pipefail:
+            continue
+        m = MF022_EXITCODE_MASK.search(stmt)
+        if not m or _match_in_quotes(stmt, m.start()):
+            continue
+        if pf and pf.start() < m.start(2):      # `ssh box 'set -o pipefail; …'`
+            continue
+        how = None
+        if MF022_CONDITIONAL.match(stmt):
+            how = 'conditional'
+        elif MF022_USES_RC.search(stmt, m.end()):
+            how = 'rc-read'
+        elif sep in ('&&', '||'):
+            nxt_stmt = stmts[idx + 1][1] if idx + 1 < len(stmts) else ''
+            if not (sep == '||' and MF022_DISCARD.match(nxt_stmt)):
+                how = sep
+        else:
+            for _ln2, s2, _sep2 in stmts[idx + 1:idx + 4]:
+                rc = MF022_USES_RC.search(s2)
+                if rc and _shell_quote_state(s2, rc.start()) != "'":
+                    how = 'rc-read'
+                    break
+                if MF022_PURE_OUTPUT.match(s2):
+                    continue
+                break
+        if how:
+            findings.append({'lineno': ln, 'verdict_cmd': m.group(1),
+                             'pipe_cmd': m.group(2), 'how': how})
+    return findings
+
+
+def _mf022_mask_message(f: dict) -> str:
+    if f['how'] == 'rc-read':
+        consumed = "and then $? is read"
+    elif f['how'] == 'conditional':
+        consumed = "and used as an if/while condition"
+    else:
+        consumed = f"and its status is consumed by `{f['how']}`"
+    return (f"'{f['verdict_cmd']}' piped to {f['pipe_cmd']} {consumed} — "
+            "that is the PIPE's exit code, not the command's. Capture the "
+            "real rc first (`cmd >log 2>&1; rc=$?`) and read the log after")
 
 
 def _check_pip_invocations_in_file(filepath: str, rel_path: str) -> List[LintIssue]:
@@ -1366,23 +1595,16 @@ def _check_pip_invocations_in_file(filepath: str, rel_path: str) -> List[LintIss
     try:
         with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
             lines = f.readlines()
+        masks = {}
+        for finding in mf022_exit_code_mask_findings(''.join(lines)):
+            masks.setdefault(finding['lineno'], finding)
         for lineno, line in enumerate(lines, 1):
                 if line.lstrip().startswith('#'):
                     continue
-                # Does this pipeline's exit code get consumed here or next?
-                nxt = ""
-                for cand in lines[lineno:lineno + 2]:
-                    if cand.strip():
-                        nxt = cand
-                        break
-                m = MF022_EXITCODE_MASK.search(line)
-                if (m and not _match_in_quotes(line, m.start())
-                        and (MF022_USES_RC.search(line) or MF022_USES_RC.search(nxt))):
+                if lineno in masks:
                     issues.append(LintIssue(
                         rel_path, lineno, Severity.ERROR, "MF022",
-                        f"'{m.group(1)}' piped to {m.group(2)} and then $? is read — "
-                        "that is the PIPE's exit code, not the command's. Capture the "
-                        "real rc first (`cmd >log 2>&1; rc=$?`) and read the log after",
+                        _mf022_mask_message(masks[lineno]),
                     ))
                     continue
                 m = MF022_PIPE_MASK.search(line)

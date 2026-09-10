@@ -181,6 +181,17 @@ risk to a rule whose FNs cost false-GREEN verdicts — the expensive direction.
 The guard is warn-only, so those 2 cost a stderr line each. Declining is the
 subtraction here; re-open only if the share climbs materially.
 
+**SUPERSEDED 2026-09-09 (close #3, Fable 5.1) — by a measurement, not a
+re-read.** The optional 4th ultra pass found the two "1c class" rows were the
+guard firing on its OWN cure text (`pytest > log 2>&1; rc=$?; cat log | tail`)
+and on `set -o pipefail`, where `$?` is correct — a guard that flags its remedy
+trains the reader to dismiss it. The FN the verdict above feared
+(`pipeline; rc=$?`) is kept: the new predicate requires the `$?` read to be the
+next STATEMENT after the pipeline and exempts an earlier `pipefail`. Re-derived
+over the same corpus (230 rows by then): fires 19 → 17, near-miss 211 → 213,
+the 2 lost are exactly the 1c rows, 0 gained. Fix commit named in the
+provenance row of the same date; the pin carries both directions.
+
 ⚠️ **Precision limit of this measurement, stated rather than buried**: witness
 lines are truncated at 160 chars and have newlines flattened to spaces, so
 multi-line commands lose newline separators and a few long commands lose their
