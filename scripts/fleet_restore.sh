@@ -44,9 +44,35 @@ PULL_FROM=""
 RESTORE_HOSTNAME=""
 SET_HOSTNAME=""
 NO_CONFIRM=false
-# Default target user: $MESHFORGE_TARGET_USER, then $SUDO_USER, then current user.
-# Override with --user.
-TARGET_USER="${MESHFORGE_TARGET_USER:-${SUDO_USER:-${USER:-pi}}}"
+# Target user resolution. Two things make this different from every other
+# operator-login site in the tree, and both argue against ANY default:
+#
+#   1. This script CREATES the account it targets — `useradd -m` plus
+#      sudo/dialout/gpio/spi/i2c — when the name does not resolve.
+#   2. It then restores the operator's config, .claude memory, and
+#      gateway_identity (an RNS PRIVATE KEY) into that home and chowns them to
+#      it.
+#
+# So a guessed name does not merely write to the wrong place: it manufactures a
+# sudo-capable account holding key material. The old chain ended in the literal
+# `pi`, which is reachable whenever both env vars are unset (a root cron or a
+# systemd unit sets NEITHER) and is simply wrong on a fleet whose operator is
+# not `pi`.
+#
+# EXPLICIT vs INFERRED is the distinction that matters, and it is tracked
+# rather than guessed at: a name the operator NAMED (--user, or
+# $MESHFORGE_TARGET_USER) may create an account, because that is the legitimate
+# fresh-Pi restore this script is for. A name merely INFERRED from the
+# environment may not — it must already exist. Neither may be empty or root.
+TARGET_USER_EXPLICIT=false
+if [[ -n "${MESHFORGE_TARGET_USER:-}" ]]; then
+    TARGET_USER="$MESHFORGE_TARGET_USER"
+    TARGET_USER_EXPLICIT=true
+else
+    # $SUDO_USER/$USER are advisory; end the chain in the real uid, never a
+    # literal login name.
+    TARGET_USER="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || true)}}"
+fi
 
 # ─────────────────────────────────────────────────────────────────
 # Parse arguments
@@ -65,7 +91,11 @@ show_help() {
     echo "  --hostname NAME    Hostname to restore (required with --pull-from)"
     echo "  --set-hostname     Set this Pi's hostname from the backup"
     echo "  --branch BRANCH    MeshForge branch to install (default: main)"
-    echo "  --user USER        Target user account (default: \$MESHFORGE_TARGET_USER, \$SUDO_USER, or \$USER)"
+    echo "  --user USER        Target user account. Required to CREATE a missing"
+    echo "                     account (that grants sudo/dialout/gpio and restores a"
+    echo "                     private key into its home, so it is never inferred)."
+    echo "                     Otherwise defaults to \$MESHFORGE_TARGET_USER, \$SUDO_USER,"
+    echo "                     \$USER, or the real uid — and that account must exist."
     echo "  --dry-run          Show what would be restored without doing it"
     echo "  --no-confirm, -y   Skip confirmation prompt"
     echo "  --help, -h         Show this help"
@@ -91,6 +121,9 @@ while [[ $# -gt 0 ]]; do
             ;;
         --user|-u)
             TARGET_USER="$2"
+            # Named by the operator — this is the ONLY way an account may be
+            # created below (see the resolution block at the top).
+            TARGET_USER_EXPLICIT=true
             shift 2
             ;;
         --dry-run)
@@ -128,10 +161,23 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Refuse an unresolved or root target BEFORE anything reads or writes a home.
+# There is no safe default at this point: the phases below create the account
+# and write private key material into it, so "pick something reasonable" is the
+# one thing this must never do.
+if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]]; then
+    echo -e "${RED}Error: cannot resolve a target user${NC}" >&2
+    echo "  MESHFORGE_TARGET_USER='${MESHFORGE_TARGET_USER:-}' SUDO_USER='${SUDO_USER:-}' USER='${USER:-}' id -un='$(id -un 2>/dev/null || true)'" >&2
+    echo "  This script creates the account and restores a private key into its home," >&2
+    echo "  so it will not guess. Name it: sudo bash $0 <archive> --user <login>" >&2
+    exit 1
+fi
+
 # Determine target user home
 TARGET_HOME=$(getent passwd "$TARGET_USER" 2>/dev/null | cut -d: -f6 || true)
 if [[ -z "$TARGET_HOME" ]]; then
-    # User doesn't exist yet — will create later
+    # User doesn't exist yet — will create later (only if EXPLICIT; the
+    # creation step re-checks and refuses an inferred name).
     TARGET_HOME="/home/${TARGET_USER}"
 fi
 
@@ -309,8 +355,25 @@ echo ""
 # ─────────────────────────────────────────────────────────────────
 echo -e "${CYAN}[2/6] Preparing system...${NC}"
 
-# Create target user if needed
+# Create target user if needed.
+#
+# Gated on EXPLICIT: creating an account grants sudo/dialout/gpio and the
+# restore then writes gateway_identity (a private key) and .claude memory into
+# its home. That is the right behavior for the fresh-Pi restore this script
+# exists for — when the operator NAMED the account. It is never right for a
+# name inferred from the environment, because the inference failing and the
+# account genuinely not existing yet are indistinguishable here.
 if ! id "$TARGET_USER" &>/dev/null; then
+    if ! $TARGET_USER_EXPLICIT; then
+        echo -e "${RED}Error: target user '${TARGET_USER}' does not exist${NC}" >&2
+        echo "  ...and it was INFERRED from the environment, not named." >&2
+        echo "  Refusing to create an account from an inference: this step adds it to" >&2
+        echo "  sudo/dialout/gpio/spi/i2c, and the restore then writes gateway_identity" >&2
+        echo "  (an RNS private key) and .claude memory into its home." >&2
+        echo "  If that is genuinely what you want, say so:" >&2
+        echo "      sudo bash $0 <archive> --user ${TARGET_USER}" >&2
+        exit 1
+    fi
     echo -e "  ${GREEN}+${NC} Creating user ${TARGET_USER}"
     useradd -m -s /bin/bash "$TARGET_USER"
     # Add to standard groups

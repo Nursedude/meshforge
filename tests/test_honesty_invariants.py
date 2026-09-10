@@ -1400,6 +1400,64 @@ def test_no_script_resolves_the_operator_from_advisory_env_alone():
         "explicitly:\n  " + "\n  ".join(offenders))
 
 
+def test_no_script_defaults_an_operator_login_to_a_literal_name():
+    """A login fallback must end in a RESOLUTION, never a guessed name.
+
+    fleet_restore.sh read `${MESHFORGE_TARGET_USER:-${SUDO_USER:-${USER:-pi}}}`.
+    The chain looked thorough and its last link was a guess — and on this fleet
+    the operator is not `pi`. That default was reachable exactly where the
+    others were (a root cron or a systemd unit sets neither var), and this is
+    the worst script in the tree to reach it in: it `useradd`s the name, adds it
+    to sudo/dialout/gpio/spi/i2c, and the restore then writes gateway_identity
+    (an RNS PRIVATE KEY) and .claude memory into that home. A guess there does
+    not write to the wrong place — it manufactures a sudo-capable account
+    holding key material.
+
+    `${USER:-$(id -un)}` and `${USER:-${OTHER}}` are fine: they continue the
+    chain. A bare word terminates it with an assumption.
+    """
+    import re
+    bad = re.compile(r"\$\{[A-Za-z_]*USER[A-Za-z_]*:-([A-Za-z][A-Za-z0-9_-]*)\}")
+    offenders = []
+    for path in sorted((REPO / "scripts").glob("*.sh")):
+        for n, ln in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            m = bad.search(ln)
+            if m:
+                offenders.append(f"{path.name}:{n}: defaults to literal "
+                                 f"{m.group(1)!r}: {ln.strip()}")
+    assert not offenders, (
+        "operator/target login defaulted to a literal name. End the chain in a "
+        "resolution ($(id -un)) or refuse outright — never a guessed login:\n  "
+        + "\n  ".join(offenders))
+
+
+def test_fleet_restore_never_creates_an_account_from_an_inferred_name():
+    """fleet_restore may CREATE the account it targets, so where the name came
+    from is a safety property, not a detail.
+
+    Named by the operator (--user / $MESHFORGE_TARGET_USER) → creating it is the
+    legitimate fresh-Pi restore this script exists for. Inferred from the
+    environment → "the inference failed" and "the account genuinely does not
+    exist yet" are indistinguishable at that point, so it must refuse.
+
+    Structural pin, and deliberately so. The unresolvable-target refusal IS
+    exercised live, but reaching the useradd branch needs a real root restore
+    with a valid archive, and running one to make a test green is not a trade
+    worth making on this path. This asserts the gate exists, is fed only by
+    operator-named sources, and stands BEFORE the useradd.
+    """
+    text = (REPO / "scripts" / "fleet_restore.sh").read_text(encoding="utf-8")
+    setters = [ln.strip() for ln in text.splitlines()
+               if "TARGET_USER_EXPLICIT=true" in ln]
+    assert len(setters) == 2, (
+        "exactly two sources may mark the target EXPLICIT (--user and "
+        f"$MESHFORGE_TARGET_USER); found: {setters}")
+    gate = text.index("if ! $TARGET_USER_EXPLICIT; then")
+    useradd = text.index("useradd -m -s /bin/bash")
+    assert gate < useradd, "the inferred-name refusal must precede the useradd"
+    assert "exit 1" in text[gate:useradd], "the gate must refuse, not warn"
+
+
 def test_dry_run_never_prompts_at_the_ownership_question():
     """"--dry-run never prompts" was true only of the FINAL prompt. The phase-1
     ownership prompt was guarded solely by mf_have_tty, so an interactive
