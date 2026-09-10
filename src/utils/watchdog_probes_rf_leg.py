@@ -111,7 +111,7 @@ DEFAULT_STATE_PATH = "/var/lib/meshforge/rf_leg_state.json"
 MIN_TX_DELTA_BYTES = 200.0
 
 #: Floor on how many consecutive flat-RX ticks are required before firing,
-#: used until a peer cadence has been observed. 20 ticks × 30 s = 600 s = one
+#: applied once the cadence is CALIBRATED. 20 ticks × 30 s = 600 s = one
 #: ``id_interval`` of the fleet's RNode config: a peer is allowed to be exactly
 #: that quiet without anything being wrong.
 MIN_SILENCE_TICKS = 20
@@ -120,6 +120,32 @@ MIN_SILENCE_TICKS = 20
 #: ticks), the silence must exceed this multiple of it. Two missed announces in
 #: a row is deafness; one is a lost packet.
 GAP_FACTOR = 2.0
+
+#: How many RX gaps must be observed before ``rx_gap_max`` is trusted as this
+#: peer's cadence. Measured 2026-09-10 (delta
+#: ``chronic_flap::rf_leg_silent_any::RNodeInterface[RNode LoRa]``): one gateway
+#: box fired 15× and a second RNode box 5× — every one a false positive on a
+#: healthy leg whose RX
+#: counter kept climbing — because ONE observed gap was enough to set the
+#: threshold. moc3's estimate climbed 16 → 52 ticks as each false fire taught it
+#: more, so the flap was UNDER-calibration, not a noisy subject. An estimate
+#: built from a single sample is a guess; say so and use the conservative floor.
+MIN_GAP_OBSERVATIONS = 5
+
+#: The threshold to use while the cadence is UNCALIBRATED (fewer than
+#: ``MIN_GAP_OBSERVATIONS`` gaps seen). 120 ticks × 30 s = 1 h. This is
+#: deliberately far above the calibrated floor: the fault this probe exists for
+#: left two radios deaf for HOURS, so an hour of cold-start conservatism costs
+#: nothing real, while the 20-tick floor cost 20 false fires in two days.
+UNCALIBRATED_SILENCE_TICKS = 120
+
+#: How many recent gaps to retain per leg. ``rx_gap_max`` used to be a
+#: monotonic max that never decayed, so a GENUINE multi-hour deafness episode —
+#: once it ended and the peer was heard again — taught the probe that multi-hour
+#: silence is this peer's normal cadence, desensitising it against a repeat of
+#: the exact fault it was built to catch. A bounded window ages that outlier out
+#: after this many further RX events instead of carrying it forever.
+GAP_WINDOW = 10
 
 #: Bound on the ``rnstatus -j`` subprocess. Same as the runner's text call.
 RAW_STATS_TIMEOUT_S = 8.0
@@ -195,8 +221,19 @@ def _int_counter(entry: dict, key: str) -> Optional[int]:
 
 
 def required_silence_ticks(rx_gap_max: int, *, min_silence_ticks: int = MIN_SILENCE_TICKS,
-                           gap_factor: float = GAP_FACTOR) -> int:
-    """How long RX must be flat before "silent" means "deaf" for this peer."""
+                           gap_factor: float = GAP_FACTOR,
+                           gap_count: int = 0,
+                           min_gap_observations: int = MIN_GAP_OBSERVATIONS,
+                           uncalibrated_ticks: int = UNCALIBRATED_SILENCE_TICKS) -> int:
+    """How long RX must be flat before "silent" means "deaf" for this peer.
+
+    ``gap_count`` is how many RX gaps have actually been observed. Below
+    ``min_gap_observations`` the cadence estimate is a guess drawn from too few
+    samples, so the conservative ``uncalibrated_ticks`` applies instead — never
+    a threshold derived from one sighting. See ``MIN_GAP_OBSERVATIONS``.
+    """
+    if gap_count < min_gap_observations:
+        return int(uncalibrated_ticks)
     if rx_gap_max <= 0:
         return int(min_silence_ticks)
     return max(int(min_silence_ticks), int(math.ceil(gap_factor * rx_gap_max)))
@@ -210,6 +247,8 @@ def probe_rf_leg_silent(
     min_tx_delta: float = MIN_TX_DELTA_BYTES,
     min_silence_ticks: int = MIN_SILENCE_TICKS,
     gap_factor: float = GAP_FACTOR,
+    min_gap_observations: int = MIN_GAP_OBSERVATIONS,
+    uncalibrated_ticks: int = UNCALIBRATED_SILENCE_TICKS,
     raw_timeout_s: float = RAW_STATS_TIMEOUT_S,
 ) -> Optional[Signal]:
     """Judge each RNode RF interface on bytes MOVED, not on interface state.
@@ -285,7 +324,16 @@ def probe_rf_leg_silent(
         last_rx = int(prior.get("last_rx", 0))
         streak = int(prior.get("flat_streak", 0))
         tx_at_flat_start = int(prior.get("tx_at_flat_start", tx))
-        rx_gap_max = int(prior.get("rx_gap_max", 0))
+        # Bounded window of observed gaps (newest last). Older state carried a
+        # monotonic `rx_gap_max` only: seed the window from it so an upgraded
+        # box keeps its estimate, but with ONE sample — which now reads as
+        # uncalibrated and applies the conservative floor until it re-learns.
+        recent_gaps = prior.get("recent_gaps")
+        if not isinstance(recent_gaps, list):
+            seed = int(prior.get("rx_gap_max", 0))
+            recent_gaps = [seed] if seed > 0 else []
+        recent_gaps = [int(g) for g in recent_gaps
+                       if isinstance(g, int) and not isinstance(g, bool) and g > 0]
         gap_valid = bool(prior.get("gap_valid", False))
         up = entry.get("status") is True
 
@@ -301,7 +349,7 @@ def probe_rf_leg_silent(
             # The peer was heard. The silence that just ended is a cadence
             # observation — but only if it was measured from a real RX event.
             if gap_valid and prior:
-                rx_gap_max = max(rx_gap_max, streak + 1)
+                recent_gaps = (recent_gaps + [streak + 1])[-GAP_WINDOW:]
             streak, tx_at_flat_start, gap_valid = 0, tx, True
         elif not ever_rx:
             # Never heard a peer. True, and not a fault — this is what a
@@ -313,18 +361,31 @@ def probe_rf_leg_silent(
         if ever_rx and up:
             judged += 1
 
+        # `rx_gap_max` is now DERIVED from the bounded window, not accumulated,
+        # so an outlier leaves the estimate once it ages out. Still persisted:
+        # it is what the detail line quotes and what older readers expect.
+        rx_gap_max = max(recent_gaps) if recent_gaps else 0
         state[key] = {
             "ever_rx": ever_rx, "last_tx": tx, "last_rx": rx,
             "flat_streak": streak, "tx_at_flat_start": tx_at_flat_start,
             "rx_gap_max": rx_gap_max, "gap_valid": gap_valid,
+            "recent_gaps": recent_gaps,
         }
 
         required = required_silence_ticks(
-            rx_gap_max, min_silence_ticks=min_silence_ticks, gap_factor=gap_factor)
+            rx_gap_max, min_silence_ticks=min_silence_ticks, gap_factor=gap_factor,
+            gap_count=len(recent_gaps),
+            min_gap_observations=min_gap_observations,
+            uncalibrated_ticks=uncalibrated_ticks)
         tx_in_window = tx - tx_at_flat_start
         if up and ever_rx and streak >= required and tx_in_window >= min_tx_delta:
-            cadence = (f"the longest silence this peer ever showed was {rx_gap_max} ticks"
-                       if rx_gap_max else "no peer cadence observed yet; floor applied")
+            if len(recent_gaps) < min_gap_observations:
+                cadence = (f"cadence UNCALIBRATED ({len(recent_gaps)} of "
+                           f"{min_gap_observations} gaps observed); "
+                           f"conservative floor applied")
+            else:
+                cadence = (f"the longest of the last {len(recent_gaps)} silences "
+                           f"this peer showed was {rx_gap_max} ticks")
             findings.append(
                 f"{key}: RX pinned at {rx} B for {streak} consecutive ticks "
                 f"(threshold {required}; {cadence}) while TX moved {tx_in_window} B "

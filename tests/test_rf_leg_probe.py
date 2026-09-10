@@ -75,9 +75,13 @@ def raw(tx_b, rx_b, up=True, name=NAME):
 def tick(tmp_path, tx_b, rx_b, *, up=True, silence=3, **kw):
     """One probe observation against a persistent state file.
 
-    ``silence`` shortens MIN_SILENCE_TICKS so the classic sequences stay
-    readable; the cadence tests below exercise the real floor explicitly.
+    ``silence`` shortens BOTH thresholds — the calibrated floor
+    (MIN_SILENCE_TICKS) and the uncalibrated one
+    (UNCALIBRATED_SILENCE_TICKS) — so the classic sequences stay readable.
+    These tests are about the FAULT, the counters and the state; the
+    calibration policy itself is exercised explicitly in TestPeerCadence.
     """
+    kw.setdefault("uncalibrated_ticks", silence)
     return rf.probe_rf_leg_silent(
         status=FakeStatus([text_iface()]),
         raw_stats=[raw(tx_b, rx_b, up=up)],
@@ -196,15 +200,18 @@ class TestPeerCadence:
         return tx, rx
 
     def test_silence_shorter_than_the_observed_cadence_never_pages(self, tmp_path):
-        # floor 6 > period 5, so the calibration cycles cannot trip the floor
-        tx, rx = self._peer_every(tmp_path, period=5, cycles=3, silence=6)
+        # floor 6 > period 5, so the calibration cycles cannot trip the floor.
+        # cycles=6 -> 5 recorded gaps (the first RX has no measured-from
+        # point), which is MIN_GAP_OBSERVATIONS: the estimate is only trusted once
+        # it rests on enough samples, so the cadence path needs a calibrated leg.
+        tx, rx = self._peer_every(tmp_path, period=5, cycles=6, silence=6)
         # observed gap 5 ticks -> requirement max(6, 2*5) = 10 flat ticks
         for i in range(1, 10):
             assert tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx, silence=6) is None, \
                 f"paged after {i} flat ticks; the peer has been quiet 5 before"
 
     def test_silence_beyond_twice_the_cadence_pages(self, tmp_path):
-        tx, rx = self._peer_every(tmp_path, period=5, cycles=3, silence=6)
+        tx, rx = self._peer_every(tmp_path, period=5, cycles=6, silence=6)
         for i in range(1, 10):
             tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx, silence=6)
         sig = tick(tmp_path, tx_b=tx + 5000, rx_b=rx, silence=6)
@@ -222,10 +229,122 @@ class TestPeerCadence:
                     silence=rf.MIN_SILENCE_TICKS) is not None
 
     def test_required_silence_arithmetic(self):
-        assert rf.required_silence_ticks(0, min_silence_ticks=20) == 20
-        assert rf.required_silence_ticks(5, min_silence_ticks=20) == 20
-        assert rf.required_silence_ticks(15, min_silence_ticks=20) == 30
-        assert rf.required_silence_ticks(7, min_silence_ticks=3, gap_factor=1.5) == 11
+        cal = dict(gap_count=rf.MIN_GAP_OBSERVATIONS)
+        assert rf.required_silence_ticks(0, min_silence_ticks=20, **cal) == 20
+        assert rf.required_silence_ticks(5, min_silence_ticks=20, **cal) == 20
+        assert rf.required_silence_ticks(15, min_silence_ticks=20, **cal) == 30
+        assert rf.required_silence_ticks(7, min_silence_ticks=3, gap_factor=1.5,
+                                         **cal) == 11
+
+    def test_an_estimate_from_too_few_samples_is_not_trusted(self):
+        """THE 2026-09-10 flap, in arithmetic form.
+
+        Two RNode boxes fired 15× and 5× on healthy legs because ONE observed
+        gap set the threshold: a 16-tick sighting made 32 ticks of silence
+        'deaf', and each false fire taught it more (16 → 52). Below
+        MIN_GAP_OBSERVATIONS the conservative floor applies instead, whatever
+        the sample happens to say.
+        """
+        for seen in range(rf.MIN_GAP_OBSERVATIONS):
+            assert rf.required_silence_ticks(16, gap_count=seen) == \
+                rf.UNCALIBRATED_SILENCE_TICKS, \
+                f"trusted a cadence built from {seen} observation(s)"
+        assert rf.required_silence_ticks(
+            16, gap_count=rf.MIN_GAP_OBSERVATIONS) == 32
+        assert rf.UNCALIBRATED_SILENCE_TICKS > 2 * 52, (
+            "the uncalibrated floor must exceed twice the widest cadence the "
+            "fleet actually learned (moc3: 52 ticks), or it cannot prevent "
+            "the flap it exists for")
+
+
+class TestCalibrationIsBounded:
+    """The two defects behind the 2026-09-10 delta
+    ``chronic_flap::rf_leg_silent_any::RNodeInterface[RNode LoRa]``.
+
+    Both are the same shape: a cadence estimate believed more than the
+    evidence under it supports.
+    """
+
+    def _peer_every(self, tmp_path, period, cycles, **kw):
+        tx, rx = 0, 0
+        for _ in range(cycles):
+            for step in range(period):
+                tx += 500
+                if step == period - 1:
+                    rx += 100
+                tick(tmp_path, tx_b=tx, rx_b=rx, **kw)
+        return tx, rx
+
+    def _gaps(self, tmp_path):
+        st = json.loads((tmp_path / "rf_leg_state.json").read_text())
+        return st[f"RNodeInterface[{NAME}]"]
+
+    def test_the_moc3_flap_does_not_reproduce(self, tmp_path):
+        """moc3, 2026-09-09/10: 15 fires on a leg whose RX kept climbing.
+
+        One observed 16-tick gap set the threshold to 32, so 32 flat ticks on a
+        peer whose REAL cadence reached 52 ticks read as deafness. Replayed with
+        the live floors, the leg must stay quiet.
+        """
+        tx, rx = 0, 0
+        for step in range(16):          # one real gap, then the peer is heard
+            tx += 500
+            tick(tmp_path, tx_b=tx, rx_b=rx, silence=rf.MIN_SILENCE_TICKS,
+                 uncalibrated_ticks=rf.UNCALIBRATED_SILENCE_TICKS)
+        rx += 100
+        tick(tmp_path, tx_b=tx, rx_b=rx, silence=rf.MIN_SILENCE_TICKS,
+             uncalibrated_ticks=rf.UNCALIBRATED_SILENCE_TICKS)
+        # ...now the 52-tick silence that moc3 actually showed, which the
+        # 16-tick estimate called deafness 15 times.
+        for i in range(1, 53):
+            assert tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx,
+                        silence=rf.MIN_SILENCE_TICKS,
+                        uncalibrated_ticks=rf.UNCALIBRATED_SILENCE_TICKS) is None, \
+                f"fired after {i} flat ticks on one observed gap — the moc3 flap"
+
+    def test_a_real_outage_does_not_become_this_peers_normal_cadence(self, tmp_path):
+        """The desensitisation defect: ``rx_gap_max`` was a monotonic max.
+
+        A genuine multi-hour deafness — the fault this probe exists for —
+        ended, was recorded as a gap, and permanently taught the probe that
+        multi-hour silence is normal here. A bounded window ages it out.
+        """
+        self._peer_every(tmp_path, period=5, cycles=6, silence=6)
+        tx, rx = self._gaps(tmp_path)["last_tx"], self._gaps(tmp_path)["last_rx"]
+
+        for i in range(1, 201):         # the outage: 200 ticks deaf, then heard
+            tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx, silence=6)
+        tx += 500 * 201
+        rx += 100
+        tick(tmp_path, tx_b=tx, rx_b=rx, silence=6)
+        assert self._gaps(tmp_path)["rx_gap_max"] >= 200, \
+            "the outage should be recorded as an observation at all"
+
+        # The peer returns to its 5-tick cadence. Once the outlier has aged out
+        # of the window the estimate must follow the peer, not the outage.
+        # The cycle count is FIXED, not GAP_WINDOW-derived, so that restoring
+        # the old unbounded learner makes this test fail in bounded time — a
+        # test whose cost scales with the thing it pins cannot be drilled.
+        assert rf.GAP_WINDOW <= 12, "widen this loop if the window grows"
+        self._peer_every(tmp_path, period=5, cycles=14, silence=6)
+        assert self._gaps(tmp_path)["rx_gap_max"] < 200, \
+            "a single outage still dominates the cadence: probe desensitised"
+        assert len(self._gaps(tmp_path)["recent_gaps"]) <= rf.GAP_WINDOW
+
+    def test_upgrading_a_box_does_not_trust_the_old_single_estimate(self, tmp_path):
+        """Old state carries ``rx_gap_max`` and no window. Seeding it as ONE
+        sample keeps the estimate but re-earns the right to use it."""
+        sp = tmp_path / "rf_leg_state.json"
+        sp.write_text(json.dumps({f"RNodeInterface[{NAME}]": {
+            "ever_rx": True, "last_tx": 1000, "last_rx": 500,
+            "flat_streak": 0, "tx_at_flat_start": 1000,
+            "rx_gap_max": 16, "gap_valid": True}}))
+        for i in range(1, 40):
+            assert tick(tmp_path, tx_b=1000 + 500 * i, rx_b=500,
+                        silence=rf.MIN_SILENCE_TICKS,
+                        uncalibrated_ticks=rf.UNCALIBRATED_SILENCE_TICKS) is None, \
+                f"fired at {i} flat ticks on an inherited one-sample estimate"
+        assert self._gaps(tmp_path)["recent_gaps"] == [16]
 
 
 class TestRestartsAreNotDeafness:
@@ -283,7 +402,8 @@ class TestRawCountersNotDisplayText:
             status=FakeStatus([text_iface(tx=FakeCounter(text_tx, "MB"),
                                           rx=FakeCounter(text_rx, "MB"))]),
             raw_stats=[raw(raw_tx, raw_rx)],
-            state_path=str(tmp_path / "s.json"), min_silence_ticks=silence)
+            state_path=str(tmp_path / "s.json"), min_silence_ticks=silence,
+            uncalibrated_ticks=silence)
 
     def test_deaf_leg_invisible_in_the_text_still_fires_from_raw_counters(self, tmp_path):
         sig = None
@@ -396,7 +516,7 @@ class TestStateAndObservability:
                 sig = rf.probe_rf_leg_silent(
                     status=FakeStatus([text_iface()]),
                     raw_stats=[raw(1000 + 500 * i, 500)],
-                    state_path=sp, min_silence_ticks=3)
+                    state_path=sp, min_silence_ticks=3, uncalibrated_ticks=3)
             assert sig is not None, "streak reset to 0 every tick: state not held in-process"
             assert not Path(sp).exists(), "the disk really was unwritable"
         finally:
