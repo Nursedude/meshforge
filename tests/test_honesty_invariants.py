@@ -1365,3 +1365,48 @@ def test_dry_run_summary_prints_exactly_once():
     assert p.returncode == 0, p.stdout[-400:]
     assert p.stdout.count("DRY RUN COMPLETE") == 1, \
         f"summary printed {p.stdout.count('DRY RUN COMPLETE')} times, expected 1"
+
+
+def test_installer_writers_work_on_the_REAL_path(tmp_path):
+    """End-of-session double tap, 2026-09-09 — the one thing fixed that day and
+    never exercised live.
+
+    20 installer writes were converted to mf_write_stdin / mf_append_line, and
+    EVERY test of them ran under --dry-run, which returns early and never
+    touches `command cat > "$1"`. Had that branch been broken, every REAL
+    install would have failed while all 20 dry-run checks passed — the exact
+    shape of the day's other four defects (a green check aimed at the wrong
+    path). It was correct; it just had no coverage. Now it does.
+
+    Two properties could have bitten silently:
+      * TRUNCATION — these replaced `cat > f`, so a second write must REPLACE,
+        not append. An appending helper would corrupt every rewritten unit file.
+      * LITERALNESS — heredoc bodies and appended lines carry $ and backticks
+        (e.g. LABEL="alsa_restore_std"); they must land verbatim, not expand.
+    """
+    import subprocess, textwrap
+    d = tmp_path
+    script = textwrap.dedent(f'''
+        set -u
+        source {_INSTALL_LIB}
+        MF_DRY_RUN=false
+        mf_write_stdin "{d}/u.service" <<'BODY'
+        [Unit]
+        BODY
+        mf_write_stdin "{d}/u.service" <<'BODY2'
+        replaced
+        BODY2
+        mf_append_line "{d}/c.txt" "first=1"
+        mf_append_line "{d}/c.txt" "second=2"
+        mf_append_line "{d}/c.txt" 'LABEL="x" $novar `nocmd`'
+    ''')
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       timeout=30)
+    assert p.returncode == 0, f"real write path failed: {p.stderr[:300]}"
+    unit = (d / "u.service").read_text()
+    assert unit.strip() == "replaced", \
+        f"mf_write_stdin must TRUNCATE like `cat >`, got {unit!r}"
+    cfg = (d / "c.txt").read_text().splitlines()
+    assert cfg[:2] == ["first=1", "second=2"], f"append order wrong: {cfg!r}"
+    assert cfg[2] == 'LABEL="x" $novar `nocmd`', \
+        f"appended line must land LITERALLY, got {cfg[2]!r}"
