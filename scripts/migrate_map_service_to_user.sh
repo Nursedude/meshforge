@@ -62,7 +62,11 @@ if [[ $EUID -ne 0 ]]; then
     die "This script must be run as root (sudo bash $0)"
 fi
 
-OP_USER="${SUDO_USER:-$USER}"
+# Already the safe shape (guarded + loud below); the uid leg is added only so
+# the whole tree uses ONE expression and the guard test can be a flat grep.
+# Under a root cron `id -un` is root, which the check below already rejects,
+# so this changes no existing outcome.
+OP_USER="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || true)}}"
 if [[ -z "$OP_USER" || "$OP_USER" == "root" ]]; then
     # Fallback: detect from /opt/meshforge ownership
     OP_USER="$(stat -c '%U' /opt/meshforge 2>/dev/null || echo)"

@@ -1370,17 +1370,34 @@ def test_resolver_prefers_sudo_user_over_the_real_uid():
     assert '"$u" == "root"' in body, "root must still be refused as the operator"
 
 
-def test_installer_resolves_the_operator_in_exactly_one_place():
-    """Two consumers of one fact, derived two ways, WILL drift (hfm #5). The
-    user-service block re-derived the login inline as `${SUDO_USER:-$USER}`,
-    which with both empty yielded "" — so `eval echo "~"` expanded to the
-    INVOKING user's home and the systemd tree was created there and chown'd
-    ":". The guarded form exits loudly instead; the inline one was silent."""
-    text = (REPO / "scripts" / "install_noc.sh").read_text(encoding="utf-8")
-    stray = [ln for ln in text.splitlines()
-             if "${SUDO_USER:-$USER}" in ln and "local u=" not in ln]
-    assert not stray, (
-        "operator login re-derived outside resolve_operator_user(): " + repr(stray))
+def test_no_script_resolves_the_operator_from_advisory_env_alone():
+    """Two consumers of one fact, derived two ways, WILL drift (hfm #5), and
+    the first version of this guard proved it by being too narrow to catch the
+    drift it was written for.
+
+    It originally read install_noc.sh ONLY. The commit that added it fixed that
+    one file, quoted "grep for its copies" in its own message, and left
+    `REAL_USER="${SUDO_USER:-$USER}"` standing in scripts/update.sh — the DEPLOY
+    path, and the worse shape of the two: it never aborts, it writes the units
+    under the invoking user's home and then prints "✓ User service templates
+    deployed". A guard scoped to the file you happened to be editing tests your
+    memory, not the tree.
+
+    The bare two-level form is the defect signature. Longer chains that end in
+    a real resolution (`$(id -un)`, `$(whoami)`) are fine and are why this is a
+    grep for the bare form rather than for the variable names.
+    """
+    import re
+    offenders = []
+    for path in sorted((REPO / "scripts").glob("*.sh")):
+        for n, ln in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"\$\{SUDO_USER:-\$USER\}", ln):
+                offenders.append(f"{path.name}:{n}: {ln.strip()}")
+    assert not offenders, (
+        "operator login resolved from advisory env alone — $USER and $SUDO_USER "
+        "are both unset under cron and systemd. End the chain in the real uid "
+        "(${SUDO_USER:-${USER:-$(id -un)}}) and handle the no-operator case "
+        "explicitly:\n  " + "\n  ".join(offenders))
 
 
 def test_dry_run_never_prompts_at_the_ownership_question():

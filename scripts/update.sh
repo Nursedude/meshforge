@@ -286,7 +286,23 @@ if [[ -f "$INSTALL_DIR/templates/systemd/meshtasticd-mudp-guard.timer" ]]; then
 fi
 
 # Deploy user-level service templates
-REAL_USER="${SUDO_USER:-$USER}"
+#
+# $SUDO_USER and $USER are ADVISORY — a root cron or a systemd unit sets
+# NEITHER, and `eval echo "~"` then expands to the invoking user's home, so
+# every unit below lands under the wrong account while this still prints
+# "✓ User service templates deployed". That false success is the defect;
+# the empty value is only how it gets there (honest_failure_modes #1).
+#
+# Fall back to the real uid, which is the thing rather than a claim about it.
+# When even that yields no operator — root with no sudo context — there IS no
+# right answer, so SKIP the block loudly instead of deploying somewhere.
+# Companion: resolve_operator_user() in scripts/install_noc.sh (7916d12d).
+REAL_USER="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || true)}}"
+if [[ -z "$REAL_USER" || "$REAL_USER" == "root" ]]; then
+    echo -e "  ${YELLOW}⚠ No operator login resolved (SUDO_USER='$SUDO_USER' USER='$USER' id -un='$(id -un 2>/dev/null || true)')${NC}"
+    echo -e "  ${YELLOW}  Skipping user-service deployment — re-run as: sudo bash scripts/update.sh${NC}"
+    REAL_USER=""
+fi
 REAL_HOME=$(eval echo "~${REAL_USER}")
 REAL_UID="$(id -u "${REAL_USER}" 2>/dev/null || echo "")"
 USER_SYSTEMD_DIR="${REAL_HOME}/.config/systemd/user"
@@ -310,7 +326,10 @@ run_user_systemctl() {
 }
 
 USER_SVC_UPDATED=false
-if [[ -d "$INSTALL_DIR/templates/systemd" ]]; then
+# -n "$REAL_USER" is the gate: with no resolvable operator the target below is
+# the invoking user's home, and deploying there then reporting success is worse
+# than not deploying. The warning above already said why.
+if [[ -n "$REAL_USER" && -d "$INSTALL_DIR/templates/systemd" ]]; then
     mkdir -p "$USER_SYSTEMD_DIR"
     # *-user.service templates map to <name>.service (existing behavior).
     for tmpl in "$INSTALL_DIR/templates/systemd/"*-user.service; do

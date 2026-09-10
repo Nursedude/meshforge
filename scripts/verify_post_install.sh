@@ -221,10 +221,15 @@ else
     check_info "mesh-oracle" "DISABLED (MESHFORGE_ORACLE_ENABLED unset — this is the default)"
 fi
 
-OP_USER="${SUDO_USER:-$USER}"
+OP_USER="${SUDO_USER:-${USER:-$(id -un 2>/dev/null || true)}}"
 OP_HOME="$(getent passwd "$OP_USER" 2>/dev/null | cut -d: -f6)"
 MINI_ENV="$OP_HOME/.config/meshforge/mini_dudeai.env"
-if [[ -n "$OP_HOME" && -f "$MINI_ENV" ]]; then
+if [[ -z "$OP_HOME" ]]; then
+    # UNOBSERVABLE is not "not present". Without a resolvable operator there is
+    # no home to look in, and reporting the optional-and-absent case here would
+    # be a verifier answering a question it could not ask (hfm #2).
+    check_info "mini-dudeai env" "UNKNOWN — no operator home resolved (SUDO_USER='$SUDO_USER' USER='$USER')"
+elif [[ -f "$MINI_ENV" ]]; then
     check_info "mini-dudeai env" "present at $MINI_ENV"
 else
     check_info "mini-dudeai env" "not present (optional; mini runs on the built-in fleet preset)"
