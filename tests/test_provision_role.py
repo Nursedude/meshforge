@@ -586,6 +586,17 @@ def _enrolled(mapping):
                         side_effect=lambda unit: mapping.get(unit))
 
 
+def _body(present):
+    """Pin whether the user unit BODY exists in ~/.config/systemd/user.
+
+    Ambient by default (it stats the real operator's home), so every test that
+    reaches the not-enrolled branch must say which of the two states it means:
+    `False` = never enrolled here, `True` = enrolled once and switched off.
+    """
+    return patch.object(pr, "_user_timer_unit_installed",
+                        side_effect=lambda unit: present)
+
+
 class TestUserTimerInheritance:
     def test_user_timers_inherit_like_services(self):
         """The whole point of merging them the same way: a key that inherited
@@ -618,13 +629,19 @@ class TestUserTimerActions:
         """THE case this whole change exists for — the drill.
 
         Someone disables the exerciser on a box whose role says it runs it.
-        Before: synth_soak_degraded went inert and nothing said a word."""
-        with _enrolled({self.SYNTH: False}):
+        Before: synth_soak_degraded went inert and nothing said a word.
+
+        The unit BODY is present (that is what makes this "switched off" and
+        not "never enrolled"); pinned explicitly rather than read off whatever
+        box runs the suite (feedback_tests_must_pin_ambient_state)."""
+        with _enrolled({self.SYNTH: False}), _body(True):
             acts = pr._user_timer_actions({self.SYNTH: "enabled"})
         assert len(acts) == 1
         a = acts[0]
         assert a.verb == "warn" and a.required is True
         assert a.current == "not-enabled" and a.desired == "enabled"
+        assert "systemctl --user enable --now" in a.detail, (
+            "a blocking warn must name the command that clears it")
 
     def test_declared_absent_but_enrolled_is_REQUIRED_warn(self):
         """The other direction: an organ appears on a box that never declared
@@ -669,8 +686,9 @@ class TestUserTimersNeverConverged:
         ("enabled", False), ("absent", True), ("enabled", True),
         ("disabled", False), ("enabled", None),
     ])
-    def test_no_action_verb_is_ever_executable(self, declared, enrolled):
-        with _enrolled({self.SYNTH: enrolled}):
+    @pytest.mark.parametrize("body", [True, False])
+    def test_no_action_verb_is_ever_executable(self, declared, enrolled, body):
+        with _enrolled({self.SYNTH: enrolled}), _body(body):
             acts = pr._user_timer_actions({self.SYNTH: declared})
         for a in acts:
             assert a.verb in ("noop", "warn"), (
@@ -679,7 +697,7 @@ class TestUserTimersNeverConverged:
 
     def test_apply_action_skips_the_required_warn(self):
         """Belt and braces: even handed the drift action, apply does nothing."""
-        with _enrolled({self.SYNTH: False}):
+        with _enrolled({self.SYNTH: False}), _body(True):
             acts = pr._user_timer_actions({self.SYNTH: "enabled"})
         with patch.object(pr, "enable_service") as en, \
                 patch.object(pr, "stop_service") as st:
@@ -761,3 +779,376 @@ class TestWaiverIsActuallyChecked:
         a = [x for x in acts if x.item == "u.service"][0]
         assert a.required is False
         assert "NOT MET" not in a.detail
+
+
+# --------------------------------------------------------------------------
+# 2026-09-09 pass-2 review findings 4, 5, 6, 14
+# --------------------------------------------------------------------------
+
+class TestMaskingInvariantHonorsOverrides:
+    """Finding 4: the masking invariant read the ROLE's `services['rnsd']`, not
+    the override-honored EFFECTIVE state.
+
+    A box whose reasoned waiver says "meshanchor-daemon owns @rns here" still
+    got `mask:meshanchor-daemon (required)` planned — and `--apply` masked the
+    RNS host the waiver names as owner. Issue #69 in reverse, executed by the
+    converge; in dry-run the same line paged role_drift over an honored
+    exception forever.
+    """
+    ROLE = {"services": {"rnsd": "enabled"}}
+
+    def _plan(self, overrides, rival_installed=True, rival_masked=False):
+        def inst(name):
+            return rival_installed if name == "meshanchor-daemon" else True
+
+        def masked(name):
+            return rival_masked if name == "meshanchor-daemon" else False
+
+        with patch.object(pr, "check_systemd_service", return_value=(True, True)), \
+             patch.object(pr, "is_service_unit_installed", side_effect=inst), \
+             patch.object(pr, "is_service_masked", side_effect=masked):
+            return pr.plan(self.ROLE, overrides)
+
+    def test_reasoned_rnsd_waiver_never_plans_a_mask(self):
+        """THE plant: an honored `rnsd: disabled` waiver naming the RNS host."""
+        acts = self._plan({"rnsd": {"state": "disabled",
+                                    "reason": "meshanchor-daemon owns @rns here"}})
+        assert not [a for a in acts if a.verb == "mask"], (
+            "an honored rnsd waiver must never plan a mask of the RNS owner")
+
+    def test_skipped_mask_says_so_out_loud(self):
+        """Silence would be its own defect — the operator must see WHY the
+        #69 invariant did not fire on a box whose role declares rnsd."""
+        acts = self._plan({"rnsd": {"state": "disabled",
+                                    "reason": "meshanchor-daemon owns @rns here"}})
+        m = [a for a in acts if a.item == "mask:meshanchor-daemon"][0]
+        assert m.verb == "warn" and m.required is False
+        assert "SKIPPED" in m.detail and "#69" in m.detail
+
+    def test_apply_cannot_mask_through_an_honored_waiver(self):
+        """The consequence, not the wiring: no change verb reaches the rival."""
+        acts = self._plan({"rnsd": {"state": "disabled", "reason": "MA owns @rns"}})
+        for a in acts:
+            if a.item.startswith("mask:"):
+                assert a.verb in ("noop", "warn")
+
+    def test_waiver_that_declares_rnsd_enabled_still_masks(self):
+        """Regression pin: honoring an override must not disarm the invariant
+        when the override AGREES the box owns rnsd."""
+        acts = self._plan({"rnsd": {"state": "enabled", "reason": "explicit"}})
+        assert [a for a in acts if a.verb == "mask"]
+
+    def test_unhonored_rnsd_override_refuses_to_mask(self):
+        """Ownership is DISPUTED (no reason → not honored). Masking is
+        destructive, so the ambiguous case does nothing and says why."""
+        acts = self._plan({"rnsd": {"state": "disabled"}})
+        assert not [a for a in acts if a.verb == "mask"]
+        m = [a for a in acts if a.item == "mask:meshanchor-daemon"][0]
+        assert m.required is False and "NOT honored" in m.detail
+
+    def test_no_rival_installed_emits_no_skip_noise(self):
+        """The advisory is about a real rival; don't invent a line for a box
+        that has no meshanchor-daemon at all."""
+        acts = self._plan({"rnsd": {"state": "disabled", "reason": "x"}},
+                          rival_installed=False)
+        assert not [a for a in acts if a.item.startswith("mask:")]
+
+
+class TestOverrideStateIsValidated:
+    """Finding 6: an override with a missing or misspelled `state` was honored
+    unconditionally — `_waiver_enablement_met` returned True for anything
+    outside the vocabulary and no caller reported it. A waiver nothing can
+    check is honest_failure_modes #3 (a validator absorbing what the author
+    cannot have meant), inside the very branch the 09-09 commit hardened.
+    """
+
+    def _one(self, override, cur="active/enabled"):
+        with patch.object(pr, "_unit_current", lambda u: cur):
+            acts = pr.plan({"services": {"u.service": "enabled"}},
+                           {"u.service": override})
+        return [a for a in acts if a.item == "u.service"][0]
+
+    def test_missing_state_key_is_a_loud_error(self):
+        """THE plant: `{reason: 'RF-sparse'}` on an enabled+active unit used to
+        read `waived:? required=False intentional per-node exception`."""
+        a = self._one({"reason": "RF-sparse"})
+        assert a.verb == "warn" and a.required is True
+        assert "no 'state' key" in a.detail and "NOT honored" in a.detail
+
+    def test_misspelled_state_is_a_loud_error(self):
+        a = self._one({"state": "off", "reason": "RF-sparse"})
+        assert a.required is True
+        assert "unknown state 'off'" in a.detail
+        assert "absent|disabled|enabled" in a.detail, "name the vocabulary"
+
+    def test_invalid_state_keeps_the_reason_visible(self):
+        a = self._one({"state": "off", "reason": "RF-sparse"})
+        assert "RF-sparse" in a.detail
+
+    def test_valid_state_still_honored(self):
+        """Regression pin: validation must not eat the honored path."""
+        a = self._one({"state": "disabled", "reason": "RF-sparse"},
+                      cur="inactive/disabled")
+        assert a.required is False and "intentional per-node exception" in a.detail
+
+    def test_waiver_enablement_met_no_longer_defaults_to_met(self):
+        """The mechanism, pinned directly: an unchecked value must never read
+        as satisfied again if a future caller forgets to validate."""
+        assert pr._waiver_enablement_met("active/enabled", "off") is False
+
+    def test_absent_waiver_on_a_running_unit_discloses_RUNNING(self):
+        """Sibling gap: `waived: absent` on an installed-and-RUNNING unit got
+        the plain 'honored' text — the same silence one vocabulary word over
+        from the `disabled` case that was fixed."""
+        a = self._one({"state": "absent", "reason": "no radio"},
+                      cur="active/disabled")
+        assert a.required is False, "still an operator decision, not a page"
+        assert "RUNNING" in a.detail and "UNVERIFIED" in a.detail
+        assert "'absent' cannot" in a.detail
+        assert "no radio" in a.detail
+
+
+class TestUserTimerNeverEnrolledIsAdvisory:
+    """Finding 5: every fresh full-gateway / gateway-only provision exited 1,
+    in dry-run AND `--apply`, with a remediation nothing could run — no
+    installer copies the soak user units and `--apply` never touches user
+    scope. The Gateway Wizard chains `--set-role` + `--apply`, so a newcomer's
+    first provision failed at 'Role & Variant'; probe_role_drift paged
+    "converge with provision_role --apply", which could not work.
+
+    The cure keeps BOTH claims by splitting the one state into two:
+    never-enrolled (advisory + an enrollment command that exists) vs
+    enrolled-then-switched-off (still REQUIRED drift — the 2026-08-09 case).
+    """
+    SYNTH = "meshforge-synth-soak.timer"
+
+    def test_never_enrolled_is_advisory_not_drift(self):
+        with _enrolled({self.SYNTH: False}), _body(False):
+            a = pr._user_timer_actions({self.SYNTH: "enabled"})[0]
+        assert a.verb == "warn"
+        assert a.required is False, (
+            "a fresh box must not fail provisioning on a unit nothing installs")
+        assert a.current == "not-installed"
+
+    def test_never_enrolled_names_the_command_that_fixes_it(self):
+        """An advisory that only says 'converge by hand' is a silenced warning.
+        This one has to name a path the product actually has."""
+        with _enrolled({self.SYNTH: False}), _body(False):
+            a = pr._user_timer_actions({self.SYNTH: "enabled"})[0]
+        assert "--enroll-user-timers" in a.detail
+
+    def test_switched_off_is_still_required_drift(self):
+        with _enrolled({self.SYNTH: False}), _body(True):
+            a = pr._user_timer_actions({self.SYNTH: "enabled"})[0]
+        assert a.required is True and "INSTALLED here" in a.detail
+
+    def test_unreadable_user_dir_is_not_drift(self):
+        with _enrolled({self.SYNTH: False}), _body(None):
+            a = pr._user_timer_actions({self.SYNTH: "enabled"})[0]
+        assert a.required is False and "not judged" in a.detail
+
+    def test_fresh_gateway_role_has_no_blocking_user_timer_warn(self):
+        """End of the domain, not a proxy: the SHIPPED full-gateway role, on a
+        box that has never enrolled either soak, contributes zero blocking
+        warnings from the user_timers leg."""
+        catalog = pr.load_roles(pr.DEFAULT_ROLES_FILE)
+        rd = pr.resolve_role(catalog, "full-gateway")
+        assert rd["user_timers"], "the role must still DECLARE them"
+        with _enrolled({u: False for u in rd["user_timers"]}), _body(False):
+            acts = pr._user_timer_actions(rd["user_timers"])
+        assert acts and not [a for a in acts if a.required], (
+            "a fresh full-gateway provision must not exit 1 on user timers")
+
+    def test_declared_absent_but_enrolled_names_its_command_too(self):
+        with _enrolled({self.SYNTH: True}), _body(True):
+            a = pr._user_timer_actions({self.SYNTH: "absent"})[0]
+        assert a.required is True
+        assert "systemctl --user disable --now" in a.detail
+
+
+class TestEnrollUserTimers:
+    """The enrollment path that makes the declared state ACHIEVABLE.
+
+    Deliberately NOT reachable from `--apply` (a converge sweep that starts
+    units is the 2026-07-24 incident); it is an explicit operator command.
+    The copy half is drilled for REAL against a scratch home — only the bus
+    call is injected.
+    """
+    SYNTH = "meshforge-synth-soak.timer"
+
+    def _runner(self, calls, ok=True):
+        def run(argv):
+            calls.append(list(argv))
+            return (ok, "" if ok else "Failed to connect to bus")
+        return run
+
+    def test_copies_both_bodies_and_enables(self, tmp_path):
+        calls = []
+        ok, lines = pr.enroll_user_timers({self.SYNTH: "enabled"},
+                                          home=str(tmp_path),
+                                          runner=self._runner(calls))
+        dest = tmp_path / ".config" / "systemd" / "user"
+        assert ok, lines
+        assert (dest / self.SYNTH).is_file(), "the timer body must land"
+        assert (dest / "meshforge-synth-soak.service").is_file(), (
+            "the timer is useless without the service it triggers")
+        assert calls[0] == ["daemon-reload"]
+        assert ["enable", "--now", self.SYNTH] in calls
+
+    def test_content_matches_the_shipped_template(self, tmp_path):
+        pr.enroll_user_timers({self.SYNTH: "enabled"}, home=str(tmp_path),
+                              runner=self._runner([]))
+        tmpl, _ = pr.user_timer_template_pair(self.SYNTH)
+        landed = tmp_path / ".config" / "systemd" / "user" / self.SYNTH
+        assert landed.read_text() == tmpl.read_text()
+
+    def test_declared_absent_is_never_enrolled(self):
+        """The safety argument: this enables ONLY what the role declares
+        enabled, and never disables anything."""
+        calls = []
+        ok, lines = pr.enroll_user_timers({self.SYNTH: "absent"},
+                                          home="/nonexistent",
+                                          runner=self._runner(calls))
+        assert ok and calls == []
+        assert "nothing to enroll" in lines[0]
+
+    def test_missing_template_fails_loud(self, tmp_path):
+        calls = []
+        ok, lines = pr.enroll_user_timers({"meshforge-nope.timer": "enabled"},
+                                          home=str(tmp_path),
+                                          runner=self._runner(calls))
+        assert ok is False
+        assert any("no shipped template body" in l for l in lines)
+        assert calls == [], "never touch the bus for a unit we could not stage"
+
+    def test_bus_failure_reports_copied_but_not_enabled(self, tmp_path):
+        """Half-done must not read as done (honest_failure_modes #9): the
+        bodies ARE on disk, and the report has to say exactly that."""
+        calls = []
+        ok, lines = pr.enroll_user_timers({self.SYNTH: "enabled"},
+                                          home=str(tmp_path),
+                                          runner=self._runner(calls, ok=False))
+        assert ok is False
+        assert any("installed but NOT enabled" in l for l in lines)
+        assert (tmp_path / ".config" / "systemd" / "user" / self.SYNTH).is_file()
+
+    def test_no_operator_resolvable_is_an_error_not_a_silent_pass(self):
+        with patch.object(pr, "resolve_operator_home", return_value=None):
+            ok, lines = pr.enroll_user_timers({self.SYNTH: "enabled"})
+        assert ok is False and "no operator user resolved" in lines[0]
+
+    def test_apply_never_reaches_enrollment(self):
+        """The invariant this change must not break: --apply stays
+        user-unit-free. No plan verb maps to enrollment."""
+        assert "enroll" not in pr.PLAN_CHANGE_VERBS
+        a = pr.Action(self.SYNTH, "not-installed", "enabled", "warn",
+                      required=False)
+        with patch.object(pr, "enroll_user_timers") as en:
+            pr.apply_action(a)
+        en.assert_not_called()
+
+
+class TestPrintUnitStateAgreesWithPlan:
+    """Finding 14: `--print-unit-state` read only `services`, so every unit the
+    role declares under `user_timers` printed `unspecified` — "no declaration"
+    for a unit the same role's plan() renders. Tooling that gates a timer
+    install on the token was told there was nothing to enroll.
+    """
+    SYNTH = "meshforge-synth-soak.timer"
+
+    def _token(self, unit, capsys, tmp_path, monkeypatch, deployment=None):
+        dj = tmp_path / "deployment.json"
+        dj.write_text(json.dumps(deployment or {"role": "full-gateway"}))
+        monkeypatch.setattr(pr, "DEPLOYMENT_JSON", dj)
+        rc = pr.main(["--role", "full-gateway", "--print-unit-state", unit])
+        assert rc == 0
+        return capsys.readouterr().out.strip()
+
+    def test_declared_user_timer_is_not_unspecified(self, capsys, tmp_path,
+                                                    monkeypatch):
+        """THE plant, against the SHIPPED catalog: full-gateway declares this
+        timer enabled and the token said 'unspecified'."""
+        assert self._token(self.SYNTH, capsys, tmp_path, monkeypatch) == "enabled"
+
+    def test_token_matches_what_plan_declares(self, capsys, tmp_path,
+                                              monkeypatch):
+        catalog = pr.load_roles(pr.DEFAULT_ROLES_FILE)
+        declared = pr.resolve_role(catalog, "full-gateway")["user_timers"]
+        for unit, state in declared.items():
+            assert self._token(unit, capsys, tmp_path, monkeypatch) == state
+
+    def test_service_token_unchanged(self, capsys, tmp_path, monkeypatch):
+        """Regression pin — the Gateway Wizard gates its service install on
+        this exact call."""
+        assert self._token("meshforge-map", capsys, tmp_path,
+                           monkeypatch) == "enabled"
+
+    def test_undeclared_unit_still_unspecified(self, capsys, tmp_path,
+                                               monkeypatch):
+        assert self._token("nothing-here.service", capsys, tmp_path,
+                           monkeypatch) == "unspecified"
+
+    def test_reasoned_service_override_still_wins(self, capsys, tmp_path,
+                                                  monkeypatch):
+        tok = self._token("meshforge-map", capsys, tmp_path, monkeypatch,
+                          deployment={"role": "full-gateway",
+                                      "service_overrides": {
+                                          "meshforge-map": {"state": "disabled",
+                                                            "reason": "heavy"}}})
+        assert tok == "waived:disabled"
+
+    def test_unhonored_override_does_not_print_waived(self, capsys, tmp_path,
+                                                      monkeypatch):
+        """plan() refuses an override with an invalid state, so this must too —
+        `waived:?` was a token no consumer could act on."""
+        tok = self._token("meshforge-map", capsys, tmp_path, monkeypatch,
+                          deployment={"role": "full-gateway",
+                                      "service_overrides": {
+                                          "meshforge-map": {"reason": "typo'd"}}})
+        assert tok == "enabled"
+
+
+class TestEnrollUserTimersCLI:
+    """The CLI leg of the enrollment path — argument wiring and the root gate.
+
+    `systemctl --user` from root addresses root's own (usually absent) session
+    bus, not the operator's (#82): a root run would report success for units
+    the operator's manager never saw. Refuse loudly instead.
+    """
+
+    def _roles(self, tmp_path, timers):
+        f = tmp_path / "roles.yaml"
+        f.write_text(json.dumps({"roles": {"r": {"services": {},
+                                                 "user_timers": timers}}}))
+        return f
+
+    def test_root_is_refused_not_bridged(self, tmp_path, capsys, monkeypatch):
+        monkeypatch.setattr(pr.os, "geteuid", lambda: 0)
+        with patch.object(pr, "enroll_user_timers") as en:
+            rc = pr.main(["--role", "r", "--enroll-user-timers",
+                          "--roles-file", str(self._roles(
+                              tmp_path, {"meshforge-synth-soak.timer": "enabled"}))])
+        assert rc == 2
+        assert en.call_count == 0, "root must not reach the user bus at all"
+        assert "AS THE OPERATOR" in capsys.readouterr().err
+
+    def test_operator_run_passes_the_roles_user_timers(self, tmp_path,
+                                                       monkeypatch):
+        monkeypatch.setattr(pr.os, "geteuid", lambda: 1000)
+        declared = {"meshforge-synth-soak.timer": "enabled",
+                    "meshforge-propagation-soak.timer": "absent"}
+        with patch.object(pr, "enroll_user_timers",
+                          return_value=(True, [])) as en:
+            rc = pr.main(["--role", "r", "--enroll-user-timers",
+                          "--roles-file", str(self._roles(tmp_path, declared))])
+        assert rc == 0
+        en.assert_called_once_with(declared)
+
+    def test_failure_exits_nonzero(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(pr.os, "geteuid", lambda: 1000)
+        with patch.object(pr, "enroll_user_timers",
+                          return_value=(False, ["[FAIL       ] boom"])):
+            rc = pr.main(["--role", "r", "--enroll-user-timers",
+                          "--roles-file", str(self._roles(
+                              tmp_path, {"meshforge-synth-soak.timer": "enabled"}))])
+        assert rc == 1, "a half-done enrollment must not exit 0"

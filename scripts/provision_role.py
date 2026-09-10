@@ -22,6 +22,9 @@ Usage:
     sudo python3 scripts/provision_role.py --apply     # converge
     python3 scripts/provision_role.py --role full-gateway   # override role
     python3 scripts/provision_role.py --set-role primary    # write role, exit
+    python3 scripts/provision_role.py --enroll-user-timers  # install+enable the
+                                                            # role's user timers
+                                                            # (as the operator)
 
 Exit codes: 0 = converged/clean, 1 = drift (dry-run) or apply failure, 2 = config error.
 """
@@ -47,7 +50,7 @@ except ImportError:
     sys.exit(2)
 
 from utils.paths import get_real_user_home  # noqa: E402
-from utils.user_units import user_timer_enrolled  # noqa: E402
+from utils.user_units import resolve_operator_home, user_timer_enrolled  # noqa: E402
 from utils.service_check import (  # noqa: E402
     check_systemd_service,
     is_service_unit_installed,
@@ -73,6 +76,17 @@ SSH_CMD = os.environ.get("MESHFORGE_SSH", "ssh")
 KNOWN_RNS_RIVALS = ("meshanchor-daemon",)
 
 VALID_UNIT_STATES = {"enabled", "disabled", "absent"}
+
+# Where the shipped `systemd --user` unit bodies live. A declared user timer
+# `X.timer` is enrolled from `templates/systemd/X-user.timer` + the matching
+# `-user.service` (the templates' own install recipes, made executable —
+# 2026-09-09, finding 5: the roles file declared these enabled and NOTHING in
+# the product could put them there).
+USER_UNIT_TEMPLATE_DIR = _SCRIPT_DIR.parent / "templates" / "systemd"
+
+# The in-product remediation for a declared-but-never-enrolled user timer.
+# Named in the advisory so the operator is not sent to a wiki (MF018 spirit).
+ENROLL_CMD = "python3 scripts/provision_role.py --enroll-user-timers"
 
 
 @dataclass
@@ -170,18 +184,140 @@ def _waiver_enablement_met(cur: str, waived: str) -> bool:
     absent is off and then some, exactly as ``masked`` is. The guard caught the
     over-strict version before it shipped; a stricter rule here would have
     turned a satisfied declaration into a blocking warning on the RF-sparse
-    boxes. A waiver naming a state outside the vocabulary is treated as met —
-    the caller's own branch already reports unknown desired states, and
-    double-reporting it as a violation would be noise.
+    boxes.
+
+    ⚠️ An out-of-vocabulary ``waived`` never reaches here any more. The first
+    cut returned ``True`` for it, on the reasoning that "the caller's own branch
+    already reports unknown desired states" — which was FALSE: that branch
+    (``plan()``'s ``desired not in VALID_UNIT_STATES``) judges the ROLE's value
+    and is skipped by the override path's ``continue``. So a waiver with a
+    missing or misspelled ``state`` key read as an honored exception forever —
+    honest_failure_modes #3, a validator absorbing what the author cannot have
+    meant. ``_honored_override_state()`` now rejects those BEFORE this is
+    called; the defensive ``False`` below keeps an unchecked value from ever
+    reading as satisfied again if a future caller forgets.
     """
     if waived not in VALID_UNIT_STATES:
-        return True
+        return False
     _, _, enablement = cur.partition("/") if "/" in cur else ("", "", cur)
     if waived == "enabled":
         # Declared ON: absent/masked/disabled all fail to deliver it.
         return enablement == "enabled"
     # Declared OFF (disabled or absent): only an ENABLED unit contradicts it.
     return enablement != "enabled"
+
+
+def _honored_override_state(ov) -> Optional[str]:
+    """The state a ``service_overrides`` entry EFFECTIVELY declares, or ``None``
+    when the override is not honored.
+
+    An override is honored only when it is a dict, carries a non-empty
+    ``reason`` (an unexplained exception is hidden drift), AND names a state
+    inside ``VALID_UNIT_STATES``. A missing or misspelled ``state`` key is a
+    VALIDATION ERROR, not a permissive default: it cannot be checked against
+    anything, so honoring it silently retires the unit's drift check
+    (honest_failure_modes #3).
+
+    THE consumer that must not skip this (2026-09-09, finding 4): the rnsd
+    masking invariant. It used to read the ROLE's ``services['rnsd']`` and so
+    masked ``meshanchor-daemon`` on a box whose reasoned waiver named
+    meshanchor-daemon as the RNS owner — Issue #69 in reverse, executed by
+    ``--apply``. Ownership is a property of the EFFECTIVE declaration.
+    """
+    if not isinstance(ov, dict):
+        return None
+    if not (ov.get("reason") or "").strip():
+        return None
+    state = ov.get("state")
+    return state if state in VALID_UNIT_STATES else None
+
+
+def _override_action(unit: str, ov) -> Action:
+    """Render one ``service_overrides`` entry as its single plan Action."""
+    reason = (ov.get("reason") or "").strip() if isinstance(ov, dict) else ""
+    waived = ov.get("state", "?") if isinstance(ov, dict) else str(ov)
+    cur = _unit_current(unit)
+
+    if not reason:
+        return Action(unit, cur, f"waived:{waived}", "warn", required=True,
+                      detail="service_override missing required 'reason' "
+                             "— NOT honored (an unexplained waiver is "
+                             "hidden drift)")
+
+    if _honored_override_state(ov) is None:
+        # Reason present, state unusable. Report LOUDLY rather than absorb:
+        # the whole point of a waiver is that something checks it, and a state
+        # nothing can compare against is a declaration that checks nothing.
+        missing = not isinstance(ov, dict) or "state" not in ov
+        what = ("has no 'state' key" if missing
+                else f"declares an unknown state '{waived}'")
+        return Action(unit, cur, f"waived:{waived}", "warn", required=True,
+                      detail=(f"service_override {what} — NOT honored. Valid: "
+                              f"{'|'.join(sorted(VALID_UNIT_STATES))}. A waiver "
+                              f"whose state cannot be checked against the live "
+                              f"unit is not an exception, it is an unverifiable "
+                              f"claim ({reason})"))
+
+    # 2026-09-09 (aim audit finding, NARROWED after re-derivation).
+    # This branch used to emit "honored" without ever comparing
+    # `cur` to `waived`, so a waiver could be VIOLATED and still
+    # read as an honored exception — and role_drift, which fires
+    # only on blocking warnings, read `clean` over it.
+    #
+    # Two distinct cases, and conflating them was the defect:
+    #
+    #  1. The waiver is not MET (enablement differs from the
+    #     declared state). That is hidden drift in exactly the way
+    #     a reason-less waiver is, so it blocks. A declaration
+    #     nothing checks is decoration.
+    #  2. The waiver IS met on enablement, but the unit is RUNNING
+    #     while declared `disabled`/`absent`. This is NOT drift and must not
+    #     block: VALID_UNIT_STATES is {enabled,disabled,absent} —
+    #     a vocabulary about ENABLEMENT ONLY. It cannot express
+    #     "not running", so an override whose reason is about
+    #     runtime ("runs RADIO-OFF") is unverifiable by
+    #     construction. Measured on the manager box 2026-09-09:
+    #     is-enabled=disabled (declaration MET), is-active=active,
+    #     the radio serving ~225 pkt/hr — and the operator knows,
+    #     having said so on 09-07. Paging here would be paging
+    #     about a human decision (feedback_never_restore_a_
+    #     deliberate_stop). So DISCLOSE it instead: silence is what
+    #     let it read as a clean "honored" for two days.
+    if not _waiver_enablement_met(cur, waived):
+        return Action(unit, cur, f"waived:{waived}", "warn", required=True,
+                      detail=(f"service_override NOT MET: declares "
+                              f"'{waived}' but the unit is '{cur}' — a "
+                              f"waiver the box does not honor is hidden "
+                              f"drift, not an exception ({reason})"))
+    if waived in ("disabled", "absent") and cur.startswith("active/"):
+        # `absent` lands here too (2026-09-09, finding 6): a unit that is
+        # installed AND RUNNING while the waiver says `absent` used to get the
+        # plain "honored" line — the same silence, one vocabulary word over.
+        return Action(unit, cur, f"waived:{waived}", "warn", required=False,
+                      detail=(f"intentional per-node exception: {reason} "
+                              f"— ⚠️ declaration MET on enablement but the "
+                              f"unit is RUNNING ({cur}). '{waived}' cannot "
+                              f"express 'not running', so this override's "
+                              f"runtime intent is UNVERIFIED here; judge it "
+                              f"by hand"))
+    return Action(unit, cur, f"waived:{waived}", "warn", required=False,
+                  detail=f"intentional per-node exception: {reason}")
+
+
+def _user_timer_unit_installed(unit: str) -> Optional[bool]:
+    """Is the user unit BODY present in the operator's user-unit dir?
+
+    Distinguishes the two states the enable-symlink read cannot: *never
+    enrolled here* (no unit file — the fresh-provision case, which nothing in
+    the product used to be able to fix) from *enrolled, then switched off*
+    (unit file present, symlink gone — real drift, and the case the 2026-08-09
+    declaration was added to catch). ``None`` when the operator is
+    unresolvable — unobservable, never "absent".
+    """
+    home = resolve_operator_home()
+    if home is None:
+        return None
+    return os.path.exists(os.path.join(home, ".config", "systemd", "user", unit))
 
 
 def _user_timer_actions(declared: Dict[str, str]) -> List[Action]:
@@ -197,6 +333,22 @@ def _user_timer_actions(declared: Dict[str, str]) -> List[Action]:
     "declared enabled, actually disabled" now pages the same way a system-unit
     divergence does — the case that was previously indistinguishable from
     "this box never ran it".
+
+    ⚠️ THREE states, not two (2026-09-09, finding 5). Treating "declared
+    enabled, not enrolled" as one thing made every FRESH full-gateway /
+    gateway-only provision exit 1 in both dry-run and ``--apply``, with a
+    remediation nothing could execute: no installer copies the soak user
+    units, and ``--apply`` deliberately never touches user scope. The Gateway
+    Wizard chains ``--set-role`` + ``--apply`` and failed a newcomer's first
+    provision on it, while ``probe_role_drift`` paged "converge with
+    provision_role --apply" — advice that could not work. So:
+
+      * unit body ABSENT  → never enrolled here. ADVISORY (not drift), naming
+        the enrollment command that now exists (``--enroll-user-timers``).
+        The declared state is ACHIEVABLE, which is what makes the advisory
+        honest rather than a silenced warning.
+      * unit body PRESENT, not enabled → enrolled once, then switched off.
+        REQUIRED — this is the drift the declaration was written for.
 
     Unobservable enrollment (no resolvable operator, or a wants dir that
     exists but cannot be read) is a NON-required advisory: unknown is not
@@ -225,12 +377,164 @@ def _user_timer_actions(declared: Dict[str, str]) -> List[Action]:
         want_enrolled = (desired == "enabled")
         if enrolled == want_enrolled:
             out.append(Action(unit, cur, str(desired), "noop"))
-        else:
+            continue
+        if want_enrolled:
+            body = _user_timer_unit_installed(unit)
+            if body is False:
+                out.append(Action(unit, "not-installed", str(desired), "warn",
+                                  required=False,
+                                  detail="declared, but this box has never "
+                                         "enrolled it (no unit file in "
+                                         "~/.config/systemd/user) — no "
+                                         "installer copies user units. "
+                                         f"Enroll: {ENROLL_CMD} "
+                                         "(as the operator, no sudo)"))
+                continue
+            if body is None:
+                out.append(Action(unit, cur, str(desired), "warn",
+                                  required=False,
+                                  detail="declared enabled but the operator's "
+                                         "user-unit dir is unreadable — not "
+                                         "judged (unknown is not drift)"))
+                continue
             out.append(Action(unit, cur, str(desired), "warn", required=True,
-                              detail="systemd --user timer diverges from the "
-                                     "role declaration — converge by hand "
-                                     "(--apply never touches user units)"))
+                              detail="systemd --user timer is INSTALLED here "
+                                     "but not enabled — an exerciser that was "
+                                     "enrolled and then switched off is drift "
+                                     f"(--apply never touches user units). "
+                                     f"Re-enable: systemctl --user enable "
+                                     f"--now {unit}"))
+            continue
+        out.append(Action(unit, cur, str(desired), "warn", required=True,
+                          detail="systemd --user timer is enabled here but the "
+                                 "role declares it "
+                                 f"'{desired}' — unlisted load is drift too "
+                                 f"(--apply never touches user units). "
+                                 f"Disable: systemctl --user disable --now "
+                                 f"{unit}"))
     return out
+
+
+# --------------------------------------------------------------------------
+# User-timer enrollment (explicit, operator-run — never part of --apply)
+# --------------------------------------------------------------------------
+
+def _user_systemctl(argv: List[str], timeout: int = 30) -> "tuple[bool, str]":
+    """Run one ``systemctl --user`` verb as the CURRENT (operator) user.
+
+    ⚠️ Deliberately NOT routed through ``utils.service_check`` (MF008's SSOT):
+    that module speaks to the SYSTEM manager, and user units are structurally
+    outside its scope — ``systemctl --user`` from root addresses root's own,
+    usually absent, session bus (Issue #82, and the whole reason
+    ``utils.user_units`` reads the filesystem instead of asking a bus). The
+    caller refuses to run as root, so this always speaks to the operator's own
+    manager.
+    """
+    import subprocess
+    cmd = ["systemctl", "--user"] + list(argv)
+    env = dict(os.environ)
+    # An operator shell normally has this; a non-login context (cron, ssh
+    # command) may not, and without it the user manager is unreachable.
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           timeout=timeout, env=env)
+    except (subprocess.SubprocessError, OSError) as e:
+        return False, f"{' '.join(cmd)}: {e}"
+    if r.returncode == 0:
+        return True, ""
+    return False, (r.stderr or r.stdout or f"exit {r.returncode}").strip()
+
+
+def user_timer_template_pair(unit: str) -> "tuple[Path, Path]":
+    """The shipped ``-user.timer`` / ``-user.service`` bodies for ``unit``."""
+    stem = unit[:-len(".timer")] if unit.endswith(".timer") else unit
+    return (USER_UNIT_TEMPLATE_DIR / f"{stem}-user.timer",
+            USER_UNIT_TEMPLATE_DIR / f"{stem}-user.service")
+
+
+def enroll_user_timers(declared: Dict[str, str],
+                       home: Optional[str] = None,
+                       runner=None) -> "tuple[bool, List[str]]":
+    """Install + enable the user timers a role declares ``enabled``.
+
+    Returns ``(ok, report_lines)``. Copies the shipped template bodies into
+    the operator's ``~/.config/systemd/user`` and enables each timer on the
+    operator's own bus.
+
+    Scope, deliberately narrow (the 2026-07-24 lesson — a sweep that starts
+    units is how a map came up on a box that had it off by design):
+
+      * enables ONLY units this role declares ``enabled``;
+      * never disables, stops, or removes anything — a timer declared
+        ``absent`` but enrolled stays a REQUIRED warn for a human;
+      * is NOT reachable from ``--apply``. Convergence stays user-unit-free;
+        this is an explicit, operator-typed command.
+
+    ``runner`` is injectable so the copy path can be drilled for real against
+    a scratch home without touching any bus.
+    """
+    import shutil
+    run = runner or _user_systemctl
+    lines: List[str] = []
+    ok = True
+    if home is None:
+        home = resolve_operator_home()
+    if home is None:
+        return False, ["ERROR: no operator user resolved — cannot locate the "
+                       "user-unit directory (see utils.user_units)"]
+
+    dest_dir = Path(home) / ".config" / "systemd" / "user"
+    wanted = [u for u, s in sorted(declared.items()) if s == "enabled"]
+    if not wanted:
+        return True, ["# no user timers declared enabled for this role — nothing to enroll"]
+
+    to_enable: List[str] = []
+    for unit in wanted:
+        if user_timer_enrolled(unit, home):
+            lines.append(f"[PASS       ] {unit}: already enrolled")
+            continue
+        timer_tmpl, svc_tmpl = user_timer_template_pair(unit)
+        missing = [str(p) for p in (timer_tmpl, svc_tmpl) if not p.is_file()]
+        if missing:
+            ok = False
+            lines.append(f"[FAIL       ] {unit}: no shipped template body "
+                         f"({', '.join(missing)}) — this role declares a timer "
+                         f"the repo does not carry; fix the declaration or add "
+                         f"the template")
+            continue
+        try:
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(timer_tmpl, dest_dir / unit)
+            shutil.copyfile(svc_tmpl, dest_dir / svc_tmpl.name.replace(
+                "-user.service", ".service"))
+        except OSError as e:
+            ok = False
+            lines.append(f"[FAIL       ] {unit}: copy failed: {e}")
+            continue
+        lines.append(f"[CHANGE     ] {unit}: unit body installed in {dest_dir}")
+        to_enable.append(unit)
+
+    if not to_enable:
+        return ok, lines
+
+    ok_reload, msg = run(["daemon-reload"])
+    if not ok_reload:
+        # The bodies ARE installed; only the bus step failed. Say exactly that
+        # — "copied but not enabled" is a different state from "did nothing".
+        lines.append(f"[FAIL       ] daemon-reload: {msg}")
+        lines.append(f"[FAIL       ] unit bodies are installed but NOT enabled "
+                     f"— finish with: systemctl --user daemon-reload && "
+                     f"systemctl --user enable --now {' '.join(to_enable)}")
+        return False, lines
+    for unit in to_enable:
+        ok_en, msg = run(["enable", "--now", unit])
+        if ok_en:
+            lines.append(f"[CHANGE     ] {unit}: enabled --now")
+        else:
+            ok = False
+            lines.append(f"[FAIL       ] {unit}: enable failed: {msg}")
+    return ok, lines
 
 
 def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Action]:
@@ -241,9 +545,12 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
     deployment.json): per-unit intentional exceptions to the role's service
     map. A waived unit is reported as a NON-blocking advisory carrying the
     reason — visible and auditable, never silently dropped — and is skipped by
-    convergence (left as the operator set it). A waiver WITHOUT a `reason` is
-    NOT honored (it stays a blocking warning) — an unexplained exception is
-    just hidden drift.
+    convergence (left as the operator set it). A waiver WITHOUT a `reason`, or
+    with a missing/misspelled `state`, is NOT honored (it stays a blocking
+    warning) — an unexplained exception is just hidden drift, and one nothing
+    can check against the live unit is an unverifiable claim. See
+    `_override_action` / `_honored_override_state`; the rnsd masking invariant
+    below reads the same EFFECTIVE state rather than the role's line.
     """
     actions: List[Action] = []
     services: Dict[str, str] = role_def.get("services", {})
@@ -252,62 +559,7 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
     for unit, desired in services.items():
         ov = overrides.get(unit)
         if ov is not None:
-            reason = (ov.get("reason") or "").strip() if isinstance(ov, dict) else ""
-            waived = ov.get("state", "?") if isinstance(ov, dict) else str(ov)
-            cur = _unit_current(unit)
-            if reason:
-                # 2026-09-09 (aim audit finding, NARROWED after re-derivation).
-                # This branch used to emit "honored" without ever comparing
-                # `cur` to `waived`, so a waiver could be VIOLATED and still
-                # read as an honored exception — and role_drift, which fires
-                # only on blocking warnings, read `clean` over it.
-                #
-                # Two distinct cases, and conflating them was the defect:
-                #
-                #  1. The waiver is not MET (enablement differs from the
-                #     declared state). That is hidden drift in exactly the way
-                #     a reason-less waiver is, so it blocks. A declaration
-                #     nothing checks is decoration.
-                #  2. The waiver IS met on enablement, but the unit is RUNNING
-                #     while declared `disabled`. This is NOT drift and must not
-                #     block: VALID_UNIT_STATES is {enabled,disabled,absent} —
-                #     a vocabulary about ENABLEMENT ONLY. It cannot express
-                #     "not running", so an override whose reason is about
-                #     runtime ("runs RADIO-OFF") is unverifiable by
-                #     construction. Measured on the manager box 2026-09-09:
-                #     is-enabled=disabled (declaration MET), is-active=active,
-                #     the radio serving ~225 pkt/hr — and the operator knows,
-                #     having said so on 09-07. Paging here would be paging
-                #     about a human decision (feedback_never_restore_a_
-                #     deliberate_stop). So DISCLOSE it instead: silence is what
-                #     let it read as a clean "honored" for two days.
-                met = _waiver_enablement_met(cur, waived)
-                if not met:
-                    actions.append(Action(
-                        unit, cur, f"waived:{waived}", "warn", required=True,
-                        detail=(f"service_override NOT MET: declares "
-                                f"'{waived}' but the unit is '{cur}' — a "
-                                f"waiver the box does not honor is hidden "
-                                f"drift, not an exception ({reason})")))
-                elif waived == "disabled" and cur.startswith("active/"):
-                    actions.append(Action(
-                        unit, cur, f"waived:{waived}", "warn", required=False,
-                        detail=(f"intentional per-node exception: {reason} "
-                                f"— ⚠️ declaration MET on enablement but the "
-                                f"unit is RUNNING ({cur}). 'disabled' cannot "
-                                f"express 'not running', so this override's "
-                                f"runtime intent is UNVERIFIED here; judge it "
-                                f"by hand")))
-                else:
-                    actions.append(Action(unit, cur, f"waived:{waived}", "warn",
-                                          required=False,
-                                          detail=f"intentional per-node exception: {reason}"))
-            else:
-                actions.append(Action(unit, cur, f"waived:{waived}", "warn",
-                                      required=True,
-                                      detail="service_override missing required 'reason' "
-                                             "— NOT honored (an unexplained waiver is "
-                                             "hidden drift)"))
+            actions.append(_override_action(unit, ov))
             continue
         if desired not in VALID_UNIT_STATES:
             actions.append(Action(unit, "?", str(desired), "warn", required=False,
@@ -342,13 +594,46 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
     actions.extend(_user_timer_actions(role_def.get("user_timers", {})))
 
     # Masking invariant: this box owns rnsd → mask any installed rival RNS host.
-    if services.get("rnsd") == "enabled":
+    #
+    # ⚠️ The predicate is "does THIS BOX own rnsd", and that is the role's
+    # declaration AS MODIFIED by an honored deployment.json override — not the
+    # role's line read alone (2026-09-09, finding 4). Reading `services` here
+    # meant a reasoned `rnsd: {state: disabled, reason: "meshanchor-daemon owns
+    # @rns here"}` still planned mask:meshanchor-daemon, and `--apply` (CLI and
+    # the TUI core step) then masked the very RNS host the waiver named as
+    # owner — Issue #69 in reverse, executed by the converge. In dry-run the
+    # same line paged role_drift forever over an honored exception.
+    rnsd_ov = overrides.get("rnsd")
+    if rnsd_ov is None:
+        rnsd_effective, dispute = services.get("rnsd"), ""
+    else:
+        rnsd_effective = _honored_override_state(rnsd_ov)
+        dispute = "" if rnsd_effective else (
+            "a service_override for rnsd that is NOT honored (no reason, or a "
+            "missing/misspelled state)")
+
+    if rnsd_effective == "enabled":
         for rival in KNOWN_RNS_RIVALS:
             if is_service_masked(rival):
                 actions.append(Action(f"mask:{rival}", "masked", "masked", "noop"))
             elif is_service_unit_installed(rival):
                 actions.append(Action(f"mask:{rival}", "present", "masked", "mask",
                                       detail="rival RNS host on an rnsd box — Issue #69 invariant"))
+    elif services.get("rnsd") == "enabled":
+        # The role says we own rnsd, the box says otherwise. Masking is
+        # destructive and irreversible-by-sweep, so the ambiguous case does
+        # NOTHING and says why — never "resolve it by taking out the listener".
+        why = dispute or (f"a reasoned service_override declares rnsd "
+                          f"'{rnsd_effective}' on this box")
+        for rival in KNOWN_RNS_RIVALS:
+            if is_service_unit_installed(rival) and not is_service_masked(rival):
+                actions.append(Action(
+                    f"mask:{rival}", "present", "left as-is", "warn",
+                    required=False,
+                    detail=(f"masking SKIPPED — the role declares rnsd enabled "
+                            f"but {why}. This box may not own the RNS "
+                            f"listener, and masking {rival} would take out the "
+                            f"#69 owner. Resolve the override, then re-run")))
 
     # Config deltas (bbox/cap/caches) are asserted against real state in
     # config_delta_actions() (appended in main, parallel to foundation_actions) —
@@ -663,6 +948,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                         "box's role (enabled|disabled|absent|unspecified, or "
                         "waived:<state> for a reasoned deployment.json override) "
                         "and exit (machine-readable; combine with --role)")
+    p.add_argument("--enroll-user-timers", action="store_true",
+                   help="install + enable the `systemd --user` timers this "
+                        "box's role declares enabled (run AS THE OPERATOR, no "
+                        "sudo). Never part of --apply, and never disables "
+                        "anything.")
     p.add_argument("--fleet-check", action="store_true",
                    help="gather roles across fleet_hosts and validate singleton invariants")
     args = p.parse_args(argv)
@@ -727,13 +1017,40 @@ def main(argv: Optional[List[str]] = None) -> int:
         # role's service map after inheritance, with a REASONED
         # deployment.json override surfaced as waived:<state> (an unexplained
         # override is not honored, matching plan()).
+        #
+        # It must agree with plan() or it is worse than nothing (2026-09-09,
+        # finding 14): it read `services` ONLY, so every unit the role declares
+        # under `user_timers` printed `unspecified` — "no declaration" — for a
+        # unit the same role's plan renders as declared. Tooling that gates a
+        # timer install on this token was told there was nothing to enroll.
+        # `service_overrides` are SERVICE overrides and plan() does not apply
+        # them to user timers, so neither does this; and an override that
+        # plan() refuses to honor (no reason, or an invalid state) must not
+        # print as `waived:` here either.
         unit = args.print_unit_state
-        ov = read_overrides().get(unit)
-        if isinstance(ov, dict) and (ov.get("reason") or "").strip():
-            print(f"waived:{ov.get('state', '?')}")
+        services_decl = role_def.get("services", {})
+        timers_decl = role_def.get("user_timers", {})
+        honored = _honored_override_state(read_overrides().get(unit))
+        if honored and unit not in timers_decl:
+            print(f"waived:{honored}")
         else:
-            print(role_def.get("services", {}).get(unit, "unspecified"))
+            print(services_decl.get(unit, timers_decl.get(unit, "unspecified")))
         return 0
+
+    if args.enroll_user_timers:
+        # Explicit, operator-typed, and NOT reachable from --apply: converge
+        # stays user-unit-free (the 2026-07-24 lesson) while the declared
+        # state stops being unachievable (finding 5).
+        if os.geteuid() == 0:
+            print("ERROR: --enroll-user-timers must run AS THE OPERATOR, not "
+                  "under sudo — `systemctl --user` from root addresses root's "
+                  "own (absent) session bus, not the operator's (#82). Re-run "
+                  "without sudo.", file=sys.stderr)
+            return 2
+        ok, lines = enroll_user_timers(role_def.get("user_timers", {}))
+        for line in lines:
+            print(line)
+        return 0 if ok else 1
 
     if role_def.get("provisioned_by"):
         print(f"role '{role}' is EXTERNAL (provisioned_by: {role_def['provisioned_by']}) "
