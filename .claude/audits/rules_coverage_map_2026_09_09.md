@@ -154,14 +154,38 @@ absent-by-design rather than letting a skip read as agreement).
 
 ### Finding 1c — the shared implementation inherits lint's over-inclusiveness
 
-Observed live, minutes after install: MF022's `.*` crosses `;` and `&&`, so a
-compound command whose `$?` belongs to an EARLIER statement than the `| head`
-now fires. Pre-existing in MF022; the hook inherits it by deriving. Warn-only,
-so an FP costs a stderr line while an FN costs a false green — the trade is
-right, and this is stated rather than hidden. **Follow-up candidate**: scope
-MF022's `.*` so it cannot cross a statement separator. Because there is now ONE
-implementation, that fix would improve both consumers at once — which is the
-whole payoff of deriving.
+MF022's `.*` crosses `;`, `&&` and `||`, so a compound command whose `$?`
+belongs to an EARLIER statement than the `| head` can fire. Pre-existing in
+MF022; the hook inherits it by deriving.
+
+**MEASURED, then DECLINED — 2026-09-09.** I first reported this as "a real
+increase in noise on the kind of command I write constantly," from a live
+impression minutes after install. Then I measured it against the guard's own
+163-command witness corpus:
+
+    would fire under the new rule           16
+      pipe ATTACHED to a verdict command    14   (true positive)
+      only reachable across ; && ||          2   (the 1c class)
+      -> false-positive share              12%
+
+⚠️ **The first measurement said 69% and was WRONG** — my classifier counted the
+bare `&` inside `2>&1` as a statement separator, so it scored true positives
+like `python3 … 2>&1 | head -28; echo "$?"` as false ones. The examples are what
+exposed it; the number alone read as plausible. A reminder that a classifier I
+write is inside my own reasoning, not outside it
+([[feedback_verify_the_verification]]).
+
+**Verdict: do not narrow MF022.** At 88% precision on a real corpus, scoping
+`.*` to statement boundaries chases 2 lines in 163 while adding false-negative
+risk to a rule whose FNs cost false-GREEN verdicts — the expensive direction.
+The guard is warn-only, so those 2 cost a stderr line each. Declining is the
+subtraction here; re-open only if the share climbs materially.
+
+⚠️ **Precision limit of this measurement, stated rather than buried**: witness
+lines are truncated at 160 chars and have newlines flattened to spaces, so
+multi-line commands lose newline separators and a few long commands lose their
+tail. The true FP share could be modestly higher than 12%; it is not plausibly
+near 69%.
 
 ## Finding 2 — the ledger's 96% should stop being quoted (confirms the plan)
 
