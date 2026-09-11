@@ -1,4 +1,4 @@
 # MeshForge Development Dependencies
 
 # Testing
-pytest>=7.0.0
+pytest>=9.1.1

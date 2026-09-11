@@ -1,15 +1,15 @@
 # MeshForge Core Dependencies (required for all profiles)
 
 # Terminal formatting (TUI)
-rich>=13.0.0
+rich>=15.0.0
 
 # Configuration and utilities
-pyyaml>=6.0
-requests>=2.31.0
-distro>=1.8.0
+pyyaml>=6.0.3
+requests>=2.34.2
+distro>=1.9.0
 
 # Meshtastic protobuf definitions (used by gateway protobuf client).
 # Floor = the fleet baseline; bump on a reviewed roll. probe_dep_version_drift
 # (watchdog) reads THIS line as the SSOT and flags any box installed below it
 # (a missed/failed update — the recurring class, feedback_version_env_rigor).
-meshtastic>=2.7.9
+meshtastic>=2.7.11
