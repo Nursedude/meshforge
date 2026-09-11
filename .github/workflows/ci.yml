@@ -78,7 +78,37 @@ jobs:
     # Measured 3.9 durations that day: 8m19s, 8m47s, [cancelled], 9m04s
     # against the 10m cap; 3.11 runs ~7m30s, so 3.9 is the axis at risk. The
     # suite only grows, so the margin only shrinks.
-    timeout-minutes: 15  # Kill job if tests hang (measurements above)
+    #
+    # 30, not 15 (raised 2026-09-10). That prediction came true in ten days,
+    # the SECOND false red of this exact shape: 45bd7f6d ran 3.9 for 15m15s
+    # and was killed, which GitHub reports as `cancelled` -- so the required
+    # check went red meaning "slow", and a reader who trusts the word goes
+    # hunting for whoever cancelled it. Trend: 9m04s (09-01) -> 13m00s
+    # (7f2f0d53, 09-10, with 2m of margin left) -> killed on the next commit.
+    #
+    # The cap is raised well CLEAR of normal runtime rather than a notch above
+    # it, because of the line already written above: a hang blows past any
+    # finite cap. Sizing this to "a bit more than a healthy run" therefore
+    # buys nothing against the thing it guards and guarantees a false red
+    # every time the suite grows -- twice now. A healthy job still ends when
+    # the tests end, so the raise costs nothing on green runs; the only cost
+    # is that a genuine hang burns 30 minutes instead of 15, which is bounded,
+    # rare, and much cheaper than a red required check that means "slow".
+    #
+    # ⚠️ The RIGHT hang guard is per-test, not per-job: pytest-timeout is
+    # already installed and has NO timeout configured, so today a wedged test
+    # is only caught by this cap -- 15 minutes later, naming nothing. A
+    # per-test timeout catches it in minutes and names THE TEST. Deliberately
+    # not set here on a guessed value: too low and it fails healthy tests,
+    # which is the exact failure class this commit is removing. It needs a
+    # `--durations` measurement of the real tail first.
+    #
+    # NOT added: a suite-duration growth detector. The freeze
+    # (.claude/rules/harness_restraint.md) bars new gates until 2026-10-09,
+    # and a gate that watches the test suite's runtime is machinery watching
+    # machinery. The number is already in front of a human twice -- this job's
+    # duration in the CI UI, and honest_status's `full suite` line.
+    timeout-minutes: 30  # Kill job if tests hang (measurements + rationale above)
     permissions:
       contents: read
       pull-requests: write   # for the PR-comment failure diagnostic below

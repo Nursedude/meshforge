@@ -630,8 +630,31 @@ def _drain_e2e_pipeline_patches_session():
         )
 
 
+@pytest.fixture(scope="session")
+def _absent_posture_path(tmp_path_factory):
+    """ONE directory for the whole session, not one per test.
+
+    The first cut called ``tmp_path_factory.mktemp()`` inside the autouse
+    fixture below, so it ran ~12,300 times and left ~12,300 directories in a
+    single parent. MEASURED on CI (the authority I did not write): the 3.9
+    job went 13m00s -> 15m15s and was killed by the 15-minute cap, which
+    GitHub reports as `cancelled` rather than a failure.
+
+    ⚠️ Worth carrying: a local sample of 977 tests put the cost at ~1.95 ms
+    each, which extrapolates to ~24 s and would have exonerated it. Directory
+    creation in one parent is NOT linear in the entry count, so the small
+    sample understated the real cost by ~5x. Only the full-scale number
+    settled it (calibrated_claims: a measurement at the wrong scale is a
+    measurement of the wrong thing).
+
+    Nothing ever reads or creates this path -- it exists only to be ABSENT,
+    so one per session is one more than strictly needed.
+    """
+    return tmp_path_factory.mktemp("no-posture") / "fleet_posture.json"
+
+
 @pytest.fixture(autouse=True)
-def _pin_declared_posture(monkeypatch, tmp_path_factory):
+def _pin_declared_posture(monkeypatch, _absent_posture_path):
     """No test may read the OPERATOR'S LIVE power posture, or this machine's
     real clock, to reach its verdict.
 
@@ -651,7 +674,7 @@ def _pin_declared_posture(monkeypatch, tmp_path_factory):
     fixture changes no existing expectation. A test that is ABOUT posture
     overrides both (monkeypatch in the test wins over the fixture).
     """
-    absent = tmp_path_factory.mktemp("no-posture") / "fleet_posture.json"
+    absent = _absent_posture_path
     monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(absent))
     monkeypatch.setenv("MESHFORGE_CLOCK_CONFIDENT", "1")
     # And the mirror's fan-out is made STRUCTURALLY impossible, not merely
