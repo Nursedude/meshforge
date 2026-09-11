@@ -61,6 +61,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -68,6 +69,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 POSTURE_BASENAME = "fleet_posture.json"
 POSTURE_ENV = "MESHFORGE_FLEET_POSTURE"
+#: Force this reader's clock verdict ("1"/"0"). Exists so the HOLD leg is
+#: DRILLABLE at all — see clock_confidence().
+CLOCK_ENV = "MESHFORGE_CLOCK_CONFIDENT"
+_TIMESYNC_STAMP = "/run/systemd/timesync/synchronized"
+_CLOCK_TTL_S = 300.0
+_clock_cache: Tuple[float, bool, str] = (0.0, False, "")
 
 STATE_ACTIVE = "active"
 STATE_SHED = "shed"
@@ -153,6 +160,18 @@ class Posture:
     boxes: Dict[str, BoxPosture] = field(default_factory=dict)
     errors: List[str] = field(default_factory=list)
     detail: str = ""                 # for UNREADABLE/INVALID: why
+    #: How this reader judged its OWN clock, and why. Empty when the caller
+    #: supplied the verdict. A consumer that prints a held box should print
+    #: this beside it — "posture HELD" without "because my clock is unconfirmed"
+    #: is the affirmative-claim-from-a-degraded-input shape all over again.
+    clock_note: str = ""
+    clock_confident: bool = True
+    #: True when this document was DISTRIBUTED here by fleet_posture_sync.sh
+    #: rather than written here. A copy is held to a stricter rule than the
+    #: original — see read_posture().
+    is_mirror: bool = False
+    mirror_from: str = ""
+    mirror_at: Optional[float] = None
 
     def box(self, name: str) -> BoxPosture:
         """Effective posture for ``name`` — ACTIVE for any box not declared
@@ -265,8 +284,153 @@ def _effective(name: str, entry: dict, now: float, clock_confident: bool) -> Box
     return bp
 
 
+# --------------------------------------------------------------------------- #
+# Clock confidence — the predicate ``_effective()`` was written for, and that
+# no consumer had ever supplied (found 2026-09-10, wiring the mirror).
+#
+# ``_effective()`` has always carried a HOLD branch: past ``until``, a reader
+# whose own clock is unconfirmed must NOT silently un-dormant a box — it holds
+# the declaration and says why (hfm #2). Every caller took the ``True``
+# default, so that branch was unreachable in production: a written mechanism
+# with no way in, which is the half-wired class this codebase keeps paying for.
+#
+# It cost nothing while the posture had exactly ONE reader, on the manager,
+# whose clock is disciplined. The mirror ends that. The readers become every
+# fleet box — RTC-less Pis that restore a stale time from fake-hwclock at boot,
+# and moc4, whose hardware RTC was proven dead on 2026-09-10 and whose early
+# journal that day was stamped 33 minutes in the past until NTP stepped it. A
+# reader that believes a forged clock either silences a box past its window or
+# wakes it early. Both are wrong, and both are silent.
+#
+# EVIDENCE ORDER — cheapest first, and each rung an authority we did not write
+# (calibrated_claims: rank evidence by authorial distance):
+#   1. $MESHFORGE_CLOCK_CONFIDENT — explicit override, so the HOLD leg can be
+#      DRILLED (guard_drill doctrine; same reason fleet_power.py carries
+#      MESHFORGE_POWER_SELF) and so tests pin ambient state instead of reading
+#      whatever clock the machine running the suite happens to have.
+#   2. /run/systemd/timesync/synchronized — timesyncd's own stamp file.
+#      PRESENT is affirmative evidence. ABSENT proves NOTHING (the fleet's two
+#      NTP-island servers run chrony, which never writes it), so absence falls
+#      through to the next rung rather than deciding. Presence is knowledge;
+#      absence is not.
+#   3. ``timedatectl show -p NTPSynchronized`` — the kernel's sync flag by way
+#      of systemd, so it answers for chrony and timesyncd alike.
+#
+# Anything else — binary missing, timed out, unparseable — is NOT confidence.
+# Unobservable is never healthy: an unreadable clock is an unconfirmed clock.
+# --------------------------------------------------------------------------- #
+def clock_confidence(*, now: Optional[float] = None, _probe=None) -> Tuple[bool, str]:
+    """Is THIS reader's wall clock trustworthy enough to EXPIRE a posture?
+
+    Returns ``(confident, note)`` and NEVER raises — a probe that blows up
+    returns ``False`` carrying the reason, because a clock we could not check
+    is not a clock we may trust.
+
+    Cached for ``_CLOCK_TTL_S``: mini ticks every 30 s on ten boxes and this
+    answer moves on the order of hours. ``_probe`` is the test seam and is
+    never cached.
+    """
+    env = os.environ.get(CLOCK_ENV)
+    if env is not None and env.strip() != "":
+        val = env.strip().lower()
+        forced = val not in ("0", "no", "false", "off")
+        return forced, f"forced by ${CLOCK_ENV}={env.strip()!r}"
+    if _probe is not None:
+        return _probe()
+    now = time.time() if now is None else now
+    global _clock_cache
+    ts, conf, note = _clock_cache
+    if ts and 0 <= (now - ts) < _CLOCK_TTL_S:
+        return conf, note
+    conf, note = _probe_clock()
+    _clock_cache = (now, conf, note)
+    return conf, note
+
+
+def _probe_clock() -> Tuple[bool, str]:
+    """The unconditional clock probe. Separate so clock_confidence() owns the
+    caching and the override, and this owns only the evidence."""
+    try:
+        if os.path.exists(_TIMESYNC_STAMP):
+            return True, "NTP-synchronized (systemd-timesyncd stamp present)"
+    except OSError:
+        pass  # falls through to timedatectl — absence decides nothing here
+    try:
+        out = subprocess.run(
+            ["timedatectl", "show", "-p", "NTPSynchronized", "--value"],
+            capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return False, (f"clock confidence UNOBSERVABLE ({type(exc).__name__}: "
+                       f"{exc}) — treating this clock as unconfirmed")
+    if out.returncode != 0:
+        return False, (f"clock confidence UNOBSERVABLE (timedatectl rc="
+                       f"{out.returncode}) — treating this clock as unconfirmed")
+    ans = (out.stdout or "").strip().lower()
+    if ans in ("yes", "true", "1"):
+        return True, "NTP-synchronized (timedatectl NTPSynchronized=yes)"
+    if ans in ("no", "false", "0"):
+        return False, ("clock NOT NTP-synchronized (timedatectl "
+                       "NTPSynchronized=no) — expiry unverifiable")
+    return False, f"clock confidence UNOBSERVABLE (timedatectl said {ans!r})"
+
+
+# --------------------------------------------------------------------------- #
+# Peer name -> box name. The posture document is keyed by BOX name (the
+# fleet_hosts spelling); peer-facing detectors observe RNS/LXMF PEER names.
+# A detector keyed to a name nothing serves reads healthy, not broken — that
+# is the 2026-08-05 class, and it cost 8.8 days of a probe blaming rnsd for a
+# name the box never had. So resolution is affirmative-match only.
+# --------------------------------------------------------------------------- #
+#: Prefixes an app puts in front of a box name when it announces.
+#: ⚠️ DELIBERATELY does NOT include "meshanchor-": ``meshanchor-server`` is a
+#: REAL box name in fleet_hosts, and stripping would resolve it to "server" —
+#: a box that does not exist — while the exact match below already handles it.
+#: Add a prefix here only after checking it cannot eat a real box name.
+PEER_PREFIXES = ("meshforge-",)
+
+
+def resolve_peer_box(subject: str, boxes: Iterable[str]) -> Optional[str]:
+    """Map an observed PEER name onto a DECLARED box name, or None.
+
+    EXACT (case-insensitive) first, prefix-strip second — never the other way
+    round, or ``meshanchor-server`` resolves to ``server``. Returning None is
+    the safe answer: an unresolved peer is simply judged as it is today.
+    """
+    if not subject:
+        return None
+    by_lower = {}
+    for b in boxes:
+        by_lower.setdefault(b.lower(), b)
+    s = subject.strip()
+    hit = by_lower.get(s.lower())
+    if hit is not None:
+        return hit
+    for pfx in PEER_PREFIXES:
+        if s.lower().startswith(pfx):
+            hit = by_lower.get(s[len(pfx):].lower())
+            if hit is not None:
+                return hit
+    return None
+
+
+def silenced_peer(subject: str, posture: "Posture") -> Optional[BoxPosture]:
+    """The declaration that makes ``subject`` expected-absent, or None.
+
+    None means "judge it exactly as today" — for an unresolved name, an
+    undeclared box, an active box, and for every box when the file is
+    absent/unreadable/invalid (``posture.boxes`` is empty in those states, so
+    the safe default falls out of the data rather than a branch).
+    """
+    name = resolve_peer_box(subject, (posture.boxes or {}).keys())
+    if name is None:
+        return None
+    bp = (posture.boxes or {}).get(name)
+    return bp if (bp is not None and bp.silent) else None
+
+
 def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
-                 clock_confident: bool = True, home: Optional[str] = None) -> Posture:
+                 clock_confident: Optional[bool] = None,
+                 home: Optional[str] = None) -> Posture:
     """Read the posture file into a tri-state-plus result. NEVER raises.
 
     UNDECLARED (no file) is a positive observation: nothing is declared,
@@ -275,6 +439,7 @@ def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
     and print ``detail`` so a broken declaration is found, not absorbed."""
     now = time.time() if now is None else now
     path = path or posture_path(home)
+    clock_note = ""
     try:
         with open(path, "r", encoding="utf-8") as fh:
             raw = fh.read()
@@ -293,11 +458,57 @@ def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
     if errs:
         return Posture(status=INVALID, path=path, errors=errs,
                        detail="; ".join(errs)[:300])
+    # Resolve the clock HERE, not at the top: the three early returns above
+    # need no clock at all, and on the fleet's current shape most boxes have
+    # no posture file, so probing first would have every mini tick pay for an
+    # answer nothing would consult.
+    #
+    # None = ASK (the honest default). An explicit bool is for tests, drills,
+    # and callers that already know. Before 2026-09-10 this defaulted to True
+    # and no caller ever overrode it, so the HOLD branch was dead code.
+    if clock_confident is None:
+        clock_confident, clock_note = clock_confidence(now=now)
+
     p = Posture(status=DECLARED, path=path, name=str(doc.get("posture") or ""),
                 declared_at=parse_ts(doc.get("declared_at")),
-                declared_by=str(doc.get("declared_by") or ""))
+                declared_by=str(doc.get("declared_by") or ""),
+                clock_note=clock_note, clock_confident=bool(clock_confident))
     for name, entry in doc["boxes"].items():
         p.boxes[name] = _effective(name, entry, now, clock_confident)
+
+    # A MIRROR is not the original, and must not be trusted like one.
+    #
+    # `_effective()` HOLDS a declaration past `until` when the reader cannot
+    # confirm its clock — the right call on the MANAGER, where the document is
+    # authoritative and an operator is present: silently un-dormanting a box
+    # behind the operator's back is the surprise worth preventing.
+    #
+    # On a distributed copy neither of those holds. The reader is an RTC-less
+    # Pi that may have restored a stale time from fake-hwclock; there is no
+    # operator; and HOLD on a forged clock has no upper bound — it is precisely
+    # "the box that died in the storm is still dormant in November", rebuilt by
+    # the mirror. So a mirror whose reader cannot confirm its own clock
+    # silences NOTHING and says why. Over-paging is recoverable and visible; a
+    # fleet that quietly stopped reporting is neither.
+    mirror = doc.get("mirror")
+    if isinstance(mirror, dict):
+        p.is_mirror = True
+        p.mirror_from = str(mirror.get("from") or "")
+        p.mirror_at = parse_ts(mirror.get("at"))
+        if not clock_confident:
+            for bp in p.boxes.values():
+                if bp.state in SILENT_STATES or bp.held:
+                    bp.state = STATE_ACTIVE
+                    bp.held = False
+                    bp.note = (
+                        f"declared {bp.declared_state}"
+                        + (f" until {fmt_ts(bp.until)}" if bp.until else "")
+                        + " — NOT APPLIED: this is a mirrored copy from "
+                        + f"{p.mirror_from or '?'} and this reader cannot "
+                        + "confirm its own clock, so the window is unjudgeable. "
+                        + "Watching (paging) instead of silencing.")
+            p.detail = ("mirrored declaration NOT APPLIED — reader's clock "
+                        f"unconfirmed ({p.clock_note or 'no clock note'})")
     return p
 
 

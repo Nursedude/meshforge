@@ -12134,3 +12134,110 @@ class TestRnsRpcLatencyBaseline:
         assert wpr._rnstatus_slow_factor() == wpr._DEFAULT_RNSTATUS_SLOW_FACTOR
         monkeypatch.setenv("MESHFORGE_RNS_RPC_SLOW_FACTOR", "0.5")
         assert wpr._rnstatus_slow_factor() == wpr._DEFAULT_RNSTATUS_SLOW_FACTOR
+
+
+# --------------------------------------------------------------------------- #
+# tracer_peer_unreachable × declared posture (2026-09-10, the mirror arc)
+#
+# The measured motivation: the 2026-09-10 UPS shutdown of five boxes put
+# `tracer_peer_unreachable` on the board for boxb/moc2/boxa while all three
+# were off exactly as the operator intended. The probe was RIGHT about what it
+# could see and wrong about what it claimed, because it could not see the
+# declaration — which lived only on the manager until the mirror shipped.
+# --------------------------------------------------------------------------- #
+def _posture_with(tmp_path, box, state="dormant", now=None):
+    """A real Posture object read from a real file — never a mock. The 2026-07-25
+    lesson: 13 tests passed against a mocked resolver while the thing it stood
+    in for was broken."""
+    from utils import fleet_posture as fp
+    now = time.time() if now is None else now
+    p = tmp_path / "posture.json"
+    p.write_text(json.dumps({
+        "posture": "drill", "declared_by": "op", "declared_at": fp.fmt_ts(now),
+        "boxes": {box: {"state": state, "since": fp.fmt_ts(now),
+                        "until": fp.fmt_ts(now + 3600)}},
+    }))
+    return fp.read_posture(str(p), now=now, clock_confident=True)
+
+
+def test_tracer_declared_dormant_peer_is_not_judged(tmp_path):
+    """An expected absence is not a finding."""
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    for i, off in enumerate((600, 300, 60), 1):
+        _write_fire(tracer_dir, now - off,
+                    [{"peer": "meshforge-boxa", "seq": i, "result": "no-route",
+                      "rtt_ms": 0}])
+    from utils.watchdog_probe_core import collect_dispositions, reset_dispositions
+    reset_dispositions()
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+        posture=_posture_with(tmp_path, "boxa", now=now))
+    assert signals == []
+    noted = collect_dispositions()["tracer_peer_unreachable"]
+    assert noted["disp"] == "inert"
+    # The skip is WITNESSED, never a silent drop (hfm #9): a detector that
+    # quietly stops reporting a peer is worse than one that reports it wrongly.
+    assert "boxa" in noted["reason"] and "dormant" in noted["reason"]
+
+
+def test_tracer_undeclared_peer_still_fires_with_a_dormant_peer_present(tmp_path):
+    """The suppression must be per-PEER. A declaration about boxa says nothing
+    about boxb, and collapsing the two would turn one declared box into a
+    fleet-wide mute."""
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    for i, off in enumerate((600, 300, 60), 1):
+        _write_fire(tracer_dir, now - off, [
+            {"peer": "meshforge-boxa", "seq": i, "result": "no-route", "rtt_ms": 0},
+            {"peer": "meshforge-boxb", "seq": i + 10, "result": "timeout", "rtt_ms": 0},
+        ])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+        posture=_posture_with(tmp_path, "boxa", now=now))
+    assert [s.subject for s in signals] == ["meshforge-boxb"]
+    # ...and the surviving signal carries the witness for what was skipped, so
+    # the suppression is visible in the mixed case too, not only when it is the
+    # whole story.
+    suppressed = signals[0].extra["posture_suppressed"]
+    assert len(suppressed) == 1
+    assert suppressed[0].startswith("meshforge-boxa (dormant until ")
+
+
+def test_tracer_shed_peer_is_still_judged(tmp_path):
+    """`shed` means the box is UP with fewer services. It is watched. Only
+    dormant/detached are expected-absent — conflating them would hide a real
+    death on a box the operator believes is running."""
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    for i, off in enumerate((600, 300, 60), 1):
+        _write_fire(tracer_dir, now - off,
+                    [{"peer": "meshforge-boxa", "seq": i, "result": "no-route",
+                      "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+        posture=_posture_with(tmp_path, "boxa", state="shed", now=now))
+    assert [s.subject for s in signals] == ["meshforge-boxa"]
+
+
+def test_tracer_unreadable_posture_judges_everything_as_before(tmp_path):
+    """A broken declaration must not mute the fleet. Paging is the safe
+    default, and the failure rides along in the note rather than being
+    absorbed (hfm #1)."""
+    from utils import fleet_posture as fp
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json at all")
+    for i, off in enumerate((600, 300, 60), 1):
+        _write_fire(tracer_dir, now - off,
+                    [{"peer": "meshforge-boxa", "seq": i, "result": "no-route",
+                      "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+        posture=fp.read_posture(str(bad), now=now, clock_confident=True))
+    assert [s.subject for s in signals] == ["meshforge-boxa"]

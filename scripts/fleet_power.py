@@ -89,11 +89,60 @@ SSH_TIMEOUT = int(os.environ.get("MESHFORGE_POWER_SSH_TIMEOUT", "20"))
 EXPECTED_SIDE_EFFECTS = (
     "one round-trip canary cycle may FAIL while peers are dark "
     "(resource_canary_degraded, self-clears on the next cycle)",
-    "surviving boxes will report tracer_peer_unreachable for each dark peer",
+    "surviving boxes will report tracer_peer_unreachable for each dark peer "
+    "UNLESS the declaration reaches them first -- they read it from their OWN "
+    "copy, not the manager's, so --apply mirrors it before the first poweroff",
 )
 
 
 METHODS = ("poweroff", "reboot")
+
+#: The mirror organ. Distributing the declaration is part of declaring it --
+#: see mirror_posture() for why it is a step of the shutdown, not a chore.
+POSTURE_SYNC = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            "fleet_posture_sync.sh")
+
+
+def mirror_posture(*, why: str, sync: Optional[str] = None) -> int:
+    """Push the declaration to the boxes that STAY UP. Returns the sync's rc.
+
+    WHY THIS IS A STEP OF THE SHUTDOWN, not a separate chore: until
+    2026-09-10 every consumer of the posture document ran on the manager, so
+    a declaration was invisible to the very boxes whose detectors do the
+    paging. Those detectors are per-box by design -- a watchdog cannot assume
+    it can reach the manager, least of all during the power event the posture
+    describes. Declared-and-unmirrored is therefore the same defect class this
+    whole tool exists to close, one layer out: an atomic intent, applied in
+    two places, with a poller free to observe the gap.
+
+    ⚠️ LOUD, NEVER FATAL. A failed mirror does not stop a shutdown. The
+    manager-side consumers still hold the real document, so the cost of
+    pressing on is noise (off-manager detectors page about a declared
+    absence), while the cost of refusing is an operator who cannot power down
+    a fleet during a storm because a box was unreachable. Noise is
+    recoverable; an aborted shutdown at the wrong moment is not. The failure
+    is printed, named per box, and folded into the caller's report.
+    """
+    sync = sync or POSTURE_SYNC
+    if not os.path.exists(sync):
+        print(f"⚠️ mirror SKIPPED — {sync} not present. The declaration is "
+              f"manager-only; off-manager detectors will page about it.")
+        return 1
+    print(f"\nmirroring the declaration to the boxes staying up ({why})...")
+    try:
+        out = subprocess.run([sync], capture_output=True, text=True, timeout=300)
+    except (OSError, subprocess.SubprocessError) as exc:
+        print(f"⚠️ mirror FAILED to run ({type(exc).__name__}: {exc}) — "
+              f"continuing; the declaration is manager-only.")
+        return 1
+    for line in (out.stdout or "").splitlines():
+        print(f"  {line}")
+    if out.returncode != 0:
+        print(f"⚠️ mirror incomplete (rc={out.returncode}) — the boxes named "
+              f"above do NOT carry the declaration and will page about it.")
+        for line in (out.stderr or "").splitlines()[:5]:
+            print(f"  {line}")
+    return out.returncode
 
 
 def power_command(method: str) -> str:
@@ -351,7 +400,11 @@ def cmd_down(args) -> int:
         print(f"  {i}. {name}")
 
     if not args.apply:
-        print("\n=== DRY RUN — nothing declared, nothing powered off. Re-run with --apply ===")
+        print("mirror      : would distribute the declaration to the boxes "
+              "staying up, after\n              it is confirmed on disk and "
+              "before the first poweroff")
+        print("\n=== DRY RUN — nothing declared, nothing mirrored, nothing "
+              "powered off. Re-run with --apply ===")
         return 0
 
     backup = fp.write_doc(path, doc)
@@ -368,6 +421,11 @@ def cmd_down(args) -> int:
         raise Refusal("declaration did not land for: " + ", ".join(missing) +
                       " — REFUSING to power anything down. Nothing has been shut off.")
     print("declaration re-read from disk and confirmed — proceeding")
+
+    # Order matters and is not arbitrary: AFTER the re-read (never distribute
+    # a declaration we have not confirmed landed here) and BEFORE the first
+    # poweroff (a box that is already dark cannot be told anything).
+    mirror_rc = mirror_posture(why="before the first poweroff")
 
     failed = []
     for name in order:
@@ -393,6 +451,10 @@ def cmd_down(args) -> int:
                     f"path. Boxes already off: {', '.join(order[:order.index(name)]) or '(none)'}")
 
     print("\n=== done ===")
+    if mirror_rc != 0:
+        print("⚠️ the declaration did NOT reach every box that stayed up "
+              "(see the mirror lines above). Those boxes will report the dark "
+              "peers as unreachable — correctly, from what they can see.")
     if failed:
         print(f"⚠️ {len(failed)} box(es) did not confirm down: {', '.join(failed)}")
         print("   They are DECLARED dormant but ANSWERING — expect POSTURE-DRIFT, correctly.")
@@ -469,6 +531,15 @@ def watch_and_clear(path: str, targets: Sequence[str], wait: int,
             print(f"  {name} answered — posture CLEARED ({'was declared' if existed else 'already clear'})")
         if pending:
             time.sleep(poll_s)
+
+    # The return leg needs the mirror too, and for the opposite reason: the
+    # survivors were told these boxes were dormant, and nothing has told them
+    # otherwise. Once per pass rather than once per box -- an ssh fan-out for
+    # every single box that answers is a lot of churn for a window whose only
+    # cost is UNDER-paging (a peer briefly still believed dormant), which is
+    # the safe direction and bounded by the length of this resume.
+    if returned:
+        mirror_posture(why="the cleared declaration, after the boxes returned")
 
     print("\n=== done ===")
     print(f"returned+cleared : {', '.join(returned) or '(none)'}")

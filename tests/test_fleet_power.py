@@ -301,3 +301,86 @@ class TestDownArgSurface:
     def test_halt_is_rejected_at_the_arg_layer_too(self):
         with pytest.raises(SystemExit):
             self._parse(["down", "b", "--method", "halt"])
+
+
+class TestMirrorPosture:
+    """The mirror leg (2026-09-10). Until it existed, every consumer of the
+    posture document ran on the MANAGER — so a declaration was invisible to
+    exactly the boxes whose per-box detectors do the paging."""
+
+    def _fake_sync(self, tmp_path, rc, out="fleet_posture_sync: mode=distribute ok=3"):
+        f = tmp_path / "fake_sync.sh"
+        f.write_text(f'#!/bin/bash\necho "{out}"\nexit {rc}\n')
+        f.chmod(0o755)
+        return str(f)
+
+    def test_success_returns_zero(self, tmp_path, capsys):
+        assert fpw.mirror_posture(why="t", sync=self._fake_sync(tmp_path, 0)) == 0
+        assert "ok=3" in capsys.readouterr().out
+
+    def test_failure_is_LOUD_but_never_fatal(self, tmp_path, capsys):
+        """A failed mirror must not stop a shutdown. The manager still holds
+        the real document, so pressing on costs noise; refusing costs an
+        operator who cannot power down a fleet during a storm."""
+        rc = fpw.mirror_posture(why="t", sync=self._fake_sync(tmp_path, 1))
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "mirror incomplete" in out and "do NOT carry the declaration" in out
+
+    def test_a_missing_sync_organ_is_said_not_assumed(self, tmp_path, capsys):
+        """Absence must be explained, never read as success (hfm #3)."""
+        rc = fpw.mirror_posture(why="t", sync=str(tmp_path / "nope.sh"))
+        assert rc == 1
+        assert "mirror SKIPPED" in capsys.readouterr().out
+
+    def test_a_sync_that_cannot_run_does_not_raise(self, tmp_path, capsys):
+        """Not executable: the organ exists but cannot be launched. Still a
+        report, still not an exception in the middle of a shutdown."""
+        f = tmp_path / "not_exec.sh"
+        f.write_text("#!/bin/bash\nexit 0\n")
+        f.chmod(0o644)
+        assert fpw.mirror_posture(why="t", sync=str(f)) == 1
+        assert "mirror FAILED to run" in capsys.readouterr().out
+
+    def test_the_default_sync_target_is_the_real_organ(self):
+        """A test that only ever runs against a fake proves the fake works."""
+        assert fpw.POSTURE_SYNC.endswith("fleet_posture_sync.sh")
+        assert Path(fpw.POSTURE_SYNC).exists()
+
+    def test_return_leg_mirrors_the_CLEARED_declaration(self, tmp_path, monkeypatch):
+        """A mirror that only ever learns about declarations, never their end,
+        keeps a fleet silent about a peer that already came back."""
+        calls = []
+        monkeypatch.setattr(fpw, "mirror_posture",
+                            lambda **kw: calls.append(kw.get("why", "")) or 0)
+        monkeypatch.setattr(fpw, "reachable", lambda n: True)
+        path = TestWatchAndClear()._posture(tmp_path, ["b1"])
+        assert fpw.watch_and_clear(path, ["b1"], wait=5) == 0
+        assert len(calls) == 1 and "cleared" in calls[0]
+
+    def test_no_box_returned_means_no_mirror(self, tmp_path, monkeypatch):
+        """Nothing changed, so there is nothing to distribute — and a box that
+        never came back keeps its declaration on purpose."""
+        calls = []
+        monkeypatch.setattr(fpw, "mirror_posture",
+                            lambda **kw: calls.append(kw) or 0)
+        monkeypatch.setattr(fpw, "reachable", lambda n: False)
+        path = TestWatchAndClear()._posture(tmp_path, ["b1"])
+        assert fpw.watch_and_clear(path, ["b1"], wait=1, poll_s=0) == 1
+        assert calls == []
+
+
+class TestMirrorOrdering:
+    """WHERE the mirror sits in `down` is the whole point, and it is pinned by
+    source order rather than by running a real shutdown: it must land AFTER
+    the declaration is re-read from disk (never distribute something we have
+    not confirmed landed here) and BEFORE the first poweroff (a box that is
+    already dark cannot be told anything)."""
+
+    def test_mirror_is_between_the_confirmed_read_and_the_first_poweroff(self):
+        src = Path(fpw.__file__).read_text()
+        confirmed = src.index("declaration re-read from disk and confirmed")
+        mirror = src.index("mirror_rc = mirror_posture(")
+        # the first thing that actually powers a box off inside cmd_down
+        poweroff = src.index("rc, _ = _ssh(name, power_command(args.method))")
+        assert confirmed < mirror < poweroff

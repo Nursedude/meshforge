@@ -38,6 +38,22 @@ def _write(tmp_path, doc):
     return str(p)
 
 
+@pytest.fixture(autouse=True)
+def _pin_clock(monkeypatch):
+    """Pin this reader's clock verdict for every test in the module.
+
+    2026-09-10: ``read_posture`` stopped ASSUMING its clock was good and
+    started asking the machine. Without this fixture every expiry assertion
+    below would silently depend on the NTP state of whatever box runs the
+    suite — green on a synced dev box, opposite on an RTC-less Pi mid-boot,
+    and a third answer in CI. A test whose verdict depends on un-pinned
+    machine state pins nothing (2026-07-28). Tests that are ABOUT the probe
+    clear this themselves.
+    """
+    monkeypatch.setenv(fp.CLOCK_ENV, "1")
+    fp._clock_cache = (0.0, False, "")
+
+
 # --------------------------------------------------------------------------- #
 # reading
 # --------------------------------------------------------------------------- #
@@ -223,6 +239,12 @@ class TestClosedConsumers:
         "scripts/honest_status.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
         "scripts/fleet_pull.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
         "scripts/fleet_registry_sync.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
+        # The mirror, and the first two consumers that could only exist once
+        # the declaration reached the boxes (2026-09-10).
+        "scripts/fleet_posture_sync.sh": ("fleet_posture.sh", "fleet_posture_is_silent"),
+        "scripts/fleet_power.py": ("fleet_posture_sync.sh", "mirror_posture"),
+        "src/utils/watchdog_probes_tracer.py": ("fleet_posture", "silenced_peer"),
+        "src/mini_dudeai/presets/meshforge_fleet.py": ("fleet_posture", "silenced_peer"),
     }
 
     @pytest.mark.parametrize("rel,needles", sorted(CONSUMERS.items()))
@@ -395,3 +417,338 @@ class TestPostureSummaryNote:
         status, note = self._summary(p)
         assert "NOT USABLE" in note
         assert "every box checked" in note
+
+
+# --------------------------------------------------------------------------- #
+# Clock confidence — the predicate that existed for nine days with no way in.
+# --------------------------------------------------------------------------- #
+class TestClockConfidence:
+    def test_env_override_forces_true_and_says_so(self, monkeypatch):
+        monkeypatch.setenv(fp.CLOCK_ENV, "1")
+        conf, note = fp.clock_confidence()
+        assert conf is True and fp.CLOCK_ENV in note
+
+    def test_env_override_forces_false(self, monkeypatch):
+        monkeypatch.setenv(fp.CLOCK_ENV, "0")
+        conf, note = fp.clock_confidence()
+        assert conf is False and fp.CLOCK_ENV in note
+
+    def test_probe_failure_is_not_confidence(self, monkeypatch):
+        """Unobservable is never healthy: a clock we could not check is not a
+        clock we may trust (hfm #2)."""
+        monkeypatch.delenv(fp.CLOCK_ENV, raising=False)
+        conf, note = fp.clock_confidence(
+            _probe=lambda: (False, "clock confidence UNOBSERVABLE (boom)"))
+        assert conf is False and "UNOBSERVABLE" in note
+
+
+    def test_probe_says_synced(self, monkeypatch):
+        monkeypatch.delenv(fp.CLOCK_ENV, raising=False)
+        conf, _ = fp.clock_confidence(_probe=lambda: (True, "synced"))
+        assert conf is True
+
+    def test_probe_result_is_cached_not_re_run_every_tick(self, monkeypatch):
+        """mini ticks every 30 s on ten boxes; this answer moves in hours."""
+        monkeypatch.delenv(fp.CLOCK_ENV, raising=False)
+        fp._clock_cache = (0.0, False, "")
+        calls = []
+
+        def fake():
+            calls.append(1)
+            return True, "synced"
+
+        monkeypatch.setattr(fp, "_probe_clock", fake)
+        fp.clock_confidence(now=NOW)
+        fp.clock_confidence(now=NOW + 10)
+        assert len(calls) == 1
+        fp.clock_confidence(now=NOW + fp._CLOCK_TTL_S + 1)
+        assert len(calls) == 2
+
+    def test_read_posture_asks_when_not_told(self, tmp_path, monkeypatch):
+        """The regression that motivated the whole leg: before 2026-09-10 the
+        default was True and no caller ever overrode it, so the HOLD branch
+        below was unreachable in production."""
+        monkeypatch.delenv(fp.CLOCK_ENV, raising=False)
+        fp._clock_cache = (0.0, False, "")
+        monkeypatch.setattr(fp, "_probe_clock", lambda: (False, "clock NOT synced"))
+        path = _write(tmp_path, _doc(boxa={"state": "dormant",
+                                           "since": fp.fmt_ts(NOW),
+                                           "until": fp.fmt_ts(NOW + 3600)}))
+        p = fp.read_posture(path, now=NOW + 7200)
+        assert p.box("boxa").held is True, "expired window must be HELD, not lifted"
+        assert p.clock_confident is False
+        assert "NOT synced" in p.clock_note
+
+    def test_explicit_argument_still_wins_over_the_probe(self, tmp_path, monkeypatch):
+        monkeypatch.delenv(fp.CLOCK_ENV, raising=False)
+        monkeypatch.setattr(fp, "_probe_clock", lambda: (False, "unsynced"))
+        path = _write(tmp_path, _doc(boxa={"state": "dormant",
+                                           "since": fp.fmt_ts(NOW),
+                                           "until": fp.fmt_ts(NOW + 3600)}))
+        p = fp.read_posture(path, now=NOW + 7200, clock_confident=True)
+        assert p.box("boxa").expired is True and p.box("boxa").held is False
+
+
+# --------------------------------------------------------------------------- #
+# Peer name -> box name
+
+class TestProbeClockItself:
+    """The drill (2026-09-10) caught this hole in the class above: every test
+    there injects ``_probe``, so they exercise the LAMBDA and never the branch
+    that actually decides. Planting "an unobservable clock reads as confident"
+    inside ``_probe_clock`` left all of them green — the 2026-07-25 lesson
+    (13 tests passed against a mocked resolver while the thing it stood in for
+    was broken) reproduced in the tests written to prevent it.
+
+    These drive the real function and fake only the OS underneath it.
+    """
+
+    def _no_stamp(self, monkeypatch):
+        monkeypatch.setattr(fp.os.path, "exists",
+                            lambda p: False if p == fp._TIMESYNC_STAMP else True)
+
+    def _timedatectl(self, monkeypatch, *, rc=0, out="yes", exc=None):
+        class R:
+            returncode = rc
+            stdout = out
+            stderr = ""
+
+        def fake(cmd, **kw):
+            assert "timeout" in kw, "MF004: every subprocess call needs a timeout"
+            if exc is not None:
+                raise exc
+            return R()
+
+        monkeypatch.setattr(fp.subprocess, "run", fake)
+
+    def test_timesyncd_stamp_present_is_affirmative(self, monkeypatch):
+        monkeypatch.setattr(fp.os.path, "exists", lambda p: True)
+        conf, note = fp._probe_clock()
+        assert conf is True and "timesyncd" in note
+
+    def test_timedatectl_yes(self, monkeypatch):
+        self._no_stamp(monkeypatch)
+        self._timedatectl(monkeypatch, out="yes\n")
+        assert fp._probe_clock()[0] is True
+
+    def test_timedatectl_no_is_not_confident(self, monkeypatch):
+        self._no_stamp(monkeypatch)
+        self._timedatectl(monkeypatch, out="no\n")
+        conf, note = fp._probe_clock()
+        assert conf is False and "NOT NTP-synchronized" in note
+
+    def test_nonzero_rc_is_UNOBSERVABLE_not_confident(self, monkeypatch):
+        self._no_stamp(monkeypatch)
+        self._timedatectl(monkeypatch, rc=1, out="")
+        conf, note = fp._probe_clock()
+        assert conf is False and "UNOBSERVABLE" in note
+
+    def test_missing_binary_is_UNOBSERVABLE_not_confident(self, monkeypatch):
+        """A box with no timedatectl at all. Absence of the instrument is not
+        evidence about the clock."""
+        self._no_stamp(monkeypatch)
+        self._timedatectl(monkeypatch, exc=FileNotFoundError("timedatectl"))
+        conf, note = fp._probe_clock()
+        assert conf is False and "UNOBSERVABLE" in note
+
+    def test_timeout_is_UNOBSERVABLE_not_confident(self, monkeypatch):
+        self._no_stamp(monkeypatch)
+        self._timedatectl(
+            monkeypatch, exc=subprocess.TimeoutExpired("timedatectl", 5))
+        conf, note = fp._probe_clock()
+        assert conf is False and "UNOBSERVABLE" in note
+
+    def test_unparseable_answer_is_UNOBSERVABLE_not_confident(self, monkeypatch):
+        """The degraded value must not overlap the healthy domain (hfm #1)."""
+        self._no_stamp(monkeypatch)
+        self._timedatectl(monkeypatch, out="n/a")
+        conf, note = fp._probe_clock()
+        assert conf is False and "UNOBSERVABLE" in note
+
+    def test_stamp_stat_error_falls_through_rather_than_deciding(self, monkeypatch):
+        def boom(p):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(fp.os.path, "exists", boom)
+        self._timedatectl(monkeypatch, out="yes")
+        assert fp._probe_clock()[0] is True
+
+# --------------------------------------------------------------------------- #
+class TestResolvePeerBox:
+    BOXES = ["boxc", "boxb", "boxa", "meshanchor-server", "mgrbox"]
+
+    def test_exact_match(self):
+        assert fp.resolve_peer_box("boxb", self.BOXES) == "boxb"
+
+    def test_case_insensitive(self):
+        assert fp.resolve_peer_box("MgrBox", self.BOXES) == "mgrbox"
+
+    def test_app_prefix_is_stripped(self):
+        assert fp.resolve_peer_box("meshforge-boxa", self.BOXES) == "boxa"
+
+    def test_exact_match_beats_prefix_strip(self):
+        """THE trap. `meshanchor-server` is a real box name in fleet_hosts.
+        Strip-first would resolve it to `server` — a box that does not exist —
+        and the detector would be keyed to a name nothing serves, which reads
+        healthy rather than broken (the 2026-08-05 class)."""
+        assert fp.resolve_peer_box("meshanchor-server", self.BOXES) == "meshanchor-server"
+
+    def test_unknown_peer_is_none_not_a_guess(self):
+        assert fp.resolve_peer_box("some-stranger", self.BOXES) is None
+        assert fp.resolve_peer_box("", self.BOXES) is None
+
+    def test_prefix_list_cannot_eat_a_real_box_name(self):
+        """A guard on the constant itself: adding a prefix that is itself the
+        head of a real box name silently re-creates the trap above."""
+        assert "meshanchor-" not in fp.PEER_PREFIXES
+
+
+class TestSilencedPeer:
+    def _p(self, tmp_path, state="dormant"):
+        path = _write(tmp_path, _doc(boxa={"state": state,
+                                           "since": fp.fmt_ts(NOW),
+                                           "until": fp.fmt_ts(NOW + 3600)}))
+        return fp.read_posture(path, now=NOW)
+
+    def test_declared_dormant_peer_is_silenced(self, tmp_path):
+        p = self._p(tmp_path)
+        assert fp.silenced_peer("meshforge-boxa", p) is not None
+
+    def test_active_peer_is_not_silenced(self, tmp_path):
+        p = self._p(tmp_path, state="shed")   # up, services reduced — still watched
+        assert fp.silenced_peer("meshforge-boxa", p) is None
+
+    def test_undeclared_peer_is_not_silenced(self, tmp_path):
+        p = self._p(tmp_path)
+        assert fp.silenced_peer("meshforge-boxb", p) is None
+
+    def test_broken_declaration_silences_nothing(self, tmp_path):
+        path = tmp_path / "p.json"
+        path.write_text("{not json")
+        p = fp.read_posture(str(path), now=NOW)
+        assert p.status == fp.INVALID or p.status == fp.UNREADABLE
+        assert fp.silenced_peer("meshforge-boxa", p) is None
+
+
+# --------------------------------------------------------------------------- #
+# A mirror is not the original.
+# --------------------------------------------------------------------------- #
+class TestMirrorIsStricterThanTheOriginal:
+    def _mirror_doc(self):
+        d = _doc(boxa={"state": "dormant", "since": fp.fmt_ts(NOW),
+                       "until": fp.fmt_ts(NOW + 3600)})
+        d["mirror"] = {"from": "mgrbox", "at": fp.fmt_ts(NOW)}
+        return d
+
+    def test_mirror_inside_its_window_silences_normally(self, tmp_path):
+        path = _write(tmp_path, self._mirror_doc())
+        p = fp.read_posture(path, now=NOW + 60, clock_confident=True)
+        assert p.is_mirror and p.mirror_from == "mgrbox"
+        assert p.box("boxa").silent
+
+    def test_mirror_with_an_unconfirmed_clock_silences_NOTHING(self, tmp_path):
+        """HOLD is right on the manager, where the document is authoritative
+        and an operator is present. On a mirrored copy read by an RTC-less Pi
+        it has no upper bound — it is 'the box that died in the storm is still
+        dormant in November', rebuilt by the mirror."""
+        path = _write(tmp_path, self._mirror_doc())
+        p = fp.read_posture(path, now=NOW + 60, clock_confident=False)
+        assert p.box("boxa").silent is False
+        assert p.box("boxa").declared_state == "dormant"
+        assert "NOT APPLIED" in p.box("boxa").note
+        assert fp.silenced_peer("meshforge-boxa", p) is None
+
+    def test_the_ORIGINAL_still_holds_on_an_unconfirmed_clock(self, tmp_path):
+        """The manager's own file carries no mirror stamp, and its behaviour
+        must not change: past `until` with an unconfirmed clock it HOLDS."""
+        d = _doc(boxa={"state": "dormant", "since": fp.fmt_ts(NOW),
+                       "until": fp.fmt_ts(NOW + 3600)})
+        path = _write(tmp_path, d)
+        p = fp.read_posture(path, now=NOW + 7200, clock_confident=False)
+        assert p.is_mirror is False
+        assert p.box("boxa").held is True and p.box("boxa").silent is True
+
+    def test_mirror_refusal_is_stated_not_silent(self, tmp_path):
+        path = _write(tmp_path, self._mirror_doc())
+        p = fp.read_posture(path, now=NOW + 60, clock_confident=False)
+        assert "NOT APPLIED" in p.detail
+
+
+# --------------------------------------------------------------------------- #
+# The stamp helper refuses to fan out what it would not accept.
+# --------------------------------------------------------------------------- #
+class TestMirrorStamp:
+    STAMP = REPO / "scripts" / "fleet_posture_stamp.py"
+
+    def _run(self, src, dest):
+        return subprocess.run(
+            [sys.executable, str(self.STAMP), str(src), str(dest), "testmgr"],
+            capture_output=True, text=True, timeout=60)
+
+    def test_valid_document_is_stamped_as_a_mirror(self, tmp_path):
+        src = tmp_path / "src.json"
+        src.write_text(json.dumps(_doc(boxa={"state": "dormant",
+                                             "since": fp.fmt_ts(NOW),
+                                             "until": fp.fmt_ts(time.time() + 3600)})))
+        dest = tmp_path / "dest.json"
+        r = self._run(src, dest)
+        assert r.returncode == 0, r.stderr
+        got = json.loads(dest.read_text())
+        assert got["mirror"]["from"] == "testmgr" and got["mirror"]["at"]
+
+    def test_invalid_document_is_REFUSED_not_distributed(self, tmp_path):
+        """One broken file on the manager must not become nine broken files on
+        the boxes that are about to lose their operator."""
+        src = tmp_path / "src.json"
+        src.write_text(json.dumps({"boxes": {"boxa": {"state": "dormant"}}}))  # no until
+        dest = tmp_path / "dest.json"
+        r = self._run(src, dest)
+        assert r.returncode == 2
+        assert "REFUSING" in r.stderr
+        assert not dest.exists()
+
+    def test_expired_window_is_still_distributable(self, tmp_path):
+        """An expired declaration is a valid document whose effect has ended —
+        and it must travel, or a box never learns the storm is over."""
+        src = tmp_path / "src.json"
+        src.write_text(json.dumps(_doc(boxa={"state": "dormant",
+                                             "since": fp.fmt_ts(NOW),
+                                             "until": fp.fmt_ts(NOW + 60)})))
+        dest = tmp_path / "dest.json"
+        assert self._run(src, dest).returncode == 0
+
+    def test_empty_declaration_travels(self, tmp_path):
+        """The resting state after `resume`. A mirror that only ever learns
+        about declarations, never their end, keeps a fleet silent about a peer
+        that already came back."""
+        src = tmp_path / "src.json"
+        src.write_text(json.dumps({"posture": "", "boxes": {}}))
+        dest = tmp_path / "dest.json"
+        assert self._run(src, dest).returncode == 0
+        assert json.loads(dest.read_text())["boxes"] == {}
+
+
+class TestCliShowEmptyDeclaration:
+    """43e0ad37 fixed this in scripts/lib/fleet_posture.sh. There were two
+    readers (hfm #5: when a mechanism is cured, grep for its copies)."""
+
+    def _show(self, path):
+        return subprocess.run([sys.executable, str(CLI), "--file", str(path), "show"],
+                              capture_output=True, text=True, timeout=60)
+
+    def test_declared_but_empty_says_nothing_is_silenced(self, tmp_path):
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps({"posture": "", "declared_by": "operator",
+                                    "boxes": {}}))
+        r = self._show(path)
+        assert r.returncode == 0
+        assert "NOTHING is silenced" in r.stdout
+
+    def test_declared_with_boxes_counts_what_is_silenced(self, tmp_path):
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps(_doc(
+            boxa={"state": "dormant", "since": fp.fmt_ts(time.time()),
+                  "until": fp.fmt_ts(time.time() + 3600)})))
+        r = self._show(path)
+        assert r.returncode == 0
+        assert "1 box(es) silenced" in r.stdout and "boxa" in r.stdout

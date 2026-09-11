@@ -82,9 +82,30 @@ def cmd_show(args) -> int:
         return 0 if p.status == fp.UNDECLARED else 1
     print(f"declaration: {p.name or '(unnamed)'} by {p.declared_by or '?'} at "
           f"{fp.fmt_ts(p.declared_at) if p.declared_at else '?'}")
+    # A posture file that PARSES is `declared` even with zero boxes in it —
+    # the normal resting state after fleet_power.py resume clears the last
+    # box. Printing the header and then nothing lets a reader carry away
+    # "posture is in effect" from an EMPTY document: an affirmative claim
+    # manufactured from an empty state, which is exactly what 43e0ad37 fixed
+    # in scripts/lib/fleet_posture.sh on 2026-09-10. It was fixed in ONE of
+    # the two readers; this is the other one (hfm #5 — when a mechanism is
+    # cured, grep for its copies).
+    if not p.boxes:
+        print("effect: NOTHING is silenced — the declaration names no box "
+              "(every box ACTIVE, watched as today)")
+        return 0
     for name, b in sorted(p.boxes.items()):
         flag = " [EXPIRED]" if b.expired else (" [HELD]" if b.held else "")
         print(f"  {name:20s} {b.state:9s}{flag}  {b.note}")
+    silent = p.silent_boxes()
+    print(f"effect: {len(silent)} box(es) silenced"
+          + (f" ({', '.join(silent)})" if silent else ""))
+    # Expiry is wall-clock, so say which clock decided it (2026-09-10).
+    if p.clock_note:
+        print(f"clock : {p.clock_note}")
+    if any(b.held for b in p.boxes.values()):
+        print("⚠️ HELD box(es) above are past their window and NOT lifted — "
+              "this reader cannot verify its own clock.")
     return 0
 
 

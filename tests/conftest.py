@@ -628,3 +628,40 @@ def _drain_e2e_pipeline_patches_session():
             "e2e pipeline teardown restore(s) FAILED at session end:\n  "
             + "\n  ".join(failures)
         )
+
+
+@pytest.fixture(autouse=True)
+def _pin_declared_posture(monkeypatch, tmp_path_factory):
+    """No test may read the OPERATOR'S LIVE power posture, or this machine's
+    real clock, to reach its verdict.
+
+    Both became test-visible on 2026-09-10, when the posture document stopped
+    being manager-only. ``probe_tracer_peer_unreachable`` and mini's
+    federation source now consult the declaration on THIS box, and
+    ``read_posture`` asks the machine whether its clock can be trusted. With
+    neither pinned, a probe test's answer depends on whether the operator
+    happens to have a box declared dormant while the suite runs, and an
+    expiry test's answer depends on the NTP state of whoever runs it: green
+    on a synced dev box, opposite on an RTC-less Pi mid-boot, a third answer
+    in CI. A test whose verdict depends on un-pinned machine state pins
+    nothing (2026-07-28).
+
+    Pinned to a path that does not exist = UNDECLARED = every box active =
+    the behaviour every pre-existing probe test was written against, so this
+    fixture changes no existing expectation. A test that is ABOUT posture
+    overrides both (monkeypatch in the test wins over the fixture).
+    """
+    absent = tmp_path_factory.mktemp("no-posture") / "fleet_posture.json"
+    monkeypatch.setenv("MESHFORGE_FLEET_POSTURE", str(absent))
+    monkeypatch.setenv("MESHFORGE_CLOCK_CONFIDENT", "1")
+    # And the mirror's fan-out is made STRUCTURALLY impossible, not merely
+    # unlikely. `fleet_power.watch_and_clear` calls the sync organ on the
+    # return leg; the suite runs ON the manager, where that organ can ssh nine
+    # real boxes and — with the posture path pinned to a file that does not
+    # exist — would enter WITHDRAW mode and start removing their copies.
+    # Relying on each test to remember to patch it is exactly the guard whose
+    # blast radius holds the thing arming it. Pointed at a host list that does
+    # not exist, the organ refuses on its own first check (rc 2) and no test
+    # can reach the fleet however it is written.
+    monkeypatch.setenv("FLEET_POSTURE_SYNC_HOSTS",
+                       str(absent.parent / "no-such-fleet_hosts"))

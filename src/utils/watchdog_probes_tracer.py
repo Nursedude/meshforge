@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import List, Optional
 
+from utils import fleet_posture as fp
 from utils.watchdog_probe_core import Signal, note_disposition
 
 
@@ -24,6 +25,7 @@ def probe_tracer_peer_unreachable(
     persistent_cycles: int = 3,
     lookback_s: float = 1800.0,
     now: Optional[float] = None,
+    posture: Optional["fp.Posture"] = None,
 ) -> List[Signal]:
     """Classify peers with recurring no-route/timeout into transient vs persistent.
 
@@ -61,6 +63,22 @@ def probe_tracer_peer_unreachable(
 
     Why a list return: one tracer_dir can report on many peers in one
     pass; flattening to N Signals keeps the probe API uniform.
+
+    DECLARED POSTURE (2026-09-10, the mirror arc). A peer the operator has
+    declared ``dormant`` or ``detached`` is an EXPECTED absence, and this
+    probe is the loudest thing in the fleet about unexpected ones: the
+    2026-09-10 UPS shutdown put ``tracer_peer_unreachable`` on the board for
+    moc1/moc2/moc4 while all three were off exactly as intended. Such a peer
+    is skipped, and the skip is WITNESSED — never a silent drop (hfm #9),
+    because a detector that quietly stops reporting a peer is worse than one
+    that reports it wrongly.
+
+    The posture is read from THIS box's own copy, which is why the mirror had
+    to exist first: before ``fleet_posture_sync.sh``, every box but the
+    manager had no declaration to read. ``posture`` is injectable for tests
+    and drills. A posture that is absent, unreadable or invalid yields zero
+    silent boxes, so the fallback is today's behaviour — watch everything —
+    and falls out of the data rather than out of a branch.
     """
     if tracer_dir is None:
         tracer_dir = _default_tracer_dir()
@@ -132,7 +150,21 @@ def probe_tracer_peer_unreachable(
         )
         return []
 
+    # ONE read for the whole pass. Never fatal: a posture we cannot read
+    # means nothing is silenced, which is exactly today's behaviour, and the
+    # reason rides along so a broken declaration is found rather than absorbed.
+    posture_err = ""
+    if posture is None:
+        try:
+            posture = fp.read_posture()
+        except Exception as exc:            # defensive: read_posture says it never raises
+            posture_err = f"{type(exc).__name__}: {exc}"
+            posture = fp.Posture(status=fp.UNDECLARED, path="")
+    elif posture.status in (fp.UNREADABLE, fp.INVALID):
+        posture_err = posture.detail
+
     signals: List[Signal] = []
+    suppressed: List[str] = []
     for peer, history in by_peer.items():
         # history is newest-first thanks to fires being newest-first.
         if not history:
@@ -140,6 +172,17 @@ def probe_tracer_peer_unreachable(
         latest_result = history[0][1]
         if latest_result == "ok":
             continue  # peer reachable right now → nothing to report
+
+        declared = fp.silenced_peer(peer, posture)
+        if declared is not None:
+            # Expected absence. Skipped BEFORE the tier classification, so a
+            # declared box cannot reach `degraded` by sitting still long
+            # enough — the tier of a deliberate absence is not information.
+            suppressed.append(
+                f"{peer} ({declared.declared_state}"
+                + (f" until {fp.fmt_ts(declared.until)}" if declared.until else "")
+                + ")")
+            continue
 
         # Count leading non-ok results.
         leading_fail = 0
@@ -215,8 +258,23 @@ def probe_tracer_peer_unreachable(
                     "tier": "transient",
                 },
             ))
+    if suppressed:
+        # The swallow leaves a witness in BOTH shapes: as the class
+        # disposition when it is the whole story, and on each surviving
+        # signal when it is not (hfm #9).
+        witness = ("declared-absent peer(s) not judged: "
+                   + "; ".join(sorted(suppressed))
+                   + (f" [posture: {posture_err}]" if posture_err else ""))
+        if signals:
+            for sig in signals:
+                sig.extra["posture_suppressed"] = sorted(suppressed)
+        else:
+            note_disposition("tracer_peer_unreachable", "inert", reason=witness)
+            return signals
     if not signals:
-        note_disposition("tracer_peer_unreachable", "clean")
+        note_disposition(
+            "tracer_peer_unreachable", "clean",
+            reason=(f"posture unusable ({posture_err})" if posture_err else None))
     return signals
 
 

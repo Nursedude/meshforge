@@ -398,8 +398,7 @@ denominators), `fleet_pull.sh` (DORMANT row, not a failure),
 Closed-consumer test pins all nine consumers. Remaining, in priority order:
 peer-facing watchdog probes (`tracer_peer_unreachable`, federation, delivery
 fan-out) + `probe_fleet_box_unreachable` reading the new verdicts, claw RF
-watch lists, the posture MIRROR to every box (registry-sync pattern — needed
-BEFORE the probes can read it off-manager), `shed` overlay on the role plan,
+watch lists, `shed` overlay on the role plan,
 validator with roles, `posture_drift` as a watchdog class, V4–V8 in the
 virtual fleet.
 
@@ -1013,3 +1012,70 @@ field-kit chat compiler, which has no code yet." Tonight's arc gives that
 justification a concrete shape and a customer. Parked, not deleted, was the
 right call — revisit at the field-kit milestone, not before.
 See [[project_ollama_parked_2026_09_07]].
+
+### Shipped — batch 4: the MIRROR, and the first off-manager consumers (2026-09-10)
+
+The declaration now reaches the boxes that act on it. Until this batch every
+one of the nine wired consumers ran on the MANAGER, so the design's own
+attack #4 — *if the declaration lives only on the manager, every other box
+loses it exactly when it needs it* — was still fully open, and mini's
+per-box rules (which run on all ten boxes) had never heard of posture at all.
+
+**The mirror** — `scripts/fleet_posture_sync.sh` (+ `fleet_posture_stamp.py`).
+Registry-sync pattern, with three deliberate inversions: a box with NO copy is
+SEEDED (absence here means "page everything", which is the case that needs the
+file); CLEARING propagates (a mirror that only learns about declarations and
+never their end keeps a fleet silent about a peer that came back); and NO
+manager file at all WITHDRAWS the remote copies, because absent is the safe
+state. The audience is the boxes STAYING UP — a box being powered down does
+not need to be told it is dormant, and the survivors are the ones whose
+detectors would otherwise page. Landed artifacts are verified by re-hashing on
+the remote, never by trusting scp's rc.
+
+⚠️ **Not cron-wired, deliberately** (harness_restraint.md, in force to
+2026-10-09). It runs where it is load-bearing: inside `fleet_power.py down`,
+between the confirmed declaration and the first poweroff, and again on the
+return leg once boxes are cleared. A timer is a separate decision for after
+the freeze.
+
+**A mirror is not the original.** Every copy carries `mirror: {from, at}`; the
+manager's file never does. A MIRROR whose reader cannot confirm its own clock
+silences NOTHING and says so, where the authoritative document HOLDS. HOLD is
+right on the manager — there is an operator and a real file. On an RTC-less Pi
+restoring a stale time from fake-hwclock it has no upper bound: it is "the box
+that died in the storm is still dormant in November", rebuilt by the mirror.
+
+**Clock confidence, finally wired.** `_effective()` has carried a
+`clock_confident` HOLD branch since 2026-09-01 and **no caller had ever passed
+the flag** — a written mechanism with no way in, harmless while the posture had
+one reader on a disciplined clock, wrong the moment it had ten. `read_posture`
+now ASKS (timesyncd stamp → `timedatectl NTPSynchronized`), and anything it
+cannot observe is NOT confidence. moc4 is the case in point: the plan picks it
+for the duty-cycle drill *because* it has "hardware RTC — the least forgeable
+clock", and on 2026-09-10 that RTC was proven dead, its early journal stamped
+33 minutes in the past. That premise is false and this leg is why it matters.
+
+**First off-manager consumers**: `probe_tracer_peer_unreachable` and mini's
+federation source skip a peer the operator declared dormant/detached — the two
+detectors that fired for moc1/moc2/moc4 during the 09-10 UPS shutdown while all
+three were off exactly as intended. Every skip is WITNESSED (hfm #9): as the
+class disposition when it is the whole story, on each surviving signal when it
+is not, and as a `posture_expected_absence` condition in mini. No rule is
+seeded for that kind and none may be during the freeze.
+
+**Drilled, not traced** — `scratchpad/drill.sh` plants 14 defects (mirror
+trusted like the original; strip-before-exact peer resolution; read_posture
+assuming its clock; an unobservable clock read as confident; the probe ignoring
+the declaration; a silent suppression; `shed` treated as expected-absent; the
+stamp fanning out an invalid document; the empty declaration reading as
+in-effect; the mirror dropped from the shutdown path, from the return leg, and
+made fatal). **14/14 caught.** The first run caught only 12 — one gap was a
+test of mine that injected a fake probe and therefore exercised the lambda
+instead of the branch it claimed to cover (the 2026-07-25 lesson, reproduced
+inside the tests written to prevent it), and the other was a new test class
+accidentally inserted mid-class, orphaning four tests into the wrong one.
+
+Remaining in the arc: `probe_fleet_box_unreachable` reading the new verdicts,
+claw RF watch lists, `shed` overlay on the role plan, validator with roles,
+`posture_drift` as a watchdog class (FROZEN until 2026-10-09), V4–V8 in the
+virtual fleet.

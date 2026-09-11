@@ -198,9 +198,54 @@ class FederationPeerSource(Source):
         if not isinstance(data, dict):
             return
         peers = (data.get("federation") or {}).get("peer_status") or []
+        # The operator's DECLARED posture, read from THIS box's own copy
+        # (fleet_posture_sync.sh mirrors the manager's document to every box
+        # that stays up). A peer declared dormant/detached is an EXPECTED
+        # absence: on 2026-09-10 a five-box UPS shutdown put this very
+        # condition on the board for moc1 and moc2 while both were off exactly
+        # as intended. Read once per tick, never fatal — an absent, unreadable
+        # or invalid declaration silences nothing, which is today's behaviour.
+        try:
+            from utils import fleet_posture as _fp
+            posture = _fp.read_posture()
+        except Exception as exc:            # a broken reader must not blind the source
+            posture, _fp = None, None
+            yield Condition(
+                kind="source_error",
+                subject="federator",
+                detail=f"posture reader unusable ({type(exc).__name__}: {exc}) "
+                       f"— every peer judged as active",
+                source=self.name,
+            )
         for p in peers:
             name = p.get("peer_name") or p.get("hostname") or p.get("name") or "?"
             if p.get("in_backoff") or (p.get("last_error") and not p.get("reachable", True)):
+                declared = (_fp.silenced_peer(str(name), posture)
+                            if posture is not None else None)
+                if declared is not None:
+                    # Witnessed as its own condition kind, never dropped: a
+                    # source that quietly stops yielding is indistinguishable
+                    # from a healthy fleet (hfm #9). `posture_expected_absence`
+                    # is informational and pages nothing.
+                    #
+                    # Freeze check (harness_restraint.md, active to 2026-10-09):
+                    # this is NOT a new signal class or detector. No rule is
+                    # seeded for this kind and none may be during the freeze —
+                    # it exists so the suppression above is VISIBLE rather than
+                    # silent. The change it belongs to REMOVES pages by
+                    # narrowing a detector that false-fires, which the freeze
+                    # exempts by name.
+                    yield Condition(
+                        kind="posture_expected_absence",
+                        subject=str(name),
+                        detail=(f"peer unhealthy but DECLARED "
+                                f"{declared.declared_state}"
+                                + (f" until {_fp.fmt_ts(declared.until)}"
+                                   if declared.until else "")
+                                + " — expected, not judged"),
+                        source=self.name,
+                    )
+                    continue
                 yield Condition(
                     kind="federation_peer_unhealthy",
                     subject=str(name),
