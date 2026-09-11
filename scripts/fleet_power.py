@@ -93,6 +93,24 @@ EXPECTED_SIDE_EFFECTS = (
 )
 
 
+METHODS = ("poweroff", "reboot")
+
+
+def power_command(method: str) -> str:
+    """The remote verb, as a pure function so it is testable without ssh.
+
+    `reboot` exists for DRILLS on boxes that are not on a UPS. `poweroff` leaves
+    such a box halted until someone physically power-cycles it -- mains
+    returning does not help, because the box never lost power in the first
+    place. That makes an unattended poweroff drill a trip to the bench, so the
+    drill path must be able to exercise everything EXCEPT the final verb:
+    declare -> dark -> posture holds -> returns -> resume clears.
+    """
+    if method not in METHODS:
+        raise Refusal(f"unknown method '{method}' (expected one of {', '.join(METHODS)})")
+    return f"sudo -n systemctl {method} --no-block"
+
+
 class Refusal(Exception):
     """A refusal names what it looked at, never just that it said no."""
 
@@ -311,7 +329,11 @@ def cmd_down(args) -> int:
         raise Refusal("posture validator refused:\n  " + "\n  ".join(errs) +
                       "\n  (--force records the refusal in the file instead of blocking)")
 
+    power_command(args.method)   # validate BEFORE declaring anything
     print(f"targets     : {len(order)} ({', '.join(order)})")
+    print(f"method      : {args.method}"
+          + ("   ⚠️ DRILL MODE — boxes come back on their own; nothing stays off"
+             if args.method == "reboot" else ""))
     print(f"declarable  : {', '.join(plan['declarable']) or '(none)'}")
     if plan["hops_only"]:
         print(f"hops only   : {', '.join(plan['hops_only'])}  (no posture entry — nothing watches them)")
@@ -350,9 +372,9 @@ def cmd_down(args) -> int:
     failed = []
     for name in order:
         print(f"\n--- {name} ---")
-        rc, _ = _ssh(name, "sudo -n systemctl poweroff --no-block")
+        rc, _ = _ssh(name, power_command(args.method))
         if rc not in (0, 255):  # 255 = connection dropped as it goes down
-            print(f"  poweroff returned rc={rc} — continuing to verify anyway")
+            print(f"  {args.method} returned rc={rc} — continuing to verify anyway")
         gone = False
         for _ in range(args.settle // 5 or 1):
             time.sleep(5)
@@ -375,7 +397,25 @@ def cmd_down(args) -> int:
         print(f"⚠️ {len(failed)} box(es) did not confirm down: {', '.join(failed)}")
         print("   They are DECLARED dormant but ANSWERING — expect POSTURE-DRIFT, correctly.")
         return 1
-    print(f"all {len(order)} confirmed down. Run `fleet_power.py resume --apply` as they return —")
+    if args.method == "reboot" and not args.no_resume:
+        # MEASURED on the first real drill (moc4, 2026-09-10): reboot issued
+        # 18:52:24, dark 18:52:44, ANSWERING AGAIN by 18:52:54 — thirty seconds.
+        # That is faster than the */5 offline cron and far faster than a human
+        # deciding to type the next command, so the operator ran the monitor
+        # first "to watch it work" and the monitor correctly reported
+        # POSTURE-DRIFT. One more page from the same two-step hole this whole
+        # tool exists to close.
+        #
+        # A reboot BY DEFINITION means the box is coming straight back, so
+        # there is no case where you want the declaration left standing.
+        # Chaining is the honest default; --no-resume opts out.
+        print(f"\nreboot mode — continuing straight into resume. A rebooting box returns")
+        print("in seconds, faster than any poller, so leaving the declaration standing")
+        print("even briefly is what produces a POSTURE-DRIFT page.")
+        return watch_and_clear(path, plan["declarable"], args.resume_wait)
+
+    verb = "rebooting" if args.method == "reboot" else "confirmed down"
+    print(f"all {len(order)} {verb}. Run `fleet_power.py resume --apply` as they return —")
     print("the posture stays declared until then, and a returning box that is still")
     print("declared is what produces the drift pages this tool exists to prevent.")
     return 0
@@ -403,7 +443,13 @@ def cmd_resume(args) -> int:
         print("\n=== DRY RUN — will not poll or clear. Re-run with --apply ===")
         return 0
 
-    deadline = time.time() + args.wait
+    return watch_and_clear(path, targets, args.wait)
+
+
+def watch_and_clear(path: str, targets: Sequence[str], wait: int,
+                    poll_s: int = 10) -> int:
+    """Poll until each box answers, clearing its posture the moment it does."""
+    deadline = time.time() + wait
     pending = list(targets)
     returned: List[str] = []
     while pending and time.time() < deadline:
@@ -422,7 +468,7 @@ def cmd_resume(args) -> int:
             returned.append(name)
             print(f"  {name} answered — posture CLEARED ({'was declared' if existed else 'already clear'})")
         if pending:
-            time.sleep(10)
+            time.sleep(poll_s)
 
     print("\n=== done ===")
     print(f"returned+cleared : {', '.join(returned) or '(none)'}")
@@ -435,7 +481,9 @@ def cmd_resume(args) -> int:
     return 0
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
+    """The ONE parser. Tests import this rather than rebuilding the arg
+    surface: a second copy drifts from this one silently (hfm #5)."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--boxes", default=DEFAULT_BOXES, help="dependency graph (offline-boxes config)")
     ap.add_argument("--posture", default=None, help="posture file (default: the SSOT path)")
@@ -450,6 +498,12 @@ def main(argv=None) -> int:
     d.add_argument("--until", default="+4h")
     d.add_argument("--reason", default="")
     d.add_argument("--settle", type=int, default=60, help="seconds to wait for each box to go dark")
+    d.add_argument("--no-resume", action="store_true",
+                   help="reboot mode: do NOT chain into resume (leaves the declaration standing)")
+    d.add_argument("--resume-wait", type=int, default=600,
+                   help="reboot mode: seconds to watch for the boxes to return")
+    d.add_argument("--method", choices=METHODS, default="poweroff",
+                   help="poweroff (real) or reboot (drill: exercises everything but the final verb)")
     d.add_argument("--force", action="store_true", help="override the posture validator, recorded")
     d.add_argument("--apply", action="store_true", help="actually do it (default: dry run)")
     d.set_defaults(fn=cmd_down)
@@ -460,7 +514,11 @@ def main(argv=None) -> int:
     r.add_argument("--apply", action="store_true", help="actually poll+clear (default: dry run)")
     r.set_defaults(fn=cmd_resume)
 
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
     try:
         return args.fn(args)
     except Refusal as exc:

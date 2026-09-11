@@ -205,3 +205,99 @@ class TestPlan:
             write_graph(tmp_path, [{"name": "leaf", "host": "leaf", "via": "hop"}]))
         plan = fpw.build_plan(["hop", "leaf"], boxes, via, probe=ALL_DARK)
         assert "hop" not in plan["declarable"]
+
+
+class TestPowerMethod:
+    """`--method reboot` is the DRILL path. A box not on a UPS that is
+    `poweroff`d stays halted until someone physically power-cycles it — mains
+    returning does not help, because it never lost power. So an unattended
+    drill must be able to exercise everything except the final verb."""
+
+    def test_poweroff_is_the_default_verb(self):
+        assert fpw.power_command("poweroff") == "sudo -n systemctl poweroff --no-block"
+
+    def test_reboot_builds_the_drill_verb(self):
+        assert fpw.power_command("reboot") == "sudo -n systemctl reboot --no-block"
+
+    def test_the_two_methods_are_different_commands(self):
+        assert fpw.power_command("reboot") != fpw.power_command("poweroff")
+
+    def test_no_block_is_always_present(self):
+        # Without --no-block the ssh call hangs until the box dies, and the
+        # caller cannot tell "issued" from "never returned".
+        for m in fpw.METHODS:
+            assert "--no-block" in fpw.power_command(m)
+
+    def test_halt_is_refused(self):
+        # `halt` stops the OS but leaves the board drawing power — the worst of
+        # both: unreachable AND still consuming the battery it was meant to save.
+        with pytest.raises(fpw.Refusal):
+            fpw.power_command("halt")
+
+    def test_an_empty_method_is_refused(self):
+        with pytest.raises(fpw.Refusal):
+            fpw.power_command("")
+
+
+class TestWatchAndClear:
+    """`resume`'s core, shared with reboot-mode chaining so both paths clear
+    posture the same way."""
+
+    def _posture(self, tmp_path, names):
+        import time as _t
+        sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+        from utils import fleet_posture as fp
+        now = _t.time()
+        doc = {"boxes": {n: {"state": "dormant", "since": fp.fmt_ts(now),
+                             "until": fp.fmt_ts(now + 3600)} for n in names},
+               "declared_at": fp.fmt_ts(now), "declared_by": "operator", "posture": "t"}
+        f = tmp_path / "posture.json"
+        f.write_text(json.dumps(doc), encoding="utf-8")
+        return str(f)
+
+    def test_a_returning_box_is_cleared_immediately(self, tmp_path, monkeypatch):
+        path = self._posture(tmp_path, ["b1"])
+        monkeypatch.setattr(fpw, "reachable", lambda n: True)
+        assert fpw.watch_and_clear(path, ["b1"], wait=5) == 0
+        assert json.loads(Path(path).read_text())["boxes"] == {}
+
+    def test_a_box_that_never_returns_keeps_its_declaration(self, tmp_path, monkeypatch):
+        """Clearing a box that has not come back would turn a real outage into a
+        DOWN page with no declaration behind it."""
+        path = self._posture(tmp_path, ["b1"])
+        monkeypatch.setattr(fpw, "reachable", lambda n: False)
+        assert fpw.watch_and_clear(path, ["b1"], wait=1, poll_s=0) == 1
+        assert "b1" in json.loads(Path(path).read_text())["boxes"]
+
+    def test_partial_return_clears_only_what_came_back(self, tmp_path, monkeypatch):
+        path = self._posture(tmp_path, ["b1", "b2"])
+        monkeypatch.setattr(fpw, "reachable", lambda n: n == "b1")
+        assert fpw.watch_and_clear(path, ["b1", "b2"], wait=1, poll_s=0) == 1
+        boxes = json.loads(Path(path).read_text())["boxes"]
+        assert "b1" not in boxes and "b2" in boxes
+
+
+class TestDownArgSurface:
+    """Parsed through the REAL parser (fpw.build_parser). A second copy of the
+    arg surface in a test drifts from the shipped one silently — the same
+    two-consumers-one-artifact rule the executor's own docstring cites."""
+
+    def _parse(self, argv):
+        return fpw.build_parser().parse_args(argv)
+
+    def test_reboot_chains_into_resume_by_default(self):
+        ns = self._parse(["down", "b", "--method", "reboot"])
+        assert ns.method == "reboot" and ns.no_resume is False
+
+    def test_no_resume_opts_out(self):
+        assert self._parse(["down", "b", "--method", "reboot", "--no-resume"]).no_resume is True
+
+    def test_poweroff_is_the_default_method(self):
+        assert self._parse(["down", "b"]).method == "poweroff"
+
+    def test_dry_run_is_the_default(self):
+        assert self._parse(["down", "b"]).apply is False
+
+    def test_halt_is_rejected_at_the_arg_layer_too(self):
+        with pytest.raises(SystemExit):
+            self._parse(["down", "b", "--method", "halt"])
