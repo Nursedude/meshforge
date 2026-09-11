@@ -61,6 +61,58 @@ jobs:
         # per-file failures and could never fail).
         run: python -m compileall -q src
 
+  manifest-resolve:
+    # Can our requirements files actually RESOLVE on the oldest Python we
+    # claim to support? Until 2026-09-11 nothing asked.
+    #
+    # WHY THIS EXISTS: the `test` job installs BARE PACKAGE NAMES
+    # (`pip install pytest ... rich textual flask pyyaml requests psutil
+    # distro`) and never reads requirements/*.txt, so pip silently resolves
+    # whatever is newest-compatible for the interpreter it is on. The
+    # manifests were therefore unvalidated by ANY check. Dependabot PR #1179
+    # proved the hole: it went green on all six checks — 3.9 matrix leg
+    # included — while proposing `requests>=2.34.2` and `pytest>=9.1.1`
+    # (need >=3.10) and `websockets>=17.1` (needs >=3.11) against a package
+    # that declares `requires-python = ">=3.9"`. Six green checks, and the
+    # manifests could not have installed on the Python we advertise.
+    #
+    # --dry-run resolves the full dependency graph and fails on an
+    # unsatisfiable pin WITHOUT building or installing anything, so this
+    # stays seconds, not minutes. --ignore-requires-python is deliberately
+    # NOT passed: the requires-python conflict IS the thing under test.
+    #
+    # rns.txt is excluded on purpose — it carries the MF-FORK-PIN git+SHA
+    # pins, which resolve over the network from our own fork and are gated
+    # by scripts/rns_version_check.py, not by pip's resolver.
+    #
+    # ⚠️ MIN_PY must equal pyproject.toml's requires-python floor. Two
+    # consumers of one constant drift (honest_failure_modes #5), so
+    # TestCIMinPythonMatchesPyproject in tests/test_honesty_invariants.py
+    # fails the moment they disagree — the day 3.9 is retired, this line,
+    # pyproject, the README badge and the dependabot ignores move together.
+    name: Manifest resolve (oldest supported Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      MIN_PY: '3.9'
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python ${{ env.MIN_PY }}
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: ${{ env.MIN_PY }}
+
+      - name: Resolve every manifest on the oldest supported Python
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install --dry-run --quiet \
+            -r requirements/core.txt \
+            -r requirements/maps.txt \
+            -r requirements/mqtt.txt \
+            -r requirements/monitoring.txt \
+            -r requirements/dev.txt
+
   test:
     # Explicit name: the bare "Test Suite" auto-name appends ALL matrix
     # axes — adding the os axis renamed the context to

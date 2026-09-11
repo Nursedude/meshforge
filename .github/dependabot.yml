@@ -51,3 +51,34 @@ updates:
       # crypto/packet format forks the NETWORK, not just the code).
       - dependency-name: rns
       - dependency-name: lxmf
+
+      # ── Floors that would cross our DECLARED Python floor ──────────────
+      # pyproject.toml says `requires-python = ">=3.9"` and the README badges
+      # python-3.9+. These three have released versions that DROP 3.9:
+      # requests 2.34.2 and pytest 9.1.1 need >=3.10, websockets 17.1 needs
+      # >=3.11 (read from PyPI's requires_python, 2026-09-11). Taking them
+      # would leave the package claiming a Python its own manifests cannot
+      # resolve on — and NOTHING would have caught it, because PR #1179 was
+      # green on all six checks, 3.9 leg included, while proposing exactly
+      # that: ci.yml installed bare package names and never read these files.
+      # The `manifest-resolve` job added in the same commit closes that.
+      #
+      # ⚠️ SCOPED TO THE CROSSING, NOT THE PACKAGE. An `ignore` with a bare
+      # dependency-name suppresses SECURITY updates too, which would gut the
+      # un-grouped security lane this config exists to protect. So each entry
+      # names only the update-type that actually crosses the line, and patch
+      # (and for two of them, minor) updates — including security ones —
+      # still flow. Floors sit at the newest 3.9-supporting release:
+      # requests 2.32.5, pytest 8.4.2, websockets 15.0.1.
+      #
+      # ⚠️ DELETE ALL THREE the day 3.9 is retired. They are not a judgement
+      # that these packages should stay old; they are the consequence of one
+      # support claim, and they become wrong the moment that claim changes.
+      # Retiring 3.9 moves pyproject + the README badge + the ci.yml floor
+      # + these entries together, or the tree disagrees with itself.
+      - dependency-name: requests
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: pytest
+        update-types: ["version-update:semver-major"]
+      - dependency-name: websockets
+        update-types: ["version-update:semver-major"]

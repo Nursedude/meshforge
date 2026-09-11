@@ -1994,3 +1994,79 @@ def test_installer_writers_work_on_the_REAL_path(tmp_path):
     assert cfg[:2] == ["first=1", "second=2"], f"append order wrong: {cfg!r}"
     assert cfg[2] == 'LABEL="x" $novar `nocmd`', \
         f"appended line must land LITERALLY, got {cfg[2]!r}"
+
+
+class TestCIMinPythonMatchesPyproject:
+    """`ci.yml`'s manifest-resolve job and `pyproject.toml` both encode "the
+    oldest Python we support". Two consumers of one constant drift
+    (honest_failure_modes #5), and the drift would be SILENT: CI would keep
+    resolving the manifests on a Python the package no longer claims, or —
+    worse — stop checking the one it does.
+
+    Born 2026-09-11 with the job itself. Dependabot PR #1179 went green on all
+    six checks, 3.9 leg included, while proposing floors that could not install
+    on 3.9; this pair is what makes that a red instead.
+    """
+
+    _REPO = Path(__file__).resolve().parent.parent
+
+    def _pyproject_floor(self) -> str:
+        for line in (self._REPO / "pyproject.toml").read_text().splitlines():
+            line = line.strip()
+            if line.startswith("requires-python"):
+                # requires-python = ">=3.9"
+                return line.split("=", 1)[1].strip().strip('"\'').lstrip(">=").strip()
+        pytest.fail("pyproject.toml has no requires-python")
+
+    def _ci_min_py(self) -> str:
+        import yaml
+        ci = yaml.safe_load((self._REPO / ".github" / "workflows" / "ci.yml").read_text())
+        job = ci["jobs"].get("manifest-resolve")
+        assert job, "ci.yml lost the manifest-resolve job — the manifests are unvalidated again"
+        return str(job["env"]["MIN_PY"])
+
+    def test_they_agree(self):
+        assert self._ci_min_py() == self._pyproject_floor(), (
+            "ci.yml manifest-resolve MIN_PY and pyproject requires-python disagree — "
+            "retiring a Python moves BOTH (plus the README badge and the "
+            "dependabot ignore entries) or the tree contradicts itself")
+
+    def _job_directives(self) -> str:
+        """The manifest-resolve block with COMMENT LINES STRIPPED.
+
+        The block's own commentary names the flags it discusses (including the
+        one that must never be passed), so scanning raw text matches the prose
+        rather than the config — caught by this test failing on its first run,
+        the same way the drop-in template test did an hour earlier.
+        """
+        ci = (self._REPO / ".github" / "workflows" / "ci.yml").read_text()
+        block = ci.split("manifest-resolve:", 1)[1].split("\n  test:", 1)[0]
+        return "\n".join(l for l in block.splitlines()
+                          if not l.strip().startswith("#"))
+
+    def test_the_job_actually_reads_the_manifests(self):
+        """RED-proofing the job's POINT: it must resolve requirements FILES.
+        A job that installed bare names would pass while proving nothing —
+        that is precisely the hole it was added to close."""
+        block = self._job_directives()
+        assert "--dry-run" in block
+        for manifest in ("core.txt", "maps.txt", "mqtt.txt",
+                         "monitoring.txt", "dev.txt"):
+            assert f"-r requirements/{manifest}" in block, \
+                f"manifest-resolve does not resolve requirements/{manifest}"
+        assert "--ignore-requires-python" not in block, \
+            "--ignore-requires-python would disable the exact check this job is for"
+
+    def test_every_manifest_is_covered(self):
+        """A NEW requirements file must be added to the job or fail here —
+        otherwise it joins the unvalidated set silently (the closed-enum /
+        open-consumer class, honest_failure_modes #7)."""
+        block = self._job_directives()
+        on_disk = {p.name for p in (self._REPO / "requirements").glob("*.txt")}
+        # rns.txt is excluded BY DESIGN: git+SHA fork pins, gated by
+        # scripts/rns_version_check.py rather than pip's resolver.
+        expected = on_disk - {"rns.txt"}
+        missing = {m for m in expected if f"-r requirements/{m}" not in block}
+        assert not missing, (
+            f"requirements file(s) {sorted(missing)} are resolved by NOTHING — "
+            f"add them to ci.yml's manifest-resolve job or exclude them explicitly")

@@ -5,7 +5,7 @@ rich>=15.0.0
 
 # Configuration and utilities
 pyyaml>=6.0.3
-requests>=2.31.0
+requests>=2.32.5
 distro>=1.9.0
 
 # Meshtastic protobuf definitions (used by gateway protobuf client).
