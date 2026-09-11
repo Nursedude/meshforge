@@ -28,7 +28,7 @@ DEFAULT_ROOT = str(Path(__file__).resolve().parents[3])
 # plan() verbs that mean "the box would actually change under converge".
 # Fallback only — _change_verbs() prefers the engine's own exported
 # PLAN_CHANGE_VERBS (one constant, one owner; honest_failure_modes #5).
-CHANGE_VERBS = ("enable", "disable", "mask")
+CHANGE_VERBS = ("enable", "disable", "mask", "dropin")
 
 # The guided next-step for the BRIDGE-LEG axis (gateway.json). apply_preset
 # converges the ROLE axis only; legs need box-specific values this generic

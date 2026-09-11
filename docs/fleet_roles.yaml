@@ -231,6 +231,16 @@ roles:
                                       # the claws + the ssh spool), which is weaker than
                                       # a local watchdog and is the price of the tier.
       meshtasticd-mudp-guard.timer: absent
+    service_dropins:                  # see the service_dropins note below the roles
+      # Keep a flaky SX126x init retrying instead of latching `failed
+      # (start-limit-hit)`. Declared on THIS role because the zero-class tier
+      # carries its radio on an unsupported cantilevered header, which is the
+      # shape that produced the 2026-09-11 incident (82 min `failed` while an
+      # unattended retry proved the radio could still come up). Other roles may
+      # adopt it by declaring the same line; USB-radio boxes already carry
+      # meshtasticd-restart.timer for a different fault (upstream VSZ leak) and
+      # are deliberately NOT opted in here.
+      meshtasticd.service.d/50-sx1262-retry-patience.conf: enabled
     # NOT declared here on purpose: the meshing-around `mesh_bot.service`. It is
     # owned by that repo (see the `bot` role's provisioned_by), and declaring it
     # `enabled` would let a converge sweep re-enable a unit the operator has
@@ -265,6 +275,30 @@ roles:
 # filesystem cannot tell them apart, so synth_soak_degraded had to treat both
 # as inert and a silently-retired exerciser looked identical to a box that
 # never ran one. The declaration is what separates them.
+
+# service_dropins — systemd drop-in FRAGMENTS (`<unit>.service.d/<file>.conf`),
+# declared separately from `services` (added 2026-09-11). Vocabulary is narrowed
+# to enabled | absent: a fragment is a file, so there is no third "installed but
+# switched off" state to name. Inherited through `inherits` exactly like
+# `services` and `user_timers`.
+#
+# WHY THE BLOCK EXISTS: a drop-in used to be a hand-`cp` recorded only in
+# DROPIN_PROVENANCE, so a re-imaged box came up WITHOUT it and nothing said so
+# — the fix sat in the repo one copy away while the box ran stock defaults.
+# Declaring it is what makes its absence drift instead of silence.
+#
+# CONVERGENCE IS INSTALL-ONLY, DELIBERATELY:
+#   * declared `enabled`, file missing -> `--apply` writes it from
+#     templates/systemd/<unit>.service.d/<file>.conf and daemon-reloads. Safe
+#     to converge (unlike a user timer) because writing a fragment starts and
+#     stops NOTHING; the new directives bind at the unit's next restart.
+#   * declared `enabled`, file present -> noop. Content is NOT compared and the
+#     action says so: an operator may have hand-tuned it, and overwriting that
+#     is the 2026-07-24 shape pointed at a file. `scripts/lib/unit_compare.sh`
+#     is the tool for content drift.
+#   * declared `absent`, file present -> warning, never auto-removed. The
+#     mirror image of never restoring a deliberate stop: do not delete a
+#     deliberate addition.
 
 # Where a non-rnsd daemon could grab the RNS listener on a box, MASK the loser.
 # mask survives restart-timers and dependencies; disable does not.

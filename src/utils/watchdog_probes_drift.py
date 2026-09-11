@@ -852,7 +852,7 @@ def probe_dep_install_fragmented(
 DEFAULT_ROLE_DRIFT_DEBOUNCE_PATH = "/var/lib/meshforge/role_drift_debounce.json"
 
 # plan() verbs that mean "the box would change under converge" = real drift.
-_ROLE_DRIFT_VERBS = ("enable", "disable", "mask")
+_ROLE_DRIFT_VERBS = ("enable", "disable", "mask", "dropin")
 
 
 def _plan_role_actions(role: str, overrides: dict, meshforge_root: str):

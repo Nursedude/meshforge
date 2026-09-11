@@ -59,6 +59,8 @@ from utils.service_check import (  # noqa: E402
     disable_service,
     stop_service,
     mask_service,
+    _sudo_cmd,
+    _sudo_write,
 )
 
 DEFAULT_ROLES_FILE = _SCRIPT_DIR.parent / "docs" / "fleet_roles.yaml"
@@ -82,7 +84,19 @@ VALID_UNIT_STATES = {"enabled", "disabled", "absent"}
 # `-user.service` (the templates' own install recipes, made executable —
 # 2026-09-09, finding 5: the roles file declared these enabled and NOTHING in
 # the product could put them there).
-USER_UNIT_TEMPLATE_DIR = _SCRIPT_DIR.parent / "templates" / "systemd"
+SYSTEMD_TEMPLATE_DIR = _SCRIPT_DIR.parent / "templates" / "systemd"
+# Same directory, kept as a name because the user-timer code reads by that
+# noun. ONE owner, not two hardcodes of the same path (honest_failure_modes #5).
+USER_UNIT_TEMPLATE_DIR = SYSTEMD_TEMPLATE_DIR
+
+# Where systemd reads system-scope drop-in fragments. Declared drop-ins are
+# written here, never into /lib or /usr/lib (package-owned).
+SYSTEM_DROPIN_ROOT = Path("/etc/systemd/system")
+
+# A fragment is a FILE: it is either there or it is not, so there is no
+# "installed but switched off" third state to name (see the service_dropins
+# note in fleet_roles.yaml).
+VALID_DROPIN_STATES = {"enabled", "absent"}
 
 # The in-product remediation for a declared-but-never-enrolled user timer.
 # Named in the advisory so the operator is not sent to a wiki (MF018 spirit).
@@ -107,7 +121,7 @@ class Action:
 # independent hardcodes of this tuple diverged once already
 # (honest_failure_modes #5). foundation_actions() adds 'foundation'
 # separately — it is not a plan() verb.
-PLAN_CHANGE_VERBS = ("enable", "disable", "mask")
+PLAN_CHANGE_VERBS = ("enable", "disable", "mask", "dropin")
 
 
 # --------------------------------------------------------------------------
@@ -125,8 +139,9 @@ def load_roles(path: Path) -> dict:
 def resolve_role(catalog: dict, role: str) -> dict:
     """Flatten a role to its effective definition, applying `inherits`.
 
-    Returns the role dict with `services` AND `user_timers` merged
-    parent→child. Raises KeyError for an unknown role.
+    Returns the role dict with `services`, `user_timers` AND
+    `service_dropins` merged parent→child. Raises KeyError for an unknown
+    role.
 
     `user_timers` inherits by the same rule as `services` deliberately: a key
     that merged for one and silently did not for the other would be a trap for
@@ -140,16 +155,20 @@ def resolve_role(catalog: dict, role: str) -> dict:
     node = roles[role]
     services: Dict[str, str] = {}
     user_timers: Dict[str, str] = {}
+    service_dropins: Dict[str, str] = {}
     parent = node.get("inherits")
     if parent:
         resolved_parent = resolve_role(catalog, parent)
         services.update(resolved_parent.get("services", {}))
         user_timers.update(resolved_parent.get("user_timers", {}))
+        service_dropins.update(resolved_parent.get("service_dropins", {}))
     services.update(node.get("services", {}) or {})
     user_timers.update(node.get("user_timers", {}) or {})
+    service_dropins.update(node.get("service_dropins", {}) or {})
     merged = dict(node)
     merged["services"] = services
     merged["user_timers"] = user_timers
+    merged["service_dropins"] = service_dropins
     return merged
 
 
@@ -537,6 +556,89 @@ def enroll_user_timers(declared: Dict[str, str],
     return ok, lines
 
 
+def parse_dropin_key(key: str) -> "tuple[str, str]":
+    """Split a declared `<unit>.service.d/<file>.conf` key into its two parts.
+
+    Raises ValueError on anything that is not exactly that shape. This is the
+    INPUT VALIDATION boundary: the key names a path we will write to under
+    /etc/systemd/system as root, so it is checked rather than trusted —
+    exactly two segments, the expected suffixes, no traversal, no absolute
+    path, no empty component.
+    """
+    if not isinstance(key, str) or not key:
+        raise ValueError("drop-in key must be a non-empty string")
+    if key.startswith("/") or "\\" in key:
+        raise ValueError(f"drop-in key must be relative: {key!r}")
+    parts = key.split("/")
+    if len(parts) != 2:
+        raise ValueError(
+            f"drop-in key must be '<unit>.service.d/<file>.conf', got {key!r}")
+    unit_dir, conf = parts
+    if not unit_dir.endswith(".service.d"):
+        raise ValueError(f"drop-in dir must end in '.service.d', got {unit_dir!r}")
+    if not conf.endswith(".conf"):
+        raise ValueError(f"drop-in file must end in '.conf', got {conf!r}")
+    for seg in (unit_dir, conf):
+        if seg in ("", ".", "..") or "/" in seg:
+            raise ValueError(f"bad drop-in path segment {seg!r} in {key!r}")
+    return unit_dir, conf
+
+
+def _dropin_paths(key: str) -> "tuple[Path, Path]":
+    """(template path in the repo, installed path on the box) for a key."""
+    unit_dir, conf = parse_dropin_key(key)
+    return (SYSTEMD_TEMPLATE_DIR / unit_dir / conf,
+            SYSTEM_DROPIN_ROOT / unit_dir / conf)
+
+
+def _dropin_actions(declared: Dict[str, str]) -> List[Action]:
+    """Diff declared drop-in fragments against what is on disk.
+
+    INSTALL-ONLY by design (see the service_dropins note in fleet_roles.yaml):
+      * enabled + missing  -> 'dropin' (write it, then daemon-reload)
+      * enabled + present  -> noop, and the detail SAYS content was not
+                              compared, so a converged-looking line never
+                              silently claims more than it checked
+      * absent  + present  -> non-blocking warn; never auto-removed
+    """
+    actions: List[Action] = []
+    for key, desired in (declared or {}).items():
+        try:
+            tpl, installed = _dropin_paths(key)
+        except ValueError as e:
+            actions.append(Action(f"dropin:{key}", "?", str(desired), "warn",
+                                  required=False, detail=str(e)))
+            continue
+        if desired not in VALID_DROPIN_STATES:
+            actions.append(Action(f"dropin:{key}", "?", str(desired), "warn",
+                                  required=False,
+                                  detail=f"unknown desired state '{desired}' "
+                                         f"(expected {sorted(VALID_DROPIN_STATES)})"))
+            continue
+        present = installed.is_file()
+        if desired == "enabled":
+            if present:
+                actions.append(Action(f"dropin:{key}", "present", "enabled", "noop",
+                                      detail="present (content not compared — "
+                                             "scripts/lib/unit_compare.sh judges drift)"))
+            elif not tpl.is_file():
+                actions.append(Action(f"dropin:{key}", "absent", "enabled", "warn",
+                                      detail=f"declared but no template at {tpl} — "
+                                             f"nothing in the repo can install it"))
+            else:
+                actions.append(Action(f"dropin:{key}", "absent", "enabled", "dropin",
+                                      detail=f"install from {tpl}"))
+        else:  # absent
+            if present:
+                actions.append(Action(f"dropin:{key}", "present", "absent", "warn",
+                                      required=False,
+                                      detail="present but role declares absent "
+                                             "(not auto-removed)"))
+            else:
+                actions.append(Action(f"dropin:{key}", "absent", "absent", "noop"))
+    return actions
+
+
 def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Action]:
     """Build the ordered action list to converge to `role_def`. Pure w.r.t.
     the SSOT observe functions (which read the live system).
@@ -592,6 +694,7 @@ def plan(role_def: dict, overrides: Optional[Dict[str, dict]] = None) -> List[Ac
                 actions.append(Action(unit, "absent", "absent", "noop"))
 
     actions.extend(_user_timer_actions(role_def.get("user_timers", {})))
+    actions.extend(_dropin_actions(role_def.get("service_dropins", {})))
 
     # Masking invariant: this box owns rnsd → mask any installed rival RNS host.
     #
@@ -759,6 +862,52 @@ def config_delta_actions(role_def: dict, defaults: dict) -> List[Action]:
 # Apply
 # --------------------------------------------------------------------------
 
+def _install_dropin(key: str) -> "tuple[bool, str]":
+    """Write one declared drop-in fragment from its repo template, then reload.
+
+    The daemon-reload is what makes systemd SEE the fragment; without it the
+    file sits on disk and changes nothing, which would be a converged-looking
+    write that did not take (the reader/writer half-wiring class,
+    honest_failure_modes #4). It starts and stops nothing — the new directives
+    bind at the unit's next restart.
+    """
+    try:
+        tpl, dest = _dropin_paths(key)
+    except ValueError as e:
+        return False, str(e)
+    if not tpl.is_file():
+        return False, f"no template at {tpl}"
+    try:
+        content = tpl.read_text()
+    except OSError as e:
+        return False, f"unreadable template {tpl}: {e}"
+    ok, msg = _sudo_cmd_run(["mkdir", "-p", str(dest.parent)])
+    if not ok:
+        return False, f"mkdir {dest.parent} failed: {msg}"
+    ok, msg = _sudo_write(str(dest), content)
+    if not ok:
+        return False, f"write {dest} failed: {msg}"
+    ok, msg = _sudo_cmd_run(["systemctl", "daemon-reload"])
+    if not ok:
+        return False, f"wrote {dest} but daemon-reload FAILED: {msg}"
+    return True, f"installed {dest} + daemon-reload"
+
+
+def _sudo_cmd_run(argv: List[str], timeout: int = 30) -> "tuple[bool, str]":
+    """Run one privileged command through the service_check sudo SSOT."""
+    import subprocess
+    try:
+        r = subprocess.run(_sudo_cmd(argv), capture_output=True, text=True,
+                           timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        return False, f"timeout after {timeout}s: {' '.join(argv)}"
+    except OSError as e:
+        return False, f"{' '.join(argv)}: {e}"
+    if r.returncode != 0:
+        return False, (r.stderr or r.stdout or f"exit {r.returncode}").strip()
+    return True, (r.stdout or "ok").strip()
+
+
 def apply_action(a: Action) -> bool:
     """Execute one action via the SSOT. Returns success. 'warn'/'noop' never act."""
     if a.verb in ("noop", "warn"):
@@ -772,6 +921,8 @@ def apply_action(a: Action) -> bool:
         ok, msg = (ok1 and ok2), f"{m1}; {m2}"
     elif a.verb == "mask":
         ok, msg = mask_service(a.item.split("mask:", 1)[1])
+    elif a.verb == "dropin":
+        ok, msg = _install_dropin(a.item.split("dropin:", 1)[1])
     elif a.verb == "foundation":
         try:
             from utils.fleet_foundation import apply_foundation

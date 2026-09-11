@@ -1152,3 +1152,233 @@ class TestEnrollUserTimersCLI:
                           "--roles-file", str(self._roles(
                               tmp_path, {"meshforge-synth-soak.timer": "enabled"}))])
         assert rc == 1, "a half-done enrollment must not exit 0"
+
+
+# --------------------------------------------------------------------------
+# service_dropins — declared systemd drop-in fragments (2026-09-11)
+# --------------------------------------------------------------------------
+
+class TestParseDropinKey:
+    """The key names a path written under /etc/systemd/system AS ROOT, so it is
+    an input-validation boundary, not a trusted string."""
+
+    def test_accepts_the_declared_shape(self):
+        assert pr.parse_dropin_key("meshtasticd.service.d/50-retry.conf") == (
+            "meshtasticd.service.d", "50-retry.conf")
+
+    @pytest.mark.parametrize("bad", [
+        "/etc/systemd/system/x.service.d/50.conf",   # absolute
+        "../../etc/passwd",                          # traversal
+        "meshtasticd.service.d/../../../etc/x.conf",  # traversal, 4 segments
+        "a/b/c.conf",                                # too many segments
+        "50-retry.conf",                             # no unit dir
+        "meshtasticd.service/50-retry.conf",         # dir not .service.d
+        "meshtasticd.service.d/50-retry.txt",        # file not .conf
+        "meshtasticd.service.d/",                    # empty file segment
+        "",                                          # empty
+    ])
+    def test_rejects_anything_else(self, bad):
+        with pytest.raises(ValueError):
+            pr.parse_dropin_key(bad)
+
+    def test_traversal_never_escapes_the_dropin_root(self):
+        """RED proof: the rejected traversal would otherwise resolve OUTSIDE
+        /etc/systemd/system, which is the whole reason this is validated."""
+        escaped = (pr.SYSTEM_DROPIN_ROOT / "../../etc/passwd").resolve()
+        assert not str(escaped).startswith(str(pr.SYSTEM_DROPIN_ROOT))
+        with pytest.raises(ValueError):
+            pr.parse_dropin_key("../../etc/passwd")
+
+
+class TestDropinActions:
+    KEY = "meshtasticd.service.d/50-sx1262-retry-patience.conf"
+
+    def _actions(self, declared, present, tpl_exists=True):
+        real_is_file = Path.is_file
+
+        def fake_is_file(self):
+            s = str(self)
+            if s.startswith(str(pr.SYSTEM_DROPIN_ROOT)):
+                return present
+            if s.startswith(str(pr.SYSTEMD_TEMPLATE_DIR)):
+                return tpl_exists
+            return real_is_file(self)
+
+        with patch.object(Path, "is_file", fake_is_file):
+            return pr._dropin_actions(declared)
+
+    def test_enabled_and_missing_plans_an_install(self):
+        a, = self._actions({self.KEY: "enabled"}, present=False)
+        assert a.verb == "dropin"
+        assert a.item == f"dropin:{self.KEY}"
+        assert a.current == "absent" and a.desired == "enabled"
+        assert str(pr.SYSTEMD_TEMPLATE_DIR) in a.detail
+
+    def test_enabled_and_present_is_noop_that_admits_what_it_did_not_check(self):
+        """A converged line must not claim more than it measured — content is
+        NOT compared, and the detail says so."""
+        a, = self._actions({self.KEY: "enabled"}, present=True)
+        assert a.verb == "noop"
+        assert "not compared" in a.detail
+
+    def test_declared_absent_but_present_warns_and_never_removes(self):
+        """Mirror image of never restoring a deliberate stop: never delete a
+        deliberate addition."""
+        a, = self._actions({self.KEY: "absent"}, present=True)
+        assert a.verb == "warn"
+        assert a.required is False
+        assert "not auto-removed" in a.detail
+        assert a.verb not in pr.PLAN_CHANGE_VERBS
+
+    def test_declared_absent_and_missing_is_noop(self):
+        a, = self._actions({self.KEY: "absent"}, present=False)
+        assert a.verb == "noop"
+
+    def test_declared_with_no_template_warns_instead_of_planning(self):
+        """A declaration nothing in the repo can satisfy is a finding, not a
+        silent skip — the writer-with-no-reader class."""
+        a, = self._actions({self.KEY: "enabled"}, present=False, tpl_exists=False)
+        assert a.verb == "warn"
+        assert "no template" in a.detail
+
+    def test_unknown_state_warns(self):
+        a, = self._actions({self.KEY: "sometimes"}, present=False)
+        assert a.verb == "warn"
+        assert "unknown desired state" in a.detail
+
+    def test_malformed_key_warns_rather_than_raising(self):
+        """A bad key in the SSOT must surface as a finding, never crash the
+        whole converge for every other unit on the box."""
+        a, = self._actions({"../escape.conf": "enabled"}, present=False)
+        assert a.verb == "warn"
+
+    def test_no_declaration_plans_nothing(self):
+        assert self._actions({}, present=False) == []
+
+
+class TestDropinsInheritAndReachThePlan:
+    CATALOG = {
+        "roles": {
+            "parent": {"services": {},
+                       "service_dropins": {"a.service.d/10-p.conf": "enabled"}},
+            "child": {"inherits": "parent", "services": {},
+                      "service_dropins": {"b.service.d/20-c.conf": "enabled"}},
+            "overrider": {"inherits": "parent", "services": {},
+                          "service_dropins": {"a.service.d/10-p.conf": "absent"}},
+        }
+    }
+
+    def test_child_inherits_parent_dropins(self):
+        d = pr.resolve_role(self.CATALOG, "child")["service_dropins"]
+        assert d == {"a.service.d/10-p.conf": "enabled",
+                     "b.service.d/20-c.conf": "enabled"}
+
+    def test_child_can_override_to_absent(self):
+        d = pr.resolve_role(self.CATALOG, "overrider")["service_dropins"]
+        assert d == {"a.service.d/10-p.conf": "absent"}
+
+    def test_plan_emits_the_dropin_action(self):
+        role = {"services": {}, "user_timers": {},
+                "service_dropins": {"a.service.d/10-p.conf": "enabled"}}
+        with patch.object(Path, "is_file", lambda self: "templates" in str(self)):
+            verbs = {a.verb for a in pr.plan(role)}
+        assert "dropin" in verbs
+
+    def test_dropin_is_a_change_verb_so_role_drift_counts_it(self):
+        assert "dropin" in pr.PLAN_CHANGE_VERBS
+
+
+class TestShippedRoleDeclaresTheDropin:
+    """The SSOT on disk, not a fixture — if the real declaration is dropped or
+    its template renamed, this fails."""
+
+    def test_field_node_declares_the_sx1262_dropin_and_the_template_exists(self):
+        catalog = pr.load_roles(pr.DEFAULT_ROLES_FILE)
+        declared = pr.resolve_role(catalog, "field-node")["service_dropins"]
+        key = "meshtasticd.service.d/50-sx1262-retry-patience.conf"
+        assert declared.get(key) == "enabled"
+        tpl, _ = pr._dropin_paths(key)
+        assert tpl.is_file(), f"declared drop-in has no template at {tpl}"
+        # Parse DIRECTIVES only. The comment block names both section headers
+        # in prose, so a naive split on the raw text lands in the commentary
+        # rather than the config (caught by this test failing on its first run).
+        section, seen = None, {}
+        for line in tpl.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.startswith("[") and line.endswith("]"):
+                section = line
+                continue
+            seen[line] = section
+        # Each directive under its REQUIRED section — putting either in the
+        # wrong one silently no-ops and systemd reports no error.
+        assert seen.get("StartLimitIntervalSec=0") == "[Unit]", seen
+        assert seen.get("RestartSec=30") == "[Service]", seen
+
+
+class TestInstallDropin:
+    """The WRITE half. Exercised against a scratch root, with the privileged
+    commands stubbed — the live sudo + systemd path is only proven on a box."""
+
+    KEY = "meshtasticd.service.d/50-sx1262-retry-patience.conf"
+
+    def _run(self, tmp_path, reload_ok=True, write_ok=True):
+        calls = []
+
+        def fake_cmd(argv, timeout=30):
+            calls.append(argv)
+            if argv[:2] == ["systemctl", "daemon-reload"]:
+                return (reload_ok, "ok" if reload_ok else "dbus is down")
+            Path(argv[-1]).mkdir(parents=True, exist_ok=True)
+            return (True, "ok")
+
+        def fake_write(path, content, timeout=10):
+            if not write_ok:
+                return (False, "permission denied")
+            Path(path).write_text(content)
+            return (True, "ok")
+
+        with patch.object(pr, "SYSTEM_DROPIN_ROOT", tmp_path), \
+             patch.object(pr, "_sudo_cmd_run", fake_cmd), \
+             patch.object(pr, "_sudo_write", fake_write):
+            ok, msg = pr._install_dropin(self.KEY)
+        return ok, msg, calls
+
+    def test_writes_the_template_verbatim_and_reloads(self, tmp_path):
+        ok, msg, calls = self._run(tmp_path)
+        assert ok, msg
+        dest = tmp_path / "meshtasticd.service.d" / "50-sx1262-retry-patience.conf"
+        tpl, _ = pr._dropin_paths(self.KEY)
+        assert dest.read_text() == tpl.read_text()
+        assert ["systemctl", "daemon-reload"] in calls
+
+    def test_a_failed_daemon_reload_is_a_FAILURE_not_a_success(self, tmp_path):
+        """The file on disk changes nothing until systemd re-reads it. A write
+        without the reload is a converged-looking no-op — the reader/writer
+        half-wiring class (honest_failure_modes #4), so it must report False."""
+        ok, msg, _ = self._run(tmp_path, reload_ok=False)
+        assert ok is False
+        assert "daemon-reload FAILED" in msg
+
+    def test_a_failed_write_never_claims_success(self, tmp_path):
+        ok, msg, calls = self._run(tmp_path, write_ok=False)
+        assert ok is False and "write" in msg
+        assert ["systemctl", "daemon-reload"] not in calls, \
+            "must not reload after a write that did not land"
+
+    def test_a_bad_key_is_refused_before_any_privileged_call(self, tmp_path):
+        calls = []
+        with patch.object(pr, "SYSTEM_DROPIN_ROOT", tmp_path), \
+             patch.object(pr, "_sudo_cmd_run", lambda *a, **k: calls.append(a) or (True, "")), \
+             patch.object(pr, "_sudo_write", lambda *a, **k: calls.append(a) or (True, "")):
+            ok, msg = pr._install_dropin("../../etc/passwd")
+        assert ok is False
+        assert calls == [], "validation must precede every privileged call"
+
+    def test_apply_action_routes_the_dropin_verb(self, tmp_path):
+        a = pr.Action(f"dropin:{self.KEY}", "absent", "enabled", "dropin")
+        with patch.object(pr, "_install_dropin", return_value=(True, "installed")) as m:
+            assert pr.apply_action(a) is True
+        m.assert_called_once_with(self.KEY)
+        assert a.result == "installed"
