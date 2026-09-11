@@ -274,6 +274,77 @@ sudo bash /opt/meshforge/scripts/reinstall.sh
 
 No need to re-image your Pi. Your radio stays configured.
 
+### If you DO re-image — what the table above stops protecting
+
+Everything in that table is preserved because `reinstall.sh` only replaces
+`/opt/meshforge`. **A fresh OS image destroys every row in it.** That is a
+different operation with different consequences, and one of them is not
+recoverable by reinstalling.
+
+**The part that is not just "set up again": your Reticulum identity.**
+
+```
+~/.reticulum/storage/transport_identity        your RNS address as your user
+~/.reticulum/storage/known_destinations
+/etc/reticulum/storage/transport_identity      the rnsd SERVICE instance's own
+/etc/reticulum/storage/known_destinations      address - a SEPARATE identity
+```
+
+Lose these and the box comes back as a **different node on the mesh**. The keys
+are regenerated, so the destination hash changes, and anything that referred to
+the old one stops matching: peers' path tables, LXMF propagation state, any
+allowlist keyed by hash, and any monitoring that targets the box by destination
+rather than by name. Nothing warns you — the box simply looks new to everyone
+else. Note there are usually **two** identities (your user's and the rnsd
+service's, under `/etc/reticulum/`); copying only `~/.reticulum` is the common
+half-migration.
+
+⚠️ `RNS.Identity.to_file` writes these **world-readable**. Whatever you copy
+them onto, `chmod 600` them there — a backup drive is the classic place a
+private key ends up at mode 644.
+
+**Capture before you wipe** (adjust to what your box actually has):
+
+```bash
+# identities - the irreplaceable ones
+~/.reticulum/storage/           /etc/reticulum/storage/
+~/.config/meshforge/*identity*  # lab echo / tracer identities, if present
+
+# configuration - recreatable, but tedious and easy to get subtly wrong
+/etc/reticulum/config           /etc/reticulum/interfaces/
+~/.config/meshforge/*.json      # deployment.json carries this box's ROLE
+/etc/meshtasticd/config.yaml    /etc/meshtasticd/config.d/
+/etc/meshtasticd/ssl/           # web-client cert; :9443 binds with or without
+                                # one, so a missing cert fails SILENTLY
+```
+
+**Then check for things this project did not install.** A long-lived box
+accumulates deployment-specific state that no MeshForge script knows about and
+no backup script will find for you:
+
+- **custom binaries** — e.g. a locally built `meshtasticd` in `/usr/local/sbin/`
+  shadowing the apt package. These take tens of minutes to rebuild and the
+  build usually has its own gotchas.
+- **systemd drop-ins** — `/etc/systemd/system/<unit>.service.d/*.conf`. Small
+  files, easy to miss, and they often carry the fix for a bug you have already
+  forgotten about.
+- **anything else you added over the years** — `systemctl list-unit-files
+  --state=enabled` and `docker ps -a` are the two fastest ways to find out what
+  is actually on the box before it stops existing.
+
+**Restore order**, after `install_noc.sh` on the fresh image: put the
+identities back *before* first start, or the services generate new ones and you
+have to do it twice. Then configs, then start.
+
+**Verify you are the same node, not a new one:** `rnstatus` should show your
+expected address, and a peer should reach you at the destination it already
+knew — not at a newly announced one. If peers only find you after a fresh
+announce, the identity did not come across.
+
+> A re-image is also the only honest test of the install path. If you are doing
+> one anyway, it is worth treating as a drill: note what the fresh install
+> could not do for you, because that list is the install path's real backlog.
+
 **Reinstall flags:**
 ```bash
 sudo bash scripts/reinstall.sh --no-confirm    # Skip confirmation prompt

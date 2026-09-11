@@ -165,7 +165,7 @@ what's proven and what isn't.
 
 | Doc | What's in it |
 |-----|--------------|
-| [Install](docs/install.md) | Hardware, install, first run, upgrade paths |
+| [Install](docs/install.md) | Hardware, install, first run, upgrade paths, re-imaging a box |
 | [Capabilities](docs/capabilities.md) | Full feature inventory, AI tiers, coverage maps |
 | [Architecture](docs/architecture.md) | How the pieces fit; where the code lives |
 | [Configuration](docs/configuration.md) | Every knob and its file |
