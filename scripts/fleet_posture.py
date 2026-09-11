@@ -82,6 +82,21 @@ def cmd_show(args) -> int:
         return 0 if p.status == fp.UNDECLARED else 1
     print(f"declaration: {p.name or '(unnamed)'} by {p.declared_by or '?'} at "
           f"{fp.fmt_ts(p.declared_at) if p.declared_at else '?'}")
+    # WHOSE document is this? On the manager it is the authoritative file; on
+    # every other box it is a COPY distributed by fleet_posture_sync.sh, and a
+    # copy can predate the manager's current truth. Until 2026-09-11 `show`
+    # printed byte-identical output in both cases (found by running it on three
+    # fleet boxes after the first seed), so an operator at a terminal could not
+    # tell the original from a copy -- while read_posture holds the two to
+    # DIFFERENT rules (a mirror whose reader cannot confirm its clock silences
+    # nothing). A distinction that governs behaviour must be visible at the
+    # surface that humans read.
+    if p.is_mirror:
+        print(f"source     : MIRROR distributed from {p.mirror_from or '?'} — "
+              f"a copy, not this box's own declaration; the manager is the SSOT")
+    else:
+        print("source     : this box's own file (no mirror stamp) — "
+              "authoritative here")
     # A posture file that PARSES is `declared` even with zero boxes in it —
     # the normal resting state after fleet_power.py resume clears the last
     # box. Printing the header and then nothing lets a reader carry away

@@ -766,6 +766,28 @@ class TestCliShowEmptyDeclaration:
         assert r.returncode == 0
         assert "NOTHING is silenced" in r.stdout
 
+    def test_a_MIRROR_says_it_is_a_copy(self, tmp_path):
+        """Found by the end-of-session double tap: after the first fleet seed,
+        `show` on three fleet boxes printed output byte-identical to the
+        manager's. read_posture holds a mirror to a STRICTER rule than the
+        original, so an operator who cannot tell them apart cannot predict what
+        the box will do."""
+        path = tmp_path / "p.json"
+        doc = {"posture": "", "declared_by": "operator", "boxes": {},
+               "mirror": {"from": "mgrbox"}}
+        path.write_text(json.dumps(doc))
+        r = self._show(path)
+        assert r.returncode == 0
+        assert "MIRROR" in r.stdout and "mgrbox" in r.stdout
+
+    def test_the_original_says_it_is_authoritative(self, tmp_path):
+        path = tmp_path / "p.json"
+        path.write_text(json.dumps({"posture": "", "declared_by": "operator",
+                                    "boxes": {}}))
+        r = self._show(path)
+        assert r.returncode == 0 and "authoritative" in r.stdout
+        assert "MIRROR" not in r.stdout
+
     def test_declared_with_boxes_counts_what_is_silenced(self, tmp_path):
         path = tmp_path / "p.json"
         path.write_text(json.dumps(_doc(
