@@ -64,6 +64,39 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 
+# Per-test hang guard. THE RIGHT AIM for the thing ci.yml's job cap was being
+# asked to do: a wedged test is caught in minutes and NAMED, where the job cap
+# kills the whole job (30 min) and names nothing. Raising that cap on
+# 2026-09-10 removed the false-red class but made the real hang case SLOWER to
+# notice; this is the other half, and without it the cap raise is a trade
+# rather than a fix.
+#
+# 600, from MEASUREMENT rather than taste (full suite, --durations=40,
+# 2026-09-11, 12328 tests):
+#     176.93s  test_honest_status_shell.py [test_honest_status_ci_leg.sh]
+#      77.93s  test_all_handlers_protocol.py ::test_all_tags_dispatch
+#      28.31s  [test_harness_audit_legs.sh]
+#      24.29s  [test_honest_status_boxes.sh]
+#      11.99s  and everything below
+# Exactly ONE test exceeds 100s, so 600 is 3.4x the slowest legitimate test.
+# Deliberately generous: a too-low per-test timeout fails HEALTHY tests, which
+# is the precise failure class the cap raise removed, and re-introducing it
+# here would be a straight trade. CI's 3.9 leg runs slightly FASTER than the
+# dev Pi these numbers came from (11m26s vs 13m30s), so the margin is real
+# there too. Tighten only against a fresh --durations tail, never by feel.
+#
+# Method left at pytest-timeout's POSIX default (signal): it fails just the
+# hung test and lets the run continue. Switch to `thread` only if a real hang
+# is ever found that signal cannot interrupt -- it dumps every thread's stack
+# but takes the whole process down with it.
+#
+# Freeze note (.claude/rules/harness_restraint.md, active to 2026-10-09): this
+# is not a new signal class, probe or detector -- nothing watches it and it
+# pages nobody. It is the aim correction for a guard that fired twice on
+# healthy runs and, when it does fire on a real hang, reports nothing useful.
+# Recorded here rather than assumed exempt, per the freeze's own instruction.
+timeout = 600
+
 # Useful options
 addopts = [
     "-v",
