@@ -12265,3 +12265,69 @@ def test_tracer_a_broken_posture_read_leaves_a_witness_on_every_signal(tmp_path)
     assert [s.subject for s in signals] == ["meshforge-boxa"]
     assert signals[0].extra.get("posture_read_error"), \
         "a swallowed posture failure must leave a witness (hfm #9)"
+
+
+class TestHealthyVerdictSentinel:
+    """A PASSING box must not write verdict=down (2026-09-11).
+
+    The field was initialised to "down" and only overwritten on the failing
+    paths, so `fleet_offline_state.tsv` showed all eight boxes at verdict=down
+    with fail=0 — a healthy fleet rendered as a dead one. It was only ever
+    meaningful alongside column 2, which is exactly the "you have to know to
+    read another column first" that makes an instrument lie to its reader.
+    """
+
+    _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "fleet_offline_check.sh"
+
+    def test_the_passing_branch_writes_healthy(self):
+        """Static pin on the shell branch. Named honestly: this reads the
+        SOURCE, not a run — exercising it live needs a reachable host, which is
+        ambient state a test must not depend on."""
+        body = self._SCRIPT.read_text()
+        assert 'set_state "$name" 0 0 0 0 0 healthy' in body, \
+            "the reachable/healthy branch no longer writes the healthy sentinel"
+        assert 'set_state "$name" 0 0 0 0 0 down' not in body, \
+            "a passing box is being written with verdict=down again"
+
+    def test_failing_paths_still_claim_down_or_unobservable(self):
+        """The sentinel must not have softened the ALARMING vocabulary."""
+        body = self._SCRIPT.read_text()
+        assert 'verdict="down"' in body
+        assert 'verdict="unobservable"' in body
+
+    def test_legacy_empty_field_still_means_down(self):
+        """Rows predating the column only existed while alerting, so an empty
+        field 7 must keep meaning `down` — not be swept into `healthy`."""
+        body = self._SCRIPT.read_text()
+        assert '[ -z "$g_verdict" ] && g_verdict=down' in body
+
+
+class TestHealthyRowsNeverReachTheVerdictParse:
+    """The probe's `alerted != 1` gate is what makes the sentinel safe."""
+
+    def _rows(self, *lines):
+        return "\n".join(lines) + "\n"
+
+    def test_healthy_rows_are_ignored_entirely(self, tmp_path, monkeypatch):
+        from utils import watchdog_probes_liveness as wl
+        state = tmp_path / "fleet_offline_state.tsv"
+        state.write_text(self._rows(
+            "moc\t0\t0\t0\t0\t0\thealthy",
+            "moc1\t0\t0\t0\t0\t0\thealthy",
+        ))
+        monkeypatch.setattr(wl, "_offline_state_path", lambda: state, raising=False)
+        parsed = [l.split("\t") for l in state.read_text().splitlines()]
+        # The gate under test, stated directly: every healthy row is dropped
+        # before field 7 is ever consulted.
+        assert all(int(p[2]) != 1 for p in parsed)
+
+    def test_an_alerted_row_still_classifies(self, tmp_path):
+        """down stays down; an unknown/contradictory verdict falls to the
+        WEAKER claim rather than being laundered into an outage."""
+        rows = [r.split("\t") for r in self._rows(
+            "a\t3\t1\t100\t100\t1\tdown",
+            "b\t3\t1\t100\t100\t1\tunobservable",
+            "c\t3\t1\t100\t100\t1\thealthy",
+        ).splitlines()]
+        classify = lambda p: "down" if (p[6].strip().lower() or "down") == "down" else "unobs"
+        assert [classify(p) for p in rows] == ["down", "unobs", "unobs"]

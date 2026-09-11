@@ -45,6 +45,7 @@
 #      direct check fails we ask the dependency BEFORE naming a verdict:
 #        via UP   -> the box is implicated  -> verdict=down         "DOWN"
 #        via DOWN -> we observed the path   -> verdict=unobservable "UNOBSERVABLE"
+#      (a box that PASSES writes verdict=healthy — see the STATE note below)
 #      Both still page — suppression would hide a real outage — but the page,
 #      the log and the state file all say which claim is being made. The verdict
 #      is state field 7 so the mini/watchdog reader words it the same way
@@ -81,6 +82,14 @@ BOXCONF="${MESHFORGE_OFFLINE_BOXES:-$HOME/.config/meshforge/fleet_offline_boxes.
 POSTURE="${MESHFORGE_FLEET_POSTURE:-$HOME/.config/meshforge/fleet_posture.json}"
 LOG="${MESHFORGE_OFFLINE_LOG:-$HOME/fleet_alerts.log}"
 WITNESS="${MESHFORGE_OFFLINE_WITNESS:-$HOME/fleet_push_witness.log}"             # delivery receipts / failures
+# verdict vocabulary: healthy | down | unobservable | dormant | detached | drift.
+# `healthy` exists so a PASSING row does not read `down` (2026-09-11): the field
+# was initialised to "down" and only overwritten on the failing paths, so all
+# eight boxes sat at verdict=down with fail=0 and a human reading the file saw a
+# dead fleet. The field was always meaningless unless fail/alerted were non-zero
+# — which is exactly the kind of "you have to know to read column 2 first" that
+# makes an instrument lie to the person it is for. An empty field 7 still means
+# `down` (legacy rows predate the column and only existed while alerting).
 STATE="${MESHFORGE_OFFLINE_STATE:-$HOME/fleet_offline_state.tsv}"              # box \t fail \t alerted \t down_since \t last_alert \t alert_count \t verdict
 HB="${MESHFORGE_OFFLINE_HB:-$HOME/fleet_offline_hb.log}"
 ALERT_THRESHOLD="${ALERT_THRESHOLD:-3}"            # ~15 min at a */5 cron cadence
@@ -378,7 +387,7 @@ for entry in "${BOXES[@]}"; do
         "$name $was ($TS)" \
         || echo "$TS  FLEET: PUSH-FAILED on RECOVERED [$name] — see witness log" >> "$LOG"
     fi
-    set_state "$name" 0 0 0 0 0 down
+    set_state "$name" 0 0 0 0 0 healthy
   else
     fail=$((g_fail + 1))
     if [ "$fail" -ge "$ALERT_THRESHOLD" ] && [ "$g_alerted" != "1" ]; then
