@@ -12267,39 +12267,13 @@ def test_tracer_a_broken_posture_read_leaves_a_witness_on_every_signal(tmp_path)
         "a swallowed posture failure must leave a witness (hfm #9)"
 
 
-class TestHealthyVerdictSentinel:
-    """A PASSING box must not write verdict=down (2026-09-11).
-
-    The field was initialised to "down" and only overwritten on the failing
-    paths, so `fleet_offline_state.tsv` showed all eight boxes at verdict=down
-    with fail=0 — a healthy fleet rendered as a dead one. It was only ever
-    meaningful alongside column 2, which is exactly the "you have to know to
-    read another column first" that makes an instrument lie to its reader.
-    """
-
-    _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "fleet_offline_check.sh"
-
-    def test_the_passing_branch_writes_healthy(self):
-        """Static pin on the shell branch. Named honestly: this reads the
-        SOURCE, not a run — exercising it live needs a reachable host, which is
-        ambient state a test must not depend on."""
-        body = self._SCRIPT.read_text()
-        assert 'set_state "$name" 0 0 0 0 0 healthy' in body, \
-            "the reachable/healthy branch no longer writes the healthy sentinel"
-        assert 'set_state "$name" 0 0 0 0 0 down' not in body, \
-            "a passing box is being written with verdict=down again"
-
-    def test_failing_paths_still_claim_down_or_unobservable(self):
-        """The sentinel must not have softened the ALARMING vocabulary."""
-        body = self._SCRIPT.read_text()
-        assert 'verdict="down"' in body
-        assert 'verdict="unobservable"' in body
-
-    def test_legacy_empty_field_still_means_down(self):
-        """Rows predating the column only existed while alerting, so an empty
-        field 7 must keep meaning `down` — not be swept into `healthy`."""
-        body = self._SCRIPT.read_text()
-        assert '[ -z "$g_verdict" ] && g_verdict=down' in body
+# The healthy-sentinel behaviour is pinned in tests/test_fleet_offline_check.py,
+# which drives the REAL script with fake ssh/curl shims on PATH. A source-read
+# pin lived here briefly and was deleted: its docstring claimed exercising the
+# passing branch "needs a reachable host, which is ambient state a test must not
+# depend on" — demonstrably false, since that harness already fakes it. CI found
+# the gap by failing two assertions in that file which this repo's own author
+# (me) never ran. A weaker test whose rationale is wrong is worse than none.
 
 
 class TestHealthyRowsNeverReachTheVerdictParse:

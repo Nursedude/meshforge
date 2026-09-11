@@ -170,8 +170,26 @@ class TestHealthyPath:
         h.write_conf()
         r = h.run()
         assert r.returncode == 0, r.stdout + r.stderr
-        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0", "down"]
+        # verdict=healthy, NOT down (2026-09-11). This assertion used to pin
+        # "down" for a box that had just answered — the field was initialised
+        # to the alarm word and only overwritten on the failing paths, so the
+        # whole state file read as a dead fleet. It was only ever meaningful
+        # alongside column 2, which is how it fooled a reader mid-drill.
+        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0", "healthy"]
         assert not h.pushes()
+
+    def test_the_healthy_verdict_is_not_merely_a_default(self, h):
+        """A box that RECOVERS must land on `healthy` too — proving the value
+        is written by the passing path, not just left over from initialisation
+        on a row that was never touched."""
+        h.write_conf()
+        h.unreachable("alpha")
+        for _ in range(3):
+            h.run()
+        assert h.row("alpha")[6] == "down"      # the honest alarm, unchanged
+        h.reachable("alpha")
+        h.run()
+        assert h.row("alpha")[6] == "healthy"   # and it must come back
 
     def test_inactive_service_counts_as_a_fault(self, h):
         h.write_conf()
@@ -231,7 +249,7 @@ class TestThresholdAndPaging:
         h.reachable("alpha")
         h.run()
         assert "RECOVERED [alpha]" in h.alerts()
-        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0", "down"]
+        assert h.row("alpha") == ["alpha", "0", "0", "0", "0", "0", "healthy"]
 
 
 class TestTierComesFromConfigNotAName:
