@@ -819,6 +819,13 @@ TEMPLATE_PROVENANCE: dict = {
 DROPIN_PROVENANCE: dict = {
     "meshforge-map.service.d": "hand-deployed map start-pre wait-for-rnsd drop-in (cb61d3b)",
     "rnsd.service.d":          "hand-deployed RNS-fork drop-ins: 10-stop-timeout, 20-exit-on-host-loss (#68/#69)",
+    "meshtasticd.service.d":   "hand-deployed on SPI-HAT boxes: 50-sx1262-retry-patience "
+                               "(RestartSec=30 + StartLimitIntervalSec=0) so a flaky "
+                               "`SX126x init result -2` retries instead of latching "
+                               "`failed (start-limit-hit)` — lehua sat failed 1h22m on "
+                               "2026-09-11 while an unattended retry proved the radio could "
+                               "still come up. Physical root cause (cocked, unsupported HAT "
+                               "header) tracked separately; this only stops the latch.",
 }
 
 
