@@ -12241,3 +12241,27 @@ def test_tracer_unreadable_posture_judges_everything_as_before(tmp_path):
         tracer_dir=tracer_dir, persistent_cycles=3, now=now,
         posture=fp.read_posture(str(bad), now=now, clock_confident=True))
     assert [s.subject for s in signals] == ["meshforge-boxa"]
+
+
+def test_tracer_a_broken_posture_read_leaves_a_witness_on_every_signal(tmp_path):
+    """Found by the pre-commit honest_failure_modes walk on this very commit:
+    with the posture reader broken AND real signals to emit, neither witness
+    branch ran and the read failure left no artifact at all. The VERDICT was
+    right (an unusable declaration silences nothing), but a correct-and-
+    invisible failure is how a broken declaration survives for days."""
+    from utils import fleet_posture as fp
+    tracer_dir = tmp_path / "tracer"
+    tracer_dir.mkdir()
+    now = time.time()
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json at all")
+    for i, off in enumerate((600, 300, 60), 1):
+        _write_fire(tracer_dir, now - off,
+                    [{"peer": "meshforge-boxa", "seq": i, "result": "no-route",
+                      "rtt_ms": 0}])
+    signals = probe_tracer_peer_unreachable(
+        tracer_dir=tracer_dir, persistent_cycles=3, now=now,
+        posture=fp.read_posture(str(bad), now=now, clock_confident=True))
+    assert [s.subject for s in signals] == ["meshforge-boxa"]
+    assert signals[0].extra.get("posture_read_error"), \
+        "a swallowed posture failure must leave a witness (hfm #9)"

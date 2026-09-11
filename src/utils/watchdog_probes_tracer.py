@@ -268,9 +268,20 @@ def probe_tracer_peer_unreachable(
         if signals:
             for sig in signals:
                 sig.extra["posture_suppressed"] = sorted(suppressed)
+                if posture_err:
+                    sig.extra["posture_read_error"] = posture_err
         else:
             note_disposition("tracer_peer_unreachable", "inert", reason=witness)
             return signals
+    if posture_err and signals and not suppressed:
+        # The hole the pre-commit hfm walk found (2026-09-10): with the
+        # posture reader broken AND real signals to emit, neither branch
+        # above runs and the read failure left NO artifact at all. The
+        # behaviour is correct either way — a posture we cannot read silences
+        # nothing, which is today's behaviour — but "correct and invisible"
+        # is how a broken declaration survives for days (hfm #9).
+        for sig in signals:
+            sig.extra["posture_read_error"] = posture_err
     if not signals:
         note_disposition(
             "tracer_peer_unreachable", "clean",
