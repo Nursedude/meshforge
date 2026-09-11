@@ -325,3 +325,73 @@ class TestBridgeBoxesCaller:
         errs_ok = fp.validate(doc, now=NOW, bridge_boxes={"moc", "moc3", "moc9"})
         assert not any("bridge-capable" in e for e in errs_ok), \
             "one surviving bridge must NOT refuse"
+
+
+class TestPostureSummaryNote:
+    """`fleet_posture_summary` — the one-clause note shell consumers append.
+
+    Born 2026-09-10: a posture FILE that parses reads `declared` even with ZERO
+    boxes in it, which is the normal resting state once the last box is cleared
+    (fleet_power.py resume). honest_status mapped `declared*` straight to
+    "declared posture in effect", so it made an affirmative claim from an EMPTY
+    state — nothing silenced, no denominator moved, and a reader chasing the
+    note finds nothing. Empty != absent != in effect.
+    """
+
+    LIB = Path(__file__).parent.parent / "scripts" / "lib" / "fleet_posture.sh"
+
+    def _summary(self, posture_file):
+        script = (f'. "{self.LIB}"; fleet_posture_read "{self.LIB.parent.parent.parent}"; '
+                  'printf "%s|%s" "$FLEET_POSTURE_STATUS" "$(fleet_posture_summary)"')
+        env = dict(os.environ, MESHFORGE_FLEET_POSTURE=str(posture_file))
+        out = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                             timeout=60, env=env).stdout
+        status, _, note = out.partition("|")
+        return status, note
+
+    def _write(self, tmp_path, boxes):
+        now = time.time()
+        doc = {"boxes": boxes, "declared_at": fp.fmt_ts(now),
+               "declared_by": "operator", "posture": "t"}
+        p = tmp_path / "posture.json"
+        p.write_text(json.dumps(doc), encoding="utf-8")
+        return p
+
+    def _box(self, hours=3):
+        now = time.time()
+        return {"state": "dormant", "since": fp.fmt_ts(now),
+                "until": fp.fmt_ts(now + hours * 3600)}
+
+    def test_absent_file_says_nothing(self, tmp_path):
+        status, note = self._summary(tmp_path / "nope.json")
+        assert status == "undeclared"
+        assert note == ""
+
+    def test_declared_but_empty_does_not_claim_it_is_in_effect(self, tmp_path):
+        """THE regression this exists for."""
+        status, note = self._summary(self._write(tmp_path, {}))
+        assert status.startswith("declared")
+        assert "in effect" not in note
+        assert "no box declared" in note
+
+    def test_declared_with_boxes_says_in_effect_and_counts_them(self, tmp_path):
+        p = self._write(tmp_path, {"b1": self._box(), "b2": self._box()})
+        status, note = self._summary(p)
+        assert status.startswith("declared")
+        assert "in effect" in note
+        assert "2 box(es) silenced" in note
+
+    def test_count_reflects_only_silent_boxes(self, tmp_path):
+        # `shed` is a box that is UP with reduced services -- it is watched, not
+        # silenced, so it must not inflate the silenced count.
+        boxes = {"b1": self._box()}
+        boxes["b2"] = dict(self._box(), state="shed")
+        status, note = self._summary(self._write(tmp_path, boxes))
+        assert "1 box(es) silenced" in note
+
+    def test_unusable_file_is_loud_and_says_every_box_is_checked(self, tmp_path):
+        p = tmp_path / "posture.json"
+        p.write_text("{not json", encoding="utf-8")
+        status, note = self._summary(p)
+        assert "NOT USABLE" in note
+        assert "every box checked" in note

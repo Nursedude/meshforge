@@ -53,6 +53,30 @@ PYPOSTURE
   return 0
 }
 
+fleet_posture_summary() {  # -> the one-clause note a consumer appends to its line
+  # WHY this is not just "declared -> in effect": a posture FILE that parses is
+  # `declared` even with ZERO boxes in it, which is the normal resting state
+  # after the last box is cleared (fleet_power.py resume). Saying "declared
+  # posture in effect" there is an affirmative claim from an EMPTY state --
+  # nothing is silenced, no leg's denominator moved, and a reader chasing the
+  # note finds nothing. Empty != absent != in effect (2026-09-10).
+  local n=0
+  if [ -n "${FLEET_POSTURE_SILENT:-}" ]; then
+    n=$(printf '%s\n' "$FLEET_POSTURE_SILENT" | grep -c '[^[:space:]]' || true)
+  fi
+  case "${FLEET_POSTURE_STATUS:-undeclared}" in
+    declared*)
+      if [ "${n:-0}" -gt 0 ]; then
+        printf '; declared posture in effect (%s box(es) silenced)' "$n"
+      else
+        printf '; posture file present, no box declared — nothing silenced'
+      fi
+      ;;
+    undeclared) : ;;
+    *) printf '; POSTURE FILE NOT USABLE (%s) — every box checked' "${FLEET_POSTURE_STATUS}" ;;
+  esac
+}
+
 fleet_posture_is_silent() {  # name -> rc 0 if declared dormant/detached in effect
   [ -n "${FLEET_POSTURE_SILENT:-}" ] || return 1
   printf '%s\n' "$FLEET_POSTURE_SILENT" | awk -v n="$1" '$1 == n {found=1} END {exit !found}'

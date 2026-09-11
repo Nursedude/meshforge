@@ -119,12 +119,14 @@ if ! command -v fleet_posture_is_silent >/dev/null 2>&1; then
   fleet_posture_is_silent() { return 1; }
   FLEET_POSTURE_STATUS="posture-lib-missing"
 fi
-_hp_note=""
-case "${FLEET_POSTURE_STATUS:-undeclared}" in
-  declared*) _hp_note="; declared posture in effect" ;;
-  undeclared) ;;
-  *) _hp_note="; POSTURE FILE NOT USABLE (${FLEET_POSTURE_STATUS}) — every box checked" ;;
-esac
+# ONE reader for the note (scripts/lib/fleet_posture.sh) so this script and any
+# other consumer cannot disagree about what a posture "in effect" means -- and
+# so the empty-but-declared case is testable without running this whole script.
+if command -v fleet_posture_summary >/dev/null 2>&1; then
+  _hp_note="$(fleet_posture_summary)"
+else
+  _hp_note="; POSTURE FILE NOT USABLE (${FLEET_POSTURE_STATUS:-reader-missing}) — every box checked"
+fi
 
 # Peers = every box that is NOT this one. The SHA-drift leg must use this, not
 # BOXES: it compares a box's `rev-parse HEAD` against $HEADFULL, which this
