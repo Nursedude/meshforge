@@ -171,7 +171,6 @@ class Posture:
     #: original — see read_posture().
     is_mirror: bool = False
     mirror_from: str = ""
-    mirror_at: Optional[float] = None
 
     def box(self, name: str) -> BoxPosture:
         """Effective posture for ``name`` — ACTIVE for any box not declared
@@ -494,7 +493,6 @@ def read_posture(path: Optional[str] = None, *, now: Optional[float] = None,
     if isinstance(mirror, dict):
         p.is_mirror = True
         p.mirror_from = str(mirror.get("from") or "")
-        p.mirror_at = parse_ts(mirror.get("at"))
         if not clock_confident:
             for bp in p.boxes.values():
                 if bp.state in SILENT_STATES or bp.held:

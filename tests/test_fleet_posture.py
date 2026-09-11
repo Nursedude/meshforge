@@ -694,7 +694,7 @@ class TestMirrorStamp:
         r = self._run(src, dest)
         assert r.returncode == 0, r.stderr
         got = json.loads(dest.read_text())
-        assert got["mirror"]["from"] == "testmgr" and got["mirror"]["at"]
+        assert got["mirror"]["from"] == "testmgr"
 
     def test_invalid_document_is_REFUSED_not_distributed(self, tmp_path):
         """One broken file on the manager must not become nine broken files on
@@ -716,6 +716,28 @@ class TestMirrorStamp:
                                              "until": fp.fmt_ts(NOW + 60)})))
         dest = tmp_path / "dest.json"
         assert self._run(src, dest).returncode == 0
+
+    def test_the_stamp_is_DETERMINISTIC(self, tmp_path):
+        """Stamping the same document twice must produce the SAME bytes.
+
+        The first cut wrote `at: <now>` into the stamp, so every sync run
+        produced a different document and the md5 comparison found drift
+        forever. DRILLED against moc4 2026-09-10: three consecutive no-change
+        runs each reported `healed`, each left a `.bak`, and `--check`
+        returned 3 with nothing changed -- a drift signal carrying no
+        information, unbounded backups, and a needless fleet-wide scp inside
+        `fleet_power.py down`. Only running the thing found it; four rounds of
+        reading it had not.
+        """
+        src = tmp_path / "src.json"
+        src.write_text(json.dumps(_doc(boxa={"state": "dormant",
+                                             "since": fp.fmt_ts(NOW),
+                                             "until": fp.fmt_ts(time.time() + 3600)})))
+        a, b = tmp_path / "a.json", tmp_path / "b.json"
+        assert self._run(src, a).returncode == 0
+        assert self._run(src, b).returncode == 0
+        assert a.read_bytes() == b.read_bytes(), \
+            "a non-deterministic stamp makes every sync run report drift"
 
     def test_empty_declaration_travels(self, tmp_path):
         """The resting state after `resume`. A mirror that only ever learns
