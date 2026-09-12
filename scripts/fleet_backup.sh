@@ -315,6 +315,33 @@ do_local_backup() {
         fi
     fi
 
+    # --- meshtasticd NODE STATE (the identity, not the config) ---
+    #
+    # WHY (2026-09-12, measured, and it cost a real identity): the block above
+    # captures /etc/meshtasticd -- CONFIGURATION. The node's own identity lives
+    # elsewhere, under /var/lib/meshtasticd/.portduino/default/prefs: the device
+    # proto carries the node number and its PKI keypair, alongside the channel
+    # table and the node DB.
+    #
+    # On moc5's reflash that day the capture took /etc/meshtasticd, the package
+    # postinst auto-started meshtasticd before anything could stop it, and the
+    # daemon minted a FRESH device proto within seconds. moc5 came back as
+    # !5f01371f instead of !4b3ef3bf -- a different Meshtastic node wearing the
+    # same name. Nothing warned; the restore reported success. The old card was
+    # the last copy and had already been reflashed.
+    #
+    # Same class as the ~/.reticulum gap fixed in d7173fcf: the configuration
+    # was captured and the IDENTITY beside it was not. Two identities, two
+    # separate misses, one shape.
+    if [[ -d /var/lib/meshtasticd/.portduino ]]; then
+        mkdir -p "$staging/var/lib/meshtasticd"
+        cp -a /var/lib/meshtasticd/.portduino "$staging/var/lib/meshtasticd/.portduino"
+        local proto_count
+        proto_count=$(find /var/lib/meshtasticd/.portduino -name '*.proto' 2>/dev/null | wc -l)
+        log_info "/var/lib/meshtasticd/.portduino/ (node identity, ${proto_count} proto file(s))"
+        backed_up=$((backed_up + 1))
+    fi
+
     # --- Things this project did not install ---
     #
     # A long-lived box accumulates deployment-specific state that no MeshForge

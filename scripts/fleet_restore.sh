@@ -336,6 +336,7 @@ echo -e "${CYAN}Will restore:${NC}"
 # legs -- the actions were wired and this preview was not.)
 [[ -d "$EXTRACT_DIR/home/reticulum" ]] && echo -e "  ${GREEN}+${NC} ~/.reticulum/ (the USER's RNS identity — a SECOND key)"
 [[ -d "$EXTRACT_DIR/etc/systemd/system" ]] && echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (units + drop-ins, then daemon-reload)"
+[[ -d "$EXTRACT_DIR/var/lib/meshtasticd/.portduino" ]] && echo -e "  ${GREEN}+${NC} /var/lib/meshtasticd/.portduino/ (the Meshtastic NODE identity)"
 [[ -d "$EXTRACT_DIR/home/scripts" ]] && echo -e "  ${GREEN}+${NC} ~/*.sh (box-local scripts)"
 [[ -f "$EXTRACT_DIR/home/crontab.txt" ]] && echo -e "  ${GREEN}+${NC} crontab"
 if [[ -f "$EXTRACT_DIR/custom_binaries.txt" ]]; then
@@ -537,6 +538,22 @@ if [[ -d "$EXTRACT_DIR/etc/meshtasticd" ]]; then
         echo -e "  ${GREEN}+${NC} /etc/meshtasticd/config.d/ (${local_count} HAT configs)"
         RESTORED=$((RESTORED + 1))
     fi
+fi
+
+# --- meshtasticd NODE STATE (identity — restore BEFORE meshtasticd starts) ---
+# Pairs with fleet_backup.sh's /var/lib/meshtasticd/.portduino leg. Captured but
+# never restored is strictly WORSE than not captured: the archive looks complete
+# and the restore reports success while the node returns with a new identity.
+if [[ -d "$EXTRACT_DIR/var/lib/meshtasticd/.portduino" ]]; then
+    mkdir -p /var/lib/meshtasticd
+    cp -a "$EXTRACT_DIR/var/lib/meshtasticd/.portduino" /var/lib/meshtasticd/.portduino
+    if id -u meshtasticd >/dev/null 2>&1; then
+        chown -R meshtasticd:meshtasticd /var/lib/meshtasticd/.portduino 2>/dev/null || true
+    fi
+    # The device proto holds the node's PKI private key.
+    find /var/lib/meshtasticd/.portduino -type f -name '*.proto' -exec chmod 600 {} \; 2>/dev/null || true
+    echo -e "  ${GREEN}+${NC} /var/lib/meshtasticd/.portduino/ (node identity restored)"
+    RESTORED=$((RESTORED + 1))
 fi
 
 # --- MeshForge user config ---
