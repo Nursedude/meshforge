@@ -47,16 +47,35 @@ def _acquire_instance_lock(lock_path: str):
 def _resolve_preset_name(name: str) -> str:
     """``auto`` follows the box's fleet-membership declaration — the same
     fleet_hosts SSOT the TUI Fleet Membership wizard writes and every fleet
-    consumer reads (hosts declared → meshforge_fleet, none → standalone).
+    consumer reads (hosts declared -> meshforge_fleet). With no hosts
+    declared it picks standalone ONLY when a NATS bus is configured;
+    otherwise standalone provably cannot start, so auto falls back to
+    meshforge_fleet and says why.
     Any other name passes through untouched, so deployed units that pin an
     explicit preset keep their exact behavior."""
     if name != "auto":
         return name
     from .rollup import resolve_fleet_hosts
     hosts = resolve_fleet_hosts()
-    resolved = "meshforge_fleet" if hosts else "standalone"
-    print(f"mini-dudeai: preset auto -> {resolved} "
-          f"({len(hosts)} fleet host(s) declared)")
+    if hosts:
+        resolved, why = "meshforge_fleet", f"{len(hosts)} fleet host(s) declared"
+    elif os.environ.get("MINI_DUDEAI_NATS_SERVER"):
+        resolved, why = "standalone", "no fleet hosts declared; NATS configured"
+    else:
+        # auto must not resolve to a preset it can PROVE cannot start.
+        # standalone raises without MINI_DUDEAI_NATS_SERVER, so on a box with
+        # neither a membership declaration nor a NATS bus the old rule sent
+        # every start into that ValueError and systemd crashlooped it forever.
+        #
+        # Measured 2026-09-12 on moc5's rebuild: fleet_hosts is a MANAGER-side
+        # artifact -- moc1/moc2/moc3/moc4/kiai carry none and run a pinned
+        # preset -- so a freshly installed member box resolved to standalone
+        # and never ticked. install_noc ships this template, so it was latent
+        # on every future install, not only that one.
+        resolved = "meshforge_fleet"
+        why = ("no fleet hosts declared AND no MINI_DUDEAI_NATS_SERVER -- "
+               "standalone cannot start, so auto will not choose it")
+    print(f"mini-dudeai: preset auto -> {resolved} ({why})")
     return resolved
 
 
