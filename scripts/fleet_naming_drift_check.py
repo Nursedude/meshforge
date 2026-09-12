@@ -26,6 +26,7 @@ Crontab wiring (the #78 cron_verdict_stale probe judges wired crons only):
 """
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
@@ -41,6 +42,10 @@ from utils.paths import get_real_user_home  # noqa: E402
 AUDIT_PATH = _SCRIPT_DIR / "fleet_naming_audit.py"
 WAIVERS_PATH = get_real_user_home() / ".config" / "meshforge" / "fleet_naming_waivers.txt"
 AUDIT_TIMEOUT_S = 90
+# --verify-identity adds one ssh-keyscan per alias; a dark host burns the
+# full 8s keyscan timeout, so the budget must scale or a couple of
+# unreachable boxes would turn every run into UNKNOWN.
+IDENTITY_EXTRA_TIMEOUT_S = 240
 
 
 def load_waivers(path: Path) -> list[str]:
@@ -87,11 +92,34 @@ def judge(report: dict, waivers: list[str]) -> tuple[int, str]:
                f"{n_waived} waived config finding(s)")
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument(
+        "--verify-identity", action="store_true",
+        help="also ssh-keyscan each resolved target against the registry's "
+             "expect_hostkey. This is the ONLY leg that asks reality: the "
+             "default comparison is /etc/hosts vs the registry, and on "
+             "2026-09-11 both went stale in the same event and agreed with "
+             "each other while a name pointed at a different node. Costs one "
+             "keyscan per alias (~0.2s LAN, up to 8s for a dark host), so it "
+             "is MANAGER-side — the fact is global, and ten boxes checking it "
+             "would buy one box's information at ten times the connect volume.")
+    ap.add_argument("--registry", default=None,
+                    help="registry path override (drills: point the whole "
+                         "chain at a scratch copy without touching the live "
+                         "one)")
+    args = ap.parse_args(argv)
+
+    cmd = [sys.executable, str(AUDIT_PATH), "--json", "--hosts-from-registry"]
+    if args.verify_identity:
+        cmd.append("--verify-identity")
+    if args.registry:
+        cmd += ["--registry", args.registry]
     try:
         proc = subprocess.run(
-            [sys.executable, str(AUDIT_PATH), "--json", "--hosts-from-registry"],
-            capture_output=True, text=True, timeout=AUDIT_TIMEOUT_S,
+            cmd, capture_output=True, text=True,
+            timeout=AUDIT_TIMEOUT_S + (IDENTITY_EXTRA_TIMEOUT_S
+                                       if args.verify_identity else 0),
         )
         report = json.loads(proc.stdout)
     except (subprocess.TimeoutExpired, OSError, json.JSONDecodeError) as e:

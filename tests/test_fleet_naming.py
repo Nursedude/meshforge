@@ -290,3 +290,64 @@ class TestServesMapValidation:
         h = reg.hosts["gwonly"]
         assert (h.role, h.serves_map) == ("gateway-only", False)
         assert h.role_derived_at == 1788387115.0
+
+
+class TestSshPort:
+    """ssh_port — the alias's OWN sshd port (absent means 22).
+
+    Exists because a shared NAT front forwards :22 to ONE box: measured
+    2026-09-11, lehua.mf.internal:22 and trdev.mf.internal:22 return the
+    same host key, while lehua's sshd is on :2200.
+    """
+
+    def test_valid_port_loads(self, tmp_path):
+        reg, errs = load_registry(_write(tmp_path, {
+            "hosts": {"lehua": {"ip_fallback": "192.0.2.10",
+                                "ssh_port": 2200}}}))
+        assert errs == []
+        assert reg.hosts["lehua"].ssh_port == 2200
+
+    def test_absent_port_is_none_meaning_22(self, tmp_path):
+        reg, errs = load_registry(_write(tmp_path, {
+            "hosts": {"box1": {"ip_fallback": "192.0.2.10"}}}))
+        assert errs == []
+        assert reg.hosts["box1"].ssh_port is None
+
+    @pytest.mark.parametrize("bad", ["2200", 0, 65536, -1, 22.5])
+    def test_bad_port_is_refused_not_coerced(self, tmp_path, bad):
+        reg, errs = load_registry(_write(tmp_path, {
+            "hosts": {"box1": {"ssh_port": bad}}}))
+        assert reg is None and errs
+        assert "ssh_port" in errs[0]
+
+    def test_true_is_not_port_one(self, tmp_path):
+        """bool is an int subclass — `true` must not silently become port 1."""
+        reg, errs = load_registry(_write(tmp_path, {
+            "hosts": {"box1": {"ssh_port": True}}}))
+        assert reg is None and errs
+        assert "ssh_port" in errs[0]
+
+
+class TestClosedHostVocabulary:
+    def test_unknown_key_is_refused(self, tmp_path):
+        """A typo'd key is ignored FOREVER if absorbed — `ssh_prot: 2200`
+        would leave the alias keyscanned on 22 with no witness."""
+        reg, errs = load_registry(_write(tmp_path, {
+            "hosts": {"box1": {"ssh_prot": 2200}}}))
+        assert reg is None and errs
+        assert "ssh_prot" in errs[0] and "unknown key" in errs[0]
+
+    def test_every_known_key_is_accepted_together(self, tmp_path):
+        """The vocabulary must cover every field the validator reads, or
+        this change breaks a registry that was legal yesterday."""
+        reg, errs = load_registry(_write(tmp_path, {
+            "hosts": {
+                "box1": {
+                    "ip_fallback": "192.0.2.10", "mac": "aa:bb:cc:dd:ee:ff",
+                    "expect_hostkey": "SHA256:x", "ssh_port": 2200,
+                    "notes": "n", "shares_front_with": "box2",
+                    "role": "gateway", "serves_map": False,
+                    "role_derived_at": 1.0},
+                "box2": None}}))
+        assert errs == []
+        assert reg.hosts["box1"].ssh_port == 2200

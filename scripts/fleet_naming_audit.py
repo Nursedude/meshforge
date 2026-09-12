@@ -58,15 +58,21 @@ KEYSCAN_TIMEOUT_S = 8
 
 
 def keyscan_fingerprints(target: str, *,
+                         port: int = 22,
                          runner=subprocess.run
                          ) -> Tuple[List[str], str]:
     """(ALL SHA256 fingerprints, "") or ([], why-unobservable). A host
     serves several key types (rsa/ecdsa/ed25519) and the registry's
     expect_hostkey is ONE of them — comparing only the first scanned
     type would manufacture false MISMATCHes on healthy hosts
-    (review-caught). Bounded; a dead host is UNKNOWN, never a mismatch."""
+    (review-caught). Bounded; a dead host is UNKNOWN, never a mismatch.
+
+    ``port`` is the alias's OWN sshd port (registry ``ssh_port``, default
+    22). Scanning the wrong port on a shared NAT front reaches a different
+    box entirely and would compare one host against another's identity."""
     try:
-        scan = runner(["ssh-keyscan", "-T", str(KEYSCAN_TIMEOUT_S), target],
+        scan = runner(["ssh-keyscan", "-T", str(KEYSCAN_TIMEOUT_S),
+                       "-p", str(port), target],
                       capture_output=True, text=True,
                       timeout=KEYSCAN_TIMEOUT_S + 4)
         if not scan.stdout.strip():
@@ -104,7 +110,7 @@ def audit_host(alias: str, registry: Optional[Registry], *,
         elif r.target is None:
             row["identity"] = "UNKNOWN(unresolved)"
         else:
-            fps, why = keyscan(r.target)
+            fps, why = keyscan(r.target, port=host.ssh_port or 22)
             if not fps:
                 row["identity"] = f"UNKNOWN({why})"
             elif host.expect_hostkey in fps:

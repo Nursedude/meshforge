@@ -53,6 +53,14 @@ METHODS = ("dns", "bare", "ip_fallback", "ip_literal", "unresolved")
 
 _IPV4_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
+# Closed host-stanza vocabulary — every key _validate_host knows how to read.
+# Grow it in the SAME change that teaches the validator the new key, or the
+# registry accepts a field nothing consumes.
+_HOST_KEYS = frozenset({
+    "ip_fallback", "mac", "expect_hostkey", "ssh_port", "notes",
+    "shares_front_with", "role", "serves_map", "role_derived_at",
+})
+
 # resolver contract: (name) -> first address string, or None when the name
 # does not resolve. Injectable for tests; the default is bounded only by
 # the system resolver's own timeouts (documented, not re-implemented).
@@ -81,6 +89,18 @@ class FleetHost:
     ip_fallback: Optional[str] = None
     mac: Optional[str] = None
     expect_hostkey: Optional[str] = None
+    # The port this alias's OWN sshd answers on. Absent means 22.
+    #
+    # Not cosmetic: several boxes are reachable only through a port-forward on
+    # a shared NAT front, so <alias>:22 reaches a DIFFERENT box. Measured
+    # 2026-09-11 — lehua.mf.internal:22 and trdev.mf.internal:22 return the
+    # IDENTICAL host key (one front, :22 forwarded to trdev), while lehua's
+    # own sshd is on :2200. An identity check that assumed 22 would record
+    # trdev's key as lehua's expected identity and then read "OK" forever
+    # while pointing at the wrong node — the exact defect the check exists to
+    # catch, one layer up (honest_failure_modes: a degraded observation
+    # rendered as a valid-looking value).
+    ssh_port: Optional[int] = None
     notes: str = ""
     # Explicit shared-address declaration: this host's ip_fallback is a NAT
     # front it legitimately shares with the named alias (e.g. the AREDN hAP
@@ -159,6 +179,18 @@ def _validate_host(alias: str, raw, errors: List[str]) -> Optional[FleetHost]:
     if not isinstance(raw, dict):
         errors.append(f"{where}: must be an object (or null)")
         return None
+    # Closed vocabulary. An unrecognized key next to a known one is almost
+    # always a typo, and silence makes it permanent: `ssh_prot: 2200` would
+    # be ignored forever while the alias kept getting keyscanned on 22.
+    # Reject what the author cannot have meant (honest_failure_modes #3)
+    # rather than absorb it. Verified 2026-09-11 that no live registry
+    # carries a stray key, so this cannot fail a box on rollout.
+    unknown = sorted(set(raw) - _HOST_KEYS)
+    if unknown:
+        errors.append(f"{where}: unknown key(s) {unknown} — not in the host "
+                      f"vocabulary {sorted(_HOST_KEYS)}; a typo'd key is "
+                      f"silently ignored forever, so it is refused here")
+        return None
     fb = raw.get("ip_fallback")
     if fb is not None:
         if not isinstance(fb, str) or not _IPV4_RE.match(fb.strip()):
@@ -175,6 +207,18 @@ def _validate_host(alias: str, raw, errors: List[str]) -> Optional[FleetHost]:
     if key is not None and not isinstance(key, str):
         errors.append(f"{where}: expect_hostkey must be a string")
         return None
+    port = raw.get("ssh_port")
+    if port is not None:
+        # bool is an int subclass in Python — `true` here must not become
+        # port 1. And a STRING "2200" must not be coerced: silently accepting
+        # it would let a quoted port work in one reader and not another.
+        if isinstance(port, bool) or not isinstance(port, int):
+            errors.append(f"{where}: ssh_port {port!r} must be a JSON integer "
+                          f"(absent means 22)")
+            return None
+        if not 1 <= port <= 65535:
+            errors.append(f"{where}: ssh_port {port} out of range 1-65535")
+            return None
     sfw = raw.get("shares_front_with")
     if sfw is not None and not isinstance(sfw, str):
         errors.append(f"{where}: shares_front_with must be a string alias")
@@ -197,7 +241,8 @@ def _validate_host(alias: str, raw, errors: List[str]) -> Optional[FleetHost]:
         errors.append(f"{where}: role_derived_at must be a unix timestamp")
         return None
     return FleetHost(alias=alias, ip_fallback=fb, mac=mac,
-                     expect_hostkey=key, notes=str(raw.get("notes", "")),
+                     expect_hostkey=key, ssh_port=port,
+                     notes=str(raw.get("notes", "")),
                      shares_front_with=sfw, role=role, serves_map=sm,
                      role_derived_at=float(rda) if rda is not None else None)
 

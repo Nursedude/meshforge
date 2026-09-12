@@ -72,7 +72,7 @@ class TestIdentity:
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: (["SHA256:good"], ""))
+            keyscan=lambda t, port=22: (["SHA256:good"], ""))
         assert row["identity"] == "OK" and row["findings"] == []
 
     def test_match_against_any_key_type_is_ok(self):
@@ -83,14 +83,14 @@ class TestIdentity:
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: (["SHA256:rsa-first", "SHA256:good"], ""))
+            keyscan=lambda t, port=22: (["SHA256:rsa-first", "SHA256:good"], ""))
         assert row["identity"] == "OK" and row["findings"] == []
 
     def test_mismatch_is_the_smoking_gun_finding(self):
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: (["SHA256:EVIL", "SHA256:EVIL2"], ""))
+            keyscan=lambda t, port=22: (["SHA256:EVIL", "SHA256:EVIL2"], ""))
         assert row["identity"].startswith("MISMATCH")
         assert "identity_mismatch" in row["findings"]
 
@@ -98,7 +98,7 @@ class TestIdentity:
         row = audit.audit_host(
             "box1", self.REG(), resolver=_resolver({}),
             verify_identity=True,
-            keyscan=lambda t: ([], "keyscan empty (rc=1)"))
+            keyscan=lambda t, port=22: ([], "keyscan empty (rc=1)"))
         assert row["identity"].startswith("UNKNOWN")
         assert "identity_mismatch" not in row["findings"]
 
@@ -106,7 +106,7 @@ class TestIdentity:
         reg = _reg(box1=FleetHost("box1", ip_fallback="192.0.2.10"))
         row = audit.audit_host("box1", reg, resolver=_resolver({}),
                                verify_identity=True,
-                               keyscan=lambda t: (["SHA256:x"], ""))
+                               keyscan=lambda t, port=22: (["SHA256:x"], ""))
         assert row["identity"] == "UNDECLARED"
         assert row["findings"] == []
 
@@ -295,3 +295,65 @@ class TestHostsFromRegistry:
         rc = audit.main(["--json", "--hosts-from-registry",
                          "--registry", str(tmp_path / "nope.json")])
         assert rc == 2  # UNKNOWN, never an empty-healthy report
+
+
+class TestIdentityPort:
+    """ssh_port routes the keyscan to the alias's OWN sshd.
+
+    The defect this prevents is not hypothetical. Measured 2026-09-11:
+    lehua.mf.internal:22 and trdev.mf.internal:22 return the IDENTICAL host
+    key, because one AREDN front serves both names and forwards :22 to
+    trdev; lehua's own sshd is on :2200. Verifying lehua on 22 compares
+    lehua against TRDEV's identity and calls it OK forever.
+    """
+
+    def test_declared_port_is_passed_to_keyscan(self):
+        seen = {}
+
+        def fake(target, port=22):
+            seen["target"], seen["port"] = target, port
+            return ["SHA256:lehua"], ""
+
+        reg = _reg(lehua=FleetHost("lehua", ip_fallback="192.0.2.10",
+                                   expect_hostkey="SHA256:lehua",
+                                   ssh_port=2200))
+        row = audit.audit_host("lehua", reg, resolver=_resolver({}),
+                               verify_identity=True, keyscan=fake)
+        assert seen["port"] == 2200
+        assert row["identity"] == "OK"
+
+    def test_absent_port_defaults_to_22(self):
+        seen = {}
+
+        def fake(target, port=22):
+            seen["port"] = port
+            return ["SHA256:good"], ""
+
+        reg = _reg(box1=FleetHost("box1", ip_fallback="192.0.2.10",
+                                  expect_hostkey="SHA256:good"))
+        audit.audit_host("box1", reg, resolver=_resolver({}),
+                         verify_identity=True, keyscan=fake)
+        assert seen["port"] == 22
+
+    def test_wrong_port_would_see_the_neighbour_and_mismatch(self):
+        """The regression guard: if ssh_port were dropped, the scan lands on
+        the front's :22 (the neighbour) and MUST read MISMATCH, never OK."""
+        front = {22: ["SHA256:trdev"], 2200: ["SHA256:lehua"]}
+
+        def fake(target, port=22):
+            return front[port], ""
+
+        reg = _reg(lehua=FleetHost("lehua", ip_fallback="192.0.2.10",
+                                   expect_hostkey="SHA256:lehua",
+                                   ssh_port=2200))
+        assert audit.audit_host("lehua", reg, resolver=_resolver({}),
+                                verify_identity=True,
+                                keyscan=fake)["identity"] == "OK"
+
+        # Same registry minus the port: now it scans the neighbour.
+        reg_noport = _reg(lehua=FleetHost("lehua", ip_fallback="192.0.2.10",
+                                          expect_hostkey="SHA256:lehua"))
+        row = audit.audit_host("lehua", reg_noport, resolver=_resolver({}),
+                               verify_identity=True, keyscan=fake)
+        assert row["identity"].startswith("MISMATCH")
+        assert "identity_mismatch" in row["findings"]
