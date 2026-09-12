@@ -20,6 +20,9 @@
 # freshness + mini) — who-watches-the-watcher closed on a second box.
 #
 # Exit 0 = manager fresh. Exit 1 = manager dark (page sent / re-page window).
+# Every dark run prints one `manager_deadman: manager DARK -- ...` witness
+# line to stderr with the raw numbers it judged on, so the FAIL verdict can
+# name its own cause instead of logging `out=empty` (2026-09-12).
 set -uo pipefail
 
 # Manager display name: env override (set it in the crontab line) else the
@@ -79,6 +82,29 @@ if [ "$age" -ge 0 ] && [ "$age" -le "$STALE_S" ]; then
     write_state 0 "$last_page"
     exit 0
 fi
+
+# --- witness the numbers BEFORE paging (honest_failure_modes #9) ---
+# The crontab redirects stderr into $OUT_DIR/manager_deadman.out, so on a
+# non-OK verdict cron_verdict.sh PRESERVES this line under a timestamped
+# name. Without it a dark run exits 1 having printed NOTHING: the verdict
+# reads `out=empty`, and the age it judged on survives only inside an ntfy
+# push -- a notification, not a retained artifact.
+#
+# WHY (measured 2026-09-12): moc1 logged `manager_deadman FAIL(1) out=empty`
+# at 16:10:02Z and its state file recorded a real MANAGER DARK page at
+# 16:10:01Z -- while the manager's own manager_heartbeat verdicts read OK at
+# 15:50:01Z, 16:00:02Z and 16:10:02Z with no gap in 65 runs. Two instruments
+# flatly disagreed and the ONE number that would have settled it was already
+# unrecoverable. Same shape as the 2026-07-30 harness_audit FAIL that named
+# the cron but never which check went red.
+#
+# beat_epoch is the MANAGER's clock at write time; mtime is THIS box's clock
+# for the same event. Together they are the cross-box skew (#6, wall-clock is
+# forgeable on this fleet): far apart on a future dark run means the clocks
+# moved, not the manager. Raw numbers only -- this line reports, never judges.
+# Prints on BOTH dark branches, so a re-page-suppressed tick is legible too.
+beat_epoch="$(head -c 32 "$BEAT_FILE" 2>/dev/null | tr -dc '0-9')"
+echo "manager_deadman: manager DARK -- age=${age}s threshold=${STALE_S}s now=${now} mtime=${mtime:-absent} beat_epoch=${beat_epoch:-unreadable} paged=${paged} last_page=${last_page} peer=$(hostname)" >&2
 
 # Manager dark. Page (first time, or re-page window elapsed).
 if [ "$paged" -eq 0 ] || [ $(( now - last_page )) -ge "$REPAGE_S" ]; then
