@@ -184,8 +184,22 @@ def test_resolve_preset_auto_follows_fleet_declaration(tmp_path, monkeypatch):
 
 
 def test_resolve_preset_auto_standalone_when_no_declaration(tmp_path, monkeypatch):
+    """No declaration -> standalone, PROVIDED standalone can actually start.
+
+    Amended 2026-09-12. The original contract was purely "declaration drives
+    the preset", and this test pinned it without setting a NATS server -- which
+    is the configuration standalone raises on. On moc5's rebuild that combination
+    (fleet_hosts is manager-side, so member boxes declare nothing; no NATS bus)
+    resolved to standalone on every start and systemd crashlooped it forever.
+    The contract now has a viability gate: auto will not choose a preset it can
+    prove cannot start. The declaration still drives the choice -- this test
+    supplies the NATS server standalone requires, so it pins the ORIGINAL intent
+    on a box where standalone is actually viable. The no-NATS branch is pinned in
+    test_mini_preset_auto_resolution.py.
+    """
     from mini_dudeai.daemon import _resolve_preset_name
     monkeypatch.setenv("MESHFORGE_FLEET_HOSTS", str(tmp_path / "absent"))
+    monkeypatch.setenv("MINI_DUDEAI_NATS_SERVER", "localhost:4222")
     assert _resolve_preset_name("auto") == "standalone"
 
 
