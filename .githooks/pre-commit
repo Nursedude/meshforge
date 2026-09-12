@@ -89,6 +89,39 @@ for _gen_artifact in \
     fi
 done
 
+# Doc stat sentinels + menu placement (2026-09-11). BOTH of these were already
+# enforced — the sentinels at PRE-PUSH, the menu ordering only inside the full
+# 13:39 suite — which is too late to be cheap. On 2026-09-11 they were the only
+# two things the full suite caught, and each cost a complete 14-minute re-run:
+# a new test file left untracked (testfiles read 373 on disk vs 372 in git) and
+# a handler registered but never PLACED in SECTION_ORDERINGS.
+# Measured that day: 0.1s and 2.0s. Two seconds here buys back two re-runs.
+# ⚠️ Deliberately NOT here: tests/test_all_handlers_protocol.py at 93.7s. It
+# caught nothing that day and would tax every commit forever; it belongs in a
+# manual pre-suite sweep, not on this path. Speed is the whole reason this gate
+# gets to exist — keep it under a few seconds or it will be bypassed.
+echo "Checking doc stat sentinels + menu placement..."
+if ! python3 scripts/readme_stats.py --check; then
+    echo ""
+    echo "README/doc structural counts drifted from the tree."
+    echo "Usually an ADDED-BUT-UNTRACKED file: the sentinel counts what git"
+    echo "tracks, so 'git add' the new file FIRST, then:"
+    echo "  python3 scripts/readme_stats.py --update   # then stage the docs"
+    exit 1
+fi
+if ! python3 -m pytest tests/test_menu_orderings.py -q >/tmp/.precommit_menu.out 2>&1; then
+    echo ""
+    echo "Menu ordering check failed:"
+    tail -20 /tmp/.precommit_menu.out
+    echo ""
+    echo "A new menu action must be PLACED in SECTION_ORDERINGS"
+    echo "(src/launcher_tui/main.py) — registering a handler is not placing it,"
+    echo "and an unplaced tag renders as an unordered tail."
+    rm -f /tmp/.precommit_menu.out
+    exit 1
+fi
+rm -f /tmp/.precommit_menu.out
+
 # Collection-only sweep: catches module-level import/syntax errors across the
 # full suite without running test bodies. Fast (~2-3s) and flags the class of
 # regression where a test module fails to import in CI but loads in dev.
