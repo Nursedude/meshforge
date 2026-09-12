@@ -305,7 +305,18 @@ runs the RadioLib ISR on ITSELF, so `pinedio_deattach_interrupt`'s self-join
 guard SKIPS the join and the stack strands (`pine64/libch341-spi-userspace`;
 strace/gdb-pinned 07-10). Live: ~561 GB VSZ / 71k anon maps @ day 5 (Pi5+USB);
 SPI-radio boxes clean. **NO published build fixes #10468** — not 2.7.24,
-2.7.26, or 2.8.
+2.7.26, or 2.8. **Re-verified 2026-09-11 AT SOURCE** (not by version
+string): `v2.8.0.47db0e3`'s `variants/native/portduino.ini` still pins
+`meshtastic/libch341-spi-userspace@03bf505d`, and that ref's
+`libpinedio-usb.c` has `pthread_detach` count **0** vs **1** in pine64
+`b0694ec8` (what our patched builds carry) — so upgrading the 4 USB boxes
+to 2.8 would REGRESS them. Our PR#2 still OPEN, untouched since 07-27.
+⚠️ **Do not roll meshtasticd**: 2.7.26.54e0d8d is STILL upstream `Latest`
+(2026-06-24); the only newer build is a 2.8.0 *alpha* whose predecessor
+`2.8.0.7239fe8` was **revoked** 08-30. meshtasticd is `apt-mark hold`ed on
+all 9 boxes (verified 09-11) — 5 of them have the OBS alpha repo enabled at
+priority 500, so the hold is the only thing standing between a routine
+`apt upgrade` and an alpha fleet-wide. Do not remove it to "unblock" a roll.
 
 ⚠️ **Our merged fix does NOT reach meshtastic builds (07-27).** pine64 merged
 PR#10 (`pthread_detach(pthread_self())`) as `b0694ec8` on 07-19 — but
