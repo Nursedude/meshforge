@@ -334,12 +334,24 @@ do_local_backup() {
     # was captured and the IDENTITY beside it was not. Two identities, two
     # separate misses, one shape.
     if [[ -d /var/lib/meshtasticd/.portduino ]]; then
+        # This tree is mode 700 owned by the meshtasticd user, so an
+        # unprivileged run cannot read it. Say that in words rather than
+        # emitting a bare `cp: Permission denied` and aborting: the operator
+        # needs to know WHICH thing is missing and WHY, because a backup that
+        # silently omits the node identity is exactly the 2026-09-12 loss.
+        if [[ ! -r /var/lib/meshtasticd/.portduino ]]; then
+            echo -e "  ${RED}!${NC} /var/lib/meshtasticd/.portduino/ UNREADABLE -" \
+                    "the Meshtastic NODE IDENTITY is NOT in this archive." \
+                    "Re-run as: sudo bash $0 --local" >&2
+            echo "meshtasticd-node-identity" >> "${IDENTITY_GAP_FLAG:-/dev/null}"
+        else
         mkdir -p "$staging/var/lib/meshtasticd"
         cp -a /var/lib/meshtasticd/.portduino "$staging/var/lib/meshtasticd/.portduino"
         local proto_count
         proto_count=$(find /var/lib/meshtasticd/.portduino -name '*.proto' 2>/dev/null | wc -l)
         log_info "/var/lib/meshtasticd/.portduino/ (node identity, ${proto_count} proto file(s))"
         backed_up=$((backed_up + 1))
+        fi
     fi
 
     # --- Things this project did not install ---
@@ -909,6 +921,13 @@ fi
 # ─────────────────────────────────────────────────────────────────
 # Dispatch
 # ─────────────────────────────────────────────────────────────────
+# A backup missing an IDENTITY must not report success to a cron: that is the
+# "valid-looking value" class this fleet keeps paying for. do_local_backup
+# runs in a subshell under `push`, so the flag rides a file, not a variable.
+IDENTITY_GAP_FLAG="$(mktemp -t mf-backup-idgap.XXXXXX)"
+export IDENTITY_GAP_FLAG
+trap 'rm -f "$IDENTITY_GAP_FLAG"' EXIT
+
 case "$ACTION" in
     local)
         $QUIET || echo -e "${CYAN}"
@@ -939,3 +958,12 @@ case "$ACTION" in
         do_rotate
         ;;
 esac
+
+# ── exit honestly ────────────────────────────────────────────────────────────
+if [[ -s "${IDENTITY_GAP_FLAG:-/nonexistent}" ]]; then
+    echo -e "${RED}INCOMPLETE:${NC} $(wc -l < "$IDENTITY_GAP_FLAG") identity category(ies)" \
+            "could not be read and are NOT in this archive:" \
+            "$(tr '\n' ' ' < "$IDENTITY_GAP_FLAG")" >&2
+    exit 2
+fi
+exit 0
