@@ -15,6 +15,13 @@
 #   ~/.claude/memory/            (AI memory — global)
 #   ~/.claude/projects/*/memory/ (AI memory — project-specific)
 #   ~/.claude/settings.json      (AI settings)
+#   ~/.reticulum/                (the USER's RNS identity -- a SEPARATE key
+#                                 from the service's above; restoring only one
+#                                 rejoins the mesh as a different node)
+#   /etc/systemd/system/         (units + drop-ins carrying forgotten fixes)
+#   crontab + ~/*.sh             (box-local scripts no install script recreates)
+#   custom_binaries.txt          (sha256 of custom /usr/local binaries; the
+#                                 bytes only with --include-binaries)
 #
 # What is NOT backed up (too large, rebuilds over time):
 #   ~/.local/share/meshforge/    (5GB+ map/telemetry history)
@@ -45,6 +52,10 @@ NC='\033[0m'
 INSTALL_DIR="/opt/meshforge"
 QUIET=false
 ACTION=""
+# Bulky custom binaries (a locally built meshtasticd is ~88 MB) are recorded by
+# sha256 by default and copied only on request -- a peer push runs over a Pi
+# fleet's network, and provenance is what a re-image actually loses.
+INCLUDE_BINARIES=false
 
 # ─────────────────────────────────────────────────────────────────
 # Detect real user home (handles sudo)
@@ -238,6 +249,52 @@ do_local_backup() {
         fi
     fi
 
+    # --- Reticulum USER identity (a SECOND, different key) ---
+    #
+    # A box has TWO RNS identities: the rnsd SERVICE's under /etc/reticulum
+    # (above) and the invoking user's under ~/.reticulum. Different keys,
+    # different destination hashes. Restoring only one is the classic
+    # half-migration: the box rejoins the mesh as a DIFFERENT node for
+    # whichever half you missed, so peers' path tables, LXMF propagation
+    # state and any hash-keyed allowlist silently stop matching -- and
+    # nothing warns you.
+    #
+    # Gap found 2026-09-11 while preparing the moc5 reflash: this script had
+    # 21 references to /etc/reticulum and ZERO to ~/.reticulum, i.e. exactly
+    # the half-migration docs/install.md warns readers about, inverted.
+    local user_rns="${REAL_HOME}/.reticulum"
+    if [[ -d "$user_rns" ]]; then
+        mkdir -p "$staging/home/reticulum/storage"
+
+        if [[ -f "$user_rns/config" ]]; then
+            cp -a "$user_rns/config" "$staging/home/reticulum/config"
+            log_info "~/.reticulum/config"
+            backed_up=$((backed_up + 1))
+        fi
+
+        if [[ -f "$user_rns/storage/transport_identity" ]]; then
+            cp -a "$user_rns/storage/transport_identity" \
+                  "$staging/home/reticulum/storage/transport_identity"
+            log_info "~/.reticulum/storage/transport_identity (CRITICAL)"
+            backed_up=$((backed_up + 1))
+        fi
+
+        for sub in identities ratchets; do
+            if [[ -d "$user_rns/storage/$sub" ]]; then
+                cp -a "$user_rns/storage/$sub" "$staging/home/reticulum/storage/$sub"
+                log_info "~/.reticulum/storage/${sub}/"
+                backed_up=$((backed_up + 1))
+            fi
+        done
+
+        if [[ -f "$user_rns/storage/known_destinations" ]]; then
+            cp -a "$user_rns/storage/known_destinations" \
+                  "$staging/home/reticulum/storage/known_destinations"
+            log_info "~/.reticulum/storage/known_destinations"
+            backed_up=$((backed_up + 1))
+        fi
+    fi
+
     # --- meshtasticd config ---
     if [[ -d /etc/meshtasticd ]]; then
         mkdir -p "$staging/etc/meshtasticd/config.d"
@@ -256,6 +313,106 @@ do_local_backup() {
             log_info "/etc/meshtasticd/config.d/ (${hat_count} HAT configs)"
             backed_up=$((backed_up + 1))
         fi
+    fi
+
+    # --- Things this project did not install ---
+    #
+    # A long-lived box accumulates deployment-specific state that no MeshForge
+    # script knows about. The failure mode is not "the bytes are gone" -- most
+    # of it is rebuildable -- it is that after a re-image you do not KNOW it was
+    # ever there. So these three sections RECORD unconditionally and copy what
+    # is cheap; bulky binaries are recorded by checksum and copied only on
+    # request (see --include-binaries).
+
+    # Custom binaries shadowing a packaged one, e.g. a locally built
+    # meshtasticd in /usr/local/sbin. These are large (~88 MB) and usually
+    # recoverable from a peer with an identical build or from a build recipe,
+    # so the default records provenance rather than taxing every peer push.
+    local localbin_manifest="$staging/custom_binaries.txt"
+    local found_bins=0
+    for d in /usr/local/sbin /usr/local/bin; do
+        [[ -d "$d" ]] || continue
+        while IFS= read -r binpath; do
+            [[ -n "$binpath" ]] || continue
+            # Skip small wrapper scripts -- those are pip/pipx shims, not builds
+            local bsize
+            bsize=$(stat -c %s "$binpath" 2>/dev/null || echo 0)
+            [[ "$bsize" -gt 1048576 ]] || continue
+            if [[ $found_bins -eq 0 ]]; then
+                {
+                    echo "# Custom binaries present on ${HOSTNAME_SHORT} at backup time."
+                    echo "# NOT included in this archive unless --include-binaries was used."
+                    echo "# sha256  size  mtime  path"
+                } > "$localbin_manifest"
+            fi
+            printf '%s  %s  %s  %s\n' \
+                "$(sha256sum "$binpath" 2>/dev/null | cut -d' ' -f1)" \
+                "$bsize" \
+                "$(date -u -r "$binpath" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null)" \
+                "$binpath" >> "$localbin_manifest"
+            found_bins=$((found_bins + 1))
+            if $INCLUDE_BINARIES; then
+                mkdir -p "$staging${d}"
+                cp -a "$binpath" "$staging${binpath}"
+            fi
+        done < <(find "$d" -maxdepth 1 -type f -perm -u+x 2>/dev/null)
+    done
+    if [[ $found_bins -gt 0 ]]; then
+        if $INCLUDE_BINARIES; then
+            log_info "custom binaries (${found_bins}, BYTES INCLUDED)"
+        else
+            log_info "custom_binaries.txt (${found_bins} recorded by sha256, bytes NOT included)"
+        fi
+        backed_up=$((backed_up + 1))
+    fi
+
+    # systemd units and drop-ins carrying fixes for bugs you have forgotten.
+    # Tiny, always included. The moc5 case: a 50-canary-pinedio-fix.conf
+    # drop-in redirecting ExecStart at the patched binary -- invisible in any
+    # config backup, and the box silently runs the WRONG binary without it.
+    if [[ -d /etc/systemd/system ]]; then
+        local unit_count=0
+        mkdir -p "$staging/etc/systemd/system"
+        while IFS= read -r unit; do
+            [[ -n "$unit" ]] || continue
+            cp -a "$unit" "$staging/etc/systemd/system/" 2>/dev/null && \
+                unit_count=$((unit_count + 1))
+        done < <(find /etc/systemd/system -maxdepth 1 -type f -name '*.service' 2>/dev/null)
+        while IFS= read -r dropin; do
+            [[ -n "$dropin" ]] || continue
+            local dropin_dir
+            dropin_dir=$(dirname "$dropin")
+            mkdir -p "$staging${dropin_dir}"
+            cp -a "$dropin" "$staging${dropin}" 2>/dev/null && \
+                unit_count=$((unit_count + 1))
+        done < <(find /etc/systemd/system -mindepth 2 -maxdepth 2 -name '*.conf' 2>/dev/null)
+        if [[ $unit_count -gt 0 ]]; then
+            log_info "/etc/systemd/system/ (${unit_count} units + drop-ins)"
+            backed_up=$((backed_up + 1))
+        fi
+    fi
+
+    # The user's crontab and any box-local scripts it calls. Found on moc5:
+    # ~/power_capture.sh, running every minute, referenced by cron, present in
+    # no repo -- no install script would ever recreate it.
+    local cron_tmp="$staging/home/crontab.txt"
+    mkdir -p "$staging/home"
+    if crontab -u "$REAL_USER" -l > "$cron_tmp" 2>/dev/null && [[ -s "$cron_tmp" ]]; then
+        log_info "crontab (${REAL_USER})"
+        backed_up=$((backed_up + 1))
+    else
+        rm -f "$cron_tmp"
+    fi
+    local home_script_count=0
+    while IFS= read -r hs; do
+        [[ -n "$hs" ]] || continue
+        mkdir -p "$staging/home/scripts"
+        cp -a "$hs" "$staging/home/scripts/" 2>/dev/null && \
+            home_script_count=$((home_script_count + 1))
+    done < <(find "$REAL_HOME" -maxdepth 1 -type f -name '*.sh' 2>/dev/null)
+    if [[ $home_script_count -gt 0 ]]; then
+        log_info "~/*.sh (${home_script_count} box-local scripts)"
+        backed_up=$((backed_up + 1))
     fi
 
     # --- MeshForge user config ---
@@ -665,6 +822,11 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  --quiet, -q      Suppress progress output"
+    echo "  --include-binaries  Copy custom /usr/local binaries into the archive."
+    echo "                   Default records them by sha256 only (a locally built"
+    echo "                   meshtasticd is ~88 MB and is usually recoverable from"
+    echo "                   a peer with an identical build). Use on a standalone"
+    echo "                   box with no peer to copy from."
     echo "  --help, -h       Show this help"
     echo ""
     echo "Fleet config: ${FLEET_CONFIG}"
@@ -678,6 +840,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --local)
             ACTION="local"
+            shift
+            ;;
+        --include-binaries)
+            INCLUDE_BINARIES=true
             shift
             ;;
         --push)
