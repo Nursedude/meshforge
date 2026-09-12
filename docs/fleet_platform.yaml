@@ -100,12 +100,21 @@ pins:
         repo: meshtastic/firmware
         ref_from: latest_stable_release
         path: variants/native/portduino.ini
-        needle: "libch341-spi-userspace/archive/03bf505d"
+        needle: "libch341-spi-userspace/archive/2e5ff751"
         expect: present
         means: >
-          while this pin is still 03bf505d, no published build carries the fix.
-          When it CHANGES, read the new ref's libpinedio-usb.c for
-          pthread_detach before believing anything.
+          The STABLE channel pins pine64@2e5ff751, verified 2026-09-11 to have
+          pthread_detach count 0 — i.e. unfixed, which is why the four USB
+          boxes run patched builds against pine64 b0694ec8 instead.
+          ⚠️ The two channels pin DIFFERENT FORKS: stable is pine64@2e5ff751,
+          the 2.8 alpha is meshtastic@03bf505d (also count 0). So the needle
+          is channel-specific, and this leg watches the stable one. When this
+          ref CHANGES, the leg goes MOVED — then read the NEW ref's
+          libpinedio-usb.c for pthread_detach before believing any version
+          string. (Authoring note: the first draft of this predicate carried
+          the ALPHA's ref while pointing ref_from at the STABLE channel, so it
+          reported MOVED on day one. The evaluator was right; the predicate
+          measured the wrong quantity.)
       - kind: github_release_stable
         repo: meshtastic/firmware
         newer_than: "2.7.26.54e0d8d"

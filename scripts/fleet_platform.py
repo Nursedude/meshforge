@@ -209,6 +209,55 @@ def cmd_pins(args) -> int:
     return 0
 
 
+def cmd_recheck(args) -> int:
+    """Run each pin's declared predicates and say whether its reason stands.
+
+    Read-only, and deliberately so: deciding a pin has lifted is a human act.
+    The predicate exists to make that decision CHEAP, not automatic.
+    """
+    catalog, errs = load_catalog(args.catalog)
+    if catalog is None:
+        print(f"FAIL: platform catalog unusable — {'; '.join(errs)}")
+        return 1
+    from utils.pin_recheck import HOLDS, MANUAL, MOVED, UNKNOWN, evaluate_pin
+
+    mark = {HOLDS: "🟢 holds  ", MOVED: "🔶 MOVED  ",
+            UNKNOWN: "❓ unknown", MANUAL: "⚪ manual "}
+    results = []
+    names = args.pin or sorted(catalog.pins)
+    for name in names:
+        pin = catalog.pins.get(name)
+        if pin is None:
+            print(f"no such pin: {name!r} "
+                  f"(have: {', '.join(sorted(catalog.pins))})")
+            return 1
+        res = evaluate_pin(pin)
+        results.append(res)
+        print(f"{mark.get(res.verdict, '?')}  {name}  @ {pin.current}")
+        for pr in res.predicates:
+            print(f"      [{pr.kind}] {pr.result}: {pr.detail}")
+        print()
+
+    moved = [r.name for r in results if r.verdict == MOVED]
+    unk = [r.name for r in results if r.verdict == UNKNOWN]
+    man = [r.name for r in results if r.verdict == MANUAL]
+    held = [r.name for r in results if r.verdict == HOLDS]
+    print(f"{len(held)} holds · {len(moved)} MOVED · {len(unk)} unknown · "
+          f"{len(man)} manual-only")
+    if moved:
+        print(f"  MOVED: {', '.join(moved)} — a condition this pin depends on "
+              f"has changed. Go read it; do NOT assume the pin can lift.")
+    if unk:
+        # Surfaced as its own line, never folded into a healthy total
+        # (calibrated_claims #5).
+        print(f"  UNKNOWN: {', '.join(unk)} — could NOT be evaluated. That is "
+              f"not evidence the pin still holds.")
+    if man:
+        print(f"  MANUAL-ONLY: {', '.join(man)} — nothing watches these. They "
+              f"will say this every time, because it stays true.")
+    return 1 if moved else 0
+
+
 def cmd_declare(args) -> int:
     catalog, errs = load_catalog(args.catalog)
     if catalog is None:
@@ -299,6 +348,10 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("pins", help="what we hold and what would move it")
     p.set_defaults(fn=cmd_pins)
+
+    rc_ = sub.add_parser("recheck", help="evaluate each pin's predicates (network)")
+    rc_.add_argument("pin", nargs="*", help="pin name(s); default all")
+    rc_.set_defaults(fn=cmd_recheck)
 
     d = sub.add_parser("declare", help="record a deliberate platform deviation")
     d.add_argument("box")
