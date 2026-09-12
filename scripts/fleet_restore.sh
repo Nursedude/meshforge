@@ -585,6 +585,121 @@ if [[ -d "$EXTRACT_DIR/home/claude" ]]; then
     chown -R "${TARGET_USER}:${TARGET_USER}" "$local_claude"
 fi
 
+# --- Reticulum USER identity (the SECOND key; see fleet_backup.sh) ---
+#
+# A box has TWO RNS identities and restoring only the service's brings the box
+# back as a different node for the user's half. The backup side gained this on
+# 2026-09-11; this reader was written the same day, after a grep showed
+# fleet_restore.sh had ZERO references to ~/.reticulum while the archive had
+# just started carrying it -- a captured-but-never-restored file is the same
+# half-migration moved one step later (honest_failure_modes #4: reader and
+# writer wire together or fail together).
+if [[ -d "$EXTRACT_DIR/home/reticulum" ]]; then
+    user_rns="${TARGET_HOME}/.reticulum"
+    mkdir -p "$user_rns/storage"
+
+    if [[ -f "$EXTRACT_DIR/home/reticulum/config" ]]; then
+        cp -a "$EXTRACT_DIR/home/reticulum/config" "$user_rns/config"
+        echo -e "  ${GREEN}+${NC} ~/.reticulum/config"
+        RESTORED=$((RESTORED + 1))
+    fi
+
+    if [[ -f "$EXTRACT_DIR/home/reticulum/storage/transport_identity" ]]; then
+        cp -a "$EXTRACT_DIR/home/reticulum/storage/transport_identity" \
+              "$user_rns/storage/transport_identity"
+        chmod 600 "$user_rns/storage/transport_identity"
+        echo -e "  ${GREEN}+${NC} ~/.reticulum/storage/transport_identity ${BOLD}(CRITICAL)${NC}"
+        RESTORED=$((RESTORED + 1))
+    fi
+
+    for sub in identities ratchets; do
+        if [[ -d "$EXTRACT_DIR/home/reticulum/storage/$sub" ]]; then
+            cp -a "$EXTRACT_DIR/home/reticulum/storage/$sub" "$user_rns/storage/"
+            echo -e "  ${GREEN}+${NC} ~/.reticulum/storage/${sub}/"
+            RESTORED=$((RESTORED + 1))
+        fi
+    done
+
+    if [[ -f "$EXTRACT_DIR/home/reticulum/storage/known_destinations" ]]; then
+        cp -a "$EXTRACT_DIR/home/reticulum/storage/known_destinations" "$user_rns/storage/"
+        echo -e "  ${GREEN}+${NC} ~/.reticulum/storage/known_destinations"
+        RESTORED=$((RESTORED + 1))
+    fi
+
+    chown -R "${TARGET_USER}:${TARGET_USER}" "$user_rns"
+    chmod 600 "$user_rns/storage/transport_identity" 2>/dev/null || true
+fi
+
+# --- systemd units + drop-ins ---
+#
+# Drop-ins carry fixes for bugs you have forgotten; moc5's
+# 50-canary-pinedio-fix.conf redirects ExecStart at a patched binary, and
+# without it the box silently runs the wrong one.
+if [[ -d "$EXTRACT_DIR/etc/systemd/system" ]]; then
+    unit_n=0
+    while IFS= read -r u; do
+        [[ -n "$u" ]] || continue
+        cp -a "$u" /etc/systemd/system/ 2>/dev/null && unit_n=$((unit_n + 1))
+    done < <(find "$EXTRACT_DIR/etc/systemd/system" -maxdepth 1 -type f -name '*.service' 2>/dev/null)
+    while IFS= read -r d; do
+        [[ -n "$d" ]] || continue
+        rel="${d#$EXTRACT_DIR/etc/systemd/system/}"
+        mkdir -p "/etc/systemd/system/$(dirname "$rel")"
+        cp -a "$d" "/etc/systemd/system/$rel" 2>/dev/null && unit_n=$((unit_n + 1))
+    done < <(find "$EXTRACT_DIR/etc/systemd/system" -mindepth 2 -maxdepth 2 -name '*.conf' 2>/dev/null)
+    if [[ $unit_n -gt 0 ]]; then
+        systemctl daemon-reload 2>/dev/null || true
+        echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (${unit_n} units + drop-ins, daemon-reloaded)"
+        RESTORED=$((RESTORED + 1))
+    fi
+fi
+
+# --- Custom binaries: restore bytes if present, SHOUT if only recorded ---
+#
+# The bytes are optional in the archive by design (fleet_backup --include-binaries).
+# What must never happen is silence: a box whose ExecStart points at a custom
+# binary that is not here will start and fail in a way no config check sees.
+if [[ -f "$EXTRACT_DIR/custom_binaries.txt" ]]; then
+    if [[ -d "$EXTRACT_DIR/usr/local" ]]; then
+        cp -a "$EXTRACT_DIR/usr/local/." /usr/local/ 2>/dev/null || true
+        echo -e "  ${GREEN}+${NC} custom binaries restored from archive"
+        echo -e "  ${YELLOW}!${NC} VERIFY LINKAGE before trusting them: a binary built on a"
+        echo -e "      different distro will not run here (noble links libgpiod.so.2,"
+        echo -e "      trixie libgpiod.so.3). Check: ldd <binary>"
+        RESTORED=$((RESTORED + 1))
+    else
+        echo -e "  ${YELLOW}!${NC} ${BOLD}This box had custom binaries that are NOT in this archive:${NC}"
+        grep -v '^#' "$EXTRACT_DIR/custom_binaries.txt" 2>/dev/null | while read -r line; do
+            echo -e "      ${line}"
+        done
+        echo -e "      Copy from a peer with a matching sha256, or rebuild. A unit whose"
+        echo -e "      ExecStart names one of these will fail until you do."
+    fi
+fi
+
+# --- crontab + box-local scripts (scripts FIRST, then the crontab) ---
+if [[ -d "$EXTRACT_DIR/home/scripts" ]]; then
+    script_n=0
+    for hs in "$EXTRACT_DIR/home/scripts"/*; do
+        [[ -f "$hs" ]] || continue
+        cp -a "$hs" "$TARGET_HOME/" && script_n=$((script_n + 1))
+    done
+    if [[ $script_n -gt 0 ]]; then
+        chown "${TARGET_USER}:${TARGET_USER}" "$TARGET_HOME"/*.sh 2>/dev/null || true
+        echo -e "  ${GREEN}+${NC} ~/*.sh (${script_n} box-local scripts)"
+        RESTORED=$((RESTORED + 1))
+    fi
+fi
+if [[ -f "$EXTRACT_DIR/home/crontab.txt" ]]; then
+    if crontab -u "$TARGET_USER" "$EXTRACT_DIR/home/crontab.txt" 2>/dev/null; then
+        echo -e "  ${GREEN}+${NC} crontab (${TARGET_USER})"
+        RESTORED=$((RESTORED + 1))
+    else
+        echo -e "  ${YELLOW}!${NC} crontab restore FAILED — reinstate by hand from"
+        echo -e "      ${EXTRACT_DIR}/home/crontab.txt"
+    fi
+fi
+
 # --- Project-level Claude config ---
 if [[ -f "$EXTRACT_DIR/opt/meshforge/.claude.json" ]]; then
     cp -a "$EXTRACT_DIR/opt/meshforge/.claude.json" "$INSTALL_DIR/.claude.json"
