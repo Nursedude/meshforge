@@ -330,6 +330,21 @@ echo -e "${CYAN}Will restore:${NC}"
 [[ -d "$EXTRACT_DIR/home/config/meshforge" ]] && echo -e "  ${GREEN}+${NC} ~/.config/meshforge/ (MeshForge settings)"
 [[ -d "$EXTRACT_DIR/home/claude" ]] && echo -e "  ${GREEN}+${NC} ~/.claude/ (AI memory + settings)"
 [[ -f "$EXTRACT_DIR/opt/meshforge/.claude.json" ]] && echo -e "  ${GREEN}+${NC} /opt/meshforge/.claude.json (project config)"
+# Keep this preview in step with Phase 4 below. A dry run that under-reports is
+# a dishonest surface: the operator approves a restore on the strength of this
+# list. (Found 2026-09-11 by dry-running the restore right after adding the
+# legs -- the actions were wired and this preview was not.)
+[[ -d "$EXTRACT_DIR/home/reticulum" ]] && echo -e "  ${GREEN}+${NC} ~/.reticulum/ (the USER's RNS identity — a SECOND key)"
+[[ -d "$EXTRACT_DIR/etc/systemd/system" ]] && echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (units + drop-ins, then daemon-reload)"
+[[ -d "$EXTRACT_DIR/home/scripts" ]] && echo -e "  ${GREEN}+${NC} ~/*.sh (box-local scripts)"
+[[ -f "$EXTRACT_DIR/home/crontab.txt" ]] && echo -e "  ${GREEN}+${NC} crontab"
+if [[ -f "$EXTRACT_DIR/custom_binaries.txt" ]]; then
+    if [[ -d "$EXTRACT_DIR/usr/local" ]]; then
+        echo -e "  ${GREEN}+${NC} custom binaries (bytes present — VERIFY ldd linkage after)"
+    else
+        echo -e "  ${YELLOW}!${NC} custom binaries RECORDED BUT NOT IN ARCHIVE — will be listed, not restored"
+    fi
+fi
 
 echo ""
 
