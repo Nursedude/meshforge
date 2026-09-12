@@ -96,6 +96,9 @@ SECTION_ORDERINGS = {
     ],
     "system": [
         "hardware", "logs", "network", "discover", "diagnose", "db_health",
+        # Read-only posture surfaces sit beside db_health: all three answer
+        # "what is true here", none of them change anything.
+        "platform_posture", "platform_pins",
         "run", "details", "daemon", "fleet_membership", "fleet_provision",
         "review", "status", "shell", "reboot",
     ],

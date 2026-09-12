@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 79 handlers · 110 menu actions (derived from get_all_handlers(), never hand-edited).
+# 80 handlers · 112 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -611,6 +611,18 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('offline_oracle', 'offline oracle (ask the fleet lore)', None),
+        ],
+    },
+    {
+        "handler_id": 'platform_posture',
+        "module": 'handlers.platform_posture',
+        "class_name": 'PlatformPostureHandler',
+        "menu_section": 'system',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('platform_posture', 'Platform Posture    OS base vs declared, per box', None),
+            ('platform_pins', 'Dependency Pins     what we hold and why', None),
         ],
     },
     {
