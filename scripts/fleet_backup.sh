@@ -405,7 +405,15 @@ do_local_backup() {
         backed_up=$((backed_up + 1))
     fi
 
-    # systemd units and drop-ins carrying fixes for bugs you have forgotten.
+    # systemd units, ENABLEMENT LINKS and drop-ins carrying fixes for bugs you
+    # have forgotten. Until 2026-09-13 this captured only maxdepth-1
+    # `*.service` FILES, silently dropping every .timer -- including
+    # meshtasticd-restart.timer, the VSZ-leak band-aid persistent_issues.md
+    # says must STAY, and meshforge-backup.timer, this script's own schedule --
+    # and all 76 `*.wants/` enablement symlinks. The archive reported success
+    # either way (honest_failure_modes #9: a silent partial must leave a
+    # witness). Types and both halves of the pair widen TOGETHER; see the
+    # mirror loop in fleet_restore.sh.
     # Tiny, always included. The moc5 case: a 50-canary-pinedio-fix.conf
     # drop-in redirecting ExecStart at the patched binary -- invisible in any
     # config backup, and the box silently runs the WRONG binary without it.
@@ -416,7 +424,30 @@ do_local_backup() {
             [[ -n "$unit" ]] || continue
             cp -a "$unit" "$staging/etc/systemd/system/" 2>/dev/null && \
                 unit_count=$((unit_count + 1))
-        done < <(find /etc/systemd/system -maxdepth 1 -type f -name '*.service' 2>/dev/null)
+        done < <(find /etc/systemd/system -maxdepth 1 -type f \
+                      \( -name '*.service' -o -name '*.timer' -o -name '*.socket' \
+                         -o -name '*.path' -o -name '*.mount' -o -name '*.target' \) 2>/dev/null)
+        # Symlinks carry three things no unit FILE does, at TWO depths:
+        #   depth 2  <target>.wants/<unit>  -- enablement. The target is
+        #            whatever the unit DECLARES, so a live timer can sit in
+        #            default.target.wants while declaring WantedBy=timers.target;
+        #            never read just one directory.
+        #   depth 1  <unit> -> /dev/null    -- a MASK. meshanchor-daemon.service
+        #            is masked on this box: a deliberate human decision, and a
+        #            restore that drops it silently re-arms the daemon
+        #            (memory: a deliberate ABSENCE is a decision, not a gap).
+        #   depth 1  <alias> -> <unit>      -- Alias= names (sshd.service).
+        # Without these a restore reinstates every unit file with NOTHING
+        # ENABLED and every mask lifted, and says "+ units" either way.
+        local link_count=0
+        while IFS= read -r link; do
+            [[ -n "$link" ]] || continue
+            local rel_link
+            rel_link="${link#/etc/systemd/system/}"
+            mkdir -p "$staging/etc/systemd/system/$(dirname "$rel_link")"
+            cp -a "$link" "$staging/etc/systemd/system/$rel_link" 2>/dev/null && \
+                link_count=$((link_count + 1))
+        done < <(find /etc/systemd/system -mindepth 1 -maxdepth 2 -type l 2>/dev/null)
         while IFS= read -r dropin; do
             [[ -n "$dropin" ]] || continue
             local dropin_dir
@@ -425,9 +456,30 @@ do_local_backup() {
             cp -a "$dropin" "$staging${dropin}" 2>/dev/null && \
                 unit_count=$((unit_count + 1))
         done < <(find /etc/systemd/system -mindepth 2 -maxdepth 2 -name '*.conf' 2>/dev/null)
-        if [[ $unit_count -gt 0 ]]; then
-            log_info "/etc/systemd/system/ (${unit_count} units + drop-ins)"
+        if [[ $unit_count -gt 0 || $link_count -gt 0 ]]; then
+            log_info "/etc/systemd/system/ (${unit_count} units + drop-ins, ${link_count} enablement links)"
             backed_up=$((backed_up + 1))
+        fi
+    fi
+
+    # USER-scope units. The system/user split is per-UNIT, not per-box: echo,
+    # nomadnet, lxmd and mini-dudeai are user units here while the map and
+    # gateway are system ones, and `sudo systemctl` cannot even see the user
+    # ones. Captured by no other step until 2026-09-13 -- 26 unit files and 16
+    # enablement links on this box went into every archive as silence.
+    local user_units="${REAL_HOME}/.config/systemd/user"
+    if [[ -d "$user_units" ]]; then
+        local uu_files uu_links
+        uu_files=$(find "$user_units" -maxdepth 1 -type f 2>/dev/null | wc -l)
+        uu_links=$(find "$user_units" -mindepth 2 -maxdepth 2 -type l 2>/dev/null | wc -l)
+        if [[ $uu_files -gt 0 || $uu_links -gt 0 ]]; then
+            mkdir -p "$staging/home/systemd-user"
+            if cp -a "$user_units/." "$staging/home/systemd-user/" 2>/dev/null; then
+                log_info "~/.config/systemd/user/ (${uu_files} units, ${uu_links} enablement links)"
+                backed_up=$((backed_up + 1))
+            else
+                log_warn "~/.config/systemd/user/ present but NOT captured -- user units will not survive a restore"
+            fi
         fi
     fi
 
@@ -583,6 +635,25 @@ for root, dirs, fnames in os.walk(staging):
     for fname in fnames:
         fpath = os.path.join(root, fname)
         relpath = os.path.relpath(fpath, staging)
+        # Enablement links (<target>.wants/<unit>) point at /lib/systemd/...,
+        # OUTSIDE the staging tree, so they are dangling here BY CONSTRUCTION.
+        # Their content IS the link target -- record that. os.walk lists a
+        # dangling link among fnames, so an unguarded os.stat() below raises
+        # FileNotFoundError and takes the whole manifest (and the backup's
+        # exit code) down with it -- caught 2026-09-13 by running the backup
+        # rather than reading it.
+        if os.path.islink(fpath):
+            try:
+                target = os.readlink(fpath)
+            except OSError as exc:
+                target = 'UNREADABLE: %s' % exc
+            files.append({
+                'path': relpath,
+                'symlink_to': target,
+                'size': 0,
+                'sha256': None,
+            })
+            continue
         stat = os.stat(fpath)
         with open(fpath, 'rb') as f:
             sha = hashlib.sha256(f.read()).hexdigest()

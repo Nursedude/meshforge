@@ -335,7 +335,8 @@ echo -e "${CYAN}Will restore:${NC}"
 # list. (Found 2026-09-11 by dry-running the restore right after adding the
 # legs -- the actions were wired and this preview was not.)
 [[ -d "$EXTRACT_DIR/home/reticulum" ]] && echo -e "  ${GREEN}+${NC} ~/.reticulum/ (the USER's RNS identity — a SECOND key)"
-[[ -d "$EXTRACT_DIR/etc/systemd/system" ]] && echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (units + drop-ins, then daemon-reload)"
+[[ -d "$EXTRACT_DIR/etc/systemd/system" ]] && echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (units + drop-ins + enablement links, then daemon-reload)"
+[[ -d "$EXTRACT_DIR/home/systemd-user" ]] && echo -e "  ${GREEN}+${NC} ~/.config/systemd/user/ (user units + enablement links)"
 [[ -d "$EXTRACT_DIR/var/lib/meshtasticd/.portduino" ]] && echo -e "  ${GREEN}+${NC} /var/lib/meshtasticd/.portduino/ (the Meshtastic NODE identity)"
 [[ -d "$EXTRACT_DIR/home/scripts" ]] && echo -e "  ${GREEN}+${NC} ~/*.sh (box-local scripts)"
 [[ -f "$EXTRACT_DIR/home/crontab.txt" ]] && echo -e "  ${GREEN}+${NC} crontab"
@@ -669,20 +670,67 @@ fi
 # without it the box silently runs the wrong one.
 if [[ -d "$EXTRACT_DIR/etc/systemd/system" ]]; then
     unit_n=0
+    link_n=0
     while IFS= read -r u; do
         [[ -n "$u" ]] || continue
         cp -a "$u" /etc/systemd/system/ 2>/dev/null && unit_n=$((unit_n + 1))
-    done < <(find "$EXTRACT_DIR/etc/systemd/system" -maxdepth 1 -type f -name '*.service' 2>/dev/null)
+    done < <(find "$EXTRACT_DIR/etc/systemd/system" -maxdepth 1 -type f \
+                  \( -name '*.service' -o -name '*.timer' -o -name '*.socket' \
+                     -o -name '*.path' -o -name '*.mount' -o -name '*.target' \) 2>/dev/null)
+    # Enablement links, masks and aliases. MUST widen in lockstep with
+    # fleet_backup.sh's capture loop: an archive that carries timers is
+    # worthless if this half still only looks for *.service. Units restored
+    # without their <target>.wants symlink are present, correct, and start on
+    # no boot; a depth-1 `-> /dev/null` dropped here silently UNMASKS a unit
+    # the operator deliberately masked.
+    while IFS= read -r l; do
+        [[ -n "$l" ]] || continue
+        rel="${l#$EXTRACT_DIR/etc/systemd/system/}"
+        mkdir -p "/etc/systemd/system/$(dirname "$rel")"
+        cp -a "$l" "/etc/systemd/system/$rel" 2>/dev/null && link_n=$((link_n + 1))
+    done < <(find "$EXTRACT_DIR/etc/systemd/system" -mindepth 1 -maxdepth 2 -type l 2>/dev/null)
     while IFS= read -r d; do
         [[ -n "$d" ]] || continue
         rel="${d#$EXTRACT_DIR/etc/systemd/system/}"
         mkdir -p "/etc/systemd/system/$(dirname "$rel")"
         cp -a "$d" "/etc/systemd/system/$rel" 2>/dev/null && unit_n=$((unit_n + 1))
     done < <(find "$EXTRACT_DIR/etc/systemd/system" -mindepth 2 -maxdepth 2 -name '*.conf' 2>/dev/null)
-    if [[ $unit_n -gt 0 ]]; then
+    if [[ $unit_n -gt 0 || $link_n -gt 0 ]]; then
         systemctl daemon-reload 2>/dev/null || true
-        echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (${unit_n} units + drop-ins, daemon-reloaded)"
+        echo -e "  ${GREEN}+${NC} /etc/systemd/system/ (${unit_n} units + drop-ins, ${link_n} enablement links, daemon-reloaded)"
         RESTORED=$((RESTORED + 1))
+    fi
+fi
+
+# --- USER-scope systemd units ---
+#
+# The system/user split is per-UNIT, not per-box (echo/nomadnet/lxmd/mini are
+# user units; map/gateway are system ones). `sudo systemctl` cannot see these,
+# so nothing else in this script would notice their absence.
+if [[ -d "$EXTRACT_DIR/home/systemd-user" ]]; then
+    user_units="${TARGET_HOME}/.config/systemd/user"
+    mkdir -p "$user_units"
+    if cp -a "$EXTRACT_DIR/home/systemd-user/." "$user_units/" 2>/dev/null; then
+        chown -R "${TARGET_USER}:${TARGET_USER}" "$user_units"
+        uu_n=$(find "$user_units" -maxdepth 1 -type f 2>/dev/null | wc -l)
+        uu_l=$(find "$user_units" -mindepth 2 -maxdepth 2 -type l 2>/dev/null | wc -l)
+        echo -e "  ${GREEN}+${NC} ~/.config/systemd/user/ (${uu_n} units, ${uu_l} enablement links)"
+        RESTORED=$((RESTORED + 1))
+        # A user manager exists only while that user has a session or lingering
+        # is on. Its ABSENCE is reported, never absorbed: the files are on disk
+        # either way, but nothing has read them yet and `is-enabled` would lie.
+        tgt_uid=$(id -u "$TARGET_USER" 2>/dev/null || true)
+        if [[ -n "$tgt_uid" ]] && sudo -u "$TARGET_USER" \
+                XDG_RUNTIME_DIR="/run/user/${tgt_uid}" \
+                systemctl --user daemon-reload 2>/dev/null; then
+            echo -e "      user manager daemon-reloaded"
+        else
+            echo -e "  ${YELLOW}!${NC} user manager not reachable -- these units are ON DISK but UNREAD."
+            echo -e "      As ${TARGET_USER}: systemctl --user daemon-reload"
+            echo -e "      If they must run headless: loginctl enable-linger ${TARGET_USER}"
+        fi
+    else
+        echo -e "  ${RED}x${NC} ~/.config/systemd/user/ present in archive but NOT restored"
     fi
 fi
 

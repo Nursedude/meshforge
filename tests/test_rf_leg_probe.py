@@ -82,6 +82,10 @@ def tick(tmp_path, tx_b, rx_b, *, up=True, silence=3, **kw):
     calibration policy itself is exercised explicitly in TestPeerCadence.
     """
     kw.setdefault("uncalibrated_ticks", silence)
+    # These tests are about the FAULT, the counters and the state. The
+    # observation-SPAN gate (MIN_GAP_SPAN_TICKS) would otherwise hold every
+    # short sequence uncalibrated; it is pinned explicitly below instead.
+    kw.setdefault("min_gap_span_ticks", 0)
     return rf.probe_rf_leg_silent(
         status=FakeStatus([text_iface()]),
         raw_stats=[raw(tx_b, rx_b, up=up)],
@@ -229,7 +233,8 @@ class TestPeerCadence:
                     silence=rf.MIN_SILENCE_TICKS) is not None
 
     def test_required_silence_arithmetic(self):
-        cal = dict(gap_count=rf.MIN_GAP_OBSERVATIONS)
+        cal = dict(gap_count=rf.MIN_GAP_OBSERVATIONS,
+                   gap_span_ticks=rf.MIN_GAP_SPAN_TICKS)
         assert rf.required_silence_ticks(0, min_silence_ticks=20, **cal) == 20
         assert rf.required_silence_ticks(5, min_silence_ticks=20, **cal) == 20
         assert rf.required_silence_ticks(15, min_silence_ticks=20, **cal) == 30
@@ -246,11 +251,14 @@ class TestPeerCadence:
         the sample happens to say.
         """
         for seen in range(rf.MIN_GAP_OBSERVATIONS):
-            assert rf.required_silence_ticks(16, gap_count=seen) == \
+            assert rf.required_silence_ticks(
+                16, gap_count=seen,
+                gap_span_ticks=rf.MIN_GAP_SPAN_TICKS) == \
                 rf.UNCALIBRATED_SILENCE_TICKS, \
                 f"trusted a cadence built from {seen} observation(s)"
         assert rf.required_silence_ticks(
-            16, gap_count=rf.MIN_GAP_OBSERVATIONS) == 32
+            16, gap_count=rf.MIN_GAP_OBSERVATIONS,
+            gap_span_ticks=rf.MIN_GAP_SPAN_TICKS) == 32
         assert rf.UNCALIBRATED_SILENCE_TICKS > 2 * 52, (
             "the uncalibrated floor must exceed twice the widest cadence the "
             "fleet actually learned (moc3: 52 ticks), or it cannot prevent "
@@ -309,27 +317,75 @@ class TestCalibrationIsBounded:
         ended, was recorded as a gap, and permanently taught the probe that
         multi-hour silence is normal here. A bounded window ages it out.
         """
-        self._peer_every(tmp_path, period=5, cycles=6, silence=6)
+        # The memory is a DURATION (GAP_MEMORY_TICKS), injected small here so
+        # the loop stays cheap: restoring the old unbounded learner still makes
+        # this fail in bounded time — a test whose cost scales with the thing
+        # it pins cannot be drilled.
+        mem = dict(silence=6, gap_memory_ticks=60)
+        self._peer_every(tmp_path, period=5, cycles=6, **mem)
         tx, rx = self._gaps(tmp_path)["last_tx"], self._gaps(tmp_path)["last_rx"]
 
         for i in range(1, 201):         # the outage: 200 ticks deaf, then heard
-            tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx, silence=6)
+            tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx, **mem)
         tx += 500 * 201
         rx += 100
-        tick(tmp_path, tx_b=tx, rx_b=rx, silence=6)
+        tick(tmp_path, tx_b=tx, rx_b=rx, **mem)
         assert self._gaps(tmp_path)["rx_gap_max"] >= 200, \
             "the outage should be recorded as an observation at all"
 
         # The peer returns to its 5-tick cadence. Once the outlier has aged out
-        # of the window the estimate must follow the peer, not the outage.
-        # The cycle count is FIXED, not GAP_WINDOW-derived, so that restoring
-        # the old unbounded learner makes this test fail in bounded time — a
-        # test whose cost scales with the thing it pins cannot be drilled.
-        assert rf.GAP_WINDOW <= 12, "widen this loop if the window grows"
-        self._peer_every(tmp_path, period=5, cycles=14, silence=6)
-        assert self._gaps(tmp_path)["rx_gap_max"] < 200, \
+        # the estimate must FOLLOW THE PEER — not merely stop being 200, which
+        # an empty window would also satisfy.
+        self._peer_every(tmp_path, period=5, cycles=14, **mem)
+        assert self._gaps(tmp_path)["rx_gap_max"] == 5, \
             "a single outage still dominates the cadence: probe desensitised"
-        assert len(self._gaps(tmp_path)["recent_gaps"]) <= rf.GAP_WINDOW
+        assert all(a < 60 for _, a in self._gaps(tmp_path)["recent_gaps"])
+
+    def test_a_chatty_peer_does_not_evict_its_own_long_silence(self, tmp_path):
+        """The 2026-09-13 defect, measured live on a fleet box before the fix.
+
+        A peer heard on consecutive ticks records a gap of 1. While the window
+        was bounded by RX EVENTS, ten such sightings — ten ticks, five minutes —
+        flushed a genuine long silence out of it; ``rx_gap_max`` collapsed to 1,
+        the threshold pinned at the floor, and the peer's NEXT normal lull read
+        as deafness. The live window that day was [3,4,1,1,1,3,4,2,8,8] on a leg
+        whose cadence reaches 52, giving a threshold of 20 against a normal
+        silence of 52.
+        """
+        kw = dict(silence=6, uncalibrated_ticks=1000, gap_memory_ticks=400,
+                  min_gap_span_ticks=0)
+        tx, rx = self._peer_every(tmp_path, period=40, cycles=2, **kw)
+        assert self._gaps(tmp_path)["rx_gap_max"] == 40, \
+            "the long silence was not recorded in the first place"
+
+        for i in range(1, 61):          # heard on EVERY tick, 60 of them
+            tick(tmp_path, tx_b=tx + 500 * i, rx_b=rx + 100 * i, **kw)
+
+        assert self._gaps(tmp_path)["rx_gap_max"] == 40, \
+            ("a burst of chatter evicted this peer's real cadence — its next "
+             "normal lull will read as deafness")
+
+    def test_a_burst_of_quick_sightings_does_not_calibrate(self, tmp_path):
+        """MIN_GAP_SPAN_TICKS: enough samples crowded into a few ticks is still
+        a guess. Five gaps of one tick seen inside five ticks satisfy
+        MIN_GAP_OBSERVATIONS while saying nothing about a leg whose real cadence
+        is long — without the span gate such a peer calibrates to the floor and
+        fires on its first normal lull."""
+        kw = dict(silence=6, uncalibrated_ticks=999, gap_memory_ticks=400,
+                  min_gap_span_ticks=50)
+        tx, rx = 0, 0
+        for _ in range(8):              # heard every tick: 7 recorded gaps of 1
+            tx += 500
+            rx += 100
+            tick(tmp_path, tx_b=tx, rx_b=rx, **kw)
+        st = self._gaps(tmp_path)
+        assert len(st["recent_gaps"]) >= rf.MIN_GAP_OBSERVATIONS, \
+            "not enough samples to make the point"
+        assert rf.required_silence_ticks(
+            st["rx_gap_max"], gap_count=len(st["recent_gaps"]),
+            gap_span_ticks=max(a for _, a in st["recent_gaps"]),
+            min_gap_span_ticks=50, uncalibrated_ticks=999) == 999, \
+            "trusted a cadence built from one burst of chatter"
 
     def test_upgrading_a_box_does_not_trust_the_old_single_estimate(self, tmp_path):
         """Old state carries ``rx_gap_max`` and no window. Seeding it as ONE
@@ -344,7 +400,8 @@ class TestCalibrationIsBounded:
                         silence=rf.MIN_SILENCE_TICKS,
                         uncalibrated_ticks=rf.UNCALIBRATED_SILENCE_TICKS) is None, \
                 f"fired at {i} flat ticks on an inherited one-sample estimate"
-        assert self._gaps(tmp_path)["recent_gaps"] == [16]
+        gaps = self._gaps(tmp_path)["recent_gaps"]
+        assert [g for g, _ in gaps] == [16], gaps
 
 
 class TestRestartsAreNotDeafness:

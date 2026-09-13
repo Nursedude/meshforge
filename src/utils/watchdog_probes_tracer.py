@@ -11,9 +11,10 @@ never exceeds degraded (the 2026-07-01 moc2-offline lesson).
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from utils import fleet_posture as fp
 from utils.watchdog_probe_core import Signal, note_disposition
@@ -155,11 +156,19 @@ def probe_tracer_peer_unreachable(
     # reason rides along so a broken declaration is found rather than absorbed.
     posture_err = ""
     if posture is None:
+        posture_home, home_err = _posture_home()
         try:
-            posture = fp.read_posture()
+            posture = fp.read_posture(home=posture_home)
         except Exception as exc:            # defensive: read_posture says it never raises
             posture_err = f"{type(exc).__name__}: {exc}"
             posture = fp.Posture(status=fp.UNDECLARED, path="")
+        if home_err and posture.status == fp.UNDECLARED:
+            # UNDECLARED is normally a POSITIVE observation ("the operator has
+            # declared nothing; watch every peer"). It is NOT one when we could
+            # not work out whose home to read: we may have looked at a path the
+            # sync never writes, and the two are indistinguishable from here.
+            # Carry the reason rather than let a guess read as an observation.
+            posture_err = home_err
     elif posture.status in (fp.UNREADABLE, fp.INVALID):
         posture_err = posture.detail
 
@@ -287,6 +296,41 @@ def probe_tracer_peer_unreachable(
             "tracer_peer_unreachable", "clean",
             reason=(f"posture unusable ({posture_err})" if posture_err else None))
     return signals
+
+
+def _posture_home() -> Tuple[Optional[str], str]:
+    """``(home, why-unresolved)`` for the operator's fleet-posture document.
+
+    The watchdog runs as ``User=root`` (meshforge-watchdog.service), where
+    ``fleet_posture.posture_path()`` falls through to ``get_real_user_home()``
+    and resolves ``/root/.config/meshforge/fleet_posture.json`` — a path
+    ``fleet_posture_sync.sh`` never writes. The posture therefore read
+    UNDECLARED forever and silenced nothing, which is the whole point of the
+    document: the reader was configured and the writer landed somewhere else
+    (honest_failure_modes #4). ``posture_path``'s own docstring names this
+    exact case, and ``_default_tracer_dir`` below already applies the same
+    root-daemon→operator-uid resolution to the tracer state dir.
+
+    Never raises. ``home`` None means "let ``posture_path`` decide"; a
+    non-empty second element says why that fallback may be reading the wrong
+    file, so the caller can refuse to treat the result as an observation.
+    """
+    if os.environ.get(fp.POSTURE_ENV):
+        # The env override wins inside posture_path(). Do not fight it, and do
+        # not claim a blind spot that does not exist (tests, drills).
+        return None, ""
+    if os.geteuid() != 0:
+        return None, ""         # get_real_user_home() is already correct here
+    try:
+        from utils.tracer_fires import _operator_home  # noqa: WPS433
+    except ImportError:
+        return None, ("running as root and the operator-home resolver is "
+                      "unavailable — posture may have been read from /root")
+    home = _operator_home()
+    if home is None:
+        return None, ("running as root and no operator home resolved — "
+                      "posture may have been read from /root")
+    return str(home), ""
 
 
 def _default_tracer_dir() -> Optional[Path]:
