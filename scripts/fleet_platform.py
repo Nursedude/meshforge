@@ -35,8 +35,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parent / "src"))
 
 from utils.fleet_platform import (  # noqa: E402
-    DRIFT, INERT, OK, UNKNOWN, Declaration, declared_path, judge_box,
-    load_catalog, load_declarations, summarize,
+    DRIFT, INERT, OK, UNKNOWN, Declaration, canonical_box, declared_path,
+    judge_box, load_catalog, load_declarations, same_box, summarize,
 )
 from utils.paths import get_real_user_home  # noqa: E402
 
@@ -93,13 +93,32 @@ def _parse(out: str) -> Dict:
             "pending": pending, "holds": holds}
 
 
+def resolve_hosts(hosts: List[str], local: str) -> List[str]:
+    """The pane's host list, with THIS box present exactly once.
+
+    `local` is the kernel hostname while fleet_hosts carries the fleet alias,
+    so the `local not in hosts` test this replaced missed a self entry that was
+    already there and appended a duplicate under the other spelling — the same
+    double-count honest_status.sh records for the fleet-host lists that DO
+    include self. Kept as a function so it can be drilled without running the
+    whole pane.
+    """
+    if not any(same_box(h, local) for h in hosts):
+        return list(hosts) + [local]
+    return list(hosts)
+
+
 def observe(hosts: List[str], local_name: str) -> Dict[str, Dict]:
     """host -> observation. A host we could not reach yields base=None, which
     the judge turns into UNKNOWN — never into a healthy default."""
     out: Dict[str, Dict] = {}
 
     def one(h: str):
-        if h == local_name:
+        # same_box, not ==: fleet_hosts addresses this box by its ALIAS while
+        # local_name is the kernel hostname, so an exact compare would ssh to
+        # ourselves for the local row (and, before the dedupe in main(), list
+        # the box twice — once per spelling).
+        if same_box(h, local_name):
             p = subprocess.run(["bash", "-c", PROBE], capture_output=True,
                                text=True, timeout=SSH_TIMEOUT)
             return h, _parse(p.stdout)
@@ -140,9 +159,8 @@ def cmd_show(args) -> int:
     decls, status = load_declarations(args.declared)
 
     local = os.uname().nodename
-    hosts = [local] if args.local else (fleet_hosts() or [local])
-    if local not in hosts:
-        hosts = hosts + [local]
+    hosts = resolve_hosts([local] if args.local else (fleet_hosts() or [local]),
+                          local)
 
     obs = observe(hosts, local)
     verdicts = [judge_box(h, obs[h].get("base"), catalog, decls,
@@ -294,7 +312,14 @@ def cmd_declare(args) -> int:
               "replace a file I do not understand")
         return 1
 
-    doc["boxes"][args.box] = {
+    # Store the comparable form. `declare` is typed by a human who may write
+    # the alias, the kernel hostname or an FQDN, and judge_box matches across
+    # those (same_box) — but two spellings of ONE box landing as two keys would
+    # read as an ambiguous declaration and take the box to UNKNOWN.
+    box_key = canonical_box(args.box)
+    if box_key != args.box:
+        print(f"NOTE: recording {args.box!r} as {box_key!r} (comparable form)")
+    doc["boxes"][box_key] = {
         "base": args.base,
         "reason": args.reason,
         "reviewed": args.reviewed or time.strftime("%Y-%m-%d"),
@@ -306,7 +331,7 @@ def cmd_declare(args) -> int:
         print(f"  backup: {bak.name}")
     from mini_dudeai._util import atomic_write_json
     atomic_write_json(str(p), doc)
-    print(f"declared {args.box} -> {args.base}: {args.reason}")
+    print(f"declared {box_key} -> {args.base}: {args.reason}")
     print(f"  {args.box} will now read INERT (deliberate), not DRIFT."
           if base.tier == "supported" else
           f"  {args.box} still reads DRIFT — {args.base} is deprecated.")
@@ -323,15 +348,30 @@ def cmd_clear(args) -> int:
     except (OSError, ValueError) as e:
         print(f"FAIL: declarations unreadable ({e}) — changing nothing")
         return 1
-    if args.box not in (doc.get("boxes") or {}):
+    boxes = doc.get("boxes") or {}
+    # Symmetry with `declare`, which stores the comparable form: a human who
+    # clears using a different spelling of the same box must not be told there
+    # is nothing there and walk away believing the decision is gone. Exact
+    # first, then the prefix-aware match; an ambiguous one REFUSES rather than
+    # deleting a declaration the operator did not name.
+    key = canonical_box(args.box)
+    if key not in boxes:
+        cands = sorted(k for k in boxes if same_box(args.box, k))
+        if len(cands) > 1:
+            print(f"REFUSED: {len(cands)} declarations could be {args.box!r} "
+                  f"({', '.join(cands)}) — name the one you mean; clearing a "
+                  f"guess would silently un-declare a decided box.")
+            return 1
+        key = cands[0] if cands else None
+    if key is None:
         print(f"nothing to clear — {args.box} carries no declaration")
         return 0
-    doc["boxes"].pop(args.box)
+    doc["boxes"].pop(key)
     bak = p.with_suffix(p.suffix + f".bak-{int(time.time())}")
     bak.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
     from mini_dudeai._util import atomic_write_json
     atomic_write_json(str(p), doc)
-    print(f"cleared {args.box} (backup {bak.name}) — it will read DRIFT again "
+    print(f"cleared {key} (backup {bak.name}) — it will read DRIFT again "
           f"if it still deviates. That is the point: the decision is gone.")
     return 0
 

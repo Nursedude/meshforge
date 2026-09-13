@@ -12,6 +12,7 @@ Collapsing any pair produces either a surface people learn to ignore, or one
 that reports a decided box as broken.
 """
 
+import importlib.util
 import json
 import sys
 import time
@@ -23,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from utils.fleet_platform import (  # noqa: E402
     DRIFT, INERT, OK, UNKNOWN, Catalog, Declaration, DistroBase,
-    judge_box, load_catalog, load_declarations, summarize,
+    canonical_box, judge_box, load_catalog, load_declarations, match_declaration,
+    same_box, summarize,
 )
 
 CATALOG_YAML = """
@@ -177,6 +179,161 @@ class TestStaleness:
 
     def test_old_review_goes_stale(self):
         assert Declaration("b", "bookworm", "r", "2020-01-01").stale() is True
+
+
+class TestBoxIdentity:
+    """A box NAMES itself one way and the fleet ADDRESSES it another.
+
+    `uname -n` answers `<prefix>-<alias>` on the fleet boxes while fleet_hosts,
+    the registry and every `declare` call use the bare alias; one box's own
+    uname differs from its registry key by CASE alone. Comparing the two
+    namespaces with `==` judged remote rows under one and the local row under
+    the other, so a box deliberately declared on an older base read INERT in
+    the fleet pane and DRIFT on its own TUI screen.
+
+    Names here are deliberately GENERIC: this pins the naming RULE, not this
+    fleet, and real box names in a portability test are an MF014 violation.
+    """
+
+    def test_prefixed_hostname_is_the_same_box_as_its_alias(self):
+        assert same_box("appname-boxa", "boxa")
+        assert same_box("boxa", "appname-boxa")
+
+    def test_case_and_domain_do_not_make_a_different_box(self):
+        assert same_box("BoxA", "boxa")
+        assert same_box("boxa.example.internal", "boxa")
+        assert canonical_box("BOXA.example.internal") == "boxa"
+
+    def test_the_dash_boundary_is_required(self):
+        """A bare endswith would match `boxa` against anything ending in those
+        letters and silently attach one box's declaration to another."""
+        assert not same_box("notboxa", "boxa")
+        assert not same_box("boxa1", "boxa")
+        assert not same_box("superboxa", "boxa")
+
+    def test_empty_names_never_match(self):
+        assert not same_box("", "boxa")
+        assert not same_box("boxa", "")
+
+    def test_a_declaration_under_the_alias_reaches_the_prefixed_box(self):
+        """THE finding. `declare boxa bookworm` is typed with the alias; the
+        box answers as the prefixed hostname and read DRIFT anyway."""
+        decls = {"boxa": Declaration("boxa", "bookworm", "standalone canary",
+                                     time.strftime("%Y-%m-%d"))}
+        v = judge_box("appname-boxa", "bookworm", _cat(), decls)
+        assert v.verdict == INERT, v.detail
+        assert "standalone canary" in v.detail
+
+    def test_the_matched_key_is_named_when_it_differs(self):
+        """The reader sees a pane saying `appname-boxa` and a file saying
+        `boxa`; an unexplained match is as confusing as a missed one."""
+        decls = {"boxa": Declaration("boxa", "bookworm", "canary",
+                                     time.strftime("%Y-%m-%d"))}
+        assert "declared as 'boxa'" in judge_box(
+            "appname-boxa", "bookworm", _cat(), decls).detail
+        # ...and NOT named when it is the same name, which would be noise.
+        assert "declared as" not in judge_box(
+            "boxa", "bookworm", _cat(), decls).detail
+
+    def test_an_exact_key_wins_over_a_prefix_match(self):
+        """Determinism first: a key that IS this box's name is never in doubt,
+        so a looser candidate must not make it ambiguous."""
+        decls = {
+            "boxa": Declaration("boxa", "bookworm", "the alias one",
+                                time.strftime("%Y-%m-%d")),
+            "appname-boxa": Declaration("appname-boxa", "bookworm",
+                                        "the prefixed one",
+                                        time.strftime("%Y-%m-%d")),
+        }
+        v = judge_box("appname-boxa", "bookworm", _cat(), decls)
+        assert v.verdict == INERT
+        assert "the prefixed one" in v.detail
+
+    def test_two_declarations_that_could_both_be_this_box_are_unknown(self):
+        """Never silently resolved: that is a finding about the file, and
+        picking one would make a real ambiguity look like a settled decision.
+
+        Two apps' prefixes over one alias, with nothing naming the box
+        exactly — there is no honest way to choose.
+        """
+        decls = {
+            "appname-boxa": Declaration("appname-boxa", "bookworm", "a",
+                                        "2026-09-11"),
+            "otherapp-boxa": Declaration("otherapp-boxa", "bookworm", "b",
+                                         "2026-09-11"),
+        }
+        v = judge_box("boxa", "bookworm", _cat(), decls)
+        assert v.verdict == UNKNOWN, v.detail
+        assert "cannot tell which" in v.detail
+
+    def test_match_declaration_reports_the_key_it_used(self):
+        decls = {"boxa": Declaration("boxa", "bookworm", "x", "2026-09-11")}
+        key, decl, amb = match_declaration("appname-boxa", decls)
+        assert (key, amb) == ("boxa", [])
+        assert decl.reason == "x"
+        assert match_declaration("boxz", decls) == (None, None, [])
+
+
+class TestTheScriptRoutesTheLocalRow:
+    """The other half of the namespace split: the fleet PANE.
+
+    Remote rows are addressed by fleet alias and the local row by kernel
+    hostname. Comparing them with `==` meant a hosts file that already named
+    this box (under the alias) got a SECOND row appended under the other
+    spelling, and `observe` then sent the alias row over ssh — to ourselves.
+    """
+
+    CLI = Path(__file__).resolve().parents[1] / "scripts" / "fleet_platform.py"
+
+    def _mod(self):
+        spec = importlib.util.spec_from_file_location(
+            "fleet_platform_cli", str(self.CLI))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod
+
+    def _stub_probes(self, mod, monkeypatch, ssh_calls):
+        def _fake_ssh(host, probe):
+            ssh_calls.append(host)
+            return 0, ""
+        monkeypatch.setattr(mod, "_ssh", _fake_ssh)
+        monkeypatch.setattr(mod, "_parse", lambda text: {
+            "base": "trixie", "python": None, "pending": None,
+            "holds": [], "why": ""})
+
+        class _Done:
+            stdout = ""
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _Done())
+
+    def test_a_hosts_list_already_naming_this_box_gains_no_duplicate(self):
+        mod = self._mod()
+        hosts = ["boxc", "boxa", "boxd"]
+        assert "BoxA" not in hosts            # why an `in` test was not enough
+        assert mod.resolve_hosts(hosts, "BoxA") == hosts
+        assert mod.resolve_hosts(["appname-boxa"], "boxa") == ["appname-boxa"]
+
+    def test_a_hosts_list_without_this_box_still_gains_it(self):
+        mod = self._mod()
+        assert mod.resolve_hosts(["boxc", "boxd"], "BoxA") == [
+            "boxc", "boxd", "BoxA"]
+
+    def test_the_alias_row_for_this_box_is_observed_locally_not_over_ssh(
+            self, monkeypatch):
+        mod = self._mod()
+        ssh_calls = []
+        self._stub_probes(mod, monkeypatch, ssh_calls)
+        out = mod.observe(["boxa"], "appname-boxa")
+        assert ssh_calls == [], f"ssh'd to this very box: {ssh_calls}"
+        assert list(out) == ["boxa"]
+        assert out["boxa"]["base"] == "trixie"
+
+    def test_a_genuinely_remote_host_still_goes_over_ssh(self, monkeypatch):
+        """The mirror: loosening the compare must not swallow real peers."""
+        mod = self._mod()
+        ssh_calls = []
+        self._stub_probes(mod, monkeypatch, ssh_calls)
+        mod.observe(["boxc"], "appname-boxa")
+        assert ssh_calls == ["boxc"]
 
 
 class TestJudge:

@@ -292,6 +292,66 @@ class BoxVerdict:
     stale_declaration: bool = False
 
 
+def canonical_box(name: str) -> str:
+    """A box name reduced to its comparable form: first DNS label, lowercased.
+
+    Deliberately does NOT strip a fleet prefix. From a name alone we cannot
+    know whether ``appname-boxa`` is prefix+alias or a box genuinely called
+    that, so the prefix is handled by MATCHING (``same_box``) rather than by
+    rewriting — rewriting would have to guess, and a wrong guess here silently
+    attaches one box's declaration to another.
+    """
+    return name.split(".")[0].strip().lower()
+
+
+def same_box(a: str, b: str) -> bool:
+    """Do two names denote the same box across the self-name/fleet-name split?
+
+    A box NAMES itself one way and the fleet ADDRESSES it another: ``uname``
+    says ``appname-boxa`` while ``fleet_hosts``, the registry and therefore
+    every ``declare`` call use the alias ``moc3``; one box's own uname differs
+    from its registry key only by CASE. Until 2026-09-13 this pane compared the
+    two namespaces with ``==``, so remote rows were judged under the alias and
+    the local row under the kernel hostname, and a box deliberately declared on
+    an older base read INERT in one pane and DRIFT in the other — the "surface
+    that nags about a settled decision" this machinery exists to prevent.
+
+    The ``-`` boundary is required: a bare ``endswith`` would match ``moc``
+    against any name merely ENDING in those letters. Same rule, for the same
+    reason, as ``fleet_power.check_not_self``.
+    """
+    x, y = canonical_box(a), canonical_box(b)
+    if not x or not y:
+        return False
+    return x == y or x.endswith("-" + y) or y.endswith("-" + x)
+
+
+def match_declaration(box: str, declarations: Dict[str, "Declaration"]
+                      ) -> Tuple[Optional[str], Optional["Declaration"], List[str]]:
+    """``(key, declaration, ambiguous_keys)`` for ``box``, across that split.
+
+    An exact (case-folded) key wins outright; otherwise a single prefix-aware
+    match is used. Two keys that could BOTH be this box are returned as
+    ``ambiguous`` and never silently resolved — that is a finding about the
+    declarations file, not a coin toss, and picking one would make a real
+    ambiguity look like a settled decision.
+    """
+    b = canonical_box(box)
+    if not b:
+        return None, None, []
+    exact = [k for k in declarations if canonical_box(k) == b]
+    if len(exact) > 1:
+        return None, None, sorted(exact)
+    if len(exact) == 1:
+        return exact[0], declarations[exact[0]], []
+    loose = [k for k in declarations if same_box(box, k)]
+    if len(loose) > 1:
+        return None, None, sorted(loose)
+    if len(loose) == 1:
+        return loose[0], declarations[loose[0]], []
+    return None, None, []
+
+
 def judge_box(box: str, actual_base: Optional[str], catalog: Catalog,
               declarations: Dict[str, Declaration], *,
               actual_python: Optional[str] = None,
@@ -333,7 +393,12 @@ def judge_box(box: str, actual_base: Optional[str], catalog: Catalog,
                           f"declarations file is {decl_status} — cannot tell "
                           f"deliberate from drift")
 
-    decl = declarations.get(box)
+    decl_key, decl, ambiguous = match_declaration(box, declarations)
+    if ambiguous:
+        # Refusing to guess beats attaching the wrong decision to a box.
+        return v(UNKNOWN, f"{len(ambiguous)} declarations could be this box "
+                          f"({', '.join(ambiguous)}) — cannot tell which is "
+                          f"meant; give them distinct names")
     if decl is None:
         return v(DRIFT, f"on {actual_base} (tier={base.tier}) with no declaration"
                         + (" — this base is deprecated" if base.tier == TIER_DEPRECATED
@@ -350,7 +415,11 @@ def judge_box(box: str, actual_base: Optional[str], catalog: Catalog,
                         f"DEPRECATED — a declaration cannot un-deprecate a base; "
                         f"this is retirement work, not a settled decision",
                  stale=decl.stale(now))
-    return v(INERT, f"deliberate: {decl.reason}", stale=decl.stale(now))
+    # Name the matched key when it is not the box's own name: the reader is
+    # looking at a pane that says 'appname-boxa' and a file that says 'boxa',
+    # and an unexplained match is as confusing as a missed one.
+    via = "" if decl_key == box else f" [declared as {decl_key!r}]"
+    return v(INERT, f"deliberate: {decl.reason}{via}", stale=decl.stale(now))
 
 
 def summarize(verdicts: List[BoxVerdict]) -> Dict[str, int]:
