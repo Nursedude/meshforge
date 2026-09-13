@@ -203,7 +203,19 @@ Before `git push origin main`, mentally run:
 3. **New runtime dep?** — If `import X` got added, is `X` in `requirements.txt`? CI installs the minimal-deps profile and will surface the gap (see Issue #29 / `project_ci_red_2026_05_03_cascade`).
 4. **New service unit or DB?** — If you added a new systemd unit, does `templates/systemd/` carry it? If you added a new SQLite DB, does `utils.db_inventory` have the `DBSpec` (MF013)?
 
-If any line says "no", fix before pushing — every fleet box pulls within seconds and runs the change.
+If any line says "no", fix before pushing — a bad commit reaches all nine
+boxes at once on the next deploy.
+
+**A push is NOT a deploy** (measured 2026-09-13; this line used to claim
+boxes "pull within seconds" and no such mechanism exists). Nothing
+auto-pulls: the only fleet cron is `fleet_sync.sh --memory-only` every 6h,
+which exits before any code deploy, and `.githooks/post-commit` fixes only
+the committing box — its own comment says it "cannot and must not reach
+across the fleet". The fleet moves when someone runs `scripts/fleet_sync.sh`
+THEN `scripts/fleet_pull.sh`, in that order: the reverse makes sync read
+every remote unit as "unchanged" and skip every restart while exiting 0.
+So `honest_status.sh`'s `fleet SHA drift` leg stays FAIL after a clean push
+until that deploy runs. That is the deploy still being owed, not a regression.
 
 **Hooks must be ON** (found OFF 2026-06-15 — `core.hooksPath` pointed at the
 empty `.git/hooks`, so the #29 spine was dormant): confirm
