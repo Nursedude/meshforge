@@ -79,6 +79,31 @@ def _ssh(host: str, command: str) -> Tuple[int, str]:
         return 255, str(e)
 
 
+def _local(command: str) -> Tuple[int, str]:
+    """Run the probe on THIS box, degrading EXACTLY as ``_ssh`` does.
+
+    The local branch used to call subprocess.run bare, so a TimeoutExpired (an
+    apt lock is enough — the probe shells out to `apt-get -s upgrade`) or an
+    OSError propagated out of ThreadPoolExecutor.map and destroyed the WHOLE
+    pane: every remote row already collected thrown away because one expensive
+    optional field on one box stalled. That inverts this module's own rule,
+    stated above PROBE — an expensive OPTIONAL field must never destroy the
+    cheap ESSENTIAL one. It also yielded no reason, so the row would have
+    printed "no reason recorded" even had it survived.
+
+    Same contract as _ssh for the same command, so ``one()`` stops
+    special-casing the local host and both paths share one degraded shape.
+    """
+    try:
+        p = subprocess.run(["bash", "-c", command], capture_output=True,
+                           text=True, timeout=SSH_TIMEOUT)
+        return p.returncode, (p.stdout or "").strip()
+    except subprocess.TimeoutExpired:
+        return 124, ""
+    except OSError as e:
+        return 255, str(e)
+
+
 def _parse(out: str) -> Dict:
     parts = (out or "").split("|")
     while len(parts) < 4:
@@ -118,15 +143,13 @@ def observe(hosts: List[str], local_name: str) -> Dict[str, Dict]:
         # local_name is the kernel hostname, so an exact compare would ssh to
         # ourselves for the local row (and, before the dedupe in main(), list
         # the box twice — once per spelling).
-        if same_box(h, local_name):
-            p = subprocess.run(["bash", "-c", PROBE], capture_output=True,
-                               text=True, timeout=SSH_TIMEOUT)
-            return h, _parse(p.stdout)
-        rc, o = _ssh(h, PROBE)
+        here = same_box(h, local_name)
+        rc, o = _local(PROBE) if here else _ssh(h, PROBE)
         if rc != 0:
-            why = ("probe timed out after "
-                   f"{SSH_TIMEOUT}s — OUR limit, not necessarily the box"
-                   ) if rc == 124 else f"ssh rc={rc}"
+            where = "locally" if here else "over ssh"
+            why = (f"probe timed out after {SSH_TIMEOUT}s {where} — OUR limit, "
+                   "not necessarily the box") if rc == 124 else (
+                       f"probe {where} rc={rc}" + (f": {o}" if o else ""))
             return h, {"base": None, "python": None, "pending": None,
                        "holds": [], "why": why}
         return h, _parse(o)

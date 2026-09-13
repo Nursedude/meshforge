@@ -780,7 +780,11 @@ btotal=$(echo $BOXES | wc -w)
 if [ -n "${HONEST_WD_DECL:-}" ]; then
   WD_DECL="$HONEST_WD_DECL"
 else
-  WD_DECL=$(mktemp 2>/dev/null || echo /tmp/hs_wd_decl.$$)
+  # Inside HS_TMP so the EXIT/INT/TERM traps above already remove it. A bare
+  # mktemp here leaked one file per run, and this gate runs from cron; a fixed
+  # /tmp name would be worse still — shared fixed tmp names are the 07-28 route
+  # into a false NOT-GREEN this file's own header warns about.
+  WD_DECL="$HS_TMP/wd_declared.tsv"
   timeout 60 python3 "$REPO/scripts/role_declared_services.py" \
     --service meshforge-watchdog $BOXES >"$WD_DECL" 2>/dev/null || : >"$WD_DECL"
 fi

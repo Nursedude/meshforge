@@ -47,6 +47,7 @@ from __future__ import annotations
 import ast
 import glob
 import os
+import re
 from pathlib import Path
 
 import pytest
@@ -1994,6 +1995,59 @@ def test_installer_writers_work_on_the_REAL_path(tmp_path):
     assert cfg[:2] == ["first=1", "second=2"], f"append order wrong: {cfg!r}"
     assert cfg[2] == 'LABEL="x" $novar `nocmd`', \
         f"appended line must land LITERALLY, got {cfg[2]!r}"
+
+
+class TestGateScratchIsTrapped:
+    """honest_status.sh must leave no scratch behind.
+
+    2026-09-13: `WD_DECL=$(mktemp ...)` sat outside HS_TMP and outside both
+    traps, so every cron run of the gate leaked one file. The narrower trap is
+    not just tidiness — this file's own header records that FIXED tmp names
+    were the 07-28 route into a false NOT-GREEN, so the rule is "inside the
+    per-run HS_TMP", never "a different name in shared /tmp".
+    """
+
+    @staticmethod
+    def _bare_mktemps(text):
+        """Lines calling mktemp whose scratch nothing is shown to remove.
+
+        Two acceptable shapes: rooted in the per-run HS_TMP (the traps take it),
+        or a variable this script explicitly `rm`s — the remote-command block
+        does the latter, on a box where HS_TMP does not exist, and that is
+        correct rather than a leak.
+        """
+        lines = text.splitlines()
+        out = []
+        for i, ln in enumerate(lines, 1):
+            s = ln.strip()
+            if "mktemp" not in s or s.startswith("#"):
+                continue
+            if s.startswith("HS_TMP="):
+                continue            # the one per-run root, removed by the trap
+            m = re.match(r"\\?([A-Za-z_][A-Za-z0-9_]*)=", s)
+            var = m.group(1) if m else None
+            if var and any(("rm -f" in o or "rm -rf" in o) and var in o
+                           for o in lines):
+                continue            # explicitly removed somewhere in the script
+            out.append((i, s))
+        return out
+
+    def test_green_the_gate_allocates_scratch_only_under_hs_tmp(self):
+        hs = (REPO / "scripts" / "honest_status.sh").read_text(encoding="utf-8")
+        assert "trap 'rm -rf \"$HS_TMP\"' EXIT" in hs, \
+            "the EXIT trap this invariant relies on moved or was renamed"
+        offenders = self._bare_mktemps(hs)
+        assert not offenders, (
+            "scratch allocated outside HS_TMP (leaks once per run; the gate "
+            "runs from cron): " + "; ".join(f"line {n}: {s}" for n, s in offenders))
+
+    def test_red_a_seeded_bare_mktemp_is_caught(self):
+        """A checker that has never fired is not evidence that it works."""
+        seeded = ('HS_TMP="$(mktemp -d -t honest_status.XXXXXX)"\n'
+                  'trap \'rm -rf "$HS_TMP"\' EXIT\n'
+                  'WD_DECL=$(mktemp 2>/dev/null || echo /tmp/hs_wd.$$)\n')
+        offenders = self._bare_mktemps(seeded)
+        assert len(offenders) == 1 and "WD_DECL" in offenders[0][1]
 
 
 class TestCIMinPythonMatchesPyproject:

@@ -303,6 +303,7 @@ class TestTheScriptRoutesTheLocalRow:
 
         class _Done:
             stdout = ""
+            returncode = 0
         monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _Done())
 
     def test_a_hosts_list_already_naming_this_box_gains_no_duplicate(self):
@@ -334,6 +335,67 @@ class TestTheScriptRoutesTheLocalRow:
         self._stub_probes(mod, monkeypatch, ssh_calls)
         mod.observe(["boxc"], "appname-boxa")
         assert ssh_calls == ["boxc"]
+
+    def test_a_stalled_local_probe_degrades_its_row_not_the_whole_pane(
+            self, monkeypatch):
+        """An expensive OPTIONAL field must never destroy the cheap ESSENTIAL
+        one — this module's own rule, stated above PROBE.
+
+        The local branch called subprocess.run bare, so a TimeoutExpired (the
+        probe shells out to `apt-get -s upgrade`; an apt lock is enough) raised
+        straight out of ThreadPoolExecutor.map and threw away every remote row
+        already collected. The ssh branch had always degraded to base=None plus
+        a reason.
+        """
+        mod = self._mod()
+        ssh_calls = []
+        self._stub_probes(mod, monkeypatch, ssh_calls)
+
+        def _stall(*a, **k):
+            raise mod.subprocess.TimeoutExpired(cmd="bash",
+                                                timeout=mod.SSH_TIMEOUT)
+        monkeypatch.setattr(mod.subprocess, "run", _stall)
+
+        out = mod.observe(["boxa", "boxc"], "boxa")
+        assert out["boxc"]["base"] == "trixie", \
+            "one stalled local probe took the whole pane down with it"
+        assert out["boxa"]["base"] is None
+        assert "timed out" in out["boxa"]["why"]
+        assert "locally" in out["boxa"]["why"], \
+            "the reason must say WHERE — a local stall is not an ssh problem"
+
+    def test_a_local_probe_that_cannot_run_at_all_says_why(self, monkeypatch):
+        """An UNKNOWN that cannot say WHY costs its reader a debugging session
+        to tell 'box is down' from 'our probe broke' — judge_box says as much."""
+        mod = self._mod()
+        ssh_calls = []
+        self._stub_probes(mod, monkeypatch, ssh_calls)
+
+        def _boom(*a, **k):
+            raise OSError("Exec format error")
+        monkeypatch.setattr(mod.subprocess, "run", _boom)
+
+        out = mod.observe(["boxa"], "boxa")
+        assert out["boxa"]["base"] is None
+        assert "Exec format error" in out["boxa"]["why"]
+
+    def test_a_local_probe_exiting_nonzero_is_not_parsed_as_an_observation(
+            self, monkeypatch):
+        """The local branch ignored the return code entirely and parsed
+        whatever came out, so a failed probe became an empty-but-'observed'
+        row with no reason attached."""
+        mod = self._mod()
+        ssh_calls = []
+        self._stub_probes(mod, monkeypatch, ssh_calls)
+
+        class _Failed:
+            stdout = ""
+            returncode = 3
+        monkeypatch.setattr(mod.subprocess, "run", lambda *a, **k: _Failed())
+
+        out = mod.observe(["boxa"], "boxa")
+        assert out["boxa"]["base"] is None
+        assert "rc=3" in out["boxa"]["why"]
 
 
 class TestJudge:
