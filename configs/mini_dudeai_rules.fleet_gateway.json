@@ -589,10 +589,17 @@
         "subject_glob": "*"
       },
       "action": {
-        "kind": "propose_escalation"
+        "kind": "ntfy",
+        "title": "[AMBER] cron unhealthy",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "alarm_clock",
+          "cron"
+        ]
       },
       "cooldown_s": 21600,
-      "annotation": "Issue #78 — a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+      "annotation": "Issue #78 — a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. PAGES since 2026-09-14 (operator decision): was propose_escalation, which reached a session and /fleet but nobody at 2am — and a watchdog-less box like lehua failed an hourly cron 26 consecutive times with nothing saying so. priority=default, NOT urgent: this is degraded, not an outage. cooldown_s 21600 caps it at one page per 6h per subject, so a stuck cron says its piece once and then shuts up. subject_glob * means this fires for PEER crons too (subject=<alias>), which is the point — the peer leg exists to give a watchdog-less box a voice."
     },
     {
       "id": "fleet_box_unreachable_any",
