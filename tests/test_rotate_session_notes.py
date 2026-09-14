@@ -563,3 +563,120 @@ class TestGateReporting:
         line = [ln for ln in r.stdout.splitlines() if ln.strip().startswith("cp ")][0]
         src = line.split()[1]
         assert Path(src).read_bytes() == original
+
+
+class TestBodyMarkersAreDisclosedNotObeyed:
+    """STICKY_RE reads HEADINGS only — a section can carry live work in its
+    BODY under a plain heading and rotate silently. Hit live 2026-09-13: the
+    09-13 ~02:50 section carried two `⚠️ OPEN` items in its body and was
+    rotated only because a human read it first.
+
+    The cure is DISCLOSURE, not stickiness. A body scan cannot distinguish
+    live OPEN from an OPEN a later section already closed, and stickiness is
+    monotonic: measured on the fleet's own notes that day, 5 of the 14
+    sections legitimately rotated would have become permanently unrotatable,
+    in a file whose 80KB gate has no cure but rotation. So the plan FLAGS
+    them and still moves them.
+    """
+
+    @pytest.fixture
+    def mixed(self, tmp_path: Path) -> Path:
+        """Three shapes that must stay distinguishable:
+        a plain heading over a live body, a plain heading over a clean body,
+        and a sticky heading over a clean body."""
+        p = tmp_path / "gateway-session-notes-testbox.md"
+        p.write_text(
+            "## Newest one\nalpha\n\n"
+            "## Newest two\nbravo\n\n"
+            "## Plain heading, live body\n"
+            "prose\n    OPEN   1. this item is still live\nmore prose\n\n"
+            "## Plain heading, clean body\nnothing marked here\n\n"
+            "## OPEN: sticky heading, clean body\nno markers in this body\n",
+            encoding="utf-8",
+        )
+        return p
+
+    def _row(self, stdout: str, needle: str) -> str:
+        rows = [ln for ln in stdout.splitlines()
+                if needle in ln and ("KEEP" in ln or "ROTATE" in ln)]
+        assert len(rows) == 1, f"expected one row for {needle!r}, got {rows}"
+        return rows[0]
+
+    def _body_cell(self, stdout: str, needle: str) -> str:
+        """The BODY cell, read POSITIONALLY. Asserting merely that '!' is
+        absent passes vacuously against a build that has no BODY column at
+        all — measured in the 2026-09-13 mutation drill, where two tests
+        written that way went green against the pre-fix script.
+        """
+        parts = self._row(stdout, needle).split()
+        assert parts[0].isdigit(), parts
+        return parts[3]
+
+    def test_plan_has_a_body_column(self, mixed, home):
+        r = run(home, "--notes", str(mixed), "--keep", "2")
+        assert r.returncode == 0, r.stderr
+        assert "BODY" in r.stdout.splitlines()[
+            [i for i, ln in enumerate(r.stdout.splitlines())
+             if "VERDICT" in ln][0]
+        ]
+
+    def test_live_body_under_plain_heading_is_flagged(self, mixed, home):
+        r = run(home, "--notes", str(mixed), "--keep", "2")
+        row = self._row(r.stdout, "Plain heading, live body")
+        assert "ROTATE" in row, row
+        assert "!1" in row, row
+
+    def test_clean_body_is_not_flagged(self, mixed, home):
+        r = run(home, "--notes", str(mixed), "--keep", "2")
+        assert "ROTATE" in self._row(r.stdout, "Plain heading, clean body")
+        assert self._body_cell(r.stdout, "Plain heading, clean body") == "-"
+
+    def test_sticky_heading_does_not_leak_into_the_body_count(self, mixed, home):
+        """The heading line matches STICKY_RE; the body does not. Counting the
+        heading as a body hit would make every sticky section read '!1' and
+        train the reader to ignore the column."""
+        r = run(home, "--notes", str(mixed), "--keep", "2")
+        assert "KEEP-STICKY" in self._row(r.stdout, "sticky heading, clean body")
+        assert self._body_cell(r.stdout, "sticky heading, clean body") == "-"
+
+    def test_warning_fires_only_for_sections_actually_moving(self, mixed, home):
+        """A flagged section that is KEPT is not at risk, so it must not warn."""
+        at_risk = run(home, "--notes", str(mixed), "--keep", "2")
+        assert "ROTATE section(s) carry live-work markers" in at_risk.stdout
+        # --keep 5 keeps every section: same markers, nothing moving, no warning.
+        safe = run(home, "--notes", str(mixed), "--keep", "5")
+        assert "carry live-work markers" not in safe.stdout, safe.stdout
+
+    def test_flagged_section_still_rotates(self, mixed, home):
+        """Disclosure, not obedience: the flag informs, it does not block."""
+        r = run(home, "--notes", str(mixed), "--keep", "2", "--apply")
+        assert r.returncode == 0, r.stdout + r.stderr
+        assert "Plain heading, live body" not in mixed.read_text(encoding="utf-8")
+
+    def test_disclosure_does_not_change_what_moves(self, mixed, home, tmp_path):
+        """The body count rides its own lookup precisely so it cannot perturb
+        the byte-moving plan. Same sections, same sizes, with and without
+        markers present."""
+        plan_with = run(home, "--notes", str(mixed), "--keep", "2").stdout
+        stripped = tmp_path / "gateway-session-notes-testbox.md"
+        stripped.write_text(
+            # SAME byte length — only the marker word changes, so any
+            # difference in the plan is the disclosure perturbing the move
+            # rather than the section simply being a different size.
+            mixed.read_text(encoding="utf-8").replace(
+                "    OPEN   1. this item is still live\n",
+                "    shut   1. this item is still live\n"),
+            encoding="utf-8",
+        )
+        plan_without = run(home, "--notes", str(stripped), "--keep", "2").stdout
+
+        def verdicts(out: str) -> list[tuple[str, str]]:
+            rows = []
+            for ln in out.splitlines():
+                parts = ln.split()
+                if len(parts) > 3 and parts[0].isdigit() and (
+                        "KEEP" in parts[1] or "ROTATE" in parts[1]):
+                    rows.append((parts[1], parts[2]))  # verdict, bytes
+            return rows
+
+        assert verdicts(plan_with) == verdicts(plan_without)

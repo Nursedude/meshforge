@@ -16,6 +16,13 @@
 #   - POSITION IS NOT STALENESS. Sections whose heading matches STICKY_RE are
 #     never rotated regardless of where they sit. The live "🔭 QUEUED" section
 #     is at the BOTTOM of the file; a naive tail-drop would have eaten it.
+#   - BODY MARKERS ARE DISCLOSED, NOT OBEYED. STICKY_RE reads headings only;
+#     a section can carry live work in its body under a plain heading and
+#     rotate silently (hit live 2026-09-13). The plan now flags those in a
+#     BODY column instead of marking them sticky, because a body scan cannot
+#     distinguish live OPEN from an OPEN a later section closed, and stickiness
+#     is monotonic: measured on this fleet's notes, 5 of 14 correctly-rotated
+#     sections would have become permanently unrotatable.
 #   - The archive is the NEWEST EXISTING one, not a date-derived name. On
 #     2026-08-31 the live archive was still ...-archive-2026H1.md; deriving
 #     "2026H2" would have split one body of content across two homes.
@@ -113,11 +120,14 @@ arch_size=0; [ -f "$ARCHIVE" ] && arch_size="$(wc -c < "$ARCHIVE")"
 # occurrences in the live files at the time, but code blocks are everywhere).
 index="$(awk -v sticky="$STICKY_RE" '
     /^[ \t]*```/ { fence = !fence; if (fence) fence_line = NR; else fence_line = 0 }
-    /^## / && !fence { sec++; start[sec]=NR; head[sec]=$0; if ($0 ~ sticky) st[sec]=1 }
-    { if (sec > 0) { bytes[sec] += length($0)+1; last[sec]=NR } else pre = NR }
+    /^## / && !fence { sec++; start[sec]=NR; head[sec]=$0; if ($0 ~ sticky) st[sec]=1; ishead=1 }
+    { if (sec > 0) { bytes[sec] += length($0)+1; last[sec]=NR
+                     if (!ishead && $0 ~ sticky) bh[sec]++ } else pre = NR
+      ishead = 0 }
     END {
         print "FENCE\t" (fence ? fence_line : 0)
         print "PRE\t" pre+0
+        for (i = 1; i <= sec; i++) print "BODY\t" i "\t" bh[i]+0
         for (i = 1; i <= sec; i++)
             printf "%d\t%d\t%d\t%d\t%d\t%s\n", i, start[i], last[i], bytes[i], st[i]+0, head[i]
     }' "$NOTES")"
@@ -128,7 +138,13 @@ fence_open="$(printf '%s\n' "$index" | awk -F'\t' '$1=="FENCE"{print $2}')"
 [ "${fence_open:-0}" -eq 0 ] || die "unbalanced code fence opened at line ${fence_open} in $NOTES — close it and re-run (a heading inside an unclosed fence would split the file at the wrong place)"
 
 pre_lines="$(printf '%s\n' "$index" | awk -F'\t' '$1=="PRE"{print $2}')"
-sections="$(printf '%s\n' "$index" | awk -F'\t' '$1!="PRE" && $1!="FENCE"')"
+sections="$(printf '%s\n' "$index" | awk -F'\t' '$1!="PRE" && $1!="FENCE" && $1!="BODY"')"
+# Body-marker counts ride their OWN lookup, deliberately NOT a plan/TSV column:
+# the heading is the LAST field and is recovered by stripping exactly five
+# leading fields in several places, so widening that row would silently
+# truncate every heading the byte-moving code greps on. Disclosure must not be
+# able to break the move.
+bodymap="$(printf '%s\n' "$index" | awk -F'\t' '$1=="BODY"{printf "%s:%s,", $2, $3}')"
 n_sections="$(printf '%s' "$sections" | grep -c . || true)"
 
 [ "$n_sections" -gt 0 ] || die "no '## ' sections found in $NOTES — nothing this tool understands"
@@ -158,11 +174,35 @@ printf '  archive  %s  (%s B) %s\n' "$ARCHIVE" "$arch_size" "$archive_note"
 printf '  preamble %s line(s) kept · %s section(s) · keep newest %s + sticky\n\n' \
     "$pre_lines" "$n_sections" "$KEEP"
 
-printf '  %-4s %-12s %9s  %s\n' '#' 'VERDICT' 'BYTES' 'HEADING'
-printf '%s\n' "$plan" | awk -F'\t' '{
+printf '  %-4s %-12s %9s %5s  %s\n' '#' 'VERDICT' 'BYTES' 'BODY' 'HEADING'
+printf '%s\n' "$plan" | awk -F'\t' -v bm="$bodymap" '
+    BEGIN { n=split(bm, a, ","); for (i=1; i<=n; i++)
+                if (split(a[i], kv, ":") == 2) hits[kv[1]] = kv[2] }
+    {
     h=$0; sub(/^[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t[^\t]*\t/, "", h)
     if (length(h) > 62) h = substr(h,1,59) "..."
-    printf "  %-4s %-12s %9s  %s\n", $1, $2, $3, h }'
+    b = (hits[$1]+0 > 0) ? "!" hits[$1] : "-"
+    printf "  %-4s %-12s %9s %5s  %s\n", $1, $2, $3, b, h }'
+
+# ── disclose body-level live-work markers ───────────────────────────────────
+# STICKY_RE protects HEADINGS only, by design: a body scan cannot tell live
+# OPEN from an OPEN a later section already closed, and marking on a body hit
+# is monotonic — measured 2026-09-13 on this fleet's own notes, 5 of the 14
+# sections legitimately rotated that day would have become permanently
+# unrotatable, in a file bounded by an 80KB gate whose only cure is rotation.
+# So the risk is SURFACED for the human the tool is already built around,
+# never acted on. Changes no byte-moving behaviour.
+flagged="$(printf '%s\n' "$plan" | awk -F'\t' -v bm="$bodymap" '
+    BEGIN { n=split(bm, a, ","); for (i=1; i<=n; i++)
+                if (split(a[i], kv, ":") == 2) hits[kv[1]] = kv[2] }
+    $2=="ROTATE" && hits[$1]+0 > 0 { c++ } END { print c+0 }')"
+if [ "${flagged:-0}" -gt 0 ]; then
+    printf '\n  ⚠️  BODY: %s ROTATE section(s) carry live-work markers in their BODY.\n' "$flagged"
+    printf '      STICKY_RE protects HEADINGS ONLY, so these would move silently.\n'
+    printf '      Read them before --apply: usually a LATER section already closed\n'
+    printf '      the item; if it is still live, give the section a sticky HEADING.\n'
+    printf '      markers: /%s/\n' "$STICKY_RE"
+fi
 
 printf '\n  rotating %s section(s), %s B\n' "$n_rotate" "$rot_bytes"
 printf '  notes: %s B -> %s B  (gate is %s B)\n' "$notes_size" "$after_size" "$GATE_BYTES"
