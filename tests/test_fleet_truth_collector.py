@@ -140,3 +140,61 @@ class TestDeclaredPostureStamp:
             c._stamp_declared_posture(snaps)
         assert all("posture" not in s for s in snaps)
         assert any("fleet_posture" in m for m in caplog.messages)
+
+
+class TestUplinkAttachedOnTheCollectorSeam:
+    """Site-level uplink telemetry rides the collector, not the byte-locked
+    shared contract, and is attached AFTER the verdict so it cannot tint it.
+    """
+
+    def test_read_uplink_serialises_a_reading(self, monkeypatch):
+        import utils.fleet_truth_collector as c
+        from utils.starlink_dish import DishStatus
+
+        monkeypatch.setattr("utils.starlink_dish.get_dish_status",
+                            lambda *a, **k: DishStatus("ok", pop_ping_latency_ms=52.6))
+        out = c._read_uplink()
+        assert out["state"] == "ok"
+        assert out["pop_ping_latency_ms"] == 52.6
+
+    def test_unreachable_dish_still_yields_a_dict_not_none(self, monkeypatch):
+        """'No dish configured here' (None) and 'the dish did not answer'
+        (a dict saying so) are different claims and must not collapse."""
+        import utils.fleet_truth_collector as c
+        from utils.starlink_dish import DishStatus
+
+        monkeypatch.setattr("utils.starlink_dish.get_dish_status",
+                            lambda *a, **k: DishStatus("unreachable", "curl exit 7"))
+        out = c._read_uplink()
+        assert out is not None and out["state"] == "unreachable"
+        assert out["fraction_obstructed"] is None
+
+    def test_a_broken_reader_is_not_rendered_as_no_dish(self, monkeypatch):
+        """get_dish_status() is contracted never to raise. If it does, that is
+        OUR defect — and returning None would render it identically to a fibre
+        site with no dish, which is the degraded-value-overlaps-healthy class
+        this project keeps paying for (hfm #1)."""
+        import utils.fleet_truth_collector as c
+
+        def boom(*a, **k):
+            raise RuntimeError("decoder exploded")
+
+        monkeypatch.setattr("utils.starlink_dish.get_dish_status", boom)
+        out = c._read_uplink()
+        assert out is not None, "a broken reader must not look like 'no dish here'"
+        assert out["state"] == "error"
+        assert "decoder exploded" in out["detail"]
+
+    def test_absent_reader_module_is_a_genuine_none(self, monkeypatch):
+        """The optional-module case IS 'nothing to report' and stays None."""
+        import builtins
+        import utils.fleet_truth_collector as c
+        real_import = builtins.__import__
+
+        def no_starlink(name, *a, **k):
+            if name == "utils.starlink_dish":
+                raise ImportError("no module named utils.starlink_dish")
+            return real_import(name, *a, **k)
+
+        monkeypatch.setattr(builtins, "__import__", no_starlink)
+        assert c._read_uplink() is None

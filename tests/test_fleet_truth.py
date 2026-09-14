@@ -1039,3 +1039,47 @@ class TestDeclaredPosture:
         t = ft.build_fleet_truth([self._dark("moc4", {"state": "active", "note": "x"})],
                                  now=NOW, signal_classes=[], noc_host="moc")
         assert t["fleet_state"] == ft.DARK and t["counts"]["dark"] == 1
+
+
+
+# ── the shared twin contract must stay free of site-specific fields ──────────
+class TestSharedContractCarriesNoUplink:
+    """``fleet_truth.py`` is BYTE-LOCKED with MeshAnchor.
+
+    Site-specific telemetry (the Starlink dish) is attached by the COLLECTOR
+    after the verdict is computed, never by this module. A first pass added an
+    ``uplink=`` parameter here and the parity gate caught it (2026-09-13) —
+    this test makes the same mistake fail in the suite instead, one gate
+    earlier, and states why.
+    """
+
+    def _snap(self, alias):
+        return {"alias": alias, "resolution_method": "dns", "answered_at": NOW,
+                "status": {"app": {"name": "meshforge"},
+                           "watchdog": {"installed": True, "ok": True},
+                           "mini_dudeai": {"installed": True, "ok": True}},
+                "slo": {"overall_status": "ready", "cascade": {"pre_fail": 0, "wedged": 0},
+                        "ci_status": {"repos": [{"name": "mf", "state": "success"}]},
+                        "radio": {"connected": True}, "schedules": {}, "path_table": {}}}
+
+    def test_build_fleet_truth_takes_no_uplink_argument(self):
+        import inspect
+        params = inspect.signature(ft.build_fleet_truth).parameters
+        assert "uplink" not in params, (
+            "build_fleet_truth is byte-locked with MeshAnchor; site-specific "
+            "telemetry belongs on the collector seam, not in the shared contract"
+        )
+
+    def test_truth_document_has_no_uplink_key_from_this_module(self):
+        t = ft.build_fleet_truth([self._snap("moc")], now=NOW,
+                                 signal_classes=[], noc_host="moc")
+        assert "uplink" not in t
+
+    def test_no_box_row_carries_uplink(self):
+        """Even once the collector attaches it, it is SITE-level. Every box
+        here routes through ONE dish (measured 2026-09-13: all 9 reach it), so
+        a per-box copy would read as nine independent observations."""
+        t = ft.build_fleet_truth([self._snap("moc"), self._snap("moc1")],
+                                 now=NOW, signal_classes=[], noc_host="moc")
+        for box in t["boxes"]:
+            assert "uplink" not in box

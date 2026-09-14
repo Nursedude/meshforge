@@ -261,4 +261,8 @@ def get_all_handlers() -> List[Type]:
     from handlers.gateway_wizard import GatewayWizardHandler
     handlers.append(GatewayWizardHandler)
 
+    # Batch 28 — Starlink dish telemetry (read-only; names WHY an uplink degraded)
+    from handlers.starlink import StarlinkHandler
+    handlers.append(StarlinkHandler)
+
     return handlers

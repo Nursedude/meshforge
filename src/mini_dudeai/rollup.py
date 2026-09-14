@@ -507,6 +507,53 @@ def _append_claw(lines: list[str], posture: dict | None) -> None:
             lines.append(_claw_line(c))
 
 
+def _render_uplink() -> str:
+    """One SITE-level uplink line, or "" when there is nothing to say.
+
+    ⚠️ Site-level, not per-box, and deliberately not part of the posture
+    summary counts. Every box here routes through ONE dish (measured
+    2026-09-13: all 9 reach it), so a per-box column would be nine copies of
+    one number dressed up as nine observations. It also never changes a box's
+    banner: a dish we cannot reach says nothing about whether a box is fresh.
+    """
+    try:
+        from utils.starlink_dish import get_dish_status
+    except ImportError:
+        return ""
+    st = get_dish_status(timeout=4)
+    if st.state == "unsupported":
+        return ""          # no curl here — silence beats a permanent nag
+    if st.state == "unreachable":
+        # Most sites have no Starlink. Saying so every roll-up would train the
+        # reader to skip the line, so absent-by-design stays quiet.
+        return ""
+    if st.state != "ok":
+        return f"🛰️ **uplink** — dish answered but unreadable: {st.detail}"
+
+    def fmt(val, spec, suffix, scale=1.0):
+        return f"{val * scale:{spec}}{suffix}" if val is not None else "?"
+
+    bits = [
+        f"latency {fmt(st.pop_ping_latency_ms, '.0f', 'ms')}",
+        f"drop {fmt(st.pop_ping_drop_rate, '.2f', '%', 100.0)}",
+        f"down {fmt(st.downlink_throughput_bps, '.1f', 'Mbps', 1e-6)}",
+        f"up {fmt(st.uplink_throughput_bps, '.1f', 'Mbps', 1e-6)}",
+        f"obstructed {fmt(st.fraction_obstructed, '.2f', '%', 100.0)}",
+    ]
+    if st.currently_obstructed:
+        bits.append("**OBSTRUCTED NOW**")
+    # Only the ALARMING side of the link-physics reading earns a slot here:
+    # "above noise floor" is the steady state and would be pure noise on every
+    # roll-up. The full alignment picture (boresight az/el) lives in the TUI
+    # pane, where an operator has gone looking for it.
+    if st.snr_above_noise_floor is False:
+        bits.append("**SNR BELOW NOISE FLOOR**")
+    alerts = st.active_alerts
+    if alerts:
+        bits.append("alerts: " + ", ".join(alerts))
+    return "🛰️ **uplink** (site, one dish) — " + " · ".join(bits)
+
+
 def build_rollup(postures: list[dict], now_ts: float) -> str:
     """Pure: render the all-boxes posture pane. Problems sort to the top."""
     stamp = datetime.datetime.fromtimestamp(now_ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -524,6 +571,9 @@ def build_rollup(postures: list[dict], now_ts: float) -> str:
         f"_rolled up {stamp} · per-box freshness re-derived now · {summary}_",
         "",
     ]
+    uplink_line = _render_uplink()
+    if uplink_line:
+        lines.extend([uplink_line, ""])
     ordered = sorted(postures, key=lambda p: (_ORDER.get(p["status"], 9), p["host"]))
     for p in ordered:
         banner = _BANNER.get(p["status"], "?")

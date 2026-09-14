@@ -172,7 +172,7 @@ src/
 │   ├── backend.py         # whiptail/dialog abstraction
 │   ├── startup_checks.py  # Environment checks + conflict resolution
 │   ├── status_bar.py      # Service status bar
-│   └── handlers/          # <!--STAT:handlers-->102<!--/STAT--> command-handler modules
+│   └── handlers/          # <!--STAT:handlers-->103<!--/STAT--> command-handler modules
 ├── commands/              # Command modules
 │   ├── propagation.py     # Space weather & HF propagation (NOAA primary)
 │   ├── rns.py             # RNS/Reticulum commands

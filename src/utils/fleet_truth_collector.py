@@ -382,6 +382,41 @@ _lock = threading.Lock()
 _cache: Dict[str, Any] = {"truth": None, "built_at": 0.0}
 
 
+def _read_uplink():
+    """Site-level uplink telemetry, or None when this NOC has no dish to ask.
+
+    Rides the collector's existing TTL cache — the dish is only queried when
+    the truth document is rebuilt, never per HTTP request.
+
+    Three outcomes, deliberately distinct — collapsing any pair would let a
+    failure read as normal:
+      * ``None``               — no reader here at all (a fibre site).
+      * ``{"state": "unreachable"...}`` — a dish was asked and did not answer.
+      * ``{"state": "error"...}``       — the READER itself broke, which is a
+        defect in our code and must never look like "no dish configured".
+    Never raises: the fleet truth document must build regardless.
+    """
+    try:
+        from utils.starlink_dish import get_dish_status
+    except ImportError as exc:
+        # No reader on this box. That is a real "nothing to report" — the
+        # module is optional and a fibre site legitimately has none.
+        logger.debug("starlink reader not present: %s", exc)
+        return None
+    try:
+        return get_dish_status().as_dict()
+    except Exception as exc:
+        # get_dish_status() is contracted never to raise, so reaching here
+        # means the READER is broken. Returning None would render that
+        # identically to a site with no dish — the degraded value would
+        # overlap the healthy domain (honest_failure_modes #1) and the only
+        # witness would be a DEBUG line nobody reads (#9). Say so instead,
+        # loudly enough that a surface can show it.
+        logger.warning("starlink reader raised, which it is contracted not "
+                       "to do: %s", exc)
+        return {"state": "error", "detail": f"reader raised: {exc}"}
+
+
 def get_fleet_truth(*, port: int = DEFAULT_PORT, ttl_s: float = CACHE_TTL_S,
                     force: bool = False) -> Dict[str, Any]:
     """Return the current fleet-truth document, refreshing via fan-out when the
@@ -413,6 +448,17 @@ def get_fleet_truth(*, port: int = DEFAULT_PORT, ttl_s: float = CACHE_TTL_S,
             # a lost hosts file is indistinguishable from a declared
             # standalone, so surface the mode instead of hiding it.
             truth["fanout"]["membership"] = "fleet" if declared > 1 else "standalone"
+            # SITE-level uplink telemetry, attached HERE rather than inside
+            # build_fleet_truth: that module is a byte-locked twin shared with
+            # MeshAnchor, and a Starlink-specific field has no business in the
+            # shared pure contract (the parity gate caught exactly that,
+            # 2026-09-13). This is the same seam `membership` above already
+            # uses for a site-specific concern.
+            #
+            # ⚠️ Attached AFTER the verdict is computed, so it cannot colour
+            # it. An unreachable dish means we could not ASK — letting that
+            # tint fleet_state would smuggle a detector in through a surface.
+            truth["uplink"] = _read_uplink()
         except Exception as e:
             logger.error("fleet_truth build failed: %s", e)
             truth = {

@@ -14,7 +14,7 @@ live ``menu_items()`` byte-for-byte. ``lifecycle: True`` handlers stay
 EAGER (their on_startup/on_shutdown cannot run if imported lazily).
 """
 
-# 80 handlers · 112 menu actions (derived from get_all_handlers(), never hand-edited).
+# 81 handlers · 114 menu actions (derived from get_all_handlers(), never hand-edited).
 
 HANDLER_MANIFEST = [
     {
@@ -817,6 +817,18 @@ HANDLER_MANIFEST = [
         "error": None,
         "menu_items": [
             ('site', 'Site Planner        Coverage estimation', None),
+        ],
+    },
+    {
+        "handler_id": 'starlink',
+        "module": 'handlers.starlink',
+        "class_name": 'StarlinkHandler',
+        "menu_section": 'system',
+        "lifecycle": False,
+        "error": None,
+        "menu_items": [
+            ('starlink_status', 'Starlink Dish       Uplink telemetry (read-only)', None),
+            ('starlink_skymap', 'Starlink Sky Map    Obstruction map + bearings', None),
         ],
     },
     {
