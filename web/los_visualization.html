@@ -293,7 +293,10 @@
             </div>
         </div>
 
-        <div id="loading" class="loading" style="display: none;">Loading elevation data...</div>
+        <div id="loading" class="loading" style="display: none;">Loading terrain data...</div>
+        <div id="notice" style="display: none; margin: 12px 0; padding: 10px 14px;
+             border-radius: 6px; border: 1px solid #5a4a1a; background: #2a2410;
+             color: #ffd479; font-size: 13px;"></div>
 
         <div id="content" style="display: none;">
             <div class="coordinates">
@@ -394,30 +397,42 @@
             la_griffith: { name: 'Griffith Observatory', lat: 34.1184, lon: -118.3004, elev: 346 },
         };
 
-        // Store selected coordinates
-        let selectedA = null;
-        let selectedB = null;
+        // Show a reason instead of failing silently.
+        function showNotice(msg) {
+            const el = document.getElementById('notice');
+            el.textContent = msg;
+            el.style.display = msg ? 'block' : 'none';
+        }
 
-        // Load preset into point A or B
+        // The <select> elements ARE the state.
+        //
+        // There used to be `selectedA`/`selectedB` globals mirroring them,
+        // written only by loadPreset(). After a reload the page re-renders a
+        // result from the URL but fires no onchange, so both copies were null
+        // and pressing Calculate alerted "Please select both Point A and Point
+        // B" with both points plainly on screen. Antenna heights and frequency
+        // never had that bug — they were always read from the DOM. Read the
+        // selects; keep no second copy of what the DOM already knows.
+        function selectedPreset(point) {
+            const key = document.getElementById('preset' + point).value;
+            return key ? (LOCATION_PRESETS[key] || null) : null;
+        }
+
+        // Picking a location recalculates immediately, so the dropdowns and
+        // the numbers on screen can never disagree. Before, changing a
+        // dropdown updated a hidden variable and nothing visible happened.
         function loadPreset(point) {
-            const select = document.getElementById('preset' + point);
-            const presetKey = select.value;
-            if (!presetKey) return;
-
-            const preset = LOCATION_PRESETS[presetKey];
-            if (!preset) return;
-
-            if (point === 'A') {
-                selectedA = preset;
-            } else {
-                selectedB = preset;
+            if (selectedPreset('A') && selectedPreset('B')) {
+                calculateFromInputs();
             }
         }
 
         // Calculate from input selections
         function calculateFromInputs() {
-            if (!selectedA || !selectedB) {
-                alert('Please select both Point A and Point B locations');
+            const a = selectedPreset('A');
+            const b = selectedPreset('B');
+            if (!a || !b) {
+                showNotice('Select both Point A and Point B to calculate.');
                 return;
             }
 
@@ -427,19 +442,31 @@
 
             // Update URL and recalculate
             const url = new URL(window.location);
-            url.searchParams.set('latA', selectedA.lat);
-            url.searchParams.set('lonA', selectedA.lon);
-            url.searchParams.set('latB', selectedB.lat);
-            url.searchParams.set('lonB', selectedB.lon);
+            url.searchParams.set('latA', a.lat);
+            url.searchParams.set('lonA', a.lon);
+            url.searchParams.set('latB', b.lat);
+            url.searchParams.set('lonB', b.lon);
             url.searchParams.set('heightA', heightA);
             url.searchParams.set('heightB', heightB);
             url.searchParams.set('freq', freq);
             window.history.pushState({}, '', url);
 
             // Show loading and recalculate
+            showNotice('');
             document.getElementById('loading').style.display = 'block';
             document.getElementById('content').style.display = 'none';
-            visualize();
+            runVisualize();
+        }
+
+        // visualize() is async. Called bare, a throw inside it became an
+        // unhandled promise rejection — invisible, and it aborted the render
+        // half-done. Every caller goes through here so a failure is SEEN.
+        function runVisualize() {
+            visualize().catch(err => {
+                console.error('LOS visualization failed:', err);
+                document.getElementById('loading').style.display = 'none';
+                showNotice('Could not render this path: ' + (err && err.message ? err.message : err));
+            });
         }
 
         // Parse URL parameters
@@ -458,59 +485,44 @@
             };
         }
 
-        // Haversine distance calculation
-        function haversineDistance(lat1, lon1, lat2, lon2) {
-            const R = 6371000; // Earth radius in meters
-            const dLat = (lat2 - lat1) * Math.PI / 180;
-            const dLon = (lon2 - lon1) * Math.PI / 180;
-            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
-                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-                      Math.sin(dLon/2) * Math.sin(dLon/2);
-            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-            return R * c;
-        }
-
-        // Calculate intermediate points along great circle
+        // Sample points along the path, matching how the server samples:
+        // linear in lat/lon, t = i/(n-1). Used only to place map markers —
+        // the elevations themselves come from the server.
         function interpolatePoints(lat1, lon1, lat2, lon2, numPoints) {
             const points = [];
-            for (let i = 0; i <= numPoints; i++) {
-                const t = i / numPoints;
-                const lat = lat1 + t * (lat2 - lat1);
-                const lon = lon1 + t * (lon2 - lon1);
-                points.push({ lat, lon, t });
+            for (let i = 0; i < numPoints; i++) {
+                const t = i / Math.max(1, numPoints - 1);
+                points.push({
+                    lat: lat1 + t * (lat2 - lat1),
+                    lon: lon1 + t * (lon2 - lon1),
+                    t: t
+                });
             }
             return points;
         }
 
-        // Fetch elevation data from Open-Elevation API
-        async function fetchElevations(points) {
-            const locations = points.map(p => `${p.lat},${p.lon}`).join('|');
-            const url = `https://api.open-elevation.com/api/v1/lookup?locations=${locations}`;
-
-            try {
-                const response = await fetch(url);
-                const data = await response.json();
-                return data.results.map((r, i) => ({
-                    ...points[i],
-                    elevation: r.elevation
-                }));
-            } catch (error) {
-                console.error('Elevation API error:', error);
-                // Return flat terrain as fallback
-                return points.map(p => ({ ...p, elevation: 0 }));
+        // Ask the NOC's terrain engine.
+        //
+        // This page used to fetch elevations from the public
+        // api.open-elevation.com and, on any failure, fall back to
+        // `elevation: 0` for every sample — flat sea-level terrain, which
+        // yields a confident "Clear LOS" over Mauna Kea whenever the WAN
+        // hiccups. /api/los runs the same SRTM terrain analysis node_map.html
+        // already uses, works with the uplink down, and reports its own
+        // coverage so "we do not know" stays distinguishable from "it is
+        // clear" (honest_failure_modes #1, #2).
+        async function fetchLOS(params) {
+            const url = `/api/los/${params.latA}/${params.lonA}/${params.latB}/${params.lonB}`
+                      + `?alt1=${params.heightA}&alt2=${params.heightB}&freq_mhz=${params.freq}`;
+            const res = await fetch(url);
+            if (!res.ok) {
+                throw new Error(`terrain service returned HTTP ${res.status}`);
             }
-        }
-
-        // Calculate earth curvature drop
-        function earthCurvatureDrop(distance) {
-            const R = 6371000 * (4/3); // Effective earth radius with RF refraction
-            return (distance * distance) / (2 * R);
-        }
-
-        // Calculate Fresnel zone radius at a point
-        function fresnelRadius(d1, d2, freq) {
-            const wavelength = 299792458 / (freq * 1e6); // Speed of light / frequency
-            return Math.sqrt((wavelength * d1 * d2) / (d1 + d2));
+            const data = await res.json();
+            if (data.error) {
+                throw new Error(data.error);
+            }
+            return data;
         }
 
         // Main visualization function
@@ -526,88 +538,67 @@
 
             document.getElementById('loading').style.display = 'block';
 
-            const distance = haversineDistance(params.latA, params.lonA, params.latB, params.lonB);
-            const distanceKm = distance / 1000;
-
-            // Get elevation points (20 samples along path)
-            const numSamples = 20;
-            const pathPoints = interpolatePoints(params.latA, params.lonA, params.latB, params.lonB, numSamples);
-
-            let elevationData;
-            if (params.data && params.data.elevations) {
-                elevationData = params.data.elevations;
-            } else {
-                elevationData = await fetchElevations(pathPoints);
+            const los = await fetchLOS(params);
+            const profile = los.profile || [];
+            if (!profile.length) {
+                throw new Error('terrain service returned no elevation profile');
             }
 
-            // Calculate LOS line and Fresnel zones
-            const elevA = elevationData[0].elevation + params.heightA;
-            const elevB = elevationData[elevationData.length - 1].elevation + params.heightB;
+            const distanceKm = los.distance_m / 1000;
 
-            const labels = [];
-            const terrainData = [];
-            const losLine = [];
-            const fresnelUpper = [];
-            const fresnelLower = [];
-            const earthCurvature = [];
-
-            let minClearance = Infinity;
-            let worstPoint = 0;
-
-            elevationData.forEach((point, i) => {
-                const distFromA = point.t * distance;
-                const distFromB = distance - distFromA;
-                const distKm = distFromA / 1000;
-
-                labels.push(distKm.toFixed(2));
-
-                // Terrain elevation
-                terrainData.push(point.elevation);
-
-                // LOS line (straight line from A to B, accounting for earth curvature)
-                const losHeight = elevA + (elevB - elevA) * point.t;
-                const curvatureDrop = earthCurvatureDrop(distFromA);
-                const adjustedLos = losHeight - curvatureDrop;
-                losLine.push(adjustedLos);
-
-                // Earth curvature reference (from point A level)
-                earthCurvature.push(elevA - earthCurvatureDrop(distFromA));
-
-                // Fresnel zone (60%)
-                if (distFromA > 0 && distFromB > 0) {
-                    const fRadius = fresnelRadius(distFromA, distFromB, params.freq) * 0.6;
-                    fresnelUpper.push(adjustedLos + fRadius);
-                    fresnelLower.push(adjustedLos - fRadius);
-
-                    // Calculate clearance
-                    const clearance = adjustedLos - fRadius - point.elevation;
-                    if (clearance < minClearance) {
-                        minClearance = clearance;
-                        worstPoint = i;
-                    }
-                } else {
-                    fresnelUpper.push(adjustedLos);
-                    fresnelLower.push(adjustedLos);
-                }
-            });
-
-            // Determine LOS status
+            // Verdict comes from the server, which owns the RF math. This
+            // page no longer re-derives Fresnel radius, earth bulge, FSPL or
+            // the clearance threshold — four copies of utils/rf.py that could
+            // drift from it silently.
             let losStatus, statusClass;
-            const fresnel60 = fresnelRadius(distance/2, distance/2, params.freq) * 0.6;
-
-            if (minClearance >= 0) {
-                losStatus = '✓ Clear LOS';
+            if (!los.terrain_complete) {
+                // Some samples had no tile behind them. is_clear is then an
+                // opinion about invented ground: report UNKNOWN, never a
+                // verdict. Unobservable is not healthy.
+                losStatus = '? Unknown — incomplete terrain';
+                statusClass = 'status-marginal';
+            } else if (los.is_clear && los.fresnel_clearance_pct >= 60) {
+                losStatus = '\u2713 Clear LOS';
                 statusClass = 'status-good';
-            } else if (minClearance > -fresnel60) {
-                losStatus = '⚠ Marginal';
+            } else if (los.is_clear) {
+                losStatus = '\u26a0 Marginal';
                 statusClass = 'status-marginal';
             } else {
-                losStatus = '✗ Obstructed';
+                losStatus = '\u2717 Obstructed';
                 statusClass = 'status-bad';
             }
 
-            // Calculate FSPL
-            const fspl = 20 * Math.log10(distance) + 20 * Math.log10(params.freq) - 27.55;
+            if (!los.terrain_complete) {
+                const miss = los.terrain_samples_missing;
+                const tot = los.terrain_samples_total;
+                showNotice(
+                    `Terrain data covers only ${tot - miss} of ${tot} points on this path. `
+                    + `The missing samples are placeholders, not measurements, so no `
+                    + `clearance verdict is shown. Tiles download automatically when the `
+                    + `uplink is available.`
+                );
+            } else {
+                showNotice('');
+            }
+
+            // Chart series, straight from the published profile.
+            const labels = profile.map(pt => (pt.distance_m / 1000).toFixed(2));
+            const terrainData = profile.map(pt => pt.elevation_m);
+            const losLine = profile.map(pt => pt.los_height_m);
+            const fresnelUpper = profile.map(pt => pt.fresnel_top);
+            const fresnelLower = profile.map(pt => pt.fresnel_bottom);
+
+            // Worst clearance of the direct ray over the ground.
+            let minClearance = Infinity;
+            for (const pt of profile) {
+                const c = pt.los_height_m - pt.elevation_m;
+                if (c < minClearance) minClearance = c;
+            }
+            // Widest point of the first Fresnel zone along this path.
+            let maxFresnel = 0;
+            for (const pt of profile) {
+                maxFresnel = Math.max(maxFresnel, pt.fresnel_top - pt.los_height_m);
+            }
 
             // Update UI
             document.getElementById('loading').style.display = 'none';
@@ -621,12 +612,35 @@
             document.getElementById('losStatus').className = 'value ' + statusClass;
 
             document.getElementById('minClearance').innerHTML = `${minClearance.toFixed(1)} <span class="unit">m</span>`;
-            document.getElementById('fresnelRadius').innerHTML = `${fresnel60.toFixed(1)} <span class="unit">m</span>`;
-            document.getElementById('fspl').innerHTML = `${fspl.toFixed(1)} <span class="unit">dB</span>`;
+            document.getElementById('fresnelRadius').innerHTML = `${maxFresnel.toFixed(1)} <span class="unit">m</span>`;
+            document.getElementById('fspl').innerHTML = `${los.fspl_db.toFixed(1)} <span class="unit">dB</span>`;
 
-            // Create chart
+            renderChart(labels, terrainData, losLine, fresnelUpper, fresnelLower);
+
+            // Resize chart container
+            document.getElementById('elevationChart').parentElement.style.height = '400px';
+
+            // Initialize RF Path Map
+            initializeMap(params, profile, losStatus, statusClass);
+        }
+
+        // Chart.js 4 THROWS from the constructor if the canvas still belongs
+        // to a chart ("Canvas is already in use..."). The previous code called
+        // `new Chart(ctx, ...)` without keeping a handle, so the first
+        // calculation worked and every later one threw — aborting visualize()
+        // before initializeMap(), leaving a stale map and a stale chart, and
+        // (being an unhandled rejection) saying nothing. Reloading "fixed" it
+        // because a fresh canvas has no chart attached. Hold the handle;
+        // destroy before reuse.
+        let elevChart = null;
+
+        function renderChart(labels, terrainData, losLine, fresnelUpper, fresnelLower) {
             const ctx = document.getElementById('elevationChart').getContext('2d');
-            new Chart(ctx, {
+            if (elevChart) {
+                elevChart.destroy();
+                elevChart = null;
+            }
+            elevChart = new Chart(ctx, {
                 type: 'line',
                 data: {
                     labels: labels,
@@ -666,15 +680,6 @@
                             borderDash: [5, 5],
                             fill: false,
                             pointRadius: 0
-                        },
-                        {
-                            label: 'Earth Curvature',
-                            data: earthCurvature,
-                            borderColor: '#ff9800',
-                            borderWidth: 1,
-                            borderDash: [10, 5],
-                            fill: false,
-                            pointRadius: 0
                         }
                     ]
                 },
@@ -712,18 +717,9 @@
                     }
                 }
             });
-
-            // Resize chart container
-            document.getElementById('elevationChart').parentElement.style.height = '400px';
-
-            // Initialize RF Path Map
-            initializeMap(params, elevationData, losStatus, statusClass);
         }
 
-        // Leaflet map instance
-        let rfMap = null;
-
-        function initializeMap(params, elevationData, losStatus, statusClass) {
+        function initializeMap(params, profile, losStatus, statusClass) {
             // Destroy existing map if present
             if (rfMap) {
                 rfMap.remove();
@@ -780,16 +776,24 @@
                 dashArray: statusClass === 'status-good' ? null : '10, 10'
             }).addTo(rfMap);
 
-            // Add elevation sample points along the path
-            elevationData.forEach((point, i) => {
-                if (i === 0 || i === elevationData.length - 1) return; // Skip endpoints
-                L.circleMarker([point.lat, point.lon], {
+            // Add elevation sample points along the path. The server's
+            // profile carries distance, not coordinates, so positions are
+            // re-derived with the SAME linear sampling the server used.
+            const markerPoints = interpolatePoints(
+                params.latA, params.lonA, params.latB, params.lonB, profile.length
+            );
+            const markerStride = Math.max(1, Math.ceil(profile.length / 20));
+            profile.forEach((point, i) => {
+                if (i === 0 || i === profile.length - 1) return; // Skip endpoints
+                if (i % markerStride !== 0) return;              // Thin 100 -> ~20
+                const pos = markerPoints[i];
+                L.circleMarker([pos.lat, pos.lon], {
                     radius: 4,
                     fillColor: '#888',
                     color: '#666',
                     weight: 1,
                     fillOpacity: 0.6
-                }).addTo(rfMap).bindPopup(`Sample ${i}<br>Elev: ${point.elevation.toFixed(0)}m`);
+                }).addTo(rfMap).bindPopup(`Sample ${i}<br>Elev: ${point.elevation_m.toFixed(0)}m`);
             });
 
             // Fit map to show both points
@@ -815,7 +819,7 @@
         }
 
         // Run visualization
-        visualize();
+        runVisualize();
     </script>
 </body>
 </html>

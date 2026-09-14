@@ -724,26 +724,59 @@ class NodeDataEndpointsMixin:
                 self._serve_json({"error": f"calculation failed: {str(e)}"})
                 return
 
-            # Build elevation profile for visualization
+            # Build elevation profile for visualization.
+            #
+            # These lists are the LOSResult contract (elevation_profile /
+            # los_heights / fresnel_radii), read by name. This block used to
+            # guard on `hasattr(result, 'profile')` and `result.obstructions`
+            # — attributes LOSResult has NEVER had — so `profile` was always
+            # [] and `obstruction_count` always 0, on every call, with real
+            # terrain loaded. A hasattr() guard against a sibling module's
+            # shape cannot fail loudly; it just quietly publishes nothing.
+            # TestLOSResponseMatchesAnalyzer pins the names instead.
+            elevations = result.elevation_profile
+            los_heights = result.los_heights
+            fresnel_radii = result.fresnel_radii
+            n = len(elevations)
             profile = []
-            if hasattr(result, 'profile') and result.profile:
-                for p in result.profile:
+            if n and len(los_heights) == n and len(fresnel_radii) == n:
+                for i in range(n):
+                    t = i / max(1, n - 1)
+                    los_h = los_heights[i]
+                    radius = fresnel_radii[i]
                     profile.append({
-                        "distance_m": p.distance_m,
-                        "elevation_m": p.ground_elevation,
-                        "los_height_m": p.los_height,
-                        "fresnel_top": p.los_height + p.fresnel_radius,
-                        "fresnel_bottom": p.los_height - p.fresnel_radius,
+                        "distance_m": result.distance_m * t,
+                        "elevation_m": elevations[i],
+                        "los_height_m": los_h,
+                        "fresnel_top": los_h + radius,
+                        "fresnel_bottom": los_h - radius,
                     })
+            elif n:
+                logger.warning(
+                    "LOS profile lists disagree (elev=%d los=%d fresnel=%d) "
+                    "— omitting profile rather than publishing a ragged one",
+                    n, len(los_heights), len(fresnel_radii),
+                )
 
             response = {
                 "is_clear": result.is_clear,
                 "distance_m": result.distance_m,
                 "total_loss_db": result.total_loss_db,
                 "terrain_loss_db": result.terrain_loss_db,
+                # Free-space component on its own, so a client can show it
+                # without subtracting two published numbers (or worse,
+                # re-implementing the FSPL formula as a fourth copy).
+                "fspl_db": result.fspl_db,
                 "fresnel_clearance_pct": result.fresnel_clearance_pct,
-                "obstruction_count": len(result.obstructions) if hasattr(result, 'obstructions') else 0,
+                "obstruction_count": result.num_obstructions,
                 "profile": profile,
+                # Coverage rides WITH the verdict, never separately: every
+                # field above is an opinion about invented ground wherever a
+                # sample was missing. A consumer that ignores this renders a
+                # confident "Clear LOS" over terrain nobody measured.
+                "terrain_complete": result.terrain_complete,
+                "terrain_samples_total": result.terrain_samples_total,
+                "terrain_samples_missing": result.terrain_samples_missing,
                 "endpoints": {
                     "from": {"lat": lat1, "lon": lon1, "alt": alt1},
                     "to": {"lat": lat2, "lon": lon2, "alt": alt2},

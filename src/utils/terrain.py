@@ -126,13 +126,46 @@ class TerrainProvider(ABC):
         Returns:
             List of elevations (meters) from start to end.
         """
-        profile = []
+        return self.get_profile_with_coverage(
+            lat1, lon1, lat2, lon2, num_points
+        )[0]
+
+    def has_elevation(self, lat: float, lon: float) -> bool:
+        """Whether real data backs :meth:`get_elevation` at this point.
+
+        Providers that synthesise terrain always have an answer. Providers
+        backed by tiles must override: ``get_elevation`` returns 0.0 for a
+        missing tile, which is indistinguishable from sea level, so a caller
+        that must tell "flat" from "unknown" asks HERE rather than inferring
+        it from the elevation (honest_failure_modes #1).
+        """
+        return True
+
+    def get_profile_with_coverage(
+        self, lat1: float, lon1: float, lat2: float, lon2: float,
+        num_points: int = 100,
+    ) -> Tuple[List[float], int]:
+        """Elevation profile plus a count of samples with NO backing data.
+
+        ONE loop, two answers, so a profile and its coverage can never
+        disagree about which points were sampled. :meth:`get_profile` is a
+        thin wrapper over this — do not grow a second sampling loop beside
+        it, or the count starts describing different points than the data.
+
+        Returns:
+            ``(profile, missing)`` where ``missing`` is how many of the
+            returned elevations are placeholders rather than measurements.
+        """
+        profile: List[float] = []
+        missing = 0
         for i in range(num_points):
             t = i / max(1, num_points - 1)
             lat = lat1 + t * (lat2 - lat1)
             lon = lon1 + t * (lon2 - lon1)
+            if not self.has_elevation(lat, lon):
+                missing += 1
             profile.append(self.get_elevation(lat, lon))
-        return profile
+        return profile, missing
 
 
 class FlatTerrainProvider(TerrainProvider):
@@ -211,6 +244,15 @@ class SRTMProvider(TerrainProvider):
             return 0.0
 
         return self._interpolate(tile_data, lat, lon)
+
+    def has_elevation(self, lat: float, lon: float) -> bool:
+        """True when a tile actually covers this point.
+
+        The 0.0 that :meth:`get_elevation` returns for a missing tile sits
+        squarely inside the healthy domain (sea level), so callers that
+        publish a verdict must ask this first.
+        """
+        return self._get_tile(lat, lon) is not None
 
     def _get_tile_name(self, lat: float, lon: float) -> str:
         """Get SRTM tile filename for a coordinate."""
@@ -383,7 +425,17 @@ class LOSResult:
         self.fresnel_clearance_pct: float = 100.0  # % of first Fresnel zone clear
         self.elevation_profile: List[float] = []
         self.los_heights: List[float] = []  # LOS line elevation at each point
+        # Fresnel radius (m) at each profile point — 0.0 at the endpoints,
+        # where the first Fresnel zone has no width. Published because
+        # analyze() already computes it; a consumer that re-derives the
+        # formula is a THIRD copy of the same math.
+        self.fresnel_radii: List[float] = []
         self.earth_bulge_m: float = 0.0
+        # Terrain coverage for this path. missing > 0 means some samples are
+        # placeholders, NOT measurements — is_clear is then an opinion about
+        # invented ground and consumers must render UNKNOWN, not a verdict.
+        self.terrain_samples_total: int = 0
+        self.terrain_samples_missing: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API/display."""
@@ -397,7 +449,22 @@ class LOSResult:
             "worst_obstruction_m": round(self.worst_obstruction_m, 1),
             "fresnel_clearance_pct": round(self.fresnel_clearance_pct, 1),
             "earth_bulge_m": round(self.earth_bulge_m, 1),
+            "terrain_samples_total": self.terrain_samples_total,
+            "terrain_samples_missing": self.terrain_samples_missing,
+            "terrain_complete": self.terrain_complete,
         }
+
+    @property
+    def terrain_complete(self) -> bool:
+        """True only when every profile sample had real data behind it.
+
+        False means the analysis ran over invented ground somewhere. It does
+        NOT mean the path is bad — it means we do not know.
+        """
+        return (
+            self.terrain_samples_total > 0
+            and self.terrain_samples_missing == 0
+        )
 
 
 class LOSAnalyzer:
@@ -447,11 +514,13 @@ class LOSAnalyzer:
             result.is_clear = True
             return result
 
-        # Get elevation profile
-        profile = self._provider.get_profile(
+        # Get elevation profile AND how much of it is real data
+        profile, missing = self._provider.get_profile_with_coverage(
             lat1, lon1, lat2, lon2, self._profile_points
         )
         result.elevation_profile = profile
+        result.terrain_samples_total = len(profile)
+        result.terrain_samples_missing = missing
 
         # Ground elevations at endpoints
         ground_a = profile[0]
@@ -491,7 +560,12 @@ class LOSAnalyzer:
             ground = profile[i]
             clearance = los_height - ground
 
-            # Fresnel radius at this point
+            # Fresnel radius at this point. Re-zeroed EVERY iteration: it
+            # used to be assigned only inside the interior branch, so an
+            # endpoint sample silently reused the previous point's radius.
+            # Harmless while it stayed a local; a real defect now that it is
+            # published per point.
+            local_fresnel = 0.0
             if t > 0 and t < 1:
                 d1 = d_from_a / 1000.0  # km from A
                 d2 = (result.distance_m - d_from_a) / 1000.0  # km from B
@@ -502,8 +576,8 @@ class LOSAnalyzer:
                     )
                     fresnel_clearance = clearance / local_fresnel if local_fresnel > 0 else float('inf')
                     worst_clearance = min(worst_clearance, fresnel_clearance)
-                else:
-                    local_fresnel = 0
+
+            result.fresnel_radii.append(local_fresnel)
 
             if clearance < 0:
                 # Terrain above LOS — definite obstruction
