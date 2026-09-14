@@ -611,7 +611,15 @@
             document.getElementById('losStatus').textContent = losStatus;
             document.getElementById('losStatus').className = 'value ' + statusClass;
 
-            document.getElementById('minClearance').innerHTML = `${minClearance.toFixed(1)} <span class="unit">m</span>`;
+            // Min clearance is measured AGAINST THE GROUND, so it inherits
+            // whatever the terrain data was. Suppressing only the verdict while
+            // still printing this number would leak the same invented ground
+            // one field down — the exact defect the verdict suppression exists
+            // to prevent. Distance, Fresnel radius and FSPL are pure geometry
+            // (position and frequency) and stay valid either way.
+            document.getElementById('minClearance').innerHTML = los.terrain_complete
+                ? `${minClearance.toFixed(1)} <span class="unit">m</span>`
+                : `<span class="unit">unknown — incomplete terrain</span>`;
             document.getElementById('fresnelRadius').innerHTML = `${maxFresnel.toFixed(1)} <span class="unit">m</span>`;
             document.getElementById('fspl').innerHTML = `${los.fspl_db.toFixed(1)} <span class="unit">dB</span>`;
 
