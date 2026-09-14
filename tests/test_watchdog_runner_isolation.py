@@ -164,7 +164,7 @@ class TestOwnershipTableAgreesWithProbeBodies:
     def test_list_returning_probes_are_the_declared_closed_set(self):
         assert set(_LIST_PROBES) == {
             "probe_lxmf_process_wedge", "probe_tracer_peer_unreachable",
-            "probe_memory_cap_engaged"}
+            "probe_memory_cap_engaged", "probe_peer_cron_verdict_stale"}
 
 
 if __name__ == "__main__":

@@ -51,6 +51,11 @@ PROBE_OWNS_OVERRIDES: Dict[str, Tuple[str, ...]] = {
     "probe_foundation_drift": ("foundation_perms_drift",),
     "probe_rns_env_coherence": ("rns_stray_env_drift",),
     "probe_history_write_failure": ("history_write_stalled",),
+    # Peer cron verdicts judged on the manager from the ssh truth spool.
+    # Deliberately owns the EXISTING class — the probe name carries a
+    # "peer_" prefix precisely because it is a second producer for a
+    # class the local probe already owns, so the stem is not a class.
+    "probe_peer_cron_verdict_stale": ("cron_verdict_stale",),
 }
 
 #: Probes that return ``List[Signal]`` (0..N) — the runner ``extend``s
@@ -60,6 +65,7 @@ LIST_RETURNING_PROBES: Tuple[str, ...] = (
     "probe_lxmf_process_wedge",
     "probe_tracer_peer_unreachable",
     "probe_memory_cap_engaged",
+    "probe_peer_cron_verdict_stale",
 )
 
 #: Per-probe raise counter (process lifetime) — the witness for a probe

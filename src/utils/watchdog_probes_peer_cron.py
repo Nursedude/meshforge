@@ -50,9 +50,16 @@ from typing import Any, Dict, List, Optional
 
 from utils.watchdog_probe_core import Signal, note_disposition
 
-#: Class this probe contributes to. Deliberately an EXISTING member of
-#: SIGNAL_CLASSES — see "WHAT THIS IS *NOT*" above.
-_CLS = "cron_verdict_stale"
+# This probe contributes to the EXISTING class "cron_verdict_stale" — see
+# "WHAT THIS IS *NOT*" above.
+#
+# ⚠️ That name is written as a LITERAL at every emission and note_disposition
+# site below, never via a module constant. `TestOwnershipTableAgreesWithProbe
+# Bodies` reads probe SOURCE for class literals and compares it to
+# `PROBE_OWNS_OVERRIDES`; routing through a constant makes the body look like
+# it owns nothing and the table look like it lies. The first version of this
+# file did exactly that and the gate caught it. Keeping the string greppable
+# IS the contract.
 
 
 def probe_peer_cron_verdict_stale(
@@ -71,7 +78,7 @@ def probe_peer_cron_verdict_stale(
                        if not p.name.startswith("cron_debounce."))
     except Exception as exc:  # noqa: BLE001 - unobservable, never "healthy"
         note_disposition(
-            _CLS, "indeterminate",
+            "cron_verdict_stale", "indeterminate",
             reason=f"peer cron leg could not read the truth spool: {exc}")
         return []
 
@@ -85,7 +92,7 @@ def probe_peer_cron_verdict_stale(
         targets = _declared_targets()
         if targets:
             note_disposition(
-                _CLS, "indeterminate",
+                "cron_verdict_stale", "indeterminate",
                 reason=("truth spool declares " + str(len(targets)) + " peer(s) "
                         "but wrote no spool file — the spool cron is not "
                         "running; peer cron verdicts are UNOBSERVABLE, not "
@@ -124,7 +131,7 @@ def probe_peer_cron_verdict_stale(
         state = cell.get("state")
         if state == "failed":
             signals.append(Signal(
-                cls=_CLS,
+                cls="cron_verdict_stale",
                 subject=alias,
                 severity="degraded",
                 detail=(f"{alias}: {cell.get('reason') or 'cron verdict unhealthy'} "
@@ -139,7 +146,7 @@ def probe_peer_cron_verdict_stale(
 
     if blind:
         note_disposition(
-            _CLS, "indeterminate",
+            "cron_verdict_stale", "indeterminate",
             reason="peer cron verdicts unobservable: " + ", ".join(blind),
             coverage={"judged": judged, "enrolled": judged + len(blind)})
     elif judged:
@@ -149,7 +156,7 @@ def probe_peer_cron_verdict_stale(
         # overrides a worse note from the local probe (worst-wins), so this
         # only ever ADDS the coverage counts.
         note_disposition(
-            _CLS, "clean",
+            "cron_verdict_stale", "clean",
             reason="judged " + str(judged) + " spooled peer(s); none failing",
             coverage={"judged": judged, "enrolled": judged})
     return signals
