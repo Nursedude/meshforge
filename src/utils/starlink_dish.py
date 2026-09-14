@@ -61,6 +61,7 @@ from __future__ import annotations
 import logging
 import math
 import shutil
+import socket
 import struct
 import subprocess
 import tempfile
@@ -74,6 +75,10 @@ DISH_HOST = "192.168.100.1"
 DISH_PORT = 9200
 GRPC_METHOD = "/SpaceX.API.Device.Device/Handle"
 DEFAULT_TIMEOUT = 8
+#: How long to spend deciding the dish is simply not here. The dish sits one
+#: hop away on the LAN, so a reachable one accepts in single-digit
+#: milliseconds; anything slower is absence, not slowness.
+REACHABILITY_TIMEOUT = 1.0
 
 # ── field numbers, read from the dish's own JS bundle (see module docstring) ──
 _REQ_GET_STATUS = 1004          # Request.get_status
@@ -344,6 +349,28 @@ def _unframe(buf: bytes) -> Optional[bytes]:
     return body
 
 
+def _dish_reachable(host: str, port: int,
+                    timeout: float = REACHABILITY_TIMEOUT) -> bool:
+    """Cheap TCP probe: is anything listening at all?
+
+    WHY THIS EXISTS (CI caught it, 2026-09-13): most boxes have no dish, and
+    without this the full request timeout is spent discovering that. The TUI's
+    map view budgets 20s, and the handler-dispatch contract test exercises
+    every menu action — so on a machine with no dish that single pane burned
+    the whole budget and took the suite's timeout with it. My local run passed
+    only because a dish happens to sit on this LAN: a verdict that depended on
+    un-pinned machine state, which is no verdict at all.
+
+    Uses connect_ex so an absent host is a return value, not an exception.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            return sock.connect_ex((host, port)) == 0
+    except OSError:
+        return False
+
+
 def _grpc_call(payload: bytes, host: str, port: int, timeout: int):
     """POST one gRPC message, return (body, error). Exactly one is None.
 
@@ -353,6 +380,8 @@ def _grpc_call(payload: bytes, host: str, port: int, timeout: int):
     curl = shutil.which("curl")
     if not curl:
         return None, "curl not found — this box cannot query the dish"
+    if not _dish_reachable(host, port):
+        return None, f"nothing listening on {host}:{port}"
 
     url = f"http://{host}:{port}{GRPC_METHOD}"
     with tempfile.TemporaryDirectory(prefix="mf-dish-") as tmp:
@@ -366,6 +395,9 @@ def _grpc_call(payload: bytes, host: str, port: int, timeout: int):
             "-H", "te: trailers",
             "--data-binary", f"@{req}",
             "-D", str(hdr), "-o", str(resp),
+            # --max-time bounds the WHOLE transfer; without a connect
+            # timeout an unroutable address spends all of it in SYN retries.
+            "--connect-timeout", str(int(REACHABILITY_TIMEOUT) or 1),
             "--max-time", str(timeout),
             url,
         ]

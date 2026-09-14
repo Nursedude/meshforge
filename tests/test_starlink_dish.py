@@ -468,3 +468,76 @@ class TestObstructionMapRender:
         from utils.starlink_dish import parse_obstruction_map, render_obstruction_map
         out = render_obstruction_map(parse_obstruction_map(LIVE_MAP), width=41)
         assert all(len(line) <= 80 for line in out.splitlines())
+
+
+class TestFailsFastWhenThereIsNoDish:
+    """CI regression, 2026-09-13.
+
+    ``test_all_tags_dispatch`` exercises EVERY registered menu action, and the
+    sky-map pane budgets 20s. On a machine with no dish that one pane spent
+    the whole budget and took the suite's timeout with it. It passed locally
+    only because a dish happens to sit on this LAN — a verdict that depended
+    on un-pinned machine state, which is no verdict at all.
+
+    The cure is a cheap TCP pre-check plus a curl ``--connect-timeout``:
+    ``--max-time`` bounds the whole transfer, so without a connect timeout an
+    unroutable address spends all of it in SYN retries.
+    """
+
+    def test_unreachable_host_never_reaches_the_subprocess(self, monkeypatch):
+        """Deterministic, not timing-based: prove the expensive path is not
+        entered at all. A wall-clock assertion would itself depend on ambient
+        machine state, which is the defect this test exists for."""
+        import utils.starlink_dish as sd
+
+        monkeypatch.setattr(sd, "_dish_reachable", lambda *a, **k: False)
+
+        def forbidden(*a, **k):
+            raise AssertionError("subprocess must not run when nothing listens")
+
+        monkeypatch.setattr(sd.subprocess, "run", forbidden)
+        st = sd.get_dish_status()
+        assert st.state == "unreachable"
+        assert "nothing listening" in st.detail
+
+    def test_obstruction_map_short_circuits_too(self, monkeypatch):
+        """The map is the expensive call (20s budget, ~60KB) — it is the one
+        that actually broke CI, so it gets its own assertion."""
+        import utils.starlink_dish as sd
+
+        monkeypatch.setattr(sd, "_dish_reachable", lambda *a, **k: False)
+        monkeypatch.setattr(
+            sd.subprocess, "run",
+            lambda *a, **k: (_ for _ in ()).throw(
+                AssertionError("subprocess must not run")))
+        m = sd.get_obstruction_map(timeout=20)
+        assert m.state == "unreachable"
+
+    def test_curl_invocation_carries_a_connect_timeout(self, monkeypatch):
+        """Pins the flag itself. Losing it would restore the original bug
+        while every other test still passed."""
+        import utils.starlink_dish as sd
+        seen = {}
+
+        monkeypatch.setattr(sd, "_dish_reachable", lambda *a, **k: True)
+
+        class _Proc:
+            returncode = 1
+            stdout = stderr = b""
+
+        def capture(cmd, **kw):
+            seen["cmd"] = cmd
+            return _Proc()
+
+        monkeypatch.setattr(sd.subprocess, "run", capture)
+        sd.get_dish_status()
+        assert "--connect-timeout" in seen["cmd"]
+        assert "--max-time" in seen["cmd"]
+
+    def test_reachability_probe_uses_connect_ex_not_exceptions(self):
+        """An absent host must be a return value, not a raise — otherwise the
+        probe itself becomes the thing that needs a try/except everywhere."""
+        from utils.starlink_dish import _dish_reachable
+        # TEST-NET-1 (RFC 5737) is guaranteed unroutable, so this is a real
+        # negative without depending on the local network.
+        assert _dish_reachable("192.0.2.1", 9200, timeout=0.5) is False
