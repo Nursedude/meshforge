@@ -634,6 +634,15 @@
         // destroy before reuse.
         let elevChart = null;
 
+        // The Leaflet map handle. Lives beside the chart handle because they
+        // are the page's two live render objects with the same lifecycle rule:
+        // destroy before rebuilding. Declared here after a 2026-09-14 slip —
+        // `let rfMap = null;` was the last line of the block that got replaced
+        // when the physics moved server-side, so initializeMap() referenced an
+        // identifier that no longer existed and every render threw
+        // "rfMap is not defined".
+        let rfMap = null;
+
         function renderChart(labels, terrainData, losLine, fresnelUpper, fresnelLower) {
             const ctx = document.getElementById('elevationChart').getContext('2d');
             if (elevChart) {
