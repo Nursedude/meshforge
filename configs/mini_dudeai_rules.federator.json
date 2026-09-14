@@ -649,7 +649,14 @@
         "subject_glob": "*"
       },
       "action": {
-        "kind": "propose_escalation"
+        "kind": "ntfy",
+        "title": "[AMBER] cron unhealthy",
+        "message": "{subject}: {detail}",
+        "priority": "default",
+        "tags": [
+          "alarm_clock",
+          "cron"
+        ]
       },
       "cooldown_s": 21600,
       "annotation": "Issue #78 — a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
