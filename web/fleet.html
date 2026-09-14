@@ -339,6 +339,10 @@
                 <h2>Internet — the path out <span class="sub" id="wan-meta">rung by rung · lan → isp edge → near anycast → the hosts we depend on · 20 pings each, every 10 min</span></h2>
                 <div class="body" id="wan"><div class="empty">loading…</div></div>
             </div>
+            <div class="card" id="uplink-panel">
+                <h2>Uplink — Starlink <span class="sub" id="uplink-meta">this box's dish, read live over gRPC · the sky map is what the dish HAS SEEN, not a forecast</span></h2>
+                <div class="body" id="uplink"><div class="empty">loading…</div></div>
+            </div>
             <div class="card">
                 <h2>Cron Verdicts <span class="sub">last verdict per job — silence is the failure mode</span></h2>
                 <div class="body" id="verdicts"><div class="empty">loading…</div></div>
@@ -386,6 +390,7 @@
     const SOAK_URL = '/lab/synth-rollup';
     const LAB_URL = '/lab/rollup';
     const LOGS_URL = '/fleet/logs';
+    const UPLINK_URL = '/fleet/uplink';
     const LOCAL_POLL_MS = 30000;
 
     // Mirrors the server allowlist (_FLEET_LOG_UNITS in
@@ -836,6 +841,185 @@
         return 'dark';
     }
 
+    // ── Uplink pane ───────────────────────────────────────────────────
+    //
+    // Two things a satellite uplink can be that a wire cannot: mis-aimed, and
+    // clipped by geometry that is invisible from the ground. The sky map is
+    // the only surface that shows the second one.
+    //
+    // ⚠️ The map is a record of what the dish HAS SEEN, never a forecast, and
+    // an unsurveyed cell is NOT a clear one. starlink_dish.py's own docstring
+    // refuses to conflate "not surveyed yet" with "no satellite will ever pass
+    // there" — so this pane reports coverage as a fraction of IN-FIELD cells
+    // and never as a progress bar. A map that stops at 32% may be complete.
+    const SKY_PX = 240;
+
+    function pct(v, digits) {
+        return (typeof v === 'number' && isFinite(v))
+            ? (v * 100).toFixed(digits === undefined ? 2 : digits) + '%' : '?';
+    }
+    function mbps(bps) {
+        return (typeof bps === 'number' && isFinite(bps))
+            ? (bps / 1e6).toFixed(2) + ' Mbps' : '?';
+    }
+    // null means "we could not read it", and must never print as 0.
+    function known(v, fmt) {
+        return (v === null || v === undefined) ? '<span class="dark">?</span>' : fmt(v);
+    }
+
+    function renderUplink(doc) {
+        const el = document.getElementById('uplink');
+        const st = doc.status || {};
+        const parts = [];
+
+        if (doc.state === 'absent') {
+            el.innerHTML = '<div class="empty">no dish reader on this box — ' +
+                esc(doc.detail || '') + '</div>';
+            return;
+        }
+
+        // ── status half ───────────────────────────────────────────────
+        const sState = String(st.state || 'unknown');
+        const sCls = sState === 'ok' ? 'healthy' : 'dark';
+        parts.push('<div class="item"><div class="id">dish <b class="' + sCls + '">' +
+            esc(sState) + '</b>' +
+            (st.detail ? ' <span class="dark">' + esc(st.detail) + '</span>' : '') +
+            '</div>');
+        if (sState === 'ok') {
+            parts.push('<div class="detail">' +
+                esc(st.hardware_version || '?') + ' · ' + esc(st.software_version || '?') +
+                ' · up ' + known(st.uptime_s, v => esc(fmtAge(v))) + '</div>');
+            parts.push('<div class="detail">latency ' +
+                known(st.pop_ping_latency_ms, v => v.toFixed(1) + ' ms') +
+                ' · drop ' + known(st.pop_ping_drop_rate, v => pct(v)) +
+                ' · down ' + known(st.downlink_throughput_bps, mbps) +
+                ' · up ' + known(st.uplink_throughput_bps, mbps) + '</div>');
+            // The dish is a phased array: boresight is where the BEAM points,
+            // not where the housing faces.
+            parts.push('<div class="detail">beam az ' +
+                known(st.boresight_azimuth_deg, v => v.toFixed(1) + '°') +
+                ' el ' + known(st.boresight_elevation_deg, v => v.toFixed(1) + '°') +
+                ' · snr above noise floor ' +
+                (st.snr_above_noise_floor === null || st.snr_above_noise_floor === undefined
+                    ? '<span class="dark">?</span>'
+                    : (st.snr_above_noise_floor
+                        ? '<b class="healthy">yes</b>' : '<b class="failed">no</b>')) +
+                '</div>');
+            parts.push('<div class="detail">obstructed right now ' +
+                (st.currently_obstructed === null || st.currently_obstructed === undefined
+                    ? '<span class="dark">?</span>'
+                    : (st.currently_obstructed
+                        ? '<b class="failed">yes</b>' : '<b class="healthy">no</b>')) +
+                ' · window obstructed ' + known(st.fraction_obstructed, v => pct(v)) +
+                '</div>');
+            const alerts = Array.isArray(st.active_alerts) ? st.active_alerts : [];
+            if (alerts.length) {
+                parts.push('<div class="detail warn">alerts: ' +
+                    alerts.map(esc).join(', ') + '</div>');
+            }
+        }
+        parts.push('</div>');
+
+        // ── sky map half ──────────────────────────────────────────────
+        if (doc.state !== 'ok' || !doc.cells) {
+            parts.push('<div class="panel-err">⚠ sky map unavailable (' +
+                esc(doc.state) + (doc.detail ? ': ' + esc(doc.detail) : '') +
+                ') — no reading, not "clear sky".</div>');
+            el.innerHTML = parts.join('');
+            return;
+        }
+
+        const c = doc.census || {};
+        const inField = c.in_field || 0;
+        const surveyed = c.surveyed || 0;
+        parts.push(
+            '<div class="item"><div class="id">sky map ' +
+            '<span class="dark">' + esc(doc.num_rows) + '×' + esc(doc.num_cols) +
+            ' · ' + esc(doc.frame_name) + '</span></div>' +
+            '<div class="detail">surveyed ' + surveyed + ' of ' + inField +
+            ' in-field cells · <b class="healthy">' + (c.clear || 0) + ' clear</b> · ' +
+            '<b class="failed">' + (c.obstructed || 0) + ' obstructed</b> · ' +
+            (c.partial || 0) + ' partial · ' + (c.no_data || 0) + ' never seen</div>' +
+            '<div class="detail dark">Coverage, not progress: a direction may be ' +
+            'unsurveyed because nothing will ever pass through it from this ' +
+            'latitude. Disc edge = ' +
+            known(doc.min_elevation_deg, v => v + '°') + ' elevation; centre = zenith.</div>' +
+            '<div style="margin:8px 0"><canvas id="sky-canvas" width="' +
+            esc(doc.num_cols) + '" height="' + esc(doc.num_rows) + '" ' +
+            'style="width:' + SKY_PX + 'px;height:' + SKY_PX + 'px;' +
+            'image-rendering:pixelated;border-radius:50%;background:#0b0f14"></canvas>' +
+            '<div class="detail dark" style="width:' + SKY_PX + 'px;text-align:center">' +
+            'top = true north</div></div>' +
+            '<div class="detail"><span class="cls-chip clean">clear</span>' +
+            '<span class="cls-chip active">obstructed</span>' +
+            '<span class="cls-chip">never seen a satellite</span></div>' +
+            '</div>');
+
+        // ── actionable bearings ───────────────────────────────────────
+        if (!doc.bearings_available) {
+            parts.push('<div class="detail warn">⚠ bearings withheld: the dish ' +
+                'reports this map in its own frame (' + esc(doc.frame_name) + '), ' +
+                'not earth-aligned, so an azimuth here would point at the wrong ' +
+                'tree.</div>');
+        } else if (!doc.bearings.length) {
+            parts.push('<div class="detail">no obstructed direction found in the ' +
+                'surveyed sky.</div>');
+        } else {
+            parts.push('<div class="item"><div class="id">what is in the way ' +
+                '<span class="dark">worst first · walk outside and look</span></div>' +
+                doc.bearings.map(b =>
+                    '<div class="detail">az <b>' + b.azimuth_deg.toFixed(1) + '°</b>' +
+                    ' (' + esc(compass(b.azimuth_deg)) + ')' +
+                    ' · el <b>' + b.elevation_deg.toFixed(1) + '°</b>' +
+                    ' · snr ' + b.snr.toFixed(2) + '</div>'
+                ).join('') + '</div>');
+        }
+
+        el.innerHTML = parts.join('');
+        paintSky(doc);
+    }
+
+    function compass(az) {
+        const names = ['N','NNE','NE','ENE','E','ESE','SE','SSE',
+                       'S','SSW','SW','WSW','W','WNW','NW','NNW'];
+        return names[Math.round(((az % 360) + 360) % 360 / 22.5) % 16];
+    }
+
+    // Draw the grid at its NATIVE resolution and let CSS scale it: one pixel
+    // per cell, no resampling to invent or erase a direction. 15k cells as
+    // DOM nodes would be 15k nodes; as ImageData it is one paint.
+    function paintSky(doc) {
+        const canvas = document.getElementById('sky-canvas');
+        if (!canvas || !canvas.getContext) return;
+        const rows = doc.num_rows, cols = doc.num_cols;
+        const ctx = canvas.getContext('2d');
+        const img = ctx.createImageData(cols, rows);
+        const cx = (cols - 1) / 2, cy = (rows - 1) / 2;
+        const radius = Math.min(rows, cols) / 2;
+        for (let i = 0; i < doc.cells.length; i++) {
+            const row = Math.floor(i / cols), col = i % cols;
+            const o = i * 4;
+            const dx = col - cx, dy = row - cy;
+            if (Math.sqrt(dx * dx + dy * dy) > radius) {
+                img.data[o + 3] = 0;               // outside the field of view
+                continue;
+            }
+            const v = doc.cells[i];
+            let r, g, b;
+            if (v < 0) {                            // never seen a satellite
+                r = 42; g = 48; b = 56;
+            } else {                                // red (blocked) -> green
+                const f = v / doc.cells_scale;
+                r = Math.round(230 - 150 * f);
+                g = Math.round(70 + 130 * f);
+                b = Math.round(70 - 10 * f);
+            }
+            img.data[o] = r; img.data[o + 1] = g; img.data[o + 2] = b;
+            img.data[o + 3] = 255;
+        }
+        ctx.putImageData(img, 0, 0);
+    }
+
     function panelErr(id, what, err) {
         document.getElementById(id).innerHTML =
             '<div class="panel-err">⚠ ' + esc(what) + ' unreachable (' +
@@ -1011,6 +1195,13 @@
             renderWan(await resp.json());
         } catch (e) {
             panelErr('wan', WAN_URL, e && e.message ? e.message : String(e));
+        }
+        try {
+            const resp = await fetch(UPLINK_URL, { headers: { 'Accept': 'application/json' } });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            renderUplink(await resp.json());
+        } catch (e) {
+            panelErr('uplink', UPLINK_URL, e && e.message ? e.message : String(e));
         }
         try {
             let resp = await fetch(SOAK_URL);

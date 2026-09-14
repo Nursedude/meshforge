@@ -288,6 +288,90 @@ class FleetEndpointsMixin:
             self._serve_json({"status": "error", "reason": "%s: %s" % (type(exc).__name__, exc)},
                              status=200)
 
+    def _serve_fleet_uplink(self):
+        """Serve THIS box's Starlink obstruction map, live from the dish.
+
+        NOC-local, like ``/fleet/wan``: the dish sits on this box's LAN, so a
+        box without one answers ``absent`` and that is not a fault. The status
+        half of the uplink already rides the fleet-truth document
+        (``uplink``); this endpoint exists for the sky map, which is far too
+        big to belong in a document polled every 5 seconds.
+
+        The dish answers in ~70ms and the grid gzips to under half a KB (it is
+        overwhelmingly one of two values), so there is no cache to go stale
+        here — each call is a fresh reading.
+
+        ⚠️ Cells are quantised to ints: ``-1`` unsurveyed, else 0-100 percent
+        SNR. ``-1`` is preserved as its own value rather than folded to 0 —
+        "never seen a satellite this way" and "blocked" are different claims,
+        and the module's own docstring refuses to conflate them. Likewise the
+        census splits in-field from the geometric corners, so a reader cannot
+        mistake the disc's square container for unsurveyed sky.
+        """
+        try:
+            from utils.starlink_dish import get_dish_status, get_obstruction_map
+        except ImportError as exc:
+            self._serve_json({
+                "state": "absent",
+                "detail": "no starlink reader on this box: %s" % (exc,),
+            }, status=200)
+            return
+        try:
+            m = get_obstruction_map()
+        except Exception as exc:   # noqa: BLE001
+            # get_obstruction_map() is contracted never to raise. If it did,
+            # that is a defect in our code and must NOT be dressed up as a
+            # site with no dish (honest_failure_modes #9 — leave a witness).
+            logger.warning("obstruction map reader raised, which it is "
+                           "contracted not to do: %s", exc)
+            self._serve_json({
+                "state": "error",
+                "detail": "%s: %s" % (type(exc).__name__, exc),
+            }, status=200)
+            return
+
+        # Status rides along so the pane is self-contained: the fleet page's
+        # NOC-local panels are contracted NOT to read the truth document, and
+        # the uplink status lives there. Same reader function, one more call
+        # (~70ms) — not a second copy of the parsing.
+        try:
+            status = get_dish_status().as_dict()
+        except Exception as exc:   # noqa: BLE001 - contracted not to raise
+            logger.warning("dish status reader raised, which it is "
+                           "contracted not to do: %s", exc)
+            status = {"state": "error",
+                      "detail": "%s: %s" % (type(exc).__name__, exc)}
+
+        payload = {
+            "status": status,
+            "state": m.state,
+            "detail": m.detail,
+            "reference_frame": m.reference_frame,
+            "frame_name": m.frame_name,
+            "num_rows": m.num_rows,
+            "num_cols": m.num_cols,
+            "min_elevation_deg": m.min_elevation_deg,
+            "max_theta_deg": m.max_theta_deg,
+            "census": m.census(),
+            "cells_scale": 100,
+            "cells": None,
+            "bearings": [],
+            # Bearings are only compass bearings in the earth-aligned frame;
+            # in the terminal's own frame an "azimuth" would send someone to
+            # look at the wrong tree. Say WHY they are withheld rather than
+            # shipping an empty list that reads as "nothing is blocked".
+            "bearings_available": m.reference_frame == 1,
+        }
+        if m.ok and m.cells:
+            payload["cells"] = [
+                -1 if c < 0 else int(round(float(c) * 100)) for c in m.cells
+            ]
+            payload["bearings"] = [
+                {"azimuth_deg": az, "elevation_deg": el, "snr": snr}
+                for az, el, snr in m.obstruction_bearings(limit=8)
+            ]
+        self._serve_json(payload, status=200)
+
     def _serve_fleet_dups(self):
         """Serve the cross-box dedup rollup (dedup/identity arc STEP 4c).
 
