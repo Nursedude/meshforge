@@ -932,10 +932,23 @@
         const c = doc.census || {};
         const inField = c.in_field || 0;
         const surveyed = c.surveyed || 0;
+        // How long this map has been accumulating. Without it, "21 cells
+        // obstructed" means something very different at 20 minutes of survey
+        // than at 9 days, and the reader cannot tell which they are looking
+        // at. The dish reports the window itself; a reboot resets it, so this
+        // is NOT the dish's age and must not be labelled as such.
+        const window_s = (st && typeof st.obstruction_valid_s === 'number')
+            ? st.obstruction_valid_s : null;
         parts.push(
             '<div class="item"><div class="id">sky map ' +
             '<span class="dark">' + esc(doc.num_rows) + '×' + esc(doc.num_cols) +
             ' · ' + esc(doc.frame_name) + '</span></div>' +
+            '<div class="detail">survey window ' +
+            (window_s === null ? '<span class="dark">?</span>'
+                               : '<b>' + esc(fmtAge(window_s)) + '</b>') +
+            ' of observation · a dish reboot resets this map, and a new ' +
+            'obstruction only registers when a satellite next passes through ' +
+            'it — the map lags the sky.</div>' +
             '<div class="detail">surveyed ' + surveyed + ' of ' + inField +
             ' in-field cells · <b class="healthy">' + (c.clear || 0) + ' clear</b> · ' +
             '<b class="failed">' + (c.obstructed || 0) + ' obstructed</b> · ' +

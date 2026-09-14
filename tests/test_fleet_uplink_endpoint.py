@@ -158,6 +158,36 @@ class TestStatusRidesAlong:
         assert resp["cells"] is not None
 
 
+class TestSurveyWindowAndWithheldFields:
+    """The map's age is part of its meaning; one field is knowingly withheld."""
+
+    def test_survey_window_reaches_the_pane(self):
+        """"21 cells obstructed" means different things at 20 min and 9 days."""
+        resp = _call(status=DishStatus("ok", obstruction_valid_s=772230.0))
+        assert resp["status"]["obstruction_valid_s"] == pytest.approx(772230.0)
+
+    def test_time_obstructed_is_deliberately_not_published(self):
+        """DO NOT "fix" this by adding the field to as_dict().
+
+        It is parsed, but the value does not support the name. Measured
+        2026-09-14 on rev4_gopher_prod1: window 772,230s x fraction 0.00229
+        implies ~1,767s obstructed; the field reads 5.9e-06. That slot does
+        not carry seconds in current firmware. Publishing it would render
+        "obstructed for 0.0 s" as a confident answer to an open question.
+        Re-derive the wire mapping first, then delete this test.
+        """
+        st = DishStatus("ok", time_obstructed_s=5.9e-06)
+        assert st.time_obstructed_s == pytest.approx(5.9e-06), "parser still reads it"
+        assert "time_obstructed_s" not in st.as_dict(), (
+            "time_obstructed_s was published; its units are unverified — see "
+            "the field comment in starlink_dish.py before exposing it"
+        )
+
+    def test_unknown_window_stays_null_not_zero(self):
+        resp = _call(status=DishStatus("ok"))
+        assert resp["status"]["obstruction_valid_s"] is None
+
+
 class TestReaderDefectsLeaveAWitness:
     def test_missing_module_reports_absent_not_a_fault(self):
         h = _make_handler()

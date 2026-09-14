@@ -157,6 +157,16 @@ class DishStatus:
     fraction_obstructed: Optional[float] = None
     currently_obstructed: Optional[bool] = None
     obstruction_valid_s: Optional[float] = None
+    #: ⚠️ PARSED BUT DELIBERATELY NOT PUBLISHED — the value does not support
+    #: the name. Measured 2026-09-14 on rev4_gopher_prod1 / 2026.08.31:
+    #: obstruction window 772,230 s and fraction_obstructed 0.00229, so a
+    #: genuine "seconds obstructed" would be ~1,767. The field reads
+    #: 5.9e-06. Whatever this slot carries in current firmware, it is not
+    #: seconds — Starlink has repurposed several obstruction stats over time.
+    #: Serialising it would put "obstructed for 0.0 s" on an operator's screen
+    #: as a confident answer to a question we cannot answer. It stays off
+    #: as_dict() until someone re-derives the wire mapping against a dish
+    #: whose true value is independently known. Do NOT "fix the omission".
     time_obstructed_s: Optional[float] = None
     alerts: Dict[str, bool] = field(default_factory=dict)
 
