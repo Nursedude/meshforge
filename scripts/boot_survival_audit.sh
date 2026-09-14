@@ -117,6 +117,23 @@ scan() {  # $1 = "" for system, "--user" for user manager
             # oneshot: enabled+inactive is the healthy resting state after a
             # successful run. dbus: activation-on-demand, idle is healthy.
             case "$typ" in oneshot|dbus|idle) continue;; esac
+            # ACTIVATION-ON-DEMAND, the other mechanism (2026-09-14). Same
+            # reasoning as `dbus` above: a unit with a non-empty TriggeredBy is
+            # started BY its trigger (socket/path/timer), so enabled+inactive is
+            # its resting state, not a boot casualty. cups.service is the live
+            # case — Type=notify (so the Type test misses it), TriggeredBy
+            # cups.socket+cups.path, and it idle-exits ~60s after each use:
+            #     00:01:15 Started cups.service
+            #     00:02:16 cups.service: Deactivated successfully
+            # Whether the 07:17 audit caught it awake was a COIN FLIP, so this
+            # fired on moc5 and not on kiai with byte-identical unit state, and
+            # since cron_verdict_stale began paging (2026-09-14) that race was
+            # an intermittent page nobody could act on.
+            # ⚠️ This hides nothing that matters: a triggered unit that FAILS to
+            # start lands in `failed`, and the failed-unit loop above catches it
+            # regardless of enablement or type. Exempting it here drops only the
+            # "idle is death" misreading.
+            [ -n "$(systemctl $scope show "$u" -p TriggeredBy --value 2>/dev/null)" ] && continue
             # A unit whose start was skipped by its own Condition* is not a
             # casualty — the box told it not to run here.
             [ "$(systemctl $scope show "$u" -p ConditionResult --value 2>/dev/null)" = "no" ] && continue
