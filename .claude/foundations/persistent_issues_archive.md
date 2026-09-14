@@ -3825,3 +3825,64 @@ not a measurement. Look at the probe's fallback branch, not at the subject.
 ways — planting `|| echo 0` back fails 4 of them including
 `test_absent_logfile_is_not_quiet`. Eval:
 `evals/local_brain/absurd_duration_sentinel_2026_09_02.jsonl`.
+
+---
+
+## The auto-preset rule existed TWICE; only one copy got fixed (2026-09-14) — RESOLVED
+
+`probe_mini_watchdog_source_unwired` read `indeterminate — no fleet-preset mini
+process is running` on moc5 while that box's mini ticked every 30s (pid 760929,
+70 rules, fresh in the rollup). The probe was NOT blind to `--preset auto`; it
+carried its **own copy** of how to resolve it, and the copy was the rule the
+daemon had already abandoned:
+
+    daemon.py  (fixed 2026-09-12)  no hosts, no NATS -> meshforge_fleet
+    probe      (never updated)     no hosts          -> "standalone" -> pid skipped
+
+**How it got there** — the useful part, and a textbook half-build:
+
+1. **2026-07-18 `ee0377d1`** ships `--preset auto` in the unit template,
+   resolving membership through the `fleet_hosts` SSOT.
+2. `fleet_hosts` is a **MANAGER-SIDE artifact** — member boxes carry none — so
+   on almost every box that lookup is legitimately EMPTY. **An empty list is
+   falsy**, so "I found no hosts" and "this box is standalone" became the same
+   value: hfm #1, inside a file that warns about that exact collapse three
+   separate times.
+3. **Latent 8 weeks**: every DEPLOYED unit was a May-era file pinning an
+   explicit preset, so nothing ever took the `auto` branch.
+4. **2026-09-12** moc5's reflash regenerates its unit from the template — the
+   first box to actually run `auto`. It resolved to standalone and never
+   ticked; a session fixed the **daemon** (standalone provably cannot start
+   without NATS, so `auto` refuses to choose it). The probe's copy of that same
+   rule was not part of the fix.
+
+So daemon and probe disagreed about the SAME pid and neither could notice: a
+copy is a claim of equivalence that decays silently. The probe's docstring even
+SAID "resolved the way the daemon resolves it" — true when written, false after
+09-12, and untestable either way. **A comment is dogma; a test-pin is a claim
+that can fail.**
+
+**Cure** (`49a5b630`): delete the copy, don't patch it. `_resolve_preset_name`
+grows an `env` parameter (whose environment to resolve against; `None` = this
+process's) plus `announce`, so the probe keeps asking with the RUNNING
+process's own environ — never the watchdog's root view (calibrated_claims #7) —
+while there is exactly ONE rule. Daemon behaviour unchanged.
+
+⚠️ **Armed on all 9 boxes, not just moc5.** The other eight are correct only
+because their unit files are four months stale; the next box regenerated from
+the template would have gone blind identically. The reflash did not cause this
+bug, it stopped hiding it.
+
+**Decision tell**: a probe that disagrees with a live check of its own subject
+— especially one whose comment claims to follow another module — means **grep
+for a second copy of the rule**, not a bug in the subject. `hfm #5` in its most
+expensive form.
+
+**Guards**: `tests/test_probe_mini_watchdog_source_unwired.py` — the test that
+had PINNED the stale rule is corrected rather than deleted
+(`test_preset_auto_with_no_hosts_and_no_nats_is_STILL_a_consumer`), and the
+negative branch it was guarding gets a test that actually reaches it (NATS
+configured -> standalone -> not a consumer).
+
+**Live proof**: moc5 `indeterminate` -> `clean | pid 760929` after the watchdog
+restart, with mini's pid unchanged throughout.
