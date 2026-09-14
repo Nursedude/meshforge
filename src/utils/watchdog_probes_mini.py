@@ -811,10 +811,25 @@ def _mini_fleet_env_flag(proc_root: str = "/proc") -> tuple:
                 key, _, val = entry.partition("=")
                 env[key] = val
         if preset == "auto":
+            # Ask the DAEMON'S OWN RULE what this pid's `auto` resolved to,
+            # against that pid's own environ. This used to be a private copy
+            # —`meshforge_fleet if resolve_fleet_hosts(env) else "standalone"`
+            # — and the copy went stale: fleet_hosts is a MANAGER-SIDE
+            # artifact, so on every member box the lookup is legitimately
+            # EMPTY, and an empty list is falsy, so "I found no hosts" and
+            # "this box is standalone" became the same value (the
+            # honest_failure_modes #1 collapse, in the file that warns about
+            # it three times). The daemon learned better on 2026-09-12
+            # (moc5's rebuild: standalone provably cannot start without NATS,
+            # so auto refuses to choose it) and this copy did not, so the two
+            # disagreed about the same process and the probe reported
+            # `no_process` while mini ticked every 30s. Measured latent on all
+            # 9 boxes — invisible only because every deployed unit still pins
+            # an explicit preset; moc5 was the first box to run the current
+            # template.
             try:
-                from utils.fleet_hosts import resolve_fleet_hosts
-                preset = (_MINI_FLEET_PRESET if resolve_fleet_hosts(env=env)
-                          else "standalone")
+                from mini_dudeai.daemon import _resolve_preset_name
+                preset = _resolve_preset_name("auto", env, announce=False)
             except Exception:
                 unresolvable.append(name)
                 continue

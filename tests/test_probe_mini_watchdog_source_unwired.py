@@ -219,11 +219,42 @@ def test_preset_auto_resolving_to_fleet_is_a_consumer(tmp_path, dispositions):
     assert sig is not None, "--preset auto (fleet) was not recognised as a consumer"
 
 
-def test_preset_auto_resolving_to_standalone_is_not_a_consumer(tmp_path, dispositions):
-    # A SET but missing override is authoritative in the resolver: no list ->
-    # standalone. Pins the test to injected state, not this machine's config.
+def test_preset_auto_with_no_hosts_and_no_nats_is_STILL_a_consumer(tmp_path, dispositions):
+    """CORRECTED 2026-09-14. This test used to assert `sig is None`, pinning
+    the probe's PRIVATE copy of the auto rule: "no host list -> standalone".
+
+    That copy went stale. ``fleet_hosts`` is a MANAGER-SIDE artifact — the
+    member boxes carry none — so on almost every box the lookup is
+    legitimately EMPTY, and an empty list is falsy, so "I found no hosts" and
+    "this box is standalone" were the same value. The DAEMON learned better on
+    2026-09-12 (moc5's rebuild): standalone provably cannot start without
+    MINI_DUDEAI_NATS_SERVER, so `auto` refuses to choose it and resolves to
+    meshforge_fleet. The probe's copy never got that fix, so the two disagreed
+    about the SAME pid and the probe reported `no_process` while mini ticked
+    every 30s.
+
+    The probe must answer what the process ACTUALLY resolved to, and the
+    daemon is what resolved it — so the daemon's rule is the ground truth.
+    The probe now calls it rather than re-implementing it."""
     proc = _proc(tmp_path, cmdline=AUTO_CMD,
                  env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0",
+                      "MESHFORGE_FLEET_HOSTS": str(tmp_path / "absent")})
+    sig = probe_mini_watchdog_source_unwired(
+        proc_root=proc, unit_status="ok", mini_home=str(tmp_path / "nohome"))
+    assert sig is not None, (
+        "an auto mini with no hosts and no NATS resolves to meshforge_fleet "
+        "(the daemon will not pick a preset that cannot start) — so it IS a "
+        "watchdog-feed consumer and the flag=0 is a real finding")
+
+
+def test_preset_auto_resolving_to_standalone_is_not_a_consumer(tmp_path, dispositions):
+    """The negative branch still has to work — and this is the shape that
+    genuinely reaches it: a NATS bus IS configured, so standalone can actually
+    start and `auto` picks it. That mini reads a different document and is not
+    party to the watchdog-feed contract."""
+    proc = _proc(tmp_path, cmdline=AUTO_CMD,
+                 env={"MINI_DUDEAI_ENABLE_WATCHDOG": "0",
+                      "MINI_DUDEAI_NATS_SERVER": "nats://127.0.0.1:4222",
                       "MESHFORGE_FLEET_HOSTS": str(tmp_path / "absent")})
     sig = probe_mini_watchdog_source_unwired(
         proc_root=proc, unit_status="ok", mini_home=str(tmp_path / "nohome"))

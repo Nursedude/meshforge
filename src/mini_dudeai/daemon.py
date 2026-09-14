@@ -44,7 +44,7 @@ def _acquire_instance_lock(lock_path: str):
     return f
 
 
-def _resolve_preset_name(name: str) -> str:
+def _resolve_preset_name(name: str, env=None, *, announce: bool = True) -> str:
     """``auto`` follows the box's fleet-membership declaration — the same
     fleet_hosts SSOT the TUI Fleet Membership wizard writes and every fleet
     consumer reads (hosts declared -> meshforge_fleet). With no hosts
@@ -52,14 +52,29 @@ def _resolve_preset_name(name: str) -> str:
     otherwise standalone provably cannot start, so auto falls back to
     meshforge_fleet and says why.
     Any other name passes through untouched, so deployed units that pin an
-    explicit preset keep their exact behavior."""
+    explicit preset keep their exact behavior.
+
+    ``env`` is WHOSE environment to resolve against; None = this process's.
+    It exists because this rule has a SECOND consumer: the watchdog probe
+    `probe_mini_watchdog_source_unwired` must decide what a RUNNING mini's
+    `--preset auto` resolved to, and it must ask using that process's own
+    environ — not the watchdog's root view (calibrated_claims #7). Before
+    2026-09-14 the probe carried its OWN copy of this rule, and when the
+    2026-09-12 moc5 fix landed here it did not land there: the daemon said
+    meshforge_fleet while the probe still said standalone about the SAME
+    pid, so the probe skipped it and reported `no_process` on a box whose
+    mini was ticking every 30s. One rule, two callers, parameterised by
+    whose environment — never two copies (honest_failure_modes #5).
+    ``announce`` is False for the probe: it re-resolves every tick per pid,
+    and printing that into the watchdog journal would be pure noise."""
     if name != "auto":
         return name
     from .rollup import resolve_fleet_hosts
-    hosts = resolve_fleet_hosts()
+    env = os.environ if env is None else env
+    hosts = resolve_fleet_hosts(env=env)
     if hosts:
         resolved, why = "meshforge_fleet", f"{len(hosts)} fleet host(s) declared"
-    elif os.environ.get("MINI_DUDEAI_NATS_SERVER"):
+    elif env.get("MINI_DUDEAI_NATS_SERVER"):
         resolved, why = "standalone", "no fleet hosts declared; NATS configured"
     else:
         # auto must not resolve to a preset it can PROVE cannot start.
@@ -75,7 +90,8 @@ def _resolve_preset_name(name: str) -> str:
         resolved = "meshforge_fleet"
         why = ("no fleet hosts declared AND no MINI_DUDEAI_NATS_SERVER -- "
                "standalone cannot start, so auto will not choose it")
-    print(f"mini-dudeai: preset auto -> {resolved} ({why})")
+    if announce:
+        print(f"mini-dudeai: preset auto -> {resolved} ({why})")
     return resolved
 
 
