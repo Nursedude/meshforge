@@ -372,25 +372,102 @@ class TestSpoolCarriesSchedules:
         assert "base64" in mod._REMOTE_CMD
 
 
-class TestAwkReductionCannotChangeTheAnswer:
-    """The remote awk sends only the LAST line per name. That is exactly what
-    `_parse_cron_verdicts` computes, so it is a bandwidth optimisation that is
-    idempotent w.r.t. the authoritative parser — pinned here, because if it
-    ever stopped being idempotent the spool would quietly disagree with the
-    local read (honest_failure_modes #5)."""
+def _awk_reduce(full: str) -> str:
+    """Reproduce the remote awk: last TWO lines per name, oldest first.
 
-    def test_full_log_and_last_per_name_parse_identically(self):
+    Mirrors `_REMOTE_CMD`'s awk exactly. Kept here so both properties the
+    reduction must preserve are tested against ONE model of it.
+    """
+    newest, prior = {}, {}
+    for ln in full.strip().split("\n"):
+        name = ln.split()[1]
+        if name in newest:
+            prior[name] = newest[name]
+        newest[name] = ln
+    out = []
+    for name, last in newest.items():
+        if name in prior:
+            out.append(prior[name])
+        out.append(last)
+    return "\n".join(out) + "\n"
+
+
+class TestAwkReductionCannotChangeTheAnswer:
+    """The remote awk summarises the verdict log before shipping it. It must
+    preserve EVERY property the manager-side consumers read — not just the one
+    its author thought of.
+
+    Until 2026-09-13 it sent one line per name, pinned only against
+    `_parse_cron_verdicts` (last-per-name). That assertion was true and it was
+    the wrong parser: the fast-cron confirmation gate reads
+    `_prior_verdict_statuses` (SECOND-newest per name), which one line cannot
+    express, so every spooled peer's failing hourly cron sat `dark` —
+    "unconfirmed first failure" — forever. Both properties are pinned now
+    (honest_failure_modes #5)."""
+
+    def test_full_log_and_reduction_parse_identically(self):
         from utils.fleet_snapshot import _parse_cron_verdicts
         now = 1_800_000_000.0
         full = (_verdict("OK", 7200, now)
                 + _verdict("FAIL", 3600, now, name="other")
                 + _verdict("CONCERN", 1800, now)
                 + _verdict("OK", 60, now))
-        # what the awk sends: last line per name, order-independent
-        reduced = "\n".join(
-            {ln.split()[1]: ln for ln in full.strip().split("\n")}.values()) + "\n"
         assert (_parse_cron_verdicts(full, now)
-                == _parse_cron_verdicts(reduced, now))
+                == _parse_cron_verdicts(_awk_reduce(full), now))
+
+    def test_the_REAL_awk_is_what_was_modelled(self, tmp_path):
+        """`_awk_reduce` above is a MODEL of the shipped awk. A model that
+        drifts from the artifact keeps the other two tests green while the
+        real transport is broken — the same self-confirming shape as the
+        2026-07-25 resolver lesson. So run the ACTUAL awk program, lifted out
+        of `_REMOTE_CMD`, and require it to agree with the model."""
+        import re
+        import shutil
+        import subprocess
+        awk_bin = shutil.which("awk")
+        if awk_bin is None:
+            pytest.skip("no awk on this host — cannot exercise the artifact")
+        spool_mod = _load_spool_script()
+        # Anchor on the verdict log: _REMOTE_CMD contains a SECOND awk (the
+        # /proc radio read), and an unanchored match lifts that one and
+        # silently reduces nothing. Found by this test failing on its own
+        # first run — which is the point of exercising the artifact.
+        pattern = r'''awk '([^']+)' "\$HOME/cron_verdicts\.log"'''
+        m = re.search(pattern, spool_mod._REMOTE_CMD)
+        assert m, "could not lift the cron-verdict awk program out of _REMOTE_CMD"
+        now = 1_800_000_000.0
+        full = (_verdict("OK", 7200, now)
+                + _verdict("FAIL", 3600, now, name="other")
+                + _verdict("FAIL", 1800, now)
+                + _verdict("FAIL", 60, now))
+        log = tmp_path / "cron_verdicts.log"
+        log.write_text(full)
+        out = subprocess.run([awk_bin, m.group(1), str(log)],
+                             capture_output=True, text=True, timeout=30)
+        assert out.returncode == 0, out.stderr
+        # Same content, per name, as the model — order across names is not
+        # part of the contract (both consumers key by name); order WITHIN a
+        # name is (oldest first), and both parsers are asserted on it.
+        from utils.fleet_snapshot import _parse_cron_verdicts
+        from utils.watchdog_probes_liveness import _prior_verdict_statuses
+        real, model = out.stdout, _awk_reduce(full)
+        assert (_parse_cron_verdicts(real, now)
+                == _parse_cron_verdicts(model, now))
+        assert _prior_verdict_statuses(real) == _prior_verdict_statuses(model)
+        assert _prior_verdict_statuses(real)["fleet_hosts_drift"] == "FAIL"
+
+    def test_reduction_preserves_the_previous_verdict(self):
+        """THE property the one-line reduction destroyed. Without this the
+        confirmation gate can never confirm, and a persistently failing fast
+        cron on a spooled box is invisible rather than red."""
+        from utils.watchdog_probes_liveness import _prior_verdict_statuses
+        now = 1_800_000_000.0
+        full = (_verdict("OK", 7200, now)
+                + _verdict("FAIL", 3600, now)
+                + _verdict("FAIL", 60, now))
+        assert _prior_verdict_statuses(full)["fleet_hosts_drift"] == "FAIL"
+        assert (_prior_verdict_statuses(_awk_reduce(full))
+                == _prior_verdict_statuses(full))
 
 
 class TestPeerJudgeUsesTheBoxesOwnProbe:
@@ -406,13 +483,30 @@ class TestPeerJudgeUsesTheBoxesOwnProbe:
         """The whole point: a FAIL on a map-less, watchdog-less box now
         reaches the NOC instead of dying in a local file."""
         now = time.time()
-        sec = _section(verdicts=_verdict("FAIL", 60, now))
+        # TWO failing runs — what the box's own log holds and what the spool
+        # now ships. Before 2026-09-13 this fixture had ONE line and the
+        # assertion accepted `dark`, so it passed green while the mechanism
+        # was wholly inert: a test that accepts both the working and the
+        # broken outcome pins neither.
+        sec = _section(verdicts=(_verdict("FAIL", 3600, now)
+                                 + _verdict("FAIL", 60, now)))
         with patch.object(c, "truth_spool_dir", return_value=tmp_path):
             # 2-tick debounce: the probe confirms before firing.
             for _ in range(4):
                 got = c.judge_spooled_schedules("lehua", sec, now=now)
-        assert got["state"] in ("failed", "dark"), got
-        assert got["state"] != "healthy"
+        assert got["state"] == "failed", got
+
+    def test_single_line_log_cannot_confirm_but_is_never_healthy(self, tmp_path):
+        """The degraded case, stated honestly rather than hidden: one line
+        genuinely cannot confirm a fast-cron failure. It must read `dark`
+        (unobservable), never `healthy` — absence of confirmation is not
+        evidence of health."""
+        now = time.time()
+        sec = _section(verdicts=_verdict("FAIL", 60, now))
+        with patch.object(c, "truth_spool_dir", return_value=tmp_path):
+            for _ in range(4):
+                got = c.judge_spooled_schedules("lehua", sec, now=now)
+        assert got["state"] == "dark", got
 
     def test_unreadable_crontab_is_dark_never_healthy(self, tmp_path):
         with patch.object(c, "truth_spool_dir", return_value=tmp_path):

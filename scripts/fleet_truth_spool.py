@@ -102,14 +102,30 @@ _REMOTE_CMD = (
     # shell-to-JSON escaping entirely; a failed encode yields an empty string,
     # which reads as unobservable rather than as an empty crontab.
     #
-    # The awk reduces the log to its LAST line per name. That is exactly what
-    # `_parse_cron_verdicts` computes, so the reduction cannot change the
-    # answer (it is idempotent w.r.t. that parser) — it only stops a
-    # 1000-line log riding every 2-minute spool run. Pinned by a test.
+    # The awk reduces the log to its LAST TWO lines per name, oldest first.
+    #
+    # ⚠️ It sent ONE line per name until 2026-09-13, justified as "idempotent
+    # w.r.t. `_parse_cron_verdicts`", which computes last-per-name. That was
+    # true and it was the wrong parser. The fast-cron confirmation gate reads
+    # `_prior_verdict_statuses` — the SECOND-newest verdict per name — so with
+    # one line `prev` was always None, every FAIL on an hourly cron read
+    # "unconfirmed first failure ... awaiting next run", and the cell sat
+    # `dark` forever instead of ever reaching `failed`. Measured cost: lehua
+    # failed its hourly `fleet_hosts_drift` 26 consecutive times (2026-09-11 →
+    # 09-14) and the NOC never said so — on the one box that has no watchdog,
+    # i.e. the box this whole spool leg exists to give a voice.
+    #
+    # The lesson is the reduction's, not the parser's: a transport that
+    # summarises its payload must preserve every property its CONSUMERS read,
+    # not the one property its author happened to test (honest_failure_modes
+    # #5). Two lines is the minimum the confirmation gate can work with;
+    # oldest-first keeps `_parse_cron_verdicts`'s "last line per name wins"
+    # answer byte-identical. Both properties are pinned by tests now.
     "; echo; echo __TRUTH_SCHEDULES__; "
     "_ct=$(crontab -l 2>/dev/null | base64 -w0 2>/dev/null); "
-    "_cv=$(awk '{a[$2]=$0} END{for(k in a) print a[k]}' \"$HOME/cron_verdicts.log\" "
-    "2>/dev/null | base64 -w0 2>/dev/null); "
+    "_cv=$(awk '{if ($2 in n) p[$2]=n[$2]; n[$2]=$0} "
+    "END{for(k in n){if (k in p) print p[k]; print n[k]}}' "
+    "\"$HOME/cron_verdicts.log\" 2>/dev/null | base64 -w0 2>/dev/null); "
     "printf '{\"crontab_b64\":\"%s\",\"verdicts_b64\":\"%s\"}' \"${_ct:-}\" \"${_cv:-}\""
 )
 _SECTIONS = ("__TRUTH_SLO__", "__TRUTH_STATUS__", "__TRUTH_RAWWD__",
