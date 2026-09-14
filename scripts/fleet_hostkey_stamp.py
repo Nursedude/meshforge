@@ -33,10 +33,18 @@ THE THREE REFUSALS — the reason this is not a for-loop
    IDENTICAL key, because one front forwards :22 to trdev while lehua's own
    sshd is on :2200. Both are refused; the fix is a correct ``ssh_port``,
    not a stamp.
-2. **Empty scan.** A host that does not answer (tunnel-only boxes: kiai,
-   alaula) is UNKNOWN, never a value. Leave ``expect_hostkey`` absent so the
-   audit reads ``UNDECLARED`` — never fabricate an identity from a failed
-   observation (honest_failure_modes #2).
+2. **Empty scan.** A host that does not answer is UNKNOWN, never a value.
+   Leave ``expect_hostkey`` absent so the audit reads ``UNDECLARED`` — never
+   fabricate an identity from a failed observation (honest_failure_modes #2).
+   ⚠️ This refusal is about the OBSERVATION, not about a list of boxes. It
+   used to name two aliases as the permanently-unscannable ones; on
+   2026-09-13 both stamped on the first try, because the 09-12 uplink move
+   had made them direct LAN neighbours and retired the reverse tunnel they
+   used to need. The refusal never fired — there was nothing to refuse. A
+   named example of a REACHABILITY fact goes stale the next time the network
+   moves, and a stale one reads as a standing exemption: the next reader
+   sees two aliases documented as un-stampable and does not re-measure. Ask
+   the scan, never this docstring.
 3. **Disagreement with an existing stamp.** If an alias already carries an
    ``expect_hostkey`` and the live scan disagrees, that is EXACTLY the
    finding this whole mechanism exists to surface. Overwriting it would
