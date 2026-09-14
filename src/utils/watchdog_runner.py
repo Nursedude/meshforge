@@ -115,6 +115,9 @@ from utils.watchdog_probes import (
     probe_tracer_peer_unreachable,
     signal_to_dict,
 )
+from utils.watchdog_probes_peer_cron import (  # noqa: E402
+    probe_peer_cron_verdict_stale,
+)
 # Signal lifecycle + the unobserved HOLD (split 2026-07-26, MF025). Re-exported
 # here so existing importers of SignalTracker keep working unchanged.
 from utils.watchdog_tracker import (  # noqa: F401  (re-export)
@@ -655,6 +658,12 @@ def run_all_probes(
     sig = probe_cron_verdict_stale()
     if sig is not None:
         signals.append(sig)
+
+    # The SAME class for boxes that run no watchdog of their own: their
+    # cron verdicts ride the ssh truth spool to this box and are judged
+    # here, with subject=<alias>. No new class — see the module header.
+    # Returns [] anywhere that is not the manager (no spool = no claim).
+    signals.extend(probe_peer_cron_verdict_stale())
 
     # Fleet box unreachable (2026-06-17, Leg D) — surface a box the offline-
     # monitor (fleet_offline_check.sh, manager-box-only) has confirmed DOWN into

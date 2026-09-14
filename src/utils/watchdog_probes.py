@@ -85,6 +85,9 @@ from utils.watchdog_probes_rns import (
     _tcp_reachable,
 )
 from utils.watchdog_probes_rf_leg import probe_rf_leg_silent  # noqa: F401
+from utils.watchdog_probes_peer_cron import (  # noqa: F401
+    probe_peer_cron_verdict_stale,
+)
 from utils.watchdog_probes_channel import (
     probe_channel_feed_dark,
 )
@@ -220,6 +223,7 @@ __all__ = [
     "probe_user_timer_unit_failing",
     "probe_tracer_peer_unreachable",
     "probe_cron_verdict_stale",
+    "probe_peer_cron_verdict_stale",
     "probe_kernel_reboot_pending",
     "probe_aredn_source_dark",
     "probe_inherited_app_drift",
