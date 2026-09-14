@@ -43,6 +43,30 @@ file (``~/mini_dudeai_claw_rules.json``) — the claw mini is a second engine
 beside the fleet one and never maps to a box role.
 
 Default is DRY-RUN (like provision_role.py); nothing is written without --apply.
+
+⚠️ ORDERING: restart this box's mini BEFORE promoting a seed whose rules match
+on a NEW extras key. Rules reload every tick; the code that PROJECTS a
+condition's extras does not — it is loaded when the daemon starts. A rule
+matching ``match.<key>`` is an extras EQUALITY filter, so on a box whose mini
+still runs older code the key is absent, the filter matches nothing, and the
+class goes SILENT rather than loud. (Landing the code first is always safe: an
+unknown extras key on a condition no rule bands is simply ignored.)
+
+Measured 2026-09-14, the first time this mattered: ``verdict_band`` was the
+first new extras key since ``class`` — the vocabulary had exactly one member
+for the life of the repo — so this is a rare shape, not a routine hazard.
+``fleet_sync.sh`` already gets it right (pull -> promote -> restart mini), and
+mini's watchdog extractor defaults an ABSENT band to the LOUD value precisely
+so a half-rolled box keeps paging. Both of those are belt and braces; the
+ordering above is the rule.
+
+Deliberately NOT enforced in code. A precondition here would have to ask "can
+this box's running mini project that key?", and the only thing it can cheaply
+read is the extractor ON DISK — which, after a pull, is the NEW file while the
+OLD daemon is still in memory. It would answer "yes" in exactly the case it
+exists to catch: a checker that consumes the artifact it validates
+(.claude/foundations/persistent_issues.md, 2026-07-25). A wrong refusal in the
+deploy path costs more than the rare mistake it would prevent.
 """
 import argparse
 import json
