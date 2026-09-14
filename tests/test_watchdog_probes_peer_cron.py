@@ -80,6 +80,32 @@ class TestItRoutesIntoTheExistingClass:
         assert "lehua" in sigs[0].detail
         assert sigs[0].extra["via"] == "truth_spool"
 
+    def test_a_peers_band_travels_with_it(self, tmp_path):
+        """A peer's CONCERN must be as quiet as a local one (2026-09-14).
+
+        The band is computed by the peer's OWN probe run on spooled text and
+        carried through `judge_spooled_schedules`; if it stopped travelling,
+        the peer leg would fall back to `fail` and page for every self-healing
+        CONCERN on a box that cannot even be asked about it."""
+        now = time.time()
+        _spool(tmp_path, "lehua",
+               _verdict("CONCERN", 3600, now) + _verdict("CONCERN", 60, now),
+               now=now)
+        sigs = []
+        for _ in range(4):
+            sigs = probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+        assert len(sigs) == 1, sigs
+        assert sigs[0].extra["verdict_band"] == "concern"
+
+    def test_a_failing_peer_is_banded_loud(self, tmp_path):
+        now = time.time()
+        _spool(tmp_path, "lehua",
+               _verdict("FAIL", 3600, now) + _verdict("FAIL", 60, now), now=now)
+        sigs = []
+        for _ in range(4):
+            sigs = probe_peer_cron_verdict_stale(now=now, spool_dir=tmp_path)
+        assert sigs[0].extra["verdict_band"] == "fail"
+
     def test_healthy_peer_emits_nothing_but_leaves_a_witness(self, tmp_path):
         """`clean` must still SAY it judged somebody. An all-healthy fleet and
         a dead peer leg both emit zero signals; only the coverage tells them

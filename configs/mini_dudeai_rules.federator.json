@@ -646,7 +646,8 @@
       "match": {
         "kind": "signal_class",
         "class": "cron_verdict_stale",
-        "subject_glob": "*"
+        "subject_glob": "*",
+        "verdict_band": "fail"
       },
       "action": {
         "kind": "ntfy",
@@ -659,7 +660,21 @@
         ]
       },
       "cooldown_s": 21600,
-      "annotation": "Issue #78 — a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL/CONCERN. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. Side-effect-free escalation; NO ntfy page (degraded, not an outage)."
+      "annotation": "Issue #78 — a crontab-wired cron_verdict.sh cron went silent past its cadence, or its latest verdict is FAIL. The silent-cron class: the cron may have been firing into a deleted path for weeks. Check ~/cron_verdicts.log + crontab -l on the box. PAGES since 2026-09-14 (operator decision): was propose_escalation, which reached a session and /fleet but nobody at 2am — and a watchdog-less box like lehua failed an hourly cron 26 consecutive times with nothing saying so. priority=default, NOT urgent: this is degraded, not an outage. cooldown_s 21600 caps it at one page per 6h per subject, so a stuck cron says its piece once and then shuts up. subject_glob * means this fires for PEER crons too (subject=<alias>), which is the point — the peer leg exists to give a watchdog-less box a voice. ⚠️ match.verdict_band 'fail' is what keeps this page MEANING something: see cron_verdict_concern_any for the other half. A band DOWNGRADE (the FAIL cleared, a CONCERN remains) ends this rule's condition and sends the generic min-priority 'cleared' — which is true of what it paged for; the surviving CONCERN stays visible on cron_verdict_concern_any and in the brief, never silently dropped."
+    },
+    {
+      "id": "cron_verdict_concern_any",
+      "match": {
+        "kind": "signal_class",
+        "class": "cron_verdict_stale",
+        "subject_glob": "*",
+        "verdict_band": "concern"
+      },
+      "action": {
+        "kind": "propose_escalation"
+      },
+      "cooldown_s": 21600,
+      "annotation": "Issue #78, quiet half (2026-09-14). The SAME class, split by loudness: a finding whose every member is a CONCERN verdict escalates but does NOT page. Why: fleet_registry_sync reports CONCERN BY DESIGN when it self-heals a drift — it never reads OK — so paging on CONCERN would put a permanently-noisy subject in the same channel as 'lehua failed an hourly cron 26 times', and train the operator to ignore both. A SILENT cron is never concern-band, whatever else is in the finding: silence is this class's actual failure mode and a dead cron cannot self-heal. The band is emitted by probe_cron_verdict_stale into extra.verdict_band (utils.watchdog_probe_core.cron_verdict_band — one vocabulary, local and peer legs alike). ⚠️ An ABSENT band reads 'fail' at the extractor on purpose, so a box whose watchdog has not rolled yet keeps paging rather than going quiet."
     },
     {
       "id": "fleet_box_unreachable_any",

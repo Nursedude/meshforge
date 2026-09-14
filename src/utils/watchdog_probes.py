@@ -43,7 +43,10 @@ live in the sibling modules and are re-exported below:
 * ``watchdog_probes_service`` — local service health (#61/#73/#75)
 * ``watchdog_probes_channel`` — Meshtastic channel feed + json-uplink instrument
 * ``watchdog_probes_drift``   — declared-vs-live drift (#77 + parity/version)
-* ``watchdog_probes_liveness``— cron/fleet/host liveness (#78)
+* ``watchdog_probes_cron``    — the cron-verdict regime (#78); split out of
+  liveness 2026-09-14 at the MF025 cap, beside its peer twin
+  ``watchdog_probes_peer_cron``. liveness still re-exports its names.
+* ``watchdog_probes_liveness``— fleet-box/host liveness + claw dark/battery/RF
 * ``watchdog_probes_env``     — router/ntfy/kernel/aredn/inherited-app
 * ``watchdog_probes_gateway`` — delivery-path core (#63/#74) + dedup
 * ``watchdog_probes_gateway_flow`` — delivery-flow observers (soak/canary/oracle)

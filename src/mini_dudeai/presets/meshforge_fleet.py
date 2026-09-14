@@ -65,6 +65,13 @@ def _state_root() -> str:
         return os.path.join(resolve_home(), ".local", "state", "meshforge")
 
 
+#: Signal classes whose rules split by LOUDNESS band (extra["verdict_band"]).
+#: Kept narrow on purpose: every other class matches on class + subject alone,
+#: and a band key on a condition no rule bands would be dead weight.
+_BANDED_CLASSES = frozenset({"cron_verdict_stale"})
+_BAND_FAIL = "fail"
+
+
 def _watchdog_extractor(data):
     """Project watchdog.json signals[] to Condition-ready dicts.
 
@@ -76,13 +83,30 @@ def _watchdog_extractor(data):
     """
     out = []
     for sig in data.get("signals") or []:
-        out.append({
+        cls = sig.get("class") or sig.get("cls") or "unknown"
+        item = {
             "subject": sig.get("subject", "unknown"),
             "detail": sig.get("detail", ""),
-            "class": sig.get("class") or sig.get("cls") or "unknown",
+            "class": cls,
             "severity": sig.get("severity", "info"),
             "issue_ref": sig.get("issue_ref"),
-        })
+        }
+        if cls in _BANDED_CLASSES:
+            # The loudness band the split rules match on (2026-09-14). Projected
+            # EXPLICITLY, not by splatting `extra` — extras are the rules' open
+            # matching vocabulary, and dumping a probe's whole payload in there
+            # would let any future extra key silently start filtering rules.
+            #
+            # ⚠️ Absent band => the LOUD one. The watchdog that writes this file
+            # and the rules that read it are a producer/consumer pair, and they
+            # roll per box: between the rule landing and the watchdog landing,
+            # an equality filter on a key nobody writes matches NO rule and the
+            # class goes silent. Defaulting loud makes a half-rolled box page
+            # exactly as it does today (honest_failure_modes #4).
+            item["verdict_band"] = (
+                (sig.get("extra") or {}).get("verdict_band")
+                or _BAND_FAIL)
+        out.append(item)
     return out
 
 

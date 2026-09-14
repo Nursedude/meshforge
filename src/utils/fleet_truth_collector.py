@@ -297,6 +297,7 @@ def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
 
     sink: list = []
     try:
+        from utils.watchdog_probe_core import CRON_VERDICT_BAND_FAIL
         from utils.watchdog_probes_liveness import probe_cron_verdict_stale
         sig = probe_cron_verdict_stale(
             crontab_text=crontab_text,
@@ -313,7 +314,13 @@ def judge_spooled_schedules(alias: str, section: "Optional[Dict[str, Any]]",
     disps = [d for _c, d, _r in sink]
     reason = next((r for _c, d, r in sink if d not in ("clean",) and r), None)
     if sig is not None:
+        # Carry the loudness band THROUGH, so a peer's CONCERN is as quiet as a
+        # local one. Absent (a Signal from an older emitter) means the band is
+        # unknown, and an unknown band must be the LOUD one — a half-rolled
+        # fleet keeps paging rather than silently stopping.
+        band = (getattr(sig, "extra", None) or {}).get("verdict_band")
         return {"state": "failed",
+                "band": band or CRON_VERDICT_BAND_FAIL,
                 "reason": getattr(sig, "detail", None) or "cron verdict unhealthy"}
     if "indeterminate" in disps:
         return {"state": "dark", "reason": reason or "cron verdicts unobservable"}

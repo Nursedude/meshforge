@@ -209,6 +209,42 @@ CRON_VERDICT_ORPHAN_ACKNOWLEDGED = {
 }
 
 
+#: The two LOUDNESS bands the ``cron_verdict_stale`` class splits into
+#: (2026-09-14, operator decision). ONE vocabulary, three consumers — the
+#: local probe, the peer probe, and the seeded rules that match on
+#: ``extra["verdict_band"]`` — so the emitter and the rules cannot drift
+#: (honest_failure_modes #5).
+CRON_VERDICT_BAND_FAIL = "fail"
+CRON_VERDICT_BAND_CONCERN = "concern"
+
+
+def cron_verdict_band(failed, stale, unwired_failing):
+    """Which band a ``cron_verdict_stale`` finding belongs in.
+
+    ``concern`` iff EVERY finding is a CONCERN-status verdict; ``fail``
+    otherwise. Why the split exists: the class conflated a DESIGNED-noisy
+    state with real findings. ``fleet_registry_sync`` reports CONCERN by
+    design when it self-heals a drift — it never reads OK — so paging on
+    CONCERN trains the operator to ignore the channel that also carries
+    "lehua failed an hourly cron 26 consecutive times" (2026-09-11 → 09-14).
+
+    A SILENT cron is ALWAYS ``fail``, whatever else is in the finding:
+    silence is the failure mode this class exists for (#78), and a cron that
+    stopped running cannot self-heal the way a CONCERN verdict does.
+
+    Entries arrive pre-formatted as ``name(STATUS)`` from the probe's own
+    buckets; the trailing token is the authority. An entry with no parsable
+    status is treated as ``fail`` — an unreadable finding is not a quiet one.
+    """
+    if stale:
+        return CRON_VERDICT_BAND_FAIL
+    for entry in list(failed) + list(unwired_failing):
+        status = entry.rsplit("(", 1)[-1].rstrip(")") if "(" in entry else ""
+        if not status.upper().startswith("CONCERN"):
+            return CRON_VERDICT_BAND_FAIL
+    return CRON_VERDICT_BAND_CONCERN
+
+
 def classify_orphan_verdicts(latest, wired):
     """Split unwired verdict names into ``(unwired, acknowledged)``.
 

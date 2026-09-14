@@ -37,7 +37,7 @@ STRUCTURAL_MATCH_KEYS = frozenset({
 # Extras keys the fleet rules legitimately match on. Anything outside
 # STRUCTURAL_MATCH_KEYS and this set draws a lint warning (not an error —
 # the extras vocabulary is open by design).
-WELL_KNOWN_EXTRAS_KEYS = frozenset({"class"})
+WELL_KNOWN_EXTRAS_KEYS = frozenset({"class", "verdict_band"})
 
 # The merge_seed_rules() report buckets, grouped by whether they change the
 # written file. CHANGE buckets mean a real edit (worth a write); PRESERVE

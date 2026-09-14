@@ -48,7 +48,9 @@ import json
 import time
 from typing import Any, Dict, List, Optional
 
-from utils.watchdog_probe_core import Signal, note_disposition
+from utils.watchdog_probe_core import (
+    CRON_VERDICT_BAND_FAIL, Signal, note_disposition,
+)
 
 # This probe contributes to the EXISTING class "cron_verdict_stale" — see
 # "WHAT THIS IS *NOT*" above.
@@ -137,7 +139,13 @@ def probe_peer_cron_verdict_stale(
                 detail=(f"{alias}: {cell.get('reason') or 'cron verdict unhealthy'} "
                         f"— judged from the ssh truth spool because this box runs "
                         f"no watchdog of its own"),
-                extra={"peer": alias, "via": "truth_spool"},
+                extra={"peer": alias, "via": "truth_spool",
+                       # Same loudness vocabulary as the local leg: a peer's
+                       # CONCERN is as quiet as ours, its FAIL as loud. An
+                       # absent band means the judge could not say, and an
+                       # unknown band is the LOUD one — never the quiet one.
+                       "verdict_band": (cell.get("band")
+                                        or CRON_VERDICT_BAND_FAIL)},
             ))
         elif state == "dark":
             # Unconfirmed / unobservable on the PEER's side. Its own reason is
