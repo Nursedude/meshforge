@@ -899,14 +899,28 @@ sync_local_unit() {
     # a dead user bus exits 1 identically). So confirm the manager is alive
     # before calling an absence benign; an absence we cannot cross-check
     # proves nothing (honest_failure_modes #2).
-    if ! systemctl list-unit-files "${unit}.service" 2>/dev/null | grep -q "$unit"; then
-        if systemctl show --property=Version >/dev/null 2>&1; then
+    # Tri-state on the QUERY ITSELF, not on a neighbouring probe. Measured
+    # 2026-09-15: `list-unit-files` prints "N unit files listed." whenever it
+    # ANSWERS (rc=0 with the unit, rc=1 with "0 unit files listed." when it is
+    # genuinely absent), and prints NOTHING on stdout when the query failed.
+    # So that marker — not the exit code, and not whether the manager happens
+    # to be reachable a moment later — is what separates "absent" from "no
+    # answer". The first cut of this fix asked `systemctl show
+    # --property=Version` instead, which proves the manager is alive NOW and
+    # says nothing about whether THIS query succeeded; meshforge-maps then
+    # read `not_running` on one run and `no_unit` on the next, an hour apart,
+    # with the unit file plainly installed both times.
+    local uf_out
+    uf_out="$(systemctl list-unit-files "${unit}.service" 2>/dev/null)"
+    case "$uf_out" in
+        *"${unit}.service"*) : ;;
+        *"unit files listed"*)
             self_skip "$unit" "no_unit (not installed on this box)" PASS
-        else
-            self_skip "$unit" "UNKNOWN systemd unreachable — this box's units were NOT checked" WARN
-        fi
-        return 0
-    fi
+            return 0 ;;
+        *)
+            self_skip "$unit" "UNKNOWN list-unit-files gave no answer — this box's units were NOT checked" WARN
+            return 0 ;;
+    esac
     # Tri-state, NOT a boolean (honest_failure_modes #1). A non-zero
     # `is-active` conflates "the operator stopped it" with "I could not reach
     # the manager at all" -- and the second is the likelier reason a unit
@@ -1042,14 +1056,28 @@ sync_local_user_unit() {
     # a dead user bus exits 1 identically). So confirm the manager is alive
     # before calling an absence benign; an absence we cannot cross-check
     # proves nothing (honest_failure_modes #2).
-    if ! systemctl --user list-unit-files "${unit_file}.service" 2>/dev/null | grep -q "${unit_file}.service"; then
-        if systemctl --user show --property=Version >/dev/null 2>&1; then
+    # Tri-state on the QUERY ITSELF, not on a neighbouring probe. Measured
+    # 2026-09-15: `list-unit-files` prints "N unit files listed." whenever it
+    # ANSWERS (rc=0 with the unit, rc=1 with "0 unit files listed." when it is
+    # genuinely absent), and prints NOTHING on stdout when the query failed.
+    # So that marker — not the exit code, and not whether the manager happens
+    # to be reachable a moment later — is what separates "absent" from "no
+    # answer". The first cut of this fix asked `systemctl show
+    # --property=Version` instead, which proves the manager is alive NOW and
+    # says nothing about whether THIS query succeeded; meshforge-maps then
+    # read `not_running` on one run and `no_unit` on the next, an hour apart,
+    # with the unit file plainly installed both times.
+    local uf_out
+    uf_out="$(systemctl --user list-unit-files "${unit_file}.service" 2>/dev/null)"
+    case "$uf_out" in
+        *"${unit_file}.service"*) : ;;
+        *"unit files listed"*)
             self_skip "$unit" "no_unit (not installed on this box)" PASS
-        else
-            self_skip "$unit" "UNKNOWN systemd --user unreachable — this box's user units were NOT checked" WARN
-        fi
-        return 0
-    fi
+            return 0 ;;
+        *)
+            self_skip "$unit" "UNKNOWN list-unit-files gave no answer — this box's user units were NOT checked" WARN
+            return 0 ;;
+    esac
     # Tri-state, NOT a boolean (honest_failure_modes #1). A non-zero
     # `is-active` conflates "the operator stopped it" with "I could not reach
     # the manager at all" -- and the second is the likelier reason a unit
