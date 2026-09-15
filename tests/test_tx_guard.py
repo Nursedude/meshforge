@@ -587,7 +587,18 @@ class TestGuardIsWiredAtEverySendSite:
         for path in self.SRC.rglob("*.py"):
             if path.name == "tx_guard.py":
                 continue
-            src = path.read_text(errors="ignore")
+            try:
+                src = path.read_text(errors="ignore")
+            except FileNotFoundError:
+                # Vanished between rglob() and read(). These sweeps run over the LIVE
+                # tree and other tests plant-then-delete files inside it, so a path
+                # can legitimately disappear mid-scan. A file that no longer exists
+                # cannot ship an unguarded send site. This is NOT a broadened except:
+                # only FileNotFoundError is skipped, every other error still raises.
+                # (2026-09-15: this read crashed the sweep and the check of record
+                # reported `full suite FAIL` when a concurrent pytest run removed a
+                # planted drill file — honest_failure_modes #8.)
+                continue
             try:
                 tree = ast.parse(src)
             except SyntaxError:
@@ -632,7 +643,11 @@ class TestGuardIsWiredAtEverySendSite:
         for path in self.SRC.rglob("*.py"):
             if path.name == "tx_guard.py":
                 continue
-            raw = path.read_text(errors="ignore").splitlines()
+            try:
+                raw = path.read_text(errors="ignore").splitlines()
+            except FileNotFoundError:
+                # Vanished mid-scan; see the note on the first sweep in this file.
+                continue
             # Comments are stripped BEFORE matching, in both directions: a
             # comment mentioning a flag must not create noise, and a comment
             # mentioning a guard or shared runner must not exempt a real
@@ -715,7 +730,11 @@ class TestMeshCoreEgress:
         for path in src_root.rglob("*.py"):
             if path.name == "tx_guard.py":
                 continue
-            src = path.read_text(errors="ignore")
+            try:
+                src = path.read_text(errors="ignore")
+            except FileNotFoundError:
+                # Vanished mid-scan; see the note on the first sweep in this file.
+                continue
             if not any(m in src for m in self.MESHCORE_SEND_METHODS):
                 continue
             try:
@@ -942,7 +961,11 @@ class TestRnsGuardIsWiredAtEverySendSite:
         for path in self.SRC.rglob("*.py"):
             if path.name in ("tx_guard.py", "rns_init.py"):
                 continue
-            src = path.read_text(errors="ignore")
+            try:
+                src = path.read_text(errors="ignore")
+            except FileNotFoundError:
+                # Vanished mid-scan; see the note on the first sweep in this file.
+                continue
             if not any(a in src for a in self.RNS_EGRESS_ATTRS):
                 continue
             try:

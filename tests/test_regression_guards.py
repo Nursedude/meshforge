@@ -1600,7 +1600,18 @@ class TestGuardsAreNotInert:
         refactor can quietly return the guards to matching nothing and every
         other test here would still be green.
         """
-        drill = os.path.join(SRC_DIR, 'utils', '_guard_selftest_tmp.py')
+        # Name must be UNIQUE PER PROCESS. It was a fixed
+        # `_guard_selftest_tmp.py` until 2026-09-15, which is a collision, not
+        # a convention (honest_failure_modes #8): this file is planted inside
+        # the LIVE src/ tree, and tests/test_tx_guard.py rglobs that same tree
+        # and read_text()s every hit. Two concurrent pytest invocations —
+        # honest_status's full suite and a targeted re-run — raced, the glob
+        # saw the planted file and the read found it already deleted, and the
+        # check of record reported `full suite FAIL` for a product that was
+        # fine. The pid suffix makes the collision impossible instead of
+        # unlikely.
+        drill_name = '_guard_selftest_tmp_%d.py' % os.getpid()
+        drill = os.path.join(SRC_DIR, 'utils', drill_name)
         try:
             with open(drill, 'w', encoding='utf-8') as fh:
                 fh.write(
@@ -1610,7 +1621,7 @@ class TestGuardsAreNotInert:
                     '    return subprocess.run(cmd, shell=True, timeout=5)\n'
                 )
             matches = _scan_python_files(r'shell\s*=\s*True')
-            hits = [fp for fp, _, _ in matches if fp.endswith('_guard_selftest_tmp.py')]
+            hits = [fp for fp, _, _ in matches if fp.endswith(drill_name)]
             assert hits, (
                 "a file planted in src/ with a bare `shell=True` was NOT seen "
                 "by the scanner — the guards in this file are inert"
