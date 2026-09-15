@@ -387,11 +387,17 @@ class TestFinding7SocketKey:
         # pause (CI 3.11 run 34461082035: StopIteration on the SECOND
         # sample; passed on 3.9 and twice locally). Serve the canned samples
         # only to the probe's own ``ss`` argv; everything else runs for real.
+        # Second occurrence (CI 3.11 run 34919387425, 2026-09-14, on a
+        # docs-only head): the leaked thread ALSO runs ``ss`` — the argv
+        # filter alone was not enough. The probe runs on THIS thread, so key
+        # the canned samples on thread identity too; a foreign thread's
+        # ``ss`` runs for real and cannot exhaust the iterator.
         samples = iter([first, second])
         real_run = cfp.subprocess.run
+        me = threading.get_ident()
 
         def _dispatch(argv, *a, **kw):
-            if argv and argv[0] == "ss":
+            if argv and argv[0] == "ss" and threading.get_ident() == me:
                 return next(samples)
             return real_run(argv, *a, **kw)
 
