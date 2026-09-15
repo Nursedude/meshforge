@@ -59,12 +59,39 @@
 # test, and the code-head at that commit resolved to a src/ commit 7.8 HOURS
 # EARLIER, so a daemon started in that window read "current".
 #
-# Widening brought back the 05-11 churn, so the real fix is PER-UNIT
-# attribution: resolve each unit's ExecStart and let the file it actually runs
-# decide its restart, falling back to this list otherwise. That satisfies both
-# decisions at once — the map ignores push_snapshot.sh, nomadnet-silence-watch
-# restarts on its own source. Until that exists, the gap stands and is written
-# down here rather than being quietly absorbed.
+# Widening brought back the 05-11 churn. An earlier draft of this note named
+# PER-UNIT ExecStart attribution as "the real fix" — "let the file it actually
+# runs decide its restart". ⚠️ DO NOT BUILD THAT AS WRITTEN. It is wrong in two
+# ways, and it was written before anyone counted the population:
+#
+#   1. It REPLACES the global list per unit, and file granularity is blind to
+#      TRANSITIVE IMPORTS. nomadnet_silence_watch.py imports from src/utils/*,
+#      so attributing it to its own file alone would stop catching src/ changes
+#      it depends on — a NEW under-restart gap wearing the appearance of
+#      precision. If it is ever built it must be ADDITIVE (this list UNION the
+#      unit's own ExecStart file), never a replacement.
+#   2. The population does not justify the machinery. Measured on the manager box
+#      2026-09-15: SIX units ExecStart out of scripts/, and FIVE are
+#      timers/oneshots (backup, ci-status, cloud-push, dep-advisory,
+#      dep-range) — invoked fresh each run, so never stale and pointless to
+#      restart. Exactly ONE is a long-lived Type=simple daemon:
+#      nomadnet-silence-watch. Every other resident daemon already runs
+#      `-m module` out of src/ (mini_dudeai, utils.watchdog_runner,
+#      lab.lxmf_echo, lab.lxmf_tracer, core.orchestrator) and is covered here
+#      already. Attribution would mean parsing `-m` module resolution and
+#      `bash -c` one-liners (meshforge-map's ExecStart is a buried shell
+#      string) for the nine units that do NOT need it, to serve the one that
+#      does. ⚠️ Measured on ONE box — sweep the fleet before trusting the count.
+#
+# PREFERRED FIX: move the daemon's body into src/ and point ExecStart at
+# `-m`, like every other resident daemon. Then this list is correct BY
+# CONSTRUCTION, both dated decisions hold with no special case, and scripts/
+# goes back to meaning what 05-11 assumed it meant — operator-invoked tooling,
+# never resident daemon code. One file moved + a unit template edit, against a
+# design change inside a fragile REMOTE_SCRIPT with fleet-wide blast radius.
+# Fix the layout violation; do not teach the tool about the violation.
+#
+# Until then the gap stands, written down rather than quietly absorbed.
 
 #: Pathspecs for code a resident daemon has loaded. Word-split on purpose:
 #: every consumer passes it unquoted after `--` so each entry is its own
